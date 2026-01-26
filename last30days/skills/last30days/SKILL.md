@@ -90,7 +90,7 @@ echo "Edit to add your API keys for enhanced research."
 
 **Step 1: Run the research script**
 ```bash
-python3 ~/.claude/skills/last30days/scripts/last30days.py "$ARGUMENTS" --emit=compact 2>&1
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/last30days.py "$ARGUMENTS" --emit=compact 2>&1
 ```
 
 The script will automatically:

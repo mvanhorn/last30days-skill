@@ -8,11 +8,27 @@
 
 ## Installation
 
-```bash
-# Clone the repo
-git clone https://github.com/mvanhorn/last30days-skill.git ~/.claude/skills/last30days
+### Option 1: Claude Code Plugin (Recommended)
 
-# Add your API keys
+```bash
+# Add the marketplace
+claude plugin marketplace add mvanhorn/last30days-skill
+
+# Install the plugin
+claude plugin install last30days@l30d
+```
+
+### Option 2: Manual Installation
+
+```bash
+git clone https://github.com/mvanhorn/last30days-skill.git
+cd last30days-skill/last30days
+# Follow setup instructions below
+```
+
+### API Keys (Optional but Recommended)
+
+```bash
 mkdir -p ~/.config/last30days
 cat > ~/.config/last30days/.env << 'EOF'
 OPENAI_API_KEY=sk-...
@@ -20,6 +36,8 @@ XAI_API_KEY=xai-...
 EOF
 chmod 600 ~/.config/last30days/.env
 ```
+
+The skill works without API keys (WebSearch fallback), but adding them unlocks Reddit and X research with real engagement metrics.
 
 ## Usage
 

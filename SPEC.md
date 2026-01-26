@@ -31,7 +31,7 @@ Other skills can import the research context in several ways:
 ### Inline Context Injection
 ```markdown
 ## Recent Research Context
-!python3 ~/.claude/skills/last30days/scripts/last30days.py "your topic" --emit=context
+!python3 ${CLAUDE_PLUGIN_ROOT}/scripts/last30days.py "your topic" --emit=context
 ```
 
 ### Read from File
@@ -42,19 +42,19 @@ Other skills can import the research context in several ways:
 
 ### Get Path for Dynamic Loading
 ```bash
-CONTEXT_PATH=$(python3 ~/.claude/skills/last30days/scripts/last30days.py "topic" --emit=path)
+CONTEXT_PATH=$(python3 ${CLAUDE_PLUGIN_ROOT}/scripts/last30days.py "topic" --emit=path)
 cat "$CONTEXT_PATH"
 ```
 
 ### JSON for Programmatic Use
 ```bash
-python3 ~/.claude/skills/last30days/scripts/last30days.py "topic" --emit=json > research.json
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/last30days.py "topic" --emit=json > research.json
 ```
 
 ## CLI Reference
 
 ```
-python3 ~/.claude/skills/last30days/scripts/last30days.py <topic> [options]
+python3 ${CLAUDE_PLUGIN_ROOT}/scripts/last30days.py <topic> [options]
 
 Options:
   --refresh           Bypass cache and fetch fresh data

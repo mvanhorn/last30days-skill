@@ -1,0 +1,16 @@
+{
+  "name": "l30d",
+  "owner": {
+    "name": "mvanhorn",
+    "url": "https://github.com/mvanhorn"
+  },
+  "metadata": {
+    "description": "Research tools for staying current with community discussions"
+  },
+  "plugins": [
+    {
+      "name": "last30days",
+      "source": "./last30days"
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "name": "last30days",
+  "description": "Research any topic from the last 30 days across Reddit, X, and the web",
+  "version": "1.0.0",
+  "author": {
+    "name": "mvanhorn"
+  },
+  "repository": "https://github.com/mvanhorn/last30days-skill",
+  "license": "MIT",
+  "keywords": ["research", "reddit", "twitter", "x", "trends", "prompts"]
+}
