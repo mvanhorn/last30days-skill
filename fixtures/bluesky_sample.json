@@ -1,0 +1,85 @@
+{
+  "items": [
+    {
+      "id": "B1",
+      "text": "Just published my thoughts on the latest developments in AI tooling. The pace of change is incredible! Thread below on what I've learned...",
+      "url": "https://bsky.app/profile/techwriter.bsky.social/post/3abc123xyz",
+      "author_handle": "techwriter.bsky.social",
+      "date": "2026-01-20",
+      "engagement": {
+        "likes": 234,
+        "reposts": 45,
+        "replies": 28,
+        "quotes": 12
+      },
+      "why_relevant": "In-depth analysis of AI tooling trends with community discussion",
+      "relevance": 0.92
+    },
+    {
+      "id": "B2",
+      "text": "Hot take: The best productivity hack isn't a new app, it's learning to say no to meetings. Change my mind.",
+      "url": "https://bsky.app/profile/productivityguru.bsky.social/post/3def456uvw",
+      "author_handle": "productivityguru.bsky.social",
+      "date": "2026-01-18",
+      "engagement": {
+        "likes": 567,
+        "reposts": 123,
+        "replies": 89,
+        "quotes": 34
+      },
+      "why_relevant": "Viral productivity discussion with diverse perspectives",
+      "relevance": 0.88
+    },
+    {
+      "id": "B3",
+      "text": "Released v2.0 of my open source project today! New features include better caching, parallel processing, and improved error handling. Check it out:",
+      "url": "https://bsky.app/profile/devrel.bsky.social/post/3ghi789rst",
+      "author_handle": "devrel.bsky.social",
+      "date": "2026-01-15",
+      "engagement": {
+        "likes": 189,
+        "reposts": 67,
+        "replies": 23,
+        "quotes": 8
+      },
+      "why_relevant": "Software release announcement with technical details",
+      "relevance": 0.85
+    },
+    {
+      "id": "B4",
+      "text": "Comparing the top 5 note-taking apps in 2026. Spoiler: there's no perfect solution, but some come close. My detailed comparison:",
+      "url": "https://bsky.app/profile/appreviewer.bsky.social/post/3jkl012mno",
+      "author_handle": "appreviewer.bsky.social",
+      "date": "2026-01-22",
+      "engagement": {
+        "likes": 312,
+        "reposts": 78,
+        "replies": 45,
+        "quotes": 15
+      },
+      "why_relevant": "Comprehensive app comparison with user recommendations",
+      "relevance": 0.90
+    },
+    {
+      "id": "B5",
+      "text": "TIL about this obscure but incredibly useful command line trick. Sharing because it saved me hours today:",
+      "url": "https://bsky.app/profile/shellwizard.bsky.social/post/3pqr345stu",
+      "author_handle": "shellwizard.bsky.social",
+      "date": "2026-01-25",
+      "engagement": {
+        "likes": 445,
+        "reposts": 156,
+        "replies": 34,
+        "quotes": 22
+      },
+      "why_relevant": "Practical tip with high engagement indicating usefulness",
+      "relevance": 0.87
+    }
+  ],
+  "metadata": {
+    "query": "productivity tools",
+    "from_date": "2026-01-01",
+    "to_date": "2026-01-31",
+    "total_results": 5
+  }
+}

@@ -1,0 +1,67 @@
+name: Bluesky Search E2E Tests
+
+on:
+  pull_request:
+    branches: ["*"]
+  push:
+    branches: ["main", "master"]
+  workflow_dispatch:
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Run unit tests
+        run: |
+          python -m unittest discover -s tests -p "test_*.py" -v
+
+  bluesky-e2e:
+    name: Bluesky E2E Tests
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Bluesky E2E tests
+        run: |
+          # Bluesky public search API requires no authentication
+          python -m unittest tests.test_bluesky_e2e -v
+
+  mock-mode-e2e:
+    name: Mock Mode E2E
+    runs-on: ubuntu-latest
+    needs: unit-tests
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run mock mode E2E test
+        run: |
+          # Test that the script runs successfully in mock mode
+          python scripts/last30days.py "test topic" --mock --emit=json

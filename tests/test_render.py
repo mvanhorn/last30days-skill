@@ -67,7 +67,8 @@ class TestRenderCompact(unittest.TestCase):
 
         result = render.render_compact(report)
 
-        self.assertIn("xAI key", result)
+        # Verify mode is shown in output
+        self.assertIn("reddit-only", result)
 
 
 class TestRenderContextSnippet(unittest.TestCase):
