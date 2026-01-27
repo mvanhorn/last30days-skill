@@ -44,11 +44,8 @@ jobs:
 
       - name: Run Bluesky E2E tests
         run: |
+          # Bluesky public search API requires no authentication
           python -m unittest tests.test_bluesky_e2e -v
-        env:
-          # Bluesky API credentials (optional - tests will skip if not provided)
-          BLUESKY_IDENTIFIER: ${{ secrets.BLUESKY_IDENTIFIER }}
-          BLUESKY_APP_PASSWORD: ${{ secrets.BLUESKY_APP_PASSWORD }}
 
   mock-mode-e2e:
     name: Mock Mode E2E

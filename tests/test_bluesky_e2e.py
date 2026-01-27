@@ -1,8 +1,10 @@
 """End-to-end tests for Bluesky search functionality.
 
 These tests verify the Bluesky search integration works correctly.
-Tests will skip if Bluesky module is not yet implemented or if
-required credentials are not available.
+Tests will skip if Bluesky module is not yet implemented.
+
+Note: Bluesky's public search API (app.bsky.feed.searchPosts) does NOT
+require authentication, unlike Reddit/X which use OpenAI and xAI APIs.
 """
 
 import json
@@ -67,15 +69,13 @@ class TestBlueskySearch(unittest.TestCase):
 
     def test_search_returns_items(self):
         """Test that search_bluesky returns valid items."""
-        # Mock the HTTP call
+        # Mock the HTTP call - Bluesky public API needs no auth
         with patch.object(bluesky, 'http') as mock_http:
-            mock_http.post.return_value = {
-                "output": json.dumps(SAMPLE_BLUESKY_RESPONSE)
+            mock_http.get.return_value = {
+                "posts": SAMPLE_BLUESKY_RESPONSE["items"]
             }
 
             result = bluesky.search_bluesky(
-                identifier="test@test.com",
-                app_password="test-password",
                 topic="productivity tools",
                 from_date="2026-01-01",
                 to_date="2026-01-31",
@@ -150,26 +150,17 @@ class TestBlueskyNormalization(unittest.TestCase):
 class TestBlueskyLiveSearch(unittest.TestCase):
     """Live integration tests for Bluesky search.
 
-    These tests require valid Bluesky credentials and will skip
-    if credentials are not available.
+    Bluesky's public search API does NOT require authentication.
+    These tests hit the real API to verify integration works.
     """
 
-    @classmethod
-    def setUpClass(cls):
-        """Check for required credentials."""
-        cls.identifier = os.environ.get("BLUESKY_IDENTIFIER")
-        cls.app_password = os.environ.get("BLUESKY_APP_PASSWORD")
-        cls.has_credentials = bool(cls.identifier and cls.app_password)
-
-    @unittest.skipUnless(
-        os.environ.get("BLUESKY_IDENTIFIER") and os.environ.get("BLUESKY_APP_PASSWORD"),
-        "Bluesky credentials not available"
+    @unittest.skipIf(
+        os.environ.get("SKIP_LIVE_TESTS"),
+        "Live tests skipped via SKIP_LIVE_TESTS env var"
     )
     def test_live_search(self):
-        """Test live search against Bluesky API."""
+        """Test live search against Bluesky public API (no auth required)."""
         result = bluesky.search_bluesky(
-            identifier=self.identifier,
-            app_password=self.app_password,
             topic="python programming",
             from_date="2026-01-01",
             to_date="2026-01-31",
@@ -177,8 +168,8 @@ class TestBlueskyLiveSearch(unittest.TestCase):
         )
 
         self.assertIsInstance(result, dict)
-        # Should have some response (even if empty)
-        self.assertIn("items", result.get("output", result))
+        # Should have posts array from the API
+        self.assertIn("posts", result)
 
 
 class TestBlueskyDataSchemas(unittest.TestCase):
