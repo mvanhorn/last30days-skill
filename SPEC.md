@@ -2,9 +2,15 @@
 
 ## Overview
 
-`last30days` is a Claude Code skill that researches a given topic across Reddit and X (Twitter) using the OpenAI Responses API and xAI Responses API respectively. It enforces a strict 30-day recency window, popularity-aware ranking, and produces actionable outputs including best practices, a prompt pack, and a reusable context snippet.
+`last30days` is a Claude Code skill that researches a given topic across Reddit, X (Twitter), and Bluesky using the OpenAI Responses API, xAI Responses API, and native AT Protocol API respectively. It enforces a strict 30-day recency window, popularity-aware ranking, and produces actionable outputs including best practices, a prompt pack, and a reusable context snippet.
 
-The skill operates in three modes depending on available API keys: **reddit-only** (OpenAI key), **x-only** (xAI key), or **both** (full cross-validation). It uses automatic model selection to stay current with the latest models from both providers, with optional pinning for stability.
+The skill operates in multiple modes depending on available API keys:
+- **all** (OpenAI + xAI keys): Reddit + X + Bluesky
+- **reddit-bluesky** (OpenAI key only): Reddit + Bluesky
+- **x-bluesky** (xAI key only): X + Bluesky
+- **bluesky** (no keys): Bluesky only (always free!)
+
+**Note:** Bluesky uses the public AT Protocol API which requires no authentication - it's always available.
 
 ## Architecture
 
@@ -17,6 +23,7 @@ The orchestrator (`last30days.py`) coordinates discovery, enrichment, normalizat
 - **models.py**: Auto-selection of OpenAI/xAI models with 7-day caching
 - **openai_reddit.py**: OpenAI Responses API + web_search for Reddit
 - **xai_x.py**: xAI Responses API + x_search for X
+- **bluesky.py**: Native AT Protocol API for Bluesky (free, no auth)
 - **reddit_enrich.py**: Fetch Reddit thread JSON for real engagement metrics
 - **normalize.py**: Convert raw API responses to canonical schema
 - **score.py**: Compute popularity-aware scores (relevance + recency + engagement)
@@ -60,7 +67,13 @@ Options:
   --refresh           Bypass cache and fetch fresh data
   --mock              Use fixtures instead of real API calls
   --emit=MODE         Output mode: compact|json|md|context|path (default: compact)
-  --sources=MODE      Source selection: auto|reddit|x|both (default: auto)
+  --sources=MODE      Source selection: auto|reddit|x|bluesky|both|all (default: auto)
+                      - auto: Uses all available sources (Bluesky always included)
+                      - bluesky: Bluesky only (always free, no API key needed)
+                      - both: Reddit + X (legacy, requires both API keys)
+                      - all: Reddit + X + Bluesky (requires both API keys)
+  --quick             Faster research with fewer sources
+  --deep              Comprehensive research with more sources
 ```
 
 ## Output Files
