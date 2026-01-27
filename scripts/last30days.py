@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-last30days - Research a topic from the last 30 days on Reddit + X.
+last30days - Research a topic from the last 30 days on Reddit + X + Bluesky.
 
 Usage:
     python3 last30days.py <topic> [options]
@@ -8,9 +8,9 @@ Usage:
 Options:
     --mock              Use fixtures instead of real API calls
     --emit=MODE         Output mode: compact|json|md|context|path (default: compact)
-    --sources=MODE      Source selection: auto|reddit|x|both (default: auto)
+    --sources=MODE      Source selection: auto|reddit|x|bluesky|both|all (default: auto)
     --quick             Faster research with fewer sources (8-12 each)
-    --deep              Comprehensive research with more sources (50-70 Reddit, 40-60 X)
+    --deep              Comprehensive research with more sources (50-70 Reddit, 40-60 X, 35-50 Bluesky)
     --debug             Enable verbose debug logging
 """
 
@@ -27,6 +27,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from lib import (
+    bluesky,
     dates,
     dedupe,
     env,
@@ -158,6 +159,44 @@ def _search_x(
     return x_items, raw_xai, x_error
 
 
+def _search_bluesky(
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    mock: bool,
+) -> tuple:
+    """Search Bluesky via AT Protocol API (runs in thread).
+
+    Returns:
+        Tuple of (bluesky_items, raw_bluesky, error)
+    """
+    raw_bluesky = None
+    bluesky_error = None
+
+    if mock:
+        raw_bluesky = load_fixture("bluesky_sample.json")
+    else:
+        try:
+            raw_bluesky = bluesky.search_bluesky(
+                topic,
+                from_date,
+                to_date,
+                depth=depth,
+            )
+        except http.HTTPError as e:
+            raw_bluesky = {"error": str(e)}
+            bluesky_error = f"API error: {e}"
+        except Exception as e:
+            raw_bluesky = {"error": str(e)}
+            bluesky_error = f"{type(e).__name__}: {e}"
+
+    # Parse response
+    bluesky_items = bluesky.parse_bluesky_response(raw_bluesky or {})
+
+    return bluesky_items, raw_bluesky, bluesky_error
+
+
 def run_research(
     topic: str,
     sources: str,
@@ -172,39 +211,52 @@ def run_research(
     """Run the research pipeline.
 
     Returns:
-        Tuple of (reddit_items, x_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error)
+        Tuple of (reddit_items, x_items, bluesky_items, web_needed,
+                  raw_openai, raw_xai, raw_bluesky, raw_reddit_enriched,
+                  reddit_error, x_error, bluesky_error)
 
     Note: web_needed is True when WebSearch should be performed by Claude.
     The script outputs a marker and Claude handles WebSearch in its session.
     """
     reddit_items = []
     x_items = []
+    bluesky_items = []
     raw_openai = None
     raw_xai = None
+    raw_bluesky = None
     raw_reddit_enriched = []
     reddit_error = None
     x_error = None
+    bluesky_error = None
 
-    # Check if WebSearch is needed (always needed in web-only mode)
-    web_needed = sources in ("all", "web", "reddit-web", "x-web")
+    # Check if WebSearch is needed
+    web_needed = sources in ("all-web", "web", "reddit-web", "x-web", "bluesky-web",
+                             "reddit-bluesky-web", "x-bluesky-web", "both-web")
 
     # Web-only mode: no API calls needed, Claude handles everything
     if sources == "web":
         if progress:
             progress.start_web_only()
             progress.end_web_only()
-        return reddit_items, x_items, True, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error
+        return (reddit_items, x_items, bluesky_items, True,
+                raw_openai, raw_xai, raw_bluesky, raw_reddit_enriched,
+                reddit_error, x_error, bluesky_error)
 
     # Determine which searches to run
-    run_reddit = sources in ("both", "reddit", "all", "reddit-web")
-    run_x = sources in ("both", "x", "all", "x-web")
+    run_reddit = sources in ("both", "reddit", "all", "reddit-web", "reddit-bluesky",
+                             "reddit-bluesky-web", "both-web", "all-web")
+    run_x = sources in ("both", "x", "all", "x-web", "x-bluesky",
+                        "x-bluesky-web", "both-web", "all-web")
+    run_bluesky = sources in ("all", "bluesky", "reddit-bluesky", "x-bluesky",
+                              "bluesky-web", "reddit-bluesky-web", "x-bluesky-web", "all-web")
 
-    # Run Reddit and X searches in parallel
+    # Run Reddit, X, and Bluesky searches in parallel
     reddit_future = None
     x_future = None
+    bluesky_future = None
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        # Submit both searches
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        # Submit all searches
         if run_reddit:
             if progress:
                 progress.start_reddit()
@@ -219,6 +271,13 @@ def run_research(
             x_future = executor.submit(
                 _search_x, topic, config, selected_models,
                 from_date, to_date, depth, mock
+            )
+
+        if run_bluesky:
+            if progress:
+                progress.start_bluesky()
+            bluesky_future = executor.submit(
+                _search_bluesky, topic, from_date, to_date, depth, mock
             )
 
         # Collect results
@@ -246,6 +305,18 @@ def run_research(
             if progress:
                 progress.end_x(len(x_items))
 
+        if bluesky_future:
+            try:
+                bluesky_items, raw_bluesky, bluesky_error = bluesky_future.result()
+                if bluesky_error and progress:
+                    progress.show_error(f"Bluesky error: {bluesky_error}")
+            except Exception as e:
+                bluesky_error = f"{type(e).__name__}: {e}"
+                if progress:
+                    progress.show_error(f"Bluesky error: {e}")
+            if progress:
+                progress.end_bluesky(len(bluesky_items))
+
     # Enrich Reddit items with real data (sequential, but with error handling per-item)
     if reddit_items:
         if progress:
@@ -271,7 +342,9 @@ def run_research(
         if progress:
             progress.end_reddit_enrich()
 
-    return reddit_items, x_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error
+    return (reddit_items, x_items, bluesky_items, web_needed,
+            raw_openai, raw_xai, raw_bluesky, raw_reddit_enriched,
+            reddit_error, x_error, bluesky_error)
 
 
 def main():
@@ -288,9 +361,9 @@ def main():
     )
     parser.add_argument(
         "--sources",
-        choices=["auto", "reddit", "x", "both"],
+        choices=["auto", "reddit", "x", "bluesky", "both", "all"],
         default="auto",
-        help="Source selection",
+        help="Source selection (bluesky always available, both=reddit+x, all=reddit+x+bluesky)",
     )
     parser.add_argument(
         "--quick",
@@ -393,24 +466,42 @@ def main():
 
     # Determine mode string
     if sources == "all":
-        mode = "all"  # reddit + x + web
+        mode = "all"  # reddit + x + bluesky
+    elif sources == "all-web":
+        mode = "all-web"  # reddit + x + bluesky + web
     elif sources == "both":
         mode = "both"  # reddit + x
+    elif sources == "both-web":
+        mode = "both-web"  # reddit + x + web
     elif sources == "reddit":
         mode = "reddit-only"
     elif sources == "reddit-web":
         mode = "reddit-web"
+    elif sources == "reddit-bluesky":
+        mode = "reddit-bluesky"
+    elif sources == "reddit-bluesky-web":
+        mode = "reddit-bluesky-web"
     elif sources == "x":
         mode = "x-only"
     elif sources == "x-web":
         mode = "x-web"
+    elif sources == "x-bluesky":
+        mode = "x-bluesky"
+    elif sources == "x-bluesky-web":
+        mode = "x-bluesky-web"
+    elif sources == "bluesky":
+        mode = "bluesky-only"
+    elif sources == "bluesky-web":
+        mode = "bluesky-web"
     elif sources == "web":
         mode = "web-only"
     else:
         mode = sources
 
     # Run research
-    reddit_items, x_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error = run_research(
+    (reddit_items, x_items, bluesky_items, web_needed,
+     raw_openai, raw_xai, raw_bluesky, raw_reddit_enriched,
+     reddit_error, x_error, bluesky_error) = run_research(
         args.topic,
         sources,
         config,
@@ -428,23 +519,28 @@ def main():
     # Normalize items
     normalized_reddit = normalize.normalize_reddit_items(reddit_items, from_date, to_date)
     normalized_x = normalize.normalize_x_items(x_items, from_date, to_date)
+    normalized_bluesky = normalize.normalize_bluesky_items(bluesky_items, from_date, to_date)
 
     # Hard date filter: exclude items with verified dates outside the range
     # This is the safety net - even if prompts let old content through, this filters it
     filtered_reddit = normalize.filter_by_date_range(normalized_reddit, from_date, to_date)
     filtered_x = normalize.filter_by_date_range(normalized_x, from_date, to_date)
+    filtered_bluesky = normalize.filter_by_date_range(normalized_bluesky, from_date, to_date)
 
     # Score items
     scored_reddit = score.score_reddit_items(filtered_reddit)
     scored_x = score.score_x_items(filtered_x)
+    scored_bluesky = score.score_bluesky_items(filtered_bluesky)
 
     # Sort items
     sorted_reddit = score.sort_items(scored_reddit)
     sorted_x = score.sort_items(scored_x)
+    sorted_bluesky = score.sort_items(scored_bluesky)
 
     # Dedupe items
     deduped_reddit = dedupe.dedupe_reddit(sorted_reddit)
     deduped_x = dedupe.dedupe_x(sorted_x)
+    deduped_bluesky = dedupe.dedupe_bluesky(sorted_bluesky)
 
     progress.end_processing()
 
@@ -459,8 +555,10 @@ def main():
     )
     report.reddit = deduped_reddit
     report.x = deduped_x
+    report.bluesky = deduped_bluesky
     report.reddit_error = reddit_error
     report.x_error = x_error
+    report.bluesky_error = bluesky_error
 
     # Generate context snippet
     report.context_snippet_md = render.render_context_snippet(report)
@@ -472,7 +570,7 @@ def main():
     if sources == "web":
         progress.show_web_only_complete()
     else:
-        progress.show_complete(len(deduped_reddit), len(deduped_x))
+        progress.show_complete(len(deduped_reddit), len(deduped_x), len(deduped_bluesky))
 
     # Output result
     output_result(report, args.emit, web_needed, args.topic, from_date, to_date, missing_keys)
@@ -508,12 +606,12 @@ def output_result(
         print(f"Date range: {from_date} to {to_date}")
         print("")
         print("Claude: Use your WebSearch tool to find 8-15 relevant web pages.")
-        print("EXCLUDE: reddit.com, x.com, twitter.com (already covered above)")
+        print("EXCLUDE: reddit.com, x.com, twitter.com, bsky.app (already covered above)")
         print("INCLUDE: blogs, docs, news, tutorials from the last 30 days")
         print("")
-        print("After searching, synthesize WebSearch results WITH the Reddit/X")
+        print("After searching, synthesize WebSearch results WITH the Reddit/X/Bluesky")
         print("results above. WebSearch items should rank LOWER than comparable")
-        print("Reddit/X items (they lack engagement metrics).")
+        print("Reddit/X/Bluesky items (they lack engagement metrics).")
         print("="*60)
 
 

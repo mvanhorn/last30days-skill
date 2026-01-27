@@ -1,6 +1,6 @@
 ---
 name: last30days
-description: Research a topic from the last 30 days on Reddit + X + Web, become an expert, and write copy-paste-ready prompts for the user's target tool.
+description: Research a topic from the last 30 days on Reddit + X + Bluesky + Web, become an expert, and write copy-paste-ready prompts for the user's target tool.
 argument-hint: "[topic] for [tool]" or "[topic]"
 context: fork
 agent: Explore
@@ -10,7 +10,7 @@ allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
 
 # last30days: Research Any Topic from the Last 30 Days
 
-Research ANY topic across Reddit, X, and the web. Surface what people are actually discussing, recommending, and debating right now.
+Research ANY topic across Reddit, X, Bluesky, and the web. Surface what people are actually discussing, recommending, and debating right now.
 
 Use cases:
 - **Prompting**: "photorealistic people in Nano Banana Pro", "Midjourney prompts", "ChatGPT image generation" → learn techniques, get copy-paste prompts
@@ -50,37 +50,42 @@ Common patterns:
 
 ## Setup Check
 
-The skill works in three modes based on available API keys:
+The skill works in multiple modes based on available API keys:
 
-1. **Full Mode** (both keys): Reddit + X + WebSearch - best results with engagement metrics
-2. **Partial Mode** (one key): Reddit-only or X-only + WebSearch
-3. **Web-Only Mode** (no keys): WebSearch only - still useful, but no engagement metrics
+1. **Full Mode** (both keys): Reddit + X + Bluesky + WebSearch - best results with engagement metrics from all platforms
+2. **Partial Mode** (one key): Reddit+Bluesky or X+Bluesky + WebSearch
+3. **Bluesky Mode** (no keys): Bluesky + WebSearch - still has real engagement metrics!
 
-**API keys are OPTIONAL.** The skill will work without them using WebSearch fallback.
+**🦋 Bluesky is ALWAYS available!** The Bluesky AT Protocol API is free and requires no authentication.
 
-### First-Time Setup (Optional but Recommended)
+**API keys are OPTIONAL.** The skill works without them using Bluesky + WebSearch.
 
-If the user wants to add API keys for better results:
+### First-Time Setup (Optional - Bluesky works immediately!)
+
+If the user wants to add API keys for Reddit and X data:
 
 ```bash
 mkdir -p ~/.config/last30days
 cat > ~/.config/last30days/.env << 'ENVEOF'
 # last30days API Configuration
-# Both keys are optional - skill works with WebSearch fallback
+# All keys are optional - Bluesky works immediately with no setup!
 
 # For Reddit research (uses OpenAI's web_search tool)
 OPENAI_API_KEY=
 
 # For X/Twitter research (uses xAI's x_search tool)
 XAI_API_KEY=
+
+# Bluesky: No API key needed! Uses free public AT Protocol API
 ENVEOF
 
 chmod 600 ~/.config/last30days/.env
 echo "Config created at ~/.config/last30days/.env"
-echo "Edit to add your API keys for enhanced research."
+echo "Edit to add your API keys for Reddit & X research."
+echo "Bluesky already works - no setup needed!"
 ```
 
-**DO NOT stop if no keys are configured.** Proceed with web-only mode.
+**DO NOT stop if no keys are configured.** Proceed with Bluesky + web mode.
 
 ---
 
@@ -137,7 +142,7 @@ For ALL query types:
   - If user says "ChatGPT image prompting", search for "ChatGPT image prompting"
   - Do NOT add "DALL-E", "GPT-4o", or other terms you think are related
   - Your knowledge may be outdated - trust the user's terminology
-- EXCLUDE reddit.com, x.com, twitter.com (covered by script)
+- EXCLUDE reddit.com, x.com, twitter.com, bsky.app (covered by script)
 - INCLUDE: blogs, tutorials, docs, news, GitHub repos
 - **DO NOT output "Sources:" list** - this is noise, we'll show stats at the end
 
@@ -156,9 +161,9 @@ Use TaskOutput to get the script results before proceeding to synthesis.
 **After all searches complete, internally synthesize (don't display stats yet):**
 
 The Judge Agent must:
-1. Weight Reddit/X sources HIGHER (they have engagement signals: upvotes, likes)
+1. Weight Reddit/X/Bluesky sources HIGHER (they have engagement signals: upvotes, likes, reposts)
 2. Weight WebSearch sources LOWER (no engagement data)
-3. Identify patterns that appear across ALL three sources (strongest signals)
+3. Identify patterns that appear across ALL sources (strongest signals)
 4. Note any contradictions between sources
 5. Extract the top 3-5 actionable insights
 
@@ -239,26 +244,40 @@ KEY PATTERNS I'll use:
 
 **THEN - Stats (right before invitation):**
 
-For **full/partial mode** (has API keys):
+For **full mode** (has both API keys):
 ```
 ---
 ✅ All agents reported back!
 ├─ 🟠 Reddit: {n} threads │ {sum} upvotes │ {sum} comments
 ├─ 🔵 X: {n} posts │ {sum} likes │ {sum} reposts
+├─ 🦋 Bluesky: {n} posts │ {sum} likes │ {sum} reposts
 ├─ 🌐 Web: {n} pages │ {domains}
-└─ Top voices: r/{sub1}, r/{sub2} │ @{handle1}, @{handle2} │ {web_author} on {site}
+└─ Top voices: r/{sub1}, r/{sub2} │ @{handle1}, @{handle2} │ @{bsky_handle}
 ```
 
-For **web-only mode** (no API keys):
+For **partial mode** (has one API key):
+```
+---
+✅ All agents reported back!
+├─ 🟠 Reddit: {n} threads │ {sum} upvotes │ {sum} comments  [or 🔵 X if xAI key]
+├─ 🦋 Bluesky: {n} posts │ {sum} likes │ {sum} reposts
+├─ 🌐 Web: {n} pages │ {domains}
+└─ Top voices: r/{sub1} │ @{bsky_handle1}, @{bsky_handle2}
+
+💡 Add {missing} API key to ~/.config/last30days/.env for more sources
+```
+
+For **bluesky mode** (no API keys):
 ```
 ---
 ✅ Research complete!
+├─ 🦋 Bluesky: {n} posts │ {sum} likes │ {sum} reposts
 ├─ 🌐 Web: {n} pages │ {domains}
-└─ Top sources: {author1} on {site1}, {author2} on {site2}
+└─ Top voices: @{bsky_handle1}, @{bsky_handle2} │ {web_author} on {site}
 
-💡 Want engagement metrics? Add API keys to ~/.config/last30days/.env
-   - OPENAI_API_KEY → Reddit (real upvotes & comments)
-   - XAI_API_KEY → X/Twitter (real likes & reposts)
+💡 Want Reddit & X data? Add API keys to ~/.config/last30days/.env
+   - OPENAI_API_KEY → Reddit (upvotes & comments)
+   - XAI_API_KEY → X/Twitter (likes & reposts)
 ```
 
 **LAST - Invitation:**
@@ -370,20 +389,30 @@ Only do new research if the user explicitly asks about a DIFFERENT topic.
 
 After delivering a prompt, end with:
 
-For **full/partial mode**:
+For **full mode** (all API keys):
 ```
 ---
 📚 Expert in: {TOPIC} for {TARGET_TOOL}
-📊 Based on: {n} Reddit threads ({sum} upvotes) + {n} X posts ({sum} likes) + {n} web pages
+📊 Based on: {n} Reddit threads ({sum} upvotes) + {n} X posts ({sum} likes) + {n} Bluesky posts ({sum} likes) + {n} web pages
 
 Want another prompt? Just tell me what you're creating next.
 ```
 
-For **web-only mode**:
+For **partial mode** (one API key):
 ```
 ---
 📚 Expert in: {TOPIC} for {TARGET_TOOL}
-📊 Based on: {n} web pages from {domains}
+📊 Based on: {n} Reddit threads ({sum} upvotes) + {n} Bluesky posts ({sum} likes) + {n} web pages
+   [or X + Bluesky if xAI key]
+
+Want another prompt? Just tell me what you're creating next.
+```
+
+For **bluesky mode** (no API keys):
+```
+---
+📚 Expert in: {TOPIC} for {TARGET_TOOL}
+📊 Based on: {n} Bluesky posts ({sum} likes) + {n} web pages from {domains}
 
 Want another prompt? Just tell me what you're creating next.
 

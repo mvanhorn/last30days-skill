@@ -1,6 +1,6 @@
 # /last30days
 
-**The AI world reinvents itself every month. This Claude Code skill keeps you current.** /last30days researches your topic across Reddit, X, and the web from the last 30 days, finds what the community is actually upvoting and sharing, and writes you a prompt that works today, not six months ago. Whether it's Ralph Wiggum loops, Suno music prompts, or the latest Midjourney techniques, you'll prompt like someone who's been paying attention.
+**The AI world reinvents itself every month. This Claude Code skill keeps you current.** /last30days researches your topic across Reddit, X, Bluesky, and the web from the last 30 days, finds what the community is actually upvoting and sharing, and writes you a prompt that works today, not six months ago. Whether it's Ralph Wiggum loops, Suno music prompts, or the latest Midjourney techniques, you'll prompt like someone who's been paying attention.
 
 **Best for prompt research**: discover what prompting techniques actually work for any tool (ChatGPT, Midjourney, Claude, Figma AI, etc.) by learning from real community discussions and best practices.
 
@@ -12,14 +12,22 @@
 # Clone the repo
 git clone https://github.com/mvanhorn/last30days-skill.git ~/.claude/skills/last30days
 
-# Add your API keys
+# (Optional) Add API keys for Reddit and X
+# Bluesky works out of the box - no API key needed!
 mkdir -p ~/.config/last30days
 cat > ~/.config/last30days/.env << 'EOF'
+# Optional: For Reddit research (uses OpenAI's web_search)
 OPENAI_API_KEY=sk-...
+
+# Optional: For X/Twitter research (uses xAI's x_search)
 XAI_API_KEY=xai-...
+
+# Bluesky requires NO API key - it's always available!
 EOF
 chmod 600 ~/.config/last30days/.env
 ```
+
+**🦋 Bluesky is always free!** The skill works immediately with Bluesky's public API - no setup required. Add OpenAI/xAI keys to unlock Reddit and X data.
 
 ## Usage
 
@@ -36,7 +44,7 @@ Examples:
 
 ## What It Does
 
-1. **Researches** - Scans Reddit and X for discussions from the last 30 days
+1. **Researches** - Scans Reddit, X, and Bluesky for discussions from the last 30 days
 2. **Synthesizes** - Identifies patterns, best practices, and what actually works
 3. **Delivers** - Either writes copy-paste-ready prompts for your target tool, or gives you a curated expert-level answer
 
@@ -694,23 +702,31 @@ This example shows /last30days discovering **emerging developer workflows** - re
 | Flag | Description |
 |------|-------------|
 | `--quick` | Faster research, fewer sources (8-12 each) |
-| `--deep` | Comprehensive research (50-70 Reddit, 40-60 X) |
+| `--deep` | Comprehensive research (50-70 Reddit, 40-60 X, 35-50 Bluesky) |
 | `--debug` | Verbose logging for troubleshooting |
 | `--sources=reddit` | Reddit only |
 | `--sources=x` | X only |
+| `--sources=bluesky` | Bluesky only (always free, no API key) |
+| `--sources=both` | Reddit + X (legacy) |
+| `--sources=all` | Reddit + X + Bluesky |
 
 ## Requirements
 
-- **OpenAI API key** - For Reddit research (uses web search)
-- **xAI API key** - For X research (optional but recommended)
+- **Bluesky** - Always available! Uses free public AT Protocol API (no key needed)
+  - Public API at `public.api.bsky.app` - no authentication required for search
+  - Rate limit: 3,000 requests per IP per 5 minutes (very generous for this use case)
+  - Real engagement metrics: likes, reposts, replies, quotes
+- **OpenAI API key** - Optional, for Reddit research (uses web search)
+- **xAI API key** - Optional, for X research
 
-At least one key is required.
+**No API keys required to start.** Bluesky provides real engagement metrics for free.
 
 ## How It Works
 
 The skill uses:
-- OpenAI's Responses API with web search to find Reddit discussions
-- xAI's API with live X search to find posts
+- **Bluesky**: Native AT Protocol API (free, no authentication) with real engagement metrics
+- **Reddit**: OpenAI's Responses API with web search (requires OPENAI_API_KEY)
+- **X**: xAI's API with live X search (requires XAI_API_KEY)
 - Real Reddit thread enrichment for engagement metrics
 - Scoring algorithm that weighs recency, relevance, and engagement
 

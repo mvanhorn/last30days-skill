@@ -56,6 +56,16 @@ X_MESSAGES = [
     "Reading between the posts...",
 ]
 
+BLUESKY_MESSAGES = [
+    "Checking what Bluesky is saying...",
+    "Scanning the skies for posts...",
+    "Reading the butterfly network...",
+    "Finding the fresh takes...",
+    "Discovering decentralized discussions...",
+    "Following the AT Protocol trail...",
+    "Exploring the open social web...",
+]
+
 ENRICHING_MESSAGES = [
     "Getting the juicy details...",
     "Fetching engagement metrics...",
@@ -82,9 +92,12 @@ WEB_ONLY_MESSAGES = [
 # Promo message for users without API keys
 PROMO_MESSAGE = f"""
 {Colors.YELLOW}{Colors.BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}
-{Colors.YELLOW}⚡ UNLOCK THE FULL POWER OF /last30days{Colors.RESET}
+{Colors.YELLOW}⚡ UNLOCK MORE SOURCES FOR /last30days{Colors.RESET}
 
-{Colors.DIM}Right now you're using web search only. Add API keys to unlock:{Colors.RESET}
+{Colors.DIM}You have Bluesky (free, no API key needed). Add keys to unlock more:{Colors.RESET}
+
+  {Colors.BLUE}🦋 Bluesky{Colors.RESET} - Already enabled! Real engagement metrics, free API
+     └─ No setup needed
 
   {Colors.YELLOW}🟠 Reddit{Colors.RESET} - Real upvotes, comments, and community insights
      └─ Add OPENAI_API_KEY (uses OpenAI's web_search for Reddit)
@@ -98,9 +111,12 @@ PROMO_MESSAGE = f"""
 
 PROMO_MESSAGE_PLAIN = """
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚡ UNLOCK THE FULL POWER OF /last30days
+⚡ UNLOCK MORE SOURCES FOR /last30days
 
-Right now you're using web search only. Add API keys to unlock:
+You have Bluesky (free, no API key needed). Add keys to unlock more:
+
+  🦋 Bluesky - Already enabled! Real engagement metrics, free API
+     └─ No setup needed
 
   🟠 Reddit - Real upvotes, comments, and community insights
      └─ Add OPENAI_API_KEY (uses OpenAI's web_search for Reddit)
@@ -237,6 +253,15 @@ class ProgressDisplay:
         if self.spinner:
             self.spinner.stop(f"{Colors.CYAN}X{Colors.RESET} Found {count} posts")
 
+    def start_bluesky(self):
+        msg = random.choice(BLUESKY_MESSAGES)
+        self.spinner = Spinner(f"{Colors.BLUE}Bluesky{Colors.RESET} {msg}", Colors.BLUE)
+        self.spinner.start()
+
+    def end_bluesky(self, count: int):
+        if self.spinner:
+            self.spinner.stop(f"{Colors.BLUE}Bluesky{Colors.RESET} Found {count} posts")
+
     def start_processing(self):
         msg = random.choice(PROCESSING_MESSAGES)
         self.spinner = Spinner(f"{Colors.PURPLE}Processing{Colors.RESET} {msg}", Colors.PURPLE)
@@ -246,15 +271,16 @@ class ProgressDisplay:
         if self.spinner:
             self.spinner.stop()
 
-    def show_complete(self, reddit_count: int, x_count: int):
+    def show_complete(self, reddit_count: int, x_count: int, bluesky_count: int = 0):
         elapsed = time.time() - self.start_time
         if IS_TTY:
             sys.stderr.write(f"\n{Colors.GREEN}{Colors.BOLD}✓ Research complete{Colors.RESET} ")
             sys.stderr.write(f"{Colors.DIM}({elapsed:.1f}s){Colors.RESET}\n")
             sys.stderr.write(f"  {Colors.YELLOW}Reddit:{Colors.RESET} {reddit_count} threads  ")
-            sys.stderr.write(f"{Colors.CYAN}X:{Colors.RESET} {x_count} posts\n\n")
+            sys.stderr.write(f"{Colors.CYAN}X:{Colors.RESET} {x_count} posts  ")
+            sys.stderr.write(f"{Colors.BLUE}Bluesky:{Colors.RESET} {bluesky_count} posts\n\n")
         else:
-            sys.stderr.write(f"✓ Research complete ({elapsed:.1f}s) - Reddit: {reddit_count} threads, X: {x_count} posts\n")
+            sys.stderr.write(f"✓ Research complete ({elapsed:.1f}s) - Reddit: {reddit_count}, X: {x_count}, Bluesky: {bluesky_count}\n")
         sys.stderr.flush()
 
     def show_cached(self, age_hours: float = None):
@@ -315,6 +341,7 @@ def print_phase(phase: str, message: str):
     colors = {
         "reddit": Colors.YELLOW,
         "x": Colors.CYAN,
+        "bluesky": Colors.BLUE,
         "process": Colors.PURPLE,
         "done": Colors.GREEN,
         "error": Colors.RED,

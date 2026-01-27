@@ -57,19 +57,22 @@ def config_exists() -> bool:
 def get_available_sources(config: Dict[str, Any]) -> str:
     """Determine which sources are available based on API keys.
 
-    Returns: 'both', 'reddit', 'x', or 'web' (fallback when no keys)
+    Returns: 'all', 'reddit-bluesky', 'x-bluesky', or 'bluesky'
+
+    Note: Bluesky is always available (public API, no key needed)
     """
     has_openai = bool(config.get('OPENAI_API_KEY'))
     has_xai = bool(config.get('XAI_API_KEY'))
 
+    # Bluesky is always available (public API)
     if has_openai and has_xai:
-        return 'both'
+        return 'all'  # reddit + x + bluesky
     elif has_openai:
-        return 'reddit'
+        return 'reddit-bluesky'
     elif has_xai:
-        return 'x'
+        return 'x-bluesky'
     else:
-        return 'web'  # Fallback: WebSearch only (no API keys needed)
+        return 'bluesky'  # Bluesky only (free!)
 
 
 def get_missing_keys(config: Dict[str, Any]) -> str:
@@ -94,53 +97,79 @@ def validate_sources(requested: str, available: str, include_web: bool = False) 
     """Validate requested sources against available keys.
 
     Args:
-        requested: 'auto', 'reddit', 'x', 'both', or 'web'
+        requested: 'auto', 'reddit', 'x', 'bluesky', 'both', 'all', or 'web'
         available: Result from get_available_sources()
         include_web: If True, add WebSearch to available sources
 
     Returns:
         Tuple of (effective_sources, error_message)
     """
-    # WebSearch-only mode (no API keys)
-    if available == 'web':
+    # Bluesky-only mode (no API keys but Bluesky is always available)
+    if available == 'bluesky':
         if requested == 'auto':
-            return 'web', None
+            if include_web:
+                return 'bluesky-web', None
+            return 'bluesky', None
+        elif requested == 'bluesky':
+            if include_web:
+                return 'bluesky-web', None
+            return 'bluesky', None
         elif requested == 'web':
             return 'web', None
         else:
-            return 'web', f"No API keys configured. Using WebSearch fallback. Add keys to ~/.config/last30days/.env for Reddit/X."
+            return 'bluesky', f"No API keys configured. Using Bluesky (free API). Add keys to ~/.config/last30days/.env for Reddit/X."
 
     if requested == 'auto':
         # Add web to sources if include_web is set
         if include_web:
-            if available == 'both':
-                return 'all', None  # reddit + x + web
-            elif available == 'reddit':
-                return 'reddit-web', None
-            elif available == 'x':
-                return 'x-web', None
+            if available == 'all':
+                return 'all-web', None  # reddit + x + bluesky + web
+            elif available == 'reddit-bluesky':
+                return 'reddit-bluesky-web', None
+            elif available == 'x-bluesky':
+                return 'x-bluesky-web', None
         return available, None
 
     if requested == 'web':
         return 'web', None
 
-    if requested == 'both':
-        if available not in ('both',):
-            missing = 'xAI' if available == 'reddit' else 'OpenAI'
-            return 'none', f"Requested both sources but {missing} key is missing. Use --sources=auto to use available keys."
+    if requested == 'bluesky':
+        # Bluesky is always available
         if include_web:
-            return 'all', None
+            return 'bluesky-web', None
+        return 'bluesky', None
+
+    if requested == 'both':
+        # 'both' means reddit + x (legacy, without bluesky)
+        if available not in ('all',):
+            if available == 'reddit-bluesky':
+                return 'none', "Requested both (Reddit+X) but xAI key is missing. Use --sources=auto to use available keys."
+            elif available == 'x-bluesky':
+                return 'none', "Requested both (Reddit+X) but OpenAI key is missing. Use --sources=auto to use available keys."
+        if include_web:
+            return 'both-web', None
         return 'both', None
 
+    if requested == 'all':
+        # 'all' means reddit + x + bluesky
+        if available not in ('all',):
+            if available == 'reddit-bluesky':
+                return 'none', "Requested all sources but xAI key is missing. Use --sources=auto to use available keys."
+            elif available == 'x-bluesky':
+                return 'none', "Requested all sources but OpenAI key is missing. Use --sources=auto to use available keys."
+        if include_web:
+            return 'all-web', None
+        return 'all', None
+
     if requested == 'reddit':
-        if available == 'x':
+        if available == 'x-bluesky':
             return 'none', "Requested Reddit but only xAI key is available."
         if include_web:
             return 'reddit-web', None
         return 'reddit', None
 
     if requested == 'x':
-        if available == 'reddit':
+        if available == 'reddit-bluesky':
             return 'none', "Requested X but only OpenAI key is available."
         if include_web:
             return 'x-web', None

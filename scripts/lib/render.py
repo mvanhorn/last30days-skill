@@ -18,14 +18,16 @@ def _assess_data_freshness(report: schema.Report) -> dict:
     """Assess how much data is actually from the last 30 days."""
     reddit_recent = sum(1 for r in report.reddit if r.date and r.date >= report.range_from)
     x_recent = sum(1 for x in report.x if x.date and x.date >= report.range_from)
+    bluesky_recent = sum(1 for b in report.bluesky if b.date and b.date >= report.range_from)
     web_recent = sum(1 for w in report.web if w.date and w.date >= report.range_from)
 
-    total_recent = reddit_recent + x_recent + web_recent
-    total_items = len(report.reddit) + len(report.x) + len(report.web)
+    total_recent = reddit_recent + x_recent + bluesky_recent + web_recent
+    total_items = len(report.reddit) + len(report.x) + len(report.bluesky) + len(report.web)
 
     return {
         "reddit_recent": reddit_recent,
         "x_recent": x_recent,
+        "bluesky_recent": bluesky_recent,
         "web_recent": web_recent,
         "total_recent": total_recent,
         "total_items": total_items,
@@ -170,6 +172,47 @@ def render_compact(report: schema.Report, limit: int = 15, missing_keys: str = "
             lines.append(f"  *{item.why_relevant}*")
             lines.append("")
 
+    # Bluesky items
+    if report.bluesky_error:
+        lines.append("### Bluesky Posts")
+        lines.append("")
+        lines.append(f"**ERROR:** {report.bluesky_error}")
+        lines.append("")
+    elif report.mode in ("all", "bluesky-only", "reddit-bluesky", "x-bluesky",
+                         "bluesky-web", "reddit-bluesky-web", "x-bluesky-web", "all-web") and not report.bluesky:
+        lines.append("### Bluesky Posts")
+        lines.append("")
+        lines.append("*No relevant Bluesky posts found for this topic.*")
+        lines.append("")
+    elif report.bluesky:
+        lines.append("### Bluesky Posts")
+        lines.append("")
+        for item in report.bluesky[:limit]:
+            eng_str = ""
+            if item.engagement:
+                eng = item.engagement
+                parts = []
+                if eng.likes is not None:
+                    parts.append(f"{eng.likes}likes")
+                if eng.reposts is not None:
+                    parts.append(f"{eng.reposts}rp")
+                if parts:
+                    eng_str = f" [{', '.join(parts)}]"
+
+            date_str = f" ({item.date})" if item.date else " (date unknown)"
+            conf_str = f" [date:{item.date_confidence}]" if item.date_confidence != "high" else ""
+
+            # Show display name if available, otherwise just handle
+            author = f"@{item.author_handle}"
+            if item.author_display_name:
+                author = f"{item.author_display_name} (@{item.author_handle})"
+
+            lines.append(f"**{item.id}** (score:{item.score}) {author}{date_str}{conf_str}{eng_str}")
+            lines.append(f"  {item.text[:200]}...")
+            lines.append(f"  {item.url}")
+            lines.append(f"  *{item.why_relevant}*")
+            lines.append("")
+
     # Web items (if any - populated by Claude)
     if report.web_error:
         lines.append("### Web Results")
@@ -217,6 +260,8 @@ def render_context_snippet(report: schema.Report) -> str:
         all_items.append((item.score, "Reddit", item.title, item.url))
     for item in report.x[:5]:
         all_items.append((item.score, "X", item.text[:50] + "...", item.url))
+    for item in report.bluesky[:5]:
+        all_items.append((item.score, "Bluesky", item.text[:50] + "...", item.url))
     for item in report.web[:5]:
         all_items.append((item.score, "Web", item.title[:50] + "...", item.url))
 
@@ -301,6 +346,30 @@ def render_full_report(report: schema.Report) -> str:
             if item.engagement:
                 eng = item.engagement
                 lines.append(f"- **Engagement:** {eng.likes or '?'} likes, {eng.reposts or '?'} reposts")
+
+            lines.append("")
+            lines.append(f"> {item.text}")
+            lines.append("")
+
+    # Bluesky section
+    if report.bluesky:
+        lines.append("## Bluesky Posts")
+        lines.append("")
+        for item in report.bluesky:
+            author = f"@{item.author_handle}"
+            if item.author_display_name:
+                author = f"{item.author_display_name} ({author})"
+
+            lines.append(f"### {item.id}: {author}")
+            lines.append("")
+            lines.append(f"- **URL:** {item.url}")
+            lines.append(f"- **Date:** {item.date or 'Unknown'} (confidence: {item.date_confidence})")
+            lines.append(f"- **Score:** {item.score}/100")
+            lines.append(f"- **Relevance:** {item.why_relevant}")
+
+            if item.engagement:
+                eng = item.engagement
+                lines.append(f"- **Engagement:** {eng.likes or '?'} likes, {eng.reposts or '?'} reposts, {eng.replies or '?'} replies")
 
             lines.append("")
             lines.append(f"> {item.text}")

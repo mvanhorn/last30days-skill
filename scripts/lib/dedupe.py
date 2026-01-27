@@ -36,16 +36,16 @@ def jaccard_similarity(set1: Set[str], set2: Set[str]) -> float:
     return intersection / union if union > 0 else 0.0
 
 
-def get_item_text(item: Union[schema.RedditItem, schema.XItem]) -> str:
+def get_item_text(item: Union[schema.RedditItem, schema.XItem, schema.BlueskyItem]) -> str:
     """Get comparable text from an item."""
     if isinstance(item, schema.RedditItem):
         return item.title
-    else:
+    else:  # XItem or BlueskyItem - both have text field
         return item.text
 
 
 def find_duplicates(
-    items: List[Union[schema.RedditItem, schema.XItem]],
+    items: List[Union[schema.RedditItem, schema.XItem, schema.BlueskyItem]],
     threshold: float = 0.7,
 ) -> List[Tuple[int, int]]:
     """Find near-duplicate pairs in items.
@@ -72,9 +72,9 @@ def find_duplicates(
 
 
 def dedupe_items(
-    items: List[Union[schema.RedditItem, schema.XItem]],
+    items: List[Union[schema.RedditItem, schema.XItem, schema.BlueskyItem]],
     threshold: float = 0.7,
-) -> List[Union[schema.RedditItem, schema.XItem]]:
+) -> List[Union[schema.RedditItem, schema.XItem, schema.BlueskyItem]]:
     """Remove near-duplicates, keeping highest-scored item.
 
     Args:
@@ -117,4 +117,12 @@ def dedupe_x(
     threshold: float = 0.7,
 ) -> List[schema.XItem]:
     """Dedupe X items."""
+    return dedupe_items(items, threshold)
+
+
+def dedupe_bluesky(
+    items: List[schema.BlueskyItem],
+    threshold: float = 0.7,
+) -> List[schema.BlueskyItem]:
+    """Dedupe Bluesky items."""
     return dedupe_items(items, threshold)

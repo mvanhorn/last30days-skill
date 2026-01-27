@@ -4,7 +4,7 @@ from typing import Any, Dict, List, TypeVar, Union
 
 from . import dates, schema
 
-T = TypeVar("T", schema.RedditItem, schema.XItem, schema.WebSearchItem)
+T = TypeVar("T", schema.RedditItem, schema.XItem, schema.BlueskyItem, schema.WebSearchItem)
 
 
 def filter_by_date_range(
@@ -145,6 +145,63 @@ def normalize_x_items(
             text=item.get("text", ""),
             url=item.get("url", ""),
             author_handle=item.get("author_handle", ""),
+            date=date_str,
+            date_confidence=date_confidence,
+            engagement=engagement,
+            relevance=item.get("relevance", 0.5),
+            why_relevant=item.get("why_relevant", ""),
+        ))
+
+    return normalized
+
+
+def normalize_bluesky_items(
+    items: List[Dict[str, Any]],
+    from_date: str,
+    to_date: str,
+) -> List[schema.BlueskyItem]:
+    """Normalize raw Bluesky items to schema.
+
+    Args:
+        items: Raw Bluesky items from API
+        from_date: Start of date range
+        to_date: End of date range
+
+    Returns:
+        List of BlueskyItem objects
+    """
+    normalized = []
+
+    for item in items:
+        # Parse engagement
+        engagement = None
+        eng_raw = item.get("engagement")
+        if isinstance(eng_raw, dict):
+            engagement = schema.Engagement(
+                likes=eng_raw.get("likes"),
+                reposts=eng_raw.get("reposts"),
+                replies=eng_raw.get("replies"),
+                quotes=eng_raw.get("quotes"),
+            )
+
+        # Determine date confidence
+        # Bluesky API returns accurate dates from createdAt field
+        date_str = item.get("date")
+        if date_str:
+            # Bluesky dates from API are authoritative
+            if from_date <= date_str <= to_date:
+                date_confidence = "high"
+            else:
+                date_confidence = dates.get_date_confidence(date_str, from_date, to_date)
+        else:
+            date_confidence = "low"
+
+        normalized.append(schema.BlueskyItem(
+            id=item.get("id", ""),
+            text=item.get("text", ""),
+            url=item.get("url", ""),
+            author_handle=item.get("author_handle", ""),
+            author_display_name=item.get("author_display_name", ""),
             date=date_str,
             date_confidence=date_confidence,
             engagement=engagement,
