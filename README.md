@@ -713,6 +713,9 @@ This example shows /last30days discovering **emerging developer workflows** - re
 ## Requirements
 
 - **Bluesky** - Always available! Uses free public AT Protocol API (no key needed)
+  - Public API at `public.api.bsky.app` - no authentication required for search
+  - Rate limit: 3,000 requests per IP per 5 minutes (very generous for this use case)
+  - Real engagement metrics: likes, reposts, replies, quotes
 - **OpenAI API key** - Optional, for Reddit research (uses web search)
 - **xAI API key** - Optional, for X research
 

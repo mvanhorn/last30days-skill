@@ -10,7 +10,7 @@ The skill operates in multiple modes depending on available API keys:
 - **x-bluesky** (xAI key only): X + Bluesky
 - **bluesky** (no keys): Bluesky only (always free!)
 
-**Note:** Bluesky uses the public AT Protocol API which requires no authentication - it's always available.
+**Note:** Bluesky uses the public AT Protocol API (`public.api.bsky.app`) which requires no authentication for read operations. Rate limit is 3,000 requests per IP per 5 minutes - very generous for this use case.
 
 ## Architecture
 
