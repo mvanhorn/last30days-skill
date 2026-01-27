@@ -68,6 +68,26 @@ def compute_x_engagement_raw(engagement: Optional[schema.Engagement]) -> Optiona
     return 0.55 * likes + 0.25 * reposts + 0.15 * replies + 0.05 * quotes
 
 
+def compute_bluesky_engagement_raw(engagement: Optional[schema.Engagement]) -> Optional[float]:
+    """Compute raw engagement score for Bluesky item.
+
+    Uses same formula as X since both are microblogging platforms:
+    Formula: 0.55*log1p(likes) + 0.25*log1p(reposts) + 0.15*log1p(replies) + 0.05*log1p(quotes)
+    """
+    if engagement is None:
+        return None
+
+    if engagement.likes is None and engagement.reposts is None:
+        return None
+
+    likes = log1p_safe(engagement.likes)
+    reposts = log1p_safe(engagement.reposts)
+    replies = log1p_safe(engagement.replies)
+    quotes = log1p_safe(engagement.quotes)
+
+    return 0.55 * likes + 0.25 * reposts + 0.15 * replies + 0.05 * quotes
+
+
 def normalize_to_100(values: List[float], default: float = 50) -> List[float]:
     """Normalize a list of values to 0-100 scale.
 
@@ -221,6 +241,66 @@ def score_x_items(items: List[schema.XItem]) -> List[schema.XItem]:
     return items
 
 
+def score_bluesky_items(items: List[schema.BlueskyItem]) -> List[schema.BlueskyItem]:
+    """Compute scores for Bluesky items.
+
+    Args:
+        items: List of Bluesky items
+
+    Returns:
+        Items with updated scores
+    """
+    if not items:
+        return items
+
+    # Compute raw engagement scores
+    eng_raw = [compute_bluesky_engagement_raw(item.engagement) for item in items]
+
+    # Normalize engagement to 0-100
+    eng_normalized = normalize_to_100(eng_raw)
+
+    for i, item in enumerate(items):
+        # Relevance subscore (convert to 0-100)
+        rel_score = int(item.relevance * 100)
+
+        # Recency subscore
+        rec_score = dates.recency_score(item.date)
+
+        # Engagement subscore
+        if eng_normalized[i] is not None:
+            eng_score = int(eng_normalized[i])
+        else:
+            eng_score = DEFAULT_ENGAGEMENT
+
+        # Store subscores
+        item.subs = schema.SubScores(
+            relevance=rel_score,
+            recency=rec_score,
+            engagement=eng_score,
+        )
+
+        # Compute overall score (same weights as X)
+        overall = (
+            WEIGHT_RELEVANCE * rel_score +
+            WEIGHT_RECENCY * rec_score +
+            WEIGHT_ENGAGEMENT * eng_score
+        )
+
+        # Apply penalty for unknown engagement
+        if eng_raw[i] is None:
+            overall -= UNKNOWN_ENGAGEMENT_PENALTY
+
+        # Apply penalty for low date confidence
+        if item.date_confidence == "low":
+            overall -= 10
+        elif item.date_confidence == "med":
+            overall -= 5
+
+        item.score = max(0, min(100, int(overall)))
+
+    return items
+
+
 def score_websearch_items(items: List[schema.WebSearchItem]) -> List[schema.WebSearchItem]:
     """Compute scores for WebSearch items WITHOUT engagement metrics.
 
@@ -278,7 +358,7 @@ def score_websearch_items(items: List[schema.WebSearchItem]) -> List[schema.WebS
     return items
 
 
-def sort_items(items: List[Union[schema.RedditItem, schema.XItem, schema.WebSearchItem]]) -> List:
+def sort_items(items: List[Union[schema.RedditItem, schema.XItem, schema.BlueskyItem, schema.WebSearchItem]]) -> List:
     """Sort items by score (descending), then date, then source priority.
 
     Args:
@@ -295,13 +375,15 @@ def sort_items(items: List[Union[schema.RedditItem, schema.XItem, schema.WebSear
         date = item.date or "0000-00-00"
         date_key = -int(date.replace("-", ""))
 
-        # Tertiary: source priority (Reddit > X > WebSearch)
+        # Tertiary: source priority (Reddit > X > Bluesky > WebSearch)
         if isinstance(item, schema.RedditItem):
             source_priority = 0
         elif isinstance(item, schema.XItem):
             source_priority = 1
-        else:  # WebSearchItem
+        elif isinstance(item, schema.BlueskyItem):
             source_priority = 2
+        else:  # WebSearchItem
+            source_priority = 3
 
         # Quaternary: title/text for stability
         text = getattr(item, "title", "") or getattr(item, "text", "")

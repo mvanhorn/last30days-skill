@@ -139,6 +139,39 @@ class XItem:
 
 
 @dataclass
+class BlueskyItem:
+    """Normalized Bluesky item."""
+    id: str
+    text: str
+    url: str
+    author_handle: str
+    author_display_name: str = ""
+    date: Optional[str] = None
+    date_confidence: str = "low"
+    engagement: Optional[Engagement] = None
+    relevance: float = 0.5
+    why_relevant: str = ""
+    subs: SubScores = field(default_factory=SubScores)
+    score: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'text': self.text,
+            'url': self.url,
+            'author_handle': self.author_handle,
+            'author_display_name': self.author_display_name,
+            'date': self.date,
+            'date_confidence': self.date_confidence,
+            'engagement': self.engagement.to_dict() if self.engagement else None,
+            'relevance': self.relevance,
+            'why_relevant': self.why_relevant,
+            'subs': self.subs.to_dict(),
+            'score': self.score,
+        }
+
+
+@dataclass
 class WebSearchItem:
     """Normalized web search item (no engagement metrics)."""
     id: str
@@ -176,11 +209,12 @@ class Report:
     range_from: str
     range_to: str
     generated_at: str
-    mode: str  # 'reddit-only', 'x-only', 'both', 'web-only', etc.
+    mode: str  # 'reddit-only', 'x-only', 'both', 'web-only', 'bluesky', etc.
     openai_model_used: Optional[str] = None
     xai_model_used: Optional[str] = None
     reddit: List[RedditItem] = field(default_factory=list)
     x: List[XItem] = field(default_factory=list)
+    bluesky: List[BlueskyItem] = field(default_factory=list)
     web: List[WebSearchItem] = field(default_factory=list)
     best_practices: List[str] = field(default_factory=list)
     prompt_pack: List[str] = field(default_factory=list)
@@ -188,6 +222,7 @@ class Report:
     # Status tracking
     reddit_error: Optional[str] = None
     x_error: Optional[str] = None
+    bluesky_error: Optional[str] = None
     web_error: Optional[str] = None
     # Cache info
     from_cache: bool = False
@@ -206,6 +241,7 @@ class Report:
             'xai_model_used': self.xai_model_used,
             'reddit': [r.to_dict() for r in self.reddit],
             'x': [x.to_dict() for x in self.x],
+            'bluesky': [b.to_dict() for b in self.bluesky],
             'web': [w.to_dict() for w in self.web],
             'best_practices': self.best_practices,
             'prompt_pack': self.prompt_pack,
@@ -215,6 +251,8 @@ class Report:
             d['reddit_error'] = self.reddit_error
         if self.x_error:
             d['x_error'] = self.x_error
+        if self.bluesky_error:
+            d['bluesky_error'] = self.bluesky_error
         if self.web_error:
             d['web_error'] = self.web_error
         if self.from_cache:
@@ -276,6 +314,28 @@ class Report:
                 score=x.get('score', 0),
             ))
 
+        # Reconstruct Bluesky items
+        bluesky_items = []
+        for b in data.get('bluesky', []):
+            eng = None
+            if b.get('engagement'):
+                eng = Engagement(**b['engagement'])
+            subs = SubScores(**b.get('subs', {})) if b.get('subs') else SubScores()
+            bluesky_items.append(BlueskyItem(
+                id=b['id'],
+                text=b['text'],
+                url=b['url'],
+                author_handle=b['author_handle'],
+                author_display_name=b.get('author_display_name', ''),
+                date=b.get('date'),
+                date_confidence=b.get('date_confidence', 'low'),
+                engagement=eng,
+                relevance=b.get('relevance', 0.5),
+                why_relevant=b.get('why_relevant', ''),
+                subs=subs,
+                score=b.get('score', 0),
+            ))
+
         # Reconstruct Web items
         web_items = []
         for w in data.get('web', []):
@@ -304,12 +364,14 @@ class Report:
             xai_model_used=data.get('xai_model_used'),
             reddit=reddit_items,
             x=x_items,
+            bluesky=bluesky_items,
             web=web_items,
             best_practices=data.get('best_practices', []),
             prompt_pack=data.get('prompt_pack', []),
             context_snippet_md=data.get('context_snippet_md', ''),
             reddit_error=data.get('reddit_error'),
             x_error=data.get('x_error'),
+            bluesky_error=data.get('bluesky_error'),
             web_error=data.get('web_error'),
             from_cache=data.get('from_cache', False),
             cache_age_hours=data.get('cache_age_hours'),
