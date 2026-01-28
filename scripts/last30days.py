@@ -34,6 +34,7 @@ from lib import (
     models,
     normalize,
     openai_reddit,
+    openrouter,
     reddit_enrich,
     render,
     schema,
@@ -61,8 +62,9 @@ def _search_reddit(
     to_date: str,
     depth: str,
     mock: bool,
+    use_openrouter: bool = False,
 ) -> tuple:
-    """Search Reddit via OpenAI (runs in thread).
+    """Search Reddit via OpenAI or OpenRouter (runs in thread).
 
     Returns:
         Tuple of (reddit_items, raw_openai, error)
@@ -72,7 +74,25 @@ def _search_reddit(
 
     if mock:
         raw_openai = load_fixture("openai_sample.json")
+    elif use_openrouter:
+        # Use OpenRouter API
+        try:
+            raw_openai = openrouter.search_reddit(
+                config["OPENROUTER_API_KEY"],
+                selected_models["openai"],
+                topic,
+                from_date,
+                to_date,
+                depth=depth,
+            )
+        except http.HTTPError as e:
+            raw_openai = {"error": str(e)}
+            reddit_error = f"OpenRouter API error: {e}"
+        except Exception as e:
+            raw_openai = {"error": str(e)}
+            reddit_error = f"{type(e).__name__}: {e}"
     else:
+        # Use native OpenAI API
         try:
             raw_openai = openai_reddit.search_reddit(
                 config["OPENAI_API_KEY"],
@@ -89,22 +109,35 @@ def _search_reddit(
             raw_openai = {"error": str(e)}
             reddit_error = f"{type(e).__name__}: {e}"
 
-    # Parse response
-    reddit_items = openai_reddit.parse_reddit_response(raw_openai or {})
+    # Parse response (OpenRouter uses same format)
+    if use_openrouter:
+        reddit_items = openrouter.parse_reddit_response(raw_openai or {})
+    else:
+        reddit_items = openai_reddit.parse_reddit_response(raw_openai or {})
 
     # Quick retry with simpler query if few results
     if len(reddit_items) < 5 and not mock and not reddit_error:
         core = openai_reddit._extract_core_subject(topic)
         if core.lower() != topic.lower():
             try:
-                retry_raw = openai_reddit.search_reddit(
-                    config["OPENAI_API_KEY"],
-                    selected_models["openai"],
-                    core,
-                    from_date, to_date,
-                    depth=depth,
-                )
-                retry_items = openai_reddit.parse_reddit_response(retry_raw)
+                if use_openrouter:
+                    retry_raw = openrouter.search_reddit(
+                        config["OPENROUTER_API_KEY"],
+                        selected_models["openai"],
+                        core,
+                        from_date, to_date,
+                        depth=depth,
+                    )
+                    retry_items = openrouter.parse_reddit_response(retry_raw)
+                else:
+                    retry_raw = openai_reddit.search_reddit(
+                        config["OPENAI_API_KEY"],
+                        selected_models["openai"],
+                        core,
+                        from_date, to_date,
+                        depth=depth,
+                    )
+                    retry_items = openai_reddit.parse_reddit_response(retry_raw)
                 # Add items not already found (by URL)
                 existing_urls = {item.get("url") for item in reddit_items}
                 for item in retry_items:
@@ -124,8 +157,9 @@ def _search_x(
     to_date: str,
     depth: str,
     mock: bool,
+    use_openrouter: bool = False,
 ) -> tuple:
-    """Search X via xAI (runs in thread).
+    """Search X via xAI or OpenRouter (runs in thread).
 
     Returns:
         Tuple of (x_items, raw_xai, error)
@@ -135,7 +169,25 @@ def _search_x(
 
     if mock:
         raw_xai = load_fixture("xai_sample.json")
+    elif use_openrouter:
+        # Use OpenRouter API
+        try:
+            raw_xai = openrouter.search_x(
+                config["OPENROUTER_API_KEY"],
+                selected_models["xai"],
+                topic,
+                from_date,
+                to_date,
+                depth=depth,
+            )
+        except http.HTTPError as e:
+            raw_xai = {"error": str(e)}
+            x_error = f"OpenRouter API error: {e}"
+        except Exception as e:
+            raw_xai = {"error": str(e)}
+            x_error = f"{type(e).__name__}: {e}"
     else:
+        # Use native xAI API
         try:
             raw_xai = xai_x.search_x(
                 config["XAI_API_KEY"],
@@ -152,8 +204,11 @@ def _search_x(
             raw_xai = {"error": str(e)}
             x_error = f"{type(e).__name__}: {e}"
 
-    # Parse response
-    x_items = xai_x.parse_x_response(raw_xai or {})
+    # Parse response (OpenRouter uses same format)
+    if use_openrouter:
+        x_items = openrouter.parse_x_response(raw_xai or {})
+    else:
+        x_items = xai_x.parse_x_response(raw_xai or {})
 
     return x_items, raw_xai, x_error
 
@@ -168,6 +223,7 @@ def run_research(
     depth: str = "default",
     mock: bool = False,
     progress: ui.ProgressDisplay = None,
+    use_openrouter: bool = False,
 ) -> tuple:
     """Run the research pipeline.
 
@@ -210,7 +266,7 @@ def run_research(
                 progress.start_reddit()
             reddit_future = executor.submit(
                 _search_reddit, topic, config, selected_models,
-                from_date, to_date, depth, mock
+                from_date, to_date, depth, mock, use_openrouter
             )
 
         if run_x:
@@ -218,7 +274,7 @@ def run_research(
                 progress.start_x()
             x_future = executor.submit(
                 _search_x, topic, config, selected_models,
-                from_date, to_date, depth, mock
+                from_date, to_date, depth, mock, use_openrouter
             )
 
         # Collect results
@@ -409,6 +465,13 @@ def main():
     else:
         mode = sources
 
+    # Determine if we should use OpenRouter
+    use_openrouter = env.should_use_openrouter(config)
+
+    # Show info about API routing
+    if use_openrouter and not args.mock:
+        progress.show_info("Using OpenRouter API for search")
+
     # Run research
     reddit_items, x_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error = run_research(
         args.topic,
@@ -420,6 +483,7 @@ def main():
         depth,
         args.mock,
         progress,
+        use_openrouter,
     )
 
     # Processing phase

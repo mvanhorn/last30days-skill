@@ -40,6 +40,8 @@ def get_config() -> Dict[str, Any]:
     config = {
         'OPENAI_API_KEY': os.environ.get('OPENAI_API_KEY') or file_env.get('OPENAI_API_KEY'),
         'XAI_API_KEY': os.environ.get('XAI_API_KEY') or file_env.get('XAI_API_KEY'),
+        'OPENROUTER_API_KEY': os.environ.get('OPENROUTER_API_KEY') or file_env.get('OPENROUTER_API_KEY'),
+        'USE_OPENROUTER': (os.environ.get('USE_OPENROUTER') or file_env.get('USE_OPENROUTER', '')).lower() in ('1', 'true', 'yes'),
         'OPENAI_MODEL_POLICY': os.environ.get('OPENAI_MODEL_POLICY') or file_env.get('OPENAI_MODEL_POLICY', 'auto'),
         'OPENAI_MODEL_PIN': os.environ.get('OPENAI_MODEL_PIN') or file_env.get('OPENAI_MODEL_PIN'),
         'XAI_MODEL_POLICY': os.environ.get('XAI_MODEL_POLICY') or file_env.get('XAI_MODEL_POLICY', 'latest'),
@@ -61,6 +63,12 @@ def get_available_sources(config: Dict[str, Any]) -> str:
     """
     has_openai = bool(config.get('OPENAI_API_KEY'))
     has_xai = bool(config.get('XAI_API_KEY'))
+    has_openrouter = bool(config.get('OPENROUTER_API_KEY'))
+    use_openrouter = config.get('USE_OPENROUTER', False)
+
+    # If OpenRouter is configured and enabled, it provides both sources
+    if has_openrouter and use_openrouter:
+        return 'both'
 
     if has_openai and has_xai:
         return 'both'
@@ -68,8 +76,37 @@ def get_available_sources(config: Dict[str, Any]) -> str:
         return 'reddit'
     elif has_xai:
         return 'x'
+    elif has_openrouter:
+        # OpenRouter available but not explicitly enabled - still use it as fallback
+        return 'both'
     else:
         return 'web'  # Fallback: WebSearch only (no API keys needed)
+
+
+def should_use_openrouter(config: Dict[str, Any]) -> bool:
+    """Determine if OpenRouter should be used for API calls.
+
+    Returns True if:
+    - OPENROUTER_API_KEY is set AND USE_OPENROUTER=true, OR
+    - OPENROUTER_API_KEY is set AND neither OPENAI nor XAI keys are available
+    """
+    has_openrouter = bool(config.get('OPENROUTER_API_KEY'))
+    use_openrouter = config.get('USE_OPENROUTER', False)
+    has_openai = bool(config.get('OPENAI_API_KEY'))
+    has_xai = bool(config.get('XAI_API_KEY'))
+
+    if not has_openrouter:
+        return False
+
+    # Explicit opt-in
+    if use_openrouter:
+        return True
+
+    # Auto-fallback: use OpenRouter if native keys aren't available
+    if not has_openai and not has_xai:
+        return True
+
+    return False
 
 
 def get_missing_keys(config: Dict[str, Any]) -> str:
@@ -79,6 +116,11 @@ def get_missing_keys(config: Dict[str, Any]) -> str:
     """
     has_openai = bool(config.get('OPENAI_API_KEY'))
     has_xai = bool(config.get('XAI_API_KEY'))
+    has_openrouter = bool(config.get('OPENROUTER_API_KEY'))
+
+    # OpenRouter provides both sources, so if it's configured, no keys are missing
+    if has_openrouter and should_use_openrouter(config):
+        return 'none'
 
     if has_openai and has_xai:
         return 'none'

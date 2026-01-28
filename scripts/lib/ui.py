@@ -92,6 +92,9 @@ PROMO_MESSAGE = f"""
   {Colors.CYAN}🔵 X (Twitter){Colors.RESET} - Real-time posts, likes, reposts from creators
      └─ Add XAI_API_KEY (uses xAI's live X search)
 
+  {Colors.GREEN}🌐 Or use OpenRouter{Colors.RESET} - One API key for both sources
+     └─ Add OPENROUTER_API_KEY + USE_OPENROUTER=true
+
 {Colors.DIM}Setup:{Colors.RESET} Edit {Colors.BOLD}~/.config/last30days/.env{Colors.RESET}
 {Colors.YELLOW}{Colors.BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━{Colors.RESET}
 """
@@ -107,6 +110,9 @@ Right now you're using web search only. Add API keys to unlock:
 
   🔵 X (Twitter) - Real-time posts, likes, reposts from creators
      └─ Add XAI_API_KEY (uses xAI's live X search)
+
+  🌐 Or use OpenRouter - One API key for both sources
+     └─ Add OPENROUTER_API_KEY + USE_OPENROUTER=true
 
 Setup: Edit ~/.config/last30days/.env
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -267,6 +273,10 @@ class ProgressDisplay:
 
     def show_error(self, message: str):
         sys.stderr.write(f"{Colors.RED}✗ Error:{Colors.RESET} {message}\n")
+        sys.stderr.flush()
+
+    def show_info(self, message: str):
+        sys.stderr.write(f"{Colors.BLUE}ℹ{Colors.RESET} {Colors.DIM}{message}{Colors.RESET}\n")
         sys.stderr.flush()
 
     def start_web_only(self):
