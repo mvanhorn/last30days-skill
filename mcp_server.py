@@ -21,13 +21,31 @@ Configure in Claude Desktop's claude_desktop_config.json:
 
 import json
 import sys
+import os
 from pathlib import Path
 
-# Add scripts to path for imports
-SCRIPT_DIR = Path(__file__).parent / "scripts"
-sys.path.insert(0, str(SCRIPT_DIR))
+# Get the directory where this script is located (works even when called from different CWD)
+SCRIPT_FILE = Path(__file__).resolve()
+ROOT_DIR = SCRIPT_FILE.parent
+SCRIPTS_DIR = ROOT_DIR / "scripts"
 
-from lib import dates, dedupe, env, http, models, normalize, openai_reddit, openrouter, reddit_enrich, render, schema, score, xai_x
+# Add scripts to path for imports
+sys.path.insert(0, str(SCRIPTS_DIR))
+
+# Change to the root directory so relative paths work
+os.chdir(ROOT_DIR)
+
+try:
+    from lib import dates, dedupe, env, http, models, normalize, openai_reddit, openrouter, reddit_enrich, render, schema, score, xai_x
+except ImportError as e:
+    # Write error to stderr for debugging
+    sys.stderr.write(f"[last30days-mcp] Import error: {e}\n")
+    sys.stderr.write(f"[last30days-mcp] Script location: {SCRIPT_FILE}\n")
+    sys.stderr.write(f"[last30days-mcp] Scripts dir: {SCRIPTS_DIR}\n")
+    sys.stderr.write(f"[last30days-mcp] Scripts dir exists: {SCRIPTS_DIR.exists()}\n")
+    sys.stderr.write(f"[last30days-mcp] sys.path: {sys.path[:3]}\n")
+    sys.stderr.flush()
+    raise
 
 
 def log(msg: str):
@@ -320,11 +338,14 @@ def handle_tools_call(id, params):
 def main():
     """Main MCP server loop."""
     log("Starting last30days MCP server...")
+    log(f"Root directory: {ROOT_DIR}")
+    log(f"Scripts directory: {SCRIPTS_DIR}")
 
     while True:
         try:
             message = read_message()
             if message is None:
+                log("No message received, exiting")
                 break
 
             method = message.get("method")
@@ -337,23 +358,36 @@ def main():
                 handle_initialize(id, params)
             elif method == "notifications/initialized":
                 # Client acknowledged initialization
-                pass
+                log("Client initialized")
             elif method == "tools/list":
                 handle_tools_list(id)
             elif method == "tools/call":
                 handle_tools_call(id, params)
             elif method == "shutdown":
                 send_result(id, None)
+                log("Shutdown requested")
                 break
             else:
                 if id is not None:
                     send_error(id, -32601, f"Method not found: {method}")
 
+        except KeyboardInterrupt:
+            log("Interrupted")
+            break
         except Exception as e:
+            import traceback
             log(f"Error: {e}")
+            log(f"Traceback: {traceback.format_exc()}")
             if 'id' in dir() and id is not None:
                 send_error(id, -32603, str(e))
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        import traceback
+        sys.stderr.write(f"[last30days-mcp] Fatal error: {e}\n")
+        sys.stderr.write(f"[last30days-mcp] {traceback.format_exc()}\n")
+        sys.stderr.flush()
+        sys.exit(1)
