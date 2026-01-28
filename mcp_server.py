@@ -60,21 +60,31 @@ def log(msg: str):
 
 def read_message():
     """Read a JSON-RPC message from stdin."""
+    log("Waiting for message...")
+
     # Read Content-Length header
     headers = {}
     while True:
         line = sys.stdin.readline()
-        if line == '\r\n' or line == '\n' or line == '':
+        log(f"Read header line: {repr(line)}")
+        if line == '\r\n' or line == '\n':
             break
+        if line == '':
+            log("EOF received")
+            return None
         if ':' in line:
             key, value = line.split(':', 1)
             headers[key.strip().lower()] = value.strip()
 
     content_length = int(headers.get('content-length', 0))
+    log(f"Content-Length: {content_length}")
+
     if content_length == 0:
+        log("No content length, returning None")
         return None
 
     content = sys.stdin.read(content_length)
+    log(f"Read content: {content[:100]}...")
     return json.loads(content)
 
 
