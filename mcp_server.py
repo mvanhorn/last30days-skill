@@ -24,6 +24,10 @@ import sys
 import os
 from pathlib import Path
 
+# Make stdin/stdout unbuffered for MCP protocol
+sys.stdin = os.fdopen(sys.stdin.fileno(), 'r', buffering=1)
+sys.stdout = os.fdopen(sys.stdout.fileno(), 'w', buffering=1)
+
 # Get the directory where this script is located (works even when called from different CWD)
 SCRIPT_FILE = Path(__file__).resolve()
 ROOT_DIR = SCRIPT_FILE.parent
