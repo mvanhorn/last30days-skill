@@ -15,7 +15,7 @@
 claude plugin marketplace add mvanhorn/last30days-skill
 
 # Install the plugin
-claude plugin install last30days@l30d
+claude plugin install last30days@last30days
 ```
 
 ### Option 2: Manual Installation
