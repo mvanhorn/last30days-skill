@@ -65,7 +65,12 @@ def search_bluesky(
     # Timeout based on depth
     timeout = 30 if depth == "quick" else 45 if depth == "default" else 60
 
-    return http.get(url, timeout=timeout)
+    # Add headers for Bluesky API
+    headers = {
+        "Accept": "application/json",
+    }
+
+    return http.get(url, headers=headers, timeout=timeout)
 
 
 def parse_bluesky_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
