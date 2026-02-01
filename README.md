@@ -9,13 +9,23 @@
 ## Installation
 
 ```bash
-# Clone the repo
+# Clone the repo - that's it!
 git clone https://github.com/mvanhorn/last30days-skill.git ~/.claude/skills/last30days
+```
 
-# Add your API keys
+**Zero configuration required.** Works immediately with Claude Code Pro's built-in WebSearch.
+
+### Optional: Enhanced Mode with API Keys
+
+For users who want Reddit engagement metrics (upvotes, comments) and X metrics (likes, reposts), you can add optional API keys:
+
+```bash
 mkdir -p ~/.config/last30days
 cat > ~/.config/last30days/.env << 'EOF'
+# Optional: For Reddit research with engagement metrics
 OPENAI_API_KEY=sk-...
+
+# Optional: For X/Twitter research with engagement metrics
 XAI_API_KEY=xai-...
 EOF
 chmod 600 ~/.config/last30days/.env
@@ -36,7 +46,7 @@ Examples:
 
 ## What It Does
 
-1. **Researches** - Scans Reddit and X for discussions from the last 30 days
+1. **Researches** - Uses Claude Code's WebSearch to find discussions from the last 30 days (enhanced mode adds Reddit & X with engagement metrics)
 2. **Synthesizes** - Identifies patterns, best practices, and what actually works
 3. **Delivers** - Either writes copy-paste-ready prompts for your target tool, or gives you a curated expert-level answer
 
@@ -691,24 +701,37 @@ This example shows /last30days discovering **emerging developer workflows** - re
 
 ## Options
 
+The default WebSearch mode works automatically with no flags needed.
+
+### Enhanced Mode Options (requires API keys)
+
 | Flag | Description |
 |------|-------------|
 | `--quick` | Faster research, fewer sources (8-12 each) |
 | `--deep` | Comprehensive research (50-70 Reddit, 40-60 X) |
 | `--debug` | Verbose logging for troubleshooting |
-| `--sources=reddit` | Reddit only |
-| `--sources=x` | X only |
+| `--sources=reddit` | Reddit only (requires OPENAI_API_KEY) |
+| `--sources=x` | X only (requires XAI_API_KEY) |
 
 ## Requirements
 
-- **OpenAI API key** - For Reddit research (uses web search)
-- **xAI API key** - For X research (optional but recommended)
+- **Claude Code Pro** - Uses built-in WebSearch (no external APIs needed)
 
-At least one key is required.
+### Optional (for enhanced metrics):
+- **OpenAI API key** - For Reddit research with real engagement metrics (upvotes, comments)
+- **xAI API key** - For X research with real engagement metrics (likes, reposts)
+
+No API keys are required - the skill works out of the box with Claude Code Pro's WebSearch.
 
 ## How It Works
 
 The skill uses:
+- **Claude Code's built-in WebSearch** to research topics across the web (default mode)
+- Intelligent query construction based on your intent (prompting, recommendations, news, general)
+- Pattern recognition to identify what's trending and working
+- Smart synthesis to deliver actionable prompts
+
+### Enhanced Mode (with optional API keys):
 - OpenAI's Responses API with web search to find Reddit discussions
 - xAI's API with live X search to find posts
 - Real Reddit thread enrichment for engagement metrics
