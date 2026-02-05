@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from . import http
 
 # Fallback models when the selected model isn't accessible (e.g., org not verified for GPT-5)
-MODEL_FALLBACK_ORDER = ["gpt-4o", "gpt-4o-mini"]
+MODEL_FALLBACK_ORDER = ["gpt-4.1", "gpt-4o", "gpt-4o-mini"]
 
 
 def _log_error(msg: str):
@@ -25,7 +25,7 @@ def _log_info(msg: str):
 
 def _is_model_access_error(error: http.HTTPError) -> bool:
     """Check if error is due to model access/verification issues."""
-    if error.status_code != 400:
+    if error.status_code not in (400, 403):
         return False
     if not error.body:
         return False
