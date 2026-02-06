@@ -275,6 +275,11 @@ def run_research(
 
 
 def main():
+    # Fix Unicode output on Windows (cp1252 can't encode emoji)
+    if sys.platform == "win32":
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(
         description="Research a topic from the last 30 days on Reddit + X"
     )
