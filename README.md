@@ -26,6 +26,7 @@ chmod 600 ~/.config/last30days/.env
 ```
 /last30days [topic]
 /last30days [topic] for [tool]
+/last30days [topic] --days=7
 ```
 
 Examples:
@@ -33,6 +34,7 @@ Examples:
 - `/last30days iOS app mockups for Nano Banana Pro`
 - `/last30days What are the best rap songs lately`
 - `/last30days remotion animations for Claude Code`
+- `/last30days AI news --days=7` — weekly roundup instead of full month
 
 ## What It Does
 
@@ -693,6 +695,7 @@ This example shows /last30days discovering **emerging developer workflows** - re
 
 | Flag | Description |
 |------|-------------|
+| `--days=N` | Look back N days instead of 30 (1-30, e.g., `--days=7` for weekly) |
 | `--quick` | Faster research, fewer sources (8-12 each) |
 | `--deep` | Comprehensive research (50-70 Reddit, 40-60 X) |
 | `--debug` | Verbose logging for troubleshooting |

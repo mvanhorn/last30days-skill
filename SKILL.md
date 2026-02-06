@@ -1,7 +1,7 @@
 ---
 name: last30days
 description: Research a topic from the last 30 days on Reddit + X + Web, become an expert, and write copy-paste-ready prompts for the user's target tool.
-argument-hint: "[topic] for [tool]" or "[topic]"
+argument-hint: "[topic]" or "[topic] --days=7"
 context: fork
 agent: Explore
 disable-model-invocation: true
@@ -144,7 +144,8 @@ For ALL query types:
 **Step 3: Wait for background script to complete**
 Use TaskOutput to get the script results before proceeding to synthesis.
 
-**Depth options** (passed through from user's command):
+**Options** (passed through from user's command):
+- `--days=N` → Look back N days instead of 30 (e.g., `--days=7` for weekly roundup)
 - `--quick` → Faster, fewer sources (8-12 each)
 - (default) → Balanced (20-30 each)
 - `--deep` → Comprehensive (50-70 Reddit, 40-60 X)
