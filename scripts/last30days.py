@@ -9,6 +9,9 @@ Options:
     --mock              Use fixtures instead of real API calls
     --emit=MODE         Output mode: compact|json|md|context|path (default: compact)
     --sources=MODE      Source selection: auto|reddit|x|both (default: auto)
+    --search=SOURCES    Comma-separated list of sources to search (e.g. reddit,hn,yt)
+                        Valid sources: reddit, x, web, hn, yt, ph
+                        Overrides --sources and --include-web when specified
     --quick             Faster research with fewer sources (8-12 each)
     --deep              Comprehensive research with more sources (50-70 Reddit, 40-60 X)
     --debug             Enable verbose debug logging
@@ -32,10 +35,12 @@ from lib import (
     dedupe,
     entity_extract,
     env,
+    hackernews,
     http,
     models,
     normalize,
     openai_reddit,
+    producthunt,
     reddit_enrich,
     render,
     schema,
@@ -43,7 +48,45 @@ from lib import (
     ui,
     websearch,
     xai_x,
+    youtube,
 )
+
+
+# Valid source names for --search flag
+VALID_SEARCH_SOURCES = {"reddit", "x", "web", "hn", "yt", "ph"}
+
+
+def parse_search_flag(search_str: str) -> set:
+    """Parse and validate the --search flag value.
+
+    Args:
+        search_str: Comma-separated source names (e.g. "reddit,hn,yt")
+
+    Returns:
+        Set of validated source names
+
+    Raises:
+        SystemExit: If invalid sources are specified
+    """
+    sources = set()
+    for s in search_str.split(","):
+        s = s.strip().lower()
+        if not s:
+            continue
+        if s not in VALID_SEARCH_SOURCES:
+            print(
+                f"Error: Unknown search source '{s}'. "
+                f"Valid sources: {', '.join(sorted(VALID_SEARCH_SOURCES))}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        sources.add(s)
+
+    if not sources:
+        print("Error: --search requires at least one source.", file=sys.stderr)
+        sys.exit(1)
+
+    return sources
 
 
 def load_fixture(name: str) -> dict:
@@ -206,6 +249,150 @@ def _search_x(
     return x_items, raw_response, x_error
 
 
+def _search_hn(
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    mock: bool,
+) -> tuple:
+    """Search Hacker News via Algolia (runs in thread).
+
+    Returns:
+        Tuple of (hn_items, raw_hn, error)
+    """
+    raw_hn = None
+    hn_error = None
+
+    if mock:
+        raw_hn = load_fixture("hackernews_sample.json")
+    else:
+        try:
+            raw_hn = hackernews.search_hn(
+                topic,
+                from_date,
+                to_date,
+                depth=depth,
+            )
+        except Exception as e:
+            raw_hn = {"error": str(e)}
+            hn_error = f"{type(e).__name__}: {e}"
+
+    # Parse response
+    hn_items = hackernews.parse_hn_response(raw_hn or {})
+
+    # Supplemental: also search by date for recent stories
+    if not mock and not hn_error and depth != "quick":
+        try:
+            date_raw = hackernews.search_hn_by_date(
+                topic, from_date, to_date, depth=depth,
+            )
+            date_items = hackernews.parse_hn_response(date_raw)
+            # Add items not already found (by HN URL)
+            existing_urls = {item.get("hn_url") for item in hn_items}
+            for item in date_items:
+                if item.get("hn_url") not in existing_urls:
+                    hn_items.append(item)
+        except Exception:
+            pass
+
+    return hn_items, raw_hn, hn_error
+
+
+def _search_yt(
+    topic: str,
+    config: dict,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    mock: bool,
+) -> tuple:
+    """Search YouTube via Data API v3 (runs in thread).
+
+    Returns:
+        Tuple of (yt_items, raw_yt, error)
+    """
+    raw_yt = None
+    yt_error = None
+
+    if mock:
+        raw_yt = load_fixture("youtube_sample.json")
+    else:
+        api_key = config.get("YOUTUBE_API_KEY")
+        if not api_key:
+            return [], None, "YOUTUBE_API_KEY not configured"
+        try:
+            raw_yt = youtube.search_youtube(
+                api_key,
+                topic,
+                from_date,
+                to_date,
+                depth=depth,
+            )
+        except http.HTTPError as e:
+            raw_yt = {"error": str(e)}
+            yt_error = f"API error: {e}"
+        except Exception as e:
+            raw_yt = {"error": str(e)}
+            yt_error = f"{type(e).__name__}: {e}"
+
+    # Parse response
+    yt_items = youtube.parse_youtube_response(raw_yt or {})
+
+    return yt_items, raw_yt, yt_error
+
+
+def _search_ph(
+    topic: str,
+    config: dict,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    mock: bool,
+    ph_slugs: list = None,
+) -> tuple:
+    """Search Product Hunt via API v2 (runs in thread).
+
+    Args:
+        ph_slugs: Pre-selected topic slugs. If None, skips PH search
+                  (caller should pass slugs via --ph-slugs).
+
+    Returns:
+        Tuple of (ph_items, raw_ph, error)
+    """
+    raw_ph = None
+    ph_error = None
+
+    if mock:
+        raw_ph = load_fixture("producthunt_sample.json")
+    else:
+        access_token = config.get("PH_ACCESS_TOKEN")
+        if not access_token:
+            return [], None, "PH_ACCESS_TOKEN not configured"
+        slugs = ph_slugs or []
+        if not slugs:
+            return [], None, "No --ph-slugs provided"
+        try:
+            raw_ph = producthunt.search_producthunt(
+                access_token,
+                slugs,
+                from_date,
+                to_date,
+                depth=depth,
+            )
+        except http.HTTPError as e:
+            raw_ph = {"error": str(e)}
+            ph_error = f"API error: {e}"
+        except Exception as e:
+            raw_ph = {"error": str(e)}
+            ph_error = f"{type(e).__name__}: {e}"
+
+    # Parse response
+    ph_items = producthunt.parse_ph_response(raw_ph or {})
+
+    return ph_items, raw_ph, ph_error
+
+
 def _run_supplemental(
     topic: str,
     reddit_items: list,
@@ -340,43 +527,87 @@ def run_research(
     mock: bool = False,
     progress: ui.ProgressDisplay = None,
     x_source: str = "xai",
+    search_sources: set = None,
+    ph_slugs: list = None,
 ) -> tuple:
     """Run the research pipeline.
 
+    Args:
+        search_sources: If provided, overrides source selection. Set of source
+            names like {"reddit", "x", "hn", "yt", "ph", "web"}.
+
     Returns:
-        Tuple of (reddit_items, x_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error)
+        Tuple of (reddit_items, x_items, hn_items, yt_items, ph_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, raw_hn, raw_yt, raw_ph, reddit_error, x_error, hn_error, yt_error, ph_error)
 
     Note: web_needed is True when WebSearch should be performed by Claude.
     The script outputs a marker and Claude handles WebSearch in its session.
     """
     reddit_items = []
     x_items = []
+    hn_items = []
+    yt_items = []
+    ph_items = []
     raw_openai = None
     raw_xai = None
+    raw_hn = None
+    raw_yt = None
+    raw_ph = None
     raw_reddit_enriched = []
     reddit_error = None
     x_error = None
+    hn_error = None
+    yt_error = None
+    ph_error = None
 
-    # Check if WebSearch is needed (always needed in web-only mode)
-    web_needed = sources in ("all", "web", "reddit-web", "x-web")
+    if search_sources is not None:
+        # --search flag overrides all source selection logic
+        run_reddit = "reddit" in search_sources
+        run_x = "x" in search_sources
+        run_hn = "hn" in search_sources
+        run_yt = "yt" in search_sources
+        run_ph = "ph" in search_sources
+        web_needed = "web" in search_sources
 
-    # Web-only mode: no API calls needed, Claude handles everything
-    if sources == "web":
-        if progress:
-            progress.start_web_only()
-            progress.end_web_only()
-        return reddit_items, x_items, True, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error
+        # Web-only via --search (no API sources selected)
+        if search_sources == {"web"}:
+            if progress:
+                progress.start_web_only()
+                progress.end_web_only()
+            return reddit_items, x_items, hn_items, yt_items, ph_items, True, raw_openai, raw_xai, raw_reddit_enriched, raw_hn, raw_yt, raw_ph, reddit_error, x_error, hn_error, yt_error, ph_error
+    else:
+        # Original source selection logic
+        # Check if WebSearch is needed (always needed in web-only mode)
+        web_needed = sources in ("all", "web", "reddit-web", "x-web")
 
-    # Determine which searches to run
-    run_reddit = sources in ("both", "reddit", "all", "reddit-web")
-    run_x = sources in ("both", "x", "all", "x-web")
+        # HN is always available (free, no auth)
+        run_hn = True
 
-    # Run Reddit and X searches in parallel
+        # YouTube runs alongside other sources when API key is available
+        run_yt = bool(config.get("YOUTUBE_API_KEY"))
+
+        # Product Hunt runs alongside other sources when token is available
+        run_ph = bool(config.get("PH_ACCESS_TOKEN"))
+
+        # Web-only mode: no API calls needed, Claude handles everything
+        if sources == "web":
+            if progress:
+                progress.start_web_only()
+                progress.end_web_only()
+            return reddit_items, x_items, hn_items, yt_items, ph_items, True, raw_openai, raw_xai, raw_reddit_enriched, raw_hn, raw_yt, raw_ph, reddit_error, x_error, hn_error, yt_error, ph_error
+
+        # Determine which searches to run
+        run_reddit = sources in ("both", "reddit", "all", "reddit-web")
+        run_x = sources in ("both", "x", "all", "x-web")
+
+    # Run Reddit, X, HN, YouTube, and Product Hunt searches in parallel
     reddit_future = None
     x_future = None
+    hn_future = None
+    yt_future = None
+    ph_future = None
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        # Submit both searches
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        # Submit all searches
         if run_reddit:
             if progress:
                 progress.start_reddit()
@@ -391,6 +622,30 @@ def run_research(
             x_future = executor.submit(
                 _search_x, topic, config, selected_models,
                 from_date, to_date, depth, mock, x_source
+            )
+
+        if run_hn:
+            if progress:
+                progress.start_hn()
+            hn_future = executor.submit(
+                _search_hn, topic,
+                from_date, to_date, depth, mock
+            )
+
+        if run_yt:
+            if progress:
+                progress.start_yt()
+            yt_future = executor.submit(
+                _search_yt, topic, config,
+                from_date, to_date, depth, mock
+            )
+
+        if run_ph:
+            if progress:
+                progress.start_ph()
+            ph_future = executor.submit(
+                _search_ph, topic, config,
+                from_date, to_date, depth, mock, ph_slugs
             )
 
         # Collect results
@@ -417,6 +672,42 @@ def run_research(
                     progress.show_error(f"X error: {e}")
             if progress:
                 progress.end_x(len(x_items))
+
+        if hn_future:
+            try:
+                hn_items, raw_hn, hn_error = hn_future.result()
+                if hn_error and progress:
+                    progress.show_error(f"HN error: {hn_error}")
+            except Exception as e:
+                hn_error = f"{type(e).__name__}: {e}"
+                if progress:
+                    progress.show_error(f"HN error: {e}")
+            if progress:
+                progress.end_hn(len(hn_items))
+
+        if yt_future:
+            try:
+                yt_items, raw_yt, yt_error = yt_future.result()
+                if yt_error and progress:
+                    progress.show_error(f"YouTube error: {yt_error}")
+            except Exception as e:
+                yt_error = f"{type(e).__name__}: {e}"
+                if progress:
+                    progress.show_error(f"YouTube error: {e}")
+            if progress:
+                progress.end_yt(len(yt_items))
+
+        if ph_future:
+            try:
+                ph_items, raw_ph, ph_error = ph_future.result()
+                if ph_error and progress:
+                    progress.show_error(f"Product Hunt error: {ph_error}")
+            except Exception as e:
+                ph_error = f"{type(e).__name__}: {e}"
+                if progress:
+                    progress.show_error(f"Product Hunt error: {e}")
+            if progress:
+                progress.end_ph(len(ph_items))
 
     # Enrich Reddit items with real data (sequential, but with error handling per-item)
     if reddit_items:
@@ -455,7 +746,7 @@ def run_research(
         if sup_x:
             x_items.extend(sup_x)
 
-    return reddit_items, x_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error
+    return reddit_items, x_items, hn_items, yt_items, ph_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, raw_hn, raw_yt, raw_ph, reddit_error, x_error, hn_error, yt_error, ph_error
 
 
 def main():
@@ -502,6 +793,13 @@ def main():
         help="Include general web search alongside Reddit/X (lower weighted)",
     )
     parser.add_argument(
+        "--search",
+        type=str,
+        default=None,
+        help="Comma-separated list of sources to search (e.g. reddit,hn,yt). "
+             "Valid: reddit, x, web, hn, yt, ph. Overrides --sources and --include-web.",
+    )
+    parser.add_argument(
         "--days",
         type=int,
         default=30,
@@ -509,8 +807,29 @@ def main():
         metavar="N",
         help="Number of days to look back (1-30, default: 30)",
     )
+    parser.add_argument(
+        "--ph-slugs",
+        type=str,
+        default=None,
+        help="Comma-separated Product Hunt topic slugs to search (e.g. artificial-intelligence,video)",
+    )
+    parser.add_argument(
+        "--list-ph-topics",
+        action="store_true",
+        help="List available Product Hunt topic slugs and exit",
+    )
 
     args = parser.parse_args()
+
+    # Handle --list-ph-topics early exit
+    if args.list_ph_topics:
+        config = env.get_config()
+        access_token = config.get("PH_ACCESS_TOKEN")
+        if not access_token:
+            print("Error: PH_ACCESS_TOKEN not configured", file=sys.stderr)
+            sys.exit(1)
+        print(producthunt.list_topic_slugs(access_token))
+        sys.exit(0)
 
     # Enable debug logging if requested
     if args.debug:
@@ -530,11 +849,21 @@ def main():
     else:
         depth = "default"
 
+    # Parse --ph-slugs
+    ph_slugs = None
+    if args.ph_slugs:
+        ph_slugs = [s.strip() for s in args.ph_slugs.split(",") if s.strip()]
+
     # Validate topic first (matches original NUX)
     if not args.topic:
         print("Error: Please provide a topic to research.", file=sys.stderr)
         print("Usage: python3 last30days.py <topic> [options]", file=sys.stderr)
         sys.exit(1)
+
+    # Parse --search flag (overrides --sources and --include-web)
+    search_sources = None
+    if args.search is not None:
+        search_sources = parse_search_flag(args.search)
 
     # Load config
     config = env.get_config()
@@ -601,7 +930,9 @@ def main():
         selected_models = models.get_models(config)
 
     # Determine mode string
-    if sources == "all":
+    if search_sources is not None:
+        mode = "+".join(sorted(search_sources))
+    elif sources == "all":
         mode = "all"  # reddit + x + web
     elif sources == "both":
         mode = "both"  # reddit + x
@@ -619,7 +950,7 @@ def main():
         mode = sources
 
     # Run research
-    reddit_items, x_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error = run_research(
+    reddit_items, x_items, hn_items, yt_items, ph_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, raw_hn, raw_yt, raw_ph, reddit_error, x_error, hn_error, yt_error, ph_error = run_research(
         args.topic,
         sources,
         config,
@@ -630,6 +961,8 @@ def main():
         args.mock,
         progress,
         x_source=x_source or "xai",
+        search_sources=search_sources,
+        ph_slugs=ph_slugs,
     )
 
     # Processing phase
@@ -638,23 +971,38 @@ def main():
     # Normalize items
     normalized_reddit = normalize.normalize_reddit_items(reddit_items, from_date, to_date)
     normalized_x = normalize.normalize_x_items(x_items, from_date, to_date)
+    normalized_hn = normalize.normalize_hn_items(hn_items, from_date, to_date)
+    normalized_yt = normalize.normalize_yt_items(yt_items, from_date, to_date)
+    normalized_ph = normalize.normalize_ph_items(ph_items, from_date, to_date)
 
     # Hard date filter: exclude items with verified dates outside the range
     # This is the safety net - even if prompts let old content through, this filters it
     filtered_reddit = normalize.filter_by_date_range(normalized_reddit, from_date, to_date)
     filtered_x = normalize.filter_by_date_range(normalized_x, from_date, to_date)
+    filtered_hn = normalize.filter_by_date_range(normalized_hn, from_date, to_date)
+    filtered_yt = normalize.filter_by_date_range(normalized_yt, from_date, to_date)
+    filtered_ph = normalize.filter_by_date_range(normalized_ph, from_date, to_date)
 
     # Score items
     scored_reddit = score.score_reddit_items(filtered_reddit)
     scored_x = score.score_x_items(filtered_x)
+    scored_hn = score.score_hn_items(filtered_hn)
+    scored_yt = score.score_yt_items(filtered_yt)
+    scored_ph = score.score_ph_items(filtered_ph)
 
     # Sort items
     sorted_reddit = score.sort_items(scored_reddit)
     sorted_x = score.sort_items(scored_x)
+    sorted_hn = score.sort_items(scored_hn)
+    sorted_yt = score.sort_items(scored_yt)
+    sorted_ph = score.sort_items(scored_ph)
 
     # Dedupe items
     deduped_reddit = dedupe.dedupe_reddit(sorted_reddit)
     deduped_x = dedupe.dedupe_x(sorted_x)
+    deduped_hn = dedupe.dedupe_hn(sorted_hn)
+    deduped_yt = dedupe.dedupe_yt(sorted_yt)
+    deduped_ph = dedupe.dedupe_ph(sorted_ph)
 
     # Minimum result guarantee: if all Reddit results were filtered out but
     # we had raw results, keep top 3 by relevance regardless of score
@@ -676,20 +1024,26 @@ def main():
     )
     report.reddit = deduped_reddit
     report.x = deduped_x
+    report.hn = deduped_hn
+    report.yt = deduped_yt
+    report.ph = deduped_ph
     report.reddit_error = reddit_error
     report.x_error = x_error
+    report.hn_error = hn_error
+    report.yt_error = yt_error
+    report.ph_error = ph_error
 
     # Generate context snippet
     report.context_snippet_md = render.render_context_snippet(report)
 
     # Write outputs
-    render.write_outputs(report, raw_openai, raw_xai, raw_reddit_enriched)
+    render.write_outputs(report, raw_openai, raw_xai, raw_reddit_enriched, raw_hn, raw_yt, raw_ph)
 
     # Show completion
     if sources == "web":
         progress.show_web_only_complete()
     else:
-        progress.show_complete(len(deduped_reddit), len(deduped_x))
+        progress.show_complete(len(deduped_reddit), len(deduped_x), hn_count=len(deduped_hn), yt_count=len(deduped_yt), ph_count=len(deduped_ph))
 
     # Output result
     output_result(report, args.emit, web_needed, args.topic, from_date, to_date, missing_keys, args.days)

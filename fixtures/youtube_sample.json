@@ -1,0 +1,75 @@
+{
+  "kind": "youtube#searchListResponse",
+  "etag": "test-etag",
+  "pageInfo": {
+    "totalResults": 3,
+    "resultsPerPage": 25
+  },
+  "items": [
+    {
+      "kind": "youtube#searchResult",
+      "etag": "item1-etag",
+      "id": {
+        "kind": "youtube#video",
+        "videoId": "abc123def"
+      },
+      "snippet": {
+        "publishedAt": "2026-01-20T14:30:00Z",
+        "channelId": "UCtest1",
+        "title": "Complete Guide to React Server Components in 2026",
+        "description": "A deep dive into React Server Components...",
+        "channelTitle": "Tech Channel",
+        "liveBroadcastContent": "none"
+      }
+    },
+    {
+      "kind": "youtube#searchResult",
+      "etag": "item2-etag",
+      "id": {
+        "kind": "youtube#video",
+        "videoId": "ghi456jkl"
+      },
+      "snippet": {
+        "publishedAt": "2026-02-01T10:00:00Z",
+        "channelId": "UCtest2",
+        "title": "React 19 &amp; Server Actions - What&#39;s New",
+        "description": "Everything new in React 19...",
+        "channelTitle": "Dev Tips",
+        "liveBroadcastContent": "none"
+      }
+    },
+    {
+      "kind": "youtube#searchResult",
+      "etag": "item3-etag",
+      "id": {
+        "kind": "youtube#video",
+        "videoId": "mno789pqr"
+      },
+      "snippet": {
+        "publishedAt": "2026-02-10T08:15:00Z",
+        "channelId": "UCtest3",
+        "title": "Building Full-Stack Apps with React Server Components",
+        "description": "Learn how to build production apps...",
+        "channelTitle": "Code Academy Pro",
+        "liveBroadcastContent": "none"
+      }
+    }
+  ],
+  "_video_stats": {
+    "abc123def": {
+      "views": 150000,
+      "likes": 5200,
+      "comments": 340
+    },
+    "ghi456jkl": {
+      "views": 45000,
+      "likes": 1800,
+      "comments": 120
+    },
+    "mno789pqr": {
+      "views": 8500,
+      "likes": 420,
+      "comments": 55
+    }
+  }
+}

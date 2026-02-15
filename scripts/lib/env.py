@@ -52,6 +52,8 @@ def get_config() -> Dict[str, Any]:
     config = {
         'OPENAI_API_KEY': os.environ.get('OPENAI_API_KEY') or file_env.get('OPENAI_API_KEY'),
         'XAI_API_KEY': os.environ.get('XAI_API_KEY') or file_env.get('XAI_API_KEY'),
+        'YOUTUBE_API_KEY': os.environ.get('YOUTUBE_API_KEY') or file_env.get('YOUTUBE_API_KEY'),
+        'PH_ACCESS_TOKEN': os.environ.get('PH_ACCESS_TOKEN') or file_env.get('PH_ACCESS_TOKEN'),
         'OPENAI_MODEL_POLICY': os.environ.get('OPENAI_MODEL_POLICY') or file_env.get('OPENAI_MODEL_POLICY', 'auto'),
         'OPENAI_MODEL_PIN': os.environ.get('OPENAI_MODEL_PIN') or file_env.get('OPENAI_MODEL_PIN'),
         'XAI_MODEL_POLICY': os.environ.get('XAI_MODEL_POLICY') or file_env.get('XAI_MODEL_POLICY', 'latest'),

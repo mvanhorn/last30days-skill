@@ -1,0 +1,41 @@
+{
+  "hits": [
+    {
+      "title": "Show HN: An Open Source Claude Code Skill for Research",
+      "objectID": "42345678",
+      "url": "https://github.com/example/research-skill",
+      "author": "hackernewsuser",
+      "created_at_i": 1738368000,
+      "points": 245,
+      "num_comments": 89,
+      "created_at": "2025-02-01T00:00:00Z",
+      "story_text": null
+    },
+    {
+      "title": "Ask HN: What's the best way to build Claude Code skills?",
+      "objectID": "42345679",
+      "url": null,
+      "author": "curious_dev",
+      "created_at_i": 1738454400,
+      "points": 120,
+      "num_comments": 67,
+      "created_at": "2025-02-02T00:00:00Z",
+      "story_text": "I've been exploring Claude Code skills and wondering what patterns work best."
+    },
+    {
+      "title": "Building AI-Powered Research Tools with Claude",
+      "objectID": "42345680",
+      "url": "https://blog.example.com/ai-research-tools",
+      "author": "ai_builder",
+      "created_at_i": 1738540800,
+      "points": 87,
+      "num_comments": 34,
+      "created_at": "2025-02-03T00:00:00Z",
+      "story_text": null
+    }
+  ],
+  "nbHits": 3,
+  "page": 0,
+  "nbPages": 1,
+  "hitsPerPage": 30
+}

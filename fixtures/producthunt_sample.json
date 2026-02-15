@@ -1,0 +1,71 @@
+{
+  "data": {
+    "posts": {
+      "edges": [
+        {
+          "node": {
+            "id": "12345",
+            "name": "AI Code Assistant Pro",
+            "tagline": "Your AI pair programmer that actually works",
+            "url": "https://www.producthunt.com/posts/ai-code-assistant-pro",
+            "votesCount": 542,
+            "commentsCount": 87,
+            "website": "https://aicodeassistant.pro",
+            "createdAt": "2026-02-05T08:00:00Z",
+            "topics": {
+              "edges": [
+                {"node": {"name": "Artificial Intelligence"}},
+                {"node": {"name": "Developer Tools"}}
+              ]
+            },
+            "makers": [
+              {"name": "Jane Smith", "username": "janesmith"}
+            ]
+          }
+        },
+        {
+          "node": {
+            "id": "12346",
+            "name": "DevFlow",
+            "tagline": "Streamline your development workflow",
+            "url": "https://www.producthunt.com/posts/devflow",
+            "votesCount": 312,
+            "commentsCount": 45,
+            "website": "https://devflow.io",
+            "createdAt": "2026-01-28T12:00:00Z",
+            "topics": {
+              "edges": [
+                {"node": {"name": "Productivity"}},
+                {"node": {"name": "Developer Tools"}}
+              ]
+            },
+            "makers": [
+              {"name": "Bob Developer", "username": "bobdev"},
+              {"name": "Alice Engineer", "username": "aliceeng"}
+            ]
+          }
+        },
+        {
+          "node": {
+            "id": "12347",
+            "name": "PromptCraft",
+            "tagline": "Craft perfect AI prompts every time",
+            "url": "https://www.producthunt.com/posts/promptcraft",
+            "votesCount": 189,
+            "commentsCount": 23,
+            "website": "https://promptcraft.app",
+            "createdAt": "2026-02-10T15:30:00Z",
+            "topics": {
+              "edges": [
+                {"node": {"name": "Artificial Intelligence"}}
+              ]
+            },
+            "makers": [
+              {"name": "Chris Maker", "username": "chrismaker"}
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
