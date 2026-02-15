@@ -1,6 +1,6 @@
 # /last30days v2
 
-**The AI world reinvents itself every month. This Claude Code skill keeps you current.** /last30days researches your topic across Reddit, X, and the web from the last 30 days, finds what the community is actually upvoting and sharing, and writes you a prompt that works today, not six months ago. Whether it's Ralph Wiggum loops, Suno music prompts, or the latest Midjourney techniques, you'll prompt like someone who's been paying attention.
+**The AI world reinvents itself every month. This Claude Code skill keeps you current.** /last30days researches your topic across Reddit, X, Hacker News, YouTube, Product Hunt, and the web from the last 30 days, finds what the community is actually upvoting and sharing, and writes you a prompt that works today, not six months ago. Whether it's Ralph Wiggum loops, Suno music prompts, or the latest Midjourney techniques, you'll prompt like someone who's been paying attention.
 
 **New in V2:** Dramatically better search results. Smarter query construction finds posts that V1 missed entirely, and a new two-phase search automatically discovers key @handles and subreddits from initial results, then drills deeper. Also: free X search via [Bird CLI](https://github.com/steipete/bird) (no xAI key needed), `--days=N` for flexible lookback, and automatic model fallback. [Full changelog below.](#whats-new-in-v2)
 
@@ -20,7 +20,9 @@ git clone https://github.com/mvanhorn/last30days-skill.git ~/.claude/skills/last
 mkdir -p ~/.config/last30days
 cat > ~/.config/last30days/.env << 'EOF'
 OPENAI_API_KEY=sk-...
-XAI_API_KEY=xai-...       # optional if using Bird CLI
+XAI_API_KEY=xai-...           # optional if using Bird CLI
+YOUTUBE_API_KEY=AIza...       # optional, for YouTube search
+PH_ACCESS_TOKEN=...           # optional, for Product Hunt search
 EOF
 chmod 600 ~/.config/last30days/.env
 ```
@@ -51,7 +53,7 @@ Examples:
 
 ## What It Does
 
-1. **Researches** - Scans Reddit and X for discussions from the last 30 days
+1. **Researches** - Scans Reddit, X, Hacker News, YouTube, and Product Hunt for discussions from the last 30 days
 2. **Synthesizes** - Identifies patterns, best practices, and what actually works
 3. **Delivers** - Either writes copy-paste-ready prompts for your target tool, or gives you a curated expert-level answer
 
@@ -771,11 +773,12 @@ This example shows /last30days discovering **emerging developer workflows** - re
 | Flag | Description |
 |------|-------------|
 | `--days=N` | Look back N days instead of 30 (e.g., `--days=7` for weekly roundup) |
+| `--search=SOURCES` | Comma-separated list of sources: `reddit`, `x`, `web`, `hn`, `yt`, `ph` |
 | `--quick` | Faster research, fewer sources (8-12 each), skips supplemental search |
 | `--deep` | Comprehensive research (50-70 Reddit, 40-60 X) with extended supplemental |
 | `--debug` | Verbose logging for troubleshooting |
-| `--sources=reddit` | Reddit only |
-| `--sources=x` | X only |
+| `--sources=reddit` | Reddit only (legacy, prefer `--search`) |
+| `--sources=x` | X only (legacy, prefer `--search`) |
 
 ## Requirements
 
@@ -786,6 +789,15 @@ This example shows /last30days discovering **emerging developer workflows** - re
 
 At least one API key is required. Bird CLI is recommended for X search since it's free.
 
+### Optional sources (no key required)
+
+- **Hacker News** - Always available, uses the free Algolia search API
+
+### Optional sources (key required)
+
+- **YouTube** - Requires a [YouTube Data API v3](https://console.cloud.google.com/apis/api/youtube.googleapis.com) key (`YOUTUBE_API_KEY`)
+- **Product Hunt** - Requires a [Product Hunt API v2](https://api.producthunt.com/v2/docs) access token (`PH_ACCESS_TOKEN`)
+
 ## How It Works
 
 ### Two-Phase Search Architecture
@@ -793,6 +805,9 @@ At least one API key is required. Bird CLI is recommended for X search since it'
 **Phase 1: Broad discovery**
 - OpenAI Responses API with `web_search` tool scoped to reddit.com
 - Bird CLI (or xAI API) for X/Twitter search
+- Hacker News via Algolia API (free, no auth)
+- YouTube Data API v3 (if key configured)
+- Product Hunt GraphQL API v2 (if token configured)
 - WebSearch for blogs, news, docs, tutorials
 - Reddit JSON enrichment for real engagement metrics (upvotes, comments)
 - Scoring algorithm weighing recency, relevance, and engagement

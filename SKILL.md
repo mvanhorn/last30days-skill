@@ -9,6 +9,37 @@ allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
 
 Research ANY topic across Reddit, X, and the web. Surface what people are actually discussing, recommending, and debating right now.
 
+## Help / Usage
+
+If the user's input is `--help`, `-h`, or `help`, display the following and STOP (do not run research):
+
+```
+/last30days <topic> [options]
+
+Research any topic across Reddit, X, and the web. Surface what people
+are actually discussing, recommending, and debating right now.
+
+Options:
+  --search=SOURCES  Comma-separated list of sources to search.
+                    Valid: reddit, x, web, hn, yt, ph
+                    Example: --search reddit,hn,yt
+                    Default: searches all sources with configured API keys
+
+  --days=N          Number of days to look back (1-30, default: 30)
+                    Example: --days 7
+
+  --quick           Faster research with fewer sources per platform
+  --deep            Comprehensive research with more sources per platform
+
+Examples:
+  /last30days Claude Code prompts
+  /last30days best AI video tools --search reddit,hn
+  /last30days NVIDIA news --days 7
+  /last30days web frameworks --deep --search reddit,x,hn,yt
+```
+
+---
+
 ## CRITICAL: Parse User Intent
 
 Before doing anything, parse the user's input for:
@@ -58,7 +89,32 @@ This text MUST appear before you call any tools. It confirms to the user that yo
 
 ## Research Execution
 
-**Step 1: Run the research script**
+**Step 1a: Select Product Hunt topic slugs**
+
+Always attempt this step unless the user used `--search` without `ph` in the list.
+
+Product Hunt's API requires specific topic slugs (like "artificial-intelligence", "developer-tools") — it does not support free-text search. You are the intelligence layer that maps the user's topic to the right slugs.
+
+1. Get the full topic list:
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/last30days}/scripts/last30days.py" --list-ph-topics 2>/dev/null
+```
+
+2. If that command succeeds (PH_ACCESS_TOKEN is configured), pick the 1-5 most relevant slugs for the user's TOPIC. Use your judgment — for example:
+   - "AI video tools" → `artificial-intelligence`, `video`, `developer-tools`
+   - "productivity apps" → `productivity`, `task-management`
+   - "crypto news" → `cryptocurrency`, `web3`, `blockchain`
+
+3. If it fails or outputs nothing, skip PH — the token isn't configured.
+
+**Step 1b: Run the research script**
+
+If you selected PH slugs, include `--ph-slugs`:
+```bash
+python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/last30days}/scripts/last30days.py" "$ARGUMENTS" --ph-slugs=slug1,slug2,slug3 --emit=compact 2>&1
+```
+
+Otherwise, run without it:
 ```bash
 python3 "${CLAUDE_PLUGIN_ROOT:-$HOME/.claude/skills/last30days}/scripts/last30days.py" "$ARGUMENTS" --emit=compact 2>&1
 ```
@@ -72,9 +128,14 @@ The script will automatically:
 
 ## STEP 2: DO WEBSEARCH WHILE SCRIPT RUNS
 
+**IMPORTANT:** If the user specified `--search=SOURCES` and did NOT include `web` in the list, SKIP this step entirely. Only do WebSearch when:
+- The user explicitly included `web` in `--search` (e.g. `--search reddit,web`)
+- The user did NOT use `--search` at all (default behavior)
+- The script output contains "### WEBSEARCH REQUIRED ###"
+
 The script auto-detects sources (Bird CLI, API keys, etc). While waiting for it, do WebSearch.
 
-For **ALL modes**, do WebSearch to supplement (or provide all data in web-only mode).
+For **ALL default modes** (when `--search` is not specified), do WebSearch to supplement (or provide all data in web-only mode).
 
 Choose search queries based on QUERY_TYPE:
 
@@ -252,12 +313,15 @@ KEY PATTERNS from the research:
 ✅ All agents reported back!
 ├─ 🟠 Reddit: {N} threads │ {N} upvotes │ {N} comments
 ├─ 🔵 X: {N} posts │ {N} likes │ {N} reposts (via Bird/xAI)
+├─ 🟡 Hacker News: {N} stories │ {N} points │ {N} comments
+├─ 🔴 YouTube: {N} videos │ {N} views │ {N} comments
+├─ 🟣 Product Hunt: {N} products │ {N} upvotes │ {N} comments
 ├─ 🌐 Web: {N} pages (supplementary)
 └─ 🗣️ Top voices: @{handle1} ({N} likes), @{handle2} │ r/{sub1}, r/{sub2}
 ---
 ```
 
-If Reddit returned 0 threads, write: "├─ 🟠 Reddit: 0 threads (no results this cycle)"
+Only include lines for sources that were actually searched. If a source returned 0 results, write e.g.: "├─ 🟠 Reddit: 0 threads (no results this cycle)"
 NEVER use plain text dashes (-) or pipe (|). ALWAYS use ├─ └─ │ and the emoji.
 
 **SELF-CHECK before displaying**: Re-read your "What I learned" section. Does it match what the research ACTUALLY says? If you catch yourself projecting your own knowledge instead of the research, rewrite it.
