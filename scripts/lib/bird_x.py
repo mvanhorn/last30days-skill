@@ -31,6 +31,29 @@ def _log(msg: str):
     sys.stderr.flush()
 
 
+def _node_env() -> Optional[Dict[str, str]]:
+    """Build environment dict for Node subprocesses.
+
+    Forwards AUTH_TOKEN / CT0 from the last30days config into the subprocess
+    so that resolveCredentials() in cookies.js finds them and skips browser
+    cookie extraction (which triggers macOS Keychain prompts).
+
+    Returns None (inherit parent env) when no config tokens are set.
+    """
+    from . import env as _env
+    config = _env.get_config()
+    auth_token = config.get('AUTH_TOKEN')
+    ct0 = config.get('CT0')
+    if not auth_token and not ct0:
+        return None
+    child_env = os.environ.copy()
+    if auth_token:
+        child_env.setdefault('AUTH_TOKEN', auth_token)
+    if ct0:
+        child_env.setdefault('CT0', ct0)
+    return child_env
+
+
 def _extract_core_subject(topic: str) -> str:
     """Extract core subject from verbose query for X search.
 
@@ -112,6 +135,7 @@ def is_bird_authenticated() -> Optional[str]:
             capture_output=True,
             text=True,
             timeout=15,
+            env=_node_env(),
         )
         if result.returncode == 0 and result.stdout.strip():
             return result.stdout.strip().split('\n')[0]
@@ -187,6 +211,7 @@ def _run_bird_search(query: str, count: int, timeout: int) -> Dict[str, Any]:
             stderr=subprocess.PIPE,
             text=True,
             preexec_fn=preexec,
+            env=_node_env(),
         )
 
         # Register for cleanup tracking (if available)
@@ -313,6 +338,7 @@ def search_handles(
                 stderr=subprocess.PIPE,
                 text=True,
                 preexec_fn=preexec,
+                env=_node_env(),
             )
 
             try:

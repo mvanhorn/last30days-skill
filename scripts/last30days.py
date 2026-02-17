@@ -940,7 +940,7 @@ def main():
     from_date, to_date = dates.get_date_range(args.days)
 
     # Check what keys are missing for promo messaging
-    missing_keys = env.get_missing_keys(config)
+    missing_keys = env.get_missing_keys(config, x_source_status=x_source_status)
 
     # Show NUX / promo for missing keys BEFORE research
     if missing_keys != 'none':

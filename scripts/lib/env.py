@@ -60,6 +60,9 @@ def get_config() -> Dict[str, Any]:
         ('OPENAI_MODEL_PIN', None),
         ('XAI_MODEL_POLICY', 'latest'),
         ('XAI_MODEL_PIN', None),
+        # X/Twitter cookie auth (skips browser cookie extraction / Keychain prompts)
+        ('AUTH_TOKEN', None),
+        ('CT0', None),
     ]
 
     config = {}
@@ -116,8 +119,14 @@ def get_web_search_source(config: Dict[str, Any]) -> Optional[str]:
     return None
 
 
-def get_missing_keys(config: Dict[str, Any]) -> str:
+def get_missing_keys(config: Dict[str, Any], x_source_status: Optional[Dict[str, Any]] = None) -> str:
     """Determine which sources are missing (accounting for Bird).
+
+    Args:
+        config: Configuration dict from get_config().
+        x_source_status: Pre-fetched result from get_x_source_status() to avoid
+            redundant bird-search --whoami calls (each may trigger a Keychain
+            prompt on macOS).
 
     Returns: 'all', 'both', 'reddit', 'x', 'web', or 'none'
     """
@@ -125,9 +134,11 @@ def get_missing_keys(config: Dict[str, Any]) -> str:
     has_xai = bool(config.get('XAI_API_KEY'))
     has_web = has_web_search_keys(config)
 
-    # Check if Bird provides X access (import here to avoid circular dependency)
-    from . import bird_x
-    has_bird = bird_x.is_bird_installed() and bird_x.is_bird_authenticated()
+    if x_source_status is not None:
+        has_bird = x_source_status.get("bird_authenticated", False)
+    else:
+        from . import bird_x
+        has_bird = bird_x.is_bird_installed() and bird_x.is_bird_authenticated()
 
     has_x = has_xai or has_bird
 
