@@ -1,7 +1,7 @@
 ---
 name: last30days
 version: "2.1"
-description: "Research a topic from the last 30 days. Also triggered by 'last30'. Sources: Reddit, X, YouTube, web. Become an expert and write copy-paste-ready prompts."
+description: "Use ONLY when the user wants last-30-days research or invokes 'last30'. Sources: Reddit, X, YouTube, web. Not for general knowledge or long-term history."
 argument-hint: 'last30 AI video tools, last30 best project management tools'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
 ---
@@ -9,6 +9,16 @@ allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
 # last30days v2.1: Research Any Topic from the Last 30 Days
 
 Research ANY topic across Reddit, X, YouTube, and the web. Surface what people are actually discussing, recommending, and debating right now.
+
+## Triggering & Boundaries (Best‑Practice)
+- **Trigger** only when the user explicitly wants “last 30 days / recent / current / trending” research or invokes **last30**.
+- **Do not trigger** for evergreen/general knowledge, historical analysis, or when the user wants your own expertise.
+- If unclear, ask a single clarifying question (“Do you want a last‑30‑days research sweep?”) before running tools.
+
+## Setup / Prereqs
+- Ensure `scripts/last30days.py` exists in the skill root.
+- If YouTube is desired, ensure `yt-dlp` is installed.
+- If X search fails, use cookie auth (AUTH_TOKEN/CT0) or optional XAI key as documented in README.
 
 ## CRITICAL: Parse User Intent
 
