@@ -36,6 +36,12 @@ Instagram Reels is now the 8th signal source. TikTok and Instagram both run on S
 
 ## Installation
 
+### Gemini CLI
+```bash
+gemini extensions install https://github.com/mvanhorn/last30days-skill.git
+```
+
+### Claude Code / Codex
 ```bash
 # Clone the repo
 git clone https://github.com/mvanhorn/last30days-skill.git ~/.claude/skills/last30days

@@ -1,0 +1,67 @@
+{
+  "name": "last30days-skill",
+  "version": "2.9.1",
+  "description": "Research a topic from the last 30 days. Also triggered by 'last30'. Sources: Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, web. Become an expert and write copy-paste-ready prompts.",
+  "settings": {
+    "GEMINI_EXTENSION_DIR": {
+      "type": "string",
+      "description": "Extension installation directory",
+      "default": "${extensionPath}",
+      "envVar": "GEMINI_EXTENSION_DIR"
+    },
+    "SCRAPECREATORS_API_KEY": {
+      "type": "string",
+      "description": "ScrapeCreators API Key for Reddit/TikTok/Instagram search",
+      "sensitive": true,
+      "envVar": "SCRAPECREATORS_API_KEY"
+    },
+    "OPENAI_API_KEY": {
+      "type": "string",
+      "description": "OpenAI API Key (optional fallback)",
+      "sensitive": true,
+      "envVar": "OPENAI_API_KEY"
+    },
+    "XAI_API_KEY": {
+      "type": "string",
+      "description": "xAI API Key for X search (optional)",
+      "sensitive": true,
+      "envVar": "XAI_API_KEY"
+    },
+    "OPENROUTER_API_KEY": {
+      "type": "string",
+      "description": "OpenRouter API Key (optional)",
+      "sensitive": true,
+      "envVar": "OPENROUTER_API_KEY"
+    },
+    "PARALLEL_API_KEY": {
+      "type": "string",
+      "description": "Parallel AI API Key (optional)",
+      "sensitive": true,
+      "envVar": "PARALLEL_API_KEY"
+    },
+    "BRAVE_API_KEY": {
+      "type": "string",
+      "description": "Brave Search API Key (optional)",
+      "sensitive": true,
+      "envVar": "BRAVE_API_KEY"
+    },
+    "APIFY_API_TOKEN": {
+      "type": "string",
+      "description": "Apify API Token (optional)",
+      "sensitive": true,
+      "envVar": "APIFY_API_TOKEN"
+    },
+    "AUTH_TOKEN": {
+      "type": "string",
+      "description": "Twitter AUTH_TOKEN (optional)",
+      "sensitive": true,
+      "envVar": "AUTH_TOKEN"
+    },
+    "CT0": {
+      "type": "string",
+      "description": "Twitter CT0 (optional)",
+      "sensitive": true,
+      "envVar": "CT0"
+    }
+  }
+}

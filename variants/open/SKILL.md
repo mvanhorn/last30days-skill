@@ -3,7 +3,7 @@ name: last30days
 version: "2.1-open"
 description: "Research topics, manage watchlists, get briefings, query history. Also triggered by 'last30'. Sources: Reddit, X, YouTube, web."
 argument-hint: 'last30 AI video tools, last30 watch my competitor every week, last30 give me my briefing'
-allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
+allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch, run_shell_command, read_file, write_file, ask_user, google_web_search
 ---
 
 # last30days (open variant): Research + Watchlist + Briefings
@@ -27,6 +27,9 @@ Parse the user's first argument to determine the mode:
 for dir in \
   "." \
   "${CLAUDE_PLUGIN_ROOT:-}" \
+  "${GEMINI_EXTENSION_DIR:-}" \
+  "$HOME/.gemini/extensions/last30days-skill" \
+  "$HOME/.gemini/extensions/last30days" \
   "$HOME/.claude/skills/last30days" \
   "$HOME/.agents/skills/last30days" \
   "$HOME/.codex/skills/last30days"; do
