@@ -1,33 +1,6 @@
 ---
 name: last30days
-version: "2.8"
 description: "Research a topic from the last 30 days. Also triggered by 'last30'. Sources: Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, web. Become an expert and write copy-paste-ready prompts."
-argument-hint: 'last30 AI video tools, last30 best project management tools'
-allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
-homepage: https://github.com/mvanhorn/last30days-skill
-user-invocable: true
-metadata:
-  clawdbot:
-    emoji: "📰"
-    requires:
-      env:
-        - OPENAI_API_KEY
-      bins:
-        - node
-        - python3
-    primaryEnv: OPENAI_API_KEY
-    files:
-      - "scripts/*"
-    homepage: https://github.com/mvanhorn/last30days-skill
-    tags:
-      - research
-      - reddit
-      - x
-      - youtube
-      - tiktok
-      - hackernews
-      - trends
-      - prompts
 ---
 
 # last30days v2.8: Research Any Topic from the Last 30 Days

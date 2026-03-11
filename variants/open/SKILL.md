@@ -1,9 +1,10 @@
 ---
-name: open
-version: "2.1-open"
+name: "open"
 description: "Research topics, manage watchlists, get briefings, query history. Also triggered by 'last30'. Sources: Reddit, X, YouTube, web."
-argument-hint: 'last30 AI video tools, last30 watch my competitor every week, last30 give me my briefing'
-allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
+allowed-tools: "Bash, Read, Write, AskUserQuestion, WebSearch"
+metadata:
+  version: "2.1-open"
+  argument-hint: "last30 AI video tools, last30 watch my competitor every week, last30 give me my briefing"
 ---
 
 # last30days (open variant): Research + Watchlist + Briefings
