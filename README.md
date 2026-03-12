@@ -64,7 +64,7 @@ gemini extensions install https://github.com/mvanhorn/last30days-skill.git
 
 ### Codex
 ```
-Fetch and follow instructions from `https://raw.githubusercontent.com/mvanhorn/last30days-skill/main/.codex/INSTALL.md`
+Fetch and follow instructions from https://raw.githubusercontent.com/mvanhorn/last30days-skill/main/.codex/INSTALL.md
 ```
 After restart, invoke with `$last30days` or from `/skills`. Full guide: `docs/README.codex.md`
 
