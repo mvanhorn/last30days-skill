@@ -62,6 +62,12 @@ Instagram Reels is now the 8th signal source. TikTok and Instagram both run on S
 gemini extensions install https://github.com/mvanhorn/last30days-skill.git
 ```
 
+### Codex
+```
+Fetch and follow instructions from https://raw.githubusercontent.com/mvanhorn/last30days-skill/main/.codex/INSTALL.md
+```
+After restart, invoke with `$last30days` or from `/skills`. Full guide: `docs/README.codex.md`
+
 ### Manual Install (Claude Code / Codex)
 ```bash
 # Clone the repo
@@ -103,13 +109,6 @@ node ~/.claude/skills/last30days/scripts/lib/vendor/bird-search/bird-search.mjs 
 ```
 
 **Requirements:** Node.js 22+ (for the vendored Twitter GraphQL client).
-
-### Codex CLI
-
-This skill also works in OpenAI Codex CLI.
-Tell Codex: `Fetch and follow instructions from https://raw.githubusercontent.com/mvanhorn/last30days-skill/main/.codex/INSTALL.md`
-After restart, invoke it with `$last30days` or from `/skills`.
-Manual install, env vars, troubleshooting, updates, and uninstalling live in `docs/README.codex.md`.
 
 ### Open Variant (Watchlist + Briefings)  - For Always-On Bots
 
