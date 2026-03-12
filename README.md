@@ -106,13 +106,10 @@ node ~/.claude/skills/last30days/scripts/lib/vendor/bird-search/bird-search.mjs 
 
 ### Codex CLI
 
-This skill also works in OpenAI Codex CLI. Install to the Codex skills directory instead:
-
-```bash
-git clone https://github.com/mvanhorn/last30days-skill.git ~/.agents/skills/last30days
-```
-
-Same SKILL.md, same Python engine, same scripts. The `agents/openai.yaml` provides Codex-specific discovery metadata. Invoke with `$last30days` or through the `/skills` menu.
+This skill also works in OpenAI Codex CLI.
+Tell Codex: `Fetch and follow instructions from https://raw.githubusercontent.com/mvanhorn/last30days-skill/main/.codex/INSTALL.md`
+After restart, invoke it with `$last30days` or from `/skills`.
+Manual install, env vars, troubleshooting, updates, and uninstalling live in `docs/README.codex.md`.
 
 ### Open Variant (Watchlist + Briefings)  - For Always-On Bots
 
