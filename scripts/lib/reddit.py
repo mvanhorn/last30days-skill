@@ -102,16 +102,66 @@ def _extract_core_subject(topic: str) -> str:
     return result.rstrip('?!.')
 
 
+# Pre-compiled pattern for comparison intent detection
+_COMPARISON_RE = re.compile(
+    r'\bvs\.?\b|\bversus\b|\bcompared?\s+to\b|\bcomparison\b|\bbetter\s+than\b'
+)
+
+
+def _infer_query_intent(topic: str) -> str:
+    """Classify a search topic into an intent category.
+
+    Categories:
+        product    - buying, reviewing, or recommending a product/service
+        comparison - comparing two or more products/options
+        opinion    - seeking community opinion or experience
+        how_to     - procedural/instructional query
+        factual    - news, events, or factual lookup
+
+    Returns one of the above category strings.
+    """
+    text = topic.lower().strip()
+
+    # Comparison signals: "vs", "versus", "compared to", etc.
+    if _COMPARISON_RE.search(text):
+        return "comparison"
+
+    # Product signals: "best", "budget", "buy", "recommend", "review", price-like
+    product_words = {
+        'best', 'budget', 'buy', 'buying', 'purchase', 'recommend',
+        'recommendation', 'recommendations', 'review', 'reviews',
+        'worth', 'affordable', 'cheap', 'expensive', 'price',
+        'upgrade', 'alternative', 'alternatives',
+    }
+    words = set(re.findall(r'\b\w+\b', text))
+    if words & product_words:
+        return "product"
+
+    # How-to signals
+    if text.startswith(('how to ', 'how do ', 'how can ', 'how should ')):
+        return "how_to"
+
+    # Opinion signals ('worth' deliberately omitted -- caught by product_words above)
+    opinion_words = {
+        'think', 'opinion', 'opinions', 'thoughts', 'experience',
+        'experiences', 'feel', 'feeling',
+    }
+    if words & opinion_words:
+        return "opinion"
+
+    return "factual"
+
+
 def expand_reddit_queries(topic: str, depth: str) -> List[str]:
     """Generate multiple Reddit search queries from a topic.
 
     Uses local logic (no LLM call needed):
     1. Extract core subject (strip noise words)
     2. Include original topic if different from core
-    3. For default/deep: add casual/review variant
-    4. For deep: add problem/issues variant
+    3. Intent-aware variants (product, comparison, opinion, how_to)
+    4. Depth-gated problem/issues variant
 
-    Returns 1-4 query strings depending on depth.
+    Returns 1-5 query strings depending on depth and intent.
     """
     core = _extract_core_subject(topic)
     queries = [core]
@@ -121,7 +171,20 @@ def expand_reddit_queries(topic: str, depth: str) -> List[str]:
     if core.lower() != original_clean.lower() and len(original_clean.split()) <= 8:
         queries.append(original_clean)
 
-    if depth in ("default", "deep"):
+    qtype = _infer_query_intent(topic)
+
+    # Product queries: always include review-oriented variant (all depths)
+    if qtype == "product":
+        queries.append(f"{core} review OR recommendation OR best")
+
+    # Product/comparison: add comparison-oriented variant
+    if qtype in ("product", "comparison"):
+        queries.append(f"{core} worth it OR vs OR compared")
+
+    # Review/opinion variant: always for product/opinion, depth-gated for others
+    if qtype in ("product", "opinion"):
+        queries.append(f"{core} worth it OR thoughts OR review")
+    elif depth in ("default", "deep"):
         queries.append(f"{core} worth it OR thoughts OR review")
 
     if depth == "deep":

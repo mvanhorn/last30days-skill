@@ -39,6 +39,50 @@ class TestExtractCoreSubject(unittest.TestCase):
         self.assertEqual(result, "react server components")
 
 
+class TestInferQueryIntent(unittest.TestCase):
+    """Tests for _infer_query_intent()."""
+
+    def test_product_best_budget(self):
+        result = reddit._infer_query_intent("best budget noise cancelling headphones 2026")
+        self.assertEqual(result, "product")
+
+    def test_product_recommend(self):
+        result = reddit._infer_query_intent("recommend a good laptop for coding")
+        self.assertEqual(result, "product")
+
+    def test_product_review(self):
+        result = reddit._infer_query_intent("Sony WH-1000XM5 review")
+        self.assertEqual(result, "product")
+
+    def test_product_alternative(self):
+        result = reddit._infer_query_intent("cheap alternative to AirPods Pro")
+        self.assertEqual(result, "product")
+
+    def test_comparison_vs(self):
+        result = reddit._infer_query_intent("iPhone 16 vs Pixel 9")
+        self.assertEqual(result, "comparison")
+
+    def test_comparison_versus(self):
+        result = reddit._infer_query_intent("React versus Vue for new projects")
+        self.assertEqual(result, "comparison")
+
+    def test_comparison_compared_to(self):
+        result = reddit._infer_query_intent("M4 MacBook compared to M3")
+        self.assertEqual(result, "comparison")
+
+    def test_how_to(self):
+        result = reddit._infer_query_intent("how to set up a home server")
+        self.assertEqual(result, "how_to")
+
+    def test_opinion(self):
+        result = reddit._infer_query_intent("what do you think about Rust")
+        self.assertEqual(result, "opinion")
+
+    def test_factual_default(self):
+        result = reddit._infer_query_intent("Claude 4 release date")
+        self.assertEqual(result, "factual")
+
+
 class TestExpandRedditQueries(unittest.TestCase):
     """Tests for expand_reddit_queries()."""
 
@@ -58,6 +102,48 @@ class TestExpandRedditQueries(unittest.TestCase):
         quick = reddit.expand_reddit_queries("cursor IDE", "quick")
         deep = reddit.expand_reddit_queries("cursor IDE", "deep")
         self.assertGreater(len(deep), len(quick))
+
+    def test_product_always_includes_review_variant(self):
+        """Product queries include review-oriented variant at all depths."""
+        for depth in ("quick", "default", "deep"):
+            queries = reddit.expand_reddit_queries(
+                "best budget noise cancelling headphones 2026", depth
+            )
+            has_review = any(
+                "review" in q or "recommendation" in q for q in queries
+            )
+            self.assertTrue(
+                has_review,
+                f"Product query at depth={depth} missing review variant: {queries}"
+            )
+
+    def test_product_quick_includes_opinion_variant(self):
+        """Product queries include 'worth it OR thoughts' even at quick depth."""
+        queries = reddit.expand_reddit_queries(
+            "best budget noise cancelling headphones 2026", "quick"
+        )
+        has_opinion = any("worth it" in q or "thoughts" in q for q in queries)
+        self.assertTrue(
+            has_opinion,
+            f"Product query at quick depth missing opinion variant: {queries}"
+        )
+
+    def test_comparison_includes_vs_variant(self):
+        """Comparison queries include 'vs OR compared' variant."""
+        queries = reddit.expand_reddit_queries("iPhone 16 vs Pixel 9", "default")
+        has_vs = any("vs" in q or "compared" in q for q in queries)
+        self.assertTrue(
+            has_vs,
+            f"Comparison query missing vs variant: {queries}"
+        )
+
+    def test_factual_query_minimal_variants(self):
+        """Factual queries don't get product/comparison variants."""
+        queries = reddit.expand_reddit_queries("Claude 4 release date", "quick")
+        has_review = any("review" in q or "recommendation" in q for q in queries)
+        has_vs = any("vs OR compared" in q for q in queries)
+        self.assertFalse(has_review, f"Factual query got review variant: {queries}")
+        self.assertFalse(has_vs, f"Factual query got vs variant: {queries}")
 
 
 class TestDiscoverSubreddits(unittest.TestCase):
