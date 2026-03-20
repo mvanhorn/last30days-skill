@@ -1,9 +1,80 @@
 """Near-duplicate detection for last30days skill."""
 
 import re
-from typing import List, Set, Tuple, Union
+from typing import List, Optional, Set, Tuple, Union
+from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 
 from . import schema
+
+
+# Tracking / analytics query parameters to strip during canonicalization
+_TRACKING_PARAMS = frozenset({
+    # Google Analytics / UTM
+    'utm_source', 'utm_medium', 'utm_campaign', 'utm_term', 'utm_content',
+    'utm_id', 'utm_source_platform', 'utm_creative_format',
+    # Facebook / Meta
+    'fbclid', 'fb_action_ids', 'fb_action_types', 'fb_ref', 'fb_source',
+    # Twitter / X
+    'ref_src', 'ref_url',
+    # Reddit
+    'share_id', 'ref_source',
+    # General trackers
+    'gclid', 'gclsrc', 'dclid', 'msclkid', 'mc_cid', 'mc_eid',
+    'igshid', '_ga', '_gl', 'yclid', 'twclid',
+    # Misc
+    'gi',
+})
+
+
+def canonicalize_url(url: Optional[str]) -> Optional[str]:
+    """Canonicalize a URL for deduplication.
+
+    - Lowercases scheme and host
+    - Strips www. prefix
+    - Removes tracking/analytics query parameters
+    - Removes trailing slashes from path
+    - Removes fragments
+
+    Returns None for empty/invalid URLs.
+    """
+    if not url or not url.strip():
+        return None
+
+    try:
+        parsed = urlparse(url.strip())
+    except ValueError:
+        return None
+
+    if not parsed.scheme or not parsed.netloc:
+        return None
+
+    scheme = parsed.scheme.lower()
+    if scheme not in ('http', 'https'):
+        return None
+    host = parsed.hostname or ''
+    host = host.lower()
+    if host.startswith('www.'):
+        host = host[4:]
+
+    # Preserve port if non-standard
+    port = parsed.port
+    netloc = host
+    if port and not (scheme == 'http' and port == 80) and not (scheme == 'https' and port == 443):
+        netloc = f"{host}:{port}"
+
+    # Strip trailing slashes from path (but keep "/" for root)
+    path = parsed.path.rstrip('/') or '/'
+
+    # Filter out tracking params, keep the rest sorted for consistency
+    query_params = parse_qs(parsed.query, keep_blank_values=True)
+    clean_params = {
+        k: v for k, v in query_params.items()
+        if k.lower() not in _TRACKING_PARAMS
+    }
+    query = urlencode(sorted(clean_params.items()), doseq=True) if clean_params else ''
+
+    # Drop fragment entirely
+    return urlunparse((scheme, netloc, path, '', query, ''))
 
 # Stopwords for token-based Jaccard (cross-source linking)
 STOPWORDS = frozenset({
@@ -67,6 +138,14 @@ def get_item_text(item: AnyItem) -> str:
         return item.title
     else:
         return item.text
+
+
+def _get_item_url(item: AnyItem) -> Optional[str]:
+    """Get the canonical URL from any item type."""
+    url = getattr(item, 'url', None)
+    # HackerNews items have both url (article) and hn_url (discussion)
+    # Use the article URL for cross-source matching
+    return canonicalize_url(url)
 
 
 def _get_cross_source_text(item: AnyItem) -> str:
@@ -256,9 +335,10 @@ def cross_source_link(
 ) -> None:
     """Annotate items with cross-source references.
 
-    Compares items across different source types using hybrid similarity
-    (max of char-trigram Jaccard and token Jaccard). When similarity exceeds
-    threshold, adds bidirectional cross_refs with the related item's ID.
+    First checks URL identity (via canonicalization) for exact matches,
+    then falls back to hybrid text similarity (max of char-trigram Jaccard
+    and token Jaccard). When similarity exceeds threshold, adds
+    bidirectional cross_refs with the related item's ID.
     Modifies items in-place.
 
     Args:
@@ -272,8 +352,16 @@ def cross_source_link(
     if len(all_items) <= 1:
         return
 
-    # Pre-compute cross-source text for each item
+    # Pre-compute canonical URLs and cross-source text for each item
+    urls = [_get_item_url(item) for item in all_items]
     texts = [_get_cross_source_text(item) for item in all_items]
+
+    def _add_xref(i: int, j: int) -> None:
+        """Add bidirectional cross-reference between items i and j."""
+        if all_items[j].id not in all_items[i].cross_refs:
+            all_items[i].cross_refs.append(all_items[j].id)
+        if all_items[i].id not in all_items[j].cross_refs:
+            all_items[j].cross_refs.append(all_items[i].id)
 
     for i in range(len(all_items)):
         for j in range(i + 1, len(all_items)):
@@ -281,10 +369,12 @@ def cross_source_link(
             if type(all_items[i]) is type(all_items[j]):
                 continue
 
+            # Fast path: exact URL match after canonicalization
+            if urls[i] and urls[j] and urls[i] == urls[j]:
+                _add_xref(i, j)
+                continue
+
+            # Slow path: text similarity
             similarity = _hybrid_similarity(texts[i], texts[j])
             if similarity >= threshold:
-                # Bidirectional cross-reference
-                if all_items[j].id not in all_items[i].cross_refs:
-                    all_items[i].cross_refs.append(all_items[j].id)
-                if all_items[i].id not in all_items[j].cross_refs:
-                    all_items[j].cross_refs.append(all_items[i].id)
+                _add_xref(i, j)
