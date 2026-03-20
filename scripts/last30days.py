@@ -1938,87 +1938,13 @@ def main():
         topic_id = topic_row["id"]
         run_id = store_mod.record_run(topic_id, source_mode=mode, status="completed")
 
-        findings = []
-        for item in deduped_reddit:
-            findings.append({
-                "source": "reddit",
-                "url": item.url,
-                "title": item.title,
-                "author": item.subreddit,
-                "content": item.title,
-                "engagement_score": item.engagement.score if item.engagement else 0,
-                "relevance_score": item.relevance,
-            })
-        for item in deduped_x:
-            findings.append({
-                "source": "x",
-                "url": item.url,
-                "title": item.text[:100],
-                "author": item.author_handle,
-                "content": item.text,
-                "engagement_score": item.engagement.likes if item.engagement else 0,
-                "relevance_score": item.relevance,
-            })
-        for item in deduped_youtube:
-            findings.append({
-                "source": "youtube",
-                "url": item.url,
-                "title": item.title,
-                "author": item.channel_name,
-                "content": item.transcript_snippet[:500] if item.transcript_snippet else item.title,
-                "engagement_score": item.engagement.views if item.engagement and item.engagement.views else 0,
-                "relevance_score": item.relevance,
-            })
-        for item in deduped_hn:
-            findings.append({
-                "source": "hackernews",
-                "url": item.hn_url,
-                "title": item.title,
-                "author": item.author,
-                "content": item.title,
-                "engagement_score": item.engagement.score if item.engagement else 0,
-                "relevance_score": item.relevance,
-            })
-        for item in deduped_bsky:
-            findings.append({
-                "source": "bluesky",
-                "url": item.url,
-                "title": item.text[:100],
-                "author": item.author_handle,
-                "content": item.text,
-                "engagement_score": item.engagement.likes if item.engagement else 0,
-                "relevance_score": item.relevance,
-            })
-        for item in deduped_pm:
-            findings.append({
-                "source": "polymarket",
-                "url": item.url,
-                "title": item.question,
-                "author": "polymarket",
-                "content": item.title,
-                "engagement_score": item.engagement.volume if item.engagement and item.engagement.volume else 0,
-                "relevance_score": item.relevance,
-            })
-        for item in deduped_ig:
-            findings.append({
-                "source": "instagram",
-                "url": item.url,
-                "title": item.text[:100],
-                "author": item.author_name,
-                "content": item.caption_snippet[:500] if item.caption_snippet else item.text,
-                "engagement_score": item.engagement.views if item.engagement and item.engagement.views else 0,
-                "relevance_score": item.relevance,
-            })
-        for item in deduped_web:
-            findings.append({
-                "source": "web",
-                "url": item.url,
-                "title": item.title,
-                "author": item.source_domain,
-                "content": item.snippet,
-                "engagement_score": 0,
-                "relevance_score": item.relevance,
-            })
+        all_deduped = (
+            list(deduped_reddit) + list(deduped_x) + list(deduped_youtube)
+            + list(deduped_tiktok) + list(deduped_hn) + list(deduped_bsky)
+            + list(deduped_ts) + list(deduped_pm) + list(deduped_ig)
+            + list(deduped_web)
+        )
+        findings = [_item_to_finding(item) for item in all_deduped]
 
         counts = store_mod.store_findings(run_id, topic_id, findings)
         store_mod.update_run(
@@ -2031,6 +1957,120 @@ def main():
             f"[store] Saved {counts['new']} new, {counts['updated']} updated findings\n"
         )
         sys.stderr.flush()
+
+
+def _item_to_finding(item) -> dict:
+    """Convert any schema item to a flat finding dict for SQLite storage."""
+    if isinstance(item, schema.RedditItem):
+        return {
+            "source": "reddit",
+            "url": item.url,
+            "title": item.title,
+            "author": item.subreddit,
+            "content": item.title,
+            "engagement_score": item.engagement.score if item.engagement else 0,
+            "relevance_score": item.relevance,
+        }
+    elif isinstance(item, schema.XItem):
+        return {
+            "source": "x",
+            "url": item.url,
+            "title": item.text[:100],
+            "author": item.author_handle,
+            "content": item.text,
+            "engagement_score": item.engagement.likes if item.engagement else 0,
+            "relevance_score": item.relevance,
+        }
+    elif isinstance(item, schema.YouTubeItem):
+        return {
+            "source": "youtube",
+            "url": item.url,
+            "title": item.title,
+            "author": item.channel_name,
+            "content": item.transcript_snippet[:500] if item.transcript_snippet else item.title,
+            "engagement_score": item.engagement.views if item.engagement and item.engagement.views else 0,
+            "relevance_score": item.relevance,
+        }
+    elif isinstance(item, schema.HackerNewsItem):
+        return {
+            "source": "hackernews",
+            "url": item.hn_url,
+            "title": item.title,
+            "author": item.author,
+            "content": item.title,
+            "engagement_score": item.engagement.score if item.engagement else 0,
+            "relevance_score": item.relevance,
+        }
+    elif isinstance(item, schema.BlueskyItem):
+        return {
+            "source": "bluesky",
+            "url": item.url,
+            "title": item.text[:100],
+            "author": item.author_handle,
+            "content": item.text,
+            "engagement_score": item.engagement.likes if item.engagement else 0,
+            "relevance_score": item.relevance,
+        }
+    elif isinstance(item, schema.TruthSocialItem):
+        return {
+            "source": "truthsocial",
+            "url": item.url,
+            "title": item.text[:100],
+            "author": item.author_handle,
+            "content": item.text,
+            "engagement_score": item.engagement.likes if item.engagement else 0,
+            "relevance_score": item.relevance,
+        }
+    elif isinstance(item, schema.PolymarketItem):
+        return {
+            "source": "polymarket",
+            "url": item.url,
+            "title": item.question,
+            "author": "polymarket",
+            "content": item.title,
+            "engagement_score": item.engagement.volume if item.engagement and item.engagement.volume else 0,
+            "relevance_score": item.relevance,
+        }
+    elif isinstance(item, schema.TikTokItem):
+        return {
+            "source": "tiktok",
+            "url": item.url,
+            "title": item.text[:100],
+            "author": item.author_name,
+            "content": item.caption_snippet[:500] if item.caption_snippet else item.text,
+            "engagement_score": item.engagement.views if item.engagement and item.engagement.views else 0,
+            "relevance_score": item.relevance,
+        }
+    elif isinstance(item, schema.InstagramItem):
+        return {
+            "source": "instagram",
+            "url": item.url,
+            "title": item.text[:100],
+            "author": item.author_name,
+            "content": item.caption_snippet[:500] if item.caption_snippet else item.text,
+            "engagement_score": item.engagement.views if item.engagement and item.engagement.views else 0,
+            "relevance_score": item.relevance,
+        }
+    elif isinstance(item, schema.WebSearchItem):
+        return {
+            "source": "web",
+            "url": item.url,
+            "title": item.title,
+            "author": item.source_domain,
+            "content": item.snippet,
+            "engagement_score": 0,
+            "relevance_score": item.relevance,
+        }
+    else:
+        return {
+            "source": "unknown",
+            "url": getattr(item, 'url', ''),
+            "title": getattr(item, 'title', str(item)[:100]),
+            "author": "",
+            "content": str(item)[:500],
+            "engagement_score": 0,
+            "relevance_score": getattr(item, 'relevance', 0),
+        }
 
 
 def output_result(

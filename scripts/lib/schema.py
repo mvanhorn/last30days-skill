@@ -30,29 +30,7 @@ class Engagement:
     liquidity: Optional[float] = None
 
     def to_dict(self) -> Dict[str, Any]:
-        d = {}
-        if self.score is not None:
-            d['score'] = self.score
-        if self.num_comments is not None:
-            d['num_comments'] = self.num_comments
-        if self.upvote_ratio is not None:
-            d['upvote_ratio'] = self.upvote_ratio
-        if self.likes is not None:
-            d['likes'] = self.likes
-        if self.reposts is not None:
-            d['reposts'] = self.reposts
-        if self.replies is not None:
-            d['replies'] = self.replies
-        if self.quotes is not None:
-            d['quotes'] = self.quotes
-        if self.views is not None:
-            d['views'] = self.views
-        if self.shares is not None:
-            d['shares'] = self.shares
-        if self.volume is not None:
-            d['volume'] = self.volume
-        if self.liquidity is not None:
-            d['liquidity'] = self.liquidity
+        d = {k: v for k, v in asdict(self).items() if v is not None}
         return d if d else None
 
 
