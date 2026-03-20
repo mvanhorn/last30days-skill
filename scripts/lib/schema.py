@@ -473,6 +473,31 @@ class PolymarketItem:
 
 
 @dataclass
+@dataclass
+class SourceHealth:
+    """Per-source health metrics from a research run."""
+    source: str               # e.g. "reddit", "x", "youtube"
+    status: str = "ok"        # "ok", "error", "timeout", "skipped"
+    item_count: int = 0
+    duration_ms: int = 0      # wall-clock milliseconds
+    error: Optional[str] = None
+    backend: Optional[str] = None  # e.g. "bird", "xai", "scrapecreators"
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = {
+            'source': self.source,
+            'status': self.status,
+            'item_count': self.item_count,
+            'duration_ms': self.duration_ms,
+        }
+        if self.error:
+            d['error'] = self.error
+        if self.backend:
+            d['backend'] = self.backend
+        return d
+
+
+@dataclass
 class Report:
     """Full research report."""
     topic: str
@@ -508,6 +533,8 @@ class Report:
     polymarket_error: Optional[str] = None
     # Handle resolution
     resolved_x_handle: Optional[str] = None
+    # Source health tracking
+    source_health: List[SourceHealth] = field(default_factory=list)
     # Cache info
     from_cache: bool = False
     cache_age_hours: Optional[float] = None
@@ -537,6 +564,8 @@ class Report:
             'prompt_pack': self.prompt_pack,
             'context_snippet_md': self.context_snippet_md,
         }
+        if self.source_health:
+            d['source_health'] = [sh.to_dict() for sh in self.source_health]
         if self.resolved_x_handle:
             d['resolved_x_handle'] = self.resolved_x_handle
         if self.reddit_error:
@@ -814,6 +843,16 @@ class Report:
             hackernews_error=data.get('hackernews_error'),
             truthsocial_error=data.get('truthsocial_error'),
             polymarket_error=data.get('polymarket_error'),
+            source_health=[
+                SourceHealth(
+                    source=sh['source'],
+                    status=sh.get('status', 'ok'),
+                    item_count=sh.get('item_count', 0),
+                    duration_ms=sh.get('duration_ms', 0),
+                    error=sh.get('error'),
+                    backend=sh.get('backend'),
+                ) for sh in data.get('source_health', [])
+            ],
             resolved_x_handle=data.get('resolved_x_handle'),
             from_cache=data.get('from_cache', False),
             cache_age_hours=data.get('cache_age_hours'),

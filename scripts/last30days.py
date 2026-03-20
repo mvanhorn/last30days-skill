@@ -23,6 +23,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
@@ -932,6 +933,7 @@ def run_research(
     polymarket_error = None
     web_error = None
     xiaohongshu_error = None
+    health: list = []  # List[schema.SourceHealth]
 
     # Determine web search mode
     do_web = sources in ("all", "web", "reddit-web", "x-web")
@@ -1013,7 +1015,7 @@ def run_research(
                     progress.show_error(f"Instagram error: {e}")
             if progress:
                 progress.end_instagram(len(instagram_items))
-        return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error
+        return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error, health
 
     # Determine which searches to run
     do_reddit = sources in ("both", "reddit", "all", "reddit-web")
@@ -1124,9 +1126,15 @@ def run_research(
             )
 
         # Collect results (with timeouts to prevent indefinite blocking)
+        # Each source records SourceHealth timing for observability
+        def _health_status(error: str = None) -> str:
+            if not error: return "ok"
+            return "timeout" if "timed out" in error else "error"
+
         reddit_used_sc = False  # Track if ScrapeCreators was used for Reddit
         if reddit_future:
             reddit_timeout = timeouts.get("reddit_future", future_timeout)
+            _t0 = time.monotonic()
             try:
                 reddit_items, raw_openai, reddit_error, reddit_used_sc = reddit_future.result(timeout=reddit_timeout)
                 if reddit_error and progress:
@@ -1139,10 +1147,17 @@ def run_research(
                 reddit_error = f"{type(e).__name__}: {e}"
                 if progress:
                     progress.show_error(f"Reddit error: {e}")
+            health.append(schema.SourceHealth(
+                source="reddit", item_count=len(reddit_items),
+                duration_ms=int((time.monotonic() - _t0) * 1000),
+                status=_health_status(reddit_error), error=reddit_error,
+                backend="scrapecreators" if reddit_used_sc else "openai",
+            ))
             if progress:
                 progress.end_reddit(len(reddit_items))
 
         if x_future:
+            _t0 = time.monotonic()
             try:
                 x_items, raw_xai, x_error = x_future.result(timeout=future_timeout)
                 if x_error and progress:
@@ -1155,11 +1170,17 @@ def run_research(
                 x_error = f"{type(e).__name__}: {e}"
                 if progress:
                     progress.show_error(f"X error: {e}")
+            health.append(schema.SourceHealth(
+                source="x", item_count=len(x_items),
+                duration_ms=int((time.monotonic() - _t0) * 1000),
+                status=_health_status(x_error), error=x_error, backend=x_source,
+            ))
             if progress:
                 progress.end_x(len(x_items))
 
         if youtube_future:
             yt_timeout = timeouts.get("youtube_future", future_timeout)
+            _t0 = time.monotonic()
             try:
                 youtube_items, youtube_error = youtube_future.result(timeout=yt_timeout)
                 if youtube_error and progress:
@@ -1172,11 +1193,17 @@ def run_research(
                 youtube_error = f"{type(e).__name__}: {e}"
                 if progress:
                     progress.show_error(f"YouTube error: {e}")
+            health.append(schema.SourceHealth(
+                source="youtube", item_count=len(youtube_items),
+                duration_ms=int((time.monotonic() - _t0) * 1000),
+                status=_health_status(youtube_error), error=youtube_error, backend="yt-dlp",
+            ))
             if progress:
                 progress.end_youtube(len(youtube_items))
 
         if tiktok_future:
             tk_timeout = timeouts.get("tiktok_future", future_timeout)
+            _t0 = time.monotonic()
             try:
                 tiktok_items, tiktok_error = tiktok_future.result(timeout=tk_timeout)
                 if tiktok_error and progress:
@@ -1189,11 +1216,17 @@ def run_research(
                 tiktok_error = f"{type(e).__name__}: {e}"
                 if progress:
                     progress.show_error(f"TikTok error: {e}")
+            health.append(schema.SourceHealth(
+                source="tiktok", item_count=len(tiktok_items),
+                duration_ms=int((time.monotonic() - _t0) * 1000),
+                status=_health_status(tiktok_error), error=tiktok_error, backend="scrapecreators",
+            ))
             if progress:
                 progress.end_tiktok(len(tiktok_items))
 
         if instagram_future:
             ig_timeout = timeouts.get("instagram_future", future_timeout)
+            _t0 = time.monotonic()
             try:
                 instagram_items, instagram_error = instagram_future.result(timeout=ig_timeout)
                 if instagram_error and progress:
@@ -1206,6 +1239,11 @@ def run_research(
                 instagram_error = f"{type(e).__name__}: {e}"
                 if progress:
                     progress.show_error(f"Instagram error: {e}")
+            health.append(schema.SourceHealth(
+                source="instagram", item_count=len(instagram_items),
+                duration_ms=int((time.monotonic() - _t0) * 1000),
+                status=_health_status(instagram_error), error=instagram_error, backend="scrapecreators",
+            ))
             if progress:
                 progress.end_instagram(len(instagram_items))
 
@@ -1226,6 +1264,7 @@ def run_research(
 
         if hackernews_future:
             hn_timeout = timeouts.get("hackernews_future", future_timeout)
+            _t0 = time.monotonic()
             try:
                 hackernews_items, hackernews_error = hackernews_future.result(timeout=hn_timeout)
                 if hackernews_error and progress:
@@ -1238,11 +1277,17 @@ def run_research(
                 hackernews_error = f"{type(e).__name__}: {e}"
                 if progress:
                     progress.show_error(f"HN error: {e}")
+            health.append(schema.SourceHealth(
+                source="hackernews", item_count=len(hackernews_items),
+                duration_ms=int((time.monotonic() - _t0) * 1000),
+                status=_health_status(hackernews_error), error=hackernews_error, backend="algolia",
+            ))
             if progress:
                 progress.end_hackernews(len(hackernews_items))
 
         if bluesky_future:
             bsky_timeout = timeouts.get("bluesky_future", future_timeout)
+            _t0 = time.monotonic()
             try:
                 bluesky_items, bluesky_error = bluesky_future.result(timeout=bsky_timeout)
                 if bluesky_error and progress:
@@ -1255,9 +1300,15 @@ def run_research(
                 bluesky_error = f"{type(e).__name__}: {e}"
                 if progress:
                     progress.show_error(f"Bluesky error: {e}")
+            health.append(schema.SourceHealth(
+                source="bluesky", item_count=len(bluesky_items),
+                duration_ms=int((time.monotonic() - _t0) * 1000),
+                status=_health_status(bluesky_error), error=bluesky_error, backend="atproto",
+            ))
 
         if truthsocial_future:
             ts_timeout = timeouts.get("truthsocial_future", future_timeout)
+            _t0 = time.monotonic()
             try:
                 truthsocial_items, truthsocial_error = truthsocial_future.result(timeout=ts_timeout)
                 if truthsocial_error and progress:
@@ -1270,9 +1321,15 @@ def run_research(
                 truthsocial_error = f"{type(e).__name__}: {e}"
                 if progress:
                     progress.show_error(f"Truth Social error: {e}")
+            health.append(schema.SourceHealth(
+                source="truthsocial", item_count=len(truthsocial_items),
+                duration_ms=int((time.monotonic() - _t0) * 1000),
+                status=_health_status(truthsocial_error), error=truthsocial_error, backend="mastodon",
+            ))
 
         if polymarket_future:
             pm_timeout = timeouts.get("polymarket_future", future_timeout)
+            _t0 = time.monotonic()
             try:
                 polymarket_items, polymarket_error = polymarket_future.result(timeout=pm_timeout)
                 if polymarket_error and progress:
@@ -1285,10 +1342,16 @@ def run_research(
                 polymarket_error = f"{type(e).__name__}: {e}"
                 if progress:
                     progress.show_error(f"Polymarket error: {e}")
+            health.append(schema.SourceHealth(
+                source="polymarket", item_count=len(polymarket_items),
+                duration_ms=int((time.monotonic() - _t0) * 1000),
+                status=_health_status(polymarket_error), error=polymarket_error, backend="gamma",
+            ))
             if progress:
                 progress.end_polymarket(len(polymarket_items))
 
         if web_future:
+            _t0 = time.monotonic()
             try:
                 web_items, web_error = web_future.result(timeout=future_timeout)
                 if web_error and progress:
@@ -1301,6 +1364,11 @@ def run_research(
                 web_error = f"{type(e).__name__}: {e}"
                 if progress:
                     progress.show_error(f"Web error: {e}")
+            health.append(schema.SourceHealth(
+                source="web", item_count=len(web_items),
+                duration_ms=int((time.monotonic() - _t0) * 1000),
+                status=_health_status(web_error), error=web_error, backend=web_backend,
+            ))
             sys.stderr.write(f"[web] {len(web_items)} results\n")
             sys.stderr.flush()
 
@@ -1405,7 +1473,7 @@ def run_research(
         if sup_x:
             x_items.extend(sup_x)
 
-    return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error
+    return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error, health
 
 
 def main():
@@ -1735,7 +1803,7 @@ def main():
             sources = "web"  # hn/polymarket only; no Reddit/X
 
     # Run research
-    reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error = run_research(
+    reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error, source_health = run_research(
         args.topic,
         sources,
         config,
@@ -1877,6 +1945,7 @@ def main():
     report.polymarket_error = polymarket_error
     report.web_error = web_error
     report.resolved_x_handle = args.x_handle
+    report.source_health = source_health
 
     # Generate context snippet
     report.context_snippet_md = render.render_context_snippet(report)

@@ -639,6 +639,31 @@ def render_source_status(report: schema.Report, source_info: dict = None) -> str
         reason = source_info.get("web_skip_reason", "assistant will use WebSearch")
         lines.append(f"  ⚡ Web: {reason}")
 
+    # Source health timing (if available)
+    _src_display = {
+        "reddit": "Reddit", "x": "X", "youtube": "YouTube",
+        "tiktok": "TikTok", "instagram": "Instagram",
+        "hackernews": "HN", "bluesky": "Bluesky",
+        "truthsocial": "Truth Social", "polymarket": "Polymarket",
+        "web": "Web",
+    }
+    if report.source_health:
+        active = [sh for sh in report.source_health if sh.status != "skipped"]
+        if active:
+            timings = []
+            for sh in sorted(active, key=lambda s: s.duration_ms, reverse=True):
+                secs = sh.duration_ms / 1000
+                name = _src_display.get(sh.source, sh.source.capitalize())
+                if sh.backend:
+                    name += f"/{sh.backend}"
+                if sh.status == "error":
+                    timings.append(f"{name}: ERR")
+                elif sh.status == "timeout":
+                    timings.append(f"{name}: T/O")
+                else:
+                    timings.append(f"{name}: {secs:.1f}s")
+            lines.append(f"  ⏱️ Timing: {' | '.join(timings)}")
+
     lines.append("")
     return "\n".join(lines)
 
