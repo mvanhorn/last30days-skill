@@ -7,6 +7,7 @@ API docs: https://docs.tavily.com/
 """
 
 import sys
+from datetime import datetime
 from typing import Any, Dict, List
 from urllib.parse import urlparse
 
@@ -32,8 +33,8 @@ def search_web(
 
     Args:
         topic: Search topic
-        from_date: Start date (YYYY-MM-DD) — unused by Tavily but kept for interface compat
-        to_date: End date (YYYY-MM-DD) — unused by Tavily but kept for interface compat
+        from_date: Start date (YYYY-MM-DD) — used to compute recency window
+        to_date: End date (YYYY-MM-DD) — used to compute recency window
         api_key: Tavily API key
         depth: 'quick', 'default', or 'deep'
 
@@ -44,15 +45,22 @@ def search_web(
     Raises:
         http.HTTPError: On API errors
     """
-    max_results = {"quick": 8, "default": 10, "deep": 20}.get(depth, 10)
+    max_results = {"quick": 8, "default": 15, "deep": 25}.get(depth, 15)
     search_depth = "basic" if depth == "quick" else "advanced"
+
+    # Compute recency window from date range
+    try:
+        days = (datetime.strptime(to_date, "%Y-%m-%d") - datetime.strptime(from_date, "%Y-%m-%d")).days
+        days = max(1, days)
+    except (ValueError, TypeError):
+        days = 30  # fallback to 30-day window
 
     payload = {
         "api_key": api_key,
         "query": topic,
         "max_results": max_results,
         "search_depth": search_depth,
-        "include_domains": [],
+        "days": days,
         "exclude_domains": EXCLUDED_DOMAINS,
     }
 

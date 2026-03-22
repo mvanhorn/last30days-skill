@@ -611,7 +611,7 @@ def _search_web(
 ) -> tuple:
     """Search the web via native API backend (runs in thread).
 
-    Uses the best available backend: Parallel AI > Brave > OpenRouter.
+    Uses the best available backend: Tavily > Parallel AI > Brave > OpenRouter.
 
     Returns:
         Tuple of (web_items, web_error)
