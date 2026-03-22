@@ -617,7 +617,7 @@ def _search_web(
         Tuple of (web_items, web_error)
         web_items are raw dicts ready for websearch.normalize_websearch_items()
     """
-    from lib import brave_search, parallel_search, openrouter_search
+    from lib import brave_search, parallel_search, openrouter_search, tavily_search
 
     backend = env.get_web_search_source(config)
     if not backend:
@@ -627,7 +627,11 @@ def _search_web(
     raw_results = []
 
     try:
-        if backend == "parallel":
+        if backend == "tavily":
+            raw_results = tavily_search.search_web(
+                topic, from_date, to_date, config["TAVILY_API_KEY"], depth=depth,
+            )
+        elif backend == "parallel":
             raw_results = parallel_search.search_web(
                 topic, from_date, to_date, config["PARALLEL_API_KEY"], depth=depth,
             )
