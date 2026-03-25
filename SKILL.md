@@ -240,7 +240,7 @@ The script will automatically:
 
 **Read the ENTIRE output.** It contains EIGHT data sections in this order: Reddit items, X items, YouTube items, TikTok items, Instagram Reels items, Hacker News items, Polymarket items, and WebSearch items. If you miss sections, you will produce incomplete stats.
 
-**YouTube items in the output look like:** `**{video_id}** (score:N) {channel_name} [N views, N likes]` followed by a title, URL, and optional transcript snippet. Count them and include them in your synthesis and stats block.
+**YouTube items in the output look like:** `**{video_id}** (score:N) {channel_name} [N views, N likes]` followed by a title, URL, **transcript highlights** (pre-extracted quotable excerpts from the video), and an optional full transcript in a collapsible section. **Quote the highlights directly in your synthesis** - they are the YouTube equivalent of Reddit top comments. Attribute quotes to the channel name. Count them and include them in your synthesis and stats block.
 
 **TikTok items in the output look like:** `**{TK_id}** (score:N) @{creator} [N views, N likes]` followed by a caption, URL, hashtags, and optional caption snippet. Count them and include them in your synthesis and stats block.
 
@@ -303,9 +303,10 @@ The Judge Agent must:
 3. Weight TikTok sources HIGH (they have views, likes, and caption content — viral signal)
 4. Weight WebSearch sources LOWER (no engagement data)
 5. **For Reddit: Pay special attention to top comments** — they often contain the wittiest, most insightful, or funniest take. When a top comment has high upvotes (shown as `💬 Top comment (N upvotes)`), quote it directly in your synthesis. Reddit's value is in the comments.
-6. Identify patterns that appear across ALL sources (strongest signals)
-7. Note any contradictions between sources
-8. Extract the top 3-5 actionable insights
+6. **For YouTube: Quote transcript highlights directly in your synthesis.** These are pre-extracted key moments from the video - treat them like Reddit top comments. Attribute to the channel name and include the actual quote. YouTube's value is in what creators SAY, not just their view counts.
+7. Identify patterns that appear across ALL sources (strongest signals)
+8. Note any contradictions between sources
+9. Extract the top 3-5 actionable insights
 
 7. **Cross-platform signals are the strongest evidence.** When items have `[also on: Reddit, HN]` or similar tags, it means the same story appears across multiple platforms. Lead with these cross-platform findings - they're the most important signals in the research.
 

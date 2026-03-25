@@ -210,6 +210,7 @@ class YouTubeItem:
     date_confidence: str = "high"  # YouTube dates are always reliable
     engagement: Optional[Engagement] = None
     transcript_snippet: str = ""
+    transcript_highlights: List[str] = field(default_factory=list)
     relevance: float = 0.7
     why_relevant: str = ""
     subs: SubScores = field(default_factory=SubScores)
@@ -226,6 +227,7 @@ class YouTubeItem:
             'date_confidence': self.date_confidence,
             'engagement': self.engagement.to_dict() if self.engagement else None,
             'transcript_snippet': self.transcript_snippet,
+            'transcript_highlights': self.transcript_highlights,
             'relevance': self.relevance,
             'why_relevant': self.why_relevant,
             'subs': self.subs.to_dict(),
@@ -655,6 +657,7 @@ class Report:
                 date_confidence=y.get('date_confidence', 'high'),
                 engagement=eng,
                 transcript_snippet=y.get('transcript_snippet', ''),
+                transcript_highlights=y.get('transcript_highlights', []),
                 relevance=y.get('relevance', 0.7),
                 why_relevant=y.get('why_relevant', ''),
                 subs=subs,

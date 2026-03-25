@@ -193,6 +193,7 @@ def normalize_youtube_items(
             date_confidence="high",
             engagement=engagement,
             transcript_snippet=item.get("transcript_snippet", ""),
+            transcript_highlights=item.get("transcript_highlights", []),
             relevance=item.get("relevance", 0.7),
             why_relevant=item.get("why_relevant", ""),
         ))

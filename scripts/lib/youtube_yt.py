@@ -33,9 +33,55 @@ TRANSCRIPT_LIMITS = {
 }
 
 # Max words to keep from each transcript
-TRANSCRIPT_MAX_WORDS = 500
+TRANSCRIPT_MAX_WORDS = 5000
 
 from .relevance import token_overlap_relevance as _compute_relevance
+
+
+def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -> List[str]:
+    """Extract quotable highlights from a YouTube transcript.
+
+    Similar to reddit_enrich.extract_comment_insights() but for
+    continuous speech-to-text rather than threaded comments.
+    """
+    if not transcript:
+        return []
+
+    sentences = re.split(r'(?<=[.!?])\s+', transcript)
+
+    filler = [
+        r"^(hey |hi |what's up|welcome back|in today's video|don't forget to)",
+        r"(subscribe|like and comment|hit the bell|check out the link|down below)",
+        r"^(so |and |but |okay |alright |um |uh )",
+        r"(thanks for watching|see you (next|in the)|bye)",
+    ]
+
+    topic_words = [w.lower() for w in topic.lower().split() if len(w) > 2]
+
+    candidates = []
+    for sent in sentences:
+        sent = sent.strip()
+        words = sent.split()
+        if len(words) < 8 or len(words) > 50:
+            continue
+        if any(re.search(p, sent, re.IGNORECASE) for p in filler):
+            continue
+
+        score = 0
+        if re.search(r'\d', sent):
+            score += 2
+        if re.search(r'[A-Z][a-z]+', sent):
+            score += 1
+        if '?' in sent:
+            score += 1
+        sent_lower = sent.lower()
+        if any(w in sent_lower for w in topic_words):
+            score += 2
+
+        candidates.append((score, sent))
+
+    candidates.sort(key=lambda x: -x[0])
+    return [sent for _, sent in candidates[:limit]]
 
 
 def _log(msg: str):
@@ -345,11 +391,15 @@ def search_and_transcribe(
     top_ids = [item["video_id"] for item in items[:transcript_limit]]
     transcripts = fetch_transcripts_parallel(top_ids)
 
-    # Step 3: Attach transcripts to items
+    # Step 3: Attach transcripts and extract highlights
+    core_topic = _extract_core_subject(topic)
     for item in items:
         vid = item["video_id"]
         transcript = transcripts.get(vid)
         item["transcript_snippet"] = transcript or ""
+        item["transcript_highlights"] = extract_transcript_highlights(
+            transcript or "", core_topic,
+        )
 
     return {"items": items}
 

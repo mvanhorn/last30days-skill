@@ -257,11 +257,15 @@ def render_compact(report: schema.Report, limit: int = 15, missing_keys: str = "
             lines.append(f"**{item.id}** (score:{item.score}) {item.channel_name}{date_str}{eng_str}{_xref_tag(item)}")
             lines.append(f"  {item.title}")
             lines.append(f"  {item.url}")
+            if item.transcript_highlights:
+                lines.append("  Highlights:")
+                for hl in item.transcript_highlights[:5]:
+                    lines.append(f'    - "{hl}"')
             if item.transcript_snippet:
-                snippet = item.transcript_snippet[:200]
-                if len(item.transcript_snippet) > 200:
-                    snippet += "..."
-                lines.append(f"  Transcript: {snippet}")
+                word_count = len(item.transcript_snippet.split())
+                lines.append(f"  <details><summary>Full transcript ({word_count} words)</summary>")
+                lines.append(f"  {item.transcript_snippet}")
+                lines.append("  </details>")
             lines.append(f"  *{item.why_relevant}*")
             lines.append("")
 
