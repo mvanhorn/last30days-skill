@@ -70,7 +70,7 @@ def check_npm_available() -> bool:
 
 **Step 2: Verify the module loads**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && python3 -c "from scripts.lib import bird_x; print('OK')"`
+Run: `cd $HOME/last30days-skill-private && python3 -c "from scripts.lib import bird_x; print('OK')"`
 Expected: `OK`
 
 **Step 3: Commit**
@@ -139,7 +139,7 @@ def get_bird_status() -> Dict[str, Any]:
 
 **Step 2: Verify functions work**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && python3 -c "from scripts.lib import bird_x; print(bird_x.get_bird_status())"`
+Run: `cd $HOME/last30days-skill-private && python3 -c "from scripts.lib import bird_x; print(bird_x.get_bird_status())"`
 Expected: Dict with installed/authenticated status
 
 **Step 3: Commit**
@@ -232,7 +232,7 @@ def search_x(
 
 **Step 2: Verify search function signature**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && python3 -c "from scripts.lib import bird_x; import inspect; print(inspect.signature(bird_x.search_x))"`
+Run: `cd $HOME/last30days-skill-private && python3 -c "from scripts.lib import bird_x; import inspect; print(inspect.signature(bird_x.search_x))"`
 Expected: `(topic: str, from_date: str, to_date: str, depth: str = 'default') -> Dict[str, Any]`
 
 **Step 3: Commit**
@@ -343,7 +343,7 @@ def parse_bird_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 **Step 2: Verify parser handles empty input**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && python3 -c "from scripts.lib import bird_x; print(bird_x.parse_bird_response({}))"`
+Run: `cd $HOME/last30days-skill-private && python3 -c "from scripts.lib import bird_x; print(bird_x.parse_bird_response({}))"`
 Expected: `[]`
 
 **Step 3: Commit**
@@ -451,7 +451,7 @@ Add these methods to the `ProgressDisplay` class (after `show_promo` method, aro
 
 **Step 3: Verify new methods exist**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && python3 -c "from scripts.lib.ui import ProgressDisplay; p = ProgressDisplay('test', show_banner=False); print(hasattr(p, 'prompt_bird_install'))"`
+Run: `cd $HOME/last30days-skill-private && python3 -c "from scripts.lib.ui import ProgressDisplay; p = ProgressDisplay('test', show_banner=False); print(hasattr(p, 'prompt_bird_install'))"`
 Expected: `True`
 
 **Step 4: Commit**
@@ -534,7 +534,7 @@ def get_x_source_status(config: Dict[str, Any]) -> Dict[str, Any]:
 
 **Step 2: Verify function works**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && python3 -c "from scripts.lib import env; print(env.get_x_source_status(env.get_config()))"`
+Run: `cd $HOME/last30days-skill-private && python3 -c "from scripts.lib import env; print(env.get_x_source_status(env.get_config()))"`
 Expected: Dict with source status
 
 **Step 3: Commit**
@@ -562,7 +562,7 @@ from . import bird_x
 
 **Step 2: Verify import works**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && python3 -c "from scripts.lib import bird_x; print('OK')"`
+Run: `cd $HOME/last30days-skill-private && python3 -c "from scripts.lib import bird_x; print('OK')"`
 Expected: `OK`
 
 **Step 3: Commit**
@@ -651,7 +651,7 @@ def setup_bird_if_needed(progress: ui.ProgressDisplay) -> Optional[str]:
 
 **Step 3: Verify script still loads**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && python3 -c "import scripts.last30days; print('OK')"`
+Run: `cd $HOME/last30days-skill-private && python3 -c "import scripts.last30days; print('OK')"`
 Expected: `OK`
 
 **Step 4: Commit**
@@ -772,7 +772,7 @@ Then update the `_search_x` call inside (around line 218-222) to pass `x_source`
 
 **Step 3: Verify script syntax is valid**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && python3 -m py_compile scripts/last30days.py && echo "OK"`
+Run: `cd $HOME/last30days-skill-private && python3 -m py_compile scripts/last30days.py && echo "OK"`
 Expected: `OK`
 
 **Step 4: Commit**
@@ -858,7 +858,7 @@ Find the `run_research` call (around line 413) and add `x_source` parameter:
 
 **Step 4: Verify script runs with --help**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && python3 scripts/last30days.py --help`
+Run: `cd $HOME/last30days-skill-private && python3 scripts/last30days.py --help`
 Expected: Help text displays without errors
 
 **Step 5: Commit**
@@ -877,12 +877,12 @@ git commit -m "feat(main): integrate Bird setup into main flow"
 
 **Step 1: Test mock mode still works**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && python3 scripts/last30days.py "Claude Code" --mock --emit=compact 2>&1 | head -20`
+Run: `cd $HOME/last30days-skill-private && python3 scripts/last30days.py "Claude Code" --mock --emit=compact 2>&1 | head -20`
 Expected: Output showing research results without errors
 
 **Step 2: Test Bird detection (informational)**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && python3 -c "from scripts.lib import env; import json; print(json.dumps(env.get_x_source_status(env.get_config()), indent=2))"`
+Run: `cd $HOME/last30days-skill-private && python3 -c "from scripts.lib import env; import json; print(json.dumps(env.get_x_source_status(env.get_config()), indent=2))"`
 Expected: JSON showing current Bird/xAI status
 
 **Step 3: Commit any fixes if needed, then final commit**
@@ -907,12 +907,12 @@ git commit -m "feat(bird): complete Bird CLI integration
 
 **Step 1: Push all changes**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && git push origin main`
+Run: `cd $HOME/last30days-skill-private && git push origin main`
 Expected: Changes pushed to private repo
 
 **Step 2: Verify commit history**
 
-Run: `cd /Users/mvanhorn/last30days-skill-private && git log --oneline -10`
+Run: `cd $HOME/last30days-skill-private && git log --oneline -10`
 Expected: Shows Bird integration commits
 
 ---

@@ -144,14 +144,14 @@ valid and sidesteps the isolation problem entirely.
 
 ### Step 1: Fix the test
 
-In the **private source repo** (`/Users/mvanhorn/last30days-skill-private/`):
+In the **private source repo** (`$HOME/last30days-skill-private/`):
 
 Edit `tests/test_codex_auth.py` line 77-84. Replace the bare test with the `@patch.dict` version above. Run `python3 -m pytest tests/test_codex_auth.py -v` to confirm 22/22.
 
 ### Step 2: Run full test suite
 
 ```bash
-cd /Users/mvanhorn/last30days-skill-private
+cd $HOME/last30days-skill-private
 python3 -m pytest tests/ -v 2>&1 | tail -20
 ```
 
@@ -165,7 +165,7 @@ Check that `.gitignore` (or the upstream push config) prevents `docs/comparison-
 from leaking to the public GitHub remote.
 
 ```bash
-cat /Users/mvanhorn/last30days-skill-private/.gitignore | grep -E "comparison|evaluate|generate"
+cat $HOME/last30days-skill-private/.gitignore | grep -E "comparison|evaluate|generate"
 ```
 
 If not present, add:
@@ -181,7 +181,7 @@ variants/open/references/research.md
 ### Step 4: Commit and sync
 
 ```bash
-cd /Users/mvanhorn/last30days-skill-private
+cd $HOME/last30days-skill-private
 git add tests/test_codex_auth.py
 git commit -m "fix(tests): patch OPENAI_API_KEY env isolation in test_api_key_takes_priority"
 bash scripts/sync.sh

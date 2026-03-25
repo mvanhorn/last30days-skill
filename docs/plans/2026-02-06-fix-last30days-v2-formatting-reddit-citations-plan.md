@@ -160,7 +160,7 @@ Re-run the same 4 queries after fixes:
 ## References
 
 - Current SKILL.md: `~/.claude/skills/last30days/SKILL.md`
-- Private repo: `/Users/mvanhorn/last30days-skill-private/`
+- Private repo: `$HOME/last30days-skill-private/`
 - Old working SKILL.md: `~/.claude/skills/last30days.backup-v1/SKILL.md`
 - Reddit search module: `scripts/lib/openai_reddit.py:53-93` (prompt), `:160-166` (API call)
 - Scoring module: `scripts/lib/score.py:151-157` (penalties)

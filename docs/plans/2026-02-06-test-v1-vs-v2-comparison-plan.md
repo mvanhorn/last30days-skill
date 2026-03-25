@@ -24,7 +24,7 @@ Run the same queries through both the public v1 and private v2 of last30days, co
 cp ~/.claude/skills/last30days/SKILL.md ~/.claude/skills/last30days/SKILL.md.v2
 
 # Install v1 from upstream
-cd /Users/mvanhorn/last30days-skill-private
+cd $HOME/last30days-skill-private
 git show upstream/main:SKILL.md > ~/.claude/skills/last30days/SKILL.md
 ```
 

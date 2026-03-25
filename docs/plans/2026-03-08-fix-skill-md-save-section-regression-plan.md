@@ -66,7 +66,7 @@ Remove from `## Save Research to Documents` through the `---` separator before `
 
 ## Post-edit steps
 
-1. Run `bash /Users/mvanhorn/last30days-skill-private/scripts/sync.sh` to deploy to `~/.claude/skills/`
+1. Run `bash $HOME/last30days-skill-private/scripts/sync.sh` to deploy to `~/.claude/skills/`
 2. Push to `origin/main` and `upstream/main`
 3. Verify with `diff` that installed skill matches repo
 

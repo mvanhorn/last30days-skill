@@ -209,7 +209,7 @@ The current `openai_reddit.py` gets relevance scores **from OpenAI** (the AI jud
 ### Phase 0: Fork Repository
 
 - [ ] Create new repo `last30days-free-reddit` (or branch in private repo)
-- [ ] `git clone /Users/mvanhorn/last30days-skill-private /Users/mvanhorn/last30days-free-reddit`
+- [ ] `git clone $HOME/last30days-skill-private $HOME/last30days-free-reddit`
 - [ ] Create feature branch: `feat/free-reddit`
 - [ ] Verify all existing tests pass on the new branch
 
@@ -317,8 +317,8 @@ The current `openai_reddit.py` gets relevance scores **from OpenAI** (the AI jud
 
 ```bash
 # Fork into new working repo
-cp -r /Users/mvanhorn/last30days-skill-private /Users/mvanhorn/last30days-free-reddit
-cd /Users/mvanhorn/last30days-free-reddit
+cp -r $HOME/last30days-skill-private $HOME/last30days-free-reddit
+cd $HOME/last30days-free-reddit
 
 # Create feature branch
 git checkout -b feat/free-reddit

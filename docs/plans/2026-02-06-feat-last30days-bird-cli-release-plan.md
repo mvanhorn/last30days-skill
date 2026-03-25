@@ -45,7 +45,7 @@ Remove the old skill so only the new one is active. This eliminates ambiguity du
    rm ~/.claude/skills/last30daystest
 
    # Create new symlink with the primary name
-   ln -s /Users/mvanhorn/last30days-skill-private ~/.claude/skills/last30days
+   ln -s $HOME/last30days-skill-private ~/.claude/skills/last30days
    ```
 
 3. **Verify only one `/last30days` appears**:
@@ -78,7 +78,7 @@ Run the Python scripts directly to verify core functionality without invoking th
 ```bash
 # Test: Bird is installed and authenticated
 python3 -c "
-import sys; sys.path.insert(0, '/Users/mvanhorn/last30days-skill-private/scripts/lib')
+import sys; sys.path.insert(0, '$HOME/last30days-skill-private/scripts/lib')
 import bird_x
 print('installed:', bird_x.is_bird_installed())
 print('authenticated:', bird_x.is_bird_authenticated())
@@ -92,7 +92,7 @@ print('status:', bird_x.get_bird_status())
 #### Environment & Source Detection
 ```bash
 python3 -c "
-import sys; sys.path.insert(0, '/Users/mvanhorn/last30days-skill-private/scripts/lib')
+import sys; sys.path.insert(0, '$HOME/last30days-skill-private/scripts/lib')
 import env
 config = env.load_config()
 print('x_source:', env.get_x_source(config))
@@ -105,7 +105,7 @@ print('has_openai:', bool(config.get('OPENAI_API_KEY')))
 #### Bird Search (Direct)
 ```bash
 python3 -c "
-import sys, json; sys.path.insert(0, '/Users/mvanhorn/last30days-skill-private/scripts/lib')
+import sys, json; sys.path.insert(0, '$HOME/last30days-skill-private/scripts/lib')
 import bird_x
 result = bird_x.search_x('Claude Code tips', '2026-01-07', '2026-02-06', 'quick')
 print(json.dumps(result, indent=2, default=str)[:2000])
@@ -117,7 +117,7 @@ print(json.dumps(result, indent=2, default=str)[:2000])
 
 #### Full Research Pipeline (Compact Output)
 ```bash
-cd /Users/mvanhorn/last30days-skill-private
+cd $HOME/last30days-skill-private
 python3 scripts/last30days.py "Claude Code tips" --emit=compact --quick 2>&1 | head -100
 ```
 - [ ] Completes without error
@@ -136,7 +136,7 @@ PATH_BACKUP="$PATH"
 export PATH=$(echo "$PATH" | tr ':' '\n' | grep -v "$(dirname $(which bird 2>/dev/null))" | tr '\n' ':')
 
 python3 -c "
-import sys; sys.path.insert(0, '/Users/mvanhorn/last30days-skill-private/scripts/lib')
+import sys; sys.path.insert(0, '$HOME/last30days-skill-private/scripts/lib')
 import env
 config = env.load_config()
 print('x_source (no bird):', env.get_x_source(config))
@@ -150,7 +150,7 @@ export PATH="$PATH_BACKUP"
 #### No X source at all
 ```bash
 python3 -c "
-import sys; sys.path.insert(0, '/Users/mvanhorn/last30days-skill-private/scripts/lib')
+import sys; sys.path.insert(0, '$HOME/last30days-skill-private/scripts/lib')
 import env
 config = {}  # empty config, no keys
 print('x_source (nothing):', env.get_x_source(config))
@@ -165,7 +165,7 @@ Validate that Bird responses are correctly normalized to the canonical schema.
 
 ```bash
 python3 -c "
-import sys; sys.path.insert(0, '/Users/mvanhorn/last30days-skill-private/scripts/lib')
+import sys; sys.path.insert(0, '$HOME/last30days-skill-private/scripts/lib')
 import bird_x
 
 # Test with sample Bird response format
@@ -197,7 +197,7 @@ print('Author:', parsed[0].get('author_handle'))
 # Verify YAML frontmatter parses correctly
 python3 -c "
 import yaml
-with open('/Users/mvanhorn/last30days-skill-private/SKILL.md') as f:
+with open('$HOME/last30days-skill-private/SKILL.md') as f:
     content = f.read()
     # Extract YAML between --- markers
     parts = content.split('---', 2)
@@ -218,7 +218,7 @@ with open('/Users/mvanhorn/last30days-skill-private/SKILL.md') as f:
 ```bash
 # Verify the only meaningful addition is bird_x.py
 diff -rq ~/.claude/skills/last30days.backup-v1/scripts/lib/ \
-         /Users/mvanhorn/last30days-skill-private/scripts/lib/ 2>/dev/null
+         $HOME/last30days-skill-private/scripts/lib/ 2>/dev/null
 ```
 - [ ] Only new file is `bird_x.py`
 - [ ] Modified files: `env.py` (source detection), `__init__.py` (exports)
@@ -345,7 +345,7 @@ Before merging to `main` on the public repo:
 - [ ] SKILL.md frontmatter is correct (`name: last30days`, not `last30daystest`)
 - [ ] README.md documents Bird CLI setup
 - [ ] No debug/test artifacts in codebase
-- [ ] No hardcoded paths (e.g., `/Users/mvanhorn/...`)
+- [ ] No hardcoded paths (e.g., `$HOME/...`)
 - [ ] `.env` files are gitignored
 - [ ] Git history is clean (no "test" or "WIP" commits on main)
 - [ ] Bird CLI failure doesn't break the skill (graceful fallback verified)
@@ -379,7 +379,7 @@ git checkout cc892d7   # last known good commit from old version
 | Bird CLI breaks after X API changes | Medium | Low | Fallback to xAI/WebSearch still works |
 | Bird auth expires silently | Medium | Low | `is_bird_authenticated()` check + user message |
 | Old xAI workflows regress | Low | High | Comparison test in Phase 2.5 |
-| Hardcoded paths in codebase | Low | Medium | Grep for `/Users/mvanhorn` before release |
+| Hardcoded paths in codebase | Low | Medium | Grep for `/Users/` or `/home/` before release |
 | SKILL.md name still says `last30daystest` | Low | High | Already fixed in commit `4e972d0` |
 
 ## References

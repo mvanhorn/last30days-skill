@@ -77,7 +77,7 @@ Remove auto-save. Add a note to the invitation: "Say 'save' to save this researc
 
 ## Context
 
-- Source: `/Users/mvanhorn/last30days-skill-private/SKILL.md`
+- Source: `$HOME/last30days-skill-private/SKILL.md`
 - Deployed to: `~/.claude/skills/last30days/SKILL.md`
 - Sync command: `bash scripts/sync.sh`
 - Current version: v2.9.3

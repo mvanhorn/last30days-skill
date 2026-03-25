@@ -49,7 +49,7 @@ Add an explicit "Display your parsing" instruction between the "Parse User Inten
 
 ### SKILL.md Change
 
-**File:** `/Users/mvanhorn/last30days-skill-private/SKILL.md`
+**File:** `$HOME/last30days-skill-private/SKILL.md`
 
 After the "Store these variables" block (line ~38) and before "Research Execution" (line ~42), add:
 
@@ -74,7 +74,7 @@ This text MUST appear before you call any tools. It confirms to the user that yo
 
 After editing SKILL.md:
 ```bash
-cp /Users/mvanhorn/last30days-skill-private/SKILL.md ~/.claude/skills/last30days/SKILL.md
+cp $HOME/last30days-skill-private/SKILL.md ~/.claude/skills/last30days/SKILL.md
 ```
 
 ## Test Plan

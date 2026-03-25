@@ -27,7 +27,7 @@ Push all V2 changes from the private development repo to the public GitHub repo,
 ### Step 2: Push to public
 
 ```bash
-cd /Users/mvanhorn/last30days-skill-private
+cd $HOME/last30days-skill-private
 git push upstream main
 ```
 

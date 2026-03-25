@@ -93,7 +93,7 @@ Initial public release. Reddit + X search via OpenAI and xAI APIs.
 #### 2. Create annotated tag on the public repo
 
 ```bash
-cd /Users/mvanhorn/last30days-skill-private
+cd $HOME/last30days-skill-private
 
 # Tag on the current HEAD (which matches upstream/main)
 git tag -a v2.1.0 -m "Release v2.1.0: Watchlists, YouTube transcripts, Codex CLI, bundled X search"

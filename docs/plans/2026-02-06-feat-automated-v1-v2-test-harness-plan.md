@@ -43,7 +43,7 @@ set -euo pipefail
 
 # === Config ===
 SKILL_DIR="$HOME/.claude/skills/last30days"
-REPO_DIR="/Users/mvanhorn/last30days-skill-private"
+REPO_DIR="$HOME/last30days-skill-private"
 OUT_DIR="$REPO_DIR/docs/test-results/v1-vs-v2-$(date +%Y%m%d-%H%M%S)"
 V1_DIR="$OUT_DIR/v1"
 V2_DIR="$OUT_DIR/v2"
@@ -255,7 +255,7 @@ rm -f "$SKILL_DIR/SKILL.md.v2.bak"
 ## How to Run
 
 ```bash
-cd /Users/mvanhorn/last30days-skill-private
+cd $HOME/last30days-skill-private
 chmod +x scripts/test-v1-vs-v2.sh
 ./scripts/test-v1-vs-v2.sh
 ```

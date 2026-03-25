@@ -210,15 +210,15 @@ The open variant's SKILL.md uses `{baseDir}` which resolves to the skill root. B
 ## References
 
 ### Internal
-- OpenClaw plan: `/Users/mvanhorn/last30days-openclaw/docs/plans/2026-02-10-feat-openclaw-last30days-skill-plan.md` (989 lines, comprehensive spec)
+- OpenClaw plan: `$HOME/last30days-openclaw/docs/plans/2026-02-10-feat-openclaw-last30days-skill-plan.md` (989 lines, comprehensive spec)
 - Codex compat plan: `docs/plans/2026-02-14-feat-codex-skill-compatibility-plan.md` (portable paths, platform-neutral text)
-- OpenClaw source: `/Users/mvanhorn/last30days-openclaw/`
+- OpenClaw source: `$HOME/last30days-openclaw/`
 
 ### Key files to port
-- `store.py`: `/Users/mvanhorn/last30days-openclaw/scripts/store.py` (20KB, SQLite with FTS5)
-- `watchlist.py`: `/Users/mvanhorn/last30days-openclaw/scripts/watchlist.py` (10KB)
-- `briefing.py`: `/Users/mvanhorn/last30days-openclaw/scripts/briefing.py` (8KB)
-- `brave_search.py`: `/Users/mvanhorn/last30days-openclaw/scripts/lib/brave_search.py` (6KB)
-- `parallel_search.py`: `/Users/mvanhorn/last30days-openclaw/scripts/lib/parallel_search.py` (4KB)
-- `openrouter_search.py`: `/Users/mvanhorn/last30days-openclaw/scripts/lib/openrouter_search.py` (7KB)
-- `env.py` (openclaw version): `/Users/mvanhorn/last30days-openclaw/scripts/lib/env.py` (9KB — has web search key functions)
+- `store.py`: `$HOME/last30days-openclaw/scripts/store.py` (20KB, SQLite with FTS5)
+- `watchlist.py`: `$HOME/last30days-openclaw/scripts/watchlist.py` (10KB)
+- `briefing.py`: `$HOME/last30days-openclaw/scripts/briefing.py` (8KB)
+- `brave_search.py`: `$HOME/last30days-openclaw/scripts/lib/brave_search.py` (6KB)
+- `parallel_search.py`: `$HOME/last30days-openclaw/scripts/lib/parallel_search.py` (4KB)
+- `openrouter_search.py`: `$HOME/last30days-openclaw/scripts/lib/openrouter_search.py` (7KB)
+- `env.py` (openclaw version): `$HOME/last30days-openclaw/scripts/lib/env.py` (9KB — has web search key functions)

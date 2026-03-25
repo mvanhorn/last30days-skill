@@ -6,7 +6,7 @@ set -euo pipefail
 # using `claude --print` to capture real end-to-end output.
 
 SKILL_DIR="$HOME/.claude/skills/last30days"
-REPO_DIR="/Users/mvanhorn/last30days-skill-private"
+REPO_DIR="$HOME/last30days-skill-private"
 
 # Safety: always restore V2 SKILL.md on exit/crash
 cleanup() {
@@ -101,7 +101,7 @@ run_version() {
 
     # Run claude --print with the skill invocation
     # No timeout — claude --print exits on its own; kill manually if stuck
-    if /Users/mvanhorn/.local/bin/claude --print \
+    if $HOME/.local/bin/claude --print \
       "/last30days $query" \
       > "$outfile" 2>"$errfile"; then
       local end_time

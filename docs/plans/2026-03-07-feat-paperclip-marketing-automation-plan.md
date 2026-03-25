@@ -160,7 +160,7 @@ Rules:
 **How it works:**
 
 1. **Tag Watcher** - `marketing/scripts/watch_releases.py`
-   - Runs `git -C /Users/mvanhorn/last30days-skill-private fetch upstream --tags` every 6 hours
+   - Runs `git -C $HOME/last30days-skill-private fetch upstream --tags` every 6 hours
    - Compares local tags vs upstream tags
    - On new tag: reads CHANGELOG.md diff since last tag
 
