@@ -221,6 +221,35 @@ def _run_topic(topic: dict) -> dict:
                 "engagement_score": (item.get("engagement") or {}).get("views", 0),
                 "relevance_score": item.get("relevance", 0),
             })
+        for item in data.get("hn", []):
+            findings.append({
+                "source": "hackernews",
+                "url": item.get("hn_url", item.get("url", "")),
+                "title": item.get("title", ""),
+                "author": item.get("author", ""),
+                "content": item.get("title", ""),
+                "summary": item.get("comment_insights_summary", ""),
+                "engagement_score": (item.get("engagement") or {}).get("points", 0) + (item.get("engagement") or {}).get("num_comments", 0),
+                "relevance_score": item.get("relevance", 0),
+            })
+        for item in data.get("polymarket", []):
+            # Format outcomes for content field
+            outcomes = item.get("outcomes", [])
+            outcomes_text = " / ".join([
+                f"{o.get('title', '')}: {o.get('probability', o.get('price', 0)):.0%}"
+                for o in outcomes[:3]
+            ]) if outcomes else ""
+            
+            findings.append({
+                "source": "polymarket",
+                "url": item.get("url", ""),
+                "title": item.get("title", item.get("question", "")),
+                "author": "polymarket",
+                "content": f"{item.get('title', '')} | {outcomes_text}",
+                "summary": item.get("why_relevant", ""),
+                "engagement_score": item.get("volume24hr", item.get("liquidity", 0)),
+                "relevance_score": item.get("relevance", 0),
+            })
 
         # Store with dedup
         counts = store.store_findings(run_id, topic_id, findings)
