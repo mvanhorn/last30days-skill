@@ -233,13 +233,18 @@ def _run_topic(topic: dict) -> dict:
             findings_updated=counts["updated"],
         )
 
-        return {
+        result = {
             "topic": topic["name"],
             "status": "completed",
             "new": counts["new"],
             "updated": counts["updated"],
             "duration": duration,
         }
+
+        # Deliver findings if configured
+        _deliver_findings(topic, counts, result)
+
+        return result
 
     except subprocess.TimeoutExpired:
         duration = time.time() - start_time
@@ -269,11 +274,73 @@ def _run_topic(topic: dict) -> dict:
         return {"topic": topic["name"], "status": "failed", "error": str(e)}
 
 
+def _deliver_findings(topic: dict, counts: dict, run_result: dict):
+    """Send delivery notification if a delivery channel is configured."""
+    delivery_channel = store.get_setting("delivery_channel", "")
+    delivery_mode = store.get_setting("delivery_mode", "announce")
+
+    if not delivery_channel or counts["new"] == 0:
+        return  # Nothing to deliver
+
+    # Build message
+    message = _format_delivery_message(topic, counts, delivery_mode)
+
+    # Dispatch by channel type
+    if delivery_channel.startswith("https://hooks.slack.com/"):
+        _send_slack_webhook(delivery_channel, message)
+    elif delivery_channel.startswith("https://"):
+        _send_generic_webhook(delivery_channel, message)
+    # Future: telegram, discord, etc.
+
+
+def _format_delivery_message(topic: dict, counts: dict, mode: str) -> str:
+    """Format the delivery message."""
+    if mode == "announce":
+        return (
+            f"📰 *last30days update: {topic['name']}*\n"
+            f"{counts['new']} new findings, {counts['updated']} updated.\n"
+            f"Run `last30 briefing` to see the full summary."
+        )
+    elif mode == "silent":
+        return f"last30days: {counts['new']} new findings for '{topic['name']}'"
+    return f"last30days: Research complete for '{topic['name']}'"
+
+
+def _send_slack_webhook(url: str, message: str):
+    """POST to a Slack incoming webhook."""
+    import urllib.request
+    import urllib.error
+    payload = json.dumps({"text": message}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except (urllib.error.URLError, Exception) as e:
+        sys.stderr.write(f"[Delivery] Slack webhook failed: {e}\n")
+
+
+def _send_generic_webhook(url: str, message: str):
+    """POST JSON payload to a generic webhook URL."""
+    import urllib.request
+    import urllib.error
+    payload = json.dumps({"text": message, "source": "last30days"}).encode()
+    req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+    try:
+        urllib.request.urlopen(req, timeout=10)
+    except (urllib.error.URLError, Exception) as e:
+        sys.stderr.write(f"[Delivery] Webhook failed: {e}\n")
+
+
 def cmd_config(args):
     """Configure watchlist settings."""
     if args.setting == "delivery":
-        store.set_setting("delivery_channel", args.value)
-        print(json.dumps({"action": "config", "setting": "delivery_channel", "value": args.value}))
+        value = args.value
+        # Basic validation
+        if value and not (value.startswith("https://") or value == ""):
+            print(json.dumps({"error": "delivery must be a webhook URL (https://...) or empty string to disable"}))
+            return
+        store.set_setting("delivery_channel", value)
+        status = "enabled" if value else "disabled"
+        print(json.dumps({"action": "config", "setting": "delivery_channel", "value": value, "status": status}))
     elif args.setting == "budget":
         store.set_setting("daily_budget", args.value)
         print(json.dumps({"action": "config", "setting": "daily_budget", "value": args.value}))
