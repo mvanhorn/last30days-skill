@@ -38,8 +38,26 @@ for t in "${TARGETS[@]}"; do
   mod_count=$(ls "$t/scripts/lib/"*.py 2>/dev/null | wc -l | tr -d ' ')
   echo "  Copied $mod_count modules"
 
-  # Verify imports
-  if (cd "$t/scripts" && python3 -c "from lib import youtube_yt, bird_x, render, ui; print('  Import check: OK')" 2>&1); then
+  # Verify imports — dynamically checks every module in lib/
+  if (cd "$t/scripts" && python3 - <<'PYEOF'
+import importlib, pathlib, sys
+failed = []
+for p in sorted(pathlib.Path("lib").glob("*.py")):
+    if p.stem == "__init__":
+        continue
+    try:
+        importlib.import_module(f"lib.{p.stem}")
+    except Exception as e:
+        failed.append(f"{p.stem}: {e}")
+if failed:
+    print("  Import check FAILED:")
+    for f in failed:
+        print(f"    {f}")
+    sys.exit(1)
+else:
+    print(f"  Import check: OK ({len(list(pathlib.Path('lib').glob('*.py'))) - 1} modules)")
+PYEOF
+  ); then
     true
   else
     echo "  Import check FAILED"

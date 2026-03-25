@@ -6,7 +6,13 @@ set -euo pipefail
 # using `claude --print` to capture real end-to-end output.
 
 SKILL_DIR="$HOME/.claude/skills/last30days"
-REPO_DIR="/Users/mvanhorn/last30days-skill"
+REPO_DIR="${REPO_DIR:-$(git -C "$(dirname "$0")" rev-parse --show-toplevel)}"
+CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || true)}"
+
+if [ -z "$CLAUDE_BIN" ]; then
+  echo "❌ claude not found in PATH. Set CLAUDE_BIN=/path/to/claude and retry." >&2
+  exit 1
+fi
 
 # Safety: always restore V2 SKILL.md on exit/crash
 cleanup() {
@@ -101,7 +107,7 @@ run_version() {
 
     # Run claude --print with the skill invocation
     # No timeout — claude --print exits on its own; kill manually if stuck
-    if /Users/mvanhorn/.local/bin/claude --print \
+    if "$CLAUDE_BIN" --print \
       "/last30days $query" \
       > "$outfile" 2>"$errfile"; then
       local end_time
