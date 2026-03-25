@@ -1455,9 +1455,9 @@ def main():
         "--days",
         type=int,
         default=30,
-        choices=range(1, 31),
+        choices=range(1, 91),
         metavar="N",
-        help="Number of days to look back (1-30, default: 30)",
+        help="Number of days to look back (1-90, default: 30)",
     )
     parser.add_argument(
         "--store",
