@@ -69,9 +69,10 @@ def _assess_data_freshness(report: schema.Report) -> dict:
 
     tiktok_recent = sum(1 for t in report.tiktok if t.date and t.date >= report.range_from)
     ig_recent = sum(1 for ig in report.instagram if ig.date and ig.date >= report.range_from)
+    yt_recent = sum(1 for yt in report.youtube if yt.date and yt.date >= report.range_from)
 
-    total_recent = reddit_recent + x_recent + web_recent + hn_recent + bsky_recent + ts_recent + pm_recent + tiktok_recent + ig_recent
-    total_items = len(report.reddit) + len(report.x) + len(report.web) + len(report.hackernews) + len(report.bluesky) + len(report.truthsocial) + len(report.polymarket) + len(report.tiktok) + len(report.instagram)
+    total_recent = reddit_recent + x_recent + web_recent + yt_recent + hn_recent + bsky_recent + ts_recent + pm_recent + tiktok_recent + ig_recent
+    total_items = len(report.reddit) + len(report.x) + len(report.web) + len(report.youtube) + len(report.hackernews) + len(report.bluesky) + len(report.truthsocial) + len(report.polymarket) + len(report.tiktok) + len(report.instagram)
 
     return {
         "reddit_recent": reddit_recent,
