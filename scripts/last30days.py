@@ -1462,7 +1462,8 @@ def main():
     parser.add_argument(
         "--store",
         action="store_true",
-        help="Persist findings to SQLite database (~/.local/share/last30days/research.db)",
+        help="Persist findings to SQLite database (default: ~/.local/share/last30days/research.db, "
+             "override with LAST30DAYS_DATABASE_PATH)",
     )
     parser.add_argument(
         "--diagnose",

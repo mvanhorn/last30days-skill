@@ -3,27 +3,174 @@
 import base64
 import json
 import os
+import tempfile
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Dict, Any, Literal
 
-# Allow override via environment variable for testing
-# Set LAST30DAYS_CONFIG_DIR="" for clean/no-config mode
-# Set LAST30DAYS_CONFIG_DIR="/path/to/dir" for custom config location
+
+# =============================================================================
+# Path Configuration
+# =============================================================================
+# Supports environment variable overrides for all paths.
+# Follows XDG Base Directory specification where applicable.
+# Falls back to temp directories if permission denied.
+
+def _get_path_with_override(env_var: str, default_parts: list, temp_suffix: str = None) -> Path:
+    """Get a path with environment variable override support.
+    
+    Args:
+        env_var: Environment variable name to check for override
+        default_parts: List of path parts for default path (e.g., [".config", "last30days"])
+        temp_suffix: Suffix for temp directory fallback (e.g., "last30days/config")
+    
+    Returns:
+        Path object with the resolved location
+    """
+    env_value = os.environ.get(env_var)
+    if env_value:
+        return Path(env_value)
+    return Path.home().joinpath(*default_parts)
+
+
+def _ensure_dir_with_fallback(path: Path, temp_suffix: str) -> Path:
+    """Ensure directory exists, falling back to temp if permission denied.
+    
+    Args:
+        path: Primary path to try
+        temp_suffix: Suffix for temp directory fallback
+    
+    Returns:
+        The path that was successfully created (may be fallback)
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    except PermissionError:
+        fallback = Path(tempfile.gettempdir()) / temp_suffix
+        fallback.mkdir(parents=True, exist_ok=True)
+        warnings.warn(
+            f"Permission denied for {path}, using fallback: {fallback}",
+            RuntimeWarning,
+            stacklevel=3
+        )
+        return fallback
+
+
+# Config directory: ~/.config/last30days or LAST30DAYS_CONFIG_DIR
 _config_override = os.environ.get('LAST30DAYS_CONFIG_DIR')
 if _config_override == "":
     # Empty string = no config file (clean mode)
-    CONFIG_DIR = None
-    CONFIG_FILE = None
+    CONFIG_DIR: Optional[Path] = None
+    CONFIG_FILE: Optional[Path] = None
 elif _config_override:
     CONFIG_DIR = Path(_config_override)
     CONFIG_FILE = CONFIG_DIR / ".env"
 else:
-    CONFIG_DIR = Path.home() / ".config" / "last30days"
+    CONFIG_DIR = _get_path_with_override(
+        'LAST30DAYS_CONFIG_DIR',
+        ['.config', 'last30days']
+    )
     CONFIG_FILE = CONFIG_DIR / ".env"
 
+
+def get_config_dir() -> Path:
+    """Get the config directory path, creating it if needed."""
+    if CONFIG_DIR is None:
+        raise RuntimeError("Config directory is disabled (clean mode)")
+    return _ensure_dir_with_fallback(CONFIG_DIR, "last30days/config")
+
+
+def get_config_file() -> Optional[Path]:
+    """Get the config file path."""
+    return CONFIG_FILE
+
+
+# Data directory: ~/.local/share/last30days or LAST30DAYS_DATA_DIR
+def get_data_dir() -> Path:
+    """Get the data directory for database and persistent storage.
+    
+    Priority:
+    1. LAST30DAYS_DATA_DIR environment variable
+    2. ~/.local/share/last30days (XDG default)
+    3. System temp directory as fallback
+    """
+    path = _get_path_with_override(
+        'LAST30DAYS_DATA_DIR',
+        ['.local', 'share', 'last30days']
+    )
+    return _ensure_dir_with_fallback(path, "last30days/data")
+
+
+def get_database_path() -> Path:
+    """Get the SQLite database path.
+    
+    Override with LAST30DAYS_DATABASE_PATH for full path control.
+    """
+    env_path = os.environ.get('LAST30DAYS_DATABASE_PATH')
+    if env_path:
+        return Path(env_path)
+    return get_data_dir() / "research.db"
+
+
+# Cache directory: ~/.cache/last30days or LAST30DAYS_CACHE_DIR
+def get_cache_dir() -> Path:
+    """Get the cache directory for temporary cached data.
+    
+    Priority:
+    1. LAST30DAYS_CACHE_DIR environment variable
+    2. ~/.cache/last30days (XDG default)
+    3. System temp directory as fallback
+    """
+    path = _get_path_with_override(
+        'LAST30DAYS_CACHE_DIR',
+        ['.cache', 'last30days']
+    )
+    return _ensure_dir_with_fallback(path, "last30days/cache")
+
+
+# Output directory: ~/.local/share/last30days/out or LAST30DAYS_OUTPUT_DIR
+def get_output_dir() -> Path:
+    """Get the output directory for generated reports.
+    
+    Priority:
+    1. LAST30DAYS_OUTPUT_DIR environment variable
+    2. ~/.local/share/last30days/out (XDG default)
+    3. System temp directory as fallback
+    """
+    path = _get_path_with_override(
+        'LAST30DAYS_OUTPUT_DIR',
+        ['.local', 'share', 'last30days', 'out']
+    )
+    return _ensure_dir_with_fallback(path, "last30days/out")
+
+
+# Briefs directory: ~/.local/share/last30days/briefs or LAST30DAYS_BRIEFS_DIR
+def get_briefs_dir() -> Path:
+    """Get the briefs directory for saved briefings.
+    
+    Priority:
+    1. LAST30DAYS_BRIEFS_DIR environment variable
+    2. ~/.local/share/last30days/briefs (XDG default)
+    3. System temp directory as fallback
+    """
+    path = _get_path_with_override(
+        'LAST30DAYS_BRIEFS_DIR',
+        ['.local', 'share', 'last30days', 'briefs']
+    )
+    return _ensure_dir_with_fallback(path, "last30days/briefs")
+
+
+# Codex auth file: ~/.codex/auth.json or CODEX_AUTH_FILE
 CODEX_AUTH_FILE = Path(os.environ.get("CODEX_AUTH_FILE", str(Path.home() / ".codex" / "auth.json")))
+
+
+# Legacy module-level variables for backward compatibility
+# These will be removed in a future version
+_DB_DIR_LEGACY = Path.home() / ".local" / "share" / "last30days"
+_DB_PATH_LEGACY = _DB_DIR_LEGACY / "research.db"
 
 AuthSource = Literal["api_key", "codex", "none"]
 AuthStatus = Literal["ok", "missing", "expired", "missing_account_id"]
@@ -218,7 +365,13 @@ def get_config() -> Dict[str, Any]:
     Priority (highest wins):
       1. Environment variables (os.environ)
       2. .claude/last30days.env (per-project config)
-      3. ~/.config/last30days/.env (global config)
+      3. Global config file (default: ~/.config/last30days/.env, 
+         override with LAST30DAYS_CONFIG_DIR environment variable)
+    
+    See also:
+      - get_config_dir() for config directory path
+      - get_data_dir() for data/database directory path  
+      - get_cache_dir() for cache directory path
     """
     # Load from global config file
     file_env = load_env_file(CONFIG_FILE) if CONFIG_FILE else {}

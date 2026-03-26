@@ -8,26 +8,43 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
-CACHE_DIR = Path.home() / ".cache" / "last30days"
+# Import path configuration from env module
+from . import env
+
 DEFAULT_TTL_HOURS = 24
 MODEL_CACHE_TTL_DAYS = 7
+
+
+def _get_cache_dir() -> Path:
+    """Get the cache directory, using centralized config with fallbacks.
+    
+    Priority:
+    1. LAST30DAYS_CACHE_DIR environment variable
+    2. ~/.cache/last30days (XDG default)
+    3. System temp directory as fallback
+    """
+    return env.get_cache_dir()
+
+
+def _get_model_cache_file() -> Path:
+    """Get the model cache file path."""
+    return _get_cache_dir() / "model_selection.json"
+
+
+# Legacy module-level variables for backward compatibility
+CACHE_DIR = Path.home() / ".cache" / "last30days"
 MODEL_CACHE_FILE = CACHE_DIR / "model_selection.json"
 
 
 def ensure_cache_dir():
-    """Ensure cache directory exists. Supports env override and sandbox fallback."""
-    global CACHE_DIR, MODEL_CACHE_FILE
-    env_dir = os.environ.get("LAST30DAYS_CACHE_DIR")
-    if env_dir:
-        CACHE_DIR = Path(env_dir)
-        MODEL_CACHE_FILE = CACHE_DIR / "model_selection.json"
-
-    try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    except PermissionError:
-        CACHE_DIR = Path(tempfile.gettempdir()) / "last30days" / "cache"
-        MODEL_CACHE_FILE = CACHE_DIR / "model_selection.json"
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    """Ensure cache directory exists. Uses centralized config with fallbacks.
+    
+    The actual path is determined by _get_cache_dir() which supports:
+    - LAST30DAYS_CACHE_DIR environment variable
+    - XDG default: ~/.cache/last30days
+    - Temp directory fallback
+    """
+    _get_cache_dir()  # This creates the directory via get_cache_dir()
 
 
 def get_cache_key(topic: str, from_date: str, to_date: str, sources: str) -> str:
@@ -37,8 +54,8 @@ def get_cache_key(topic: str, from_date: str, to_date: str, sources: str) -> str
 
 
 def get_cache_path(cache_key: str) -> Path:
-    """Get path to cache file."""
-    return CACHE_DIR / f"{cache_key}.json"
+    """Get path to cache file. Uses centralized cache directory config."""
+    return _get_cache_dir() / f"{cache_key}.json"
 
 
 def is_cache_valid(cache_path: Path, ttl_hours: int = DEFAULT_TTL_HOURS) -> bool:
@@ -116,36 +133,38 @@ def save_cache(cache_key: str, data: dict):
 
 
 def clear_cache():
-    """Clear all cache files."""
-    if CACHE_DIR.exists():
-        for f in CACHE_DIR.glob("*.json"):
+    """Clear all cache files. Uses centralized cache directory config."""
+    cache_dir = _get_cache_dir()
+    if cache_dir.exists():
+        for f in cache_dir.glob("*.json"):
             try:
                 f.unlink()
             except OSError:
                 pass
 
 
-# Model selection cache (longer TTL) — MODEL_CACHE_FILE is set at module level
-# and updated by ensure_cache_dir() if env override or fallback is needed.
+# Model selection cache (longer TTL)
 
 
 def load_model_cache() -> dict:
-    """Load model selection cache."""
-    if not is_cache_valid(MODEL_CACHE_FILE, MODEL_CACHE_TTL_DAYS * 24):
+    """Load model selection cache. Uses centralized cache directory config."""
+    model_cache_file = _get_model_cache_file()
+    if not is_cache_valid(model_cache_file, MODEL_CACHE_TTL_DAYS * 24):
         return {}
 
     try:
-        with open(MODEL_CACHE_FILE, 'r') as f:
+        with open(model_cache_file, 'r') as f:
             return json.load(f)
     except (json.JSONDecodeError, OSError):
         return {}
 
 
 def save_model_cache(data: dict):
-    """Save model selection cache."""
+    """Save model selection cache. Uses centralized cache directory config."""
     ensure_cache_dir()
+    model_cache_file = _get_model_cache_file()
     try:
-        with open(MODEL_CACHE_FILE, 'w') as f:
+        with open(model_cache_file, 'w') as f:
             json.dump(data, f)
     except OSError:
         pass

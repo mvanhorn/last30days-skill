@@ -1204,6 +1204,14 @@ Your research topic is included in all outbound API requests. If you research se
 - Watchlist database: `~/.local/share/last30days/research.db` (SQLite)
 - Briefings: `~/.local/share/last30days/briefs/`
 
+**Path customization:** All paths can be overridden via environment variables:
+- `LAST30DAYS_CONFIG_DIR` — Config directory (default: `~/.config/last30days`)
+- `LAST30DAYS_DATA_DIR` — Data directory for database (default: `~/.local/share/last30days`)
+- `LAST30DAYS_DATABASE_PATH` — Full database path (overrides `LAST30DAYS_DATA_DIR`)
+- `LAST30DAYS_CACHE_DIR` — Cache directory (default: `~/.cache/last30days`)
+- `LAST30DAYS_OUTPUT_DIR` — Output directory for reports (default: `~/.local/share/last30days/out`)
+- `LAST30DAYS_BRIEFS_DIR` — Briefings directory (default: `~/.local/share/last30days/briefs`)
+
 ### API key isolation
 
 Each API key is transmitted only to its respective endpoint. Your OpenAI key is never sent to xAI, Brave, or any other provider. Browser cookies for X are read locally and used only for Twitter GraphQL requests.

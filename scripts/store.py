@@ -7,7 +7,8 @@ Stores topics, research runs, and findings with:
 - URL-based dedup with engagement metric updates on re-sighting
 - Lightweight schema migrations without external dependencies
 
-Database location: ~/.local/share/last30days/research.db
+Database location: Configurable via LAST30DAYS_DATABASE_PATH or LAST30DAYS_DATA_DIR
+                   Default: ~/.local/share/last30days/research.db
 """
 
 import argparse
@@ -18,6 +19,10 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+# Import path configuration from env module
+from lib.env import get_database_path, get_data_dir
+
+# Module-level defaults for backward compatibility
 DB_DIR = Path.home() / ".local" / "share" / "last30days"
 DB_PATH = DB_DIR / "research.db"
 
@@ -26,7 +31,17 @@ _db_override = None
 
 
 def _get_db_path() -> Path:
-    return _db_override or DB_PATH
+    """Get the database path, using override or centralized config.
+    
+    Priority:
+    1. Test override (_db_override)
+    2. LAST30DAYS_DATABASE_PATH environment variable
+    3. LAST30DAYS_DATA_DIR environment variable + /research.db
+    4. Default: ~/.local/share/last30days/research.db
+    """
+    if _db_override:
+        return _db_override
+    return get_database_path()
 
 
 SCHEMA_V1 = """

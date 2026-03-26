@@ -7,7 +7,21 @@ from pathlib import Path
 from typing import Optional
 
 from . import schema
+from . import env
 
+
+def _get_output_dir() -> Path:
+    """Get the output directory, using centralized config with fallbacks.
+    
+    Priority:
+    1. LAST30DAYS_OUTPUT_DIR environment variable
+    2. ~/.local/share/last30days/out (XDG default)
+    3. System temp directory as fallback
+    """
+    return env.get_output_dir()
+
+
+# Legacy module-level variable for backward compatibility
 OUTPUT_DIR = Path.home() / ".local" / "share" / "last30days" / "out"
 
 
@@ -44,17 +58,14 @@ def _xref_tag(item) -> str:
 
 
 def ensure_output_dir():
-    """Ensure output directory exists. Supports env override and sandbox fallback."""
-    global OUTPUT_DIR
-    env_dir = os.environ.get("LAST30DAYS_OUTPUT_DIR")
-    if env_dir:
-        OUTPUT_DIR = Path(env_dir)
-
-    try:
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    except PermissionError:
-        OUTPUT_DIR = Path(tempfile.gettempdir()) / "last30days" / "out"
-        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    """Ensure output directory exists. Uses centralized config with fallbacks.
+    
+    The actual path is determined by _get_output_dir() which supports:
+    - LAST30DAYS_OUTPUT_DIR environment variable
+    - XDG default: ~/.local/share/last30days/out
+    - Temp directory fallback
+    """
+    _get_output_dir()  # This creates the directory via get_output_dir()
 
 
 def _assess_data_freshness(report: schema.Report) -> dict:
@@ -118,7 +129,10 @@ def render_compact(report: schema.Report, limit: int = 15, missing_keys: str = "
         lines.append("- `SCRAPECREATORS_API_KEY` → Reddit + TikTok + Instagram (one key, all three!) — real upvotes, comments, views")
         lines.append("- `XAI_API_KEY` → X posts with real likes & reposts")
         lines.append("- `OPENAI_API_KEY` (legacy) → Reddit threads (slower, higher cost)")
-        lines.append("- Edit `~/.config/last30days/.env` to add keys")
+        # Show actual config path
+        config_file = env.get_config_file()
+        config_path = str(config_file) if config_file else "~/.config/last30days/.env"
+        lines.append(f"- Edit `{config_path}` to add keys")
         lines.append("---")
         lines.append("")
 
@@ -964,33 +978,34 @@ def write_outputs(
         raw_reddit_enriched: Raw enriched Reddit thread data
     """
     ensure_output_dir()
+    output_dir = _get_output_dir()
 
     # report.json
-    with open(OUTPUT_DIR / "report.json", 'w') as f:
+    with open(output_dir / "report.json", 'w') as f:
         json.dump(report.to_dict(), f, indent=2)
 
     # report.md
-    with open(OUTPUT_DIR / "report.md", 'w') as f:
+    with open(output_dir / "report.md", 'w') as f:
         f.write(render_full_report(report))
 
     # last30days.context.md
-    with open(OUTPUT_DIR / "last30days.context.md", 'w') as f:
+    with open(output_dir / "last30days.context.md", 'w') as f:
         f.write(render_context_snippet(report))
 
     # Raw responses
     if raw_openai:
-        with open(OUTPUT_DIR / "raw_openai.json", 'w') as f:
+        with open(output_dir / "raw_openai.json", 'w') as f:
             json.dump(raw_openai, f, indent=2)
 
     if raw_xai:
-        with open(OUTPUT_DIR / "raw_xai.json", 'w') as f:
+        with open(output_dir / "raw_xai.json", 'w') as f:
             json.dump(raw_xai, f, indent=2)
 
     if raw_reddit_enriched:
-        with open(OUTPUT_DIR / "raw_reddit_threads_enriched.json", 'w') as f:
+        with open(output_dir / "raw_reddit_threads_enriched.json", 'w') as f:
             json.dump(raw_reddit_enriched, f, indent=2)
 
 
 def get_context_path() -> str:
-    """Get path to context file."""
-    return str(OUTPUT_DIR / "last30days.context.md")
+    """Get path to context file. Uses centralized output directory config."""
+    return str(_get_output_dir() / "last30days.context.md")

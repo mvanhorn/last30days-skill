@@ -21,7 +21,21 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import store
+from lib.env import get_briefs_dir
 
+
+def _get_briefs_dir() -> Path:
+    """Get the briefs directory, using centralized config with fallbacks.
+    
+    Priority:
+    1. LAST30DAYS_BRIEFS_DIR environment variable
+    2. ~/.local/share/last30days/briefs (XDG default)
+    3. System temp directory as fallback
+    """
+    return get_briefs_dir()
+
+
+# Legacy module-level variable for backward compatibility
 BRIEFS_DIR = Path.home() / ".local" / "share" / "last30days" / "briefs"
 
 
@@ -204,10 +218,11 @@ def show_briefing(date: str = None) -> dict:
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
 
-    path = BRIEFS_DIR / f"{date}.json"
+    briefs_dir = _get_briefs_dir()
+    path = briefs_dir / f"{date}.json"
     if not path.exists():
         # Try weekly
-        path = BRIEFS_DIR / f"{date}-weekly.json"
+        path = briefs_dir / f"{date}-weekly.json"
 
     if not path.exists():
         return {"status": "not_found", "message": f"No briefing found for {date}."}
@@ -218,9 +233,10 @@ def show_briefing(date: str = None) -> dict:
 
 def _save_briefing(data: dict, suffix: str = ""):
     """Save briefing data to local archive."""
-    BRIEFS_DIR.mkdir(parents=True, exist_ok=True)
+    briefs_dir = _get_briefs_dir()
+    briefs_dir.mkdir(parents=True, exist_ok=True)
     date = datetime.now().strftime("%Y-%m-%d")
-    path = BRIEFS_DIR / f"{date}{suffix}.json"
+    path = briefs_dir / f"{date}{suffix}.json"
     with open(path, "w") as f:
         json.dump(data, f, indent=2, default=str)
 

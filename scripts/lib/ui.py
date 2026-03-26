@@ -6,6 +6,9 @@ import threading
 import random
 from typing import Optional
 
+# Import path configuration for dynamic path display
+from . import env
+
 # Check if we're in a real terminal (not captured by Claude Code)
 IS_TTY = sys.stderr.isatty()
 
@@ -146,7 +149,46 @@ PROMO_SINGLE_KEY = {
     "x": "\n💡 You can unlock X with AUTH_TOKEN/CT0 or XAI_API_KEY - just ask me how.\n",
 }
 
-# Bird auth help (for local users with vendored Bird CLI)
+
+def _get_config_path_display() -> str:
+    """Get a display-friendly config path for UI messages.
+    
+    Returns the actual config file path if available, or a fallback string.
+    """
+    config_file = env.get_config_file()
+    if config_file:
+        return str(config_file)
+    return "~/.config/last30days/.env"
+
+
+def _get_bird_auth_help(use_colors: bool = True) -> str:
+    """Generate Bird auth help text with the actual config path.
+    
+    Args:
+        use_colors: If True, use ANSI color codes
+    
+    Returns:
+        Help text string with the actual config path
+    """
+    config_path = _get_config_path_display()
+    if use_colors:
+        return f"""
+{Colors.YELLOW}Bird authentication failed.{Colors.RESET}
+
+To fix this:
+1. Add AUTH_TOKEN and CT0 to {config_path} or .claude/last30days.env
+2. Or set XAI_API_KEY for the xAI fallback backend
+"""
+    return f"""
+Bird authentication failed.
+
+To fix this:
+1. Add AUTH_TOKEN and CT0 to {config_path} or .claude/last30days.env
+2. Or set XAI_API_KEY for the xAI fallback backend
+"""
+
+
+# Legacy constants for backward compatibility (use functions above instead)
 BIRD_AUTH_HELP = f"""
 {Colors.YELLOW}Bird authentication failed.{Colors.RESET}
 
@@ -409,11 +451,8 @@ class ProgressDisplay:
         sys.stderr.flush()
 
     def show_bird_auth_help(self):
-        """Show Bird authentication help."""
-        if IS_TTY:
-            sys.stderr.write(BIRD_AUTH_HELP)
-        else:
-            sys.stderr.write(BIRD_AUTH_HELP_PLAIN)
+        """Show Bird authentication help with actual config path."""
+        sys.stderr.write(_get_bird_auth_help(use_colors=IS_TTY))
         sys.stderr.flush()
 
 
@@ -437,6 +476,14 @@ def show_diagnostic_banner(diag: dict):
     if has_reddit and has_x and has_youtube and has_web:
         return
 
+    # Get the actual config path for display
+    config_path = _get_config_path_display()
+    
+    # Truncate config path if too long for banner width
+    max_config_len = 30
+    if len(config_path) > max_config_len:
+        config_path = "..." + config_path[-(max_config_len-3):]
+
     lines = []
 
     if IS_TTY:
@@ -451,7 +498,8 @@ def show_diagnostic_banner(diag: dict):
             lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Reddit{Colors.RESET}    — Public Reddit search (no key)       {Colors.DIM}│{Colors.RESET}")
         else:
             lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.RED}❌ Reddit{Colors.RESET}    — No OPENAI_API_KEY                    {Colors.DIM}│{Colors.RESET}")
-            lines.append(f"{Colors.DIM}│{Colors.RESET}     └─ Add to ~/.config/last30days/.env            {Colors.DIM}│{Colors.RESET}")
+            add_msg = f"Add to {config_path}"
+            lines.append(f"{Colors.DIM}│{Colors.RESET}     └─ {add_msg:<38}{Colors.DIM}│{Colors.RESET}")
 
         # X/Twitter
         if has_x:
@@ -487,7 +535,8 @@ def show_diagnostic_banner(diag: dict):
             lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.YELLOW}⚡ Web{Colors.RESET}       — Using assistant's search tool       {Colors.DIM}│{Colors.RESET}")
 
         lines.append(f"{Colors.DIM}│{Colors.RESET}                                                     {Colors.DIM}│{Colors.RESET}")
-        lines.append(f"{Colors.DIM}│{Colors.RESET}  Config: {Colors.BOLD}~/.config/last30days/.env{Colors.RESET}                  {Colors.DIM}│{Colors.RESET}")
+        config_line = f"Config: {config_path}"
+        lines.append(f"{Colors.DIM}│{Colors.RESET}  {config_line:<43}{Colors.DIM}│{Colors.RESET}")
         lines.append(f"{Colors.DIM}└─────────────────────────────────────────────────────┘{Colors.RESET}")
     else:
         # Plain text for non-TTY (Claude Code / Codex)
@@ -501,7 +550,8 @@ def show_diagnostic_banner(diag: dict):
             lines.append("│  ✅ Reddit    — Public Reddit search (no key)       │")
         else:
             lines.append("│  ❌ Reddit    — No OPENAI_API_KEY                    │")
-            lines.append("│     └─ Add to ~/.config/last30days/.env            │")
+            add_msg = f"Add to {config_path}"
+            lines.append(f"│     └─ {add_msg:<38}│")
 
         if has_x:
             lines.append("│  ✅ X/Twitter — available                            │")
@@ -529,7 +579,7 @@ def show_diagnostic_banner(diag: dict):
             lines.append("│  ⚡ Web       — Using assistant's search tool       │")
 
         lines.append("│                                                     │")
-        lines.append("│  Config: ~/.config/last30days/.env                  │")
+        lines.append(f"│  Config: {config_path:<43}│")
         lines.append("└─────────────────────────────────────────────────────┘")
 
     sys.stderr.write("\n".join(lines) + "\n\n")
