@@ -106,7 +106,12 @@ def _extract_subreddits(reddit_items: List[Dict[str, Any]]) -> List[str]:
 
     for item in reddit_items:
         # Primary subreddit
-        sub = item.get("subreddit", "").strip().lstrip("r/")
+        raw_sub = item.get("subreddit", "")
+        if isinstance(raw_sub, dict):
+            sub = raw_sub.get("name") or raw_sub.get("display_name") or raw_sub.get("subreddit") or ""
+        else:
+            sub = raw_sub
+        sub = str(sub).strip().lstrip("r/")
         if sub:
             sub_counts[sub] += 1
 

@@ -73,6 +73,18 @@ def _log(msg: str):
     sys.stderr.flush()
 
 
+def _coerce_subreddit_name(value: Any) -> str:
+    """Normalize subreddit values from APIs into a clean subreddit name."""
+    if isinstance(value, str):
+        return value.strip().lstrip("r/")
+    if isinstance(value, dict):
+        for key in ("name", "display_name", "subreddit", "title", "id"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip().lstrip("r/")
+    return ""
+
+
 def _sc_headers(token: str) -> Dict[str, str]:
     """Build ScrapeCreators request headers."""
     return {
@@ -153,7 +165,7 @@ def discover_subreddits(
 
     scores = Counter()
     for post in results:
-        sub = post.get("subreddit", "")
+        sub = _coerce_subreddit_name(post.get("subreddit", ""))
         if not sub:
             continue
 
@@ -211,7 +223,7 @@ def _normalize_post(post: Dict[str, Any], idx: int, source_label: str = "global"
         "reddit_id": post.get("id", ""),
         "title": title,
         "url": url,
-        "subreddit": str(post.get("subreddit", "")).strip(),
+        "subreddit": _coerce_subreddit_name(post.get("subreddit", "")),
         "date": _parse_date(post.get("created_utc")),
         "engagement": {
             "score": post.get("ups") or post.get("score", 0),

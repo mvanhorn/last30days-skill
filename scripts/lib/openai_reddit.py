@@ -25,6 +25,18 @@ def _log_info(msg: str):
     sys.stderr.flush()
 
 
+def _coerce_subreddit_name(value: Any) -> str:
+    """Normalize subreddit values into a clean subreddit name."""
+    if isinstance(value, str):
+        return value.strip().lstrip("r/")
+    if isinstance(value, dict):
+        for key in ("name", "display_name", "subreddit", "title", "id"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip().lstrip("r/")
+    return ""
+
+
 def _is_model_access_error(error: http.HTTPError) -> bool:
     """Check if error is due to model access/verification issues."""
     if error.status_code not in (400, 403):
@@ -427,7 +439,7 @@ def search_reddit_public(
                     "id": f"R{len(all_items)+1}",
                     "title": str(post.get("title", "")).strip(),
                     "url": full_url,
-                    "subreddit": str(post.get("subreddit", "")).strip(),
+                    "subreddit": _coerce_subreddit_name(post.get("subreddit", "")),
                     "date": date_value,
                     "why_relevant": "Found via Reddit public search",
                     "relevance": _public_relevance(score, num_comments),
@@ -508,7 +520,7 @@ def search_subreddits(
                     "id": f"RS{len(all_items)+1}",
                     "title": str(post.get("title", "")).strip(),
                     "url": f"https://www.reddit.com{permalink}",
-                    "subreddit": str(post.get("subreddit", sub)).strip(),
+                    "subreddit": _coerce_subreddit_name(post.get("subreddit", sub)) or sub.lstrip("r/"),
                     "date": None,
                     "why_relevant": f"Found in r/{sub} supplemental search",
                     "relevance": 0.65,  # Slightly lower default for supplemental
@@ -615,7 +627,7 @@ def parse_reddit_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
             "id": f"R{i+1}",
             "title": str(item.get("title", "")).strip(),
             "url": url,
-            "subreddit": str(item.get("subreddit", "")).strip().lstrip("r/"),
+            "subreddit": _coerce_subreddit_name(item.get("subreddit", "")),
             "date": item.get("date"),
             "why_relevant": str(item.get("why_relevant", "")).strip(),
             "relevance": min(1.0, max(0.0, float(item.get("relevance", 0.5)))),

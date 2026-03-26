@@ -7,6 +7,18 @@ from . import dates, schema
 T = TypeVar("T", schema.RedditItem, schema.XItem, schema.WebSearchItem, schema.YouTubeItem, schema.TikTokItem, schema.InstagramItem, schema.HackerNewsItem, schema.BlueskyItem, schema.PolymarketItem)
 
 
+def _coerce_subreddit_name(value: Any) -> str:
+    """Normalize subreddit values into a clean subreddit name."""
+    if isinstance(value, str):
+        return value.strip().lstrip("r/")
+    if isinstance(value, dict):
+        for key in ("name", "display_name", "subreddit", "title", "id"):
+            candidate = value.get(key)
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip().lstrip("r/")
+    return ""
+
+
 def filter_by_date_range(
     items: List[T],
     from_date: str,
@@ -94,7 +106,7 @@ def normalize_reddit_items(
             id=item.get("id", ""),
             title=item.get("title", ""),
             url=item.get("url", ""),
-            subreddit=item.get("subreddit", ""),
+            subreddit=_coerce_subreddit_name(item.get("subreddit", "")),
             date=date_str,
             date_confidence=date_confidence,
             engagement=engagement,
