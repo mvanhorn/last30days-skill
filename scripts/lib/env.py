@@ -499,6 +499,15 @@ def is_truthsocial_available(config: Dict[str, Any]) -> bool:
     return bool(config.get('TRUTHSOCIAL_TOKEN'))
 
 
+def is_mastodon_available() -> bool:
+    """Check if Mastodon source is available.
+
+    Always returns True - Mastodon uses public APIs that don't require
+    authentication. Searches multiple popular instances.
+    """
+    return True
+
+
 def is_polymarket_available() -> bool:
     """Check if Polymarket source is available.
 

@@ -242,6 +242,14 @@ def dedupe_truthsocial(
     return dedupe_items(items, threshold)
 
 
+def dedupe_mastodon(
+    items: List[schema.MastodonItem],
+    threshold: float = 0.7,
+) -> List[schema.MastodonItem]:
+    """Dedupe Mastodon items."""
+    return dedupe_items(items, threshold)
+
+
 def dedupe_polymarket(
     items: List[schema.PolymarketItem],
     threshold: float = 0.7,

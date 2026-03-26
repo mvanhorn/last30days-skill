@@ -432,6 +432,45 @@ class TruthSocialItem:
 
 
 @dataclass
+class MastodonItem:
+    """Normalized Mastodon post from federated instances."""
+    id: str              # "MD1", "MD2", ...
+    text: str
+    url: str             # Instance permalink (e.g., mastodon.social/@user/123)
+    author_handle: str   # Full handle (e.g., user@mastodon.social)
+    display_name: str
+    instance: str        # Instance hostname (e.g., "mastodon.social")
+    date: Optional[str] = None
+    date_confidence: str = "high"  # Mastodon API has exact timestamps
+    engagement: Optional[Engagement] = None  # likes, reposts, replies
+    relevance: float = 0.5
+    why_relevant: str = ""
+    subs: SubScores = field(default_factory=SubScores)
+    score: int = 0
+    cross_refs: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = {
+            'id': self.id,
+            'text': self.text,
+            'url': self.url,
+            'author_handle': self.author_handle,
+            'display_name': self.display_name,
+            'instance': self.instance,
+            'date': self.date,
+            'date_confidence': self.date_confidence,
+            'engagement': self.engagement.to_dict() if self.engagement else None,
+            'relevance': self.relevance,
+            'why_relevant': self.why_relevant,
+            'subs': self.subs.to_dict(),
+            'score': self.score,
+        }
+        if self.cross_refs:
+            d['cross_refs'] = self.cross_refs
+        return d
+
+
+@dataclass
 class PolymarketItem:
     """Normalized Polymarket prediction market item."""
     id: str           # "PM1", "PM2", ...
@@ -493,6 +532,7 @@ class Report:
     hackernews: List[HackerNewsItem] = field(default_factory=list)
     bluesky: List[BlueskyItem] = field(default_factory=list)
     truthsocial: List[TruthSocialItem] = field(default_factory=list)
+    mastodon: List[MastodonItem] = field(default_factory=list)
     polymarket: List[PolymarketItem] = field(default_factory=list)
     best_practices: List[str] = field(default_factory=list)
     prompt_pack: List[str] = field(default_factory=list)
@@ -507,6 +547,7 @@ class Report:
     hackernews_error: Optional[str] = None
     bluesky_error: Optional[str] = None
     truthsocial_error: Optional[str] = None
+    mastodon_error: Optional[str] = None
     polymarket_error: Optional[str] = None
     # Handle resolution
     resolved_x_handle: Optional[str] = None
@@ -534,6 +575,7 @@ class Report:
             'hackernews': [h.to_dict() for h in self.hackernews],
             'bluesky': [b.to_dict() for b in self.bluesky],
             'truthsocial': [ts.to_dict() for ts in self.truthsocial],
+            'mastodon': [m.to_dict() for m in self.mastodon],
             'polymarket': [p.to_dict() for p in self.polymarket],
             'best_practices': self.best_practices,
             'prompt_pack': self.prompt_pack,
@@ -559,6 +601,8 @@ class Report:
             d['bluesky_error'] = self.bluesky_error
         if self.truthsocial_error:
             d['truthsocial_error'] = self.truthsocial_error
+        if self.mastodon_error:
+            d['mastodon_error'] = self.mastodon_error
         if self.polymarket_error:
             d['polymarket_error'] = self.polymarket_error
         if self.from_cache:
@@ -762,6 +806,30 @@ class Report:
                 cross_refs=ts.get('cross_refs', []),
             ))
 
+        # Reconstruct Mastodon items (backward compat: key may not exist)
+        mastodon_items = []
+        for m in data.get('mastodon', []):
+            eng = None
+            if m.get('engagement'):
+                eng = Engagement(**m['engagement'])
+            subs = SubScores(**m.get('subs', {})) if m.get('subs') else SubScores()
+            mastodon_items.append(MastodonItem(
+                id=m['id'],
+                text=m['text'],
+                url=m['url'],
+                author_handle=m.get('author_handle', ''),
+                display_name=m.get('display_name', ''),
+                instance=m.get('instance', ''),
+                date=m.get('date'),
+                date_confidence=m.get('date_confidence', 'high'),
+                engagement=eng,
+                relevance=m.get('relevance', 0.5),
+                why_relevant=m.get('why_relevant', ''),
+                subs=subs,
+                score=m.get('score', 0),
+                cross_refs=m.get('cross_refs', []),
+            ))
+
         # Reconstruct Polymarket items (backward compat: key may not exist)
         pm_items = []
         for p in data.get('polymarket', []):
@@ -804,6 +872,7 @@ class Report:
             instagram=ig_items,
             hackernews=hn_items,
             truthsocial=ts_items,
+            mastodon=mastodon_items,
             polymarket=pm_items,
             best_practices=data.get('best_practices', []),
             prompt_pack=data.get('prompt_pack', []),
@@ -816,6 +885,7 @@ class Report:
             instagram_error=data.get('instagram_error'),
             hackernews_error=data.get('hackernews_error'),
             truthsocial_error=data.get('truthsocial_error'),
+            mastodon_error=data.get('mastodon_error'),
             polymarket_error=data.get('polymarket_error'),
             resolved_x_handle=data.get('resolved_x_handle'),
             from_cache=data.get('from_cache', False),

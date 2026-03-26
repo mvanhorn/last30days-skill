@@ -438,6 +438,50 @@ def normalize_truthsocial_items(
     return normalized
 
 
+def normalize_mastodon_items(
+    items: List[Dict[str, Any]],
+    from_date: str,
+    to_date: str,
+) -> List[schema.MastodonItem]:
+    """Normalize raw Mastodon items to schema.
+
+    Args:
+        items: Raw Mastodon items from public instance APIs
+        from_date: Start of date range
+        to_date: End of date range
+
+    Returns:
+        List of MastodonItem objects
+    """
+    normalized = []
+
+    for i, item in enumerate(items):
+        eng_raw = item.get("engagement") or {}
+        engagement = schema.Engagement(
+            likes=eng_raw.get("likes"),
+            reposts=eng_raw.get("reposts"),
+            replies=eng_raw.get("replies"),
+        )
+
+        date_str = item.get("date")
+
+        normalized.append(schema.MastodonItem(
+            id=f"MD{i+1}",
+            text=item.get("text", ""),
+            url=item.get("url", ""),
+            author_handle=item.get("handle", ""),
+            display_name=item.get("display_name", ""),
+            instance=item.get("instance", ""),
+            date=date_str,
+            date_confidence="high",
+            engagement=engagement,
+            relevance=item.get("relevance", 0.5),
+            why_relevant=item.get("why_relevant", ""),
+        ))
+
+    return normalized
+
+
 def normalize_polymarket_items(
     items: List[Dict[str, Any]],
     from_date: str,

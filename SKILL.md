@@ -1,7 +1,7 @@
 ---
 name: last30days
-version: "2.9.5"
-description: "Deep research engine covering the last 30 days across 10+ sources - Reddit, X/Twitter, YouTube, TikTok, Instagram, Hacker News, Polymarket, Bluesky, Truth Social, web. AI synthesizes findings into grounded, cited reports. The most comprehensive recency research skill on ClawHub."
+version: "2.10.0"
+description: "Deep research engine covering the last 30 days across 11+ sources - Reddit, X/Twitter, YouTube, TikTok, Instagram, Hacker News, Polymarket, Bluesky, Truth Social, Mastodon, web. AI synthesizes findings into grounded, cited reports. The most comprehensive recency research skill on ClawHub."
 argument-hint: 'last30 AI video tools, last30 best project management tools'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
 homepage: https://github.com/mvanhorn/last30days-skill
@@ -47,6 +47,8 @@ metadata:
       - polymarket
       - bluesky
       - truthsocial
+      - mastodon
+      - fediverse
       - trends
       - recency
       - news
@@ -59,11 +61,11 @@ metadata:
       - clawhub
 ---
 
-# last30days v2.9.5: Research Any Topic from the Last 30 Days
+# last30days v2.10.0: Research Any Topic from the Last 30 Days
 
-> **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `~/Documents/Last30Days/`. X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars). Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). Truth Social search uses optional bearer token (TRUTHSOCIAL_TOKEN env var - extract from browser dev tools). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
+> **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `~/Documents/Last30Days/`. X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars). Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). Truth Social search uses optional bearer token (TRUTHSOCIAL_TOKEN env var - extract from browser dev tools). Mastodon search uses public APIs (no authentication required). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
 
-Research ANY topic across Reddit, X, Bluesky, Truth Social, YouTube, TikTok, Hacker News, Polymarket, and the web. Surface what people are actually discussing, recommending, betting on, and debating right now.
+Research ANY topic across Reddit, X, Bluesky, Truth Social, Mastodon, YouTube, TikTok, Hacker News, Polymarket, and the web. Surface what people are actually discussing, recommending, betting on, and debating right now.
 
 ## CRITICAL: Parse User Intent
 
@@ -100,7 +102,7 @@ Common patterns:
 **DISPLAY your parsing to the user.** Before running any tools, output:
 
 ```
-I'll research {TOPIC} across Reddit, X, Bluesky, Truth Social, TikTok, and the web to find what's been discussed in the last 30 days.
+I'll research {TOPIC} across Reddit, X, Bluesky, Truth Social, Mastodon, TikTok, and the web to find what's been discussed in the last 30 days.
 
 Parsed intent:
 - TOPIC = {TOPIC}
@@ -164,7 +166,7 @@ Agent mode report format:
 
 ```
 ## Research Report: {TOPIC}
-Generated: {date} | Sources: Reddit, X, Bluesky, Truth Social, YouTube, TikTok, HN, Polymarket, Web
+Generated: {date} | Sources: Reddit, X, Bluesky, Truth Social, Mastodon, YouTube, TikTok, HN, Polymarket, Web
 
 ### Key Findings
 [3-5 bullet points, highest-signal insights with citations]
@@ -462,8 +464,10 @@ CITATION PRIORITY (most to least preferred):
 4. TikTok creators — "per @creator on TikTok" (viral/trending signal)
 5. Instagram creators — "per @creator on Instagram" (influencer/creator signal)
 6. HN discussions — "per HN" or "per hn/username" (developer community signal)
-7. Polymarket — "Polymarket has X at Y% (up/down Z%)" with specific odds and movement
-8. Web sources — ONLY when Reddit/X/YouTube/TikTok/Instagram/HN/Polymarket don't cover that specific fact
+7. Bluesky users — "per @handle on Bluesky" (growing social network)
+8. Mastodon users — "per @user@instance on Mastodon" (federated social network)
+9. Polymarket — "Polymarket has X at Y% (up/down Z%)" with specific odds and movement
+10. Web sources — ONLY when Reddit/X/YouTube/TikTok/Instagram/HN/Bluesky/Mastodon/Polymarket don't cover that specific fact
 
 The tool's value is surfacing what PEOPLE are saying, not what journalists wrote.
 When both a web article and an X post cover the same fact, cite the X post.
@@ -519,6 +523,7 @@ KEY PATTERNS from the research:
 ├─ 🟡 HN: {N} stories │ {N} points │ {N} comments
 ├─ 🦋 Bluesky: {N} posts │ {N} likes │ {N} reposts
 ├─ 🇺🇸 Truth Social: {N} posts │ {N} likes │ {N} reposts
+├─ 🐘 Mastodon: {N} posts │ {N} likes │ {N} reposts
 ├─ 📊 Polymarket: {N} markets │ {short summary of up to 5 most relevant market odds, e.g. "Championship: 12%, #1 Seed: 28%, Big 12: 64%, vs Kansas: 71%"}
 ├─ 🌐 Web: {N} pages — Source Name, Source Name, Source Name
 └─ 🗣️ Top voices: @{handle1} ({N} likes), @{handle2} │ r/{sub1}, r/{sub2}
@@ -710,7 +715,7 @@ After delivering a prompt, end with:
 ```
 ---
 📚 Expert in: {TOPIC} for {TARGET_TOOL}
-📊 Based on: {n} Reddit threads ({sum} upvotes) + {n} X posts ({sum} likes) + {n} YouTube videos ({sum} views) + {n} TikTok videos ({sum} views) + {n} Instagram reels ({sum} views) + {n} HN stories ({sum} points) + {n} web pages
+📊 Based on: {n} Reddit threads ({sum} upvotes) + {n} X posts ({sum} likes) + {n} YouTube videos ({sum} views) + {n} TikTok videos ({sum} views) + {n} Instagram reels ({sum} views) + {n} HN stories ({sum} points) + {n} Bluesky posts + {n} Truth Social posts + {n} Mastodon posts + {n} web pages
 
 Want another prompt? Just tell me what you're creating next.
 ```
@@ -725,6 +730,7 @@ Want another prompt? Just tell me what you're creating next.
 - Sends search queries to Twitter's GraphQL API (via optional user-provided AUTH_TOKEN/CT0 env vars — no browser session access) or xAI's API (`api.x.ai`) for X search
 - Sends search queries to Algolia HN Search API (`hn.algolia.com`) for Hacker News story and comment discovery (free, no auth)
 - Sends search queries to Polymarket Gamma API (`gamma-api.polymarket.com`) for prediction market discovery (free, no auth)
+- Sends search queries to public Mastodon instance APIs (`mastodon.social`, `mas.to`, `fosstodon.org`, `mstdn.social`, `techhub.social`) for federated social search (free, no auth)
 - Runs `yt-dlp` locally for YouTube search and transcript extraction (no API key, public data)
 - Sends search queries to ScrapeCreators API (`api.scrapecreators.com`) for TikTok and Instagram search, transcript/caption extraction (same SCRAPECREATORS_API_KEY as Reddit, PAYG after 100 free credits)
 - Optionally sends search queries to Brave Search API, Parallel AI API, or OpenRouter API for web search
@@ -738,7 +744,7 @@ Want another prompt? Just tell me what you're creating next.
 - Does not share API keys between providers (OpenAI key only goes to api.openai.com, etc.)
 - Does not log, cache, or write API keys to output files
 - Does not send data to any endpoint not listed above
-- Hacker News and Polymarket sources are always available (no API key, no binary dependency)
+- Hacker News, Polymarket, and Mastodon sources are always available (no API key, no binary dependency)
 - TikTok and Instagram sources require SCRAPECREATORS_API_KEY (same key covers both; 100 free credits, then PAYG)
 - Can be invoked autonomously by agents via the Skill tool (runs inline, not forked); pass `--agent` for non-interactive report output
 

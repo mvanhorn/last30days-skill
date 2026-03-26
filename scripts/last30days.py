@@ -45,7 +45,7 @@ TIMEOUT_PROFILES = {
 
 # Valid source names for the --search flag
 VALID_SEARCH_SOURCES = {
-    "reddit", "x", "hn", "bluesky", "bsky", "truthsocial", "truth", "youtube", "tiktok", "instagram",
+    "reddit", "x", "hn", "bluesky", "bsky", "truthsocial", "truth", "mastodon", "youtube", "tiktok", "instagram",
     "polymarket", "web", "xiaohongshu", "xhs",
 }
 
@@ -69,6 +69,8 @@ def parse_search_flag(search_str: str) -> set:
             continue
         if s == "xhs":
             s = "xiaohongshu"
+        if s == "bsky":
+            s = "bluesky"
         if s not in VALID_SEARCH_SOURCES:
             print(
                 f"Error: Unknown search source '{s}'. "
@@ -137,6 +139,7 @@ from lib import (
     bird_x,
     bluesky,
     truthsocial,
+    mastodon,
     dates,
     dedupe,
     hackernews,
@@ -574,6 +577,35 @@ def _search_truthsocial(
     return ts_items, ts_error
 
 
+def _search_mastodon(
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    config: dict = None,
+) -> tuple:
+    """Search Mastodon via public instance APIs (runs in thread).
+
+    Returns:
+        Tuple of (mastodon_items, mastodon_error)
+    """
+    mastodon_error = None
+
+    try:
+        response = mastodon.search_mastodon(
+            topic, from_date, to_date, depth=depth, config=config,
+        )
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+
+    mastodon_items = mastodon.parse_mastodon_response(response)
+
+    if response.get("error"):
+        mastodon_error = response["error"]
+
+    return mastodon_items, mastodon_error
+
+
 def _search_polymarket(
     topic: str,
     from_date: str,
@@ -888,6 +920,7 @@ def run_research(
     do_hackernews: bool = True,
     do_bluesky: bool = True,
     do_truthsocial: bool = True,
+    do_mastodon: bool = True,
     do_polymarket: bool = True,
     no_native_web: bool = False,
 ) -> tuple:
@@ -895,10 +928,10 @@ def run_research(
 
     Returns:
         Tuple of (reddit_items, x_items, youtube_items, tiktok_items, instagram_items,
-                  hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed,
+                  hackernews_items, bluesky_items, truthsocial_items, mastodon_items, polymarket_items, web_items, web_needed,
                   raw_openai, raw_xai, raw_reddit_enriched,
                   reddit_error, x_error, youtube_error, tiktok_error, instagram_error,
-                  hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error)
+                  hackernews_error, bluesky_error, truthsocial_error, mastodon_error, polymarket_error, web_error)
 
     Note: web_needed is True when web search should be performed by the assistant
     (i.e., no native web search API keys are configured). When native web search
@@ -916,6 +949,7 @@ def run_research(
     hackernews_items = []
     bluesky_items = []
     truthsocial_items = []
+    mastodon_items = []
     polymarket_items = []
     web_items = []
     raw_openai = None
@@ -929,6 +963,7 @@ def run_research(
     hackernews_error = None
     bluesky_error = None
     truthsocial_error = None
+    mastodon_error = None
     polymarket_error = None
     web_error = None
     xiaohongshu_error = None
@@ -1013,7 +1048,7 @@ def run_research(
                     progress.show_error(f"Instagram error: {e}")
             if progress:
                 progress.end_instagram(len(instagram_items))
-        return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error
+        return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, mastodon_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, mastodon_error, polymarket_error, web_error
 
     # Determine which searches to run
     do_reddit = sources in ("both", "reddit", "all", "reddit-web")
@@ -1107,6 +1142,11 @@ def run_research(
         if do_truthsocial:
             truthsocial_future = executor.submit(
                 _search_truthsocial, topic, from_date, to_date, depth, config
+            )
+
+        if do_mastodon:
+            mastodon_future = executor.submit(
+                _search_mastodon, topic, from_date, to_date, depth, config
             )
 
         if do_polymarket:
@@ -1271,6 +1311,21 @@ def run_research(
                 if progress:
                     progress.show_error(f"Truth Social error: {e}")
 
+        if mastodon_future:
+            mastodon_timeout = timeouts.get("mastodon_future", future_timeout)
+            try:
+                mastodon_items, mastodon_error = mastodon_future.result(timeout=mastodon_timeout)
+                if mastodon_error and progress:
+                    progress.show_error(f"Mastodon error: {mastodon_error}")
+            except TimeoutError:
+                mastodon_error = f"Mastodon search timed out after {mastodon_timeout}s"
+                if progress:
+                    progress.show_error(mastodon_error)
+            except Exception as e:
+                mastodon_error = f"{type(e).__name__}: {e}"
+                if progress:
+                    progress.show_error(f"Mastodon error: {e}")
+
         if polymarket_future:
             pm_timeout = timeouts.get("polymarket_future", future_timeout)
             try:
@@ -1405,7 +1460,7 @@ def run_research(
         if sup_x:
             x_items.extend(sup_x)
 
-    return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error
+    return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, mastodon_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, mastodon_error, polymarket_error, web_error
 
 
 def main():
@@ -1704,6 +1759,7 @@ def main():
     search_do_hackernews = qt.is_source_enabled("hn", query_type) if not args.search else True
     search_do_bluesky = has_bluesky and qt.is_source_enabled("bluesky", query_type)
     search_do_truthsocial = False  # Always opt-in (requires --search truthsocial)
+    search_do_mastodon = env.is_mastodon_available() and qt.is_source_enabled("mastodon", query_type)
     search_do_polymarket = qt.is_source_enabled("polymarket", query_type)
     search_run_youtube = has_ytdlp and qt.is_source_enabled("youtube", query_type)
     search_run_tiktok = has_tiktok and qt.is_source_enabled("tiktok", query_type)
@@ -1716,6 +1772,7 @@ def main():
         search_do_hackernews = "hn" in search_sources
         search_do_bluesky = ("bluesky" in search_sources or "bsky" in search_sources) and has_bluesky
         search_do_truthsocial = ("truthsocial" in search_sources or "truth" in search_sources) and has_truthsocial
+        search_do_mastodon = "mastodon" in search_sources
         search_do_polymarket = "polymarket" in search_sources
         search_run_youtube = "youtube" in search_sources and has_ytdlp
         search_run_tiktok = "tiktok" in search_sources and has_tiktok
@@ -1735,7 +1792,7 @@ def main():
             sources = "web"  # hn/polymarket only; no Reddit/X
 
     # Run research
-    reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error = run_research(
+    reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, mastodon_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, mastodon_error, polymarket_error, web_error = run_research(
         args.topic,
         sources,
         config,
@@ -1755,6 +1812,7 @@ def main():
         do_hackernews=search_do_hackernews,
         do_bluesky=search_do_bluesky,
         do_truthsocial=search_do_truthsocial,
+        do_mastodon=search_do_mastodon,
         do_polymarket=search_do_polymarket,
         no_native_web=args.no_native_web,
     )
@@ -1771,6 +1829,7 @@ def main():
     normalized_hn = normalize.normalize_hackernews_items(hackernews_items, from_date, to_date) if hackernews_items else []
     normalized_bsky = normalize.normalize_bluesky_items(bluesky_items, from_date, to_date) if bluesky_items else []
     normalized_ts = normalize.normalize_truthsocial_items(truthsocial_items, from_date, to_date) if truthsocial_items else []
+    normalized_mastodon = normalize.normalize_mastodon_items(mastodon_items, from_date, to_date) if mastodon_items else []
     normalized_pm = normalize.normalize_polymarket_items(polymarket_items, from_date, to_date) if polymarket_items else []
     normalized_web = websearch.normalize_websearch_items(web_items, from_date, to_date) if web_items else []
 
@@ -1789,6 +1848,7 @@ def main():
     filtered_hn = normalize.filter_by_date_range(normalized_hn, from_date, to_date) if normalized_hn else []
     filtered_bsky = normalize.filter_by_date_range(normalized_bsky, from_date, to_date) if normalized_bsky else []
     filtered_ts = normalize.filter_by_date_range(normalized_ts, from_date, to_date) if normalized_ts else []
+    filtered_mastodon = normalize.filter_by_date_range(normalized_mastodon, from_date, to_date) if normalized_mastodon else []
     # Polymarket: skip hard date filter - markets are active/traded, updatedAt is fine
     filtered_pm = normalized_pm
     filtered_web = normalize.filter_by_date_range(normalized_web, from_date, to_date) if normalized_web else []
@@ -1802,6 +1862,7 @@ def main():
     scored_hn = score.score_hackernews_items(filtered_hn) if filtered_hn else []
     scored_bsky = score.score_bluesky_items(filtered_bsky) if filtered_bsky else []
     scored_ts = score.score_truthsocial_items(filtered_ts) if filtered_ts else []
+    scored_mastodon = score.score_mastodon_items(filtered_mastodon) if filtered_mastodon else []
     scored_pm = score.score_polymarket_items(filtered_pm) if filtered_pm else []
     scored_web = score.score_websearch_items(filtered_web, query_type=query_type) if filtered_web else []
 
@@ -1814,6 +1875,7 @@ def main():
     sorted_hn = score.sort_items(scored_hn, query_type=query_type) if scored_hn else []
     sorted_bsky = score.sort_items(scored_bsky, query_type=query_type) if scored_bsky else []
     sorted_ts = score.sort_items(scored_ts, query_type=query_type) if scored_ts else []
+    sorted_mastodon = score.sort_items(scored_mastodon, query_type=query_type) if scored_mastodon else []
     sorted_pm = score.sort_items(scored_pm, query_type=query_type) if scored_pm else []
     sorted_web = score.sort_items(scored_web, query_type=query_type) if scored_web else []
 
@@ -1826,6 +1888,7 @@ def main():
     deduped_hn = dedupe.dedupe_hackernews(sorted_hn) if sorted_hn else []
     deduped_bsky = dedupe.dedupe_bluesky(sorted_bsky) if sorted_bsky else []
     deduped_ts = dedupe.dedupe_truthsocial(sorted_ts) if sorted_ts else []
+    deduped_mastodon = dedupe.dedupe_mastodon(sorted_mastodon) if sorted_mastodon else []
     deduped_pm = dedupe.dedupe_polymarket(sorted_pm) if sorted_pm else []
     deduped_web = websearch.dedupe_websearch(sorted_web) if sorted_web else []
 
@@ -1838,11 +1901,12 @@ def main():
     deduped_hn = score.relevance_filter(deduped_hn, "HN")
     deduped_bsky = score.relevance_filter(deduped_bsky, "BLUESKY")
     deduped_ts = score.relevance_filter(deduped_ts, "TRUTHSOCIAL")
+    deduped_mastodon = score.relevance_filter(deduped_mastodon, "MASTODON") if deduped_mastodon else []
     deduped_pm = score.relevance_filter(deduped_pm, "POLYMARKET") if deduped_pm else []
 
     # Cross-source linking: annotate items that discuss the same story
     dedupe.cross_source_link(
-        deduped_reddit, deduped_x, deduped_youtube, deduped_tiktok, deduped_ig, deduped_hn, deduped_bsky, deduped_ts, deduped_pm, deduped_web,
+        deduped_reddit, deduped_x, deduped_youtube, deduped_tiktok, deduped_ig, deduped_hn, deduped_bsky, deduped_ts, deduped_mastodon, deduped_pm, deduped_web,
     )
 
     progress.end_processing()
@@ -1864,6 +1928,7 @@ def main():
     report.hackernews = deduped_hn
     report.bluesky = deduped_bsky
     report.truthsocial = deduped_ts
+    report.mastodon = deduped_mastodon
     report.polymarket = deduped_pm
     report.web = deduped_web
     report.reddit_error = reddit_error
@@ -1874,6 +1939,7 @@ def main():
     report.hackernews_error = hackernews_error
     report.bluesky_error = bluesky_error
     report.truthsocial_error = truthsocial_error
+    report.mastodon_error = mastodon_error
     report.polymarket_error = polymarket_error
     report.web_error = web_error
     report.resolved_x_handle = args.x_handle

@@ -593,6 +593,62 @@ def score_truthsocial_items(items: List[schema.TruthSocialItem]) -> List[schema.
     return items
 
 
+def compute_mastodon_engagement_raw(engagement: Optional[schema.Engagement]) -> Optional[float]:
+    """Compute raw engagement score for Mastodon item.
+
+    Formula: 0.45*log1p(likes) + 0.30*log1p(reposts) + 0.25*log1p(replies)
+    Likes are primary signal; reposts indicate reach; replies indicate discussion.
+    """
+    if engagement is None:
+        return None
+
+    if engagement.likes is None and engagement.reposts is None:
+        return None
+
+    likes = log1p_safe(engagement.likes)
+    reposts = log1p_safe(engagement.reposts)
+    replies = log1p_safe(engagement.replies)
+
+    return 0.45 * likes + 0.30 * reposts + 0.25 * replies
+
+
+def score_mastodon_items(items: List[schema.MastodonItem]) -> List[schema.MastodonItem]:
+    """Compute scores for Mastodon items."""
+    if not items:
+        return items
+
+    eng_raw = [compute_mastodon_engagement_raw(item.engagement) for item in items]
+    eng_normalized = normalize_to_100(eng_raw)
+
+    for i, item in enumerate(items):
+        rel_score = int(item.relevance * 100)
+        rec_score = dates.recency_score(item.date)
+
+        if eng_normalized[i] is not None:
+            eng_score = int(eng_normalized[i])
+        else:
+            eng_score = DEFAULT_ENGAGEMENT
+
+        item.subs = schema.SubScores(
+            relevance=rel_score,
+            recency=rec_score,
+            engagement=eng_score,
+        )
+
+        overall = (
+            WEIGHT_RELEVANCE * rel_score +
+            WEIGHT_RECENCY * rec_score +
+            WEIGHT_ENGAGEMENT * eng_score
+        )
+
+        if eng_raw[i] is None:
+            overall -= UNKNOWN_ENGAGEMENT_PENALTY
+
+        item.score = max(0, min(100, int(overall)))
+
+    return items
+
+
 def compute_polymarket_engagement_raw(engagement: Optional[schema.Engagement]) -> Optional[float]:
     """Compute raw engagement score for Polymarket item.
 
@@ -716,9 +772,10 @@ _ITEM_SOURCE_MAP = {
     schema.HackerNewsItem: "hn",
     schema.BlueskyItem: "bluesky",
     schema.TruthSocialItem: "truthsocial",
+    schema.MastodonItem: "mastodon",
     schema.PolymarketItem: "polymarket",
 }
-_DEFAULT_TIEBREAKER = {"reddit": 0, "x": 1, "youtube": 2, "tiktok": 3, "instagram": 4, "hn": 5, "bluesky": 6, "truthsocial": 7, "polymarket": 8, "web": 9}
+_DEFAULT_TIEBREAKER = {"reddit": 0, "x": 1, "youtube": 2, "tiktok": 3, "instagram": 4, "hn": 5, "bluesky": 6, "truthsocial": 7, "mastodon": 8, "polymarket": 9, "web": 10}
 
 
 def sort_items(items: List[Union[schema.RedditItem, schema.XItem, schema.WebSearchItem, schema.YouTubeItem, schema.TikTokItem, schema.InstagramItem, schema.HackerNewsItem, schema.BlueskyItem, schema.TruthSocialItem, schema.PolymarketItem]], query_type: QueryType = None) -> List:
