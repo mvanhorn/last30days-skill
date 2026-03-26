@@ -1,6 +1,6 @@
 """Normalization of raw API data to canonical schema."""
 
-from typing import Any, Dict, List, TypeVar, Union
+from typing import Any, Dict, List, TypeVar
 
 from . import dates, schema
 

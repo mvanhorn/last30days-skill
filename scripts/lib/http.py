@@ -7,7 +7,6 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional
-from urllib.parse import urlencode
 
 DEFAULT_TIMEOUT = 30
 DEBUG = os.environ.get("LAST30DAYS_DEBUG", "").lower() in ("1", "true", "yes")

@@ -10,7 +10,7 @@ API docs: https://scrapecreators.com/docs
 import re
 import sys
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
 try:
     import requests as _requests

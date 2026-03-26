@@ -9,7 +9,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from lib.relevance import STOPWORDS, SYNONYMS, token_overlap_relevance, tokenize
+from lib.relevance import token_overlap_relevance, tokenize
 
 
 class TestTokenize(unittest.TestCase):

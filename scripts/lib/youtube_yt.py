@@ -7,7 +7,6 @@ Inspired by Peter Steinberger's toolchain approach (yt-dlp + summarize CLI).
 """
 
 import json
-import math
 import os
 import re
 import signal
@@ -17,7 +16,7 @@ import sys
 import tempfile
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional
 
 # Depth configurations: how many videos to search / transcribe
 DEPTH_CONFIG = {

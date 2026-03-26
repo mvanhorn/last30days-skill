@@ -2,7 +2,7 @@
 extraction, and compound term detection. Used by all search modules."""
 
 import re
-from typing import FrozenSet, List, Optional, Set
+from typing import FrozenSet, List, Optional
 
 # Common multi-word prefixes stripped from all queries (identical across modules)
 PREFIXES = [

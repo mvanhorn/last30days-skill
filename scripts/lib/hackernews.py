@@ -7,9 +7,8 @@ No API key needed - just HTTP calls via stdlib urllib.
 import html
 import math
 import sys
-import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from . import http
 from .query import extract_core_subject
@@ -43,7 +42,6 @@ def _date_to_unix(date_str: str) -> int:
     """Convert YYYY-MM-DD to Unix timestamp (start of day UTC)."""
     parts = date_str.split("-")
     year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
-    import calendar
     import datetime
     dt = datetime.datetime(year, month, day, tzinfo=datetime.timezone.utc)
     return int(dt.timestamp())

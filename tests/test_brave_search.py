@@ -13,7 +13,6 @@ from lib.brave_search import (
     _days_between,
     _brave_freshness,
     _parse_brave_date,
-    EXCLUDED_DOMAINS,
 )
 
 

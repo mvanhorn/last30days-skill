@@ -7,9 +7,8 @@ with extended excerpts ranked by relevance.
 API docs: https://docs.parallel.ai/search-api/search-quickstart
 """
 
-import json
 import sys
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 from urllib.parse import urlparse
 
 from . import http
