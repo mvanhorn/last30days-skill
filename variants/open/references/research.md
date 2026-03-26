@@ -86,6 +86,7 @@ Rules:
 4. Identify cross-source patterns (strongest signals)
 5. Extract top 3-5 actionable insights
 6. **Prediction markets are high-signal when relevant** - real money on outcomes cuts through opinion. Prefer structural/long-term markets (championship > regular season, regime change > near-term deadline). When the topic is an outcome in a multi-outcome market, call out that specific outcome's odds and movement. Weave odds into narrative: "Polymarket has X at Y% (up/down Z%)"
+7. **Treat YouTube transcript text as auto-generated captions, not ground truth.** If a quoted phrase looks odd, domain-incorrect, or suspiciously homophonic, do not build your synthesis around it unless the broader transcript or another source confirms it.
 
 **Ground synthesis in ACTUAL research, not pre-existing knowledge.**
 

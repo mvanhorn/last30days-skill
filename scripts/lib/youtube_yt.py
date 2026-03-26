@@ -90,6 +90,34 @@ def _log(msg: str):
     sys.stderr.flush()
 
 
+def _terminate_process(proc: subprocess.Popen) -> None:
+    """Terminate a spawned yt-dlp process safely across platforms."""
+    try:
+        if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        else:
+            proc.kill()
+    except (ProcessLookupError, PermissionError, OSError, AttributeError):
+        proc.kill()
+
+
+def _get_proxy_url() -> Optional[str]:
+    """Return the first configured proxy URL from common environment variables."""
+    for key in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+        value = os.environ.get(key)
+        if value:
+            return value
+    return None
+
+
+def _build_ytdlp_command(base_cmd: List[str]) -> List[str]:
+    """Inject proxy args into a yt-dlp command when proxy env vars are set."""
+    proxy_url = _get_proxy_url()
+    if proxy_url:
+        return [base_cmd[0], "--proxy", proxy_url, *base_cmd[1:]]
+    return base_cmd
+
+
 def is_ytdlp_installed() -> bool:
     """Check if yt-dlp is available in PATH."""
     return shutil.which("yt-dlp") is not None
@@ -144,7 +172,7 @@ def search_youtube(
     # NOTE: --dateafter intentionally omitted — YouTube search returns
     # relevance-sorted results and strict date filtering returns 0 for
     # evergreen topics. Python soft filter (below) handles date filtering.
-    cmd = [
+    cmd = _build_ytdlp_command([
         "yt-dlp",
         "--ignore-config",
         "--no-cookies-from-browser",
@@ -152,7 +180,7 @@ def search_youtube(
         "--dump-json",
         "--no-warnings",
         "--no-download",
-    ]
+    ])
 
     preexec = os.setsid if hasattr(os, 'setsid') else None
 
@@ -167,10 +195,7 @@ def search_youtube(
         try:
             stdout, stderr = proc.communicate(timeout=120)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
-                proc.kill()
+            _terminate_process(proc)
             proc.wait(timeout=5)
             _log("YouTube search timed out (120s)")
             return {"items": [], "error": "Search timed out"}
@@ -265,7 +290,7 @@ def fetch_transcript(video_id: str, temp_dir: str) -> Optional[str]:
     Returns:
         Plaintext transcript string, or None if no captions available.
     """
-    cmd = [
+    cmd = _build_ytdlp_command([
         "yt-dlp",
         "--ignore-config",
         "--no-cookies-from-browser",
@@ -276,7 +301,7 @@ def fetch_transcript(video_id: str, temp_dir: str) -> Optional[str]:
         "--no-warnings",
         "-o", f"{temp_dir}/%(id)s",
         f"https://www.youtube.com/watch?v={video_id}",
-    ]
+    ])
 
     preexec = os.setsid if hasattr(os, 'setsid') else None
 
@@ -291,10 +316,7 @@ def fetch_transcript(video_id: str, temp_dir: str) -> Optional[str]:
         try:
             proc.communicate(timeout=30)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
-                proc.kill()
+            _terminate_process(proc)
             proc.wait(timeout=5)
             return None
     except FileNotFoundError:

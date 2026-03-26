@@ -240,6 +240,8 @@ def render_compact(report: schema.Report, limit: int = 15, missing_keys: str = "
     elif report.youtube:
         lines.append("### YouTube Videos")
         lines.append("")
+        lines.append("*Note: YouTube transcripts/highlights come from auto-generated captions and may contain speech-to-text mistakes. Treat odd phrases as unverified until corroborated elsewhere.*")
+        lines.append("")
         for item in report.youtube[:limit]:
             eng_str = ""
             if item.engagement:
@@ -258,12 +260,12 @@ def render_compact(report: schema.Report, limit: int = 15, missing_keys: str = "
             lines.append(f"  {item.title}")
             lines.append(f"  {item.url}")
             if item.transcript_highlights:
-                lines.append("  Highlights:")
+                lines.append("  Auto-caption highlights:")
                 for hl in item.transcript_highlights[:5]:
                     lines.append(f'    - "{hl}"')
             if item.transcript_snippet:
                 word_count = len(item.transcript_snippet.split())
-                lines.append(f"  <details><summary>Full transcript ({word_count} words)</summary>")
+                lines.append(f"  <details><summary>Auto-generated transcript ({word_count} words, may contain errors)</summary>")
                 lines.append(f"  {item.transcript_snippet}")
                 lines.append("  </details>")
             lines.append(f"  *{item.why_relevant}*")
