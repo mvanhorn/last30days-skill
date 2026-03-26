@@ -11,7 +11,7 @@ The typical flow is:
 """
 
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -128,7 +128,7 @@ def extract_date_from_snippet(text: str) -> Optional[str]:
             return f"{year}-{month}-{day}"
 
     # Pattern 4: Relative dates ("3 days ago", "yesterday", etc.)
-    today = datetime.now()
+    today = datetime.now(timezone.utc).replace(tzinfo=None)
 
     if "yesterday" in text_lower:
         date = today - timedelta(days=1)

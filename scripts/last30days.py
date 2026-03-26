@@ -23,7 +23,7 @@ import os
 import signal
 import sys
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -824,7 +824,7 @@ def _run_supplemental(
                     item for item in raw_reddit
                     if item.get("url", "") not in existing_urls
                 ]
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 sys.stderr.write("[Phase 2] Supplemental Reddit timed out (30s)\n")
             except Exception as e:
                 sys.stderr.write(f"[Phase 2] Supplemental Reddit error: {e}\n")
@@ -836,7 +836,7 @@ def _run_supplemental(
                     item for item in raw_x
                     if item.get("url", "") not in existing_urls
                 ]
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 sys.stderr.write("[Phase 2] Supplemental X timed out (30s)\n")
             except Exception as e:
                 sys.stderr.write(f"[Phase 2] Supplemental X error: {e}\n")
@@ -854,7 +854,7 @@ def _run_supplemental(
                 supplemental_x.extend(resolved_new)
                 if resolved_new:
                     sys.stderr.write(f"[Phase 2] +{len(resolved_new)} from @{resolved_handle}\n")
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 sys.stderr.write(f"[Phase 2] Resolved handle @{resolved_handle} timed out (30s)\n")
             except Exception as e:
                 sys.stderr.write(f"[Phase 2] Resolved handle error: {e}\n")
@@ -1131,7 +1131,7 @@ def run_research(
                 reddit_items, raw_openai, reddit_error, reddit_used_sc = reddit_future.result(timeout=reddit_timeout)
                 if reddit_error and progress:
                     progress.show_error(f"Reddit error: {reddit_error}")
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 reddit_error = f"Reddit search timed out after {reddit_timeout}s"
                 if progress:
                     progress.show_error(reddit_error)
@@ -1147,7 +1147,7 @@ def run_research(
                 x_items, raw_xai, x_error = x_future.result(timeout=future_timeout)
                 if x_error and progress:
                     progress.show_error(f"X error: {x_error}")
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 x_error = f"X search timed out after {future_timeout}s"
                 if progress:
                     progress.show_error(x_error)
@@ -1164,7 +1164,7 @@ def run_research(
                 youtube_items, youtube_error = youtube_future.result(timeout=yt_timeout)
                 if youtube_error and progress:
                     progress.show_error(f"YouTube error: {youtube_error}")
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 youtube_error = f"YouTube search timed out after {yt_timeout}s"
                 if progress:
                     progress.show_error(youtube_error)
@@ -1181,7 +1181,7 @@ def run_research(
                 tiktok_items, tiktok_error = tiktok_future.result(timeout=tk_timeout)
                 if tiktok_error and progress:
                     progress.show_error(f"TikTok error: {tiktok_error}")
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 tiktok_error = f"TikTok search timed out after {tk_timeout}s"
                 if progress:
                     progress.show_error(tiktok_error)
@@ -1198,7 +1198,7 @@ def run_research(
                 instagram_items, instagram_error = instagram_future.result(timeout=ig_timeout)
                 if instagram_error and progress:
                     progress.show_error(f"Instagram error: {instagram_error}")
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 instagram_error = f"Instagram search timed out after {ig_timeout}s"
                 if progress:
                     progress.show_error(instagram_error)
@@ -1215,7 +1215,7 @@ def run_research(
                 web_items.extend(xhs_items)
                 if xiaohongshu_error and progress:
                     progress.show_error(f"Xiaohongshu error: {xiaohongshu_error}")
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 xiaohongshu_error = f"Xiaohongshu search timed out after {future_timeout}s"
                 if progress:
                     progress.show_error(xiaohongshu_error)
@@ -1230,7 +1230,7 @@ def run_research(
                 hackernews_items, hackernews_error = hackernews_future.result(timeout=hn_timeout)
                 if hackernews_error and progress:
                     progress.show_error(f"HN error: {hackernews_error}")
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 hackernews_error = f"HN search timed out after {hn_timeout}s"
                 if progress:
                     progress.show_error(hackernews_error)
@@ -1247,7 +1247,7 @@ def run_research(
                 bluesky_items, bluesky_error = bluesky_future.result(timeout=bsky_timeout)
                 if bluesky_error and progress:
                     progress.show_error(f"Bluesky error: {bluesky_error}")
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 bluesky_error = f"Bluesky search timed out after {bsky_timeout}s"
                 if progress:
                     progress.show_error(bluesky_error)
@@ -1262,7 +1262,7 @@ def run_research(
                 truthsocial_items, truthsocial_error = truthsocial_future.result(timeout=ts_timeout)
                 if truthsocial_error and progress:
                     progress.show_error(f"Truth Social error: {truthsocial_error}")
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 truthsocial_error = f"Truth Social search timed out after {ts_timeout}s"
                 if progress:
                     progress.show_error(truthsocial_error)
@@ -1277,7 +1277,7 @@ def run_research(
                 polymarket_items, polymarket_error = polymarket_future.result(timeout=pm_timeout)
                 if polymarket_error and progress:
                     progress.show_error(f"Polymarket error: {polymarket_error}")
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 polymarket_error = f"Polymarket search timed out after {pm_timeout}s"
                 if progress:
                     progress.show_error(polymarket_error)
@@ -1293,7 +1293,7 @@ def run_research(
                 web_items, web_error = web_future.result(timeout=future_timeout)
                 if web_error and progress:
                     progress.show_error(f"Web error: {web_error}")
-            except TimeoutError:
+            except (TimeoutError, FuturesTimeoutError):
                 web_error = f"Web search timed out after {future_timeout}s"
                 if progress:
                     progress.show_error(web_error)
@@ -1368,7 +1368,7 @@ def run_research(
                                     f"Enrich failed for {items_to_enrich[idx].get('url', 'unknown')}: {e}"
                                 )
                         raw_reddit_enriched.append(reddit_items[idx])
-                except TimeoutError:
+                except (TimeoutError, FuturesTimeoutError):
                     if progress:
                         progress.show_error(
                             f"Enrichment timed out after {enrich_total_timeout}s "

@@ -321,6 +321,20 @@ def _parse_brave_date(age: Optional[str], page_age: Optional[str]) -> Optional[s
         weeks = int(match.group(1))
         return (now - timedelta(weeks=weeks)).strftime("%Y-%m-%d")
 
+    # "X months ago"
+    match = re.search(r'(\d+)\s*months?\s*ago', text_lower)
+    if match:
+        months = int(match.group(1))
+        # Approximate: subtract months, clamping day
+        month = now.month - months
+        year = now.year
+        while month <= 0:
+            month += 12
+            year -= 1
+        max_day = (now.replace(year=year, month=month) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
+        day = min(now.day, max_day.day)
+        return now.replace(year=year, month=month, day=day).strftime("%Y-%m-%d")
+
     # ISO format: 2026-01-24T...
     match = re.search(r'(\d{4}-\d{2}-\d{2})', text)
     if match:

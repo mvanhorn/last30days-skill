@@ -38,8 +38,18 @@ for t in "${TARGETS[@]}"; do
   mod_count=$(ls "$t/scripts/lib/"*.py 2>/dev/null | wc -l | tr -d ' ')
   echo "  Copied $mod_count modules"
 
-  # Verify imports
-  if (cd "$t/scripts" && python3 -c "from lib import youtube_yt, bird_x, render, ui; print('  Import check: OK')" 2>&1); then
+  # Verify imports (all public modules)
+  if (cd "$t/scripts" && python3 -c "
+from lib import (
+    bird_x, bluesky, brave_search, cache, dates, dedupe,
+    entity_extract, env, hackernews, http, instagram, models,
+    normalize, openai_reddit, openrouter_search, parallel_search,
+    polymarket, query, query_type, reddit, reddit_enrich,
+    relevance, render, schema, score, scrapecreators_x, tiktok,
+    truthsocial, ui, websearch, xai_x, xiaohongshu_api, youtube_yt,
+)
+print('  Import check: OK')
+" 2>&1); then
     true
   else
     echo "  Import check FAILED"
