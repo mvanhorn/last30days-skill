@@ -344,6 +344,7 @@ def normalize_hackernews_items(
             engagement=engagement,
             top_comments=top_comments,
             comment_insights=item.get("comment_insights", []),
+            trending=item.get("trending", False),
             relevance=item.get("relevance", 0.5),
             why_relevant=item.get("why_relevant", ""),
         ))

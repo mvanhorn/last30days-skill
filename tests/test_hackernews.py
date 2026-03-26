@@ -196,6 +196,114 @@ class TestScoreHackernewsItems(unittest.TestCase):
         self.assertIsNone(result)
 
 
+class TestMergeResults(unittest.TestCase):
+    """Tests for merge_results — deduplication of keyword + trending items."""
+
+    def _make_item(self, object_id, title, points=100, trending=False):
+        return {
+            "object_id": object_id,
+            "title": title,
+            "url": "",
+            "hn_url": f"https://news.ycombinator.com/item?id={object_id}",
+            "author": "user",
+            "date": "2026-03-24",
+            "engagement": {"points": points, "num_comments": 10},
+            "relevance": 0.8,
+            "why_relevant": f"HN story about {title}",
+        }
+
+    def test_no_overlap(self):
+        keyword = [self._make_item("1", "AI story")]
+        trending = [self._make_item("2", "Supply chain attack", points=900)]
+        merged = hackernews.merge_results(keyword, trending)
+        self.assertEqual(len(merged), 2)
+        self.assertFalse(merged[0].get("trending"))
+        self.assertTrue(merged[1].get("trending"))
+
+    def test_full_overlap(self):
+        keyword = [self._make_item("1", "Same story")]
+        trending = [self._make_item("1", "Same story")]
+        merged = hackernews.merge_results(keyword, trending)
+        self.assertEqual(len(merged), 1)
+        # Keyword version takes priority (no trending flag)
+        self.assertFalse(merged[0].get("trending"))
+
+    def test_partial_overlap(self):
+        keyword = [
+            self._make_item("1", "Keyword only"),
+            self._make_item("2", "Both keyword and trending"),
+        ]
+        trending = [
+            self._make_item("2", "Both keyword and trending"),
+            self._make_item("3", "Trending only", points=920),
+        ]
+        merged = hackernews.merge_results(keyword, trending)
+        self.assertEqual(len(merged), 3)
+        ids = [i["object_id"] for i in merged]
+        self.assertEqual(ids, ["1", "2", "3"])
+        # Only item 3 should be marked trending
+        self.assertTrue(merged[2].get("trending"))
+
+    def test_empty_trending(self):
+        keyword = [self._make_item("1", "Keyword")]
+        merged = hackernews.merge_results(keyword, [])
+        self.assertEqual(len(merged), 1)
+
+    def test_empty_keyword(self):
+        trending = [self._make_item("1", "Trending", points=500)]
+        merged = hackernews.merge_results([], trending)
+        self.assertEqual(len(merged), 1)
+        self.assertTrue(merged[0].get("trending"))
+
+    def test_trending_item_has_why_relevant(self):
+        merged = hackernews.merge_results(
+            [], [self._make_item("1", "LiteLLM compromised", points=920)]
+        )
+        self.assertIn("Trending on HN", merged[0]["why_relevant"])
+        self.assertIn("920", merged[0]["why_relevant"])
+
+
+class TestTrendingFlagSurvivesNormalization(unittest.TestCase):
+    """Verify trending flag persists through normalize → to_dict → from_dict."""
+
+    def test_trending_survives_normalization(self):
+        raw_items = [
+            {
+                "object_id": "42",
+                "title": "Supply chain attack",
+                "url": "https://example.com",
+                "hn_url": "https://news.ycombinator.com/item?id=42",
+                "author": "user",
+                "date": "2026-03-24",
+                "engagement": {"points": 920, "num_comments": 300},
+                "trending": True,
+                "relevance": 0.8,
+                "why_relevant": "Trending on HN (920 pts)",
+            },
+            {
+                "object_id": "43",
+                "title": "Normal keyword match",
+                "url": "https://example.com/2",
+                "hn_url": "https://news.ycombinator.com/item?id=43",
+                "author": "user2",
+                "date": "2026-03-24",
+                "engagement": {"points": 50, "num_comments": 10},
+                "relevance": 0.7,
+                "why_relevant": "HN story",
+            },
+        ]
+        normalized = normalize.normalize_hackernews_items(raw_items, "2026-03-20", "2026-03-27")
+        self.assertTrue(normalized[0].trending)
+        self.assertFalse(normalized[1].trending)
+
+        # Verify it survives to_dict serialization
+        d = normalized[0].to_dict()
+        self.assertTrue(d["trending"])
+
+        d2 = normalized[1].to_dict()
+        self.assertFalse(d2["trending"])
+
+
 class TestSortItemsWithHN(unittest.TestCase):
     def test_hn_priority_after_youtube(self):
         """HN should sort after YouTube at same score."""

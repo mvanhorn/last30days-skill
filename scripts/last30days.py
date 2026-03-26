@@ -496,6 +496,10 @@ def _search_hackernews(
 ) -> tuple:
     """Search Hacker News via Algolia (runs in thread).
 
+    Performs keyword search AND fetches trending front-page stories,
+    then merges results. This ensures breaking news (e.g. supply chain
+    attacks) appears even when it doesn't match the topic keyword.
+
     Returns:
         Tuple of (hn_items, hn_error)
     """
@@ -508,10 +512,20 @@ def _search_hackernews(
     except Exception as e:
         return [], f"{type(e).__name__}: {e}"
 
-    hn_items = hackernews.parse_hackernews_response(response, query=topic)
+    keyword_items = hackernews.parse_hackernews_response(response, query=topic)
 
     if response.get("error"):
         hn_error = response["error"]
+
+    # Merge trending front-page stories that keyword search would miss
+    try:
+        trending_response = hackernews.fetch_trending_stories(
+            from_date, to_date, depth=depth,
+        )
+        trending_items = hackernews.parse_hackernews_response(trending_response)
+        hn_items = hackernews.merge_results(keyword_items, trending_items)
+    except Exception:
+        hn_items = keyword_items  # Trending fetch failed — use keyword results only
 
     return hn_items, hn_error
 
@@ -1013,6 +1027,33 @@ def run_research(
                     progress.show_error(f"Instagram error: {e}")
             if progress:
                 progress.end_instagram(len(instagram_items))
+        # Also run HN and Polymarket in web-only mode when requested
+        if do_hackernews:
+            if progress:
+                progress.start_hackernews()
+            try:
+                hackernews_items, hackernews_error = _search_hackernews(topic, from_date, to_date, depth)
+                if hackernews_error and progress:
+                    progress.show_error(f"HN error: {hackernews_error}")
+            except Exception as e:
+                hackernews_error = f"{type(e).__name__}: {e}"
+                if progress:
+                    progress.show_error(f"HN error: {e}")
+            if progress:
+                progress.end_hackernews(len(hackernews_items))
+        if do_polymarket:
+            if progress:
+                progress.start_polymarket()
+            try:
+                polymarket_items, polymarket_error = _search_polymarket(topic, from_date, to_date, depth)
+                if polymarket_error and progress:
+                    progress.show_error(f"Polymarket error: {polymarket_error}")
+            except Exception as e:
+                polymarket_error = f"{type(e).__name__}: {e}"
+                if progress:
+                    progress.show_error(f"Polymarket error: {e}")
+            if progress:
+                progress.end_polymarket(len(polymarket_items))
         return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error
 
     # Determine which searches to run

@@ -117,6 +117,105 @@ def search_hackernews(
     return response
 
 
+# How many trending stories to return (after client-side sort by points).
+# Must be generous enough to surface 500+ pt stories reliably.
+TRENDING_DEPTH_CONFIG = {
+    "quick": 50,
+    "default": 75,
+    "deep": 150,
+}
+# Algolia can't sort by points, so we over-fetch and sort client-side
+TRENDING_FETCH_SIZE = 200
+
+
+def fetch_trending_stories(
+    from_date: str,
+    to_date: str,
+    depth: str = "default",
+    min_points: int = 200,
+) -> Dict[str, Any]:
+    """Fetch high-engagement HN stories regardless of keyword.
+
+    Queries Algolia for stories above a points threshold within the date
+    range, sorted by points. This catches breaking news (e.g. supply chain
+    attacks, major launches) that keyword search would miss.
+
+    Note: Algolia's 'front_page' tag is unreliable (many high-engagement
+    stories lack it), so we filter by points instead.
+
+    Args:
+        from_date: Start date (YYYY-MM-DD)
+        to_date: End date (YYYY-MM-DD)
+        depth: 'quick', 'default', or 'deep'
+        min_points: Minimum points threshold (default 200 filters noise)
+
+    Returns:
+        Dict with Algolia response (contains 'hits' list, sorted by points).
+    """
+    return_count = TRENDING_DEPTH_CONFIG.get(depth, TRENDING_DEPTH_CONFIG["default"])
+    from_ts = _date_to_unix(from_date)
+    to_ts = _date_to_unix(to_date) + 86400
+
+    _log(f"Fetching trending stories (since {from_date}, min_points={min_points})")
+
+    params = {
+        "query": "",
+        "tags": "story",
+        "numericFilters": f"created_at_i>{from_ts},created_at_i<{to_ts},points>{min_points}",
+        "hitsPerPage": str(TRENDING_FETCH_SIZE),
+    }
+
+    from urllib.parse import urlencode
+    # Use search_by_date (sorted by date) rather than search (sorted by
+    # relevance). With an empty query, Algolia's relevance ranking is
+    # unpredictable and drops high-engagement items. Date sort + points
+    # filter + client-side sort by points is deterministic.
+    url = f"{ALGOLIA_SEARCH_BY_DATE_URL}?{urlencode(params)}"
+
+    try:
+        response = http.request("GET", url, timeout=30)
+    except Exception as e:
+        _log(f"Trending fetch failed: {e}")
+        return {"hits": [], "error": str(e)}
+
+    hits = response.get("hits", [])
+    # Sort by points descending and trim — Algolia can't sort by numeric fields
+    hits.sort(key=lambda h: h.get("points") or 0, reverse=True)
+    hits = hits[:return_count]
+    response["hits"] = hits
+    _log(f"Found {len(hits)} trending stories (top: {hits[0].get('points', 0)} pts)" if hits else "No trending stories")
+    return response
+
+
+def merge_results(
+    keyword_items: List[Dict[str, Any]],
+    trending_items: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Merge keyword search results with trending stories, deduplicating by object_id.
+
+    Keyword matches take priority (keep their relevance score).
+    Trending-only items are appended with a 'trending' flag.
+
+    Args:
+        keyword_items: Items from keyword search (search_hackernews)
+        trending_items: Items from fetch_trending_stories
+
+    Returns:
+        Merged, deduplicated list.
+    """
+    seen_ids = {item["object_id"] for item in keyword_items}
+    merged = list(keyword_items)
+
+    for item in trending_items:
+        if item["object_id"] not in seen_ids:
+            item["trending"] = True
+            item["why_relevant"] = f"Trending on HN ({item.get('engagement', {}).get('points', 0)} pts): {item.get('title', '')[:50]}"
+            merged.append(item)
+            seen_ids.add(item["object_id"])
+
+    return merged
+
+
 def parse_hackernews_response(response: Dict[str, Any], query: str = "") -> List[Dict[str, Any]]:
     """Parse Algolia response into normalized item dicts.
 

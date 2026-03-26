@@ -329,6 +329,7 @@ class HackerNewsItem:
     engagement: Optional[Engagement] = None  # points + num_comments
     top_comments: List[Comment] = field(default_factory=list)
     comment_insights: List[str] = field(default_factory=list)
+    trending: bool = False  # True if surfaced via trending fetch, not keyword search
     relevance: float = 0.5
     why_relevant: str = ""
     subs: SubScores = field(default_factory=SubScores)
@@ -347,6 +348,7 @@ class HackerNewsItem:
             'engagement': self.engagement.to_dict() if self.engagement else None,
             'top_comments': [c.to_dict() for c in self.top_comments],
             'comment_insights': self.comment_insights,
+            'trending': self.trending,
             'relevance': self.relevance,
             'why_relevant': self.why_relevant,
             'subs': self.subs.to_dict(),
@@ -732,6 +734,7 @@ class Report:
                 engagement=eng,
                 top_comments=comments,
                 comment_insights=h.get('comment_insights', []),
+                trending=h.get('trending', False),
                 relevance=h.get('relevance', 0.5),
                 why_relevant=h.get('why_relevant', ''),
                 subs=subs,
