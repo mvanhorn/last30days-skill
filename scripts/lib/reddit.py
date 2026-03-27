@@ -584,10 +584,23 @@ def search_and_enrich(
     to_date: str,
     depth: str = "default",
     token: str = None,
+    enrich_timeout: int = 45,
 ) -> Dict[str, Any]:
     """Full Reddit pipeline: search + comment enrichment.
 
-    This is the convenience function that does everything.
+    Search results are always returned even if comment enrichment times
+    out or fails.  Previously, the enrichment phase ran synchronously
+    inside this function.  When fetching comments for the top posts was
+    slow (e.g. ScrapeCreators latency spikes), the entire function
+    could exceed the caller's 90-second future timeout, causing a
+    TimeoutError that discarded *all* search results — even though the
+    search itself had already completed successfully.
+
+    The fix runs enrichment in a dedicated thread with its own timeout
+    (default 45 s), leaving ~45 s of budget for the search phase within
+    the caller's 90-second window.  If enrichment times out or raises,
+    the search results are returned without comments rather than being
+    thrown away.
 
     Args:
         topic: Search topic
@@ -595,16 +608,34 @@ def search_and_enrich(
         to_date: End date (YYYY-MM-DD)
         depth: 'quick', 'default', or 'deep'
         token: ScrapeCreators API key
+        enrich_timeout: Max seconds for the comment-enrichment phase
+            (default 45).  Set to 0 to skip enrichment entirely.
 
     Returns:
-        Dict with 'items' list. Items include top_comments and comment_insights.
+        Dict with 'items' list. Items include top_comments and
+        comment_insights when enrichment succeeds; plain search
+        results otherwise.
     """
     result = search_reddit(topic, from_date, to_date, depth, token)
     items = result.get("items", [])
 
-    if items and token:
-        items = enrich_with_comments(items, token, depth)
-        result["items"] = items
+    if items and token and enrich_timeout > 0:
+        try:
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(enrich_with_comments, items, token, depth)
+                items = future.result(timeout=enrich_timeout)
+                result["items"] = items
+        except FutureTimeout:
+            _log(
+                f"Comment enrichment timed out after {enrich_timeout}s "
+                f"— returning {len(items)} posts without comments"
+            )
+        except Exception as e:
+            _log(
+                f"Comment enrichment failed ({type(e).__name__}: {e}) "
+                f"— returning {len(items)} posts without comments"
+            )
 
     return result
 
