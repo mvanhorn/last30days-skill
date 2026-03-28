@@ -84,6 +84,18 @@ If you're signed in to Codex (`codex login`), the skill will use your Codex cred
 
 For project-specific overrides, create `.claude/last30days.env` in the repo root. It overrides the global `~/.config/last30days/.env`.
 
+### Proxy Support (Optional)
+
+When scraping multiple platforms simultaneously, you may hit IP-based rate limits. Adding a residential proxy avoids blocks and enables geo-targeted research.
+
+Add to your `.env` config:
+```bash
+# Optional: Route requests through a residential proxy
+PROXY_URL=http://customer_id:api_key-country-US@proxy.iploop.io:8880
+```
+
+[ProxyClaw](https://clawhub.ai/skills/proxyclaw) provides 2M+ residential IPs across 195+ countries via the [IPLoop](https://iploop.io) network. Install via `clawhub install proxyclaw`, `pip install iploop-sdk`, or `npm install iploop`.
+
 ### X Search Authentication
 
 X search prefers explicit env auth. This keeps local runs headless and avoids browser-cookie and macOS Keychain prompts.
