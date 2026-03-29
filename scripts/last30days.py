@@ -1774,24 +1774,30 @@ def main():
     normalized_pm = normalize.normalize_polymarket_items(polymarket_items, from_date, to_date) if polymarket_items else []
     normalized_web = websearch.normalize_websearch_items(web_items, from_date, to_date) if web_items else []
 
-    # Hard date filter: exclude items with verified dates outside the range
-    # This is the safety net - even if prompts let old content through, this filters it
-    filtered_reddit = normalize.filter_by_date_range(normalized_reddit, from_date, to_date)
-    filtered_x = normalize.filter_by_date_range(normalized_x, from_date, to_date)
-    # YouTube: skip hard date filter — youtube_yt.py already applies a soft filter
-    # that prefers recent videos but keeps older ones for evergreen topics.
-    # YouTube content has a longer shelf life than tweets/posts.
-    filtered_youtube = normalized_youtube
-    # TikTok: hard date filter (tiktok.py already pre-filters, but safety net)
-    filtered_tiktok = normalize.filter_by_date_range(normalized_tiktok, from_date, to_date) if normalized_tiktok else []
-    # Instagram: hard date filter (instagram.py already pre-filters, but safety net)
-    filtered_ig = normalize.filter_by_date_range(normalized_ig, from_date, to_date) if normalized_ig else []
-    filtered_hn = normalize.filter_by_date_range(normalized_hn, from_date, to_date) if normalized_hn else []
-    filtered_bsky = normalize.filter_by_date_range(normalized_bsky, from_date, to_date) if normalized_bsky else []
-    filtered_ts = normalize.filter_by_date_range(normalized_ts, from_date, to_date) if normalized_ts else []
-    # Polymarket: skip hard date filter - markets are active/traded, updatedAt is fine
-    filtered_pm = normalized_pm
-    filtered_web = normalize.filter_by_date_range(normalized_web, from_date, to_date) if normalized_web else []
+    filtered_items = apply_date_safety_filters(
+        reddit_items=normalized_reddit,
+        x_items=normalized_x,
+        youtube_items=normalized_youtube,
+        tiktok_items=normalized_tiktok,
+        instagram_items=normalized_ig,
+        hackernews_items=normalized_hn,
+        bluesky_items=normalized_bsky,
+        truthsocial_items=normalized_ts,
+        polymarket_items=normalized_pm,
+        web_items=normalized_web,
+        from_date=from_date,
+        to_date=to_date,
+    )
+    filtered_reddit = filtered_items["reddit"]
+    filtered_x = filtered_items["x"]
+    filtered_youtube = filtered_items["youtube"]
+    filtered_tiktok = filtered_items["tiktok"]
+    filtered_ig = filtered_items["instagram"]
+    filtered_hn = filtered_items["hackernews"]
+    filtered_bsky = filtered_items["bluesky"]
+    filtered_ts = filtered_items["truthsocial"]
+    filtered_pm = filtered_items["polymarket"]
+    filtered_web = filtered_items["web"]
 
     # Score items
     scored_reddit = score.score_reddit_items(filtered_reddit)
@@ -2074,6 +2080,37 @@ def output_result(
         print("results above. WebSearch items should rank LOWER than comparable")
         print("Reddit/X items (they lack engagement metrics).")
         print("="*60)
+
+
+def apply_date_safety_filters(
+    *,
+    reddit_items=None,
+    x_items=None,
+    youtube_items=None,
+    tiktok_items=None,
+    instagram_items=None,
+    hackernews_items=None,
+    bluesky_items=None,
+    truthsocial_items=None,
+    polymarket_items=None,
+    web_items=None,
+    from_date: str,
+    to_date: str,
+):
+    """Apply final date safety filters before scoring and rendering."""
+    return {
+        "reddit": normalize.filter_by_date_range(reddit_items, from_date, to_date) if reddit_items else [],
+        "x": normalize.filter_by_date_range(x_items, from_date, to_date) if x_items else [],
+        "youtube": normalize.filter_by_date_range(youtube_items, from_date, to_date) if youtube_items else [],
+        "tiktok": normalize.filter_by_date_range(tiktok_items, from_date, to_date) if tiktok_items else [],
+        "instagram": normalize.filter_by_date_range(instagram_items, from_date, to_date) if instagram_items else [],
+        "hackernews": normalize.filter_by_date_range(hackernews_items, from_date, to_date) if hackernews_items else [],
+        "bluesky": normalize.filter_by_date_range(bluesky_items, from_date, to_date) if bluesky_items else [],
+        "truthsocial": normalize.filter_by_date_range(truthsocial_items, from_date, to_date) if truthsocial_items else [],
+        # Markets stay visible even when created before the window if they are still active.
+        "polymarket": polymarket_items or [],
+        "web": normalize.filter_by_date_range(web_items, from_date, to_date) if web_items else [],
+    }
 
 
 if __name__ == "__main__":

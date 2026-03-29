@@ -514,6 +514,28 @@ class Report:
     from_cache: bool = False
     cache_age_hours: Optional[float] = None
 
+    def display_mode(self) -> str:
+        """Human-facing mode label that includes auxiliary sources with signal."""
+        label = self.mode
+        extras = []
+        if (self.youtube or self.youtube_error) and "youtube" not in label:
+            extras.append("youtube")
+        if (self.hackernews or self.hackernews_error) and "hn" not in label:
+            extras.append("hn")
+        if (self.tiktok or self.tiktok_error) and "tiktok" not in label:
+            extras.append("tiktok")
+        if (self.instagram or self.instagram_error) and "instagram" not in label:
+            extras.append("instagram")
+        if (self.bluesky or self.bluesky_error) and "bluesky" not in label:
+            extras.append("bluesky")
+        if (self.truthsocial or self.truthsocial_error) and "truthsocial" not in label:
+            extras.append("truthsocial")
+        if (self.polymarket or self.polymarket_error) and "polymarket" not in label:
+            extras.append("polymarket")
+        if extras:
+            label = f"{label} + " + " + ".join(extras)
+        return label
+
     def to_dict(self) -> Dict[str, Any]:
         d = {
             'topic': self.topic,
@@ -523,6 +545,7 @@ class Report:
             },
             'generated_at': self.generated_at,
             'mode': self.mode,
+            'display_mode': self.display_mode(),
             'openai_model_used': self.openai_model_used,
             'xai_model_used': self.xai_model_used,
             'reddit': [r.to_dict() for r in self.reddit],

@@ -69,6 +69,39 @@ class TestRenderCompact(unittest.TestCase):
 
         self.assertIn("xAI key", result)
 
+    def test_mode_line_includes_auxiliary_sources_present_in_report(self):
+        report = schema.Report(
+            topic="test",
+            range_from="2026-01-01",
+            range_to="2026-01-31",
+            generated_at="2026-01-31T12:00:00Z",
+            mode="reddit-only",
+            youtube=[
+                schema.YouTubeItem(
+                    id="Y1",
+                    title="Video",
+                    url="https://youtube.com/watch?v=1",
+                    channel_name="ch",
+                    date="2026-01-15",
+                )
+            ],
+            hackernews=[
+                schema.HackerNewsItem(
+                    id="HN1",
+                    title="Story",
+                    url="https://example.com/story",
+                    hn_url="https://news.ycombinator.com/item?id=1",
+                    author="hn",
+                    date="2026-01-16",
+                    engagement=schema.Engagement(score=10, num_comments=2),
+                )
+            ],
+        )
+
+        result = render.render_compact(report)
+
+        self.assertIn("**Mode:** reddit-only + youtube + hn", result)
+
 
 class TestRenderContextSnippet(unittest.TestCase):
     def test_renders_snippet(self):

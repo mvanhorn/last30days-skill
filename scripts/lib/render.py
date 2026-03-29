@@ -84,6 +84,11 @@ def _assess_data_freshness(report: schema.Report) -> dict:
     }
 
 
+def _mode_label(report: schema.Report) -> str:
+    """Human-facing mode label that includes auxiliary sources with signal."""
+    return report.display_mode()
+
+
 def render_compact(report: schema.Report, limit: int = 15, missing_keys: str = "none") -> str:
     """Render compact output for the assistant to synthesize.
 
@@ -129,7 +134,7 @@ def render_compact(report: schema.Report, limit: int = 15, missing_keys: str = "
         lines.append("")
 
     lines.append(f"**Date Range:** {report.range_from} to {report.range_to}")
-    lines.append(f"**Mode:** {report.mode}")
+    lines.append(f"**Mode:** {_mode_label(report)}")
     if report.openai_model_used:
         lines.append(f"**OpenAI Model:** {report.openai_model_used}")
     if report.xai_model_used:
@@ -715,7 +720,7 @@ def render_full_report(report: schema.Report) -> str:
     lines.append("")
     lines.append(f"**Generated:** {report.generated_at}")
     lines.append(f"**Date Range:** {report.range_from} to {report.range_to}")
-    lines.append(f"**Mode:** {report.mode}")
+    lines.append(f"**Mode:** {_mode_label(report)}")
     lines.append("")
 
     # Models

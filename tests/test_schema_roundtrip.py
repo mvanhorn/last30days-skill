@@ -138,5 +138,38 @@ class TestPolymarketItem(unittest.TestCase):
         self.assertEqual(d["question"], "Who wins?")
 
 
+class TestReport(unittest.TestCase):
+    def test_to_dict_includes_display_mode_for_auxiliary_sources(self):
+        report = schema.Report(
+            topic="test",
+            range_from="2026-01-01",
+            range_to="2026-01-31",
+            generated_at="2026-01-31T12:00:00Z",
+            mode="reddit-only",
+            youtube=[
+                schema.YouTubeItem(
+                    id="YT1",
+                    title="Video",
+                    url="http://youtube.com/1",
+                    channel_name="chan",
+                    date="2026-01-15",
+                )
+            ],
+            hackernews=[
+                schema.HackerNewsItem(
+                    id="HN1",
+                    title="Story",
+                    url="http://example.com/story",
+                    hn_url="http://news.ycombinator.com/item?id=1",
+                    author="pg",
+                    date="2026-01-16",
+                )
+            ],
+        )
+
+        d = report.to_dict()
+        self.assertEqual(d["display_mode"], "reddit-only + youtube + hn")
+
+
 if __name__ == "__main__":
     unittest.main()

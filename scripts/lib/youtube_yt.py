@@ -219,9 +219,10 @@ def search_youtube(
             "why_relevant": f"YouTube: {video.get('title', core_topic)[:60]}",
         })
 
-    # Soft date filter: prefer recent items but fall back to all if too few
+    # Soft date filter: if we found any in-range videos, keep only those.
+    # Fall back to all results only when YouTube returns zero recent matches.
     recent = [i for i in items if i["date"] and i["date"] >= from_date]
-    if len(recent) >= 3:
+    if recent:
         items = recent
         _log(f"Found {len(items)} videos within date range")
     else:
