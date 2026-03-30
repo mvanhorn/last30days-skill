@@ -192,7 +192,7 @@ def _run_bird_search(query: str, count: int, timeout: int) -> Dict[str, Any]:
             # Kill the entire process group
             try:
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
+            except (ProcessLookupError, PermissionError, OSError, AttributeError):
                 proc.kill()
             proc.wait(timeout=5)
             return {"error": f"Search timed out after {timeout}s", "items": []}
@@ -341,7 +341,7 @@ def search_handles(
             except subprocess.TimeoutExpired:
                 try:
                     os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-                except (ProcessLookupError, PermissionError, OSError):
+                except (ProcessLookupError, PermissionError, OSError, AttributeError):
                     proc.kill()
                 proc.wait(timeout=5)
                 _log(f"Handle search timed out for @{handle}")

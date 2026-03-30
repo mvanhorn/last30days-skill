@@ -102,7 +102,7 @@ def _cleanup_children():
     for pid in pids:
         try:
             os.killpg(os.getpgid(pid), signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
+        except (ProcessLookupError, PermissionError, OSError, AttributeError):
             pass
 
 
