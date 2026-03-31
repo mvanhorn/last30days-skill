@@ -53,7 +53,7 @@ class Engagement:
             d['volume'] = self.volume
         if self.liquidity is not None:
             d['liquidity'] = self.liquidity
-        return d if d else None
+        return d if d else {}
 
 
 @dataclass
