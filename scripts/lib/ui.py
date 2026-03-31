@@ -83,6 +83,12 @@ INSTAGRAM_MESSAGES = [
     "Scanning Instagram for relevant reels...",
 ]
 
+GITHUB_MESSAGES = [
+    "Searching GitHub issues & PRs...",
+    "Finding active discussions on GitHub...",
+    "Scanning GitHub for relevant activity...",
+]
+
 HN_MESSAGES = [
     "Searching Hacker News...",
     "Scanning HN front page stories...",
@@ -300,6 +306,15 @@ class ProgressDisplay:
     def end_instagram(self, count: int):
         if self.spinner:
             self.spinner.stop(f"{Colors.PURPLE}Instagram{Colors.RESET} Found {count} reels")
+
+    def start_github(self):
+        msg = random.choice(GITHUB_MESSAGES)
+        self.spinner = Spinner(f"{Colors.WHITE}GitHub{Colors.RESET} {msg}", Colors.WHITE, quiet=True)
+        self.spinner.start()
+
+    def end_github(self, count: int):
+        if self.spinner:
+            self.spinner.stop(f"{Colors.WHITE}GitHub{Colors.RESET} Found {count} issues/PRs")
 
     def start_hackernews(self):
         msg = random.choice(HN_MESSAGES)

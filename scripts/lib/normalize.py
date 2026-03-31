@@ -4,7 +4,7 @@ from typing import Any, Dict, List, TypeVar, Union
 
 from . import dates, schema
 
-T = TypeVar("T", schema.RedditItem, schema.XItem, schema.WebSearchItem, schema.YouTubeItem, schema.TikTokItem, schema.InstagramItem, schema.HackerNewsItem, schema.BlueskyItem, schema.PolymarketItem)
+T = TypeVar("T", schema.RedditItem, schema.XItem, schema.WebSearchItem, schema.YouTubeItem, schema.TikTokItem, schema.InstagramItem, schema.HackerNewsItem, schema.GitHubItem, schema.BlueskyItem, schema.PolymarketItem)
 
 
 def filter_by_date_range(
@@ -342,6 +342,66 @@ def normalize_hackernews_items(
             date=date_str,
             date_confidence="high",
             engagement=engagement,
+            top_comments=top_comments,
+            comment_insights=item.get("comment_insights", []),
+            relevance=item.get("relevance", 0.5),
+            why_relevant=item.get("why_relevant", ""),
+        ))
+
+    return normalized
+
+
+def normalize_github_items(
+    items: List[Dict[str, Any]],
+    from_date: str,
+    to_date: str,
+) -> List[schema.GitHubItem]:
+    """Normalize raw GitHub items to schema.
+
+    Args:
+        items: Raw GitHub items from API
+        from_date: Start of date range
+        to_date: End of date range
+
+    Returns:
+        List of GitHubItem objects
+    """
+    normalized = []
+
+    for i, item in enumerate(items):
+        # Parse engagement (reactions + comments)
+        eng_raw = item.get("engagement") or {}
+        engagement = schema.Engagement(
+            score=eng_raw.get("reactions"),
+            num_comments=eng_raw.get("num_comments"),
+        )
+
+        # Parse comments (from enrichment)
+        top_comments = []
+        for c in item.get("top_comments", []):
+            top_comments.append(schema.Comment(
+                score=c.get("reactions", 0),
+                date=None,
+                author=c.get("author", ""),
+                excerpt=c.get("text", ""),
+                url="",
+            ))
+
+        # GitHub dates are always high confidence (exact timestamps from API)
+        date_str = item.get("date")
+
+        normalized.append(schema.GitHubItem(
+            id=f"GH{i+1}",
+            title=item.get("title", ""),
+            url=item.get("url", ""),
+            repository=item.get("repository", ""),
+            author=item.get("author", ""),
+            item_type=item.get("item_type", "issue"),
+            date=date_str,
+            date_confidence="high",
+            engagement=engagement,
+            body_snippet=item.get("body_snippet", ""),
+            labels=item.get("labels", []),
             top_comments=top_comments,
             comment_insights=item.get("comment_insights", []),
             relevance=item.get("relevance", 0.5),

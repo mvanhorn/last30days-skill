@@ -30,6 +30,8 @@ def _xref_tag(item) -> str:
             source_names.add('Instagram')
         elif ref_id.startswith('HN'):
             source_names.add('HN')
+        elif ref_id.startswith('GH'):
+            source_names.add('GitHub')
         elif ref_id.startswith('BS'):
             source_names.add('Bluesky')
         elif ref_id.startswith('TS'):
@@ -71,7 +73,7 @@ def _assess_data_freshness(report: schema.Report) -> dict:
     ig_recent = sum(1 for ig in report.instagram if ig.date and ig.date >= report.range_from)
 
     total_recent = reddit_recent + x_recent + web_recent + hn_recent + bsky_recent + ts_recent + pm_recent + tiktok_recent + ig_recent
-    total_items = len(report.reddit) + len(report.x) + len(report.web) + len(report.hackernews) + len(report.bluesky) + len(report.truthsocial) + len(report.polymarket) + len(report.tiktok) + len(report.instagram)
+    total_items = len(report.reddit) + len(report.x) + len(report.web) + len(report.hackernews) + len(report.github) + len(report.bluesky) + len(report.truthsocial) + len(report.polymarket) + len(report.tiktok) + len(report.instagram)
 
     return {
         "reddit_recent": reddit_recent,
@@ -377,6 +379,44 @@ def render_compact(report: schema.Report, limit: int = 15, missing_keys: str = "
 
             lines.append("")
 
+    # GitHub items
+    if report.github_error:
+        lines.append("### GitHub Issues & PRs")
+        lines.append("")
+        lines.append(f"**ERROR:** {report.github_error}")
+        lines.append("")
+    elif report.github:
+        lines.append("### GitHub Issues & PRs")
+        lines.append("")
+        for item in report.github[:limit]:
+            eng_str = ""
+            if item.engagement:
+                eng = item.engagement
+                parts = []
+                if eng.score is not None:
+                    parts.append(f"{eng.score}reactions")
+                if eng.num_comments is not None:
+                    parts.append(f"{eng.num_comments}cmt")
+                if parts:
+                    eng_str = f" [{', '.join(parts)}]"
+
+            date_str = f" ({item.date})" if item.date else ""
+            type_tag = "PR" if item.item_type == "pull_request" else "issue"
+            label_str = f" [{', '.join(item.labels[:3])}]" if item.labels else ""
+
+            lines.append(f"**{item.id}** (score:{item.score}) {item.repository} [{type_tag}]{date_str}{eng_str}{label_str}{_xref_tag(item)}")
+            lines.append(f"  {item.title}")
+            lines.append(f"  {item.url}")
+            lines.append(f"  *{item.why_relevant}*")
+
+            # Comment insights
+            if item.comment_insights:
+                lines.append(f"  Insights:")
+                for insight in item.comment_insights[:3]:
+                    lines.append(f"    - {insight}")
+
+            lines.append("")
+
     # Bluesky items
     if report.bluesky_error:
         lines.append("### Bluesky Posts")
@@ -635,6 +675,12 @@ def render_source_status(report: schema.Report, source_info: dict = None) -> str
         lines.append(f"  ✅ HN: {len(report.hackernews)} stories")
     # Hide when zero results
 
+    # GitHub
+    if report.github_error:
+        lines.append(f"  ❌ GitHub: error - {report.github_error}")
+    elif report.github:
+        lines.append(f"  ✅ GitHub: {len(report.github)} issues/PRs")
+
     # Bluesky
     if report.bluesky_error:
         lines.append(f"  ❌ Bluesky: error - {report.bluesky_error}")
@@ -699,6 +745,8 @@ def render_context_snippet(report: schema.Report) -> str:
         all_items.append((item.score, "Instagram", item.text[:50] + "...", item.url))
     for item in report.hackernews[:5]:
         all_items.append((item.score, "HN", item.title[:50] + "...", item.hn_url))
+    for item in report.github[:5]:
+        all_items.append((item.score, "GitHub", item.title[:50] + "...", item.url))
     for item in report.bluesky[:5]:
         all_items.append((item.score, "Bluesky", item.text[:50] + "...", item.url))
     for item in report.truthsocial[:5]:
@@ -867,6 +915,37 @@ def render_full_report(report: schema.Report) -> str:
             if item.engagement:
                 eng = item.engagement
                 lines.append(f"- **Engagement:** {eng.score or '?'} points, {eng.num_comments or '?'} comments")
+
+            if item.comment_insights:
+                lines.append("")
+                lines.append("**Key Insights from Comments:**")
+                for insight in item.comment_insights:
+                    lines.append(f"- {insight}")
+
+            lines.append("")
+
+    # GitHub section
+    if report.github:
+        lines.append("## GitHub Issues & PRs")
+        lines.append("")
+        for item in report.github:
+            type_tag = "PR" if item.item_type == "pull_request" else "Issue"
+            lines.append(f"### {item.id}: {item.title}")
+            lines.append("")
+            lines.append(f"- **Type:** {type_tag}")
+            lines.append(f"- **Repository:** {item.repository}")
+            lines.append(f"- **Author:** {item.author}")
+            lines.append(f"- **URL:** {item.url}")
+            lines.append(f"- **Date:** {item.date or 'Unknown'}")
+            lines.append(f"- **Score:** {item.score}/100")
+            lines.append(f"- **Relevance:** {item.why_relevant}")
+
+            if item.labels:
+                lines.append(f"- **Labels:** {', '.join(item.labels[:5])}")
+
+            if item.engagement:
+                eng = item.engagement
+                lines.append(f"- **Engagement:** {eng.score or '?'} reactions, {eng.num_comments or '?'} comments")
 
             if item.comment_insights:
                 lines.append("")

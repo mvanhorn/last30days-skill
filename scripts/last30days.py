@@ -38,14 +38,14 @@ _child_pids: set = set()
 _child_pids_lock = threading.Lock()
 
 TIMEOUT_PROFILES = {
-    "quick":   {"global": 90,  "future": 30, "reddit_future": 60,  "youtube_future": 60,  "tiktok_future": 90,   "instagram_future": 90,   "hackernews_future": 30,  "bluesky_future": 30,  "truthsocial_future": 30,  "polymarket_future": 15,  "http": 15, "enrich_per": 8,  "enrich_total": 30, "enrich_max_items": 10},
-    "default": {"global": 180, "future": 60, "reddit_future": 90,  "youtube_future": 90,  "tiktok_future": 120,  "instagram_future": 120,  "hackernews_future": 60,  "bluesky_future": 60,  "truthsocial_future": 60,  "polymarket_future": 30,  "http": 30, "enrich_per": 15, "enrich_total": 45, "enrich_max_items": 15},
-    "deep":    {"global": 300, "future": 90, "reddit_future": 120, "youtube_future": 120, "tiktok_future": 150,  "instagram_future": 150,  "hackernews_future": 90,  "bluesky_future": 90,  "truthsocial_future": 90,  "polymarket_future": 45,  "http": 30, "enrich_per": 15, "enrich_total": 60, "enrich_max_items": 25},
+    "quick":   {"global": 90,  "future": 30, "reddit_future": 60,  "youtube_future": 60,  "tiktok_future": 90,   "instagram_future": 90,   "hackernews_future": 30,  "github_future": 30,  "bluesky_future": 30,  "truthsocial_future": 30,  "polymarket_future": 15,  "http": 15, "enrich_per": 8,  "enrich_total": 30, "enrich_max_items": 10},
+    "default": {"global": 180, "future": 60, "reddit_future": 90,  "youtube_future": 90,  "tiktok_future": 120,  "instagram_future": 120,  "hackernews_future": 60,  "github_future": 60,  "bluesky_future": 60,  "truthsocial_future": 60,  "polymarket_future": 30,  "http": 30, "enrich_per": 15, "enrich_total": 45, "enrich_max_items": 15},
+    "deep":    {"global": 300, "future": 90, "reddit_future": 120, "youtube_future": 120, "tiktok_future": 150,  "instagram_future": 150,  "hackernews_future": 90,  "github_future": 90,  "bluesky_future": 90,  "truthsocial_future": 90,  "polymarket_future": 45,  "http": 30, "enrich_per": 15, "enrich_total": 60, "enrich_max_items": 25},
 }
 
 # Valid source names for the --search flag
 VALID_SEARCH_SOURCES = {
-    "reddit", "x", "hn", "bluesky", "bsky", "truthsocial", "truth", "youtube", "tiktok", "instagram",
+    "reddit", "x", "hn", "github", "bluesky", "bsky", "truthsocial", "truth", "youtube", "tiktok", "instagram",
     "polymarket", "web", "xiaohongshu", "xhs",
 }
 
@@ -139,6 +139,7 @@ from lib import (
     truthsocial,
     dates,
     dedupe,
+    github,
     hackernews,
     xiaohongshu_api,
     polymarket,
@@ -516,6 +517,35 @@ def _search_hackernews(
     return hn_items, hn_error
 
 
+def _search_github(
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    token: str = None,
+) -> tuple:
+    """Search GitHub via public API (runs in thread).
+
+    Returns:
+        Tuple of (github_items, github_error)
+    """
+    gh_error = None
+
+    try:
+        response = github.search_github(
+            topic, from_date, to_date, depth=depth, token=token,
+        )
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+
+    gh_items = github.parse_github_response(response, query=topic)
+
+    if response.get("error"):
+        gh_error = response["error"]
+
+    return gh_items, gh_error
+
+
 def _search_bluesky(
     topic: str,
     from_date: str,
@@ -890,6 +920,7 @@ def run_research(
     timeouts: dict = None,
     resolved_handle: str = None,
     do_hackernews: bool = True,
+    do_github: bool = True,
     do_bluesky: bool = True,
     do_truthsocial: bool = True,
     do_polymarket: bool = True,
@@ -899,10 +930,10 @@ def run_research(
 
     Returns:
         Tuple of (reddit_items, x_items, youtube_items, tiktok_items, instagram_items,
-                  hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed,
+                  hackernews_items, github_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed,
                   raw_openai, raw_xai, raw_reddit_enriched,
                   reddit_error, x_error, youtube_error, tiktok_error, instagram_error,
-                  hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error)
+                  hackernews_error, github_error, bluesky_error, truthsocial_error, polymarket_error, web_error)
 
     Note: web_needed is True when web search should be performed by the assistant
     (i.e., no native web search API keys are configured). When native web search
@@ -918,6 +949,7 @@ def run_research(
     tiktok_items = []
     instagram_items = []
     hackernews_items = []
+    github_items = []
     bluesky_items = []
     truthsocial_items = []
     polymarket_items = []
@@ -931,6 +963,7 @@ def run_research(
     tiktok_error = None
     instagram_error = None
     hackernews_error = None
+    github_error = None
     bluesky_error = None
     truthsocial_error = None
     polymarket_error = None
@@ -1017,7 +1050,7 @@ def run_research(
                     progress.show_error(f"Instagram error: {e}")
             if progress:
                 progress.end_instagram(len(instagram_items))
-        return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error
+        return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, github_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, github_error, bluesky_error, truthsocial_error, polymarket_error, web_error
 
     # Determine which searches to run
     do_reddit = sources in ("both", "reddit", "all", "reddit-web")
@@ -1033,6 +1066,7 @@ def run_research(
     instagram_future = None
     xiaohongshu_future = None
     hackernews_future = None
+    github_future = None
     bluesky_future = None
     truthsocial_future = None
     polymarket_future = None
@@ -1044,6 +1078,7 @@ def run_research(
         + (1 if run_instagram else 0)
         + (1 if run_xiaohongshu else 0)
         + (1 if do_hackernews else 0)
+        + (1 if do_github else 0)
         + (1 if do_bluesky else 0)
         + (1 if do_truthsocial else 0)
         + (1 if do_polymarket else 0)
@@ -1101,6 +1136,14 @@ def run_research(
                 progress.start_hackernews()
             hackernews_future = executor.submit(
                 _search_hackernews, topic, from_date, to_date, depth
+            )
+
+        if do_github:
+            if progress:
+                progress.start_github()
+            github_future = executor.submit(
+                _search_github, topic, from_date, to_date, depth,
+                env.get_github_token(config),
             )
 
         if do_bluesky:
@@ -1244,6 +1287,23 @@ def run_research(
                     progress.show_error(f"HN error: {e}")
             if progress:
                 progress.end_hackernews(len(hackernews_items))
+
+        if github_future:
+            gh_timeout = timeouts.get("github_future", future_timeout)
+            try:
+                github_items, github_error = github_future.result(timeout=gh_timeout)
+                if github_error and progress:
+                    progress.show_error(f"GitHub error: {github_error}")
+            except TimeoutError:
+                github_error = f"GitHub search timed out after {gh_timeout}s"
+                if progress:
+                    progress.show_error(github_error)
+            except Exception as e:
+                github_error = f"{type(e).__name__}: {e}"
+                if progress:
+                    progress.show_error(f"GitHub error: {e}")
+            if progress:
+                progress.end_github(len(github_items))
 
         if bluesky_future:
             bsky_timeout = timeouts.get("bluesky_future", future_timeout)
@@ -1394,6 +1454,16 @@ def run_research(
             sys.stderr.write(f"[HN] Enrichment error: {e}\n")
             sys.stderr.flush()
 
+    # Enrich GitHub issues with comments
+    if github_items:
+        try:
+            github_items = github.enrich_top_issues(
+                github_items, depth=depth, token=env.get_github_token(config),
+            )
+        except Exception as e:
+            sys.stderr.write(f"[GitHub] Enrichment error: {e}\n")
+            sys.stderr.flush()
+
     # Phase 2: Supplemental search based on entities from Phase 1
     # Skip on --quick (speed matters), mock mode, or if Reddit is rate-limiting
     # Also skip Reddit supplemental when ScrapeCreators was used (subreddit drilling already done)
@@ -1409,7 +1479,7 @@ def run_research(
         if sup_x:
             x_items.extend(sup_x)
 
-    return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error
+    return reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, github_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, github_error, bluesky_error, truthsocial_error, polymarket_error, web_error
 
 
 def main():
@@ -1601,6 +1671,7 @@ def main():
             "xiaohongshu": has_xiaohongshu,
             "xiaohongshu_api_base": env.get_xiaohongshu_api_base(config),
             "hackernews": True,
+            "github": True,
             "bluesky": has_bluesky,
             "truthsocial": has_truthsocial,
             "polymarket": True,
@@ -1647,6 +1718,7 @@ def main():
         "tiktok": has_tiktok,
         "instagram": has_instagram,
         "hackernews": True,
+        "github": True,
         "polymarket": True,
         "bluesky": has_bluesky,
         "truthsocial": has_truthsocial,
@@ -1728,6 +1800,7 @@ def main():
     # Source defaults are query-type-aware (Truth Social always opt-in,
     # Bluesky only for query types where it adds signal)
     search_do_hackernews = qt.is_source_enabled("hn", query_type) if not args.search else True
+    search_do_github = qt.is_source_enabled("github", query_type) if not args.search else True
     search_do_bluesky = has_bluesky and qt.is_source_enabled("bluesky", query_type)
     search_do_truthsocial = False  # Always opt-in (requires --search truthsocial)
     search_do_polymarket = qt.is_source_enabled("polymarket", query_type)
@@ -1752,6 +1825,7 @@ def main():
         has_reddit = "reddit" in search_sources
         has_x = "x" in search_sources
         search_do_hackernews = "hn" in search_sources
+        search_do_github = "github" in search_sources
         search_do_bluesky = ("bluesky" in search_sources or "bsky" in search_sources) and has_bluesky
         search_do_truthsocial = ("truthsocial" in search_sources or "truth" in search_sources) and has_truthsocial
         search_do_polymarket = "polymarket" in search_sources
@@ -1773,7 +1847,7 @@ def main():
             sources = "web"  # hn/polymarket only; no Reddit/X
 
     # Run research
-    reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, bluesky_error, truthsocial_error, polymarket_error, web_error = run_research(
+    reddit_items, x_items, youtube_items, tiktok_items, instagram_items, hackernews_items, github_items, bluesky_items, truthsocial_items, polymarket_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, tiktok_error, instagram_error, hackernews_error, github_error, bluesky_error, truthsocial_error, polymarket_error, web_error = run_research(
         args.topic,
         sources,
         config,
@@ -1791,6 +1865,7 @@ def main():
         timeouts=timeouts,
         resolved_handle=args.x_handle,
         do_hackernews=search_do_hackernews,
+        do_github=search_do_github,
         do_bluesky=search_do_bluesky,
         do_truthsocial=search_do_truthsocial,
         do_polymarket=search_do_polymarket,
@@ -1807,6 +1882,7 @@ def main():
     normalized_tiktok = normalize.normalize_tiktok_items(tiktok_items, from_date, to_date) if tiktok_items else []
     normalized_ig = normalize.normalize_instagram_items(instagram_items, from_date, to_date) if instagram_items else []
     normalized_hn = normalize.normalize_hackernews_items(hackernews_items, from_date, to_date) if hackernews_items else []
+    normalized_gh = normalize.normalize_github_items(github_items, from_date, to_date) if github_items else []
     normalized_bsky = normalize.normalize_bluesky_items(bluesky_items, from_date, to_date) if bluesky_items else []
     normalized_ts = normalize.normalize_truthsocial_items(truthsocial_items, from_date, to_date) if truthsocial_items else []
     normalized_pm = normalize.normalize_polymarket_items(polymarket_items, from_date, to_date) if polymarket_items else []
@@ -1825,6 +1901,7 @@ def main():
     # Instagram: hard date filter (instagram.py already pre-filters, but safety net)
     filtered_ig = normalize.filter_by_date_range(normalized_ig, from_date, to_date) if normalized_ig else []
     filtered_hn = normalize.filter_by_date_range(normalized_hn, from_date, to_date) if normalized_hn else []
+    filtered_gh = normalize.filter_by_date_range(normalized_gh, from_date, to_date) if normalized_gh else []
     filtered_bsky = normalize.filter_by_date_range(normalized_bsky, from_date, to_date) if normalized_bsky else []
     filtered_ts = normalize.filter_by_date_range(normalized_ts, from_date, to_date) if normalized_ts else []
     # Polymarket: skip hard date filter - markets are active/traded, updatedAt is fine
@@ -1838,6 +1915,7 @@ def main():
     scored_tiktok = score.score_tiktok_items(filtered_tiktok) if filtered_tiktok else []
     scored_ig = score.score_instagram_items(filtered_ig) if filtered_ig else []
     scored_hn = score.score_hackernews_items(filtered_hn) if filtered_hn else []
+    scored_gh = score.score_github_items(filtered_gh) if filtered_gh else []
     scored_bsky = score.score_bluesky_items(filtered_bsky) if filtered_bsky else []
     scored_ts = score.score_truthsocial_items(filtered_ts) if filtered_ts else []
     scored_pm = score.score_polymarket_items(filtered_pm) if filtered_pm else []
@@ -1850,6 +1928,7 @@ def main():
     sorted_tiktok = score.sort_items(scored_tiktok, query_type=query_type) if scored_tiktok else []
     sorted_ig = score.sort_items(scored_ig, query_type=query_type) if scored_ig else []
     sorted_hn = score.sort_items(scored_hn, query_type=query_type) if scored_hn else []
+    sorted_gh = score.sort_items(scored_gh, query_type=query_type) if scored_gh else []
     sorted_bsky = score.sort_items(scored_bsky, query_type=query_type) if scored_bsky else []
     sorted_ts = score.sort_items(scored_ts, query_type=query_type) if scored_ts else []
     sorted_pm = score.sort_items(scored_pm, query_type=query_type) if scored_pm else []
@@ -1862,6 +1941,7 @@ def main():
     deduped_tiktok = dedupe.dedupe_tiktok(sorted_tiktok) if sorted_tiktok else []
     deduped_ig = dedupe.dedupe_instagram(sorted_ig) if sorted_ig else []
     deduped_hn = dedupe.dedupe_hackernews(sorted_hn) if sorted_hn else []
+    deduped_gh = dedupe.dedupe_github(sorted_gh) if sorted_gh else []
     deduped_bsky = dedupe.dedupe_bluesky(sorted_bsky) if sorted_bsky else []
     deduped_ts = dedupe.dedupe_truthsocial(sorted_ts) if sorted_ts else []
     deduped_pm = dedupe.dedupe_polymarket(sorted_pm) if sorted_pm else []
@@ -1874,13 +1954,14 @@ def main():
     deduped_tiktok = score.relevance_filter(deduped_tiktok, "TIKTOK")
     deduped_ig = score.relevance_filter(deduped_ig, "INSTAGRAM")
     deduped_hn = score.relevance_filter(deduped_hn, "HN")
+    deduped_gh = score.relevance_filter(deduped_gh, "GITHUB")
     deduped_bsky = score.relevance_filter(deduped_bsky, "BLUESKY")
     deduped_ts = score.relevance_filter(deduped_ts, "TRUTHSOCIAL")
     deduped_pm = score.relevance_filter(deduped_pm, "POLYMARKET") if deduped_pm else []
 
     # Cross-source linking: annotate items that discuss the same story
     dedupe.cross_source_link(
-        deduped_reddit, deduped_x, deduped_youtube, deduped_tiktok, deduped_ig, deduped_hn, deduped_bsky, deduped_ts, deduped_pm, deduped_web,
+        deduped_reddit, deduped_x, deduped_youtube, deduped_tiktok, deduped_ig, deduped_hn, deduped_gh, deduped_bsky, deduped_ts, deduped_pm, deduped_web,
     )
 
     progress.end_processing()
@@ -1900,6 +1981,7 @@ def main():
     report.tiktok = deduped_tiktok
     report.instagram = deduped_ig
     report.hackernews = deduped_hn
+    report.github = deduped_gh
     report.bluesky = deduped_bsky
     report.truthsocial = deduped_ts
     report.polymarket = deduped_pm
@@ -1910,6 +1992,7 @@ def main():
     report.tiktok_error = tiktok_error
     report.instagram_error = instagram_error
     report.hackernews_error = hackernews_error
+    report.github_error = github_error
     report.bluesky_error = bluesky_error
     report.truthsocial_error = truthsocial_error
     report.polymarket_error = polymarket_error

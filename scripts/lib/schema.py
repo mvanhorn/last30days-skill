@@ -432,6 +432,53 @@ class TruthSocialItem:
 
 
 @dataclass
+class GitHubItem:
+    """Normalized GitHub issue/PR item."""
+    id: str              # "GH1", "GH2", ...
+    title: str
+    url: str             # https://github.com/owner/repo/issues/123
+    repository: str      # owner/repo
+    author: str          # GitHub username
+    item_type: str       # "issue" or "pull_request"
+    date: Optional[str] = None
+    date_confidence: str = "high"  # GitHub API provides exact timestamps
+    engagement: Optional[Engagement] = None  # reactions + num_comments
+    body_snippet: str = ""
+    labels: List[str] = field(default_factory=list)
+    top_comments: List[Comment] = field(default_factory=list)
+    comment_insights: List[str] = field(default_factory=list)
+    relevance: float = 0.5
+    why_relevant: str = ""
+    subs: SubScores = field(default_factory=SubScores)
+    score: int = 0
+    cross_refs: List[str] = field(default_factory=list)
+
+    def to_dict(self) -> Dict[str, Any]:
+        d = {
+            'id': self.id,
+            'title': self.title,
+            'url': self.url,
+            'repository': self.repository,
+            'author': self.author,
+            'item_type': self.item_type,
+            'date': self.date,
+            'date_confidence': self.date_confidence,
+            'engagement': self.engagement.to_dict() if self.engagement else None,
+            'body_snippet': self.body_snippet,
+            'labels': self.labels,
+            'top_comments': [c.to_dict() for c in self.top_comments],
+            'comment_insights': self.comment_insights,
+            'relevance': self.relevance,
+            'why_relevant': self.why_relevant,
+            'subs': self.subs.to_dict(),
+            'score': self.score,
+        }
+        if self.cross_refs:
+            d['cross_refs'] = self.cross_refs
+        return d
+
+
+@dataclass
 class PolymarketItem:
     """Normalized Polymarket prediction market item."""
     id: str           # "PM1", "PM2", ...
@@ -491,6 +538,7 @@ class Report:
     tiktok: List[TikTokItem] = field(default_factory=list)
     instagram: List[InstagramItem] = field(default_factory=list)
     hackernews: List[HackerNewsItem] = field(default_factory=list)
+    github: List[GitHubItem] = field(default_factory=list)
     bluesky: List[BlueskyItem] = field(default_factory=list)
     truthsocial: List[TruthSocialItem] = field(default_factory=list)
     polymarket: List[PolymarketItem] = field(default_factory=list)
@@ -505,6 +553,7 @@ class Report:
     tiktok_error: Optional[str] = None
     instagram_error: Optional[str] = None
     hackernews_error: Optional[str] = None
+    github_error: Optional[str] = None
     bluesky_error: Optional[str] = None
     truthsocial_error: Optional[str] = None
     polymarket_error: Optional[str] = None
@@ -532,6 +581,7 @@ class Report:
             'tiktok': [t.to_dict() for t in self.tiktok],
             'instagram': [ig.to_dict() for ig in self.instagram],
             'hackernews': [h.to_dict() for h in self.hackernews],
+            'github': [g.to_dict() for g in self.github],
             'bluesky': [b.to_dict() for b in self.bluesky],
             'truthsocial': [ts.to_dict() for ts in self.truthsocial],
             'polymarket': [p.to_dict() for p in self.polymarket],
@@ -555,6 +605,8 @@ class Report:
             d['instagram_error'] = self.instagram_error
         if self.hackernews_error:
             d['hackernews_error'] = self.hackernews_error
+        if self.github_error:
+            d['github_error'] = self.github_error
         if self.bluesky_error:
             d['bluesky_error'] = self.bluesky_error
         if self.truthsocial_error:
@@ -713,6 +765,35 @@ class Report:
                 cross_refs=ig.get('cross_refs', []),
             ))
 
+        # Reconstruct GitHub items
+        gh_items = []
+        for g in data.get('github', []):
+            eng = None
+            if g.get('engagement'):
+                eng = Engagement(**g['engagement'])
+            comments = [Comment(**c) for c in g.get('top_comments', [])]
+            subs = SubScores(**g.get('subs', {})) if g.get('subs') else SubScores()
+            gh_items.append(GitHubItem(
+                id=g['id'],
+                title=g['title'],
+                url=g.get('url', ''),
+                repository=g.get('repository', ''),
+                author=g.get('author', ''),
+                item_type=g.get('item_type', 'issue'),
+                date=g.get('date'),
+                date_confidence=g.get('date_confidence', 'high'),
+                engagement=eng,
+                body_snippet=g.get('body_snippet', ''),
+                labels=g.get('labels', []),
+                top_comments=comments,
+                comment_insights=g.get('comment_insights', []),
+                relevance=g.get('relevance', 0.5),
+                why_relevant=g.get('why_relevant', ''),
+                subs=subs,
+                score=g.get('score', 0),
+                cross_refs=g.get('cross_refs', []),
+            ))
+
         # Reconstruct HackerNews items
         hn_items = []
         for h in data.get('hackernews', []):
@@ -803,6 +884,7 @@ class Report:
             tiktok=tiktok_items,
             instagram=ig_items,
             hackernews=hn_items,
+            github=gh_items,
             truthsocial=ts_items,
             polymarket=pm_items,
             best_practices=data.get('best_practices', []),
@@ -815,6 +897,7 @@ class Report:
             tiktok_error=data.get('tiktok_error'),
             instagram_error=data.get('instagram_error'),
             hackernews_error=data.get('hackernews_error'),
+            github_error=data.get('github_error'),
             truthsocial_error=data.get('truthsocial_error'),
             polymarket_error=data.get('polymarket_error'),
             resolved_x_handle=data.get('resolved_x_handle'),

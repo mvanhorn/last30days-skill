@@ -359,6 +359,7 @@ def get_config() -> Dict[str, Any]:
         ('PARALLEL_API_KEY', None),
         ('BRAVE_API_KEY', None),
         ('EXA_API_KEY', None),
+        ('GITHUB_TOKEN', None),
         ('XIAOHONGSHU_API_BASE', None),
         ('GEMINI_MODEL', None),
         ('OPENAI_MODEL_POLICY', 'auto'),
@@ -653,6 +654,20 @@ def is_ytdlp_available() -> bool:
     """Check if yt-dlp is installed for YouTube search."""
     from . import youtube_yt
     return youtube_yt.is_ytdlp_installed()
+
+
+def is_github_available() -> bool:
+    """Check if GitHub source is available.
+
+    Always returns True - GitHub public search API needs no key.
+    Optional GITHUB_TOKEN provides higher rate limits (30 vs 10 req/min).
+    """
+    return True
+
+
+def get_github_token(config: Dict[str, Any]) -> Optional[str]:
+    """Get GitHub token if configured (optional, for higher rate limits)."""
+    return config.get('GITHUB_TOKEN')
 
 
 def is_hackernews_available() -> bool:

@@ -477,6 +477,61 @@ def score_hackernews_items(items: List[schema.HackerNewsItem]) -> List[schema.Ha
     return items
 
 
+def compute_github_engagement_raw(engagement: Optional[schema.Engagement]) -> Optional[float]:
+    """Compute raw engagement score for GitHub item.
+
+    Formula: 0.45*log1p(reactions) + 0.55*log1p(num_comments)
+    Comments indicate depth of discussion; reactions indicate broad interest.
+    """
+    if engagement is None:
+        return None
+
+    if engagement.score is None and engagement.num_comments is None:
+        return None
+
+    reactions = log1p_safe(engagement.score)
+    comments = log1p_safe(engagement.num_comments)
+
+    return 0.45 * reactions + 0.55 * comments
+
+
+def score_github_items(items: List[schema.GitHubItem]) -> List[schema.GitHubItem]:
+    """Compute scores for GitHub items."""
+    if not items:
+        return items
+
+    eng_raw = [compute_github_engagement_raw(item.engagement) for item in items]
+    eng_normalized = normalize_to_100(eng_raw)
+
+    for i, item in enumerate(items):
+        rel_score = int(item.relevance * 100)
+        rec_score = dates.recency_score(item.date)
+
+        if eng_normalized[i] is not None:
+            eng_score = int(eng_normalized[i])
+        else:
+            eng_score = DEFAULT_ENGAGEMENT
+
+        item.subs = schema.SubScores(
+            relevance=rel_score,
+            recency=rec_score,
+            engagement=eng_score,
+        )
+
+        overall = (
+            WEIGHT_RELEVANCE * rel_score +
+            WEIGHT_RECENCY * rec_score +
+            WEIGHT_ENGAGEMENT * eng_score
+        )
+
+        if eng_raw[i] is None:
+            overall -= UNKNOWN_ENGAGEMENT_PENALTY
+
+        item.score = max(0, min(100, int(overall)))
+
+    return items
+
+
 def compute_bluesky_engagement_raw(engagement: Optional[schema.Engagement]) -> Optional[float]:
     """Compute raw engagement score for Bluesky item.
 
@@ -714,14 +769,15 @@ _ITEM_SOURCE_MAP = {
     schema.TikTokItem: "tiktok",
     schema.InstagramItem: "instagram",
     schema.HackerNewsItem: "hn",
+    schema.GitHubItem: "github",
     schema.BlueskyItem: "bluesky",
     schema.TruthSocialItem: "truthsocial",
     schema.PolymarketItem: "polymarket",
 }
-_DEFAULT_TIEBREAKER = {"reddit": 0, "x": 1, "youtube": 2, "tiktok": 3, "instagram": 4, "hn": 5, "bluesky": 6, "truthsocial": 7, "polymarket": 8, "web": 9}
+_DEFAULT_TIEBREAKER = {"reddit": 0, "x": 1, "youtube": 2, "tiktok": 3, "instagram": 4, "hn": 5, "github": 6, "bluesky": 7, "truthsocial": 8, "polymarket": 9, "web": 10}
 
 
-def sort_items(items: List[Union[schema.RedditItem, schema.XItem, schema.WebSearchItem, schema.YouTubeItem, schema.TikTokItem, schema.InstagramItem, schema.HackerNewsItem, schema.BlueskyItem, schema.TruthSocialItem, schema.PolymarketItem]], query_type: QueryType = None) -> List:
+def sort_items(items: List[Union[schema.RedditItem, schema.XItem, schema.WebSearchItem, schema.YouTubeItem, schema.TikTokItem, schema.InstagramItem, schema.HackerNewsItem, schema.GitHubItem, schema.BlueskyItem, schema.TruthSocialItem, schema.PolymarketItem]], query_type: QueryType = None) -> List:
     """Sort items by score (descending), then date, then source tiebreaker.
 
     Tiebreaker (tertiary sort key, after score and date): source priority
