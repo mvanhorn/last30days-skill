@@ -617,7 +617,7 @@ def _search_web(
         Tuple of (web_items, web_error)
         web_items are raw dicts ready for websearch.normalize_websearch_items()
     """
-    from lib import brave_search, parallel_search, openrouter_search, exa_search
+    from lib import brave_search, parallel_search, openrouter_search, exa_search, tavily_search
 
     backend = env.get_web_search_source(config)
     if not backend:
@@ -627,7 +627,11 @@ def _search_web(
     raw_results = []
 
     try:
-        if backend == "exa":
+        if backend == "tavily":
+            raw_results = tavily_search.search_web(
+                topic, from_date, to_date, config["TAVILY_API_KEY"], depth=depth,
+            )
+        elif backend == "exa":
             raw_results = exa_search.search_web(
                 topic, from_date, to_date, config["EXA_API_KEY"], depth=depth,
             )
@@ -1605,6 +1609,7 @@ def main():
             "truthsocial": has_truthsocial,
             "polymarket": True,
             "web_search_backend": web_source,
+            "tavily": bool(config.get("TAVILY_API_KEY")),
             "exa": bool(config.get("EXA_API_KEY")),
             "parallel_ai": bool(config.get("PARALLEL_API_KEY")),
             "brave": bool(config.get("BRAVE_API_KEY")),
