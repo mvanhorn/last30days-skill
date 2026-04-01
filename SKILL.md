@@ -20,6 +20,7 @@ metadata:
         - XAI_API_KEY
         - OPENROUTER_API_KEY
         - PARALLEL_API_KEY
+        - TAVILY_API_KEY
         - BRAVE_API_KEY
         - APIFY_API_TOKEN
         - AUTH_TOKEN

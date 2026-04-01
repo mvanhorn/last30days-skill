@@ -11,8 +11,6 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from tavily import TavilyClient
-
 # Domains to exclude (handled by Reddit/X search)
 EXCLUDED_DOMAINS = {
     "reddit.com", "www.reddit.com", "old.reddit.com",
@@ -71,18 +69,36 @@ def search_web(
     sys.stderr.write(f"[Web] Searching Tavily for: {topic}\n")
     sys.stderr.flush()
 
-    client = TavilyClient(api_key=api_key)
+    try:
+        from tavily import TavilyClient
+    except ImportError:
+        sys.stderr.write("[Web] Tavily: tavily-python package not installed\n")
+        sys.stderr.flush()
+        return []
 
-    response = client.search(
-        query=topic,
-        max_results=max_results,
-        search_depth=search_depth,
-        topic="news",
-        time_range=time_range,
-        exclude_domains=list(EXCLUDED_DOMAINS),
-    )
+    try:
+        client = TavilyClient(api_key=api_key)
 
-    return _normalize_results(response)
+        response = client.search(
+            query=topic,
+            max_results=max_results,
+            search_depth=search_depth,
+            topic="news",
+            time_range=time_range,
+            exclude_domains=list(EXCLUDED_DOMAINS),
+        )
+
+        return _normalize_results(response)
+    except Exception as e:
+        err_str = str(e).lower()
+        if "401" in err_str or "unauthorized" in err_str or "invalid api key" in err_str:
+            sys.stderr.write("[Web] Tavily: invalid API key (401)\n")
+        elif "429" in err_str or "rate limit" in err_str:
+            sys.stderr.write("[Web] Tavily: rate limited (429)\n")
+        else:
+            sys.stderr.write(f"[Web] Tavily: {e}\n")
+        sys.stderr.flush()
+        return []
 
 
 def _normalize_results(response: Dict[str, Any]) -> List[Dict[str, Any]]:

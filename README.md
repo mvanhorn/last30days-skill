@@ -118,6 +118,7 @@ BSKY_APP_PASSWORD=xxxx-xxxx-xxxx
 
 ```bash
 # Add to ~/.config/last30days/.env
+TAVILY_API_KEY=...      # Tavily Search (top priority — LLM-optimized, 1K free/month at tavily.com)
 PARALLEL_API_KEY=...    # Parallel AI (preferred — LLM-optimized results)
 BRAVE_API_KEY=...       # Brave Search (free tier: 2,000 queries/month)
 OPENROUTER_API_KEY=...  # OpenRouter/Perplexity Sonar Pro
@@ -134,6 +135,7 @@ OPENROUTER_API_KEY=...  # OpenRouter/Perplexity Sonar Pro
 | YouTube | yt-dlp (`brew install yt-dlp`) | N/A | **No API key exists.** Install yt-dlp for search; transcripts work without it. |
 | Hacker News | Always free | N/A | **No.** Always works, no config needed. |
 | Polymarket | Always free | N/A | **No.** Always works, no config needed. |
+| Web search | N/A | Tavily (`TAVILY_API_KEY`) | **Optional.** Top-priority web backend. 1,000 free credits/month at tavily.com. |
 | Web search | N/A | Exa (`EXA_API_KEY`) | **Optional.** 1,000 free searches/month at exa.ai. |
 | Bluesky | Free app password | N/A | **Optional.** Free app password at bsky.app. |
 | TikTok | N/A | ScrapeCreators | **Optional.** Included with ScrapeCreators key. |
@@ -1232,6 +1234,7 @@ Thanks to the contributors who helped shape V2:
 | `youtube.com` (via yt-dlp) | Search query | None (public search) |
 | `hn.algolia.com` | Search query | None (public API) |
 | `gamma-api.polymarket.com` | Search query | None (public API) |
+| `api.tavily.com` | Search query (optional) | TAVILY_API_KEY |
 | `api.search.brave.com` | Search query (optional) | BRAVE_API_KEY |
 | `api.parallel.ai` | Search query (optional) | PARALLEL_API_KEY |
 | `openrouter.ai` | Search query (optional) | OPENROUTER_API_KEY |
