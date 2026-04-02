@@ -251,7 +251,7 @@ def enrich_reddit_item(
             "score": c.get("score", 0),
             "date": dates.timestamp_to_date(c.get("created_utc")),
             "author": c.get("author", ""),
-            "excerpt": c.get("body", "")[:200],
+            "excerpt": c.get("body", "")[:400],
             "url": comment_url,
         })
 

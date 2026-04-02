@@ -180,13 +180,15 @@ def render_compact(report: schema.Report, limit: int = 15, missing_keys: str = "
             lines.append(f"  {item.url}")
             lines.append(f"  *{item.why_relevant}*")
 
-            # Top comment (elevated — Reddit's value IS the comments)
-            if item.top_comments and item.top_comments[0].score >= 10:
-                tc = item.top_comments[0]
-                excerpt = tc.excerpt[:200]
-                if len(tc.excerpt) > 200:
-                    excerpt = excerpt.rstrip() + "..."
-                lines.append(f'  \U0001f4ac Top comment ({tc.score} upvotes): "{excerpt}"')
+            # Top comments (elevated — Reddit's value IS the comments)
+            if item.top_comments:
+                for tc in item.top_comments[:3]:
+                    if tc.score < 10:
+                        break
+                    excerpt = tc.excerpt[:200]
+                    if len(tc.excerpt) > 200:
+                        excerpt = excerpt.rstrip() + "..."
+                    lines.append(f'  \U0001f4ac Top comment ({tc.score} upvotes): "{excerpt}"')
 
             # Comment insights
             if item.comment_insights:
@@ -766,14 +768,16 @@ def render_full_report(report: schema.Report) -> str:
                 eng = item.engagement
                 lines.append(f"- **Engagement:** {eng.score or '?'} points, {eng.num_comments or '?'} comments")
 
-            if item.top_comments and item.top_comments[0].score >= 10:
-                tc = item.top_comments[0]
-                excerpt = tc.excerpt[:200]
-                if len(tc.excerpt) > 200:
-                    excerpt = excerpt.rstrip() + "..."
-                lines.append("")
-                lines.append(f'**\U0001f4ac Top Comment** ({tc.score} upvotes, u/{tc.author}):')
-                lines.append(f'> {excerpt}')
+            if item.top_comments:
+                for tc in item.top_comments[:3]:
+                    if tc.score < 10:
+                        break
+                    excerpt = tc.excerpt[:200]
+                    if len(tc.excerpt) > 200:
+                        excerpt = excerpt.rstrip() + "..."
+                    lines.append("")
+                    lines.append(f'**\U0001f4ac Top Comment** ({tc.score} upvotes, u/{tc.author}):')
+                    lines.append(f'> {excerpt}')
 
             if item.comment_insights:
                 lines.append("")
