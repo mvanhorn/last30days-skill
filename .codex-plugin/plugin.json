@@ -1,0 +1,5 @@
+{
+  "name": "last30days",
+  "description": "The AI world reinvents itself every month. This skill keeps you current - researches any topic across Reddit, X, YouTube, HN, Polymarket, and more from the last 30 days.",
+  "skills": "./skills"
+}
