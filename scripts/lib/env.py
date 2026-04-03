@@ -374,7 +374,7 @@ def get_config() -> Dict[str, Any]:
         ('TRUTHSOCIAL_TOKEN', None),
         ('FROM_BROWSER', None),
         ('SETUP_COMPLETE', None),
-        ('INCLUDE_SOURCES', None),
+        ('INCLUDE_SOURCES', ''),
     ]
 
     for key, default in keys:
