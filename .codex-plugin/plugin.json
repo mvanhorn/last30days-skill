@@ -1,0 +1,54 @@
+{
+  "schema_version": "1.0.0",
+  "name": "last30days",
+  "version": "2.9.6",
+  "description": "Deep research engine covering the last 30 days across 10+ sources - Reddit, X/Twitter, YouTube, TikTok, Instagram, Hacker News, Polymarket, Bluesky, TruthSocial, and the web. AI synthesizes findings into grounded, cited reports.",
+  "author": {
+    "name": "Matt Van Horn",
+    "email": "mvanhorn@anthropic.com",
+    "url": "https://github.com/mvanhorn"
+  },
+  "homepage": "https://github.com/mvanhorn/last30days-skill",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mvanhorn/last30days-skill"
+  },
+  "license": "MIT",
+  "keywords": [
+    "research",
+    "ai",
+    "claude-code",
+    "reddit",
+    "twitter",
+    "youtube",
+    "hackernews",
+    "polymarket",
+    "bluesky",
+    "news",
+    "trends",
+    "deep-research",
+    "multi-source"
+  ],
+  "skills": "./SKILL.md",
+  "optional_env": [
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "REDDIT_CLIENT_ID",
+    "REDDIT_CLIENT_SECRET",
+    "XAI_API_KEY",
+    "XAU_API_KEY",
+    "OPENROUTER_API_KEY",
+    "PARALLEL_API_KEY",
+    "BRAVE_API_KEY",
+    "APIFY_API_TOKEN",
+    "AUTH_TOKEN",
+    "CT0",
+    "BSKY_HANDLE",
+    "BSKY_APP_PASSWORD",
+    "TRUTHSOCIAL_TOKEN",
+    "SCRAPECREATORS_API_KEY"
+  ],
+  "pattern": "last30",
+  "match_mode": "exact",
+  "user_invocable": true
+}
