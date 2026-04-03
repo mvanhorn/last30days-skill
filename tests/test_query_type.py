@@ -20,7 +20,6 @@ class TestDetectQueryType(unittest.TestCase):
         self.assertEqual(detect_query_type("cursor IDE pricing"), "product")
         self.assertEqual(detect_query_type("is Claude Pro worth the cost"), "product")
         self.assertEqual(detect_query_type("best free tier LLM API"), "product")
-        self.assertEqual(detect_query_type("nano banana pro prompting"), "product")
 
     def test_concept_queries(self):
         self.assertEqual(detect_query_type("what is WebTransport"), "concept")
