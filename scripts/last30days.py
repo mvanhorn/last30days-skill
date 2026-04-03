@@ -390,14 +390,15 @@ def _search_x(
             to_date,
             depth=depth,
         )
+        x_items = xai_x.parse_x_response(raw_response or {})
     except http.HTTPError as e:
         raw_response = {"error": str(e)}
         x_error = f"API error: {e}"
+        x_items = []
     except Exception as e:
         raw_response = {"error": str(e)}
         x_error = f"{type(e).__name__}: {e}"
-
-    x_items = xai_x.parse_x_response(raw_response or {})
+        x_items = []
 
     return x_items, raw_response, x_error
 
