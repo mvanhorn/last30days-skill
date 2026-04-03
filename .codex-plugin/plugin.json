@@ -1,0 +1,23 @@
+{
+  "$schema": "https://openai.com/codex/plugin.schema.json",
+  "name": "last30days",
+  "version": "2.9.6",
+  "description": "Research any topic from the last 30 days across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, and the web.",
+  "author": {
+    "name": "Matt Van Horn",
+    "email": "mvanhorn@gmail.com",
+    "url": "https://github.com/mvanhorn"
+  },
+  "repository": "https://github.com/mvanhorn/last30days-skill",
+  "homepage": "https://github.com/mvanhorn/last30days-skill",
+  "license": "MIT",
+  "keywords": ["research", "reddit", "twitter", "youtube", "tiktok", "instagram", "trends", "prompts", "polymarket"],
+  "readme": "README.md",
+  "skills": [
+    {
+      "name": "research",
+      "description": "Research any topic from the last 30 days",
+      "trigger": "research last30days for"
+    }
+  ]
+}
