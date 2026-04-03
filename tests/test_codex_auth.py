@@ -12,7 +12,7 @@ from unittest.mock import patch
 # Add scripts directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from lib import env, openai_reddit
+from lib import env, openai_reddit, http
 
 
 def _make_jwt(payload: dict) -> str:
@@ -169,8 +169,15 @@ class TestParseCodexStream(unittest.TestCase):
         self.assertEqual(text, "hello")
 
     def test_empty_stream(self):
-        result = openai_reddit._parse_codex_stream("")
-        self.assertEqual(result, {})
+        """Empty SSE stream should raise HTTPError (indicates API failure, not zero results)."""
+        with self.assertRaises(http.HTTPError):
+            openai_reddit._parse_codex_stream("")
+
+    def test_malformed_stream_no_output(self):
+        """SSE stream with events but no output text should raise HTTPError."""
+        sse = 'data: {"type":"response.created"}\n\n'
+        with self.assertRaises(http.HTTPError):
+            openai_reddit._parse_codex_stream(sse)
 
 
 class TestBuildPayload(unittest.TestCase):

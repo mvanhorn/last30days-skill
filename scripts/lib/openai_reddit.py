@@ -98,6 +98,13 @@ def _parse_codex_stream(raw: str) -> Dict[str, Any]:
     """Parse SSE stream from Codex responses into a response-like dict."""
     events = _parse_sse_stream_raw(raw)
 
+    # Fail fast if the stream is completely empty (indicates API error, not zero results)
+    if not events:
+        raw_preview = raw[:100] if raw else "(empty)"
+        raise http.HTTPError(
+            f"Codex API returned empty response (no SSE events parsed from: {raw_preview})"
+        )
+
     # Prefer explicit completed response payload if present
     for evt in reversed(events):
         if isinstance(evt, dict):
@@ -129,7 +136,8 @@ def _parse_codex_stream(raw: str) -> Dict[str, Any]:
             ]
         }
 
-    return {}
+    # No output text after parsing all events — this is a silent failure
+    raise http.HTTPError("Codex API returned valid SSE stream but no output text (malformed response)")
 
 # Depth configurations: (min, max) threads to request
 # Request MORE than needed since many get filtered by date
