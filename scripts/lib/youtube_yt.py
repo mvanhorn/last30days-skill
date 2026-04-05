@@ -169,9 +169,12 @@ def search_youtube(
         try:
             stdout, stderr = proc.communicate(timeout=120)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
+            if hasattr(os, 'killpg'):
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    proc.kill()
+            else:
                 proc.kill()
             proc.wait(timeout=5)
             _log("YouTube search timed out (120s)")
@@ -392,9 +395,12 @@ def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
         try:
             proc.communicate(timeout=30)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
+            if hasattr(os, 'killpg'):
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    proc.kill()
+            else:
                 proc.kill()
             proc.wait(timeout=5)
             return None
