@@ -51,7 +51,7 @@ def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -
     if not transcript:
         return []
 
-    sentences = re.split(r'(?<=[.!?])\s+', transcript)
+    sentences = re.split(r"(?<=[.!?])\s+", transcript)
 
     # Fallback for punctuation-free transcripts (common with auto-captions):
     # chunk into ~20-word segments so they pass the 8-50 word filter.
@@ -78,11 +78,11 @@ def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -
             continue
 
         score = 0
-        if re.search(r'\d', sent):
+        if re.search(r"\d", sent):
             score += 2
-        if re.search(r'[A-Z][a-z]+', sent):
+        if re.search(r"[A-Z][a-z]+", sent):
             score += 1
-        if '?' in sent:
+        if "?" in sent:
             score += 1
         sent_lower = sent.lower()
         if any(w in sent_lower for w in topic_words):
@@ -103,6 +103,26 @@ def is_ytdlp_installed() -> bool:
     return shutil.which("yt-dlp") is not None
 
 
+def _popen_process_group_kwargs() -> Dict[str, Any]:
+    if os.name == "nt":
+        creationflags = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+        return {"creationflags": creationflags} if creationflags else {}
+
+    preexec = os.setsid if hasattr(os, "setsid") else None
+    return {"preexec_fn": preexec} if preexec else {}
+
+
+def _terminate_process_group(proc: subprocess.Popen) -> None:
+    if os.name != "nt" and hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+            return
+        except (ProcessLookupError, PermissionError, OSError, AttributeError):
+            pass
+
+    proc.kill()
+
+
 def _extract_core_subject(topic: str) -> str:
     """Extract core subject from verbose query for YouTube search.
 
@@ -110,23 +130,66 @@ def _extract_core_subject(topic: str) -> str:
     are intentionally KEPT — they're YouTube content types that improve search.
     """
     from .query import extract_core_subject
+
     # YouTube-specific noise set: smaller than default, keeps content-type words
-    _YT_NOISE = frozenset({
-        'best', 'top', 'good', 'great', 'awesome', 'killer',
-        'latest', 'new', 'news', 'update', 'updates',
-        'trending', 'hottest', 'popular', 'viral',
-        'practices', 'features',
-        'recommendations', 'advice',
-        'prompt', 'prompts', 'prompting',
-        'methods', 'strategies', 'approaches',
-        # Temporal/meta words — planner generates these but they don't
-        # appear in YouTube titles, so strip them for better search.
-        'last', 'days', 'recent', 'recently', 'month', 'week',
-        'january', 'february', 'march', 'april', 'may', 'june',
-        'july', 'august', 'september', 'october', 'november', 'december',
-        '2025', '2026', '2027',
-        'music', 'public', 'appearances', 'developments', 'discussions', 'coverage',
-    })
+    _YT_NOISE = frozenset(
+        {
+            "best",
+            "top",
+            "good",
+            "great",
+            "awesome",
+            "killer",
+            "latest",
+            "new",
+            "news",
+            "update",
+            "updates",
+            "trending",
+            "hottest",
+            "popular",
+            "viral",
+            "practices",
+            "features",
+            "recommendations",
+            "advice",
+            "prompt",
+            "prompts",
+            "prompting",
+            "methods",
+            "strategies",
+            "approaches",
+            # Temporal/meta words — planner generates these but they don't
+            # appear in YouTube titles, so strip them for better search.
+            "last",
+            "days",
+            "recent",
+            "recently",
+            "month",
+            "week",
+            "january",
+            "february",
+            "march",
+            "april",
+            "may",
+            "june",
+            "july",
+            "august",
+            "september",
+            "october",
+            "november",
+            "december",
+            "2025",
+            "2026",
+            "2027",
+            "music",
+            "public",
+            "appearances",
+            "developments",
+            "discussions",
+            "coverage",
+        }
+    )
     return extract_core_subject(topic, noise=_YT_NOISE)
 
 
@@ -227,23 +290,18 @@ def search_youtube(
         "--no-download",
     ]
 
-    preexec = os.setsid if hasattr(os, 'setsid') else None
-
     try:
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            preexec_fn=preexec,
+            **_popen_process_group_kwargs(),
         )
         try:
             stdout, stderr = proc.communicate(timeout=120)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
-                proc.kill()
+            _terminate_process_group(proc)
             proc.wait(timeout=5)
             _log("YouTube search timed out (120s)")
             return {"items": [], "error": "Search timed out"}
@@ -277,22 +335,26 @@ def search_youtube(
             date_str = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
 
         description = str(video.get("description", ""))[:500]
-        items.append({
-            "video_id": video_id,
-            "title": video.get("title", ""),
-            "url": f"https://www.youtube.com/watch?v={video_id}",
-            "channel_name": video.get("channel", video.get("uploader", "")),
-            "date": date_str,
-            "engagement": {
-                "views": view_count,
-                "likes": like_count,
-                "comments": comment_count,
-            },
-            "duration": video.get("duration"),
-            "relevance": _compute_relevance(core_topic, f"{video.get('title', '')} {description}"),
-            "why_relevant": f"YouTube: {video.get('title', core_topic)[:60]}",
-            "description": description,
-        })
+        items.append(
+            {
+                "video_id": video_id,
+                "title": video.get("title", ""),
+                "url": f"https://www.youtube.com/watch?v={video_id}",
+                "channel_name": video.get("channel", video.get("uploader", "")),
+                "date": date_str,
+                "engagement": {
+                    "views": view_count,
+                    "likes": like_count,
+                    "comments": comment_count,
+                },
+                "duration": video.get("duration"),
+                "relevance": _compute_relevance(
+                    core_topic, f"{video.get('title', '')} {description}"
+                ),
+                "why_relevant": f"YouTube: {video.get('title', core_topic)[:60]}",
+                "description": description,
+            }
+        )
 
     # Soft date filter: prefer recent items but fall back to all if too few
     recent = [i for i in items if i["date"] and i["date"] >= from_date]
@@ -300,7 +362,9 @@ def search_youtube(
         items = recent
         _log(f"Found {len(items)} videos within date range")
     else:
-        _log(f"Found {len(items)} videos ({len(recent)} within date range, keeping all)")
+        _log(
+            f"Found {len(items)} videos ({len(recent)} within date range, keeping all)"
+        )
 
     # Sort by views descending
     items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
@@ -311,15 +375,17 @@ def search_youtube(
 def _clean_vtt(vtt_text: str) -> str:
     """Convert VTT subtitle format to clean plaintext."""
     # Strip VTT header
-    text = re.sub(r'^WEBVTT.*?\n\n', '', vtt_text, flags=re.DOTALL)
+    text = re.sub(r"^WEBVTT.*?\n\n", "", vtt_text, flags=re.DOTALL)
     # Strip timestamps
-    text = re.sub(r'\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*\n', '', text)
+    text = re.sub(
+        r"\d{2}:\d{2}:\d{2}\.\d{3}\s*-->\s*\d{2}:\d{2}:\d{2}\.\d{3}.*\n", "", text
+    )
     # Strip position/alignment tags
-    text = re.sub(r'<[^>]+>', '', text)
+    text = re.sub(r"<[^>]+>", "", text)
     # Strip cue numbers
-    text = re.sub(r'^\d+\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r"^\d+\s*$", "", text, flags=re.MULTILINE)
     # Deduplicate overlapping lines
-    lines = text.strip().split('\n')
+    lines = text.strip().split("\n")
     seen = set()
     unique = []
     for line in lines:
@@ -327,7 +393,7 @@ def _clean_vtt(vtt_text: str) -> str:
         if stripped and stripped not in seen:
             seen.add(stripped)
             unique.append(stripped)
-    return re.sub(r'\s+', ' ', ' '.join(unique)).strip()
+    return re.sub(r"\s+", " ", " ".join(unique)).strip()
 
 
 _YT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
@@ -357,20 +423,25 @@ def _fetch_transcript_direct(video_id: str, timeout: int = 30) -> Optional[str]:
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             html = resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as exc:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        OSError,
+        TimeoutError,
+    ) as exc:
         _log(f"Direct transcript: failed to fetch watch page for {video_id}: {exc}")
         return None
 
     # Step 2: Extract captions URL from ytInitialPlayerResponse
     # YouTube embeds this as a JS variable in the page HTML
     match = re.search(
-        r'ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;(?:\s*var\s|\s*<\/script>)',
+        r"ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;(?:\s*var\s|\s*<\/script>)",
         html,
     )
     if not match:
         # Fallback: try the JSON embedded in the script tag
         match = re.search(
-            r'var\s+ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;',
+            r"var\s+ytInitialPlayerResponse\s*=\s*(\{.+?\})\s*;",
             html,
         )
     if not match:
@@ -380,7 +451,9 @@ def _fetch_transcript_direct(video_id: str, timeout: int = 30) -> Optional[str]:
     try:
         player_response = json.loads(match.group(1))
     except json.JSONDecodeError:
-        _log(f"Direct transcript: failed to parse ytInitialPlayerResponse for {video_id}")
+        _log(
+            f"Direct transcript: failed to parse ytInitialPlayerResponse for {video_id}"
+        )
         return None
 
     # Navigate to caption tracks
@@ -419,7 +492,12 @@ def _fetch_transcript_direct(video_id: str, timeout: int = 30) -> Optional[str]:
     try:
         with urllib.request.urlopen(vtt_req, timeout=timeout) as resp:
             vtt_text = resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as exc:
+    except (
+        urllib.error.URLError,
+        urllib.error.HTTPError,
+        OSError,
+        TimeoutError,
+    ) as exc:
         _log(f"Direct transcript: failed to fetch VTT for {video_id}: {exc}")
         return None
 
@@ -444,15 +522,16 @@ def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
         "--ignore-config",
         "--no-cookies-from-browser",
         "--write-auto-subs",
-        "--sub-lang", "en",
-        "--sub-format", "vtt",
+        "--sub-lang",
+        "en",
+        "--sub-format",
+        "vtt",
         "--skip-download",
         "--no-warnings",
-        "-o", f"{temp_dir}/%(id)s",
+        "-o",
+        f"{temp_dir}/%(id)s",
         f"https://www.youtube.com/watch?v={video_id}",
     ]
-
-    preexec = os.setsid if hasattr(os, 'setsid') else None
 
     try:
         proc = subprocess.Popen(
@@ -460,15 +539,12 @@ def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
-            preexec_fn=preexec,
+            **_popen_process_group_kwargs(),
         )
         try:
             proc.communicate(timeout=30)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
-                proc.kill()
+            _terminate_process_group(proc)
             proc.wait(timeout=5)
             return None
     except FileNotFoundError:
@@ -522,7 +598,7 @@ def fetch_transcript(video_id: str, temp_dir: str) -> Optional[str]:
     # Truncate to max words
     words = transcript.split()
     if len(words) > TRANSCRIPT_MAX_WORDS:
-        transcript = ' '.join(words[:TRANSCRIPT_MAX_WORDS]) + '...'
+        transcript = " ".join(words[:TRANSCRIPT_MAX_WORDS]) + "..."
 
     return transcript if transcript else None
 
@@ -628,7 +704,8 @@ def search_and_transcribe(
         transcript = transcripts.get(vid)
         item["transcript_snippet"] = transcript or ""
         item["transcript_highlights"] = extract_transcript_highlights(
-            transcript or "", core_topic,
+            transcript or "",
+            core_topic,
         )
 
     return {"items": items}
