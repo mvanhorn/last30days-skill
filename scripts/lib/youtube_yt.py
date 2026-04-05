@@ -37,6 +37,17 @@ TRANSCRIPT_LIMITS = {
 # Max words to keep from each transcript
 TRANSCRIPT_MAX_WORDS = 5000
 
+_IS_WINDOWS = sys.platform == "win32"
+
+
+def _get_proxy_args() -> list:
+    """Return yt-dlp --proxy args if YOUTUBE_PROXY is configured."""
+    proxy = os.environ.get("YOUTUBE_PROXY")
+    if proxy:
+        return ["--proxy", proxy]
+    return []
+
+
 from .relevance import token_overlap_relevance as _compute_relevance
 
 
@@ -156,6 +167,8 @@ def search_youtube(
         "--no-download",
     ]
 
+    cmd.extend(_get_proxy_args())
+
     preexec = os.setsid if hasattr(os, 'setsid') else None
 
     try:
@@ -169,9 +182,12 @@ def search_youtube(
         try:
             stdout, stderr = proc.communicate(timeout=120)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
+            if hasattr(os, 'killpg'):
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    proc.kill()
+            else:
                 proc.kill()
             proc.wait(timeout=5)
             _log("YouTube search timed out (120s)")
@@ -379,6 +395,8 @@ def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
         f"https://www.youtube.com/watch?v={video_id}",
     ]
 
+    cmd.extend(_get_proxy_args())
+
     preexec = os.setsid if hasattr(os, 'setsid') else None
 
     try:
@@ -392,9 +410,12 @@ def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
         try:
             proc.communicate(timeout=30)
         except subprocess.TimeoutExpired:
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
+            if hasattr(os, 'killpg'):
+                try:
+                    os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    proc.kill()
+            else:
                 proc.kill()
             proc.wait(timeout=5)
             return None

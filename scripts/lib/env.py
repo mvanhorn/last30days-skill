@@ -375,6 +375,7 @@ def get_config() -> Dict[str, Any]:
         ('FROM_BROWSER', None),
         ('SETUP_COMPLETE', None),
         ('INCLUDE_SOURCES', None),
+        ('YOUTUBE_PROXY', None),
     ]
 
     for key, default in keys:
