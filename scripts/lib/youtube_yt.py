@@ -86,6 +86,14 @@ def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -
     return [sent for _, sent in candidates[:limit]]
 
 
+def _get_proxy_args() -> list:
+    """Return yt-dlp proxy args if YOUTUBE_PROXY is configured."""
+    proxy = os.environ.get("YOUTUBE_PROXY")
+    if proxy:
+        return ["--proxy", proxy]
+    return []
+
+
 def _log(msg: str):
     """Log to stderr."""
     sys.stderr.write(f"[YouTube] {msg}\n")
@@ -154,7 +162,7 @@ def search_youtube(
         "--dump-json",
         "--no-warnings",
         "--no-download",
-    ]
+    ] + _get_proxy_args()
 
     preexec = os.setsid if hasattr(os, 'setsid') else None
 
@@ -377,7 +385,7 @@ def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
         "--no-warnings",
         "-o", f"{temp_dir}/%(id)s",
         f"https://www.youtube.com/watch?v={video_id}",
-    ]
+    ] + _get_proxy_args()
 
     preexec = os.setsid if hasattr(os, 'setsid') else None
 
