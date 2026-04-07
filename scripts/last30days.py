@@ -1737,7 +1737,7 @@ def main():
     search_run_xiaohongshu = has_xiaohongshu
 
     # INCLUDE_SOURCES override: force specific sources on regardless of tier
-    _include_sources = {s.strip().lower() for s in config.get('INCLUDE_SOURCES', '').split(',') if s.strip()}
+    _include_sources = {s.strip().lower() for s in (config.get('INCLUDE_SOURCES') or '').split(',') if s.strip()}
     if _include_sources:
         if 'tiktok' in _include_sources and has_tiktok:
             if not search_run_tiktok:
