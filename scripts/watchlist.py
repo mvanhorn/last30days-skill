@@ -1,62 +1,114 @@
 #!/usr/bin/env python3
-"""Topic watchlist management for last30days.
+"""Topic watchlist management for last30days."""
 
-CLI for adding, removing, and listing watched topics with auto-bootstrap.
-On first `add`, creates the SQLite database.
-
-Usage:
-    python3 watchlist.py add "AI video tools" [--schedule "0 8 * * *"]
-    python3 watchlist.py add "NVIDIA news" --weekly
-    python3 watchlist.py remove "AI video tools"
-    python3 watchlist.py list
-    python3 watchlist.py run-all
-    python3 watchlist.py run-one "AI video tools"
-    python3 watchlist.py config delivery telegram
-    python3 watchlist.py config budget 10.00
-"""
+from __future__ import annotations
 
 import argparse
 import json
 import subprocess
 import sys
 import time
-from datetime import datetime
 from pathlib import Path
+
+try:
+    import requests
+except ImportError:
+    requests = None
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import store
+from lib import schema
 
+
+# --- Webhook Delivery Functions ---
+
+def _deliver_findings(topic_name: str, counts: dict) -> None:
+    """Send webhook notification if delivery is configured and there are new findings."""
+    channel = store.get_setting("delivery_channel", "")
+    if not channel or counts.get("new", 0) == 0:
+        return
+    
+    mode = store.get_setting("delivery_mode", "announce")
+    message = _format_delivery_message(topic_name, counts, mode)
+    
+    try:
+        if "hooks.slack.com" in channel:
+            _send_slack_webhook(channel, message)
+        elif channel.startswith("https://"):
+            _send_generic_webhook(channel, message)
+    except Exception as e:
+        # Don't fail the research run if delivery fails
+        print(f"Delivery failed: {e}", file=sys.stderr)
+
+
+def _format_delivery_message(topic: str, counts: dict, mode: str) -> str:
+    """Format notification message based on delivery mode."""
+    new = counts.get("new", 0)
+    updated = counts.get("updated", 0)
+    
+    if mode == "announce":
+        return f"📰 *last30days update: {topic}*\n{new} new, {updated} updated"
+    elif mode == "silent":
+        return f"last30days: {new} new findings for '{topic}'"
+    else:
+        return f"last30days: Research complete for '{topic}'"
+
+
+def _send_slack_webhook(url: str, text: str) -> None:
+    """POST to Slack incoming webhook."""
+    if not requests:
+        raise RuntimeError("requests library not available for webhook delivery")
+    
+    response = requests.post(
+        url,
+        json={"text": text},
+        headers={"Content-Type": "application/json"},
+        timeout=10,
+    )
+    response.raise_for_status()
+
+
+def _send_generic_webhook(url: str, text: str) -> None:
+    """POST JSON payload to generic webhook."""
+    if not requests:
+        raise RuntimeError("requests library not available for webhook delivery")
+    
+    response = requests.post(
+        url,
+        json={
+            "message": text,
+            "source": "last30days",
+            "timestamp": time.time(),
+        },
+        headers={"Content-Type": "application/json"},
+        timeout=10,
+    )
+    response.raise_for_status()
+
+
+# --- Command Handlers ---
 
 def cmd_add(args):
-    """Add a topic to the watchlist."""
     schedule = "0 8 * * 1" if args.weekly else (args.schedule or "0 8 * * *")
-    queries = args.queries.split(",") if args.queries else None
-
+    queries = [query.strip() for query in (args.queries or "").split(",") if query.strip()] or None
     topic = store.add_topic(args.topic, search_queries=queries, schedule=schedule)
-
     sched_desc = "weekly (Mondays 8am)" if args.weekly else f"daily ({schedule})"
-    result = {
+    print(json.dumps({
         "action": "added",
         "topic": topic["name"],
         "schedule": sched_desc,
         "message": f'Added "{topic["name"]}" to watchlist. Schedule: {sched_desc}.',
-    }
-
-    print(json.dumps(result, default=str))
+    }, default=str))
 
 
 def cmd_remove(args):
-    """Remove a topic from the watchlist."""
     removed = store.remove_topic(args.topic)
-
     if not removed:
         print(json.dumps({"action": "not_found", "topic": args.topic, "message": f'Topic not found: "{args.topic}"'}))
         return
-
     remaining = store.list_topics()
-
     print(json.dumps({
         "action": "removed",
         "topic": args.topic,
@@ -66,55 +118,43 @@ def cmd_remove(args):
 
 
 def cmd_list(args):
-    """List all watched topics with stats."""
+    del args
     topics = store.list_topics()
     budget_used = store.get_daily_cost()
-    budget_limit = store.get_setting("daily_budget", "5.00")
-
-    result = {
+    budget_limit = float(store.get_setting("daily_budget", "5.00"))
+    print(json.dumps({
         "topics": topics,
         "budget_used": budget_used,
-        "budget_limit": float(budget_limit),
-    }
-    print(json.dumps(result, default=str))
+        "budget_limit": budget_limit,
+    }, default=str))
 
 
 def cmd_run_one(args):
-    """Run research for a single topic."""
     topic = store.get_topic(args.topic)
     if not topic:
         print(json.dumps({"error": f'Topic not found: "{args.topic}"'}))
         sys.exit(1)
-
-    result = _run_topic(topic)
-    print(json.dumps(result, default=str))
+    print(json.dumps(_run_topic(topic), default=str))
 
 
 def cmd_run_all(args):
-    """Run research for all enabled topics with budget guard."""
-    topics = store.list_topics()
-    enabled = [t for t in topics if t["enabled"]]
-
-    if not enabled:
+    del args
+    topics = [topic for topic in store.list_topics() if topic["enabled"]]
+    if not topics:
         print(json.dumps({"message": "No enabled topics to research."}))
         return
 
     budget_limit = float(store.get_setting("daily_budget", "5.00"))
     results = []
-
-    for topic in enabled:
-        # Budget guard
-        daily_cost = store.get_daily_cost()
-        if daily_cost >= budget_limit:
+    for topic in topics:
+        if store.get_daily_cost() >= budget_limit:
             results.append({
                 "topic": topic["name"],
                 "status": "skipped",
-                "reason": f"Budget exceeded: ${daily_cost:.2f}/${budget_limit:.2f}",
+                "reason": f"Budget exceeded: ${store.get_daily_cost():.2f}/${budget_limit:.2f}",
             })
             continue
-
-        result = _run_topic(topic)
-        results.append(result)
+        results.append(_run_topic(topic))
 
     print(json.dumps({
         "action": "run_all",
@@ -125,32 +165,28 @@ def cmd_run_all(args):
 
 
 def _run_topic(topic: dict) -> dict:
-    """Run research for a single topic and store findings."""
     start_time = time.time()
     topic_id = topic["id"]
-
-    # Record the run
-    run_id = store.record_run(topic_id, source_mode="both", status="running")
+    run_id = store.record_run(topic_id, source_mode="v3", status="running")
 
     try:
-        # Prefer custom search_queries over topic name (#40)
         search_queries = json.loads(topic["search_queries"]) if topic.get("search_queries") else None
         search_term = search_queries[0] if search_queries else topic["name"]
-        cmd = [
-            sys.executable,
-            str(SCRIPT_DIR / "last30days.py"),
-            search_term,
-            "--emit=json",
-        ]
         result = subprocess.run(
-            cmd,
+            [
+                sys.executable,
+                str(SCRIPT_DIR / "last30days.py"),
+                search_term,
+                "--emit=json",
+                "--quick",
+                "--lookback-days",
+                "90",
+            ],
             capture_output=True,
             text=True,
             timeout=300,
         )
-
         duration = time.time() - start_time
-
         if result.returncode != 0:
             store.update_run(
                 run_id,
@@ -165,66 +201,9 @@ def _run_topic(topic: dict) -> dict:
                 "duration": duration,
             }
 
-        # Parse research output
-        data = json.loads(result.stdout)
-
-        # Convert research items to findings format
-        findings = []
-        for item in data.get("reddit", []):
-            findings.append({
-                "source": "reddit",
-                "url": item.get("url", ""),
-                "title": item.get("title", ""),
-                "author": item.get("author", ""),
-                "content": item.get("title", ""),
-                "summary": item.get("top_comments_summary", ""),
-                "engagement_score": item.get("upvotes", 0),
-                "relevance_score": item.get("relevance", 0),
-            })
-        for item in data.get("x", []):
-            findings.append({
-                "source": "x",
-                "url": item.get("url", ""),
-                "title": item.get("text", "")[:100],
-                "author": item.get("author_handle", ""),
-                "content": item.get("text", ""),
-                "engagement_score": (item.get("engagement") or {}).get("likes", 0),
-                "relevance_score": item.get("relevance", 0),
-            })
-        for item in data.get("youtube", []):
-            findings.append({
-                "source": "youtube",
-                "url": item.get("url", ""),
-                "title": item.get("title", ""),
-                "author": item.get("channel_name", item.get("channel", "")),
-                "content": item.get("transcript_snippet", "") or item.get("title", ""),
-                "engagement_score": (item.get("engagement") or {}).get("views", 0),
-                "relevance_score": item.get("relevance", 0),
-            })
-        for item in data.get("tiktok", []):
-            findings.append({
-                "source": "tiktok",
-                "url": item.get("url", ""),
-                "title": (item.get("caption_snippet", "") or "")[:120],
-                "author": item.get("author", ""),
-                "content": item.get("caption_snippet", ""),
-                "engagement_score": (item.get("engagement") or {}).get("views", 0),
-                "relevance_score": item.get("relevance", 0),
-            })
-        for item in data.get("instagram", []):
-            findings.append({
-                "source": "instagram",
-                "url": item.get("url", ""),
-                "title": (item.get("caption_snippet", "") or "")[:120],
-                "author": item.get("author_name", ""),
-                "content": item.get("caption_snippet", ""),
-                "engagement_score": (item.get("engagement") or {}).get("views", 0),
-                "relevance_score": item.get("relevance", 0),
-            })
-
-        # Store with dedup
+        report = schema.report_from_dict(json.loads(result.stdout))
+        findings = store.findings_from_report(report, limit=25)
         counts = store.store_findings(run_id, topic_id, findings)
-
         store.update_run(
             run_id,
             status="completed",
@@ -232,7 +211,10 @@ def _run_topic(topic: dict) -> dict:
             findings_new=counts["new"],
             findings_updated=counts["updated"],
         )
-
+        
+        # Deliver webhook notification if configured
+        _deliver_findings(topic["name"], counts)
+        
         return {
             "topic": topic["name"],
             "status": "completed",
@@ -240,90 +222,78 @@ def _run_topic(topic: dict) -> dict:
             "updated": counts["updated"],
             "duration": duration,
         }
-
     except subprocess.TimeoutExpired:
         duration = time.time() - start_time
         store.update_run(
-            run_id, status="failed",
+            run_id,
+            status="failed",
             error_message="Research timed out after 300s",
             duration_seconds=duration,
         )
         return {"topic": topic["name"], "status": "failed", "error": "timeout"}
-
-    except json.JSONDecodeError as e:
+    except json.JSONDecodeError as exc:
         duration = time.time() - start_time
         store.update_run(
-            run_id, status="failed",
-            error_message=f"Invalid JSON output: {e}",
+            run_id,
+            status="failed",
+            error_message=f"Invalid JSON output: {exc}",
             duration_seconds=duration,
         )
-        return {"topic": topic["name"], "status": "failed", "error": f"parse error: {e}"}
-
-    except Exception as e:
-        duration = time.time() - start_time
-        store.update_run(
-            run_id, status="failed",
-            error_message=str(e)[:500],
-            duration_seconds=duration,
-        )
-        return {"topic": topic["name"], "status": "failed", "error": str(e)}
-
-
+        return {"topic": topic["name"], "status": "failed", "error": f"parse error: {exc}"}
 def cmd_config(args):
-    """Configure watchlist settings."""
-    if args.setting == "delivery":
-        store.set_setting("delivery_channel", args.value)
-        print(json.dumps({"action": "config", "setting": "delivery_channel", "value": args.value}))
-    elif args.setting == "budget":
-        store.set_setting("daily_budget", args.value)
-        print(json.dumps({"action": "config", "setting": "daily_budget", "value": args.value}))
-    else:
-        print(json.dumps({"error": f"Unknown setting: {args.setting}. Use 'delivery' or 'budget'."}))
+    if args.key == "budget":
+        store.set_setting("daily_budget", str(args.value))
+        print(json.dumps({"action": "config", "key": "daily_budget", "value": str(args.value)}))
+        return
+    if args.key == "delivery":
+        store.set_setting("delivery_channel", str(args.value))
+        print(json.dumps({"action": "config", "key": "delivery_channel", "value": str(args.value)}))
+        return
+    raise SystemExit(f"Unknown config key: {args.key}")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Manage last30days topic watchlist")
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Manage the last30days watchlist")
     sub = parser.add_subparsers(dest="command")
 
-    # add
-    a = sub.add_parser("add", help="Add a topic to the watchlist")
-    a.add_argument("topic", help="Topic name")
-    a.add_argument("--schedule", help="Cron expression (default: 0 8 * * *)")
-    a.add_argument("--weekly", action="store_true", help="Run weekly instead of daily")
-    a.add_argument("--queries", help="Comma-separated custom search queries")
-    a.set_defaults(func=cmd_add)
+    add = sub.add_parser("add")
+    add.add_argument("topic")
+    add.add_argument("--schedule")
+    add.add_argument("--weekly", action="store_true")
+    add.add_argument("--queries")
+    add.set_defaults(func=cmd_add)
 
-    # remove
-    r = sub.add_parser("remove", help="Remove a topic from the watchlist")
-    r.add_argument("topic", help="Topic name")
-    r.set_defaults(func=cmd_remove)
+    remove = sub.add_parser("remove")
+    remove.add_argument("topic")
+    remove.set_defaults(func=cmd_remove)
 
-    # list
-    l = sub.add_parser("list", help="List all watched topics")
-    l.set_defaults(func=cmd_list)
+    list_parser = sub.add_parser("list")
+    list_parser.set_defaults(func=cmd_list)
 
-    # run-all
-    ra = sub.add_parser("run-all", help="Run research for all enabled topics")
-    ra.set_defaults(func=cmd_run_all)
+    run_one = sub.add_parser("run-one")
+    run_one.add_argument("topic")
+    run_one.set_defaults(func=cmd_run_one)
 
-    # run-one
-    ro = sub.add_parser("run-one", help="Run research for a single topic")
-    ro.add_argument("topic", help="Topic name")
-    ro.set_defaults(func=cmd_run_one)
+    run_all = sub.add_parser("run-all")
+    run_all.set_defaults(func=cmd_run_all)
 
-    # config
-    c = sub.add_parser("config", help="Configure watchlist settings")
-    c.add_argument("setting", help="Setting name (delivery, budget)")
-    c.add_argument("value", help="Setting value")
-    c.set_defaults(func=cmd_config)
+    config = sub.add_parser("config")
+    config.add_argument("key", choices=["delivery", "budget"])
+    config.add_argument("value")
+    config.set_defaults(func=cmd_config)
 
+    return parser
+
+
+def main() -> int:
+    parser = build_parser()
     args = parser.parse_args()
-    if not args.command:
+    if not getattr(args, "command", None):
         parser.print_help()
-        sys.exit(1)
-
+        return 1
     args.func(args)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -1,4 +1,4 @@
-"""Entity extraction from Phase 1 search results for supplemental searches."""
+"""Entity extraction from initial search results for supplemental searches."""
 
 import re
 from collections import Counter

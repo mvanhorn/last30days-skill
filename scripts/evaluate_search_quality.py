@@ -1,10 +1,5 @@
 #!/usr/bin/env python3
-"""Run local search-quality evaluations across fixed topics.
-
-This is an optional local gate, not a required CI job. It compares a baseline
-revision against a candidate checkout, computes deterministic regression
-metrics, and optionally calls Gemini as a judge for graded relevance labels.
-"""
+"""Compare two last30days revisions on the v3 ranked candidate output."""
 
 from __future__ import annotations
 
@@ -12,315 +7,177 @@ import argparse
 import json
 import math
 import os
-import shlex
-import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from lib import env as envlib
+from lib import schema
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_TOPICS: List[Tuple[str, str]] = [
-    ("nano banana pro prompting", "product"),
-    ("codex vs claude code", "comparison"),
-    ("anthropic odds", "prediction"),
-    ("kanye west", "breaking_news"),
-    ("remotion animations for Claude Code", "how_to"),
-]
-DEFAULT_SEARCH = "reddit,x,youtube,hn,polymarket"
-SOURCE_KEYS = [
-    "reddit",
-    "x",
-    "youtube",
-    "tiktok",
-    "instagram",
-    "hackernews",
-    "bluesky",
-    "truthsocial",
-    "polymarket",
-    "websearch",
-]
-DEFAULT_JUDGE_MODEL = "gemini-3-pro-preview"
+EVAL_TOPICS_FILE = REPO_ROOT / "fixtures" / "eval_topics.json"
+
+
+def _load_default_topics() -> list[tuple[str, str]]:
+    if EVAL_TOPICS_FILE.exists():
+        rows = json.loads(EVAL_TOPICS_FILE.read_text())
+        return [(row["topic"], row["query_type"]) for row in rows]
+    return [
+        ("nano banana pro prompting", "product"),
+        ("codex vs claude code", "comparison"),
+        ("openclaw vs nanoclaw vs ironclaw", "comparison"),
+        ("anthropic odds", "prediction"),
+        ("kanye west", "breaking_news"),
+        ("remotion animations for Claude Code", "how_to"),
+    ]
+
+
+DEFAULT_TOPICS = _load_default_topics()
+DEFAULT_SEARCH = ""
+DEFAULT_JUDGE_MODEL = "gemini-3.1-flash-lite-preview"
 GEMINI_API_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 
 
-def slugify(topic: str) -> str:
-    return "".join(c.lower() if c.isalnum() else "-" for c in topic).strip("-")
+def stable_item_key(item: dict[str, Any]) -> str:
+    return str(item.get("candidate_id") or item.get("url") or item.get("title") or "")
 
 
-def path_without_node(path_value: str) -> str:
-    parts = []
-    for entry in path_value.split(os.pathsep):
-        if not entry:
-            continue
-        if (Path(entry) / "node").exists():
-            continue
-        parts.append(entry)
-    return os.pathsep.join(parts)
+def row_sources(row: dict[str, Any]) -> list[str]:
+    candidate = schema.candidate_from_dict(row)
+    return schema.candidate_sources(candidate)
 
 
-def write_exec_wrapper(path: Path, target: str, fixed_args: List[str]) -> None:
-    quoted_target = shlex.quote(target)
-    quoted_args = " ".join(shlex.quote(arg) for arg in fixed_args)
-    path.write_text(f"#!/bin/sh\nexec {quoted_target} {quoted_args} \"$@\"\n")
-    path.chmod(0o755)
+def row_best_date(row: dict[str, Any]) -> str | None:
+    candidate = schema.candidate_from_dict(row)
+    return schema.candidate_best_published_at(candidate)
 
 
-def create_eval_tool_path(eval_home: Path, base_path: str) -> str:
-    """Create safe wrapper binaries for local evaluation subprocesses."""
-    bin_dir = eval_home / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
-
-    real_ytdlp = shutil.which("yt-dlp")
-    if real_ytdlp:
-        write_exec_wrapper(
-            bin_dir / "yt-dlp",
-            real_ytdlp,
-            ["--ignore-config", "--no-cookies-from-browser"],
-        )
-
-    if not base_path:
-        return str(bin_dir)
-    return os.pathsep.join([str(bin_dir), base_path])
+V2_SOURCE_KEYS = [
+    ("reddit", "title"),
+    ("x", "text"),
+    ("youtube", "title"),
+    ("tiktok", "text"),
+    ("instagram", "text"),
+    ("hackernews", "title"),
+    ("bluesky", "text"),
+    ("truthsocial", "text"),
+    ("polymarket", "question"),
+    ("web", "title"),
+]
 
 
-def stable_item_key(source: str, item: Dict[str, Any]) -> str:
-    url = str(item.get("url") or "").strip()
-    if url:
-        return url
-    item_id = str(item.get("id") or "").strip()
-    text = item_text(source, item)
-    return f"{source}:{item_id}:{text[:120]}"
-
-
-def item_text(source: str, item: Dict[str, Any]) -> str:
-    if source in {"x", "bluesky", "truthsocial"}:
-        return str(item.get("text") or "").strip()
-    if source == "polymarket":
-        return str(item.get("question") or item.get("title") or "").strip()
-    return str(item.get("title") or "").strip()
-
-
-def build_ranked_items(report: Dict[str, Any], per_source_limit: int) -> List[Dict[str, Any]]:
-    ranked: List[Dict[str, Any]] = []
-    for source in SOURCE_KEYS:
-        items = list(report.get(source) or [])[:per_source_limit]
-        for item in items:
+def build_ranked_items(report: dict[str, Any], limit: int) -> list[dict[str, Any]]:
+    # v3 format: ranked_candidates list
+    if report.get("ranked_candidates"):
+        ranked = []
+        for row in report["ranked_candidates"][:limit]:
+            candidate_sources = row_sources(row)
             ranked.append({
-                "source": source,
-                "key": stable_item_key(source, item),
-                "url": str(item.get("url") or "").strip(),
-                "text": item_text(source, item),
-                "score": float(item.get("score") or 0),
-                "relevance": float(item.get("relevance") or 0),
-                "date": item.get("date"),
+                "key": stable_item_key(row),
+                "source": ", ".join(candidate_sources),
+                "sources": candidate_sources,
+                "url": str(row.get("url") or ""),
+                "text": str(row.get("title") or ""),
+                "date": row_best_date(row),
+                "score": float(row.get("final_score") or 0.0),
             })
-    ranked.sort(key=lambda item: (-item["score"], item["source"], item["key"]))
-    return ranked
+        return ranked
+
+    # v2 format: per-source lists (reddit, x, youtube, etc.)
+    all_items = []
+    for source_key, text_field in V2_SOURCE_KEYS:
+        for item in report.get(source_key) or []:
+            if not isinstance(item, dict):
+                continue
+            all_items.append({
+                "key": str(item.get("url") or item.get("id") or item.get(text_field) or ""),
+                "source": source_key,
+                "sources": [source_key],
+                "url": str(item.get("url") or ""),
+                "text": str(item.get(text_field) or item.get("title") or ""),
+                "date": item.get("date"),
+                "score": float(item.get("score") or 0.0),
+            })
+    all_items.sort(key=lambda x: x["score"], reverse=True)
+    return all_items[:limit]
 
 
-def url_sets_by_source(report: Dict[str, Any]) -> Dict[str, set[str]]:
-    result: Dict[str, set[str]] = {}
-    for source in SOURCE_KEYS:
-        items = report.get(source) or []
-        urls = {
-            stable_item_key(source, item)
-            for item in items
-        }
-        result[source] = urls
-    return result
+def source_sets(report: dict[str, Any], limit: int) -> dict[str, set[str]]:
+    grouped: dict[str, set[str]] = {}
+    for item in build_ranked_items(report, limit):
+        for source in item["sources"]:
+            grouped.setdefault(source, set()).add(item["key"])
+    return grouped
 
 
-def jaccard(left: Iterable[str], right: Iterable[str]) -> float:
-    left_set = set(left)
-    right_set = set(right)
-    if not left_set and not right_set:
+def jaccard(left: set[str], right: set[str]) -> float:
+    if not left and not right:
         return 1.0
-    union = left_set | right_set
+    union = left | right
     if not union:
         return 1.0
-    return len(left_set & right_set) / len(union)
+    return len(left & right) / len(union)
 
 
-def retention(left: Iterable[str], right: Iterable[str]) -> float:
-    left_set = set(left)
-    right_set = set(right)
-    if not left_set:
+def retention(left: set[str], right: set[str]) -> float:
+    if not left:
         return 1.0
-    return len(left_set & right_set) / len(left_set)
+    return len(left & right) / len(left)
 
 
-def precision_at_k(ranking: List[Dict[str, Any]], judgments: Dict[str, int], k: int) -> float:
+def precision_at_k(ranking: list[dict[str, Any]], judgments: dict[str, int], k: int) -> float:
     top = ranking[:k]
     if not top:
         return 0.0
-    hits = sum(1 for item in top if judgments.get(item["key"], 0) >= 2)
-    return hits / len(top)
+    return sum(1 for item in top if judgments.get(item["key"], 0) >= 2) / len(top)
 
 
-def ndcg_at_k(
-    ranking: List[Dict[str, Any]],
-    judgments: Dict[str, int],
-    k: int,
-    judged_pool: Optional[List[Dict[str, Any]]] = None,
-) -> float:
+def ndcg_at_k(ranking: list[dict[str, Any]], judgments: dict[str, int], k: int, judged_pool: list[dict[str, Any]]) -> float:
     top = ranking[:k]
     if not top:
         return 0.0
 
-    def dcg(grades: List[int]) -> float:
+    def dcg(grades: list[int]) -> float:
         total = 0.0
         for index, grade in enumerate(grades, start=1):
             total += (2**grade - 1) / math.log2(index + 1)
         return total
 
     actual = [judgments.get(item["key"], 0) for item in top]
-    ideal_candidates = judged_pool or ranking
-    ideal = sorted(
-        (judgments.get(item["key"], 0) for item in ideal_candidates),
-        reverse=True,
-    )[:len(top)]
+    ideal = sorted((judgments.get(item["key"], 0) for item in judged_pool), reverse=True)[: len(top)]
     ideal_score = dcg(ideal)
     if ideal_score == 0:
         return 0.0
     return dcg(actual) / ideal_score
 
 
-def source_coverage_recall(
-    ranking: List[Dict[str, Any]],
-    judged_pool: List[Dict[str, Any]],
-    judgments: Dict[str, int],
-) -> float:
-    good_sources = {item["source"] for item in judged_pool if judgments.get(item["key"], 0) >= 2}
+def source_coverage_recall(ranking: list[dict[str, Any]], judged_pool: list[dict[str, Any]], judgments: dict[str, int]) -> float:
+    good_sources = {
+        source
+        for item in judged_pool
+        if judgments.get(item["key"], 0) >= 2
+        for source in item["sources"]
+    }
     if not good_sources:
         return 1.0
     hit_sources = {
-        item["source"]
+        source
         for item in ranking
         if judgments.get(item["key"], 0) >= 2
+        for source in item["sources"]
     }
     return len(hit_sources & good_sources) / len(good_sources)
 
 
-def create_eval_env(include_web: bool) -> Tuple[Dict[str, str], Path]:
-    config = envlib.get_config()
-    eval_home = Path(tempfile.mkdtemp(prefix="last30days-eval-home-"))
-    (eval_home / ".config").mkdir(parents=True, exist_ok=True)
-    safe_path = create_eval_tool_path(
-        eval_home,
-        path_without_node(os.environ.get("PATH", "")),
-    )
-    passthrough = {
-        "HOME": str(eval_home),
-        "XDG_CONFIG_HOME": str(eval_home / ".config"),
-        "PATH": safe_path,
-        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
-        "LC_ALL": os.environ.get("LC_ALL", ""),
-        "TMPDIR": os.environ.get("TMPDIR", ""),
-        "PYTHONUTF8": "1",
-        "LAST30DAYS_CONFIG_DIR": "",
-        "BIRD_DISABLE_BROWSER_COOKIES": "1",
-        "LAST30DAYS_DISABLE_BROWSER_COOKIES": "1",
-    }
-    for key in ("OPENAI_API_KEY", "XAI_API_KEY", "SCRAPECREATORS_API_KEY"):
-        value = config.get(key)
-        if value:
-            passthrough[key] = value
-    if include_web:
-        for key in ("PARALLEL_API_KEY", "BRAVE_API_KEY", "OPENROUTER_API_KEY"):
-            value = config.get(key)
-            if value:
-                passthrough[key] = value
-    return passthrough, eval_home
-
-
-def run_last30days(
-    repo_dir: Path,
-    topic: str,
-    *,
-    search: str,
-    timeout_seconds: int,
-    include_web: bool,
-    env: Dict[str, str],
-) -> Tuple[Dict[str, Any], str]:
-    cmd = [
-        sys.executable,
-        "scripts/last30days.py",
-        topic,
-        "--emit",
-        "json",
-        "--search",
-        search,
-        "--timeout",
-        str(timeout_seconds),
-    ]
-    if not include_web:
-        cmd.append("--no-native-web")
-    result = subprocess.run(
-        cmd,
-        cwd=repo_dir,
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=timeout_seconds + 30,
-        check=False,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(
-            f"{repo_dir.name} failed for '{topic}' with exit {result.returncode}\n{result.stderr.strip()}"
-        )
-    return json.loads(result.stdout), result.stderr
-
-
-def create_worktree(rev: str) -> Path:
-    worktree_dir = Path(tempfile.mkdtemp(prefix="last30days-eval-"))
-    subprocess.run(
-        ["git", "worktree", "add", "--detach", str(worktree_dir), rev],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return worktree_dir
-
-
-def remove_worktree(path: Path) -> None:
-    subprocess.run(
-        ["git", "worktree", "remove", "--force", str(path)],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    shutil.rmtree(path, ignore_errors=True)
-
-
-def extract_gemini_text(payload: Dict[str, Any]) -> str:
-    for candidate in payload.get("candidates", []):
-        content = candidate.get("content") or {}
-        for part in content.get("parts", []):
-            text = part.get("text")
-            if text:
-                return text
-    raise ValueError("Gemini response did not contain text")
-
-
-def resolve_google_judge_api_key(config: Dict[str, Any]) -> Optional[str]:
-    """Resolve the local canonical Google API key name.
-
-    This workspace conventionally uses GOOGLE_API_KEY. We also accept the
-    more Gemini-specific aliases for portability.
-    """
+def resolve_google_judge_api_key(config: dict[str, Any]) -> str | None:
     return (
         os.environ.get("GOOGLE_API_KEY")
         or config.get("GOOGLE_API_KEY")
@@ -331,17 +188,22 @@ def resolve_google_judge_api_key(config: Dict[str, Any]) -> Optional[str]:
     )
 
 
-def call_gemini_judge(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
+def extract_gemini_text(payload: dict[str, Any]) -> str:
+    for candidate in payload.get("candidates") or []:
+        content = candidate.get("content") or {}
+        for part in content.get("parts") or []:
+            if part.get("text"):
+                return part["text"]
+    raise ValueError("Gemini response did not contain text.")
+
+
+def call_gemini_judge(api_key: str, model: str, prompt: str) -> dict[str, Any]:
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {
-            "temperature": 0,
-            "responseMimeType": "application/json",
-        },
+        "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
     }
-    url = GEMINI_API_URL.format(model=model, api_key=api_key)
     request = Request(
-        url,
+        GEMINI_API_URL.format(model=model, api_key=api_key),
         data=json.dumps(body).encode("utf-8"),
         headers={"Content-Type": "application/json"},
         method="POST",
@@ -357,12 +219,7 @@ def call_gemini_judge(api_key: str, model: str, prompt: str) -> Dict[str, Any]:
     return json.loads(extract_gemini_text(payload))
 
 
-def build_judge_prompt(
-    *,
-    topic: str,
-    query_type: str,
-    items: List[Dict[str, Any]],
-) -> str:
+def build_judge_prompt(topic: str, query_type: str, items: list[dict[str, Any]]) -> str:
     item_lines = []
     for item in items:
         item_lines.append(
@@ -374,36 +231,28 @@ def build_judge_prompt(
                 f"  date: {item.get('date') or 'unknown'}",
             ])
         )
-    joined = "\n".join(item_lines)
-    return textwrap.dedent(
-        f"""
-        Judge search-result relevance for a last-30-days research tool.
+    return f"""
+Judge search-result relevance for a last-30-days research tool.
 
-        Topic: {topic}
-        Query type: {query_type}
+Topic: {topic}
+Query type: {query_type}
 
-        Score each item on this 0-3 scale:
-        - 0 = off-topic or clearly bad
-        - 1 = weak or tangential
-        - 2 = relevant and useful
-        - 3 = highly relevant, one of the best results
+Score each item on this 0-3 scale:
+- 0 = off-topic or clearly bad
+- 1 = weak or tangential
+- 2 = relevant and useful
+- 3 = highly relevant, one of the best results
 
-        Focus on actual user intent, not just token overlap. Penalize items that
-        only match generic words like "odds", "review", or "tips" without
-        matching the real entity or subject. Favor items that would genuinely
-        help answer the topic in the context of recent discussion.
+Return JSON only:
+{{
+  "judgments": [
+    {{"id": "ITEM_ID", "grade": 0}}
+  ]
+}}
 
-        Return strict JSON with this shape:
-        {{
-          "judgments": [
-            {{"id": "ITEM_ID", "grade": 0, "reason": "short reason"}}
-          ]
-        }}
-
-        Items:
-        {joined}
-        """
-    ).strip()
+Items:
+{chr(10).join(item_lines)}
+""".strip()
 
 
 def get_judgments(
@@ -412,42 +261,115 @@ def get_judgments(
     slug: str,
     topic: str,
     query_type: str,
-    items: List[Dict[str, Any]],
+    items: list[dict[str, Any]],
     judge_model: str,
-    gemini_api_key: Optional[str],
-) -> Dict[str, int]:
+    gemini_api_key: str | None,
+) -> dict[str, int]:
     cache_file = output_dir / "judgments" / f"{slug}.json"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
     if cache_file.exists():
-        cached = json.loads(cache_file.read_text())
-        return {entry["id"]: int(entry["grade"]) for entry in cached.get("judgments", [])}
-
-    if not gemini_api_key:
+        payload = json.loads(cache_file.read_text())
+        return {row["id"]: int(row["grade"]) for row in payload.get("judgments") or []}
+    if not gemini_api_key or not items:
         return {}
-
-    prompt = build_judge_prompt(topic=topic, query_type=query_type, items=items)
-    payload = call_gemini_judge(gemini_api_key, judge_model, prompt)
+    payload = call_gemini_judge(gemini_api_key, judge_model, build_judge_prompt(topic, query_type, items))
     cache_file.write_text(json.dumps(payload, indent=2))
-    return {entry["id"]: int(entry["grade"]) for entry in payload.get("judgments", [])}
+    return {row["id"]: int(row["grade"]) for row in payload.get("judgments") or []}
 
 
-def summarize_topic(
-    *,
-    topic: str,
-    query_type: str,
-    baseline_report: Dict[str, Any],
-    candidate_report: Dict[str, Any],
-    judged_pool: List[Dict[str, Any]],
-    judgments: Dict[str, int],
-    per_source_limit: int,
-) -> Dict[str, Any]:
-    baseline_ranked = build_ranked_items(baseline_report, per_source_limit)
-    candidate_ranked = build_ranked_items(candidate_report, per_source_limit)
+def create_eval_env() -> dict[str, str]:
+    config = envlib.get_config()
+    passthrough = {
+        "PATH": os.environ.get("PATH", ""),
+        "LANG": os.environ.get("LANG", "en_US.UTF-8"),
+        "LC_ALL": os.environ.get("LC_ALL", ""),
+        "TMPDIR": os.environ.get("TMPDIR", ""),
+        "PYTHONUTF8": "1",
+        "LAST30DAYS_CONFIG_DIR": "",
+    }
+    for key in (
+        "GOOGLE_API_KEY",
+        "GEMINI_API_KEY",
+        "GOOGLE_GENAI_API_KEY",
+        "OPENAI_API_KEY",
+        "XAI_API_KEY",
+        "SCRAPECREATORS_API_KEY",
+        "BSKY_HANDLE",
+        "BSKY_APP_PASSWORD",
+        "TRUTHSOCIAL_TOKEN",
+        "AUTH_TOKEN",
+        "CT0",
+    ):
+        value = os.environ.get(key) or config.get(key)
+        if value:
+            passthrough[key] = value
+    return passthrough
 
-    baseline_sets = url_sets_by_source(baseline_report)
-    candidate_sets = url_sets_by_source(candidate_report)
 
-    metrics = {
+def run_last30days(repo_dir: Path, topic: str, *, search: str, timeout_seconds: int, quick: bool, mock: bool, env: dict[str, str]) -> dict[str, Any]:
+    cmd = [sys.executable, "scripts/last30days.py", topic, "--emit=json"]
+    if search:
+        cmd.extend(["--search", search])
+    if quick:
+        cmd.append("--quick")
+    if mock:
+        cmd.append("--mock")
+    result = subprocess.run(
+        cmd,
+        cwd=repo_dir,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=timeout_seconds,
+        check=False,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"{repo_dir.name} failed for '{topic}' with exit {result.returncode}\n{result.stderr.strip()}")
+    return json.loads(result.stdout)
+
+
+def create_worktree(rev: str) -> Path:
+    worktree_dir = Path(tempfile.mkdtemp(prefix="last30days-eval-"))
+    subprocess.run(
+        ["git", "worktree", "add", "--detach", str(worktree_dir), rev],
+        cwd=REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return worktree_dir
+
+
+def resolve_repo_dir(label: str) -> tuple[Path, bool]:
+    """Resolve a benchmark label into a repo directory and whether it is temporary."""
+    if label == "WORKTREE":
+        return REPO_ROOT, False
+    return create_worktree(label), True
+
+
+def remove_worktree(path: Path) -> None:
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(path)],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    try:
+        os.rmdir(path)
+    except OSError:
+        pass
+
+
+def summarize_topic(topic: str, query_type: str, baseline_report: dict[str, Any], candidate_report: dict[str, Any], judgments: dict[str, int], judged_pool: list[dict[str, Any]], limit: int) -> dict[str, Any]:
+    baseline_ranked = build_ranked_items(baseline_report, limit)
+    candidate_ranked = build_ranked_items(candidate_report, limit)
+    baseline_sets = source_sets(baseline_report, limit)
+    candidate_sets = source_sets(candidate_report, limit)
+    overall_left = set().union(*baseline_sets.values()) if baseline_sets else set()
+    overall_right = set().union(*candidate_sets.values()) if candidate_sets else set()
+    sources = sorted(set(baseline_sets) | set(candidate_sets))
+    return {
         "topic": topic,
         "query_type": query_type,
         "baseline": {
@@ -461,180 +383,166 @@ def summarize_topic(
             "source_coverage_recall": source_coverage_recall(candidate_ranked, judged_pool, judgments),
         },
         "stability": {
-            "overall_jaccard": jaccard(
-                set().union(*baseline_sets.values()),
-                set().union(*candidate_sets.values()),
-            ),
-            "overall_retention_vs_baseline": retention(
-                set().union(*baseline_sets.values()),
-                set().union(*candidate_sets.values()),
-            ),
+            "overall_jaccard": jaccard(overall_left, overall_right),
+            "overall_retention_vs_baseline": retention(overall_left, overall_right),
             "per_source": {
                 source: {
-                    "baseline_count": len(baseline_sets[source]),
-                    "candidate_count": len(candidate_sets[source]),
-                    "jaccard": jaccard(baseline_sets[source], candidate_sets[source]),
-                    "retention_vs_baseline": retention(baseline_sets[source], candidate_sets[source]),
+                    "baseline_count": len(baseline_sets.get(source, set())),
+                    "candidate_count": len(candidate_sets.get(source, set())),
+                    "jaccard": jaccard(baseline_sets.get(source, set()), candidate_sets.get(source, set())),
+                    "retention_vs_baseline": retention(baseline_sets.get(source, set()), candidate_sets.get(source, set())),
                 }
-                for source in SOURCE_KEYS
+                for source in sources
             },
         },
     }
-    return metrics
 
 
-def write_markdown_summary(
-    output_dir: Path,
-    baseline_label: str,
-    candidate_label: str,
-    topic_summaries: List[Dict[str, Any]],
-) -> None:
+def write_summary(output_dir: Path, baseline_label: str, candidate_label: str, summaries: list[dict[str, Any]]) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "baseline": baseline_label,
+        "candidate": candidate_label,
+        "topics": summaries,
+    }
+    (output_dir / "metrics.json").write_text(json.dumps(payload, indent=2))
+
     lines = [
-        f"# Search Quality Evaluation",
+        "# Search Quality Evaluation",
         "",
         f"- Baseline: `{baseline_label}`",
         f"- Candidate: `{candidate_label}`",
-        f"- Generated: {datetime.now().isoformat(timespec='seconds')}",
-        "",
-        "## Topic Metrics",
+        f"- Generated: {payload['generated_at']}",
         "",
         "| Topic | Base P@5 | Cand P@5 | Base nDCG@5 | Cand nDCG@5 | Jaccard | Retention |",
         "|---|---:|---:|---:|---:|---:|---:|",
     ]
-    for summary in topic_summaries:
+    for row in summaries:
         lines.append(
             "| {topic} | {bp:.2f} | {cp:.2f} | {bn:.2f} | {cn:.2f} | {jac:.2f} | {ret:.2f} |".format(
-                topic=summary["topic"],
-                bp=summary["baseline"]["precision_at_5"],
-                cp=summary["candidate"]["precision_at_5"],
-                bn=summary["baseline"]["ndcg_at_5"],
-                cn=summary["candidate"]["ndcg_at_5"],
-                jac=summary["stability"]["overall_jaccard"],
-                ret=summary["stability"]["overall_retention_vs_baseline"],
+                topic=row["topic"],
+                bp=row["baseline"]["precision_at_5"],
+                cp=row["candidate"]["precision_at_5"],
+                bn=row["baseline"]["ndcg_at_5"],
+                cn=row["candidate"]["ndcg_at_5"],
+                jac=row["stability"]["overall_jaccard"],
+                ret=row["stability"]["overall_retention_vs_baseline"],
             )
         )
-    lines.append("")
-    lines.append("## Notes")
-    lines.append("")
-    lines.append("- `Precision@5` and `nDCG@5` depend on the judged union pool, not a full gold corpus.")
-    lines.append("- `Source coverage recall` measures whether a run surfaced at least one judged-good result from the good sources in the judged pool.")
-    lines.append("- `Jaccard` and `retention` are stability guards against baseline drift, not truth metrics.")
-    (output_dir / "summary.md").write_text("\n".join(lines))
+    (output_dir / "summary.md").write_text("\n".join(lines) + "\n")
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Evaluate last30days search quality locally")
-    parser.add_argument("--baseline-rev", default="origin/main", help="Git revision for the baseline run")
-    parser.add_argument("--candidate-rev", default=None, help="Optional git revision for the candidate run")
-    parser.add_argument("--no-default-topics", action="store_true", help="Do not include the built-in 5-topic suite")
-    parser.add_argument("--topic", action="append", default=[], help="Extra topic to evaluate (repeatable)")
-    parser.add_argument("--search", default=DEFAULT_SEARCH, help="Comma-separated sources passed to --search")
-    parser.add_argument("--timeout", type=int, default=180, help="Per-topic timeout passed to last30days")
-    parser.add_argument("--per-source-limit", type=int, default=5, help="Items per source to judge")
-    parser.add_argument("--include-web", action="store_true", help="Include web-search keys and native web backends")
-    parser.add_argument("--judge-model", default=None, help="Gemini judge model override")
-    parser.add_argument("--judge-provider", choices=["auto", "gemini", "none"], default="auto")
-    parser.add_argument("--keep-worktrees", action="store_true", help="Leave temporary baseline/candidate worktrees on disk")
-    parser.add_argument("--output-dir", default=None, help="Output directory (default: docs/test-results/search-quality-<timestamp>)")
-    return parser.parse_args()
+def write_failure_summary(
+    output_dir: Path,
+    baseline_label: str,
+    candidate_label: str,
+    summaries: list[dict[str, Any]],
+    failures: list[dict[str, Any]],
+) -> None:
+    write_summary(output_dir, baseline_label, candidate_label, summaries)
+    metrics_path = output_dir / "metrics.json"
+    payload = json.loads(metrics_path.read_text()) if metrics_path.exists() else {
+        "generated_at": datetime.now().isoformat(timespec="seconds"),
+        "baseline": baseline_label,
+        "candidate": candidate_label,
+        "topics": [],
+    }
+    payload["failures"] = failures
+    metrics_path.write_text(json.dumps(payload, indent=2))
+
+    summary_path = output_dir / "summary.md"
+    lines = summary_path.read_text().splitlines() if summary_path.exists() else ["# Search Quality Evaluation", ""]
+    if failures:
+        lines.extend([
+            "",
+            "## Failures",
+            "",
+        ])
+        for failure in failures:
+            lines.append(f"- `{failure['topic']}`: {failure['error']}")
+    summary_path.write_text("\n".join(lines).rstrip() + "\n")
+
+
+def parse_topics_file(path: Path) -> list[tuple[str, str]]:
+    rows = json.loads(path.read_text())
+    return [(str(row["topic"]), str(row.get("query_type") or "general")) for row in rows]
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Compare two last30days revisions on ranked candidate quality")
+    parser.add_argument("--baseline", default="HEAD~1")
+    parser.add_argument("--candidate", default="WORKTREE")
+    parser.add_argument("--search", default=DEFAULT_SEARCH)
+    parser.add_argument("--output-dir", default="tmp/search-quality")
+    parser.add_argument("--judge-model", default=DEFAULT_JUDGE_MODEL)
+    parser.add_argument("--timeout", type=int, default=240)
+    parser.add_argument("--limit", type=int, default=20)
+    parser.add_argument("--mock", action="store_true")
+    parser.add_argument("--quick", action="store_true")
+    parser.add_argument("--topics-file")
+    return parser
 
 
 def main() -> int:
-    args = parse_args()
-    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    output_dir = Path(args.output_dir) if args.output_dir else REPO_ROOT / "docs" / "test-results" / f"search-quality-{timestamp}"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    args = build_parser().parse_args()
+    topics = parse_topics_file(Path(args.topics_file)) if args.topics_file else DEFAULT_TOPICS
+    output_dir = Path(args.output_dir).resolve()
+    config = envlib.get_config()
+    gemini_api_key = resolve_google_judge_api_key(config)
+    run_env = create_eval_env()
 
-    topics = [] if args.no_default_topics else list(DEFAULT_TOPICS)
-    topics.extend((topic, "custom") for topic in args.topic)
-    if not topics:
-        raise SystemExit("No topics configured. Use the default suite or pass --topic.")
-
-    judge_config = envlib.get_config()
-    judge_provider = args.judge_provider
-    gemini_api_key = resolve_google_judge_api_key(judge_config)
-    judge_model = args.judge_model or judge_config.get("GEMINI_MODEL") or DEFAULT_JUDGE_MODEL
-    if judge_provider == "auto":
-        judge_provider = "gemini" if gemini_api_key else "none"
-    if judge_provider == "none":
-        gemini_api_key = None
-
-    eval_env, eval_home = create_eval_env(include_web=args.include_web)
-    baseline_dir = create_worktree(args.baseline_rev)
-    candidate_dir = create_worktree(args.candidate_rev) if args.candidate_rev else REPO_ROOT
-
-    baseline_label = args.baseline_rev
-    candidate_label = args.candidate_rev or "working-tree"
-    topic_summaries: List[Dict[str, Any]] = []
-
+    baseline_dir, baseline_temp = resolve_repo_dir(args.baseline)
+    candidate_dir, candidate_temp = resolve_repo_dir(args.candidate)
     try:
+        summaries = []
+        failures = []
         for topic, query_type in topics:
-            slug = slugify(topic)
-            baseline_report, baseline_stderr = run_last30days(
-                baseline_dir,
-                topic,
-                search=args.search,
-                timeout_seconds=args.timeout,
-                include_web=args.include_web,
-                env=eval_env,
-            )
-            candidate_report, candidate_stderr = run_last30days(
-                candidate_dir,
-                topic,
-                search=args.search,
-                timeout_seconds=args.timeout,
-                include_web=args.include_web,
-                env=eval_env,
-            )
-
-            topic_dir = output_dir / slug
-            topic_dir.mkdir(parents=True, exist_ok=True)
-            (topic_dir / "baseline.json").write_text(json.dumps(baseline_report, indent=2))
-            (topic_dir / "candidate.json").write_text(json.dumps(candidate_report, indent=2))
-            (topic_dir / "baseline.stderr.txt").write_text(baseline_stderr)
-            (topic_dir / "candidate.stderr.txt").write_text(candidate_stderr)
-
-            baseline_ranked = build_ranked_items(baseline_report, args.per_source_limit)
-            candidate_ranked = build_ranked_items(candidate_report, args.per_source_limit)
-            union_map = {item["key"]: item for item in baseline_ranked + candidate_ranked}
-            judgments = get_judgments(
-                output_dir=output_dir,
-                slug=slug,
-                topic=topic,
-                query_type=query_type,
-                items=list(union_map.values()),
-                judge_model=judge_model,
-                gemini_api_key=gemini_api_key,
-            )
-
-            summary = summarize_topic(
-                topic=topic,
-                query_type=query_type,
-                baseline_report=baseline_report,
-                candidate_report=candidate_report,
-                judged_pool=list(union_map.values()),
-                judgments=judgments,
-                per_source_limit=args.per_source_limit,
-            )
-            topic_summaries.append(summary)
-
-        payload = {
-            "baseline": baseline_label,
-            "candidate": candidate_label,
-            "judge_provider": judge_provider,
-            "judge_model": judge_model if gemini_api_key else None,
-            "topics": topic_summaries,
-        }
-        (output_dir / "summary.json").write_text(json.dumps(payload, indent=2))
-        write_markdown_summary(output_dir, baseline_label, candidate_label, topic_summaries)
-        print(output_dir)
-        return 0
+            try:
+                baseline_report = run_last30days(
+                    baseline_dir,
+                    topic,
+                    search=args.search,
+                    timeout_seconds=args.timeout,
+                    quick=args.quick,
+                    mock=args.mock,
+                    env=run_env,
+                )
+                candidate_report = run_last30days(
+                    candidate_dir,
+                    topic,
+                    search=args.search,
+                    timeout_seconds=args.timeout,
+                    quick=args.quick,
+                    mock=args.mock,
+                    env=run_env,
+                )
+                judged_pool_map = {
+                    item["key"]: item
+                    for item in build_ranked_items(baseline_report, args.limit) + build_ranked_items(candidate_report, args.limit)
+                }
+                judged_pool = list(judged_pool_map.values())
+                judgments = get_judgments(
+                    output_dir=output_dir,
+                    slug="".join(char.lower() if char.isalnum() else "-" for char in topic).strip("-"),
+                    topic=topic,
+                    query_type=query_type,
+                    items=judged_pool,
+                    judge_model=args.judge_model,
+                    gemini_api_key=gemini_api_key,
+                )
+                summaries.append(summarize_topic(topic, query_type, baseline_report, candidate_report, judgments, judged_pool, args.limit))
+            except Exception as exc:
+                failures.append({"topic": topic, "query_type": query_type, "error": str(exc)})
+        write_failure_summary(output_dir, args.baseline, args.candidate, summaries, failures)
     finally:
-        if not args.keep_worktrees:
+        if baseline_temp:
             remove_worktree(baseline_dir)
-            if args.candidate_rev:
-                remove_worktree(candidate_dir)
-        shutil.rmtree(eval_home, ignore_errors=True)
+        if candidate_temp:
+            remove_worktree(candidate_dir)
+    result = {"output_dir": str(output_dir), "topics": len(topics), "failures": len(failures)}
+    print(json.dumps(result, indent=2))
+    return 1 if failures else 0
 
 
 if __name__ == "__main__":

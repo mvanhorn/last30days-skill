@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'scripts'))
 os.environ['LAST30DAYS_CONFIG_DIR'] = ''
 
 from lib.exa_search import search_web, _normalize_results, _parse_exa_date, EXCLUDED_DOMAINS
-from lib import env, http
+from lib import http
 
 
 class TestNormalizeResults(unittest.TestCase):
@@ -200,49 +200,27 @@ class TestSearchWebIntegration(unittest.TestCase):
         self.assertEqual(results, [])
 
 
-class TestEnvExaPriority(unittest.TestCase):
-    """Test that Exa is prioritized correctly in env.py."""
+class TestExaNormalizationV3Keys(unittest.TestCase):
+    """Test that Exa results include v3 normalization keys."""
 
-    def test_no_exa_key_not_selected(self):
-        config = {}
-        self.assertIsNone(env.get_web_search_source(config))
-
-    def test_exa_key_selected(self):
-        config = {"EXA_API_KEY": "exa-test-key"}
-        self.assertEqual(env.get_web_search_source(config), "exa")
-
-    def test_exa_takes_priority_over_brave(self):
-        config = {"EXA_API_KEY": "exa-key", "BRAVE_API_KEY": "brave-key"}
-        self.assertEqual(env.get_web_search_source(config), "exa")
-
-    def test_exa_takes_priority_over_parallel(self):
-        config = {"EXA_API_KEY": "exa-key", "PARALLEL_API_KEY": "parallel-key"}
-        self.assertEqual(env.get_web_search_source(config), "exa")
-
-    def test_exa_takes_priority_over_openrouter(self):
-        config = {"EXA_API_KEY": "exa-key", "OPENROUTER_API_KEY": "or-key"}
-        self.assertEqual(env.get_web_search_source(config), "exa")
-
-    def test_exa_takes_priority_over_all(self):
-        config = {
-            "EXA_API_KEY": "exa-key",
-            "PARALLEL_API_KEY": "parallel-key",
-            "BRAVE_API_KEY": "brave-key",
-            "OPENROUTER_API_KEY": "or-key",
+    def test_results_include_engagement_and_metadata(self):
+        response = {
+            "results": [
+                {
+                    "title": "Test Article",
+                    "url": "https://example.com/test",
+                    "text": "Content here",
+                    "publishedDate": "2026-03-15T00:00:00.000Z",
+                    "score": 0.8,
+                },
+            ]
         }
-        self.assertEqual(env.get_web_search_source(config), "exa")
-
-    def test_fallback_to_parallel_without_exa(self):
-        config = {"PARALLEL_API_KEY": "parallel-key", "BRAVE_API_KEY": "brave-key"}
-        self.assertEqual(env.get_web_search_source(config), "parallel")
-
-    def test_has_web_search_keys_with_exa(self):
-        config = {"EXA_API_KEY": "exa-key"}
-        self.assertTrue(env.has_web_search_keys(config))
-
-    def test_has_web_search_keys_without_any(self):
-        config = {}
-        self.assertFalse(env.has_web_search_keys(config))
+        items = _normalize_results(response)
+        self.assertEqual(len(items), 1)
+        self.assertIn("engagement", items[0])
+        self.assertIn("metadata", items[0])
+        self.assertEqual(items[0]["engagement"], {})
+        self.assertEqual(items[0]["metadata"], {})
 
 
 if __name__ == "__main__":

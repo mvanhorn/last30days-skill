@@ -1,489 +1,442 @@
-"""Normalization of raw API data to canonical schema."""
+"""Normalization of source-specific payloads into the v3 generic item model."""
 
-from typing import Any, Dict, List, TypeVar, Union
+from __future__ import annotations
+
+from typing import Any
+from urllib.parse import urlparse
 
 from . import dates, schema
 
-T = TypeVar("T", schema.RedditItem, schema.XItem, schema.WebSearchItem, schema.YouTubeItem, schema.TikTokItem, schema.InstagramItem, schema.HackerNewsItem, schema.BlueskyItem, schema.PolymarketItem)
-
 
 def filter_by_date_range(
-    items: List[T],
+    items: list[schema.SourceItem],
     from_date: str,
     to_date: str,
     require_date: bool = False,
-) -> List[T]:
-    """Hard filter: Remove items outside the date range.
-
-    This is the safety net - even if the prompt lets old content through,
-    this filter will exclude it.
-
-    Args:
-        items: List of items to filter
-        from_date: Start date (YYYY-MM-DD) - exclude items before this
-        to_date: End date (YYYY-MM-DD) - exclude items after this
-        require_date: If True, also remove items with no date
-
-    Returns:
-        Filtered list with only items in range (or unknown dates if not required)
-    """
-    result = []
+) -> list[schema.SourceItem]:
+    """Keep only items within the requested window."""
+    filtered: list[schema.SourceItem] = []
     for item in items:
-        if item.date is None:
+        if not item.published_at:
             if not require_date:
-                result.append(item)  # Keep unknown dates (with scoring penalty)
+                filtered.append(item)
             continue
-
-        # Hard filter: if date is before from_date, exclude
-        if item.date < from_date:
-            continue  # DROP - too old
-
-        # Hard filter: if date is after to_date, exclude (likely parsing error)
-        if item.date > to_date:
-            continue  # DROP - future date
-
-        result.append(item)
-
-    return result
+        if item.published_at < from_date or item.published_at > to_date:
+            continue
+        filtered.append(item)
+    return filtered
 
 
-def normalize_reddit_items(
-    items: List[Dict[str, Any]],
+def normalize_source_items(
+    source: str,
+    items: list[dict[str, Any]],
     from_date: str,
     to_date: str,
-) -> List[schema.RedditItem]:
-    """Normalize raw Reddit items to schema.
-
-    Args:
-        items: Raw Reddit items from API
-        from_date: Start of date range
-        to_date: End of date range
-
-    Returns:
-        List of RedditItem objects
-    """
-    normalized = []
-
-    for item in items:
-        # Parse engagement
-        engagement = None
-        eng_raw = item.get("engagement")
-        if isinstance(eng_raw, dict):
-            engagement = schema.Engagement(
-                score=eng_raw.get("score"),
-                num_comments=eng_raw.get("num_comments"),
-                upvote_ratio=eng_raw.get("upvote_ratio"),
-            )
-
-        # Parse comments
-        top_comments = []
-        for c in item.get("top_comments", []):
-            top_comments.append(schema.Comment(
-                score=c.get("score", 0),
-                date=c.get("date"),
-                author=c.get("author", ""),
-                excerpt=c.get("excerpt", ""),
-                url=c.get("url", ""),
-            ))
-
-        # Determine date confidence
-        date_str = item.get("date")
-        date_confidence = dates.get_date_confidence(date_str, from_date, to_date)
-
-        normalized.append(schema.RedditItem(
-            id=item.get("id", ""),
-            title=item.get("title", ""),
-            url=item.get("url", ""),
-            subreddit=item.get("subreddit", ""),
-            date=date_str,
-            date_confidence=date_confidence,
-            engagement=engagement,
-            top_comments=top_comments,
-            comment_insights=item.get("comment_insights", []),
-            relevance=item.get("relevance", 0.5),
-            why_relevant=item.get("why_relevant", ""),
-        ))
-
-    return normalized
+    freshness_mode: str = "balanced_recent",
+) -> list[schema.SourceItem]:
+    """Normalize raw source items, filter by date range, with evergreen fallback for how_to queries."""
+    source = source.lower()
+    normalizers = {
+        "reddit": _normalize_reddit,
+        "x": _normalize_x,
+        "youtube": _normalize_youtube,
+        "tiktok": lambda s, i, idx, fd, td: _normalize_shortform_video(s, i, idx, fd, td, "TK", "TikTok post"),
+        "instagram": lambda s, i, idx, fd, td: _normalize_shortform_video(s, i, idx, fd, td, "IG", "Instagram reel"),
+        "hackernews": _normalize_hackernews,
+        "bluesky": lambda s, i, idx, fd, td: _normalize_microblog(s, i, idx, fd, td, "BS", "Bluesky post"),
+        "truthsocial": lambda s, i, idx, fd, td: _normalize_microblog(s, i, idx, fd, td, "TS", "Truth Social post"),
+        "threads": lambda s, i, idx, fd, td: _normalize_microblog(s, i, idx, fd, td, "TH", "Threads post"),
+        "pinterest": _normalize_pinterest,
+        "polymarket": _normalize_polymarket,
+        "grounding": _normalize_grounding,
+        "xiaohongshu": _normalize_grounding,
+        "github": _normalize_github,
+        "perplexity": _normalize_grounding,
+    }
+    normalizer = normalizers.get(source)
+    if normalizer is None:
+        raise ValueError(f"Unsupported source: {source}")
+    normalized = [normalizer(source, item, index, from_date, to_date) for index, item in enumerate(items)]
+    require_date = source == "grounding"
+    filtered = filter_by_date_range(normalized, from_date, to_date, require_date=require_date)
+    if filtered:
+        return filtered
+    if freshness_mode == "evergreen_ok" and source == "youtube":
+        if require_date:
+            return [item for item in normalized if item.published_at]
+        return normalized
+    return filtered
 
 
-def normalize_x_items(
-    items: List[Dict[str, Any]],
+def _domain_from_url(url: str) -> str | None:
+    if not url:
+        return None
+    domain = urlparse(url).netloc.strip().lower()
+    return domain or None
+
+
+def _date_confidence(item: dict[str, Any], from_date: str, to_date: str, default: str = "low") -> str:
+    if item.get("date_confidence"):
+        return str(item["date_confidence"])
+    date_value = item.get("date")
+    if not date_value:
+        return default
+    return dates.get_date_confidence(str(date_value), from_date, to_date)
+
+
+def _source_item(
+    *,
+    item_id: str,
+    source: str,
+    title: str,
+    body: str,
+    url: str,
+    published_at: str | None,
+    date_confidence: str,
+    relevance_hint: float,
+    why_relevant: str,
+    author: str | None = None,
+    container: str | None = None,
+    engagement: dict[str, float | int] | None = None,
+    snippet: str = "",
+    metadata: dict[str, Any] | None = None,
+) -> schema.SourceItem:
+    return schema.SourceItem(
+        item_id=item_id,
+        source=source,
+        title=title.strip() or body.strip()[:160] or item_id,
+        body=body.strip(),
+        url=url.strip(),
+        author=(author or "").strip() or None,
+        container=(container or "").strip() or None,
+        published_at=published_at,
+        date_confidence=date_confidence,
+        engagement=engagement or {},
+        relevance_hint=max(0.0, min(1.0, float(relevance_hint or 0.0))),
+        why_relevant=why_relevant.strip(),
+        snippet=snippet.strip(),
+        metadata=metadata or {},
+    )
+
+
+def _normalize_reddit(
+    source: str,
+    item: dict[str, Any],
+    index: int,
     from_date: str,
     to_date: str,
-) -> List[schema.XItem]:
-    """Normalize raw X items to schema.
-
-    Args:
-        items: Raw X items from API
-        from_date: Start of date range
-        to_date: End of date range
-
-    Returns:
-        List of XItem objects
-    """
-    normalized = []
-
-    for item in items:
-        # Parse engagement
-        engagement = None
-        eng_raw = item.get("engagement")
-        if isinstance(eng_raw, dict):
-            engagement = schema.Engagement(
-                likes=eng_raw.get("likes"),
-                reposts=eng_raw.get("reposts"),
-                replies=eng_raw.get("replies"),
-                quotes=eng_raw.get("quotes"),
-            )
-
-        # Determine date confidence
-        date_str = item.get("date")
-        date_confidence = dates.get_date_confidence(date_str, from_date, to_date)
-
-        normalized.append(schema.XItem(
-            id=item.get("id", ""),
-            text=item.get("text", ""),
-            url=item.get("url", ""),
-            author_handle=item.get("author_handle", ""),
-            date=date_str,
-            date_confidence=date_confidence,
-            engagement=engagement,
-            relevance=item.get("relevance", 0.5),
-            why_relevant=item.get("why_relevant", ""),
-        ))
-
-    return normalized
+) -> schema.SourceItem:
+    top_comments = item.get("top_comments") or []
+    comment_text = " ".join(
+        str(comment.get("excerpt") or "").strip()
+        for comment in top_comments[:3]
+        if isinstance(comment, dict)
+    )
+    body = "\n".join(
+        part
+        for part in [
+            str(item.get("title") or "").strip(),
+            str(item.get("selftext") or "").strip(),
+            comment_text,
+        ]
+        if part
+    )
+    return _source_item(
+        item_id=str(item.get("id") or f"R{index + 1}"),
+        source=source,
+        title=str(item.get("title") or ""),
+        body=body,
+        url=str(item.get("url") or ""),
+        author=None,
+        container=str(item.get("subreddit") or ""),
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=comment_text or str(item.get("selftext") or "")[:400],
+        metadata={
+            "top_comments": top_comments,
+            "comment_insights": item.get("comment_insights") or [],
+        },
+    )
 
 
-def normalize_youtube_items(
-    items: List[Dict[str, Any]],
+def _normalize_x(
+    source: str,
+    item: dict[str, Any],
+    index: int,
     from_date: str,
     to_date: str,
-) -> List[schema.YouTubeItem]:
-    """Normalize raw YouTube items to schema.
-
-    Args:
-        items: Raw YouTube items from yt-dlp
-        from_date: Start of date range
-        to_date: End of date range
-
-    Returns:
-        List of YouTubeItem objects
-    """
-    normalized = []
-
-    for item in items:
-        # Parse engagement
-        eng_raw = item.get("engagement") or {}
-        engagement = schema.Engagement(
-            views=eng_raw.get("views"),
-            likes=eng_raw.get("likes"),
-            num_comments=eng_raw.get("comments"),
-        )
-
-        # YouTube dates are reliable (always YYYY-MM-DD from yt-dlp)
-        date_str = item.get("date")
-
-        normalized.append(schema.YouTubeItem(
-            id=item.get("video_id", ""),
-            title=item.get("title", ""),
-            url=item.get("url", ""),
-            channel_name=item.get("channel_name", ""),
-            date=date_str,
-            date_confidence="high",
-            engagement=engagement,
-            transcript_snippet=item.get("transcript_snippet", ""),
-            transcript_highlights=item.get("transcript_highlights", []),
-            relevance=item.get("relevance", 0.7),
-            why_relevant=item.get("why_relevant", ""),
-        ))
-
-    return normalized
+) -> schema.SourceItem:
+    text = str(item.get("text") or "").strip()
+    return _source_item(
+        item_id=str(item.get("id") or f"X{index + 1}"),
+        source=source,
+        title=text[:140] or f"X post {index + 1}",
+        body=text,
+        url=str(item.get("url") or ""),
+        author=str(item.get("author_handle") or "").lstrip("@"),
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+    )
 
 
-def normalize_tiktok_items(
-    items: List[Dict[str, Any]],
+def _normalize_youtube(
+    source: str,
+    item: dict[str, Any],
+    index: int,
     from_date: str,
     to_date: str,
-) -> List[schema.TikTokItem]:
-    """Normalize raw TikTok items to schema.
-
-    Args:
-        items: Raw TikTok items from Apify
-        from_date: Start of date range
-        to_date: End of date range
-
-    Returns:
-        List of TikTokItem objects
-    """
-    normalized = []
-
-    for i, item in enumerate(items):
-        # Parse engagement
-        eng_raw = item.get("engagement") or {}
-        engagement = schema.Engagement(
-            views=eng_raw.get("views"),
-            likes=eng_raw.get("likes"),
-            num_comments=eng_raw.get("comments"),
-            shares=eng_raw.get("shares"),
-        )
-
-        # TikTok dates are reliable (exact timestamps from Apify)
-        date_str = item.get("date")
-
-        normalized.append(schema.TikTokItem(
-            id=f"TK{i+1}",
-            text=item.get("text", ""),
-            url=item.get("url", ""),
-            author_name=item.get("author_name", ""),
-            date=date_str,
-            date_confidence="high",
-            engagement=engagement,
-            caption_snippet=item.get("caption_snippet", ""),
-            hashtags=item.get("hashtags", []),
-            relevance=item.get("relevance", 0.7),
-            why_relevant=item.get("why_relevant", ""),
-        ))
-
-    return normalized
+) -> schema.SourceItem:
+    transcript = str(item.get("transcript_snippet") or "").strip()
+    description = str(item.get("description") or "").strip()
+    title = str(item.get("title") or "").strip()
+    highlights = item.get("transcript_highlights") or []
+    metadata: dict[str, Any] = {}
+    if highlights:
+        metadata["transcript_highlights"] = highlights
+    return _source_item(
+        item_id=str(item.get("video_id") or item.get("id") or f"YT{index + 1}"),
+        source=source,
+        title=title,
+        body="\n".join(part for part in [title, description, transcript] if part),
+        url=str(item.get("url") or ""),
+        author=str(item.get("channel_name") or ""),
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=transcript,
+        metadata=metadata,
+    )
 
 
-def normalize_instagram_items(
-    items: List[Dict[str, Any]],
+def _normalize_shortform_video(
+    source: str,
+    item: dict[str, Any],
+    index: int,
     from_date: str,
     to_date: str,
-) -> List[schema.InstagramItem]:
-    """Normalize raw Instagram items to schema.
-
-    Args:
-        items: Raw Instagram items from ScrapeCreators
-        from_date: Start of date range
-        to_date: End of date range
-
-    Returns:
-        List of InstagramItem objects
-    """
-    normalized = []
-
-    for i, item in enumerate(items):
-        # Parse engagement
-        eng_raw = item.get("engagement") or {}
-        engagement = schema.Engagement(
-            views=eng_raw.get("views"),
-            likes=eng_raw.get("likes"),
-            num_comments=eng_raw.get("comments"),
-        )
-
-        # Instagram dates are reliable (exact timestamps from ScrapeCreators)
-        date_str = item.get("date")
-
-        normalized.append(schema.InstagramItem(
-            id=f"IG{i+1}",
-            text=item.get("text", ""),
-            url=item.get("url", ""),
-            author_name=item.get("author_name", ""),
-            date=date_str,
-            date_confidence="high",
-            engagement=engagement,
-            caption_snippet=item.get("caption_snippet", ""),
-            hashtags=item.get("hashtags", []),
-            relevance=item.get("relevance", 0.7),
-            why_relevant=item.get("why_relevant", ""),
-        ))
-
-    return normalized
+    id_prefix: str,
+    default_title: str,
+) -> schema.SourceItem:
+    """Shared normalizer for TikTok and Instagram (identical structure)."""
+    caption = str(item.get("caption_snippet") or "").strip()
+    text = str(item.get("text") or "").strip()
+    return _source_item(
+        item_id=str(item.get("id") or f"{id_prefix}{index + 1}"),
+        source=source,
+        title=text[:140] or caption[:140] or f"{default_title} {index + 1}",
+        body="\n".join(part for part in [text, caption] if part),
+        url=str(item.get("url") or ""),
+        author=str(item.get("author_name") or ""),
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=caption,
+        metadata={"hashtags": item.get("hashtags") or []},
+    )
 
 
-def normalize_hackernews_items(
-    items: List[Dict[str, Any]],
+def _normalize_pinterest(
+    source: str,
+    item: dict[str, Any],
+    index: int,
     from_date: str,
     to_date: str,
-) -> List[schema.HackerNewsItem]:
-    """Normalize raw Hacker News items to schema.
+) -> schema.SourceItem:
+    """Normalizer for Pinterest pins (visual content with descriptions).
 
-    Args:
-        items: Raw HN items from Algolia API
-        from_date: Start of date range
-        to_date: End of date range
-
-    Returns:
-        List of HackerNewsItem objects
+    Saves are the primary engagement signal, analogous to likes/upvotes.
     """
-    normalized = []
-
-    for i, item in enumerate(items):
-        # Parse engagement
-        eng_raw = item.get("engagement") or {}
-        engagement = schema.Engagement(
-            score=eng_raw.get("points"),
-            num_comments=eng_raw.get("num_comments"),
-        )
-
-        # Parse comments (from enrichment)
-        top_comments = []
-        for c in item.get("top_comments", []):
-            top_comments.append(schema.Comment(
-                score=c.get("points", 0),
-                date=None,
-                author=c.get("author", ""),
-                excerpt=c.get("text", ""),
-                url="",
-            ))
-
-        # HN dates are always high confidence (exact timestamps from Algolia)
-        date_str = item.get("date")
-
-        normalized.append(schema.HackerNewsItem(
-            id=f"HN{i+1}",
-            title=item.get("title", ""),
-            url=item.get("url", ""),
-            hn_url=item.get("hn_url", ""),
-            author=item.get("author", ""),
-            date=date_str,
-            date_confidence="high",
-            engagement=engagement,
-            top_comments=top_comments,
-            comment_insights=item.get("comment_insights", []),
-            relevance=item.get("relevance", 0.5),
-            why_relevant=item.get("why_relevant", ""),
-        ))
-
-    return normalized
+    description = str(item.get("description") or "").strip()
+    return _source_item(
+        item_id=str(item.get("pin_id") or item.get("id") or f"PI{index + 1}"),
+        source=source,
+        title=description[:140] or f"Pinterest pin {index + 1}",
+        body=description,
+        url=str(item.get("url") or ""),
+        author=str(item.get("author") or ""),
+        container=str(item.get("board") or ""),
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="low"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=description[:400],
+    )
 
 
-def normalize_bluesky_items(
-    items: List[Dict[str, Any]],
+def _normalize_hackernews(
+    source: str,
+    item: dict[str, Any],
+    index: int,
     from_date: str,
     to_date: str,
-) -> List[schema.BlueskyItem]:
-    """Normalize raw Bluesky items to schema.
-
-    Args:
-        items: Raw Bluesky items from AT Protocol API
-        from_date: Start of date range
-        to_date: End of date range
-
-    Returns:
-        List of BlueskyItem objects
-    """
-    normalized = []
-
-    for i, item in enumerate(items):
-        eng_raw = item.get("engagement") or {}
-        engagement = schema.Engagement(
-            likes=eng_raw.get("likes"),
-            reposts=eng_raw.get("reposts"),
-            replies=eng_raw.get("replies"),
-            quotes=eng_raw.get("quotes"),
-        )
-
-        date_str = item.get("date")
-
-        normalized.append(schema.BlueskyItem(
-            id=f"BS{i+1}",
-            text=item.get("text", ""),
-            url=item.get("url", ""),
-            author_handle=item.get("handle", ""),
-            display_name=item.get("display_name", ""),
-            date=date_str,
-            date_confidence="high",
-            engagement=engagement,
-            relevance=item.get("relevance", 0.5),
-            why_relevant=item.get("why_relevant", ""),
-        ))
-
-    return normalized
+) -> schema.SourceItem:
+    top_comments = item.get("top_comments") or []
+    comment_text = " ".join(
+        str(comment.get("text") or "").strip()
+        for comment in top_comments[:3]
+        if isinstance(comment, dict)
+    )
+    title = str(item.get("title") or "").strip()
+    body = "\n".join(part for part in [title, str(item.get("text") or "").strip(), comment_text] if part)
+    return _source_item(
+        item_id=str(item.get("id") or f"HN{index + 1}"),
+        source=source,
+        title=title or f"HN story {index + 1}",
+        body=body,
+        url=str(item.get("url") or item.get("hn_url") or ""),
+        author=str(item.get("author") or ""),
+        container="Hacker News",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=comment_text,
+        metadata={
+            "hn_url": item.get("hn_url"),
+            "top_comments": top_comments,
+            "comment_insights": item.get("comment_insights") or [],
+        },
+    )
 
 
-def normalize_truthsocial_items(
-    items: List[Dict[str, Any]],
+def _normalize_microblog(
+    source: str,
+    item: dict[str, Any],
+    index: int,
     from_date: str,
     to_date: str,
-) -> List[schema.TruthSocialItem]:
-    """Normalize raw Truth Social items to schema.
-
-    Args:
-        items: Raw Truth Social items from Mastodon API
-        from_date: Start of date range
-        to_date: End of date range
-
-    Returns:
-        List of TruthSocialItem objects
-    """
-    normalized = []
-
-    for i, item in enumerate(items):
-        eng_raw = item.get("engagement") or {}
-        engagement = schema.Engagement(
-            likes=eng_raw.get("likes"),
-            reposts=eng_raw.get("reposts"),
-            replies=eng_raw.get("replies"),
-        )
-
-        date_str = item.get("date")
-
-        normalized.append(schema.TruthSocialItem(
-            id=f"TS{i+1}",
-            text=item.get("text", ""),
-            url=item.get("url", ""),
-            author_handle=item.get("handle", ""),
-            display_name=item.get("display_name", ""),
-            date=date_str,
-            date_confidence="high",
-            engagement=engagement,
-            relevance=item.get("relevance", 0.5),
-            why_relevant=item.get("why_relevant", ""),
-        ))
-
-    return normalized
+    id_prefix: str,
+    default_title: str,
+) -> schema.SourceItem:
+    """Shared normalizer for Bluesky and Truth Social (identical structure)."""
+    text = str(item.get("text") or "").strip()
+    return _source_item(
+        item_id=str(item.get("id") or f"{id_prefix}{index + 1}"),
+        source=source,
+        title=text[:140] or f"{default_title} {index + 1}",
+        body=text,
+        url=str(item.get("url") or ""),
+        author=str(item.get("handle") or item.get("author_handle") or "").lstrip("@"),
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        metadata={"display_name": item.get("display_name")},
+    )
 
 
-def normalize_polymarket_items(
-    items: List[Dict[str, Any]],
+def _normalize_polymarket(
+    source: str,
+    item: dict[str, Any],
+    index: int,
     from_date: str,
     to_date: str,
-) -> List[schema.PolymarketItem]:
-    """Normalize raw Polymarket items to schema.
-
-    Args:
-        items: Raw Polymarket items from Gamma API
-        from_date: Start of date range
-        to_date: End of date range
-
-    Returns:
-        List of PolymarketItem objects
-    """
-    normalized = []
-
-    for i, item in enumerate(items):
-        # Prefer volume1mo (more stable) for engagement scoring, fall back to volume24hr
-        volume = item.get("volume1mo") or item.get("volume24hr", 0.0)
-        engagement = schema.Engagement(
-            volume=volume,
-            liquidity=item.get("liquidity", 0.0),
-        )
-
-        date_str = item.get("date")
-
-        normalized.append(schema.PolymarketItem(
-            id=f"PM{i+1}",
-            title=item.get("title", ""),
-            question=item.get("question", ""),
-            url=item.get("url", ""),
-            outcome_prices=item.get("outcome_prices", []),
-            outcomes_remaining=item.get("outcomes_remaining", 0),
-            price_movement=item.get("price_movement"),
-            date=date_str,
-            date_confidence="high",
-            engagement=engagement,
-            end_date=item.get("end_date"),
-            relevance=item.get("relevance", 0.5),
-            why_relevant=item.get("why_relevant", ""),
-        ))
-
-    return normalized
+) -> schema.SourceItem:
+    title = str(item.get("title") or "").strip()
+    question = str(item.get("question") or "").strip()
+    engagement = {
+        "volume": item.get("volume1mo") or item.get("volume24hr") or 0,
+        "liquidity": item.get("liquidity") or 0,
+    }
+    return _source_item(
+        item_id=str(item.get("id") or f"PM{index + 1}"),
+        source=source,
+        title=title or question or f"Polymarket event {index + 1}",
+        body="\n".join(part for part in [title, question, str(item.get("price_movement") or "")] if part),
+        url=str(item.get("url") or ""),
+        author=None,
+        container="Polymarket",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=engagement,
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=str(item.get("price_movement") or ""),
+        metadata={
+            "question": question,
+            "end_date": item.get("end_date"),
+            "outcome_prices": item.get("outcome_prices") or [],
+            "outcomes_remaining": item.get("outcomes_remaining"),
+        },
+    )
 
 
-def items_to_dicts(items: List) -> List[Dict[str, Any]]:
-    """Convert schema items to dicts for JSON serialization."""
-    return [item.to_dict() for item in items]
+
+def _normalize_github(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    title = str(item.get("title") or "").strip()
+    snippet_text = str(item.get("snippet") or "").strip()
+    top_comments = item.get("metadata", {}).get("top_comments") or []
+    comment_text = " ".join(
+        str(comment.get("excerpt") or "").strip()
+        for comment in top_comments[:3]
+        if isinstance(comment, dict)
+    )
+    body = "\n".join(part for part in [title, snippet_text, comment_text] if part)
+    metadata = item.get("metadata") or {}
+    return _source_item(
+        item_id=str(item.get("id") or f"GH{index + 1}"),
+        source=source,
+        title=title or f"GitHub item {index + 1}",
+        body=body,
+        url=str(item.get("url") or ""),
+        author=str(item.get("author") or ""),
+        container=str(item.get("container") or ""),
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=comment_text or snippet_text[:400],
+        metadata={
+            "top_comments": top_comments,
+            "labels": metadata.get("labels") or [],
+            "state": metadata.get("state", ""),
+            "is_pr": metadata.get("is_pr", False),
+        },
+    )
+
+def _normalize_grounding(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    title = str(item.get("title") or "").strip()
+    snippet = str(item.get("snippet") or "").strip()
+    url = str(item.get("url") or "").strip()
+    return _source_item(
+        item_id=str(item.get("id") or f"W{index + 1}"),
+        source=source,
+        title=title or _domain_from_url(url) or f"Web result {index + 1}",
+        body="\n".join(part for part in [title, snippet] if part),
+        url=url,
+        author=None,
+        container=str(item.get("source_domain") or _domain_from_url(url) or ""),
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=snippet,
+        metadata=item.get("metadata") or {},
+    )

@@ -18,6 +18,11 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+SCRIPT_DIR = Path(__file__).parent.resolve()
+sys.path.insert(0, str(SCRIPT_DIR))
+
+from lib import schema
+
 DB_DIR = Path.home() / ".local" / "share" / "last30days"
 DB_PATH = DB_DIR / "research.db"
 
@@ -128,9 +133,7 @@ INSERT OR IGNORE INTO settings (key, value) VALUES ('default_schedule', '0 8 * *
 """
 
 # Future migrations keyed by version number
-MIGRATIONS: Dict[int, str] = {
-    # 2: "ALTER TABLE findings ADD COLUMN tags TEXT DEFAULT '[]';",
-}
+MIGRATIONS: Dict[int, str] = {}
 
 
 def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
@@ -575,6 +578,78 @@ def get_trending(days: int = 7) -> List[Dict[str, Any]]:
         return [dict(r) for r in rows]
     finally:
         conn.close()
+
+
+def finding_from_candidate(candidate: schema.Candidate) -> Dict[str, Any]:
+    """Convert a ranked candidate into a persisted finding."""
+    primary_item = schema.candidate_primary_item(candidate)
+    corroborating_sources = [
+        source for source in schema.candidate_sources(candidate)
+        if source and source != candidate.source
+    ]
+    summary = candidate.explanation or candidate.snippet or ""
+    if corroborating_sources:
+        prefix = f"Also seen in: {', '.join(corroborating_sources)}."
+        summary = f"{prefix} {summary}".strip()
+    body = (
+        primary_item.body
+        if primary_item and primary_item.body
+        else candidate.snippet or candidate.title
+    )
+    author = primary_item.author if primary_item and primary_item.author else ""
+    return {
+        "source": candidate.source or "unknown",
+        "source_url": candidate.url,
+        "source_title": candidate.title,
+        "author": author,
+        "content": body,
+        "summary": summary,
+        "engagement_score": candidate.engagement or 0,
+        "relevance_score": candidate.final_score or candidate.rerank_score or candidate.local_relevance,
+    }
+
+
+def findings_from_report(
+    report: schema.Report,
+    *,
+    limit: Optional[int] = None,
+) -> List[Dict[str, Any]]:
+    """Convert report into persisted findings.
+    
+    Uses ranked candidates (post-rerank) when available for quality scores and explanations.
+    Supplements with raw items from items_by_source for HN/PM that didn't rank highly
+    but are valuable for watchlist persistence.
+    """
+    findings = []
+    seen_urls = set()
+    
+    # Phase 1: Process ranked candidates (high-quality data with explanations and corroboration)
+    for candidate in report.ranked_candidates:
+        finding = finding_from_candidate(candidate)
+        findings.append(finding)
+        seen_urls.add(candidate.url)
+    
+    # Phase 2: Add HN/PM items not already captured in ranked candidates
+    for source_name in ["hackernews", "polymarket"]:
+        if source_name not in report.items_by_source:
+            continue
+        for item in report.items_by_source[source_name]:
+            if item.url in seen_urls:
+                continue  # Already captured with rich data
+            findings.append({
+                "source": source_name,
+                "source_url": item.url,
+                "source_title": item.title,
+                "author": item.author or "",
+                "content": item.body or "",
+                "summary": item.snippet or (item.body[:500] if item.body else ""),
+                "engagement_score": item.engagement_score or 0.0,
+                "relevance_score": item.local_relevance or 0.5,
+            })
+            seen_urls.add(item.url)
+    
+    # Apply global limit after collecting all findings (fix: was per-source, now global)
+    return findings[:limit] if limit is not None else findings
 
 
 # --- CLI interface ---

@@ -1,7 +1,7 @@
 {
   "name": "last30days",
-  "version": "2.9.6",
-  "description": "Research any topic from the last 30 days across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, and the web.",
+  "version": "3.0.0",
+  "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and 5+ more sources. AI agent scores by upvotes, likes, and real money - not editors.",
   "author": {
     "name": "Matt Van Horn",
     "email": "mvanhorn@gmail.com",
@@ -10,7 +10,7 @@
   "homepage": "https://github.com/mvanhorn/last30days-skill",
   "repository": "https://github.com/mvanhorn/last30days-skill",
   "license": "MIT",
-  "keywords": ["research", "reddit", "twitter", "youtube", "tiktok", "instagram", "trends", "prompts", "polymarket"],
+  "keywords": ["research", "reddit", "twitter", "youtube", "tiktok", "instagram", "trends", "prompts", "polymarket", "github", "perplexity", "threads", "pinterest", "eli5", "hacker-news"],
   "skills": ["./"],
   "hooks": {}
 }

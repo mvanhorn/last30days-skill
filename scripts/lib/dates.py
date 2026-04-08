@@ -41,7 +41,10 @@ def parse_date(date_str: Optional[str]) -> Optional[datetime]:
 
     for fmt in formats:
         try:
-            return datetime.strptime(date_str, fmt).replace(tzinfo=timezone.utc)
+            dt = datetime.strptime(date_str, fmt)
+            if dt.tzinfo is not None:
+                return dt.astimezone(timezone.utc)
+            return dt.replace(tzinfo=timezone.utc)
         except ValueError:
             continue
 
@@ -78,14 +81,7 @@ def get_date_confidence(date_str: Optional[str], from_date: str, to_date: str) -
         start = datetime.strptime(from_date, "%Y-%m-%d").date()
         end = datetime.strptime(to_date, "%Y-%m-%d").date()
 
-        if start <= dt <= end:
-            return 'high'
-        elif dt < start:
-            # Older than range
-            return 'low'
-        else:
-            # Future date (suspicious)
-            return 'low'
+        return 'high' if start <= dt <= end else 'low'
     except ValueError:
         return 'low'
 

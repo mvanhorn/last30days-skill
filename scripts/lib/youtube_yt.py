@@ -1,4 +1,4 @@
-"""YouTube search and transcript extraction via yt-dlp for /last30days v2.1.
+"""YouTube search and transcript extraction via yt-dlp for the v3.0.0 pipeline.
 
 Uses yt-dlp (https://github.com/yt-dlp/yt-dlp) for both YouTube search and
 transcript extraction. No API keys needed — just have yt-dlp installed.
@@ -23,33 +23,41 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 # Depth configurations: how many videos to search / transcribe
 DEPTH_CONFIG = {
-    "quick": 10,
-    "default": 20,
+    "quick": 6,
+    "default": 8,
     "deep": 40,
 }
 
 TRANSCRIPT_LIMITS = {
-    "quick": 3,
-    "default": 5,
+    "quick": 0,
+    "default": 2,
     "deep": 8,
 }
 
 # Max words to keep from each transcript
 TRANSCRIPT_MAX_WORDS = 5000
 
+from . import http, log
 from .relevance import token_overlap_relevance as _compute_relevance
 
 
-def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -> List[str]:
+def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -> list[str]:
     """Extract quotable highlights from a YouTube transcript.
 
-    Similar to reddit_enrich.extract_comment_insights() but for
-    continuous speech-to-text rather than threaded comments.
+    Filters filler (subscribe, welcome back, etc.), scores sentences by
+    specificity (numbers, proper nouns, topic relevance), and returns
+    the top highlights.
     """
     if not transcript:
         return []
 
     sentences = re.split(r'(?<=[.!?])\s+', transcript)
+
+    # Fallback for punctuation-free transcripts (common with auto-captions):
+    # chunk into ~20-word segments so they pass the 8-50 word filter.
+    if len(sentences) <= 1 and len(transcript.split()) > 50:
+        words = transcript.split()
+        sentences = [' '.join(words[i:i+20]) for i in range(0, len(words), 20)]
 
     filler = [
         r"^(hey |hi |what's up|welcome back|in today's video|don't forget to)",
@@ -87,9 +95,7 @@ def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -
 
 
 def _log(msg: str):
-    """Log to stderr."""
-    sys.stderr.write(f"[YouTube] {msg}\n")
-    sys.stderr.flush()
+    log.source_log("YouTube", msg, tty_only=False)
 
 
 def is_ytdlp_installed() -> bool:
@@ -113,8 +119,73 @@ def _extract_core_subject(topic: str) -> str:
         'recommendations', 'advice',
         'prompt', 'prompts', 'prompting',
         'methods', 'strategies', 'approaches',
+        # Temporal/meta words — planner generates these but they don't
+        # appear in YouTube titles, so strip them for better search.
+        'last', 'days', 'recent', 'recently', 'month', 'week',
+        'january', 'february', 'march', 'april', 'may', 'june',
+        'july', 'august', 'september', 'october', 'november', 'december',
+        '2025', '2026', '2027',
+        'music', 'public', 'appearances', 'developments', 'discussions', 'coverage',
     })
     return extract_core_subject(topic, noise=_YT_NOISE)
+
+
+def _infer_query_intent(topic: str) -> str:
+    """Tiny local intent classifier for YouTube query expansion."""
+    text = topic.lower().strip()
+    if re.search(r"\b(vs|versus|compare|difference between)\b", text):
+        return "comparison"
+    if re.search(r"\b(how to|tutorial|guide|setup|step by step|deploy|install|configure|troubleshoot|error|fix|debug)\b", text):
+        return "how_to"
+    if re.search(r"\b(thoughts on|worth it|should i|opinion|review)\b", text):
+        return "opinion"
+    if re.search(r"\b(pricing|feature|features|best .* for)\b", text):
+        return "product"
+    return "breaking_news"
+
+
+def expand_youtube_queries(topic: str, depth: str) -> List[str]:
+    """Generate multiple YouTube search queries from a topic.
+
+    Mirrors reddit.py's expand_reddit_queries() pattern:
+    1. Extract core subject (strip noise words)
+    2. Include original topic if different from core
+    3. Add intent-specific OR-joined content-type variants
+    4. Cap by depth: 1 for quick, 2 for default, 3 for deep
+
+    Returns 1-3 query strings depending on depth.
+    """
+    core = _extract_core_subject(topic)
+    queries = [core]
+
+    # Include cleaned original topic as variant if different from core
+    original_clean = topic.strip().rstrip('?!.')
+    if core.lower() != original_clean.lower() and len(original_clean.split()) <= 8:
+        queries.append(original_clean)
+
+    qtype = _infer_query_intent(topic)
+
+    # Intent-specific YouTube content-type variants
+    if qtype == "opinion":
+        queries.append(f"{core} review OR reaction OR breakdown")
+    elif qtype == "product":
+        queries.append(f"{core} review OR comparison OR unboxing")
+    elif qtype == "comparison":
+        queries.append(f"{core} vs OR compared OR head to head")
+    elif qtype == "how_to":
+        queries.append(f"{core} tutorial OR guide OR explained")
+    else:
+        # breaking_news / general — YouTube content types
+        queries.append(f"{core} review OR reaction OR breakdown")
+
+    # Deep depth: add full-length content variant
+    if depth == "deep":
+        queries.append(f"{core} full OR complete OR official")
+
+    # Cap by depth budget
+    caps = {"quick": 1, "default": 2, "deep": 3}
+    cap = caps.get(depth, 2)
+    return queries[:cap]
 
 
 def search_youtube(
@@ -195,9 +266,9 @@ def search_youtube(
             continue
 
         video_id = video.get("id", "")
-        view_count = video.get("view_count") or 0
-        like_count = video.get("like_count") or 0
-        comment_count = video.get("comment_count") or 0
+        view_count = video.get("view_count") if video.get("view_count") is not None else 0
+        like_count = video.get("like_count") if video.get("like_count") is not None else 0
+        comment_count = video.get("comment_count") if video.get("comment_count") is not None else 0
         upload_date = video.get("upload_date", "")  # YYYYMMDD
 
         # Convert YYYYMMDD to YYYY-MM-DD
@@ -205,6 +276,7 @@ def search_youtube(
         if upload_date and len(upload_date) == 8:
             date_str = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
 
+        description = str(video.get("description", ""))[:500]
         items.append({
             "video_id": video_id,
             "title": video.get("title", ""),
@@ -217,8 +289,9 @@ def search_youtube(
                 "comments": comment_count,
             },
             "duration": video.get("duration"),
-            "relevance": _compute_relevance(core_topic, video.get("title", "")),
+            "relevance": _compute_relevance(core_topic, f"{video.get('title', '')} {description}"),
             "why_relevant": f"YouTube: {video.get('title', core_topic)[:60]}",
+            "description": description,
         })
 
     # Soft date filter: prefer recent items but fall back to all if too few
@@ -433,11 +506,15 @@ def fetch_transcript(video_id: str, temp_dir: str) -> Optional[str]:
     raw_vtt = None
     if is_ytdlp_installed():
         raw_vtt = _fetch_transcript_ytdlp(video_id, temp_dir)
+        if not raw_vtt:
+            _log(f"yt-dlp transcript failed for {video_id}, trying direct HTTP fallback")
+            raw_vtt = _fetch_transcript_direct(video_id)
     else:
         _log("yt-dlp not installed, using direct HTTP transcript fetch")
         raw_vtt = _fetch_transcript_direct(video_id)
 
     if not raw_vtt:
+        _log(f"No transcript available for {video_id} (no captions found)")
         return None
 
     transcript = _clean_vtt(raw_vtt)
@@ -479,11 +556,16 @@ def fetch_transcripts_parallel(
                 vid = futures[future]
                 try:
                     results[vid] = future.result()
-                except Exception:
+                except (OSError, subprocess.SubprocessError) as exc:
+                    _log(f"Transcript fetch error for {vid}: {exc}")
+                    results[vid] = None
+                except Exception as exc:
+                    _log(f"Unexpected transcript error for {vid}: {type(exc).__name__}: {exc}")
                     results[vid] = None
 
     got = sum(1 for v in results.values() if v)
-    _log(f"Got transcripts for {got}/{len(video_ids)} videos")
+    errors = sum(1 for v in results.values() if v is None)
+    _log(f"Got transcripts for {got}/{len(video_ids)} videos ({errors} failed)")
     return results
 
 
@@ -495,6 +577,9 @@ def search_and_transcribe(
 ) -> Dict[str, Any]:
     """Full YouTube search: find videos, then fetch transcripts for top results.
 
+    Uses expand_youtube_queries() to generate multiple search queries,
+    runs yt-dlp for each, and merges/deduplicates results by video ID.
+
     Args:
         topic: Search topic
         from_date: Start date (YYYY-MM-DD)
@@ -504,17 +589,37 @@ def search_and_transcribe(
     Returns:
         Dict with 'items' list. Each item has a 'transcript_snippet' field.
     """
-    # Step 1: Search
-    search_result = search_youtube(topic, from_date, to_date, depth)
-    items = search_result.get("items", [])
+    # Step 1: Multi-query search — run yt-dlp for each expanded query
+    queries = expand_youtube_queries(topic, depth)
+    seen_ids: Set[str] = set()
+    items: List[Dict[str, Any]] = []
+    for q in queries:
+        search_result = search_youtube(q, from_date, to_date, depth)
+        for item in search_result.get("items", []):
+            vid = item.get("video_id", "")
+            if vid and vid not in seen_ids:
+                seen_ids.add(vid)
+                items.append(item)
+
+    # Sort merged results by views descending
+    items.sort(key=lambda x: x.get("engagement", {}).get("views", 0), reverse=True)
 
     if not items:
         return search_result
 
-    # Step 2: Fetch transcripts for top N by views
+    # Step 2: Fetch transcripts for top videos by views.
+    # Try more candidates than the limit because some videos (music videos,
+    # short clips) lack captions. Attempt up to 3x the limit so we have a
+    # good chance of reaching the target number of successful transcripts.
     transcript_limit = TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"])
-    top_ids = [item["video_id"] for item in items[:transcript_limit]]
-    transcripts = fetch_transcripts_parallel(top_ids)
+    transcripts: Dict[str, Optional[str]] = {}
+    if transcript_limit > 0:
+        attempt_count = min(len(items), transcript_limit * 3)
+        candidate_ids = [item["video_id"] for item in items[:attempt_count]]
+        _log(f"Fetching transcripts for up to {attempt_count} videos (target: {transcript_limit}): {candidate_ids}")
+        transcripts = fetch_transcripts_parallel(candidate_ids)
+    else:
+        _log(f"Transcript limit is 0 for depth={depth}, skipping transcript fetch")
 
     # Step 3: Attach transcripts and extract highlights
     core_topic = _extract_core_subject(topic)
@@ -536,3 +641,335 @@ def parse_youtube_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
         List of item dicts ready for normalization.
     """
     return response.get("items", [])
+
+
+# ---------------------------------------------------------------------------
+# ScrapeCreators YouTube API support
+# ---------------------------------------------------------------------------
+
+SCRAPECREATORS_YT_BASE = "https://api.scrapecreators.com/v1/youtube"
+
+try:
+    import requests as _requests
+except ImportError:
+    _requests = None
+
+
+def _sc_headers(token: str) -> Dict[str, str]:
+    """Build ScrapeCreators request headers."""
+    return {
+        "x-api-key": token,
+        "Content-Type": "application/json",
+    }
+
+
+def _total_engagement(item: Dict[str, Any]) -> int:
+    """Combined engagement score for ranking which videos to enrich."""
+    eng = item.get("engagement", {})
+    views = eng.get("views", 0) or 0
+    likes = eng.get("likes", 0) or 0
+    comments = eng.get("comments", 0) or 0
+    return views + likes + comments
+
+
+def enrich_with_comments(
+    items: List[Dict[str, Any]],
+    token: str,
+    max_videos: int = 3,
+    max_comments: int = 5,
+) -> List[Dict[str, Any]]:
+    """Enrich top YouTube videos with comment data from ScrapeCreators.
+
+    For the top N videos by engagement, fetches comments via the SC API
+    and attaches them as a ``top_comments`` field on each item.
+
+    Args:
+        items: YouTube items from search_and_transcribe() or search_youtube_sc()
+        token: ScrapeCreators API key
+        max_videos: How many videos to enrich with comments
+        max_comments: Max comments to keep per video
+
+    Returns:
+        Items list (mutated in place) with top_comments added to enriched items.
+    """
+    if not items or not token or max_videos <= 0:
+        return items
+
+    ranked = sorted(items, key=_total_engagement, reverse=True)
+    top_items = ranked[:max_videos]
+    _log(f"Enriching comments for {len(top_items)} YouTube videos")
+
+    enriched_count = 0
+    for item in top_items:
+        video_id = item.get("video_id", "")
+        if not video_id:
+            continue
+        try:
+            comments = _fetch_video_comments(video_id, token, max_comments)
+            if comments:
+                item["top_comments"] = comments
+                enriched_count += 1
+        except Exception as exc:
+            _log(f"Comment enrichment failed for {video_id}: {exc}")
+
+    _log(f"Enriched {enriched_count}/{len(top_items)} videos with comments")
+    return items
+
+
+def _fetch_video_comments(
+    video_id: str,
+    token: str,
+    max_comments: int = 5,
+) -> List[Dict[str, Any]]:
+    """Fetch comments for a single YouTube video via ScrapeCreators.
+
+    Args:
+        video_id: YouTube video ID
+        token: ScrapeCreators API key
+        max_comments: Maximum comments to return
+
+    Returns:
+        List of comment dicts with author, text, likes, date.
+    """
+    if not _requests:
+        try:
+            from urllib.parse import urlencode
+            params = urlencode({"id": video_id})
+            url = f"{SCRAPECREATORS_YT_BASE}/video/comments?{params}"
+            headers = _sc_headers(token)
+            headers["User-Agent"] = http.USER_AGENT
+            data = http.get(url, headers=headers, timeout=30, retries=2)
+        except Exception as exc:
+            _log(f"Comment fetch error (urllib) for {video_id}: {exc}")
+            return []
+    else:
+        try:
+            resp = _requests.get(
+                f"{SCRAPECREATORS_YT_BASE}/video/comments",
+                params={"id": video_id},
+                headers=_sc_headers(token),
+                timeout=30,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            _log(f"Comment fetch error for {video_id}: {exc}")
+            return []
+
+    raw_comments = data.get("comments", data.get("data", []))
+    comments = []
+    for c in raw_comments[:max_comments]:
+        text = c.get("text") or c.get("body") or c.get("content", "")
+        if not text:
+            continue
+        comments.append({
+            "author": c.get("author") or c.get("author_name", ""),
+            "text": text[:400],
+            "likes": c.get("likes") or c.get("vote_count", 0),
+            "date": c.get("date") or c.get("published_at", ""),
+        })
+
+    return comments
+
+
+def search_youtube_sc(
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str = "default",
+    token: str = None,
+) -> Dict[str, Any]:
+    """Search YouTube via ScrapeCreators API (fallback when yt-dlp is unavailable).
+
+    Uses SC keyword search to find videos and SC transcript endpoint to
+    fetch transcripts. Called by pipeline.py when yt-dlp fails.
+
+    Args:
+        topic: Search topic
+        from_date: Start date (YYYY-MM-DD)
+        to_date: End date (YYYY-MM-DD)
+        depth: 'quick', 'default', or 'deep'
+        token: ScrapeCreators API key
+
+    Returns:
+        Dict with 'items' list of video metadata dicts.
+    """
+    if not token:
+        return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
+
+    count = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
+    core_topic = _extract_core_subject(topic)
+    _log(f"Searching YouTube via ScrapeCreators for '{core_topic}' (depth={depth})")
+
+    # Step 1: Search
+    raw_items = _sc_youtube_search(core_topic, token)
+    if not raw_items:
+        _log("SC YouTube search returned 0 results")
+        return {"items": []}
+
+    # Parse into normalized items
+    items = []
+    for i, raw in enumerate(raw_items[:count]):
+        video_id = (
+            raw.get("id") or raw.get("video_id") or raw.get("videoId") or ""
+        )
+        title = raw.get("title", "")
+        channel = raw.get("channel") or raw.get("channel_name") or raw.get("uploader", "")
+        description = str(raw.get("description", ""))[:500]
+        view_count = raw.get("view_count") or raw.get("views", 0)
+        like_count = raw.get("like_count") or raw.get("likes", 0)
+        comment_count = raw.get("comment_count") or raw.get("comments", 0)
+
+        # Date: try multiple field names
+        date_str = raw.get("upload_date") or raw.get("date") or raw.get("published_at", "")
+        if date_str and len(date_str) == 8 and date_str.isdigit():
+            date_str = f"{date_str[:4]}-{date_str[4:6]}-{date_str[6:8]}"
+        elif date_str and "T" in date_str:
+            date_str = date_str[:10]
+
+        url = raw.get("url", "")
+        if not url and video_id:
+            url = f"https://www.youtube.com/watch?v={video_id}"
+
+        items.append({
+            "video_id": video_id,
+            "title": title,
+            "url": url,
+            "channel_name": channel,
+            "date": date_str if date_str else None,
+            "engagement": {
+                "views": view_count or 0,
+                "likes": like_count or 0,
+                "comments": comment_count or 0,
+            },
+            "duration": raw.get("duration"),
+            "relevance": _compute_relevance(core_topic, f"{title} {description}"),
+            "why_relevant": f"YouTube: {title[:60]}" if title else f"YouTube: {core_topic}",
+            "description": description,
+        })
+
+    # Soft date filter
+    recent = [i for i in items if i["date"] and i["date"] >= from_date]
+    if len(recent) >= 3:
+        items = recent
+        _log(f"Found {len(items)} videos within date range")
+    else:
+        _log(f"Found {len(items)} videos ({len(recent)} within date range, keeping all)")
+
+    # Sort by views
+    items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
+
+    # Step 2: Fetch transcripts for top videos
+    transcript_limit = TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"])
+    if transcript_limit > 0 and items:
+        attempt_count = min(len(items), transcript_limit * 3)
+        _log(f"Fetching SC transcripts for up to {attempt_count} videos (target: {transcript_limit})")
+        for item in items[:attempt_count]:
+            vid = item["video_id"]
+            if not vid:
+                continue
+            transcript = _sc_fetch_transcript(vid, token)
+            item["transcript_snippet"] = transcript or ""
+            item["transcript_highlights"] = extract_transcript_highlights(
+                transcript or "", core_topic,
+            )
+    else:
+        for item in items:
+            item["transcript_snippet"] = ""
+            item["transcript_highlights"] = []
+
+    _log(f"SC YouTube: {len(items)} videos returned")
+    return {"items": items}
+
+
+def _sc_youtube_search(keyword: str, token: str) -> List[Dict[str, Any]]:
+    """Call ScrapeCreators YouTube search endpoint.
+
+    Args:
+        keyword: Search keyword
+        token: ScrapeCreators API key
+
+    Returns:
+        List of raw video dicts from the API.
+    """
+    if not _requests:
+        try:
+            from urllib.parse import urlencode
+            params = urlencode({"keyword": keyword})
+            url = f"{SCRAPECREATORS_YT_BASE}/search?{params}"
+            headers = _sc_headers(token)
+            headers["User-Agent"] = http.USER_AGENT
+            data = http.get(url, headers=headers, timeout=30, retries=2)
+            return data.get("videos", data.get("data", data.get("items", [])))
+        except Exception as exc:
+            _log(f"SC YouTube search error (urllib): {exc}")
+            return []
+
+    try:
+        resp = _requests.get(
+            f"{SCRAPECREATORS_YT_BASE}/search",
+            params={"keyword": keyword},
+            headers=_sc_headers(token),
+            timeout=30,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get("videos", data.get("data", data.get("items", [])))
+    except Exception as exc:
+        _log(f"SC YouTube search error: {exc}")
+        return []
+
+
+def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
+    """Fetch transcript for a YouTube video via ScrapeCreators.
+
+    Args:
+        video_id: YouTube video ID
+        token: ScrapeCreators API key
+
+    Returns:
+        Plaintext transcript string, or None if unavailable.
+    """
+    if not _requests:
+        try:
+            from urllib.parse import urlencode
+            params = urlencode({"id": video_id})
+            url = f"{SCRAPECREATORS_YT_BASE}/video/transcript?{params}"
+            headers = _sc_headers(token)
+            headers["User-Agent"] = http.USER_AGENT
+            data = http.get(url, headers=headers, timeout=30, retries=2)
+        except Exception as exc:
+            _log(f"SC transcript error (urllib) for {video_id}: {exc}")
+            return None
+    else:
+        try:
+            resp = _requests.get(
+                f"{SCRAPECREATORS_YT_BASE}/video/transcript",
+                params={"id": video_id},
+                headers=_sc_headers(token),
+                timeout=30,
+            )
+            if resp.status_code != 200:
+                _log(f"SC transcript returned {resp.status_code} for {video_id}")
+                return None
+            data = resp.json()
+        except Exception as exc:
+            _log(f"SC transcript error for {video_id}: {exc}")
+            return None
+
+    transcript = data.get("transcript")
+    if not transcript:
+        return None
+
+    if isinstance(transcript, list):
+        transcript = " ".join(str(s) for s in transcript)
+
+    # Clean VTT formatting if present
+    transcript = _clean_vtt(transcript)
+
+    # Truncate to max words
+    words = transcript.split()
+    if len(words) > TRANSCRIPT_MAX_WORDS:
+        transcript = " ".join(words[:TRANSCRIPT_MAX_WORDS]) + "..."
+
+    return transcript if transcript else None

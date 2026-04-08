@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-04
+
+### Highlights
+
+Intelligent search, fun judge, cross-source cluster merging, single-pass comparisons, and OpenClaw as a first-class citizen. The v3 engine doesn't just search for your topic -- it figures out *where* to search before the search begins. Engine architecture by @j-sperling.
+
+### Added
+
+- **Intelligent pre-research** -- Resolves X handles, subreddits, TikTok hashtags, and YouTube channels via a new Python brain before any API calls fire. Bidirectional: person to company, product to founder.
+- **Fun judge / Best Takes** -- Second parallel LLM judge scores humor, cleverness, and virality. Surfaces the best reactions in a dedicated output section.
+- **Cross-source cluster merging** -- Entity-based overlap detection merges the same story across Reddit, X, YouTube into one cluster instead of three separate items.
+- **Single-pass comparisons** -- "X vs Y" runs one pass with entity-aware subqueries instead of three serial passes. 3 minutes instead of 12+.
+- **GitHub as a source** -- Stars, reactions, and comments from repos and issues.
+- **OpenClaw first-class citizen** -- Auto-resolve for engine-side pre-research. Device auth for frictionless ScrapeCreators signup.
+- **Per-author cap** -- Max 3 items per author prevents single-voice dominance.
+- **Entity disambiguation** -- Synthesis trusts resolved handles over keyword matches.
+- **Perplexity Sonar Pro as additive source** -- AI-synthesized research with citations via OpenRouter. Opt-in via `INCLUDE_SOURCES=perplexity`. Returns structured narratives that complement social data.
+- **Perplexity Deep Research** -- `--deep-research` flag for exhaustive 50+ citation reports (~$0.90/query). Premium opt-in for serious investigation.
+- **OpenRouter as reasoning provider** -- One OPENROUTER_API_KEY powers planning, reranking, and Perplexity search. Auto-detected after Gemini/OpenAI/xAI.
+- **Parallel AI grounding backend** -- `--web-backend parallel` or auto-detected via PARALLEL_API_KEY.
+- **Grounding in planner** -- Grounding source properly registered in SOURCE_CAPABILITIES instead of force-injected.
+
+### Changed
+
+- YouTube transcript candidate pool widened 3x past music videos to reach talk/review content with captions
+- Reddit comment enrichment sorted by total engagement (upvotes + comments), not just upvotes
+- Polymarket display shows % odds only; dollar volumes removed
+- 852 tests passing
+
+### Contributors
+
+- @j-sperling -- v3 engine architecture, Python pre-research brain
+- @hnshah -- Watchlist features
+
 ## [2.9.4] - 2026-03-06
 
 ### Changed

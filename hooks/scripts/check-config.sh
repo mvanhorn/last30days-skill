@@ -103,6 +103,6 @@ else
   # Setup done but missing ScrapeCreators — recommend it
   echo "/last30days: Ready — ${SOURCE_COUNT} sources active."
   echo "  Tip: Add ScrapeCreators for Reddit comments + TikTok + Instagram."
-  echo "  100 free API calls, no credit card — scrapecreators.com"
+  echo "  10,000 free API calls, no credit card — scrapecreators.com"
   echo "  last30days has no affiliation with any API provider."
 fi

@@ -328,3 +328,85 @@ class TestMissingSubreddit:
 
         results = reddit_public.search("test", subreddit="nonexistent")
         assert results == []
+
+
+# ---------------------------------------------------------------------------
+# Tests for comment enrichment (Unit 2)
+# ---------------------------------------------------------------------------
+
+class TestEnrichmentIntegration:
+    """search_reddit_public enriches top posts with comments."""
+
+    @mock.patch("lib.reddit_public._enrich_post")
+    @mock.patch("lib.reddit_public.urllib.request.urlopen")
+    def test_search_enriches_top_5_by_default(self, mock_urlopen, mock_enrich):
+        listing = _make_reddit_listing([
+            {"title": f"Post {i}", "permalink": f"/r/test/comments/{i:06d}/post_{i}/",
+             "score": 100 - i, "created_utc": 1711670400}
+            for i in range(10)
+        ])
+        mock_urlopen.return_value = _mock_urlopen_ok(listing)
+        mock_enrich.side_effect = lambda item, timeout=10: item  # pass-through
+
+        results = reddit_public.search_reddit_public("test", "2024-03-01", "2024-03-31")
+
+        assert len(results) == 10
+        # Default depth enriches top 5
+        assert mock_enrich.call_count == 5
+
+    @mock.patch("lib.reddit_public._enrich_post")
+    @mock.patch("lib.reddit_public.urllib.request.urlopen")
+    def test_enrichment_timeout_keeps_posts(self, mock_urlopen, mock_enrich):
+        listing = _make_reddit_listing([
+            {"title": f"Post {i}", "permalink": f"/r/test/comments/{i:06d}/post_{i}/",
+             "score": 100 - i, "created_utc": 1711670400}
+            for i in range(10)
+        ])
+        mock_urlopen.return_value = _mock_urlopen_ok(listing)
+
+        # Some enrichments raise, some succeed
+        call_count = {"n": 0}
+        def _side_effect(item, timeout=10):
+            call_count["n"] += 1
+            if call_count["n"] % 2 == 0:
+                raise TimeoutError("enrichment timed out")
+            return item
+        mock_enrich.side_effect = _side_effect
+
+        results = reddit_public.search_reddit_public("test", "2024-03-01", "2024-03-31")
+
+        # All 10 posts should still be returned
+        assert len(results) == 10
+
+    @mock.patch("lib.reddit_public._enrich_post")
+    @mock.patch("lib.reddit_public.urllib.request.urlopen")
+    def test_all_enrichment_fails_all_posts_returned(self, mock_urlopen, mock_enrich):
+        listing = _make_reddit_listing([
+            {"title": f"Post {i}", "permalink": f"/r/test/comments/{i:06d}/post_{i}/",
+             "score": 100 - i, "created_utc": 1711670400}
+            for i in range(10)
+        ])
+        mock_urlopen.return_value = _mock_urlopen_ok(listing)
+        mock_enrich.side_effect = Exception("total failure")
+
+        results = reddit_public.search_reddit_public("test", "2024-03-01", "2024-03-31")
+
+        # All posts returned despite enrichment failure
+        assert len(results) == 10
+
+    @mock.patch("lib.reddit_public._enrich_post")
+    @mock.patch("lib.reddit_public.urllib.request.urlopen")
+    def test_quick_depth_enriches_top_3(self, mock_urlopen, mock_enrich):
+        listing = _make_reddit_listing([
+            {"title": f"Post {i}", "permalink": f"/r/test/comments/{i:06d}/post_{i}/",
+             "score": 100 - i, "created_utc": 1711670400}
+            for i in range(10)
+        ])
+        mock_urlopen.return_value = _mock_urlopen_ok(listing)
+        mock_enrich.side_effect = lambda item, timeout=10: item
+
+        results = reddit_public.search_reddit_public("test", "2024-03-01", "2024-03-31", depth="quick")
+
+        assert len(results) == 10
+        # Quick depth enriches only top 3
+        assert mock_enrich.call_count == 3

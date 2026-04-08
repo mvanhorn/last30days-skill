@@ -84,7 +84,7 @@ def token_overlap_relevance(
     - a small precision term to penalize extra noise
     - an exact phrase bonus
 
-    Generic tokens alone are capped below the post-retrieval 0.3 threshold.
+    Generic tokens alone are capped below typical relevance filter thresholds.
 
     Args:
         query: Search query

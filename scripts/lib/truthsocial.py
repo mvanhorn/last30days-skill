@@ -9,7 +9,7 @@ import re
 import sys
 from typing import Any, Dict, List, Optional
 
-from . import http
+from . import http, log
 
 TRUTHSOCIAL_SEARCH_URL = "https://truthsocial.com/api/v2/search"
 
@@ -21,10 +21,7 @@ DEPTH_CONFIG = {
 
 
 def _log(msg: str):
-    """Log to stderr (only in TTY mode to avoid cluttering Claude Code output)."""
-    if sys.stderr.isatty():
-        sys.stderr.write(f"[TruthSocial] {msg}\n")
-        sys.stderr.flush()
+    log.source_log("TruthSocial", msg)
 
 
 def _strip_html(html: str) -> str:
@@ -36,26 +33,14 @@ def _strip_html(html: str) -> str:
 
 def _extract_core_subject(topic: str) -> str:
     """Extract core subject from verbose query for Truth Social search."""
-    text = topic.lower().strip()
-    prefixes = [
-        'what are the best', 'what is the best', 'what are the latest',
-        'what are people saying about', 'what do people think about',
-        'how do i use', 'how to use', 'how to',
-        'what are', 'what is', 'tips for', 'best practices for',
-    ]
-    for p in prefixes:
-        if text.startswith(p + ' '):
-            text = text[len(p):].strip()
-    noise = {
+    from .query import extract_core_subject
+    _TS_NOISE = frozenset({
         'best', 'top', 'good', 'great', 'awesome',
         'latest', 'new', 'news', 'update', 'updates',
         'trending', 'hottest', 'popular', 'viral',
         'practices', 'features', 'recommendations', 'advice',
-    }
-    words = text.split()
-    filtered = [w for w in words if w not in noise]
-    result = ' '.join(filtered) if filtered else text
-    return result.rstrip('?!.')
+    })
+    return extract_core_subject(topic, noise=_TS_NOISE)
 
 
 def _parse_date(status: Dict[str, Any]) -> Optional[str]:

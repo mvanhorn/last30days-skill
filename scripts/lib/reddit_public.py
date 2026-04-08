@@ -17,6 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from typing import Any, Dict, List, Optional
 
 
@@ -27,6 +28,13 @@ DEPTH_LIMITS = {
     "quick": 10,
     "default": 25,
     "deep": 50,
+}
+
+# How many top posts to enrich with comments, by depth
+ENRICH_LIMITS = {
+    "quick": 3,
+    "default": 5,
+    "deep": 8,
 }
 
 MAX_RETRIES = 3
@@ -156,6 +164,7 @@ def _parse_posts(data: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
             },
             "relevance": _compute_relevance(score, num_comments),
             "why_relevant": "Reddit public search",
+            "metadata": {},
         })
 
     return posts
@@ -217,27 +226,133 @@ def search(
     return unique[:limit]
 
 
+def _enrich_post(item: Dict[str, Any], timeout: int = 10) -> Dict[str, Any]:
+    """Enrich a single post with top comments. Never raises."""
+    try:
+        from . import reddit_enrich
+        thread_data = reddit_enrich.fetch_thread_data(item["url"], timeout=timeout)
+        if not thread_data:
+            return item
+        parsed = reddit_enrich.parse_thread_data(thread_data)
+        comments = parsed.get("comments", [])
+        top = reddit_enrich.get_top_comments(comments)
+        item["top_comments"] = [
+            {
+                "score": c.get("score", 0),
+                "excerpt": (c.get("body") or "")[:200],
+                "author": c.get("author", ""),
+            }
+            for c in top[:10]
+        ]
+    except Exception:
+        # Never discard — keep post with empty metadata
+        pass
+    return item
+
+
+def _enrich_posts(posts: List[Dict[str, Any]], depth: str = "default") -> List[Dict[str, Any]]:
+    """Enrich top N posts with comment data using threads. Total budget 45s."""
+    limit = ENRICH_LIMITS.get(depth, ENRICH_LIMITS["default"])
+    to_enrich = posts[:limit]
+    rest = posts[limit:]
+
+    if not to_enrich:
+        return posts
+
+    enriched = []
+    try:
+        with ThreadPoolExecutor(max_workers=min(limit, 4)) as executor:
+            futures = {
+                executor.submit(_enrich_post, post, 10): i
+                for i, post in enumerate(to_enrich)
+            }
+            # Collect results with 45s total budget
+            import concurrent.futures
+            done, not_done = concurrent.futures.wait(futures, timeout=45)
+            # Build result list preserving order
+            result_map: Dict[int, Dict[str, Any]] = {}
+            for future in done:
+                idx = futures[future]
+                try:
+                    result_map[idx] = future.result(timeout=0)
+                except Exception:
+                    result_map[idx] = to_enrich[idx]
+            # Any not-done futures: keep original post
+            for future in not_done:
+                idx = futures[future]
+                result_map[idx] = to_enrich[idx]
+                future.cancel()
+            enriched = [result_map[i] for i in range(len(to_enrich))]
+    except Exception:
+        enriched = to_enrich
+
+    return enriched + rest
+
+
+def _search_subreddit(sub: str, topic: str, depth: str, timeout: int = 15) -> List[Dict[str, Any]]:
+    """Search a single subreddit. Never raises."""
+    try:
+        return search(topic, depth=depth, subreddit=sub, timeout=timeout)
+    except Exception as e:
+        _log(f"Subreddit search failed for r/{sub}: {e}")
+        return []
+
+
 def search_reddit_public(
     topic: str,
     from_date: str,
     to_date: str,
     depth: str = "default",
+    subreddits: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """High-level Reddit public search matching the openai_reddit interface.
 
-    Runs global search, deduplicates, filters by date range, and sorts
-    by engagement. Compatible as a drop-in replacement in the fallback chain.
+    When subreddits are provided (from agent planning), searches each targeted
+    sub first, then does global search, and deduplicates across both. This
+    mirrors the SC search_and_enrich() flow where pre-resolved subreddits get
+    priority.
 
     Args:
         topic: Search topic
         from_date: Start date (YYYY-MM-DD)
         to_date: End date (YYYY-MM-DD)
         depth: 'quick', 'default', or 'deep'
+        subreddits: Optional list of subreddit names (without r/) for targeted search
 
     Returns:
         List of normalized item dicts matching ScrapeCreators output format.
     """
-    results = search(topic, depth=depth)
+    all_posts: List[Dict[str, Any]] = []
+
+    # Phase 1: Search targeted subreddits in parallel (if provided)
+    if subreddits:
+        _log(f"Searching {len(subreddits)} targeted subreddits: {subreddits}")
+        workers = min(4, len(subreddits))
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {
+                executor.submit(_search_subreddit, sub, topic, depth): sub
+                for sub in subreddits
+            }
+            for future in futures:
+                sub = futures[future]
+                try:
+                    sub_posts = future.result(timeout=30)
+                    _log(f"  -> {len(sub_posts)} results from r/{sub}")
+                    all_posts.extend(sub_posts)
+                except (Exception, FuturesTimeoutError) as e:
+                    _log(f"  -> r/{sub} failed: {e}")
+
+    # Phase 2: Global search
+    global_posts = search(topic, depth=depth)
+    all_posts.extend(global_posts)
+
+    # Deduplicate by URL (targeted results keep priority since they come first)
+    seen_urls: set = set()
+    results: List[Dict[str, Any]] = []
+    for post in all_posts:
+        if post["url"] not in seen_urls:
+            seen_urls.add(post["url"])
+            results.append(post)
 
     # Date filter: keep posts in range or with unknown dates
     filtered = []
@@ -251,6 +366,9 @@ def search_reddit_public(
         key=lambda x: x.get("engagement", {}).get("score", 0),
         reverse=True,
     )
+
+    # Enrich top posts with comments
+    filtered = _enrich_posts(filtered, depth=depth)
 
     # Re-index IDs
     for i, item in enumerate(filtered):

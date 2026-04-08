@@ -1,4 +1,9 @@
-"""Tests for post-research quality score and upgrade nudge."""
+"""Tests for post-research quality score and upgrade nudge.
+
+Reddit is always a core source (free public JSON). The 5 core sources are:
+HN, Polymarket, Reddit (always active), X, YouTube.
+ScrapeCreators adds TikTok + Instagram as bonus sources, not core.
+"""
 
 import pytest
 from unittest.mock import patch
@@ -48,66 +53,75 @@ def _compute(config_overrides=None, result_overrides=None, ytdlp_installed=False
 # ---------------------------------------------------------------------------
 
 class TestBaseline:
-    """HN + Polymarket only (no X, no YT, no SC) -> 40%."""
+    """HN + Polymarket + Reddit always active (no X, no YT) -> 60%."""
 
-    def test_score_40(self):
+    def test_score_60(self):
         q = _compute()
-        assert q["score_pct"] == 40
+        assert q["score_pct"] == 60
 
     def test_active_sources(self):
         q = _compute()
         assert "hn" in q["core_active"]
         assert "polymarket" in q["core_active"]
-        assert len(q["core_active"]) == 2
+        assert "reddit" in q["core_active"]
+        assert len(q["core_active"]) == 3
 
-    def test_missing_all_three(self):
+    def test_missing_x_and_youtube(self):
         q = _compute()
-        assert set(q["core_missing"]) == {"x", "youtube", "reddit_comments"}
+        assert set(q["core_missing"]) == {"x", "youtube"}
 
-    def test_nudge_mentions_all_missing(self):
+    def test_reddit_not_in_missing(self):
+        """Reddit is always active - never appears in missing."""
+        q = _compute()
+        assert "reddit" not in q["core_missing"]
+        assert "reddit_comments" not in q["core_missing"]
+
+    def test_nudge_mentions_x_and_youtube(self):
         q = _compute()
         assert q["nudge_text"] is not None
         assert "X/Twitter" in q["nudge_text"]
         assert "YouTube" in q["nudge_text"]
-        assert "Reddit with comments" in q["nudge_text"]
+
+    def test_nudge_does_not_mention_reddit(self):
+        """Reddit is free - nudge should not tell user to get SC for it."""
+        q = _compute()
+        assert "Reddit with comments" not in q["nudge_text"]
 
 
 class TestXCookies:
-    """+X cookies -> 60%."""
+    """+X cookies -> 80%."""
 
-    def test_score_60(self):
+    def test_score_80(self):
         q = _compute(config_overrides={"AUTH_TOKEN": "tok123"})
-        assert q["score_pct"] == 60
+        assert q["score_pct"] == 80
 
-    def test_nudge_mentions_yt_and_sc(self):
+    def test_nudge_mentions_yt_only(self):
         q = _compute(config_overrides={"AUTH_TOKEN": "tok123"})
         assert "YouTube" in q["nudge_text"]
-        assert "Reddit with comments" in q["nudge_text"]
         assert "X/Twitter" not in q["nudge_text"]
 
 
 class TestXPlusYtdlp:
-    """+X + yt-dlp -> 80%."""
+    """+X + yt-dlp -> 100%. No SC needed for full core coverage."""
 
-    def test_score_80(self):
+    def test_score_100(self):
         q = _compute(
             config_overrides={"AUTH_TOKEN": "tok123"},
             ytdlp_installed=True,
         )
-        assert q["score_pct"] == 80
+        assert q["score_pct"] == 100
 
-    def test_nudge_mentions_sc_only(self):
+    def test_nudge_is_none(self):
+        """Full core coverage with zero paid keys."""
         q = _compute(
             config_overrides={"AUTH_TOKEN": "tok123"},
             ytdlp_installed=True,
         )
-        assert "ScrapeCreators" in q["nudge_text"] or "scrapecreators" in q["nudge_text"]
-        assert "YouTube" not in q["nudge_text"]
-        assert "X/Twitter" not in q["nudge_text"]
+        assert q["nudge_text"] is None
 
 
-class TestFullCoverage:
-    """+X + yt-dlp + SC -> 100%, no nudge."""
+class TestFullCoverageWithSC:
+    """+X + yt-dlp + SC -> still 100%, SC adds bonus sources."""
 
     def test_score_100(self):
         q = _compute(
@@ -130,10 +144,15 @@ class TestFullCoverage:
         assert q["nudge_text"] is None
 
 
-class TestSCActiveNoX:
-    """SC active but no X -> 80%, nudge suggests browser cookies (free)."""
+class TestSCDoesNotAffectCoreScore:
+    """SC key should not change core score - it only adds bonus sources."""
 
-    def test_score_80(self):
+    def test_sc_alone_still_60(self):
+        """SC key without X or yt-dlp is still 60% (3/5 core)."""
+        q = _compute(config_overrides={"SCRAPECREATORS_API_KEY": "sc_key"})
+        assert q["score_pct"] == 60
+
+    def test_sc_plus_ytdlp_is_80(self):
         q = _compute(
             config_overrides={"SCRAPECREATORS_API_KEY": "sc_key"},
             ytdlp_installed=True,
@@ -146,24 +165,7 @@ class TestSCActiveNoX:
             ytdlp_installed=True,
         )
         assert q["nudge_text"] is not None
-        assert "browser" in q["nudge_text"].lower()
         assert "x.com" in q["nudge_text"].lower()
-
-
-class TestRedditErrored:
-    """SC is configured but Reddit errored this run."""
-
-    def test_nudge_mentions_error(self):
-        q = _compute(
-            config_overrides={
-                "AUTH_TOKEN": "tok123",
-                "SCRAPECREATORS_API_KEY": "sc_key",
-            },
-            result_overrides={"reddit_error": "ScrapeCreators: 500 Internal Server Error"},
-            ytdlp_installed=True,
-        )
-        assert "reddit_comments" in q["core_errored"]
-        assert "errored" in q["nudge_text"].lower()
 
 
 class TestDisclaimerAlwaysPresent:
@@ -179,25 +181,21 @@ class TestDisclaimerAlwaysPresent:
 
     def test_disclaimer_not_present_at_100(self):
         q = _compute(
-            config_overrides={
-                "AUTH_TOKEN": "tok123",
-                "SCRAPECREATORS_API_KEY": "sc_key",
-            },
+            config_overrides={"AUTH_TOKEN": "tok123"},
             ytdlp_installed=True,
         )
         assert q["nudge_text"] is None
 
 
-class TestSCNudgeContent:
-    """SC nudge always includes '100 free API calls, no credit card'."""
+class TestRedditNeverInCoreErrored:
+    """Reddit errors don't affect core score since it's always-active via public path."""
 
-    def test_sc_nudge_content(self):
-        q = _compute()
-        assert "100 free API calls, no credit card" in q["nudge_text"]
-
-    def test_sc_nudge_content_when_only_missing_sc(self):
+    def test_reddit_error_does_not_affect_score(self):
         q = _compute(
             config_overrides={"AUTH_TOKEN": "tok123"},
+            result_overrides={"reddit_error": "429 Too Many Requests"},
             ytdlp_installed=True,
         )
-        assert "100 free API calls, no credit card" in q["nudge_text"]
+        # Reddit is always-active in core (public path), error doesn't demote it
+        assert "reddit" in q["core_active"]
+        assert q["score_pct"] == 100

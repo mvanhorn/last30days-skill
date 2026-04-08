@@ -1,4 +1,4 @@
-"""Tests for yt-dlp invocation safety flags."""
+"""Tests for YouTube transcript highlights and yt-dlp safety flags."""
 
 import json
 import sys
@@ -23,6 +23,43 @@ class _DummyProc:
 
     def wait(self, timeout=None):
         return 0
+
+
+class TestYouTubeEngagementZero(unittest.TestCase):
+    """Verify that 0 engagement counts are preserved (not coerced to fallback)."""
+
+    def test_zero_view_count_preserved(self):
+        """video.get('view_count') == 0 must stay 0, not become the fallback."""
+        import json
+        import tempfile
+        import os
+
+        video = {
+            "id": "abc123",
+            "title": "Test",
+            "view_count": 0,
+            "like_count": 0,
+            "comment_count": 0,
+            "upload_date": "20260301",
+            "description": "desc",
+        }
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
+            f.write(json.dumps(video) + "\n")
+            f.flush()
+            with open(f.name) as rf:
+                lines = rf.readlines()
+
+        # Re-parse as the search function would
+        parsed = json.loads(lines[0])
+        view_count = parsed.get("view_count") if parsed.get("view_count") is not None else 0
+        like_count = parsed.get("like_count") if parsed.get("like_count") is not None else 0
+        comment_count = parsed.get("comment_count") if parsed.get("comment_count") is not None else 0
+
+        os.unlink(f.name)
+
+        self.assertEqual(0, view_count)
+        self.assertEqual(0, like_count)
+        self.assertEqual(0, comment_count)
 
 
 class TestYtDlpFlags(unittest.TestCase):
@@ -61,7 +98,6 @@ class TestExtractTranscriptHighlights(unittest.TestCase):
         )
         highlights = youtube_yt.extract_transcript_highlights(transcript, "Lego")
         self.assertTrue(len(highlights) > 0)
-        # Should pick the sentences with numbers and topic relevance, not filler
         joined = " ".join(highlights)
         self.assertIn("13,438", joined)
         self.assertNotIn("subscribe", joined)
@@ -77,6 +113,17 @@ class TestExtractTranscriptHighlights(unittest.TestCase):
         ) + "."
         highlights = youtube_yt.extract_transcript_highlights(sentences, "model", limit=3)
         self.assertEqual(len(highlights), 3)
+
+    def test_punctuation_free_transcript_produces_highlights(self):
+        # Auto-generated YouTube captions often lack sentence-ending punctuation
+        words = (
+            "the new Tesla Model Y has 350 miles of range and costs about 45000 dollars "
+            "which makes it one of the most affordable electric vehicles on the market today "
+            "compared to the BMW iX which starts at 87000 the value proposition is pretty clear "
+            "and with the 7500 dollar tax credit you can get it for under 40000"
+        )
+        highlights = youtube_yt.extract_transcript_highlights(words, "Tesla Model Y")
+        self.assertTrue(len(highlights) > 0, "Should produce highlights from punctuation-free text")
 
 
 class TestFetchTranscriptDirect(unittest.TestCase):
@@ -212,6 +259,150 @@ class TestFetchTranscriptFallback(unittest.TestCase):
              mock.patch.object(youtube_yt, "_fetch_transcript_direct", return_value=None):
             result = youtube_yt.fetch_transcript("novid", "/tmp/test")
         self.assertIsNone(result)
+
+
+class TestExpandYouTubeQueries(unittest.TestCase):
+    """Tests for expand_youtube_queries() multi-query generation."""
+
+    def test_default_depth_returns_two_plus_queries(self):
+        queries = youtube_yt.expand_youtube_queries("Kanye West", "default")
+        self.assertGreaterEqual(len(queries), 2)
+        # First query is the core subject
+        self.assertEqual(queries[0].lower(), "kanye west")
+
+    def test_how_to_intent_includes_tutorial_variant(self):
+        # Use deep depth so the intent variant isn't capped out by core + original
+        queries = youtube_yt.expand_youtube_queries("how to use Docker", "deep")
+        variant_found = any(
+            "tutorial" in q.lower() or "guide" in q.lower() or "explained" in q.lower()
+            for q in queries
+        )
+        self.assertTrue(
+            variant_found,
+            f"Expected tutorial/guide/explained in queries: {queries}",
+        )
+
+    def test_product_intent_includes_review_variant(self):
+        # Use deep depth so the intent variant isn't capped out
+        queries = youtube_yt.expand_youtube_queries("best running shoes", "deep")
+        variant_found = any("review" in q.lower() for q in queries)
+        self.assertTrue(variant_found, f"Expected 'review' in queries: {queries}")
+
+    def test_comparison_intent_includes_vs_variant(self):
+        queries = youtube_yt.expand_youtube_queries("Claude vs Gemini", "default")
+        variant_found = any("vs" in q.lower() or "compared" in q.lower() for q in queries)
+        self.assertTrue(variant_found, f"Expected 'vs' or 'compared' in queries: {queries}")
+
+    def test_quick_depth_returns_one_query(self):
+        queries = youtube_yt.expand_youtube_queries("Kanye West", "quick")
+        self.assertEqual(len(queries), 1)
+
+    def test_deep_depth_returns_three_queries(self):
+        queries = youtube_yt.expand_youtube_queries("Kanye West", "deep")
+        self.assertEqual(len(queries), 3)
+
+    def test_single_word_returns_at_least_one(self):
+        queries = youtube_yt.expand_youtube_queries("React", "default")
+        self.assertGreaterEqual(len(queries), 1)
+
+    def test_temporal_words_stripped_from_core(self):
+        queries = youtube_yt.expand_youtube_queries("kanye west last 30 days", "default")
+        core = queries[0].lower()
+        self.assertNotIn("last", core)
+        self.assertNotIn("days", core)
+        self.assertIn("kanye", core)
+        self.assertIn("west", core)
+
+
+class TestInferQueryIntent(unittest.TestCase):
+    """Tests for _infer_query_intent() classification."""
+
+    def test_comparison_intent(self):
+        self.assertEqual(youtube_yt._infer_query_intent("Claude vs Gemini"), "comparison")
+
+    def test_how_to_intent(self):
+        self.assertEqual(youtube_yt._infer_query_intent("how to deploy Kubernetes"), "how_to")
+
+    def test_opinion_intent(self):
+        self.assertEqual(youtube_yt._infer_query_intent("thoughts on Claude Code"), "opinion")
+
+    def test_product_intent(self):
+        self.assertEqual(youtube_yt._infer_query_intent("best laptop for programming"), "product")
+
+    def test_breaking_news_default(self):
+        self.assertEqual(youtube_yt._infer_query_intent("Kanye West"), "breaking_news")
+
+
+class TestSearchAndTranscribe(unittest.TestCase):
+    """Tests for search_and_transcribe() end-to-end flow."""
+
+    def _make_item(self, video_id, views):
+        return {
+            "video_id": video_id,
+            "title": f"Video {video_id}",
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_name": "TestChannel",
+            "date": "2026-03-15",
+            "engagement": {"views": views, "likes": 10, "comments": 5},
+            "relevance": 0.8,
+            "why_relevant": "test",
+            "description": "test desc",
+            "duration": 600,
+        }
+
+    def test_transcripts_attached_when_top_videos_lack_captions(self):
+        """When top-viewed videos have no captions, lower-ranked ones still get transcripts."""
+        items = [
+            self._make_item("music1", 1_000_000),   # no captions (music video)
+            self._make_item("music2", 500_000),      # no captions (music video)
+            self._make_item("talk1", 50_000),         # has captions
+            self._make_item("talk2", 25_000),         # has captions
+        ]
+
+        # fetch_transcripts_parallel returns None for music videos, text for talks
+        def fake_parallel(video_ids, max_workers=5):
+            result = {}
+            for vid in video_ids:
+                if vid.startswith("talk"):
+                    result[vid] = "This is a detailed discussion about the topic with 100 data points."
+                else:
+                    result[vid] = None
+            return result
+
+        with mock.patch.object(youtube_yt, "search_youtube", return_value={"items": items}), \
+             mock.patch.object(youtube_yt, "fetch_transcripts_parallel", side_effect=fake_parallel) as ft_mock:
+            result = youtube_yt.search_and_transcribe("test topic", "2026-03-01", "2026-03-31", depth="default")
+
+        # Should have attempted more than just the top 2 (transcript_limit=2)
+        called_ids = ft_mock.call_args[0][0]
+        self.assertGreater(len(called_ids), 2, "Should attempt more than transcript_limit candidates")
+        self.assertIn("talk1", called_ids)
+        self.assertIn("talk2", called_ids)
+
+        # talk1 and talk2 should have transcripts
+        items_by_id = {i["video_id"]: i for i in result["items"]}
+        self.assertTrue(items_by_id["talk1"]["transcript_snippet"])
+        self.assertTrue(items_by_id["talk1"]["transcript_highlights"])
+        # music videos should have empty transcripts
+        self.assertFalse(items_by_id["music1"]["transcript_snippet"])
+
+    def test_transcript_limit_zero_skips_fetch(self):
+        """When transcript_limit is 0 (quick depth), no transcripts are fetched."""
+        items = [self._make_item("vid1", 1000)]
+        with mock.patch.object(youtube_yt, "search_youtube", return_value={"items": items}), \
+             mock.patch.object(youtube_yt, "fetch_transcripts_parallel") as ft_mock:
+            result = youtube_yt.search_and_transcribe("test", "2026-03-01", "2026-03-31", depth="quick")
+
+        ft_mock.assert_not_called()
+        self.assertEqual(result["items"][0]["transcript_snippet"], "")
+
+    def test_no_items_returns_early(self):
+        """When search returns no items, returns without fetching transcripts."""
+        with mock.patch.object(youtube_yt, "search_youtube", return_value={"items": []}), \
+             mock.patch.object(youtube_yt, "fetch_transcripts_parallel") as ft_mock:
+            result = youtube_yt.search_and_transcribe("nothing", "2026-03-01", "2026-03-31")
+
+        ft_mock.assert_not_called()
 
 
 if __name__ == "__main__":

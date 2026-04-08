@@ -21,13 +21,10 @@ def extract_reddit_path(url: str) -> Optional[str]:
     Returns:
         Path component or None
     """
-    try:
-        parsed = urlparse(url)
-        if "reddit.com" not in parsed.netloc:
-            return None
-        return parsed.path
-    except:
+    parsed = urlparse(url)
+    if "reddit.com" not in parsed.netloc:
         return None
+    return parsed.path
 
 
 class RedditRateLimitError(Exception):

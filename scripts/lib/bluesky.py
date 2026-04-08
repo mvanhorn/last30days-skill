@@ -10,7 +10,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from . import http
+from . import http, log
 
 BSKY_SESSION_URL = "https://bsky.social/xrpc/com.atproto.server.createSession"
 BSKY_SEARCH_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts"
@@ -27,10 +27,7 @@ _session_error: Optional[str] = None
 
 
 def _log(msg: str):
-    """Log to stderr (only in TTY mode to avoid cluttering Claude Code output)."""
-    if sys.stderr.isatty():
-        sys.stderr.write(f"[Bluesky] {msg}\n")
-        sys.stderr.flush()
+    log.source_log("Bluesky", msg)
 
 
 def _create_session(handle: str, app_password: str) -> Optional[str]:

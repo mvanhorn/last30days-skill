@@ -1,11 +1,7 @@
-"""Reddit search via ScrapeCreators API for /last30days.
+"""Reddit search via ScrapeCreators API for the v3 pipeline.
 
 Uses ScrapeCreators REST API to search Reddit globally, discover relevant
 subreddits, run targeted subreddit searches, and fetch comment trees.
-
-Replaces openai_reddit.py as the primary Reddit search backend.
-Falls back to openai_reddit.py if SCRAPECREATORS_API_KEY is missing but
-OPENAI_API_KEY is present.
 
 Requires SCRAPECREATORS_API_KEY in config (same key as TikTok + Instagram).
 API docs: https://scrapecreators.com/docs
@@ -13,7 +9,9 @@ API docs: https://scrapecreators.com/docs
 
 import re
 import sys
+import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait as futures_wait
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set
 
@@ -22,7 +20,15 @@ try:
 except ImportError:
     _requests = None
 
-from . import http
+
+def _first_of(*values, default=None):
+    """Return first value that is not None."""
+    for v in values:
+        if v is not None:
+            return v
+    return default
+
+from . import http, log
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/reddit"
 
@@ -49,7 +55,6 @@ DEPTH_CONFIG = {
 }
 
 from .query import extract_core_subject as _query_extract
-from .query_type import detect_query_type
 from .relevance import token_overlap_relevance
 
 # Reddit-specific noise words (preserves original smaller set)
@@ -68,9 +73,7 @@ NOISE_WORDS = frozenset({
 
 
 def _log(msg: str):
-    """Log to stderr."""
-    sys.stderr.write(f"[Reddit] {msg}\n")
-    sys.stderr.flush()
+    log.source_log("Reddit", msg, tty_only=False)
 
 
 def _sc_headers(token: str) -> Dict[str, str]:
@@ -108,9 +111,18 @@ def expand_reddit_queries(topic: str, depth: str) -> List[str]:
     if core.lower() != original_clean.lower() and len(original_clean.split()) <= 8:
         queries.append(original_clean)
 
-    # Opinion/review variants help mostly for product and opinion queries.
-    # They contaminate broader searches like predictions or breaking news.
-    qtype = detect_query_type(topic)
+    qtype = _infer_query_intent(topic)
+
+    # Product queries: always include review-oriented variant to bias toward
+    # review communities instead of keyword-matching unrelated subreddits.
+    if qtype == "product":
+        queries.append(f"{core} review OR recommendation OR best")
+
+    # Comparison queries: include head-to-head discussion variant.
+    if qtype == "comparison":
+        queries.append(f"{core} worth it OR vs OR compared")
+
+    # Opinion/review variants for default/deep depth.
     if depth in ("default", "deep") and qtype in ("product", "opinion"):
         queries.append(f"{core} worth it OR thoughts OR review")
 
@@ -119,6 +131,22 @@ def expand_reddit_queries(topic: str, depth: str) -> List[str]:
         queries.append(f"{core} issues OR problems OR bug OR broken")
 
     return queries
+
+
+def _infer_query_intent(topic: str) -> str:
+    """Tiny local fallback for Reddit query expansion only."""
+    text = topic.lower().strip()
+    if re.search(r"\b(vs|versus|compare|difference between)\b", text):
+        return "comparison"
+    if re.search(r"\b(how to|tutorial|guide|setup|step by step|deploy|install|configuration|configure|troubleshoot|troubleshooting|error|errors|fix|debug)\b", text):
+        return "how_to"
+    if re.search(r"\b(thoughts on|worth it|should i|opinion|review)\b", text):
+        return "opinion"
+    if re.search(r"\b(pricing|feature|features|best .* for)\b", text):
+        return "product"
+    if re.search(r"\b(predict|prediction|odds|forecast|chance)\b", text):
+        return "prediction"
+    return "breaking_news"
 
 
 # Known utility/meta subreddits that match queries but aren't discussion subs.
@@ -153,7 +181,7 @@ def discover_subreddits(
 
     scores = Counter()
     for post in results:
-        sub = post.get("subreddit", "")
+        sub = _extract_subreddit_name(post.get("subreddit", ""))
         if not sub:
             continue
 
@@ -170,7 +198,7 @@ def discover_subreddits(
             base *= 0.3
 
         # Bonus: post engagement (high-engagement posts = better sub)
-        ups = post.get("ups") or post.get("score", 0)
+        ups = _first_of(post.get("ups"), post.get("score"), post.get("votes"), default=0)
         if ups and ups > 100:
             base += 0.5
 
@@ -179,19 +207,84 @@ def discover_subreddits(
     return [sub for sub, _ in scores.most_common(max_subs)]
 
 
-def _parse_date(created_utc) -> Optional[str]:
-    """Convert Unix timestamp to YYYY-MM-DD."""
-    if not created_utc:
+def _parse_date(value) -> Optional[str]:
+    """Convert Unix timestamp or ISO-8601 string to YYYY-MM-DD.
+
+    Global search returns ``created_at`` as an ISO string
+    (e.g. "2018-05-03T01:09:17.620000+0000"); subreddit search returns
+    ``created_utc`` as a Unix timestamp.  Handle both.
+    """
+    if not value:
         return None
+    # ISO-8601 string (contains 'T' or '-')
+    if isinstance(value, str) and ("T" in value or "-" in value):
+        try:
+            # Strip trailing offset variations (+0000, Z) for fromisoformat
+            clean = value.replace("Z", "+00:00")
+            if clean.endswith("+0000"):
+                clean = clean[:-5] + "+00:00"
+            dt = datetime.fromisoformat(clean)
+            return dt.strftime("%Y-%m-%d")
+        except (ValueError, TypeError):
+            pass
+    # Unix timestamp (int or float or numeric string)
     try:
-        dt = datetime.fromtimestamp(float(created_utc), tz=timezone.utc)
+        dt = datetime.fromtimestamp(float(value), tz=timezone.utc)
         return dt.strftime("%Y-%m-%d")
     except (ValueError, TypeError, OSError):
         return None
 
 
+def _extract_subreddit_name(value: Any) -> str:
+    """Extract subreddit name from string or API object dict."""
+    if isinstance(value, dict):
+        return str(value.get("name") or value.get("display_name") or "").strip()
+    return str(value).strip()
+
+
+def _extract_score(post: Dict[str, Any]) -> int:
+    """Extract post score from either API schema.
+
+    Global search uses ``votes``; subreddit search uses ``ups``/``score``.
+    """
+    return _first_of(post.get("ups"), post.get("score"), post.get("votes"), default=0)
+
+
+def _extract_date(post: Dict[str, Any]) -> Optional[str]:
+    """Extract date from either API schema.
+
+    Global search uses ``created_at`` (ISO); subreddit search uses ``created_utc`` (Unix).
+    """
+    return _parse_date(
+        post.get("created_utc") or post.get("created_at") or post.get("created_at_iso")
+    )
+
+
+def _normalize_reddit_id(raw_id: str) -> str:
+    """Strip Reddit fullname prefix (t3_) for consistent dedup."""
+    s = str(raw_id or "")
+    return s[3:] if s.startswith("t3_") else s
+
+
+def _total_engagement(item: Dict[str, Any]) -> int:
+    """Combined engagement score: upvotes + comment count.
+
+    Used for selecting which threads to enrich with comments.
+    Threads with lots of comments are high-value even if upvote score is low.
+    """
+    eng = item.get("engagement", {})
+    score = eng.get("score", 0) or 0
+    num_comments = eng.get("num_comments", 0) or 0
+    return score + num_comments
+
+
 def _normalize_post(post: Dict[str, Any], idx: int, source_label: str = "global", query: str = "") -> Dict[str, Any]:
-    """Normalize a ScrapeCreators Reddit post to our internal format."""
+    """Normalize a ScrapeCreators Reddit post to our internal format.
+
+    Handles both the global-search schema (``votes``, ``created_at``,
+    ``subreddit`` as dict) and the subreddit-search schema (``ups``/``score``,
+    ``created_utc``, ``subreddit`` as string).
+    """
     permalink = post.get("permalink", "")
     url = f"https://www.reddit.com{permalink}" if permalink else post.get("url", "")
 
@@ -208,13 +301,13 @@ def _normalize_post(post: Dict[str, Any], idx: int, source_label: str = "global"
 
     return {
         "id": f"R{idx}",
-        "reddit_id": post.get("id", ""),
+        "reddit_id": _normalize_reddit_id(post.get("id", "")),
         "title": title,
         "url": url,
-        "subreddit": str(post.get("subreddit", "")).strip(),
-        "date": _parse_date(post.get("created_utc")),
+        "subreddit": _extract_subreddit_name(post.get("subreddit", "")),
+        "date": _extract_date(post),
         "engagement": {
-            "score": post.get("ups") or post.get("score", 0),
+            "score": _extract_score(post),
             "num_comments": post.get("num_comments", 0),
             "upvote_ratio": post.get("upvote_ratio"),
         },
@@ -268,6 +361,11 @@ def _global_search(
             headers["User-Agent"] = http.USER_AGENT
             data = http.get(url, headers=headers, timeout=30, retries=2)
             return data.get("posts", data.get("data", []))
+        except http.HTTPError as e:
+            if e.status_code and e.status_code in (401, 403):
+                raise
+            _log(f"Global search error (urllib): {e}")
+            return []
         except Exception as e:
             _log(f"Global search error (urllib): {e}")
             return []
@@ -282,6 +380,11 @@ def _global_search(
         resp.raise_for_status()
         data = resp.json()
         return data.get("posts", data.get("data", []))
+    except _requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code in (401, 403):
+            raise http.HTTPError(f"Auth error: {e}", e.response.status_code)
+        _log(f"Global search error: {e}")
+        return []
     except Exception as e:
         _log(f"Global search error: {e}")
         return []
@@ -409,10 +512,11 @@ def search_reddit(
     to_date: str,
     depth: str = "default",
     token: str = None,
+    subreddits: List[str] | None = None,
 ) -> Dict[str, Any]:
     """Full Reddit search: multi-query global discovery + subreddit drill-down.
 
-    This is the main entry point. Replaces openai_reddit.search_reddit().
+    This is the main v3 Reddit entry point.
 
     Args:
         topic: Search topic
@@ -420,6 +524,7 @@ def search_reddit(
         to_date: End date (YYYY-MM-DD)
         depth: 'quick', 'default', or 'deep'
         token: ScrapeCreators API key
+        subreddits: Optional list of subreddit names to search first (pre-resolved)
 
     Returns:
         Dict with 'items' list and optional 'error'.
@@ -429,40 +534,72 @@ def search_reddit(
 
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     timeframe = config["timeframe"]
+    intent = _infer_query_intent(topic)
 
     # === Phase 1: Query Expansion ===
     queries = expand_reddit_queries(topic, depth)
     _log(f"Expanded '{topic}' into {len(queries)} queries: {queries}")
 
-    # === Phase 2: Global Discovery ===
+    core = _extract_core_subject(topic)
+
+    # === Phase 1.5: Pre-resolved subreddit search (high-signal) ===
     all_raw_posts = []
+    all_items: List[Dict[str, Any]] = []
+    if subreddits:
+        _log(f"Searching pre-resolved subreddits: {subreddits}")
+        with ThreadPoolExecutor(max_workers=min(5, len(subreddits))) as executor:
+            futures = {}
+            for sub in subreddits:
+                futures[executor.submit(_subreddit_search, sub, core, token, "relevance", timeframe)] = sub
+            for future in as_completed(futures):
+                sub = futures[future]
+                sub_posts = future.result()
+                _log(f"  -> {len(sub_posts)} results from pre-resolved r/{sub}")
+                for j, post in enumerate(sub_posts):
+                    item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
+                    all_items.append(item)
+
+    # === Phase 2: Global Discovery ===
     max_global = config["global_searches"]
 
-    for i, query in enumerate(queries[:max_global]):
-        sort = "relevance" if i == 0 else "top"
-        _log(f"Global search {i+1}/{max_global}: '{query}' (sort={sort})")
-        posts = _global_search(query, token, sort=sort, timeframe=timeframe)
-        _log(f"  -> {len(posts)} results")
-        all_raw_posts.extend(posts)
+    with ThreadPoolExecutor(max_workers=max_global or 1) as executor:
+        futures = {}
+        for i, query in enumerate(queries[:max_global]):
+            # Product/comparison queries: sort=top surfaces high-engagement posts
+            # from relevant communities instead of keyword-matched noise.
+            sort = "top" if intent in ("product", "comparison") else ("relevance" if i == 0 else "top")
+            _log(f"Global search {i+1}/{max_global}: '{query}' (sort={sort})")
+            futures[executor.submit(_global_search, query, token, sort, timeframe)] = query
+        for future in as_completed(futures):
+            query = futures[future]
+            posts = future.result()
+            _log(f"  -> {len(posts)} results for '{query}'")
+            all_raw_posts.extend(posts)
 
     # Normalize all posts (with query for relevance scoring)
-    core = _extract_core_subject(topic)
-    all_items = []
     for i, post in enumerate(all_raw_posts):
         item = _normalize_post(post, i + 1, "global", query=core)
         all_items.append(item)
 
     # === Phase 3: Subreddit Discovery + Targeted Search ===
-    discovered_subs = discover_subreddits(all_raw_posts, topic=topic, max_subs=config["subreddit_searches"])
+    subreddit_budget = 0 if intent == "how_to" else config["subreddit_searches"]
+    discovered_subs = discover_subreddits(all_raw_posts, topic=topic, max_subs=subreddit_budget)
     _log(f"Discovered subreddits: {discovered_subs}")
 
-    for sub in discovered_subs[:config["subreddit_searches"]]:
-        _log(f"Subreddit search: r/{sub} for '{core}'")
-        sub_posts = _subreddit_search(sub, core, token, sort="relevance", timeframe=timeframe)
-        _log(f"  -> {len(sub_posts)} results from r/{sub}")
-        for j, post in enumerate(sub_posts):
-            item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
-            all_items.append(item)
+    subreddit_limit = subreddit_budget
+    if subreddit_limit > 0:
+        with ThreadPoolExecutor(max_workers=subreddit_limit) as executor:
+            futures = {}
+            for sub in discovered_subs[:subreddit_limit]:
+                _log(f"Subreddit search: r/{sub} for '{core}'")
+                futures[executor.submit(_subreddit_search, sub, core, token, "relevance", timeframe)] = sub
+            for future in as_completed(futures):
+                sub = futures[future]
+                sub_posts = future.result()
+                _log(f"  -> {len(sub_posts)} results from r/{sub}")
+                for j, post in enumerate(sub_posts):
+                    item = _normalize_post(post, len(all_items) + j + 1, f"r/{sub}", query=core)
+                    all_items.append(item)
 
     # === Phase 4: Deduplicate ===
     all_items = _dedupe_posts(all_items)
@@ -486,9 +623,9 @@ def search_reddit(
     else:
         _log(f"No posts within date range, keeping all {len(all_items)}")
 
-    # === Phase 6: Sort by engagement ===
+    # === Phase 6: Sort by engagement (upvotes + comment count) ===
     all_items.sort(
-        key=lambda x: (x.get("engagement", {}).get("score", 0) or 0),
+        key=lambda x: _total_engagement(x),
         reverse=True,
     )
 
@@ -504,6 +641,7 @@ def enrich_with_comments(
     items: List[Dict[str, Any]],
     token: str,
     depth: str = "default",
+    budget_seconds: int = 60,
 ) -> List[Dict[str, Any]]:
     """Enrich top items with comment data from ScrapeCreators.
 
@@ -511,6 +649,8 @@ def enrich_with_comments(
         items: Reddit items from search_reddit()
         token: ScrapeCreators API key
         depth: Depth for comment limit
+        budget_seconds: Maximum total time for enrichment. If exceeded,
+            returns items with whatever enrichment completed. Never discards items.
 
     Returns:
         Items with top_comments and comment_insights added.
@@ -518,62 +658,84 @@ def enrich_with_comments(
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     max_comments = config["comment_enrichments"]
 
-    if not items or not token:
+    if not items or not token or max_comments <= 0:
         return items
 
-    top_items = items[:max_comments]
-    _log(f"Enriching comments for {len(top_items)} posts")
+    # Select the top threads by total engagement (upvotes + comment count),
+    # not by list position. This ensures high-comment threads like [FRESH ALBUM]
+    # always get enriched even if their upvote score is low.
+    ranked = sorted(items, key=_total_engagement, reverse=True)
+    top_items = ranked[:max_comments]
+    _log(f"Enriching comments for {len(top_items)} posts (by total engagement)")
 
-    for item in top_items:
-        url = item.get("url", "")
-        if not url:
-            continue
+    start = time.monotonic()
 
-        raw_comments = fetch_post_comments(url, token)
-        if not raw_comments:
-            continue
+    with ThreadPoolExecutor(max_workers=min(4, len(top_items))) as executor:
+        futures = {
+            executor.submit(fetch_post_comments, item.get("url", ""), token): item
+            for item in top_items
+            if item.get("url")
+        }
 
-        # Parse comments into our format
-        top_comments = []
-        insights = []
+        # Wait with budget instead of unbounded as_completed
+        remaining = max(0, budget_seconds - (time.monotonic() - start))
+        done, not_done = futures_wait(futures, timeout=remaining)
 
-        for ci, c in enumerate(raw_comments[:10]):  # Take top 10 comments
-            body = c.get("body", "")
-            if not body or body in ("[deleted]", "[removed]"):
+        enriched_count = 0
+        for future in done:
+            item = futures[future]
+            try:
+                raw_comments = future.result(timeout=0)
+            except Exception:
+                continue
+            if not raw_comments:
                 continue
 
-            score = c.get("ups") or c.get("score", 0)
-            author = c.get("author", "[deleted]")
-            permalink = c.get("permalink", "")
-            comment_url = f"https://reddit.com{permalink}" if permalink else ""
+            top_comments = []
+            insights = []
 
-            # Top comment gets more room (400 chars) — funny/clever comments need it
-            max_excerpt = 400 if ci == 0 else 300
-            top_comments.append({
-                "score": score,
-                "date": _parse_date(c.get("created_utc")),
-                "author": author,
-                "excerpt": body[:max_excerpt],
-                "url": comment_url,
-            })
+            for ci, c in enumerate(raw_comments[:10]):
+                body = c.get("body", "")
+                if not body or body in ("[deleted]", "[removed]"):
+                    continue
 
-            # Extract insights from substantive comments
-            if len(body) >= 30 and author not in ("[deleted]", "[removed]", "AutoModerator"):
-                insight = body[:150]
-                if len(body) > 150:
-                    for i, char in enumerate(insight):
-                        if char in '.!?' and i > 50:
-                            insight = insight[:i+1]
-                            break
-                    else:
-                        insight = insight.rstrip() + "..."
-                insights.append(insight)
+                score = c.get("ups") or c.get("score", 0)
+                author = c.get("author", "[deleted]")
+                permalink = c.get("permalink", "")
+                comment_url = f"https://reddit.com{permalink}" if permalink else ""
 
-        # Sort comments by score
-        top_comments.sort(key=lambda c: c.get("score", 0), reverse=True)
+                max_excerpt = 400 if ci == 0 else 300
+                top_comments.append({
+                    "score": score,
+                    "date": _parse_date(c.get("created_utc")),
+                    "author": author,
+                    "excerpt": body[:max_excerpt],
+                    "url": comment_url,
+                })
 
-        item["top_comments"] = top_comments[:10]
-        item["comment_insights"] = insights[:10]
+                if len(body) >= 30 and author not in ("[deleted]", "[removed]", "AutoModerator"):
+                    insight = body[:150]
+                    if len(body) > 150:
+                        for i, char in enumerate(insight):
+                            if char in '.!?' and i > 50:
+                                insight = insight[:i+1]
+                                break
+                        else:
+                            insight = insight.rstrip() + "..."
+                    insights.append(insight)
+
+            top_comments.sort(key=lambda c: c.get("score", 0), reverse=True)
+            item["top_comments"] = top_comments[:10]
+            item["comment_insights"] = insights[:10]
+            enriched_count += 1
+
+        if not_done:
+            _log(f"Enrichment budget hit ({budget_seconds}s): {enriched_count}/{len(futures)} posts enriched, {len(not_done)} skipped")
+            for future in not_done:
+                future.cancel()
+        else:
+            elapsed = time.monotonic() - start
+            _log(f"Enriched {enriched_count}/{len(futures)} posts in {elapsed:.1f}s")
 
     return items
 
@@ -584,6 +746,7 @@ def search_and_enrich(
     to_date: str,
     depth: str = "default",
     token: str = None,
+    subreddits: List[str] | None = None,
 ) -> Dict[str, Any]:
     """Full Reddit pipeline: search + comment enrichment.
 
@@ -595,11 +758,12 @@ def search_and_enrich(
         to_date: End date (YYYY-MM-DD)
         depth: 'quick', 'default', or 'deep'
         token: ScrapeCreators API key
+        subreddits: Optional list of subreddit names to search first (pre-resolved)
 
     Returns:
         Dict with 'items' list. Items include top_comments and comment_insights.
     """
-    result = search_reddit(topic, from_date, to_date, depth, token)
+    result = search_reddit(topic, from_date, to_date, depth, token, subreddits=subreddits)
     items = result.get("items", [])
 
     if items and token:
@@ -612,6 +776,6 @@ def search_and_enrich(
 def parse_reddit_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
     """Parse ScrapeCreators response to item list.
 
-    Compatibility shim matching openai_reddit.parse_reddit_response() signature.
+    Parse raw Reddit search output into the generic item shape.
     """
     return response.get("items", [])

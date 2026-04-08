@@ -112,13 +112,68 @@ WEB_ONLY_MESSAGES = [
     "Discovering tutorials...",
 ]
 
+SOURCE_COMPLETION_ORDER = [
+    "reddit",
+    "x",
+    "youtube",
+    "tiktok",
+    "instagram",
+    "hackernews",
+    "bluesky",
+    "truthsocial",
+    "polymarket",
+    "grounding",
+    "xiaohongshu",
+]
+
+SOURCE_COMPLETION_META = {
+    "reddit": ("Reddit", "thread", "threads", Colors.YELLOW),
+    "x": ("X", "post", "posts", Colors.CYAN),
+    "youtube": ("YouTube", "video", "videos", Colors.RED),
+    "tiktok": ("TikTok", "video", "videos", Colors.PURPLE),
+    "instagram": ("Instagram", "reel", "reels", Colors.PURPLE),
+    "hackernews": ("HN", "story", "stories", Colors.YELLOW),
+    "bluesky": ("Bluesky", "post", "posts", Colors.BLUE),
+    "truthsocial": ("Truth Social", "post", "posts", Colors.CYAN),
+    "polymarket": ("Polymarket", "market", "markets", Colors.GREEN),
+    "grounding": ("Web", "result", "results", Colors.GREEN),
+    "xiaohongshu": ("Xiaohongshu", "post", "posts", Colors.RED),
+}
+
+
+def _completion_sources(source_counts: dict[str, int], display_sources: list[str] | None) -> list[str]:
+    requested = list(dict.fromkeys(display_sources or []))
+    if not requested:
+        requested = [source for source, count in source_counts.items() if count]
+    if not requested and source_counts:
+        requested = list(source_counts)
+
+    candidate_set = set(requested) | set(source_counts)
+    ordered = [source for source in SOURCE_COMPLETION_ORDER if source in candidate_set]
+    for source in requested + list(source_counts):
+        if source in candidate_set and source not in ordered:
+            ordered.append(source)
+    return ordered
+
+
+def _format_completion_part(source: str, count: int, tty: bool) -> str:
+    label, singular, plural, color = SOURCE_COMPLETION_META.get(
+        source,
+        (source.replace("_", " ").title(), "result", "results", Colors.RESET),
+    )
+    unit = singular if count == 1 else plural
+    if tty:
+        return f"{color}{label}:{Colors.RESET} {count} {unit}"
+    return f"{label}: {count} {unit}"
+
 def _build_nux_message(diag: dict = None) -> str:
     """Build conversational NUX message with dynamic source status."""
+    available = set((diag or {}).get("available_sources", []))
     if diag:
-        reddit = "✓" if diag.get("openai") else "✗"
-        x = "✓" if diag.get("x_source") else "✗"
-        youtube = "✓" if diag.get("youtube") else "✗"
-        web = "✓" if diag.get("web_search_backend") else "✗"
+        reddit = "✓" if "reddit" in available else "✗"
+        x = "✓" if "x" in available else "✗"
+        youtube = "✓" if "youtube" in available else "✗"
+        web = "✓" if "grounding" in available else "✗"
         status_line = f"Reddit {reddit}, X {x}, YouTube {youtube}, Web {web}"
     else:
         status_line = "YouTube ✓, Web ✓, Reddit ✗, X ✗"
@@ -128,12 +183,11 @@ I just researched that for you. Here's what I've got right now:
 
 {status_line}
 
-You can unlock more sources with API keys or by signing in to Codex — just ask me how and I'll walk you through it. More sources means better research, but it works fine as-is.
+More sources means better research, but it works fine as-is. You can unlock more for free - log into x.com in your browser for X, and run `brew install yt-dlp` for YouTube transcripts. That gives you Reddit (with comments), X, YouTube, HN, and Polymarket - all free.
 
 Some examples of what you can do:
 - "last30 what are people saying about Figma"
 - "last30 watch my biggest competitor every week"
-- "last30 watch Peter Steinberger every 30 days"
 - "last30 watch AI video tools monthly"
 - "last30 what have you found about AI video?"
 
@@ -142,8 +196,9 @@ Just start with "last30" and talk to me like normal.
 
 # Shorter promo for single missing key
 PROMO_SINGLE_KEY = {
-    "reddit": "\n💡 You can unlock Reddit with an OpenAI API key or by running `codex login` — just ask me how.\n",
-    "x": "\n💡 You can unlock X with AUTH_TOKEN/CT0 or XAI_API_KEY - just ask me how.\n",
+    "reddit": "\n💡 Unlock TikTok and Instagram with SCRAPECREATORS_API_KEY - 10,000 free calls, no CC - scrapecreators.com\n",
+    "x": "\n💡 Unlock X: log into x.com in Firefox or Safari, then re-run. Or add AUTH_TOKEN/CT0 or XAI_API_KEY.\n",
+    "web": "\n💡 You can unlock native grounded web search with BRAVE_API_KEY or SERPER_API_KEY.\n",
 }
 
 # Bird auth help (for local users with vendored Bird CLI)
@@ -328,36 +383,46 @@ class ProgressDisplay:
         if self.spinner:
             self.spinner.stop()
 
-    def show_complete(self, reddit_count: int, x_count: int, youtube_count: int = 0, hn_count: int = 0, pm_count: int = 0, tiktok_count: int = 0, ig_count: int = 0):
+    def show_complete(
+        self,
+        reddit_count: int = 0,
+        x_count: int = 0,
+        youtube_count: int = 0,
+        hn_count: int = 0,
+        pm_count: int = 0,
+        tiktok_count: int = 0,
+        ig_count: int = 0,
+        *,
+        source_counts: dict[str, int] | None = None,
+        display_sources: list[str] | None = None,
+    ):
         elapsed = time.time() - self.start_time
+        if source_counts is None:
+            source_counts = {
+                "reddit": reddit_count,
+                "x": x_count,
+                "youtube": youtube_count,
+                "tiktok": tiktok_count,
+                "instagram": ig_count,
+                "hackernews": hn_count,
+                "polymarket": pm_count,
+            }
+            if display_sources is None:
+                display_sources = [source for source, count in source_counts.items() if count]
+                if not display_sources:
+                    display_sources = ["reddit", "x"]
+
+        ordered_sources = _completion_sources(source_counts, display_sources)
+        parts = [
+            _format_completion_part(source, source_counts.get(source, 0), tty=IS_TTY)
+            for source in ordered_sources
+        ]
         if IS_TTY:
             sys.stderr.write(f"\n{Colors.GREEN}{Colors.BOLD}✓ Research complete{Colors.RESET} ")
             sys.stderr.write(f"{Colors.DIM}({elapsed:.1f}s){Colors.RESET}\n")
-            sys.stderr.write(f"  {Colors.YELLOW}Reddit:{Colors.RESET} {reddit_count} threads  ")
-            sys.stderr.write(f"{Colors.CYAN}X:{Colors.RESET} {x_count} posts")
-            if youtube_count:
-                sys.stderr.write(f"  {Colors.RED}YouTube:{Colors.RESET} {youtube_count} videos")
-            if tiktok_count:
-                sys.stderr.write(f"  {Colors.PURPLE}TikTok:{Colors.RESET} {tiktok_count} videos")
-            if ig_count:
-                sys.stderr.write(f"  {Colors.PURPLE}Instagram:{Colors.RESET} {ig_count} reels")
-            if hn_count:
-                sys.stderr.write(f"  {Colors.YELLOW}HN:{Colors.RESET} {hn_count} stories")
-            if pm_count:
-                sys.stderr.write(f"  {Colors.GREEN}Polymarket:{Colors.RESET} {pm_count} markets")
+            sys.stderr.write("  " + "  ".join(parts))
             sys.stderr.write("\n\n")
         else:
-            parts = [f"Reddit: {reddit_count} threads", f"X: {x_count} posts"]
-            if youtube_count:
-                parts.append(f"YouTube: {youtube_count} videos")
-            if tiktok_count:
-                parts.append(f"TikTok: {tiktok_count} videos")
-            if ig_count:
-                parts.append(f"Instagram: {ig_count} reels")
-            if hn_count:
-                parts.append(f"HN: {hn_count} stories")
-            if pm_count:
-                parts.append(f"Polymarket: {pm_count} markets")
             sys.stderr.write(f"✓ Research complete ({elapsed:.1f}s) - {', '.join(parts)}\n")
         sys.stderr.flush()
 
@@ -417,190 +482,115 @@ class ProgressDisplay:
         sys.stderr.flush()
 
 
-def _build_status_banner(diag: dict) -> list[str]:
-    """Build the status banner lines (plain text, no ANSI).
-
-    Returns a list of strings, each being a line of the banner box.
-
-    Args:
-        diag: Dict with keys:
-            setup_complete, reddit_source, x_source, x_method,
-            youtube, tiktok, instagram, hackernews, polymarket,
-            bluesky, truthsocial, xiaohongshu, scrapecreators,
-            web_search_backend
-    """
-    setup_complete = diag.get("setup_complete", False)
-    has_sc = diag.get("scrapecreators", False)
-
-    # --- Build active sources list: (label, method_label) ---
-    active: list[str] = []
-
-    # Reddit — always available; what matters to users is comments or not
-    reddit_src = diag.get("reddit_source")
-    if reddit_src == "scrapecreators":
-        active.append("Reddit (with comments)")
-    else:
-        active.append("Reddit (threads only)")
-
-    # X/Twitter
-    x_source = diag.get("x_source")
-    x_method = diag.get("x_method")
-    if x_source:
-        if x_method and x_method.startswith("browser-"):
-            browser = x_method.split("-", 1)[1].capitalize()
-            active.append(f"X ({browser})")
-        elif x_method == "env":
-            active.append("X (env)")
-        elif x_method == "api":
-            active.append("X (xAI)")
-        else:
-            active.append("X")
-
-    # YouTube
-    if diag.get("youtube"):
-        active.append("YouTube")
-
-    # HN — always available
-    if diag.get("hackernews"):
-        active.append("HN")
-
-    # Polymarket — always available
-    if diag.get("polymarket"):
-        active.append("Polymarket")
-
-    # TikTok (requires SC or Apify)
-    if diag.get("tiktok"):
-        active.append("TikTok")
-
-    # Instagram (requires SC)
-    if diag.get("instagram"):
-        active.append("Instagram")
-
-    # Bluesky
-    if diag.get("bluesky"):
-        active.append("Bluesky")
-
-    # Truth Social
-    if diag.get("truthsocial"):
-        active.append("Truth Social")
-
-    # Xiaohongshu
-    if diag.get("xiaohongshu"):
-        active.append("Xiaohongshu")
-
-    # --- Format active sources into wrapped lines ---
-    BOX_INNER = 53  # characters inside the box (between │ and │)
-    PREFIX = "  "    # 2-space indent inside box
-
-    def _wrap_sources(sources: list[str]) -> list[str]:
-        """Wrap source labels into lines that fit the box width."""
-        result_lines: list[str] = []
-        current = PREFIX
-        for i, s in enumerate(sources):
-            token = f"✅ {s}"
-            sep = "  " if current != PREFIX else ""
-            if len(current) + len(sep) + len(token) > BOX_INNER:
-                result_lines.append(current)
-                current = PREFIX + token
-            else:
-                current += sep + token
-        if current.strip():
-            result_lines.append(current)
-        return result_lines
-
-    source_lines = _wrap_sources(active)
-
-    # --- Title ---
-    if not setup_complete:
-        title = "/last30days v3.0 — First Run"
-    else:
-        title = "/last30days v3.0 — Source Status"
-
-    # --- Build upgrade suggestions ---
-    suggestions: list[str] = []
-
-    if not setup_complete:
-        suggestions.append("Run /last30days setup to unlock more sources")
-    else:
-        # Recommend ScrapeCreators if missing
-        if not has_sc:
-            suggestions.append("⭐ Add SCRAPECREATORS_API_KEY for Reddit comments")
-            suggestions.append("   + TikTok + Instagram")
-            suggestions.append("   100 free calls, no CC — scrapecreators.com (no affiliation)")
-
-    # --- Assemble box lines ---
-    # Collect all content lines, then determine box width dynamically.
-    content: list[str] = []
-    content.append(f" {title}")
-    content.append("")  # blank line
-
-    for sl in source_lines:
-        content.append(sl)
-
-    if suggestions:
-        content.append("")  # blank line
-        for sg in suggestions:
-            content.append(f"  {sg}")
-
-    content.append("")  # blank line
-    content.append("  Config: ~/.config/last30days/.env")
-
-    # Width = widest content line + 1 for right margin
-    width = max(len(line) for line in content) + 1
-    if width < 53:
-        width = 53
-
-    lines: list[str] = []
-    lines.append("\u250c" + "\u2500" * width + "\u2510")
-    for c in content:
-        lines.append("\u2502" + c.ljust(width) + "\u2502")
-    lines.append("\u2514" + "\u2500" * width + "\u2518")
-
-    return lines
-
-
-def _colorize_banner(lines: list[str]) -> list[str]:
-    """Apply ANSI colors to plain-text banner lines for TTY output."""
-    colored: list[str] = []
-    for line in lines:
-        if line.startswith("\u250c") or line.startswith("\u2514"):
-            colored.append(f"{Colors.DIM}{line}{Colors.RESET}")
-        elif line.startswith("\u2502"):
-            inner = line[1:-1]  # strip box chars on both sides
-            inner_width = len(inner)
-            # Colorize check marks green, star yellow
-            inner = inner.replace("\u2705", f"{Colors.GREEN}\u2705{Colors.RESET}")
-            inner = inner.replace("\u2b50", f"{Colors.YELLOW}\u2b50{Colors.RESET}")
-            # Bold the title line
-            if "/last30days v3.0" in inner:
-                stripped = inner.strip()
-                inner = f" {Colors.BOLD}{stripped}{Colors.RESET}"
-                # Re-pad to original width (ANSI codes are zero-width)
-                visible_len = 1 + len(stripped)
-                inner = inner + " " * max(0, inner_width - visible_len)
-            colored.append(f"{Colors.DIM}\u2502{Colors.RESET}{inner}{Colors.DIM}\u2502{Colors.RESET}")
-        else:
-            colored.append(line)
-    return colored
-
-
 def show_diagnostic_banner(diag: dict):
-    """Show pre-flight source status banner.
-
-    Free-first design: leads with what's working (✅), not what's broken.
-    Shows upgrade suggestions only when relevant.
+    """Show pre-flight source status banner when sources are missing.
 
     Args:
-        diag: Dict with keys:
-            setup_complete, reddit_source, x_source, x_method,
-            youtube, tiktok, instagram, hackernews, polymarket,
-            bluesky, truthsocial, xiaohongshu, scrapecreators,
-            web_search_backend
+        diag: Dict from pipeline.diagnose() with available_sources, x_backend,
+            bird status, provider availability, and native web backend info.
     """
-    lines = _build_status_banner(diag)
+    available_sources = set(diag.get("available_sources") or [])
+    has_reddit = "reddit" in available_sources
+    has_scrapecreators = diag.get("has_scrapecreators", False)
+    has_x = "x" in available_sources
+    has_youtube = "youtube" in available_sources
+    has_web = "grounding" in available_sources
+    has_xiaohongshu = "xiaohongshu" in available_sources
+    x_backend = diag.get("x_backend")
+    native_web_backend = diag.get("native_web_backend")
+
+    # If everything is available, no banner needed
+    if has_reddit and has_x and has_youtube and has_web:
+        return
+
+    lines = []
 
     if IS_TTY:
-        lines = _colorize_banner(lines)
+        lines.append(f"{Colors.DIM}┌─────────────────────────────────────────────────────┐{Colors.RESET}")
+        lines.append(f"{Colors.DIM}│{Colors.RESET} {Colors.BOLD}/last30days v3.0.0 - Source Status{Colors.RESET}                 {Colors.DIM}│{Colors.RESET}")
+        lines.append(f"{Colors.DIM}│{Colors.RESET}                                                     {Colors.DIM}│{Colors.RESET}")
+
+        # Reddit
+        if has_reddit and has_scrapecreators:
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Reddit{Colors.RESET}    — full threads with comments          {Colors.DIM}│{Colors.RESET}")
+        elif has_reddit:
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Reddit{Colors.RESET}    — public threads (titles + scores)   {Colors.DIM}│{Colors.RESET}")
+        else:
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.RED}❌ Reddit{Colors.RESET}    — unavailable                         {Colors.DIM}│{Colors.RESET}")
+
+        # X/Twitter
+        if has_x:
+            username = diag.get("bird_username", "")
+            label = f"Bird ({username})" if x_backend == "bird" and username else str(x_backend or "xai").upper()
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ X/Twitter{Colors.RESET} — {label}                          {Colors.DIM}│{Colors.RESET}")
+        else:
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.RED}❌ X/Twitter{Colors.RESET} — No X auth or fallback key        {Colors.DIM}│{Colors.RESET}")
+            if diag.get("bird_installed"):
+                lines.append(f"{Colors.DIM}│{Colors.RESET}     └─ Add AUTH_TOKEN/CT0 or XAI_API_KEY      {Colors.DIM}│{Colors.RESET}")
+            else:
+                lines.append(f"{Colors.DIM}│{Colors.RESET}     └─ Needs Node.js 22+ (Bird is bundled)           {Colors.DIM}│{Colors.RESET}")
+
+        # YouTube
+        if has_youtube:
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ YouTube{Colors.RESET}   — yt-dlp found                      {Colors.DIM}│{Colors.RESET}")
+        else:
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.RED}❌ YouTube{Colors.RESET}   — yt-dlp not installed                {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}│{Colors.RESET}     └─ Fix: brew install yt-dlp (free)                {Colors.DIM}│{Colors.RESET}")
+
+        # Xiaohongshu (only show when configured)
+        if has_xiaohongshu:
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Xiaohongshu{Colors.RESET} — API connected + logged in         {Colors.DIM}│{Colors.RESET}")
+
+        # Web
+        if has_web:
+            backend = native_web_backend or "native"
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Web{Colors.RESET}       — {backend} API                       {Colors.DIM}│{Colors.RESET}")
+        else:
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.YELLOW}⚡ Web{Colors.RESET}       — Add BRAVE_API_KEY or SERPER_API_KEY {Colors.DIM}│{Colors.RESET}")
+
+        lines.append(f"{Colors.DIM}│{Colors.RESET}                                                     {Colors.DIM}│{Colors.RESET}")
+        lines.append(f"{Colors.DIM}│{Colors.RESET}  Config: {Colors.BOLD}~/.config/last30days/.env{Colors.RESET}                  {Colors.DIM}│{Colors.RESET}")
+        lines.append(f"{Colors.DIM}└─────────────────────────────────────────────────────┘{Colors.RESET}")
+    else:
+        # Plain text for non-TTY (Claude Code / Codex)
+        lines.append("┌─────────────────────────────────────────────────────┐")
+        lines.append("│ /last30days v3.0.0 - Source Status                 │")
+        lines.append("│                                                     │")
+
+        if has_reddit and has_scrapecreators:
+            lines.append("│  ✅ Reddit    — full threads with comments          │")
+        elif has_reddit:
+            lines.append("│  ✅ Reddit    — public threads (titles + scores)   │")
+        else:
+            lines.append("│  ❌ Reddit    — unavailable                         │")
+
+        if has_x:
+            lines.append("│  ✅ X/Twitter — available                            │")
+        else:
+            lines.append("│  ❌ X/Twitter — No X auth or fallback key          │")
+            if diag.get("bird_installed"):
+                lines.append("│     └─ Add AUTH_TOKEN/CT0 or XAI_API_KEY           │")
+            else:
+                lines.append("│     └─ Needs Node.js 22+ (Bird is bundled)           │")
+
+        if has_youtube:
+            lines.append("│  ✅ YouTube   — yt-dlp found                        │")
+        else:
+            lines.append("│  ❌ YouTube   — yt-dlp not installed                │")
+            lines.append("│     └─ Fix: brew install yt-dlp (free)                │")
+
+        if has_xiaohongshu:
+            lines.append("│  ✅ Xiaohongshu — API connected + logged in         │")
+
+        if has_web:
+            backend = native_web_backend or "native"
+            lines.append(f"│  ✅ Web       — {backend} API available{' ' * max(0, 13 - len(backend))}│")
+        else:
+            lines.append("│  ⚡ Web       — Add BRAVE_API_KEY or SERPER_API_KEY │")
+
+        lines.append("│                                                     │")
+        lines.append("│  Config: ~/.config/last30days/.env                  │")
+        lines.append("└─────────────────────────────────────────────────────┘")
 
     sys.stderr.write("\n".join(lines) + "\n\n")
     sys.stderr.flush()

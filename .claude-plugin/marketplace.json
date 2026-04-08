@@ -1,16 +1,16 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "last30days-skill",
-  "description": "Research any topic from the last 30 days across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, and the web.",
+  "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, HN, Polymarket, GitHub, and 5+ more sources.",
   "owner": {
     "name": "Matt Van Horn",
     "url": "https://github.com/mvanhorn"
   },
   "plugins": [
     {
-      "name": "last30days",
-      "description": "Research any topic from the last 30 days. Become an expert and write copy-paste-ready prompts.",
-      "version": "2.9.6",
+      "name": "last30days-3",
+      "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, HN, Polymarket, GitHub, and 5+ more sources.",
+      "version": "3.0.0-alpha",
       "author": {
         "name": "Matt Van Horn",
         "url": "https://github.com/mvanhorn"

@@ -4,11 +4,11 @@ Computes a quality score based on 5 core sources and builds
 a nudge message describing what the user missed and how to fix it.
 """
 
-from typing import Any, Dict, List, Optional
+from typing import List
 
 
 # The 5 core sources
-CORE_SOURCES = ["hn", "polymarket", "x", "youtube", "reddit_comments"]
+CORE_SOURCES = ["hn", "polymarket", "x", "youtube", "reddit"]
 
 # Labels for display
 SOURCE_LABELS = {
@@ -16,7 +16,7 @@ SOURCE_LABELS = {
     "polymarket": "Polymarket",
     "x": "X/Twitter",
     "youtube": "YouTube",
-    "reddit_comments": "Reddit with comments",
+    "reddit": "Reddit",
 }
 
 
@@ -45,16 +45,6 @@ def _is_youtube_active(config: dict, research_results: dict) -> bool:
     return True
 
 
-def _is_reddit_comments_active(config: dict, research_results: dict) -> bool:
-    """Check if Reddit with comments is active (ScrapeCreators)."""
-    has_sc = bool(config.get("SCRAPECREATORS_API_KEY"))
-    if not has_sc:
-        return False
-    if research_results.get("reddit_error"):
-        return False
-    return True
-
-
 def compute_quality_score(config: dict, research_results: dict) -> dict:
     """Compute research quality score based on 5 core sources.
 
@@ -67,8 +57,8 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
         {
             "score_pct": 40-100,
             "core_active": ["hn", "polymarket", ...],
-            "core_missing": ["x", "youtube", "reddit_comments"],
-            "core_errored": ["reddit_comments"],  # configured but errored
+            "core_missing": ["x", "youtube"],
+            "core_errored": [],  # configured but errored
             "nudge_text": "..." or None if 100%
         }
     """
@@ -76,9 +66,10 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
     core_missing: List[str] = []
     core_errored: List[str] = []
 
-    # HN and Polymarket are always active
+    # HN, Polymarket, and Reddit are always active
     core_active.append("hn")
     core_active.append("polymarket")
+    core_active.append("reddit")
 
     # X
     has_x_creds = bool(config.get("AUTH_TOKEN") or config.get("XAI_API_KEY"))
@@ -90,30 +81,25 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
             core_errored.append("x")
 
     # YouTube
-    try:
-        from . import youtube_yt
-        has_ytdlp = youtube_yt.is_ytdlp_installed()
-    except Exception:
-        has_ytdlp = False
-    if _is_youtube_active(config, research_results):
+    yt_active = _is_youtube_active(config, research_results)
+    if yt_active:
         core_active.append("youtube")
     else:
         core_missing.append("youtube")
+        # Check if configured but errored (yt-dlp installed but failed this run)
+        try:
+            from . import youtube_yt
+            has_ytdlp = youtube_yt.is_ytdlp_installed()
+        except Exception:
+            has_ytdlp = False
         if has_ytdlp and research_results.get("youtube_error"):
             core_errored.append("youtube")
 
-    # Reddit with comments (ScrapeCreators)
-    has_sc = bool(config.get("SCRAPECREATORS_API_KEY"))
-    if _is_reddit_comments_active(config, research_results):
-        core_active.append("reddit_comments")
-    else:
-        core_missing.append("reddit_comments")
-        if has_sc and research_results.get("reddit_error"):
-            core_errored.append("reddit_comments")
-
     score_pct = int(len(core_active) / 5 * 100)
 
-    nudge_text = _build_nudge_text(core_missing, core_errored) if core_missing else None
+    has_sc = bool(config.get("SCRAPECREATORS_API_KEY"))
+    active_sources = research_results.get("active_sources") or []
+    nudge_text = _build_nudge_text(core_missing, core_errored, has_sc=has_sc, active_sources=active_sources) if core_missing else None
 
     return {
         "score_pct": score_pct,
@@ -124,10 +110,11 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
     }
 
 
-def _build_nudge_text(core_missing: List[str], core_errored: List[str]) -> str:
+def _build_nudge_text(core_missing: List[str], core_errored: List[str], has_sc: bool = False, active_sources: list = None) -> str:
     """Build human-readable nudge text describing what was missed.
 
-    Prioritizes free suggestions before paid ones.
+    Prioritizes free suggestions. Optionally mentions bonus sources
+    (TikTok, Instagram, Threads, Pinterest) if ScrapeCreators key is configured.
     """
     lines: List[str] = []
 
@@ -145,43 +132,44 @@ def _build_nudge_text(core_missing: List[str], core_errored: List[str]) -> str:
     lines.append(f"Missing: {', '.join(missed_parts)}.")
     lines.append("")
 
-    # Free suggestions first
+    # Free suggestions
     free_suggestions: List[str] = []
-    paid_suggestions: List[str] = []
 
     if "x" in core_missing:
         if "x" in core_errored:
             free_suggestions.append(
-                "X errored — try refreshing your browser cookies "
-                "(log into x.com, then re-run)."
+                "X/Twitter errored - log into x.com in your browser, then re-run."
             )
         else:
             free_suggestions.append(
-                "X/Twitter: scan browser cookies automatically — "
-                "just log into x.com in any browser and re-run."
+                "X/Twitter: real-time posts with likes and reposts - the fastest "
+                "signal for breaking topics. Two options: log into x.com in your "
+                "browser and re-run (cookies detected automatically), or add "
+                "XAI_API_KEY to your .env (no browser access, get key at api.x.ai)."
             )
 
     if "youtube" in core_missing:
         if "youtube" in core_errored:
             free_suggestions.append(
-                "YouTube errored — check that yt-dlp is up to date: "
-                "brew upgrade yt-dlp"
+                "YouTube errored - update yt-dlp: brew upgrade yt-dlp"
             )
         else:
             free_suggestions.append(
-                "YouTube: install yt-dlp — brew install yt-dlp"
+                "YouTube: video transcripts with key moments - often the deepest "
+                "explanations on any topic. Install yt-dlp: brew install yt-dlp (free)"
             )
 
-    if "reddit_comments" in core_missing:
-        if "reddit_comments" in core_errored:
-            paid_suggestions.append(
-                "Reddit comments errored — check your ScrapeCreators API key "
-                "at scrapecreators.com."
-            )
-        else:
-            paid_suggestions.append(
-                "Reddit with comments: add SCRAPECREATORS_API_KEY — "
-                "100 free API calls, no credit card — scrapecreators.com"
+    # Mention bonus opt-in sources when SC key is present
+    if has_sc:
+        bonus_hints = []
+        if "threads" not in (active_sources or []):
+            bonus_hints.append("Threads")
+        if "pinterest" not in (active_sources or []):
+            bonus_hints.append("Pinterest")
+        if bonus_hints:
+            free_suggestions.append(
+                f"Your SC key also powers {', '.join(bonus_hints)} and YouTube comments. "
+                "Add them to INCLUDE_SOURCES in your .env to enable."
             )
 
     if free_suggestions:
@@ -190,12 +178,13 @@ def _build_nudge_text(core_missing: List[str], core_errored: List[str]) -> str:
             lines.append(f"  - {s}")
         lines.append("")
 
-    if paid_suggestions:
-        lines.append("Paid options:")
-        for s in paid_suggestions:
-            lines.append(f"  - {s}")
-        lines.append("")
-
-    lines.append("last30days has no affiliation with any API provider.")
+    # Bonus sources mention (non-blocking)
+    if not has_sc:
+        lines.append(
+            "Bonus: TikTok and Instagram are available with a free "
+            "ScrapeCreators key at scrapecreators.com (no affiliation)."
+        )
+    else:
+        lines.append("last30days has no affiliation with any API provider.")
 
     return "\n".join(lines)
