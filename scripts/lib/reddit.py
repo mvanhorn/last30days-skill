@@ -282,6 +282,11 @@ def _global_search(
         resp.raise_for_status()
         data = resp.json()
         return data.get("posts", data.get("data", []))
+    except _requests.exceptions.HTTPError as e:
+        _log(f"Global search error: {e}")
+        if e.response is not None and e.response.status_code == 402:
+            raise  # Payment required — API key exhausted, trigger fallback
+        return []
     except Exception as e:
         _log(f"Global search error: {e}")
         return []
@@ -337,6 +342,11 @@ def _subreddit_search(
         resp.raise_for_status()
         data = resp.json()
         return data.get("posts", data.get("data", []))
+    except _requests.exceptions.HTTPError as e:
+        _log(f"Subreddit search error for r/{subreddit}: {e}")
+        if e.response is not None and e.response.status_code == 402:
+            raise  # Payment required — trigger fallback
+        return []
     except Exception as e:
         _log(f"Subreddit search error for r/{subreddit}: {e}")
         return []
@@ -378,6 +388,11 @@ def fetch_post_comments(
         resp.raise_for_status()
         data = resp.json()
         return data.get("comments", data.get("data", []))
+    except _requests.exceptions.HTTPError as e:
+        _log(f"Comment fetch error: {e}")
+        if e.response is not None and e.response.status_code == 402:
+            raise  # Payment required — trigger fallback
+        return []
     except Exception as e:
         _log(f"Comment fetch error: {e}")
         return []
