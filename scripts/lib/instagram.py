@@ -217,7 +217,7 @@ def search_instagram(
 
     try:
         resp = _requests.get(
-            f"{SCRAPECREATORS_BASE}/v1/instagram/reels/search",
+            f"{SCRAPECREATORS_BASE}/v2/instagram/reels/search",
             params={"query": core_topic},
             headers=_sc_headers(token),
             timeout=30,
