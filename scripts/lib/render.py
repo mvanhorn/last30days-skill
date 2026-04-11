@@ -14,6 +14,7 @@ SOURCE_LABELS = {
     "x": "X",
     "github": "GitHub",
     "perplexity": "Perplexity",
+    "adanos": "Adanos Market Sentiment",
 }
 
 

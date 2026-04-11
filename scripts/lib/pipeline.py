@@ -11,6 +11,7 @@ from shutil import which
 from typing import Any
 
 from . import (
+    adanos,
     bird_x,
     bluesky,
     dates,
@@ -77,6 +78,7 @@ MOCK_AVAILABLE_SOURCES = [
     "github",
     "perplexity",
     "xquik",
+    "adanos",
 ]
 
 
@@ -110,10 +112,18 @@ def available_sources(config: dict[str, Any], requested_sources: list[str] | Non
         available.append("truthsocial")
     if config.get("BRAVE_API_KEY") or config.get("EXA_API_KEY") or config.get("SERPER_API_KEY") or config.get("PARALLEL_API_KEY"):
         available.append("grounding")
-    # Perplexity Sonar: opt-in additive source via INCLUDE_SOURCES=perplexity
-    include_sources = (config.get("INCLUDE_SOURCES") or "").lower().split(",")
+    # Optional additive sources via INCLUDE_SOURCES or explicit --search.
+    include_sources = {
+        source.strip()
+        for source in (config.get("INCLUDE_SOURCES") or "").lower().split(",")
+        if source.strip()
+    }
     if config.get("OPENROUTER_API_KEY") and "perplexity" in include_sources:
         available.append("perplexity")
+    if config.get("ADANOS_API_KEY") and (
+        "adanos" in include_sources or (requested_sources and "adanos" in requested_sources)
+    ):
+        available.append("adanos")
     if requested_sources and "xiaohongshu" in requested_sources and env.is_xiaohongshu_available(config):
         available.append("xiaohongshu")
     if env.is_threads_available(config):
@@ -155,6 +165,7 @@ def diagnose(config: dict[str, Any], requested_sources: list[str] | None = None)
         "native_web_backend": native_web_backend,
         "has_scrapecreators": bool(config.get("SCRAPECREATORS_API_KEY")),
         "has_github": bool(config.get("GITHUB_TOKEN") or which("gh")),
+        "has_adanos": bool(config.get("ADANOS_API_KEY")),
         "available_sources": available_sources(config, requested_sources),
     }
 
@@ -363,7 +374,8 @@ def run(
             normalized = normalized[: settings["per_stream_limit"]]
             bundle.add_items(subquery.label, source, normalized)
             if artifact:
-                bundle.artifacts.setdefault("grounding", []).append(artifact)
+                artifact_key = "grounding" if source == "grounding" else source
+                bundle.artifacts.setdefault(artifact_key, []).append(artifact)
 
     # Phase 2: supplemental entity-based searches
     _run_supplemental_searches(
@@ -947,6 +959,8 @@ def _retrieve_stream(
             token=env.get_xquik_token(config),
         )
         return xquik.parse_xquik_response(result), {}
+    if source == "adanos":
+        return adanos.search(subquery.search_query, date_range, config, depth=depth)
     raise RuntimeError(f"Unsupported source: {source}")
 
 
@@ -994,6 +1008,22 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
                 "date": dates.get_date_range(7)[0],
                 "relevance": 0.88,
                 "why_relevant": "Brave web search",
+            }
+        ],
+        "adanos": [
+            {
+                "id": "ADANOS-reddit-TSLA",
+                "ticker": "TSLA",
+                "company_name": "Tesla, Inc.",
+                "platform": "reddit",
+                "title": f"TSLA Reddit market sentiment for {subquery.search_query}",
+                "text": "Tesla retail sentiment snapshot from Adanos.",
+                "date": dates.get_date_range(1)[0],
+                "date_confidence": "med",
+                "engagement": {"buzz_score": 72.0, "mentions": 140, "total_upvotes": 850},
+                "relevance": 0.84,
+                "why_relevant": "Mock Adanos market sentiment result",
+                "metadata": {"ticker": "TSLA", "platform": "reddit", "trend": "rising"},
             }
         ],
     }

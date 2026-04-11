@@ -61,6 +61,7 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 | **Instagram Reels** | The influencer perspective with spoken-word transcripts. The visual culture signal. |
 | **Hacker News** | The developer consensus. 825 points, 899 comments. Where technical people actually argue. |
 | **Polymarket** | Not opinions. Odds. Backed by real money. 96% confidence on album sales. 4% on an acquisition. |
+| **Adanos Market Sentiment** | Optional structured stock sentiment across Reddit, X, News, and Polymarket. Best for tickers, watchlists, and "what does retail think about this stock?" |
 | **GitHub** | For people: PR velocity, top repos by stars, release notes. For topics: issues and discussions. |
 | **Threads** | The post-Twitter text layer. Conversations from creators and brands. |
 | **Pinterest** | Visual discovery. Pins, saves, and comments on products and ideas. |
@@ -171,6 +172,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 | Bluesky | App password from bsky.app | Free |
 | TikTok + Instagram + Threads + Pinterest + YouTube comments | ScrapeCreators key | 10,000 free calls |
 | Perplexity Sonar | OpenRouter key | Pay as you go |
+| Adanos Market Sentiment | `ADANOS_API_KEY` + `INCLUDE_SOURCES=adanos` | Adanos plan |
 | Web search | Brave Search key | 2,000 free queries/month |
 
 ## How it works

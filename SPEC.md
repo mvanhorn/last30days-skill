@@ -20,6 +20,7 @@ The orchestrator (`last30days.py`) coordinates discovery, enrichment, normalizat
 - **reddit_enrich.py**: Fetch Reddit thread JSON for real engagement metrics
 - **hackernews.py**: Hacker News search via Algolia API (free, no auth)
 - **polymarket.py**: Polymarket prediction market search via Gamma API (free, no auth)
+- **adanos.py**: Optional Adanos Market Sentiment source for finance/ticker queries
 - **normalize.py**: Convert raw API responses to canonical schema
 - **score.py**: Compute popularity-aware scores (relevance + recency + engagement)
 - **dedupe.py**: Near-duplicate detection via text similarity

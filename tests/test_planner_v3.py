@@ -248,6 +248,42 @@ class PlannerV3Tests(unittest.TestCase):
             self.assertNotIn("polymarket", all_sources,
                              f"polymarket should be excluded from {expected_intent}")
 
+    def test_adanos_excluded_from_how_to_and_concept(self):
+        """Adanos should stay out of non-market instructional and concept plans."""
+        for topic, expected_intent in [
+            ("how to deploy on Fly.io", "how_to"),
+            ("explain transformer architecture", "concept"),
+        ]:
+            plan = planner.plan_query(
+                topic=topic,
+                available_sources=["reddit", "x", "hackernews", "adanos"],
+                requested_sources=None,
+                depth="default",
+                provider=None,
+                model=None,
+            )
+            self.assertEqual(expected_intent, plan.intent)
+            all_sources = set()
+            for subquery in plan.subqueries:
+                all_sources.update(subquery.sources)
+            self.assertNotIn("adanos", all_sources,
+                             f"adanos should be excluded from {expected_intent}")
+
+    def test_prediction_includes_adanos_when_available(self):
+        plan = planner.plan_query(
+            topic="odds of TSLA earnings beat",
+            available_sources=["reddit", "x", "polymarket", "adanos"],
+            requested_sources=None,
+            depth="default",
+            provider=None,
+            model=None,
+        )
+        self.assertEqual("prediction", plan.intent)
+        all_sources = set()
+        for subquery in plan.subqueries:
+            all_sources.update(subquery.sources)
+        self.assertIn("adanos", all_sources)
+
     def test_opinion_includes_polymarket(self):
         """Polymarket should not be excluded from opinion intent plans."""
         plan = planner.plan_query(

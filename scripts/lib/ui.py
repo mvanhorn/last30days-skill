@@ -122,6 +122,7 @@ SOURCE_COMPLETION_ORDER = [
     "bluesky",
     "truthsocial",
     "polymarket",
+    "adanos",
     "grounding",
     "xiaohongshu",
 ]
@@ -136,6 +137,7 @@ SOURCE_COMPLETION_META = {
     "bluesky": ("Bluesky", "post", "posts", Colors.BLUE),
     "truthsocial": ("Truth Social", "post", "posts", Colors.CYAN),
     "polymarket": ("Polymarket", "market", "markets", Colors.GREEN),
+    "adanos": ("Adanos", "snapshot", "snapshots", Colors.GREEN),
     "grounding": ("Web", "result", "results", Colors.GREEN),
     "xiaohongshu": ("Xiaohongshu", "post", "posts", Colors.RED),
 }

@@ -25,8 +25,8 @@ QUICK_SOURCE_PRIORITY = {
     "opinion": ["reddit", "x", "youtube", "hackernews"],
     "how_to": ["youtube", "reddit", "x", "hackernews"],
     "comparison": ["reddit", "x", "hackernews", "youtube"],
-    "breaking_news": ["x", "reddit", "hackernews", "youtube", "polymarket"],
-    "prediction": ["polymarket", "x", "hackernews", "reddit", "youtube"],
+    "breaking_news": ["x", "reddit", "adanos", "hackernews", "youtube", "polymarket"],
+    "prediction": ["adanos", "polymarket", "x", "hackernews", "reddit", "youtube"],
 }
 SOURCE_PRIORITY = {
     "factual": ["hackernews", "reddit", "x", "youtube"],
@@ -34,9 +34,9 @@ SOURCE_PRIORITY = {
     "concept": ["hackernews", "reddit", "x", "youtube"],
     "opinion": ["reddit", "x", "youtube", "hackernews"],
     "how_to": ["youtube", "reddit", "x", "hackernews"],
-    "comparison": ["reddit", "x", "hackernews", "youtube"],
-    "breaking_news": ["x", "reddit", "hackernews", "youtube", "polymarket"],
-    "prediction": ["polymarket", "x", "hackernews", "reddit", "youtube"],
+    "comparison": ["reddit", "x", "adanos", "hackernews", "youtube"],
+    "breaking_news": ["x", "reddit", "adanos", "hackernews", "youtube", "polymarket"],
+    "prediction": ["adanos", "polymarket", "x", "hackernews", "reddit", "youtube"],
 }
 SOURCE_LIMITS = {
     "quick": {
@@ -54,8 +54,8 @@ SOURCE_LIMITS = {
     # uses tight budgets above for latency.
 }
 INTENT_SOURCE_EXCLUSIONS: dict[str, set[str]] = {
-    "concept": {"polymarket"},
-    "how_to": {"polymarket"},
+    "concept": {"polymarket", "adanos"},
+    "how_to": {"polymarket", "adanos"},
 }
 SOURCE_CAPABILITIES = {
     "reddit": {"discussion", "social"},
@@ -67,13 +67,14 @@ SOURCE_CAPABILITIES = {
     "bluesky": {"discussion", "social"},
     "truthsocial": {"discussion", "social"},
     "polymarket": {"market"},
+    "adanos": {"market", "sentiment"},
     "xiaohongshu": {"video", "video_shortform", "social"},
     "github": {"discussion", "link"},
     "grounding": {"web", "reference", "link"},
     "perplexity": {"web", "reference", "analysis"},
 }
 DEFAULT_INTENT_CAPABILITIES = {
-    "comparison": {"discussion", "video", "web", "reference", "social", "link", "market"},
+    "comparison": {"discussion", "video", "web", "reference", "social", "link", "market", "sentiment"},
     "how_to": {"discussion", "video", "web", "reference", "link"},
 }
 
@@ -367,7 +368,7 @@ def _fallback_plan(
                 label="odds",
                 search_query=f"{base_search} odds forecast",
                 ranking_query=f"What are the current odds, forecasts, or market signals about {topic}?",
-                sources=[source for source in source_weights if source in {"polymarket", "grounding", "x", "reddit"}] or list(source_weights),
+                sources=[source for source in source_weights if source in {"adanos", "polymarket", "grounding", "x", "reddit"}] or list(source_weights),
                 weight=0.7,
             )
         )
@@ -445,11 +446,11 @@ def _default_cluster_mode(intent: str) -> str:
 def _default_source_weights(intent: str, sources: list[str]) -> dict[str, float]:
     base = {source: 1.0 for source in sources}
     if intent == "prediction":
-        for source, bonus in {"polymarket": 2.5, "x": 1.3}.items():
+        for source, bonus in {"adanos": 2.5, "polymarket": 2.5, "x": 1.3}.items():
             if source in base:
                 base[source] += bonus
     elif intent == "breaking_news":
-        for source, bonus in {"x": 1.5, "reddit": 1.3, "hackernews": 0.8}.items():
+        for source, bonus in {"x": 1.5, "reddit": 1.3, "adanos": 0.8, "hackernews": 0.8}.items():
             if source in base:
                 base[source] += bonus
     elif intent == "how_to":

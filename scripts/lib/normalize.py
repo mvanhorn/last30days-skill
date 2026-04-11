@@ -53,6 +53,7 @@ def normalize_source_items(
         "xiaohongshu": _normalize_grounding,
         "github": _normalize_github,
         "perplexity": _normalize_grounding,
+        "adanos": _normalize_adanos,
     }
     normalizer = normalizers.get(source)
     if normalizer is None:
@@ -414,6 +415,41 @@ def _normalize_github(
             "is_pr": metadata.get("is_pr", False),
         },
     )
+
+
+def _normalize_adanos(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    ticker = str(item.get("ticker") or "").strip().upper()
+    company = str(item.get("company_name") or "").strip()
+    platform = str(item.get("platform") or "").strip()
+    title = str(item.get("title") or "").strip()
+    body = str(item.get("text") or "").strip()
+    metadata = dict(item.get("metadata") or {})
+    metadata.setdefault("ticker", ticker)
+    metadata.setdefault("company_name", company)
+    metadata.setdefault("platform", platform)
+    return _source_item(
+        item_id=str(item.get("id") or f"AD{index + 1}"),
+        source=source,
+        title=title or f"{ticker or company} Adanos market sentiment",
+        body=body,
+        url=str(item.get("url") or ""),
+        author=None,
+        container="Adanos Market Sentiment",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="med"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.7),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=body[:400],
+        metadata=metadata,
+    )
+
 
 def _normalize_grounding(
     source: str,

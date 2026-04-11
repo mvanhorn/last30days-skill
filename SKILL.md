@@ -27,6 +27,9 @@ metadata:
         - BSKY_HANDLE
         - BSKY_APP_PASSWORD
         - TRUTHSOCIAL_TOKEN
+        - ADANOS_API_KEY
+        - ADANOS_API_BASE_URL
+        - ADANOS_PLATFORMS
       bins:
         - node
         - python3
@@ -45,6 +48,7 @@ metadata:
       - instagram
       - hackernews
       - polymarket
+      - adanos
       - bluesky
       - truthsocial
       - trends
@@ -255,6 +259,11 @@ Perplexity Sonar Pro (AI-synthesized research via OpenRouter):
 - Use `--deep-research` flag for exhaustive 50+ citation reports (~$0.90/query) on topics that need serious investigation.
 - Bonus: also powers the planning and reranking engine if you don't have a Gemini/OpenAI/xAI key.
 
+Adanos Market Sentiment (optional structured stock sentiment):
+- `ADANOS_API_KEY=xxx` - unlocks structured stock sentiment snapshots across Reddit, X, News, and Polymarket.
+- Add `adanos` to `INCLUDE_SOURCES` (for example `INCLUDE_SOURCES=tiktok,instagram,adanos`) or run `--search adanos`.
+- Adanos only runs for finance-like topics such as tickers, cashtags, watchlists, stock sentiment, earnings, or market sentiment. It stays out of general research.
+
 Other bonus sources (add anytime):
 - `EXA_API_KEY=xxx` - semantic web search, 1K free/month (exa.ai)
 - `BSKY_HANDLE=you.bsky.social` + `BSKY_APP_PASSWORD=xxx` - Bluesky (free app password)
@@ -382,6 +391,7 @@ Common patterns:
 - If SCRAPECREATORS_API_KEY is set and INCLUDE_SOURCES contains pinterest: add Pinterest
 - If BSKY_HANDLE and BSKY_APP_PASSWORD are set: add Bluesky
 - If OPENROUTER_API_KEY is set: add Perplexity
+- If ADANOS_API_KEY is set and INCLUDE_SOURCES contains adanos: add Adanos Market Sentiment
 
 Then display (use "and more" if 5+ sources, otherwise list all with Oxford comma):
 
@@ -537,7 +547,7 @@ Agent mode report format:
 
 ```
 ## Research Report: {TOPIC}
-Generated: {date} | Sources: Reddit, X, Bluesky, YouTube, TikTok, HN, Polymarket, Web
+Generated: {date} | Sources: Reddit, X, Bluesky, YouTube, TikTok, HN, Polymarket, Adanos, Web
 
 ### Key Findings
 [3-5 bullet points, highest-signal insights with citations]
@@ -687,7 +697,7 @@ Only show lines for platforms where something was resolved. Skip empty lines. Th
 
 **Rules for your plan:**
 - Emit 1 to 4 subqueries (more for complex/multi-faceted topics, fewer for simple ones)
-- **CRITICAL: Your PRIMARY subquery MUST include ALL of these sources: reddit, x, youtube, tiktok, instagram, hackernews, polymarket.** Never omit reddit (highest-signal discussion) or youtube (unique transcripts + official content). Secondary subqueries can target specific platforms.
+- **CRITICAL: Your PRIMARY subquery MUST include ALL configured sources relevant to the query: reddit, x, youtube, tiktok, instagram, hackernews, polymarket, and adanos when enabled for finance/ticker topics.** Never omit reddit (highest-signal discussion) or youtube (unique transcripts + official content). Secondary subqueries can target specific platforms.
 - `search_query` should be concise and keyword-heavy — match how content is TITLED on platforms
 - `ranking_query` should read like a natural language question
 - **DISAMBIGUATION:** If the topic name is a common word or has known non-product meanings (e.g., "Loom" = also a weaving tool, "Tella" = also a soccer player), add a qualifying term to your search_query to disambiguate. Examples: "tella screen recording" not just "tella", "loom video messaging" not just "loom". The product category prevents matching unrelated content.
@@ -697,11 +707,11 @@ Only show lines for platforms where something was resolved. Skip empty lines. Th
 - Preserve exact proper nouns and entity strings from the topic
 - For comparison ("X vs Y"): create per-entity subqueries at weight 0.8 + a head-to-head subquery at weight 1.0
 - For product queries: route to YouTube (reviews), Reddit (discussions), TikTok (demos)
-- For predictions: include Polymarket in sources
+- For predictions: include Polymarket in sources; include Adanos for stock/ticker predictions when configured
 - For how_to: prioritize YouTube (tutorials) and Reddit (guides)
 - Primary subquery weight = 1.0, secondary = 0.6-0.8, peripheral = 0.3-0.5
 
-**Available sources (include ALL in primary subquery):** reddit, x, youtube, tiktok, instagram, hackernews, polymarket. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search — only if user has Brave/Exa/Serper key)
+**Available sources (include ALL in primary subquery):** reddit, x, youtube, tiktok, instagram, hackernews, polymarket. Optional: adanos (stock/ticker market sentiment), bluesky, truthsocial, threads, pinterest, grounding (web search — only if user has Brave/Exa/Serper key)
 
 **Intent → freshness_mode mapping:**
 - breaking_news, prediction → `strict_recent`
@@ -771,10 +781,10 @@ Use a **timeout of 300000** (5 minutes) on the Bash call. The script typically t
 
 The script will automatically:
 - Detect available API keys
-- Run Reddit/X/YouTube/TikTok/Instagram/Hacker News/Polymarket searches
+- Run Reddit/X/YouTube/TikTok/Instagram/Hacker News/Polymarket searches, plus Adanos for finance/ticker topics when configured
 - Output ALL results including YouTube transcripts, TikTok captions, Instagram captions, HN comments, and prediction market odds
 
-**Read the ENTIRE output.** It contains EIGHT data sections in this order: Reddit items, X items, YouTube items, TikTok items, Instagram Reels items, Hacker News items, Polymarket items, and WebSearch items. If you miss sections, you will produce incomplete stats.
+**Read the ENTIRE output.** It contains source sections in this order when available: Reddit items, X items, YouTube items, TikTok items, Instagram Reels items, Hacker News items, Polymarket items, Adanos market sentiment items, and WebSearch items. If you miss sections, you will produce incomplete stats.
 
 **YouTube items in the output look like:** `**{video_id}** (score:N) {channel_name} [N views, N likes]` followed by a title, URL, **transcript highlights** (pre-extracted quotable excerpts from the video), and an optional full transcript in a collapsible section. **Quote the highlights directly in your synthesis** - they are the YouTube equivalent of Reddit top comments. Attribute quotes to the channel name. Count them and include them in your synthesis and stats block.
 
@@ -1073,7 +1083,8 @@ CITATION PRIORITY (most to least preferred):
 5. Instagram creators — "per @creator on Instagram" (influencer/creator signal)
 6. HN discussions — "per HN" or "per hn/username" (developer community signal)
 7. Polymarket — "Polymarket has X at Y% (up/down Z%)" with specific odds and movement
-8. Web sources — ONLY when Reddit/X/YouTube/TikTok/Instagram/HN/Polymarket don't cover that specific fact
+8. Adanos — "Adanos shows TSLA retail sentiment rising on Reddit/X/News" for configured stock/ticker topics
+9. Web sources — ONLY when Reddit/X/YouTube/TikTok/Instagram/HN/Polymarket/Adanos don't cover that specific fact
 
 The tool's value is surfacing what PEOPLE are saying, not what journalists wrote.
 When both a web article and an X post cover the same fact, cite the X post.
