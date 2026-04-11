@@ -264,7 +264,7 @@ def get_config() -> dict[str, Any]:
         ('XQUIK_API_KEY', None),
         ('FROM_BROWSER', None),
         ('SETUP_COMPLETE', None),
-        ('INCLUDE_SOURCES', None),
+        ('INCLUDE_SOURCES', ''),
     ]
 
     for key, default in keys:
