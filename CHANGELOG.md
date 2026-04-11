@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [3.0.0] - 2026-04
+## [3.0.0] - 2026-04-11
 
 ### Highlights
 
@@ -34,10 +34,18 @@ Intelligent search, fun judge, cross-source cluster merging, single-pass compari
 - Polymarket display shows % odds only; dollar volumes removed
 - 852 tests passing
 
+### Fixed
+
+- Marketplace validation: duplicate `name: last30days` collision in `skills/last30days/SKILL.md` caused strict validators to reject the plugin. Resolved by renaming the internal v3 architecture spec to `last30days-v3-spec` with `user-invocable: false`. Fixed in #214 (reported by @Cody-Coyote in #204).
+- Stale README link to the deleted `skills/last30days-v3/` path from the v3 directory rename. Fixed in #214.
+- OpenAI Codex CLI discoverability: added `.agents/skills/last30days/SKILL.md` as a real file (Codex's loader skips symlinked files) plus `.codex-plugin/plugin.json` as the namespace marker. The skill now registers as `last30days:last30days` when Codex runs in a checkout of the repo. Fixed in #219 (inspired by @Jah-yee in #153 and @dannyshmueli on X).
+
 ### Contributors
 
 - @j-sperling -- v3 engine architecture, Python pre-research brain
 - @hnshah -- Watchlist features
+- @Cody-Coyote -- Marketplace validation bug report (#204)
+- @Jah-yee -- Codex CLI integration inspiration (#153)
 
 ## [2.9.4] - 2026-03-06
 
