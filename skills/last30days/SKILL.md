@@ -1,14 +1,14 @@
 ---
-name: last30days
+name: last30days-v3-spec
 version: "3.0.0"
-description: "Multi-query social search with intelligent planning. Agent plans queries when possible, falls back to Gemini/OpenAI when not. Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, and the web."
+description: "Internal architecture spec for the v3 last30days runtime pipeline. Not user-invocable."
 argument-hint: "last30days codex vs claude code"
 allowed-tools: Bash, Read, Write, WebSearch
 homepage: https://github.com/mvanhorn/last30days-skill
 repository: https://github.com/mvanhorn/last30days-skill
 author: mvanhorn
 license: MIT
-user-invocable: true
+user-invocable: false
 ---
 
 # last30days v3.0.0
@@ -86,7 +86,6 @@ fi
 - `yt-dlp` enables YouTube.
 - Planning and reranking fall back gracefully: Gemini -> OpenAI -> xAI -> deterministic/local.
 - Web retrieval stays within Brave/Serper dated results. Undated web hits are dropped.
-- For OpenClaw-specific watchlist, briefing, and history workflows, use `variants/open/SKILL.md`.
 
 ## Output model
 
