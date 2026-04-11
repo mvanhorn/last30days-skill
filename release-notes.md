@@ -74,40 +74,12 @@ Contributors who shaped the release itself:
 - @Cody-Coyote (#204) reported the marketplace validation bug that needed fixing before v3 could ship cleanly
 - @dannyshmueli pushed for v3 and Codex family support publicly on X
 
-## What's New
+Full Added / Changed / Fixed detail lives in [CHANGELOG.md](CHANGELOG.md) under `[3.0.0]`.
 
-### Added
+## Earlier contributors
 
-- Intelligent pre-research brain resolving X handles, subreddits, TikTok hashtags, and YouTube channels before searching
-- Fun judge and Best Takes section scoring humor, wit, and virality
-- Cross-source cluster merging with entity-based overlap detection
-- Single-pass comparisons for "X vs Y" queries
-- GitHub as a first-class source with person-mode and project-mode
-- Perplexity Sonar Pro via OpenRouter (`INCLUDE_SOURCES=perplexity`)
-- Perplexity Deep Research (`--deep-research` flag)
-- Parallel AI grounding backend (`--web-backend parallel`)
-- OpenRouter as a reasoning provider (auto-detected after Gemini / OpenAI / xAI)
-- Per-author cap (max 3 items per author)
-- Entity disambiguation trusting resolved handles over keyword matches
-- OpenAI Codex CLI integration via `.agents/skills/last30days/SKILL.md` and `.codex-plugin/plugin.json`
-- ELI5 mode
+From the v1 and v2 lineage:
 
-### Changed
-
-- YouTube transcript candidate pool widened 3x to reach talk and review content with captions
-- Reddit comment enrichment sorted by total engagement (upvotes + comments), not just upvotes
-- Polymarket display shows % odds only, dollar volumes removed
-- 852 tests passing
-
-### Fixed
-
-- Marketplace validation: duplicate `name: last30days` collision in `skills/last30days/SKILL.md` that caused strict validators to reject the plugin. Resolved by renaming the internal v3 architecture spec to `last30days-v3-spec` in #214
-- Stale README link to the deleted `skills/last30days-v3/` path from the v3 directory rename. Fixed in #214
-- Codex CLI discovery: added the real `.agents/skills/last30days/SKILL.md` (regular file, not a symlink, since Codex's loader skips symlinked files) and `.codex-plugin/plugin.json` namespace marker in #219
-
-## Credits
-
-- [@steipete](https://github.com/steipete) for Bird CLI (vendored X search) and yt-dlp/summarize inspiration for YouTube transcripts
 - [@galligan](https://github.com/galligan) for marketplace plugin inspiration
 - [@hutchins](https://x.com/hutchins) for pushing the YouTube feature
 

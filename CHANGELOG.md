@@ -189,7 +189,6 @@ Three headline features: watchlists for always-on bots, YouTube transcripts as a
 
 ### Credits
 
-- @steipete -- Bird CLI (vendored X search) and yt-dlp/summarize inspiration for YouTube transcripts
 - @galligan -- Marketplace plugin inspiration
 - @hutchins -- Pushed for YouTube feature
 
