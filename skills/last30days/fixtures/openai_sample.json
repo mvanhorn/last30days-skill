@@ -1,0 +1,22 @@
+{
+  "id": "resp_mock123",
+  "object": "response",
+  "created": 1706140800,
+  "model": "gpt-5.2",
+  "output": [
+    {
+      "type": "message",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\n  \"items\": [\n    {\n      \"title\": \"Best practices for Claude Code skills - comprehensive guide\",\n      \"url\": \"https://reddit.com/r/ClaudeAI/comments/abc123/best_practices_for_claude_code_skills\",\n      \"subreddit\": \"ClaudeAI\",\n      \"date\": \"2026-01-15\",\n      \"why_relevant\": \"Detailed discussion of skill creation patterns and best practices\",\n      \"relevance\": 0.95\n    },\n    {\n      \"title\": \"How I built a research skill for Claude Code\",\n      \"url\": \"https://reddit.com/r/ClaudeAI/comments/def456/how_i_built_a_research_skill\",\n      \"subreddit\": \"ClaudeAI\",\n      \"date\": \"2026-01-10\",\n      \"why_relevant\": \"Real-world example of building a Claude Code skill with API integrations\",\n      \"relevance\": 0.90\n    },\n    {\n      \"title\": \"Claude Code vs Cursor vs Windsurf - January 2026 comparison\",\n      \"url\": \"https://reddit.com/r/LocalLLaMA/comments/ghi789/claude_code_vs_cursor_vs_windsurf\",\n      \"subreddit\": \"LocalLLaMA\",\n      \"date\": \"2026-01-08\",\n      \"why_relevant\": \"Compares Claude Code features including skills system\",\n      \"relevance\": 0.85\n    },\n    {\n      \"title\": \"Tips for effective prompt engineering in Claude Code\",\n      \"url\": \"https://reddit.com/r/PromptEngineering/comments/jkl012/tips_for_claude_code_prompts\",\n      \"subreddit\": \"PromptEngineering\",\n      \"date\": \"2026-01-05\",\n      \"why_relevant\": \"Discusses prompt patterns that work well with Claude Code skills\",\n      \"relevance\": 0.80\n    },\n    {\n      \"title\": \"New Claude Code update: improved skill loading\",\n      \"url\": \"https://reddit.com/r/ClaudeAI/comments/mno345/new_claude_code_update_improved_skill_loading\",\n      \"subreddit\": \"ClaudeAI\",\n      \"date\": \"2026-01-03\",\n      \"why_relevant\": \"Announcement of new skill features in Claude Code\",\n      \"relevance\": 0.75\n    }\n  ]\n}"
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 150,
+    "completion_tokens": 500,
+    "total_tokens": 650
+  }
+}

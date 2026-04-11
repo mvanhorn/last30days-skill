@@ -1,14 +1,8 @@
 ---
 name: last30days
-version: "3.0.0"
 description: "Multi-query social search with intelligent planning. Agent plans queries when possible, falls back to Gemini/OpenAI when not. Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, and the web."
-argument-hint: 'last30days AI video tools, last30days best noise cancelling headphones'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
-homepage: https://github.com/mvanhorn/last30days-skill
-repository: https://github.com/mvanhorn/last30days-skill
-author: mvanhorn
 license: MIT
-user-invocable: true
 metadata:
   openclaw:
     emoji: "📰"
@@ -59,7 +53,7 @@ metadata:
       - clawhub
 ---
 
-# last30days v2.9.5: Research Any Topic from the Last 30 Days
+# last30days v3.0.0: Research Any Topic from the Last 30 Days
 
 > **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `~/Documents/Last30Days/`. X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars). Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
 
@@ -67,9 +61,25 @@ Research ANY topic across Reddit, X, YouTube, and other sources. Surface what pe
 
 ## Runtime Preflight
 
-Before running any `last30days.py` command in this skill, resolve a Python 3.12+ interpreter once and keep it in `LAST30DAYS_PYTHON`:
+Before running any `last30days.py` command in this skill, resolve the skill root and a Python 3.12+ interpreter once:
 
 ```bash
+for dir in \
+  "${SKILL_ROOT:-}" \
+  "${CODEX_HOME:-$HOME/.codex}/skills/last30days" \
+  "$HOME/.agents/skills/last30days" \
+  "$HOME/.claude/skills/last30days" \
+  "$HOME/.openclaw/skills/last30days" \
+  "${CLAUDE_PLUGIN_ROOT:-}" \
+  "$PWD"; do
+  [ -n "$dir" ] && [ -f "$dir/scripts/last30days.py" ] && SKILL_ROOT="$dir" && break
+done
+
+if [ -z "${SKILL_ROOT:-}" ]; then
+  echo "ERROR: Could not find scripts/last30days.py" >&2
+  exit 1
+fi
+
 for py in python3.14 python3.13 python3.12 python3; do
   command -v "$py" >/dev/null 2>&1 || continue
   "$py" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || continue
@@ -81,6 +91,12 @@ if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
   echo "ERROR: last30days v3 requires Python 3.12+. Install python3.12 or python3.13 and rerun." >&2
   exit 1
 fi
+```
+
+If `uv` is available, prefer `cd "$SKILL_ROOT" && uv run --with 'requests>=2.32,<3' --python "$LAST30DAYS_PYTHON" python scripts/last30days.py ...`. Without `uv`, verify `requests` first:
+
+```bash
+"$LAST30DAYS_PYTHON" -c 'import requests' || "$LAST30DAYS_PYTHON" -m pip install --user 'requests>=2.32,<3'
 ```
 
 ## Step 0: First-Run Setup Wizard

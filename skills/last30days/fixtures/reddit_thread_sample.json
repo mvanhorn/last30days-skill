@@ -1,0 +1,108 @@
+[
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t3",
+          "data": {
+            "title": "Best practices for Claude Code skills - comprehensive guide",
+            "score": 847,
+            "num_comments": 156,
+            "upvote_ratio": 0.94,
+            "created_utc": 1705363200,
+            "permalink": "/r/ClaudeAI/comments/abc123/best_practices_for_claude_code_skills/",
+            "selftext": "After building 20+ skills for Claude Code, here are my key learnings..."
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "Listing",
+    "data": {
+      "children": [
+        {
+          "kind": "t1",
+          "data": {
+            "score": 234,
+            "created_utc": 1705366800,
+            "author": "skill_expert",
+            "body": "Great guide! One thing I'd add: always use explicit tool permissions in your SKILL.md. Don't default to allowing everything.",
+            "permalink": "/r/ClaudeAI/comments/abc123/best_practices_for_claude_code_skills/comment1/"
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "score": 189,
+            "created_utc": 1705370400,
+            "author": "claude_dev",
+            "body": "The context: fork tip is gold. I was wondering why my heavy research skill was slow - it was blocking the main thread!",
+            "permalink": "/r/ClaudeAI/comments/abc123/best_practices_for_claude_code_skills/comment2/"
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "score": 145,
+            "created_utc": 1705374000,
+            "author": "ai_builder",
+            "body": "For anyone starting out: begin with a simple skill that just runs one bash command. Once that works, build up complexity gradually.",
+            "permalink": "/r/ClaudeAI/comments/abc123/best_practices_for_claude_code_skills/comment3/"
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "score": 98,
+            "created_utc": 1705377600,
+            "author": "dev_tips",
+            "body": "The --mock flag pattern for testing without API calls is essential. I always build that in from day one now.",
+            "permalink": "/r/ClaudeAI/comments/abc123/best_practices_for_claude_code_skills/comment4/"
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "score": 76,
+            "created_utc": 1705381200,
+            "author": "code_writer",
+            "body": "Thanks for sharing! Question: how do you handle API key storage securely in skills?",
+            "permalink": "/r/ClaudeAI/comments/abc123/best_practices_for_claude_code_skills/comment5/"
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "score": 65,
+            "created_utc": 1705384800,
+            "author": "security_minded",
+            "body": "I use ~/.config/skillname/.env with chmod 600. Never hardcode keys, and definitely don't commit them!",
+            "permalink": "/r/ClaudeAI/comments/abc123/best_practices_for_claude_code_skills/comment6/"
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "score": 52,
+            "created_utc": 1705388400,
+            "author": "helpful_user",
+            "body": "The caching pattern you described saved me so much on API costs. 24h TTL is perfect for most research skills.",
+            "permalink": "/r/ClaudeAI/comments/abc123/best_practices_for_claude_code_skills/comment7/"
+          }
+        },
+        {
+          "kind": "t1",
+          "data": {
+            "score": 34,
+            "created_utc": 1705392000,
+            "author": "newbie_coder",
+            "body": "This is exactly what I needed. Starting my first skill this weekend!",
+            "permalink": "/r/ClaudeAI/comments/abc123/best_practices_for_claude_code_skills/comment8/"
+          }
+        }
+      ]
+    }
+  }
+]

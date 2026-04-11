@@ -1,0 +1,58 @@
+{
+  "items": [
+    {
+      "video_id": "7543693751290481942",
+      "text": "This Claude Code trick saved me hours #claudecode #ai #coding",
+      "url": "https://www.tiktok.com/@codemaster/video/7543693751290481942",
+      "author_name": "codemaster",
+      "date": "2026-02-28",
+      "engagement": {
+        "views": 2100000,
+        "likes": 45000,
+        "comments": 1200,
+        "shares": 8400
+      },
+      "hashtags": ["claudecode", "ai", "coding"],
+      "duration": 45,
+      "relevance": 0.85,
+      "why_relevant": "TikTok: This Claude Code trick saved me hours #claude",
+      "caption_snippet": "So I found this insane trick with Claude Code where you can use slash commands to automate everything"
+    },
+    {
+      "video_id": "7543100200112345678",
+      "text": "AI coding tools comparison 2026 - Claude vs Copilot vs Cursor #ai #devtools",
+      "url": "https://www.tiktok.com/@techreviewer/video/7543100200112345678",
+      "author_name": "techreviewer",
+      "date": "2026-02-25",
+      "engagement": {
+        "views": 850000,
+        "likes": 22000,
+        "comments": 890,
+        "shares": 3200
+      },
+      "hashtags": ["ai", "devtools"],
+      "duration": 60,
+      "relevance": 0.7,
+      "why_relevant": "TikTok: AI coding tools comparison 2026 - Claude vs Copi",
+      "caption_snippet": ""
+    },
+    {
+      "video_id": "7543200300223456789",
+      "text": "You need to try Claude Code RIGHT NOW #programming #tips",
+      "url": "https://www.tiktok.com/@devtips/video/7543200300223456789",
+      "author_name": "devtips",
+      "date": "2026-03-01",
+      "engagement": {
+        "views": 500000,
+        "likes": 15000,
+        "comments": 450,
+        "shares": 2100
+      },
+      "hashtags": ["programming", "tips"],
+      "duration": 30,
+      "relevance": 0.6,
+      "why_relevant": "TikTok: You need to try Claude Code RIGHT NOW #programm",
+      "caption_snippet": "Let me show you why Claude Code is the best AI coding tool right now"
+    }
+  ]
+}

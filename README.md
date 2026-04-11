@@ -152,6 +152,20 @@ claude plugin update last30days@last30days-skill
 clawhub install last30days-official
 ```
 
+### Codex / skills.sh
+
+The portable skill package lives at `skills/last30days` and is self-contained for Codex-style installers.
+
+```bash
+npx skills add https://github.com/mvanhorn/last30days-skill/tree/main/skills/last30days -g -a codex -y --copy
+```
+
+From inside Codex, you can also use the built-in installer:
+
+```
+$skill-installer install https://github.com/mvanhorn/last30days-skill/tree/main/skills/last30days
+```
+
 ### Manual
 ```bash
 git clone https://github.com/mvanhorn/last30days-skill.git ~/.claude/skills/last30days

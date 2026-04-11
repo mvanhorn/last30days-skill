@@ -1,0 +1,22 @@
+{
+  "id": "resp_xai_mock456",
+  "object": "response",
+  "created": 1706140800,
+  "model": "grok-4-latest",
+  "output": [
+    {
+      "type": "message",
+      "content": [
+        {
+          "type": "output_text",
+          "text": "{\n  \"items\": [\n    {\n      \"text\": \"Just shipped my first Claude Code skill! The SKILL.md format is incredibly intuitive. Pro tip: use context: fork for resource-intensive operations.\",\n      \"url\": \"https://x.com/devuser1/status/1234567890\",\n      \"author_handle\": \"devuser1\",\n      \"date\": \"2026-01-18\",\n      \"engagement\": {\n        \"likes\": 542,\n        \"reposts\": 87,\n        \"replies\": 34,\n        \"quotes\": 12\n      },\n      \"why_relevant\": \"First-hand experience building Claude Code skills with practical tips\",\n      \"relevance\": 0.92\n    },\n    {\n      \"text\": \"Thread: Everything I learned building 10 Claude Code skills in 30 days. 1/ Start simple. Your first skill should be < 50 lines of markdown.\",\n      \"url\": \"https://x.com/aibuilder/status/1234567891\",\n      \"author_handle\": \"aibuilder\",\n      \"date\": \"2026-01-12\",\n      \"engagement\": {\n        \"likes\": 1203,\n        \"reposts\": 245,\n        \"replies\": 89,\n        \"quotes\": 56\n      },\n      \"why_relevant\": \"Comprehensive thread on skill building best practices\",\n      \"relevance\": 0.95\n    },\n    {\n      \"text\": \"The allowed-tools field in SKILL.md is crucial for security. Don't give skills more permissions than they need.\",\n      \"url\": \"https://x.com/securitydev/status/1234567892\",\n      \"author_handle\": \"securitydev\",\n      \"date\": \"2026-01-08\",\n      \"engagement\": {\n        \"likes\": 328,\n        \"reposts\": 67,\n        \"replies\": 23,\n        \"quotes\": 8\n      },\n      \"why_relevant\": \"Security best practices for Claude Code skills\",\n      \"relevance\": 0.85\n    },\n    {\n      \"text\": \"Loving the new /skill command in Claude Code. Makes testing skills so much easier during development.\",\n      \"url\": \"https://x.com/codeenthusiast/status/1234567893\",\n      \"author_handle\": \"codeenthusiast\",\n      \"date\": \"2026-01-05\",\n      \"engagement\": {\n        \"likes\": 156,\n        \"reposts\": 23,\n        \"replies\": 12,\n        \"quotes\": 4\n      },\n      \"why_relevant\": \"Discusses skill development workflow\",\n      \"relevance\": 0.78\n    }\n  ]\n}"
+        }
+      ]
+    }
+  ],
+  "usage": {
+    "prompt_tokens": 180,
+    "completion_tokens": 450,
+    "total_tokens": 630
+  }
+}

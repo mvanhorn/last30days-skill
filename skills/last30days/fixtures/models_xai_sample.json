@@ -1,0 +1,23 @@
+{
+  "object": "list",
+  "data": [
+    {
+      "id": "grok-4-latest",
+      "object": "model",
+      "created": 1704067200,
+      "owned_by": "xai"
+    },
+    {
+      "id": "grok-4",
+      "object": "model",
+      "created": 1701388800,
+      "owned_by": "xai"
+    },
+    {
+      "id": "grok-3",
+      "object": "model",
+      "created": 1698710400,
+      "owned_by": "xai"
+    }
+  ]
+}
