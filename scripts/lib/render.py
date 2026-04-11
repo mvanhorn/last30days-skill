@@ -136,7 +136,8 @@ def render_full(report: schema.Report) -> str:
     lines.append("## All Items by Source")
     lines.append("")
     source_order = ["reddit", "x", "youtube", "tiktok", "instagram", "threads", "pinterest",
-                    "hackernews", "bluesky", "truthsocial", "polymarket", "grounding", "xiaohongshu", "github", "perplexity"]
+                    "hackernews", "bluesky", "truthsocial", "polymarket", "adanos",
+                    "grounding", "xiaohongshu", "github", "perplexity"]
     for source in source_order:
         items = report.items_by_source.get(source, [])
         if not items:
@@ -211,7 +212,8 @@ def _format_item_engagement(item: schema.SourceItem) -> str:
         return ""
     parts = []
     for key in ["score", "likes", "views", "points", "reposts", "replies", "comments",
-                "play_count", "digg_count", "share_count", "num_comments"]:
+                "play_count", "digg_count", "share_count", "num_comments", "buzz_score",
+                "mentions", "trade_count", "total_upvotes", "total_liquidity"]:
         val = eng.get(key)
         if val is not None and val != 0:
             parts.append(f"{val} {key}")
@@ -434,6 +436,13 @@ def _format_date(item: schema.SourceItem | None) -> str:
 def _format_actor(item: schema.SourceItem | None) -> str | None:
     if not item:
         return None
+    if item.source == "adanos":
+        ticker = str(item.metadata.get("ticker") or "").strip()
+        platform = str(item.metadata.get("platform") or "").strip()
+        if ticker and platform:
+            return f"{ticker} on {platform}"
+        if ticker:
+            return ticker
     if item.source == "reddit" and item.container:
         return f"r/{item.container}"
     if item.source in {"x", "bluesky", "truthsocial"} and item.author:
@@ -462,6 +471,13 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "polymarket":   [],
     "github":       [("reactions", "react"), ("comments", "cmt")],
     "perplexity":   [("citations", "cite")],
+    "adanos": [
+        ("buzz_score", "buzz"),
+        ("mentions", "mentions"),
+        ("trade_count", "trades"),
+        ("total_upvotes", "upvotes"),
+        ("total_liquidity", "liquidity"),
+    ],
 }
 
 
@@ -527,6 +543,7 @@ def _top_actor_summary(source: str, items: list[schema.SourceItem]) -> str | Non
         "grounding": "domains",
         "youtube": "channels",
         "hackernews": "domains",
+        "adanos": "tickers",
     }.get(source, "voices")
     return f"{label}: {', '.join(actors)}"
 
@@ -551,6 +568,9 @@ def _top_voices_overall(items_by_source: dict[str, list[schema.SourceItem]], lim
 
 
 def _stats_actor(item: schema.SourceItem) -> str | None:
+    if item.source == "adanos":
+        ticker = str(item.metadata.get("ticker") or "").strip()
+        return ticker or None
     if item.source == "reddit" and item.container:
         return f"r/{item.container}"
     if item.source in {"x", "bluesky", "truthsocial"} and item.author:

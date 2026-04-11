@@ -374,7 +374,7 @@ def run(
             normalized = normalized[: settings["per_stream_limit"]]
             bundle.add_items(subquery.label, source, normalized)
             if artifact:
-                artifact_key = "grounding" if source == "grounding" else source
+                artifact_key = "adanos" if source == "adanos" else "grounding"
                 bundle.artifacts.setdefault(artifact_key, []).append(artifact)
 
     # Phase 2: supplemental entity-based searches

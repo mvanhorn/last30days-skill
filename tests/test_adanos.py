@@ -104,6 +104,24 @@ class AdanosPipelineTests(unittest.TestCase):
         self.assertIn("adanos", pipeline.available_sources({**config, "INCLUDE_SOURCES": "adanos"}))
         self.assertIn("adanos", pipeline.available_sources(config, requested_sources=["adanos"]))
 
+    @patch("lib.pipeline._retrieve_stream")
+    def test_adanos_artifacts_use_source_bucket(self, mock_retrieve):
+        def fake_retrieve(**kwargs):
+            items, _artifact = pipeline._mock_stream_results(kwargs["source"], kwargs["subquery"])
+            return items, {"label": "adanos", "resultCount": len(items)}
+
+        mock_retrieve.side_effect = fake_retrieve
+        report = pipeline.run(
+            topic="TSLA stock sentiment",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            requested_sources=["adanos"],
+            mock=True,
+        )
+
+        self.assertIn("adanos", report.artifacts)
+        self.assertEqual("adanos", report.artifacts["adanos"][0]["label"])
+
 
 class AdanosNormalizeTests(unittest.TestCase):
     def test_normalize_adanos_preserves_sentiment_metadata(self):
