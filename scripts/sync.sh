@@ -24,7 +24,7 @@ sync_target() {
 
   echo ""
   echo "--- Syncing to $target ---"
-  mkdir -p "$target/scripts/lib" "$target/variants/open/references"
+  mkdir -p "$target/scripts/lib"
 
   cp "$skill_md" "$target/SKILL.md"
 
@@ -35,7 +35,13 @@ sync_target() {
     "$SRC/scripts/store.py" \
     "$target/scripts/"
   rsync -a "$SRC/scripts/lib/"*.py "$target/scripts/lib/"
-  rsync -a "$SRC/variants/open/" "$target/variants/open/"
+
+  # The OpenClaw variant lives in the private repo only. Skip cleanly when
+  # running this script from the public repo where variants/open does not exist.
+  if [ -d "$SRC/variants/open" ]; then
+    mkdir -p "$target/variants/open/references"
+    rsync -a "$SRC/variants/open/" "$target/variants/open/"
+  fi
 
   if [ -d "$SRC/scripts/lib/vendor" ]; then
     rsync -a "$SRC/scripts/lib/vendor" "$target/scripts/lib/"
@@ -63,7 +69,16 @@ for t in "${COMMON_TARGETS[@]}"; do
   sync_target "$t" "$SRC/SKILL.md"
 done
 
-sync_target "$OPENCLAW_TARGET" "$SRC/variants/open/SKILL.md"
+# OpenClaw sync only runs when the private-repo OpenClaw variant is present
+# in the source tree. The public repo does not ship variants/open (the variant
+# is sanitized via strip_for_openclaw.py and published separately from
+# last30days-skill-private).
+if [ -d "$SRC/variants/open" ]; then
+  sync_target "$OPENCLAW_TARGET" "$SRC/variants/open/SKILL.md"
+else
+  echo ""
+  echo "Skipping OpenClaw target (no variants/open in this repo)"
+fi
 
 echo ""
 echo "Sync complete."
