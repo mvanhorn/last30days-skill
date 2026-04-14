@@ -113,6 +113,17 @@ if [ -d "$HOME/.hermes/skills/research" ]; then
   fi
 fi
 
+# GitHub Copilot: if a Copilot-specific SKILL.md exists, overwrite the copy
+# that COMMON_TARGETS already deployed to ~/.agents/skills/last30days.
+# Scripts are already in place from the COMMON_TARGETS sync above.
+if [ -f "$SRC/.copilot-plugin/SKILL.md" ]; then
+  COPILOT_TARGET="$HOME/.agents/skills/last30days"
+  echo ""
+  echo "--- Overwriting SKILL.md for GitHub Copilot (VS Code) ---"
+  cp "$SRC/.copilot-plugin/SKILL.md" "$COPILOT_TARGET/SKILL.md"
+  echo "  Deployed Copilot-specific SKILL.md"
+fi
+
 # OpenClaw sync only runs when the private-repo OpenClaw variant is present
 # in the source tree. The public repo does not ship variants/open (the variant
 # is sanitized via strip_for_openclaw.py and published separately from

@@ -30,6 +30,13 @@ Hermes:
 # Or manually copy to ~/.hermes/skills/research/last30days/
 ```
 
+GitHub Copilot (VS Code):
+```bash
+git clone https://github.com/mvanhorn/last30days-skill.git
+cd last30days-skill && bash scripts/sync.sh
+# Deploys to ~/.agents/skills/last30days/
+```
+
 Zero config. Reddit, HN, Polymarket, and GitHub work immediately. Run it once and the setup wizard unlocks X, YouTube, TikTok, and more in 30 seconds.
 
 ---
@@ -186,6 +193,30 @@ git clone https://github.com/mvanhorn/last30days-skill.git ~/.claude/skills/last
 ```
 
 Or build the claude.ai `.skill` file from source: `bash scripts/build-skill.sh` produces `dist/last30days.skill`.
+
+### GitHub Copilot (VS Code)
+
+Clone the repo and run `sync.sh` to deploy to `~/.agents/skills/last30days/`:
+
+```bash
+git clone https://github.com/mvanhorn/last30days-skill.git
+cd last30days-skill && bash scripts/sync.sh
+```
+
+On Windows (PowerShell):
+```powershell
+git clone https://github.com/mvanhorn/last30days-skill.git
+cd last30days-skill
+New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.agents\skills\last30days\scripts\lib"
+Copy-Item .copilot-plugin\SKILL.md "$env:USERPROFILE\.agents\skills\last30days\SKILL.md"
+Copy-Item scripts\last30days.py, scripts\watchlist.py, scripts\briefing.py, scripts\store.py "$env:USERPROFILE\.agents\skills\last30days\scripts\"
+Copy-Item scripts\lib\*.py "$env:USERPROFILE\.agents\skills\last30days\scripts\lib\"
+Copy-Item -Recurse scripts\lib\vendor "$env:USERPROFILE\.agents\skills\last30days\scripts\lib\"
+```
+
+GitHub Copilot reads skills from `~/.agents/skills/` automatically. The Copilot-specific SKILL.md adapts the setup wizard and commands for VS Code's terminal and cross-platform support (Windows/macOS/Linux).
+
+Requires Python 3.12+ and `requests` (`pip install requests`).
 
 Reddit (with comments), Hacker News, Polymarket, and GitHub work immediately. Zero configuration. Run `/last30days` once and the setup wizard unlocks more sources in 30 seconds.
 
