@@ -288,8 +288,8 @@ def main() -> int:
                 sys.stderr.write(f"[Planner] Invalid --plan JSON: {exc}\n")
 
         # Auto-resolve: use web search to discover subreddits/handles before planning.
-        # This is the engine-side equivalent of SKILL.md Steps 0.55/0.75 for platforms
-        # without WebSearch (OpenClaw, Codex, raw CLI).
+        # This is the engine-side equivalent of SKILL.md Steps 0.55/0.75 for sessions
+        # where the agent cannot do external WebSearch planning.
         if args.auto_resolve and not external_plan:
             from lib import resolve
             resolution = resolve.auto_resolve(topic, config)

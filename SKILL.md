@@ -91,8 +91,8 @@ To detect first run: check if `~/.config/last30days/.env` exists. If it does NOT
 
 **When first run is detected, detect your platform first:**
 
-**If you do NOT have WebSearch capability (OpenClaw, Codex, raw CLI):** Run the OpenClaw setup flow below.
-**If you DO have WebSearch (Claude Code):** Run the standard setup flow below.
+**If you do NOT have WebSearch capability in this session (for example, OpenClaw or a raw CLI session):** Run the OpenClaw setup flow below.
+**If you DO have WebSearch capability in this session (for example, Claude Code or Codex with search enabled):** Run the standard setup flow below.
 
 ---
 
@@ -762,10 +762,10 @@ fi
 - `--github-repo={RESOLVED_GITHUB_REPOS}` (from Step 0.5c, product/project topics only)
 - Omit any flag where the value was not resolved (empty).
 
-**If you skipped Steps 0.55 and 0.75 (no WebSearch -- OpenClaw, Codex, etc.), add:**
+**If you skipped Steps 0.55 and 0.75 because WebSearch is unavailable in this session, add:**
 - `--auto-resolve` (the engine will use Brave/Exa/Serper to discover subreddits and context before planning)
 
-**If you skipped Steps 0.55 and 0.75 (no WebSearch), run the command as-is.** The Python engine will plan internally.
+**If you ran Steps 0.55 and 0.75 with WebSearch, do NOT add `--auto-resolve`.** The Python engine will use your `--plan` and resolved targeting flags.
 
 Use a **timeout of 300000** (5 minutes) on the Bash call. The script typically takes 1-3 minutes.
 
