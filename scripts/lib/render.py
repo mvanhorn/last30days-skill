@@ -152,13 +152,14 @@ def render_full(report: schema.Report) -> str:
                 lines.append(f"  *{item.container}*")
             if item.snippet:
                 lines.append(f"  {item.snippet[:500]}")
-            # Top comments for Reddit
+            # Top comments for Reddit, YouTube, TikTok, HackerNews.
             top_comments = item.metadata.get("top_comments", [])
             if top_comments and isinstance(top_comments[0], dict):
+                vote_label = _vote_label_for(item.source)
                 for tc in top_comments[:3]:
                     excerpt = tc.get("excerpt", tc.get("text", ""))[:200]
                     tc_score = tc.get("score", "")
-                    lines.append(f"  Top comment ({tc_score} upvotes): {excerpt}")
+                    lines.append(f"  Top comment ({tc_score} {vote_label}): {excerpt}")
             # Comment insights for Reddit
             insights = item.metadata.get("comment_insights", [])
             if insights:
@@ -276,7 +277,8 @@ def _render_candidate(candidate: schema.Candidate, prefix: str) -> list[str]:
     for tc in _top_comments_list(primary):
         excerpt = tc.get("excerpt") or tc.get("text") or ""
         score = tc.get("score", "")
-        lines.append(f"   - Comment ({score} upvotes): {_truncate(excerpt.strip(), 240)}")
+        vote_label = _vote_label_for(primary.source) if primary else "upvotes"
+        lines.append(f"   - Comment ({score} {vote_label}): {_truncate(excerpt.strip(), 240)}")
     insight = _comment_insight(primary)
     if insight:
         lines.append(f"   - Insight: {_truncate(insight, 220)}")
@@ -582,13 +584,42 @@ def _format_explanation(candidate: schema.Candidate) -> str | None:
     return candidate.explanation
 
 
-def _top_comments_list(item: schema.SourceItem | None, limit: int = 3, min_score: int = 10) -> list[dict]:
-    """Return up to `limit` top comments with score >= min_score."""
+# Per-source minimum vote counts for showing a top comment in compact emit.
+# Reddit upvotes, YouTube likes, and TikTok likes are not comparable units —
+# 10 upvotes on Reddit signals genuine community interest, 10 likes on a
+# viral TikTok is noise. First-pass values; tune after live observation.
+_TOP_COMMENT_MIN_SCORE: dict[str, int] = {
+    "reddit": 10,
+    "youtube": 50,
+    "tiktok": 500,
+    "hackernews": 5,
+}
+_TOP_COMMENT_VOTE_LABEL: dict[str, str] = {
+    "reddit": "upvotes",
+    "hackernews": "points",
+    "youtube": "likes",
+    "tiktok": "likes",
+}
+
+
+def _vote_label_for(source: str) -> str:
+    return _TOP_COMMENT_VOTE_LABEL.get(source, "votes")
+
+
+def _top_comments_list(item: schema.SourceItem | None, limit: int = 3, min_score: int | None = None) -> list[dict]:
+    """Return up to `limit` top comments with score at or above the source's minimum.
+
+    If `min_score` is passed explicitly it overrides the per-source default;
+    otherwise the source-keyed map is consulted, with an effective default of 0
+    (always show) for unknown sources so new sources don't get silently hidden.
+    """
     if not item:
         return []
     comments = item.metadata.get("top_comments") or []
     if not comments or not isinstance(comments[0], dict):
         return []
+    if min_score is None:
+        min_score = _TOP_COMMENT_MIN_SCORE.get(item.source, 0)
     return [c for c in comments if (c.get("score") or 0) >= min_score][:limit]
 
 

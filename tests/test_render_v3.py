@@ -242,6 +242,34 @@ class RenderTopCommentsTests(unittest.TestCase):
         self.assertNotIn("Comment (", text)
         self.assertNotIn("upvotes)", text)
 
+    def test_youtube_comments_use_likes_label_and_50_threshold(self):
+        comments = [
+            {"score": 120, "excerpt": "legit fire tutorial", "author": "alice"},
+            {"score": 60, "excerpt": "saved me hours", "author": "bob"},
+            {"score": 10, "excerpt": "below threshold", "author": "carol"},
+        ]
+        report = self._make_report_with_comments(source="youtube", top_comments=comments)
+        text = render.render_compact(report)
+        self.assertIn("Comment (120 likes): legit fire tutorial", text)
+        self.assertIn("Comment (60 likes): saved me hours", text)
+        self.assertNotIn("Comment (10 likes)", text)
+        # Render must not silently label YT as upvotes.
+        self.assertNotIn("Comment (120 upvotes)", text)
+
+    def test_tiktok_comments_use_likes_label_and_500_threshold(self):
+        comments = [
+            {"score": 2000, "excerpt": "this aged well", "author": "a"},
+            {"score": 600, "excerpt": "so real", "author": "b"},
+            {"score": 400, "excerpt": "below tt threshold", "author": "c"},
+            {"score": 50, "excerpt": "way below", "author": "d"},
+        ]
+        report = self._make_report_with_comments(source="tiktok", top_comments=comments)
+        text = render.render_compact(report)
+        self.assertIn("Comment (2000 likes): this aged well", text)
+        self.assertIn("Comment (600 likes): so real", text)
+        self.assertNotIn("Comment (400 likes)", text)
+        self.assertNotIn("Comment (50 likes)", text)
+
 
 class RenderBestTakesCompactTests(unittest.TestCase):
     """Tests for Best Takes section in compact output and fun tags on candidates."""
