@@ -128,7 +128,7 @@ Say "eli5 on" after any research run. The synthesis rewrites in plain language. 
 
 - **Free Reddit comments.** Public JSON gives you threads + top comments with upvote counts. No API key, no ScrapeCreators. Just works.
 - **YouTube transcripts that actually work.** Widened candidate pool 3x past music videos to reach talk/review content with captions.
-- **Threads, Pinterest, YouTube comments.** Opt-in sources via ScrapeCreators. Set `INCLUDE_SOURCES=tiktok,instagram` and add threads, pinterest, youtube_comments for more.
+- **Threads, Pinterest, YouTube + TikTok comments.** Opt-in sources via ScrapeCreators. Set `INCLUDE_SOURCES=tiktok,instagram` and add threads, pinterest, youtube_comments, tiktok_comments for more. `youtube_comments` and `tiktok_comments` surface top comments with vote counts the same way Reddit does.
 - **Perplexity Sonar.** Grounded web search with citations via OpenRouter. Add `OPENROUTER_API_KEY` to unlock.
 - **Polymarket noise filtering.** Common-word disambiguation prevents "Apple" from matching "Will Apple release a car?"
 - **Resilient Reddit.** Timeout budgets and runtime fallback. One slow thread doesn't kill the whole run.

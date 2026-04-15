@@ -203,8 +203,8 @@ Your ScrapeCreators key powers TikTok, Instagram, Threads, Pinterest, and YouTub
 **Call AskUserQuestion:**
 Question: "Which ScrapeCreators sources do you want on?"
 Options:
-- "TikTok + Instagram (recommended)" - append `INCLUDE_SOURCES=tiktok,instagram` to ~/.config/last30days/.env. Confirm: "TikTok and Instagram are on, plus Reddit backup if public Reddit has issues. You can add threads, pinterest, youtube_comments to INCLUDE_SOURCES anytime."
-- "Everything - TikTok, Instagram, Threads, Pinterest, YouTube comments" - append `INCLUDE_SOURCES=tiktok,instagram,threads,pinterest,youtube_comments` to ~/.config/last30days/.env. Confirm: "All ScrapeCreators sources are on."
+- "TikTok + Instagram (recommended)" - append `INCLUDE_SOURCES=tiktok,instagram` to ~/.config/last30days/.env. Confirm: "TikTok and Instagram are on, plus Reddit backup if public Reddit has issues. You can add threads, pinterest, youtube_comments, tiktok_comments to INCLUDE_SOURCES anytime."
+- "Everything - TikTok, Instagram, Threads, Pinterest, YouTube + TikTok comments" - append `INCLUDE_SOURCES=tiktok,instagram,threads,pinterest,youtube_comments,tiktok_comments` to ~/.config/last30days/.env. Confirm: "All ScrapeCreators sources are on."
 - "Just the basics - let's run our first search" - don't write the flag. Confirm: "Got it. ScrapeCreators will serve as Reddit backup. You can add sources to INCLUDE_SOURCES in your .env anytime."
 
 **After TikTok/Instagram opt-in (or SC skip), show the first research topic modal:**
@@ -244,7 +244,7 @@ YouTube (free, open source):
 
 Bonus: TikTok, Instagram, Threads, Pinterest, YouTube comments (ScrapeCreators):
 - `SCRAPECREATORS_API_KEY=xxx` - 10,000 free calls at scrapecreators.com.
-- After adding your key, set `INCLUDE_SOURCES=tiktok,instagram` to turn on the most popular ones. Add threads, pinterest, youtube_comments for more.
+- After adding your key, set `INCLUDE_SOURCES=tiktok,instagram` to turn on the most popular ones. Add threads, pinterest, youtube_comments, tiktok_comments for more.
 
 GitHub Issues/PRs (free, no key needed):
 - If you have the `gh` CLI installed (`brew install gh`), GitHub search is automatic. No API key required.
@@ -290,7 +290,7 @@ Create `~/.config/last30days/.env` if it doesn't exist (check first!), pre-popul
 
 # ScrapeCreators (10,000 free calls - scrapecreators.com):
 # SCRAPECREATORS_API_KEY=    # Unlocks: TikTok, Instagram, Reddit backup (if public Reddit gets rate-limited)
-#                             # Optional: add threads, pinterest, youtube_comments for more
+#                             # Optional: add threads, pinterest, youtube_comments, tiktok_comments for more
 # INCLUDE_SOURCES=tiktok,instagram
 
 # YouTube: install yt-dlp (brew install yt-dlp) - no key needed
@@ -776,7 +776,7 @@ The script will automatically:
 
 **Read the ENTIRE output.** It contains EIGHT data sections in this order: Reddit items, X items, YouTube items, TikTok items, Instagram Reels items, Hacker News items, Polymarket items, and WebSearch items. If you miss sections, you will produce incomplete stats.
 
-**YouTube items in the output look like:** `**{video_id}** (score:N) {channel_name} [N views, N likes]` followed by a title, URL, **transcript highlights** (pre-extracted quotable excerpts from the video), and an optional full transcript in a collapsible section. **Quote the highlights directly in your synthesis** - they are the YouTube equivalent of Reddit top comments. Attribute quotes to the channel name. Count them and include them in your synthesis and stats block.
+**YouTube items in the output look like:** `**{video_id}** (score:N) {channel_name} [N views, N likes]` followed by a title, URL, **transcript highlights** (pre-extracted quotable excerpts from the video), and an optional full transcript in a collapsible section. **Quote the highlights directly in your synthesis.** When YouTube items also include top comments (enabled via `youtube_comments`), quote those too with their like counts — they capture how viewers reacted to the video. Transcript highlights and top comments are complementary signals; use both when present. Attribute transcript quotes to the channel name, comment quotes to the commenter. Count them and include them in your synthesis and stats block.
 
 **TikTok items in the output look like:** `**{TK_id}** (score:N) @{creator} [N views, N likes]` followed by a caption, URL, hashtags, and optional caption snippet. Count them and include them in your synthesis and stats block.
 
@@ -880,8 +880,8 @@ The Judge Agent must:
 2. Weight YouTube sources HIGH (they have views, likes, and transcript content)
 3. Weight TikTok sources HIGH (they have views, likes, and caption content — viral signal)
 4. Weight WebSearch sources LOWER (no engagement data)
-5. **For Reddit: Pay special attention to top comments** — they often contain the wittiest, most insightful, or funniest take. Quote them directly.
-6. **For YouTube: Quote transcript highlights directly.** Attribute to the channel name.
+5. **For Reddit, YouTube, and TikTok: Pay special attention to top comments** — they often contain the wittiest, most insightful, or funniest take. Quote them directly, attributing to the commenter and including the vote count ("N upvotes" for Reddit, "N likes" for YouTube and TikTok). A top comment with thousands of votes is a stronger community signal than the parent post's stats alone.
+6. **For YouTube: Quote transcript highlights AND top comments.** Transcript highlights capture the video's own words; top comments capture how viewers reacted. Both add value — use them together. Attribute transcript quotes to the channel name.
 7. Identify patterns that appear across ALL sources (strongest signals)
 8. Note any contradictions between sources
 9. **Multi-source clusters (items from 3+ platforms) are the strongest signals.** Lead with these.
@@ -1067,7 +1067,7 @@ CITATION RULE: Cite sources sparingly to prove research is real.
 
 CITATION PRIORITY (most to least preferred):
 1. @handles from X — "per @handle" (these prove the tool's unique value)
-2. r/subreddits from Reddit — "per r/subreddit" (when citing Reddit, prefer quoting top comments over just the thread title)
+2. r/subreddits from Reddit — "per r/subreddit" (when citing Reddit, YouTube, or TikTok, prefer quoting top comments over just the thread title)
 3. YouTube channels — "per [channel name] on YouTube" (transcript-backed insights)
 4. TikTok creators — "per @creator on TikTok" (viral/trending signal)
 5. Instagram creators — "per @creator on Instagram" (influencer/creator signal)
