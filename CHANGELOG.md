@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.4] - 2026-04-15
+
+### Fixed
+
+- **Cleared `/doctor` path-escape error on Claude Code v2.1.109+.** `.claude-plugin/plugin.json` previously declared `"skills": ["./"]`. That value shipped unchanged from v2.1.0 through v3.0.3 and worked on older Claude Code, but current versions reject `./` with `Path escapes plugin directory: ./ (skills)`. The `"skills"` key is now omitted entirely, matching the pattern used by every other plugin in the Claude Code marketplace ecosystem. Claude Code auto-discovers `skills/*/SKILL.md` when the key is absent.
+
+### Recovery
+
+If `/doctor` reports a path-escape error for last30days, run `/plugin update last30days` then `/reload-plugins`. If errors persist, uninstall and reinstall the plugin.
+
 ## [3.0.3] - 2026-04-15
 
 ### Fixed
