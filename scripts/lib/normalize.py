@@ -69,6 +69,47 @@ def normalize_source_items(
     return filtered
 
 
+def _remap_comments(
+    raw: list[Any],
+    score_keys: tuple[str, ...],
+    excerpt_keys: tuple[str, ...],
+) -> list[dict[str, Any]]:
+    """Normalize comments from any source into the shared Reddit-compatible shape.
+
+    Downstream code (signals._top_comment_score, render._top_comments_list,
+    entity_extract, rerank) all expect `score` and `excerpt`. This helper maps
+    per-source field names (YT: likes/text, TikTok: digg_count/text) onto that
+    shape while preserving author/date/url passthrough.
+    """
+    out: list[dict[str, Any]] = []
+    for raw_c in raw:
+        if not isinstance(raw_c, dict):
+            continue
+        score = _first_present(raw_c, score_keys, default=0)
+        excerpt = _first_present(raw_c, excerpt_keys, default="")
+        try:
+            score_int = int(score or 0)
+        except (TypeError, ValueError):
+            score_int = 0
+        entry: dict[str, Any] = {
+            "score": score_int,
+            "excerpt": str(excerpt or "")[:400],
+            "author": str(raw_c.get("author") or ""),
+            "date": str(raw_c.get("date") or ""),
+        }
+        if raw_c.get("url"):
+            entry["url"] = str(raw_c["url"])
+        out.append(entry)
+    return out
+
+
+def _first_present(d: dict[str, Any], keys: tuple[str, ...], default: Any) -> Any:
+    for key in keys:
+        if key in d and d[key] not in (None, ""):
+            return d[key]
+    return default
+
+
 def _domain_from_url(url: str) -> str | None:
     if not url:
         return None
@@ -200,6 +241,11 @@ def _normalize_youtube(
     metadata: dict[str, Any] = {}
     if highlights:
         metadata["transcript_highlights"] = highlights
+    metadata["top_comments"] = _remap_comments(
+        item.get("top_comments") or [],
+        score_keys=("score", "likes"),
+        excerpt_keys=("excerpt", "text"),
+    )
     return _source_item(
         item_id=str(item.get("video_id") or item.get("id") or f"YT{index + 1}"),
         source=source,
