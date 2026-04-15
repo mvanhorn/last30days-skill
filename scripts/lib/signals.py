@@ -82,12 +82,11 @@ def _top_comment_score(item: schema.SourceItem) -> float:
 
 
 # Per-source engagement weights: list of (field_name, weight) tuples.
-# Reddit uses a custom function because upvote_ratio and top_comment_score
-# are not simple log1p fields.
+# Reddit, YouTube, and TikTok use custom functions because they include
+# a dedicated 10% top-comment-score slot (see _reddit_engagement,
+# _youtube_engagement, _tiktok_engagement).
 ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "x":            [("likes", 0.55), ("reposts", 0.25), ("replies", 0.15), ("quotes", 0.05)],
-    "youtube":      [("views", 0.50), ("likes", 0.35), ("comments", 0.15)],
-    "tiktok":       [("views", 0.50), ("likes", 0.30), ("comments", 0.20)],
     "instagram":    [("views", 0.50), ("likes", 0.30), ("comments", 0.20)],
     "hackernews":   [("points", 0.55), ("comments", 0.45)],
     "bluesky":      [("likes", 0.40), ("reposts", 0.30), ("replies", 0.20), ("quotes", 0.10)],
@@ -113,6 +112,29 @@ def _reddit_engagement(item: schema.SourceItem) -> float | None:
     return (0.50 * score) + (0.35 * comments) + (0.05 * (ratio * 10.0)) + (0.10 * top_comment)
 
 
+def _youtube_engagement(item: schema.SourceItem) -> float | None:
+    views = log1p_safe(item.engagement.get("views"))
+    likes = log1p_safe(item.engagement.get("likes"))
+    comments = log1p_safe(item.engagement.get("comments"))
+    top_comment = _top_comment_score(item)
+    if not any([views, likes, comments, top_comment]):
+        return None
+    # Mirrors Reddit: carve out 10% for top-comment signal, keep view-weight
+    # dominant. Without comments, the pre-change weights (0.50/0.35/0.15)
+    # still govern relative ordering.
+    return (0.45 * views) + (0.32 * likes) + (0.13 * comments) + (0.10 * top_comment)
+
+
+def _tiktok_engagement(item: schema.SourceItem) -> float | None:
+    views = log1p_safe(item.engagement.get("views"))
+    likes = log1p_safe(item.engagement.get("likes"))
+    comments = log1p_safe(item.engagement.get("comments"))
+    top_comment = _top_comment_score(item)
+    if not any([views, likes, comments, top_comment]):
+        return None
+    return (0.45 * views) + (0.27 * likes) + (0.18 * comments) + (0.10 * top_comment)
+
+
 def _generic_engagement(item: schema.SourceItem) -> float | None:
     if not item.engagement:
         return None
@@ -125,6 +147,10 @@ def _generic_engagement(item: schema.SourceItem) -> float | None:
 def engagement_raw(item: schema.SourceItem) -> float | None:
     if item.source == "reddit":
         return _reddit_engagement(item)
+    if item.source == "youtube":
+        return _youtube_engagement(item)
+    if item.source == "tiktok":
+        return _tiktok_engagement(item)
     weights = ENGAGEMENT_WEIGHTS.get(item.source)
     if weights:
         return _weighted_engagement(item, weights)

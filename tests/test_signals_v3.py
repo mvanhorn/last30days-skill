@@ -28,6 +28,98 @@ class SignalsV3Tests(unittest.TestCase):
         )
         self.assertAlmostEqual(expected, signals.engagement_raw(item))
 
+    def test_youtube_engagement_adds_top_comment_slot(self):
+        with_comment = schema.SourceItem(
+            item_id="yt1",
+            source="youtube",
+            title="Title",
+            body="Body",
+            url="https://youtube.com/watch?v=a",
+            engagement={"views": 10000, "likes": 500, "comments": 30},
+            metadata={"top_comments": [{"score": 500}]},
+        )
+        without = schema.SourceItem(
+            item_id="yt2",
+            source="youtube",
+            title="Title",
+            body="Body",
+            url="https://youtube.com/watch?v=b",
+            engagement={"views": 10000, "likes": 500, "comments": 30},
+            metadata={"top_comments": []},
+        )
+        with_score = signals.engagement_raw(with_comment)
+        without_score = signals.engagement_raw(without)
+        self.assertIsNotNone(with_score)
+        self.assertIsNotNone(without_score)
+        self.assertGreater(with_score, without_score)
+        expected = (
+            0.45 * math.log1p(10000)
+            + 0.32 * math.log1p(500)
+            + 0.13 * math.log1p(30)
+            + 0.10 * math.log1p(500)
+        )
+        self.assertAlmostEqual(expected, with_score, places=6)
+
+    def test_youtube_engagement_empty_returns_none(self):
+        item = schema.SourceItem(
+            item_id="yt-empty",
+            source="youtube",
+            title="Title",
+            body="Body",
+            url="https://youtube.com/watch?v=e",
+            engagement={},
+            metadata={"top_comments": []},
+        )
+        self.assertIsNone(signals.engagement_raw(item))
+
+    def test_tiktok_engagement_adds_top_comment_slot(self):
+        item = schema.SourceItem(
+            item_id="tt1",
+            source="tiktok",
+            title="Title",
+            body="Body",
+            url="https://tiktok.com/@u/video/1",
+            engagement={"views": 100000, "likes": 5000, "comments": 500},
+            metadata={"top_comments": [{"score": 1200}]},
+        )
+        expected = (
+            0.45 * math.log1p(100000)
+            + 0.27 * math.log1p(5000)
+            + 0.18 * math.log1p(500)
+            + 0.10 * math.log1p(1200)
+        )
+        self.assertAlmostEqual(expected, signals.engagement_raw(item), places=6)
+
+    def test_youtube_ranking_promotes_viral_comment_thread(self):
+        """A moderately-viewed YouTube video with a 10k-like comment should
+        outrank a slightly-higher-viewed video with no high-signal comments."""
+        viral_comment = schema.SourceItem(
+            item_id="yt-with-viral-comment",
+            source="youtube",
+            title="Deploy to Fly.io",
+            body="Deploy to Fly.io walkthrough",
+            url="https://youtube.com/watch?v=x",
+            published_at="2026-03-15",
+            engagement={"views": 5000, "likes": 200, "comments": 50},
+            metadata={"top_comments": [{"score": 10000}]},
+        )
+        higher_views = schema.SourceItem(
+            item_id="yt-higher-views-no-comment",
+            source="youtube",
+            title="Deploy to Fly.io",
+            body="Deploy to Fly.io walkthrough",
+            url="https://youtube.com/watch?v=y",
+            published_at="2026-03-15",
+            engagement={"views": 8000, "likes": 300, "comments": 60},
+            metadata={"top_comments": []},
+        )
+        ranked = signals.annotate_stream(
+            [higher_views, viral_comment],
+            ranking_query="How do I deploy on Fly.io?",
+            freshness_mode="balanced_recent",
+        )
+        self.assertEqual("yt-with-viral-comment", ranked[0].item_id)
+
     def test_polymarket_engagement_uses_market_fields(self):
         item = schema.SourceItem(
             item_id="pm1",
@@ -221,7 +313,8 @@ class SignalsV3Tests(unittest.TestCase):
         self.assertAlmostEqual(expected, result)
 
     def test_youtube_engagement_dominant_weight(self):
-        """YouTube: views at 0.50 should dominate over comments at 0.15."""
+        """YouTube: views at 0.45 should dominate. With no top-comment data,
+        the remaining 0.90 of weight is split views/likes/comments 0.45/0.32/0.13."""
         item = schema.SourceItem(
             item_id="yt1", source="youtube", title="T", body="B",
             url="https://example.com",
@@ -230,9 +323,9 @@ class SignalsV3Tests(unittest.TestCase):
         result = signals.engagement_raw(item)
         self.assertIsNotNone(result)
         expected = (
-            0.50 * math.log1p(10000)
-            + 0.35 * math.log1p(500)
-            + 0.15 * math.log1p(80)
+            0.45 * math.log1p(10000)
+            + 0.32 * math.log1p(500)
+            + 0.13 * math.log1p(80)
         )
         self.assertAlmostEqual(expected, result)
 
@@ -252,7 +345,7 @@ class SignalsV3Tests(unittest.TestCase):
         )
         result = signals.engagement_raw(item)
         self.assertIsNotNone(result)
-        expected = 0.50 * math.log1p(5000)
+        expected = 0.45 * math.log1p(5000)
         self.assertAlmostEqual(expected, result)
 
     def test_tiktok_engagement_dominant_weight(self):
@@ -264,9 +357,9 @@ class SignalsV3Tests(unittest.TestCase):
         result = signals.engagement_raw(item)
         self.assertIsNotNone(result)
         expected = (
-            0.50 * math.log1p(50000)
-            + 0.30 * math.log1p(3000)
-            + 0.20 * math.log1p(200)
+            0.45 * math.log1p(50000)
+            + 0.27 * math.log1p(3000)
+            + 0.18 * math.log1p(200)
         )
         self.assertAlmostEqual(expected, result)
 
@@ -286,7 +379,7 @@ class SignalsV3Tests(unittest.TestCase):
         )
         result = signals.engagement_raw(item)
         self.assertIsNotNone(result)
-        expected = 0.30 * math.log1p(1000)
+        expected = 0.27 * math.log1p(1000)
         self.assertAlmostEqual(expected, result)
 
     def test_instagram_engagement_dominant_weight(self):
