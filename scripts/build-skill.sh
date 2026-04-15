@@ -19,12 +19,19 @@ mkdir -p dist
 OUT="dist/last30days.skill"
 git archive --format=zip --prefix=last30days/ --output="$OUT" HEAD
 
+# claude.ai's .skill bundle only needs the root SKILL.md + scripts/ runtime.
+# Claude Code needs skills/ and .claude-plugin/ in the git archive
+# (that's why they're NOT in .gitattributes export-ignore), but the .skill
+# bundle must strip them to keep a single canonical SKILL.md and stay under
+# the 200-file cap.
+zip -d "$OUT" "last30days/skills/*" "last30days/.claude-plugin/*" > /dev/null 2>&1 || true
+
 COUNT=$(unzip -l "$OUT" | tail -1 | awk '{print $2}')
 SIZE=$(du -h "$OUT" | cut -f1)
 
 if [ "$COUNT" -gt 200 ]; then
   echo "error: $COUNT files in zip, claude.ai's cap is 200" >&2
-  echo "       check .gitattributes export-ignore entries" >&2
+  echo "       check .gitattributes export-ignore entries and this script's zip -d excludes" >&2
   exit 1
 fi
 
