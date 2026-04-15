@@ -25,3 +25,6 @@ htmlcov/
 
 # build artifact from scripts/build-skill.sh
 /dist/
+
+# Internal planning docs (ce:plan output) — keep local, don't publish
+docs/plans/
