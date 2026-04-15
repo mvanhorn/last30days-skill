@@ -887,7 +887,11 @@ def _retrieve_stream(
             hashtags=tiktok_hashtags,
             creators=tiktok_creators,
         )
-        return tiktok.parse_tiktok_response(result), {}
+        items = tiktok.parse_tiktok_response(result)
+        if items and env.is_tiktok_comments_available(config):
+            sc_token = config.get("SCRAPECREATORS_API_KEY", "")
+            tiktok.enrich_with_comments(items, token=sc_token)
+        return items, {}
     if source == "instagram":
         # Use raw_topic so expand_instagram_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.

@@ -441,6 +441,18 @@ def is_youtube_comments_available(config: dict[str, Any]) -> bool:
     return 'youtube_comments' in include
 
 
+def is_tiktok_comments_available(config: dict[str, Any]) -> bool:
+    """Check if TikTok comment enrichment is available.
+
+    Requires SCRAPECREATORS_API_KEY AND tiktok_comments in INCLUDE_SOURCES.
+    Mirrors the youtube_comments opt-in pattern.
+    """
+    if not config.get('SCRAPECREATORS_API_KEY'):
+        return False
+    include = _parse_include_sources(config)
+    return 'tiktok_comments' in include
+
+
 def is_youtube_sc_available(config: dict[str, Any]) -> bool:
     """Check if ScrapeCreators YouTube search fallback is available.
 
