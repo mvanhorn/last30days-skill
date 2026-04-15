@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.5] - 2026-04-15
+
+### Added
+
+- **`/last30days` slash command for plugin users.** New `commands/last30days.md` registers a Claude Code slash command. Users type `/last30days <topic>` and Claude Code's autocomplete prefix-matches it to the canonical `/last30days:last30days` form (the same way `/ce:plan` resolves to `/compound-engineering:ce-plan`). The command delegates to the existing `last30days` skill body — no skill behavior changes.
+
+### Removed
+
+- **`skills/last30days-nux/`** — byte-identical duplicate of root `SKILL.md` that created confusing `/last30days:last30days-nux` autocomplete entries via Claude Code's plugin namespacing. The root `SKILL.md` remains the canonical skill source.
+
+### Recovery
+
+```
+/plugin update last30days
+/reload-plugins
+```
+
+Then type `/last30days <topic>` to invoke the skill via slash command. Natural-language invocation ("search the last 30 days for X") continues to work unchanged.
+
 ## [3.0.4] - 2026-04-15
 
 ### Fixed
