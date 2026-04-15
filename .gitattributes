@@ -16,9 +16,10 @@ docs/          export-ignore
 fixtures/      export-ignore
 assets/        export-ignore
 
-# Second SKILL.md files would confuse claude.ai's uploader
-# (skills/last30days/ is an internal spec; skills/last30days-nux/ is a symlink)
-skills/        export-ignore
+# NOTE: skills/ and .claude-plugin/ are NOT export-ignored here because
+# Claude Code's /plugin install fetches this same git archive tarball.
+# Removing those from the archive (as v3.0.1 did) silently breaks installs.
+# claude.ai-bundle-specific exclusions live in scripts/build-skill.sh.
 
 # Historical + repo-only manifests
 SKILL-original.md  export-ignore
@@ -35,7 +36,6 @@ uv.lock            export-ignore
 .agents/         export-ignore
 .codex-plugin/   export-ignore
 .hermes-plugin/  export-ignore
-.claude-plugin/  export-ignore
 
 # CI workflows - repo-only, not needed at skill runtime
 .github/         export-ignore

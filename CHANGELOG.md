@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.3] - 2026-04-15
+
+### Fixed
+
+- **Restored `skills/` and `.claude-plugin/` to the plugin install tarball.** v3.0.1 added `.gitattributes` rules that excluded both directories from `git archive` output to shrink the claude.ai `.skill` bundle. Claude Code's `/plugin install` fetches the same archive, so users installing v3.0.1 or v3.0.2 received a tarball with no plugin manifest and no skill files. `git archive v3.0.0` contained 8 files under those paths; `v3.0.1` and `v3.0.2` contained 0. This release reverts those `.gitattributes` lines.
+- **Reverted `plugin.json` `"skills"` field to `["./"]`.** v3.0.2 changed this to `["skills"]` based on a misdiagnosis — the manifest change had no effect because the manifest wasn't in the tarball at all. The historical `["./"]` value shipped in every release from v2.1.0 through v3.0.0 without issues and is restored here.
+
+### Recovery
+
+Users on v3.0.1 or v3.0.2: run `/plugin update last30days` then `/reload-plugins`. If autoUpdate is enabled, the next session start will pull v3.0.3 automatically. Users on cached v3.0.0 or earlier installs were unaffected.
+
+### Notes
+
+- The claude.ai `.skill` bundle built by `scripts/build-skill.sh` still works — the archive grew from 89 to 97 files, well under the 200-file cap.
+- claude.ai-specific exclusions (avoiding duplicate `SKILL.md` files in the bundle) should move into `scripts/build-skill.sh` rather than `.gitattributes` in a future release, since `.gitattributes` cannot distinguish between the two distribution channels.
+
 ## [3.0.2] - 2026-04-15
 
 ### Fixed
