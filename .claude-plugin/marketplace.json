@@ -10,7 +10,7 @@
     {
       "name": "last30days",
       "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, HN, Polymarket, GitHub, and 5+ more sources.",
-      "version": "3.0.0",
+      "version": "3.0.2",
       "author": {
         "name": "Matt Van Horn",
         "url": "https://github.com/mvanhorn"
