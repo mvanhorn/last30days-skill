@@ -143,6 +143,71 @@ class NormalizeV3Tests(unittest.TestCase):
         )
         self.assertAlmostEqual(math.log1p(9999), signals._top_comment_score(normalized[0]), places=4)
 
+    def test_tiktok_top_comments_passthrough_with_digg_count_mapping(self):
+        """TikTok comments from enrich_with_comments use digg_count/text;
+        normalize must map to the shared {score, excerpt} shape."""
+        items = [
+            {
+                "id": "tt-1",
+                "text": "POV: shipping on Friday",
+                "url": "https://www.tiktok.com/@u/video/tt-1",
+                "author_name": "u",
+                "date": "2026-03-01",
+                "engagement": {"views": 50000, "likes": 2000, "comments": 300},
+                "top_comments": [
+                    {"author": "Alice", "text": "dead", "digg_count": 1200, "date": "2026-03-02"},
+                    {"author": "Bob", "text": "so real", "digg_count": 400, "date": "2026-03-03"},
+                ],
+            }
+        ]
+        normalized = normalize.normalize_source_items(
+            "tiktok", items, "2026-02-15", "2026-03-17",
+        )
+        self.assertEqual(1, len(normalized))
+        top = normalized[0].metadata.get("top_comments")
+        self.assertEqual(2, len(top))
+        self.assertEqual(1200, top[0]["score"])
+        self.assertEqual("dead", top[0]["excerpt"])
+        self.assertEqual("Alice", top[0]["author"])
+        self.assertEqual(400, top[1]["score"])
+
+    def test_tiktok_without_top_comments_does_not_crash(self):
+        items = [
+            {
+                "id": "tt-2",
+                "text": "plain clip",
+                "url": "https://www.tiktok.com/@u/video/tt-2",
+                "author_name": "u",
+                "date": "2026-03-01",
+                "engagement": {"views": 1000, "likes": 20},
+            }
+        ]
+        normalized = normalize.normalize_source_items(
+            "tiktok", items, "2026-02-15", "2026-03-17",
+        )
+        self.assertEqual([], normalized[0].metadata.get("top_comments", []))
+
+    def test_tiktok_top_comments_feed_top_comment_score_signal(self):
+        from lib import signals
+        import math
+        items = [
+            {
+                "id": "tt-3",
+                "text": "viral",
+                "url": "https://www.tiktok.com/@u/video/tt-3",
+                "author_name": "u",
+                "date": "2026-03-01",
+                "engagement": {"views": 100000, "likes": 5000, "comments": 500},
+                "top_comments": [
+                    {"author": "A", "text": "this aged well", "digg_count": 50000, "date": "2026-03-02"},
+                ],
+            }
+        ]
+        normalized = normalize.normalize_source_items(
+            "tiktok", items, "2026-02-15", "2026-03-17",
+        )
+        self.assertAlmostEqual(math.log1p(50000), signals._top_comment_score(normalized[0]), places=4)
+
     def test_grounding_requires_a_usable_date(self):
         items = [
             {

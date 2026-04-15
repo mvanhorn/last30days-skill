@@ -288,7 +288,16 @@ def _normalize_shortform_video(
         relevance_hint=item.get("relevance", 0.5),
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=caption,
-        metadata={"hashtags": item.get("hashtags") or []},
+        metadata={
+            "hashtags": item.get("hashtags") or [],
+            "top_comments": _remap_comments(
+                item.get("top_comments") or [],
+                # TikTok uses digg_count as the vote field; Instagram has no
+                # comment fetcher today so the key is harmlessly absent.
+                score_keys=("score", "digg_count", "likes"),
+                excerpt_keys=("excerpt", "text"),
+            ),
+        },
     )
 
 
