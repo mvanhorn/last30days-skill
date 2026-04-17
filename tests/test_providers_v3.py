@@ -18,16 +18,19 @@ class ProvidersV3Tests(unittest.TestCase):
         self.assertEqual("gemini", client.name)
         self.assertTrue(runtime.planner_model.startswith("gemini-3.1-"))
 
-    def test_auto_falls_back_to_openai(self):
+    def test_auto_falls_back_to_openai_codex_auth(self):
         runtime, client = providers.resolve_runtime(
             {
-                "OPENAI_API_KEY": "test-key",
+                "OPENAI_ACCESS_TOKEN": "codex-token",
                 "OPENAI_AUTH_STATUS": "ok",
+                "OPENAI_AUTH_SOURCE": "codex",
+                "OPENAI_CHATGPT_ACCOUNT_ID": "acct_123",
                 "LAST30DAYS_REASONING_PROVIDER": "auto",
             },
             depth="default",
         )
         self.assertEqual("openai", runtime.reasoning_provider)
+        self.assertEqual("openai", client.name)
 
     def test_auto_falls_back_to_xai(self):
         runtime, client = providers.resolve_runtime(
@@ -53,7 +56,7 @@ class ProvidersV3Tests(unittest.TestCase):
                 depth="default",
             )
 
-    def test_explicit_openai_without_key_still_raises(self):
+    def test_explicit_openai_without_codex_auth_still_raises(self):
         with self.assertRaises(RuntimeError):
             providers.resolve_runtime(
                 {"LAST30DAYS_REASONING_PROVIDER": "openai"},

@@ -142,12 +142,24 @@ class EvaluatorV3Tests(unittest.TestCase):
             self.assertEqual({}, skipped)
 
     def test_create_eval_env_and_run_last30days(self):
-        with mock.patch.object(evaluator.envlib, "get_config", return_value={"OPENAI_API_KEY": "config-openai"}):
+        with mock.patch.object(
+            evaluator.envlib,
+            "get_config",
+            return_value={
+                "OPENAI_ACCESS_TOKEN": "codex-token",
+                "OPENAI_AUTH_SOURCE": "codex",
+                "OPENAI_AUTH_STATUS": "ok",
+                "OPENAI_CHATGPT_ACCOUNT_ID": "acct_123",
+            },
+        ):
             with mock.patch.dict("os.environ", {"PATH": "/bin", "GOOGLE_API_KEY": "env-google"}, clear=False):
                 created = evaluator.create_eval_env()
         self.assertEqual("/bin", created["PATH"])
         self.assertEqual("env-google", created["GOOGLE_API_KEY"])
-        self.assertEqual("config-openai", created["OPENAI_API_KEY"])
+        self.assertEqual("codex-token", created["OPENAI_ACCESS_TOKEN"])
+        self.assertEqual("codex", created["OPENAI_AUTH_SOURCE"])
+        self.assertEqual("ok", created["OPENAI_AUTH_STATUS"])
+        self.assertEqual("acct_123", created["OPENAI_CHATGPT_ACCOUNT_ID"])
         self.assertEqual("", created["LAST30DAYS_CONFIG_DIR"])
 
         with mock.patch.object(evaluator.subprocess, "run", return_value=mock.Mock(returncode=0, stdout='{"topic":"x"}', stderr="")):

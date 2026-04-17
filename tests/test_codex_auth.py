@@ -1,4 +1,4 @@
-"""Tests for Codex auth integration (env.py + openai_reddit.py)."""
+"""Tests for Codex auth integration (env.py + providers.py)."""
 
 import base64
 import json
@@ -12,7 +12,7 @@ from unittest.mock import patch
 # Add scripts directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
 
-from lib import env, openai_reddit
+from lib import env, providers
 
 
 def _make_jwt(payload: dict) -> str:
@@ -135,7 +135,7 @@ class TestLoadCodexAuth(unittest.TestCase):
         self.assertEqual(result["tokens"]["access_token"], "tok123")
 
 
-class TestGetAvailableSourcesWithAuth(unittest.TestCase):
+class TestRedditAvailabilityWithAuth(unittest.TestCase):
 
     def test_codex_auth_ok_counts_as_openai(self):
         config = {
@@ -143,8 +143,8 @@ class TestGetAvailableSourcesWithAuth(unittest.TestCase):
             "OPENAI_AUTH_STATUS": "ok",
             "XAI_API_KEY": None,
         }
-        result = env.get_available_sources(config)
-        self.assertIn("reddit", result)
+        self.assertTrue(env.is_reddit_available(config))
+        self.assertEqual("openai", env.get_reddit_source(config))
 
     def test_codex_auth_expired_not_counted(self):
         config = {
@@ -152,9 +152,8 @@ class TestGetAvailableSourcesWithAuth(unittest.TestCase):
             "OPENAI_AUTH_STATUS": "expired",
             "XAI_API_KEY": None,
         }
-        result = env.get_available_sources(config)
-        # Reddit is available via public JSON fallback even without OpenAI auth
-        self.assertEqual(result, "reddit")
+        self.assertFalse(env.is_reddit_available(config))
+        self.assertIsNone(env.get_reddit_source(config))
 
 
 class TestParseCodexStream(unittest.TestCase):
@@ -165,7 +164,7 @@ class TestParseCodexStream(unittest.TestCase):
             'data: {"type":"response.created","response":{"id":"r1"}}\n\n'
             'data: {"type":"response.completed","response":{"id":"r1","output":[{"type":"message","content":[{"type":"output_text","text":"hello"}]}]}}\n\n'
         )
-        result = openai_reddit._parse_codex_stream(sse)
+        result = providers._parse_codex_stream(sse)
         self.assertIn("output", result)
 
     def test_delta_fallback(self):
@@ -174,32 +173,13 @@ class TestParseCodexStream(unittest.TestCase):
             'data: {"delta":"hel"}\n\n'
             'data: {"delta":"lo"}\n\n'
         )
-        result = openai_reddit._parse_codex_stream(sse)
-        self.assertIn("output", result)
-        text = result["output"][0]["content"][0]["text"]
+        result = providers._parse_codex_stream(sse)
+        text = providers.extract_openai_text(result)
         self.assertEqual(text, "hello")
 
     def test_empty_stream(self):
-        result = openai_reddit._parse_codex_stream("")
+        result = providers._parse_codex_stream("")
         self.assertEqual(result, {})
-
-
-class TestBuildPayload(unittest.TestCase):
-
-    def test_codex_payload_has_stream(self):
-        payload = openai_reddit._build_payload(
-            "gpt-4o", "instructions", "input text", env.AUTH_SOURCE_CODEX
-        )
-        self.assertTrue(payload["stream"])
-        # Input should be structured message format for Codex
-        self.assertIsInstance(payload["input"], list)
-        self.assertEqual(payload["input"][0]["role"], "user")
-
-    def test_codex_payload_has_store_false(self):
-        payload = openai_reddit._build_payload(
-            "gpt-4o", "inst", "text", env.AUTH_SOURCE_CODEX
-        )
-        self.assertFalse(payload["store"])
 
 
 if __name__ == "__main__":

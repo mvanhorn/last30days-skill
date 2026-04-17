@@ -57,9 +57,14 @@ fi
 
 # Check SETUP_COMPLETE (from file or env)
 SETUP_COMPLETE="${ENV_SETUP_COMPLETE:-${SETUP_COMPLETE:-}}"
+CODEX_AUTH_FILE="${CODEX_AUTH_FILE:-$HOME/.codex/auth.json}"
+HAS_CODEX_AUTH=""
+if [[ -f "$CODEX_AUTH_FILE" ]]; then
+  HAS_CODEX_AUTH="yes"
+fi
 
 # If setup has never been run, show welcome message for new users
-if [[ -z "$SETUP_COMPLETE" && -z "$CONFIG_FILE" && -z "${OPENAI_API_KEY:-}" && -z "${SCRAPECREATORS_API_KEY:-}" && -z "${AUTH_TOKEN:-}" && -z "${XAI_API_KEY:-}" ]]; then
+if [[ -z "$SETUP_COMPLETE" && -z "$CONFIG_FILE" && -z "$HAS_CODEX_AUTH" && -z "${SCRAPECREATORS_API_KEY:-}" && -z "${AUTH_TOKEN:-}" && -z "${XAI_API_KEY:-}" ]]; then
   cat <<'EOF'
 /last30days: Ready to use. Run /last30days to get started — setup takes 30 seconds.
 

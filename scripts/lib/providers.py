@@ -267,7 +267,7 @@ def resolve_runtime(config: dict[str, Any], depth: str) -> tuple[schema.Provider
     """Resolve the reasoning provider and pinned models."""
     provider_name = (config.get("LAST30DAYS_REASONING_PROVIDER") or "auto").lower()
     google_key = config.get("GOOGLE_API_KEY") or config.get("GEMINI_API_KEY") or config.get("GOOGLE_GENAI_API_KEY")
-    openai_token = config.get("OPENAI_API_KEY")
+    openai_token = config.get("OPENAI_ACCESS_TOKEN")
     xai_key = config.get("XAI_API_KEY")
 
     if provider_name == "auto":
@@ -303,7 +303,7 @@ def resolve_runtime(config: dict[str, Any], depth: str) -> tuple[schema.Provider
 
     if provider_name == "openai":
         if not openai_token or config.get("OPENAI_AUTH_STATUS") != env.AUTH_STATUS_OK:
-            raise RuntimeError("OpenAI selected but no valid OpenAI auth is configured.")
+            raise RuntimeError("OpenAI selected but no valid Codex auth is configured.")
         runtime = schema.ProviderRuntime(
             reasoning_provider="openai",
             planner_model=planner_model,
@@ -313,7 +313,7 @@ def resolve_runtime(config: dict[str, Any], depth: str) -> tuple[schema.Provider
         )
         return runtime, OpenAIClient(
             openai_token,
-            config.get("OPENAI_AUTH_SOURCE") or env.AUTH_SOURCE_API_KEY,
+            config.get("OPENAI_AUTH_SOURCE") or env.AUTH_SOURCE_CODEX,
             config.get("OPENAI_CHATGPT_ACCOUNT_ID"),
         )
 

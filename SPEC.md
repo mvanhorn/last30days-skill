@@ -2,9 +2,9 @@
 
 ## Overview
 
-`last30days` is a Claude Code skill that researches a given topic across Reddit and X (Twitter) using the OpenAI Responses API and xAI Responses API respectively. It enforces a strict 30-day recency window, popularity-aware ranking, and produces actionable outputs including best practices, a prompt pack, and a reusable context snippet. OpenAI auth can come from `OPENAI_API_KEY` or Codex login credentials.
+`last30days` is a Claude Code skill that researches a given topic across Reddit and X (Twitter) using Codex-backed OpenAI Responses auth and xAI Responses auth respectively. It enforces a strict 30-day recency window, popularity-aware ranking, and produces actionable outputs including best practices, a prompt pack, and a reusable context snippet. OpenAI auth comes from Codex login credentials.
 
-The skill operates in three modes depending on available API keys: **reddit-only** (OpenAI key), **x-only** (xAI key), or **both** (full cross-validation). It uses automatic model selection to stay current with the latest models from both providers, with optional pinning for stability.
+The skill operates in three modes depending on available auth: **reddit-only** (ScrapeCreators or Codex-backed OpenAI), **x-only** (xAI or Bird/cookies), or **both** (full cross-validation). It uses automatic model selection to stay current with the latest models from supported providers, with optional pinning for stability.
 
 ## Architecture
 
@@ -14,10 +14,9 @@ The orchestrator (`last30days.py`) coordinates discovery, enrichment, normalizat
 - **dates.py**: Date range calculation and confidence scoring
 - **cache.py**: 24-hour TTL caching keyed by topic + date range
 - **http.py**: stdlib-only HTTP client with retry logic
-- **models.py**: Auto-selection of OpenAI/xAI models with 7-day caching
-- **openai_reddit.py**: OpenAI Responses API + web_search for Reddit
+- **providers.py**: Resolve reasoning provider/model pins and call Gemini, Codex-backed OpenAI, xAI, or OpenRouter
 - **xai_x.py**: xAI Responses API + x_search for X
-- **reddit_enrich.py**: Fetch Reddit thread JSON for real engagement metrics
+- **reddit.py / reddit_public.py / reddit_enrich.py**: Reddit retrieval and engagement enrichment
 - **hackernews.py**: Hacker News search via Algolia API (free, no auth)
 - **polymarket.py**: Polymarket prediction market search via Gamma API (free, no auth)
 - **normalize.py**: Convert raw API responses to canonical schema

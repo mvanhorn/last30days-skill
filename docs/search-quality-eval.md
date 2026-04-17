@@ -42,7 +42,7 @@ Gemini configuration:
 Notes:
 
 - The script forces a clean env-based auth path when it shells out to `last30days.py`.
-- It passes `XAI_API_KEY`, `OPENAI_API_KEY`, and `SCRAPECREATORS_API_KEY`, but intentionally does not pass browser-cookie X auth. That keeps evaluation runs on the popup-free path.
+- It passes `XAI_API_KEY`, Codex/OpenAI auth fields, and `SCRAPECREATORS_API_KEY`, but intentionally does not pass browser-cookie X auth. That keeps evaluation runs on the popup-free path.
 - It also strips `node` from the eval `PATH` and wraps `yt-dlp` with `--ignore-config`, so older revisions do not inherit local browser-cookie config either.
 - `Jaccard` and retention are regression guards, not truth metrics.
 - `Precision@5` and `nDCG@5` are only as good as the judged pool. They help compare revisions, but they are not a substitute for a larger labeled benchmark.

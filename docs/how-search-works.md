@@ -31,12 +31,12 @@ Both searches run **in parallel** using Python's `ThreadPoolExecutor(max_workers
 
 ### How it works
 
-Reddit search uses the **OpenAI Responses API** with the `web_search` tool, domain-filtered to `reddit.com` only.
+Reddit search uses the **OpenAI Responses API** with the `web_search` tool, domain-filtered to `reddit.com` only. In current builds, that auth comes from Codex device login rather than an injected API key.
 
 **API Call:**
 ```
-POST https://api.openai.com/v1/responses
-Authorization: Bearer {OPENAI_API_KEY}
+POST https://chatgpt.com/backend-api/codex/responses
+Authorization: Bearer {CODEX_ACCESS_TOKEN}
 ```
 
 **Payload:**

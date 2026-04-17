@@ -78,13 +78,14 @@ fi
 
 ## Runtime expectations
 
-- One reasoning provider is required: `GOOGLE_API_KEY` for Gemini, `OPENAI_API_KEY` for OpenAI, or `XAI_API_KEY` for xAI.
+- One reasoning provider is required: `GOOGLE_API_KEY` for Gemini, Codex device auth for OpenAI, or `XAI_API_KEY` for xAI.
 - `BRAVE_API_KEY` enables Brave web search (recommended). `SERPER_API_KEY` is the web fallback.
 - `SCRAPECREATORS_API_KEY` enables Reddit, TikTok, and Instagram.
 - `XAI_API_KEY` enables xAI reasoning and X search.
 - `AUTH_TOKEN` plus `CT0` enables Bird-backed X search.
 - `yt-dlp` enables YouTube.
-- Planning and reranking fall back gracefully: Gemini -> OpenAI -> xAI -> deterministic/local.
+- OpenAI auth is auto-detected from `~/.codex/auth.json`; do not inject an OpenAI API key.
+- Planning and reranking fall back gracefully: Gemini -> Codex-backed OpenAI -> xAI -> deterministic/local.
 - Web retrieval stays within Brave/Serper dated results. Undated web hits are dropped.
 
 ## Output model

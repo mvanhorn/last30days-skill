@@ -66,7 +66,7 @@ cat > ~/.config/last30days/.env << 'ENVEOF'
 # Both keys are optional - skill works with WebSearch fallback
 
 # For Reddit research (uses OpenAI's web_search tool)
-OPENAI_API_KEY=
+OPENAI_ACCESS_TOKEN=
 
 # For X/Twitter research (uses xAI's x_search tool)
 XAI_API_KEY=
@@ -254,7 +254,7 @@ For **web-only mode** (no API keys):
 └─ Top sources: {author1} on {site1}, {author2} on {site2}
 
 💡 Want engagement metrics? Add API keys to ~/.config/last30days/.env
-   - OPENAI_API_KEY → Reddit (real upvotes & comments)
+   - OPENAI_ACCESS_TOKEN → Codex-backed OpenAI reasoning
    - XAI_API_KEY → X/Twitter (real likes & reposts)
 ```
 

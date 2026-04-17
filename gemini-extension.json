@@ -16,12 +16,6 @@
       "sensitive": true
     },
     {
-      "name": "OpenAI API Key",
-      "description": "OpenAI API Key - optional fallback for Reddit discovery",
-      "envVar": "OPENAI_API_KEY",
-      "sensitive": true
-    },
-    {
       "name": "xAI API Key",
       "description": "xAI API Key for X/Twitter search (optional)",
       "envVar": "XAI_API_KEY",

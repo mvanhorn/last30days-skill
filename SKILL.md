@@ -16,7 +16,6 @@ metadata:
       env:
         - SCRAPECREATORS_API_KEY
       optionalEnv:
-        - OPENAI_API_KEY
         - XAI_API_KEY
         - OPENROUTER_API_KEY
         - PARALLEL_API_KEY
@@ -237,7 +236,9 @@ X/Twitter (pick one - this is the most important):
 Reddit (free, works out of the box):
 - Public JSON gives you threads + top comments with upvote counts. No setup required.
 - `SCRAPECREATORS_API_KEY=xxx` - optional backup source if public Reddit gets rate-limited.
-- `OPENAI_API_KEY=xxx` - optional fallback if public Reddit search has trouble finding threads.
+
+OpenAI reasoning via Codex device auth (no API key):
+- Sign into Codex with device auth. `last30days` reads `~/.codex/auth.json` automatically and uses that token for OpenAI-backed reasoning when Gemini is not configured.
 
 YouTube (free, open source):
 - Run `brew install yt-dlp` - free, open source, 190K+ GitHub stars. Enables YouTube search and transcripts.

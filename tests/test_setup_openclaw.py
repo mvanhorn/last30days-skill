@@ -108,7 +108,7 @@ class TestRunOpenclawSetup:
     def test_output_is_json_serializable(self, mock_which):
         """Result can be serialized to JSON without errors."""
         mock_which.return_value = "/usr/bin/something"
-        config = {"XAI_API_KEY": "k", "OPENAI_API_KEY": "ok"}
+        config = {"XAI_API_KEY": "k", "OPENAI_ACCESS_TOKEN": "ok"}
 
         result = setup_wizard.run_openclaw_setup(config)
         serialized = json.dumps(result)
@@ -116,6 +116,7 @@ class TestRunOpenclawSetup:
 
         assert parsed["yt_dlp"] is True
         assert parsed["keys"]["xai"] is True
+        assert parsed["keys"]["openai_access"] is True
 
 
 class TestRunDeviceAuth:

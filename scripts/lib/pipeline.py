@@ -140,7 +140,7 @@ def diagnose(config: dict[str, Any], requested_sources: list[str] | None = None)
         native_web_backend = "parallel"
     providers_status = {
         "google": bool(google_key),
-        "openai": bool(config.get("OPENAI_API_KEY")) and config.get("OPENAI_AUTH_STATUS") == env.AUTH_STATUS_OK,
+        "openai": bool(config.get("OPENAI_ACCESS_TOKEN")) and config.get("OPENAI_AUTH_STATUS") == env.AUTH_STATUS_OK,
         "xai": bool(config.get("XAI_API_KEY")),
         "openrouter": bool(config.get("OPENROUTER_API_KEY")),
     }

@@ -179,14 +179,14 @@ ScrapeCreators Reddit as the default backend (one `SCRAPECREATORS_API_KEY` cover
 
 ### Changed
 
-- `primaryEnv` switched from `OPENAI_API_KEY` to `SCRAPECREATORS_API_KEY` — one key now powers Reddit, TikTok, and Instagram
+- `primaryEnv` switched from the legacy OpenAI key fallback to `SCRAPECREATORS_API_KEY` — one key now powers Reddit, TikTok, and Instagram
 - Reddit engagement scoring formula: `0.55/0.40/0.05` (score/comments/ratio) → `0.50/0.35/0.05/0.10` (score/comments/ratio/top-comment)
 - SKILL.md synthesis instructions updated to emphasize quoting top comments
 
 ### Fixed
 
 - Utility subreddit noise in discovery (e.g., r/tipofmytongue appearing for unrelated topics)
-- Reddit search no longer requires `OPENAI_API_KEY` — ScrapeCreators API handles search directly
+- Reddit search no longer requires the legacy OpenAI key fallback — ScrapeCreators API handles search directly
 
 ## [2.8.0] - 2026-03-04
 
