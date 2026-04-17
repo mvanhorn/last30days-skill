@@ -18,9 +18,9 @@ SOURCE_LABELS = {
 
 
 _FUN_LEVELS = {
-    "low": {"threshold": 80.0, "limit": 2},
-    "medium": {"threshold": 70.0, "limit": 5},
-    "high": {"threshold": 55.0, "limit": 8},
+    "low": {"threshold": 75.0, "limit": 2},
+    "medium": {"threshold": 55.0, "limit": 5},
+    "high": {"threshold": 40.0, "limit": 8},
 }
 
 _AI_SAFETY_NOTE = (
@@ -60,6 +60,11 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
         lines.extend(f"- {warning}" for warning in report.warnings)
         lines.append("")
 
+    fun_params = _FUN_LEVELS.get(fun_level, _FUN_LEVELS["medium"])
+    best_takes = _render_best_takes(report.ranked_candidates, limit=fun_params["limit"], threshold=fun_params["threshold"])
+    if best_takes:
+        lines.extend(best_takes + [""])
+
     lines.append("## Ranked Evidence Clusters")
     lines.append("")
     candidate_by_id = {candidate.candidate_id: candidate for candidate in report.ranked_candidates}
@@ -79,11 +84,6 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
         lines.append("")
 
     lines.extend(_render_stats(report))
-
-    fun_params = _FUN_LEVELS.get(fun_level, _FUN_LEVELS["medium"])
-    best_takes = _render_best_takes(report.ranked_candidates, limit=fun_params["limit"], threshold=fun_params["threshold"])
-    if best_takes:
-        lines.extend([""] + best_takes)
 
     lines.extend(_render_source_coverage(report))
     return "\n".join(lines).strip() + "\n"
@@ -654,31 +654,76 @@ def _source_label(source: str) -> str:
 
 
 def _render_best_takes(candidates, limit=5, threshold=70.0):
-    gems = sorted(
-        (c for c in candidates if c.fun_score is not None and c.fun_score >= threshold),
-        key=lambda c: -(c.fun_score or 0),
-    )
-    if len(gems) < 2:
-        return []
-    lines = ["## Best Takes", ""]
-    for candidate in gems[:limit]:
-        text = candidate.title.strip()
+    # Build a unified list of gems: candidate-level entries and comment-level entries,
+    # each tagged by type so they can share the sort but render with different attribution.
+    gems: list[tuple[str, float, object]] = []
+    for candidate in candidates:
+        if candidate.fun_score is not None and candidate.fun_score >= threshold:
+            gems.append(("candidate", candidate.fun_score, candidate))
         for item in candidate.source_items:
-            for comment in item.metadata.get("top_comments", [])[:3]:
-                body = (comment.get("body") or comment.get("text") or "") if isinstance(comment, dict) else str(comment)
-                body = body.strip()
-                if body and len(body) < len(text) and len(body) > 10:
-                    text = body
-        source_label = _source_label(candidate.source)
-        author = candidate.source_items[0].author if candidate.source_items else None
-        attribution = f"@{author} on {source_label}" if author and candidate.source in ("x", "tiktok", "instagram", "threads") else f"{source_label}"
-        if author and candidate.source == "reddit":
-            container = candidate.source_items[0].container if candidate.source_items else None
-            attribution = f"r/{container} comment" if container else "Reddit"
-        score_tag = f"(fun:{candidate.fun_score:.0f})"
-        reason = f" -- {candidate.fun_explanation}" if candidate.fun_explanation and candidate.fun_explanation != "heuristic-fallback" else ""
-        lines.append(f'- "{_truncate(text, 280)}" -- {attribution} {score_tag}{reason}')
+            for comment in item.metadata.get("top_comments", []) or []:
+                if not isinstance(comment, dict):
+                    continue
+                comment_score = comment.get("fun_score")
+                if comment_score is None or comment_score < threshold:
+                    continue
+                gems.append(("comment", float(comment_score), (candidate, item, comment)))
+    if not gems:
+        return []
+    gems.sort(key=lambda g: -g[1])
+    lines = ["## Best Takes", ""]
+    for kind, score, payload in gems[:limit]:
+        if kind == "candidate":
+            lines.append(_render_candidate_gem(payload))
+        else:
+            candidate, item, comment = payload
+            lines.append(_render_comment_gem(candidate, item, comment))
     return lines
+
+
+def _render_candidate_gem(candidate) -> str:
+    text = candidate.title.strip()
+    for item in candidate.source_items:
+        for comment in item.metadata.get("top_comments", [])[:3]:
+            body = (comment.get("body") or comment.get("excerpt") or comment.get("text") or "") if isinstance(comment, dict) else str(comment)
+            body = body.strip()
+            if body and len(body) < len(text) and len(body) > 10:
+                text = body
+    source_label = _source_label(candidate.source)
+    author = candidate.source_items[0].author if candidate.source_items else None
+    attribution = f"@{author} on {source_label}" if author and candidate.source in ("x", "tiktok", "instagram", "threads") else f"{source_label}"
+    if author and candidate.source == "reddit":
+        container = candidate.source_items[0].container if candidate.source_items else None
+        attribution = f"r/{container} comment" if container else "Reddit"
+    score_tag = f"(fun:{candidate.fun_score:.0f})"
+    reason = f" -- {candidate.fun_explanation}" if candidate.fun_explanation and candidate.fun_explanation != "heuristic-fallback" else ""
+    return f'- "{_truncate(text, 280)}" -- {attribution} {score_tag}{reason}'
+
+
+def _render_comment_gem(candidate, item, comment) -> str:
+    body = (comment.get("body") or comment.get("excerpt") or comment.get("text") or "").strip()
+    upvotes = comment.get("score") or comment.get("ups") or comment.get("upvotes") or comment.get("likes") or 0
+    source_label = _source_label(candidate.source)
+    parent_title = (candidate.title or "").strip()
+    comment_author = comment.get("author")
+    vote_label = _vote_label_for(candidate.source)
+    fun_tag = f"(fun:{comment.get('fun_score', 0):.0f})"
+
+    if candidate.source == "reddit":
+        container = item.container if item else None
+        source_attribution = f"r/{container}" if container else source_label
+    elif comment_author:
+        source_attribution = f"@{comment_author} on {source_label}"
+    else:
+        source_attribution = source_label
+
+    vote_suffix = ""
+    if isinstance(upvotes, int) and upvotes:
+        vote_suffix = f" ({upvotes:,} {vote_label})"
+
+    in_clause = f' in "{_truncate(parent_title, 100)}"' if parent_title else ""
+
+    return f'- "{_truncate(body, 280)}" -- {source_attribution}{in_clause}{vote_suffix} {fun_tag}'
 
 
 def _truncate(text: str, limit: int) -> str:

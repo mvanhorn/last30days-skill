@@ -387,15 +387,124 @@ class RenderBestTakesCompactTests(unittest.TestCase):
         text = render.render_compact(report)
         self.assertNotIn("## Best Takes", text)
 
-    def test_no_best_takes_with_1_high_fun_candidate(self):
-        """No Best Takes section when only 1 candidate above threshold."""
+    def test_best_takes_with_1_high_fun_candidate(self):
+        """Best Takes section appears even with only 1 candidate above threshold.
+
+        The single-gem floor means a single viral quote is enough to show the block,
+        which is essential for the default medium level on most research topics.
+        """
         candidates = [
             self._make_candidate("c1", fun_score=80),
-            self._make_candidate("c2", fun_score=50),
+            self._make_candidate("c2", fun_score=40),
         ]
         report = self._make_report_with_candidates(candidates)
         text = render.render_compact(report)
-        self.assertNotIn("## Best Takes", text)
+        self.assertIn("## Best Takes", text)
+        self.assertIn("(fun:80)", text)
+
+    def test_best_takes_renders_above_clusters(self):
+        """Best Takes section appears before the Ranked Evidence Clusters header."""
+        candidates = [
+            self._make_candidate("c1", fun_score=85),
+            self._make_candidate("c2", fun_score=75),
+        ]
+        report = self._make_report_with_candidates(candidates)
+        text = render.render_compact(report)
+        self.assertLess(text.index("## Best Takes"), text.index("## Ranked Evidence Clusters"))
+
+    def test_comment_level_gem_appears_in_best_takes(self):
+        """A high-fun top_comment on a low-fun parent candidate still qualifies."""
+        item = schema.SourceItem(
+            item_id="item-c1",
+            source="reddit",
+            title="Post c1",
+            body="Body.",
+            url="https://reddit.com/r/test/comments/c1/",
+            container="test",
+            published_at="2026-03-15",
+            date_confidence="high",
+            engagement={"score": 300, "num_comments": 30},
+            metadata={
+                "top_comments": [{
+                    "body": "WHAT?! I reached my monthly limit just reading this post",
+                    "excerpt": "WHAT?! I reached my monthly limit just reading this post",
+                    "score": 2304,
+                    "fun_score": 88.0,
+                }],
+            },
+        )
+        candidate = schema.Candidate(
+            candidate_id="c1",
+            item_id="item-c1",
+            source="reddit",
+            title="Post c1",
+            url="https://reddit.com/r/test/comments/c1/",
+            snippet="",
+            subquery_labels=["primary"],
+            native_ranks={"primary:reddit": 1},
+            local_relevance=0.9,
+            freshness=90,
+            engagement=88,
+            source_quality=1.0,
+            rrf_score=0.02,
+            rerank_score=92,
+            final_score=90,
+            sources=["reddit"],
+            source_items=[item],
+            fun_score=35.0,  # parent below threshold
+        )
+        report = self._make_report_with_candidates([candidate])
+        text = render.render_compact(report)
+        self.assertIn("## Best Takes", text)
+        self.assertIn("WHAT?! I reached my monthly limit", text)
+        self.assertIn("2,304", text)
+        self.assertIn("r/test", text)
+        self.assertIn('in "Post c1"', text)
+
+    def test_comment_and_candidate_gems_sorted_by_fun_score(self):
+        """Higher fun score comes first, regardless of whether it's a candidate or a comment."""
+        item = schema.SourceItem(
+            item_id="item-c1",
+            source="reddit",
+            title="Post c1",
+            body="Body.",
+            url="https://reddit.com/r/test/comments/c1/",
+            container="test",
+            engagement={"score": 100},
+            metadata={
+                "top_comments": [{
+                    "body": "higher-ranked comment",
+                    "score": 800,
+                    "fun_score": 90.0,
+                }],
+            },
+        )
+        comment_candidate = schema.Candidate(
+            candidate_id="cc",
+            item_id="item-c1",
+            source="reddit",
+            title="Parent thread title",
+            url="https://reddit.com/r/test/comments/c1/",
+            snippet="",
+            subquery_labels=["primary"],
+            native_ranks={"primary:reddit": 1},
+            local_relevance=0.9,
+            freshness=90,
+            engagement=10,
+            source_quality=1.0,
+            rrf_score=0.02,
+            sources=["reddit"],
+            source_items=[item],
+            fun_score=30.0,
+        )
+        lower_candidate = self._make_candidate("cl", fun_score=70)
+        report = self._make_report_with_candidates([comment_candidate, lower_candidate])
+        text = render.render_compact(report)
+        comment_pos = text.find("higher-ranked comment")
+        lower_pos = text.find("(fun:70)")
+        self.assertNotEqual(comment_pos, -1)
+        self.assertNotEqual(lower_pos, -1)
+        self.assertLess(comment_pos, lower_pos)
 
 
 if __name__ == "__main__":

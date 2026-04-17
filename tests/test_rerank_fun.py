@@ -9,7 +9,12 @@ SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from lib import schema
-from lib.rerank import _apply_single_fun_fallback, _extract_comment_text
+from lib.rerank import (
+    _apply_fun_fallback,
+    _apply_single_fun_fallback,
+    _extract_comment_text,
+    _score_comments_per_candidate,
+)
 
 
 def _make_candidate(
@@ -17,10 +22,12 @@ def _make_candidate(
     snippet: str = "",
     engagement: float | None = 0.0,
     top_comments: list[dict] | None = None,
+    parent_raw_engagement: int | None = None,
 ) -> schema.Candidate:
     """Build a minimal Candidate with optional source_items carrying top_comments."""
     source_items = []
     if top_comments is not None:
+        item_engagement = {"score": parent_raw_engagement} if parent_raw_engagement is not None else {}
         source_items.append(
             schema.SourceItem(
                 item_id="si-1",
@@ -28,6 +35,7 @@ def _make_candidate(
                 title=title,
                 body="",
                 url="https://reddit.com/r/test/1",
+                engagement=item_engagement,
                 metadata={"top_comments": top_comments},
             )
         )
@@ -110,6 +118,89 @@ class TestFunFallbackCommentText:
         _apply_single_fun_fallback(candidate)
         assert candidate.fun_score is not None
         assert candidate.fun_explanation == "heuristic-fallback"
+
+
+class TestScoreCommentsPerCandidate:
+    """Per-comment fun scoring: high-ratio viral comments outrank absolute-high comments on dominant threads."""
+
+    def test_high_ratio_comment_outranks_low_ratio(self):
+        """A 2304-upvote comment on a 300-upvote parent should score higher than
+        a 400-upvote comment on a 3400-upvote parent (high ratio = viral wit)."""
+        viral = _make_candidate(
+            parent_raw_engagement=300,
+            top_comments=[{"body": "WHAT?! I reached my monthly limit just reading this post", "score": 2304}],
+        )
+        average = _make_candidate(
+            parent_raw_engagement=3400,
+            top_comments=[{"body": "we can't trust benchmarks anymore and need to re-run them", "score": 400}],
+        )
+        _score_comments_per_candidate(viral)
+        _score_comments_per_candidate(average)
+        viral_score = viral.source_items[0].metadata["top_comments"][0]["fun_score"]
+        average_score = average.source_items[0].metadata["top_comments"][0]["fun_score"]
+        assert viral_score > average_score
+
+    def test_2304_upvote_comment_on_small_parent_crosses_medium_threshold(self):
+        """The exact Opus 4.7 case: the comment should score >= 55 (medium threshold)."""
+        candidate = _make_candidate(
+            parent_raw_engagement=300,
+            top_comments=[{
+                "body": "WHAT?! I reached my monthly limit just reading this post",
+                "score": 2304,
+            }],
+        )
+        _score_comments_per_candidate(candidate)
+        comment = candidate.source_items[0].metadata["top_comments"][0]
+        assert comment["fun_score"] >= 55.0
+
+    def test_reddit_excerpt_field_also_works(self):
+        """Reddit uses 'excerpt' not 'body'. The scorer must handle that."""
+        candidate = _make_candidate(
+            parent_raw_engagement=100,
+            top_comments=[{"excerpt": "bruh this is gold", "score": 500}],
+        )
+        _score_comments_per_candidate(candidate)
+        comment = candidate.source_items[0].metadata["top_comments"][0]
+        assert "fun_score" in comment
+        assert comment["fun_score"] > 0
+
+    def test_no_parent_upvotes_does_not_crash(self):
+        """A candidate without parent engagement still scores comments via the absolute-upvote fallback."""
+        candidate = _make_candidate(
+            parent_raw_engagement=None,
+            top_comments=[{"body": "lmao", "score": 200}],
+        )
+        _score_comments_per_candidate(candidate)
+        comment = candidate.source_items[0].metadata["top_comments"][0]
+        assert "fun_score" in comment
+
+    def test_malformed_comments_skipped(self):
+        """Non-dict entries and missing-body entries are skipped without raising."""
+        candidate = _make_candidate(
+            parent_raw_engagement=500,
+            top_comments=[
+                "not a dict",  # malformed, still counts toward the top-3 window
+                {"body": "", "score": 10},  # empty body within window
+                {"body": "valid", "score": 50},  # valid within window
+            ],
+        )
+        _score_comments_per_candidate(candidate)
+        comments = candidate.source_items[0].metadata["top_comments"]
+        # Only the valid one gets a fun_score
+        valid = [c for c in comments if isinstance(c, dict) and c.get("fun_score") is not None]
+        assert len(valid) == 1
+        assert valid[0]["body"] == "valid"
+
+    def test_score_comments_runs_after_fallback(self):
+        """_apply_fun_fallback wires in comment scoring automatically."""
+        candidate = _make_candidate(
+            parent_raw_engagement=300,
+            top_comments=[{"body": "bro what 😭", "score": 1500}],
+        )
+        _apply_fun_fallback([candidate])
+        comment = candidate.source_items[0].metadata["top_comments"][0]
+        assert "fun_score" in comment
+        assert candidate.fun_score is not None
 
 
 class TestExtractCommentText:

@@ -285,11 +285,13 @@ def _apply_fun_scores(candidates: list[schema.Candidate], payload: dict) -> None
             c.fun_score, c.fun_explanation = scores[c.candidate_id]
         else:
             _apply_single_fun_fallback(c)
+        _score_comments_per_candidate(c)
 
 
 def _apply_fun_fallback(candidates: list[schema.Candidate]) -> None:
     for c in candidates:
         _apply_single_fun_fallback(c)
+        _score_comments_per_candidate(c)
 
 
 def _apply_single_fun_fallback(candidate: schema.Candidate) -> None:
@@ -302,6 +304,72 @@ def _apply_single_fun_fallback(candidate: schema.Candidate) -> None:
     marker_bonus = 10 if any(m in text.lower() for m in markers) else 0
     candidate.fun_score = max(0.0, min(100.0, shortness + eng_bonus + marker_bonus))
     candidate.fun_explanation = "heuristic-fallback"
+
+
+_FUN_MARKERS = ("lol", "lmao", "dead", "hilarious", "funny", "bruh", "ratio",
+                "nah", "bro", "ain't no way", "i'm crying", "rent free")
+
+
+def _comment_body(comment: dict) -> str:
+    for key in ("body", "excerpt", "text"):
+        value = comment.get(key) if isinstance(comment, dict) else None
+        if value:
+            return str(value).strip()
+    return ""
+
+
+def _comment_upvotes(comment: dict) -> int:
+    for key in ("score", "ups", "upvotes", "likes"):
+        value = comment.get(key) if isinstance(comment, dict) else None
+        if value is not None:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+    return 0
+
+
+def _parent_raw_upvotes(candidate: schema.Candidate) -> int:
+    for item in candidate.source_items:
+        eng = item.engagement
+        if isinstance(eng, dict):
+            for key in ("score", "ups", "upvotes", "likes"):
+                value = eng.get(key)
+                if value is not None:
+                    try:
+                        return int(value)
+                    except (TypeError, ValueError):
+                        continue
+        elif isinstance(eng, (int, float)) and eng:
+            return int(eng)
+    return 0
+
+
+def _score_comments_per_candidate(candidate: schema.Candidate) -> None:
+    """Annotate each of the top 3 comments on this candidate with its own fun_score.
+
+    Scoring: (ratio-to-parent bonus, capped 50) + shortness bonus (0-30) + marker bonus (0-20).
+    A comment with high upvotes relative to its parent thread dominates an absolute-high
+    comment on a dominant parent thread, which is the viral-wit signal.
+    """
+    parent_upvotes = _parent_raw_upvotes(candidate)
+    for item in candidate.source_items:
+        comments = item.metadata.get("top_comments") or []
+        if not isinstance(comments, list):
+            continue
+        for comment in comments[:3]:
+            if not isinstance(comment, dict):
+                continue
+            body = _comment_body(comment)
+            if not body:
+                continue
+            upvotes = _comment_upvotes(comment)
+            ratio = upvotes / max(parent_upvotes, 1) if parent_upvotes else min(upvotes / 100.0, 2.5)
+            ratio_bonus = min(ratio * 20.0, 50.0)
+            body_len = len(body)
+            shortness_bonus = max(0.0, (200 - body_len) / 200.0) * 30.0
+            marker_bonus = 20.0 if any(m in body.lower() for m in _FUN_MARKERS) else 0.0
+            comment["fun_score"] = max(0.0, min(100.0, ratio_bonus + shortness_bonus + marker_bonus))
 
 
 def _normalized_rrf(rrf_score: float) -> float:
