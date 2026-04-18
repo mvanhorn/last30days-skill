@@ -2,10 +2,48 @@
 
 from __future__ import annotations
 
+import json
+import pathlib
 from collections import Counter
+from datetime import date
 from urllib.parse import urlparse
 
 from . import dates, schema
+
+
+def _skill_version() -> str:
+    """Read plugin version from .claude-plugin/plugin.json if available.
+
+    Tries nearest plugin.json by walking up from render.py's own location.
+    Falls back to "?" if not found. This keeps the badge emission from
+    crashing on non-plugin-cache installs (repo checkout, Gemini, Codex).
+    """
+    here = pathlib.Path(__file__).resolve()
+    for parent in [here.parent, *here.parents]:
+        candidate = parent / ".claude-plugin" / "plugin.json"
+        if candidate.is_file():
+            try:
+                return json.loads(candidate.read_text()).get("version", "?")
+            except (json.JSONDecodeError, OSError):
+                return "?"
+    return "?"
+
+
+def _render_badge() -> list[str]:
+    """Emit the MANDATORY first-line badge per SKILL.md OUTPUT CONTRACT.
+
+    Added in v3.0.8 after three Opus 4.7 self-debugs (2026-04-18) confirmed
+    the model was failing to emit the badge manually because SKILL.md was
+    too big to reach the BADGE MANDATORY block before synthesis. Engine
+    emission makes passing-through-the-script-output the default-correct
+    behavior; emitting the badge no longer depends on model compliance.
+    """
+    version = _skill_version()
+    today = date.today().strftime("%Y-%m-%d")
+    return [
+        f"🌐 last30days v{version} · synced {today}",
+        "",
+    ]
 
 SOURCE_LABELS = {
     "grounding": "Web",
@@ -40,6 +78,7 @@ def _assistant_safety_lines() -> list[str]:
 def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str = "medium", save_path: str | None = None) -> str:
     non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
     lines = [
+        *_render_badge(),
         f"# last30days v3.0.0: {report.topic}",
         "",
         *_assistant_safety_lines(),

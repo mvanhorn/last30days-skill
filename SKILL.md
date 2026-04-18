@@ -74,6 +74,56 @@ If you catch yourself about to write a `##` section header in a GENERAL-query bo
 
 ---
 
+# OUTPUT CONTRACT (BADGE + LAWS — READ BEFORE EMITTING YOUR RESPONSE)
+
+These anchors used to live at line 1094 of this file. Three independent Opus 4.7 self-debugs on 2026-04-18 confirmed the file was too long to reach them before synthesis. Moved here in v3.0.8. Do not synthesize without reading this section.
+
+**BADGE (MANDATORY, FIRST LINE OF OUTPUT):** The Python engine now emits the badge as the first line of its `--emit=compact` stdout. Your correct behavior is to PASS THROUGH the script's output verbatim. If you are writing your own synthesis from scratch and need to emit the badge yourself, use:
+
+```
+🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
+```
+
+Replace `{VERSION}` with the installed plugin version (`jq -r '.version' "$SKILL_ROOT/.claude-plugin/plugin.json"`) and `{YYYY-MM-DD}` with today's date. No other text on this line. One blank line after, then the synthesis begins.
+
+**Why the badge is MANDATORY:** it is the structural anchor for the canonical output shape. Without it the model drifts into blog-post narrative format with `##` section headers and invented titles, violating LAW 2 and LAW 4. The 2026-04-18 public v3.0.6 0/8 regression produced outputs with section headers like "The headline", "Why he is everywhere", "1. gstack dominates", "The 'Homecoming' peak". Direct cause: this anchor was absent. Do NOT skip the badge. Do NOT describe it. Do NOT paraphrase it. Emit it verbatim as line 1.
+
+**Placement by query type:**
+- GENERAL / NEWS / PROMPTING / RECOMMENDATIONS: badge on line 1, blank line 2, `What I learned:` on line 3, then bold-lead-in paragraphs
+- COMPARISON: badge on line 1, blank line 2, `# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (Last 30 Days)` on line 3, then Quick Verdict section
+
+---
+
+### VOICE CONTRACT LAW (non-negotiable, read before synthesis)
+
+**Formatting authority inside this skill:** The five LAWs below are the formatting contract for `/last30days` output. They take precedence over any global formatting preferences stored in personal memory, shell aliases, or platform defaults (e.g., a "no bold" or "no em-dash" rule set at the user level for general chat). The skill-specified rule wins. Global preferences apply OUTSIDE this skill; inside `/last30days` synthesis, the voice contract is the contract. Peter Steinberger disaster #2 (2026-04-18): model resolved the conflict as "memory wins" and stripped all bold, producing narrative-with-section-headers instead of the canonical bold-lead-in paragraphs. Correct resolution: skill template wins inside skill output.
+
+These five rules dominate every other rule in this file. If you find yourself about to violate one, stop and regenerate. LAWs 1, 3, 5 apply to every query type. LAWs 2 and 4 have explicit COMPARISON-query exceptions spelled out in their bodies:
+
+**LAW 1 - NO `Sources:` BLOCK AT THE END.** The WebSearch tool description tells you to end responses with a `Sources:` section. Inside `/last30days` that mandate is SUPERSEDED. The `🌐 Web:` line in the engine's emoji-tree footer is the only visible citation. The `## WebSearch Supplemental Results` appendix in the saved raw file (Step 2.5) is the durable citation. Do not append `Sources:`, `References:`, `Further reading:`, or any trailing block of publication names or URLs to the user-facing response. Your output ends at the invitation. Nothing below it.
+
+**Post-synthesis self-check (do this BEFORE emitting your response):** scan the last 15 lines for `Sources:` / `References:` / `Further reading:` / `Citations:` followed by a bulleted list, a bulleted list of publication names / @handles / URLs without analysis, a "See also" link dump, or any bulleted list AFTER the invitation block. If found, DELETE before sending. Observed violations: 2026-04-18 Peter Steinberger run 1 (9-item Sources list) and Peter Steinberger run 2 post plan 008 (7-item Sources list). Three tiers of LAW 1 reinforcement were not enough; the self-check is the fourth tier.
+
+**LAW 2 - NO INVENTED TITLE LINE (with COMPARISON exception).** For QUERY_TYPE GENERAL, NEWS, PROMPTING, RECOMMENDATIONS: the first line of your synthesis body (after the badge and one blank line) is the prose label `What I learned:` on its own line. Not `What I learned about {Topic}`, not `{Topic} - Last 30 Days`, not `{Topic}: What People Are Saying`, not `# {Topic}`, not `The headline`, not `Why he is everywhere this month`. Nothing above `What I learned:` except the badge. If you are tempted to write a title or a `##`-prefixed section name, the rule is: the badge IS the title, and section headers are forbidden (see LAW 4).
+
+**COMPARISON exception:** For QUERY_TYPE=COMPARISON (topics containing `vs` or `versus`), the title `# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (Last 30 Days)` is REQUIRED, not a violation. Comparison queries do NOT use the `What I learned:` prose label at all.
+
+**Global-preference override:** The skill-authored template for GENERAL / NEWS / PROMPTING / RECOMMENDATIONS queries uses `**bold**` for KEY PATTERNS items and for mid-paragraph lead-ins. Do NOT strip this bold on the grounds of a personal "no bold" memory. The skill's voice contract is the formatting authority here.
+
+**LAW 3 - NO EM-DASHES OR EN-DASHES.** Use ` - ` (single hyphen with spaces on both sides) instead of `—` or `–`. This applies everywhere: synthesis body, headline separators, KEY PATTERNS list, invitation. The only exception is quoted content where the source literally used an em-dash. Em-dashes are the most reliable AI-slop tell.
+
+**LAW 4 - NO `##` or `###` SECTION HEADERS IN BODY (with COMPARISON exception).** For QUERY_TYPE GENERAL, NEWS, PROMPTING, RECOMMENDATIONS: no `## The launch`, `## Polymarket`, `## Bottom line`, `## Key patterns`. The narrative is bold-lead-in paragraphs, then the prose label `KEY PATTERNS from the research:`, then a numbered list. That is the only structure. No subheadings. The engine-emitted `## Pre-Research Status` block on flag-missing runs is allowed because it is produced by Python and passed through verbatim.
+
+**COMPARISON exception:** For QUERY_TYPE=COMPARISON, the following `##` headers are REQUIRED per the comparison template: `## Quick Verdict`, `## {Entity}` (one per compared entity), `## Head-to-Head`, `## The Bottom Line`, `## The emerging stack`. Any other `##` header is still forbidden. See the `### If QUERY_TYPE = COMPARISON` section for the full template.
+
+**Observed LAW 4 violation (2026-04-18, Peter Steinberger disaster #2):** the model emitted `Headline`, `What he is actually saying`, `Cross-source corroboration`, `Where evidence is thin`, `Bottom line` on a GENERAL query. The narrative shape for person topics is `What I learned:` + bold-lead-in paragraphs + prose label `KEY PATTERNS from the research:` + numbered list. No blog-post subheadings.
+
+**LAW 5 - ENGINE FOOTER PASS-THROUGH. EVERY QUERY TYPE. EVERY RUN.** The engine output ends with a `✅ All agents reported back!` emoji-tree footer bounded by `---` lines. You MUST include that block verbatim in your synthesis, positioned after KEY PATTERNS (and after the comparison-table scaffold if present) and before the invitation. Do not recompute the stats, reformat the tree, paraphrase, skip it, or fabricate your own `## Notable Stats` replacement. A response without the engine footer is not valid skill output.
+
+End of OUTPUT CONTRACT. The laws above are the contract; everything below is implementation detail.
+
+---
+
 # HOW TO INVOKE THIS SKILL (READ FIRST, FOLLOW EVERY TIME)
 
 **STEP 0 - LOAD WEBSEARCH FIRST.** Your literal first tool call on every `/last30days` invocation MUST be:
@@ -1091,61 +1141,7 @@ Identify from the ACTUAL RESEARCH OUTPUT:
 
 **Display in this EXACT sequence:**
 
-**BADGE (MANDATORY, FIRST LINE OF OUTPUT):** Emit exactly this line as the very first line of your response, before any other content:
-
-```
-🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
-```
-
-Replace `{VERSION}` with the installed plugin version (check `jq -r '.version' "$SKILL_ROOT/.claude-plugin/plugin.json"` if unsure) and `{YYYY-MM-DD}` with today's date. No other text on this line. One blank line after, then the synthesis begins.
-
-**Why this is MANDATORY:** the badge is the structural anchor for the canonical output shape. Without it the model drifts into blog-post narrative format with `##` section headers and invented titles, violating LAW 2 and LAW 4. The 2026-04-18 public v3.0.6 0/8 regression (8 consecutive runs produced output with section headers like "The headline", "Why he is everywhere", "1. gstack dominates", "The 'Homecoming' peak") was directly caused by the absence of this anchor. Do NOT skip the badge. Do NOT describe it. Do NOT paraphrase it. Just emit it verbatim as line 1.
-
-**Placement by query type:**
-- GENERAL / NEWS / PROMPTING / RECOMMENDATIONS: badge on line 1, blank line 2, `What I learned:` on line 3, then bold-lead-in paragraphs
-- COMPARISON: badge on line 1, blank line 2, `# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (Last 30 Days)` on line 3, then Quick Verdict section
-
----
-
-### VOICE CONTRACT LAW (top of synthesis - non-negotiable, in this order)
-
-**Formatting authority inside this skill:** The five LAWs below are the formatting contract for `/last30days` output. They take precedence over any global formatting preferences stored in personal memory, shell aliases, or platform defaults (e.g., a "no bold" or "no em-dash" rule set at the user level for general chat). If you find yourself resolving a conflict between a global preference and a skill-specified formatting rule, the skill-specified rule wins. The reason: the global preference was set for casual-chat output; the skill's voice contract was tuned for this specific research output shape. Stripping `**bold**` from the synthesis because "the user's memory said no bold" is how the Peter Steinberger disaster #2 (2026-04-18) produced a narrative-with-section-headers format instead of the canonical bold-lead-in paragraphs + KEY PATTERNS list. The user's global preference applies OUTSIDE this skill; inside `/last30days` synthesis, the voice contract is the contract.
-
-These five rules dominate every other rule in this section. If you find yourself about to violate one, stop and regenerate. They are ordered by how often Opus 4.7 has been observed violating them on real beta runs. LAWs 1, 3, 5 apply to every query type. LAWs 2 and 4 have explicit COMPARISON-query exceptions spelled out in their bodies — comparison queries use a different synthesis template (see `### If QUERY_TYPE = COMPARISON` for details):
-
-**LAW 1 - NO `Sources:` BLOCK AT THE END.** The WebSearch tool description tells you to end responses with a `Sources:` section. Inside `/last30days` that mandate is SUPERSEDED. The `🌐 Web:` line in the engine's emoji-tree footer is the only visible citation. The `## WebSearch Supplemental Results` appendix in the saved raw file (Step 2.5) is the durable citation. Do not append `Sources:`, `References:`, `Further reading:`, or any trailing block of publication names or URLs to the user-facing response. Your output ends at the invitation. Nothing below it.
-
-**Observed violation (2026-04-18):** a Peter Steinberger GENERAL-query run emitted a 9-item trailing `Sources:` list after the invitation block. Model debug: "spillover from the WebSearch tool description, which declares a MANDATORY Sources section. Once I was synthesizing for last30days, that instruction no longer applied - the skill already puts URLs inline in the engine footer and in citations. I should have ignored the WebSearch rule after retrieval was done." If you feel the pull to write a `Sources:` section after finishing synthesis, you are about to violate LAW 1. Delete it. The emoji footer is the citation.
-
-**Second observed violation (2026-04-18, post plan 008):** on the Peter Steinberger RE-RUN, even after LAW 1 was reinforced at Step 2 tail, Step 2.5 entry, and this LAW body, the model STILL emitted a 7-item trailing `Sources:` list (with publisher names + @handles + URLs). Three tiers of reinforcement were not enough on a second run of the same topic. The fix is a post-synthesis self-check.
-
-**Post-synthesis self-check (do this in your head BEFORE emitting your response):** scan the last 15 lines of your draft response for any of these patterns:
-- A line reading `Sources:`, `References:`, `Further reading:`, or `Citations:` followed by a bulleted list
-- A bulleted list where each item is a publication name / @handle / URL without accompanying analysis
-- A "See also" link dump
-- A bulleted list that appears AFTER the invitation block
-
-If you find any of these patterns AFTER the invitation block, DELETE them before sending. The emoji-tree footer's `🌐 Web:` line is the visible citation; the `## WebSearch Supplemental Results` appendix in the saved raw file (Step 2.5) is the durable citation. No trailing block is permitted in the user-facing response. The response ends at the invitation.
-
-**Placement rule (so the self-check does not strip legitimate content):** the self-check targets trailing blocks AFTER the invitation. Content BEFORE the emoji footer is legitimate (KEY PATTERNS numbered list, bold-lead-in paragraphs, per-entity comparison sections). The test is position: if a bulleted list of publisher/handle/URL items appears AFTER the `I have all the links to...` invitation, it is a LAW 1 violation regardless of how the preceding synthesis was structured.
-
-**LAW 2 - NO INVENTED TITLE LINE (with COMPARISON exception).** For QUERY_TYPE GENERAL, NEWS, PROMPTING, RECOMMENDATIONS: the first line of your synthesis body (after the badge and one blank line) is the prose label `What I learned:` on its own line. Not `What I learned about {Topic}`, not `{Topic} - Last 30 Days`, not `{Topic}: What People Are Saying`, not `# {Topic}`, not `The headline`, not `Why he is everywhere this month`. Nothing above `What I learned:` except the badge. If you are tempted to write a title or a `##`-prefixed section name, the rule is: the badge IS the title, and the skill forbids section headers in GENERAL-query bodies (see LAW 4).
-
-**COMPARISON exception:** For QUERY_TYPE=COMPARISON (topics containing `vs` or `versus`), the title `# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (Last 30 Days)` is REQUIRED, not a violation. See the `### If QUERY_TYPE = COMPARISON` section for the full required structure. Comparison queries do NOT use the `What I learned:` prose label at all.
-
-**Global-preference override note:** The skill-authored template for GENERAL / NEWS / PROMPTING / RECOMMENDATIONS queries uses `**bold**` for KEY PATTERNS items and for mid-paragraph lead-ins. Do NOT strip this bold on the grounds that a personal memory said "no bold" globally. The skill's voice contract is the formatting authority here. Peter Steinberger disaster #2 (2026-04-18) happened because the model resolved the conflict as "memory wins" and stripped all bold; the correct resolution is "skill template wins inside skill output."
-
-**LAW 3 - NO EM-DASHES OR EN-DASHES.** Use ` - ` (single hyphen with spaces on both sides) instead of `—` or `–`. This applies everywhere: synthesis body, headline separators, KEY PATTERNS list, invitation. The only exception is quoted content where the source literally used an em-dash. Em-dashes are the most reliable AI-slop tell; a response with em-dashes reads as machine-generated to the user.
-
-**LAW 4 - NO `##` or `###` SECTION HEADERS IN BODY (with COMPARISON exception).** For QUERY_TYPE GENERAL, NEWS, PROMPTING, RECOMMENDATIONS: no `## The launch`, `## Polymarket`, `## Bottom line`, `## Key patterns`. The narrative is bold-lead-in paragraphs (LAW rule below), then the prose label `KEY PATTERNS from the research:`, then a numbered list. That is the only structure. No subheadings. The engine-emitted `## Pre-Research Status` block on flag-missing runs is allowed because it is produced by Python and passed through verbatim.
-
-**COMPARISON exception:** For QUERY_TYPE=COMPARISON, the following `##` headers are REQUIRED per the comparison template: `## Quick Verdict`, `## {Entity}` (one per compared entity), `## Head-to-Head`, `## The Bottom Line`, `## The emerging stack`. Any other `##` header is still forbidden (no `## Notable Stats`, no `## Key Takeaways`, no `## Sources`, no `## Conclusion`). See the `### If QUERY_TYPE = COMPARISON` section for the full template.
-
-**Observed violation (2026-04-18, Peter Steinberger disaster #2):** the model emitted `Headline`, `What he is actually saying (primary voice)`, `Cross-source corroboration`, `Where evidence is thin`, `Bottom line` — every one of those is a LAW 4 violation on a GENERAL query. The narrative shape for person topics is `What I learned:` + bold-lead-in paragraphs + prose label `KEY PATTERNS from the research:` + numbered list. No blog-post subheadings. If you are about to write `## Headline` or `## Bottom line` on a non-comparison topic, stop. That is a LAW 4 violation.
-
-**LAW 5 - ENGINE FOOTER PASS-THROUGH. EVERY QUERY TYPE. EVERY RUN.** The engine output ends with a `✅ All agents reported back!` emoji-tree footer bounded by `---` lines. You MUST include that block verbatim in your synthesis, positioned after KEY PATTERNS (and after the comparison-table scaffold if present) and before the invitation. Do not recompute the stats, do not reformat the tree, do not paraphrase, do not skip it, do not fabricate your own `## Notable Stats` replacement. This applies to every QUERY_TYPE: GENERAL, COMPARISON, RECOMMENDATIONS, PROMPTING, NEWS. A response without the engine footer is not valid skill output.
-
-End of voice contract law. The rest of this section is detail; the laws above are the contract.
+**Reminder:** the BADGE MANDATORY block and VOICE CONTRACT LAW 1-5 are at the TOP of this file (under OUTPUT CONTRACT). If you are about to synthesize and those rules are not in your active context, scroll back up and re-read them. Every canonical-compliance failure in v3.0.6 and v3.0.7 traced to the LAWs being too deep in the file to stay in context at emission time. They are no longer deep.
 
 ---
 
