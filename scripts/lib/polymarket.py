@@ -117,6 +117,9 @@ _NOISE_WORDS = frozenset({
     "software", "plugin", "skill", "agent", "bot", "search", "research",
     # Generic prediction market terms
     "market", "odds", "prediction", "forecast", "chance", "probability",
+    # Comparison-query conjunctions — should not count as informative filter tokens
+    # when the topic is "X vs Y vs Z"
+    "vs", "versus",
 })
 
 
@@ -163,6 +166,70 @@ def _passes_topic_filter(topic: str, event_title: str) -> bool:
     min_matches = 2 if len(informative) >= 3 else 1
 
     return match_count >= min_matches
+
+
+def _passes_any_informative_word(topic: str, event_title: str) -> bool:
+    """Looser variant of _passes_topic_filter that keeps an item if ANY
+    informative word from the topic appears in the title.
+
+    Designed for post-merge validation of comparison topics (e.g., "OpenClaw vs
+    Hermes vs Paperclip"), where a market mentioning just one of the entities
+    is still on-topic. The stricter _passes_topic_filter (min_matches=2 for
+    3+ informative words) is correct for single-entity topics like "Mill.com
+    food recycler" but drops legitimate single-entity comparison results.
+    """
+    core = _extract_core_subject(topic).lower()
+    core_words = [w for w in re.sub(r"[^\w\s]", " ", core).split() if len(w) > 1]
+    if not core_words:
+        return True
+    informative = [w for w in core_words if w not in _NOISE_WORDS]
+    if not informative:
+        return True
+
+    title_lower = " ".join(re.sub(r"[^\w\s]", " ", event_title.lower()).split())
+    title_words = set(title_lower.split())
+
+    for word in informative:
+        if word in title_words:
+            return True
+        if len(word) >= 4 and word in title_lower:
+            return True
+    return False
+
+
+def filter_items_against_topic(topic: str, items: List[Any]) -> List[Any]:
+    """Drop items whose title shares no informative word with the original topic.
+
+    Called post-merge from pipeline.py so per-entity subquery results for
+    comparison topics get re-validated against the ORIGINAL full topic before
+    landing in the footer. Prevents noise like WTI crude oil or Elon tweet
+    markets from surviving a loose "Hermes" single-entity subquery match.
+
+    Uses the looser _passes_any_informative_word rule (ANY entity name match
+    is sufficient) so a market mentioning just one of several compared entities
+    still counts as on-topic.
+
+    Accepts a list of either raw dicts (with 'title') or SourceItem-like objects
+    (with .title attribute). Returns the filtered list in the same order.
+    """
+    if not topic:
+        return items
+
+    filtered = []
+    for item in items:
+        title = getattr(item, "title", None)
+        if title is None and isinstance(item, dict):
+            title = item.get("title", "")
+        title = title or ""
+
+        if _passes_any_informative_word(topic, title):
+            filtered.append(item)
+
+    dropped = len(items) - len(filtered)
+    if dropped:
+        _log(f"Post-merge topic filter dropped {dropped} Polymarket items against full topic '{topic}'")
+
+    return filtered
 
 
 def _extract_domain_queries(topic: str, events: List[Dict]) -> List[str]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from urllib.parse import urlparse
 
 from . import dates, schema
 
@@ -36,7 +37,7 @@ def _assistant_safety_lines() -> list[str]:
     ]
 
 
-def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str = "medium") -> str:
+def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str = "medium", save_path: str | None = None) -> str:
     non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
     lines = [
         f"# last30days v3.0.0: {report.topic}",
@@ -86,7 +87,151 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
         lines.extend([""] + best_takes)
 
     lines.extend(_render_source_coverage(report))
+
+    pre_research_warning = _render_pre_research_warning(report)
+    if pre_research_warning:
+        lines.append("")
+        lines.extend(pre_research_warning)
+
+    comparison_scaffold = _render_comparison_scaffold(report.topic)
+    if comparison_scaffold:
+        lines.append("")
+        lines.extend(comparison_scaffold)
+
+    footer = _render_emoji_footer(report, save_path)
+    if footer:
+        lines.append("")
+        lines.extend(footer)
+
     return "\n".join(lines).strip() + "\n"
+
+
+def _is_pre_research_eligible(topic: str) -> bool:
+    """Return True if the topic looks like a person, project, brand, or product.
+
+    Heuristic: 1-5 words, AND either at least one word is capitalized OR it is
+    a single word (product names like "nvidia" or "openai" are valid lowercase
+    brand handles). Comparison topics (containing vs/versus) also count as
+    eligible because per-entity resolution is expected.
+
+    Phrases that clearly look abstract (multi-word all-lowercase prose like
+    "best noise cancelling headphones" or "ai regulation") return False.
+
+    False positives are preferable to false negatives here since the warning
+    is only an advisory nudge, not a blocker.
+    """
+    if not topic:
+        return False
+    words = topic.strip().split()
+    # Comparison queries are always eligible (per-entity resolution expected)
+    # Check before the word-count cap since comparisons with 3+ entities can exceed 5 words.
+    lower = topic.lower()
+    if " vs " in lower or " vs. " in lower or " versus " in lower:
+        return True
+    if len(words) < 1 or len(words) > 5:
+        return False
+    # Single-word topics are eligible (product names are often lowercase brand handles)
+    if len(words) == 1:
+        return True
+    # Multi-word topics need at least one capitalized word
+    capitalized = sum(1 for w in words if w and w[0].isupper())
+    return capitalized >= 1
+
+
+def _render_pre_research_warning(report: schema.Report) -> list[str]:
+    """Emit a Pre-Research Status warning block when the engine was called
+    without --x-handle / --github-user / --subreddits / --plan / --auto-resolve
+    on a topic that would benefit from pre-research resolution.
+
+    Returns empty list when flags are present or topic is not eligible.
+    """
+    flags_present = bool(report.artifacts.get("pre_research_flags_present", False))
+    if flags_present:
+        return []
+    if not _is_pre_research_eligible(report.topic):
+        return []
+
+    return [
+        "## Pre-Research Status",
+        "",
+        "⚠️  Step 0.55 pre-research was skipped. The engine ran with keyword search only.",
+        "",
+        "For people, projects, brands, and products this usually misses:",
+        "- Founder and team X timelines (what they post about their own work)",
+        "- GitHub repo activity (issues, PRs, release notes, commit velocity)",
+        "- Subreddit-specific threads on dedicated communities",
+        "- Topic-specific TikTok and Instagram creators",
+        "",
+        "To fix: in a fresh Claude Code window, run `ToolSearch select:WebSearch` first,",
+        f"then rerun `/last30days {report.topic}`. The skill will resolve handles",
+        "and communities before calling the engine this time, producing richer results.",
+        "",
+        "If this topic really is abstract (e.g. \"AI regulation\") and doesn't need",
+        "handle resolution, add `--auto-resolve` to the engine command or ignore this",
+        "warning - the current results are the keyword-search fallback.",
+    ]
+
+
+def _parse_comparison_entities(topic: str) -> list[str] | None:
+    """Return list of entity names if topic is a comparison query, else None.
+
+    Splits on ` vs ` or ` versus ` (case-insensitive). Caps at 4 entities
+    for table readability. Returns None if only one entity or empty input.
+    """
+    if not topic:
+        return None
+    import re
+    parts = re.split(r"\s+(?:vs\.?|versus)\s+", topic.strip(), flags=re.IGNORECASE)
+    parts = [p.strip() for p in parts if p.strip()]
+    if len(parts) < 2:
+        return None
+    return parts[:4]
+
+
+def _render_comparison_scaffold(topic: str) -> list[str]:
+    """Emit a markdown comparison table scaffold for synthesizer to fill.
+
+    Returns empty list if topic is not a comparison query. When present,
+    the block is bracketed so the synthesizer can detect it and pass through.
+
+    Axes match the April 9 launch-video exemplar (9 axes suited to AI-tool
+    comparisons). For non-AI-tool comparisons, the synthesizer writes N/A
+    or topic-appropriate substitutes in irrelevant rows.
+    """
+    entities = _parse_comparison_entities(topic)
+    if not entities:
+        return []
+
+    # Header row - uses "Dimension" per the April 9 exemplar (not "Feature")
+    header = "| Dimension | " + " | ".join(entities) + " |"
+    # Separator row matching column count
+    separator = "|" + "|".join(["---"] * (len(entities) + 1)) + "|"
+    # 9 axes from the April 9 exemplar. Model fills with topic-appropriate
+    # content; irrelevant axes get "N/A" rather than invented data.
+    axes = [
+        "What it is",
+        "GitHub stars",
+        "Philosophy",
+        "Skills",
+        "Memory",
+        "Models",
+        "Security",
+        "Best for",
+        "Install",
+    ]
+    body = [f"| {axis} | " + " | ".join([" "] * len(entities)) + " |" for axis in axes]
+
+    return [
+        "## Head-to-Head",
+        "",
+        "Fill each cell based on the research above. Keep cells short (5-15 words). Use ' - ' (hyphen with spaces) not em-dashes. Write N/A for axes that do not apply to this topic class. This scaffold matches the April 9 launch-video exemplar shape.",
+        "",
+        header,
+        separator,
+        *body,
+        "",
+        "After the table, write the Bottom Line section with one Choose-X-if paragraph per entity, then the emerging stack paragraph. See the comparison template in SKILL.md for the full structure.",
+    ]
 
 
 def render_full(report: schema.Report) -> str:
@@ -301,10 +446,54 @@ def _format_volume_short(volume: float) -> str:
     return ""
 
 
+def _shorten_polymarket_title(title: str) -> str:
+    """Strip boilerplate from a Polymarket question to produce a compact descriptor.
+
+    Examples:
+    - "Will Kanye West visit the UK by June 30?" -> "UK visit"
+    - "Kanye West blocked from entering another country by June 30?" -> "blocked from entering another country"
+    - "Will Bianca and Kanye West separate in 2026?" -> "Bianca and Kanye West separate"
+
+    Falls back to first 3-4 significant words if stripping does not reduce below 40 chars.
+    Never truncates mid-word.
+    """
+    import re
+
+    t = (title or "").strip().rstrip("?").strip()
+
+    # Drop leading "Will "
+    if t.lower().startswith("will "):
+        t = t[5:].strip()
+
+    # Drop "by <Month> <Day>" or "by <Month> <Day>, <Year>" tail
+    t = re.sub(r"\s+by\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+(?:,\s*\d{4})?$", "", t, flags=re.IGNORECASE)
+    # Drop "in <Year>" tail (e.g. "separate in 2026")
+    t = re.sub(r"\s+in\s+\d{4}$", "", t, flags=re.IGNORECASE)
+    # Drop "by <Year>" tail
+    t = re.sub(r"\s+by\s+\d{4}$", "", t, flags=re.IGNORECASE)
+    # Drop "before <Month> <Day>" tail
+    t = re.sub(r"\s+before\s+(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d+$", "", t, flags=re.IGNORECASE)
+
+    # Pattern: "<Subject> visit <Place>" -> "<Place> visit"
+    m = re.match(r"^(.+?)\s+visit\s+(?:the\s+)?(.+)$", t, flags=re.IGNORECASE)
+    if m:
+        subject, place = m.group(1), m.group(2)
+        t = f"{place} visit"
+
+    t = t.strip()
+
+    # If still too long, fall back to first 6 significant words
+    if len(t) > 40:
+        words = t.split()
+        t = " ".join(words[:6])
+
+    return t
+
+
 def _polymarket_top_markets(items: list[schema.SourceItem], limit: int = 3) -> list[str]:
     """Build short summary strings for the top Polymarket markets by volume.
 
-    Returns list like: ['"BULLY <300k": 96% ($66K)', '"Top Spotify": Kanye 6.5% ($21K)']
+    Returns list like: ['UK visit 5.5%', 'Israel visit 8%', 'blocked from entering 36%']
     """
     # Sort by volume descending
     sorted_items = sorted(
@@ -313,27 +502,28 @@ def _polymarket_top_markets(items: list[schema.SourceItem], limit: int = 3) -> l
         reverse=True,
     )
 
-    summaries = []
+    summaries: list[str] = []
     for item in sorted_items[:limit]:
         outcome_prices = item.metadata.get("outcome_prices") or []
         if not outcome_prices:
             continue
 
-        # Pick the leading outcome (first one, already sorted by relevance in polymarket.py)
         lead_name, lead_price = outcome_prices[0]
-        # For binary Yes/No markets, show "Yes: 96%" format
-        # For multi-outcome, show "OutcomeName: X%"
-        if isinstance(lead_price, (int, float)):
-            pct = f"{lead_price * 100:.0f}%" if lead_price >= 0.1 else f"{lead_price * 100:.1f}%"
-        else:
+        if not isinstance(lead_price, (int, float)):
             continue
 
-        # Short title
-        title = item.metadata.get("question") or item.title
-        if len(title) > 30:
-            title = title[:27] + "..."
+        pct = f"{lead_price * 100:.0f}%" if lead_price >= 0.1 else f"{lead_price * 100:.1f}%"
 
-        summaries.append(f'"{title}": {lead_name} {pct}')
+        descriptor = _shorten_polymarket_title(item.metadata.get("question") or item.title or "")
+        if not descriptor:
+            continue
+
+        # For binary Yes/No markets (lead_name == "Yes"), the "Yes" is implicit - omit it.
+        # For named outcomes (e.g. "Kanye" in a multi-way market), keep the outcome name.
+        if lead_name.lower() == "yes":
+            summaries.append(f"{descriptor} {pct}")
+        else:
+            summaries.append(f"{descriptor}: {lead_name} {pct}")
 
     return summaries
 
@@ -352,6 +542,284 @@ def _render_source_coverage(report: schema.Report) -> list[str]:
         for source, error in sorted(report.errors_by_source.items()):
             lines.append(f"- {_source_label(source)}: {error}")
     return lines
+
+
+# Known publications for the Web line of the emoji-tree footer.
+# Maps apex domain to a clean display name. Unknown domains fall back to
+# the bare domain string (protocol stripped, www. removed).
+_SITE_NAMES: dict[str, str] = {
+    "later.com": "Later",
+    "buffer.com": "Buffer",
+    "socialbee.com": "SocialBee",
+    "cnn.com": "CNN",
+    "bbc.com": "BBC",
+    "bbc.co.uk": "BBC",
+    "nytimes.com": "NYT",
+    "nypost.com": "NY Post",
+    "wsj.com": "WSJ",
+    "bloomberg.com": "Bloomberg",
+    "reuters.com": "Reuters",
+    "theverge.com": "The Verge",
+    "techcrunch.com": "TechCrunch",
+    "wired.com": "Wired",
+    "arstechnica.com": "Ars Technica",
+    "theguardian.com": "The Guardian",
+    "independent.co.uk": "The Independent",
+    "theatlantic.com": "The Atlantic",
+    "newyorker.com": "The New Yorker",
+    "washingtonpost.com": "Washington Post",
+    "politico.com": "Politico",
+    "axios.com": "Axios",
+    "semafor.com": "Semafor",
+    "theinformation.com": "The Information",
+    "medium.com": "Medium",
+    "substack.com": "Substack",
+    "dev.to": "dev.to",
+    "github.com": "GitHub",
+    "stackoverflow.com": "Stack Overflow",
+    "producthunt.com": "Product Hunt",
+    "variety.com": "Variety",
+    "deadline.com": "Deadline",
+    "rollingstone.com": "Rolling Stone",
+    "complex.com": "Complex",
+    "pbs.org": "PBS",
+    "npr.org": "NPR",
+    "forbes.com": "Forbes",
+    "cnbc.com": "CNBC",
+    "businessinsider.com": "Business Insider",
+    "fortune.com": "Fortune",
+    "vox.com": "Vox",
+    "slate.com": "Slate",
+    "theregister.com": "The Register",
+    "venturebeat.com": "VentureBeat",
+    "hackernoon.com": "HackerNoon",
+    "anthropic.com": "Anthropic",
+    "openai.com": "OpenAI",
+    "aws.amazon.com": "AWS",
+    "9to5mac.com": "9to5Mac",
+    "9to5google.com": "9to5Google",
+    "decrypt.co": "Decrypt",
+    "xda-developers.com": "XDA",
+    "tomshardware.com": "Tom's Hardware",
+    "engadget.com": "Engadget",
+    "mashable.com": "Mashable",
+    "vellum.ai": "Vellum",
+    "helpnetsecurity.com": "Help Net Security",
+    "gizmodo.com": "Gizmodo",
+}
+
+
+def _site_name_for_url(url: str) -> str:
+    """Return a clean publication name for a URL, or a bare domain fallback.
+
+    Strips protocol and ``www.`` from unknowns; checks known publications
+    before falling back. Returns a short readable string, never a raw URL.
+    """
+    if not url:
+        return ""
+    u = url.strip()
+    if not u:
+        return ""
+    # urlparse needs a scheme to resolve the netloc; prepend http:// if missing.
+    parsed = urlparse(u if "://" in u else f"http://{u}")
+    host = (parsed.netloc or parsed.path.split("/", 1)[0]).lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if not host:
+        return u[:40]
+    if host in _SITE_NAMES:
+        return _SITE_NAMES[host]
+    # Try stripping one subdomain level (eu.example.com -> example.com)
+    parts = host.split(".")
+    if len(parts) >= 3:
+        apex = ".".join(parts[-2:])
+        if apex in _SITE_NAMES:
+            return _SITE_NAMES[apex]
+    return host
+
+
+def _format_web_line_sources(items: list[schema.SourceItem], limit: int = 8) -> str:
+    """Return comma-separated clean publication names for the Web line.
+
+    Deduplicates by display name while preserving first-seen order.
+    """
+    seen: list[str] = []
+    for item in items:
+        if not item.url:
+            continue
+        name = _site_name_for_url(item.url)
+        if not name:
+            continue
+        if name not in seen:
+            seen.append(name)
+        if len(seen) >= limit:
+            break
+    return ", ".join(seen)
+
+
+# Per-source line format for the emoji-tree footer.
+# Label in the template, emoji prefix, word for the item count, and which
+# engagement dimensions to show.  Keys are the source names as used in
+# Report.items_by_source.  Order here is the render order.
+_FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
+    # (source_key,  emoji, display_name, item_word_singular, [(engagement_key, word)])
+    ("reddit",      "🟠", "Reddit",       "thread",   [("score", "upvotes"), ("num_comments", "comments")]),
+    ("x",           "🔵", "X",            "post",     [("likes", "likes"), ("reposts", "reposts")]),
+    ("youtube",     "🔴", "YouTube",      "video",    [("views", "views")]),  # transcripts appended below in _build_source_footer_lines
+    ("tiktok",      "🎵", "TikTok",       "video",    [("views", "views"), ("likes", "likes")]),
+    ("instagram",   "📸", "Instagram",    "reel",     [("views", "views"), ("likes", "likes")]),
+    ("threads",     "🧵", "Threads",      "post",     [("likes", "likes"), ("replies", "replies")]),
+    ("pinterest",   "📌", "Pinterest",    "pin",      [("saves", "saves"), ("comments", "comments")]),
+    ("hackernews",  "🟡", "HN",           "story",    [("points", "points"), ("comments", "comments")]),
+    ("bluesky",     "🦋", "Bluesky",      "post",     [("likes", "likes"), ("reposts", "reposts")]),
+    ("truthsocial", "🇺🇸", "Truth Social", "post",     [("likes", "likes"), ("reposts", "reposts")]),
+    ("github",      "🐙", "GitHub",       "item",     [("reactions", "reactions"), ("comments", "comments")]),
+]
+
+
+def _sum_engagement(items: list[schema.SourceItem], key: str) -> int:
+    total = 0
+    for item in items:
+        value = item.engagement.get(key) if item.engagement else None
+        if value in (None, ""):
+            continue
+        try:
+            total += int(value)
+        except (TypeError, ValueError):
+            continue
+    return total
+
+
+def _footer_line_for_source(emoji: str, label: str, count: int, item_word: str, stats: str) -> str:
+    count_str = f"{count:,}" if count >= 1000 else str(count)
+    plural = f"{item_word}s" if count != 1 else item_word
+    if stats:
+        return f"{emoji} {label}: {count_str} {plural} │ {stats}"
+    return f"{emoji} {label}: {count_str} {plural}"
+
+
+def _build_source_footer_lines(report: schema.Report) -> list[str]:
+    """Return emoji-tree body lines (without tree characters) for each populated source.
+
+    The caller adds the tree characters (├─ / └─) after assembling all lines.
+    """
+    out: list[str] = []
+    for source_key, emoji, label, item_word, engagement_fields in _FOOTER_SOURCES:
+        items = report.items_by_source.get(source_key) or []
+        if not items:
+            continue
+        parts: list[str] = []
+        for eng_key, word in engagement_fields:
+            total = _sum_engagement(items, eng_key)
+            if total > 0:
+                total_str = f"{total:,}" if total >= 1000 else str(total)
+                parts.append(f"{total_str} {word}")
+        # YouTube: append "N with transcripts" instead of a third likes-based column.
+        # Transcripts are a more meaningful research-depth signal than likes.
+        if source_key == "youtube":
+            with_transcripts = sum(
+                1 for it in items
+                if (it.metadata.get("transcript_highlights") or it.metadata.get("transcript_snippet"))
+            )
+            if with_transcripts > 0:
+                parts.append(f"{with_transcripts} with transcripts")
+        stats = " │ ".join(parts)
+        out.append(_footer_line_for_source(emoji, label, len(items), item_word, stats))
+
+    # Polymarket (special: count + odds string from existing helper)
+    polymarket_items = report.items_by_source.get("polymarket") or []
+    if polymarket_items:
+        odds = _polymarket_top_markets(polymarket_items, limit=3)
+        odds_str = ", ".join(odds) if odds else ""
+        count = len(polymarket_items)
+        count_str = f"{count:,}" if count >= 1000 else str(count)
+        plural = "markets" if count != 1 else "market"
+        if odds_str:
+            out.append(f"📊 Polymarket: {count_str} {plural} │ {odds_str}")
+        else:
+            out.append(f"📊 Polymarket: {count_str} {plural}")
+
+    # Web (sources from grounding)
+    web_items = report.items_by_source.get("grounding") or []
+    if web_items:
+        names = _format_web_line_sources(web_items)
+        count = len(web_items)
+        count_str = f"{count:,}" if count >= 1000 else str(count)
+        plural = "pages" if count != 1 else "page"
+        if names:
+            out.append(f"🌐 Web: {count_str} {plural} - {names}")
+        else:
+            out.append(f"🌐 Web: {count_str} {plural}")
+
+    return out
+
+
+def _top_voices_footer_line(report: schema.Report) -> str | None:
+    """Return the 🗣️ Top voices line or None if no meaningful voices exist.
+
+    Combines top handles (X, Bluesky, Truth Social, YouTube, TikTok, Instagram)
+    and top subreddits, separated by │.
+    """
+    handle_items = {
+        source: report.items_by_source.get(source) or []
+        for source in ("x", "bluesky", "truthsocial", "youtube", "tiktok", "instagram", "threads")
+    }
+    handle_counts: Counter[str] = Counter()
+    for items in handle_items.values():
+        for item in items:
+            actor = _stats_actor(item)
+            if actor and actor.startswith("@"):
+                handle_counts[actor] += 1
+
+    subreddit_counts: Counter[str] = Counter()
+    for item in report.items_by_source.get("reddit") or []:
+        if item.container:
+            subreddit_counts[f"r/{item.container}"] += 1
+
+    top_handles = [h for h, _ in handle_counts.most_common(3)]
+    top_subs = [s for s, _ in subreddit_counts.most_common(3)]
+    if not top_handles and not top_subs:
+        return None
+    parts: list[str] = []
+    if top_handles:
+        parts.append(", ".join(top_handles))
+    if top_subs:
+        parts.append(", ".join(top_subs))
+    return f"🗣️ Top voices: {' │ '.join(parts)}"
+
+
+def _render_emoji_footer(report: schema.Report, save_path: str | None) -> list[str]:
+    """Produce the deterministic magic footer block.
+
+    Returns a list of markdown lines, including enclosing ``---`` separators.
+    Returns an empty list if no sources are populated.
+    """
+    source_lines = _build_source_footer_lines(report)
+    if not source_lines:
+        return []
+
+    voices_line = _top_voices_footer_line(report)
+    raw_line = f"📎 Raw results saved to {save_path}" if save_path else None
+
+    body: list[str] = []
+    body.extend(source_lines)
+    if voices_line:
+        body.append(voices_line)
+    if raw_line:
+        body.append(raw_line)
+
+    # Apply tree characters: ├─ for all but the last body line, └─ for the last.
+    tree_lines: list[str] = []
+    for i, line in enumerate(body):
+        prefix = "└─" if i == len(body) - 1 else "├─"
+        tree_lines.append(f"{prefix} {line}")
+
+    return [
+        "---",
+        "✅ All agents reported back!",
+        *tree_lines,
+        "---",
+    ]
 
 
 def _render_stats(report: schema.Report) -> list[str]:

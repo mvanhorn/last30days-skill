@@ -407,7 +407,7 @@ def run(
         if bundle.items_by_source.get(source):
             del bundle.errors_by_source[source]
 
-    items_by_source = _finalize_items_by_source(bundle.items_by_source)
+    items_by_source = _finalize_items_by_source(bundle.items_by_source, topic=topic)
     candidates = weighted_rrf(bundle.items_by_source_and_query, plan, pool_limit=settings["pool_limit"])
     ranked_candidates = rerank.rerank_candidates(
         topic=topic,
@@ -472,11 +472,22 @@ def _normalize_score_dedupe(
     return normalized
 
 
-def _finalize_items_by_source(items_by_source_raw: dict[str, list[schema.SourceItem]]) -> dict[str, list[schema.SourceItem]]:
+def _finalize_items_by_source(
+    items_by_source_raw: dict[str, list[schema.SourceItem]],
+    topic: str = "",
+) -> dict[str, list[schema.SourceItem]]:
     finalized = {}
     for source, items in items_by_source_raw.items():
         items = sorted(items, key=lambda item: item.local_rank_score or 0.0, reverse=True)
-        finalized[source] = dedupe.dedupe_items(items)
+        items = dedupe.dedupe_items(items)
+        # Post-merge topic-relevance filter for Polymarket: comparison queries
+        # fan out into per-entity subqueries ("Hermes", "OpenClaw") whose topic
+        # is too narrow for Gamma API to filter meaningfully. Re-validating the
+        # merged list against the full original topic drops off-topic markets
+        # (e.g., WTI crude oil, Elon tweet counts) before footer emission.
+        if source == "polymarket" and topic:
+            items = polymarket.filter_items_against_topic(topic, items)
+        finalized[source] = items
     return finalized
 
 
