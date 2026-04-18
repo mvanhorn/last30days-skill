@@ -59,6 +59,21 @@ metadata:
       - clawhub
 ---
 
+# SKILL CONTRACT — READ BEFORE ANY TOOL CALL
+
+You are inside the `/last30days` SKILL. This is a specific research tool with a 1400+ line instruction contract (the rest of this file) that defines EXACTLY how to produce the research output. It is not a generic "last 30 days of X" research prompt. Do NOT treat `/last30days` as a search keyword you can improvise against.
+
+**Named failure mode (2026-04-18 public v3.0.6 0/8 regression):** on 8 consecutive public invocations, Opus 4.7 treated `/last30days` as a generic research keyword and improvised. Every single run violated LAW 2 (invented titles like "The headline", "Kanye West: the last 30 days"), LAW 4 (section headers like "Why he is everywhere this month", "1. gstack dominates", "The 'Homecoming' peak"), or both. One run (Matt Van Horn) skipped Step 0.5 / Step 0.55 entirely and ran the engine bare with zero resolution flags. Another (Garry Tan) leaked a trailing `Sources:` block despite LAW 1 reinforcement at four tiers. Two runs (Peter Steinberger, Kanye vs Kim) landed on a stale `~/.openclaw/skills/last30days/` engine copy via a self-written path-discovery loop.
+
+**How v3.0.7 fixes it:** three structural anchors.
+1. **The MANDATORY first-line badge** (`🌐 last30days v{VERSION} · synced {YYYY-MM-DD}`) at the top of every response is the LAW 2 / LAW 4 enforcement anchor. See "BADGE (MANDATORY, FIRST LINE OF OUTPUT)" in the synthesis section.
+2. **The pinned SKILL_ROOT resolution** in the engine Bash calls always points to the public plugin cache, never `~/.openclaw/` or other stale copies.
+3. **This preface** tells you plainly: do NOT improvise. Follow SKILL.md top to bottom.
+
+If you catch yourself about to write a `##` section header in a GENERAL-query body, a custom title line, a `Sources:` bullet list, a `for dir in ...` path-discovery loop, or a bare `python3 scripts/last30days.py "{TOPIC}"` engine call with no pre-flight flags — stop. Those are the exact failure modes the LAWs and this contract exist to prevent. The 10/10 beta validation from 2026-04-18 and the 0/8 public v3.0.6 regression from the same day had THE SAME MODEL and SIMILAR SKILL.md CONTENT; the delta is the three anchors this release restores. Read SKILL.md top to bottom before emitting your first response.
+
+---
+
 # HOW TO INVOKE THIS SKILL (READ FIRST, FOLLOW EVERY TIME)
 
 **STEP 0 - LOAD WEBSEARCH FIRST.** Your literal first tool call on every `/last30days` invocation MUST be:
@@ -646,21 +661,26 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 **IMPORTANT: Include `--x-handle={RESOLVED_HANDLE}` in the command. For comparison mode: Pass `--x-handle={TOPIC_A_HANDLE}` to the first pass, `--x-handle={TOPIC_B_HANDLE}` to the second pass, and both to the head-to-head pass. Also include `--subreddits={RESOLVED_SUBREDDITS}`, `--tiktok-hashtags={RESOLVED_HASHTAGS}`, `--tiktok-creators={RESOLVED_TIKTOK_CREATORS}`, and `--ig-creators={RESOLVED_IG_CREATORS}` from Step 0.55. Omit any flag where the value was not resolved (empty).**
 
 ```bash
-# Find skill root - works in repo checkout, Claude Code, or Codex install
-for dir in \
-  "." \
-  "${CLAUDE_PLUGIN_ROOT:-}" \
-  "${GEMINI_EXTENSION_DIR:-}" \
-  "$HOME/.claude/plugins/marketplaces/last30days-skill-private" \
-  "$HOME/.claude/plugins/cache/last30days-skill-private/last30days-3-nogem/3.0.0-nogem" \
-  "$HOME/.claude/plugins/cache/last30days-skill-private/last30days-3/3.0.0-alpha" \
-  "$HOME/.claude/skills/last30days-3-nogem" \
-  "$HOME/.claude/skills/last30days-3"; do
-  [ -n "$dir" ] && [ -f "$dir/scripts/last30days.py" ] && SKILL_ROOT="$dir" && break
-done
+# PIN SKILL_ROOT to the public plugin cache (highest-version dir wins on upgrade).
+# DO NOT write your own path-discovery loop. The 2026-04-18 Peter Steinberger run 1
+# regression was caused by a custom discovery loop landing on ~/.openclaw/skills/last30days/
+# (a stale copy from a private-repo sync pattern). That path contains a pre-plan-007
+# engine and produces non-canonical output. This pinned resolution ignores every stale
+# copy (~/.openclaw/, ~/.agents/, ~/.codex/) and picks the plugin cache exclusively.
+SKILL_ROOT="$(ls -d "$HOME/.claude/plugins/cache/last30days-skill/last30days/"*/ 2>/dev/null | sort -V | tail -1)"
+SKILL_ROOT="${SKILL_ROOT%/}"
 
-if [ -z "${SKILL_ROOT:-}" ]; then
-  echo "ERROR: Could not find scripts/last30days.py" >&2
+# Fallback for repo checkout / Gemini / Codex hosts where the plugin cache does not exist.
+# Only runs if the public plugin cache is missing entirely.
+if [ -z "$SKILL_ROOT" ] || [ ! -f "$SKILL_ROOT/scripts/last30days.py" ]; then
+  for dir in "." "${CLAUDE_PLUGIN_ROOT:-}" "${GEMINI_EXTENSION_DIR:-}"; do
+    [ -n "$dir" ] && [ -f "$dir/scripts/last30days.py" ] && SKILL_ROOT="$dir" && break
+  done
+fi
+
+if [ -z "${SKILL_ROOT:-}" ] || [ ! -f "$SKILL_ROOT/scripts/last30days.py" ]; then
+  echo "ERROR: Could not find scripts/last30days.py in public plugin cache or repo checkout" >&2
+  echo "Expected: $HOME/.claude/plugins/cache/last30days-skill/last30days/{VERSION}/scripts/last30days.py" >&2
   exit 1
 fi
 
@@ -977,6 +997,8 @@ Voice contract LAWs 1, 3, 5 apply to comparisons unchanged (no `Sources:` block,
 **Required comparison structure (match the April 9 exemplar):**
 
 ```
+🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
+
 # {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (Last 30 Days)
 
 ## Quick Verdict
@@ -1069,6 +1091,20 @@ Identify from the ACTUAL RESEARCH OUTPUT:
 
 **Display in this EXACT sequence:**
 
+**BADGE (MANDATORY, FIRST LINE OF OUTPUT):** Emit exactly this line as the very first line of your response, before any other content:
+
+```
+🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
+```
+
+Replace `{VERSION}` with the installed plugin version (check `jq -r '.version' "$SKILL_ROOT/.claude-plugin/plugin.json"` if unsure) and `{YYYY-MM-DD}` with today's date. No other text on this line. One blank line after, then the synthesis begins.
+
+**Why this is MANDATORY:** the badge is the structural anchor for the canonical output shape. Without it the model drifts into blog-post narrative format with `##` section headers and invented titles, violating LAW 2 and LAW 4. The 2026-04-18 public v3.0.6 0/8 regression (8 consecutive runs produced output with section headers like "The headline", "Why he is everywhere", "1. gstack dominates", "The 'Homecoming' peak") was directly caused by the absence of this anchor. Do NOT skip the badge. Do NOT describe it. Do NOT paraphrase it. Just emit it verbatim as line 1.
+
+**Placement by query type:**
+- GENERAL / NEWS / PROMPTING / RECOMMENDATIONS: badge on line 1, blank line 2, `What I learned:` on line 3, then bold-lead-in paragraphs
+- COMPARISON: badge on line 1, blank line 2, `# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (Last 30 Days)` on line 3, then Quick Verdict section
+
 ---
 
 ### VOICE CONTRACT LAW (top of synthesis - non-negotiable, in this order)
@@ -1093,7 +1129,7 @@ If you find any of these patterns AFTER the invitation block, DELETE them before
 
 **Placement rule (so the self-check does not strip legitimate content):** the self-check targets trailing blocks AFTER the invitation. Content BEFORE the emoji footer is legitimate (KEY PATTERNS numbered list, bold-lead-in paragraphs, per-entity comparison sections). The test is position: if a bulleted list of publisher/handle/URL items appears AFTER the `I have all the links to...` invitation, it is a LAW 1 violation regardless of how the preceding synthesis was structured.
 
-**LAW 2 - NO INVENTED TITLE LINE (with COMPARISON exception).** For QUERY_TYPE GENERAL, NEWS, PROMPTING, RECOMMENDATIONS: the first line of your synthesis body is the prose label `What I learned:` on its own line. Not `What I learned about {Topic}`, not `{Topic} - Last 30 Days`, not `{Topic}: What People Are Saying`, not `# {Topic}`. Nothing above `What I learned:`. If you are tempted to write a title, the rule is: there is no title.
+**LAW 2 - NO INVENTED TITLE LINE (with COMPARISON exception).** For QUERY_TYPE GENERAL, NEWS, PROMPTING, RECOMMENDATIONS: the first line of your synthesis body (after the badge and one blank line) is the prose label `What I learned:` on its own line. Not `What I learned about {Topic}`, not `{Topic} - Last 30 Days`, not `{Topic}: What People Are Saying`, not `# {Topic}`, not `The headline`, not `Why he is everywhere this month`. Nothing above `What I learned:` except the badge. If you are tempted to write a title or a `##`-prefixed section name, the rule is: the badge IS the title, and the skill forbids section headers in GENERAL-query bodies (see LAW 4).
 
 **COMPARISON exception:** For QUERY_TYPE=COMPARISON (topics containing `vs` or `versus`), the title `# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (Last 30 Days)` is REQUIRED, not a violation. See the `### If QUERY_TYPE = COMPARISON` section for the full required structure. Comparison queries do NOT use the `What I learned:` prose label at all.
 
@@ -1180,9 +1216,11 @@ here for the conversation, not the press release.
 
 **NEVER use `##` or `###` markdown section headers in your response body.** No `## The launch`, no `## Where it disappoints`, no `## Polymarket`, no `## Best quotes`, no `## Stats snapshot`. Those read as AI-slop news-article structure. The narrative is a short block of bold-lead-in paragraphs followed by a prose label `KEY PATTERNS from the research:` followed by a numbered list. That is the only structure.
 
-**NEVER write a title line at the top of your response.** No `Kanye West: last 30 days`, no `Claude Opus 4.7 - what people are actually saying`, no `{Topic} news`. Your response begins with the prose label `What I learned:` on its own line and goes straight into the narrative.
+**NEVER write a title line at the top of your response.** No `Kanye West: last 30 days`, no `Claude Opus 4.7 - what people are actually saying`, no `{Topic} news`. Your response begins with the MANDATORY badge on line 1, one blank line, then the prose label `What I learned:` on line 3, and goes straight into the narrative.
 
 ```
+🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
+
 What I learned:
 
 **{Headline summarizing topic 1}** - [1-2 sentences about what people are saying, per @handle or r/sub]
