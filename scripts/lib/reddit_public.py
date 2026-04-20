@@ -198,7 +198,7 @@ def search(
     encoded_query = _url_encode(query)
 
     if subreddit:
-        sub = subreddit.lstrip("r/").strip()
+        sub = subreddit.strip().removeprefix("r/")
         url = (
             f"https://www.reddit.com/r/{sub}/search.json"
             f"?q={encoded_query}&restrict_sr=on&sort=relevance&t=month&limit={limit}&raw_json=1"

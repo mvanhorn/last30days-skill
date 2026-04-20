@@ -153,6 +153,18 @@ class TestSubredditScopedSearch:
         assert "/r/ClaudeAI/search.json" in req.full_url
         assert "/r/r/" not in req.full_url
 
+    @mock.patch("lib.reddit_public.urllib.request.urlopen")
+    def test_subreddit_name_starting_with_r_preserved(self, mock_urlopen):
+        """Subs starting with 'r' must not be chewed."""
+
+        mock_urlopen.return_value = _mock_urlopen_ok(SAMPLE_LISTING)
+
+        reddit_public.search("mobile robots", subreddit="robotics")
+
+        req = mock_urlopen.call_args[0][0]
+        assert "/r/robotics/search.json" in req.full_url
+        assert "/r/obotics" not in req.full_url
+
 
 class TestRetryOn429:
     """429 response triggers retries, eventually returns partial results."""
