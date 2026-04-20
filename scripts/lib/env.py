@@ -278,6 +278,14 @@ def get_config() -> dict[str, Any]:
     else:
         config['_CONFIG_SOURCE'] = 'env_only'
 
+    # Resolve comma-separated SCRAPECREATORS_API_KEY — pick one randomly for load distribution
+    # Restored from PR #268 (accidentally removed in v3.0.6 release commit d14814a)
+    sc_key_raw = config.get('SCRAPECREATORS_API_KEY') or ''
+    if ',' in sc_key_raw:
+        import random
+        sc_keys = [k.strip() for k in sc_key_raw.split(',') if k.strip()]
+        config['SCRAPECREATORS_API_KEY'] = random.choice(sc_keys) if sc_keys else ''
+
     # Extract browser credentials if configured
     browser_creds = extract_browser_credentials(config)
     for key, value in browser_creds.items():
