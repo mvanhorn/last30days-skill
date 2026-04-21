@@ -1,0 +1,53 @@
+name: Bug Report
+description: Report a bug or unexpected behavior
+labels: [bug]
+body:
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened?
+      placeholder: Describe the bug in 1-2 sentences.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to Reproduce
+      description: How can we reproduce this?
+      placeholder: |
+        1. Run `python3 scripts/last30days.py "topic" --emit compact`
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: What should have happened?
+    validations:
+      required: true
+  - type: textarea
+    id: traceback
+    attributes:
+      label: Error / Traceback
+      description: Paste the full traceback or error output.
+      render: text
+  - type: dropdown
+    id: install
+    attributes:
+      label: Install Method
+      options:
+        - Claude Code plugin
+        - Gemini CLI extension
+        - Codex plugin
+        - Hermes skill
+        - Manual (git clone)
+        - Other
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: macOS 15.4, Ubuntu 24.04, Windows 11, etc.
