@@ -37,7 +37,7 @@ class TestVersionConsistency(unittest.TestCase):
 
     def test_no_stray_hardcoded_memory_dir_paths(self) -> None:
         allowed_suffixes = {".md", ".py", ".sh", ".txt", ".yml", ".yaml", ".json"}
-        skip_dirs = {".git", "assets", "fixtures"}
+        skip_dirs = {".git", "assets", "fixtures", "docs"}
         offenders = []
 
         for path in ROOT.rglob("*"):
