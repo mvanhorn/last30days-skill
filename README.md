@@ -147,6 +147,7 @@ Say "eli5 on" after any research run. The synthesis rewrites in plain language. 
 | **Claude Code** | `/plugin marketplace add mvanhorn/last30days-skill` |
 | **OpenClaw** | `clawhub install last30days-official` |
 | **Gemini CLI** | Clone then `gemini extensions install ./last30days-skill` (see below) |
+| **Cursor** | Clone then `ln -s` to `~/.cursor/skills/last30days/` (see below) |
 
 ### claude.ai (web)
 
@@ -177,6 +178,19 @@ Gemini CLI v0.9.0 has an upstream installer bug that can fail with `Configuratio
 ```bash
 git clone https://github.com/mvanhorn/last30days-skill
 gemini extensions install ./last30days-skill
+```
+
+### Cursor
+
+```bash
+git clone https://github.com/mvanhorn/last30days-skill
+ln -s "$(pwd)/last30days-skill" ~/.cursor/skills/last30days
+```
+
+Or with `sync.sh` (also deploys to Claude Code, Codex, and other targets):
+
+```bash
+bash scripts/sync.sh
 ```
 
 ### Manual (developer)
