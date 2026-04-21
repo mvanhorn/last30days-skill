@@ -215,7 +215,7 @@ If your Bash call to `last30days.py` does NOT include the FULL pre-flight checkl
 
 # last30days v3.0.1: Research Any Topic from the Last 30 Days
 
-> **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `~/Documents/Last30Days/`. X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars). Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
+> **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`). X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars). Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
 
 Research ANY topic across Reddit, X, YouTube, and other sources. Surface what people are actually discussing, recommending, betting on, and debating right now.
 
@@ -235,7 +235,13 @@ if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
   echo "ERROR: last30days v3 requires Python 3.12+. Install python3.12 or python3.13 and rerun." >&2
   exit 1
 fi
+
+LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
 ```
+
+## Configuration
+
+Set `LAST30DAYS_MEMORY_DIR` before invoking the skill to choose where raw research files are saved. If it is not set, the skill defaults to `~/Documents/Last30Days`.
 
 ## Step 0: First-Run Setup Wizard
 
@@ -522,7 +528,7 @@ If `--agent` appears in ARGUMENTS (e.g., `/last30days plaud granola --agent`):
 5. **Skip** the follow-up invitation ("I'm now an expert on X...")
 6. **Output** the complete research report and stop - do not wait for further input
 
-Agent mode saves raw research data to `~/Documents/Last30Days/` automatically via `--save-dir` (handled by the script, no extra tool calls).
+Agent mode saves raw research data to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`) automatically via `--save-dir` (handled by the script, no extra tool calls).
 
 Agent mode report format:
 
@@ -550,7 +556,7 @@ When the user asks "X vs Y", run ONE research pass with a comparison-optimized p
 
 **Single pass with entity-aware subqueries:**
 ```bash
-"${LAST30DAYS_PYTHON}" "${SKILL_ROOT}/scripts/last30days.py" "{TOPIC_A} vs {TOPIC_B}" --emit=compact --save-dir=~/Documents/Last30Days --save-suffix=v3 --plan 'COMPARISON_PLAN_JSON' --x-handle={TOPIC_A_HANDLE} --x-related={TOPIC_B_HANDLE},{COMPANY_A_HANDLE},{COMPANY_B_HANDLE},{COMMENTATOR_HANDLES} --subreddits={RESOLVED_SUBREDDITS} --tiktok-hashtags={RESOLVED_HASHTAGS} --tiktok-creators={RESOLVED_TIKTOK_CREATORS} --ig-creators={RESOLVED_IG_CREATORS}
+"${LAST30DAYS_PYTHON}" "${SKILL_ROOT}/scripts/last30days.py" "{TOPIC_A} vs {TOPIC_B}" --emit=compact --save-dir="${LAST30DAYS_MEMORY_DIR}" --save-suffix=v3 --plan 'COMPARISON_PLAN_JSON' --x-handle={TOPIC_A_HANDLE} --x-related={TOPIC_B_HANDLE},{COMPANY_A_HANDLE},{COMPANY_B_HANDLE},{COMMENTATOR_HANDLES} --subreddits={RESOLVED_SUBREDDITS} --tiktok-hashtags={RESOLVED_HASHTAGS} --tiktok-creators={RESOLVED_TIKTOK_CREATORS} --ig-creators={RESOLVED_IG_CREATORS}
 ```
 
 **The `--plan` JSON for comparisons should include 3-4 subqueries:**
@@ -792,7 +798,7 @@ if [ -z "${SKILL_ROOT:-}" ] || [ ! -f "$SKILL_ROOT/scripts/last30days.py" ]; the
   exit 1
 fi
 
-"${LAST30DAYS_PYTHON}" "${SKILL_ROOT}/scripts/last30days.py" $ARGUMENTS --emit=compact --save-dir=~/Documents/Last30Days --save-suffix=v3
+"${LAST30DAYS_PYTHON}" "${SKILL_ROOT}/scripts/last30days.py" $ARGUMENTS --emit=compact --save-dir="${LAST30DAYS_MEMORY_DIR}" --save-suffix=v3
 ```
 
 **If you ran Steps 0.55 and 0.75 (agent planning), add these flags:**
@@ -886,7 +892,7 @@ For ALL query types:
 
 ## Step 2.5: Append WebSearch Results to Saved Raw File
 
-**MANDATORY - do not skip this step.** Every post-engine WebSearch supplement you ran in Step 2 MUST be appended to the saved raw file under `~/Documents/Last30Days/`. Skipping this step is a common Opus 4.7 failure mode: the saved file ends at `## Source Coverage` with no appendix, future sessions cannot see what blog/tutorial/news sources informed the synthesis, and the user cannot trace where specific claims came from.
+**MANDATORY - do not skip this step.** Every post-engine WebSearch supplement you ran in Step 2 MUST be appended to the saved raw file under `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`). Skipping this step is a common Opus 4.7 failure mode: the saved file ends at `## Source Coverage` with no appendix, future sessions cannot see what blog/tutorial/news sources informed the synthesis, and the user cannot trace where specific claims came from.
 
 **LAW 1 OVERRIDE (read before synthesizing):** the WebSearch tool description declares a "MANDATORY Sources section" in its own contract. That instruction applies to generic WebSearch usage. Inside `/last30days` it is SUPERSEDED. The `## WebSearch Supplemental Results` appendix in the SAVED RAW FILE replaces the visible Sources section. Never emit a visible `Sources:` bullet list to the user. Your user-facing response ends at the invitation block. The emoji-tree footer's `🌐 Web:` line is the only visible citation. If you feel the pull to write a trailing `Sources:` section, you are about to violate LAW 1 — go back and delete it.
 
@@ -1183,7 +1189,7 @@ I've compared {TOPIC_A} vs {TOPIC_B} [vs ...] using the latest community data. S
 - Fabricate a `## Notable Stats` block (the engine footer IS the stats block, LAW 5)
 - Produce section headers outside the six listed above (`## Quick Verdict`, `## {Entity}` per entity, `## Head-to-Head`, `## The Bottom Line`, `## The emerging stack` are the only allowed `##` headers per LAW 4 comparison exception)
 
-**Reference exemplar:** `~/Documents/Last30Days/openclaw-vs-hermes-vs-paperclip-LAUNCH-VIDEO-april9-exemplar.md` preserves the April 9 canonical output with full structural analysis. Match this shape section-for-section.
+**Reference exemplar:** `$LAST30DAYS_MEMORY_DIR/openclaw-vs-hermes-vs-paperclip-LAUNCH-VIDEO-april9-exemplar.md` preserves the April 9 canonical output with full structural analysis. Match this shape section-for-section.
 
 ### For all QUERY_TYPEs
 
@@ -1305,7 +1311,7 @@ Options:
 
 **THEN - Engine footer pass-through (right before invitation):**
 
-**The research output ENDS with a deterministic footer block bracketed by `---` lines, starting with `✅ All agents reported back!` and ending with `📎 Raw results saved to ~/Documents/Last30Days/<slug>-raw.md`. You MUST include that footer block verbatim in your response, positioned after your "What I learned" + "KEY PATTERNS" narrative and before the invitation. Do not recompute the stats. Do not reformat the tree. Do not paraphrase. Do not skip it. Do not add your own source lines. Copy the exact bytes.**
+**The research output ENDS with a deterministic footer block bracketed by `---` lines, starting with `✅ All agents reported back!` and ending with `📎 Raw results saved to {resolved LAST30DAYS_MEMORY_DIR}/<slug>-raw.md`. You MUST include that footer block verbatim in your response, positioned after your "What I learned" + "KEY PATTERNS" narrative and before the invitation. Do not recompute the stats. Do not reformat the tree. Do not paraphrase. Do not skip it. Do not add your own source lines. Copy the exact bytes.**
 
 - The engine already omits zero-count sources. You do not need to filter them.
 - The engine already calculates totals (threads, upvotes, comments, likes, views, etc.). You do not need to add them up.
@@ -1401,7 +1407,7 @@ Close with `I have all the links to the {N} {source list} I pulled from. Just as
 
 ## WAIT FOR USER'S RESPONSE
 
-**STOP and wait** for the user to respond. Do NOT call any tools after displaying the invitation. Do NOT append a `Sources:` section (see override above - WebSearch's mandate does not apply here). The research script already saved raw data to `~/Documents/Last30Days/` via `--save-dir`.
+**STOP and wait** for the user to respond. Do NOT call any tools after displaying the invitation. Do NOT append a `Sources:` section (see override above - WebSearch's mandate does not apply here). The research script already saved raw data to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`) via `--save-dir`.
 
 ---
 
@@ -1514,7 +1520,7 @@ Want another prompt? Just tell me what you're creating next.
 - Optionally sends search queries to Brave Search API, Parallel AI API, or OpenRouter API for web search
 - Fetches public Reddit thread data from `reddit.com` for engagement metrics
 - Stores research findings in local SQLite database (watchlist mode only)
-- Saves research briefings as .md files to ~/Documents/Last30Days/
+- Saves research briefings as .md files to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`)
 
 **What this skill does NOT do:**
 - Does not post, like, or modify content on any platform

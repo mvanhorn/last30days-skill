@@ -125,8 +125,8 @@ def emit_output(report: schema.Report, emit: str, fun_level: str = "medium", sav
 def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str) -> str:
     """Compute the user-friendly save path string that will be shown in the footer.
 
-    Uses ~ for the home directory so the footer reads "~/Documents/Last30Days/slug-raw.md"
-    instead of an absolute machine-local path.
+    Uses ~ when the saved file is under the user's home directory; otherwise
+    returns the absolute path.
     """
     from pathlib import Path as _Path
     path = _Path(save_dir).expanduser().resolve()

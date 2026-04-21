@@ -202,15 +202,15 @@ Intelligent search, fun judge, cross-source cluster merging, single-pass compari
 
 ### Highlights
 
-Auto-save research briefings to `~/Documents/Last30Days/` as topic-named .md files. Every run now builds a personal research library automatically - no more manual copy-paste.
+Auto-save research briefings to the default memory directory as topic-named .md files. Every run now builds a personal research library automatically - no more manual copy-paste.
 
 ### Added
 
-- Auto-save complete research briefings (synthesis, stats, follow-up suggestions) to `~/Documents/Last30Days/{topic-slug}.md` after every run
+- Auto-save complete research briefings (synthesis, stats, follow-up suggestions) to the default memory directory after every run
 - Kebab-case filename generation from topic (e.g., "Claude Code skills" -> `claude-code-skills.md`)
 - Duplicate topic handling: appends date suffix instead of overwriting (e.g., `claude-code-skills-2026-03-05.md`)
 - Agent mode (`--agent`) also saves research files
-- Brief confirmation after save: "Saved to ~/Documents/Last30Days/{slug}.md"
+- Brief confirmation after save with the saved file path
 
 ### Credits
 
