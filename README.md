@@ -10,6 +10,10 @@
   </a>
 </p>
 
+<p align="center">
+  <img src="assets/hero.gif" alt="last30days demo" width="900" />
+</p>
+
 **An AI agent-led search engine scored by upvotes, likes, and real money - not editors.**
 
 This README tracks the current v3 pipeline. The runtime skill spec lives in [skills/last30days/SKILL.md](skills/last30days/SKILL.md), which is the source of truth for the latest command and setup behavior.
