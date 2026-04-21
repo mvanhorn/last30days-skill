@@ -15,6 +15,7 @@ COMMON_TARGETS=(
   "$HOME/.claude/plugins/cache/last30days-skill-private/last30days-3-nogem/3.0.0-nogem"
   "$HOME/.agents/skills/last30days"
   "$HOME/.codex/skills/last30days"
+  "$HOME/.cursor/skills/last30days"
 )
 OPENCLAW_TARGET="$HOME/.openclaw/skills/last30days"
 
