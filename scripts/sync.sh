@@ -57,7 +57,7 @@ sync_target() {
 
   if (
     cd "$target/scripts" &&
-    python3 -c "import briefing, store, watchlist; from lib import youtube_yt, bird_x, render, ui; print('  Import check: OK')"
+    python3 -c "import briefing, store, watchlist; from lib import youtube_yt, bird_x, render, ui, schema, env, normalize, dedupe, reddit, reddit_public, reddit_enrich, hackernews, polymarket, bluesky, truthsocial, tiktok, instagram, pinterest, threads, perplexity, github, xai_x, xiaohongshu_api, xquik, pipeline, planner, cluster, fusion, rerank, relevance, grounding, entity_extract, signals, snippet, query, dates, http, log, preflight, providers, quality_nudge, resolve, setup_wizard; print('  Import check: OK')"
   ); then
     true
   else
@@ -100,7 +100,7 @@ if [ -d "$HOME/.hermes/skills/research" ]; then
   
   if (
     cd "$HERMES_TARGET/scripts" &&
-    python3 -c "import briefing, store, watchlist; from lib import youtube_yt, bird_x, render, ui; print('  Import check: OK')"
+    python3 -c "import briefing, store, watchlist; from lib import youtube_yt, bird_x, render, ui, schema, env, normalize, dedupe, reddit, reddit_public, reddit_enrich, hackernews, polymarket, bluesky, truthsocial, tiktok, instagram, pinterest, threads, perplexity, github, xai_x, xiaohongshu_api, xquik, pipeline, planner, cluster, fusion, rerank, relevance, grounding, entity_extract, signals, snippet, query, dates, http, log, preflight, providers, quality_nudge, resolve, setup_wizard; print('  Import check: OK')"
   ); then
     true
   else
