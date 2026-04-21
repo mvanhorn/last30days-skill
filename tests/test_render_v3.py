@@ -267,31 +267,31 @@ class RenderTopCommentsTests(unittest.TestCase):
         ]
         report = self._make_report_with_comments(top_comments=comments)
         text = render.render_compact(report)
-        self.assertIn("Comment (500 upvotes):", text)
-        self.assertIn("Comment (200 upvotes):", text)
-        self.assertIn("Comment (50 upvotes):", text)
-        self.assertNotIn("Comment (8 upvotes):", text)
-        self.assertNotIn("Comment (3 upvotes):", text)
+        # Reddit authors render with u/ prefix now.
+        self.assertIn("u/user1 (500 upvotes):", text)
+        self.assertIn("u/user2 (200 upvotes):", text)
+        self.assertIn("u/user3 (50 upvotes):", text)
+        self.assertNotIn("u/user4 (8 upvotes):", text)
+        self.assertNotIn("u/user5 (3 upvotes):", text)
 
     def test_reddit_1_comment_renders_1(self):
         """Reddit candidate with 1 comment renders 1."""
         comments = [{"score": 100, "excerpt": "Single comment", "author": "user1"}]
         report = self._make_report_with_comments(top_comments=comments)
         text = render.render_compact(report)
-        self.assertIn("Comment (100 upvotes): Single comment", text)
+        self.assertIn("u/user1 (100 upvotes): Single comment", text)
 
     def test_reddit_0_comments_no_section(self):
         """Reddit candidate with 0 comments renders no comment section."""
         report = self._make_report_with_comments(top_comments=[])
         text = render.render_compact(report)
-        self.assertNotIn("Comment (", text)
         self.assertNotIn("upvotes)", text)
 
     def test_non_reddit_no_comments(self):
         """Non-Reddit candidate doesn't render comments when metadata has none."""
         report = self._make_report_with_comments(source="grounding", top_comments=[])
         text = render.render_compact(report)
-        self.assertNotIn("Comment (", text)
+        self.assertNotIn("upvotes)", text)
         self.assertIn("Test cluster", text)
 
     def test_all_comments_below_score_10_no_section(self):
@@ -303,7 +303,6 @@ class RenderTopCommentsTests(unittest.TestCase):
         ]
         report = self._make_report_with_comments(top_comments=comments)
         text = render.render_compact(report)
-        self.assertNotIn("Comment (", text)
         self.assertNotIn("upvotes)", text)
 
     def test_youtube_comments_use_likes_label_and_50_threshold(self):
@@ -314,9 +313,38 @@ class RenderTopCommentsTests(unittest.TestCase):
         ]
         report = self._make_report_with_comments(source="youtube", top_comments=comments)
         text = render.render_compact(report)
-        self.assertIn("Comment (120 likes): legit fire tutorial", text)
-        self.assertIn("Comment (60 likes): saved me hours", text)
-        self.assertNotIn("Comment (10 likes)", text)
+        # YouTube authors render with @ prefix now.
+        self.assertIn("@alice (120 likes): legit fire tutorial", text)
+        self.assertIn("@bob (60 likes): saved me hours", text)
+        self.assertNotIn("@carol (10 likes)", text)
+
+    def test_reddit_comment_without_author_falls_back_to_legacy_label(self):
+        """When author is missing or [deleted], render falls back to 'Comment (...)'."""
+        comments = [
+            {"score": 500, "excerpt": "No author field", "author": ""},
+            {"score": 200, "excerpt": "Deleted user", "author": "[deleted]"},
+            {"score": 50, "excerpt": "Removed user", "author": "[removed]"},
+        ]
+        report = self._make_report_with_comments(top_comments=comments)
+        text = render.render_compact(report)
+        # Legacy format preserved - no u/ prefix leaks with empty/deleted handles.
+        self.assertIn("Comment (500 upvotes): No author field", text)
+        self.assertIn("Comment (200 upvotes): Deleted user", text)
+        self.assertIn("Comment (50 upvotes): Removed user", text)
+        self.assertNotIn("u/ (", text)
+        self.assertNotIn("u/[deleted]", text)
+        self.assertNotIn("u/[removed]", text)
+
+    def test_tiktok_comments_render_with_at_handle(self):
+        """TikTok source renders @handle attribution on comment lines."""
+        comments = [
+            {"score": 3986, "excerpt": "oh no. who's going to make the same phone every year now..", "author": "moosanoormahomed"},
+            {"score": 925, "excerpt": "This is either going to go so well or so bad", "author": "Muna9e"},
+        ]
+        report = self._make_report_with_comments(source="tiktok", top_comments=comments)
+        text = render.render_compact(report)
+        self.assertIn("@moosanoormahomed (3986 likes):", text)
+        self.assertIn("@Muna9e (925 likes):", text)
         # Render must not silently label YT as upvotes.
         self.assertNotIn("Comment (120 upvotes)", text)
 
@@ -329,10 +357,10 @@ class RenderTopCommentsTests(unittest.TestCase):
         ]
         report = self._make_report_with_comments(source="tiktok", top_comments=comments)
         text = render.render_compact(report)
-        self.assertIn("Comment (2000 likes): this aged well", text)
-        self.assertIn("Comment (600 likes): so real", text)
-        self.assertNotIn("Comment (400 likes)", text)
-        self.assertNotIn("Comment (50 likes)", text)
+        self.assertIn("@a (2000 likes): this aged well", text)
+        self.assertIn("@b (600 likes): so real", text)
+        self.assertNotIn("@c (400 likes)", text)
+        self.assertNotIn("@d (50 likes)", text)
 
 
 class RenderBestTakesCompactTests(unittest.TestCase):

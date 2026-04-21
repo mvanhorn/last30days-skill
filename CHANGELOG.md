@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.10] - 2026-04-21
+
+### Added
+
+- **Commenter handles on evidence lines.** Top-comment rendering now includes the commenter's handle - `u/author` for Reddit, `@handle` for TikTok/YouTube/Instagram/Bluesky/X/Threads. The enrichment adapters already captured `author`; the render layer just was not using it. Evidence lines change from `- Comment (6822 upvotes): Finally, John Apple` to `- u/Cyrisaurus (6822 upvotes): Finally, John Apple`. Person-level citations make synthesis-side inline markdown links per LAW 8 much more natural. Both the compact and full render paths are covered.
+
+### Fixed
+
+- **TikTok author preference.** `_fetch_post_comments` in `scripts/lib/tiktok.py` preferred `user.nickname` over `user.unique_id`, so the engine captured display names ("Moosa Noormahomed") instead of @handles ("moosanoormahomed"). Flipped to prefer `unique_id`. Nickname still wins as a fallback when `unique_id` is missing. Display names can contain emoji, spaces, and non-Latin characters that do not round-trip to a profile URL; the @handle is the stable identifier.
+
+### Behavior fallback
+
+- When an author is empty, `[deleted]`, or `[removed]`, the render falls back to the legacy `Comment (...)` shape - no `u/` or `@` prefix with an empty handle is ever emitted.
+
 ## [3.0.9] - 2026-04-18 - The Self-Debug Release
 
 ### Highlights

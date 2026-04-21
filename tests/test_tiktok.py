@@ -175,6 +175,44 @@ class TestTikTokEnrichWithComments(unittest.TestCase):
         self.assertEqual("2024-03-01", out[0]["date"])
         self.assertEqual(3, out[1]["digg_count"])
 
+    def test_fetch_post_comments_prefers_unique_id_over_nickname(self):
+        """Author prefers unique_id (@handle) over nickname (display name)."""
+        from unittest.mock import patch
+        from lib import tiktok
+
+        fake_sc_response = {
+            "comments": [
+                {"text": "first", "user": {"unique_id": "moosanoormahomed", "nickname": "Moosa Noormahomed"},
+                 "digg_count": 3986, "create_time": 1709251200},
+                {"text": "second", "user": {"nickname": "Muna9e"},  # no unique_id, falls back to nickname
+                 "digg_count": 925, "create_time": 1709251300},
+                {"text": "third", "user": {},  # neither - empty string
+                 "digg_count": 100, "create_time": 1709251400},
+            ],
+            "total": 3,
+        }
+
+        class FakeResp:
+            def raise_for_status(self):
+                pass
+            def json(self):
+                return fake_sc_response
+
+        with patch.object(tiktok, "_requests") as mock_req:
+            mock_req.get.return_value = FakeResp()
+            out = tiktok._fetch_post_comments(
+                "https://www.tiktok.com/@u/video/1",
+                token="k",
+                max_comments=5,
+            )
+        self.assertEqual(3, len(out))
+        # unique_id wins over nickname when both present
+        self.assertEqual("moosanoormahomed", out[0]["author"])
+        # nickname used when unique_id missing
+        self.assertEqual("Muna9e", out[1]["author"])
+        # both missing → empty string, comment still included
+        self.assertEqual("", out[2]["author"])
+
     def test_fetch_post_comments_swallows_http_error(self):
         from unittest.mock import patch
         from lib import tiktok

@@ -462,7 +462,8 @@ def render_full(report: schema.Report) -> str:
                 for tc in top_comments[:3]:
                     excerpt = tc.get("excerpt", tc.get("text", ""))[:200]
                     tc_score = tc.get("score", "")
-                    lines.append(f"  Top comment ({tc_score} {vote_label}): {excerpt}")
+                    attribution = _comment_attribution(item.source, tc.get("author"))
+                    lines.append(f"  Top comment {attribution} ({tc_score} {vote_label}): {excerpt}")
             # Comment insights for Reddit
             insights = item.metadata.get("comment_insights", [])
             if insights:
@@ -581,7 +582,9 @@ def _render_candidate(candidate: schema.Candidate, prefix: str) -> list[str]:
         excerpt = tc.get("excerpt") or tc.get("text") or ""
         score = tc.get("score", "")
         vote_label = _vote_label_for(primary.source) if primary else "upvotes"
-        lines.append(f"   - Comment ({score} {vote_label}): {_truncate(excerpt.strip(), 240)}")
+        source = primary.source if primary else None
+        attribution = _comment_attribution(source, tc.get("author"))
+        lines.append(f"   - {attribution} ({score} {vote_label}): {_truncate(excerpt.strip(), 240)}")
     insight = _comment_insight(primary)
     if insight:
         lines.append(f"   - Insight: {_truncate(insight, 220)}")
@@ -1230,6 +1233,33 @@ _TOP_COMMENT_VOTE_LABEL: dict[str, str] = {
 
 def _vote_label_for(source: str) -> str:
     return _TOP_COMMENT_VOTE_LABEL.get(source, "votes")
+
+
+# Handle prefixes for commenter attribution. Reddit uses `u/`; everyone else
+# uses `@`. Missing source or unknown platform falls back to plain-text so
+# we never emit `u/` or `@` with no handle attached.
+_HANDLE_PREFIX: dict[str, str] = {
+    "reddit": "u/",
+    "tiktok": "@",
+    "youtube": "@",
+    "instagram": "@",
+    "bluesky": "@",
+    "x": "@",
+    "threads": "@",
+}
+
+
+def _comment_attribution(source: str | None, author: str | None) -> str:
+    """Build the attribution prefix for a top comment line.
+
+    Returns a string like ``u/Cyrisaurus`` or ``@moosanoormahomed`` when an
+    author is captured, or the legacy ``Comment`` marker when the author is
+    missing, empty, deleted, or removed.
+    """
+    if not author or author in ("[deleted]", "[removed]"):
+        return "Comment"
+    prefix = _HANDLE_PREFIX.get(source or "", "")
+    return f"{prefix}{author}" if prefix else author
 
 
 def _top_comments_list(item: schema.SourceItem | None, limit: int = 3, min_score: int | None = None) -> list[dict]:

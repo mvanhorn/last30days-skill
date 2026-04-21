@@ -658,7 +658,9 @@ def _fetch_post_comments(
         if not text:
             continue
         user = c.get("user") if isinstance(c.get("user"), dict) else {}
-        author = user.get("nickname") or user.get("unique_id") or ""
+        # Prefer unique_id (the @handle) over nickname (display name) so
+        # downstream render can cite @handle consistently across platforms.
+        author = user.get("unique_id") or user.get("nickname") or ""
         create_time = c.get("create_time")
         date_str = ""
         if create_time:
