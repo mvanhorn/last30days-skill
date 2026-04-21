@@ -12,11 +12,10 @@ from . import dates, schema
 
 
 def _skill_version() -> str:
-    """Read plugin version from .claude-plugin/plugin.json if available.
+    """Read skill version from plugin.json or SKILL.md frontmatter.
 
-    Tries nearest plugin.json by walking up from render.py's own location.
-    Falls back to "?" if not found. This keeps the badge emission from
-    crashing on non-plugin-cache installs (repo checkout, Gemini, Codex).
+    Tries nearest .claude-plugin/plugin.json first (Claude Code installs),
+    then falls back to SKILL.md frontmatter (Hermes, Codex, repo checkout).
     """
     here = pathlib.Path(__file__).resolve()
     for parent in [here.parent, *here.parents]:
@@ -25,7 +24,15 @@ def _skill_version() -> str:
             try:
                 return json.loads(candidate.read_text()).get("version", "?")
             except (json.JSONDecodeError, OSError):
-                return "?"
+                pass
+        skill_md = parent / "SKILL.md"
+        if skill_md.is_file():
+            try:
+                for line in skill_md.read_text().splitlines()[:10]:
+                    if line.startswith("version:"):
+                        return line.split(":", 1)[1].strip().strip('"').strip("'")
+            except OSError:
+                pass
     return "?"
 
 
@@ -79,7 +86,7 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
     non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
     lines = [
         *_render_badge(),
-        f"# last30days v3.0.0: {report.topic}",
+        f"# last30days v{_skill_version()}: {report.topic}",
         "",
         *_assistant_safety_lines(),
         f"- Date range: {report.range_from} to {report.range_to}",
@@ -397,7 +404,7 @@ def render_full(report: schema.Report) -> str:
     # Start with the same header as compact
     non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
     lines = [
-        f"# last30days v3.0.0: {report.topic}",
+        f"# last30days v{_skill_version()}: {report.topic}",
         "",
         *_assistant_safety_lines(),
         f"- Date range: {report.range_from} to {report.range_to}",

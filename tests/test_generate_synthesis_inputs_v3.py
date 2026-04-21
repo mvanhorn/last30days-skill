@@ -116,7 +116,8 @@ class GenerateSynthesisInputsV3Tests(unittest.TestCase):
 
             self.assertEqual(0, result)
             output = (compact_dir / "sample.md").read_text()
-            self.assertIn("# last30days v3.0.0: test topic", output)
+            self.assertIn("# last30days v", output)
+            self.assertIn(": test topic", output)
 
 
 if __name__ == "__main__":

@@ -507,7 +507,7 @@ def show_diagnostic_banner(diag: dict):
 
     if IS_TTY:
         lines.append(f"{Colors.DIM}┌─────────────────────────────────────────────────────┐{Colors.RESET}")
-        lines.append(f"{Colors.DIM}│{Colors.RESET} {Colors.BOLD}/last30days v3.0.0 - Source Status{Colors.RESET}                 {Colors.DIM}│{Colors.RESET}")
+        lines.append(f"{Colors.DIM}│{Colors.RESET} {Colors.BOLD}/last30days v3.0.10 - Source Status{Colors.RESET}                {Colors.DIM}│{Colors.RESET}")
         lines.append(f"{Colors.DIM}│{Colors.RESET}                                                     {Colors.DIM}│{Colors.RESET}")
 
         # Reddit
@@ -554,7 +554,7 @@ def show_diagnostic_banner(diag: dict):
     else:
         # Plain text for non-TTY (Claude Code / Codex)
         lines.append("┌─────────────────────────────────────────────────────┐")
-        lines.append("│ /last30days v3.0.0 - Source Status                 │")
+        lines.append("│ /last30days v3.0.10 - Source Status                │")
         lines.append("│                                                     │")
 
         if has_reddit and has_scrapecreators:
