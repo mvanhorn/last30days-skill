@@ -11,12 +11,62 @@ import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
+from typing import Optional
 
-from . import dates, grounding
+from . import categories, dates, grounding
+
+MAX_SUBS = 10
 
 
 def _log(msg: str) -> None:
     print(f"[Resolve] {msg}", file=sys.stderr)
+
+
+def _merge_category_peers(topic: str, subreddits: list[str]) -> tuple[list[str], Optional[str]]:
+    """Extend the WebSearch-extracted subreddit list with category peers.
+
+    Classifies the topic, fetches the category's peer subs, dedupes
+    case-insensitively against the existing list, and appends missing
+    peers in priority order. Caps the final list at MAX_SUBS, preserving
+    every WebSearch-returned sub (they are the freshest signal) and
+    trimming from the peer-additions end.
+
+    Returns a tuple of (merged_subs, matched_category_id_or_None).
+    Emits a [Resolve] Matched category log line only when peers were
+    actually added (not when every peer was already in the WebSearch set).
+
+    Classification failures degrade to "no match" — the unwidened list
+    is returned and a warning is logged.
+    """
+    try:
+        category = categories.detect_category(topic)
+    except Exception as exc:
+        _log(f"Category classification failed: {exc}")
+        return list(subreddits)[:MAX_SUBS], None
+
+    if category is None:
+        return list(subreddits)[:MAX_SUBS], None
+
+    peers = categories.peer_subs_for(category)
+    if not peers:
+        return list(subreddits)[:MAX_SUBS], category
+
+    existing_lower = {s.lower() for s in subreddits}
+    merged = list(subreddits)
+    added: list[str] = []
+    for peer in peers:
+        if len(merged) >= MAX_SUBS:
+            break
+        if peer.lower() in existing_lower:
+            continue
+        merged.append(peer)
+        existing_lower.add(peer.lower())
+        added.append(peer)
+
+    if added:
+        _log(f"Matched category={category}, adding peers: {', '.join(added)}")
+
+    return merged, category
 
 
 def _has_backend(config: dict) -> bool:
@@ -134,10 +184,19 @@ def auto_resolve(topic: str, config: dict) -> dict:
         config: Dict with API keys (BRAVE_API_KEY, EXA_API_KEY, SERPER_API_KEY).
 
     Returns:
-        Dict with keys: subreddits, x_handle, context, searches_run.
-        Returns empty result if no web search backend is available.
+        Dict with keys: subreddits, x_handle, github_user, github_repos,
+        context, category, searches_run. Returns empty result if no web
+        search backend is available.
     """
-    empty = {"subreddits": [], "x_handle": "", "context": "", "searches_run": 0}
+    empty = {
+        "subreddits": [],
+        "x_handle": "",
+        "github_user": "",
+        "github_repos": [],
+        "context": "",
+        "category": None,
+        "searches_run": 0,
+    }
 
     if not _has_backend(config):
         _log("No web search backend available, skipping resolve")
@@ -184,7 +243,9 @@ def auto_resolve(topic: str, config: dict) -> dict:
     github_repos = _extract_github_repos(results.get("github", []))
     context = _build_context_summary(results.get("news", []))
 
-    _log(f"Resolved {len(subreddits)} subreddits, x_handle={x_handle!r}, github_user={github_user!r}, github_repos={github_repos!r}, context_len={len(context)}")
+    subreddits, category = _merge_category_peers(topic, subreddits)
+
+    _log(f"Resolved {len(subreddits)} subreddits, x_handle={x_handle!r}, github_user={github_user!r}, github_repos={github_repos!r}, context_len={len(context)}, category={category!r}")
 
     return {
         "subreddits": subreddits,
@@ -192,5 +253,6 @@ def auto_resolve(topic: str, config: dict) -> dict:
         "github_user": github_user,
         "github_repos": github_repos,
         "context": context,
+        "category": category,
         "searches_run": searches_run,
     }
