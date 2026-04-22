@@ -174,7 +174,7 @@ class RetrievalBundle:
 
 def to_dict(value: Any) -> Any:
     """Serialize dataclasses and nested containers."""
-    return _drop_none(value)
+    return _drop_none(value) if _drop_none(value) is not None else {}
 
 
 def provider_runtime_from_dict(payload: dict[str, Any]) -> ProviderRuntime:
