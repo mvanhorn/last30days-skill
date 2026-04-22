@@ -596,6 +596,43 @@ The first search finds subreddits. The second gives you current events context (
 
 Extract 3-5 subreddit names from the results. Store as `RESOLVED_SUBREDDITS` (comma-separated, no r/ prefix).
 
+**2a. Category-peer expansion (MANDATORY for product topics).** If the topic is a product in a recognizable category (AI image generation, AI video generation, AI coding agents, AI music, AI chat models, SaaS screen recording, prediction markets, etc.), the brand-specific subreddits that WebSearch returned are INSUFFICIENT. Add 2-3 peer subreddits from the category. Peer subs are where cross-product technique discussion actually lives. Missing them is the 2026-04-22 `GPT Image 2` failure mode: the model resolved `r/OpenAI, r/ChatGPT, r/singularity, r/ChatGPTpromptengineering` (all OpenAI-brand) and missed `r/StableDiffusion, r/midjourney, r/dalle2, r/aiArt` where prompting techniques are actually shared. The user had to manually prompt "check image generation reddits too" to get a usable run.
+
+Canonical category peers (single source of truth; `scripts/lib/categories.py` mirrors this for the `--auto-resolve` engine path):
+
+| Category | Trigger keywords | Peer subs (priority order) |
+|----------|------------------|---------------------------|
+| `ai_image_generation` | image generation, text to image, GPT Image, Nano Banana, Midjourney, Stable Diffusion, DALL-E, Flux.1, Imagen, Seedance, Ideogram, Recraft | `StableDiffusion, midjourney, dalle2, aiArt, PromptEngineering, MediaSynthesis` |
+| `ai_video_generation` | video generation, text to video, Sora, Veo 3, Runway Gen, Kling, Pika Labs, Luma Dream Machine, Hailuo | `aivideo, StableDiffusion, runwayml, singularity, MediaSynthesis` |
+| `ai_music_generation` | music generation, ai music, Suno, Udio, Riffusion, Stable Audio | `SunoAI, udiomusic, aimusic, artificial` |
+| `ai_coding_agent` | Claude Code, Cursor IDE, GitHub Copilot, Windsurf, Aider, Cline, OpenClaw, Hermes Agent, Continue.dev, Codeium, Devin | `ChatGPTCoding, LocalLLaMA, singularity, PromptEngineering` |
+| `ai_agent_framework` | agent framework, LangChain, LangGraph, CrewAI, AutoGen, LlamaIndex, DSPy, smolagents | `LangChain, LocalLLaMA, AI_Agents, MachineLearning` |
+| `ai_chat_model` | GPT-5/4, Claude Opus/Sonnet/Haiku, Gemini Pro/Flash, Llama 3/4, DeepSeek, Qwen, Mistral Large, Grok | `LocalLLaMA, ChatGPT, ClaudeAI, singularity, artificial` |
+| `saas_screen_recording` | screen recording, screen recorder, Loom video, Tella screen, Vidyard | `SaaS, screenrecording, productivity, Entrepreneur` |
+| `saas_productivity` | Notion app, Obsidian, Linear app, Asana, ClickUp, productivity app | `productivity, SaaS, ObsidianMD, Notion` |
+| `prediction_markets` | Polymarket, Kalshi, prediction market, event contracts, Manifold Markets | `Polymarket, Kalshi, predictionmarkets` |
+| `crypto_defi` | DeFi protocol, yield farming, liquidity pool, stablecoin, layer 2, L2 rollup | `defi, ethfinance, CryptoCurrency, ethereum` |
+
+**Merging rule.** Start with WebSearch-returned subs. Append 2-3 category peers in the priority order shown. Dedupe case-insensitively (don't list `midjourney` twice if WebSearch already returned it). Cap total at 10: if adding all peers would exceed the cap, keep every WebSearch-returned sub (they are the freshest signal) and drop peers from the end of the priority list.
+
+**Extrapolation.** If the topic is a product in a category NOT listed in the table (new AI tool, niche SaaS), use the same spirit: pick the 2-3 most active cross-product communities where technique discussion happens. A new image-gen tool still gets `r/StableDiffusion, r/midjourney, r/aiArt`. A new code editor still gets `r/ChatGPTCoding, r/LocalLLaMA`.
+
+**Worked example — the failing query.** Topic: `Prompting GPT Image 2`.
+
+Before (the 2026-04-22 failure mode):
+```
+Resolved:
+- Reddit: r/OpenAI, r/ChatGPT, r/singularity, r/ChatGPTpromptengineering, r/artificial
+```
+
+After (with category-peer expansion):
+```
+Resolved:
+- Reddit: r/OpenAI, r/ChatGPT, r/singularity, r/ChatGPTpromptengineering, r/StableDiffusion, r/midjourney, r/dalle2, r/aiArt (+ ai_image_generation peers)
+```
+
+The parenthetical `(+ ai_image_generation peers)` is the observable contract of the new Resolved block format. See Step 0.55 self-check below.
+
 **3. TikTok hashtags + creators** - **INFER these from your topic knowledge. Do NOT WebSearch for "{PERSON} TikTok account" - most people/CEOs don't have TikTok, and the search is wasted.**
 
 - **Hashtags:** Infer 2-3 from the topic name + category. Examples: "Kanye West" → `kanyewest,ye,bully`. "Claude Code" → `claudecode,aiagent,aicoding`. "Sam Altman" → `samaltman,openai,chatgpt`.
@@ -658,17 +695,19 @@ Passing the resolved block visibly (per-entity, all 4 types each) is the observa
 
 **If you can't infer targeting for a platform, skip that flag -- the Python engine will fall back to keyword search.**
 
+**Step 0.55 self-check: category-peer coverage.** Before emitting the Resolved block, re-read your resolved subreddit list. Does the topic match any category in the Section 2a table (or fit the spirit of one — AI image gen, AI coding, AI music, etc.)? If YES: does your list include AT LEAST 2 peer subs from that category? If NO, widen the list NOW — do not run the engine yet. The observable contract is the `(+ {category_id} peers)` annotation on the Reddit line in the Resolved block. Its absence on a product-in-a-known-category topic is a Step 0.55 regression — the named 2026-04-22 failure mode. Person topics, music artists, news stories, and topics outside any category are exempt; omit the annotation.
+
 **After resolving all handles and communities, display what you found before moving on.** This shows the user that intelligent pre-research happened:
 
 ```
 Resolved:
 - X: @{HANDLE} (+ @{COMPANY}, @{COMMENTATOR})
-- Reddit: r/{sub1}, r/{sub2}, r/{sub3}
+- Reddit: r/{sub1}, r/{sub2}, r/{sub3}, r/{peer1}, r/{peer2} (+ {category_id} peers)
 - TikTok: #{hashtag1}, #{hashtag2}
 - YouTube: {query1}, {query2}
 ```
 
-Only show lines for platforms where something was resolved. Skip empty lines. This display replaces the old "Parsed intent" block with something more useful.
+Only show lines for platforms where something was resolved. Skip empty lines. On the Reddit line, the trailing `(+ {category_id} peers)` annotation appears when Step 0.55 Section 2a added category-peer subs. Omit the annotation when the topic had no matching category. This display replaces the old "Parsed intent" block with something more useful.
 
 ---
 
