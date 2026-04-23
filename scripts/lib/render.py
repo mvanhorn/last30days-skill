@@ -624,6 +624,17 @@ def render_full(report: schema.Report) -> str:
         lines.extend(f"- {warning}" for warning in report.warnings)
         lines.append("")
 
+    # When this Report is a per-entity sub-run from vs-mode / --competitors,
+    # include the single-row Resolved Entities block so the saved file is
+    # self-describing. The artifact is populated by last30days.py's
+    # _competitor_runner and _main_runner closures.
+    resolved = report.artifacts.get("resolved")
+    if isinstance(resolved, dict) and resolved.get("entity"):
+        single_row = _render_resolved_entities_block([(resolved["entity"], report)])
+        if single_row:
+            lines.extend(single_row)
+            lines.append("")
+
     # ALL clusters (no limit)
     lines.append("## Ranked Evidence Clusters")
     lines.append("")

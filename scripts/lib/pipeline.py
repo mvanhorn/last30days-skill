@@ -443,7 +443,7 @@ def run(
         if bundle.items_by_source.get(source):
             del bundle.errors_by_source[source]
 
-    items_by_source = _finalize_items_by_source(bundle.items_by_source, topic=topic)
+    items_by_source = _finalize_items_by_source(bundle.items_by_source, topic=topic, config=config)
     candidates = weighted_rrf(bundle.items_by_source_and_query, plan, pool_limit=settings["pool_limit"])
     ranked_candidates = rerank.rerank_candidates(
         topic=topic,
@@ -511,6 +511,7 @@ def _normalize_score_dedupe(
 def _finalize_items_by_source(
     items_by_source_raw: dict[str, list[schema.SourceItem]],
     topic: str = "",
+    config: dict | None = None,
 ) -> dict[str, list[schema.SourceItem]]:
     finalized = {}
     for source, items in items_by_source_raw.items():
@@ -523,6 +524,11 @@ def _finalize_items_by_source(
         # (e.g., WTI crude oil, Elon tweet counts) before footer emission.
         if source == "polymarket" and topic:
             items = polymarket.filter_items_against_topic(topic, items)
+            # --polymarket-keywords (via config): additional keyword filter
+            # for ambiguous single-token topics (e.g., "Warriors" → nba,gsw).
+            keywords = config.get("_polymarket_keywords") if isinstance(config, dict) else None
+            if keywords:
+                items = polymarket.filter_items_against_keywords(items, keywords)
         finalized[source] = items
     return finalized
 

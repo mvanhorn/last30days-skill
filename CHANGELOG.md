@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.13] - 2026-04-22
+
+### Changed
+
+- **vs mode runs N full passes in parallel, one per entity.** Architectural revert of the 3-pass → 1-pass latency optimization from an earlier version. `/last30days "OpenAI vs Anthropic vs xAI"` now runs three full `pipeline.run()` calls in parallel via the same fanout `--competitors` uses, producing three `*-raw.md` save files plus a merged comparison output. Each entity gets its own Step 0.55-grade targeting, own primary X handle weight, own subreddit scoping — apples-to-apples depth instead of the one-pool merged retrieval the single-pass path produced. Parallel execution keeps wall clock ≈ single pass.
+- **`--competitors` is now a SKILL.md-level shortcut for vs-mode with auto-discovery.** The hosting reasoning model (Claude Code, Codex, Hermes, Gemini, any agent with WebSearch) performs discovery and Step 0.55 per entity via its own WebSearch tool, then invokes the engine with a vs-topic and `--competitors-plan` JSON. The engine flag remains for headless/cron use with BRAVE/EXA/SERPER/PARALLEL/OPENROUTER keys (engine-internal `auto_resolve` stays as fallback).
+- **LAW 7-style stderr for `--competitors` with no backend** now leads with the hosting-model path (WebSearch + Step 0.55 + `--competitors-plan`) instead of `BRAVE_API_KEY`. API-key framing moved to a secondary "headless" section.
+
+### Added
+
+- **`--competitors-plan` JSON flag** for per-entity Step 0.55 targeting. Schema: `{entity_name: {x_handle?, x_related?, subreddits?, github_user?, github_repos?, context?}}`. Accepts inline JSON or a file path (matches `--plan`). When present for an entity, skips engine-internal `auto_resolve` and uses the provided values; missing fields fall back to `auto_resolve` (if backend) or planner defaults. Case-insensitive entity matching. The `subrun_kwargs_for` helper is the single source of truth for per-entity kwargs — no closure-default fallthrough from main scope.
+- **Per-entity save files** when `--save-dir` is set on a vs-mode or `--competitors` run. Each entity's sub-run produces its own `{slug}-raw.md` with a single-row Resolved Entities block — matches historical vs-mode behavior (N passes → N save files).
+- **`--polymarket-keywords "kw1,kw2"`** to filter Polymarket matches for ambiguous single-token topics (e.g., "Warriors" → `nba,gsw,golden-state` kills Glasgow Warriors rugby and Honor of Kings Rogue Warriors noise).
+
+### Fixed
+
+- **BRAVE/SERPER footer nudge suppressed** when `--plan` or `--competitors-plan` is present. The nudge told Claude Code users to set an API key when they already have WebSearch via the hosting model. Nudge still fires for true headless runs (no `--plan`, no backend) where the advice is correct.
+- **Override-leak regression testing.** 3.0.12 already fixed the main-topic `--subreddits` / `--x-handle` / `--github-*` from leaking into peer sub-runs via explicit per-entity kwargs scrubbing. This release adds a 4-test regression suite (`test_competitor_subrun_isolation.py`) locking in the invariant.
+
 ## [3.0.12] - 2026-04-22
 
 ### Fixed
