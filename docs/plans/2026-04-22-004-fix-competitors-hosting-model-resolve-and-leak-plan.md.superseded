@@ -1,0 +1,394 @@
+---
+title: "fix: --competitors runs a full last30days per entity with hosting-model pre-resolve"
+type: fix
+status: active
+date: 2026-04-22
+origin: docs/plans/2026-04-22-003-fix-competitors-per-entity-resolution-plan.md
+---
+
+# fix: --competitors runs a full last30days per entity with hosting-model pre-resolve
+
+## Overview
+
+User intent confirmed 2026-04-22: `--competitors` should run a full single-entity `last30days` pipeline for the main topic AND for each discovered peer — three independent full-depth passes, each with its own Step 0.55 resolution, own X handle primary weight, own subreddit targeting, own GitHub repo scoping. Then merge them into the comparison output.
+
+3.0.12 already built the N-parallel-pipelines orchestration (`scripts/lib/fanout.py`). What it got wrong: it tried to do per-entity Step 0.55 engine-side via `resolve.auto_resolve()`, which requires a web search backend key (BRAVE/EXA/SERPER/PARALLEL/OPENROUTER). Matt runs from Claude Code, which has its own WebSearch tool. The engine has none of those keys, so per-entity auto_resolve silently no-ops and all peer sub-runs fall through to deterministic single-word planner queries.
+
+Four 2026-04-22 test runs (Warriors, Seattle, Arizona Wildcats, Kanye West) confirmed this via engine receipts:
+
+- Compact Resolved Entities block shows peers as `X - | Subs - | GitHub - | Context: -`.
+- Sub-run planner lines show `source=deterministic, subqueries=1` — the "I gave up and keyword-searched" shape.
+- Engine footer keeps nudging `💡 You can unlock native grounded web search with BRAVE_API_KEY or SERPER_API_KEY`, which is wrong advice for a Claude Code user who already has WebSearch.
+- Kanye run leaked main topic's `--subreddits` into Drake's and Kendrick's sub-runs (regression bug).
+
+The fix is to flip the resolution responsibility: the hosting model (Claude Code, Codex, Hermes, Gemini) does Step 0.55 via its own WebSearch tool for every entity, then passes the resolved targeting to the engine via a new `--competitors-plan` JSON flag. Engine fan-out remains — each peer still runs a full `pipeline.run()`. The difference is the peers now arrive with full targeting, equivalent to the main topic, so retrieval is apples-to-apples.
+
+Why not just reuse vs-mode? vs-mode is a SINGLE `pipeline.run()` with a comparison-optimized plan. It pre-resolves Step 0.55 per entity but merges everything into one retrieval pool with lower-weight `--x-related` for peers, merged subreddits, and cross-entity keyword noise. That is not "three full passes." The user explicitly wants three full passes.
+
+## Problem Frame
+
+3.0.12's architecture was correct; its data dependency was wrong.
+
+| Capability | 3.0.12 path | Target path (this plan) |
+|---|---|---|
+| Fan out to N parallel pipelines | Yes (`fanout.run_competitor_fanout`) | Same — keep |
+| Per-entity Step 0.55 resolution | Engine-internal `resolve.auto_resolve()` — needs BRAVE/EXA/SERPER/PARALLEL key | Hosting model does it via its own WebSearch, passes to engine |
+| Per-entity targeting threaded into `pipeline.run()` | Main topic only via outer flags; peers via auto_resolve (failing) or nothing | Main topic via outer flags; peers via `--competitors-plan` JSON |
+| Footer nudge | Unconditional BRAVE/SERPER | Suppressed when `--plan` or `--competitors-plan` present |
+| Resolved Entities block in raw save file | Stdout only | Also in `--save-dir` raw file |
+| Override-leak from main into peers | Present (Kanye receipt) | Fixed via explicit per-entity kwargs scrub |
+| Polymarket noise on ambiguous topics | Present (Warriors, Arizona receipts) | `--polymarket-keywords` + auto-skip for single-token-ambiguous |
+
+The key architectural change is who owns per-entity resolution. The engine stops trying to do it itself; the hosting model does it upstream (it already has WebSearch) and passes results in.
+
+This is the same pattern `--plan` already uses for the main topic: hosting model generates the plan via its own reasoning, passes it in, engine accepts. We apply the pattern to peers.
+
+## Requirements Trace
+
+- R1. New `--competitors-plan` JSON flag accepting per-entity targeting: `x_handle`, `x_related`, `subreddits`, `github_user`, `github_repos`, `context`. Implies `--competitors`. Per-entity values thread into that entity's `pipeline.run()`. Bypasses engine-internal `auto_resolve` for covered entities.
+- R2. SKILL.md "Competitor mode" rewritten to make the hosting-model path canonical: (a) discover N peers via WebSearch, (b) run Step 0.55 per entity (main + peers) via WebSearch, (c) assemble `--competitors-plan` JSON, (d) invoke engine. Engine-internal auto_resolve remains as headless fallback.
+- R3. The LAW 7-style stderr emitted when `--competitors` has no list, no plan, no backend is reframed: leads with "hosting reasoning model, use your WebSearch to run Step 0.55 per entity and pass `--competitors-plan`." Does not lead with BRAVE_API_KEY.
+- R4. Footer nudge `💡 You can unlock native grounded web search with BRAVE_API_KEY...` is suppressed when `--plan` OR `--competitors-plan` was passed. Signal: hosting model is driving and already has WebSearch.
+- R5. Override-leak fix: competitor sub-runs do not inherit main topic's `--subreddits`, `--x-handle`, `--x-related`, `--tiktok-hashtags`, `--tiktok-creators`, `--ig-creators`, `--github-user`, `--github-repo`. Sub-runs use only their own per-entity targeting (from `--competitors-plan` if provided, else engine-internal auto_resolve if backend, else planner defaults).
+- R6. The `## Resolved Entities` block is also appended to the saved raw file when `--save-dir` is in use. Each entity's effective targeting (whatever was actually passed to its `pipeline.run()`) is visible on audit.
+- R6b. When `--save-dir` is in use with a comparison run, each entity's sub-run ALSO saves its own standalone raw file — same format as a single-entity run. `/last30days Kanye West --competitors` produces `kanye-west-raw.md`, `drake-raw.md`, `kendrick-lamar-raw.md` (one per entity) plus the merged comparison file. Matches the historical vs-mode behavior when it ran as N passes.
+- R7. Polymarket disambiguation: support `--polymarket-keywords "kw1,kw2"` to filter market matches; auto-skip Polymarket when topic is single-token-ambiguous and no override is provided.
+- R8. Default `--competitors` count remains 2 (3-way: main + 2 peers). Unchanged from 3.0.12.
+
+## Scope Boundaries
+
+- No changes to `scripts/lib/fanout.py` architecture. N parallel pipelines stays. Only the data each sub-run receives changes.
+- No changes to the vs-mode (topic contains "vs" / "versus") behavior. That path is independent.
+- No new emit modes. Comparison output format unchanged.
+- No deprecation of `--competitors-list`. Stays as the minimum escape hatch for hosting models that skip per-entity Step 0.55 (names-only).
+
+### Deferred to Separate Tasks
+
+- Cache layer for hosting-model competitor resolution: separate plan once cost evidence exists.
+- Cross-source disambiguation beyond Polymarket: separate plan.
+
+## Context & Research
+
+### Relevant Code and Patterns
+
+- `scripts/last30days.py` — `--competitors` / `--competitors-list` argparse block, `resolve_competitors_args` validator, `_main_runner` closure, `_competitor_runner` closure, the `[Competitors] --competitors requires...` stderr block. Primary file for this plan.
+- `scripts/lib/fanout.py` — `run_competitor_fanout` orchestrator. Signature unchanged; `_competitor_runner` closure now builds kwargs from `--competitors-plan`.
+- `scripts/lib/pipeline.py` — `pipeline.run()` signature; no changes required (all per-entity flags already exist as kwargs).
+- `scripts/lib/planner.py` — existing `--plan` parsing and validation, pattern to mirror for `--competitors-plan`.
+- `scripts/lib/render.py` `_render_resolved_entities_block` (added in 3.0.12) — already reads `report.artifacts["resolved"]`; no change needed.
+- `scripts/last30days.py` `save_output` / `render.render_full` — the save path. Needs to include the Resolved Entities block for comparison runs.
+- `scripts/lib/quality_nudge.py` — where the BRAVE/SERPER footer nudge is emitted. Needs a context-aware suppression check.
+- `scripts/lib/polymarket.py` — source adapter. Entry point for `--polymarket-keywords` filter and single-token-ambiguous auto-skip.
+
+### Institutional Learnings
+
+- 3.0.11 plan (`2026-04-22-002`): built the initial fanout, deferred per-entity resolve as "v1 simplification."
+- 3.0.12 plan (`2026-04-22-003`): tried to close the gap via engine-internal `auto_resolve`. Works only with backend keys. Fails silently without.
+- 2026-04-22 test session receipts: confirmed all four fixes in this plan are real, reproducible bugs.
+- User's architectural steer 2026-04-22: "runs a full last30days on all 3 topics" — this plan encodes that explicitly as N full `pipeline.run()` calls with pre-resolved targeting per entity.
+
+### External References
+
+- None. All patterns in-repo.
+
+## Key Technical Decisions
+
+- **`--competitors-plan` is a single JSON flag, not a fan of separate flags.** Mirrors `--plan`. Stable schema: `{entity_name: {x_handle, x_related, subreddits, github_user, github_repos, context}}`. Accept inline JSON or a file path (matches `--plan`).
+- **Hosting-model-driven resolution is the documented default.** Engine-internal `auto_resolve` is the headless / cron fallback. SKILL.md routes hosting models to the JSON-flag path; engine keeps auto_resolve alive for BRAVE/EXA/SERPER users running CI.
+- **Override-leak fix is call-site scrubbing, not a signature change.** `_competitor_runner` builds an explicit kwargs dict per entity from `_subrun_kwargs(entity, plan_entry)`. No closure-default fallthrough from main scope. The 3.0.12 `entity_config = dict(config)` deep-copy pattern extends to every per-entity flag.
+- **Footer nudge becomes context-aware.** Suppressed when `--plan` or `--competitors-plan` present. Not suppressed for bare `--competitors-list` or bare invocations. Headless cron without keys still sees the nudge.
+- **Polymarket disambiguation is additive and conservative.** `--polymarket-keywords` is explicit; auto-skip only fires for a known list of single-token-ambiguous names (states, common nouns). Stderr notes the skip so it is observable and overridable.
+- **Per-entity sub-runs get the full `pipeline.run()` pass.** Same depth, same sources, same API cost per entity as a single-topic run. This is the explicit user intent — three full passes, not one merged pass.
+
+## Open Questions
+
+### Resolved During Planning
+
+- **JSON or multi-flag?** JSON. Matches `--plan`.
+- **Default count?** 2 peers (3-way comparison). Unchanged from 3.0.12.
+- **Does engine-internal auto_resolve stay alive?** Yes, for entities not covered by `--competitors-plan` when a backend is configured. Headless/cron users with keys keep the current 3.0.12 behavior.
+- **vs-mode or fanout?** Fanout. User's explicit ask: three full passes, not one merged pass. vs-mode merges into one pipeline with lower peer weighting, which is not what the user wants.
+- **Does the save file need per-entity clusters?** Start with the Resolved block appended. Per-entity cluster sections can follow in a separate task; they are nice-to-have, not blocking.
+
+### Deferred to Implementation
+
+- Exact trace of override-leak source. Candidates: closure capture of `subreddits` in `_competitor_runner`, shared `_auto_resolve_context` leak, Reddit adapter inheriting global config. Test-first; trace at implementation time.
+- Heuristic for "single-token-ambiguous topic" auto-skip. Start with a short hard-coded list (US state names, US city names, common nouns like "Warriors", "Suns", "Jets"); revisit after dogfood.
+- Whether per-entity coverage warnings fire when `--competitors-plan` under-resolves an entity (e.g., only `x_handle`, no subreddits). Start with stderr logging; revisit UX.
+
+## Implementation Units
+
+- [ ] **Unit 1: `--competitors-plan` JSON flag + per-entity kwargs threading**
+
+**Goal:** New CLI flag accepting per-entity targeting JSON. Each covered entity's `pipeline.run()` receives its own `x_handle` / `x_related` / `subreddits` / `github_user` / `github_repos` / `context`. Skips engine-internal `auto_resolve` for covered entities.
+
+**Requirements:** R1, R5 (primary leak fix site)
+
+**Dependencies:** None
+
+**Files:**
+- Modify: `scripts/last30days.py` (argparse + parse + `_competitor_runner`)
+- Possibly modify: `scripts/lib/fanout.py` (no signature change expected; verify)
+- Test: `tests/test_cli_competitors.py` (extend)
+- Test: `tests/test_competitors_plan_threading.py` (new)
+
+**Approach:**
+- Add `--competitors-plan` argparse flag. Accepts inline JSON OR a file path (mirror `--plan`).
+- Validation: parse JSON; must be a dict; each value must be a dict; unknown fields log warnings; malformed input exits 2.
+- Schema per entity: optional fields `x_handle` (str), `x_related` (list), `subreddits` (list), `github_user` (str), `github_repos` (list), `context` (str).
+- Case-insensitive matching against `--competitors-list` / discovered entities.
+- Build `_subrun_kwargs(entity, plan_entry)` helper. Returns a complete, explicit kwargs dict for `pipeline.run()` with no closure-default fallthrough from main scope. This helper is the single source of truth for per-entity call args. It also fixes the override-leak (R5) by scrubbing all per-entity flags to None unless the plan (or auto_resolve) sets them.
+- `_competitor_runner(entity)`:
+  1. Look up `plan_entry` from `--competitors-plan` (if any).
+  2. If plan covers entity fully, build kwargs from it; skip `auto_resolve`.
+  3. If plan partially covers or is absent, fall back to `auto_resolve` (3.0.12 behavior) when a backend is configured. Plan values win over auto_resolve values on conflict.
+  4. If neither plan nor backend, fall through to `pipeline.run()` with per-entity kwargs all None — engine uses planner defaults for that entity only (no leak).
+- Deep-copy config per sub-run (already done in 3.0.12); merge per-entity `context` into `entity_config["_auto_resolve_context"]` only.
+
+**Execution note:** Test-first for the override-leak regression (pass `--subreddits=A,B` on main + a peer, assert peer's `pipeline.run(subreddits=...)` is None or peer-specific).
+
+**Patterns to follow:**
+- `--plan` parsing at `scripts/last30days.py` (inline JSON or file path).
+- 3.0.12's `_competitor_runner` closure for scope; extract the kwargs-build into `_subrun_kwargs` helper.
+- `entity_config = dict(config)` deep-copy pattern from 3.0.12.
+
+**Test scenarios:**
+- Happy path: `--competitors-plan '{"Drake": {"x_handle":"Drake","subreddits":["Drizzy"]}}'` → Drake's `pipeline.run` receives `x_handle="Drake"` and `subreddits=["Drizzy"]`; no `auto_resolve` call for Drake.
+- Happy path: plan covers 2 of 3 entities, backend configured → covered entities skip auto_resolve; third falls back to auto_resolve.
+- Happy path: plan file path accepted like `--plan` file path.
+- Happy path: case-insensitive entity match (`Drake` in plan, `drake` in list).
+- Edge case: unknown fields in plan entry → logged, ignored, run continues.
+- Edge case: plan entry for entity not in list → ignored with warning.
+- Error path: malformed JSON → exit 2.
+- Error path: top-level JSON is list not dict → exit 2.
+- Regression (leak fix): main `--subreddits=A,B` + `--competitors-list "Drake"` + no plan → Drake's `pipeline.run` receives `subreddits=None` (no leak).
+- Regression (leak fix): same for `--x-handle`, `--x-related`, `--tiktok-*`, `--ig-creators`, `--github-*`.
+- Regression (leak fix): main `--x-handle=kanyewest` + plan `{"Drake":{"x_handle":"Drake"}}` → Drake's sub-run gets `x_handle="Drake"`, NOT `"kanyewest"`.
+- Integration: full main + 2 peers run via `--competitors-plan`; assert each sub-run's effective kwargs match expected per-entity values.
+
+**Verification:**
+- All new and regression tests pass.
+- Smoke run (mock mode + `--competitors-plan`): stderr shows `[Competitors] Drake: x=@Drake subs=Drizzy` line per entity; no `[AutoResolve]` calls for plan-covered entities; no leak of main topic's flags.
+
+- [ ] **Unit 2: Reframe LAW 7-style stderr for hosting-model context**
+
+**Goal:** When `--competitors` has no `--competitors-list`, no `--competitors-plan`, and no backend, stderr tells the hosting reasoning model to use its WebSearch tool for Step 0.55 per entity and pass `--competitors-plan`. Stops leading with BRAVE_API_KEY.
+
+**Requirements:** R3
+
+**Dependencies:** Unit 1 (flag must exist)
+
+**Files:**
+- Modify: `scripts/last30days.py` (the existing `[Competitors] --competitors requires...` block)
+- Test: `tests/test_competitors_no_backend_message.py` (new)
+
+**Approach:**
+- Rewrite stderr in this order:
+  1. "If you are the hosting reasoning model (Claude Code, Codex, Hermes, Gemini, or any agent runtime with a WebSearch tool), YOU should: (a) discover N peers via WebSearch, (b) run Step 0.55 per entity (main + peers), (c) assemble a `--competitors-plan` JSON, (d) re-invoke. Skip this step and quality degrades — peer entities will run with planner defaults."
+  2. "If you are running headless (cron, CI, no hosting model), set BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY / OPENROUTER_API_KEY and re-run."
+  3. "Minimum escape hatch: `--competitors-list "A,B,C"` skips discovery but does not pre-resolve peers. Use only for quick tests."
+- Exits non-zero as today.
+
+**Patterns to follow:**
+- Existing LAW 7 stderr in `planner.plan_query` for tone.
+
+**Test scenarios:**
+- Happy path: stderr leads with "If you are the hosting reasoning model" and names `--competitors-plan` before any backend key.
+- Happy path: stderr explicitly names `--competitors-plan` as the preferred override.
+- Happy path: stderr does NOT say "requires either a configured web search backend OR an explicit --competitors-list" (the current 3.0.12 wording).
+
+**Verification:**
+- Test asserts ordering and required phrases.
+
+- [ ] **Unit 3: Suppress BRAVE/SERPER footer nudge when hosting-model-driven**
+
+**Goal:** The `💡 You can unlock native grounded web search with BRAVE_API_KEY or SERPER_API_KEY` footer is suppressed when `--plan` or `--competitors-plan` was passed (signal: hosting model is driving and already has WebSearch).
+
+**Requirements:** R4
+
+**Dependencies:** Unit 1
+
+**Files:**
+- Modify: `scripts/lib/quality_nudge.py` (or wherever nudge is emitted; verify during implementation)
+- Test: `tests/test_footer_nudge_suppression.py` (new)
+
+**Approach:**
+- Locate the nudge emission point.
+- Add a suppression check: if `--plan` OR `--competitors-plan` was passed, skip the nudge. Otherwise, current behavior.
+- Don't suppress the nudge for bare `--competitors-list` alone — that path isn't necessarily hosting-model-driven.
+
+**Test scenarios:**
+- Happy path: `--plan` passed, no backend → nudge does NOT fire.
+- Happy path: `--competitors-plan` passed, no backend → nudge does NOT fire.
+- Happy path: `--competitors-list` only, no backend → nudge fires (current behavior).
+- Happy path: no `--competitors`, no `--plan`, no backend → nudge fires (current behavior unchanged).
+
+**Verification:**
+- All four scenarios produce expected nudge presence/absence.
+
+- [ ] **Unit 4: Per-entity save files + Resolved block in each**
+
+**Goal:** When `--save-dir` is in use with a comparison run, each entity's sub-run saves its own standalone raw file (same format as a single-entity run), and each file includes the `## Resolved Entities` block so audits can see what targeting that entity received. Matches the historical vs-mode behavior when it was N passes.
+
+**Requirements:** R6, R6b
+
+**Dependencies:** Unit 1
+
+**Files:**
+- Modify: `scripts/last30days.py` (`save_output`, the save loop after fanout completes)
+- Possibly modify: `scripts/lib/render.py` (`render_full` branch to include Resolved block when artifact is present)
+- Test: `tests/test_save_raw_competitor_files.py` (new)
+
+**Approach:**
+- After fanout completes, iterate `report.artifacts["competitor_reports"]`. For each `(entity, entity_report)` tuple, call `save_output(entity_report, emit="md", save_dir=args.save_dir, suffix=args.save_suffix)` — same path a single-entity run takes.
+- Each saved file uses its entity's slug as the filename (`drake-raw.md`, `kendrick-lamar-raw.md`). Main topic keeps the existing `kanye-west-raw.md` filename.
+- Each file includes its own `## Resolved Entities` block (single-entity variant: one row for that entity only). This makes each sub-run's file self-describing — you can see what targeting was used without opening the comparison file.
+- The merged comparison output (stdout) still includes the 3-row Resolved Entities block.
+- Optional: also save a comparison summary file (e.g., `kanye-west-comparison-raw.md`) holding the merged multi-entity render. Start with per-entity files only; comparison summary is a follow-up if stdout-plus-individual-files is insufficient.
+- Single-entity runs unchanged (no additional files, no block change).
+
+**Patterns to follow:**
+- Existing `save_output` invocation for single-entity runs (line 501 of current `scripts/last30days.py`).
+- Existing slug generation (`slugify(topic)`) for filename consistency.
+- `_render_resolved_entities_block` from 3.0.12 for the single-entity variant.
+
+**Test scenarios:**
+- Happy path: `--competitors-list "Drake,Kendrick Lamar"` + `--save-dir=/tmp/x` → `/tmp/x/kanye-west-raw.md`, `/tmp/x/drake-raw.md`, `/tmp/x/kendrick-lamar-raw.md` all exist.
+- Happy path: each peer file's first sections include that entity's Resolved Entities block with its own row only.
+- Happy path: single-entity run with `--save-dir` → one file, unchanged from today's behavior.
+- Edge case: entity slug collides with existing file → overwrite (matches single-entity behavior).
+- Edge case: `--save-suffix=v3` → all 3 files get the suffix (`kanye-west-raw-v3.md`, `drake-raw-v3.md`, `kendrick-lamar-raw-v3.md`).
+- Edge case: comparison run with one peer whose sub-run failed → that entity's file is NOT saved; others are.
+- Integration: stderr after save shows three `[last30days] Saved output to <path>` lines, one per entity.
+
+**Verification:**
+- After `/last30days Kanye West --competitors-list "Drake,Kendrick Lamar" --save-dir=/tmp/x`: `ls /tmp/x/*-raw.md` shows 3 files. Each contains its entity's Resolved block.
+
+- [ ] **Unit 5: SKILL.md "Competitor mode" rewrite — hosting-model Step 0.55 canonical**
+
+**Goal:** SKILL.md documents the hosting-model-driven path as canonical: discover N peers via WebSearch, run Step 0.55 per entity, assemble `--competitors-plan`, invoke engine. Engine-internal `auto_resolve` is labeled the headless fallback.
+
+**Requirements:** R2
+
+**Dependencies:** Unit 1 (flag must exist before documented)
+
+**Files:**
+- Modify: `SKILL.md` (Competitor mode subsection)
+- Modify: `README.md` (one-line example update)
+
+**Approach:**
+- Replace the 3.0.12 Competitor mode subsection with a clear flow:
+  1. User invokes with `--competitors` or `--competitors=N`.
+  2. Hosting model runs WebSearch for "[topic] competitors" / "[topic] alternatives" → picks top N peers.
+  3. Hosting model runs Step 0.55 for main + each peer (x_handle, subreddits, github_user, github_repos, context) — same protocol as vs-mode per SKILL.md §679.
+  4. Hosting model assembles a `--competitors-plan` JSON object.
+  5. Hosting model invokes the engine with `--competitors-list "A,B,C" --competitors-plan '{...}'`.
+  6. Engine fans out N full pipelines (main + peers), each with its own full Step 0.55-grade targeting. Each entity also saves its own `*-raw.md` file when `--save-dir` is set (three full passes → three save files, matching the historical vs-mode behavior). Comparison output merges them for display.
+- Concrete JSON example in SKILL.md showing the schema.
+- Failure-mode warning: a `## Resolved Entities` block with dashes for any entity means hosting model skipped Step 0.55 for that one. Re-run with corrected plan.
+- "Headless fallback" sub-subsection: when BRAVE/EXA/SERPER/PARALLEL/OPENROUTER is set, engine's internal `auto_resolve` handles peers and `--competitors-plan` is optional.
+
+**Patterns to follow:**
+- SKILL.md "Step 0.55" section for per-entity resolve protocol.
+- SKILL.md "If QUERY_TYPE = COMPARISON" section for the same-protocol-as-vs-mode reference.
+- Tone of existing 3.0.12 Competitor mode prose.
+
+**Test scenarios:**
+- Test expectation: none — documentation. Verification is a fresh Claude Code window dogfood run.
+
+**Verification:**
+- `/last30days Kanye West --competitors` in a new window: hosting model does Step 0.55 for Kanye + 2 discovered peers; passes `--competitors-plan`; rendered Resolved block shows non-empty fields for all 3; top voices include at least one peer-specific handle.
+
+- [ ] **Unit 6: Polymarket disambiguation guard**
+
+**Goal:** Support `--polymarket-keywords "kw1,kw2"` to filter market matches; auto-skip Polymarket when topic is single-token-ambiguous and no override is provided.
+
+**Requirements:** R7
+
+**Dependencies:** None
+
+**Files:**
+- Modify: `scripts/last30days.py` argparse (`--polymarket-keywords`)
+- Modify: `scripts/lib/polymarket.py`
+- Test: `tests/test_polymarket_disambiguation.py` (new)
+
+**Approach:**
+- Add `--polymarket-keywords "kw1,kw2"` flag. When provided, Polymarket adapter filters market titles to those whose normalized text contains at least one keyword.
+- Auto-skip rule: if topic is one token AND token matches a known-ambiguous list (US state names, US city names, common sports/color/animal words) AND no `--polymarket-keywords` provided, skip Polymarket with a stderr note.
+- SKILL.md Step 0.55 protocol gets a small addition: for ambiguous topics, hosting model passes `--polymarket-keywords` with topic-specific qualifiers.
+
+**Patterns to follow:**
+- Existing Polymarket adapter match logic.
+- Single-token detection heuristic.
+
+**Test scenarios:**
+- Happy path: topic "Warriors", no override → Polymarket skipped; stderr notes the skip.
+- Happy path: topic "Warriors", `--polymarket-keywords "nba,gsw"` → Polymarket runs; matches filtered.
+- Happy path: topic "OpenAI" (no ambiguity) → Polymarket runs as before.
+- Happy path: topic "Arizona Wildcats" (multi-token) → Polymarket runs as before.
+- Edge case: `--polymarket-keywords ""` → treated as empty, no filter.
+
+**Verification:**
+- Warriors smoke run → Polymarket footer absent OR filtered to nba/gsw markets.
+
+- [ ] **Unit 7: Version 3.0.13, CHANGELOG, sync, hot-copy**
+
+**Goal:** Ship 3.0.13 to all local targets.
+
+**Requirements:** Closes R1-R7
+
+**Dependencies:** Units 1-6
+
+**Files:**
+- Modify: `.claude-plugin/plugin.json`
+- Modify: `CHANGELOG.md`
+- Run: `bash scripts/sync.sh`
+- Hot-copy: `~/.claude/plugins/cache/last30days-skill/last30days/3.0.13/`
+
+**Approach:**
+- CHANGELOG entry groups the fixes: Added `--competitors-plan` JSON flag for per-entity hosting-model pre-resolve. Fixed override-leak from main into peer sub-runs. Changed: LAW 7 stderr framing for hosting-model context. Changed: BRAVE/SERPER footer nudge suppressed when `--plan` / `--competitors-plan` is present. Added: Resolved Entities block persists to saved raw file. Added: `--polymarket-keywords` + auto-skip for ambiguous single-token topics.
+- Beta channel first per CLAUDE.md.
+- Hot-copy so public `/last30days` picks up 3.0.13 immediately.
+
+**Test scenarios:**
+- Test expectation: none — packaging.
+
+**Verification:**
+- `grep version .claude-plugin/plugin.json` returns 3.0.13.
+- `sync.sh` exits 0.
+- Hot-copy contains the new files with competitors.py, fanout.py, the updated SKILL.md, and plugin.json 3.0.13.
+
+## System-Wide Impact
+
+- **Interaction graph:** `_competitor_runner` becomes the single source of truth for sub-run kwargs via `_subrun_kwargs(entity, plan_entry)`. Every per-entity flag flows through one helper. No closure-default leaks.
+- **Error propagation:** `--competitors-plan` JSON parse errors exit 2 with stderr (same as `--plan`). Per-entity plan entries with malformed values log warnings and fall back; don't abort the whole run.
+- **State lifecycle risks:** `entity_config = dict(config)` already deep-copies for `_auto_resolve_context`; extend the isolation discipline to every per-entity flag. Verified in Unit 1 regression tests.
+- **API surface parity:** `--competitors-plan` is additive. `--competitors` and `--competitors-list` unchanged. `--plan` unchanged. `--polymarket-keywords` additive.
+- **Integration coverage:** New regression tests for override-leak. New integration test for plan-driven sub-run threading. New nudge-suppression test. New Polymarket disambiguation test.
+- **Unchanged invariants:** `pipeline.run()` signature unchanged. `planner.plan_query` LAW 7 behavior for the default path unchanged. Single-entity render path unchanged. vs-mode behavior unchanged.
+
+## Risks & Dependencies
+
+| Risk | Mitigation |
+|------|------------|
+| Hosting model takes the lazy path and uses `--competitors-list` names-only. | Unit 2 stderr explicitly steers to `--competitors-plan` with Step 0.55 protocol named. Unit 5 SKILL.md docs. Resolved Entities dashes in output make the gap visible. |
+| JSON gets verbose for the hosting model to construct repeatedly. | Schema is small (≤6 fields per entity). Hosting model already runs Step 0.55 for main topic in every comparison run; peers use the same protocol. One JSON block replaces N CLI flags. |
+| Override-leak source is deeper than `_competitor_runner` closure. | Test-first per Unit 1. Receipts from 2026-04-22 Kanye run are reproducible. Trace methodically from call site. |
+| Plan-covered entity bypasses auto_resolve but plan data is incomplete (e.g., no subreddits). | Hosting model's own SKILL.md contract says Step 0.55 must cover all fields. Stderr logs per-entity coverage so under-resolved entities are visible. Next-run correction, not engine-side rescue. |
+| Polymarket auto-skip false-positives on legitimate ambiguous topics with real markets. | Conservative match (single-token + known list). `--polymarket-keywords` override is explicit and unambiguous. Stderr notes the skip. |
+| Footer nudge suppression hides the message from headless users who genuinely need it. | Suppression only fires when `--plan` or `--competitors-plan` is present. Cron / CI runs that pass neither still see the nudge. |
+
+## Documentation / Operational Notes
+
+- Beta channel first per CLAUDE.md (private repo `/last30days-beta`).
+- After merge: hot-copy to `~/.claude/plugins/cache/last30days-skill/last30days/3.0.13/`.
+- CHANGELOG voice should call this out as the feedback-driven follow-up to 3.0.12. Reader should see "we tried engine-internal resolve in 3.0.12; it needs backend keys we don't have; we moved resolution to the hosting model in 3.0.13."
+
+## Sources & References
+
+- Origin plan (3.0.12): `docs/plans/2026-04-22-003-fix-competitors-per-entity-resolution-plan.md`
+- Earlier plan (3.0.11): `docs/plans/2026-04-22-002-feat-competitors-flag-comparison-fanout-plan.md`
+- 2026-04-22 test session receipts: Warriors, Seattle, Arizona Wildcats, Kanye West
+- SKILL.md §551 "If QUERY_TYPE = COMPARISON" and §679 per-entity Step 0.55 protocol
+- Related code: `scripts/lib/fanout.py`, `scripts/last30days.py` `_competitor_runner`, `scripts/lib/render.py` `_render_resolved_entities_block`, `scripts/lib/polymarket.py`, `scripts/lib/quality_nudge.py`
+- Related PRs: #308 (3.0.11), #309 (3.0.12)

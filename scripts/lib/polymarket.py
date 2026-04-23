@@ -232,6 +232,39 @@ def filter_items_against_topic(topic: str, items: List[Any]) -> List[Any]:
     return filtered
 
 
+def filter_items_against_keywords(items: List[Any], keywords: List[str]) -> List[Any]:
+    """Keep only items whose title contains at least one keyword (case-insensitive).
+
+    Intended for disambiguating ambiguous single-token topics like 'Warriors'
+    via --polymarket-keywords (e.g., 'nba,gsw,golden-state') to filter out
+    Glasgow Warriors rugby, Honor of Kings Rogue Warriors markets that share
+    the 'Warriors' token but are not the target entity.
+    """
+    if not keywords:
+        return items
+    normalized_keywords = [kw.strip().lower() for kw in keywords if kw and kw.strip()]
+    if not normalized_keywords:
+        return items
+
+    filtered = []
+    for item in items:
+        title = getattr(item, "title", None)
+        if title is None and isinstance(item, dict):
+            title = item.get("title", "")
+        title = (title or "").lower()
+        if any(kw in title for kw in normalized_keywords):
+            filtered.append(item)
+
+    dropped = len(items) - len(filtered)
+    if dropped:
+        _log(
+            f"Keyword filter dropped {dropped} Polymarket items; "
+            f"kept {len(filtered)} matching {normalized_keywords}"
+        )
+
+    return filtered
+
+
 def _extract_domain_queries(topic: str, events: List[Dict]) -> List[str]:
     """Extract domain-indicator search terms from first-pass event tags.
 

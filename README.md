@@ -116,7 +116,7 @@ When the same story appears on Reddit, X, and YouTube, v3 merges them into one c
 
 ### Auto-discovered competitor comparisons
 
-`/last30days OpenAI --competitors` discovers the top 2 peers via web search (Anthropic, xAI), runs the full pipeline on each in parallel, and returns one 3-way comparison report. Override with `--competitors=N` (range 1..6) or `--competitors-list="A,B,C"`.
+`/last30days OpenAI --competitors` tells the hosting reasoning model to discover the top 2 peers via WebSearch (Anthropic, xAI), run Step 0.55 per entity, and invoke the engine with `"OpenAI vs Anthropic vs xAI"` and a per-entity `--competitors-plan` JSON. The engine fans out 3 full pipelines in parallel, saves a `*-raw.md` file per entity, and merges them into a 3-way comparison. Same mechanics power `/last30days "OpenAI vs Anthropic vs xAI"` directly.
 
 ### GitHub person-mode
 
