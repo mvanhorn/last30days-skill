@@ -116,7 +116,7 @@ When the same story appears on Reddit, X, and YouTube, v3 merges them into one c
 
 ### Auto-discovered competitor comparisons
 
-`/last30days OpenAI --competitors` discovers the top 3 peers via web search (Anthropic, xAI, Google Gemini), runs the full pipeline on each in parallel, and returns one N-way comparison report. Override with `--competitors=N` or `--competitors-list="A,B,C"`.
+`/last30days OpenAI --competitors` discovers the top 2 peers via web search (Anthropic, xAI), runs the full pipeline on each in parallel, and returns one 3-way comparison report. Override with `--competitors=N` (range 1..6) or `--competitors-list="A,B,C"`.
 
 ### GitHub person-mode
 

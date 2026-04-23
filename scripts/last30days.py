@@ -230,11 +230,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--competitors",
         nargs="?",
-        const=3,
+        const=2,
         type=int,
         default=None,
         metavar="N",
-        help="Auto-discover N competitor entities and fan out last30days across all of them as a comparison (default N=3, range 1..6). Use --competitors-list to override discovery.",
+        help="Auto-discover N competitor entities and fan out last30days across all of them as a comparison (default N=2 → 3-way: original + 2 peers; range 1..6). Use --competitors-list to override discovery.",
     )
     parser.add_argument(
         "--competitors-list",
@@ -246,7 +246,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 COMPETITORS_MIN = 1
 COMPETITORS_MAX = 6
-COMPETITORS_DEFAULT = 3
+COMPETITORS_DEFAULT = 2
 
 
 def resolve_competitors_args(args: argparse.Namespace) -> tuple[bool, int, list[str]]:
@@ -463,7 +463,7 @@ def main() -> int:
         comp_enabled, comp_count, comp_explicit = resolve_competitors_args(args)
 
         def _main_runner() -> schema.Report:
-            return pipeline.run(
+            r = pipeline.run(
                 topic=topic,
                 config=config,
                 depth=depth,
@@ -481,6 +481,15 @@ def main() -> int:
                 github_user=github_user,
                 github_repos=github_repos,
             )
+            r.artifacts["resolved"] = {
+                "entity": topic,
+                "x_handle": (args.x_handle or "").lstrip("@"),
+                "subreddits": list(subreddits or []),
+                "github_user": (github_user or ""),
+                "github_repos": list(github_repos or []),
+                "context": config.get("_auto_resolve_context", "") or "",
+            }
+            return r
 
         if comp_enabled:
             from lib import competitors as competitors_mod
@@ -517,15 +526,56 @@ def main() -> int:
             )
 
             def _competitor_runner(entity: str) -> schema.Report:
-                return pipeline.run(
+                # Deep-copy config so per-entity auto_resolve context does not
+                # leak across sub-runs. Each sub-run writes its own
+                # `_auto_resolve_context` into its local config copy.
+                entity_config = dict(config)
+                resolved = {
+                    "entity": entity,
+                    "x_handle": "",
+                    "subreddits": [],
+                    "github_user": "",
+                    "github_repos": [],
+                    "context": "",
+                }
+                if not args.mock and resolve_mod._has_backend(entity_config):
+                    try:
+                        r = resolve_mod.auto_resolve(entity, entity_config)
+                    except Exception as exc:
+                        sys.stderr.write(
+                            f"[Competitors] auto_resolve failed for {entity!r}: "
+                            f"{type(exc).__name__}: {exc}\n"
+                        )
+                        r = {}
+                    resolved["x_handle"] = r.get("x_handle", "") or ""
+                    resolved["subreddits"] = list(r.get("subreddits") or [])
+                    resolved["github_user"] = r.get("github_user", "") or ""
+                    resolved["github_repos"] = list(r.get("github_repos") or [])
+                    resolved["context"] = r.get("context", "") or ""
+                    if resolved["context"]:
+                        entity_config["_auto_resolve_context"] = resolved["context"]
+                    sys.stderr.write(
+                        f"[Competitors] {entity}: "
+                        f"x=@{resolved['x_handle'] or '-'} "
+                        f"subs={len(resolved['subreddits'])} "
+                        f"gh={resolved['github_user'] or '-'}\n"
+                    )
+                report = pipeline.run(
                     topic=entity,
-                    config=config,
+                    config=entity_config,
                     depth=depth,
                     requested_sources=requested_sources,
                     mock=args.mock,
+                    x_handle=resolved["x_handle"] or None,
+                    subreddits=resolved["subreddits"] or None,
+                    github_user=resolved["github_user"] or None,
+                    github_repos=resolved["github_repos"] or None,
                     web_backend=args.web_backend,
                     lookback_days=args.lookback_days,
+                    internal_subrun=True,
                 )
+                report.artifacts["resolved"] = resolved
+                return report
 
             entity_reports = fanout.run_competitor_fanout(
                 main_topic=topic,

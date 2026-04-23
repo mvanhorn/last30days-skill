@@ -177,6 +177,7 @@ def run(
     lookback_days: int = 30,
     github_user: str | None = None,
     github_repos: list[str] | None = None,
+    internal_subrun: bool = False,
 ) -> schema.Report:
     settings = DEPTH_SETTINGS[depth]
     requested_sources = normalize_requested_sources(requested_sources)
@@ -214,6 +215,7 @@ def run(
             provider=None if mock else reasoning_provider,
             model=None if mock else runtime.planner_model,
             context=config.get("_auto_resolve_context", ""),
+            internal_subrun=internal_subrun,
         )
         # Source labelling: the fallback path annotates notes with "fallback-plan"
         # or "deterministic-comparison-plan"; anything else came from the LLM.
