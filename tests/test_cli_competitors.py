@@ -29,12 +29,18 @@ class CompetitorsCliTests(unittest.TestCase):
         self.assertEqual(count, 0)
         self.assertEqual(explicit, [])
 
-    def test_bare_flag_defaults_to_three(self):
+    def test_bare_flag_defaults_to_two(self):
         args = _parse("Kanye West", "--competitors")
         enabled, count, explicit = cli.resolve_competitors_args(args)
         self.assertTrue(enabled)
-        self.assertEqual(count, 3)
+        self.assertEqual(count, 2)
         self.assertEqual(explicit, [])
+
+    def test_explicit_three_still_supported(self):
+        args = _parse("OpenAI", "--competitors", "3")
+        enabled, count, _explicit = cli.resolve_competitors_args(args)
+        self.assertTrue(enabled)
+        self.assertEqual(count, 3)
 
     def test_explicit_count(self):
         args = _parse("OpenAI", "--competitors", "4")

@@ -86,9 +86,16 @@ def plan_query(
     provider: providers.ReasoningClient | None,
     model: str | None,
     context: str = "",
+    internal_subrun: bool = False,
 ) -> schema.QueryPlan:
     """Create a query plan. Comparison queries with extractable entities use a
-    deterministic plan; other intents prefer the configured reasoning provider."""
+    deterministic plan; other intents prefer the configured reasoning provider.
+
+    internal_subrun: when True, suppress the LAW 7 "No --plan passed" stderr
+    warning. LAW 7 targets the hosting-reasoning-model path; competitor
+    fan-out sub-runs are engine-internal and the warning is a false positive
+    there. Default False preserves the warning on every user-facing invocation.
+    """
     if _should_force_deterministic_plan(topic):
         return _fallback_plan(
             topic,
@@ -122,16 +129,17 @@ def plan_query(
     # planner credentials - NOT a prerequisite the caller needs. If you are
     # the hosting reasoning model, YOU are the provider. LAW 7 / 2026-04-19
     # Hermes Agent Use Cases failure mode.
-    import sys
-    print(
-        "[Planner] No --plan passed. If you are the reasoning model hosting "
-        "this skill (Claude Code, Codex, Hermes, Gemini, or any agent runtime), "
-        "YOU ARE the planner: generate a JSON query plan yourself and pass it "
-        "via --plan. You do not need an API key or credentials; you ARE the "
-        "LLM. The deterministic fallback below is the headless/cron path only. "
-        "See LAW 7 in SKILL.md and Step 0.75 for the plan schema.",
-        file=sys.stderr,
-    )
+    if not internal_subrun:
+        import sys
+        print(
+            "[Planner] No --plan passed. If you are the reasoning model hosting "
+            "this skill (Claude Code, Codex, Hermes, Gemini, or any agent runtime), "
+            "YOU ARE the planner: generate a JSON query plan yourself and pass it "
+            "via --plan. You do not need an API key or credentials; you ARE the "
+            "LLM. The deterministic fallback below is the headless/cron path only. "
+            "See LAW 7 in SKILL.md and Step 0.75 for the plan schema.",
+            file=sys.stderr,
+        )
     return _fallback_plan(topic, available_sources, requested_sources, depth)
 
 

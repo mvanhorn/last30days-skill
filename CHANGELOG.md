@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.12] - 2026-04-22
+
+### Fixed
+
+- **Per-entity Step 0.55 resolution for competitor sub-runs.** In 3.0.11, only the main topic got X handle / subreddit / GitHub resolution; competitor sub-runs ran with planner defaults and produced visibly thinner evidence (Reddit 403 fallbacks, single-word queries). Each competitor sub-run now calls `resolve.auto_resolve()` inside `fanout.run_competitor_fanout` when a web backend is available, mirroring the main topic's pre-flight resolution. Per-entity X handle, subreddit list, GitHub user/repos, and news context are threaded into each sub-run's `pipeline.run()` call. Deep-copied config per sub-run prevents `_auto_resolve_context` cross-leak. Surfaces in a new `## Resolved Entities` output block so the resolution coverage is visible without reading stderr.
+- **LAW 7 false-positive on internal fan-out sub-runs.** Each competitor sub-run was emitting the `[Planner] No --plan passed... YOU ARE the planner` stderr warning. LAW 7 targets the hosting-reasoning-model path, not engine-internal fan-out. New `internal_subrun=True` keyword on `planner.plan_query` and `pipeline.run` suppresses the warning for sub-runs only; the default path is unchanged.
+- **Marketplace-stale SKILL.md trap.** Added a STEP 0 canonical-path self-check at the top of SKILL.md. Two of three 2026-04-22 test runs loaded SKILL.md from `plugins/marketplaces/last30days-skill/` (Claude-Code-managed git clone pinned to origin/main, lagging the versioned cache), then ran `--help` against the same stale path, did not see `--competitors`, and fell back to a manual comparison plan. The STEP 0 block forces any reader to verify they loaded from `plugins/cache/last30days-skill/last30days/{VERSION}/SKILL.md` and re-read from the versioned cache if not.
+
+### Changed
+
+- **Default `--competitors` count is now 2 (3-way total: original + 2 peers).** Previously 3. `--competitors=N` still customizes (range 1..6). Matches the feature description's canonical example (`Kanye vs Drake vs Kendrick`).
+
+### Added
+
+- **`## Resolved Entities` block** in `render_comparison_multi` output. Shows per-entity X handle, subreddits, GitHub user/repos, and truncated context for every entity in the comparison. Block is omitted entirely when no entity has a resolved payload (mock mode, no backend).
+
 ## [3.0.11] - 2026-04-22
 
 ### Added

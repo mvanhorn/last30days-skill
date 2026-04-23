@@ -59,6 +59,26 @@ metadata:
       - clawhub
 ---
 
+# STEP 0: CANONICAL PATH SELF-CHECK — RUN BEFORE READING BELOW
+
+Before reading anything else in this file, verify that the SKILL.md you just loaded is the versioned cache copy, not a stale marketplace clone:
+
+```bash
+CANONICAL_ROOT="$HOME/.claude/plugins/cache/last30days-skill/last30days"
+CANONICAL_LATEST=$(ls -d "$CANONICAL_ROOT"/*/ 2>/dev/null | sort -V | tail -1)
+CANONICAL_LATEST="${CANONICAL_LATEST%/}"
+```
+
+If the SKILL.md file you just read is NOT under `$CANONICAL_LATEST/`, STOP and re-read `$CANONICAL_LATEST/SKILL.md` before proceeding. Do not run `--help`, do not plan, do not invoke the engine against any other path.
+
+**Why:** `~/.claude/plugins/marketplaces/last30days-skill/` is a git clone Claude Code auto-restores to `origin/main` on session start. It can lag the versioned cache by one or more releases. Three 2026-04-22 test runs (Linear, Coinbase) loaded SKILL.md from `marketplaces/`, ran `--help` from the same stale path, did not see the `--competitors` flag that existed in the cache, and fell back to a manual comparison plan. Result: 2 of 3 windows never invoked the feature they were asked to test.
+
+**How to self-check:** the file path you used in your last Read tool call should match `$CANONICAL_LATEST/SKILL.md`. If it contains `marketplaces/` or any other prefix, that is the stale-path failure mode. Re-read from `$CANONICAL_LATEST/SKILL.md` and restart this contract from the top.
+
+The same pinned resolver appears later in Step 1 for the engine Bash invocation. That guard is necessary but insufficient — by the time you reach Step 1, you may have already internalized an out-of-date flag list from the stale SKILL.md above it. This STEP 0 runs first so the CONTRACT itself is read from the right file.
+
+---
+
 # SKILL CONTRACT — READ BEFORE ANY TOOL CALL
 
 You are inside the `/last30days` SKILL. This is a specific research tool with a 1400+ line instruction contract (the rest of this file) that defines EXACTLY how to produce the research output. It is not a generic "last 30 days of X" research prompt. Do NOT treat `/last30days` as a search keyword you can improvise against.
@@ -575,10 +595,10 @@ Then do WebSearch for: `{TOPIC_A} vs {TOPIC_B} comparison {YEAR}` and `{TOPIC_A}
 
 ### Competitor mode (`--competitors`)
 
-When the user passes `--competitors` on a single-entity topic, the engine auto-discovers 2-6 peer entities and fans out the full pipeline over the topic plus each competitor in parallel. Example: `last30days Kanye West --competitors` resolves to a 4-way comparison against Drake, Kendrick Lamar, and one other peer; `last30days OpenAI --competitors` resolves against Anthropic, xAI, and Google Gemini.
+When the user passes `--competitors` on a single-entity topic, the engine auto-discovers 1-6 peer entities and fans out the full pipeline over the topic plus each competitor in parallel. Example: `last30days Kanye West --competitors` resolves to a 3-way comparison against Drake and Kendrick Lamar; `last30days OpenAI --competitors=3` resolves against Anthropic, xAI, and Google Gemini.
 
 **Flag surface:**
-- `--competitors` (bare) - discover and compare against 3 peers.
+- `--competitors` (bare) - discover and compare against 2 peers (3-way comparison: original + 2).
 - `--competitors=N` - discover N peers (range 1..6; out-of-range clamps with a stderr warning).
 - `--competitors-list="A,B,C"` - skip discovery and use the explicit list. Implies `--competitors`.
 

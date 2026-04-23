@@ -159,6 +159,110 @@ class RenderComparisonMultiTests(unittest.TestCase):
         self.assertIn("GPT-5 drop", out)
 
 
+class ResolvedEntitiesBlockTests(unittest.TestCase):
+    def _build_with_resolved(self, label, topic, resolved):
+        r = _build_report(topic, ["Cluster A"])
+        if resolved is not None:
+            r.artifacts["resolved"] = resolved
+        return (label, r)
+
+    def test_block_emitted_when_any_entity_has_resolved(self):
+        reports = [
+            self._build_with_resolved("OpenAI", "OpenAI", {
+                "entity": "OpenAI",
+                "x_handle": "OpenAI",
+                "subreddits": ["OpenAI", "MachineLearning"],
+                "github_user": "openai",
+                "github_repos": ["openai/gpt"],
+                "context": "GPT-5 release signals are strong",
+            }),
+            self._build_with_resolved("Anthropic", "Anthropic", {
+                "entity": "Anthropic",
+                "x_handle": "AnthropicAI",
+                "subreddits": ["ClaudeAI"],
+                "github_user": "anthropics",
+                "github_repos": [],
+                "context": "",
+            }),
+        ]
+        rendered = render.render_comparison_multi(reports)
+        self.assertIn("## Resolved Entities", rendered)
+        self.assertIn("**OpenAI**: X @OpenAI", rendered)
+        self.assertIn("r/OpenAI, r/MachineLearning", rendered)
+        self.assertIn("@openai (openai/gpt)", rendered)
+        self.assertIn("**Anthropic**: X @AnthropicAI", rendered)
+        # Missing context renders as "-"
+        self.assertIn("Context: -", rendered)
+
+    def test_block_omitted_when_no_resolved_artifacts(self):
+        reports = [
+            self._build_with_resolved("A", "A", None),
+            self._build_with_resolved("B", "B", None),
+        ]
+        rendered = render.render_comparison_multi(reports)
+        self.assertNotIn("## Resolved Entities", rendered)
+
+    def test_missing_fields_render_as_dash(self):
+        reports = [
+            self._build_with_resolved("OpenAI", "OpenAI", {
+                "entity": "OpenAI",
+                "x_handle": "",
+                "subreddits": [],
+                "github_user": "",
+                "github_repos": [],
+                "context": "",
+            }),
+        ]
+        rendered = render.render_comparison_multi(reports)
+        self.assertIn("**OpenAI**: X - | Subs - | GitHub - | Context: -", rendered)
+
+    def test_long_context_truncated(self):
+        long = "a" * 200
+        reports = [
+            self._build_with_resolved("X", "X", {
+                "entity": "X",
+                "x_handle": "",
+                "subreddits": [],
+                "github_user": "",
+                "github_repos": [],
+                "context": long,
+            }),
+        ]
+        rendered = render.render_comparison_multi(reports)
+        # The truncate helper adds an ellipsis; context line should not show
+        # the full 200-char string.
+        self.assertNotIn("a" * 200, rendered)
+
+    def test_context_emit_includes_resolved_block(self):
+        reports = [
+            self._build_with_resolved("OpenAI", "OpenAI", {
+                "entity": "OpenAI",
+                "x_handle": "OpenAI",
+                "subreddits": ["OpenAI"],
+                "github_user": "",
+                "github_repos": [],
+                "context": "",
+            }),
+        ]
+        out = render.render_comparison_multi_context(reports)
+        self.assertIn("## Resolved Entities", out)
+        self.assertIn("**OpenAI**: X @OpenAI", out)
+
+    def test_subreddit_overflow_truncated(self):
+        reports = [
+            self._build_with_resolved("X", "X", {
+                "entity": "X",
+                "x_handle": "",
+                "subreddits": ["a", "b", "c", "d", "e", "f", "g"],
+                "github_user": "",
+                "github_repos": [],
+                "context": "",
+            }),
+        ]
+        rendered = render.render_comparison_multi(reports)
+        self.assertIn("r/a, r/b, r/c, r/d, r/e (+2)", rendered)
+
+
 class EmitComparisonOutputTests(unittest.TestCase):
     def test_json_emit_nests_per_entity(self):
         reports = [

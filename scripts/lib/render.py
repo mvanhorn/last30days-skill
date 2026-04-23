@@ -445,6 +445,11 @@ def render_comparison_multi(
     )
     lines.append("")
 
+    resolved_block = _render_resolved_entities_block(entity_reports)
+    if resolved_block:
+        lines.extend(resolved_block)
+        lines.append("")
+
     fun_params = _FUN_LEVELS.get(fun_level, _FUN_LEVELS["medium"])
     for label, report in entity_reports:
         lines.extend(_render_entity_evidence_block(
@@ -473,6 +478,52 @@ def render_comparison_multi(
     lines.extend(_render_canonical_boundary())
 
     return "\n".join(lines).strip() + "\n"
+
+
+def _render_resolved_entities_block(
+    entity_reports: list[tuple[str, schema.Report]],
+) -> list[str]:
+    """Emit a visible per-entity Step 0.55 resolution summary.
+
+    Reads `resolved` dicts from each Report's artifacts. Returns an empty
+    list when no entity has a resolved payload (mock mode, no web backend,
+    or artifacts not populated). Missing per-entity fields render as `-`.
+    Context strings truncate at 120 chars.
+    """
+    any_resolved = any(
+        isinstance(report.artifacts.get("resolved"), dict)
+        for _label, report in entity_reports
+    )
+    if not any_resolved:
+        return []
+
+    out: list[str] = ["## Resolved Entities", ""]
+    for label, report in entity_reports:
+        resolved = report.artifacts.get("resolved") or {}
+        x_handle = resolved.get("x_handle") or ""
+        subs = resolved.get("subreddits") or []
+        gh_user = resolved.get("github_user") or ""
+        gh_repos = resolved.get("github_repos") or []
+        context = resolved.get("context") or ""
+
+        x_display = f"@{x_handle}" if x_handle else "-"
+        subs_display = (
+            ", ".join(f"r/{s}" for s in subs[:5]) + (
+                f" (+{len(subs) - 5})" if len(subs) > 5 else ""
+            )
+        ) if subs else "-"
+        gh_display = f"@{gh_user}" if gh_user else "-"
+        if gh_repos:
+            gh_display += f" ({', '.join(gh_repos[:3])}" + (
+                f" +{len(gh_repos) - 3}" if len(gh_repos) > 3 else ""
+            ) + ")"
+        context_display = _truncate(context, 120) if context else "-"
+
+        out.append(
+            f"- **{label}**: X {x_display} | Subs {subs_display} | "
+            f"GitHub {gh_display} | Context: {context_display}"
+        )
+    return out
 
 
 def _render_entity_evidence_block(
@@ -536,6 +587,10 @@ def render_comparison_multi_context(
         _AI_SAFETY_NOTE,
         "",
     ]
+    resolved_block = _render_resolved_entities_block(entity_reports)
+    if resolved_block:
+        lines.extend(resolved_block)
+        lines.append("")
     for label, report in entity_reports:
         lines.append(f"## {label}")
         lines.append(f"Intent: {report.query_plan.intent}")
