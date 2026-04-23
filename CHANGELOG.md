@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.1.0] - 2026-04-22
+
+Consolidates the 3.0.10 to 3.0.14 dev cycle (commenter handles, `--competitors`, per-entity Step 0.55, vs-mode N passes, comparison title attribution) and republishes the OpenClaw bundle, which had been frozen on ClawHub at `3.0.0-open` since April 8.
+
+### Added
+
+- **OpenClaw republish.** `clawhub install last30days-official` now resolves to `3.1.0-open`, matching current main. Closes [#307](https://github.com/mvanhorn/last30days-skill/issues/307), [#195](https://github.com/mvanhorn/last30days-skill/issues/195), [#236](https://github.com/mvanhorn/last30days-skill/issues/236). The ClawHub bundle had shipped a broken `env.py get_config()` and stale SKILL.md path references since April; both are fixed at source on main and the republish carries the fixes to installers.
+
+### Fixed
+
+- **Claude Code plugin manifest path-escape.** The `.claude-plugin/plugin.json` `skills` key was removed in commit `93fbed2` but never shipped in a tagged release. Installing via `/plugin install last30days-skill` could hit `/doctor`'s `Path escapes plugin directory: ./ (skills)` error. This release ships the fix. Closes [#306](https://github.com/mvanhorn/last30days-skill/issues/306).
+- **Broken README link.** The README's "source of truth" link pointed at `skills/last30days/SKILL.md`, a path that does not exist. Fixed to point at root `SKILL.md`.
+
+### Dev cycle journal (3.0.10 - 3.0.14, not separately tagged)
+
+Individual changelog entries for 3.0.10 through 3.0.14 below document the incremental work consolidated into this release.
+
 ## [3.0.14] - 2026-04-22
 
 ### Changed
