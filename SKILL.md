@@ -573,6 +573,21 @@ Then do WebSearch for: `{TOPIC_A} vs {TOPIC_B} comparison {YEAR}` and `{TOPIC_A}
 
 **COMPARISON TABLE SCAFFOLD (engine-emitted, pass through verbatim):** For comparison topics, the engine's compact output includes a `## Head-to-Head Comparison` block with an empty markdown table (columns = entities, rows = axes like "Core pitch", "Who it's for", "Community stance", "Trajectory") plus a "Choose X if / Choose Y if" prose block. Your synthesis MUST include this block verbatim with filled cells, positioned between the narrative and the emoji-tree footer. Keep each cell to 5-15 words. Use ' - ' (hyphen with spaces) not em-dashes inside cells. The block is the canonical comparison output shape - do not invent your own table structure.
 
+### Competitor mode (`--competitors`)
+
+When the user passes `--competitors` on a single-entity topic, the engine auto-discovers 2-6 peer entities and fans out the full pipeline over the topic plus each competitor in parallel. Example: `last30days Kanye West --competitors` resolves to a 4-way comparison against Drake, Kendrick Lamar, and one other peer; `last30days OpenAI --competitors` resolves against Anthropic, xAI, and Google Gemini.
+
+**Flag surface:**
+- `--competitors` (bare) - discover and compare against 3 peers.
+- `--competitors=N` - discover N peers (range 1..6; out-of-range clamps with a stderr warning).
+- `--competitors-list="A,B,C"` - skip discovery and use the explicit list. Implies `--competitors`.
+
+**Discovery path:** web search plus deterministic text mining (same backends as `--auto-resolve`). No internal LLM call. When no web search backend is configured and no list is passed, the engine emits a LAW 7-style stderr telling the hosting reasoning model to generate the list and re-invoke with `--competitors-list="A,B,C"`, then exits non-zero.
+
+**Sub-run behavior:** each entity runs `pipeline.run()` in parallel inheriting the main run's `--quick` / `--deep` / `--web-backend` / `--days`. Topic-specific overrides (`--x-handle`, `--subreddits`, `--github-user`, `--github-repo`) apply to the main topic only - competitor sub-runs use planner defaults. Per-entity failures degrade to a warning; the run continues as long as at least 2 entities survive.
+
+**Output:** one comparison report covering all entities, reusing the same `## Head-to-Head` scaffold as explicit `A vs B` topics. Synthesis contract identical to the COMPARISON query type above.
+
 ---
 
 ## Step 0.55: Pre-Research Intelligence (resolve communities + handles)

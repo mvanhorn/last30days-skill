@@ -114,6 +114,10 @@ When the same story appears on Reddit, X, and YouTube, v3 merges them into one c
 
 "CLI vs MCP" used to run three serial passes (12+ minutes). v3 runs one pass with entity-aware subqueries for both sides simultaneously. Same depth, 3 minutes.
 
+### Auto-discovered competitor comparisons
+
+`/last30days OpenAI --competitors` discovers the top 3 peers via web search (Anthropic, xAI, Google Gemini), runs the full pipeline on each in parallel, and returns one N-way comparison report. Override with `--competitors=N` or `--competitors-list="A,B,C"`.
+
 ### GitHub person-mode
 
 When the topic is a person, the engine switches from keyword search to author-scoped queries. Instead of "who mentioned this name in an issue body," it answers: what are they shipping and where is it landing?

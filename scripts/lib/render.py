@@ -392,6 +392,165 @@ def _render_comparison_scaffold(topic: str) -> list[str]:
     ]
 
 
+def render_comparison_multi(
+    entity_reports: list[tuple[str, schema.Report]],
+    *,
+    cluster_limit: int = 4,
+    fun_level: str = "medium",
+    save_path: str | None = None,
+) -> str:
+    """Render N (entity, Report) pairs as a single comparison output.
+
+    Reuses _render_comparison_scaffold for the synthesis table and emits
+    per-entity evidence sections inside one EVIDENCE FOR SYNTHESIS envelope.
+    The single-Report render_compact path is unchanged.
+
+    Args:
+        entity_reports: Ordered (label, Report) pairs. The first pair is the
+            user's main topic; the remainder are discovered/explicit competitors.
+        cluster_limit: Max clusters to surface per entity (kept lower than the
+            single-entity default to keep N-way comparisons readable).
+        fun_level: Same fun-level knob as render_compact, applied to each
+            entity's best-takes block.
+        save_path: Optional save-path display string for the footer.
+    """
+    if not entity_reports:
+        raise ValueError("render_comparison_multi requires at least one report")
+
+    entities = [label for label, _ in entity_reports]
+    main_label, main_report = entity_reports[0]
+    synthesized_topic = " vs ".join(entities)
+
+    lines: list[str] = [
+        *_render_badge(),
+        f"# last30days v3.0.0: {synthesized_topic}",
+        "",
+        *_assistant_safety_lines(),
+        f"- Comparison mode: {len(entities)} entities ({', '.join(entities)})",
+        f"- Date range: {main_report.range_from} to {main_report.range_to}",
+        "",
+    ]
+
+    aggregated_warnings: list[str] = []
+    for label, report in entity_reports:
+        aggregated_warnings.extend(f"[{label}] {w}" for w in report.warnings)
+    if aggregated_warnings:
+        lines.append("## Warnings")
+        lines.extend(f"- {w}" for w in aggregated_warnings)
+        lines.append("")
+
+    lines.append(
+        "<!-- EVIDENCE FOR SYNTHESIS: read this, do not emit verbatim. Transform into "
+        "`What I learned:` prose per LAW 2. Each entity has its own evidence subsection. -->"
+    )
+    lines.append("")
+
+    fun_params = _FUN_LEVELS.get(fun_level, _FUN_LEVELS["medium"])
+    for label, report in entity_reports:
+        lines.extend(_render_entity_evidence_block(
+            label=label,
+            report=report,
+            cluster_limit=cluster_limit,
+            fun_params=fun_params,
+        ))
+
+    lines.append("<!-- END EVIDENCE FOR SYNTHESIS -->")
+    lines.append("")
+
+    # Reuse the existing comparison scaffold by feeding it the synthesized
+    # topic. _parse_comparison_entities splits on " vs " so the scaffold
+    # picks up all N entities automatically.
+    scaffold = _render_comparison_scaffold(synthesized_topic)
+    lines.extend(scaffold)
+
+    footer = _render_emoji_footer(main_report, save_path)
+    if footer:
+        lines.append("")
+        lines.append("<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->")
+        lines.extend(footer)
+        lines.append("<!-- END PASS-THROUGH FOOTER -->")
+
+    lines.extend(_render_canonical_boundary())
+
+    return "\n".join(lines).strip() + "\n"
+
+
+def _render_entity_evidence_block(
+    *,
+    label: str,
+    report: schema.Report,
+    cluster_limit: int,
+    fun_params: dict,
+) -> list[str]:
+    """Render one entity's clusters and best-takes inside the evidence envelope."""
+    candidate_by_id = {c.candidate_id: c for c in report.ranked_candidates}
+    out: list[str] = [f"## {label}", ""]
+
+    if not report.clusters:
+        out.append("(no significant discussion this month)")
+        out.append("")
+        return out
+
+    out.append("### Ranked Evidence Clusters")
+    out.append("")
+    for index, cluster in enumerate(report.clusters[:cluster_limit], start=1):
+        out.append(
+            f"#### {index}. {cluster.title} "
+            f"(score {cluster.score:.0f}, {len(cluster.candidate_ids)} item"
+            f"{'s' if len(cluster.candidate_ids) != 1 else ''}, "
+            f"sources: {', '.join(_source_label(s) for s in cluster.sources)})"
+        )
+        if cluster.uncertainty:
+            out.append(f"- Uncertainty: {cluster.uncertainty}")
+        for rep_index, candidate_id in enumerate(cluster.representative_ids, start=1):
+            candidate = candidate_by_id.get(candidate_id)
+            if not candidate:
+                continue
+            out.extend(_render_candidate(candidate, prefix=f"{rep_index}."))
+        out.append("")
+
+    best_takes = _render_best_takes(
+        report.ranked_candidates,
+        limit=fun_params["limit"],
+        threshold=fun_params["threshold"],
+    )
+    if best_takes:
+        out.extend(best_takes)
+        out.append("")
+
+    return out
+
+
+def render_comparison_multi_context(
+    entity_reports: list[tuple[str, schema.Report]],
+    cluster_limit: int = 4,
+) -> str:
+    """Context-mode rendering for the multi-entity comparison."""
+    if not entity_reports:
+        raise ValueError("render_comparison_multi_context requires at least one report")
+
+    entities = [label for label, _ in entity_reports]
+    lines = [
+        f"Comparison: {' vs '.join(entities)}",
+        f"Entities: {len(entities)}",
+        _AI_SAFETY_NOTE,
+        "",
+    ]
+    for label, report in entity_reports:
+        lines.append(f"## {label}")
+        lines.append(f"Intent: {report.query_plan.intent}")
+        if not report.clusters:
+            lines.append("- (no significant discussion this month)")
+        else:
+            for cluster in report.clusters[:cluster_limit]:
+                lines.append(
+                    f"- {cluster.title} "
+                    f"[{', '.join(_source_label(s) for s in cluster.sources)}]"
+                )
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
 def render_full(report: schema.Report) -> str:
     """Full data dump: ALL clusters + ALL items by source. For saved files and debugging."""
     # Start with the same header as compact

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.11] - 2026-04-22
+
+### Added
+
+- **`--competitors` flag for auto-discovered comparison fan-out.** Pass `--competitors` on a single-entity topic and the engine discovers 2-6 peer entities via web search, then runs the full pipeline on each in parallel and emits one N-way comparison. `last30days Kanye West --competitors` resolves Drake, Kendrick Lamar, and one more peer. `last30days OpenAI --competitors` resolves Anthropic, xAI, Google Gemini. `--competitors=N` controls count, `--competitors-list="A,B,C"` skips discovery and uses the explicit list. Discovery mirrors the `auto_resolve` pattern (Brave / Exa / Serper / Parallel) with deterministic text extraction - no internal LLM call. Sub-runs inherit the main `--quick`/`--deep`/`--days`, run in a `ThreadPoolExecutor`, and degrade gracefully when at least 2 entities survive. Output reuses the existing 9-axis `## Head-to-Head` scaffold.
+
 ## [3.0.10] - 2026-04-21
 
 ### Added

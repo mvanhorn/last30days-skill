@@ -122,6 +122,31 @@ def emit_output(report: schema.Report, emit: str, fun_level: str = "medium", sav
     raise SystemExit(f"Unsupported emit mode: {emit}")
 
 
+def emit_comparison_output(
+    entity_reports: list[tuple[str, schema.Report]],
+    emit: str,
+    fun_level: str = "medium",
+    save_path: str | None = None,
+) -> str:
+    if emit == "json":
+        payload = {
+            "comparison": True,
+            "entities": [label for label, _ in entity_reports],
+            "reports": [
+                {"entity": label, "report": schema.to_dict(report)}
+                for label, report in entity_reports
+            ],
+        }
+        return json.dumps(payload, indent=2, sort_keys=True)
+    if emit in {"compact", "md"}:
+        return render.render_comparison_multi(
+            entity_reports, fun_level=fun_level, save_path=save_path,
+        )
+    if emit == "context":
+        return render.render_comparison_multi_context(entity_reports)
+    raise SystemExit(f"Unsupported emit mode: {emit}")
+
+
 def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str) -> str:
     """Compute the user-friendly save path string that will be shown in the footer.
 
@@ -202,7 +227,83 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Use web search to discover subreddits/handles before planning (for platforms without WebSearch)")
     parser.add_argument("--github-user", help="GitHub username for person-mode search (e.g., steipete)")
     parser.add_argument("--github-repo", help="Comma-separated owner/repo for project-mode search (e.g., openclaw/openclaw,paperclipai/paperclip)")
+    parser.add_argument(
+        "--competitors",
+        nargs="?",
+        const=3,
+        type=int,
+        default=None,
+        metavar="N",
+        help="Auto-discover N competitor entities and fan out last30days across all of them as a comparison (default N=3, range 1..6). Use --competitors-list to override discovery.",
+    )
+    parser.add_argument(
+        "--competitors-list",
+        dest="competitors_list",
+        help="Comma-separated competitor entities to skip discovery (e.g., 'Anthropic,xAI,Google Gemini'). Implies --competitors.",
+    )
     return parser
+
+
+COMPETITORS_MIN = 1
+COMPETITORS_MAX = 6
+COMPETITORS_DEFAULT = 3
+
+
+def resolve_competitors_args(args: argparse.Namespace) -> tuple[bool, int, list[str]]:
+    """Normalize --competitors / --competitors-list into (enabled, count, explicit_list).
+
+    - (False, 0, []) when neither flag is set.
+    - An explicit list always wins; count is derived from list length.
+    - A numeric count outside [1, 6] is clamped with a stderr warning.
+    - count <= 0 (explicit) raises SystemExit(2).
+    """
+    explicit_list: list[str] = []
+    list_flag_provided = args.competitors_list is not None
+    if list_flag_provided:
+        explicit_list = [
+            entity.strip()
+            for entity in args.competitors_list.split(",")
+            if entity.strip()
+        ]
+        if not explicit_list:
+            sys.stderr.write("[Competitors] --competitors-list is empty.\n")
+            raise SystemExit(2)
+
+    competitors_flag = args.competitors
+    list_present = bool(explicit_list)
+    flag_present = competitors_flag is not None
+
+    if not list_present and not flag_present:
+        return False, 0, []
+
+    if list_present:
+        count = len(explicit_list)
+        if flag_present and competitors_flag != count:
+            sys.stderr.write(
+                f"[Competitors] --competitors={competitors_flag} ignored; using "
+                f"{count} entries from --competitors-list.\n"
+            )
+        if count > COMPETITORS_MAX:
+            sys.stderr.write(
+                f"[Competitors] --competitors-list has {count} entries, clamping to {COMPETITORS_MAX}.\n"
+            )
+            explicit_list = explicit_list[:COMPETITORS_MAX]
+            count = COMPETITORS_MAX
+        return True, count, explicit_list
+
+    # flag_present, no explicit list
+    count = competitors_flag
+    if count < COMPETITORS_MIN:
+        sys.stderr.write(
+            f"[Competitors] --competitors must be >= {COMPETITORS_MIN} (got {count}).\n"
+        )
+        raise SystemExit(2)
+    if count > COMPETITORS_MAX:
+        sys.stderr.write(
+            f"[Competitors] --competitors={count} exceeds max {COMPETITORS_MAX}; clamping.\n"
+        )
+        count = COMPETITORS_MAX
+    return True, count, []
 
 
 def _missing_sources_for_promo(diag: dict[str, object]) -> str | None:
@@ -359,24 +460,91 @@ def main() -> int:
             if "perplexity" not in include.lower():
                 config["INCLUDE_SOURCES"] = f"{include},perplexity" if include else "perplexity"
 
-        report = pipeline.run(
-            topic=topic,
-            config=config,
-            depth=depth,
-            requested_sources=requested_sources,
-            mock=args.mock,
-            x_handle=args.x_handle,
-            x_related=x_related,
-            web_backend=args.web_backend,
-            external_plan=external_plan,
-            subreddits=subreddits,
-            tiktok_hashtags=tiktok_hashtags,
-            tiktok_creators=tiktok_creators,
-            ig_creators=ig_creators,
-            lookback_days=args.lookback_days,
-            github_user=github_user,
-            github_repos=github_repos,
-        )
+        comp_enabled, comp_count, comp_explicit = resolve_competitors_args(args)
+
+        def _main_runner() -> schema.Report:
+            return pipeline.run(
+                topic=topic,
+                config=config,
+                depth=depth,
+                requested_sources=requested_sources,
+                mock=args.mock,
+                x_handle=args.x_handle,
+                x_related=x_related,
+                web_backend=args.web_backend,
+                external_plan=external_plan,
+                subreddits=subreddits,
+                tiktok_hashtags=tiktok_hashtags,
+                tiktok_creators=tiktok_creators,
+                ig_creators=ig_creators,
+                lookback_days=args.lookback_days,
+                github_user=github_user,
+                github_repos=github_repos,
+            )
+
+        if comp_enabled:
+            from lib import competitors as competitors_mod
+            from lib import fanout, resolve as resolve_mod
+
+            if comp_explicit:
+                discovered = comp_explicit
+            else:
+                if not resolve_mod._has_backend(config) and not args.mock:
+                    sys.stderr.write(
+                        "[Competitors] --competitors requires either a configured web "
+                        "search backend (BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / "
+                        "PARALLEL_API_KEY) or an explicit --competitors-list. If you are "
+                        "the hosting reasoning model (Claude Code, Codex, Hermes, "
+                        "Gemini, or any agent runtime), generate a comma-separated list "
+                        "of 2-6 peer entities for the topic and re-invoke with "
+                        "--competitors-list=\"A,B,C\". You do not need API keys; you ARE "
+                        "the LLM. The web-search discovery path below is the headless / "
+                        "credentialed path only.\n"
+                    )
+                    return 2
+                discovered = competitors_mod.discover_competitors(
+                    topic, comp_count, config, lookback_days=args.lookback_days,
+                )
+                if not discovered:
+                    sys.stderr.write(
+                        f"[Competitors] No peers discovered for {topic!r}; aborting "
+                        "comparison run. Pass --competitors-list to override.\n"
+                    )
+                    return 2
+
+            sys.stderr.write(
+                f"[Competitors] Comparing: {topic} vs " + " vs ".join(discovered) + "\n"
+            )
+
+            def _competitor_runner(entity: str) -> schema.Report:
+                return pipeline.run(
+                    topic=entity,
+                    config=config,
+                    depth=depth,
+                    requested_sources=requested_sources,
+                    mock=args.mock,
+                    web_backend=args.web_backend,
+                    lookback_days=args.lookback_days,
+                )
+
+            entity_reports = fanout.run_competitor_fanout(
+                main_topic=topic,
+                main_runner=_main_runner,
+                competitors=discovered,
+                competitor_runner=_competitor_runner,
+            )
+            if len(entity_reports) < 2:
+                progress.end_processing()
+                sys.stderr.write(
+                    f"[Competitors] Fewer than 2 sub-runs survived ({len(entity_reports)}); "
+                    "cannot render a comparison. Re-run without --competitors or check the "
+                    "warnings above.\n"
+                )
+                return 1
+            report = entity_reports[0][1]
+            report.artifacts["competitor_reports"] = entity_reports
+        else:
+            report = _main_runner()
     except Exception as exc:
         progress.end_processing()
         progress.show_error(str(exc))
@@ -420,7 +588,15 @@ def main() -> int:
     )
     report.artifacts["pre_research_flags_present"] = pre_research_flags_present
 
-    rendered = emit_output(report, args.emit, fun_level=fun_level, save_path=footer_save_path)
+    entity_reports = report.artifacts.get("competitor_reports") if hasattr(report, "artifacts") else None
+    if entity_reports:
+        rendered = emit_comparison_output(
+            entity_reports, args.emit, fun_level=fun_level, save_path=footer_save_path,
+        )
+    else:
+        rendered = emit_output(
+            report, args.emit, fun_level=fun_level, save_path=footer_save_path,
+        )
     if args.save_dir:
         save_path = save_output(report, args.emit, args.save_dir, suffix=args.save_suffix or "")
         sys.stderr.write(f"[last30days] Saved output to {save_path}\n")
