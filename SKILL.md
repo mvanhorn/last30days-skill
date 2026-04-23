@@ -110,7 +110,7 @@ Replace `{VERSION}` with the installed plugin version (`jq -r '.version' "$SKILL
 
 **Placement by query type:**
 - GENERAL / NEWS / PROMPTING / RECOMMENDATIONS: badge on line 1, blank line 2, `What I learned:` on line 3, then bold-lead-in paragraphs
-- COMPARISON: badge on line 1, blank line 2, `# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (Last 30 Days)` on line 3, then Quick Verdict section
+- COMPARISON: badge on line 1, blank line 2, `# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (/Last30Days)` on line 3, then Quick Verdict section
 
 ---
 
@@ -128,7 +128,7 @@ These LAWs dominate every other rule in this file. If you find yourself about to
 
 **LAW 2 - NO INVENTED TITLE LINE (with COMPARISON exception).** For QUERY_TYPE GENERAL, NEWS, PROMPTING, RECOMMENDATIONS: the first line of your synthesis body (after the badge and one blank line) is the prose label `What I learned:` on its own line. Not `What I learned about {Topic}`, not `{Topic} - Last 30 Days`, not `{Topic}: What People Are Saying`, not `# {Topic}`, not `The headline`, not `Why he is everywhere this month`. Nothing above `What I learned:` except the badge. If you are tempted to write a title or a `##`-prefixed section name, the rule is: the badge IS the title, and section headers are forbidden (see LAW 4).
 
-**COMPARISON exception:** For QUERY_TYPE=COMPARISON (topics containing `vs` or `versus`), the title `# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (Last 30 Days)` is REQUIRED, not a violation. Comparison queries do NOT use the `What I learned:` prose label at all.
+**COMPARISON exception:** For QUERY_TYPE=COMPARISON (topics containing `vs` or `versus`), the title `# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (/Last30Days)` is REQUIRED, not a violation. Comparison queries do NOT use the `What I learned:` prose label at all.
 
 **Global-preference override:** The skill-authored template for GENERAL / NEWS / PROMPTING / RECOMMENDATIONS queries uses `**bold**` for KEY PATTERNS items and for mid-paragraph lead-ins. Do NOT strip this bold on the grounds of a personal "no bold" memory. The skill's voice contract is the formatting authority here.
 
@@ -1205,7 +1205,7 @@ Voice contract LAWs 1, 3, 5 apply to comparisons unchanged (no `Sources:` block,
 ```
 🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
 
-# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (Last 30 Days)
+# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (/Last30Days)
 
 ## Quick Verdict
 

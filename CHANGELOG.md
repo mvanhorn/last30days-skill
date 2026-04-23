@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.14] - 2026-04-22
+
+### Changed
+
+- **Comparison-mode title attribution.** The synthesis title for vs-mode and `--competitors` outputs changes from `What the Community Says (Last 30 Days)` to `What the Community Says (/Last30Days)`. Surfaces the slash-command identity instead of restating the date range. Three SKILL.md occurrences updated; pure documentation change.
+
 ## [3.0.13] - 2026-04-22
 
 ### Changed
