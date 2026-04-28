@@ -285,6 +285,34 @@ def get_config() -> dict[str, Any]:
             config[key] = value
             config[f"_{key}_SOURCE"] = "browser"
 
+    import random
+    rotatable = (
+        'SCRAPECREATORS_API_KEY',
+        'BRAVE_API_KEY',
+        'XAI_API_KEY',
+        'OPENROUTER_API_KEY',
+        'EXA_API_KEY',
+        'OPENAI_API_KEY',
+        'SERPER_API_KEY',
+        'BSKY_APP_PASSWORD',
+    )
+    for _k in rotatable:
+        _raw = config.get(_k) or ''
+        if ',' in _raw:
+            _vals = [v.strip() for v in _raw.split(',') if v.strip()]
+            if _vals:
+                config[_k] = random.choice(_vals)
+
+    _auth_raw = config.get('AUTH_TOKEN') or ''
+    _ct0_raw = config.get('CT0') or ''
+    if ',' in _auth_raw and ',' in _ct0_raw:
+        _auth_vals = [v.strip() for v in _auth_raw.split(',') if v.strip()]
+        _ct0_vals = [v.strip() for v in _ct0_raw.split(',') if v.strip()]
+        if _auth_vals and _ct0_vals and len(_auth_vals) == len(_ct0_vals):
+            _idx = random.randrange(len(_auth_vals))
+            config['AUTH_TOKEN'] = _auth_vals[_idx]
+            config['CT0'] = _ct0_vals[_idx]
+
     return config
 
 
