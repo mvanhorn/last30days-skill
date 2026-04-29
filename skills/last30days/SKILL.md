@@ -1507,6 +1507,33 @@ Close with `I have all the links to the {N} {source list} I pulled from. Just as
 
 ---
 
+## SHAREABLE HTML BRIEF (when the user asked for one)
+
+**This section fires if EITHER trigger is true:**
+
+- `$ARGUMENTS` contains `--emit=html`, `--emit:html`, or `--html` as a flag
+- The user's natural-language request asks for an HTML brief, shareable doc, or file for sharing (Slack, email, Notion, "export as HTML", etc). Use your judgment for phrasing variants.
+
+**If neither trigger fires, skip this entire section and proceed to WAIT FOR USER'S RESPONSE.** No HTML save flow, no reference read needed.
+
+**When triggered, you MUST:**
+
+- Read `references/save-html-brief.md` BEFORE proceeding to WAIT FOR USER'S RESPONSE
+- Follow that file's instructions exactly - it is the canonical source for the save flow
+- Append the confirmation line (`📎 Shareable brief saved to <path>`) to your already-emitted chat response
+
+**You MUST NOT:**
+
+- Improvise the HTML save flow from memory or from instructions you've seen before
+- Skip the reference read because the steps "look familiar"
+- Save to a different path than the reference specifies
+- Add data quality warnings, debug headers, or safety notes to the saved HTML
+- Re-research the topic for the HTML render - the engine cache covers the second invocation
+
+**Why the directive is forceful:** the reference file is the only source of truth for the save flow. Skipping it produces broken artifacts - wrong path conventions, missing synthesis content, leaked engine debug output, or warnings that don't belong in shareable docs.
+
+---
+
 ## WAIT FOR USER'S RESPONSE
 
 **STOP and wait** for the user to respond. Do NOT call any tools after displaying the invitation. Do NOT append a `Sources:` section (see override above - WebSearch's mandate does not apply here). The research script already saved raw data to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`) via `--save-dir`.

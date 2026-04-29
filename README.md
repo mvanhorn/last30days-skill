@@ -96,6 +96,28 @@ The synthesis ranks by what real people actually engaged with. Social relevancy,
 
 ## What v3 Changed
 
+### Shareable HTML briefs
+
+Ask for an HTML brief and the skill saves a self-contained, dark-mode, print-friendly file you can drop into Slack, email, or Notion. No raw markdown leaks. Inline CSS, system-font fallbacks behind Inter and JetBrains Mono. No JavaScript. Works offline.
+
+```
+/last30days OpenClaw --emit=html
+```
+
+or just ask in plain language:
+
+```
+/last30days OpenClaw, give me a shareable HTML brief
+/last30days Cursor IDE for slack
+/last30days Anthropic earnings export as html
+```
+
+The skill emits the synthesis in chat as usual AND saves a brief to `${LAST30DAYS_MEMORY_DIR}/{topic}-brief.html` (defaults to `~/Documents/Last30Days/`). The chat response ends with the file path so you can `open` it or drag it into a message.
+
+What's in the file: badge, inline metadata line, the model's synthesis verbatim with all citations, the engine footer (✅ All agents reported back! tree), and a colophon noting the topic + how to re-run. Data quality warnings (degraded run, thin evidence, etc.) stay in the engine's stderr logs; they never leak into the shareable artifact.
+
+For direct CLI use without the model in the loop, the engine also accepts `--synthesis-file PATH` to convert any markdown synthesis to HTML.
+
 ### Intelligent search: the killer feature
 
 The v3 engine doesn't just search for your topic. It figures out *where* to search before the search begins. Type "OpenClaw" and the engine resolves @steipete (Peter Steinberger, the creator), r/openclaw, r/ClaudeCode, and the right YouTube channels and TikTok hashtags - all via a new Python pre-research brain built by [@j-sperling](https://github.com/j-sperling). The old engine searched keywords. The new engine understands your topic first, then searches the right people and communities.

@@ -41,7 +41,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import env, pipeline, render, schema, ui
+from lib import env, html_render, pipeline, render, schema, ui
 
 _child_pids: set[int] = set()
 _child_pids_lock = threading.Lock()
@@ -91,30 +91,46 @@ def slugify(value: str) -> str:
     return slug or "last30days"
 
 
-def save_output(report: schema.Report, emit: str, save_dir: str, suffix: str = "") -> Path:
+def save_output(
+    report: schema.Report,
+    emit: str,
+    save_dir: str,
+    suffix: str = "",
+    synthesis_md: str | None = None,
+) -> Path:
     from datetime import datetime
     path = Path(save_dir).expanduser().resolve()
     path.mkdir(parents=True, exist_ok=True)
     slug = slugify(report.topic)
-    extension = "json" if emit == "json" else "md"
+    extension = "json" if emit == "json" else "html" if emit == "html" else "md"
+    raw_label = "raw-html" if emit == "html" else "raw"
     suffix_part = f"-{suffix}" if suffix else ""
-    out_path = path / f"{slug}-raw{suffix_part}.{extension}"
+    out_path = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
     if out_path.exists():
-        out_path = path / f"{slug}-raw{suffix_part}-{datetime.now().strftime('%Y-%m-%d')}.{extension}"
-    # Always save the FULL dump to disk (all items, all sources, transcripts).
-    # Claude sees compact clusters via --emit=compact on stdout.
-    # The saved file is the complete debug artifact.
-    if emit == "json":
-        content = emit_output(report, emit)
+        out_path = path / f"{slug}-{raw_label}{suffix_part}-{datetime.now().strftime('%Y-%m-%d')}.{extension}"
+    # Markdown saves keep the complete debug artifact. JSON and HTML preserve
+    # their requested wire format so file extensions match their content.
+    if emit in {"json", "html"}:
+        content = emit_output(report, emit, synthesis_md=synthesis_md)
     else:
         content = render.render_full(report)
     out_path.write_text(content, encoding="utf-8")
     return out_path
 
 
-def emit_output(report: schema.Report, emit: str, fun_level: str = "medium", save_path: str | None = None) -> str:
+def emit_output(
+    report: schema.Report,
+    emit: str,
+    fun_level: str = "medium",
+    save_path: str | None = None,
+    synthesis_md: str | None = None,
+) -> str:
     if emit == "json":
         return json.dumps(schema.to_dict(report), indent=2, sort_keys=True)
+    if emit == "html":
+        return html_render.render_html(
+            report, fun_level=fun_level, save_path=save_path, synthesis_md=synthesis_md,
+        )
     if emit in {"compact", "md"}:
         return render.render_compact(report, fun_level=fun_level, save_path=save_path)
     if emit == "context":
@@ -127,6 +143,7 @@ def emit_comparison_output(
     emit: str,
     fun_level: str = "medium",
     save_path: str | None = None,
+    synthesis_md: str | None = None,
 ) -> str:
     if emit == "json":
         payload = {
@@ -138,6 +155,13 @@ def emit_comparison_output(
             ],
         }
         return json.dumps(payload, indent=2, sort_keys=True)
+    if emit == "html":
+        return html_render.render_html_comparison(
+            entity_reports,
+            fun_level=fun_level,
+            save_path=save_path,
+            synthesis_md=synthesis_md,
+        )
     if emit in {"compact", "md"}:
         return render.render_comparison_multi(
             entity_reports, fun_level=fun_level, save_path=save_path,
@@ -156,15 +180,24 @@ def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str)
     from pathlib import Path as _Path
     path = _Path(save_dir).expanduser().resolve()
     slug = slugify(topic)
-    extension = "json" if emit == "json" else "md"
+    extension = "json" if emit == "json" else "html" if emit == "html" else "md"
+    raw_label = "raw-html" if emit == "html" else "raw"
     suffix_part = f"-{suffix}" if suffix else ""
-    raw = path / f"{slug}-raw{suffix_part}.{extension}"
+    raw = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
     try:
         home = _Path.home().resolve()
         relative = raw.relative_to(home)
         return f"~/{relative}"
     except ValueError:
         return str(raw)
+
+
+def read_synthesis_file(path: str) -> str:
+    try:
+        return Path(path).expanduser().read_text(encoding="utf-8")
+    except OSError as exc:
+        sys.stderr.write(f"[last30days] Cannot read --synthesis-file: {exc}\n")
+        raise SystemExit(2)
 
 
 def persist_report(report: schema.Report) -> dict[str, int]:
@@ -193,7 +226,7 @@ def persist_report(report: schema.Report) -> dict[str, int]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Research a topic across live social, market, and grounded web sources.")
     parser.add_argument("topic", nargs="*", help="Research topic")
-    parser.add_argument("--emit", default="compact", choices=["compact", "json", "context", "md"])
+    parser.add_argument("--emit", default="compact", choices=["compact", "json", "context", "md", "html"])
     parser.add_argument("--search", help="Comma-separated source list")
     parser.add_argument("--quick", action="store_true", help="Lower-latency retrieval profile")
     parser.add_argument("--deep", action="store_true", help="Higher-recall retrieval profile")
@@ -201,6 +234,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock", action="store_true", help="Use mock retrieval fixtures")
     parser.add_argument("--diagnose", action="store_true", help="Print provider and source availability")
     parser.add_argument("--save-dir", help="Optional directory for saving the rendered output")
+    parser.add_argument("--synthesis-file", help="Markdown synthesis to embed in --emit=html output")
     parser.add_argument("--store", action="store_true", help="Persist ranked findings to the SQLite research store")
     parser.add_argument("--x-handle", help="X handle for targeted supplemental search")
     parser.add_argument("--x-related", help="Comma-separated related X handles (searched with lower weight)")
@@ -537,6 +571,13 @@ def main() -> int:
         parser.print_usage(sys.stderr)
         return 2
 
+    synthesis_md = None
+    if args.synthesis_file:
+        if args.emit == "html":
+            synthesis_md = read_synthesis_file(args.synthesis_file)
+        else:
+            sys.stderr.write("[last30days] Warning: --synthesis-file is only used with --emit=html; ignoring.\n")
+
     if not os.environ.get("LAST30DAYS_SKIP_PREFLIGHT"):
         from lib import preflight
         refuse_msg = preflight.check_class_1_trap(topic)
@@ -854,15 +895,29 @@ def main() -> int:
 
     if entity_reports:
         rendered = emit_comparison_output(
-            entity_reports, args.emit, fun_level=fun_level, save_path=footer_save_path,
+            entity_reports,
+            args.emit,
+            fun_level=fun_level,
+            save_path=footer_save_path,
+            synthesis_md=synthesis_md,
         )
     else:
         rendered = emit_output(
-            report, args.emit, fun_level=fun_level, save_path=footer_save_path,
+            report,
+            args.emit,
+            fun_level=fun_level,
+            save_path=footer_save_path,
+            synthesis_md=synthesis_md,
         )
     if args.save_dir:
         # Save the main topic's raw file (single-entity or comparison main).
-        save_path = save_output(report, args.emit, args.save_dir, suffix=args.save_suffix or "")
+        save_path = save_output(
+            report,
+            args.emit,
+            args.save_dir,
+            suffix=args.save_suffix or "",
+            synthesis_md=synthesis_md,
+        )
         sys.stderr.write(f"[last30days] Saved output to {save_path}\n")
         # Competitor / vs-mode: also save a per-entity raw file for each peer.
         # Matches historical vs-mode behavior (N passes → N save files).
@@ -871,6 +926,7 @@ def main() -> int:
                 peer_path = save_output(
                     entity_report, args.emit, args.save_dir,
                     suffix=args.save_suffix or "",
+                    synthesis_md=synthesis_md,
                 )
                 sys.stderr.write(f"[last30days] Saved output to {peer_path}\n")
         sys.stderr.flush()

@@ -171,6 +171,168 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
     return "\n".join(lines).strip() + "\n"
 
 
+def render_for_html(
+    report: schema.Report,
+    synthesis_md: str | None = None,
+    *,
+    save_path: str | None = None,
+) -> str:
+    """Render markdown intended for shareable HTML conversion.
+
+    This output keeps the public badge, compact source/date metadata, an
+    optional one-line data quality note, optional synthesized brief markdown,
+    and the engine footer. It deliberately omits the debug file header,
+    model-facing safety note, and evidence scratchpad emitted by
+    render_compact().
+
+    When synthesis_md is None, the body is intentionally sparse: badge,
+    metadata, optional data quality note, and engine footer only.
+    """
+    lines = [
+        *_render_badge(),
+        *_render_html_metadata(report),
+    ]
+    if synthesis_md:
+        lines.extend(["", synthesis_md.strip()])
+    # Data quality warnings are NOT rendered into the HTML artifact. The HTML
+    # is meant to be shared (Slack, email, Notion); recipients haven't asked
+    # for technical commentary about how the run was produced. Generators see
+    # the same warnings via collect_html_warnings() routed to stderr by the
+    # CLI, so they can fix quality issues before sharing.
+    _append_html_footer(lines, report, save_path)
+    return "\n".join(lines).strip() + "\n"
+
+
+def render_for_html_comparison(
+    entity_reports: list[tuple[str, schema.Report]],
+    synthesis_md: str | None = None,
+    *,
+    save_path: str | None = None,
+) -> str:
+    """Render comparison markdown intended for shareable HTML conversion.
+
+    Same semantics as render_for_html(), but metadata and data quality notes
+    are aggregated across the compared entities.
+    """
+    if not entity_reports:
+        raise ValueError("render_for_html_comparison requires at least one report")
+
+    entities = [label for label, _ in entity_reports]
+    main_report = entity_reports[0][1]
+    meta = (
+        f"<!-- META: {main_report.range_from} to {main_report.range_to} "
+        f"· comparing {len(entities)}: {', '.join(entities)} -->"
+    )
+    lines = [
+        *_render_badge(),
+        meta,
+    ]
+    if synthesis_md:
+        lines.extend(["", synthesis_md.strip()])
+    # Comparison data quality notes also go to stderr, not into the artifact.
+    _append_html_footer(lines, main_report, save_path)
+    return "\n".join(lines).strip() + "\n"
+
+
+def collect_html_warnings(report: schema.Report) -> list[str]:
+    """Collect data quality warnings for stderr output (NOT for the HTML artifact).
+
+    Returns a list of human-readable warning strings. Empty list if the run
+    was clean. Used by the CLI to emit diagnostics to stderr after writing
+    the HTML to stdout/file.
+    """
+    notes: list[str] = []
+    if _render_degraded_run_warning(report):
+        notes.append("Run was missing pre-flight resolution. Re-run with `--plan` for richer results.")
+    elif _render_pre_research_warning(report):
+        notes.append("Pre-research was skipped, so results may be thinner than a resolved run.")
+    freshness_warning = _assess_data_freshness(report)
+    if freshness_warning:
+        notes.append(freshness_warning)
+    notes.extend(report.warnings)
+    return _dedupe_notes(notes)
+
+
+def collect_html_warnings_comparison(
+    entity_reports: list[tuple[str, schema.Report]],
+) -> list[str]:
+    """Collect comparison-mode warnings, prefixed by entity label."""
+    notes: list[str] = []
+    for label, report in entity_reports:
+        for w in collect_html_warnings(report):
+            notes.append(f"{label}: {w}")
+    return notes
+
+
+def _render_html_metadata(report: schema.Report) -> list[str]:
+    """Inline metadata as an HTML comment marker.
+
+    html_render.py post-processes ``<!-- META: ... -->`` markers into a
+    ``<div class="meta">`` after markdown conversion, so the metadata escapes
+    the markdown converter's HTML-escaping pass cleanly. Same pattern as the
+    PASS_THROUGH_FOOTER marker used for the engine tree.
+    """
+    non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
+    if non_empty:
+        sources = ", ".join(_source_label(s) for s in non_empty)
+    else:
+        sources = "no active sources"
+    return [
+        f"<!-- META: {report.range_from} to {report.range_to} · {sources} -->",
+    ]
+
+
+def _render_html_data_quality_note(report: schema.Report) -> str | None:
+    notes: list[str] = []
+    degraded_warning = _render_degraded_run_warning(report)
+    if degraded_warning:
+        notes.append("This run was missing pre-flight resolution. Re-run with `--plan` for richer results.")
+    pre_research_warning = _render_pre_research_warning(report)
+    if pre_research_warning and not degraded_warning:
+        notes.append("Pre-research was skipped, so results may be thinner than a resolved run.")
+    freshness_warning = _assess_data_freshness(report)
+    if freshness_warning:
+        notes.append(freshness_warning)
+    notes.extend(report.warnings)
+    if not notes:
+        return None
+    return f"> **Data quality note:** {' '.join(_dedupe_notes(notes))}"
+
+
+def _render_html_comparison_data_quality_note(
+    entity_reports: list[tuple[str, schema.Report]],
+) -> str | None:
+    notes: list[str] = []
+    for label, report in entity_reports:
+        note = _render_html_data_quality_note(report)
+        if note:
+            clean = note.removeprefix("> **Data quality note:** ").strip()
+            notes.append(f"{label}: {clean}")
+    if not notes:
+        return None
+    return f"> **Data quality note:** {' '.join(_dedupe_notes(notes))}"
+
+
+def _dedupe_notes(notes: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for note in notes:
+        normalized = " ".join(str(note).split())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+def _append_html_footer(lines: list[str], report: schema.Report, save_path: str | None) -> None:
+    footer = _render_emoji_footer(report, save_path)
+    lines.append("")
+    lines.append("<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->")
+    lines.extend(footer)
+    lines.append("<!-- END PASS-THROUGH FOOTER -->")
+
+
 def _render_canonical_boundary() -> list[str]:
     """Emit the explicit END-OF-CANONICAL-OUTPUT boundary.
 
