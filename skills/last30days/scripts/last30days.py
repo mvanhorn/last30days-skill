@@ -97,15 +97,19 @@ def save_output(report: schema.Report, emit: str, save_dir: str, suffix: str = "
     path.mkdir(parents=True, exist_ok=True)
     slug = slugify(report.topic)
     extension = "json" if emit == "json" else "md"
-    suffix_part = f"-{suffix}" if suffix else ""
+    output_suffix = suffix
+    if emit == "research-prompt":
+        output_suffix = f"{suffix}-research-prompt" if suffix else "research-prompt"
+    suffix_part = f"-{output_suffix}" if output_suffix else ""
     out_path = path / f"{slug}-raw{suffix_part}.{extension}"
     if out_path.exists():
         out_path = path / f"{slug}-raw{suffix_part}-{datetime.now().strftime('%Y-%m-%d')}.{extension}"
-    # Always save the FULL dump to disk (all items, all sources, transcripts).
-    # Claude sees compact clusters via --emit=compact on stdout.
-    # The saved file is the complete debug artifact.
+    # Legacy markdown modes save the FULL dump to disk (all items, all sources,
+    # transcripts). The research-prompt mode saves the handoff artifact itself.
     if emit == "json":
         content = emit_output(report, emit)
+    elif emit == "research-prompt":
+        content = render.render_research_prompt(report)
     else:
         content = render.render_full(report)
     out_path.write_text(content, encoding="utf-8")
@@ -119,6 +123,8 @@ def emit_output(report: schema.Report, emit: str, fun_level: str = "medium", sav
         return render.render_compact(report, fun_level=fun_level, save_path=save_path)
     if emit == "context":
         return render.render_context(report)
+    if emit == "research-prompt":
+        return render.render_research_prompt(report)
     raise SystemExit(f"Unsupported emit mode: {emit}")
 
 
@@ -144,6 +150,8 @@ def emit_comparison_output(
         )
     if emit == "context":
         return render.render_comparison_multi_context(entity_reports)
+    if emit == "research-prompt":
+        return render.render_research_prompt_comparison(entity_reports)
     raise SystemExit(f"Unsupported emit mode: {emit}")
 
 
@@ -157,7 +165,10 @@ def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str)
     path = _Path(save_dir).expanduser().resolve()
     slug = slugify(topic)
     extension = "json" if emit == "json" else "md"
-    suffix_part = f"-{suffix}" if suffix else ""
+    output_suffix = suffix
+    if emit == "research-prompt":
+        output_suffix = f"{suffix}-research-prompt" if suffix else "research-prompt"
+    suffix_part = f"-{output_suffix}" if output_suffix else ""
     raw = path / f"{slug}-raw{suffix_part}.{extension}"
     try:
         home = _Path.home().resolve()
@@ -193,7 +204,12 @@ def persist_report(report: schema.Report) -> dict[str, int]:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Research a topic across live social, market, and grounded web sources.")
     parser.add_argument("topic", nargs="*", help="Research topic")
-    parser.add_argument("--emit", default="compact", choices=["compact", "json", "context", "md"])
+    parser.add_argument(
+        "--emit",
+        default="compact",
+        choices=["compact", "json", "context", "md", "research-prompt"],
+        help="Output mode: compact, json, context, md, or research-prompt",
+    )
     parser.add_argument("--search", help="Comma-separated source list")
     parser.add_argument("--quick", action="store_true", help="Lower-latency retrieval profile")
     parser.add_argument("--deep", action="store_true", help="Higher-recall retrieval profile")

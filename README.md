@@ -96,6 +96,8 @@ The synthesis ranks by what real people actually engaged with. Social relevancy,
 
 ## What v3 Changed
 
+New in v3: `--emit=research-prompt` turns a last30days run into a six-section markdown handoff for deep-research tools. Run `/last30days "AI agent frameworks" --emit=research-prompt | pbcopy`, paste it into Perplexity, ChatGPT Deep Research, Gemini, or Anthropic Advanced Research, and the tool starts with the community claims, citations, engagement, resolved entities, and explicit gaps already loaded.
+
 ### Intelligent search: the killer feature
 
 The v3 engine doesn't just search for your topic. It figures out *where* to search before the search begins. Type "OpenClaw" and the engine resolves @steipete (Peter Steinberger, the creator), r/openclaw, r/ClaudeCode, and the right YouTube channels and TikTok hashtags - all via a new Python pre-research brain built by [@j-sperling](https://github.com/j-sperling). The old engine searched keywords. The new engine understands your topic first, then searches the right people and communities.

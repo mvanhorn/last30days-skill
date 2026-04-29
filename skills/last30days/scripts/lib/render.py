@@ -780,6 +780,387 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
+def render_research_prompt(report: schema.Report, cluster_limit: int = 8) -> str:
+    """Render a markdown handoff prompt for external deep-research tools."""
+    topic = report.query_plan.raw_topic or report.topic
+    return _render_research_prompt_body([(report.topic, report)], topic, cluster_limit=cluster_limit)
+
+
+def render_research_prompt_comparison(
+    entity_reports: list[tuple[str, schema.Report]],
+    cluster_limit: int = 8,
+) -> str:
+    """Render a research handoff prompt for vs-mode and competitor runs."""
+    if not entity_reports:
+        raise ValueError("render_research_prompt_comparison requires at least one report")
+    topic = " vs ".join(label for label, _report in entity_reports)
+    return _render_research_prompt_body(entity_reports, topic, cluster_limit=cluster_limit)
+
+
+def _render_research_prompt_body(
+    entity_reports: list[tuple[str, schema.Report]],
+    topic: str,
+    *,
+    cluster_limit: int,
+) -> str:
+    clean_topic = _research_clean(topic)
+    lines: list[str] = [
+        f"**Topic:** {clean_topic}",
+        "",
+        "**Community pre-research summary**",
+        *_research_summary_lines(entity_reports, clean_topic),
+        "",
+        "**Resolved entities**",
+        *_research_resolved_entity_lines(entity_reports),
+        "",
+        "**Top community claims (cited, with engagement)**",
+        *_research_claim_lines(entity_reports, limit=cluster_limit),
+        "",
+        "**Gaps the social engine cannot fill**",
+        *_research_gap_lines(entity_reports),
+        "",
+        "**Investigation directives**",
+        *_research_directive_lines(entity_reports, clean_topic),
+    ]
+    return "\n".join(lines).strip() + "\n"
+
+
+def _research_summary_lines(
+    entity_reports: list[tuple[str, schema.Report]],
+    topic: str,
+) -> list[str]:
+    clusters = [
+        (label, cluster)
+        for label, report in entity_reports
+        for cluster in report.clusters
+    ]
+    total_items = sum(
+        len(items)
+        for _label, report in entity_reports
+        for items in report.items_by_source.values()
+    )
+    source_counts: Counter[str] = Counter()
+    for _label, report in entity_reports:
+        for source, items in report.items_by_source.items():
+            if items:
+                source_counts[source] += len(items)
+
+    if not clusters:
+        return [
+            f"The 30-day community signal for {topic} is thin: no ranked clusters survived the engine's relevance pass. Treat the run as an absence-of-evidence map and use deep research to establish the primary source baseline.",
+            f"The engine found {total_items} usable item{'s' if total_items != 1 else ''} across {len(source_counts)} active source{'s' if len(source_counts) != 1 else ''}.",
+        ]
+
+    top_clusters = sorted(clusters, key=lambda item: item[1].score, reverse=True)[:3]
+    cluster_phrase = _join_phrase(
+        _research_clean(f"{label}: {cluster.title}" if len(entity_reports) > 1 else cluster.title)
+        for label, cluster in top_clusters
+    )
+    top_sources = _join_phrase(
+        _source_label(source)
+        for source, _count in source_counts.most_common(4)
+    )
+    lines = [
+        f"The 30-day community signal for {topic} clusters around {cluster_phrase}.",
+    ]
+    if top_sources:
+        lines.append(
+            f"The strongest coverage comes from {top_sources}, with {total_items} usable item{'s' if total_items != 1 else ''} feeding {len(clusters)} ranked cluster{'s' if len(clusters) != 1 else ''}."
+        )
+    if len(clusters) < 3 or total_items < 3:
+        lines.append("Coverage is still thin, so treat these claims as hypotheses for corroboration rather than settled facts.")
+    else:
+        lines.append("Use these community claims as hypotheses to verify, contradict, or quantify with primary-source research.")
+    return lines
+
+
+def _research_resolved_entity_lines(
+    entity_reports: list[tuple[str, schema.Report]],
+) -> list[str]:
+    rows = [
+        _research_resolved_entity_line(label, report)
+        for label, report in entity_reports
+    ]
+    return rows or ["- No explicit handles, repositories, or subreddits were resolved in this run."]
+
+
+def _research_resolved_entity_line(label: str, report: schema.Report) -> str:
+    resolved = report.artifacts.get("resolved")
+    if isinstance(resolved, dict):
+        entity = _research_clean(str(resolved.get("entity") or label or report.topic))
+        parts: list[str] = []
+        x_handle = str(resolved.get("x_handle") or "").strip().lstrip("@")
+        if x_handle:
+            parts.append(f"X @{_research_clean(x_handle)}")
+        subs = [
+            _research_clean(str(sub).strip().lstrip("r/"))
+            for sub in (resolved.get("subreddits") or [])
+            if str(sub).strip()
+        ]
+        if subs:
+            parts.append("Subs " + ", ".join(f"r/{sub}" for sub in subs[:5]))
+        github_user = str(resolved.get("github_user") or "").strip().lstrip("@")
+        github_repos = [
+            _research_clean(str(repo).strip())
+            for repo in (resolved.get("github_repos") or [])
+            if str(repo).strip()
+        ]
+        if github_user or github_repos:
+            github_part = f"GitHub @{_research_clean(github_user)}" if github_user else "GitHub"
+            if github_repos:
+                github_part += f" ({', '.join(github_repos[:3])})"
+            parts.append(github_part)
+        context = _research_clean(str(resolved.get("context") or ""))
+        if context:
+            parts.append(f"Context: {_truncate(context, 140)}")
+        if parts:
+            return f"- **{entity}**: " + " | ".join(parts)
+
+    observed = _research_observed_entities(report)
+    entity = _research_clean(label or report.topic)
+    if observed:
+        return f"- **{entity}**: " + " | ".join(observed)
+    return f"- **{entity}**: No explicit handles, repositories, or subreddits were resolved in this run."
+
+
+def _research_observed_entities(report: schema.Report) -> list[str]:
+    handles: list[str] = []
+    repos: list[str] = []
+    subs: list[str] = []
+    for source, items in report.items_by_source.items():
+        for item in items:
+            if source in {"x", "bluesky", "truthsocial", "tiktok", "instagram", "threads"} and item.author:
+                handle = f"@{item.author.lstrip('@')}"
+                if handle not in handles:
+                    handles.append(handle)
+            if source == "reddit" and item.container:
+                sub = f"r/{item.container.lstrip('r/')}"
+                if sub not in subs:
+                    subs.append(sub)
+            repo = _github_repo_from_url(item.url)
+            if repo and repo not in repos:
+                repos.append(repo)
+
+    out: list[str] = []
+    if handles:
+        out.append("Observed handles " + ", ".join(_research_clean(h) for h in handles[:5]))
+    if repos:
+        out.append("Observed repos " + ", ".join(_research_clean(r) for r in repos[:5]))
+    if subs:
+        out.append("Observed subs " + ", ".join(_research_clean(s) for s in subs[:5]))
+    return out
+
+
+def _github_repo_from_url(url: str) -> str | None:
+    if not url:
+        return None
+    parsed = urlparse(url if "://" in url else f"https://{url}")
+    host = parsed.netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    if host != "github.com":
+        return None
+    parts = [part for part in parsed.path.split("/") if part]
+    if len(parts) < 2:
+        return None
+    return f"{parts[0]}/{parts[1]}"
+
+
+def _research_claim_lines(
+    entity_reports: list[tuple[str, schema.Report]],
+    *,
+    limit: int,
+) -> list[str]:
+    claims: list[tuple[str, schema.Report, schema.Cluster]] = [
+        (label, report, cluster)
+        for label, report in entity_reports
+        for cluster in report.clusters
+    ]
+    if not claims:
+        return ["- No ranked community claims were strong enough to render."]
+
+    claims = sorted(claims, key=lambda item: item[2].score, reverse=True)
+    out: list[str] = []
+    for index, (label, report, cluster) in enumerate(claims[:limit], start=1):
+        candidate = _research_representative_candidate(report, cluster)
+        title = _research_clean(cluster.title)
+        if len(entity_reports) > 1:
+            title = f"{_research_clean(label)}: {title}"
+        linked_title = _research_link(title, candidate.url if candidate else "")
+        attribution = _research_candidate_attribution(candidate) if candidate else _research_cluster_attribution(cluster)
+        engagement = _research_candidate_engagement(candidate)
+        out.append(
+            f"{index}. {linked_title} - {attribution}; engagement: {engagement}; cluster score {cluster.score:.0f}."
+        )
+    return out
+
+
+def _research_representative_candidate(
+    report: schema.Report,
+    cluster: schema.Cluster,
+) -> schema.Candidate | None:
+    candidate_by_id = {candidate.candidate_id: candidate for candidate in report.ranked_candidates}
+    for candidate_id in cluster.representative_ids:
+        candidate = candidate_by_id.get(candidate_id)
+        if candidate:
+            return candidate
+    for candidate_id in cluster.candidate_ids:
+        candidate = candidate_by_id.get(candidate_id)
+        if candidate:
+            return candidate
+    return None
+
+
+def _research_candidate_attribution(candidate: schema.Candidate | None) -> str:
+    if not candidate:
+        return "platform attribution unavailable"
+    primary = schema.candidate_primary_item(candidate)
+    source_label = _source_label(candidate.source)
+    actor = _format_actor(primary)
+    if actor:
+        return _research_clean(f"{source_label} via {actor}")
+    sources = ", ".join(_source_label(source) for source in schema.candidate_sources(candidate))
+    return _research_clean(sources or source_label)
+
+
+def _research_cluster_attribution(cluster: schema.Cluster) -> str:
+    if not cluster.sources:
+        return "platform attribution unavailable"
+    return _research_clean(", ".join(_source_label(source) for source in cluster.sources))
+
+
+def _research_candidate_engagement(candidate: schema.Candidate | None) -> str:
+    if not candidate:
+        return "not captured"
+    primary = schema.candidate_primary_item(candidate)
+    engagement = _format_engagement(primary)
+    if engagement:
+        return _research_clean(engagement.strip("[]"))
+    if candidate.engagement not in (None, "", 0):
+        return _research_clean(str(candidate.engagement))
+    return "not captured"
+
+
+def _research_gap_lines(entity_reports: list[tuple[str, schema.Report]]) -> list[str]:
+    source_counts: Counter[str] = Counter()
+    clusters: list[schema.Cluster] = []
+    topic_text = " ".join(
+        [label for label, _report in entity_reports]
+        + [report.topic for _label, report in entity_reports]
+    )
+    for _label, report in entity_reports:
+        clusters.extend(report.clusters)
+        for source, items in report.items_by_source.items():
+            source_counts[source] += len(items)
+
+    gaps: list[str] = []
+    if source_counts["grounding"] == 0:
+        gaps.append("Authoritative web sources / official documentation")
+    if source_counts["hackernews"] == 0:
+        gaps.append("Developer-community technical analysis")
+    if source_counts["polymarket"] == 0 and _research_topic_looks_predictive(topic_text):
+        gaps.append("Quantitative outcome odds / forecasts")
+
+    single_source_titles = [
+        _research_clean(cluster.title)
+        for cluster in clusters
+        if len(cluster.sources) <= 1 or cluster.uncertainty == "single-source"
+    ][:4]
+    if single_source_titles:
+        gaps.append("Independent corroboration of: " + "; ".join(single_source_titles))
+
+    if not gaps:
+        gaps.append("Primary-source verification for the highest-engagement community claims")
+    return [f"- {gap}" for gap in gaps]
+
+
+def _research_topic_looks_predictive(topic: str) -> bool:
+    lowered = topic.lower()
+    markers = [
+        "will ",
+        "forecast",
+        "predict",
+        "odds",
+        "election",
+        "price",
+        "market",
+        "release date",
+        "launch",
+        "by ",
+    ]
+    return any(marker in lowered for marker in markers)
+
+
+def _research_directive_lines(
+    entity_reports: list[tuple[str, schema.Report]],
+    topic: str,
+) -> list[str]:
+    claims: list[str] = []
+    for label, report in entity_reports:
+        for cluster in report.clusters:
+            claim = _research_clean(cluster.title)
+            if len(entity_reports) > 1:
+                claim = f"{_research_clean(label)}: {claim}"
+            claims.append(claim)
+
+    directives: list[str] = []
+    if claims:
+        directives.append(
+            f"1. Verify or contradict the community claim that {claims[0]} using primary sources, official documentation, or reputable reporting."
+        )
+        if len(claims) > 1:
+            directives.append(
+                f"2. Find independent evidence for {claims[1]}; separate first-hand data from repeated social summaries."
+            )
+        else:
+            directives.append(
+                f"2. Find independent evidence for the strongest {topic} claim; separate first-hand data from repeated social summaries."
+            )
+    else:
+        directives.extend([
+            f"1. Establish the authoritative baseline for {topic} from official sources, primary documents, and reputable long-form analysis.",
+            f"2. Identify whether the lack of recent community clusters reflects low activity, poor query coverage, or a genuinely quiet topic.",
+        ])
+
+    if len(entity_reports) > 1:
+        directives.append(
+            f"{len(directives) + 1}. Build a side-by-side comparison of the entities on architecture, adoption, risks, pricing, and best-fit use cases."
+        )
+    gaps = [line[2:] for line in _research_gap_lines(entity_reports)]
+    if gaps:
+        directives.append(
+            f"{len(directives) + 1}. Fill this explicit gap from the social run: {gaps[0]}."
+        )
+    directives.append(
+        f"{len(directives) + 1}. Return a concise brief that labels each conclusion as confirmed, contradicted, or still uncertain relative to the community signal."
+    )
+    return directives[:5]
+
+
+def _research_link(text: str, url: str) -> str:
+    clean_text = _research_clean(text).replace("[", "(").replace("]", ")")
+    clean_url = _research_clean(url).replace(")", "%29").strip()
+    if not clean_url:
+        return clean_text
+    return f"[{clean_text}]({clean_url})"
+
+
+def _join_phrase(values) -> str:
+    items = [str(value).strip() for value in values if str(value).strip()]
+    if not items:
+        return "no dominant theme"
+    if len(items) == 1:
+        return items[0]
+    if len(items) == 2:
+        return f"{items[0]} and {items[1]}"
+    return f"{', '.join(items[:-1])}, and {items[-1]}"
+
+
+def _research_clean(text: str) -> str:
+    cleaned = str(text).replace(chr(8212), " - ").replace(chr(8211), " - ")
+    return " ".join(cleaned.split())
+
+
 def _render_candidate(candidate: schema.Candidate, prefix: str) -> list[str]:
     primary = schema.candidate_primary_item(candidate)
     detail_parts = [
