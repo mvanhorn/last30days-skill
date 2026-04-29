@@ -98,19 +98,27 @@ The synthesis ranks by what real people actually engaged with. Social relevancy,
 
 ### Shareable HTML briefs
 
-`--emit=html` turns a run into a dark-mode, print-friendly research brief you can send around without raw markdown leaking into Slack, email, or Notion. Example:
+`--emit=html` turns a run into a dark-mode, print-friendly research brief you can send around without raw markdown leaking into Slack, email, or Notion. Self-contained HTML file - inline CSS, system-font fallbacks behind Inter and JetBrains Mono. No JavaScript, no external dependencies, works offline.
+
+Two-step workflow. Step 1 runs the model-driven research and saves the synthesis to a file; step 2 converts that synthesis into the shareable HTML.
 
 ```bash
-# 1. Run research (model synthesizes)
-/last30days "OpenClaw"
+# 1. In Claude Code, run the skill and save the model's synthesis to a file:
+/last30days OpenClaw
+# (after the synthesis prints, copy the "What I learned" block + KEY PATTERNS
+#  into ~/research/openclaw-synthesis.md, or pipe the conversation to a file)
 
-# 2. Save the synthesis the model produced
-
-# 3. Convert to shareable HTML:
-last30days "OpenClaw" --mock --emit=html --synthesis-file synthesis.md > brief.html
+# 2. Convert to shareable HTML by calling the engine directly:
+SKILL_ROOT="$HOME/.claude/plugins/cache/last30days-skill/last30days/3.1.1/skills/last30days"
+python3 "$SKILL_ROOT/scripts/last30days.py" "OpenClaw" \
+  --emit=html \
+  --synthesis-file ~/research/openclaw-synthesis.md \
+  > ~/research/openclaw-brief.html
 ```
 
-Without `--synthesis-file`, `--emit=html` produces a sparse engine-data-only doc: badge, source/date metadata, data quality note when needed, and the engine footer.
+Without `--synthesis-file`, `--emit=html` produces a sparse engine-data-only doc: badge, source/date metadata line, engine footer, and a colophon noting the topic + how to re-run. Useful for archival; shareable but minimal because the synthesized prose lives upstream of the engine.
+
+Data quality warnings (degraded run, thin evidence, etc.) stay in the engine's stderr logs; they never leak into the shareable artifact.
 
 ### Intelligent search: the killer feature
 
