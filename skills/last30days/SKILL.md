@@ -856,6 +856,8 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 
 **Degraded path (missing any of the above on a WebSearch platform) is a known regression shape. It produces bland 4-bullet summaries instead of rich synthesis. Do not take it.**
 
+**Handoff exception (`--emit=research-prompt`):** when the user explicitly asks for a deep-research handoff prompt to paste into Perplexity / ChatGPT Deep Research / Gemini Deep Research / Anthropic Advanced Research, run the engine with `--emit=research-prompt` instead of `--emit=compact`. That mode produces a fixed 6-section handoff artifact (Topic, Community pre-research summary, Resolved entities, Top community claims, Gaps the social engine cannot fill, Investigation directives) emitted by the engine wholesale. Pass through verbatim - do NOT synthesize, do NOT apply LAWs 1-8 (the engine deliberately omits the badge, the engine footer, and any trailing `Sources:` block because this is a downstream artifact, not a /last30days-as-itself output). Step 0.55 / 0.75 pre-research still applies so the handoff has good entity resolution; only the output contract differs.
+
 ---
 
 **Step 1: Run the research script WITH your query plan (FOREGROUND)**
