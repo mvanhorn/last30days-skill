@@ -9,6 +9,12 @@ Python scripts with multi-source search aggregation.
 - `skills/last30days/scripts/lib/` — search, enrichment, rendering modules
 - `skills/last30days/scripts/lib/vendor/bird-search/` — vendored X search client
 
+## Orientation
+- This is a Claude Code skill, not a CLI tool. `/last30days <topic>` is the product; `scripts/last30days.py` is implementation.
+- Feature design starts from the slash-command UX. A new engine flag with no SKILL.md integration is incomplete.
+- README and PR examples show `/last30days <topic>` first. Direct CLI is a fallback for scripting/cron; label it as such.
+- Slash commands don't pass shell mechanics through. `/last30days OpenClaw --emit=html | pbcopy` is invalid; either use the slash form (no flags or pipes) or the direct CLI form (full `python3 ...`).
+
 ## Commands
 ```bash
 python3 skills/last30days/scripts/last30days.py "test query" --emit=compact
@@ -17,7 +23,7 @@ bash skills/last30days/scripts/sync.sh
 
 ## Rules
 - `lib/__init__.py` must be bare package marker (comment only, NO eager imports)
-- After edits: run `bash skills/last30days/scripts/sync.sh` to deploy
+- `bash skills/last30days/scripts/sync.sh` — local-dev deploy only. Skip if the plugin is already installed via marketplace (creates duplicate skill entries).
 - Git remote: origin = public (`mvanhorn/last30days-skill`)
 
 ## Beta channel
