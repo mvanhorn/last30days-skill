@@ -58,14 +58,52 @@ fi
 # Check SETUP_COMPLETE (from file or env)
 SETUP_COMPLETE="${ENV_SETUP_COMPLETE:-${SETUP_COMPLETE:-}}"
 
+# Compute last-run summary line (if last-run.json exists)
+if [[ "${LAST30DAYS_CONFIG_DIR+x}" == "x" ]]; then
+  if [[ -n "$LAST30DAYS_CONFIG_DIR" ]]; then
+    LAST_RUN_FILE="$LAST30DAYS_CONFIG_DIR/last-run.json"
+  else
+    LAST_RUN_FILE=""
+  fi
+else
+  LAST_RUN_FILE="$HOME/.config/last30days/last-run.json"
+fi
+LAST_RUN_LINE=""
+if [[ -n "$LAST_RUN_FILE" && -f "$LAST_RUN_FILE" ]]; then
+  LAST_RUN_LINE=$(LAST_RUN_FILE="$LAST_RUN_FILE" python3 - <<'PY' 2>/dev/null
+import datetime
+import json
+import os
+
+path = os.environ["LAST_RUN_FILE"]
+try:
+    d = json.load(open(path))
+    topic = (d.get("topic") or "?")[:60]
+    ts = d.get("timestamp", "")
+    dt = datetime.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    delta = (datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds()
+    if delta < 60: ago = f"{int(delta)}s ago"
+    elif delta < 3600: ago = f"{int(delta//60)}m ago"
+    elif delta < 86400: ago = f"{int(delta//3600)}h ago"
+    else: ago = f"{int(delta//86400)}d ago"
+    total = d.get("total", 0)
+    print(f"  Last run: \"{topic}\" · {ago} · {total} results")
+except Exception:
+    pass
+PY
+)
+fi
+
 # If setup has never been run, show welcome message for new users
 if [[ -z "$SETUP_COMPLETE" && -z "$CONFIG_FILE" && -z "${OPENAI_API_KEY:-}" && -z "${SCRAPECREATORS_API_KEY:-}" && -z "${AUTH_TOKEN:-}" && -z "${XAI_API_KEY:-}" ]]; then
   cat <<'EOF'
 /last30days: Ready to use. Run /last30days to get started — setup takes 30 seconds.
+  Research any topic across Reddit, HN, X, YouTube, Polymarket (last 30 days).
 
 Reddit, Hacker News, and Polymarket work out of the box.
 The setup wizard can unlock X/Twitter, YouTube, and more.
 EOF
+  [[ -n "$LAST_RUN_LINE" ]] && echo "$LAST_RUN_LINE"
   exit 0
 fi
 
@@ -103,9 +141,13 @@ fi
 if [[ -n "$HAS_SCRAPECREATORS" ]]; then
   # Fully configured — compact ready message
   echo "/last30days: Ready — ${SOURCE_COUNT} sources active."
+  echo "  Research any topic across social + market + web sources (last 30 days)."
+  [[ -n "$LAST_RUN_LINE" ]] && echo "$LAST_RUN_LINE"
 else
   # Setup done but missing ScrapeCreators — recommend it
   echo "/last30days: Ready — ${SOURCE_COUNT} sources active."
+  echo "  Research any topic across social + market + web sources (last 30 days)."
+  [[ -n "$LAST_RUN_LINE" ]] && echo "$LAST_RUN_LINE"
   echo "  Tip: Add ScrapeCreators for Reddit comments + TikTok + Instagram."
   echo "  10,000 free API calls, no credit card — scrapecreators.com"
   echo "  last30days has no affiliation with any API provider."

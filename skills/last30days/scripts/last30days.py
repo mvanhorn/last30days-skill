@@ -489,6 +489,25 @@ def _show_runtime_ui(
         progress.show_promo(promo, diag=diag)
 
 
+def _write_last_run(topic: str, report: "schema.Report") -> None:
+    try:
+        import datetime
+        if env.CONFIG_DIR is None:
+            return
+        target = env.CONFIG_DIR
+        target.mkdir(parents=True, exist_ok=True)
+        counts = {source: len(items) for source, items in report.items_by_source.items()}
+        payload = {
+            "topic": topic,
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "sources": counts,
+            "total": sum(counts.values()),
+        }
+        (target / "last-run.json").write_text(json.dumps(payload, indent=2))
+    except Exception:
+        pass
+
+
 def main() -> int:
     parser = build_parser()
     # Use parse_known_args so setup sub-flags (--device-auth, --github,
@@ -814,6 +833,7 @@ def main() -> int:
         report, progress, diag,
         suppress_web_promo=bool(external_plan or comp_plan),
     )
+    _write_last_run(topic, report)
     if args.store:
         counts = persist_report(report)
         sys.stderr.write(
