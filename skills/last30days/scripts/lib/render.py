@@ -171,6 +171,125 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
     return "\n".join(lines).strip() + "\n"
 
 
+def render_for_html(
+    report: schema.Report,
+    synthesis_md: str | None = None,
+    *,
+    save_path: str | None = None,
+) -> str:
+    """Render markdown intended for shareable HTML conversion.
+
+    This output keeps the public badge, compact source/date metadata, an
+    optional one-line data quality note, optional synthesized brief markdown,
+    and the engine footer. It deliberately omits the debug file header,
+    model-facing safety note, and evidence scratchpad emitted by
+    render_compact().
+
+    When synthesis_md is None, the body is intentionally sparse: badge,
+    metadata, optional data quality note, and engine footer only.
+    """
+    lines = [
+        *_render_badge(),
+        *_render_html_metadata(report),
+    ]
+    warning = _render_html_data_quality_note(report)
+    if warning:
+        lines.extend(["", warning])
+    if synthesis_md:
+        lines.extend(["", synthesis_md.strip()])
+    _append_html_footer(lines, report, save_path)
+    return "\n".join(lines).strip() + "\n"
+
+
+def render_for_html_comparison(
+    entity_reports: list[tuple[str, schema.Report]],
+    synthesis_md: str | None = None,
+    *,
+    save_path: str | None = None,
+) -> str:
+    """Render comparison markdown intended for shareable HTML conversion.
+
+    Same semantics as render_for_html(), but metadata and data quality notes
+    are aggregated across the compared entities.
+    """
+    if not entity_reports:
+        raise ValueError("render_for_html_comparison requires at least one report")
+
+    entities = [label for label, _ in entity_reports]
+    main_report = entity_reports[0][1]
+    lines = [
+        *_render_badge(),
+        f"- Comparison mode: {len(entities)} entities ({', '.join(entities)})",
+        f"- Date range: {main_report.range_from} to {main_report.range_to}",
+    ]
+    warning = _render_html_comparison_data_quality_note(entity_reports)
+    if warning:
+        lines.extend(["", warning])
+    if synthesis_md:
+        lines.extend(["", synthesis_md.strip()])
+    _append_html_footer(lines, main_report, save_path)
+    return "\n".join(lines).strip() + "\n"
+
+
+def _render_html_metadata(report: schema.Report) -> list[str]:
+    non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
+    return [
+        f"- Date range: {report.range_from} to {report.range_to}",
+        f"- Sources: {len(non_empty)} active ({', '.join(_source_label(s) for s in non_empty)})" if non_empty else "- Sources: none",
+    ]
+
+
+def _render_html_data_quality_note(report: schema.Report) -> str | None:
+    notes: list[str] = []
+    degraded_warning = _render_degraded_run_warning(report)
+    if degraded_warning:
+        notes.append("This run was missing pre-flight resolution. Re-run with `--plan` for richer results.")
+    pre_research_warning = _render_pre_research_warning(report)
+    if pre_research_warning and not degraded_warning:
+        notes.append("Pre-research was skipped, so results may be thinner than a resolved run.")
+    freshness_warning = _assess_data_freshness(report)
+    if freshness_warning:
+        notes.append(freshness_warning)
+    notes.extend(report.warnings)
+    if not notes:
+        return None
+    return f"> **Data quality note:** {' '.join(_dedupe_notes(notes))}"
+
+
+def _render_html_comparison_data_quality_note(
+    entity_reports: list[tuple[str, schema.Report]],
+) -> str | None:
+    notes: list[str] = []
+    for label, report in entity_reports:
+        note = _render_html_data_quality_note(report)
+        if note:
+            clean = note.removeprefix("> **Data quality note:** ").strip()
+            notes.append(f"{label}: {clean}")
+    if not notes:
+        return None
+    return f"> **Data quality note:** {' '.join(_dedupe_notes(notes))}"
+
+
+def _dedupe_notes(notes: list[str]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for note in notes:
+        normalized = " ".join(str(note).split())
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        out.append(normalized)
+    return out
+
+
+def _append_html_footer(lines: list[str], report: schema.Report, save_path: str | None) -> None:
+    footer = _render_emoji_footer(report, save_path)
+    lines.append("")
+    lines.append("<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->")
+    lines.extend(footer)
+    lines.append("<!-- END PASS-THROUGH FOOTER -->")
+
+
 def _render_canonical_boundary() -> list[str]:
     """Emit the explicit END-OF-CANONICAL-OUTPUT boundary.
 
