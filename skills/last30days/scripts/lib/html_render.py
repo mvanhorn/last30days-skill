@@ -18,6 +18,10 @@ INVITATION_PATTERN = re.compile(r"^---\nI'm now an expert.*?Just ask\.$", re.MUL
 EVIDENCE_BLOCK_PATTERN = re.compile(r"<!-- EVIDENCE FOR SYNTHESIS.*?<!-- END EVIDENCE FOR SYNTHESIS -->", re.DOTALL)
 PASS_THROUGH_FOOTER_PATTERN = re.compile(r"<!-- PASS-THROUGH FOOTER.*?-->\n(.*?)<!-- END PASS-THROUGH FOOTER -->", re.DOTALL)
 CANONICAL_BOUNDARY_PATTERN = re.compile(r"\n?---\n# END OF last30days CANONICAL OUTPUT.*$", re.DOTALL)
+# render_for_html emits metadata as <!-- META: ... --> so it survives the
+# markdown converter (which escapes raw HTML inside paragraphs). Promoted to
+# a styled <div class="meta"> after conversion.
+META_MARKER_PATTERN = re.compile(r"<!--\s*META:\s*(.*?)\s*-->")
 
 CSS = """
 :root {
@@ -83,6 +87,14 @@ body {
 }
 
 .badge .accent { color: var(--accent); }
+
+.meta {
+  margin: -1.5rem 0 2.5rem;
+  color: var(--fg-subtle);
+  font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  font-size: 13px;
+  letter-spacing: 0.01em;
+}
 
 h1 {
   margin: 0 0 1.5rem;
@@ -346,6 +358,7 @@ def render_html(
     md = _promote_prose_labels(md)
     body = _markdown_to_html(md)
     body = _wrap_engine_footer(body)
+    body = _promote_meta_marker(body)
     colophon = _build_colophon(report)
     return _wrap_in_template(body, colophon, report.topic)
 
@@ -367,6 +380,7 @@ def render_html_comparison(
     md = _promote_prose_labels(md)
     body = _markdown_to_html(md)
     body = _wrap_engine_footer(body)
+    body = _promote_meta_marker(body)
     topic = " vs ".join(label for label, _ in entity_reports)
     colophon = _build_colophon(entity_reports[0][1], topic=topic)
     return _wrap_in_template(body, colophon, topic)
@@ -399,7 +413,9 @@ def _markdown_to_html(md: str) -> str:
     md, footers = _protect_engine_footers(md)
     global _ENGINE_FOOTER_STORE
     _ENGINE_FOOTER_STORE = footers
-    md = re.sub(r"<!--.*?-->", "", md, flags=re.DOTALL)
+    # Strip HTML comments EXCEPT preserved markers used for post-processing
+    # (META is promoted to <div class="meta"> after markdown conversion).
+    md = re.sub(r"<!--(?!\s*META:).*?-->", "", md, flags=re.DOTALL)
     lines = md.splitlines()
     out: list[str] = []
     paragraph: list[str] = []
@@ -547,6 +563,34 @@ def _wrap_engine_footer(body: str) -> str:
         replace,
         body,
     )
+
+
+def _promote_meta_marker(body: str) -> str:
+    """Promote ``<!-- META: ... -->`` markers into a styled ``<div class="meta">``.
+
+    The marker is preserved through the comment-strip pass (see
+    _markdown_to_html exemption) but the markdown converter wraps it in
+    ``<p>`` and HTML-escapes the angle brackets. After conversion the body
+    contains shapes like:
+      <p>&lt;!-- META: TEXT --&gt;</p>
+      <p><!-- META: TEXT --></p>     (when not escaped)
+    Both collapse to ``<div class="meta">TEXT</div>``.
+    """
+    def replace(match: re.Match[str]) -> str:
+        text = match.group(1).strip()
+        return f'<div class="meta">{text}</div>'
+
+    # Escaped form (most common after markdown conversion)
+    body = re.sub(
+        r"<p>\s*&lt;!--\s*META:\s*(.*?)\s*--&gt;\s*</p>",
+        replace,
+        body,
+    )
+    body = re.sub(r"&lt;!--\s*META:\s*(.*?)\s*--&gt;", replace, body)
+    # Unescaped form (paranoid fallback)
+    body = re.sub(r"<p>\s*<!--\s*META:\s*(.*?)\s*-->\s*</p>", replace, body)
+    body = re.sub(r"<!--\s*META:\s*(.*?)\s*-->", replace, body)
+    return body
 
 
 _ENGINE_FOOTER_STORE: dict[str, str] = {}

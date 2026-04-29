@@ -113,7 +113,7 @@ class HtmlRenderSnapshotTests(unittest.TestCase):
             "<!DOCTYPE html>",
             "<title>last30days · AI agent frameworks</title>",
             '<div class="badge"><span class="accent">🌐</span> last30days v',
-            "<li>Date range: 2026-03-30 to 2026-04-29</li>",
+            '<div class="meta">2026-03-30 to 2026-04-29',
             '<div class="engine-footer"><pre>---\n✅ All agents reported back!',
             'Generated 2026-04-29 by /last30days v',
             '<span class="rerun">/last30days AI agent frameworks</span>',
@@ -127,7 +127,7 @@ class HtmlRenderSnapshotTests(unittest.TestCase):
         rendered = html_render.render_html(_report("obscure topic", []))
         snapshot_markers = [
             "<title>last30days · obscure topic</title>",
-            "<li>Sources: none</li>",
+            "no active sources",
             "topic: obscure topic",
         ]
         for marker in snapshot_markers:
@@ -141,8 +141,8 @@ class HtmlRenderSnapshotTests(unittest.TestCase):
         rendered = html_render.render_html_comparison(reports)
         snapshot_markers = [
             "<title>last30days · OpenClaw vs Hermes</title>",
-            "<li>Comparison mode: 2 entities (OpenClaw, Hermes)</li>",
-            "<li>Date range: 2026-03-30 to 2026-04-29</li>",
+            'comparing 2: OpenClaw, Hermes</div>',
+            '<div class="meta">2026-03-30 to 2026-04-29',
             '<span class="rerun">/last30days OpenClaw vs Hermes</span>',
         ]
         for marker in snapshot_markers:
@@ -213,24 +213,32 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         )
         self.assertIn("<strong>Test brief</strong> - body content per", rendered)
         self.assertIn('<a href="https://example.com">@example</a>', rendered)
-        metadata_index = rendered.index("<li>Sources:")
+        metadata_index = rendered.index('<div class="meta">')
         synthesis_index = rendered.index("<strong>Test brief</strong>")
         footer_index = rendered.index('<div class="engine-footer">')
         self.assertLess(metadata_index, synthesis_index)
         self.assertLess(synthesis_index, footer_index)
 
-    def test_warnings_compact_blockquote(self):
+    def test_warnings_excluded_from_html_artifact(self):
+        """Data quality warnings must NOT appear in the shareable HTML.
+
+        Recipients of a shared HTML brief don't have context to act on
+        warnings about pre-flight resolution / engine state. The HTML is the
+        artifact; warnings stay in the engine's stderr logs where the
+        generator (not the recipient) sees them.
+        """
         report = _report("OpenClaw", ["Containers"])
         report.artifacts["pre_research_flags_present"] = False
         report.artifacts["plan_source"] = "deterministic"
         report.warnings.append("Brave quota exhausted")
         rendered = html_render.render_html(report)
-        self.assertEqual(1, rendered.count("<blockquote>"))
-        self.assertIn("<strong>Data quality note:</strong>", rendered)
-        self.assertIn("Brave quota exhausted", rendered)
-        self.assertNotIn("<h2>DEGRADED RUN WARNING</h2>", rendered)
-        self.assertNotIn("<h2>Pre-Research Status</h2>", rendered)
-        self.assertNotIn("<h2>Warnings</h2>", rendered)
+        # Warning text variations must all be absent from the artifact.
+        self.assertNotIn("Data quality note", rendered)
+        self.assertNotIn("Brave quota exhausted", rendered)
+        self.assertNotIn("DEGRADED RUN WARNING", rendered)
+        self.assertNotIn("Pre-Research Status", rendered)
+        # No blockquote at all in mock output - just badge + meta + footer + colophon
+        self.assertEqual(0, rendered.count("<blockquote>"))
 
 
 class HtmlCliIntegrationTests(unittest.TestCase):

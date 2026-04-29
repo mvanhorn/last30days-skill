@@ -192,11 +192,13 @@ def render_for_html(
         *_render_badge(),
         *_render_html_metadata(report),
     ]
-    warning = _render_html_data_quality_note(report)
-    if warning:
-        lines.extend(["", warning])
     if synthesis_md:
         lines.extend(["", synthesis_md.strip()])
+    # Data quality warnings are NOT rendered into the HTML artifact. The HTML
+    # is meant to be shared (Slack, email, Notion); recipients haven't asked
+    # for technical commentary about how the run was produced. Generators see
+    # the same warnings via collect_html_warnings() routed to stderr by the
+    # CLI, so they can fix quality issues before sharing.
     _append_html_footer(lines, report, save_path)
     return "\n".join(lines).strip() + "\n"
 
@@ -217,25 +219,66 @@ def render_for_html_comparison(
 
     entities = [label for label, _ in entity_reports]
     main_report = entity_reports[0][1]
+    meta = (
+        f"<!-- META: {main_report.range_from} to {main_report.range_to} "
+        f"· comparing {len(entities)}: {', '.join(entities)} -->"
+    )
     lines = [
         *_render_badge(),
-        f"- Comparison mode: {len(entities)} entities ({', '.join(entities)})",
-        f"- Date range: {main_report.range_from} to {main_report.range_to}",
+        meta,
     ]
-    warning = _render_html_comparison_data_quality_note(entity_reports)
-    if warning:
-        lines.extend(["", warning])
     if synthesis_md:
         lines.extend(["", synthesis_md.strip()])
+    # Comparison data quality notes also go to stderr, not into the artifact.
     _append_html_footer(lines, main_report, save_path)
     return "\n".join(lines).strip() + "\n"
 
 
+def collect_html_warnings(report: schema.Report) -> list[str]:
+    """Collect data quality warnings for stderr output (NOT for the HTML artifact).
+
+    Returns a list of human-readable warning strings. Empty list if the run
+    was clean. Used by the CLI to emit diagnostics to stderr after writing
+    the HTML to stdout/file.
+    """
+    notes: list[str] = []
+    if _render_degraded_run_warning(report):
+        notes.append("Run was missing pre-flight resolution. Re-run with `--plan` for richer results.")
+    elif _render_pre_research_warning(report):
+        notes.append("Pre-research was skipped, so results may be thinner than a resolved run.")
+    freshness_warning = _assess_data_freshness(report)
+    if freshness_warning:
+        notes.append(freshness_warning)
+    notes.extend(report.warnings)
+    return _dedupe_notes(notes)
+
+
+def collect_html_warnings_comparison(
+    entity_reports: list[tuple[str, schema.Report]],
+) -> list[str]:
+    """Collect comparison-mode warnings, prefixed by entity label."""
+    notes: list[str] = []
+    for label, report in entity_reports:
+        for w in collect_html_warnings(report):
+            notes.append(f"{label}: {w}")
+    return notes
+
+
 def _render_html_metadata(report: schema.Report) -> list[str]:
+    """Inline metadata as an HTML comment marker.
+
+    html_render.py post-processes ``<!-- META: ... -->`` markers into a
+    ``<div class="meta">`` after markdown conversion, so the metadata escapes
+    the markdown converter's HTML-escaping pass cleanly. Same pattern as the
+    PASS_THROUGH_FOOTER marker used for the engine tree.
+    """
     non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
+    if non_empty:
+        sources = ", ".join(_source_label(s) for s in non_empty)
+    else:
+        sources = "no active sources"
     return [
-        f"- Date range: {report.range_from} to {report.range_to}",
-        f"- Sources: {len(non_empty)} active ({', '.join(_source_label(s) for s in non_empty)})" if non_empty else "- Sources: none",
+        f"<!-- META: {report.range_from} to {report.range_to} · {sources} -->",
     ]
 
 
