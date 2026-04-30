@@ -311,3 +311,38 @@ def get_reddit_source(config: Dict[str, Any]) -> Optional[str]:
     if config.get('OPENAI_ACCESS_TOKEN'):
         return 'openai'
     return None
+
+
+def is_bluesky_available(config: Dict[str, Any]) -> bool:
+    """Stub: Bluesky availability."""
+    return False
+
+
+def is_truthsocial_available(config: Dict[str, Any]) -> bool:
+    """Stub: TruthSocial availability."""
+    return False
+
+
+def is_xquik_available(config: Dict[str, Any]) -> bool:
+    """Stub: XQuik availability."""
+    return False
+
+
+def is_youtube_sc_available(config: Dict[str, Any]) -> bool:
+    """Stub: YouTube SC availability."""
+    return False
+
+
+def is_xiaohongshu_available(config: Dict[str, Any]) -> bool:
+    """Stub: Xiaohongshu availability."""
+    return False
+
+
+def is_threads_available(config: Dict[str, Any]) -> bool:
+    """Stub: Threads availability."""
+    return False
+
+
+def is_pinterest_available(config: Dict[str, Any]) -> bool:
+    """Stub: Pinterest availability."""
+    return False
