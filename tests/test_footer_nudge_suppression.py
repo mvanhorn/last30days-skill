@@ -1,5 +1,5 @@
 # ruff: noqa: E402
-"""Tests for the BRAVE/SERPER web-promo suppression when hosting-model-driven."""
+"""Tests for footer nudges when hosting-model-driven."""
 
 from __future__ import annotations
 
@@ -35,12 +35,14 @@ class FooterNudgeSuppressionTests(unittest.TestCase):
             env.pop(key, None)
         return subprocess.run(cmd, capture_output=True, text=True, env=env)
 
-    def test_bare_run_emits_web_promo(self):
+    def test_bare_run_emits_quality_nudge(self):
         result = self._run(topic="OpenAI")
         combined = result.stdout + result.stderr
-        # Mock mode still shows the promo when nothing indicates a hosting
-        # model is driving. Check both streams since the UI may emit to stderr.
-        self.assertIn("BRAVE_API_KEY", combined)
+        # Mock mode still shows user-facing quality guidance when nothing
+        # indicates a hosting model is driving. Check both streams since the UI
+        # may emit to stderr.
+        self.assertIn("Research quality:", combined)
+        self.assertIn("XAI_API_KEY", combined)
 
     def test_competitors_plan_suppresses_web_promo(self):
         result = self._run(
