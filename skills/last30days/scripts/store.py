@@ -687,11 +687,16 @@ def findings_from_report(
         findings.append(finding)
         seen_urls.add(candidate.url)
     
-    # Phase 2: Add HN/PM items not already captured in ranked candidates
-    for source_name in ["hackernews", "polymarket"]:
-        if source_name not in report.items_by_source:
-            continue
-        for item in report.items_by_source[source_name]:
+    # Phase 2: Add raw items not already captured in ranked candidates.
+    # When rankings are present, keep the historical HN/PM supplement behavior.
+    # When rankings are absent, preserve watchlist/mock runs from every source.
+    raw_source_names = (
+        report.items_by_source.keys()
+        if not report.ranked_candidates
+        else ("hackernews", "polymarket")
+    )
+    for source_name in raw_source_names:
+        for item in report.items_by_source.get(source_name, []):
             if item.url in seen_urls:
                 continue  # Already captured with rich data
             findings.append({
