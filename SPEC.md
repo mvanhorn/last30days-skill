@@ -1,5 +1,8 @@
 # last30days Skill Specification
 
+> Historical implementation spec. The maintained runtime contract lives in
+> `skills/last30days/SKILL.md`.
+
 ## Overview
 
 `last30days` is a Claude Code skill that researches a given topic across Reddit and X (Twitter) using the OpenAI Responses API and xAI Responses API respectively. It enforces a strict 30-day recency window, popularity-aware ranking, and produces actionable outputs including best practices, a prompt pack, and a reusable context snippet. OpenAI auth can come from `OPENAI_API_KEY` or Codex login credentials.
