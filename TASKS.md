@@ -1,5 +1,8 @@
 # last30days Implementation Tasks
 
+> Historical checklist from the original implementation. Current runtime code
+> lives under `skills/last30days/scripts/`.
+
 ## Setup & Configuration
 - [x] Create directory structure
 - [x] Write SPEC.md
