@@ -9,6 +9,16 @@ from typing import Optional
 # Check if we're in a real terminal (not captured by Claude Code)
 IS_TTY = sys.stderr.isatty()
 
+
+def _skill_version() -> str:
+    """Return the installed plugin version for user-facing UI labels."""
+    try:
+        from . import render
+        return render._skill_version()
+    except Exception:
+        return "?"
+
+
 # ANSI color codes
 class Colors:
     PURPLE = '\033[95m'
@@ -503,11 +513,13 @@ def show_diagnostic_banner(diag: dict):
     if has_reddit and has_x and has_youtube and has_web:
         return
 
+    title = f"/last30days v{_skill_version()} - Source Status"
+    title_padding = " " * max(1, 51 - len(title))
     lines = []
 
     if IS_TTY:
         lines.append(f"{Colors.DIM}┌─────────────────────────────────────────────────────┐{Colors.RESET}")
-        lines.append(f"{Colors.DIM}│{Colors.RESET} {Colors.BOLD}/last30days v3.0.0 - Source Status{Colors.RESET}                 {Colors.DIM}│{Colors.RESET}")
+        lines.append(f"{Colors.DIM}│{Colors.RESET} {Colors.BOLD}{title}{Colors.RESET}{title_padding}{Colors.DIM}│{Colors.RESET}")
         lines.append(f"{Colors.DIM}│{Colors.RESET}                                                     {Colors.DIM}│{Colors.RESET}")
 
         # Reddit
@@ -554,7 +566,7 @@ def show_diagnostic_banner(diag: dict):
     else:
         # Plain text for non-TTY (Claude Code / Codex)
         lines.append("┌─────────────────────────────────────────────────────┐")
-        lines.append("│ /last30days v3.0.0 - Source Status                 │")
+        lines.append(f"│ {title}{title_padding}│")
         lines.append("│                                                     │")
 
         if has_reddit and has_scrapecreators:

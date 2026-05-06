@@ -27,6 +27,7 @@ class UiV3Tests(unittest.TestCase):
             with redirect_stderr(stderr):
                 ui.show_diagnostic_banner(diag)
         output = stderr.getvalue()
+        self.assertIn(f"/last30days v{ui._skill_version()} - Source Status", output)
         self.assertIn("Reddit", output)
         self.assertIn("unavailable", output)
         self.assertIn("Add AUTH_TOKEN/CT0 or XAI_API_KEY", output)
