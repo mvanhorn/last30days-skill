@@ -376,3 +376,38 @@ def enrich_with_top_posts(
     if enriched:
         _log(f"enriched {enriched} clusters with X posts")
     return items
+
+
+def enrich_source_items(items: list, top_k: int = 3, posts_per: int = POSTS_PER_CLUSTER) -> list:
+    """Attach top X posts to the first ``top_k`` SourceItems that survived dedupe.
+
+    Reads ``metadata['clusterUrlId']`` and writes ``metadata['posts']`` in
+    place. Skips items that already carry a non-empty ``metadata['posts']``,
+    items whose engagement ``postCount`` is 0, and items whose source is not
+    'digg'. Designed to run from `_finalize_items_by_source` so enrichment
+    is spent on the items the brief actually shows.
+    """
+    if top_k <= 0 or posts_per <= 0:
+        return items
+    enriched = 0
+    for item in items:
+        if enriched >= top_k:
+            break
+        if getattr(item, "source", None) != "digg":
+            continue
+        metadata = getattr(item, "metadata", None) or {}
+        if metadata.get("posts"):
+            continue
+        engagement = getattr(item, "engagement", None) or {}
+        if not engagement.get("postCount"):
+            continue
+        cluster_url_id = metadata.get("clusterUrlId") or item.item_id
+        if not cluster_url_id:
+            continue
+        posts = fetch_top_posts(str(cluster_url_id), posts_per=posts_per)
+        if posts:
+            metadata["posts"] = posts
+            enriched += 1
+    if enriched:
+        _log(f"post-dedupe enriched {enriched} clusters with X posts")
+    return items

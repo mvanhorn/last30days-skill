@@ -358,6 +358,59 @@ def test_enrich_top_k_zero_skips_all(monkeypatch):
     fake.assert_not_called()
 
 
+# === enrich_source_items (post-dedupe path) ===
+
+class _FakeSourceItem:
+    def __init__(self, source, item_id, engagement, metadata):
+        self.source = source
+        self.item_id = item_id
+        self.engagement = engagement
+        self.metadata = metadata
+
+
+def test_enrich_source_items_attaches_to_survivors(monkeypatch):
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        lambda cmd, *, timeout, env=None, on_pid=None: _stdout_for(
+            {"results": [_post(username=f"u_{cmd[2]}")]}
+        ),
+    )
+    items = [
+        _FakeSourceItem("digg", "ID1", {"postCount": 4}, {"clusterUrlId": "ID1", "posts": []}),
+        _FakeSourceItem("digg", "ID2", {"postCount": 6}, {"clusterUrlId": "ID2", "posts": []}),
+        _FakeSourceItem("digg", "ID3", {"postCount": 8}, {"clusterUrlId": "ID3", "posts": []}),
+    ]
+    digg.enrich_source_items(items, top_k=2)
+    assert items[0].metadata["posts"][0]["username"] == "u_ID1"
+    assert items[1].metadata["posts"][0]["username"] == "u_ID2"
+    assert items[2].metadata["posts"] == []
+
+
+def test_enrich_source_items_skips_non_digg(monkeypatch):
+    fake = MagicMock()
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake)
+    items = [_FakeSourceItem("hackernews", "HN1", {"points": 100}, {"posts": []})]
+    digg.enrich_source_items(items, top_k=3)
+    fake.assert_not_called()
+
+
+def test_enrich_source_items_falls_back_to_item_id(monkeypatch):
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    captured = {}
+
+    def fake_run(cmd, *, timeout, env=None, on_pid=None):
+        captured["cluster_id"] = cmd[2]
+        return _stdout_for({"results": [_post()]})
+
+    monkeypatch.setattr(digg.subproc, "run_with_timeout", fake_run)
+    items = [_FakeSourceItem("digg", "fallbackid", {"postCount": 3}, {"posts": []})]
+    digg.enrich_source_items(items, top_k=1)
+    assert captured["cluster_id"] == "fallbackid"
+
+
 # === Live tests (opt-in) ===
 
 LIVE = os.environ.get("LAST30DAYS_DIGG_LIVE", "").lower() in ("1", "true", "yes")

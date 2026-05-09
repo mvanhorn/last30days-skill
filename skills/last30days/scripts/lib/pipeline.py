@@ -535,6 +535,12 @@ def _finalize_items_by_source(
             keywords = config.get("_polymarket_keywords") if isinstance(config, dict) else None
             if keywords:
                 items = polymarket.filter_items_against_keywords(items, keywords)
+        if source == "digg" and items:
+            # Pull top-ranked X posts only for the survivors that will appear
+            # in the brief. Spending the enrichment budget here (rather than
+            # at retrieval time) keeps the inline 'via Digg AI 1000' quotes
+            # paired with the clusters dedupe actually kept.
+            digg.enrich_source_items(items, top_k=3)
         finalized[source] = items
     return finalized
 
@@ -973,8 +979,9 @@ def _retrieve_stream(
     if source == "digg":
         result = digg.search_digg(subquery.search_query, from_date, to_date, depth=depth)
         items = digg.parse_digg_response(result, query=subquery.search_query)
-        if depth in {"default", "deep"}:
-            digg.enrich_with_top_posts(items, top_k=digg.ENRICH_CONFIG.get(depth, 0))
+        # Enrichment with attached X posts is deferred to
+        # _finalize_items_by_source so it runs on the items that actually
+        # survive dedupe rather than on top-K of the raw fanout.
         return items, {}
     if source == "bluesky":
         result = bluesky.search_bluesky(subquery.search_query, from_date, to_date, depth=depth, config=config)
