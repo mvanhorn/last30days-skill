@@ -1229,7 +1229,7 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
     ("bluesky",     "🦋", "Bluesky",      "post",     [("likes", "likes"), ("reposts", "reposts")]),
     ("truthsocial", "🇺🇸", "Truth Social", "post",     [("likes", "likes"), ("reposts", "reposts")]),
     ("github",      "🐙", "GitHub",       "item",     [("reactions", "reactions"), ("comments", "comments")]),
-    ("digg",        "⛏️", "Digg AI 1000", "story",    [("postCount", "posts"), ("uniqueAuthors", "authors")]),
+    ("digg",        "⛏️", "Digg AI 1000", "cluster",  [("postCount", "posts"), ("uniqueAuthors", "authors")]),
 ]
 
 
@@ -1487,7 +1487,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "polymarket":   [],
     "github":       [("reactions", "react"), ("comments", "cmt")],
     "perplexity":   [("citations", "cite")],
-    "digg":         [("postCount", "posts"), ("uniqueAuthors", "authors")],
+    "digg":         [("postCount", "posts"), ("uniqueAuthors", "auth")],
 }
 
 
