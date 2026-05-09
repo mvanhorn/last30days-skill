@@ -53,6 +53,7 @@ SOURCE_LABELS = {
     "xiaohongshu": "Xiaohongshu",
     "x": "X",
     "github": "GitHub",
+    "digg": "Digg AI 1000",
     "perplexity": "Perplexity",
 }
 
@@ -826,7 +827,7 @@ def render_full(report: schema.Report) -> str:
     lines.append("## All Items by Source")
     lines.append("")
     source_order = ["reddit", "x", "youtube", "tiktok", "instagram", "threads", "pinterest",
-                    "hackernews", "bluesky", "truthsocial", "polymarket", "grounding", "xiaohongshu", "github", "perplexity"]
+                    "hackernews", "bluesky", "truthsocial", "polymarket", "grounding", "xiaohongshu", "github", "digg", "perplexity"]
     for source in source_order:
         items = report.items_by_source.get(source, [])
         if not items:
@@ -852,6 +853,9 @@ def render_full(report: schema.Report) -> str:
                     tc_score = tc.get("score", "")
                     attribution = _comment_attribution(item.source, tc.get("author"))
                     lines.append(f"  Top comment {attribution} ({tc_score} {vote_label}): {excerpt}")
+            # Digg AI 1000: inline X-post quotes attached to the cluster.
+            for post in _digg_posts_for(item, limit=3):
+                lines.append(f"  > {_format_digg_quote(post)}")
             # Comment insights for Reddit
             insights = item.metadata.get("comment_insights", [])
             if insights:
@@ -973,6 +977,8 @@ def _render_candidate(candidate: schema.Candidate, prefix: str) -> list[str]:
         source = primary.source if primary else None
         attribution = _comment_attribution(source, tc.get("author"))
         lines.append(f"   - {attribution} ({score} {vote_label}): {_truncate(excerpt.strip(), 240)}")
+    for post in _digg_posts_for(primary):
+        lines.append(f"   - {_format_digg_quote(post)}")
     insight = _comment_insight(primary)
     if insight:
         lines.append(f"   - Insight: {_truncate(insight, 220)}")
@@ -1223,6 +1229,7 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
     ("bluesky",     "🦋", "Bluesky",      "post",     [("likes", "likes"), ("reposts", "reposts")]),
     ("truthsocial", "🇺🇸", "Truth Social", "post",     [("likes", "likes"), ("reposts", "reposts")]),
     ("github",      "🐙", "GitHub",       "item",     [("reactions", "reactions"), ("comments", "comments")]),
+    ("digg",        "⛏️", "Digg AI 1000", "story",    [("postCount", "posts"), ("uniqueAuthors", "authors")]),
 ]
 
 
@@ -1480,6 +1487,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "polymarket":   [],
     "github":       [("reactions", "react"), ("comments", "cmt")],
     "perplexity":   [("citations", "cite")],
+    "digg":         [("postCount", "posts"), ("uniqueAuthors", "authors")],
 }
 
 
@@ -1674,6 +1682,39 @@ def _comment_insight(item: schema.SourceItem | None) -> str | None:
     if not insights:
         return None
     return str(insights[0]).strip() or None
+
+
+def _digg_posts_for(item: schema.SourceItem | None, limit: int = 2) -> list[dict]:
+    """Return up to `limit` parsed Digg posts attached as enrichment to a cluster.
+
+    Returns an empty list for non-digg sources or clusters without enrichment.
+    """
+    if not item or item.source != "digg":
+        return []
+    posts = item.metadata.get("posts") or []
+    if not isinstance(posts, list):
+        return []
+    out: list[dict] = []
+    for entry in posts:
+        if isinstance(entry, dict) and entry.get("body") and entry.get("username"):
+            out.append(entry)
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _format_digg_quote(post: dict, body_limit: int = 200) -> str:
+    """Format a Digg-attached X post as an inline 'via Digg AI 1000' quote line."""
+    handle = post.get("username") or ""
+    x_url = post.get("x_url") or ""
+    body = (post.get("body") or "").replace("\n", " ").strip()
+    if len(body) > body_limit:
+        body = body[: body_limit - 1].rstrip() + "…"
+    if x_url and handle:
+        return f"[@{handle}]({x_url}) via Digg AI 1000: {body}"
+    if handle:
+        return f"@{handle} via Digg AI 1000: {body}"
+    return f"via Digg AI 1000: {body}"
 
 
 def _transcript_highlights(item: schema.SourceItem | None) -> list[str]:

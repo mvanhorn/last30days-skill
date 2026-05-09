@@ -49,6 +49,7 @@ def normalize_source_items(
         "xquik": _normalize_x,
         "pinterest": _normalize_pinterest,
         "polymarket": _normalize_polymarket,
+        "digg": _normalize_digg,
         "grounding": _normalize_grounding,
         "xiaohongshu": _normalize_grounding,
         "github": _normalize_github,
@@ -396,6 +397,53 @@ def _normalize_microblog(
         relevance_hint=item.get("relevance", 0.5),
         why_relevant=str(item.get("why_relevant") or ""),
         metadata={"display_name": item.get("display_name")},
+    )
+
+
+def _normalize_digg(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for Digg AI 1000 clusters.
+
+    Each cluster is one item. The TLDR carries the most useful body for
+    rerank and synthesis. Top-ranked X posts attached at search time are
+    passed through under metadata['posts'] so render can emit them as
+    inline 'via Digg AI 1000' quotes.
+    """
+    title = str(item.get("title") or "").strip()
+    tldr = str(item.get("tldr") or "").strip()
+    body = "\n\n".join(part for part in [title, tldr] if part)
+    posts = item.get("posts") or []
+    if not isinstance(posts, list):
+        posts = []
+    cluster_url_id = str(item.get("id") or f"DG{index + 1}")
+    return _source_item(
+        item_id=cluster_url_id,
+        source=source,
+        title=title or f"Digg cluster {index + 1}",
+        body=body,
+        url=str(item.get("url") or f"https://di.gg/ai/{cluster_url_id}"),
+        author="",
+        container="Digg AI 1000",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=tldr[:400],
+        metadata={
+            "clusterUrlId": cluster_url_id,
+            "tldr": tldr,
+            "rank": (item.get("engagement") or {}).get("rank"),
+            "uniqueAuthors": (item.get("engagement") or {}).get("uniqueAuthors"),
+            "postCount": (item.get("engagement") or {}).get("postCount"),
+            "firstPostAge": item.get("first_post_age"),
+            "posts": posts,
+        },
     )
 
 
