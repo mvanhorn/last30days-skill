@@ -45,6 +45,7 @@ metadata:
       - instagram
       - hackernews
       - polymarket
+      - digg
       - bluesky
       - truthsocial
       - trends
@@ -317,6 +318,7 @@ Common patterns:
 
 - Always active: Reddit, Hacker News, Polymarket
 - If gh CLI is installed (check `which gh`): add GitHub
+- If digg-pp-cli is installed (check `which digg-pp-cli`): add Digg AI 1000
 - If AUTH_TOKEN/CT0 or XAI_API_KEY or FROM_BROWSER is set, or xurl CLI is installed and authenticated: add X
 - If yt-dlp is installed (check `which yt-dlp`): add YouTube
 - If SCRAPECREATORS_API_KEY is set and INCLUDE_SOURCES contains tiktok: add TikTok
@@ -824,7 +826,7 @@ Only show lines for platforms where something was resolved. Skip empty lines. On
 - For how_to: prioritize YouTube (tutorials) and Reddit (guides)
 - Primary subquery weight = 1.0, secondary = 0.6-0.8, peripheral = 0.3-0.5
 
-**Available sources (include ALL in primary subquery):** reddit, x, youtube, tiktok, instagram, hackernews, polymarket. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key)
+**Available sources (include ALL in primary subquery):** reddit, x, youtube, tiktok, instagram, hackernews, polymarket. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg AI 1000 clusters - only if `digg-pp-cli` is on PATH)
 
 **Intent → freshness_mode mapping:**
 - breaking_news, prediction → `strict_recent`

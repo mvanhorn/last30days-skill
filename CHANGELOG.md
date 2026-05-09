@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Add `--emit=html` for shareable, print-friendly HTML research briefs.
+- **Digg AI 1000 source** (auto-enabled when `digg-pp-cli` is on PATH). Surfaces curated story clusters from the AI 1000 leaderboard and pulls attributable X-post quotes into the brief as `[@handle](xUrl) via Digg AI 1000: ...` lines. Footer line: `⛏️ Digg AI 1000: N clusters │ K posts │ M authors`. No X auth required for the inline quotes since they flow through Digg's read-only endpoints.
 
 ## [3.1.1] - 2026-04-24
 

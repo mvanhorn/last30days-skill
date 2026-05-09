@@ -67,6 +67,7 @@ SOURCE_CAPABILITIES = {
     "bluesky": {"discussion", "social"},
     "truthsocial": {"discussion", "social"},
     "polymarket": {"market"},
+    "digg": {"discussion", "social", "link"},
     "xiaohongshu": {"video", "video_shortform", "social"},
     "github": {"discussion", "link"},
     "grounding": {"web", "reference", "link"},
