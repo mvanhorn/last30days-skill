@@ -254,7 +254,7 @@ MIT license. No tracking. No analytics. Your research stays on your machine. 1,0
 
 Built with Python 3.12+, yt-dlp, Node.js (vendored Bird client for X search), and ScrapeCreators API. v3 engine architecture by [@j-sperling](https://github.com/j-sperling).
 
-See [CHANGELOG.md](CHANGELOG.md) for version history.
+See [CHANGELOG.md](CHANGELOG.md) for version history. Architecture decision records live in [`docs/adr/`](docs/adr/) for packaging and eval-policy context.
 
 ## Star History
 
