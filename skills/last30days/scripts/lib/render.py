@@ -1684,7 +1684,7 @@ def _comment_insight(item: schema.SourceItem | None) -> str | None:
     return str(insights[0]).strip() or None
 
 
-def _digg_posts_for(item: schema.SourceItem | None, limit: int = 2) -> list[dict]:
+def _digg_posts_for(item: schema.SourceItem | None, limit: int = 3) -> list[dict]:
     """Return up to `limit` parsed Digg posts attached as enrichment to a cluster.
 
     Returns an empty list for non-digg sources or clusters without enrichment.

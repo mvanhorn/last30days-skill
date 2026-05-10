@@ -44,8 +44,9 @@ ENRICH_CONFIG = {
     "deep": 5,
 }
 
-# X posts pulled per enriched cluster.
-POSTS_PER_CLUSTER = 3
+# X posts pulled per enriched cluster. Matches the 5-comment cap used by
+# Reddit/HN/YouTube/TikTok/GitHub enrichment.
+POSTS_PER_CLUSTER = 5
 
 SEARCH_TIMEOUT = 30
 POSTS_TIMEOUT = 15
