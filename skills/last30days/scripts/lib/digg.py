@@ -286,9 +286,9 @@ def parse_digg_response(
                 "posts": [],
                 "relevance": round(relevance, 2),
                 "why_relevant": (
-                    f"Digg AI 1000 cluster (rank {rank}, {post_count} posts, {unique_authors} authors)"
+                    f"Digg cluster (rank {rank}, {post_count} posts, {unique_authors} authors)"
                     if rank is not None
-                    else f"Digg AI 1000 cluster ({post_count} posts, {unique_authors} authors)"
+                    else f"Digg cluster ({post_count} posts, {unique_authors} authors)"
                 ),
             }
         )

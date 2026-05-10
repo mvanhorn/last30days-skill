@@ -412,7 +412,7 @@ def _normalize_digg(
     Each cluster is one item. The TLDR carries the most useful body for
     rerank and synthesis. Top-ranked X posts attached at search time are
     passed through under metadata['posts'] so render can emit them as
-    inline 'via Digg AI 1000' quotes.
+    inline 'via Digg' quotes.
     """
     title = str(item.get("title") or "").strip()
     tldr = str(item.get("tldr") or "").strip()
@@ -428,7 +428,7 @@ def _normalize_digg(
         body=body,
         url=str(item.get("url") or f"https://di.gg/ai/{cluster_url_id}"),
         author="",
-        container="Digg AI 1000",
+        container="Digg",
         published_at=item.get("date"),
         date_confidence=_date_confidence(item, from_date, to_date, default="high"),
         engagement=item.get("engagement") or {},

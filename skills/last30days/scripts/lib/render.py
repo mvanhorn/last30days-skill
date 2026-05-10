@@ -53,7 +53,7 @@ SOURCE_LABELS = {
     "xiaohongshu": "Xiaohongshu",
     "x": "X",
     "github": "GitHub",
-    "digg": "Digg AI 1000",
+    "digg": "Digg",
     "perplexity": "Perplexity",
 }
 
@@ -853,7 +853,7 @@ def render_full(report: schema.Report) -> str:
                     tc_score = tc.get("score", "")
                     attribution = _comment_attribution(item.source, tc.get("author"))
                     lines.append(f"  Top comment {attribution} ({tc_score} {vote_label}): {excerpt}")
-            # Digg AI 1000: inline X-post quotes attached to the cluster.
+            # Digg: inline X-post quotes attached to the cluster.
             for post in _digg_posts_for(item, limit=3):
                 lines.append(f"  > {_format_digg_quote(post)}")
             # Comment insights for Reddit
@@ -1229,7 +1229,7 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
     ("bluesky",     "🦋", "Bluesky",      "post",     [("likes", "likes"), ("reposts", "reposts")]),
     ("truthsocial", "🇺🇸", "Truth Social", "post",     [("likes", "likes"), ("reposts", "reposts")]),
     ("github",      "🐙", "GitHub",       "item",     [("reactions", "reactions"), ("comments", "comments")]),
-    ("digg",        "⛏️", "Digg AI 1000", "cluster",  [("postCount", "posts"), ("uniqueAuthors", "authors")]),
+    ("digg",        "⛏️", "Digg",         "cluster",  [("postCount", "posts"), ("uniqueAuthors", "authors")]),
 ]
 
 
@@ -1704,17 +1704,17 @@ def _digg_posts_for(item: schema.SourceItem | None, limit: int = 3) -> list[dict
 
 
 def _format_digg_quote(post: dict, body_limit: int = 200) -> str:
-    """Format a Digg-attached X post as an inline 'via Digg AI 1000' quote line."""
+    """Format a Digg-attached X post as an inline 'via Digg' quote line."""
     handle = post.get("username") or ""
     x_url = post.get("x_url") or ""
     body = (post.get("body") or "").replace("\n", " ").strip()
     if len(body) > body_limit:
         body = body[: body_limit - 1].rstrip() + "…"
     if x_url and handle:
-        return f"[@{handle}]({x_url}) via Digg AI 1000: {body}"
+        return f"[@{handle}]({x_url}) via Digg: {body}"
     if handle:
-        return f"@{handle} via Digg AI 1000: {body}"
-    return f"via Digg AI 1000: {body}"
+        return f"@{handle} via Digg: {body}"
+    return f"via Digg: {body}"
 
 
 def _transcript_highlights(item: schema.SourceItem | None) -> list[str]:

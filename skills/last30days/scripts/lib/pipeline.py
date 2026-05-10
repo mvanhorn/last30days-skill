@@ -538,7 +538,7 @@ def _finalize_items_by_source(
         if source == "digg" and items:
             # Pull top-ranked X posts only for the survivors that will appear
             # in the brief. Spending the enrichment budget here (rather than
-            # at retrieval time) keeps the inline 'via Digg AI 1000' quotes
+            # at retrieval time) keeps the inline 'via Digg' quotes
             # paired with the clusters dedupe actually kept.
             digg.enrich_source_items(items, top_k=3)
         finalized[source] = items
@@ -1078,7 +1078,7 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
         "digg": [
             {
                 "id": "mock1abc",
-                "title": f"Digg AI 1000 cluster about {subquery.search_query}",
+                "title": f"Digg cluster about {subquery.search_query}",
                 "url": "https://di.gg/ai/mock1abc",
                 "tldr": f"Curated cluster summarizing recent {subquery.search_query} discussion across the AI 1000.",
                 "author": "",

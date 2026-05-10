@@ -11,7 +11,7 @@
     {
       "name": "last30days",
       "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and 5+ more sources. AI agent scores by upvotes, likes, and real money - not editors.",
-      "version": "3.2.0",
+      "version": "3.2.1",
       "author": {
         "name": "Matt Van Horn",
         "url": "https://github.com/mvanhorn"

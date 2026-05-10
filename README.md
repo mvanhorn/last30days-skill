@@ -68,7 +68,7 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 | **Hacker News** | The developer consensus. 825 points, 899 comments. Where technical people actually argue. |
 | **Polymarket** | Not opinions. Odds. Backed by real money. 96% confidence on album sales. 4% on an acquisition. |
 | **GitHub** | For people: PR velocity, top repos by stars, release notes. For topics: issues and discussions. |
-| **Digg AI 1000** | Curated story clusters from ~1000 high-signal AI accounts on X, with attributable inline quotes (no X auth required). Auto-enabled when `digg-pp-cli` is on PATH. |
+| **Digg** | Curated story clusters from Digg's AI 1000 leaderboard (~1000 high-signal AI accounts on X), with attributable inline quotes (no X auth required). Auto-enabled when `digg-pp-cli` is on PATH. |
 | **Threads** | The post-Twitter text layer. Conversations from creators and brands. |
 | **Pinterest** | Visual discovery. Pins, saves, and comments on products and ideas. |
 | **Bluesky** | The decentralized social layer. AT Protocol posts from the post-Twitter migration. |

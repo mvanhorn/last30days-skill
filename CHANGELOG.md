@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Rename "Digg AI 1000" to just "Digg" in user-facing output (footer line, source label, inline-quote suffix, why_relevant, container attribution). Internal references to the upstream Digg AI 1000 product remain in code comments and docstrings.
+- Bump `POSTS_PER_CLUSTER` from 3 to 5 and the render-side display limit from 2 to 3 to match the per-source enrichment caps used by Reddit, HN, YouTube, TikTok, and GitHub. The previous 3/2 caps routinely truncated cluster context (e.g. dropped a Jason Calacanis quote tweet on a `cli-printing-press` run).
+
 ## [3.2.0] - 2026-05-09
 
 ### Added
