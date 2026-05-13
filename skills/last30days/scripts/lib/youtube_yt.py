@@ -886,7 +886,7 @@ def _sc_youtube_search(keyword: str, token: str) -> List[Dict[str, Any]]:
     if not _requests:
         try:
             from urllib.parse import urlencode
-            params = urlencode({"keyword": keyword})
+            params = urlencode({"query": keyword})
             url = f"{SCRAPECREATORS_YT_BASE}/search?{params}"
             headers = http.scrapecreators_headers(token)
             headers["User-Agent"] = http.USER_AGENT
@@ -899,7 +899,7 @@ def _sc_youtube_search(keyword: str, token: str) -> List[Dict[str, Any]]:
     try:
         resp = _requests.get(
             f"{SCRAPECREATORS_YT_BASE}/search",
-            params={"keyword": keyword},
+            params={"query": keyword},
             headers=http.scrapecreators_headers(token),
             timeout=30,
         )

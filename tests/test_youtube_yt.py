@@ -407,5 +407,49 @@ class TestSearchAndTranscribe(unittest.TestCase):
         ft_mock.assert_not_called()
 
 
+class TestScrapeCreatorsYouTubeSearchParam(unittest.TestCase):
+    """The ScrapeCreators YouTube search endpoint requires ?query=, not ?keyword=."""
+
+    def test_sc_youtube_search_sends_query_param_requests_branch(self):
+        """The requests-branch call must send params={'query': ...}, not 'keyword'."""
+        captured = {}
+
+        class _FakeResp:
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"videos": []}
+
+        def fake_get(url, params=None, headers=None, timeout=None):
+            captured["params"] = params
+            return _FakeResp()
+
+        fake_requests = mock.MagicMock()
+        fake_requests.get = fake_get
+
+        with mock.patch.object(youtube_yt, "_requests", fake_requests):
+            youtube_yt._sc_youtube_search("agent memory", token="dummy")
+
+        self.assertIn("query", captured["params"])
+        self.assertNotIn("keyword", captured["params"])
+        self.assertEqual(captured["params"]["query"], "agent memory")
+
+    def test_sc_youtube_search_sends_query_param_urllib_branch(self):
+        """The urllib fallback branch must also send query= (not keyword=) in the URL."""
+        captured = {}
+
+        def fake_http_get(url, headers=None, timeout=None, retries=None):
+            captured["url"] = url
+            return {"videos": []}
+
+        with mock.patch.object(youtube_yt, "_requests", None), \
+             mock.patch.object(youtube_yt.http, "get", side_effect=fake_http_get):
+            youtube_yt._sc_youtube_search("agent memory", token="dummy")
+
+        self.assertIn("query=", captured["url"])
+        self.assertNotIn("keyword=", captured["url"])
+
+
 if __name__ == "__main__":
     unittest.main()
