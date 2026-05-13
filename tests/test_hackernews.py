@@ -160,11 +160,50 @@ def test_title_matches_query_empty_query():
 
 
 def test_title_matches_query_partial_match():
-    """Test that all query words must match."""
+    """Partial-word matches accepted — Algolia already ranked the hit.
+
+    The previous behavior here AND-required every query word to appear in the
+    title, which dropped real relevant hits for any multi-word query whose
+    words happened not to all appear in a real title. Algolia already did the
+    relevance work; this filter's only job is to reject hits where the match
+    was solely the HN prefix or the author username.
+    """
     title = "New AI framework"
     query = "AI blockchain"
-    
-    # "blockchain" is not in title, so should fail
+
+    # "AI" appears in title → accept. ("blockchain" doesn't, but Algolia
+    # surfaced this hit anyway, so we trust the ranking.)
+    assert hackernews._title_matches_query(title, query) is True
+
+
+def test_title_matches_query_verbose_query_keeps_real_show_hn():
+    """Regression: verbose multi-word queries must not drop real Show HN hits.
+
+    Canonical reproduction: a community-signal pass with a verbose topic like
+    "agent memory mindshare last 30 days" should surface real Show HN posts
+    even when their titles don't contain every query word.
+    """
+    title = "Show HN: A Karpathy-style LLM wiki your agents maintain (Markdown and Git)"
+    query = "agent memory mindshare last 30 days"
+
+    # Words "agent" + "memory" appear (in stripped title body); other words
+    # don't. Under the old AND-every-word logic this would reject; under the
+    # corrected logic Algolia's relevance ranking is trusted.
+    assert hackernews._title_matches_query(title, query) is True
+
+
+def test_title_matches_query_no_words_in_title_rejects():
+    """When NO query word appears in stripped title body, reject.
+
+    This is the load-bearing case the docstring describes: the Algolia hit
+    must have matched on prefix or author (since no query word is in the
+    title body), so it's a false positive.
+    """
+    title = "Show HN: A totally unrelated project"
+    query = "kubernetes operators"
+
+    # Neither "kubernetes" nor "operators" appears in stripped title body
+    # → reject as prefix/author-only match.
     assert hackernews._title_matches_query(title, query) is False
 
 

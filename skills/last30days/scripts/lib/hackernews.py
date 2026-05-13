@@ -118,27 +118,35 @@ def search_hackernews(
 
 
 def _title_matches_query(title: str, query: str, author: str = "") -> bool:
-    """Check if the query term appears in the title content, not just an HN prefix or author.
+    """Reject hits where the Algolia match was solely an HN prefix or the author username.
 
-    Returns True if the query (or any multi-word token) appears in the title
-    after stripping "Tell HN:", "Show HN:", "Ask HN:", "Launch HN:" prefixes
-    and ignoring the author name.  Returns True when query is empty (no filter).
+    Trust Algolia's relevance ranking; this filter exists only to catch false
+    positives where the query word matched solely an HN prefix ("Show HN:",
+    "Tell HN:", "Ask HN:", "Launch HN:") or the author's username field, not
+    the actual title content.
+
+    Returns True when query is empty (no filter), or when at least one query
+    word appears in the prefix-stripped title body. Returns False only when
+    the stripped title is empty or contains none of the query words — which
+    means Algolia matched on prefix or author, not on real title content.
+
+    Does NOT AND-require every query word: Algolia already ranked the hit by
+    relevance, and verbose multi-word queries (e.g. "agent memory mindshare
+    last 30 days") rarely have every word in real titles even when the hit
+    is highly relevant.
     """
     if not query:
         return True
-    stripped = _HN_PREFIXES.sub("", title).strip()
-    # Also check that the match isn't solely in the author's username
-    check_text = stripped.lower()
-    query_lower = query.lower()
-    # Check each word of the query independently; all must appear somewhere
-    # in the stripped title (not just the prefix).
-    query_words = query_lower.split()
-    for word in query_words:
-        if word in check_text:
-            continue
-        # Word not found in stripped title — reject
+    stripped = _HN_PREFIXES.sub("", title).strip().lower()
+    # Empty stripped title means the entire title was an HN prefix; reject.
+    if not stripped:
         return False
-    return True
+    query_words = query.lower().split()
+    if not query_words:
+        return True  # whitespace-only query — no filter
+    # Accept if any query word appears in the stripped title body. Don't AND-
+    # require every word — that drops real relevant hits for verbose queries.
+    return any(word in stripped for word in query_words)
 
 
 def parse_hackernews_response(response: Dict[str, Any], query: str = "") -> List[Dict[str, Any]]:
