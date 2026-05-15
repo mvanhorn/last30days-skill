@@ -1,7 +1,12 @@
 """Bluesky search via AT Protocol (requires app password).
 
-Uses bsky.social for auth and public.api.bsky.app for post search.
+Uses bsky.social for auth and api.bsky.app for post search.
 Requires BSKY_HANDLE and BSKY_APP_PASSWORD env vars.
+
+Note on search host: api.bsky.app is the main AppView (what the official web
+client uses). public.api.bsky.app is a public CDN mirror that has stricter
+access policies — confirmed to block residential IPs that api.bsky.app accepts
+with the same bearer token. Use the main AppView to avoid spurious 403s.
 """
 
 import math
@@ -14,7 +19,7 @@ from typing import Any, Dict, List, Optional
 from . import http, log
 
 BSKY_SESSION_URL = "https://bsky.social/xrpc/com.atproto.server.createSession"
-BSKY_SEARCH_URL = "https://public.api.bsky.app/xrpc/app.bsky.feed.searchPosts"
+BSKY_SEARCH_URL = "https://api.bsky.app/xrpc/app.bsky.feed.searchPosts"
 
 DEPTH_CONFIG = {
     "quick": 15,
