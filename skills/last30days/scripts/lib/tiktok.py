@@ -11,11 +11,6 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Set
 
-try:
-    import requests as _requests
-except ImportError:
-    _requests = None
-
 from . import dates, http, log
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/tiktok"
@@ -214,30 +209,17 @@ def _hashtag_search(
         List of raw TikTok item dicts (aweme_info format).
     """
     _log(f"Hashtag search: #{hashtag}")
-    if not _requests:
-        try:
-            from urllib.parse import urlencode
-            params = urlencode({"hashtag": hashtag})
-            url = f"{SCRAPECREATORS_BASE}/search/hashtag?{params}"
-            headers = http.scrapecreators_headers(token)
-            headers["User-Agent"] = http.USER_AGENT
-            data = http.get(url, headers=headers, timeout=30, retries=2)
-        except Exception as e:
-            _log(f"Hashtag search error (urllib) for #{hashtag}: {e}")
-            return []
-    else:
-        try:
-            resp = _requests.get(
-                f"{SCRAPECREATORS_BASE}/search/hashtag",
-                params={"hashtag": hashtag},
-                headers=http.scrapecreators_headers(token),
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            _log(f"Hashtag search error for #{hashtag}: {e}")
-            return []
+    try:
+        data = http.get(
+            f"{SCRAPECREATORS_BASE}/search/hashtag",
+            params={"hashtag": hashtag},
+            headers=http.scrapecreators_headers(token),
+            timeout=30,
+            retries=2,
+        )
+    except Exception as e:
+        _log(f"Hashtag search error for #{hashtag}: {e}")
+        return []
 
     raw_items = data.get("aweme_list") or data.get("data") or []
     _log(f"  -> {len(raw_items)} results for #{hashtag}")
@@ -261,30 +243,17 @@ def _profile_videos(
     """
     _log(f"Profile videos: @{handle}")
     profile_url = "https://api.scrapecreators.com/v3/tiktok/profile/videos"
-    if not _requests:
-        try:
-            from urllib.parse import urlencode
-            params = urlencode({"handle": handle, "sort_by": "latest"})
-            url = f"{profile_url}?{params}"
-            headers = http.scrapecreators_headers(token)
-            headers["User-Agent"] = http.USER_AGENT
-            data = http.get(url, headers=headers, timeout=30, retries=2)
-        except Exception as e:
-            _log(f"Profile videos error (urllib) for @{handle}: {e}")
-            return []
-    else:
-        try:
-            resp = _requests.get(
-                profile_url,
-                params={"handle": handle, "sort_by": "latest"},
-                headers=http.scrapecreators_headers(token),
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            _log(f"Profile videos error for @{handle}: {e}")
-            return []
+    try:
+        data = http.get(
+            profile_url,
+            params={"handle": handle, "sort_by": "latest"},
+            headers=http.scrapecreators_headers(token),
+            timeout=30,
+            retries=2,
+        )
+    except Exception as e:
+        _log(f"Profile videos error for @{handle}: {e}")
+        return []
 
     raw_items = data.get("aweme_list") or data.get("data") or []
     _log(f"  -> {len(raw_items)} videos from @{handle}")
@@ -318,31 +287,17 @@ def search_tiktok(
 
     _log(f"Searching TikTok for '{core_topic}' (depth={depth}, count={config['results_per_page']})")
 
-    if not _requests:
-        _log("requests library not installed, falling back to urllib")
-        try:
-            from urllib.parse import urlencode
-            params = urlencode({"query": core_topic, "sort_by": "relevance"})
-            url = f"{SCRAPECREATORS_BASE}/search/keyword?{params}"
-            headers = http.scrapecreators_headers(token)
-            headers["User-Agent"] = http.USER_AGENT
-            data = http.get(url, headers=headers, timeout=30, retries=2)
-        except Exception as e:
-            _log(f"ScrapeCreators error (urllib): {e}")
-            return {"items": [], "error": f"{type(e).__name__}: {e}"}
-    else:
-        try:
-            resp = _requests.get(
-                f"{SCRAPECREATORS_BASE}/search/keyword",
-                params={"query": core_topic, "sort_by": "relevance"},
-                headers=http.scrapecreators_headers(token),
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            _log(f"ScrapeCreators error: {e}")
-            return {"items": [], "error": f"{type(e).__name__}: {e}"}
+    try:
+        data = http.get(
+            f"{SCRAPECREATORS_BASE}/search/keyword",
+            params={"query": core_topic, "sort_by": "relevance"},
+            headers=http.scrapecreators_headers(token),
+            timeout=30,
+            retries=2,
+        )
+    except Exception as e:
+        _log(f"ScrapeCreators error: {e}")
+        return {"items": [], "error": f"{type(e).__name__}: {e}"}
 
     # Items are nested under aweme_info
     raw_entries = data.get("search_item_list") or data.get("data") or []
@@ -397,7 +352,7 @@ def fetch_captions(
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     max_captions = config["max_captions"]
 
-    if not video_items or not token or not _requests:
+    if not video_items or not token:
         return {}
 
     top_items = video_items[:max_captions]
@@ -422,24 +377,23 @@ def fetch_captions(
         if not url:
             continue
         try:
-            resp = _requests.get(
+            data = http.get(
                 f"{SCRAPECREATORS_BASE}/video/transcript",
                 params={"url": url},
                 headers=http.scrapecreators_headers(token),
                 timeout=15,
+                retries=1,
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                transcript = data.get("transcript")
+            transcript = data.get("transcript")
+            if transcript:
+                if isinstance(transcript, list):
+                    transcript = " ".join(str(s) for s in transcript)
+                transcript = _clean_webvtt(transcript)
                 if transcript:
-                    if isinstance(transcript, list):
-                        transcript = " ".join(str(s) for s in transcript)
-                    transcript = _clean_webvtt(transcript)
-                    if transcript:
-                        words = transcript.split()
-                        if len(words) > CAPTION_MAX_WORDS:
-                            transcript = ' '.join(words[:CAPTION_MAX_WORDS]) + '...'
-                        captions[vid] = transcript
+                    words = transcript.split()
+                    if len(words) > CAPTION_MAX_WORDS:
+                        transcript = ' '.join(words[:CAPTION_MAX_WORDS]) + '...'
+                    captions[vid] = transcript
         except Exception as e:
             _log(f"Transcript fetch failed for {vid}: {e}")
 
@@ -620,30 +574,17 @@ def _fetch_post_comments(
         List of comment dicts with author, text, digg_count (likes), date.
         Empty list on any error — comment failures never crash the pipeline.
     """
-    if not _requests:
-        try:
-            from urllib.parse import urlencode
-            params = urlencode({"url": post_url, "trim": "true"})
-            url = f"{SCRAPECREATORS_BASE}/video/comments?{params}"
-            headers = http.scrapecreators_headers(token)
-            headers["User-Agent"] = http.USER_AGENT
-            data = http.get(url, headers=headers, timeout=30, retries=2)
-        except Exception as exc:
-            _log(f"Comment fetch error (urllib) for {post_url}: {exc}")
-            return []
-    else:
-        try:
-            resp = _requests.get(
-                f"{SCRAPECREATORS_BASE}/video/comments",
-                params={"url": post_url, "trim": "true"},
-                headers=http.scrapecreators_headers(token),
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            _log(f"Comment fetch error for {post_url}: {exc}")
-            return []
+    try:
+        data = http.get(
+            f"{SCRAPECREATORS_BASE}/video/comments",
+            params={"url": post_url, "trim": "true"},
+            headers=http.scrapecreators_headers(token),
+            timeout=30,
+            retries=2,
+        )
+    except Exception as exc:
+        _log(f"Comment fetch error for {post_url}: {exc}")
+        return []
 
     raw_comments = data.get("comments") or data.get("data") or []
     # Sort by digg_count desc so normalize sees the highest-signal first.

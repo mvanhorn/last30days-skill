@@ -152,35 +152,16 @@ def search_threads(
     _log(f"Searching for '{core_topic}' (depth={depth}, limit={config['results']})")
 
     try:
-        import requests as _requests
-    except ImportError:
-        _requests = None
-
-    if not _requests:
-        _log("requests library not installed, falling back to urllib")
-        try:
-            from urllib.parse import urlencode
-            params = urlencode({"keyword": core_topic})
-            url = f"{SCRAPECREATORS_BASE}/search?{params}"
-            headers = http.scrapecreators_headers(token)
-            headers["User-Agent"] = http.USER_AGENT
-            data = http.get(url, headers=headers, timeout=30, retries=2)
-        except Exception as e:
-            _log(f"ScrapeCreators error (urllib): {e}")
-            return {"items": [], "error": f"{type(e).__name__}: {e}"}
-    else:
-        try:
-            resp = _requests.get(
-                f"{SCRAPECREATORS_BASE}/search",
-                params={"keyword": core_topic},
-                headers=http.scrapecreators_headers(token),
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            _log(f"ScrapeCreators error: {e}")
-            return {"items": [], "error": f"{type(e).__name__}: {e}"}
+        data = http.get(
+            f"{SCRAPECREATORS_BASE}/search",
+            params={"keyword": core_topic},
+            headers=http.scrapecreators_headers(token),
+            timeout=30,
+            retries=2,
+        )
+    except Exception as e:
+        _log(f"ScrapeCreators error: {e}")
+        return {"items": [], "error": f"{type(e).__name__}: {e}"}
 
     # Extract items from response (try common SC response shapes)
     raw_items = (

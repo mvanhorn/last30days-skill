@@ -10,16 +10,11 @@ import sys
 import time
 from pathlib import Path
 
-try:
-    import requests
-except ImportError:
-    requests = None
-
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import store
-from lib import schema
+from lib import http, schema
 
 
 # --- Webhook Delivery Functions ---
@@ -58,34 +53,21 @@ def _format_delivery_message(topic: str, counts: dict, mode: str) -> str:
 
 def _send_slack_webhook(url: str, text: str) -> None:
     """POST to Slack incoming webhook."""
-    if not requests:
-        raise RuntimeError("requests library not available for webhook delivery")
-    
-    response = requests.post(
-        url,
-        json={"text": text},
-        headers={"Content-Type": "application/json"},
-        timeout=10,
-    )
-    response.raise_for_status()
+    http.post(url, json_data={"text": text}, timeout=10, retries=1)
 
 
 def _send_generic_webhook(url: str, text: str) -> None:
     """POST JSON payload to generic webhook."""
-    if not requests:
-        raise RuntimeError("requests library not available for webhook delivery")
-    
-    response = requests.post(
+    http.post(
         url,
-        json={
+        json_data={
             "message": text,
             "source": "last30days",
             "timestamp": time.time(),
         },
-        headers={"Content-Type": "application/json"},
         timeout=10,
+        retries=1,
     )
-    response.raise_for_status()
 
 
 # --- Command Handlers ---

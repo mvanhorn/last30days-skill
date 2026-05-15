@@ -617,11 +617,6 @@ def parse_youtube_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 SCRAPECREATORS_YT_BASE = "https://api.scrapecreators.com/v1/youtube"
 
-try:
-    import requests as _requests
-except ImportError:
-    _requests = None
-
 
 def _total_engagement(item: Dict[str, Any]) -> int:
     """Combined engagement score for ranking which videos to enrich."""
@@ -701,30 +696,17 @@ def _fetch_video_comments(
         List of comment dicts with author, text, likes, date.
     """
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    if not _requests:
-        try:
-            from urllib.parse import urlencode
-            params = urlencode({"url": video_url})
-            url = f"{SCRAPECREATORS_YT_BASE}/video/comments?{params}"
-            headers = http.scrapecreators_headers(token)
-            headers["User-Agent"] = http.USER_AGENT
-            data = http.get(url, headers=headers, timeout=30, retries=2)
-        except Exception as exc:
-            _log(f"Comment fetch error (urllib) for {video_id}: {exc}")
-            return []
-    else:
-        try:
-            resp = _requests.get(
-                f"{SCRAPECREATORS_YT_BASE}/video/comments",
-                params={"url": video_url},
-                headers=http.scrapecreators_headers(token),
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as exc:
-            _log(f"Comment fetch error for {video_id}: {exc}")
-            return []
+    try:
+        data = http.get(
+            f"{SCRAPECREATORS_YT_BASE}/video/comments",
+            params={"url": video_url},
+            headers=http.scrapecreators_headers(token),
+            timeout=30,
+            retries=2,
+        )
+    except Exception as exc:
+        _log(f"Comment fetch error for {video_id}: {exc}")
+        return []
 
     raw_comments = data.get("comments", data.get("data", []))
     comments = []
@@ -883,28 +865,14 @@ def _sc_youtube_search(keyword: str, token: str) -> List[Dict[str, Any]]:
     Returns:
         List of raw video dicts from the API.
     """
-    if not _requests:
-        try:
-            from urllib.parse import urlencode
-            params = urlencode({"keyword": keyword})
-            url = f"{SCRAPECREATORS_YT_BASE}/search?{params}"
-            headers = http.scrapecreators_headers(token)
-            headers["User-Agent"] = http.USER_AGENT
-            data = http.get(url, headers=headers, timeout=30, retries=2)
-            return data.get("videos", data.get("data", data.get("items", [])))
-        except Exception as exc:
-            _log(f"SC YouTube search error (urllib): {exc}")
-            return []
-
     try:
-        resp = _requests.get(
+        data = http.get(
             f"{SCRAPECREATORS_YT_BASE}/search",
             params={"keyword": keyword},
             headers=http.scrapecreators_headers(token),
             timeout=30,
+            retries=2,
         )
-        resp.raise_for_status()
-        data = resp.json()
         return data.get("videos", data.get("data", data.get("items", [])))
     except Exception as exc:
         _log(f"SC YouTube search error: {exc}")
@@ -922,32 +890,17 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
         Plaintext transcript string, or None if unavailable.
     """
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    if not _requests:
-        try:
-            from urllib.parse import urlencode
-            params = urlencode({"url": video_url})
-            url = f"{SCRAPECREATORS_YT_BASE}/video/transcript?{params}"
-            headers = http.scrapecreators_headers(token)
-            headers["User-Agent"] = http.USER_AGENT
-            data = http.get(url, headers=headers, timeout=30, retries=2)
-        except Exception as exc:
-            _log(f"SC transcript error (urllib) for {video_id}: {exc}")
-            return None
-    else:
-        try:
-            resp = _requests.get(
-                f"{SCRAPECREATORS_YT_BASE}/video/transcript",
-                params={"url": video_url},
-                headers=http.scrapecreators_headers(token),
-                timeout=30,
-            )
-            if resp.status_code != 200:
-                _log(f"SC transcript returned {resp.status_code} for {video_id}")
-                return None
-            data = resp.json()
-        except Exception as exc:
-            _log(f"SC transcript error for {video_id}: {exc}")
-            return None
+    try:
+        data = http.get(
+            f"{SCRAPECREATORS_YT_BASE}/video/transcript",
+            params={"url": video_url},
+            headers=http.scrapecreators_headers(token),
+            timeout=30,
+            retries=1,
+        )
+    except Exception as exc:
+        _log(f"SC transcript error for {video_id}: {exc}")
+        return None
 
     transcript = data.get("transcript")
     if not transcript:

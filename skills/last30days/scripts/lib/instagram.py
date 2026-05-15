@@ -12,11 +12,6 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
-try:
-    import requests as _requests
-except ImportError:
-    _requests = None
-
 from . import dates, http, log
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com"
@@ -236,30 +231,17 @@ def _user_reels(
     """
     _log(f"User reels: @{handle}")
     reels_url = f"{SCRAPECREATORS_BASE}/v1/instagram/user/reels"
-    if not _requests:
-        try:
-            from urllib.parse import urlencode
-            params = urlencode({"handle": handle})
-            url = f"{reels_url}?{params}"
-            headers = http.scrapecreators_headers(token)
-            headers["User-Agent"] = http.USER_AGENT
-            data = http.get(url, headers=headers, timeout=30, retries=2)
-        except Exception as e:
-            _log(f"User reels error (urllib) for @{handle}: {e}")
-            return []
-    else:
-        try:
-            resp = _requests.get(
-                reels_url,
-                params={"handle": handle},
-                headers=http.scrapecreators_headers(token),
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            _log(f"User reels error for @{handle}: {e}")
-            return []
+    try:
+        data = http.get(
+            reels_url,
+            params={"handle": handle},
+            headers=http.scrapecreators_headers(token),
+            timeout=30,
+            retries=2,
+        )
+    except Exception as e:
+        _log(f"User reels error for @{handle}: {e}")
+        return []
 
     raw_items = data.get("items") or data.get("reels") or data.get("data") or []
     _log(f"  -> {len(raw_items)} reels from @{handle}")
@@ -293,31 +275,17 @@ def search_instagram(
 
     _log(f"Searching Instagram for '{core_topic}' (depth={depth}, count={config['results_per_page']})")
 
-    if not _requests:
-        _log("requests library not installed, falling back to urllib")
-        try:
-            from urllib.parse import urlencode
-            params = urlencode({"query": core_topic})
-            url = f"{SCRAPECREATORS_BASE}/v2/instagram/reels/search?{params}"
-            headers = http.scrapecreators_headers(token)
-            headers["User-Agent"] = http.USER_AGENT
-            data = http.get(url, headers=headers, timeout=30, retries=2)
-        except Exception as e:
-            _log(f"ScrapeCreators error (urllib): {e}")
-            return {"items": [], "error": f"{type(e).__name__}: {e}"}
-    else:
-        try:
-            resp = _requests.get(
-                f"{SCRAPECREATORS_BASE}/v2/instagram/reels/search",
-                params={"query": core_topic},
-                headers=http.scrapecreators_headers(token),
-                timeout=30,
-            )
-            resp.raise_for_status()
-            data = resp.json()
-        except Exception as e:
-            _log(f"ScrapeCreators error: {e}")
-            return {"items": [], "error": f"{type(e).__name__}: {e}"}
+    try:
+        data = http.get(
+            f"{SCRAPECREATORS_BASE}/v2/instagram/reels/search",
+            params={"query": core_topic},
+            headers=http.scrapecreators_headers(token),
+            timeout=30,
+            retries=2,
+        )
+    except Exception as e:
+        _log(f"ScrapeCreators error: {e}")
+        return {"items": [], "error": f"{type(e).__name__}: {e}"}
 
     # Items are in the 'reels' array (ScrapeCreators v2 response)
     raw_items = data.get("reels") or data.get("items") or data.get("data") or []
@@ -367,7 +335,7 @@ def fetch_captions(
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     max_captions = config["max_captions"]
 
-    if not video_items or not token or not _requests:
+    if not video_items or not token:
         return {}
 
     top_items = video_items[:max_captions]
@@ -392,26 +360,24 @@ def fetch_captions(
         if not url:
             continue
         try:
-            resp = _requests.get(
+            data = http.get(
                 f"{SCRAPECREATORS_BASE}/v2/instagram/media/transcript",
                 params={"url": url},
                 headers=http.scrapecreators_headers(token),
                 timeout=15,
+                retries=1,
             )
-            if resp.status_code == 200:
-                data = resp.json()
-                transcripts = data.get("transcripts") or []
-                if transcripts and isinstance(transcripts, list):
-                    # Combine all transcript segments
-                    transcript_text = " ".join(
-                        t.get("text", "") for t in transcripts
-                        if isinstance(t, dict) and t.get("text")
-                    )
-                    if transcript_text:
-                        words = transcript_text.split()
-                        if len(words) > CAPTION_MAX_WORDS:
-                            transcript_text = ' '.join(words[:CAPTION_MAX_WORDS]) + '...'
-                        captions[vid] = transcript_text
+            transcripts = data.get("transcripts") or []
+            if transcripts and isinstance(transcripts, list):
+                transcript_text = " ".join(
+                    t.get("text", "") for t in transcripts
+                    if isinstance(t, dict) and t.get("text")
+                )
+                if transcript_text:
+                    words = transcript_text.split()
+                    if len(words) > CAPTION_MAX_WORDS:
+                        transcript_text = ' '.join(words[:CAPTION_MAX_WORDS]) + '...'
+                    captions[vid] = transcript_text
         except Exception as e:
             _log(f"Transcript fetch failed for {vid}: {e}")
 
