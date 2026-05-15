@@ -13,9 +13,9 @@ metadata:
   openclaw:
     emoji: "📰"
     requires:
-      env:
-        - SCRAPECREATORS_API_KEY
+      env: []
       optionalEnv:
+        - SCRAPECREATORS_API_KEY
         - OPENAI_API_KEY
         - XAI_API_KEY
         - OPENROUTER_API_KEY

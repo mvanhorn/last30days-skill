@@ -64,6 +64,19 @@ class TestRunOpenclawSetup:
         assert result["keys"]["brave"] is True
         assert result["keys"]["scrapecreators"] is False
 
+    def test_openclaw_metadata_keeps_scrapecreators_optional(self):
+        """OpenClaw metadata should not hard-require the ScrapeCreators key."""
+        skill_md = Path(__file__).parent.parent / "skills" / "last30days" / "SKILL.md"
+        text = skill_md.read_text()
+        assert "SCRAPECREATORS_API_KEY" in text
+        expected = (
+            "requires:\n"
+            "      env: []\n"
+            "      optionalEnv:\n"
+            "        - SCRAPECREATORS_API_KEY"
+        )
+        assert expected in text
+
     @patch("shutil.which")
     def test_x_method_xai(self, mock_which):
         """x_method is 'xai' when XAI_API_KEY is set."""
