@@ -7,12 +7,15 @@ SRC="$(cd "$(dirname "$0")/.." && pwd)"
 echo "Source: $SRC"
 
 COMMON_TARGETS=(
-  # Claude Code plugin cache: marketplace installs overwrite on update,
-  # but local development needs the cache kept in sync with the repo.
-  # Do NOT add ~/.claude/skills/last30days - it creates a duplicate
-  # /last30days-3 in the slash command menu alongside the plugin version.
-  "$HOME/.claude/plugins/cache/last30days-skill-private/last30days-3/3.2.1"
-  "$HOME/.claude/plugins/cache/last30days-skill-private/last30days-3-nogem/3.0.0-nogem"
+  # Claude Code plugin cache for this (public) repo's marketplace install.
+  # Marketplace name = last30days-skill (.claude-plugin/marketplace.json).
+  # Plugin name      = last30days       (.claude-plugin/plugin.json).
+  # Path shape       = .../cache/{marketplace-name}/{plugin-name}/{version}.
+  # Marketplace pulls overwrite this on update; local sync keeps it fresh
+  # against the working tree so /last30days reflects local dev without
+  # waiting for a release. Do NOT add ~/.claude/skills/last30days - it
+  # creates a duplicate slash-command entry alongside the plugin version.
+  "$HOME/.claude/plugins/cache/last30days-skill/last30days/3.2.1"
   "$HOME/.agents/skills/last30days"
   "$HOME/.codex/skills/last30days"
 )

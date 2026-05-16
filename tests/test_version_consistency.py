@@ -24,7 +24,10 @@ class TestVersionConsistency(unittest.TestCase):
     def test_sync_cache_path_uses_skill_version(self) -> None:
         sync_text = (SKILL_ROOT / "scripts" / "sync.sh").read_text(encoding="utf-8")
         version = _skill_version()
-        self.assertIn(f'last30days-3/{version}"', sync_text)
+        self.assertIn(
+            f'last30days-skill/last30days/{version}"',
+            sync_text,
+        )
 
     def test_memory_save_dir_uses_single_env_variable(self) -> None:
         skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
