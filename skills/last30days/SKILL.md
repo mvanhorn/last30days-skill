@@ -1,6 +1,6 @@
 ---
 name: last30days
-version: "3.2.3"
+version: "3.2.4"
 description: "Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web."
 argument-hint: 'last30days nvidia earnings reaction | last30days AI video tools | last30days what users want in react'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
@@ -243,7 +243,7 @@ If your Bash call to `last30days.py` does NOT include the FULL pre-flight checkl
 
 ---
 
-# last30days v3.2.3: Research Any Topic from the Last 30 Days
+# last30days v3.2.4: Research Any Topic from the Last 30 Days
 
 > **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`). X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars). Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
 
@@ -605,10 +605,15 @@ if [ -n "$CLAUDE_PLUGIN_ROOT" ]; then
 fi
 if [ -z "$SKILL_ROOT" ] || [ ! -f "$SKILL_ROOT/scripts/last30days.py" ]; then
   for dir in \
+      "$HOME/.claude/skills/last30days" \
       "$HOME/.codex/skills/last30days" \
+      "$HOME/.cursor/skills/last30days" \
+      "$HOME/.gemini/skills/last30days" \
+      "$HOME/.copilot/skills/last30days" \
       "$HOME/.agents/skills/last30days" \
+      "./.claude/skills/last30days" \
+      "./.agents/skills/last30days" \
       "./skills/last30days" \
-      "./.skills/last30days" \
       "." \
       "${GEMINI_EXTENSION_DIR:-}"; do
     [ -n "$dir" ] && [ -f "$dir/scripts/last30days.py" ] && SKILL_ROOT="$dir" && break
@@ -934,13 +939,20 @@ if [ -n "$CLAUDE_PLUGIN_ROOT" ]; then
   fi
 fi
 
-# 2. Common per-harness skill dirs and repo checkout (npx skills, Codex, Agents, Gemini, etc).
+# 2. Per-harness global skill dirs (where `npx skills add -g -a <harness>` writes),
+#    universal Agent Skills dir, project-local installs (npx skills with no -g),
+#    repo checkout, and a Gemini env-var hint as a last resort.
 if [ -z "$SKILL_ROOT" ] || [ ! -f "$SKILL_ROOT/scripts/last30days.py" ]; then
   for dir in \
+      "$HOME/.claude/skills/last30days" \
       "$HOME/.codex/skills/last30days" \
+      "$HOME/.cursor/skills/last30days" \
+      "$HOME/.gemini/skills/last30days" \
+      "$HOME/.copilot/skills/last30days" \
       "$HOME/.agents/skills/last30days" \
+      "./.claude/skills/last30days" \
+      "./.agents/skills/last30days" \
       "./skills/last30days" \
-      "./.skills/last30days" \
       "." \
       "${GEMINI_EXTENSION_DIR:-}"; do
     [ -n "$dir" ] && [ -f "$dir/scripts/last30days.py" ] && SKILL_ROOT="$dir" && break
@@ -949,7 +961,7 @@ fi
 
 if [ -z "${SKILL_ROOT:-}" ] || [ ! -f "$SKILL_ROOT/scripts/last30days.py" ]; then
   echo "ERROR: Could not find scripts/last30days.py in any known install location" >&2
-  echo "Searched: ~/.claude/plugins/cache/, ~/.codex/skills/, ~/.agents/skills/, ./skills/last30days, ./.skills/last30days, ." >&2
+  echo "Searched: Claude plugin cache, per-harness global dirs (~/.claude/skills, ~/.codex/skills, ~/.cursor/skills, ~/.gemini/skills, ~/.copilot/skills, ~/.agents/skills), project-local installs (./.claude/skills, ./.agents/skills), repo checkout, CWD." >&2
   exit 1
 fi
 
