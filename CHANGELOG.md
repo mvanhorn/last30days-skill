@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`LAST30DAYS_YOUTUBE_SSH_HOST` transcript routing** — yt-dlp transcript fetch now runs on the remote SSH host via a `mktemp + cat` shell pipeline that captures the .vtt to stdout. Previously the transcript path skipped yt-dlp entirely when SSH routing was on and fell back to direct HTTP, which is also IP-walled on datacenter VPS (verified: 0/6 transcript success on Hetzner). Follow-up to [#376](https://github.com/mvanhorn/last30days-skill/pull/376) — search routing landed there, transcript path was deferred.
+
+### Fixed
+
+- **SSH routing failures no longer present as "0 results"** — `search_youtube` now surfaces non-zero SSH exit codes (connection refused, auth rejected, yt-dlp missing on remote) as an explicit `error` field instead of swallowing them as a legitimate empty search. Addresses Greptile's P1 finding on [#376](https://github.com/mvanhorn/last30days-skill/pull/376). The error-surfacing branch is gated on `LAST30DAYS_YOUTUBE_SSH_HOST` being set so users on the local-yt-dlp path see no behavior change.
+
 ## [3.3.0] - 2026-05-17
 
 A week-long shipping cycle: ~75 PRs merged plus 7 community fixes salvaged through PR triage. Big themes: install story modernized for the multi-harness world (Claude Code, Codex, Cursor, Gemini CLI, Copilot, Windsurf, and 50+ Agent Skills hosts), new emit and source modes, and a substantial reliability sweep across Reddit, X, Windows, YouTube, and the planner.
