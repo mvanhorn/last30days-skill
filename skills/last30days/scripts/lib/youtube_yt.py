@@ -511,6 +511,81 @@ def _fetch_transcript_direct(
     return vtt_text
 
 
+def _fetch_transcript_ytdlp_via_ssh(video_id: str, ssh_host: str) -> Optional[str]:
+    """Fetch transcript via yt-dlp running on a remote SSH host.
+
+    The local-yt-dlp path writes the .vtt file to a temp dir on the
+    invoking machine; wrapping that command in ``ssh <host> "yt-dlp ..."``
+    would write the file to the *remote* filesystem where the local code
+    can't read it back. Instead this helper runs a small shell pipeline on
+    the remote host that:
+
+      1. Creates a remote tempdir (mktemp -d)
+      2. Runs yt-dlp into that tempdir, with the player extractor log
+         redirected to /dev/null (otherwise its ``[youtube] Solving JS
+         challenges`` chatter pollutes stdout and corrupts the VTT)
+      3. cats the resulting .vtt file to stdout
+      4. Cleans up the tempdir
+
+    The local side captures stdout (the VTT text), verifies it starts with
+    ``WEBVTT``, and returns it. This is one ssh round-trip per video, with
+    deterministic remote cleanup.
+
+    Why not just use ``-o -`` to stream stdout?  ``--write-auto-subs``
+    writes the captions to a file regardless of the ``-o`` template;
+    with ``-o -`` yt-dlp either writes a literal ``-.en.vtt`` file or
+    produces no output. The remote-mktemp + cat trick is the only
+    approach that actually returns VTT bytes via stdout.
+
+    Why not ``scp`` the file back?  Adds connection setup latency for
+    every transcript fetch (search routes 6-40 videos through this) and
+    requires a writable local temp_dir contract that the wrapper would
+    have to honor. Single ssh + cat is simpler and faster.
+
+    Args:
+        video_id: YouTube video ID
+        ssh_host: Remote SSH alias (already validated by _ytdlp_ssh_host)
+
+    Returns:
+        Raw VTT text, or None if no captions available or SSH failed.
+    """
+    # Defense-in-depth: validate the host even though the caller already did.
+    if not _SSH_HOST_ALIAS_RE.match(ssh_host):
+        return None
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    quoted_url = shlex.quote(url)
+    remote_script = (
+        "set -e; "
+        "TMPD=$(mktemp -d); "
+        "yt-dlp --ignore-config --no-cookies-from-browser "
+        "--write-auto-subs --sub-lang en --sub-format vtt "
+        "--skip-download --no-warnings "
+        f'-o "$TMPD/%(id)s" {quoted_url} >/dev/null 2>&1 || true; '
+        'VTT=$(ls "$TMPD"/*.vtt 2>/dev/null | head -1); '
+        '[ -n "$VTT" ] && cat "$VTT"; '
+        'rm -rf "$TMPD"'
+    )
+    cmd = ["ssh", "-o", "BatchMode=yes", "--", ssh_host, remote_script]
+    try:
+        result = subproc.run_with_timeout(cmd, timeout=45)
+    except subproc.SubprocTimeout:
+        _log(f"SSH yt-dlp transcript timed out for {video_id} via {ssh_host!r}")
+        return None
+    except FileNotFoundError:
+        _log("ssh executable not found; cannot route transcript fetch")
+        return None
+    out = result.stdout or ""
+    if not out.strip().startswith("WEBVTT"):
+        if result.returncode != 0 and result.stderr:
+            first_line = result.stderr.strip().splitlines()[0]
+            _log(
+                f"SSH yt-dlp transcript via {ssh_host!r} failed for "
+                f"{video_id} (rc={result.returncode}): {first_line}"
+            )
+        return None
+    return out
+
+
 def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
     """Fetch transcript using yt-dlp (original implementation).
 
@@ -579,22 +654,23 @@ def fetch_transcript(
         Plaintext transcript string, or None if no captions available.
     """
     raw_vtt = None
-    # When SSH-routing is on, the yt-dlp transcript path would write a VTT
-    # file on the remote host that we can't easily read back. Skip it and
-    # use the HTTP transcript fallback (different YouTube endpoint, less
-    # bot-walled, works fine from datacenter IPs).
     ssh_host = _ytdlp_ssh_host()
-    use_ytdlp = is_ytdlp_installed() and not ssh_host
-    if use_ytdlp:
+    if ssh_host and is_ytdlp_installed():
+        # Route yt-dlp through the residential-IP host (same pattern as
+        # search). The remote-mktemp + cat helper captures the VTT to
+        # stdout so the local temp_dir contract is preserved without
+        # actually writing anything locally.
+        raw_vtt = _fetch_transcript_ytdlp_via_ssh(video_id, ssh_host)
+        if not raw_vtt:
+            _log(f"SSH yt-dlp transcript failed for {video_id}, trying direct HTTP fallback")
+            raw_vtt = _fetch_transcript_direct(video_id, status=status)
+    elif is_ytdlp_installed():
         raw_vtt = _fetch_transcript_ytdlp(video_id, temp_dir)
         if not raw_vtt:
             _log(f"yt-dlp transcript failed for {video_id}, trying direct HTTP fallback")
             raw_vtt = _fetch_transcript_direct(video_id, status=status)
     else:
-        if ssh_host:
-            _log("SSH-routing active, using direct HTTP transcript fetch")
-        else:
-            _log("yt-dlp not installed, using direct HTTP transcript fetch")
+        _log("yt-dlp not installed, using direct HTTP transcript fetch")
         raw_vtt = _fetch_transcript_direct(video_id, status=status)
 
     if not raw_vtt:

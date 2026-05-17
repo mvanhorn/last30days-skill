@@ -618,5 +618,165 @@ class TestYtdlpSSHRouting(unittest.TestCase):
         self.assertNotIn("error", out)
 
 
+class TestTranscriptSSHRouting(unittest.TestCase):
+    """LAST30DAYS_YOUTUBE_SSH_HOST routes yt-dlp transcript fetches through SSH.
+
+    Search routing landed in #376; this class covers the transcript path
+    using the remote-mktemp + cat helper. Without these tests, the
+    fetch_transcript dispatch would silently regress to HTTP fallback on
+    every refactor (which is the bug this PR fixes — HTTP fallback fails
+    on datacenter VPS where the entire bot-wall problem started).
+    """
+
+    def setUp(self):
+        self._saved_env = os.environ.pop("LAST30DAYS_YOUTUBE_SSH_HOST", None)
+
+    def tearDown(self):
+        os.environ.pop("LAST30DAYS_YOUTUBE_SSH_HOST", None)
+        if self._saved_env is not None:
+            os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = self._saved_env
+
+    def test_ssh_helper_invokes_remote_mktemp_pipeline(self):
+        """The SSH helper sends mktemp + yt-dlp + cat + cleanup to the remote host."""
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        from lib.subproc import SubprocResult
+        fake_vtt = "WEBVTT\nKind: captions\nLanguage: en\n\n00:00:00.000 --> 00:00:02.000\nhi\n"
+        fake_result = SubprocResult(returncode=0, stdout=fake_vtt, stderr="")
+        with mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                               return_value=fake_result) as run_mock:
+            out = youtube_yt._fetch_transcript_ytdlp_via_ssh("vid1", "macmini")
+        self.assertEqual(out, fake_vtt)
+        cmd = run_mock.call_args.args[0]
+        # ssh -o BatchMode=yes -- <host> <remote-script>
+        self.assertEqual(cmd[0], "ssh")
+        self.assertEqual(cmd[1], "-o")
+        self.assertEqual(cmd[2], "BatchMode=yes")
+        self.assertEqual(cmd[3], "--")
+        self.assertEqual(cmd[4], "macmini")
+        remote_script = cmd[5]
+        # The remote pipeline must do all of these:
+        self.assertIn("mktemp -d", remote_script)
+        self.assertIn("yt-dlp", remote_script)
+        self.assertIn("--write-auto-subs", remote_script)
+        # /dev/null redirect is non-negotiable — without it the yt-dlp
+        # extractor log lines corrupt the captured VTT.
+        self.assertIn(">/dev/null 2>&1", remote_script)
+        self.assertIn("cat", remote_script)
+        self.assertIn("rm -rf", remote_script)
+        # The video URL must be shell-quoted to survive the remote shell.
+        self.assertIn("'https://www.youtube.com/watch?v=vid1'", remote_script)
+
+    def test_ssh_helper_returns_none_when_stdout_not_webvtt(self):
+        """A successful SSH call with non-VTT stdout returns None (no captions)."""
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        from lib.subproc import SubprocResult
+        # rc=0 but no VTT in stdout — captions just don't exist for this video
+        fake_result = SubprocResult(returncode=0, stdout="", stderr="")
+        with mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                               return_value=fake_result):
+            out = youtube_yt._fetch_transcript_ytdlp_via_ssh("vid2", "macmini")
+        self.assertIsNone(out)
+
+    def test_ssh_helper_returns_none_on_ssh_failure(self):
+        """SSH connection failures return None so the caller can fall back."""
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        from lib.subproc import SubprocResult
+        fake_result = SubprocResult(
+            returncode=255,
+            stdout="",
+            stderr="ssh: connect to host macmini port 22: Connection refused\n",
+        )
+        with mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                               return_value=fake_result):
+            out = youtube_yt._fetch_transcript_ytdlp_via_ssh("vid3", "macmini")
+        self.assertIsNone(out)
+
+    def test_ssh_helper_rejects_invalid_host_alias_defense_in_depth(self):
+        """Even if a bad host slips past the caller, the helper rejects it."""
+        # Caller validates too, but defense-in-depth means the helper
+        # also matches against _SSH_HOST_ALIAS_RE before issuing ssh.
+        out = youtube_yt._fetch_transcript_ytdlp_via_ssh("vid4", "-oProxyCommand=evil")
+        self.assertIsNone(out)
+        out = youtube_yt._fetch_transcript_ytdlp_via_ssh("vid5", "host;rm -rf /")
+        self.assertIsNone(out)
+
+    def test_ssh_helper_handles_timeout(self):
+        """SubprocTimeout returns None, doesn't raise."""
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        with mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                               side_effect=youtube_yt.subproc.SubprocTimeout("test")):
+            out = youtube_yt._fetch_transcript_ytdlp_via_ssh("vid6", "macmini")
+        self.assertIsNone(out)
+
+    def test_ssh_helper_handles_missing_ssh_executable(self):
+        """FileNotFoundError (ssh not on PATH) returns None, doesn't raise."""
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        with mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                               side_effect=FileNotFoundError("ssh")):
+            out = youtube_yt._fetch_transcript_ytdlp_via_ssh("vid7", "macmini")
+        self.assertIsNone(out)
+
+    def test_fetch_transcript_uses_ssh_helper_when_routing_on(self):
+        """fetch_transcript dispatches to _fetch_transcript_ytdlp_via_ssh when SSH is on.
+
+        Before this PR, fetch_transcript fell back to HTTP when SSH routing
+        was on (with the comment "works fine from datacenter IPs"). That
+        was wrong on datacenter VPS — the HTTP transcript endpoint is also
+        IP-walled. This test verifies the dispatch now prefers the SSH path.
+        """
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        fake_vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nhello there friends\n"
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp_via_ssh",
+                               return_value=fake_vtt) as ssh_mock, \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp") as local_mock, \
+             mock.patch.object(youtube_yt, "_fetch_transcript_direct") as direct_mock:
+            result = youtube_yt.fetch_transcript("vidX", "/tmp/test")
+        ssh_mock.assert_called_once_with("vidX", "macmini")
+        local_mock.assert_not_called()
+        direct_mock.assert_not_called()
+        self.assertIn("hello there friends", result)
+
+    def test_fetch_transcript_falls_back_to_http_when_ssh_returns_none(self):
+        """If the SSH transcript fetch returns None, HTTP fallback still runs.
+
+        Belt and suspenders: even though SSH is the preferred path on
+        datacenter VPS, some videos won't have auto-captions or yt-dlp
+        will fail on them. The HTTP fallback is the last chance and
+        sometimes works (it's just unreliable enough that it can't be the
+        primary path when SSH routing is configured).
+        """
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        http_vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nhttp fallback content\n"
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp_via_ssh",
+                               return_value=None) as ssh_mock, \
+             mock.patch.object(youtube_yt, "_fetch_transcript_direct",
+                               return_value=http_vtt) as direct_mock:
+            result = youtube_yt.fetch_transcript("vidY", "/tmp/test")
+        ssh_mock.assert_called_once()
+        direct_mock.assert_called_once()
+        self.assertIn("http fallback content", result)
+
+    def test_fetch_transcript_local_path_unchanged_when_ssh_unset(self):
+        """Without SSH routing, local yt-dlp + HTTP fallback path is unchanged.
+
+        Regression guard for users not on SSH routing — the new dispatch
+        branch must not perturb their behavior.
+        """
+        # No env var set in setUp
+        fake_vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nlocal yt-dlp output\n"
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp_via_ssh") as ssh_mock, \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp",
+                               return_value=fake_vtt) as local_mock, \
+             mock.patch.object(youtube_yt, "_fetch_transcript_direct") as direct_mock:
+            result = youtube_yt.fetch_transcript("vidZ", "/tmp/test")
+        ssh_mock.assert_not_called()
+        local_mock.assert_called_once_with("vidZ", "/tmp/test")
+        direct_mock.assert_not_called()
+        self.assertIn("local yt-dlp output", result)
+
+
 if __name__ == "__main__":
     unittest.main()
