@@ -602,20 +602,34 @@ class TestYtdlpSSHRouting(unittest.TestCase):
 
         The error-surfacing branch is gated on ssh_host being set. Local
         yt-dlp non-zero exits keep the original "0 results" behavior to avoid
-        a behavior change for users not on SSH routing.
+        a behavior change for users not on SSH routing. The assertion is
+        narrow on purpose — we only want to confirm the new SSH-error
+        message isn't synthesized; the upstream "yt-dlp not installed"
+        early-return error (which fires on CI where yt-dlp is genuinely
+        absent) is unrelated and acceptable here.
         """
-        # No env var set in setUp
+        # No env var set in setUp; mock yt-dlp as installed locally so we
+        # actually reach the empty-stdout branch (CI runners don't have
+        # yt-dlp on PATH and would short-circuit before run_with_timeout).
         from lib.subproc import SubprocResult
         fake_result = SubprocResult(
             returncode=1,
             stdout="",
             stderr="some local yt-dlp warning\n",
         )
-        with mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed",
+                               return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout",
                                return_value=fake_result):
             out = youtube_yt.search_youtube("test", "2026-02-01", "2026-03-01")
         self.assertEqual(out["items"], [])
-        self.assertNotIn("error", out)
+        # The error-surfacing branch must NOT have fired — no SSH-related
+        # error string should appear in the output.
+        self.assertNotIn(
+            "SSH routing",
+            out.get("error", ""),
+            "Local non-zero exit should not synthesize an SSH-routing error",
+        )
 
 
 class TestTranscriptSSHRouting(unittest.TestCase):
