@@ -663,6 +663,16 @@ class TestTranscriptSSHRouting(unittest.TestCase):
         self.assertIn(">/dev/null 2>&1", remote_script)
         self.assertIn("cat", remote_script)
         self.assertIn("rm -rf", remote_script)
+        # Use `find` not `ls` — `ls "$TMPD"/*.vtt` exits 1 on no match,
+        # and on a remote shell with `pipefail` set that trips `set -e`
+        # before cleanup runs, leaking the tempdir. `find` exits 0 on
+        # no match. Regression guard for greptile review on PR #422.
+        self.assertIn("find ", remote_script)
+        self.assertNotIn(
+            'ls "$TMPD"', remote_script,
+            "Don't use `ls`/glob to detect VTT — exits 1 on no match and "
+            "leaks the tempdir under pipefail. Use `find` instead.",
+        )
         # The video URL must be shell-quoted to survive the remote shell.
         self.assertIn("'https://www.youtube.com/watch?v=vid1'", remote_script)
 

@@ -542,6 +542,13 @@ def _fetch_transcript_ytdlp_via_ssh(video_id: str, ssh_host: str) -> Optional[st
     requires a writable local temp_dir contract that the wrapper would
     have to honor. Single ssh + cat is simpler and faster.
 
+    The remote script uses ``find`` rather than ``ls "$TMPD"/*.vtt | head``
+    because when no .vtt exists the ``ls`` glob exits 1; under ``pipefail``
+    (which can leak into non-interactive SSH from ``/etc/bash.bashrc`` on
+    hardened hosts) the pipeline trips ``set -e`` before the cleanup line
+    runs, orphaning the remote tempdir. ``find`` exits 0 on no matches,
+    keeping cleanup deterministic.
+
     Args:
         video_id: YouTube video ID
         ssh_host: Remote SSH alias (already validated by _ytdlp_ssh_host)
@@ -561,7 +568,13 @@ def _fetch_transcript_ytdlp_via_ssh(video_id: str, ssh_host: str) -> Optional[st
         "--write-auto-subs --sub-lang en --sub-format vtt "
         "--skip-download --no-warnings "
         f'-o "$TMPD/%(id)s" {quoted_url} >/dev/null 2>&1 || true; '
-        'VTT=$(ls "$TMPD"/*.vtt 2>/dev/null | head -1); '
+        # Use `find` not `ls`: when no .vtt exists, `ls` exits 1 and a
+        # remote shell with `pipefail` set (common on hardened systems
+        # via /etc/bash.bashrc or login-shell config that leaks into
+        # non-interactive SSH) will trip `set -e` and skip the rm
+        # cleanup, leaking the tempdir. `find` exits 0 even with no
+        # matches, so the pipeline is pipefail-safe.
+        'VTT=$(find "$TMPD" -maxdepth 1 -name "*.vtt" 2>/dev/null | head -1); '
         '[ -n "$VTT" ] && cat "$VTT"; '
         'rm -rf "$TMPD"'
     )
