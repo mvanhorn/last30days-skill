@@ -292,6 +292,7 @@ def search_youtube(
         "--no-download",
     ]
     cmd = _wrap_ytdlp_cmd(cmd)
+    ssh_host = _ytdlp_ssh_host()
 
     try:
         result = subproc.run_with_timeout(cmd, timeout=120)
@@ -302,6 +303,26 @@ def search_youtube(
         return {"items": [], "error": "yt-dlp not found"}
 
     stdout = result.stdout
+    # When SSH-routing is on, surface SSH/transport failures explicitly.
+    # run_with_timeout doesn't raise on non-zero exit — it returns a
+    # SubprocResult with returncode and stderr populated. Without this
+    # branch a failed SSH (auth rejected, host unreachable, yt-dlp not
+    # installed on remote) presents as stdout=="" and gets logged as
+    # "0 results", which is indistinguishable from a legitimate empty
+    # search. The first stderr line of ssh failures is short and
+    # diagnostic (e.g. "ssh: connect to host macmini port 22: Connection
+    # refused"), so we surface it both in the log and the error field.
+    if ssh_host and result.returncode != 0 and not stdout.strip():
+        stderr_first = (result.stderr or "").strip().splitlines()
+        first_line = stderr_first[0] if stderr_first else "(no stderr)"
+        _log(
+            f"YouTube search via SSH host {ssh_host!r} failed "
+            f"(rc={result.returncode}): {first_line}"
+        )
+        return {
+            "items": [],
+            "error": f"SSH routing to {ssh_host!r} failed: {first_line}",
+        }
     if not stdout.strip():
         _log("YouTube search returned 0 results")
         return {"items": []}

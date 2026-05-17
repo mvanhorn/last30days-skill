@@ -536,6 +536,87 @@ class TestYtdlpSSHRouting(unittest.TestCase):
         self.assertIn("--ignore-config", cmd[5])
         self.assertIn("--no-cookies-from-browser", cmd[5])
 
+    def test_search_ssh_failure_surfaces_error_not_empty_results(self):
+        """SSH connection failures surface as an error, not silent '0 results'.
+
+        Regression test for the silent-failure bug flagged by Greptile on
+        PR #376: run_with_timeout doesn't raise on a non-zero exit, so a
+        failed SSH (connection refused, auth rejected, yt-dlp missing on
+        remote) yields stdout="" with stderr populated. Before this fix
+        the empty stdout branch swallowed it as a legitimate "0 results"
+        and discarded stderr entirely.
+        """
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        from lib.subproc import SubprocResult
+        fake_result = SubprocResult(
+            returncode=255,
+            stdout="",
+            stderr="ssh: connect to host macmini port 22: Connection refused\n",
+        )
+        with mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                               return_value=fake_result):
+            out = youtube_yt.search_youtube("test", "2026-02-01", "2026-03-01")
+        self.assertEqual(out["items"], [])
+        self.assertIn("error", out, "SSH failure must populate the error field")
+        self.assertIn("macmini", out["error"])
+        self.assertIn("Connection refused", out["error"])
+
+    def test_search_ssh_yt_dlp_missing_on_remote_surfaces_error(self):
+        """yt-dlp missing on the remote host (rc=127) surfaces as an error."""
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        from lib.subproc import SubprocResult
+        fake_result = SubprocResult(
+            returncode=127,
+            stdout="",
+            stderr="bash: line 1: yt-dlp: command not found\n",
+        )
+        with mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                               return_value=fake_result):
+            out = youtube_yt.search_youtube("test", "2026-02-01", "2026-03-01")
+        self.assertEqual(out["items"], [])
+        self.assertIn("error", out)
+        self.assertIn("macmini", out["error"])
+        self.assertIn("command not found", out["error"])
+
+    def test_search_ssh_success_with_empty_results_does_not_synthesize_error(self):
+        """A successful SSH call (rc=0) with empty output is still '0 results', not an error.
+
+        Distinguishes genuine empty search results (yt-dlp ran fine, found
+        nothing) from SSH/transport failures. Only the latter should populate
+        the error field.
+        """
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        from lib.subproc import SubprocResult
+        fake_result = SubprocResult(returncode=0, stdout="", stderr="")
+        with mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                               return_value=fake_result):
+            out = youtube_yt.search_youtube("test", "2026-02-01", "2026-03-01")
+        self.assertEqual(out["items"], [])
+        self.assertNotIn(
+            "error", out,
+            "rc=0 with empty stdout should NOT synthesize an SSH error",
+        )
+
+    def test_search_local_nonzero_does_not_synthesize_ssh_error(self):
+        """Without SSH routing, a non-zero exit + empty stdout stays as '0 results'.
+
+        The error-surfacing branch is gated on ssh_host being set. Local
+        yt-dlp non-zero exits keep the original "0 results" behavior to avoid
+        a behavior change for users not on SSH routing.
+        """
+        # No env var set in setUp
+        from lib.subproc import SubprocResult
+        fake_result = SubprocResult(
+            returncode=1,
+            stdout="",
+            stderr="some local yt-dlp warning\n",
+        )
+        with mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                               return_value=fake_result):
+            out = youtube_yt.search_youtube("test", "2026-02-01", "2026-03-01")
+        self.assertEqual(out["items"], [])
+        self.assertNotIn("error", out)
+
 
 if __name__ == "__main__":
     unittest.main()
