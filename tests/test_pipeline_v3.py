@@ -1026,12 +1026,23 @@ class TestInnerMaxWorkers(unittest.TestCase):
         self.assertEqual(pipeline._inner_max_workers(3, internal_subrun=True), 3)
         self.assertEqual(pipeline._inner_max_workers(1, internal_subrun=True), 2)
 
-    def test_subrun_total_bound_for_six_competitors(self):
-        # MAX_PARALLEL_SUBRUNS=6 outer × inner_cap=4 = 24 inner threads,
-        # well under the un-capped 6×16=96.
-        inner = pipeline._inner_max_workers(20, internal_subrun=True)
-        total = inner * 6
-        self.assertLessEqual(total, 30, f"6×{inner}={total} exceeds bound")
+    def test_subrun_caps_total_concurrency_below_uncapped(self):
+        # Derive the outer cap from fanout so this test stays meaningful if
+        # MAX_PARALLEL_SUBRUNS is bumped. The contract under test is "subrun
+        # mode meaningfully reduces total inner-thread count", not a magic
+        # number tied to today's value of MAX_PARALLEL_SUBRUNS=6.
+        from lib import fanout
+        max_subruns = fanout.MAX_PARALLEL_SUBRUNS
+        capped = pipeline._inner_max_workers(20, internal_subrun=True) * max_subruns
+        uncapped = pipeline._inner_max_workers(20, internal_subrun=False) * max_subruns
+        self.assertLess(capped, uncapped, f"capped={capped} not < uncapped={uncapped}")
+        # The cap must cut total concurrency to at most half of the un-capped
+        # value; otherwise the cap is doing real work.
+        self.assertLessEqual(
+            capped,
+            uncapped // 2,
+            f"capped {capped} should be at most half of uncapped {uncapped}",
+        )
 
 
 if __name__ == "__main__":
