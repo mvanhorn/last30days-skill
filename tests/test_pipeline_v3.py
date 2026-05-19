@@ -1005,5 +1005,34 @@ class TestExcludeSourcesEndToEnd(unittest.TestCase):
         self.assertNotIn("tiktok", sources)
         self.assertNotIn("instagram", sources)
 
+
+class TestInnerMaxWorkers(unittest.TestCase):
+    """Cap inner ThreadPoolExecutor concurrency under competitor fanout.
+
+    Without the cap, six competitor sub-runs each open their own
+    ``ThreadPoolExecutor(max_workers=16)``, peaking around 96 worker threads
+    that all hammer the same upstream APIs. ``internal_subrun=True`` should
+    reduce the inner pool so the nested fanout stays bounded.
+    """
+
+    def test_normal_run_uses_full_ceiling(self):
+        self.assertEqual(pipeline._inner_max_workers(20, internal_subrun=False), 16)
+        self.assertEqual(pipeline._inner_max_workers(10, internal_subrun=False), 10)
+        self.assertEqual(pipeline._inner_max_workers(1, internal_subrun=False), 4)
+
+    def test_subrun_caps_at_four(self):
+        self.assertEqual(pipeline._inner_max_workers(20, internal_subrun=True), 4)
+        self.assertEqual(pipeline._inner_max_workers(10, internal_subrun=True), 4)
+        self.assertEqual(pipeline._inner_max_workers(3, internal_subrun=True), 3)
+        self.assertEqual(pipeline._inner_max_workers(1, internal_subrun=True), 2)
+
+    def test_subrun_total_bound_for_six_competitors(self):
+        # MAX_PARALLEL_SUBRUNS=6 outer × inner_cap=4 = 24 inner threads,
+        # well under the un-capped 6×16=96.
+        inner = pipeline._inner_max_workers(20, internal_subrun=True)
+        total = inner * 6
+        self.assertLessEqual(total, 30, f"6×{inner}={total} exceeds bound")
+
+
 if __name__ == "__main__":
     unittest.main()

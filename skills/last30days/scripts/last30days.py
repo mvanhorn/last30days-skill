@@ -752,6 +752,10 @@ def main() -> int:
                 lookback_days=args.lookback_days,
                 github_user=github_user,
                 github_repos=github_repos,
+                # Under --competitors fanout, the main slot runs in parallel
+                # with N peer subruns; cap inner concurrency so the nested
+                # pool doesn't peak at ~96 threads.
+                internal_subrun=comp_enabled,
             )
             r.artifacts["resolved"] = {
                 "entity": topic,
