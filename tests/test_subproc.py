@@ -93,5 +93,19 @@ class TestRunWithTimeout(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "ok")
 
+    def test_sigterm_ignoring_child_is_sigkill_escalated(self):
+        """A child that ignores SIGTERM must be escalated to SIGKILL.
+
+        Without escalation, ``proc.wait(timeout=5)`` raises
+        ``subprocess.TimeoutExpired`` past the ``except`` block instead of the
+        documented ``SubprocTimeout``, and the child stays alive.
+        """
+        with self.assertRaises(subproc.SubprocTimeout):
+            subproc.run_with_timeout(
+                ["sh", "-c", "trap '' TERM; sleep 30"],
+                timeout=1,
+            )
+
+
 if __name__ == "__main__":
     unittest.main()

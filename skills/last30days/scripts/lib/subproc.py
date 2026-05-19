@@ -84,7 +84,15 @@ def run_with_timeout(
             os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         except (ProcessLookupError, PermissionError, OSError):
             proc.kill()
-        proc.wait(timeout=5)
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            # Child ignored SIGTERM (or our killpg lost the race); escalate.
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.kill()
+            proc.wait()
         raise SubprocTimeout(f"Command {cmd[0]} timed out after {timeout}s")
 
     return SubprocResult(
