@@ -230,6 +230,19 @@ def test_parse_post_drops_non_http_scheme_xurl():
     assert digg._parse_post(_post(x_url="http://x.com/a/status/1")) is not None
 
 
+def test_parse_post_logs_unsafe_xurl_rejection_even_in_non_tty(capsys):
+    """Security-class drops must be observable in non-interactive runs.
+
+    The default ``log.source_log`` path is TTY-gated; without forcing
+    ``tty_only=False`` the rejection is invisible in Claude Code runs,
+    which is exactly the attack surface. Guard against silent regression.
+    """
+    digg._parse_post(_post(x_url="javascript:alert(1)"))
+    err = capsys.readouterr().err
+    assert "[Digg] dropped post with unsafe xUrl scheme" in err
+    assert "javascript:alert(1)" in err
+
+
 # === _run_cli / search_digg with stubbed subprocess ===
 
 

@@ -329,7 +329,18 @@ def _parse_post(raw_post: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     if not username:
         return None
     x_url = str(raw_post.get("xUrl") or "").strip()
-    if not x_url or not _is_safe_http_url(x_url):
+    if not x_url:
+        return None
+    if not _is_safe_http_url(x_url):
+        # Security-class drop: an upstream-supplied URL with a dangerous
+        # scheme. Force tty_only=False so the rejection is visible in
+        # non-interactive runs (Claude Code), which is the actual attack
+        # surface — the default tty_only=True would suppress it there.
+        log.source_log(
+            "Digg",
+            f"dropped post with unsafe xUrl scheme: {x_url!r}",
+            tty_only=False,
+        )
         return None
     return {
         "username": username,
