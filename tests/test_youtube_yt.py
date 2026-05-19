@@ -313,25 +313,6 @@ class TestExpandYouTubeQueries(unittest.TestCase):
         self.assertIn("west", core)
 
 
-class TestInferQueryIntent(unittest.TestCase):
-    """Tests for _infer_query_intent() classification."""
-
-    def test_comparison_intent(self):
-        self.assertEqual(youtube_yt._infer_query_intent("Claude vs Gemini"), "comparison")
-
-    def test_how_to_intent(self):
-        self.assertEqual(youtube_yt._infer_query_intent("how to deploy Kubernetes"), "how_to")
-
-    def test_opinion_intent(self):
-        self.assertEqual(youtube_yt._infer_query_intent("thoughts on Claude Code"), "opinion")
-
-    def test_product_intent(self):
-        self.assertEqual(youtube_yt._infer_query_intent("best laptop for programming"), "product")
-
-    def test_breaking_news_default(self):
-        self.assertEqual(youtube_yt._infer_query_intent("Kanye West"), "breaking_news")
-
-
 class TestSearchAndTranscribe(unittest.TestCase):
     """Tests for search_and_transcribe() end-to-end flow."""
 

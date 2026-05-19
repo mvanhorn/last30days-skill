@@ -37,6 +37,7 @@ TRANSCRIPT_LIMITS = {
 TRANSCRIPT_MAX_WORDS = 5000
 
 from . import http, log, subproc
+from .query import infer_query_intent
 from .relevance import token_overlap_relevance as _compute_relevance
 
 
@@ -195,20 +196,6 @@ def _extract_core_subject(topic: str) -> str:
     return extract_core_subject(topic, noise=_YT_NOISE)
 
 
-def _infer_query_intent(topic: str) -> str:
-    """Tiny local intent classifier for YouTube query expansion."""
-    text = topic.lower().strip()
-    if re.search(r"\b(vs|versus|compare|difference between)\b", text):
-        return "comparison"
-    if re.search(r"\b(how to|tutorial|guide|setup|step by step|deploy|install|configure|troubleshoot|error|fix|debug)\b", text):
-        return "how_to"
-    if re.search(r"\b(thoughts on|worth it|should i|opinion|review)\b", text):
-        return "opinion"
-    if re.search(r"\b(pricing|feature|features|best .* for)\b", text):
-        return "product"
-    return "breaking_news"
-
-
 def expand_youtube_queries(topic: str, depth: str) -> List[str]:
     """Generate multiple YouTube search queries from a topic.
 
@@ -228,7 +215,7 @@ def expand_youtube_queries(topic: str, depth: str) -> List[str]:
     if core.lower() != original_clean.lower() and len(original_clean.split()) <= 8:
         queries.append(original_clean)
 
-    qtype = _infer_query_intent(topic)
+    qtype = infer_query_intent(topic)
 
     # Intent-specific YouTube content-type variants
     if qtype == "opinion":

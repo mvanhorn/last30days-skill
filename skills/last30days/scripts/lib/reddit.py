@@ -47,7 +47,7 @@ DEPTH_CONFIG = {
     },
 }
 
-from .query import extract_core_subject as _query_extract
+from .query import extract_core_subject as _query_extract, infer_query_intent
 from .relevance import token_overlap_relevance
 
 # Reddit-specific noise words (preserves original smaller set)
@@ -96,7 +96,7 @@ def expand_reddit_queries(topic: str, depth: str) -> List[str]:
     if core.lower() != original_clean.lower() and len(original_clean.split()) <= 8:
         queries.append(original_clean)
 
-    qtype = _infer_query_intent(topic)
+    qtype = infer_query_intent(topic)
 
     # Product queries: always include review-oriented variant to bias toward
     # review communities instead of keyword-matching unrelated subreddits.
@@ -116,22 +116,6 @@ def expand_reddit_queries(topic: str, depth: str) -> List[str]:
         queries.append(f"{core} issues OR problems OR bug OR broken")
 
     return queries
-
-
-def _infer_query_intent(topic: str) -> str:
-    """Tiny local fallback for Reddit query expansion only."""
-    text = topic.lower().strip()
-    if re.search(r"\b(vs|versus|compare|difference between)\b", text):
-        return "comparison"
-    if re.search(r"\b(how to|tutorial|guide|setup|step by step|deploy|install|configuration|configure|troubleshoot|troubleshooting|error|errors|fix|debug)\b", text):
-        return "how_to"
-    if re.search(r"\b(thoughts on|worth it|should i|opinion|review)\b", text):
-        return "opinion"
-    if re.search(r"\b(pricing|feature|features|best .* for)\b", text):
-        return "product"
-    if re.search(r"\b(predict|prediction|odds|forecast|chance)\b", text):
-        return "prediction"
-    return "breaking_news"
 
 
 # Known utility/meta subreddits that match queries but aren't discussion subs.
@@ -466,7 +450,7 @@ def search_reddit(
 
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     timeframe = config["timeframe"]
-    intent = _infer_query_intent(topic)
+    intent = infer_query_intent(topic)
 
     # === Phase 1: Query Expansion ===
     queries = expand_reddit_queries(topic, depth)
