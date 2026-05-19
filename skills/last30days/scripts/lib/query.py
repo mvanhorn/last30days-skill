@@ -44,6 +44,27 @@ NOISE_WORDS = frozenset({
 })
 
 
+# Shared noise sets for adapter `_extract_core_subject` wrappers.
+#
+# SOCIAL_NOISE: short-form micro-social platforms (Bluesky, Threads, Truth Social)
+# where research/meta words rarely appear in the body of a post.
+SOCIAL_NOISE = frozenset({
+    'best', 'top', 'good', 'great', 'awesome',
+    'latest', 'new', 'news', 'update', 'updates',
+    'trending', 'hottest', 'popular', 'viral',
+    'practices', 'features', 'recommendations', 'advice',
+})
+
+# VIRAL_NOISE: viral / discovery platforms (TikTok, Instagram, Pinterest) and
+# the base for YouTube. Adds 'killer', the prompt-meta cluster, and the
+# methodology cluster on top of SOCIAL_NOISE.
+VIRAL_NOISE = SOCIAL_NOISE | frozenset({
+    'killer',
+    'prompt', 'prompts', 'prompting',
+    'methods', 'strategies', 'approaches',
+})
+
+
 def extract_core_subject(
     topic: str,
     *,

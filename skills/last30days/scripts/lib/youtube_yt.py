@@ -174,25 +174,17 @@ def _extract_core_subject(topic: str) -> str:
     NOTE: 'tips', 'tricks', 'tutorial', 'guide', 'review', 'reviews'
     are intentionally KEPT — they're YouTube content types that improve search.
     """
-    from .query import extract_core_subject
-    # YouTube-specific noise set: smaller than default, keeps content-type words
-    _YT_NOISE = frozenset({
-        'best', 'top', 'good', 'great', 'awesome', 'killer',
-        'latest', 'new', 'news', 'update', 'updates',
-        'trending', 'hottest', 'popular', 'viral',
-        'practices', 'features',
-        'recommendations', 'advice',
-        'prompt', 'prompts', 'prompting',
-        'methods', 'strategies', 'approaches',
-        # Temporal/meta words — planner generates these but they don't
-        # appear in YouTube titles, so strip them for better search.
+    from .query import VIRAL_NOISE, extract_core_subject
+    # YouTube extends VIRAL_NOISE with temporal/meta words the planner emits
+    # that don't appear in YouTube titles (months, recent year tokens, etc.).
+    _YT_EXTRA = frozenset({
         'last', 'days', 'recent', 'recently', 'month', 'week',
         'january', 'february', 'march', 'april', 'may', 'june',
         'july', 'august', 'september', 'october', 'november', 'december',
         '2025', '2026', '2027',
         'music', 'public', 'appearances', 'developments', 'discussions', 'coverage',
     })
-    return extract_core_subject(topic, noise=_YT_NOISE)
+    return extract_core_subject(topic, noise=VIRAL_NOISE | _YT_EXTRA)
 
 
 def _infer_query_intent(topic: str) -> str:

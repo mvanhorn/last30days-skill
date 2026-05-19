@@ -2,7 +2,13 @@
 
 import unittest
 
-from lib.query import NOISE_WORDS, extract_compound_terms, extract_core_subject
+from lib.query import (
+    NOISE_WORDS,
+    SOCIAL_NOISE,
+    VIRAL_NOISE,
+    extract_compound_terms,
+    extract_core_subject,
+)
 
 
 class TestExtractCoreSubject(unittest.TestCase):
@@ -120,6 +126,59 @@ class TestNoiseWordsCompleteness(unittest.TestCase):
     def test_research_meta_present(self):
         for w in ('best', 'top', 'latest', 'trending', 'popular'):
             self.assertIn(w, NOISE_WORDS)
+
+
+
+class TestSharedAdapterNoiseSets(unittest.TestCase):
+    """Pin SOCIAL_NOISE / VIRAL_NOISE so adapters can rely on stable membership.
+
+    Bluesky, Threads, Truth Social use SOCIAL_NOISE.
+    TikTok, Instagram, Pinterest use VIRAL_NOISE.
+    YouTube extends VIRAL_NOISE with temporal/meta tokens (asserted in its
+    own adapter test).
+    """
+
+    def test_social_noise_membership(self):
+        # Words shared with the historical _BSKY_NOISE / _TS_NOISE / _THREADS_NOISE.
+        expected = {
+            'best', 'top', 'good', 'great', 'awesome',
+            'latest', 'new', 'news', 'update', 'updates',
+            'trending', 'hottest', 'popular', 'viral',
+            'practices', 'features', 'recommendations', 'advice',
+        }
+        self.assertEqual(set(SOCIAL_NOISE), expected)
+
+    def test_viral_noise_is_social_superset(self):
+        self.assertTrue(SOCIAL_NOISE.issubset(VIRAL_NOISE))
+        # The extra words VIRAL adds on top of SOCIAL: the historical
+        # tiktok / instagram / pinterest delta.
+        delta = VIRAL_NOISE - SOCIAL_NOISE
+        self.assertEqual(
+            delta,
+            {'killer', 'prompt', 'prompts', 'prompting',
+             'methods', 'strategies', 'approaches'},
+        )
+
+    def test_extract_core_subject_with_social_noise(self):
+        # Sanity: a Bluesky-style query strips through SOCIAL_NOISE.
+        result = extract_core_subject(
+            "best new Claude Code update",
+            noise=SOCIAL_NOISE,
+        )
+        self.assertEqual(result, "claude code")
+
+    def test_extract_core_subject_with_viral_noise(self):
+        # Viral set strips 'killer' and the prompt cluster.
+        result = extract_core_subject(
+            "killer prompting strategies for React",
+            noise=VIRAL_NOISE,
+        )
+        # 'for' is in the default NOISE_WORDS path but VIRAL_NOISE alone
+        # doesn't include articles/prepositions; extract_core_subject
+        # falls back to original when nothing survives, so allow 'for'.
+        self.assertIn("react", result)
+        self.assertNotIn("killer", result)
+        self.assertNotIn("prompting", result)
 
 
 class TestExtractCompoundTerms(unittest.TestCase):

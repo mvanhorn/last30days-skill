@@ -158,14 +158,8 @@ def _reset_session_cache() -> None:
 
 def _extract_core_subject(topic: str) -> str:
     """Extract core subject from verbose query for Bluesky search."""
-    from .query import extract_core_subject
-    _BSKY_NOISE = frozenset({
-        'best', 'top', 'good', 'great', 'awesome',
-        'latest', 'new', 'news', 'update', 'updates',
-        'trending', 'hottest', 'popular', 'viral',
-        'practices', 'features', 'recommendations', 'advice',
-    })
-    return extract_core_subject(topic, noise=_BSKY_NOISE)
+    from .query import SOCIAL_NOISE, extract_core_subject
+    return extract_core_subject(topic, noise=SOCIAL_NOISE)
 
 
 def _parse_date(item: Dict[str, Any]) -> Optional[str]:

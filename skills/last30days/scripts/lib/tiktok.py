@@ -30,17 +30,8 @@ from .relevance import token_overlap_relevance as _compute_relevance
 
 def _extract_core_subject(topic: str) -> str:
     """Extract core subject from verbose query for TikTok search."""
-    from .query import extract_core_subject
-    _TIKTOK_NOISE = frozenset({
-        'best', 'top', 'good', 'great', 'awesome', 'killer',
-        'latest', 'new', 'news', 'update', 'updates',
-        'trending', 'hottest', 'popular', 'viral',
-        'practices', 'features',
-        'recommendations', 'advice',
-        'prompt', 'prompts', 'prompting',
-        'methods', 'strategies', 'approaches',
-    })
-    return extract_core_subject(topic, noise=_TIKTOK_NOISE)
+    from .query import VIRAL_NOISE, extract_core_subject
+    return extract_core_subject(topic, noise=VIRAL_NOISE)
 
 
 def _infer_query_intent(topic: str) -> str:

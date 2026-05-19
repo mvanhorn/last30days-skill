@@ -68,17 +68,8 @@ def _resolve_transcript_timeout(
 
 def _extract_core_subject(topic: str) -> str:
     """Extract core subject from verbose query for Instagram search."""
-    from .query import extract_core_subject
-    _INSTAGRAM_NOISE = frozenset({
-        'best', 'top', 'good', 'great', 'awesome', 'killer',
-        'latest', 'new', 'news', 'update', 'updates',
-        'trending', 'hottest', 'popular', 'viral',
-        'practices', 'features',
-        'recommendations', 'advice',
-        'prompt', 'prompts', 'prompting',
-        'methods', 'strategies', 'approaches',
-    })
-    return extract_core_subject(topic, noise=_INSTAGRAM_NOISE)
+    from .query import VIRAL_NOISE, extract_core_subject
+    return extract_core_subject(topic, noise=VIRAL_NOISE)
 
 
 def _to_hashtag_form(query: str) -> str:
