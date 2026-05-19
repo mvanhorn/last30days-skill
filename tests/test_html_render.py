@@ -191,7 +191,10 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
     def test_self_containedness(self):
         rendered = html_render.render_html(_report("self contained", []))
         self.assertNotIn("<script", rendered.lower())
-        self.assertEqual(1, rendered.count('rel="stylesheet"'))
+        self.assertEqual(0, rendered.count('rel="stylesheet"'))
+        self.assertNotIn("fonts.googleapis.com", rendered)
+        self.assertNotIn("fonts.gstatic.com", rendered)
+        self.assertNotIn('rel="preconnect"', rendered)
 
     def test_markdown_links_convert(self):
         rendered = html_render._markdown_to_html("[name](https://example.test/path)")
