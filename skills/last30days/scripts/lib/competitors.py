@@ -13,11 +13,10 @@ the caller's requested count.
 from __future__ import annotations
 
 import re
-import sys
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from . import dates, grounding
+from . import dates, grounding, log
 from .resolve import _has_backend
 
 # A "brand-shaped" token starts with uppercase OR is camelCase with an
@@ -62,7 +61,7 @@ _STOPWORD_TOKENS: frozenset[str] = frozenset(
 
 
 def _log(msg: str) -> None:
-    print(f"[Competitors] {msg}", file=sys.stderr)
+    log.source_log("Competitors", msg, tty_only=False)
 
 
 def _topic_tokens(topic: str) -> set[str]:

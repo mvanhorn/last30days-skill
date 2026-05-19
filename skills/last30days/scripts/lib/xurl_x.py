@@ -13,15 +13,14 @@ Priority: xAI API > Bird/GraphQL > xurl > web-only fallback
 import json
 import re
 import subprocess
-import sys
 from typing import Any, Dict, List, Optional
 
+from . import log
 from .relevance import token_overlap_relevance as _compute_relevance
 
 
 def _log(msg: str) -> None:
-    sys.stderr.write(f"[xurl] {msg}\n")
-    sys.stderr.flush()
+    log.source_log("xurl", msg, tty_only=False)
 
 
 # Depth configurations: number of results to request
