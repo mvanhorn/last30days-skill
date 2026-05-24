@@ -41,6 +41,7 @@ from . import (
     truthsocial,
     xai_x,
     xiaohongshu_api,
+    getxapi,
     xquik,
     xurl_x,
     youtube_yt,
@@ -60,6 +61,7 @@ SEARCH_ALIAS = {
     "truth": "truthsocial",
     "web": "grounding",
     "xhs": "xiaohongshu",
+    "getxapi": "getxapi",
     "xquik": "xquik",
 }
 
@@ -82,6 +84,7 @@ MOCK_AVAILABLE_SOURCES = [
     "threads",
     "pinterest",
     "xquik",
+    "getxapi",
     "digg",
 ]
 
@@ -132,6 +135,8 @@ def available_sources(config: dict[str, Any], requested_sources: list[str] | Non
         available.append("pinterest")
     if env.is_xquik_available(config):
         available.append("xquik")
+    if env.is_getxapi_available(config):
+        available.append("getxapi")
     exclude = {s.strip().lower() for s in (config.get("EXCLUDE_SOURCES") or "").split(",") if s.strip()}
     if exclude:
         available = [s for s in available if s not in exclude]
@@ -1039,6 +1044,13 @@ def _retrieve_stream(
             token=env.get_xquik_token(config),
         )
         return xquik.parse_xquik_response(result), {}
+    if source == "getxapi":
+        result = getxapi.search_getxapi(
+            subquery.search_query, from_date, to_date,
+            depth=depth,
+            token=env.get_getxapi_token(config),
+        )
+        return getxapi.parse_response(result), {}
     raise RuntimeError(f"Unsupported source: {source}")
 
 

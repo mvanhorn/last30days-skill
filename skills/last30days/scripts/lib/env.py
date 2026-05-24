@@ -42,7 +42,7 @@ KEYCHAIN_KEYS = (
     "GOOGLE_GENAI_API_KEY", "SCRAPECREATORS_API_KEY", "APIFY_API_TOKEN",
     "AUTH_TOKEN", "CT0", "BSKY_HANDLE", "BSKY_APP_PASSWORD",
     "TRUTHSOCIAL_TOKEN", "BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY",
-    "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "XQUIK_API_KEY",
+    "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "XQUIK_API_KEY", "GETXAPI_API_KEY",
     "XIAOHONGSHU_API_BASE",
 )
 
@@ -331,6 +331,7 @@ def get_config() -> dict[str, Any]:
         ('OPENROUTER_API_KEY', None),
         ('PARALLEL_API_KEY', None),
         ('XQUIK_API_KEY', None),
+        ('GETXAPI_API_KEY', None),
         ('FROM_BROWSER', None),
         ('SETUP_COMPLETE', None),
         ('INCLUDE_SOURCES', ''),
@@ -742,3 +743,17 @@ def is_xquik_available(config: dict[str, Any]) -> bool:
 def get_xquik_token(config: dict[str, Any]) -> str:
     """Get Xquik API key."""
     return config.get('XQUIK_API_KEY') or ''
+
+
+# GetXAPI
+def is_getxapi_available(config: dict[str, Any]) -> bool:
+    """Check if GetXAPI X search source is available.
+
+    Requires GETXAPI_API_KEY (API key from getxapi.com).
+    """
+    return bool(config.get('GETXAPI_API_KEY'))
+
+
+def get_getxapi_token(config: dict[str, Any]) -> str:
+    """Get GetXAPI API key."""
+    return config.get('GETXAPI_API_KEY') or ''
