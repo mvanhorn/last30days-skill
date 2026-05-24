@@ -84,7 +84,6 @@ MOCK_AVAILABLE_SOURCES = [
     "threads",
     "pinterest",
     "xquik",
-    "getxapi",
     "digg",
 ]
 
