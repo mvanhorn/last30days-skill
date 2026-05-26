@@ -201,7 +201,7 @@ def extract_date_signals(
     return None, "low"
 
 
-# Domains to exclude (Reddit and X are handled separately)
+# Domains to exclude (Reddit, X, and HN are handled as separate first-class sources)
 EXCLUDED_DOMAINS = {
     "reddit.com",
     "www.reddit.com",
@@ -211,6 +211,8 @@ EXCLUDED_DOMAINS = {
     "x.com",
     "www.x.com",
     "mobile.twitter.com",
+    "news.ycombinator.com",
+    "hn.algolia.com",
 }
 
 

@@ -215,6 +215,27 @@ def render_compact(report: schema.Report, limit: int = 15, missing_keys: str = "
             lines.append(f"  *{item.why_relevant}*")
             lines.append("")
 
+    # Hacker News items
+    if report.hn_error:
+        lines.append("### Hacker News")
+        lines.append("")
+        lines.append(f"**ERROR:** {report.hn_error}")
+        lines.append("")
+    elif report.hn:
+        lines.append("### Hacker News")
+        lines.append("")
+        for item in report.hn[:limit]:
+            eng_str = ""
+            if item.engagement:
+                eng_str = f" [{item.engagement.score} pts, {item.num_comments} comments]"
+            date_str = f" ({item.date})" if item.date else ""
+
+            lines.append(f"**{item.id}** (score:{item.score}) {item.author}{date_str}{eng_str}")
+            lines.append(f"  {item.title}")
+            lines.append(f"  {item.url}")
+            lines.append(f"  *{item.why_relevant}*")
+            lines.append("")
+
     # Web items (if any - populated by the assistant)
     if report.web_error:
         lines.append("### Web Results")

@@ -337,6 +337,76 @@ def score_websearch_items(items: List[schema.WebSearchItem]) -> List[schema.WebS
     return items
 
 
+def score_hn_items(items: List[schema.HackerNewsItem]) -> List[schema.HackerNewsItem]:
+    """Compute scores for Hacker News items.
+
+    Uses engagement (points) and comments for weighting, similar to Reddit.
+    HN items don't get a source penalty since HN is a first-class source.
+
+    Date confidence adjustments:
+    - High confidence (Algolia timestamp): +10 bonus
+    - Med confidence: no change
+    - Low confidence: -15 penalty
+
+    Args:
+        items: List of HN items
+
+    Returns:
+        Items with updated scores
+    """
+    if not items:
+        return items
+
+    for item in items:
+        # Relevance subscore (model-provided, convert to 0-100)
+        rel_score = int(item.relevance * 100)
+
+        # Recency subscore
+        rec_score = dates.recency_score(item.date)
+
+        # Engagement: points + comments factor
+        eng_score = 0
+        if item.engagement and item.engagement.score:
+            # Normalize points to 0-100 (log scale for large values)
+            pts = item.engagement.score
+            if pts <= 100:
+                eng_score = pts
+            elif pts <= 1000:
+                eng_score = 100 + (pts - 100) * 0.1
+            else:
+                eng_score = 100 + 90 + (pts - 1000) * 0.01
+                eng_score = min(eng_score, 200)
+
+        # Comments factor
+        comments_score = 0
+        if item.num_comments:
+            if item.num_comments <= 10:
+                comments_score = item.num_comments * 2
+            elif item.num_comments <= 100:
+                comments_score = 20 + (item.num_comments - 10) * 0.5
+            else:
+                comments_score = 65 + (item.num_comments - 100) * 0.02
+                comments_score = min(comments_score, 100)
+
+        # HN weights: engagement-heavy
+        overall = (
+            WEIGHT_RELEVANCE * rel_score +
+            WEIGHT_RECENCY * rec_score +
+            WEIGHT_ENGAGEMENT * eng_score +
+            0.15 * comments_score
+        )
+
+        # Apply date confidence adjustments
+        if item.date_confidence == "high":
+            overall += 10
+        elif item.date_confidence == "low":
+            overall -= 15
+
+        item.score = max(0, min(100, int(overall)))
+
+    return items
+
+
 def sort_items(items: List[Union[schema.RedditItem, schema.XItem, schema.WebSearchItem, schema.YouTubeItem]]) -> List:
     """Sort items by score (descending), then date, then source priority.
 

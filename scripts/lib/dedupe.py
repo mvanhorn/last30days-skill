@@ -36,12 +36,14 @@ def jaccard_similarity(set1: Set[str], set2: Set[str]) -> float:
     return intersection / union if union > 0 else 0.0
 
 
-def get_item_text(item: Union[schema.RedditItem, schema.XItem, schema.YouTubeItem]) -> str:
+def get_item_text(item: Union[schema.RedditItem, schema.XItem, schema.YouTubeItem, schema.HackerNewsItem]) -> str:
     """Get comparable text from an item."""
     if isinstance(item, schema.RedditItem):
         return item.title
     elif isinstance(item, schema.YouTubeItem):
         return f"{item.title} {item.channel_name}"
+    elif isinstance(item, schema.HackerNewsItem):
+        return item.title
     else:
         return item.text
 
@@ -127,4 +129,12 @@ def dedupe_youtube(
     threshold: float = 0.7,
 ) -> List[schema.YouTubeItem]:
     """Dedupe YouTube items."""
+    return dedupe_items(items, threshold)
+
+
+def dedupe_hn(
+    items: List[schema.HackerNewsItem],
+    threshold: float = 0.7,
+) -> List[schema.HackerNewsItem]:
+    """Dedupe HN items by title similarity."""
     return dedupe_items(items, threshold)

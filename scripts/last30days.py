@@ -100,6 +100,7 @@ from lib import (
     dedupe,
     entity_extract,
     env,
+    hacker_news,
     http,
     models,
     normalize,
@@ -303,6 +304,34 @@ def _search_youtube(
     return youtube_items, youtube_error
 
 
+def _search_hn(
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+) -> tuple:
+    """Search Hacker News via Algolia API (runs in thread).
+
+    Returns:
+        Tuple of (hn_items, hn_error)
+    """
+    hn_error = None
+
+    try:
+        raw_response = hacker_news.search_hacker_news(
+            topic, from_date, to_date, depth=depth,
+        )
+    except Exception as e:
+        return [], f"{type(e).__name__}: {e}"
+
+    hn_items = hacker_news.parse_hn_response(raw_response)
+
+    if raw_response.get("error") and not hn_error:
+        hn_error = raw_response["error"]
+
+    return hn_items, hn_error
+
+
 def _search_web(
     topic: str,
     config: dict,
@@ -501,9 +530,9 @@ def run_research(
     """Run the research pipeline.
 
     Returns:
-        Tuple of (reddit_items, x_items, youtube_items, web_items, web_needed,
+        Tuple of (reddit_items, x_items, youtube_items, web_items, hn_items, web_needed,
                   raw_openai, raw_xai, raw_reddit_enriched,
-                  reddit_error, x_error, youtube_error, web_error)
+                  reddit_error, x_error, youtube_error, web_error, hn_error)
 
     Note: web_needed is True when web search should be performed by the assistant
     (i.e., no native web search API keys are configured). When native web search
@@ -517,6 +546,7 @@ def run_research(
     x_items = []
     youtube_items = []
     web_items = []
+    hn_items = []
     raw_openai = None
     raw_xai = None
     raw_reddit_enriched = []
@@ -524,6 +554,7 @@ def run_research(
     x_error = None
     youtube_error = None
     web_error = None
+    hn_error = None
 
     # Determine web search mode
     do_web = sources in ("all", "web", "reddit-web", "x-web")
@@ -565,16 +596,17 @@ def run_research(
                     progress.show_error(f"YouTube error: {e}")
             if progress:
                 progress.end_youtube(len(youtube_items))
-        return reddit_items, x_items, youtube_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, web_error
+        return reddit_items, x_items, youtube_items, web_items, hn_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, web_error, hn_error
 
     # Determine which searches to run
     do_reddit = sources in ("both", "reddit", "all", "reddit-web")
     do_x = sources in ("both", "x", "all", "x-web")
 
-    # Run Reddit, X, YouTube, and Web searches in parallel
+    # Run Reddit, X, YouTube, HN, and Web searches in parallel
     reddit_future = None
     x_future = None
     youtube_future = None
+    hn_future = None
     web_future = None
     max_workers = 2 + (1 if run_youtube else 0) + (1 if web_backend else 0)
 
@@ -602,6 +634,11 @@ def run_research(
             youtube_future = executor.submit(
                 _search_youtube, topic, from_date, to_date, depth
             )
+
+        # HN is always searched (no API key needed)
+        hn_future = executor.submit(
+            _search_hn, topic, from_date, to_date, depth
+        )
 
         if web_backend:
             sys.stderr.write(f"[web] Searching via {web_backend}\n")
@@ -676,6 +713,21 @@ def run_research(
                     progress.show_error(f"Web error: {e}")
             sys.stderr.write(f"[web] {len(web_items)} results\n")
             sys.stderr.flush()
+
+        # Collect HN results
+        if hn_future:
+            try:
+                hn_items, hn_error = hn_future.result(timeout=future_timeout)
+                if hn_error and progress:
+                    progress.show_error(f"HN error: {hn_error}")
+            except TimeoutError:
+                hn_error = f"HN search timed out after {future_timeout}s"
+                if progress:
+                    progress.show_error(hn_error)
+            except Exception as e:
+                hn_error = f"{type(e).__name__}: {e}"
+                if progress:
+                    progress.show_error(f"HN error: {e}")
 
     # Enrich Reddit items with real data (parallel, capped)
     enrich_max = timeouts["enrich_max_items"]
@@ -760,7 +812,7 @@ def run_research(
         if sup_x:
             x_items.extend(sup_x)
 
-    return reddit_items, x_items, youtube_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, web_error
+    return reddit_items, x_items, youtube_items, web_items, hn_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, web_error, hn_error
 
 
 def main():
@@ -982,7 +1034,7 @@ def main():
         mode = sources
 
     # Run research
-    reddit_items, x_items, youtube_items, web_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, web_error = run_research(
+    reddit_items, x_items, youtube_items, web_items, hn_items, web_needed, raw_openai, raw_xai, raw_reddit_enriched, reddit_error, x_error, youtube_error, web_error, hn_error = run_research(
         args.topic,
         sources,
         config,
@@ -1005,6 +1057,7 @@ def main():
     normalized_x = normalize.normalize_x_items(x_items, from_date, to_date)
     normalized_youtube = normalize.normalize_youtube_items(youtube_items, from_date, to_date) if youtube_items else []
     normalized_web = websearch.normalize_websearch_items(web_items, from_date, to_date) if web_items else []
+    normalized_hn = normalize.normalize_hn_items(hn_items, from_date, to_date) if hn_items else []
 
     # Hard date filter: exclude items with verified dates outside the range
     # This is the safety net - even if prompts let old content through, this filters it
@@ -1015,24 +1068,28 @@ def main():
     # YouTube content has a longer shelf life than tweets/posts.
     filtered_youtube = normalized_youtube
     filtered_web = normalize.filter_by_date_range(normalized_web, from_date, to_date) if normalized_web else []
+    filtered_hn = normalize.filter_by_date_range(normalized_hn, from_date, to_date) if normalized_hn else []
 
     # Score items
     scored_reddit = score.score_reddit_items(filtered_reddit)
     scored_x = score.score_x_items(filtered_x)
     scored_youtube = score.score_youtube_items(filtered_youtube) if filtered_youtube else []
     scored_web = score.score_websearch_items(filtered_web) if filtered_web else []
+    scored_hn = score.score_hn_items(filtered_hn) if filtered_hn else []
 
     # Sort items
     sorted_reddit = score.sort_items(scored_reddit)
     sorted_x = score.sort_items(scored_x)
     sorted_youtube = score.sort_items(scored_youtube) if scored_youtube else []
     sorted_web = score.sort_items(scored_web) if scored_web else []
+    sorted_hn = score.sort_items(scored_hn) if scored_hn else []
 
     # Dedupe items
     deduped_reddit = dedupe.dedupe_reddit(sorted_reddit)
     deduped_x = dedupe.dedupe_x(sorted_x)
     deduped_youtube = dedupe.dedupe_youtube(sorted_youtube) if sorted_youtube else []
     deduped_web = websearch.dedupe_websearch(sorted_web) if sorted_web else []
+    deduped_hn = dedupe.dedupe_hn(sorted_hn) if sorted_hn else []
 
     # Minimum result guarantee: if all Reddit results were filtered out but
     # we had raw results, keep top 3 by relevance regardless of score
@@ -1056,10 +1113,12 @@ def main():
     report.x = deduped_x
     report.youtube = deduped_youtube
     report.web = deduped_web
+    report.hn = deduped_hn
     report.reddit_error = reddit_error
     report.x_error = x_error
     report.youtube_error = youtube_error
     report.web_error = web_error
+    report.hn_error = hn_error
 
     # Generate context snippet
     report.context_snippet_md = render.render_context_snippet(report)

@@ -175,6 +175,39 @@ class WebSearchItem:
 
 
 @dataclass
+class HackerNewsItem:
+    """Normalized Hacker News item."""
+    id: str  # story_id from Algolia
+    title: str
+    url: str
+    author: str
+    date: Optional[str] = None
+    date_confidence: str = "high"  # HN Algolia provides reliable timestamps
+    engagement: Optional[Engagement] = None
+    num_comments: int = 0
+    relevance: float = 0.5
+    why_relevant: str = ""
+    subs: SubScores = field(default_factory=SubScores)
+    score: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            'id': self.id,
+            'title': self.title,
+            'url': self.url,
+            'author': self.author,
+            'date': self.date,
+            'date_confidence': self.date_confidence,
+            'engagement': self.engagement.to_dict() if self.engagement else None,
+            'num_comments': self.num_comments,
+            'relevance': self.relevance,
+            'why_relevant': self.why_relevant,
+            'subs': self.subs.to_dict(),
+            'score': self.score,
+        }
+
+
+@dataclass
 class YouTubeItem:
     """Normalized YouTube item."""
     id: str  # video_id
@@ -221,6 +254,7 @@ class Report:
     x: List[XItem] = field(default_factory=list)
     web: List[WebSearchItem] = field(default_factory=list)
     youtube: List[YouTubeItem] = field(default_factory=list)
+    hn: List["HackerNewsItem"] = field(default_factory=list)
     best_practices: List[str] = field(default_factory=list)
     prompt_pack: List[str] = field(default_factory=list)
     context_snippet_md: str = ""
@@ -229,6 +263,7 @@ class Report:
     x_error: Optional[str] = None
     web_error: Optional[str] = None
     youtube_error: Optional[str] = None
+    hn_error: Optional[str] = None
     # Cache info
     from_cache: bool = False
     cache_age_hours: Optional[float] = None
@@ -248,6 +283,7 @@ class Report:
             'x': [x.to_dict() for x in self.x],
             'web': [w.to_dict() for w in self.web],
             'youtube': [y.to_dict() for y in self.youtube],
+            'hn': [h.to_dict() for h in self.hn],
             'best_practices': self.best_practices,
             'prompt_pack': self.prompt_pack,
             'context_snippet_md': self.context_snippet_md,
@@ -260,6 +296,8 @@ class Report:
             d['web_error'] = self.web_error
         if self.youtube_error:
             d['youtube_error'] = self.youtube_error
+        if self.hn_error:
+            d['hn_error'] = self.hn_error
         if self.from_cache:
             d['from_cache'] = self.from_cache
         if self.cache_age_hours is not None:
@@ -359,6 +397,28 @@ class Report:
                 score=y.get('score', 0),
             ))
 
+        # Reconstruct HN items
+        hn_items = []
+        for h in data.get('hn', []):
+            eng = None
+            if h.get('engagement'):
+                eng = Engagement(**h['engagement'])
+            subs = SubScores(**h.get('subs', {})) if h.get('subs') else SubScores()
+            hn_items.append(HackerNewsItem(
+                id=h['id'],
+                title=h['title'],
+                url=h.get('url', ''),
+                author=h.get('author', ''),
+                date=h.get('date'),
+                date_confidence=h.get('date_confidence', 'high'),
+                engagement=eng,
+                num_comments=h.get('num_comments', 0),
+                relevance=h.get('relevance', 0.5),
+                why_relevant=h.get('why_relevant', ''),
+                subs=subs,
+                score=h.get('score', 0),
+            ))
+
         return cls(
             topic=data['topic'],
             range_from=range_from,
@@ -371,6 +431,7 @@ class Report:
             x=x_items,
             web=web_items,
             youtube=youtube_items,
+            hn=hn_items,
             best_practices=data.get('best_practices', []),
             prompt_pack=data.get('prompt_pack', []),
             context_snippet_md=data.get('context_snippet_md', ''),
@@ -378,6 +439,7 @@ class Report:
             x_error=data.get('x_error'),
             web_error=data.get('web_error'),
             youtube_error=data.get('youtube_error'),
+            hn_error=data.get('hn_error'),
             from_cache=data.get('from_cache', False),
             cache_age_hours=data.get('cache_age_hours'),
         )

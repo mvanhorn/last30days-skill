@@ -200,6 +200,50 @@ def normalize_youtube_items(
     return normalized
 
 
+def normalize_hn_items(
+    items: List[Dict[str, Any]],
+    from_date: str,
+    to_date: str,
+) -> List[schema.HackerNewsItem]:
+    """Normalize raw HN items to schema.
+
+    Args:
+        items: Raw HN items from Algolia API
+        from_date: Start of date range
+        to_date: End of date range
+
+    Returns:
+        List of HackerNewsItem objects
+    """
+    normalized = []
+
+    for item in items:
+        # Parse engagement (points = upvotes on HN)
+        engagement = None
+        points = item.get("points", 0) or item.get("score", 0)
+        if points:
+            engagement = schema.Engagement(score=points)
+
+        # Determine date confidence
+        date_str = item.get("date")
+        date_confidence = dates.get_date_confidence(date_str, from_date, to_date)
+
+        normalized.append(schema.HackerNewsItem(
+            id=item.get("id", ""),
+            title=item.get("title", ""),
+            url=item.get("url", ""),
+            author=item.get("author", ""),
+            date=date_str,
+            date_confidence=date_confidence,
+            engagement=engagement,
+            num_comments=item.get("num_comments", 0),
+            relevance=item.get("relevance", 0.5),
+            why_relevant=item.get("why_relevant", ""),
+        ))
+
+    return normalized
+
+
 def items_to_dicts(items: List) -> List[Dict[str, Any]]:
     """Convert schema items to dicts for JSON serialization."""
     return [item.to_dict() for item in items]
