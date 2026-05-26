@@ -4,6 +4,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import quote
 
 from . import http
 
@@ -54,7 +55,7 @@ def search_hacker_news(
 
     # Algolia search endpoint
     # Use story type filter to exclude comments
-    params = f"query={topic}&tags=story&hitsPerPage={hits_per_page}&numericFilters=created_at_i>={from_ts},created_at_i<={to_ts}"
+    params = f"query={quote(topic)}&tags=story&hitsPerPage={hits_per_page}&numericFilters=created_at_i>={from_ts},created_at_i<={to_ts}"
     url = f"{HN_ALGOLIA_URL}/search?{params}"
 
     _log_info(f"Searching HN Algolia: {topic}")
