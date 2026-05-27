@@ -197,7 +197,6 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
 _OPENCLAW_KEY_NAMES = [
     "SCRAPECREATORS_API_KEY",
     "XAI_API_KEY",
-    "BRAVE_API_KEY",
     "EXA_API_KEY",
     "SERPER_API_KEY",
     "OPENAI_API_KEY",

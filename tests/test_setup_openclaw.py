@@ -49,14 +49,14 @@ class TestRunOpenclawSetup:
         mock_which.return_value = None
         config = {
             "XAI_API_KEY": "xai-abc123",
-            "BRAVE_API_KEY": "brav-xyz",
+            "EXA_API_KEY": "brav-xyz",
             "SCRAPECREATORS_API_KEY": "",  # empty = falsy
         }
 
         result = setup_wizard.run_openclaw_setup(config)
 
         assert result["keys"]["xai"] is True
-        assert result["keys"]["brave"] is True
+        assert result["keys"]["exa"] is True
         assert result["keys"]["scrapecreators"] is False
 
     def test_openclaw_metadata_keeps_scrapecreators_optional(self):

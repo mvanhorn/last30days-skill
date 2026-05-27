@@ -525,7 +525,7 @@ Three headline features: watchlists for always-on bots, YouTube transcripts as a
 - YouTube as a 4th research source via yt-dlp -- search, view counts, and auto-generated transcript extraction (`feat: Add YouTube`)
 - OpenAI Codex CLI compatibility -- install to `~/.agents/skills/last30days`, invoke with `$last30days` (`feat: Add Codex CLI`)
 - Bundled X search -- vendored subset of Bird's Twitter GraphQL client (MIT, originally by @steipete), no external CLI needed (`v2.1: Bundle Bird X search`)
-- Native web search backends: Parallel AI, Brave Search, OpenRouter/Perplexity Sonar Pro (`feat(engine)`)
+- Native web search backends: Parallel AI, Exa Search, OpenRouter/Perplexity Sonar Pro (`feat(engine)`)
 - `--diagnose` flag for checking available sources and authentication status
 - `--store` flag for SQLite accumulation (open variant)
 - Conversational first-run experience (NUX) with dynamic source status (`feat(nux)`)

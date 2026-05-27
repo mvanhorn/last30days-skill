@@ -231,7 +231,7 @@ class CliV3Tests(unittest.TestCase):
             "bird_installed": True,
             "bird_authenticated": False,
             "bird_username": None,
-            "native_web_backend": "brave",
+            "native_web_backend": "exa",
         }
         fake_progress = mock.Mock()
         with mock.patch.object(cli.env, "get_config", return_value={}), \

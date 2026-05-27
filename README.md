@@ -261,7 +261,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 | Bluesky | App password from bsky.app | Free |
 | TikTok + Instagram + Threads + Pinterest + YouTube comments | ScrapeCreators key | 100 free credits, then PAYG |
 | Perplexity Sonar | OpenRouter key | Pay as you go |
-| Web search | Brave Search key | 2,000 free queries/month |
+| Web search | Exa API key | free tier available, paid usage supported |
 
 ### macOS Keychain (optional)
 

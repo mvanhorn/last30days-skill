@@ -23,7 +23,6 @@ assets/        export-ignore
 # claude.ai-bundle-specific exclusions live in scripts/build-skill.sh.
 
 # Historical + repo-only manifests
-SKILL-original.md  export-ignore
 SPEC.md            export-ignore
 TASKS.md           export-ignore
 test-run.log       export-ignore

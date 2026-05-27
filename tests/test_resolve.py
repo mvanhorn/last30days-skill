@@ -11,8 +11,8 @@ class TestHasBackend(unittest.TestCase):
     def test_no_keys_returns_false(self):
         self.assertFalse(resolve._has_backend({}))
 
-    def test_brave_key_returns_true(self):
-        self.assertTrue(resolve._has_backend({"BRAVE_API_KEY": "key"}))
+    def test_exa_key_returns_true(self):
+        self.assertTrue(resolve._has_backend({"EXA_API_KEY": "key"}))
 
     def test_exa_key_returns_true(self):
         self.assertTrue(resolve._has_backend({"EXA_API_KEY": "key"}))
@@ -137,19 +137,19 @@ class TestAutoResolve(unittest.TestCase):
             if "subreddit" in query:
                 return [
                     {"title": "r/technology discussion", "snippet": "Also r/gadgets", "url": ""},
-                ], {"label": "brave"}
+                ], {"label": "exa"}
             if "news" in query:
                 return [
                     {"snippet": "Major tech breakthrough announced this week."},
-                ], {"label": "brave"}
+                ], {"label": "exa"}
             if "handle" in query:
                 return [
                     {"title": "TechCo on X", "snippet": "@TechCo", "url": "https://x.com/TechCo"},
-                ], {"label": "brave"}
+                ], {"label": "exa"}
             return [], {}
 
         mock_search.side_effect = side_effect
-        result = resolve.auto_resolve("tech", {"BRAVE_API_KEY": "fake"})
+        result = resolve.auto_resolve("tech", {"EXA_API_KEY": "fake"})
 
         self.assertEqual(result["subreddits"], ["technology", "gadgets"])
         self.assertEqual(result["x_handle"], "techco")
@@ -160,7 +160,7 @@ class TestAutoResolve(unittest.TestCase):
     @patch("lib.resolve.grounding.web_search")
     def test_search_failure_graceful(self, mock_search):
         mock_search.side_effect = RuntimeError("API error")
-        result = resolve.auto_resolve("test", {"BRAVE_API_KEY": "fake"})
+        result = resolve.auto_resolve("test", {"EXA_API_KEY": "fake"})
         self.assertEqual(result["subreddits"], [])
         self.assertEqual(result["x_handle"], "")
         self.assertEqual(result["context"], "")

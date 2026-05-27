@@ -56,7 +56,7 @@ On first run, the skill will guide you through setup:
 
 3. **Optional: API Keys**
    - XAI_API_KEY for X/Twitter (alternative to browser cookies)
-   - BRAVE_API_KEY for web search
+   - EXA_API_KEY for web search
 
 ## Available Sources
 
@@ -70,7 +70,7 @@ On first run, the skill will guide you through setup:
 - **X/Twitter** - xAI API key or browser cookies
 - **TikTok** - ScrapeCreators API
 - **Instagram** - ScrapeCreators API
-- **Web Search** - Brave Search API
+- **Web Search** - Exa Search API
 
 ## Troubleshooting
 

@@ -325,7 +325,6 @@ def get_config() -> dict[str, Any]:
         ('BSKY_APP_PASSWORD', None),
         ('BSKY_SEARCH_HOST', None),
         ('TRUTHSOCIAL_TOKEN', None),
-        ('BRAVE_API_KEY', None),
         ('EXA_API_KEY', None),
         ('SERPER_API_KEY', None),
         ('OPENROUTER_API_KEY', None),

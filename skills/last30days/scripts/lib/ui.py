@@ -202,7 +202,7 @@ Just start with "last30" and talk to me like normal.
 PROMO_SINGLE_KEY = {
     "reddit": "\n💡 Unlock TikTok and Instagram with SCRAPECREATORS_API_KEY - 100 free credits, no CC - scrapecreators.com\n",
     "x": "\n💡 Unlock X: log into x.com in Firefox or Safari, then re-run. Or add AUTH_TOKEN/CT0 or XAI_API_KEY.\n",
-    "web": "\n💡 You can unlock native grounded web search with BRAVE_API_KEY or SERPER_API_KEY.\n",
+    "web": "\n💡 You can unlock native grounded web search with EXA_API_KEY or SERPER_API_KEY.\n",
 }
 
 # Bird auth help (for local users with vendored Bird CLI)
@@ -551,7 +551,7 @@ def show_diagnostic_banner(diag: dict):
             backend = native_web_backend or "native"
             lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Web{Colors.RESET}       — {backend} API                       {Colors.DIM}│{Colors.RESET}")
         else:
-            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.YELLOW}⚡ Web{Colors.RESET}       — Add BRAVE_API_KEY or SERPER_API_KEY {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.YELLOW}⚡ Web{Colors.RESET}       — Add EXA_API_KEY or SERPER_API_KEY {Colors.DIM}│{Colors.RESET}")
 
         lines.append(f"{Colors.DIM}│{Colors.RESET}                                                     {Colors.DIM}│{Colors.RESET}")
         lines.append(f"{Colors.DIM}│{Colors.RESET}  Config: {Colors.BOLD}~/.config/last30days/.env{Colors.RESET}                  {Colors.DIM}│{Colors.RESET}")
@@ -592,7 +592,7 @@ def show_diagnostic_banner(diag: dict):
             backend = native_web_backend or "native"
             lines.append(f"│  ✅ Web       — {backend} API available{' ' * max(0, 13 - len(backend))}│")
         else:
-            lines.append("│  ⚡ Web       — Add BRAVE_API_KEY or SERPER_API_KEY │")
+            lines.append("│  ⚡ Web       — Add EXA_API_KEY or SERPER_API_KEY │")
 
         lines.append("│                                                     │")
         lines.append("│  Config: ~/.config/last30days/.env                  │")

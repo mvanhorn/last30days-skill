@@ -15,7 +15,7 @@ class UiV3Tests(unittest.TestCase):
             "bird_installed": True,
             "bird_authenticated": False,
             "bird_username": None,
-            "native_web_backend": "brave",
+            "native_web_backend": "exa",
         }
         with mock.patch.object(ui, "IS_TTY", False):
             stderr = io.StringIO()
@@ -25,7 +25,7 @@ class UiV3Tests(unittest.TestCase):
         self.assertIn("Reddit", output)
         self.assertIn("unavailable", output)
         self.assertIn("Add AUTH_TOKEN/CT0 or XAI_API_KEY", output)
-        self.assertIn("brave API available", output)
+        self.assertIn("exa API available", output)
 
     def test_build_nux_message_mentions_v3_unlock_paths(self):
         text = ui._build_nux_message(

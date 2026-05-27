@@ -40,9 +40,9 @@
       "sensitive": true
     },
     {
-      "name": "Brave Search API Key",
-      "description": "Brave Search API Key (optional)",
-      "envVar": "BRAVE_API_KEY",
+      "name": "Exa API Key",
+      "description": "Exa API Key (optional)",
+      "envVar": "EXA_API_KEY",
       "sensitive": true
     },
     {

@@ -1,51 +1,11 @@
-"""Web search retrieval via Brave Search, Exa, and Serper."""
+"""Web search retrieval via Exa, Serper, and Parallel."""
 
 from __future__ import annotations
 
-import sys
-import urllib.parse
 from datetime import datetime
 from urllib.parse import urlparse
 
 from . import dates, http
-
-
-# ---------------------------------------------------------------------------
-# Brave Search API
-# ---------------------------------------------------------------------------
-
-def brave_search(
-    query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
-) -> tuple[list[dict], dict]:
-    url = (
-        "https://api.search.brave.com/res/v1/web/search?"
-        + urllib.parse.urlencode(
-            {
-                "q": query,
-                "count": count,
-                "freshness": f"{date_range[0]}to{date_range[1]}",
-            }
-        )
-    )
-    data = http.request("GET", url, headers={"X-Subscription-Token": api_key}, timeout=15)
-    items = []
-    for i, r in enumerate((data.get("web", {}).get("results", []))[:count]):
-        raw_date = r.get("page_age") or ""
-        pub_date = _normalize_date(raw_date[:10]) if raw_date else None
-        if not _in_date_range(pub_date, date_range):
-            continue
-        items.append({
-            "id": f"WB{i + 1}",
-            "title": r.get("title", ""),
-            "url": r.get("url", ""),
-            "source_domain": _domain(r.get("url", "")),
-            "snippet": r.get("description", ""),
-            "date": pub_date,
-            "relevance": 0.8,
-            "why_relevant": "Brave web search",
-        })
-    artifact = {"label": "brave", "webSearchQueries": [query], "resultCount": len(items)}
-    return items, artifact
 
 
 # ---------------------------------------------------------------------------
@@ -140,10 +100,7 @@ def parallel_search(
     data = http.request(
         "POST", "https://api.parallel.ai/v1/search",
         headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-        json_data={
-            "search_queries": [query],
-            "advanced_settings": {"max_results": count},
-        },
+        json_data={"query": query, "max_results": count},
         timeout=15,
     )
     items = []
@@ -153,7 +110,7 @@ def parallel_search(
         url = r.get("url", "")
         if not url:
             continue
-        raw_date = r.get("publish_date") or ""
+        raw_date = r.get("published_date") or ""
         pub_date = _normalize_date(raw_date[:10]) if raw_date else None
         if not _in_date_range(pub_date, date_range):
             continue
@@ -162,7 +119,7 @@ def parallel_search(
             "title": r.get("title", ""),
             "url": url,
             "source_domain": _domain(url),
-            "snippet": ((r.get("excerpts") or [""])[0] or "")[:500],
+            "snippet": r.get("snippet", ""),
             "date": pub_date,
             "relevance": 0.8,
             "why_relevant": "Parallel AI web search",
@@ -199,9 +156,7 @@ def web_search(
 ) -> tuple[list[dict], dict]:
     """Run web search with the specified or auto-detected backend."""
     if backend == "auto":
-        if config.get("BRAVE_API_KEY"):
-            backend = "brave"
-        elif config.get("EXA_API_KEY"):
+        if config.get("EXA_API_KEY"):
             backend = "exa"
         elif config.get("SERPER_API_KEY"):
             backend = "serper"
@@ -209,90 +164,24 @@ def web_search(
             backend = "parallel"
         else:
             return [], {}
-    items: list[dict] = []
-    artifact: dict = {}
-    if backend == "brave":
-        key = config.get("BRAVE_API_KEY")
-        if not key:
-            raise RuntimeError("BRAVE_API_KEY is required when web_backend='brave'")
-        items, artifact = brave_search(query, date_range, key)
-    elif backend == "exa":
+    if backend == "exa":
         key = config.get("EXA_API_KEY")
         if not key:
             raise RuntimeError("EXA_API_KEY is required when web_backend='exa'")
-        items, artifact = exa_search(query, date_range, key)
-    elif backend == "serper":
+        return exa_search(query, date_range, key)
+    if backend == "serper":
         key = config.get("SERPER_API_KEY")
         if not key:
             raise RuntimeError("SERPER_API_KEY is required when web_backend='serper'")
-        items, artifact = serper_search(query, date_range, key)
-    elif backend == "parallel":
+        return serper_search(query, date_range, key)
+    if backend == "parallel":
         key = config.get("PARALLEL_API_KEY")
         if not key:
             raise RuntimeError("PARALLEL_API_KEY is required when web_backend='parallel'")
-        items, artifact = parallel_search(query, date_range, key)
-    elif backend != "none":
+        return parallel_search(query, date_range, key)
+    if backend != "none":
         raise ValueError(f"Unsupported web backend: {backend!r}")
-    else:
-        return [], {}
-    if items and not _reddit_excluded(config):
-        items = _enrich_reddit_items(items)
-    return items, artifact
-
-
-def _reddit_excluded(config: dict) -> bool:
-    """Return True when EXCLUDE_SOURCES contains 'reddit'.
-
-    Respects the same suppression knob the pipeline uses for source gating,
-    so a user who set EXCLUDE_SOURCES=reddit doesn't get Reddit content
-    smuggled back in via web-search URLs.
-    """
-    raw = (config.get("EXCLUDE_SOURCES") or "").split(",")
-    return any(s.strip().lower() == "reddit" for s in raw)
-
-
-def _enrich_reddit_items(items: list[dict]) -> list[dict]:
-    """Enrich web search results that are Reddit URLs with thread body and comments.
-
-    Claude Code's WebFetch blocks reddit.com, so the model can't retrieve
-    Reddit content from web search results. This fetches it via the public
-    JSON API (reddit.com/.../.json) which bypasses that restriction.
-
-    Callers should gate this with EXCLUDE_SOURCES=reddit handling (see
-    `_reddit_excluded`) so a user who explicitly excluded Reddit doesn't
-    get Reddit content via web-search URLs.
-    """
-    from . import reddit_enrich
-    from .reddit_enrich import RedditRateLimitError
-
-    for item in items:
-        url = item.get("url", "")
-        if "reddit.com" not in url or "/comments/" not in url:
-            continue
-        try:
-            thread_data = reddit_enrich.fetch_thread_data(url, timeout=8)
-            if not thread_data:
-                continue
-            parsed = reddit_enrich.parse_thread_data(thread_data)
-            # selftext lives under parsed["submission"], not at the top level
-            selftext = (parsed.get("submission") or {}).get("selftext", "")
-            if selftext:
-                item["snippet"] = selftext[:2000]
-            comments = parsed.get("comments", [])
-            top = reddit_enrich.get_top_comments(comments)
-            if top:
-                item["top_comments"] = [
-                    {"score": c.get("score", 0), "excerpt": (c.get("body") or "")[:200]}
-                    for c in top[:5]
-                ]
-            item["enriched_via"] = "reddit_json_api"
-        except RedditRateLimitError as exc:
-            # Stop iterating to avoid flooding more 429s
-            sys.stderr.write(f"[Web] Reddit rate-limited, halting enrichment: {exc}\n")
-            break
-        except Exception as exc:
-            sys.stderr.write(f"[Web] Reddit enrichment failed for {url}: {exc}\n")
-    return items
+    return [], {}
 
 
 # ---------------------------------------------------------------------------
