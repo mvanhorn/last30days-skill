@@ -25,7 +25,7 @@ DEPTH_CONFIG = {
 
 
 def _log(msg: str):
-    log.source_log("Threads", msg)
+    log.source_log("Threads", msg, tty_only=False)
 
 
 def _extract_core_subject(topic: str) -> str:

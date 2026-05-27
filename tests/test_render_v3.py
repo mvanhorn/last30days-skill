@@ -147,6 +147,50 @@ class OutputEnvelopeTests(unittest.TestCase):
         close_idx = text.index("<!-- END PASS-THROUGH FOOTER -->")
         self.assertIn("All agents reported back!", text[open_idx:close_idx])
 
+    def _perplexity_item(self, item_id: str, citations: int) -> schema.SourceItem:
+        return schema.SourceItem(
+            item_id=item_id,
+            source="perplexity",
+            title=f"Perplexity Sonar Pro: test topic ({item_id})",
+            body="AI synthesis body.",
+            url="",
+            container="perplexity.ai",
+            published_at="2026-03-16",
+            date_confidence="high",
+            engagement={"citations": citations},
+            metadata={},
+        )
+
+    def test_emoji_footer_includes_perplexity_when_present(self):
+        # Regression: Perplexity items survived retrieval/normalize/dedup but
+        # were dropped from the emoji-tree footer because _FOOTER_SOURCES
+        # omitted perplexity. The synthesis LLM that consumes the pass-through
+        # block then had no Perplexity signal, and users reasonably concluded
+        # the source was broken.
+        report = sample_report()
+        report.items_by_source["perplexity"] = [self._perplexity_item("px1", 7)]
+        text = render.render_compact(report)
+        self.assertIn("🧠 Perplexity:", text)
+        self.assertIn("7 citations", text)
+
+    def test_emoji_footer_perplexity_pluralizes_correctly(self):
+        # The footer line helper appends a literal "s" for plurals, so the
+        # item_word must pluralize regularly. Multi-item runs must produce
+        # "results", not "synthesiss" or other malformed forms.
+        report = sample_report()
+        report.items_by_source["perplexity"] = [
+            self._perplexity_item("px1", 4),
+            self._perplexity_item("px2", 3),
+            self._perplexity_item("px3", 2),
+        ]
+        text = render.render_compact(report)
+        self.assertIn("3 results", text)
+        self.assertNotIn("3 synthesiss", text)
+        self.assertNotIn("3 syntheses", text)
+        # Aggregate of all citation counts (4+3+2 = 9) — confirms multi-item
+        # engagement summation also lands correctly.
+        self.assertIn("9 citations", text)
+
     def test_canonical_boundary_scopes_pass_through_to_footer(self):
         text = render.render_compact(sample_report())
         # New boundary text scopes verbatim to the PASS-THROUGH FOOTER block,
