@@ -19,11 +19,14 @@ import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
-from . import reddit_rss, reddit_shreddit
+from collections import Counter
+
+from . import reddit_rss, reddit_shreddit, reddit_listing
 
 ENRICH_LIMITS = reddit_shreddit.ENRICH_LIMITS
 ENRICH_BUDGET = 45  # seconds total across all enrichment threads
 MAX_ENRICH_WORKERS = 4
+MAX_DERIVED_SUBS = 5  # subreddits derived from RSS results for score backfill
 
 
 def _log(msg: str) -> None:
@@ -41,14 +44,57 @@ def _tier0_json(topic: str, depth: str) -> List[Dict[str, Any]]:
         return []
 
 
+def _top_subreddits(posts: List[Dict[str, Any]], limit: int = MAX_DERIVED_SUBS) -> List[str]:
+    """Most frequent subreddits across discovered posts (for score backfill)."""
+    counts = Counter(p.get("subreddit", "") for p in posts if p.get("subreddit"))
+    return [sub for sub, _ in counts.most_common(limit)]
+
+
+def _apply_scores(post: Dict[str, Any], scored: Dict[str, int]) -> None:
+    post["score"] = scored["score"]
+    post["num_comments"] = scored["num_comments"]
+    post.setdefault("engagement", {})["score"] = scored["score"]
+    post["engagement"]["num_comments"] = scored["num_comments"]
+
+
 def _discover(topic: str, depth: str, subreddits: Optional[List[str]]) -> List[Dict[str, Any]]:
+    # Tier 0: demoted one-shot .json (dead for normal users too, but free to try).
     posts = _tier0_json(topic, depth)
     if posts:
         _log(f"Tier 0 (.json) returned {len(posts)} posts")
         return posts
-    posts = reddit_rss.search_rss(topic, depth=depth, subreddits=subreddits)
-    _log(f"Tier 1 (RSS) returned {len(posts)} posts")
-    return posts
+
+    # Tier 1: keyless discovery. RSS gives breadth (incl. global keyword search);
+    # the listing partials give real upvote scores. When no subreddits were
+    # provided, derive them from the RSS results so scores still flow through.
+    rss_posts = reddit_rss.search_rss(topic, depth=depth, subreddits=subreddits)
+    subs = subreddits or _top_subreddits(rss_posts)
+    listing_posts = reddit_listing.fetch_listings(subs, depth=depth, query=topic)
+    _log(f"Tier 1 (RSS) {len(rss_posts)} posts; listings {len(listing_posts)} scored posts")
+
+    # Score lookup by post id, from the scored listing cards.
+    score_map: Dict[str, Dict[str, int]] = {}
+    for p in listing_posts:
+        pid = p.get("metadata", {}).get("post_id", "")
+        if pid:
+            score_map[pid] = {"score": p["score"], "num_comments": p["num_comments"]}
+
+    # Merge: scored listing posts first, then RSS breadth (backfilled where possible).
+    merged: List[Dict[str, Any]] = []
+    seen: set = set()
+    for p in listing_posts:
+        if p["url"] not in seen:
+            seen.add(p["url"])
+            merged.append(p)
+    for p in rss_posts:
+        if p["url"] in seen:
+            continue
+        pid = reddit_listing._post_id(p["url"])
+        if pid in score_map:
+            _apply_scores(p, score_map[pid])
+        seen.add(p["url"])
+        merged.append(p)
+    return merged
 
 
 def _enrich_one(post: Dict[str, Any]) -> Dict[str, Any]:
@@ -132,11 +178,15 @@ def search_and_enrich(
         if p.get("date") is None or (from_date <= p["date"] <= to_date)
     ]
 
-    # Rank before enrichment. Keyless discovery has no post upvote score, so rank
-    # by query relevance then recency; RSS listing feeds already front-load
-    # popular posts, so the top of this order is a sound enrichment target.
+    # Rank before enrichment by real upvote score (from listing cards / backfill),
+    # then query relevance, then recency. Posts without a recovered score sort by
+    # the latter two — same behavior as before scores were available.
     posts.sort(
-        key=lambda p: (p.get("relevance", 0) or 0, p.get("date") or ""),
+        key=lambda p: (
+            p.get("engagement", {}).get("score", 0) or 0,
+            p.get("relevance", 0) or 0,
+            p.get("date") or "",
+        ),
         reverse=True,
     )
 
