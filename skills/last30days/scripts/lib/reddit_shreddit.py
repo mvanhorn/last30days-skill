@@ -59,7 +59,13 @@ def extract_post_ref(url: str) -> Optional[tuple]:
 
 
 def _svc_url(subreddit: str, post_id: str) -> str:
-    return f"https://www.reddit.com/svc/shreddit/comments/r/{subreddit}/t3_{post_id}"
+    # sort=top guarantees Reddit front-loads the highest-scored comments on the
+    # first page, so the true top comments are captured even on huge threads
+    # (we still re-sort by score locally as a backstop).
+    return (
+        f"https://www.reddit.com/svc/shreddit/comments/r/{subreddit}/t3_{post_id}"
+        f"?sort=top"
+    )
 
 
 def _attr(tag: str, name: str) -> str:

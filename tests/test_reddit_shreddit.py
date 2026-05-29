@@ -22,8 +22,9 @@ class TestExtractPostRef:
         assert rs.extract_post_ref("") is None
 
     def test_svc_url_shape(self):
+        # sort=top guarantees the highest-scored comments land on page 1.
         assert rs._svc_url("Rakuten", "1taeiw0") == (
-            "https://www.reddit.com/svc/shreddit/comments/r/Rakuten/t3_1taeiw0"
+            "https://www.reddit.com/svc/shreddit/comments/r/Rakuten/t3_1taeiw0?sort=top"
         )
 
 
