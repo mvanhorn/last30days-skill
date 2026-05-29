@@ -14,6 +14,7 @@ import shlex
 import shutil
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -38,6 +39,27 @@ TRANSCRIPT_MAX_WORDS = 5000
 
 from . import http, log, subproc
 from .relevance import token_overlap_relevance as _compute_relevance
+
+# yt-dlp transcript-fetch resilience. A non-zero yt-dlp exit means a real fetch
+# error (rate-limit / bot-check / network), NOT "no captions" — yt-dlp exits 0
+# with no file for a video that genuinely lacks the requested captions. So we
+# capture the returncode, log a classified reason instead of failing silently,
+# and retry transient errors a couple of times with a small per-video staggered
+# backoff.
+_TRANSCRIPT_MAX_RETRIES = 2
+_TRANSCRIPT_BACKOFF_BASE = 2.0  # seconds; multiplied by (attempt + 1)
+# Transient = worth retrying (and definitely not "no captions").
+_TRANSIENT_RE = re.compile(
+    r"429|too many requests|sign in to confirm|not a bot|rate.?limit"
+    r"|temporarily|try again|timed out|timeout|connection|unable to (extract|download)"
+    r"|failed to (extract|download)|got error|read error",
+    re.IGNORECASE,
+)
+# A genuine no-captions signal — treat as no captions, never retry/surface.
+_NO_CAPTION_RE = re.compile(
+    r"no subtitles|requested (format|language)|there'?s no .*subtitles",
+    re.IGNORECASE,
+)
 
 
 def extract_transcript_highlights(transcript: str, topic: str, limit: int = 5) -> list[str]:
@@ -490,15 +512,52 @@ def _fetch_transcript_direct(
     return vtt_text
 
 
-def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
+def _transcript_backoff(video_id: str, attempt: int) -> float:
+    """Backoff seconds before a transcript retry.
+
+    Staggered per-video (a sub-second offset derived from the id) so parallel
+    workers don't retry in lockstep and re-trip YouTube's limiter.
+    """
+    offset = (sum(ord(c) for c in video_id) % 1000) / 1000.0  # 0.0–1.0s
+    return _TRANSCRIPT_BACKOFF_BASE * (attempt + 1) + offset
+
+
+def _read_vtt(video_id: str, temp_dir: str) -> Optional[str]:
+    """Return the VTT text yt-dlp wrote for ``video_id``, or None if absent."""
+    # yt-dlp may save as .en.vtt or an en variant like .en-orig.vtt
+    vtt_path = Path(temp_dir) / f"{video_id}.en.vtt"
+    if not vtt_path.exists():
+        for p in Path(temp_dir).glob(f"{video_id}*.vtt"):
+            vtt_path = p
+            break
+        else:
+            return None
+
+    try:
+        return vtt_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def _fetch_transcript_ytdlp(
+    video_id: str,
+    temp_dir: str,
+    status: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
     """Fetch transcript using yt-dlp (original implementation).
 
     Args:
         video_id: YouTube video ID
         temp_dir: Temporary directory for subtitle files
+        status: Optional dict mutated to record a yt-dlp failure reason
+            (``status["ytdlp_error"]``) so the caller can tell a real fetch
+            error (rate-limit / bot-check / network / timeout) apart from a
+            video that genuinely has no captions, and skip the misleading
+            "no captions found" log + the YouTube-blocked HTTP fallback.
 
     Returns:
-        Raw VTT text, or None if no captions available.
+        Raw VTT text, or None if no captions are available or the fetch failed.
+        On a hard (non-no-caption) failure, sets ``status["ytdlp_error"]``.
     """
     cmd = [
         "yt-dlp",
@@ -513,27 +572,55 @@ def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
         f"https://www.youtube.com/watch?v={video_id}",
     ]
 
-    try:
-        subproc.run_with_timeout(cmd, timeout=30)
-    except subproc.SubprocTimeout:
-        return None
-    except FileNotFoundError:
-        return None
-
-    # yt-dlp may save as .en.vtt or .en-orig.vtt
-    vtt_path = Path(temp_dir) / f"{video_id}.en.vtt"
-    if not vtt_path.exists():
-        # Try alternate naming
-        for p in Path(temp_dir).glob(f"{video_id}*.vtt"):
-            vtt_path = p
+    attempts = _TRANSCRIPT_MAX_RETRIES + 1
+    last_reason: Optional[str] = None
+    for attempt in range(attempts):
+        try:
+            result = subproc.run_with_timeout(cmd, timeout=30)
+        except subproc.SubprocTimeout:
+            last_reason = "timed out after 30s"
+            _log(f"yt-dlp transcript timed out after 30s for {video_id} "
+                 f"(attempt {attempt + 1}/{attempts})")
+            if attempt < attempts - 1:
+                time.sleep(_transcript_backoff(video_id, attempt))
+                continue
             break
-        else:
+        except FileNotFoundError:
+            # yt-dlp binary missing — not transient, not retryable.
+            if status is not None:
+                status["ytdlp_error"] = "yt-dlp not found"
             return None
 
-    try:
-        return vtt_path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
+        if result.returncode == 0:
+            vtt = _read_vtt(video_id, temp_dir)
+            if vtt is not None:
+                return vtt
+            # Exit 0 with no file == the uploader has no matching captions.
+            # Genuine no-captions: return quietly (caller may still try direct).
+            return None
+
+        # Non-zero exit == a real error worth classifying & surfacing.
+        stderr = (result.stderr or "").strip()
+        snippet = (stderr.splitlines()[-1][:200] if stderr
+                   else f"exit {result.returncode}")
+        if _NO_CAPTION_RE.search(stderr):
+            # yt-dlp can exit non-zero when the requested language is absent.
+            # Treat as genuine no-captions, not an error worth retrying.
+            return None
+        last_reason = snippet
+        if _TRANSIENT_RE.search(stderr) and attempt < attempts - 1:
+            _log(f"yt-dlp transcript transient failure for {video_id} "
+                 f"(attempt {attempt + 1}/{attempts}): {snippet}")
+            time.sleep(_transcript_backoff(video_id, attempt))
+            continue
+        # Non-transient, or retries exhausted — surface the real reason.
+        _log(f"yt-dlp transcript failed for {video_id} "
+             f"(exit {result.returncode}): {snippet}")
+        break
+
+    if status is not None and last_reason is not None:
+        status["ytdlp_error"] = last_reason
+    return None
 
 
 def fetch_transcript(
@@ -565,9 +652,17 @@ def fetch_transcript(
     ssh_host = _ytdlp_ssh_host()
     use_ytdlp = is_ytdlp_installed() and not ssh_host
     if use_ytdlp:
-        raw_vtt = _fetch_transcript_ytdlp(video_id, temp_dir)
+        raw_vtt = _fetch_transcript_ytdlp(video_id, temp_dir, status=status)
         if not raw_vtt:
-            _log(f"yt-dlp transcript failed for {video_id}, trying direct HTTP fallback")
+            ytdlp_error = (status or {}).get("ytdlp_error")
+            if ytdlp_error:
+                # yt-dlp hit a real error (rate-limit / bot-check / timeout) —
+                # captions likely exist. The direct-HTTP fallback hits the same
+                # wall and returns an empty body that masquerades as "no
+                # captions", so skip it and surface the real reason instead.
+                _log(f"Transcript fetch failed for {video_id}: {ytdlp_error}")
+                return None
+            _log(f"yt-dlp found no captions for {video_id}, trying direct HTTP fallback")
             raw_vtt = _fetch_transcript_direct(video_id, status=status)
     else:
         if ssh_host:

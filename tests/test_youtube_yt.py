@@ -233,7 +233,7 @@ class TestFetchTranscriptFallback(unittest.TestCase):
              mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp", return_value="WEBVTT\n\nfake") as yt_mock, \
              mock.patch.object(youtube_yt, "_fetch_transcript_direct") as direct_mock:
             result = youtube_yt.fetch_transcript("vid1", "/tmp/test")
-        yt_mock.assert_called_once_with("vid1", "/tmp/test")
+        yt_mock.assert_called_once_with("vid1", "/tmp/test", status=None)
         direct_mock.assert_not_called()
 
     def test_uses_direct_when_ytdlp_missing(self):
