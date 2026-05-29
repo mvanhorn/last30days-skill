@@ -78,6 +78,24 @@ class TestDiscoveryTierOrder:
         backfilled = [p for p in out if p["url"] == rss_post["url"]][0]
         assert backfilled["engagement"]["score"] == 999
 
+    def test_bare_query_does_not_merge_listing_discovery(self):
+        # No subreddits provided: derived-subreddit listings must NOT be added as
+        # results (avoids flooding with off-topic high-upvote posts) — only used
+        # to backfill scores onto the keyword-matched RSS posts.
+        rss_post = _post(1)  # on-topic keyword match
+        offtopic_listing = _scored(99, score=88888)  # high score, unrelated sub
+        offtopic_listing["url"] = "https://www.reddit.com/r/random/comments/zzz999/x/"
+        with mock.patch.object(reddit_keyless, "_tier0_json", return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
+                               return_value=[rss_post]), \
+             mock.patch.object(reddit_keyless, "_top_subreddits", return_value=["random"]), \
+             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[offtopic_listing]):
+            out = reddit_keyless._discover("topic", "default", None)
+        urls = [p["url"] for p in out]
+        assert rss_post["url"] in urls
+        assert offtopic_listing["url"] not in urls  # not merged as discovery
+
     def test_tier0_never_raises(self):
         with mock.patch("lib.reddit_public.search", side_effect=Exception("boom")), \
              mock.patch.object(reddit_keyless.reddit_rss, "search_rss", return_value=[]), \

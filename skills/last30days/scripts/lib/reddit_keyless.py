@@ -65,21 +65,37 @@ def _discover(topic: str, depth: str, subreddits: Optional[List[str]]) -> List[D
         return posts
 
     # Tier 1: keyless discovery. RSS gives breadth (incl. global keyword search);
-    # the listing partials give real upvote scores. When no subreddits were
-    # provided, derive them from the RSS results so scores still flow through.
+    # the listing partials give real upvote scores.
     rss_posts = reddit_rss.search_rss(topic, depth=depth, subreddits=subreddits)
-    subs = subreddits or _top_subreddits(rss_posts)
-    listing_posts = reddit_listing.fetch_listings(subs, depth=depth, query=topic)
-    _log(f"Tier 1 (RSS) {len(rss_posts)} posts; listings {len(listing_posts)} scored posts")
+
+    if subreddits:
+        # Targeted run: the caller chose these subreddits, so their listing cards
+        # are on-topic — include them as scored discovery AND as a score source.
+        listing_posts = reddit_listing.fetch_listings(subreddits, depth=depth, query=topic)
+        score_source = listing_posts
+    else:
+        # Bare global run: subreddits derived from noisy RSS results are NOT
+        # reliably on-topic, so their listings are used ONLY to backfill scores
+        # onto the keyword-matched RSS posts — never merged as discovery, which
+        # would flood results with high-upvote but irrelevant posts.
+        listing_posts = []
+        derived = _top_subreddits(rss_posts)
+        score_source = reddit_listing.fetch_listings(derived, depth=depth, query=topic)
+    _log(
+        f"Tier 1 (RSS) {len(rss_posts)} posts; "
+        f"{'listing discovery ' + str(len(listing_posts)) if subreddits else 'score-only'}; "
+        f"{len(score_source)} scored cards"
+    )
 
     # Score lookup by post id, from the scored listing cards.
     score_map: Dict[str, Dict[str, int]] = {}
-    for p in listing_posts:
+    for p in score_source:
         pid = p.get("metadata", {}).get("post_id", "")
         if pid:
             score_map[pid] = {"score": p["score"], "num_comments": p["num_comments"]}
 
-    # Merge: scored listing posts first, then RSS breadth (backfilled where possible).
+    # Merge: scored listing posts first (targeted only), then RSS breadth,
+    # backfilled with real scores where the post appears in a listing.
     merged: List[Dict[str, Any]] = []
     seen: set = set()
     for p in listing_posts:
