@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.1] - 2026-05-30
+
+### Fixed
+
+- Removed the redundant `commands/last30days.md` wrapper so the plugin exposes only the skill ([#461](https://github.com/mvanhorn/last30days-skill/issues/461)). Previously the plugin shipped both a command wrapper and the skill under the same name, so `/last30` surfaced two `last30days` entries with two different descriptions. The skill already carries its own `argument-hint`, so the `/last30days <topic>` picker UX is unchanged.
+- Corrected the README install note that claimed Claude Code dedupes the slash command across install methods; it does not, so having both the marketplace plugin and the `npx skills` copy active shows two entries.
+
 ## [3.3.0] - 2026-05-17
 
 A week-long shipping cycle: ~75 PRs merged plus 7 community fixes salvaged through PR triage. Big themes: install story modernized for the multi-harness world (Claude Code, Codex, Cursor, Gemini CLI, Copilot, Windsurf, and 50+ Agent Skills hosts), new emit and source modes, and a substantial reliability sweep across Reddit, X, Windows, YouTube, and the planner.

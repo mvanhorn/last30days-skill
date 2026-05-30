@@ -1,6 +1,6 @@
 ---
 name: last30days
-version: "3.3.0"
+version: "3.3.1"
 description: "Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web."
 argument-hint: 'last30days nvidia earnings reaction | last30days AI video tools | last30days what users want in react'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
@@ -243,7 +243,7 @@ If your Bash call to `last30days.py` does NOT include the FULL pre-flight checkl
 
 ---
 
-# last30days v3.3.0: Research Any Topic from the Last 30 Days
+# last30days v3.3.1: Research Any Topic from the Last 30 Days
 
 > **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`). X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars). Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
 
@@ -596,8 +596,8 @@ When the user asks "X vs Y" (or "X vs Y vs Z"), the engine fans out N full `pipe
 # the Read tool result. Examples:
 #   Read ~/.claude/skills/last30days/SKILL.md      → SKILL_DIR=$HOME/.claude/skills/last30days
 #   Read ~/.codex/skills/last30days/SKILL.md       → SKILL_DIR=$HOME/.codex/skills/last30days
-#   Read ~/.claude/plugins/cache/last30days-skill/last30days/3.3.0/skills/last30days/SKILL.md
-#     → SKILL_DIR=$HOME/.claude/plugins/cache/last30days-skill/last30days/3.3.0/skills/last30days
+#   Read ~/.claude/plugins/cache/last30days-skill/last30days/3.3.1/skills/last30days/SKILL.md
+#     → SKILL_DIR=$HOME/.claude/plugins/cache/last30days-skill/last30days/3.3.1/skills/last30days
 # scripts/last30days.py is always a direct child of SKILL_DIR (every install layout
 # packages SKILL.md and scripts/ as siblings).
 SKILL_DIR="<absolute path of the directory containing the SKILL.md you Read>"
@@ -914,8 +914,8 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 # the Read tool result. Examples:
 #   Read ~/.claude/skills/last30days/SKILL.md      → SKILL_DIR=$HOME/.claude/skills/last30days
 #   Read ~/.codex/skills/last30days/SKILL.md       → SKILL_DIR=$HOME/.codex/skills/last30days
-#   Read ~/.claude/plugins/cache/last30days-skill/last30days/3.3.0/skills/last30days/SKILL.md
-#     → SKILL_DIR=$HOME/.claude/plugins/cache/last30days-skill/last30days/3.3.0/skills/last30days
+#   Read ~/.claude/plugins/cache/last30days-skill/last30days/3.3.1/skills/last30days/SKILL.md
+#     → SKILL_DIR=$HOME/.claude/plugins/cache/last30days-skill/last30days/3.3.1/skills/last30days
 # scripts/last30days.py is always a direct child of SKILL_DIR (every install layout
 # packages SKILL.md and scripts/ as siblings).
 SKILL_DIR="<absolute path of the directory containing the SKILL.md you Read>"

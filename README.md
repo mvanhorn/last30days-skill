@@ -189,7 +189,7 @@ If you'd rather use the agent-skills install path on Claude Code, that's also su
 npx skills add mvanhorn/last30days-skill -g -a claude-code
 ```
 
-The native plugin and the `npx skills` install can coexist; Claude Code dedupes the slash command.
+The native plugin and the `npx skills` install can coexist. Note that Claude Code does not dedupe across install methods: if you have both the marketplace plugin and the `npx skills` copy active, `/last30days` will show two entries. Use one install method per machine.
 
 ### Codex, Cursor, Copilot, Gemini CLI, and other Agent Skills hosts
 
