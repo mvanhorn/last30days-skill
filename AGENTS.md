@@ -3,7 +3,7 @@
 Agent Skills package for researching any topic across Reddit, X, YouTube, and web. Installable across Claude Code (most common host), Codex, Cursor, GitHub Copilot, Gemini CLI, and 50+ other [Agent Skills](https://agentskills.io) hosts. Python scripts with multi-source search aggregation.
 
 ## Structure
-- `skills/last30days/SKILL.md` — canonical skill definition / runtime spec the model reads when the slash command fires (`SKILL-original.md` at repo root is the historical v1 spec, kept for reference only)
+- `skills/last30days/SKILL.md` — canonical skill definition / runtime spec the model reads when the slash command fires
 - `skills/last30days/scripts/last30days.py` — main research engine
 - `skills/last30days/scripts/lib/` — search, enrichment, rendering modules
 - `skills/last30days/scripts/lib/vendor/bird-search/` — vendored X search client
