@@ -254,17 +254,35 @@ Research ANY topic across Reddit, X, YouTube, and other sources. Surface what pe
 Before running any `last30days.py` command in this skill, resolve a Python 3.12+ interpreter once and keep it in `LAST30DAYS_PYTHON`:
 
 ```bash
-for py in python3.14 python3.13 python3.12 python3; do
-  command -v "$py" >/dev/null 2>&1 || continue
-  "$py" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || continue
-  LAST30DAYS_PYTHON="$py"
-  break
-done
+if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
+  for py in \
+    "${LOCALAPPDATA:-}/Programs/Python/Python314/python.exe" \
+    "${LOCALAPPDATA:-}/Programs/Python/Python313/python.exe" \
+    "${LOCALAPPDATA:-}/Programs/Python/Python312/python.exe" \
+    python3.14 python3.13 python3.12 python3 python; do
+    [ -n "$py" ] || continue
+    if [ -x "$py" ]; then
+      candidate="$py"
+    elif command -v "$py" >/dev/null 2>&1; then
+      candidate="$py"
+    else
+      continue
+    fi
+    "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || continue
+    LAST30DAYS_PYTHON="$candidate"
+    break
+  done
+fi
 
 if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
-  echo "ERROR: last30days v3 requires Python 3.12+. Install python3.12 or python3.13 and rerun." >&2
+  echo "ERROR: last30days v3 requires Python 3.12+. Install Python 3.12+ or set LAST30DAYS_PYTHON to a supported interpreter." >&2
   exit 1
 fi
+
+"${LAST30DAYS_PYTHON}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || {
+  echo "ERROR: LAST30DAYS_PYTHON must point to Python 3.12+." >&2
+  exit 1
+}
 
 LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
 ```
