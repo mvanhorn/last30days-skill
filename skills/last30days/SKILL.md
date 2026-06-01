@@ -254,23 +254,50 @@ Research ANY topic across Reddit, X, YouTube, and other sources. Surface what pe
 Before running any `last30days.py` command in this skill, resolve a Python 3.12+ interpreter once and keep it in `LAST30DAYS_PYTHON`:
 
 ```bash
+try_last30days_python() {
+  candidate="$1"
+  [ -n "$candidate" ] || return 1
+  if [ -x "$candidate" ]; then
+    :
+  elif command -v "$candidate" >/dev/null 2>&1; then
+    :
+  else
+    return 1
+  fi
+  "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || return 1
+  LAST30DAYS_PYTHON="$candidate"
+  return 0
+}
+
+windows_path_to_unix() {
+  path="$1"
+  [ -n "$path" ] || return 1
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -u "$path"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
 if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
-  for py in \
-    "${LOCALAPPDATA:-}/Programs/Python/Python314/python.exe" \
-    "${LOCALAPPDATA:-}/Programs/Python/Python313/python.exe" \
-    "${LOCALAPPDATA:-}/Programs/Python/Python312/python.exe" \
-    python3.14 python3.13 python3.12 python3 python; do
-    [ -n "$py" ] || continue
-    if [ -x "$py" ]; then
-      candidate="$py"
-    elif command -v "$py" >/dev/null 2>&1; then
-      candidate="$py"
-    else
-      continue
-    fi
-    "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || continue
-    LAST30DAYS_PYTHON="$candidate"
-    break
+  while IFS= read -r windows_python_root; do
+    [ -n "$windows_python_root" ] && [ -d "$windows_python_root" ] || continue
+    while IFS= read -r py; do
+      try_last30days_python "$py" && break 2
+    done <<EOF_PYTHON_CANDIDATES
+$(find "$windows_python_root" -maxdepth 2 -type f -iname python.exe 2>/dev/null | sort -r)
+EOF_PYTHON_CANDIDATES
+  done <<EOF_WINDOWS_PYTHON_ROOTS
+$([ -n "${LOCALAPPDATA:-}" ] && printf '%s\n' "$(windows_path_to_unix "$LOCALAPPDATA")/Programs/Python")
+$([ -n "${ProgramFiles:-}" ] && windows_path_to_unix "$ProgramFiles")
+$([ -n "${PROGRAMFILES:-}" ] && windows_path_to_unix "$PROGRAMFILES")
+$(program_files_x86="$(printenv 'ProgramFiles(x86)' 2>/dev/null || true)"; [ -n "$program_files_x86" ] && windows_path_to_unix "$program_files_x86")
+EOF_WINDOWS_PYTHON_ROOTS
+fi
+
+if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
+  for py in python3.14 python3.13 python3.12 python3 python; do
+    try_last30days_python "$py" && break
   done
 fi
 
