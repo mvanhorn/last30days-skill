@@ -452,7 +452,10 @@ def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
 
 
 def run_github_auth(timeout: int = 300) -> Dict[str, Any]:
-    """Run the GitHub device auth flow without forwarding local PATs.
+    """Run the --github setup path via device auth only.
+
+    Kept as the semantic entry point for GitHub-backed setup; this path must
+    not read or forward local GitHub CLI tokens.
 
     Returns JSON-serializable dict with status, method, and api_key.
     """
