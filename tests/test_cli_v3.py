@@ -102,6 +102,19 @@ class CliV3Tests(unittest.TestCase):
         self.assertEqual(["biosecurity", "ai", "agents"], args.topic)
         self.assertEqual([], extra)
 
+    def test_build_parser_passes_setup_github_flag_through_without_abbrev_collision(self):
+        # Regression for #456: `setup --github` must reach extra_argv intact.
+        # With argparse's default prefix-matching, `--github` was treated as an
+        # ambiguous abbreviation of --github-user/--github-repo and hard-exited.
+        parser = cli.build_parser()
+        args, extra = parser.parse_known_args(["setup", "--github"])
+        self.assertEqual(["setup"], args.topic)
+        self.assertIn("--github", extra)
+        # The registered full-length flags must still parse normally.
+        args, extra = parser.parse_known_args(["claude", "--github-user", "steipete"])
+        self.assertEqual("steipete", args.github_user)
+        self.assertEqual([], extra)
+
     def test_ensure_supported_python_rejects_old_interpreter_with_actionable_error(self):
         stderr = io.StringIO()
         with redirect_stderr(stderr):

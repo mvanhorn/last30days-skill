@@ -236,7 +236,15 @@ def persist_report(report: schema.Report) -> dict[str, int]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Research a topic across live social, market, and grounded web sources.")
+    # allow_abbrev=False so prefix-matching never hijacks setup sub-flags that
+    # main() pulls out of parse_known_args() (e.g. `setup --github`). With the
+    # default (True), argparse treats `--github` as an ambiguous abbreviation of
+    # the registered `--github-user`/`--github-repo` and hard-exits before the
+    # flag can pass through to extra_argv. No caller relies on abbreviated flags.
+    parser = argparse.ArgumentParser(
+        description="Research a topic across live social, market, and grounded web sources.",
+        allow_abbrev=False,
+    )
     parser.add_argument("topic", nargs="*", help="Research topic")
     parser.add_argument("--emit", default="compact", choices=["compact", "json", "context", "md", "html"])
     parser.add_argument("--search", help="Comma-separated source list")
