@@ -7,6 +7,14 @@ set -euo pipefail
 PROJECT_ENV=".claude/last30days.env"
 GLOBAL_ENV="$HOME/.config/last30days/.env"
 
+# Ensure LAST30DAYS_MEMORY_DIR exists for HTML-brief / raw-markdown saves.
+# SKILL.md and the engine default this via the same env-var fallback. Fresh
+# installs otherwise fail silently on first --emit=html run. See #395.
+MEM_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+if [[ -n "$MEM_DIR" ]]; then
+  mkdir -p "$MEM_DIR" 2>/dev/null || true
+fi
+
 # Helper: warn if file permissions are too open
 check_perms() {
   local file="$1"

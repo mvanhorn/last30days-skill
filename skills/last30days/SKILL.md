@@ -272,7 +272,7 @@ LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
 
 ## Configuration
 
-Set `LAST30DAYS_MEMORY_DIR` before invoking the skill to choose where raw research files are saved. If it is not set, the skill defaults to `~/Documents/Last30Days`.
+Set `LAST30DAYS_MEMORY_DIR` before invoking the skill to choose where raw research files are saved. If it is not set, the skill defaults to `~/Documents/Last30Days`. The SessionStart hook (`hooks/scripts/check-config.sh`) creates this directory automatically on every session start if it doesn't already exist, so first-run users don't need to `mkdir` by hand.
 
 ## Step 0: First-Run Setup Wizard
 
