@@ -115,7 +115,17 @@ fi
 
 # Setup done but check for ScrapeCreators
 HAS_SCRAPECREATORS="${ENV_SCRAPECREATORS_API_KEY:-${SCRAPECREATORS_API_KEY:-}}"
-HAS_X="${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}"
+# X cookie auth needs BOTH auth_token and ct0 — the pipeline only treats X as
+# searchable when both are present (see setup_wizard.py's x_method="cookies"
+# gate and env.py). Counting AUTH_TOKEN alone reported a dead X source as
+# active, inflating the "N sources active" line. The XAI API path is separate
+# and needs only its own key.
+HAS_X_AUTH="${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}"
+HAS_X_CT0="${ENV_CT0:-${CT0:-}}"
+HAS_X=""
+if [[ -n "$HAS_X_AUTH" && -n "$HAS_X_CT0" ]]; then
+  HAS_X="yes"
+fi
 HAS_XAI="${ENV_XAI_API_KEY:-${XAI_API_KEY:-}}"
 HAS_YTDLP=""
 if command -v yt-dlp &>/dev/null; then
