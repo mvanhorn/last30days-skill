@@ -80,59 +80,72 @@ class LastRunStateTests(unittest.TestCase):
             self.assertIn('Last run: "custom hook query"', result.stdout)
 
 
-def _run_hook_with_env_file(env_lines: str) -> subprocess.CompletedProcess[str]:
-    """Run check-config.sh against a temp global .env and return the result.
+def _hook_source_count(env_lines: str) -> int:
+    """Run check-config.sh against a synthetic global .env and return the
+    "N sources active" count.
 
-    Returns the CompletedProcess; callers inspect stdout for the
-    "N sources active" line. HOME is redirected so the hook reads the
-    synthetic ~/.config/last30days/.env rather than the developer's real one.
+    HOME is redirected to a throwaway dir so the hook reads our synthetic
+    ~/.config/last30days/.env rather than the developer's real one, and every
+    source-contributing env var is stripped so the count is driven solely by
+    the synthetic file. yt-dlp (detected via PATH, not an env var) cannot be
+    neutralized this way — callers compare counts via deltas so its presence
+    cancels out.
     """
-    tmp = tempfile.mkdtemp()
-    config_dir = Path(tmp) / ".config" / "last30days"
-    config_dir.mkdir(parents=True)
-    (config_dir / ".env").write_text(env_lines)
-    env = os.environ.copy()
-    env["HOME"] = tmp
-    # Drop any X creds inherited from the developer's shell so the count is
-    # driven solely by the synthetic .env file.
-    for key in ("AUTH_TOKEN", "CT0", "XAI_API_KEY", "SCRAPECREATORS_API_KEY"):
-        env.pop(key, None)
-    return subprocess.run(
-        ["bash", "hooks/scripts/check-config.sh"],
-        cwd=REPO_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    with tempfile.TemporaryDirectory() as tmp:
+        config_dir = Path(tmp) / ".config" / "last30days"
+        config_dir.mkdir(parents=True)
+        (config_dir / ".env").write_text(env_lines)
+        env = os.environ.copy()
+        env["HOME"] = tmp
+        for key in (
+            "AUTH_TOKEN", "CT0", "XAI_API_KEY", "SCRAPECREATORS_API_KEY",
+            "BSKY_HANDLE", "EXA_API_KEY",
+        ):
+            env.pop(key, None)
+        result = subprocess.run(
+            ["bash", "hooks/scripts/check-config.sh"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    if result.returncode != 0:
+        raise AssertionError(f"hook exited {result.returncode}: {result.stderr}")
+    for line in result.stdout.splitlines():
+        if "sources active" in line:
+            return int(line.split("Ready —")[1].split("sources")[0].strip())
+    raise AssertionError(f"no 'sources active' line in output:\n{result.stdout}")
 
 
 class SourceCountTests(unittest.TestCase):
     """check-config.sh must count X as active only when it can actually search.
 
     X cookie auth needs both AUTH_TOKEN and CT0 (issue #396); AUTH_TOKEN alone
-    is a dead source. The baseline without X is 3 (HN + Polymarket + Reddit).
+    is a dead source. Assertions compare against a no-X baseline rather than a
+    hardcoded absolute count, so they hold regardless of whether yt-dlp is
+    installed on the test machine.
     """
 
-    def _source_count(self, env_lines: str) -> int:
-        result = _run_hook_with_env_file(env_lines)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        for line in result.stdout.splitlines():
-            if "sources active" in line:
-                return int(line.split("Ready —")[1].split("sources")[0].strip())
-        self.fail(f"no 'sources active' line in output:\n{result.stdout}")
+    BASELINE_ENV = "SETUP_COMPLETE=1\n"
+
+    def _x_contribution(self, x_env_lines: str) -> int:
+        """How many sources the given X creds add over a no-X baseline (0 or 1)."""
+        baseline = _hook_source_count(self.BASELINE_ENV)
+        with_x = _hook_source_count(self.BASELINE_ENV + x_env_lines)
+        return with_x - baseline
 
     def test_auth_token_without_ct0_does_not_count_x(self):
-        self.assertEqual(3, self._source_count("SETUP_COMPLETE=1\nAUTH_TOKEN=abc\n"))
+        self.assertEqual(0, self._x_contribution("AUTH_TOKEN=abc\n"))
 
     def test_auth_token_with_ct0_counts_x(self):
-        self.assertEqual(4, self._source_count("SETUP_COMPLETE=1\nAUTH_TOKEN=abc\nCT0=def\n"))
+        self.assertEqual(1, self._x_contribution("AUTH_TOKEN=abc\nCT0=def\n"))
 
     def test_ct0_without_auth_token_does_not_count_x(self):
-        self.assertEqual(3, self._source_count("SETUP_COMPLETE=1\nCT0=def\n"))
+        self.assertEqual(0, self._x_contribution("CT0=def\n"))
 
     def test_xai_api_key_counts_x_without_cookies(self):
-        self.assertEqual(4, self._source_count("SETUP_COMPLETE=1\nXAI_API_KEY=grok\n"))
+        self.assertEqual(1, self._x_contribution("XAI_API_KEY=grok\n"))
 
 
 if __name__ == "__main__":
