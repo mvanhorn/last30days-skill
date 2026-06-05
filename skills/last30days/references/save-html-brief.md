@@ -22,7 +22,9 @@ The contract: the synthesis still appears in chat as the primary output. The HTM
 #    summarize, do not reorder. The HTML must read identically to the chat
 #    response in voice and citations.
 SYNTHESIS_FILE="/tmp/last30days-synthesis-${CLAUDE_SESSION_ID}.md"
-cat > "$SYNTHESIS_FILE" <<'SYNTHESIS_EOF'
+# >| not >: fixed path may already exist on a same-session re-run; a plain >
+# is refused under `set -o noclobber`.
+cat >| "$SYNTHESIS_FILE" <<'SYNTHESIS_EOF'
 What I learned:
 
 **{First headline}** - {body with [name](url) inline citations}
@@ -45,7 +47,7 @@ HTML_PATH="${LAST30DAYS_MEMORY_DIR}/${SLUG}-brief.html"
 "${LAST30DAYS_PYTHON}" "${SKILL_ROOT}/scripts/last30days.py" "${TOPIC}" \
   --emit=html \
   --synthesis-file "$SYNTHESIS_FILE" \
-  > "$HTML_PATH"
+  >| "$HTML_PATH"   # >| not >: re-running the same topic overwrites an existing brief, refused under `set -o noclobber`
 
 # 3. Append ONE line to your already-emitted chat response, after the
 #    invitation block. Use a paperclip emoji as a visible signal that an

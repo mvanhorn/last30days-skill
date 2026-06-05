@@ -617,7 +617,9 @@ fi
 # GNU; BSD only substitutes X's at the end of the template.
 COMPETITORS_PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-competitors.XXXXXX")
 trap 'rm -f "$COMPETITORS_PLAN_FILE"' EXIT
-cat > "$COMPETITORS_PLAN_FILE" <<'PLAN_EOF'
+# >| not >: mktemp already created the file, so a plain > is refused under
+# `set -o noclobber` (leaving the plan empty -> deterministic fallback).
+cat >| "$COMPETITORS_PLAN_FILE" <<'PLAN_EOF'
 {
   "{TOPIC_B}": {"x_handle":"{TOPIC_B_HANDLE}","subreddits":["{TOPIC_B_SUB_1}","{TOPIC_B_SUB_2}"],"github_user":"{TOPIC_B_GH}","context":"{TOPIC_B_CONTEXT}"},
   "{TOPIC_C}": {"x_handle":"{TOPIC_C_HANDLE}","subreddits":["{TOPIC_C_SUB_1}"],"github_user":"{TOPIC_C_GH}","context":"{TOPIC_C_CONTEXT}"}
@@ -940,7 +942,9 @@ fi
 # X's at the end of the template.
 QUERY_PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-plan.XXXXXX")
 trap 'rm -f "$QUERY_PLAN_FILE"' EXIT
-cat > "$QUERY_PLAN_FILE" <<'PLAN_EOF'
+# >| not >: mktemp already created the file, so a plain > is refused under
+# `set -o noclobber` (leaving the plan empty -> deterministic fallback).
+cat >| "$QUERY_PLAN_FILE" <<'PLAN_EOF'
 {QUERY_PLAN_JSON_FROM_STEP_0.75}
 PLAN_EOF
 ```
