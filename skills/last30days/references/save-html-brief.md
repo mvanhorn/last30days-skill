@@ -81,7 +81,7 @@ If the user runs `/last30days OpenClaw` normally, sees the synthesis in chat, an
 - Do NOT save HTML if the user didn't ask. The sparse mode (no synthesis) produces a thin file; not useful as a shareable.
 - Do NOT add content to the temp file beyond your synthesis prose. The badge / footer / colophon come from the engine.
 - Do NOT change the file path convention. `${LAST30DAYS_MEMORY_DIR}/${SLUG}-brief.html` is the canonical location.
-- Do NOT silently overwrite an existing file without telling the user. If `$HTML_PATH` already exists from a prior run, the engine will pick a date-suffixed name (`{slug}-brief-YYYY-MM-DD.html`) automatically; just print whichever path the redirect produced.
+- Do NOT hide the save path from the user. The `>|` redirect always writes to the fixed `$HTML_PATH`, overwriting any earlier brief for the same topic — that is intentional (the brief is a regenerated artifact for the latest run, not an archive). The engine writes HTML to stdout, so it has no say over the filename; the shell redirect owns it. Always surface the path via the `📎` line in step 3 so the user knows what was written.
 - Do NOT include the data quality warning text in the temp file or in your final chat line. Warnings are an engine-stderr concern, not an artifact concern.
 
 ## Edge cases
