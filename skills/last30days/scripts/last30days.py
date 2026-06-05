@@ -236,7 +236,10 @@ def persist_report(report: schema.Report) -> dict[str, int]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Research a topic across live social, market, and grounded web sources.")
+    parser = argparse.ArgumentParser(
+        description="Research a topic across live social, market, and grounded web sources.",
+        allow_abbrev=False,
+    )
     parser.add_argument("topic", nargs="*", help="Research topic")
     parser.add_argument("--emit", default="compact", choices=["compact", "json", "context", "md", "html"])
     parser.add_argument("--search", help="Comma-separated source list")
