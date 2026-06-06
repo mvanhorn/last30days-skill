@@ -3,6 +3,25 @@ WebSearch is a **deferred tool** in Claude Code v2.1.114. The frontmatter of thi
 
 Load WebSearch first. No exceptions. Then proceed to the branching rule below.
 
+## Claude Code Stale-Clone Self-Check
+
+If the `SKILL.md` path you loaded contains `/.claude/plugins/marketplaces/`, run this before continuing:
+
+```bash
+CLAUDE_CACHE_LATEST=$(find "$HOME/.claude/plugins/cache/last30days-skill/last30days" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1)
+CLAUDE_CACHE_SKILL_MD=""
+if [ -n "$CLAUDE_CACHE_LATEST" ]; then
+  if [ -f "$CLAUDE_CACHE_LATEST/skills/last30days/SKILL.md" ]; then
+    CLAUDE_CACHE_SKILL_MD="$CLAUDE_CACHE_LATEST/skills/last30days/SKILL.md"
+  elif [ -f "$CLAUDE_CACHE_LATEST/SKILL.md" ]; then
+    CLAUDE_CACHE_SKILL_MD="$CLAUDE_CACHE_LATEST/SKILL.md"
+  fi
+fi
+echo "CLAUDE_CACHE_SKILL_MD=$CLAUDE_CACHE_SKILL_MD"
+```
+
+If `CLAUDE_CACHE_SKILL_MD` is non-empty, stop and re-read that cached `SKILL.md` before proceeding. The stale path is Claude Code's `~/.claude/plugins/marketplaces/last30days-skill/` clone, which can lag the versioned cache after session start. Other install paths are valid.
+
 **STEP 1 - RUN THE ENGINE. You MUST run `scripts/last30days.py` via Bash. Do not produce output from WebSearch alone.**
 
 The single most common failure mode of this skill is the model reading this file, skimming the section headers, and then answering the user's topic with 3-10 WebSearch calls followed by a prose summary. That is wrong output. The Python engine is the skill. Web-only synthesis is not the skill.
@@ -61,11 +80,11 @@ Before proceeding to Step 1, handle first-run setup.
 - If the file exists and contains `SETUP_COMPLETE=true`, skip Step 0 entirely and go to Step 1 (CRITICAL: Parse User Intent below). Do NOT announce that setup is complete. The user does not need a status message on every run.
 
 **If this IS a first run:**
-- Use the Read tool to load `skills/last30days/nux-wizard.md` (relative to the skill root).
-- Follow the wizard's instructions end-to-end. The wizard handles platform detection (OpenClaw vs Claude Code), auto vs manual setup, ScrapeCreators opt-in, and the initial topic picker.
-- After the wizard writes `SETUP_COMPLETE=true` to `~/.config/last30days/.env`, proceed to research.
+- Run the engine setup path with the resolved interpreter: `"${LAST30DAYS_PYTHON}" "$SKILL_ROOT/scripts/last30days.py" setup`.
+- For OpenClaw server-side setup, add `--openclaw`. For GitHub/ScrapeCreators auth, use `setup --github` or `setup --device-auth` only when the user asked for that setup path.
+- After setup writes `SETUP_COMPLETE=true` to `~/.config/last30days/.env`, proceed to research.
 
-The wizard lives in a separate file so the common-case (already set up) path through this file is short and the voice-contract rules further down stay in context.
+The implementation lives in `scripts/lib/setup_wizard.py`. Post-research invitations and prompt follow-ups live in `references/nux-wizard.md`; do not read that file for first-run setup.
 
 ---
 

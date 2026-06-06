@@ -1,4 +1,10 @@
 
+# Source Playbooks and Mode-Specific Output
+
+Use this file for source weighting, recommendation ranking, comparison templates, invitation copy, and synthesis examples that are too long for the hot path.
+
+## ELI5 Style Examples
+
 Example - normal: "Arizona's identity is paint scoring (50%+ shooting, 9th nationally) and rebounding behind Big 12 Player of the Year Jaden Bradley."
 Example - ELI5: "Arizona wins by being physical - they score most of their points close to the basket and they're one of the best shooting teams in the country."
 

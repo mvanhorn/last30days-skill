@@ -67,10 +67,29 @@ This file is the execution hot path. It keeps the required routing, engine invoc
 - `references/output-contract.md` - full badge, law, citation, comparison, and self-check rules.
 - `references/query-planning.md` - query quality preflight, handle/community resolution, query-plan schema, and engine command details.
 - `references/source-playbooks.md` - source weighting, cluster synthesis, mode-specific output templates, and invitation copy.
-- `references/troubleshooting.md` - runtime preflight, stale-clone checks, security notes, and known failure modes.
-- `references/nux-wizard.md` - first-run setup and follow-up prompt-generation flows.
+- `references/troubleshooting.md` - runtime preflight, first-run setup, stale-clone checks, security notes, and known failure modes.
+- `references/nux-wizard.md` - post-research invitations and follow-up prompt-generation flows.
 - `references/save-html-brief.md` - optional HTML briefing save flow.
 - `references/full-playbook-v3.3.1.md` - preserved full v3.3.1 playbook for audit or unusual edge cases.
+
+## Claude Code Stale-Clone Self-Check
+
+If the `SKILL.md` path you loaded contains `/.claude/plugins/marketplaces/`, run this before continuing:
+
+```bash
+CLAUDE_CACHE_LATEST=$(find "$HOME/.claude/plugins/cache/last30days-skill/last30days" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -V | tail -1)
+CLAUDE_CACHE_SKILL_MD=""
+if [ -n "$CLAUDE_CACHE_LATEST" ]; then
+  if [ -f "$CLAUDE_CACHE_LATEST/skills/last30days/SKILL.md" ]; then
+    CLAUDE_CACHE_SKILL_MD="$CLAUDE_CACHE_LATEST/skills/last30days/SKILL.md"
+  elif [ -f "$CLAUDE_CACHE_LATEST/SKILL.md" ]; then
+    CLAUDE_CACHE_SKILL_MD="$CLAUDE_CACHE_LATEST/SKILL.md"
+  fi
+fi
+echo "CLAUDE_CACHE_SKILL_MD=$CLAUDE_CACHE_SKILL_MD"
+```
+
+If `CLAUDE_CACHE_SKILL_MD` is non-empty, stop and re-read that cached `SKILL.md` before proceeding. Other install paths, including `~/.codex/skills/`, `~/.agents/skills/`, `npx skills add` directories, and repo checkouts, are valid.
 
 ## Non-Negotiable Flow
 
@@ -89,18 +108,25 @@ Read `references/query-planning.md` before step 3 if the query is a person, comp
 
 ## Runtime Preflight
 
-The engine requires Python 3.12+.
+The engine requires Python 3.12+. Resolve a compatible interpreter once and use it for every engine call in this run.
 
 ```bash
-python3 - <<'PY'
-import sys
-if sys.version_info < (3, 12):
-    raise SystemExit("ERROR: last30days v3 requires Python 3.12+. Install python3.12+ and rerun.")
-print(f"python {sys.version.split()[0]} ok")
-PY
+for py in python3.14 python3.13 python3.12 python3; do
+  command -v "$py" >/dev/null 2>&1 || continue
+  "$py" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || continue
+  LAST30DAYS_PYTHON="$py"
+  break
+done
+
+if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
+  echo "ERROR: last30days v3 requires Python 3.12+. Install python3.12 or python3.13 and rerun." >&2
+  exit 1
+fi
+
+echo "LAST30DAYS_PYTHON=$LAST30DAYS_PYTHON"
 ```
 
-If the user asks for setup, install help, provider configuration, or diagnostics, read `references/nux-wizard.md` and `references/troubleshooting.md`.
+If the user asks for setup, install help, provider configuration, or diagnostics, read `references/troubleshooting.md`.
 
 ## Intent Parse
 
@@ -130,7 +156,7 @@ mkdir -p "$LAST30DAYS_MEMORY_DIR"
 On WebSearch-capable hosts, pass your query plan and resolved targeting:
 
 ```bash
-python3 "$SKILL_ROOT/scripts/last30days.py" \
+"${LAST30DAYS_PYTHON}" "$SKILL_ROOT/scripts/last30days.py" \
   --emit=compact \
   --save-dir="${LAST30DAYS_MEMORY_DIR}" \
   --plan 'QUERY_PLAN_JSON' \
@@ -154,7 +180,7 @@ For person topics, resolved `--x-handle` and `--github-user` are both expected u
 If WebSearch is unavailable, do not fake the pre-research steps. Use the engine fallback instead:
 
 ```bash
-python3 "$SKILL_ROOT/scripts/last30days.py" \
+"${LAST30DAYS_PYTHON}" "$SKILL_ROOT/scripts/last30days.py" \
   --emit=compact \
   --save-dir="${LAST30DAYS_MEMORY_DIR}" \
   --auto-resolve \

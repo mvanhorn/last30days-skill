@@ -18,7 +18,7 @@ If you catch yourself about to write a `##` section header in a GENERAL-query bo
 
 # OUTPUT CONTRACT (BADGE + LAWS — READ BEFORE EMITTING YOUR RESPONSE)
 
-These anchors used to live at line 1094 of this file. Three independent Opus 4.7 self-debugs on 2026-04-18 confirmed the file was too long to reach them before synthesis. Moved here in v3.0.8. Do not synthesize without reading this section.
+These anchors used to live deep in `SKILL.md`, around line 1094 before the v3.3.1 split. Three independent Opus 4.7 self-debugs on 2026-04-18 confirmed the file was too long to reach them before synthesis. They were hoisted in v3.0.8 and extracted here in v3.3.1. Do not synthesize without reading this section.
 
 **BADGE (MANDATORY, FIRST LINE OF OUTPUT):** The Python engine now emits the badge as the first line of its `--emit=compact` stdout. Your correct behavior is to PASS THROUGH the script's output verbatim. If you are writing your own synthesis from scratch and need to emit the badge yourself, use:
 

@@ -1,4 +1,5 @@
 import json
+import re
 import tomllib
 import unittest
 from pathlib import Path
@@ -56,6 +57,27 @@ class TestPluginContract(unittest.TestCase):
                     offenders.append(f"{path.relative_to(ROOT)}:{line_number}: {line.strip()}")
 
         self.assertEqual([], offenders)
+
+    def test_skill_reference_split_keeps_hot_path_contract_reachable(self) -> None:
+        skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+
+        refs = sorted(set(re.findall(r"`(references/[^`]+)`", skill_text)))
+        missing_refs = [ref for ref in refs if not (SKILL_ROOT / ref).exists()]
+        self.assertEqual([], missing_refs)
+
+        troubleshooting = (SKILL_ROOT / "references" / "troubleshooting.md").read_text(encoding="utf-8")
+        self.assertIn("marketplaces", troubleshooting)
+        self.assertIn("CLAUDE_CACHE_SKILL_MD", troubleshooting)
+        self.assertIn("scripts/lib/setup_wizard.py", troubleshooting)
+        self.assertNotIn("skills/last30days/nux-wizard.md", troubleshooting)
+
+        self.assertIn("CLAUDE_CACHE_SKILL_MD", skill_text)
+        self.assertIn("${LAST30DAYS_PYTHON}", skill_text)
+        self.assertNotIn("python3 \"$SKILL_ROOT/scripts/last30days.py\"", skill_text)
+
+        nux = (SKILL_ROOT / "references" / "nux-wizard.md").read_text(encoding="utf-8")
+        self.assertTrue(nux.lstrip().startswith("# Post-Research Invitations"))
+        self.assertIn("First-run setup lives in `references/troubleshooting.md`", nux)
 
 if __name__ == "__main__":
     unittest.main()

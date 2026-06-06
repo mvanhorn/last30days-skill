@@ -1,3 +1,14 @@
+# Post-Research Invitations and Follow-Up Prompts
+
+This file covers the response after a research run has already completed: invitation copy, follow-up question handling, prompt generation, and optional HTML brief routing. First-run setup lives in `references/troubleshooting.md` and is implemented by `scripts/lib/setup_wizard.py`.
+
+**If QUERY_TYPE = COMPARISON:**
+```
+---
+I've compared {TOPIC_A} vs {TOPIC_B} using the latest community data. Some things you could ask:
+- [Deep dive into {TOPIC_A} alone with /last30days {TOPIC_A}]
+- [Deep dive into {TOPIC_B} alone with /last30days {TOPIC_B}]
+- [Focus on a specific dimension from the comparison table]
 - [Look at a different time period with --days=7 or --days=90]
 ```
 

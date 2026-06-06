@@ -1,3 +1,7 @@
+# Query Planning and Targeting
+
+Use this file when a query needs platform-specific targeting, entity resolution, comparison fanout, or a generated `QUERY_PLAN_JSON`.
+
 **Checkpoint before running the engine:** your Bash command must include every flag from the checklist that applies to this topic. For a person who ships code (the Peter Steinberger class), that is MINIMUM `--x-handle` AND `--github-user` AND `--subreddits`, and typically `--x-related` too. A command with only `--x-handle` on a person topic is a pre-flight skip and a Step 0.5 regression.
 
 ---
