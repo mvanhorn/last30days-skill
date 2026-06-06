@@ -6,6 +6,7 @@ import tempfile
 import unittest
 import urllib.error
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest import mock
 
 from lib import youtube_yt
@@ -83,6 +84,75 @@ class TestYtDlpFlags(unittest.TestCase):
         cmd = run_mock.call_args.args[0]
         self.assertIn("--ignore-config", cmd)
         self.assertIn("--no-cookies-from-browser", cmd)
+
+
+class TestYtDlpSubLangs(unittest.TestCase):
+    """Verify LAST30DAYS_YT_SUB_LANGS knob and language-agnostic VTT matching."""
+
+    def _fake_result(self, stdout: str = "", returncode: int = 0):
+        from lib.subproc import SubprocResult
+        return SubprocResult(returncode=returncode, stdout=stdout, stderr="")
+
+    def test_default_sub_langs_when_env_unset(self):
+        """When LAST30DAYS_YT_SUB_LANGS is not set, the default is en,es,pt."""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LAST30DAYS_YT_SUB_LANGS", None)
+            self.assertEqual(youtube_yt._ytdlp_sub_langs(), "en,es,pt")
+
+    def test_env_var_overrides_default(self):
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "fr,de"}):
+            self.assertEqual(youtube_yt._ytdlp_sub_langs(), "fr,de")
+
+    def test_env_var_normalizes_whitespace_and_case(self):
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": " EN , Es , PT "}):
+            self.assertEqual(youtube_yt._ytdlp_sub_langs(), "en,es,pt")
+
+    def test_env_var_handles_empty_segments(self):
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "en,,pt,"}):
+            self.assertEqual(youtube_yt._ytdlp_sub_langs(), "en,pt")
+
+    def test_env_var_empty_string_falls_back_to_default(self):
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "   "}):
+            self.assertEqual(youtube_yt._ytdlp_sub_langs(), "en,es,pt")
+
+    def test_transcript_cmd_uses_default_sub_langs(self):
+        """Regression: the --sub-lang arg is en,es,pt by default (issue #469)."""
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()) as run_mock:
+            os.environ.pop("LAST30DAYS_YT_SUB_LANGS", None)
+            youtube_yt.fetch_transcript("abc123", temp_dir)
+
+        cmd = run_mock.call_args_list[0].args[0]
+        idx = cmd.index("--sub-lang")
+        self.assertEqual(cmd[idx + 1], "en,es,pt")
+
+    def test_transcript_cmd_respects_env_var_override(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "fr,de,it"}), \
+             mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()) as run_mock:
+            youtube_yt.fetch_transcript("abc123", temp_dir)
+
+        cmd = run_mock.call_args_list[0].args[0]
+        idx = cmd.index("--sub-lang")
+        self.assertEqual(cmd[idx + 1], "fr,de,it")
+
+    def test_vtt_matching_picks_non_english_track(self):
+        """When yt-dlp writes a Spanish track (no English available), we read it."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Simulate yt-dlp output: only a Spanish VTT is available
+            (Path(temp_dir) / "abc123.es.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHola mundo esta es una prueba.\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+                 mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()):
+                vtt = youtube_yt._fetch_transcript_ytdlp("abc123", temp_dir)
+
+        self.assertIsNotNone(vtt)
+        self.assertIn("Hola mundo", vtt)
 
 
 class TestExtractTranscriptHighlights(unittest.TestCase):

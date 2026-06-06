@@ -401,6 +401,7 @@ def get_config() -> dict[str, Any]:
         ('EXCLUDE_SOURCES', ''),
         ('LAST30DAYS_YOUTUBE_SSH_HOST', None),
         ('LAST30DAYS_TRANSCRIPT_TIMEOUT', None),
+        ('LAST30DAYS_YT_SUB_LANGS', 'en,es,pt'),
     ]
 
     for key, default in keys:

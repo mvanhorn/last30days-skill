@@ -490,6 +490,22 @@ def _fetch_transcript_direct(
     return vtt_text
 
 
+def _ytdlp_sub_langs() -> str:
+    """Return the comma-separated list of caption languages to try in order.
+
+    Reads ``LAST30DAYS_YT_SUB_LANGS`` (env or config file), defaulting to
+    ``en,es,pt`` — the three languages LLMs can synthesize cleanly from
+    without translation. yt-dlp tries each in order and writes the first
+    available track. Set to a single code (``en``) to restore the prior
+    behavior, or expand the list to capture more non-English transcripts.
+    """
+    raw = os.environ.get("LAST30DAYS_YT_SUB_LANGS", "").strip()
+    if not raw:
+        return "en,es,pt"
+    # yt-dlp accepts comma-separated ISO 639 codes; lowercase and strip spaces.
+    return ",".join(code.strip().lower() for code in raw.split(",") if code.strip()) or "en,es,pt"
+
+
 def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
     """Fetch transcript using yt-dlp (original implementation).
 
@@ -505,7 +521,7 @@ def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
         "--ignore-config",
         "--no-cookies-from-browser",
         "--write-auto-subs",
-        "--sub-lang", "en",
+        "--sub-lang", _ytdlp_sub_langs(),
         "--sub-format", "vtt",
         "--skip-download",
         "--no-warnings",
@@ -520,15 +536,14 @@ def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
     except FileNotFoundError:
         return None
 
-    # yt-dlp may save as .en.vtt or .en-orig.vtt
-    vtt_path = Path(temp_dir) / f"{video_id}.en.vtt"
-    if not vtt_path.exists():
-        # Try alternate naming
-        for p in Path(temp_dir).glob(f"{video_id}*.vtt"):
-            vtt_path = p
-            break
-        else:
-            return None
+    # yt-dlp writes the first available language, e.g. {id}.en.vtt, {id}.es.vtt,
+    # or {id}.en-orig.vtt. Glob all candidates and pick the first one sorted
+    # alphabetically — that order matches the requested lang list when the
+    # user keeps the default en,es,pt ordering, so English still wins ties.
+    matches = sorted(Path(temp_dir).glob(f"{video_id}*.vtt"))
+    if not matches:
+        return None
+    vtt_path = matches[0]
 
     try:
         return vtt_path.read_text(encoding="utf-8", errors="replace")

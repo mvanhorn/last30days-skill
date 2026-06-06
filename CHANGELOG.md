@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- YouTube transcript extraction now falls back through `en,es,pt` (configurable via `LAST30DAYS_YT_SUB_LANGS`) instead of English-only, so non-English videos with auto-captions in any of those three languages now contribute transcripts to the brief ([#469](https://github.com/mvanhorn/last30days-skill/issues/469))
 - Keyless Reddit comment enrichment now spends its limited slots on entity-matching posts first (mirroring rerank's entity-miss demotion signal) instead of raw upvote order, so off-topic high-upvote threads from broad subreddits no longer consume the comment budget only to be demoted afterward ([#484](https://github.com/mvanhorn/last30days-skill/pull/484))
 
 ## [3.3.1] - 2026-05-30
