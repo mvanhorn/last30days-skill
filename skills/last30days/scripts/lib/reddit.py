@@ -29,22 +29,9 @@ SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/reddit"
 # Reddit's highest-upvote content (relationship drama, AITA, viral news) often
 # has near-zero topic overlap. Engagement-only ranking floats it above on-topic
 # posts, especially on bare global searches where no subreddits were resolved
-# upstream. A relevance floor + relevance-first ranking keeps an off-topic viral
-# post from ever outranking an on-topic one.
-RELEVANCE_FLOOR = 0.1
-MIN_ON_TOPIC = 5
-
-
-def _relevance_rank_key(item: Dict[str, Any]) -> float:
-    """Rank by relevance first, with a bounded engagement bonus as tiebreaker.
-
-    The log-scaled bonus is capped at 0.25 so it orders similarly-relevant posts
-    by discussion volume but is too small to lift an off-topic post (relevance
-    ~0) above an on-topic one (relevance >= RELEVANCE_FLOOR).
-    """
-    rel = item.get("relevance") or 0.0
-    eng_bonus = min(0.25, math.log10(_total_engagement(item) + 1) / 20.0)
-    return rel + eng_bonus
+# upstream. A relevance floor + relevance-first ranking (see _relevance_rank_key
+# below and RELEVANCE_FLOOR / MIN_ON_TOPIC in relevance.py) keeps an off-topic
+# viral post from ever outranking an on-topic one.
 
 # Depth configurations: how many API calls per phase
 DEPTH_CONFIG = {
@@ -69,7 +56,7 @@ DEPTH_CONFIG = {
 }
 
 from .query import extract_core_subject as _query_extract
-from .relevance import token_overlap_relevance
+from .relevance import token_overlap_relevance, RELEVANCE_FLOOR, MIN_ON_TOPIC
 
 # Reddit-specific noise words (preserves original smaller set)
 NOISE_WORDS = frozenset({
@@ -271,6 +258,18 @@ def _total_engagement(item: Dict[str, Any]) -> int:
     score = eng.get("score", 0) or 0
     num_comments = eng.get("num_comments", 0) or 0
     return score + num_comments
+
+
+def _relevance_rank_key(item: Dict[str, Any]) -> float:
+    """Rank by relevance first, with a bounded engagement bonus as tiebreaker.
+
+    The log-scaled bonus is capped at 0.25 so it orders similarly-relevant posts
+    by discussion volume but is too small to lift an off-topic post (relevance
+    ~0) above an on-topic one (relevance >= RELEVANCE_FLOOR).
+    """
+    rel = item.get("relevance") or 0.0
+    eng_bonus = min(0.25, math.log10(_total_engagement(item) + 1) / 20.0)
+    return rel + eng_bonus
 
 
 def _normalize_post(post: Dict[str, Any], idx: int, source_label: str = "global", query: str = "") -> Dict[str, Any]:

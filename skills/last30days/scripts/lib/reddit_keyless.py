@@ -23,16 +23,16 @@ from typing import Any, Dict, List, Optional
 from collections import Counter
 
 from . import reddit_rss, reddit_shreddit, reddit_listing
+# Scores are backfilled from popular derived subreddits, so an engagement-first
+# final sort buries on-topic RSS hits under viral off-topic posts. A relevance
+# floor + relevance-first final ranking keeps the section on-topic. Thresholds
+# are shared with the keyed path (reddit.py) via relevance.py.
+from .relevance import RELEVANCE_FLOOR, MIN_ON_TOPIC
 
 ENRICH_LIMITS = reddit_shreddit.ENRICH_LIMITS
 ENRICH_BUDGET = 45  # seconds total across all enrichment threads
 MAX_ENRICH_WORKERS = 4
 MAX_DERIVED_SUBS = 5  # subreddits derived from RSS results for score backfill
-# Scores are backfilled from popular derived subreddits, so an engagement-first
-# final sort buries on-topic RSS hits under viral off-topic posts. A relevance
-# floor + relevance-first final ranking keeps the section on-topic.
-RELEVANCE_FLOOR = 0.1
-MIN_ON_TOPIC = 5
 
 
 def _relevance_rank_key(post: Dict[str, Any]) -> float:
@@ -255,6 +255,7 @@ def search_and_enrich(
     # title/body token match at all) when anything relevant remains, so
     # backfilled high-upvote posts from popular subs can't bury on-topic RSS
     # hits. Keep all only when nothing scored above zero.
+    before = len(posts)
     on_topic = [p for p in posts if (p.get("relevance") or 0) >= RELEVANCE_FLOOR]
     if len(on_topic) >= MIN_ON_TOPIC:
         posts = on_topic
@@ -262,6 +263,8 @@ def search_and_enrich(
         nonzero = [p for p in posts if (p.get("relevance") or 0) > 0]
         if nonzero:
             posts = nonzero
+    if len(posts) < before:
+        _log(f"Relevance floor dropped {before - len(posts)} off-topic posts")
 
     # Provisional score-first order so enrichment-slot selection has a stable
     # within-tier order to preserve.
