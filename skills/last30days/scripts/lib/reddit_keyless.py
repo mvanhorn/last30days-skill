@@ -163,6 +163,45 @@ def _enrich(posts: List[Dict[str, Any]], depth: str) -> List[Dict[str, Any]]:
     return enriched + rest
 
 
+def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Order posts for enrichment slots: entity-matching posts first.
+
+    Comment slots (ENRICH_LIMITS) are scarce; spending them on high-upvote
+    posts that rerank later demotes as entity misses starves the on-topic
+    posts the user actually sees (2026-06-06 "OpenClaw vs Hermes" run:
+    2,000+ upvote Gemma/GPU threads took every slot, then were demoted to
+    zero). Mirror rerank's demotion signal — the topic's stripped primary
+    entity contained in the post text — so slots go to posts likely to
+    survive final ranking. Falls back to token-overlap relevance when the
+    topic yields no usable primary entity. Within each tier the incoming
+    (score-first) order is preserved. Never raises; on any failure the
+    incoming order is returned unchanged.
+    """
+    try:
+        from . import relevance, rerank
+
+        def _post_text(post: Dict[str, Any]) -> str:
+            return f"{post.get('title') or ''} {post.get('selftext') or ''}"
+
+        entity = rerank._primary_entity(topic).lower()
+        if entity:
+            def _matches(post: Dict[str, Any]) -> bool:
+                return entity in _post_text(post).lower()
+        else:
+            prepared = relevance.PreparedQuery(topic)
+
+            def _matches(post: Dict[str, Any]) -> bool:
+                return relevance.token_overlap_relevance(prepared, _post_text(post)) > 0.24
+
+        matches: List[Dict[str, Any]] = []
+        misses: List[Dict[str, Any]] = []
+        for post in posts:
+            (matches if _matches(post) else misses).append(post)
+        return matches + misses
+    except Exception:
+        return posts
+
+
 def search_and_enrich(
     topic: str,
     from_date: str,
@@ -194,9 +233,9 @@ def search_and_enrich(
         if p.get("date") is None or (from_date <= p["date"] <= to_date)
     ]
 
-    # Rank before enrichment by real upvote score (from listing cards / backfill),
-    # then query relevance, then recency. Posts without a recovered score sort by
-    # the latter two — same behavior as before scores were available.
+    # Rank by real upvote score (from listing cards / backfill), then query
+    # relevance, then recency. Posts without a recovered score sort by the
+    # latter two — same behavior as before scores were available.
     posts.sort(
         key=lambda p: (
             p.get("engagement", {}).get("score", 0) or 0,
@@ -206,7 +245,10 @@ def search_and_enrich(
         reverse=True,
     )
 
-    posts = _enrich(posts, depth)
+    # Enrichment slot selection is relevance-aware: entity-matching posts
+    # claim the scarce comment slots first (score order preserved within
+    # each tier). The score-first sort above still governs within-tier order.
+    posts = _enrich(_slot_priority(topic, posts), depth)
 
     for i, post in enumerate(posts):
         post["id"] = f"R{i + 1}"
