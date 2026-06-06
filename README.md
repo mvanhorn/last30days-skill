@@ -238,6 +238,12 @@ Enable "Code execution and file creation" under Capabilities first — skills wo
 clawhub install last30days-official
 ```
 
+For X/Twitter action workflows outside `/last30days` research, such as posting
+tweets or replies, follower export, media handling, monitors, and giveaway
+draws, use [TweetClaw](https://github.com/Xquik-dev/tweetclaw) as the companion
+OpenClaw plugin. TweetClaw is maintained by Xquik-dev and is listed only as an
+optional companion path, not a last30days dependency or endorsement.
+
 ### Manual (developer)
 
 ```bash
@@ -256,7 +262,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 | Sources | What you need | Cost |
 |---------|---------------|------|
 | Reddit (with comments) + HN + Polymarket + GitHub | Nothing | Free |
-| X / Twitter | Log into x.com in any browser | Free |
+| X / Twitter | Log into x.com in any browser, or set `XQUIK_API_KEY` / `XAI_API_KEY` | Browser cookies are free; keys are provider-specific |
 | YouTube | `brew install yt-dlp` | Free |
 | Bluesky | App password from bsky.app | Free |
 | TikTok + Instagram + Threads + Pinterest + YouTube comments | ScrapeCreators key | 100 free credits, then PAYG |

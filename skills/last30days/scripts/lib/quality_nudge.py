@@ -22,13 +22,22 @@ SOURCE_LABELS = {
 
 def _is_x_active(config: dict, research_results: dict) -> bool:
     """Check if X source is active (has credentials AND didn't error)."""
-    has_creds = bool(config.get("AUTH_TOKEN") or config.get("XAI_API_KEY"))
+    has_creds = _has_x_credentials(config)
     if not has_creds:
         return False
     # If X errored this run, it's configured but broken
     if research_results.get("x_error"):
         return False
     return True
+
+
+def _has_x_credentials(config: dict) -> bool:
+    """Return True when any X/Twitter source credential is configured."""
+    return bool(
+        config.get("AUTH_TOKEN")
+        or config.get("XAI_API_KEY")
+        or config.get("XQUIK_API_KEY")
+    )
 
 
 def _is_youtube_active(config: dict, research_results: dict) -> bool:
@@ -146,7 +155,7 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
     core_active.append("reddit")
 
     # X
-    has_x_creds = bool(config.get("AUTH_TOKEN") or config.get("XAI_API_KEY"))
+    has_x_creds = _has_x_credentials(config)
     if _is_x_active(config, research_results):
         core_active.append("x")
     else:
@@ -257,9 +266,10 @@ def _build_nudge_text(
         else:
             free_suggestions.append(
                 "X/Twitter: real-time posts with likes and reposts - the fastest "
-                "signal for breaking topics. Two options: log into x.com in your "
+                "signal for breaking topics. Three options: log into x.com in your "
                 "browser and re-run (cookies detected automatically), or add "
-                "XAI_API_KEY to your .env (no browser access, get key at api.x.ai)."
+                "XAI_API_KEY to your .env (get key at api.x.ai), or add "
+                "XQUIK_API_KEY to your .env (get key at xquik.com)."
             )
 
     if "youtube" in core_missing:

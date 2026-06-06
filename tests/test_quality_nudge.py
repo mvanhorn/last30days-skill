@@ -19,6 +19,7 @@ def _base_config(**overrides):
         "AUTH_TOKEN": None,
         "CT0": None,
         "XAI_API_KEY": None,
+        "XQUIK_API_KEY": None,
         "SCRAPECREATORS_API_KEY": None,
     }
     config.update(overrides)
@@ -101,6 +102,20 @@ class TestXCookies:
         assert "X/Twitter" not in q["nudge_text"]
 
 
+class TestXquikKey:
+    """+Xquik key -> 80% without browser-cookie or xAI credentials."""
+
+    def test_score_80(self):
+        q = _compute(config_overrides={"XQUIK_API_KEY": "xq_test"})
+        assert q["score_pct"] == 80
+        assert "x" in q["core_active"]
+
+    def test_nudge_mentions_yt_only(self):
+        q = _compute(config_overrides={"XQUIK_API_KEY": "xq_test"})
+        assert "YouTube" in q["nudge_text"]
+        assert "X/Twitter" not in q["nudge_text"]
+
+
 class TestXPlusYtdlp:
     """+X + yt-dlp -> 100%. No SC needed for full core coverage."""
 
@@ -166,6 +181,7 @@ class TestSCDoesNotAffectCoreScore:
         )
         assert q["nudge_text"] is not None
         assert "x.com" in q["nudge_text"].lower()
+        assert "XQUIK_API_KEY" in q["nudge_text"]
 
 
 class TestDisclaimerAlwaysPresent:
@@ -571,4 +587,3 @@ class TestInstagramSilentFailure:
             result_overrides={"instagram_items_count": 0},
         )
         assert "instagram" in q["bonus_errored"]
-
