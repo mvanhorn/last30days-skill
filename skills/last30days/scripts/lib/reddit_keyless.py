@@ -15,6 +15,7 @@ ScrapeCreators backup when every keyless tier comes up empty.
 """
 
 import concurrent.futures
+import math
 import sys
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
@@ -27,6 +28,23 @@ ENRICH_LIMITS = reddit_shreddit.ENRICH_LIMITS
 ENRICH_BUDGET = 45  # seconds total across all enrichment threads
 MAX_ENRICH_WORKERS = 4
 MAX_DERIVED_SUBS = 5  # subreddits derived from RSS results for score backfill
+# Scores are backfilled from popular derived subreddits, so an engagement-first
+# final sort buries on-topic RSS hits under viral off-topic posts. A relevance
+# floor + relevance-first final ranking keeps the section on-topic.
+RELEVANCE_FLOOR = 0.1
+MIN_ON_TOPIC = 5
+
+
+def _relevance_rank_key(post: Dict[str, Any]) -> float:
+    """Rank by relevance first, with a bounded engagement bonus as tiebreaker.
+
+    Mirrors reddit.py: the log-scaled bonus (capped at 0.25) orders
+    similarly-relevant posts by discussion volume but is too small to lift an
+    off-topic post (relevance ~0) above an on-topic one.
+    """
+    eng = post.get("engagement", {})
+    total = (eng.get("score", 0) or 0) + (eng.get("num_comments", 0) or 0)
+    return (post.get("relevance") or 0.0) + min(0.25, math.log10(total + 1) / 20.0)
 
 
 def _log(msg: str) -> None:
@@ -233,9 +251,20 @@ def search_and_enrich(
         if p.get("date") is None or (from_date <= p["date"] <= to_date)
     ]
 
-    # Rank by real upvote score (from listing cards / backfill), then query
-    # relevance, then recency. Posts without a recovered score sort by the
-    # latter two — same behavior as before scores were available.
+    # Relevance floor: strip zero-overlap posts (relevance exactly 0 = no
+    # title/body token match at all) when anything relevant remains, so
+    # backfilled high-upvote posts from popular subs can't bury on-topic RSS
+    # hits. Keep all only when nothing scored above zero.
+    on_topic = [p for p in posts if (p.get("relevance") or 0) >= RELEVANCE_FLOOR]
+    if len(on_topic) >= MIN_ON_TOPIC:
+        posts = on_topic
+    else:
+        nonzero = [p for p in posts if (p.get("relevance") or 0) > 0]
+        if nonzero:
+            posts = nonzero
+
+    # Provisional score-first order so enrichment-slot selection has a stable
+    # within-tier order to preserve.
     posts.sort(
         key=lambda p: (
             p.get("engagement", {}).get("score", 0) or 0,
@@ -247,8 +276,13 @@ def search_and_enrich(
 
     # Enrichment slot selection is relevance-aware: entity-matching posts
     # claim the scarce comment slots first (score order preserved within
-    # each tier). The score-first sort above still governs within-tier order.
+    # each tier).
     posts = _enrich(_slot_priority(topic, posts), depth)
+
+    # Final display order ranks relevance-first with a bounded engagement bonus,
+    # so an off-topic high-upvote post can't outrank an on-topic one in what the
+    # user sees. Enrichment above may have backfilled real comment counts.
+    posts.sort(key=_relevance_rank_key, reverse=True)
 
     for i, post in enumerate(posts):
         post["id"] = f"R{i + 1}"
