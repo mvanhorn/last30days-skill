@@ -154,6 +154,46 @@ class TestYtDlpSubLangs(unittest.TestCase):
         self.assertIsNotNone(vtt)
         self.assertIn("Hola mundo", vtt)
 
+    def test_vtt_matching_respects_non_default_priority(self):
+        """When multiple tracks exist, the user-requested priority wins
+        over alphabetical order (regression for the Greptile review on #486)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            (Path(temp_dir) / "abc123.en.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nEnglish first track.\n",
+                encoding="utf-8",
+            )
+            (Path(temp_dir) / "abc123.es.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nSpanish second track.\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "es,en"}), \
+                 mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+                 mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()):
+                vtt = youtube_yt._fetch_transcript_ytdlp("abc123", temp_dir)
+
+        self.assertIsNotNone(vtt)
+        self.assertIn("Spanish", vtt)
+
+    def test_vtt_matching_unknown_suffix_sorts_last(self):
+        """A non-lang suffix (e.g. a stray .tmp or .live_chat) must not
+        win over a real track that just happens to be alphabetically later."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            (Path(temp_dir) / "abc123.zz.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nZZ track content.\n",
+                encoding="utf-8",
+            )
+            (Path(temp_dir) / "abc123.es.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nSpanish content.\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "es,en,pt"}), \
+                 mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+                 mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()):
+                vtt = youtube_yt._fetch_transcript_ytdlp("abc123", temp_dir)
+
+        self.assertIsNotNone(vtt)
+        self.assertIn("Spanish", vtt)
+
 
 class TestExtractTranscriptHighlights(unittest.TestCase):
     def test_extracts_specific_sentences(self):

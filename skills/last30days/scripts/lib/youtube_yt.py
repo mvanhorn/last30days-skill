@@ -493,17 +493,48 @@ def _fetch_transcript_direct(
 def _ytdlp_sub_langs() -> str:
     """Return the comma-separated list of caption languages to try in order.
 
-    Reads ``LAST30DAYS_YT_SUB_LANGS`` (env or config file), defaulting to
-    ``en,es,pt`` — the three languages LLMs can synthesize cleanly from
+    Reads ``LAST30DAYS_YT_SUB_LANGS`` from the process environment, defaulting
+    to ``en,es,pt`` — the three languages LLMs can synthesize cleanly from
     without translation. yt-dlp tries each in order and writes the first
     available track. Set to a single code (``en``) to restore the prior
     behavior, or expand the list to capture more non-English transcripts.
+
+    The variable is read from ``os.environ`` only; users who keep it in
+    ``~/.config/last30days/.env`` must export it into the process environment
+    before invoking the engine, e.g. with ``set -a; source ...; set +a``.
     """
     raw = os.environ.get("LAST30DAYS_YT_SUB_LANGS", "").strip()
     if not raw:
         return "en,es,pt"
     # yt-dlp accepts comma-separated ISO 639 codes; lowercase and strip spaces.
     return ",".join(code.strip().lower() for code in raw.split(",") if code.strip()) or "en,es,pt"
+
+
+def _pick_ytdlp_vtt(video_id: str, temp_dir: str, priority: List[str]) -> Optional[Path]:
+    """Return the best VTT match on disk, preferring the requested language order.
+
+    yt-dlp with ``--sub-lang en,es,pt`` typically writes only the first
+    available language (``{id}.en.vtt`` etc.), but can leave multiple files
+    behind (e.g. when manual subs are also requested). Alphabetical sort
+    happens to match the default priority; for any other ordering we have
+    to look at the language code embedded in the filename and rank by the
+    user's requested list. Unknown suffixes sort last so a stray ``.tmp``
+    never wins over a real track.
+    """
+    matches = list(Path(temp_dir).glob(f"{video_id}*.vtt"))
+    if not matches:
+        return None
+    priority_index = {code: i for i, code in enumerate(priority)}
+
+    def rank(p: Path) -> int:
+        stem = p.stem  # e.g. "abc123.en" or "abc123.en-orig"
+        suffix = stem[len(video_id) + 1:] if stem.startswith(video_id + ".") else ""
+        # yt-dlp writes e.g. "abc123.en.vtt" or "abc123.en-orig.vtt"; the
+        # leading token before "-" or "." is the language code.
+        code = suffix.split("-")[0].split(".")[0]
+        return priority_index.get(code, len(priority_index))
+
+    return sorted(matches, key=rank)[0]
 
 
 def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
@@ -516,12 +547,13 @@ def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
     Returns:
         Raw VTT text, or None if no captions available.
     """
+    sub_langs = _ytdlp_sub_langs()
     cmd = [
         "yt-dlp",
         "--ignore-config",
         "--no-cookies-from-browser",
         "--write-auto-subs",
-        "--sub-lang", _ytdlp_sub_langs(),
+        "--sub-lang", sub_langs,
         "--sub-format", "vtt",
         "--skip-download",
         "--no-warnings",
@@ -536,14 +568,9 @@ def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
     except FileNotFoundError:
         return None
 
-    # yt-dlp writes the first available language, e.g. {id}.en.vtt, {id}.es.vtt,
-    # or {id}.en-orig.vtt. Glob all candidates and pick the first one sorted
-    # alphabetically — that order matches the requested lang list when the
-    # user keeps the default en,es,pt ordering, so English still wins ties.
-    matches = sorted(Path(temp_dir).glob(f"{video_id}*.vtt"))
-    if not matches:
+    vtt_path = _pick_ytdlp_vtt(video_id, temp_dir, sub_langs.split(","))
+    if not vtt_path:
         return None
-    vtt_path = matches[0]
 
     try:
         return vtt_path.read_text(encoding="utf-8", errors="replace")
