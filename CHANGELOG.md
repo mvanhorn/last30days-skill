@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.3.2] - 2026-06-06
+
 ### Fixed
 
 - Keyless Reddit comment enrichment now spends its limited slots on entity-matching posts first (mirroring rerank's entity-miss demotion signal) instead of raw upvote order, so off-topic high-upvote threads from broad subreddits no longer consume the comment budget only to be demoted afterward ([#484](https://github.com/mvanhorn/last30days-skill/pull/484))
