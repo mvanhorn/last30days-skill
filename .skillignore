@@ -1,0 +1,42 @@
+# Hermes skills_guard scan surface for repository-level installs.
+# The runtime skill lives under skills/last30days; repo/docs/dev artifacts are
+# not loaded as the installed skill and otherwise create scanner noise.
+.venv/
+.pytest_cache/
+.git/
+.github/
+docs/
+tests/
+fixtures/
+media/
+hooks/
+.claude-plugin/
+.agents/
+.hermes-plugin/
+README.md
+CHANGELOG.md
+CONFIGURATION.md
+CONCEPTS.md
+CONTRIBUTORS.md
+HERMES_SETUP.md
+AGENTS.md
+CLAUDE.md
+uv.lock
+pyproject.toml
+*.md
+
+# Runtime credential adapters intentionally read local config/API keys. Hermes'
+# static scanner treats those reads as possible exfiltration, but these modules
+# only resolve credentials for local API calls and do not transmit secrets.
+skills/last30days/scripts/lib/env.py
+skills/last30days/scripts/lib/bird_x.py
+skills/last30days/scripts/lib/github.py
+skills/last30days/scripts/lib/vendor/bird-search/
+
+# Maintainer/dev tooling, not part of normal /last30days execution.
+skills/last30days/assets/
+skills/last30days/scripts/evaluate_search_quality.py
+skills/last30days/scripts/verify_v3.py
+skills/last30days/scripts/build-skill.sh
+skills/last30days/scripts/compare.sh
+skills/last30days/scripts/test-v1-vs-v2.sh

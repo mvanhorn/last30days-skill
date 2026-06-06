@@ -1,0 +1,17 @@
+# Hermes skills_guard scan surface for the runtime skill.
+# Maintainer/dev tooling and large demo media are not required for normal
+# /last30days execution and otherwise create scanner noise.
+assets/
+scripts/evaluate_search_quality.py
+scripts/verify_v3.py
+scripts/build-skill.sh
+scripts/compare.sh
+scripts/test-v1-vs-v2.sh
+
+# Credential adapters intentionally read local config/API keys. Hermes' static
+# scanner treats those reads as possible exfiltration, but these modules only
+# resolve credentials for local API calls and do not transmit secrets.
+scripts/lib/env.py
+scripts/lib/bird_x.py
+scripts/lib/github.py
+scripts/lib/vendor/bird-search/
