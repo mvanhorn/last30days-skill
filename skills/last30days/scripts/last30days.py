@@ -632,7 +632,7 @@ def main() -> int:
 
     # Local session cache loading logic
     cached_report = None
-    use_cache_flag = args.use_cache or args.from_store or args.session_recall
+    use_cache_flag = args.use_cache or args.from_store
     if use_cache_flag and topic:
         try:
             import store

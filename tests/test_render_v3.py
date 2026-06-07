@@ -126,7 +126,7 @@ class OutputEnvelopeTests(unittest.TestCase):
     def test_evidence_for_synthesis_envelope_wraps_raw_evidence(self):
         text = render.render_compact(sample_report())
         self.assertIn("<!-- EVIDENCIA PARA SÍNTESIS:", text)
-        self.assertIn("<!-- END EVIDENCE FOR SYNTHESIS -->", text)
+        self.assertIn("<!-- FIN DE EVIDENCIA PARA SÍNTESIS -->", text)
         # Opening comment must appear BEFORE the raw evidence block.
         self.assertLess(
             text.index("<!-- EVIDENCIA PARA SÍNTESIS:"),
@@ -134,7 +134,7 @@ class OutputEnvelopeTests(unittest.TestCase):
         )
         # Closing comment must appear AFTER Source Coverage.
         self.assertGreater(
-            text.index("<!-- END EVIDENCE FOR SYNTHESIS -->"),
+            text.index("<!-- FIN DE EVIDENCIA PARA SÍNTESIS -->"),
             text.index("## Cobertura de Fuentes"),
         )
 
@@ -156,6 +156,7 @@ class OutputEnvelopeTests(unittest.TestCase):
         self.assertIn("### 1.", text)
         self.assertIn("LEY 6", text)
         # The prior ambiguous phrasing is gone.
+        self.assertNotIn("Pass through the lines ABOVE this boundary verbatim", text)
         self.assertNotIn("Pasa las líneas por encima de este límite textualmente", text)
 
     def test_envelopes_appear_in_md_emit_mode(self):
@@ -163,7 +164,7 @@ class OutputEnvelopeTests(unittest.TestCase):
         # same envelopes apply. Guard against future divergence.
         text = render.render_compact(sample_report())
         self.assertEqual(text.count("<!-- EVIDENCIA PARA SÍNTESIS:"), 1)
-        self.assertEqual(text.count("<!-- END EVIDENCE FOR SYNTHESIS -->"), 1)
+        self.assertEqual(text.count("<!-- FIN DE EVIDENCIA PARA SÍNTESIS -->"), 1)
         self.assertEqual(text.count("<!-- PIE DE PÁGINA DIRECTO:"), 1)
         self.assertEqual(text.count("<!-- FIN DEL PIE DE PÁGINA DIRECTO -->"), 1)
 
@@ -174,7 +175,7 @@ class OutputEnvelopeTests(unittest.TestCase):
         text = render.render_compact(report)
         self.assertEqual(
             text.count("<!-- EVIDENCIA PARA SÍNTESIS:"),
-            text.count("<!-- END EVIDENCE FOR SYNTHESIS -->"),
+            text.count("<!-- FIN DE EVIDENCIA PARA SÍNTESIS -->"),
         )
         self.assertEqual(
             text.count("<!-- PIE DE PÁGINA DIRECTO:"),

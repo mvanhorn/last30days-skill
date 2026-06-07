@@ -163,7 +163,7 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
     lines.extend(_render_source_coverage(report))
     # Close EVIDENCE FOR SYNTHESIS envelope before anything that passes through verbatim.
     lines.append("")
-    lines.append("<!-- END EVIDENCE FOR SYNTHESIS -->")
+    lines.append("<!-- FIN DE EVIDENCIA PARA SÍNTESIS -->")
 
     pre_research_warning = _render_pre_research_warning(report)
     if pre_research_warning:
@@ -344,9 +344,9 @@ def _dedupe_notes(notes: list[str]) -> list[str]:
 def _append_html_footer(lines: list[str], report: schema.Report, save_path: str | None) -> None:
     footer = _render_emoji_footer(report, save_path)
     lines.append("")
-    lines.append("<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->")
+    lines.append("<!-- PIE DE PÁGINA DIRECTO: emítelo textualmente en la respuesta del modelo según la LEY 5. -->")
     lines.extend(footer)
-    lines.append("<!-- END PASS-THROUGH FOOTER -->")
+    lines.append("<!-- FIN DEL PIE DE PÁGINA DIRECTO -->")
 
 
 def _render_canonical_boundary() -> list[str]:
@@ -624,7 +624,7 @@ def render_comparison_multi(
             fun_params=fun_params,
         ))
 
-    lines.append("<!-- END EVIDENCE FOR SYNTHESIS -->")
+    lines.append("<!-- FIN DE EVIDENCIA PARA SÍNTESIS -->")
     lines.append("")
 
     # Reuse the existing comparison scaffold by feeding it the synthesized
@@ -636,9 +636,9 @@ def render_comparison_multi(
     footer = _render_emoji_footer(main_report, save_path)
     if footer:
         lines.append("")
-        lines.append("<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->")
+        lines.append("<!-- PIE DE PÁGINA DIRECTO: emítelo textualmente en la respuesta del modelo según la LEY 5. -->")
         lines.extend(footer)
-        lines.append("<!-- END PASS-THROUGH FOOTER -->")
+        lines.append("<!-- FIN DEL PIE DE PÁGINA DIRECTO -->")
 
     lines.extend(_render_canonical_boundary())
 

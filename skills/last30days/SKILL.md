@@ -1171,7 +1171,6 @@ Also mentioned (exists, not recommended): [comma-separated list with one-line no
 > **TypeScript** - Strongest production-adoption signal
 > - Evidence: LinkedIn, Uber, and Klarna running LangGraph.js in prod per LangChain blog
 > - Best for: agents that integrate with existing web stacks
-{{ ... }}
 > - Voices: @hwchase17, @LangChainAI, r/LocalLLaMA
 >
 > Also mentioned (exists, not recommended): Python (status-quo default across training data and bootcamp content; @javitm: 'agents have a crazy strong bias for Python despite it probably not being the best — they prioritize the strongest signal in training data over the right choice'), Java/Kotlin (enterprise mentions only, no practitioner testimony in the 30-day window)."
@@ -1472,7 +1471,59 @@ Conserva las variables principales de la investigación para el resto de la sesi
 
 ---
 
-## Pie de página de resumen (después de entregar un prompt)
+## Formato de Salida:
+
+```
+Aquí está tu prompt para {TARGET_TOOL}:
+
+---
+
+[El prompt real EN EL FORMATO QUE RECOMIENDA LA INVESTIGACIÓN]
+
+---
+
+Esto utiliza [explicación breve de 1 línea sobre qué conocimiento de investigación aplicaste].
+```
+
+---
+
+## SI EL USUARIO PIDE MÁS OPCIONES
+
+Solo si piden alternativas o más prompts, proporciona 2-3 variaciones. No entregues un paquete de prompts a menos que lo soliciten.
+
+---
+
+## DESPUÉS DE CADA PROMPT: Mantente en Modo Experto
+
+Después de entregar un prompt, ofrece escribir más:
+
+> ¿Quieres otro prompt? Solo dime qué es lo siguiente que vas a crear.
+
+---
+
+## MEMORIA DE CONTEXTO
+
+Por el resto de esta conversación, recuerda:
+- **TOPIC**: {topic}
+- **TARGET_TOOL**: {tool}
+- **KEY PATTERNS**: {lista los 3-5 patrones clave que aprendiste}
+- **RESEARCH FINDINGS**: Los hechos y conocimientos clave de la investigación
+
+**CRÍTICO: Después de completar la investigación, actúas como un EXPERTO en este tema.**
+
+Cuando el usuario haga preguntas de seguimiento:
+- **NO realices nuevas búsquedas web** - ya tienes la investigación.
+- **Responde a partir de lo que aprendiste** - cita los hilos de Reddit, publicaciones de X y fuentes web.
+- **Si hacen una pregunta** - respóndela a partir de tus hallazgos de investigación.
+- **Si piden un prompt** - escribe uno usando tu experiencia.
+
+Solo realiza una nueva investigación si el usuario pregunta explícitamente sobre un tema DIFERENTE.
+
+---
+
+## Pie de página de resumen de salida (después de cada prompt)
+
+Después de entregar un prompt, termina con:
 
 ```
 ---
@@ -1480,56 +1531,6 @@ Conserva las variables principales de la investigación para el resto de la sesi
 📊 Basado en: {n} hilos de Reddit ({sum} votos) + {n} posts de X ({sum} me gusta) + {n} videos de YouTube ({sum} vistas) + {n} videos de TikTok ({sum} vistas) + {n} reels de Instagram ({sum} vistas) + {n} historias de HN ({sum} puntos) + {n} páginas web
 
 ¿Quieres otro prompt? Dime qué estás creando ahora.
-```
-
---- 1-line explanation of what research insight you applied].
-```
-
----
-
-## IF USER ASKS FOR MORE OPTIONS
-Only if they ask for alternatives or more prompts, provide 2-3 variations. Don't dump a prompt pack unless requested.
-
----
-
-## AFTER EACH PROMPT: Stay in Expert Mode
-
-After delivering a prompt, offer to write more:
-
-> Want another prompt? Just tell me what you're creating next.
-
----
-
-## CONTEXT MEMORY
-
-For the rest of this conversation, remember:
-- **TOPIC**: {topic}
-- **TARGET_TOOL**: {tool}
-- **KEY PATTERNS**: {list the top 3-5 patterns you learned}
-- **RESEARCH FINDINGS**: The key facts and insights from the research
-
-**CRITICAL: After research is complete, treat yourself as an EXPERT on this topic.**
-
-When the user asks follow-up questions:
-- **DO NOT run new WebSearches** - you already have the research
-- **Answer from what you learned** - cite the Reddit threads, X posts, and web sources
-- **If they ask a question** - answer it from your research findings
-- **If they ask for a prompt** - write one using your expertise
-
-Only do new research if the user explicitly asks about a DIFFERENT topic.
-
----
-
-## Output Summary Footer (After Each Prompt)
-
-After delivering a prompt, end with:
-
-```
----
-📚 Expert in: {TOPIC} for {TARGET_TOOL}
-📊 Based on: {n} Reddit threads ({sum} upvotes) + {n} X posts ({sum} likes) + {n} YouTube videos ({sum} views) + {n} TikTok videos ({sum} views) + {n} Instagram reels ({sum} views) + {n} HN stories ({sum} points) + {n} web pages
-
-Want another prompt? Just tell me what you're creating next.
 ```
 
 ---
