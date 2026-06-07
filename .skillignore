@@ -13,14 +13,6 @@ hooks/
 .claude-plugin/
 .agents/
 .hermes-plugin/
-README.md
-CHANGELOG.md
-CONFIGURATION.md
-CONCEPTS.md
-CONTRIBUTORS.md
-HERMES_SETUP.md
-AGENTS.md
-CLAUDE.md
 uv.lock
 pyproject.toml
 *.md
@@ -31,6 +23,7 @@ pyproject.toml
 skills/last30days/scripts/lib/env.py
 skills/last30days/scripts/lib/bird_x.py
 skills/last30days/scripts/lib/github.py
+skills/last30days/scripts/lib/cookie_extract.py
 skills/last30days/scripts/lib/vendor/bird-search/
 
 # Maintainer/dev tooling, not part of normal /last30days execution.

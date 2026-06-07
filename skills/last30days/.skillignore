@@ -14,4 +14,5 @@ scripts/test-v1-vs-v2.sh
 scripts/lib/env.py
 scripts/lib/bird_x.py
 scripts/lib/github.py
+scripts/lib/cookie_extract.py
 scripts/lib/vendor/bird-search/
