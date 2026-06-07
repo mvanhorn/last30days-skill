@@ -102,6 +102,12 @@ class CliV3Tests(unittest.TestCase):
         self.assertEqual(["biosecurity", "ai", "agents"], args.topic)
         self.assertEqual([], extra)
 
+    def test_build_parser_preserves_github_setup_subflag(self):
+        parser = cli.build_parser()
+        args, extra = parser.parse_known_args(["setup", "--github"])
+        self.assertEqual(["setup"], args.topic)
+        self.assertEqual(["--github"], extra)
+
     def test_ensure_supported_python_rejects_old_interpreter_with_actionable_error(self):
         stderr = io.StringIO()
         with redirect_stderr(stderr):
