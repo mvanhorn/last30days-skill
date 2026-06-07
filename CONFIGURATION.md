@@ -264,5 +264,5 @@ This is the right home for client-specific changes you don't intend to upstream 
 
 - The CLI flag surface: `python3 scripts/last30days.py --help`
 - The skill contract (voice, LAWs, pre-flight protocol): [`skills/last30days/SKILL.md`](skills/last30days/SKILL.md)
-- Engine spec (some sections stale; SKILL.md wins on conflicts): [`SPEC.md`](SPEC.md)
+- Shared package vocabulary and engine/harness terminology: [`CONCEPTS.md`](CONCEPTS.md)
 - Contributor guidance: [`CONTRIBUTORS.md`](CONTRIBUTORS.md)
