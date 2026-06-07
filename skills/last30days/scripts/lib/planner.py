@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 
 from . import http, providers, query, schema
+
+# Hebrew Unicode block: U+0590–U+05FF
+_HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
+
+
+def detect_language(text: str) -> str | None:
+    """Return 'he' if the text contains Hebrew characters, else None."""
+    return 'he' if _HEBREW_RE.search(text) else None
 
 ALLOWED_INTENTS = {
     "factual",
@@ -383,6 +392,14 @@ def _fallback_plan(
     note: str = "fallback-plan",
 ) -> schema.QueryPlan:
     intent = _infer_intent(topic)
+    # Hebrew-language topics: elevate web search (grounding) to the front of
+    # the source list since Reddit/HN/GitHub are English-dominant platforms.
+    # Grounding covers Ynet, Walla, Mako, N12 etc. if a web search key is set.
+    if detect_language(topic) == 'he' and 'grounding' in available_sources:
+        ordered = ['grounding'] + [s for s in available_sources if s != 'grounding']
+        available_sources = ordered
+        if requested_sources:
+            requested_sources = ['grounding'] + [s for s in requested_sources if s != 'grounding']
     allowed_sources = requested_sources or available_sources
     source_weights = _default_source_weights(intent, allowed_sources)
     core = query.extract_core_subject(topic, max_words=6, strip_suffixes=True)

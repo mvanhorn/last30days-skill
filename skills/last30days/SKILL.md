@@ -387,8 +387,18 @@ Known keyword-trap classes and how to handle each:
 - Action: Ask for specificity before running:
   > "{TOPIC} is a huge category - are you asking about {specific-facet-A}, {specific-facet-B}, or {specific-facet-C}? Each is a different community. Pick one or tell me the angle."
 
+**Class 5: Non-English / non-Latin-script topic (Hebrew, Arabic, Chinese, Japanese, etc.)**
+- Pattern: topic contains non-Latin characters (Hebrew [\u0590-\u05FF], Arabic [\u0600-\u06FF], CJK [\u4E00-\u9FFF], etc.).
+- Why it fails without intervention: Reddit, HackerNews, GitHub, and Polymarket are English-dominant platforms. A Hebrew brand like "קפה עלית" scores zero entity-matches across all four sources and returns only English-language noise as fallback padding.
+- Action: **Mandatory pre-flight steps for non-English topics:**
+  1. **Force `--web-backend brave`** in the engine command. Brave indexes non-English web (Ynet/Walla/Mako for Hebrew; Haber7/Hurriyet for Turkish; etc.) and is the only available source with real-language coverage.
+  2. **Skip `--subreddits` targeting unless the topic has a known English-speaking community.** Generic subreddits (r/food, r/Israel) return English noise; omit them or scope tightly to known bilingual communities.
+  3. **Note in the Resolved block:** "Non-English topic detected ([language]). Routing to `--web-backend brave`; Reddit/HN/GitHub will likely return zero on-topic results."
+  4. **X/Twitter and YouTube are the highest-value missing sources for non-English topics.** Surface this clearly in the output so the user knows what would unlock deeper coverage.
+- Do NOT skip this class check for mixed-script queries (e.g. "קפה עלית Elite Coffee") - if any non-Latin characters are present, Class 5 applies.
+
 **Pre-Flight decision flow (do this BEFORE any WebSearch):**
-1. Read the topic. Match against Classes 1-4 above.
+1. Read the topic. Match against Classes 1-5 above.
 2. If the topic matches a class, ALWAYS emit a visible pre-flight note before the Resolved block:
    - `Pre-Flight: topic matches {Class N} ({class name}). {Action: clarifying question / reframe / specificity ask}.`
 3. If the action is a clarifying question, STOP after emitting it. Wait for the user response before any engine work.
@@ -416,6 +426,7 @@ Before running the engine, determine which flags apply to this topic and resolve
 | `--tiktok-hashtags={h1,h2,...}` | Step 0.55 | Always — inferred from topic |
 | `--tiktok-creators={c1,c2,...}` | Step 0.55 | Creator / influencer / brand topics |
 | `--ig-creators={c1,c2,...}` | Step 0.55 | Creator / brand topics |
+| `--web-backend brave` | Step 0.45 Class 5 | **MANDATORY** for non-Latin-script topics (Hebrew, Arabic, CJK, etc.) — Brave is the only source that indexes non-English web |
 | `--auto-resolve` | Fallback | WebSearch is available but Step 0.55 could not resolve everything cleanly — use as belt-and-suspenders |
 
 **Checkpoint before running the engine:** your Bash command must include every flag from the checklist that applies to this topic. For a person who ships code (the Peter Steinberger class), that is MINIMUM `--x-handle` AND `--github-user` AND `--subreddits`, and typically `--x-related` too. A command with only `--x-handle` on a person topic is a pre-flight skip and a Step 0.5 regression.

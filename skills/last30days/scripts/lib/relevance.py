@@ -16,6 +16,13 @@ STOPWORDS = frozenset({
     'your', 'i', 'me', 'we', 'you', 'what', 'are', 'do', 'can',
     'its', 'be', 'or', 'not', 'no', 'so', 'if', 'but', 'about',
     'all', 'just', 'get', 'has', 'have', 'was', 'will',
+    # Hebrew function words / prepositions / conjunctions
+    'את', 'של', 'על', 'עם', 'אל', 'כי', 'לא', 'הוא', 'היא', 'הם',
+    'הן', 'אנו', 'אנחנו', 'זה', 'זו', 'זאת', 'כל', 'יש', 'אין',
+    'כבר', 'רק', 'גם', 'כן', 'אם', 'או', 'אבל', 'כך', 'מה', 'מי',
+    'איך', 'למה', 'כמה', 'היה', 'הייתה', 'היו', 'יהיה', 'יהיו',
+    # Hebrew definite article / prefixes appearing as standalone tokens after split
+    'ה', 'ב', 'ל', 'מ', 'כ', 'ו', 'ש',
 })
 
 # Synonym groups for relevance scoring (bidirectional expansion)
