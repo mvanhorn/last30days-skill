@@ -11,13 +11,15 @@ from . import render, schema
 
 PROSE_LABELS = [
     ("What I learned:", "What I learned"),
+    ("Lo que aprendí:", "Lo que aprendí"),
     ("KEY PATTERNS from the research:", "Key patterns from the research"),
+    ("PATRONES CLAVE de la investigación:", "Patrones clave de la investigación"),
 ]
 
-INVITATION_PATTERN = re.compile(r"^---\nI'm now an expert.*?Just ask\.$", re.MULTILINE | re.DOTALL)
+INVITATION_PATTERN = re.compile(r"^---\n(?:I'm now an expert|Ahora soy un experto|He comparado).*?(?:Just ask\.|Solo pregunta\.)$", re.MULTILINE | re.DOTALL | re.IGNORECASE)
 EVIDENCE_BLOCK_PATTERN = re.compile(r"<!-- (?:EVIDENCE FOR SYNTHESIS|EVIDENCIA PARA SÍNTESIS).*?<!-- (?:END EVIDENCE FOR SYNTHESIS|FIN DE EVIDENCIA PARA SÍNTESIS) -->", re.DOTALL | re.IGNORECASE)
 PASS_THROUGH_FOOTER_PATTERN = re.compile(r"<!-- (?:PASS-THROUGH FOOTER|PIE DE PÁGINA DIRECTO).*?-->\n(.*?)<!-- (?:END PASS-THROUGH FOOTER|FIN DEL PIE DE PÁGINA DIRECTO) -->", re.DOTALL | re.IGNORECASE)
-CANONICAL_BOUNDARY_PATTERN = re.compile(r"\n?---\n# END OF last30days CANONICAL OUTPUT.*$", re.DOTALL)
+CANONICAL_BOUNDARY_PATTERN = re.compile(r"\n?---\n# (?:END OF last30days CANONICAL OUTPUT|FIN DE LA SALIDA CANÓNICA DE last30days).*$", re.DOTALL | re.IGNORECASE)
 # render_for_html emits metadata as <!-- META: ... --> so it survives the
 # markdown converter (which escapes raw HTML inside paragraphs). Promoted to
 # a styled <div class="meta"> after conversion.

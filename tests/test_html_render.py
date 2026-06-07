@@ -116,7 +116,9 @@ class HtmlRenderSnapshotTests(unittest.TestCase):
         for marker in snapshot_markers:
             self.assertIn(marker, rendered)
         self.assertNotIn("EVIDENCE FOR SYNTHESIS", rendered)
+        self.assertNotIn("EVIDENCIA PARA SÍNTESIS", rendered)
         self.assertNotIn("END OF last30days CANONICAL OUTPUT", rendered)
+        self.assertNotIn("FIN DE LA SALIDA CANÓNICA DE last30days", rendered)
 
     def test_thin_cluster_fixture_snapshot(self):
         rendered = html_render.render_html(_report("obscure topic", []))
