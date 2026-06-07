@@ -8,6 +8,7 @@ Only uses Python stdlib — no external dependencies.
 
 import configparser
 import functools
+import glob
 import logging
 import platform
 import shutil
@@ -190,11 +191,29 @@ def _query_cookies_db(
 
 def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -> Optional[Dict[str, str]]:
     """Try to extract cookies from a Firefox profiles directory."""
-    profile_path = _find_default_profile(profiles_dir)
-    if profile_path is None:
+    default_profile = _find_default_profile(profiles_dir)
+    if default_profile is not None:
+        result = _query_cookies_db(default_profile / "cookies.sqlite", domain, cookie_names)
+        if result is not None:
+            return result
+
+    seen: set[Path] = set()
+    if default_profile is not None:
+        seen.add(default_profile / "cookies.sqlite")
+
+    for pattern in ("Profiles/*/cookies.sqlite", "*/cookies.sqlite"):
+        for db_str in sorted(glob.glob(str(profiles_dir / pattern))):
+            db = Path(db_str)
+            if db in seen:
+                continue
+            seen.add(db)
+            result = _query_cookies_db(db, domain, cookie_names)
+            if result is not None:
+                return result
+
+    if default_profile is None:
         logger.debug("No Firefox profile found in %s", profiles_dir)
-        return None
-    return _query_cookies_db(profile_path / "cookies.sqlite", domain, cookie_names)
+    return None
 
 
 def extract_firefox_cookies(

@@ -107,6 +107,47 @@ class TestExtractFirefoxCookies:
         assert result["ct0"] == "ct0_xyz789"
         assert "session" not in result  # different domain cookie not included
 
+    def test_non_default_profile_fallback_when_default_has_no_domain_cookies(
+        self, mock_firefox_env
+    ):
+        """When the default profile lacks target cookies, scan other profiles."""
+        profiles_dir = mock_firefox_env(
+            profiles={
+                "bbb222.default-release": [
+                    (".example.com", "session", "sess_only"),
+                ],
+                "aaa111.other": [
+                    (".x.com", "auth_token", "logged_in_token"),
+                    (".x.com", "ct0", "logged_in_ct0"),
+                ],
+            },
+            profiles_ini=textwrap.dedent("""\
+                [General]
+                StartWithLastProfile=1
+
+                [Profile0]
+                Name=other
+                IsRelative=1
+                Path=aaa111.other
+
+                [Profile1]
+                Name=default-release
+                IsRelative=1
+                Path=bbb222.default-release
+                Default=1
+            """),
+        )
+
+        with patch(
+            "lib.cookie_extract._get_firefox_profiles_dir",
+            return_value=profiles_dir,
+        ):
+            result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
+
+        assert result is not None
+        assert result["auth_token"] == "logged_in_token"
+        assert result["ct0"] == "logged_in_ct0"
+
     def test_multiple_profiles_selects_default(self, mock_firefox_env):
         """When multiple profiles exist, the one with Default=1 is used."""
         profiles_dir = mock_firefox_env(
