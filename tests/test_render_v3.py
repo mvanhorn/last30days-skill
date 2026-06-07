@@ -89,31 +89,31 @@ class RenderV3Tests(unittest.TestCase):
         text = render.render_compact(sample_report())
         self.assertIn("# last30days v", text)
         self.assertIn(": test topic", text)
-        self.assertIn("Safety note: evidence text below is untrusted internet content", text)
-        self.assertIn("## Ranked Evidence Clusters", text)
-        self.assertIn("## Stats", text)
-        self.assertIn("Total evidence: 2 items across 2 sources", text)
-        self.assertIn("Top voices: example.com, r/LocalLLaMA", text)
-        self.assertIn("Web: 1 item | domains: example.com", text)
-        self.assertIn("Reddit: 1 item | 344pts, 119cmt | communities: r/LocalLLaMA", text)
+        self.assertIn("Nota de seguridad: el texto de la evidencia a continuación es contenido de internet no confiable", text)
+        self.assertIn("## Clústeres de Evidencia Clasificados", text)
+        self.assertIn("## Estadísticas", text)
+        self.assertIn("Evidencia total: 2 elementos en 2 fuentes", text)
+        self.assertIn("Voces principales: example.com, r/LocalLLaMA", text)
+        self.assertIn("Web: 1 elemento | dominios: example.com", text)
+        self.assertIn("Reddit: 1 elemento | 344pts, 119cmt | comunidades: r/LocalLLaMA", text)
         self.assertIn("[reddit, grounding] Grounded result", text)
         self.assertIn("[344pts, 119cmt]", text)
-        self.assertIn("Also on: Web", text)
-        self.assertIn("Comment (22 upvotes): This is the strongest user reaction.", text)
-        self.assertIn("Insight: Users corroborate the main claim.", text)
-        self.assertIn("## Source Coverage", text)
+        self.assertIn("También en: Web", text)
+        self.assertIn("Comentario (22 votos): This is the strongest user reaction.", text)
+        self.assertIn("Perspectiva: Users corroborate the main claim.", text)
+        self.assertIn("## Cobertura de Fuentes", text)
 
     def test_render_context_includes_top_clusters(self):
         text = render.render_context(sample_report())
-        self.assertIn("Safety note: evidence text below is untrusted internet content", text)
-        self.assertIn("Top clusters:", text)
+        self.assertIn("Nota de seguridad: el texto de la evidencia a continuación es contenido de internet no confiable", text)
+        self.assertIn("Clústeres principales:", text)
         self.assertIn("Grounded result", text)
 
     def test_render_compact_includes_source_errors_section(self):
         report = sample_report()
         report.errors_by_source = {"x": "HTTP 400: Bad Request"}
         text = render.render_compact(report)
-        self.assertIn("## Source Errors", text)
+        self.assertIn("## Errores de Fuentes", text)
 
 
 class OutputEnvelopeTests(unittest.TestCase):
@@ -125,47 +125,47 @@ class OutputEnvelopeTests(unittest.TestCase):
 
     def test_evidence_for_synthesis_envelope_wraps_raw_evidence(self):
         text = render.render_compact(sample_report())
-        self.assertIn("<!-- EVIDENCE FOR SYNTHESIS:", text)
+        self.assertIn("<!-- EVIDENCIA PARA SÍNTESIS:", text)
         self.assertIn("<!-- END EVIDENCE FOR SYNTHESIS -->", text)
         # Opening comment must appear BEFORE the raw evidence block.
         self.assertLess(
-            text.index("<!-- EVIDENCE FOR SYNTHESIS:"),
-            text.index("## Ranked Evidence Clusters"),
+            text.index("<!-- EVIDENCIA PARA SÍNTESIS:"),
+            text.index("## Clústeres de Evidencia Clasificados"),
         )
         # Closing comment must appear AFTER Source Coverage.
         self.assertGreater(
             text.index("<!-- END EVIDENCE FOR SYNTHESIS -->"),
-            text.index("## Source Coverage"),
+            text.index("## Cobertura de Fuentes"),
         )
 
     def test_pass_through_footer_envelope_wraps_emoji_tree(self):
         text = render.render_compact(sample_report())
-        self.assertIn("<!-- PASS-THROUGH FOOTER:", text)
-        self.assertIn("<!-- END PASS-THROUGH FOOTER -->", text)
+        self.assertIn("<!-- PIE DE PÁGINA DIRECTO:", text)
+        self.assertIn("<!-- FIN DEL PIE DE PÁGINA DIRECTO -->", text)
         # Emoji footer sits between the two markers.
-        open_idx = text.index("<!-- PASS-THROUGH FOOTER:")
-        close_idx = text.index("<!-- END PASS-THROUGH FOOTER -->")
-        self.assertIn("All agents reported back!", text[open_idx:close_idx])
+        open_idx = text.index("<!-- PIE DE PÁGINA DIRECTO:")
+        close_idx = text.index("<!-- FIN DEL PIE DE PÁGINA DIRECTO -->")
+        self.assertIn("¡Todos los agentes informaron!", text[open_idx:close_idx])
 
     def test_canonical_boundary_scopes_pass_through_to_footer(self):
         text = render.render_compact(sample_report())
         # New boundary text scopes verbatim to the PASS-THROUGH FOOTER block,
         # not everything above.
-        self.assertIn("Pass through ONLY the PASS-THROUGH FOOTER block verbatim", text)
+        self.assertIn("Pasa ÚNICAMENTE el bloque del PIE DE PÁGINA DIRECTO textualmente", text)
         # Self-check string is present so the model has a concrete failure signal.
         self.assertIn("### 1.", text)
-        self.assertIn("LAW 6", text)
+        self.assertIn("LEY 6", text)
         # The prior ambiguous phrasing is gone.
-        self.assertNotIn("Pass through the lines ABOVE this boundary verbatim", text)
+        self.assertNotIn("Pasa las líneas por encima de este límite textualmente", text)
 
     def test_envelopes_appear_in_md_emit_mode(self):
         # --emit md and --emit compact both route to render_compact, so the
         # same envelopes apply. Guard against future divergence.
         text = render.render_compact(sample_report())
-        self.assertEqual(text.count("<!-- EVIDENCE FOR SYNTHESIS:"), 1)
+        self.assertEqual(text.count("<!-- EVIDENCIA PARA SÍNTESIS:"), 1)
         self.assertEqual(text.count("<!-- END EVIDENCE FOR SYNTHESIS -->"), 1)
-        self.assertEqual(text.count("<!-- PASS-THROUGH FOOTER:"), 1)
-        self.assertEqual(text.count("<!-- END PASS-THROUGH FOOTER -->"), 1)
+        self.assertEqual(text.count("<!-- PIE DE PÁGINA DIRECTO:"), 1)
+        self.assertEqual(text.count("<!-- FIN DEL PIE DE PÁGINA DIRECTO -->"), 1)
 
     def test_no_dangling_envelope_open_without_close(self):
         # Open/close counts must always match, even for empty clusters.
@@ -173,12 +173,12 @@ class OutputEnvelopeTests(unittest.TestCase):
         report.clusters = []
         text = render.render_compact(report)
         self.assertEqual(
-            text.count("<!-- EVIDENCE FOR SYNTHESIS:"),
+            text.count("<!-- EVIDENCIA PARA SÍNTESIS:"),
             text.count("<!-- END EVIDENCE FOR SYNTHESIS -->"),
         )
         self.assertEqual(
-            text.count("<!-- PASS-THROUGH FOOTER:"),
-            text.count("<!-- END PASS-THROUGH FOOTER -->"),
+            text.count("<!-- PIE DE PÁGINA DIRECTO:"),
+            text.count("<!-- FIN DEL PIE DE PÁGINA DIRECTO -->"),
         )
 
 
@@ -265,30 +265,30 @@ class RenderTopCommentsTests(unittest.TestCase):
         report = self._make_report_with_comments(top_comments=comments)
         text = render.render_compact(report)
         # Reddit authors render with u/ prefix now.
-        self.assertIn("u/user1 (500 upvotes):", text)
-        self.assertIn("u/user2 (200 upvotes):", text)
-        self.assertIn("u/user3 (50 upvotes):", text)
-        self.assertNotIn("u/user4 (8 upvotes):", text)
-        self.assertNotIn("u/user5 (3 upvotes):", text)
+        self.assertIn("u/user1 (500 votos):", text)
+        self.assertIn("u/user2 (200 votos):", text)
+        self.assertIn("u/user3 (50 votos):", text)
+        self.assertNotIn("u/user4 (8 votos):", text)
+        self.assertNotIn("u/user5 (3 votos):", text)
 
     def test_reddit_1_comment_renders_1(self):
         """Reddit candidate with 1 comment renders 1."""
         comments = [{"score": 100, "excerpt": "Single comment", "author": "user1"}]
         report = self._make_report_with_comments(top_comments=comments)
         text = render.render_compact(report)
-        self.assertIn("u/user1 (100 upvotes): Single comment", text)
+        self.assertIn("u/user1 (100 votos): Single comment", text)
 
     def test_reddit_0_comments_no_section(self):
         """Reddit candidate with 0 comments renders no comment section."""
         report = self._make_report_with_comments(top_comments=[])
         text = render.render_compact(report)
-        self.assertNotIn("upvotes)", text)
+        self.assertNotIn("votos)", text)
 
     def test_non_reddit_no_comments(self):
         """Non-Reddit candidate doesn't render comments when metadata has none."""
         report = self._make_report_with_comments(source="grounding", top_comments=[])
         text = render.render_compact(report)
-        self.assertNotIn("upvotes)", text)
+        self.assertNotIn("votos)", text)
         self.assertIn("Test cluster", text)
 
     def test_all_comments_below_score_10_no_section(self):
@@ -300,7 +300,7 @@ class RenderTopCommentsTests(unittest.TestCase):
         ]
         report = self._make_report_with_comments(top_comments=comments)
         text = render.render_compact(report)
-        self.assertNotIn("upvotes)", text)
+        self.assertNotIn("votos)", text)
 
     def test_youtube_comments_use_likes_label_and_50_threshold(self):
         comments = [
@@ -311,9 +311,9 @@ class RenderTopCommentsTests(unittest.TestCase):
         report = self._make_report_with_comments(source="youtube", top_comments=comments)
         text = render.render_compact(report)
         # YouTube authors render with @ prefix now.
-        self.assertIn("@alice (120 likes): legit fire tutorial", text)
-        self.assertIn("@bob (60 likes): saved me hours", text)
-        self.assertNotIn("@carol (10 likes)", text)
+        self.assertIn("@alice (120 me gusta): legit fire tutorial", text)
+        self.assertIn("@bob (60 me gusta): saved me hours", text)
+        self.assertNotIn("@carol (10 me gusta)", text)
 
     def test_reddit_comment_without_author_falls_back_to_legacy_label(self):
         """When author is missing or [deleted], render falls back to 'Comment (...)'."""
@@ -325,9 +325,9 @@ class RenderTopCommentsTests(unittest.TestCase):
         report = self._make_report_with_comments(top_comments=comments)
         text = render.render_compact(report)
         # Legacy format preserved - no u/ prefix leaks with empty/deleted handles.
-        self.assertIn("Comment (500 upvotes): No author field", text)
-        self.assertIn("Comment (200 upvotes): Deleted user", text)
-        self.assertIn("Comment (50 upvotes): Removed user", text)
+        self.assertIn("Comentario (500 votos): No author field", text)
+        self.assertIn("Comentario (200 votos): Deleted user", text)
+        self.assertIn("Comentario (50 votos): Removed user", text)
         self.assertNotIn("u/ (", text)
         self.assertNotIn("u/[deleted]", text)
         self.assertNotIn("u/[removed]", text)
@@ -340,10 +340,10 @@ class RenderTopCommentsTests(unittest.TestCase):
         ]
         report = self._make_report_with_comments(source="tiktok", top_comments=comments)
         text = render.render_compact(report)
-        self.assertIn("@moosanoormahomed (3986 likes):", text)
-        self.assertIn("@Muna9e (925 likes):", text)
+        self.assertIn("@moosanoormahomed (3986 me gusta):", text)
+        self.assertIn("@Muna9e (925 me gusta):", text)
         # Render must not silently label YT as upvotes.
-        self.assertNotIn("Comment (120 upvotes)", text)
+        self.assertNotIn("Comentario (120 votos)", text)
 
     def test_tiktok_comments_use_likes_label_and_500_threshold(self):
         comments = [
@@ -354,10 +354,10 @@ class RenderTopCommentsTests(unittest.TestCase):
         ]
         report = self._make_report_with_comments(source="tiktok", top_comments=comments)
         text = render.render_compact(report)
-        self.assertIn("@a (2000 likes): this aged well", text)
-        self.assertIn("@b (600 likes): so real", text)
-        self.assertNotIn("@c (400 likes)", text)
-        self.assertNotIn("@d (50 likes)", text)
+        self.assertIn("@a (2000 me gusta): this aged well", text)
+        self.assertIn("@b (600 me gusta): so real", text)
+        self.assertNotIn("@c (400 me gusta)", text)
+        self.assertNotIn("@d (50 me gusta)", text)
 
 
 class RenderBestTakesCompactTests(unittest.TestCase):
@@ -447,7 +447,7 @@ class RenderBestTakesCompactTests(unittest.TestCase):
         ]
         report = self._make_report_with_candidates(candidates)
         text = render.render_compact(report)
-        self.assertIn("## Best Takes", text)
+        self.assertIn("## Mejores Opiniones", text)
         self.assertIn("(fun:85)", text)
         self.assertIn("(fun:75)", text)
 
@@ -474,7 +474,7 @@ class RenderBestTakesCompactTests(unittest.TestCase):
         ]
         report = self._make_report_with_candidates(candidates)
         text = render.render_compact(report)
-        self.assertNotIn("## Best Takes", text)
+        self.assertNotIn("## Mejores Opiniones", text)
 
     def test_no_best_takes_with_1_high_fun_candidate(self):
         """No Best Takes section when only 1 candidate above threshold."""
@@ -484,7 +484,7 @@ class RenderBestTakesCompactTests(unittest.TestCase):
         ]
         report = self._make_report_with_candidates(candidates)
         text = render.render_compact(report)
-        self.assertNotIn("## Best Takes", text)
+        self.assertNotIn("## Mejores Opiniones", text)
 
 
 class DegradedRunBannerTests(unittest.TestCase):
@@ -502,18 +502,18 @@ class DegradedRunBannerTests(unittest.TestCase):
 
     def test_banner_appears_on_bare_named_entity_deterministic_run(self):
         text = render.render_compact(self._bare_named_entity_report())
-        self.assertIn("## DEGRADED RUN WARNING", text)
+        self.assertIn("## ADVERTENCIA DE EJECUCIÓN DEGRADADA", text)
         self.assertIn("<!-- USER-VISIBLE BANNER:", text)
         self.assertIn("<!-- END USER-VISIBLE BANNER -->", text)
-        self.assertIn("YOU ARE", text)
+        self.assertIn("TÚ ERES", text)
         # Runtime-agnostic enumeration: all host runtimes appear.
         for runtime_name in ("Claude Code", "Codex", "Hermes", "Gemini"):
             self.assertIn(runtime_name, text)
 
     def test_banner_positioned_before_evidence_envelope(self):
         text = render.render_compact(self._bare_named_entity_report())
-        banner_idx = text.index("## DEGRADED RUN WARNING")
-        envelope_idx = text.index("<!-- EVIDENCE FOR SYNTHESIS:")
+        banner_idx = text.index("## ADVERTENCIA DE EJECUCIÓN DEGRADADA")
+        envelope_idx = text.index("<!-- EVIDENCIA PARA SÍNTESIS:")
         self.assertLess(banner_idx, envelope_idx,
             "DEGRADED RUN banner must appear BEFORE evidence envelope so pass-through catches it.")
 
@@ -521,26 +521,26 @@ class DegradedRunBannerTests(unittest.TestCase):
         report = self._bare_named_entity_report()
         report.artifacts["plan_source"] = "external"
         text = render.render_compact(report)
-        self.assertNotIn("## DEGRADED RUN WARNING", text)
+        self.assertNotIn("## ADVERTENCIA DE EJECUCIÓN DEGRADADA", text)
 
     def test_banner_suppressed_when_plan_source_llm(self):
         report = self._bare_named_entity_report()
         report.artifacts["plan_source"] = "llm"
         text = render.render_compact(report)
-        self.assertNotIn("## DEGRADED RUN WARNING", text)
+        self.assertNotIn("## ADVERTENCIA DE EJECUCIÓN DEGRADADA", text)
 
     def test_banner_suppressed_when_pre_research_flags_present(self):
         report = self._bare_named_entity_report()
         report.artifacts["pre_research_flags_present"] = True
         text = render.render_compact(report)
-        self.assertNotIn("## DEGRADED RUN WARNING", text)
+        self.assertNotIn("## ADVERTENCIA DE EJECUCIÓN DEGRADADA", text)
 
     def test_banner_suppressed_on_non_eligible_abstract_topic(self):
         report = self._bare_named_entity_report()
         # Multi-word lowercase abstract phrase is NOT pre-research-eligible.
         report.topic = "how to deploy containers in the cloud"
         text = render.render_compact(report)
-        self.assertNotIn("## DEGRADED RUN WARNING", text)
+        self.assertNotIn("## ADVERTENCIA DE EJECUCIÓN DEGRADADA", text)
 
     def test_banner_mentions_law_7_and_plan_flag(self):
         text = render.render_compact(self._bare_named_entity_report())
@@ -609,19 +609,19 @@ class YoutubeFooterTranscriptRatioTests(unittest.TestCase):
         # Pre-fix the footer hid this entirely; post-fix it must say "0/6 with transcripts".
         report = self._build_youtube_report([False] * 6)
         text = render.render_compact(report)
-        self.assertIn("0/6 with transcripts", text)
+        self.assertIn("0/6 con transcripción", text)
 
     def test_partial_transcripts_renders_ratio(self):
         # 5 of 6 transcripts captured - shows ratio so user knows one was missed.
         report = self._build_youtube_report([True] * 5 + [False])
         text = render.render_compact(report)
-        self.assertIn("5/6 with transcripts", text)
+        self.assertIn("5/6 con transcripción", text)
 
     def test_full_transcripts_renders_ratio(self):
         # All 3 transcripts captured - still shows ratio for consistency.
         report = self._build_youtube_report([True] * 3)
         text = render.render_compact(report)
-        self.assertIn("3/3 with transcripts", text)
+        self.assertIn("3/3 con transcripción", text)
 
     def test_no_videos_no_transcript_segment(self):
         # When YouTube has no items at all, the YouTube footer line is
@@ -630,7 +630,7 @@ class YoutubeFooterTranscriptRatioTests(unittest.TestCase):
         report = self._build_youtube_report([])
         text = render.render_compact(report)
         # No YouTube footer line at all - so no transcript segment either
-        self.assertNotIn("with transcripts", text)
+        self.assertNotIn("con transcripción", text)
 
 if __name__ == "__main__":
     unittest.main()

@@ -27,6 +27,9 @@ from lib.chrome_cookies import (
 # Helpers — create real encrypted cookie values using known key + system openssl
 # ---------------------------------------------------------------------------
 
+import shutil
+HAS_OPENSSL = shutil.which("openssl") is not None
+
 KNOWN_PASSPHRASE = b"test_passphrase_for_unit_tests"
 KNOWN_AES_KEY = _derive_aes_key(KNOWN_PASSPHRASE)
 
@@ -160,6 +163,7 @@ class TestKeyDerivation:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not HAS_OPENSSL, reason="openssl not found")
 class TestDecryption:
     def test_decrypt_v10_roundtrip(self):
         """Encrypt then decrypt — verifies the full pipeline works."""
@@ -230,6 +234,7 @@ class TestKeychainDenied:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not HAS_OPENSSL, reason="openssl not found")
 class TestOpensslNotFound:
     def test_openssl_missing(self):
         encrypted = _encrypt_value_v10("test", KNOWN_AES_KEY)
@@ -263,6 +268,7 @@ class TestUnencryptedCookies:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not HAS_OPENSSL, reason="openssl not found")
 class TestFullExtraction:
     def test_encrypted_cookies_extracted(self, tmp_path):
         """End-to-end: create DB with real v10-encrypted values, extract them."""

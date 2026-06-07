@@ -102,8 +102,8 @@ class RenderComparisonMultiTests(unittest.TestCase):
         # Scaffold table header has a column per entity
         self.assertIn("| Dimension | OpenAI | Anthropic | xAI |", rendered)
         # Envelope scaffolding present
-        self.assertIn("EVIDENCE FOR SYNTHESIS", rendered)
-        self.assertIn("END OF last30days CANONICAL OUTPUT", rendered)
+        self.assertIn("EVIDENCIA PARA SÍNTESIS", rendered)
+        self.assertIn("FIN DE LA SALIDA CANÓNICA DE last30days", rendered)
 
     def test_two_entity_table_has_two_columns(self):
         reports = [
@@ -122,7 +122,7 @@ class RenderComparisonMultiTests(unittest.TestCase):
         ]
         rendered = render.render_comparison_multi(reports)
         self.assertIn("## ObscureCompetitor", rendered)
-        self.assertIn("no significant discussion this month", rendered)
+        self.assertIn("(no hubo discusión significativa este mes)", rendered)
         # Main still has its cluster
         self.assertIn("GPT-5 drop", rendered)
 
@@ -147,7 +147,7 @@ class RenderComparisonMultiTests(unittest.TestCase):
             ("Anthropic", _build_report("Anthropic", ["Claude 4.7"])),
         ]
         out = render.render_comparison_multi_context(reports)
-        self.assertIn("Comparison: OpenAI vs Anthropic", out)
+        self.assertIn("Comparación: OpenAI vs Anthropic", out)
         self.assertIn("## OpenAI", out)
         self.assertIn("## Anthropic", out)
         self.assertIn("GPT-5 drop", out)
@@ -180,13 +180,13 @@ class ResolvedEntitiesBlockTests(unittest.TestCase):
             }),
         ]
         rendered = render.render_comparison_multi(reports)
-        self.assertIn("## Resolved Entities", rendered)
+        self.assertIn("## Entidades Resueltas", rendered)
         self.assertIn("**OpenAI**: X @OpenAI", rendered)
         self.assertIn("r/OpenAI, r/MachineLearning", rendered)
         self.assertIn("@openai (openai/gpt)", rendered)
         self.assertIn("**Anthropic**: X @AnthropicAI", rendered)
         # Missing context renders as "-"
-        self.assertIn("Context: -", rendered)
+        self.assertIn("Contexto: -", rendered)
 
     def test_block_omitted_when_no_resolved_artifacts(self):
         reports = [
@@ -194,7 +194,7 @@ class ResolvedEntitiesBlockTests(unittest.TestCase):
             self._build_with_resolved("B", "B", None),
         ]
         rendered = render.render_comparison_multi(reports)
-        self.assertNotIn("## Resolved Entities", rendered)
+        self.assertNotIn("## Entidades Resueltas", rendered)
 
     def test_missing_fields_render_as_dash(self):
         reports = [
@@ -208,7 +208,7 @@ class ResolvedEntitiesBlockTests(unittest.TestCase):
             }),
         ]
         rendered = render.render_comparison_multi(reports)
-        self.assertIn("**OpenAI**: X - | Subs - | GitHub - | Context: -", rendered)
+        self.assertIn("**OpenAI**: X - | Subs - | GitHub - | Contexto: -", rendered)
 
     def test_long_context_truncated(self):
         long = "a" * 200
@@ -239,7 +239,7 @@ class ResolvedEntitiesBlockTests(unittest.TestCase):
             }),
         ]
         out = render.render_comparison_multi_context(reports)
-        self.assertIn("## Resolved Entities", out)
+        self.assertIn("## Entidades Resueltas", out)
         self.assertIn("**OpenAI**: X @OpenAI", out)
 
     def test_subreddit_overflow_truncated(self):
@@ -287,7 +287,7 @@ class EmitComparisonOutputTests(unittest.TestCase):
             ("B", _build_report("B", ["Thing B"])),
         ]
         out = cli.emit_comparison_output(reports, emit="context")
-        self.assertIn("Comparison: A vs B", out)
+        self.assertIn("Comparación: A vs B", out)
 
     def test_unsupported_emit_raises(self):
         reports = [("A", _build_report("A", ["Thing A"]))]

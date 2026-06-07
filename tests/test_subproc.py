@@ -4,13 +4,17 @@ Covers the process-group cleanup path, timeout behavior, success path,
 PID callback wiring, and environment inheritance.
 """
 
+import shutil
 import unittest
 from unittest.mock import patch
 
 from lib import subproc
 
+HAS_SH = shutil.which("sh") is not None
+
 
 class TestRunWithTimeout(unittest.TestCase):
+    @unittest.skipIf(not HAS_SH, "requires sh (POSIX shell)")
     def test_success_returns_stdout(self):
         result = subproc.run_with_timeout(
             ["sh", "-c", "echo hello"],
@@ -20,6 +24,7 @@ class TestRunWithTimeout(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), "hello")
         self.assertEqual(result.stderr, "")
 
+    @unittest.skipIf(not HAS_SH, "requires sh (POSIX shell)")
     def test_nonzero_exit_returns_returncode_not_exception(self):
         result = subproc.run_with_timeout(
             ["sh", "-c", "exit 3"],
@@ -27,6 +32,7 @@ class TestRunWithTimeout(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 3)
 
+    @unittest.skipIf(not HAS_SH, "requires sh (POSIX shell)")
     def test_captures_stderr(self):
         result = subproc.run_with_timeout(
             ["sh", "-c", "echo err >&2"],
@@ -34,6 +40,7 @@ class TestRunWithTimeout(unittest.TestCase):
         )
         self.assertEqual(result.stderr.strip(), "err")
 
+    @unittest.skipIf(not HAS_SH, "requires sh (POSIX shell)")
     def test_timeout_raises_subproctimeout(self):
         with self.assertRaises(subproc.SubprocTimeout):
             subproc.run_with_timeout(
@@ -41,6 +48,7 @@ class TestRunWithTimeout(unittest.TestCase):
                 timeout=1,
             )
 
+    @unittest.skipIf(not HAS_SH, "requires sh (POSIX shell)")
     def test_timeout_kills_process_group(self):
         """A slow child inside a shell should be killed when the group is signaled."""
         with self.assertRaises(subproc.SubprocTimeout):
@@ -60,6 +68,7 @@ class TestRunWithTimeout(unittest.TestCase):
                 timeout=5,
             )
 
+    @unittest.skipIf(not HAS_SH, "requires sh (POSIX shell)")
     def test_env_is_passed_through(self):
         result = subproc.run_with_timeout(
             ["sh", "-c", "echo $LAST30DAYS_TEST_VAR"],
@@ -68,6 +77,7 @@ class TestRunWithTimeout(unittest.TestCase):
         )
         self.assertEqual(result.stdout.strip(), "custom_value")
 
+    @unittest.skipIf(not HAS_SH, "requires sh (POSIX shell)")
     def test_on_pid_callback_receives_pid(self):
         seen_pids = []
         subproc.run_with_timeout(
@@ -79,6 +89,7 @@ class TestRunWithTimeout(unittest.TestCase):
         self.assertIsInstance(seen_pids[0], int)
         self.assertGreater(seen_pids[0], 0)
 
+    @unittest.skipIf(not HAS_SH, "requires sh (POSIX shell)")
     def test_on_pid_callback_exceptions_are_suppressed(self):
         """If the PID callback raises, the subprocess should still run to completion."""
         def raising_callback(pid):

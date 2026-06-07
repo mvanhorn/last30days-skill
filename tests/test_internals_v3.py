@@ -100,7 +100,7 @@ class TestAssessDataFreshness(unittest.TestCase):
         report = self._report({})
         result = render._assess_data_freshness(report)
         self.assertIsNotNone(result)
-        self.assertIn("Limited", result)
+        self.assertIn("limitados", result)
 
     def test_all_old_items_returns_warning(self):
         items = [_item(published_at="2026-01-01") for _ in range(10)]
@@ -132,7 +132,7 @@ class TestFormatDate(unittest.TestCase):
         self.assertIn("date:low", render._format_date(item))
 
     def test_none_item(self):
-        self.assertIn("unknown", render._format_date(None).lower())
+        self.assertIn("desconocida", render._format_date(None).lower())
 
 # ---------------------------------------------------------------------------
 # render._format_actor
@@ -180,7 +180,7 @@ class TestFormatCorroboration(unittest.TestCase):
     def test_multi_source(self):
         c = _candidate(sources=["reddit", "x", "hackernews"])
         result = render._format_corroboration(c)
-        self.assertIn("Also on", result)
+        self.assertIn("También en", result)
         self.assertIn("X", result)
 
     def test_single_source_none(self):

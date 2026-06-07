@@ -109,7 +109,7 @@ class HtmlRenderSnapshotTests(unittest.TestCase):
             "<title>last30days · AI agent frameworks</title>",
             '<div class="badge"><span class="accent">🌐</span> last30days v',
             '<div class="meta">2026-03-30 to 2026-04-29',
-            '<div class="engine-footer"><pre>---\n✅ All agents reported back!',
+            '<div class="engine-footer"><pre>---\n✅ ¡Todos los agentes informaron!',
             'Generated 2026-04-29 by /last30days v',
             '<span class="rerun">/last30days AI agent frameworks</span>',
         ]

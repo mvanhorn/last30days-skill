@@ -1,0 +1,10 @@
+{
+  "name": "last30days-skill",
+  "version": "3.3.2",
+  "description": "Research a topic from the last 30 days across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, and the web.",
+  "author": {
+    "name": "mvanhorn"
+  },
+  "repository": "https://github.com/mvanhorn/last30days-skill",
+  "license": "MIT"
+}

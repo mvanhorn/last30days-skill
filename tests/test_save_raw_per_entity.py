@@ -33,7 +33,7 @@ class PerEntitySaveFilesTests(unittest.TestCase):
             *argv,
         ]
         env = {**os.environ, "LAST30DAYS_SKIP_PREFLIGHT": "1"}
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        result = subprocess.run(cmd, capture_output=True, text=True, env=env, encoding="utf-8")
         return result, save_dir
 
     def test_vs_mode_produces_per_entity_files(self):
@@ -74,7 +74,7 @@ class PerEntitySaveFilesTests(unittest.TestCase):
         anthropic_file = save_dir / "anthropic-raw.md"
         self.assertTrue(anthropic_file.exists())
         content = anthropic_file.read_text()
-        self.assertIn("## Resolved Entities", content)
+        self.assertIn("## Entidades Resueltas", content)
         self.assertIn("**Anthropic**", content)
 
 if __name__ == "__main__":

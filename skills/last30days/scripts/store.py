@@ -913,6 +913,153 @@ def findings_from_report(
     return findings[:limit] if limit is not None else findings
 
 
+def load_cached_report(topic_name: str) -> Optional[schema.Report]:
+    """Reconstruct a schema.Report from the SQLite research database for a given topic."""
+    topic = get_topic(topic_name)
+    if not topic:
+        return None
+    topic_id = topic["id"]
+
+    runs = get_latest_completed_runs(topic_id, limit=1)
+    if not runs:
+        # Fallback to get all findings for topic if no runs are recorded
+        findings = get_new_findings(topic_id)
+        run_date = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    else:
+        run = runs[0]
+        run_date = run["run_date"]
+        # Query findings for this specific run
+        conn = _connect()
+        try:
+            rows = conn.execute(
+                """SELECT f.*
+                   FROM findings f
+                   JOIN finding_sightings s ON f.id = s.finding_id
+                   WHERE s.topic_id = ? AND s.run_id = ?
+                   ORDER BY f.id""",
+                (topic_id, run["id"]),
+            ).fetchall()
+            findings = [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+        if not findings:
+            findings = get_new_findings(topic_id)
+
+    if not findings:
+        return None
+
+    candidates = []
+    items_by_source = {}
+
+    for f in findings:
+        main_eng_key = {
+            "reddit": "score",
+            "x": "likes",
+            "youtube": "views",
+            "tiktok": "views",
+            "instagram": "views",
+            "threads": "likes",
+            "pinterest": "saves",
+            "hackernews": "points",
+            "bluesky": "likes",
+            "truthsocial": "likes",
+            "github": "reactions",
+            "digg": "postCount"
+        }.get(f["source"], "score")
+
+        engagement = {main_eng_key: f["engagement_score"] or 0.0}
+
+        metadata = {}
+        if f["source"] == "youtube":
+            metadata["transcript_highlights"] = [f["summary"] or ""]
+
+        item = schema.SourceItem(
+            item_id=f"item_{f['id']}",
+            source=f["source"],
+            title=f["source_title"] or "",
+            body=f["content"] or "",
+            url=f["source_url"] or "",
+            author=f["author"] or "",
+            engagement=engagement,
+            engagement_score=f["engagement_score"],
+            local_relevance=f["relevance_score"],
+            metadata=metadata,
+        )
+        items_by_source.setdefault(f["source"], []).append(item)
+
+        candidate = schema.Candidate(
+            candidate_id=f"cand_{f['id']}",
+            item_id=f"item_{f['id']}",
+            source=f["source"],
+            title=f["source_title"] or "",
+            url=f["source_url"] or "",
+            snippet=f["summary"] or "",
+            subquery_labels=[],
+            native_ranks={},
+            local_relevance=f["relevance_score"] or 0.5,
+            freshness=0,
+            engagement=f["engagement_score"],
+            source_quality=0.5,
+            rrf_score=0.0,
+            sources=[f["source"]],
+            source_items=[item],
+            rerank_score=f["relevance_score"],
+            final_score=f["relevance_score"] or 0.5,
+            explanation=f["summary"],
+        )
+        candidates.append(candidate)
+
+    # Sort candidates by relevance
+    candidates.sort(key=lambda c: c.final_score, reverse=True)
+
+    query_plan = schema.QueryPlan(
+        intent="breaking_news",
+        freshness_mode="default",
+        cluster_mode="default",
+        raw_topic=topic_name,
+        subqueries=[],
+        source_weights={},
+        notes=["Reconstructed from local SQLite cache."],
+    )
+
+    from lib import cluster
+    clusters = cluster.cluster_candidates(candidates, query_plan)
+
+    # Calculate date range from run_date
+    try:
+        run_dt = datetime.fromisoformat(run_date.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            run_dt = datetime.strptime(run_date, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            run_dt = datetime.now(timezone.utc)
+
+    range_to = run_dt.strftime("%Y-%m-%d")
+    range_from = (run_dt - timedelta(days=30)).strftime("%Y-%m-%d")
+
+    report = schema.Report(
+        topic=topic_name,
+        range_from=range_from,
+        range_to=range_to,
+        generated_at=run_dt.strftime("%Y-%m-%d %H:%M:%S"),
+        provider_runtime=schema.ProviderRuntime(
+            reasoning_provider="local",
+            planner_model="cache",
+            rerank_model="cache",
+        ),
+        query_plan=query_plan,
+        clusters=clusters,
+        ranked_candidates=candidates,
+        items_by_source=items_by_source,
+        errors_by_source={},
+        warnings=["Este informe fue reconstruido desde el almacenamiento local SQLite."],
+        artifacts={"pre_research_flags_present": True},
+    )
+
+    return report
+
+
 # --- CLI interface ---
 
 

@@ -271,6 +271,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--auto-resolve", action="store_true",
                         help="Use web search to discover subreddits/handles before planning (for platforms without WebSearch)")
+    parser.add_argument("--use-cache", action="store_true", help="Use local SQLite cache if available for the topic")
+    parser.add_argument("--from-store", action="store_true", help="Alias for --use-cache")
+    parser.add_argument("--session-recall", action="store_true", help="Recall the last run topic from local cache if no topic is specified")
     parser.add_argument("--github-user", help="GitHub username for person-mode search (e.g., steipete)")
     parser.add_argument("--github-repo", help="Comma-separated owner/repo for project-mode search (e.g., openclaw/openclaw,paperclipai/paperclip)")
     parser.add_argument(
@@ -604,6 +607,18 @@ def main() -> int:
         print(json.dumps(diag, indent=2, sort_keys=True))
         return 0
 
+    # Session recall logic
+    if not topic and args.session_recall:
+        try:
+            if env.CONFIG_DIR:
+                last_run_path = env.CONFIG_DIR / "last-run.json"
+                if last_run_path.is_file():
+                    last_run = json.loads(last_run_path.read_text(encoding="utf-8"))
+                    topic = last_run.get("topic", "").strip()
+                    sys.stderr.write(f"[SessionRecall] Tema recuperado de la última sesión: '{topic}'\n")
+        except Exception as exc:
+            sys.stderr.write(f"[SessionRecall] No se pudo recuperar el tema de la sesión anterior: {exc}\n")
+
     if not topic:
         parser.print_usage(sys.stderr)
         return 2
@@ -615,302 +630,319 @@ def main() -> int:
         else:
             sys.stderr.write("[last30days] Warning: --synthesis-file is only used with --emit=html; ignoring.\n")
 
-    if not os.environ.get("LAST30DAYS_SKIP_PREFLIGHT"):
-        from lib import preflight
-        refuse_msg = preflight.check_class_1_trap(topic)
-        if refuse_msg:
-            sys.stderr.write(refuse_msg)
-            return 2
+    # Local session cache loading logic
+    cached_report = None
+    use_cache_flag = args.use_cache or args.from_store or args.session_recall
+    if use_cache_flag and topic:
+        try:
+            import store
+            cached_report = store.load_cached_report(topic)
+            if cached_report:
+                sys.stderr.write(f"[Caché] Reporte reconstruido desde el almacenamiento local SQLite para el tema '{topic}'\n")
+        except Exception as exc:
+            sys.stderr.write(f"[Caché] Error al intentar cargar desde la caché local: {exc}\n")
 
-    progress = ui.ProgressDisplay(topic, show_banner=True)
-    progress.start_processing()
+    if cached_report:
+        report = cached_report
+        entity_reports = None
+        _write_last_run(topic, report)
+    else:
+        if not os.environ.get("LAST30DAYS_SKIP_PREFLIGHT"):
+            from lib import preflight
+            refuse_msg = preflight.check_class_1_trap(topic)
+            if refuse_msg:
+                sys.stderr.write(refuse_msg)
+                return 2
 
-    depth = "deep" if args.deep else "quick" if args.quick else "default"
-    try:
-        x_related = [h.strip() for h in args.x_related.split(",") if h.strip()] if args.x_related else None
-        subreddits = [s.strip().removeprefix("r/") for s in args.subreddits.split(",") if s.strip()] if args.subreddits else None
-        tiktok_hashtags = [h.strip().lstrip("#") for h in args.tiktok_hashtags.split(",") if h.strip()] if args.tiktok_hashtags else None
-        tiktok_creators = [c.strip().lstrip("@") for c in args.tiktok_creators.split(",") if c.strip()] if args.tiktok_creators else None
-        ig_creators = [c.strip().lstrip("@") for c in args.ig_creators.split(",") if c.strip()] if args.ig_creators else None
-        # Parse external plan if provided via --plan flag
-        external_plan = None
-        if args.plan:
-            import json as _json
-            plan_str = args.plan
-            if os.path.isfile(plan_str):
-                plan_str = open(plan_str).read()
-            try:
-                external_plan = _json.loads(plan_str)
-            except _json.JSONDecodeError as exc:
-                sys.stderr.write(f"[Planner] Invalid --plan JSON: {exc}\n")
+        progress = ui.ProgressDisplay(topic, show_banner=True)
+        progress.start_processing()
 
-        # Auto-resolve: use web search to discover subreddits/handles before planning.
-        # This is the engine-side equivalent of SKILL.md Steps 0.55/0.75 for platforms
-        # without WebSearch (OpenClaw, Codex, raw CLI).
-        repos_from_auto_resolve = False
-        if args.auto_resolve and not external_plan:
-            from lib import resolve
-            resolution = resolve.auto_resolve(topic, config)
-            if resolution.get("subreddits") and not subreddits:
-                subreddits = resolution["subreddits"]
-                sys.stderr.write(f"[AutoResolve] Subreddits: {', '.join(subreddits)}\n")
-            if resolution.get("x_handle") and not args.x_handle:
-                args.x_handle = resolution["x_handle"]
-                sys.stderr.write(f"[AutoResolve] X handle: @{args.x_handle}\n")
-            if resolution.get("github_user") and not args.github_user:
-                args.github_user = resolution["github_user"]
-                sys.stderr.write(f"[AutoResolve] GitHub user: @{args.github_user}\n")
-            if resolution.get("github_repos") and not args.github_repo:
-                args.github_repo = ",".join(resolution["github_repos"])
-                # auto_resolve already canonicalized via canonicalize_github_repos(cap=5);
-                # mark so we don't re-canonicalize below and clobber its relevance order.
-                repos_from_auto_resolve = True
-                sys.stderr.write(f"[AutoResolve] GitHub repos: {args.github_repo}\n")
-            if resolution.get("context"):
-                # Inject context into external_plan metadata for the planner to use
-                if not external_plan:
-                    external_plan = None  # planner will use its own, but with context
-                # Store context for the planner prompt injection
-                config["_auto_resolve_context"] = resolution["context"]
-                sys.stderr.write(f"[AutoResolve] Context: {resolution['context'][:80]}...\n")
+        depth = "deep" if args.deep else "quick" if args.quick else "default"
+        try:
+            x_related = [h.strip() for h in args.x_related.split(",") if h.strip()] if args.x_related else None
+            subreddits = [s.strip().removeprefix("r/") for s in args.subreddits.split(",") if s.strip()] if args.subreddits else None
+            tiktok_hashtags = [h.strip().lstrip("#") for h in args.tiktok_hashtags.split(",") if h.strip()] if args.tiktok_hashtags else None
+            tiktok_creators = [c.strip().lstrip("@") for c in args.tiktok_creators.split(",") if c.strip()] if args.tiktok_creators else None
+            ig_creators = [c.strip().lstrip("@") for c in args.ig_creators.split(",") if c.strip()] if args.ig_creators else None
+            # Parse external plan if provided via --plan flag
+            external_plan = None
+            if args.plan:
+                import json as _json
+                plan_str = args.plan
+                if os.path.isfile(plan_str):
+                    plan_str = open(plan_str).read()
+                try:
+                    external_plan = _json.loads(plan_str)
+                except _json.JSONDecodeError as exc:
+                    sys.stderr.write(f"[Planner] Invalid --plan JSON: {exc}\n")
 
-        github_user = args.github_user.lstrip("@").lower() if args.github_user else None
-        github_repos = [r.strip() for r in args.github_repo.split(",") if r.strip() and "/" in r.strip()] if args.github_repo else None
+            # Auto-resolve: use web search to discover subreddits/handles before planning.
+            # This is the engine-side equivalent of SKILL.md Steps 0.55/0.75 for platforms
+            # without WebSearch (OpenClaw, Codex, raw CLI).
+            repos_from_auto_resolve = False
+            if args.auto_resolve and not external_plan:
+                from lib import resolve
+                resolution = resolve.auto_resolve(topic, config)
+                if resolution.get("subreddits") and not subreddits:
+                    subreddits = resolution["subreddits"]
+                    sys.stderr.write(f"[AutoResolve] Subreddits: {', '.join(subreddits)}\n")
+                if resolution.get("x_handle") and not args.x_handle:
+                    args.x_handle = resolution["x_handle"]
+                    sys.stderr.write(f"[AutoResolve] X handle: @{args.x_handle}\n")
+                if resolution.get("github_user") and not args.github_user:
+                    args.github_user = resolution["github_user"]
+                    sys.stderr.write(f"[AutoResolve] GitHub user: @{args.github_user}\n")
+                if resolution.get("github_repos") and not args.github_repo:
+                    args.github_repo = ",".join(resolution["github_repos"])
+                    # auto_resolve already canonicalized via canonicalize_github_repos(cap=5);
+                    # mark so we don't re-canonicalize below and clobber its relevance order.
+                    repos_from_auto_resolve = True
+                    sys.stderr.write(f"[AutoResolve] GitHub repos: {args.github_repo}\n")
+                if resolution.get("context"):
+                    # Inject context into external_plan metadata for the planner to use
+                    if not external_plan:
+                        external_plan = None  # planner will use its own, but with context
+                    # Store context for the planner prompt injection
+                    config["_auto_resolve_context"] = resolution["context"]
+                    sys.stderr.write(f"[AutoResolve] Context: {resolution['context'][:80]}...\n")
 
-        # Only canonicalize when repos came from a user-supplied --github-repo flag.
-        # When repos_from_auto_resolve is True, auto_resolve already ran
-        # canonicalize_github_repos(cap=5) and ranked by relevance; re-running here
-        # with cap=None can re-sort by topic-slug match and lose that ordering.
-        if github_repos and not repos_from_auto_resolve:
-            from lib import resolve as resolve_lib
-            original_github_repos = github_repos[:]
-            github_repos = resolve_lib.canonicalize_github_repos(topic, github_repos, cap=None)
-            if github_repos != original_github_repos:
-                sys.stderr.write(
-                    "[GitHub] Canonicalized repos: "
-                    f"{','.join(original_github_repos)} -> {','.join(github_repos)}\n"
-                )
+            github_user = args.github_user.lstrip("@").lower() if args.github_user else None
+            github_repos = [r.strip() for r in args.github_repo.split(",") if r.strip() and "/" in r.strip()] if args.github_repo else None
 
-        # --deep-research: auto-enable perplexity source and set deep flag
-        if args.deep_research:
-            if not config.get("OPENROUTER_API_KEY"):
-                print("Error: --deep-research requires OPENROUTER_API_KEY", file=sys.stderr)
-                sys.exit(1)
-            config["_deep_research"] = True
-            # Auto-enable perplexity in INCLUDE_SOURCES
-            include = config.get("INCLUDE_SOURCES") or ""
-            if "perplexity" not in include.lower():
-                config["INCLUDE_SOURCES"] = f"{include},perplexity" if include else "perplexity"
-
-        comp_enabled, comp_count, comp_explicit = resolve_competitors_args(args)
-        comp_plan = parse_competitors_plan(args.competitors_plan)
-
-        # Polymarket disambiguation: if user passed --polymarket-keywords,
-        # store on config so the polymarket adapter can filter matches.
-        if args.polymarket_keywords:
-            keywords = [
-                k.strip().lower()
-                for k in args.polymarket_keywords.split(",")
-                if k.strip()
-            ]
-            if keywords:
-                config["_polymarket_keywords"] = keywords
-
-        # vs-mode: if the topic string contains " vs " / " versus " and the
-        # planner can split it into >=2 entities, route through the same
-        # N-pass fanout path as --competitors. The first entity becomes the
-        # main topic; remaining entities become the competitor list. User's
-        # outer --x-handle / --subreddits apply to the first entity unless
-        # --competitors-plan covers it.
-        from lib import planner as _planner
-        vs_entities = _planner._comparison_entities(topic)
-        if len(vs_entities) >= 2 and not comp_enabled:
-            topic = vs_entities[0]
-            comp_enabled = True
-            comp_count = len(vs_entities) - 1
-            comp_explicit = vs_entities[1:]
-            sys.stderr.write(
-                f"[Competitors] vs-mode: routing to N-pass fanout: "
-                f"{' vs '.join(vs_entities)}\n"
-            )
-
-        def _main_runner() -> schema.Report:
-            r = pipeline.run(
-                topic=topic,
-                config=config,
-                depth=depth,
-                requested_sources=requested_sources,
-                mock=args.mock,
-                x_handle=args.x_handle,
-                x_related=x_related,
-                web_backend=args.web_backend,
-                external_plan=external_plan,
-                subreddits=subreddits,
-                tiktok_hashtags=tiktok_hashtags,
-                tiktok_creators=tiktok_creators,
-                ig_creators=ig_creators,
-                lookback_days=args.lookback_days,
-                github_user=github_user,
-                github_repos=github_repos,
-            )
-            r.artifacts["resolved"] = {
-                "entity": topic,
-                "x_handle": (args.x_handle or "").lstrip("@"),
-                "subreddits": list(subreddits or []),
-                "github_user": (github_user or ""),
-                "github_repos": list(github_repos or []),
-                "context": config.get("_auto_resolve_context", "") or "",
-            }
-            return r
-
-        if comp_enabled:
-            from lib import competitors as competitors_mod
-            from lib import fanout, resolve as resolve_mod
-
-            if comp_explicit:
-                discovered = comp_explicit
-            else:
-                if not resolve_mod._has_backend(config) and not args.mock:
+            # Only canonicalize when repos came from a user-supplied --github-repo flag.
+            # When repos_from_auto_resolve is True, auto_resolve already ran
+            # canonicalize_github_repos(cap=5) and ranked by relevance; re-running here
+            # with cap=None can re-sort by topic-slug match and lose that ordering.
+            if github_repos and not repos_from_auto_resolve:
+                from lib import resolve as resolve_lib
+                original_github_repos = github_repos[:]
+                github_repos = resolve_lib.canonicalize_github_repos(topic, github_repos, cap=None)
+                if github_repos != original_github_repos:
                     sys.stderr.write(
-                        "[Competitors] Cannot auto-discover peers without help.\n"
-                        "\n"
-                        "RECOMMENDED PATH (hosting reasoning models — Claude Code, Codex, "
-                        "Hermes, Gemini, any agent with a WebSearch tool): YOU have "
-                        "WebSearch. Use it to run full Step 0.55 per entity, then invoke "
-                        "the engine with a vs-topic plus --competitors-plan:\n"
-                        "  1. WebSearch for '{topic} competitors' or '{topic} alternatives'.\n"
-                        "  2. For each peer, WebSearch for handles/subs/github (Step 0.55).\n"
-                        "  3. Re-invoke: /last30days '{topic} vs {peer1} vs {peer2}' "
-                        "--competitors-plan '{\"Peer1\":{\"x_handle\":\"h1\",\"subreddits\":"
-                        "[\"s1\"],...},\"Peer2\":{...}}'.\n"
-                        "See SKILL.md 'Competitor mode' for the full protocol.\n"
-                        "\n"
-                        "HEADLESS / CRON PATH (no hosting model available): set "
-                        "BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY / "
-                        "OPENROUTER_API_KEY and re-run.\n"
-                        "\n"
-                        "MINIMUM ESCAPE HATCH: pass --competitors-list 'A,B,C' to skip "
-                        "discovery. Without --competitors-plan, peer sub-runs fall back to "
-                        "planner defaults and produce visibly thinner data than the main.\n"
+                        "[GitHub] Canonicalized repos: "
+                        f"{','.join(original_github_repos)} -> {','.join(github_repos)}\n"
                     )
-                    return 2
-                discovered = competitors_mod.discover_competitors(
-                    topic, comp_count, config, lookback_days=args.lookback_days,
-                )
-                if not discovered:
-                    sys.stderr.write(
-                        f"[Competitors] No peers discovered for {topic!r}; aborting "
-                        "comparison run. Pass --competitors-list to override.\n"
-                    )
-                    return 2
 
-            sys.stderr.write(
-                f"[Competitors] Comparing: {topic} vs " + " vs ".join(discovered) + "\n"
-            )
+            # --deep-research: auto-enable perplexity source and set deep flag
+            if args.deep_research:
+                if not config.get("OPENROUTER_API_KEY"):
+                    print("Error: --deep-research requires OPENROUTER_API_KEY", file=sys.stderr)
+                    sys.exit(1)
+                config["_deep_research"] = True
+                # Auto-enable perplexity in INCLUDE_SOURCES
+                include = config.get("INCLUDE_SOURCES") or ""
+                if "perplexity" not in include.lower():
+                    config["INCLUDE_SOURCES"] = f"{include},perplexity" if include else "perplexity"
 
-            def _competitor_runner(entity: str) -> schema.Report:
-                # Deep-copy config so per-entity auto_resolve context does not
-                # leak across sub-runs. Each sub-run writes its own
-                # `_auto_resolve_context` into its local config copy.
-                entity_config = dict(config)
-                plan_entry = comp_plan.get(entity.strip().lower(), {})
-                resolved = {
-                    "entity": entity,
-                    "x_handle": "",
-                    "subreddits": [],
-                    "github_user": "",
-                    "github_repos": [],
-                    "context": "",
-                }
-                # Skip engine-internal auto_resolve when the hosting model
-                # pre-resolved via --competitors-plan (saves a redundant
-                # round-trip and makes per-entity Step 0.55 purely
-                # hosting-model-driven).
-                plan_covers_fully = bool(plan_entry.get("x_handle")) and bool(
-                    plan_entry.get("subreddits")
-                )
-                if (
-                    not args.mock
-                    and not plan_covers_fully
-                    and resolve_mod._has_backend(entity_config)
-                ):
-                    try:
-                        r = resolve_mod.auto_resolve(entity, entity_config)
-                    except Exception as exc:
-                        sys.stderr.write(
-                            f"[Competitors] auto_resolve failed for {entity!r}: "
-                            f"{type(exc).__name__}: {exc}\n"
-                        )
-                        r = {}
-                    resolved["x_handle"] = r.get("x_handle", "") or ""
-                    resolved["subreddits"] = list(r.get("subreddits") or [])
-                    resolved["github_user"] = r.get("github_user", "") or ""
-                    resolved["github_repos"] = list(r.get("github_repos") or [])
-                    resolved["context"] = r.get("context", "") or ""
-                kwargs = subrun_kwargs_for(entity, plan_entry, resolved=resolved)
-                # Record effective per-entity targeting for the Resolved block.
-                resolved_effective = {
-                    "entity": entity,
-                    "x_handle": kwargs["x_handle"] or "",
-                    "subreddits": kwargs["subreddits"] or [],
-                    "github_user": kwargs["github_user"] or "",
-                    "github_repos": kwargs["github_repos"] or [],
-                    "context": kwargs["_context"],
-                }
-                if kwargs["_context"]:
-                    entity_config["_auto_resolve_context"] = kwargs["_context"]
+            comp_enabled, comp_count, comp_explicit = resolve_competitors_args(args)
+            comp_plan = parse_competitors_plan(args.competitors_plan)
+
+            # Polymarket disambiguation: if user passed --polymarket-keywords,
+            # store on config so the polymarket adapter can filter matches.
+            if args.polymarket_keywords:
+                keywords = [
+                    k.strip().lower()
+                    for k in args.polymarket_keywords.split(",")
+                    if k.strip()
+                ]
+                if keywords:
+                    config["_polymarket_keywords"] = keywords
+
+            # vs-mode: if the topic string contains " vs " / " versus " and the
+            # planner can split it into >=2 entities, route through the same
+            # N-pass fanout path as --competitors. The first entity becomes the
+            # main topic; remaining entities become the competitor list. User's
+            # outer --x-handle / --subreddits apply to the first entity unless
+            # --competitors-plan covers it.
+            from lib import planner as _planner
+            vs_entities = _planner._comparison_entities(topic)
+            if len(vs_entities) >= 2 and not comp_enabled:
+                topic = vs_entities[0]
+                comp_enabled = True
+                comp_count = len(vs_entities) - 1
+                comp_explicit = vs_entities[1:]
                 sys.stderr.write(
-                    f"[Competitors] {entity}: "
-                    f"x=@{resolved_effective['x_handle'] or '-'} "
-                    f"subs={len(resolved_effective['subreddits'])} "
-                    f"gh={resolved_effective['github_user'] or '-'} "
-                    f"({'plan' if plan_entry else 'auto'})\n"
+                    f"[Competitors] vs-mode: routing to N-pass fanout: "
+                    f"{' vs '.join(vs_entities)}\n"
                 )
-                report = pipeline.run(
-                    topic=entity,
-                    config=entity_config,
+
+            def _main_runner() -> schema.Report:
+                r = pipeline.run(
+                    topic=topic,
+                    config=config,
                     depth=depth,
                     requested_sources=requested_sources,
                     mock=args.mock,
-                    x_handle=kwargs["x_handle"],
-                    x_related=kwargs["x_related"],
-                    subreddits=kwargs["subreddits"],
-                    github_user=kwargs["github_user"],
-                    github_repos=kwargs["github_repos"],
+                    x_handle=args.x_handle,
+                    x_related=x_related,
                     web_backend=args.web_backend,
+                    external_plan=external_plan,
+                    subreddits=subreddits,
+                    tiktok_hashtags=tiktok_hashtags,
+                    tiktok_creators=tiktok_creators,
+                    ig_creators=ig_creators,
                     lookback_days=args.lookback_days,
-                    internal_subrun=True,
+                    github_user=github_user,
+                    github_repos=github_repos,
                 )
-                report.artifacts["resolved"] = resolved_effective
-                return report
+                r.artifacts["resolved"] = {
+                    "entity": topic,
+                    "x_handle": (args.x_handle or "").lstrip("@"),
+                    "subreddits": list(subreddits or []),
+                    "github_user": (github_user or ""),
+                    "github_repos": list(github_repos or []),
+                    "context": config.get("_auto_resolve_context", "") or "",
+                }
+                return r
 
-            entity_reports = fanout.run_competitor_fanout(
-                main_topic=topic,
-                main_runner=_main_runner,
-                competitors=discovered,
-                competitor_runner=_competitor_runner,
-            )
-            if len(entity_reports) < 2:
-                progress.end_processing()
+            if comp_enabled:
+                from lib import competitors as competitors_mod
+                from lib import fanout, resolve as resolve_mod
+
+                if comp_explicit:
+                    discovered = comp_explicit
+                else:
+                    if not resolve_mod._has_backend(config) and not args.mock:
+                        sys.stderr.write(
+                            "[Competitors] Cannot auto-discover peers without help.\n"
+                            "\n"
+                            "RECOMMENDED PATH (hosting reasoning models — Claude Code, Codex, "
+                            "Hermes, Gemini, any agent with a WebSearch tool): YOU have "
+                            "WebSearch. Use it to run full Step 0.55 per entity, then invoke "
+                            "the engine with a vs-topic plus --competitors-plan:\n"
+                            "  1. WebSearch for '{topic} competitors' or '{topic} alternatives'.\n"
+                            "  2. For each peer, WebSearch for handles/subs/github (Step 0.55).\n"
+                            "  3. Re-invoke: /last30days '{topic} vs {peer1} vs {peer2}' "
+                            "--competitors-plan '{\"Peer1\":{\"x_handle\":\"h1\",\"subreddits\":"
+                            "[\"s1\"],...},\"Peer2\":{...}}'.\n"
+                            "See SKILL.md 'Competitor mode' for the full protocol.\n"
+                            "\n"
+                            "HEADLESS / CRON PATH (no hosting model available): set "
+                            "BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY / "
+                            "OPENROUTER_API_KEY and re-run.\n"
+                            "\n"
+                            "MINIMUM ESCAPE HATCH: pass --competitors-list 'A,B,C' to skip "
+                            "discovery. Without --competitors-plan, peer sub-runs fall back to "
+                            "planner defaults and produce visibly thinner data than the main.\n"
+                        )
+                        return 2
+                    discovered = competitors_mod.discover_competitors(
+                        topic, comp_count, config, lookback_days=args.lookback_days,
+                    )
+                    if not discovered:
+                        sys.stderr.write(
+                            f"[Competitors] No peers discovered for {topic!r}; aborting "
+                            "comparison run. Pass --competitors-list to override.\n"
+                        )
+                        return 2
+
                 sys.stderr.write(
-                    f"[Competitors] Fewer than 2 sub-runs survived ({len(entity_reports)}); "
-                    "cannot render a comparison. Re-run without --competitors or check the "
-                    "warnings above.\n"
+                    f"[Competitors] Comparing: {topic} vs " + " vs ".join(discovered) + "\n"
                 )
-                return 1
-            report = entity_reports[0][1]
-        else:
-            entity_reports = None
-            report = _main_runner()
-    except Exception as exc:
-        progress.end_processing()
-        progress.show_error(str(exc))
-        raise
-    _show_runtime_ui(
-        report, progress, diag,
-        suppress_web_promo=bool(external_plan or comp_plan),
-    )
-    _write_last_run(topic, report)
+
+                def _competitor_runner(entity: str) -> schema.Report:
+                    # Deep-copy config so per-entity auto_resolve context does not
+                    # leak across sub-runs. Each sub-run writes its own
+                    # `_auto_resolve_context` into its local config copy.
+                    entity_config = dict(config)
+                    plan_entry = comp_plan.get(entity.strip().lower(), {})
+                    resolved = {
+                        "entity": entity,
+                        "x_handle": "",
+                        "subreddits": [],
+                        "github_user": "",
+                        "github_repos": [],
+                        "context": "",
+                    }
+                    # Skip engine-internal auto_resolve when the hosting model
+                    # pre-resolved via --competitors-plan (saves a redundant
+                    # round-trip and makes per-entity Step 0.55 purely
+                    # hosting-model-driven).
+                    plan_covers_fully = bool(plan_entry.get("x_handle")) and bool(
+                        plan_entry.get("subreddits")
+                    )
+                    if (
+                        not args.mock
+                        and not plan_covers_fully
+                        and resolve_mod._has_backend(entity_config)
+                    ):
+                        try:
+                            r = resolve_mod.auto_resolve(entity, entity_config)
+                        except Exception as exc:
+                            sys.stderr.write(
+                                f"[Competitors] auto_resolve failed for {entity!r}: "
+                                f"{type(exc).__name__}: {exc}\n"
+                            )
+                            r = {}
+                        resolved["x_handle"] = r.get("x_handle", "") or ""
+                        resolved["subreddits"] = list(r.get("subreddits") or [])
+                        resolved["github_user"] = r.get("github_user", "") or ""
+                        resolved["github_repos"] = list(r.get("github_repos") or [])
+                        resolved["context"] = r.get("context", "") or ""
+                    kwargs = subrun_kwargs_for(entity, plan_entry, resolved=resolved)
+                    # Record effective per-entity targeting for the Resolved block.
+                    resolved_effective = {
+                        "entity": entity,
+                        "x_handle": kwargs["x_handle"] or "",
+                        "subreddits": kwargs["subreddits"] or [],
+                        "github_user": kwargs["github_user"] or "",
+                        "github_repos": kwargs["github_repos"] or [],
+                        "context": kwargs["_context"],
+                    }
+                    if kwargs["_context"]:
+                        entity_config["_auto_resolve_context"] = kwargs["_context"]
+                    sys.stderr.write(
+                        f"[Competitors] {entity}: "
+                        f"x=@{resolved_effective['x_handle'] or '-'} "
+                        f"subs={len(resolved_effective['subreddits'])} "
+                        f"gh={resolved_effective['github_user'] or '-'} "
+                        f"({'plan' if plan_entry else 'auto'})\n"
+                    )
+                    report = pipeline.run(
+                        topic=entity,
+                        config=entity_config,
+                        depth=depth,
+                        requested_sources=requested_sources,
+                        mock=args.mock,
+                        x_handle=kwargs["x_handle"],
+                        x_related=kwargs["x_related"],
+                        subreddits=kwargs["subreddits"],
+                        github_user=kwargs["github_user"],
+                        github_repos=kwargs["github_repos"],
+                        web_backend=args.web_backend,
+                        lookback_days=args.lookback_days,
+                        internal_subrun=True,
+                    )
+                    report.artifacts["resolved"] = resolved_effective
+                    return report
+
+                entity_reports = fanout.run_competitor_fanout(
+                    main_topic=topic,
+                    main_runner=_main_runner,
+                    competitors=discovered,
+                    competitor_runner=_competitor_runner,
+                )
+                if len(entity_reports) < 2:
+                    progress.end_processing()
+                    sys.stderr.write(
+                        f"[Competitors] Fewer than 2 sub-runs survived ({len(entity_reports)}); "
+                        "cannot render a comparison. Re-run without --competitors or check the "
+                        "warnings above.\n"
+                    )
+                    return 1
+                report = entity_reports[0][1]
+            else:
+                entity_reports = None
+                report = _main_runner()
+        except Exception as exc:
+            progress.end_processing()
+            progress.show_error(str(exc))
+            raise
+        _show_runtime_ui(
+            report, progress, diag,
+            suppress_web_promo=bool(external_plan or comp_plan),
+        )
+        _write_last_run(topic, report)
     # LAST30DAYS_STORE env var = persistence default-on. Read both os.environ
     # (for shell-exported users) and config (for users who set it in
     # ~/.config/last30days/.env, which env.py loads but does not propagate
