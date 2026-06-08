@@ -1,0 +1,67 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Export locked dependency set
+        run: |
+          uv export \
+            --locked \
+            --all-groups \
+            --no-hashes \
+            --format requirements.txt \
+            --output-file /tmp/last30days-requirements.txt
+
+      # Advisory-first: visibility before enforcement. This repo handles API keys,
+      # cookies, browser tokens, and local env files, so dependency CVEs should be
+      # visible in CI logs even before the project has a clean blocking baseline.
+      # Set continue-on-error: false once a clean baseline run is confirmed.
+      - name: Run pip-audit against locked dependencies
+        continue-on-error: true
+        run: uvx --python 3.12 pip-audit -r /tmp/last30days-requirements.txt --progress-spinner=off
+
+  secret-scan:
+    name: Secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout full history for diff-aware scanning
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Advisory-first: this reports verified secrets in pull requests and pushes to
+      # main, but does not block merges until maintainers confirm a clean baseline.
+      # The TruffleHog action automatically scans the PR range for pull_request
+      # events and the pushed commit range for push events.
+      # Set continue-on-error: false once a clean baseline run is confirmed.
+      # Contributor policy: never commit real secrets in fixtures, tests, docs, or
+      # examples; use obvious dummy values and env-based auth patterns instead.
+      - name: Run TruffleHog OSS secret scan
+        if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        uses: trufflesecurity/trufflehog@v3.95.2
+        continue-on-error: true
+        with:
+          path: ./
+          version: v3.95.2
+          extra_args: --only-verified

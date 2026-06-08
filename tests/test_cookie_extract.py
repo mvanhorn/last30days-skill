@@ -3,19 +3,17 @@
 import configparser
 import sqlite3
 import textwrap
-from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from unittest.mock import patch
 
 import pytest
 
-from scripts.lib.cookie_extract import (
+from lib.cookie_extract import (
     extract_cookies,
     extract_firefox_cookies,
     _find_default_profile,
     _get_firefox_profiles_dir,
 )
-
 
 @pytest.fixture
 def mock_firefox_env(tmp_path):
@@ -99,7 +97,7 @@ class TestExtractFirefoxCookies:
         profiles_dir = mock_firefox_env()
 
         with patch(
-            "scripts.lib.cookie_extract._get_firefox_profiles_dir",
+            "lib.cookie_extract._get_firefox_profiles_dir",
             return_value=profiles_dir,
         ):
             result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
@@ -139,7 +137,7 @@ class TestExtractFirefoxCookies:
         )
 
         with patch(
-            "scripts.lib.cookie_extract._get_firefox_profiles_dir",
+            "lib.cookie_extract._get_firefox_profiles_dir",
             return_value=profiles_dir,
         ):
             result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
@@ -151,10 +149,10 @@ class TestExtractFirefoxCookies:
     def test_firefox_not_installed(self):
         """Returns None when Firefox profiles directory doesn't exist."""
         with patch(
-            "scripts.lib.cookie_extract._get_firefox_profiles_dir",
+            "lib.cookie_extract._get_firefox_profiles_dir",
             return_value=None,
         ), patch(
-            "scripts.lib.cookie_extract._is_wsl",
+            "lib.cookie_extract._is_wsl",
             return_value=False,
         ):
             result = extract_firefox_cookies(".x.com", ["auth_token"])
@@ -168,10 +166,10 @@ class TestExtractFirefoxCookies:
         )
 
         with patch(
-            "scripts.lib.cookie_extract._get_firefox_profiles_dir",
+            "lib.cookie_extract._get_firefox_profiles_dir",
             return_value=profiles_dir,
         ), patch(
-            "scripts.lib.cookie_extract._is_wsl",
+            "lib.cookie_extract._is_wsl",
             return_value=False,
         ):
             result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
@@ -189,10 +187,10 @@ class TestExtractFirefoxCookies:
         )
 
         with patch(
-            "scripts.lib.cookie_extract._get_firefox_profiles_dir",
+            "lib.cookie_extract._get_firefox_profiles_dir",
             return_value=profiles_dir,
         ), patch(
-            "scripts.lib.cookie_extract._is_wsl",
+            "lib.cookie_extract._is_wsl",
             return_value=False,
         ):
             result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
@@ -211,7 +209,7 @@ class TestExtractFirefoxCookies:
         )
 
         with patch(
-            "scripts.lib.cookie_extract._get_firefox_profiles_dir",
+            "lib.cookie_extract._get_firefox_profiles_dir",
             return_value=profiles_dir,
         ):
             result = extract_firefox_cookies(".x.com", ["auth_token"])
@@ -228,17 +226,17 @@ class TestExtractCookiesAuto:
         profiles_dir = mock_firefox_env()
 
         with (
-            patch("scripts.lib.cookie_extract.platform.system", return_value="Darwin"),
+            patch("lib.cookie_extract.platform.system", return_value="Darwin"),
             patch(
-                "scripts.lib.cookie_extract.extract_chrome_cookies",
+                "lib.cookie_extract.extract_chrome_cookies",
                 return_value=None,
             ),
             patch(
-                "scripts.lib.cookie_extract.extract_safari_cookies",
+                "lib.cookie_extract.extract_safari_cookies",
                 return_value=None,
             ),
             patch(
-                "scripts.lib.cookie_extract._get_firefox_profiles_dir",
+                "lib.cookie_extract._get_firefox_profiles_dir",
                 return_value=profiles_dir,
             ),
         ):
@@ -254,9 +252,9 @@ class TestExtractCookiesAuto:
         profiles_dir = mock_firefox_env()
 
         with (
-            patch("scripts.lib.cookie_extract.platform.system", return_value="Linux"),
+            patch("lib.cookie_extract.platform.system", return_value="Linux"),
             patch(
-                "scripts.lib.cookie_extract._get_firefox_profiles_dir",
+                "lib.cookie_extract._get_firefox_profiles_dir",
                 return_value=profiles_dir,
             ),
         ):
@@ -270,7 +268,7 @@ class TestExtractCookiesAuto:
         profiles_dir = mock_firefox_env()
 
         with patch(
-            "scripts.lib.cookie_extract._get_firefox_profiles_dir",
+            "lib.cookie_extract._get_firefox_profiles_dir",
             return_value=profiles_dir,
         ):
             result = extract_cookies("firefox", ".x.com", ["auth_token"])
@@ -286,7 +284,7 @@ class TestExtractCookiesAuto:
     def test_chrome_delegates_to_chrome_module(self):
         """Chrome extraction delegates to chrome_cookies module."""
         with patch(
-            "scripts.lib.cookie_extract.extract_chrome_cookies",
+            "lib.cookie_extract.extract_chrome_cookies",
             return_value={"auth_token": "chrome_tok"},
         ):
             result = extract_cookies("chrome", ".x.com", ["auth_token"])
@@ -295,7 +293,7 @@ class TestExtractCookiesAuto:
     def test_safari_delegates_to_safari_module(self):
         """Safari extraction delegates to safari_cookies module."""
         with patch(
-            "scripts.lib.cookie_extract.extract_safari_cookies",
+            "lib.cookie_extract.extract_safari_cookies",
             return_value={"auth_token": "safari_tok"},
         ):
             result = extract_cookies("safari", ".x.com", ["auth_token"])

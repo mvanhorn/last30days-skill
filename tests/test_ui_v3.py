@@ -1,12 +1,7 @@
-# ruff: noqa: E402
 import io
-import sys
 import unittest
 from contextlib import redirect_stderr
-from pathlib import Path
 from unittest import mock
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from lib import ui
 
@@ -71,7 +66,6 @@ class UiV3Tests(unittest.TestCase):
         self.assertIn("Bluesky: 3 posts", output)
         self.assertIn("Truth Social: 1 post", output)
         self.assertIn("Xiaohongshu: 4 posts", output)
-
 
 if __name__ == "__main__":
     unittest.main()

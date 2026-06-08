@@ -1,10 +1,6 @@
-import sys
 import urllib.error
 import unittest
-from pathlib import Path
 from unittest.mock import patch, MagicMock
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from lib import http
 
@@ -104,3 +100,117 @@ class TestParamsEncoding(unittest.TestCase):
         sent_url = self._sent_url(mock_urlopen)
         self.assertIn("count=25", sent_url)
         self.assertIn("raw=True", sent_url)
+
+
+class TestDNSResolutionRetry(unittest.TestCase):
+    """DNS resolution failures (gaierror) must retry with exponential backoff.
+
+    Caller-passed `retries` values smaller than MIN_DNS_RETRIES are expanded
+    on the first gaierror so a transient resolution failure doesn't wipe a
+    request just because the caller passed retries=2.
+    """
+
+    @patch("lib.http.urllib.request.urlopen")
+    @patch("lib.http.time.sleep")
+    def test_gaierror_retries_up_to_min_dns_retries_even_when_caller_passes_fewer(
+        self, mock_sleep, mock_urlopen
+    ):
+        """Caller passed retries=2; gaierror should still get MIN_DNS_RETRIES attempts."""
+        import socket
+        err = urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+        mock_urlopen.side_effect = err
+
+        with self.assertRaises(http.HTTPError):
+            http.request("GET", "http://nonexistent.example", retries=2)
+
+        # Caller passed retries=2, but the budget expanded to MIN_DNS_RETRIES=3.
+        self.assertEqual(mock_urlopen.call_count, http.MIN_DNS_RETRIES)
+
+    @patch("lib.http.urllib.request.urlopen")
+    @patch("lib.http.time.sleep")
+    def test_gaierror_succeeds_after_transient_failure(self, mock_sleep, mock_urlopen):
+        """gaierror on attempt 1, then success — should NOT raise."""
+        import socket
+        success_response = MagicMock()
+        success_response.read.return_value = b'{"ok": true}'
+        success_response.status = 200
+        success_response.__enter__ = lambda self: self
+        success_response.__exit__ = lambda *args: None
+
+        err = urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+        mock_urlopen.side_effect = [err, success_response]
+
+        result = http.request("GET", "http://flaky.example", retries=2)
+
+        self.assertEqual(result, {"ok": True})
+        self.assertEqual(mock_urlopen.call_count, 2)
+
+    @patch("lib.http.urllib.request.urlopen")
+    @patch("lib.http.time.sleep")
+    def test_gaierror_uses_exponential_backoff(self, mock_sleep, mock_urlopen):
+        """Backoff delays for gaierror should be 1s, 2s, 4s — not the linear default."""
+        import socket
+        err = urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+        mock_urlopen.side_effect = err
+
+        with self.assertRaises(http.HTTPError):
+            http.request("GET", "http://nonexistent.example", retries=3)
+
+        # Expected sleep calls: 1s (after attempt 1), 2s (after attempt 2).
+        # No sleep after the final attempt (the loop exits to raise).
+        sleep_delays = [call.args[0] for call in mock_sleep.call_args_list]
+        self.assertEqual(sleep_delays, [1, 2])
+
+    @patch("lib.http.urllib.request.urlopen")
+    @patch("lib.http.time.sleep")
+    def test_non_dns_urlerror_uses_linear_backoff_not_dns_branch(
+        self, mock_sleep, mock_urlopen
+    ):
+        """A URLError that's NOT a gaierror must NOT expand the retry budget."""
+        # ConnectionRefusedError-style URLError reason (not gaierror)
+        err = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        mock_urlopen.side_effect = err
+
+        with self.assertRaises(http.HTTPError):
+            http.request("GET", "http://refused.example", retries=2)
+
+        # Caller passed retries=2, and non-DNS URLError doesn't expand it.
+        self.assertEqual(mock_urlopen.call_count, 2)
+
+    @patch("lib.http.urllib.request.urlopen")
+    @patch("lib.http.time.sleep")
+    def test_dns_widening_does_not_leak_into_subsequent_non_dns_urlerror(
+        self, mock_sleep, mock_urlopen
+    ):
+        """Mixed sequence: DNS-then-non-DNS must respect caller's original retries.
+
+        Without the fix, the first gaierror widens effective_retries from 2 to
+        MIN_DNS_RETRIES=3, and a subsequent ConnectionRefused on attempt 1
+        slips into a third overall attempt — exceeding what the caller asked
+        for. Each non-DNS error path must gate on the original `retries`.
+        """
+        import socket
+        dns_err = urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+        conn_err = urllib.error.URLError(ConnectionRefusedError(111, "Connection refused"))
+        mock_urlopen.side_effect = [dns_err, conn_err, conn_err]  # 3rd would only fire if budget leaked
+
+        with self.assertRaises(http.HTTPError):
+            http.request("GET", "http://flaky.example", retries=2)
+
+        # Caller asked for at most 2 attempts. DNS widening must not give us a 3rd.
+        self.assertEqual(mock_urlopen.call_count, 2)
+
+    @patch("lib.http.urllib.request.urlopen")
+    @patch("lib.http.time.sleep")
+    def test_dns_widening_does_not_leak_into_subsequent_oserror(
+        self, mock_sleep, mock_urlopen
+    ):
+        """Mixed sequence: DNS-then-OSError must respect caller's original retries."""
+        import socket
+        dns_err = urllib.error.URLError(socket.gaierror(-2, "Name or service not known"))
+        mock_urlopen.side_effect = [dns_err, TimeoutError("timed out"), TimeoutError("timed out")]
+
+        with self.assertRaises(http.HTTPError):
+            http.request("GET", "http://flaky.example", retries=2)
+
+        self.assertEqual(mock_urlopen.call_count, 2)

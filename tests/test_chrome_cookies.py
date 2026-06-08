@@ -1,7 +1,6 @@
 """Tests for Chrome cookie extraction on macOS."""
 
 import hashlib
-import os
 import sqlite3
 import subprocess
 import tempfile
@@ -10,7 +9,7 @@ from unittest import mock
 
 import pytest
 
-from scripts.lib.chrome_cookies import (
+from lib.chrome_cookies import (
     CHROME_COOKIES_DB,
     CHROME_IV_HEX,
     CHROME_KEY_LENGTH,
@@ -23,7 +22,6 @@ from scripts.lib.chrome_cookies import (
     _decrypt_v10_value,
     extract_chrome_cookies_macos,
 )
-
 
 # ---------------------------------------------------------------------------
 # Helpers — create real encrypted cookie values using known key + system openssl
@@ -109,10 +107,10 @@ def _create_chrome_cookies_db(path: str, cookies: list[tuple], db_version: int =
     conn.commit()
     conn.close()
 
-
 # ---------------------------------------------------------------------------
 # PKCS7 padding tests
 # ---------------------------------------------------------------------------
+
 
 class TestPkcs7Padding:
     def test_valid_padding_1(self):
@@ -140,10 +138,10 @@ class TestPkcs7Padding:
     def test_empty_data(self):
         assert _remove_pkcs7_padding(b"") is None
 
-
 # ---------------------------------------------------------------------------
 # Key derivation test
 # ---------------------------------------------------------------------------
+
 
 class TestKeyDerivation:
     def test_derive_aes_key_deterministic(self):
@@ -157,10 +155,10 @@ class TestKeyDerivation:
         key2 = _derive_aes_key(b"passphrase_b")
         assert key1 != key2
 
-
 # ---------------------------------------------------------------------------
 # Decryption test (real openssl, known key)
 # ---------------------------------------------------------------------------
+
 
 class TestDecryption:
     def test_decrypt_v10_roundtrip(self):
@@ -194,28 +192,28 @@ class TestDecryption:
         """v10 prefix with no ciphertext should return None."""
         assert _decrypt_v10_value(b"v10", KNOWN_AES_KEY, db_version=20) is None
 
-
 # ---------------------------------------------------------------------------
 # Chrome not installed → returns None
 # ---------------------------------------------------------------------------
 
+
 class TestChromeNotInstalled:
     def test_db_not_found(self):
         with mock.patch(
-            "scripts.lib.chrome_cookies.CHROME_COOKIES_DB",
+            "lib.chrome_cookies.CHROME_COOKIES_DB",
             Path("/nonexistent/path/Cookies"),
         ):
             result = extract_chrome_cookies_macos(".x.com", ["auth_token"])
             assert result is None
 
-
 # ---------------------------------------------------------------------------
 # Keychain access denied → returns None
 # ---------------------------------------------------------------------------
 
+
 class TestKeychainDenied:
     def test_security_command_fails(self):
-        with mock.patch("scripts.lib.chrome_cookies.subprocess.run") as mock_run:
+        with mock.patch("lib.chrome_cookies.subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=44, stdout="", stderr="security: SecKeychainSearchCopyNext: The specified item could not be found in the keychain."
             )
@@ -223,26 +221,26 @@ class TestKeychainDenied:
             assert result is None
 
     def test_security_command_not_found(self):
-        with mock.patch("scripts.lib.chrome_cookies.subprocess.run", side_effect=FileNotFoundError):
+        with mock.patch("lib.chrome_cookies.subprocess.run", side_effect=FileNotFoundError):
             result = _get_chrome_encryption_key()
             assert result is None
-
 
 # ---------------------------------------------------------------------------
 # openssl not found → returns None
 # ---------------------------------------------------------------------------
 
+
 class TestOpensslNotFound:
     def test_openssl_missing(self):
         encrypted = _encrypt_value_v10("test", KNOWN_AES_KEY)
-        with mock.patch("scripts.lib.chrome_cookies.subprocess.run", side_effect=FileNotFoundError):
+        with mock.patch("lib.chrome_cookies.subprocess.run", side_effect=FileNotFoundError):
             result = _decrypt_v10_value(encrypted, KNOWN_AES_KEY, db_version=20)
             assert result is None
-
 
 # ---------------------------------------------------------------------------
 # Unencrypted cookie values → returned as-is
 # ---------------------------------------------------------------------------
+
 
 class TestUnencryptedCookies:
     def test_plain_value_returned(self, tmp_path):
@@ -253,17 +251,17 @@ class TestUnencryptedCookies:
             (".x.com", "ct0", "plain_ct0_value", b""),
         ])
 
-        with mock.patch("scripts.lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
+        with mock.patch("lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
             # No keychain needed for unencrypted values
-            with mock.patch("scripts.lib.chrome_cookies._get_chrome_encryption_key", return_value=None):
+            with mock.patch("lib.chrome_cookies._get_chrome_encryption_key", return_value=None):
                 result = extract_chrome_cookies_macos(".x.com", ["auth_token", "ct0"])
 
         assert result == {"auth_token": "plain_token_value", "ct0": "plain_ct0_value"}
 
-
 # ---------------------------------------------------------------------------
 # Full integration: mock DB with real v10 encryption, mock Keychain
 # ---------------------------------------------------------------------------
+
 
 class TestFullExtraction:
     def test_encrypted_cookies_extracted(self, tmp_path):
@@ -281,9 +279,9 @@ class TestFullExtraction:
             (".other.com", "other", "", b""),  # unrelated cookie
         ])
 
-        with mock.patch("scripts.lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
+        with mock.patch("lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
             with mock.patch(
-                "scripts.lib.chrome_cookies._get_chrome_encryption_key",
+                "lib.chrome_cookies._get_chromium_encryption_key",
                 return_value=KNOWN_PASSPHRASE,
             ):
                 result = extract_chrome_cookies_macos(".x.com", ["auth_token", "ct0"])
@@ -298,8 +296,8 @@ class TestFullExtraction:
             (".other.com", "session", "val", b""),
         ])
 
-        with mock.patch("scripts.lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
-            with mock.patch("scripts.lib.chrome_cookies._get_chrome_encryption_key", return_value=None):
+        with mock.patch("lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
+            with mock.patch("lib.chrome_cookies._get_chrome_encryption_key", return_value=None):
                 result = extract_chrome_cookies_macos(".x.com", ["auth_token"])
 
         assert result is None
@@ -314,9 +312,9 @@ class TestFullExtraction:
             (".x.com", "auth_token", "", encrypted_auth),
         ], db_version=24)
 
-        with mock.patch("scripts.lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
+        with mock.patch("lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
             with mock.patch(
-                "scripts.lib.chrome_cookies._get_chrome_encryption_key",
+                "lib.chrome_cookies._get_chromium_encryption_key",
                 return_value=KNOWN_PASSPHRASE,
             ):
                 result = extract_chrome_cookies_macos(".x.com", ["auth_token"])
@@ -324,10 +322,10 @@ class TestFullExtraction:
         assert result is not None
         assert result["auth_token"] == auth_val
 
-
 # ---------------------------------------------------------------------------
 # DB version detection
 # ---------------------------------------------------------------------------
+
 
 class TestDbVersion:
     def test_reads_version_from_meta(self, tmp_path):

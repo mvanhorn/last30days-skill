@@ -19,7 +19,7 @@ jobs:
 
       - name: Build .skill artifact
         run: |
-          bash scripts/build-skill.sh
+          bash skills/last30days/scripts/build-skill.sh
           test -f dist/last30days.skill
 
       - name: Create GitHub release

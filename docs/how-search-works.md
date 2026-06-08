@@ -142,7 +142,7 @@ The repo vendors a search-only subset of Bird's Twitter GraphQL client and shell
 | Likes/reposts | Real (X API) | Real (x_search tool) |
 | Replies/quotes | Real | Real |
 | Author handle | Real | Real |
-| Relevance score | Default 0.7 (re-ranked by score.py) | AI-assessed 0.0-1.0 |
+| Relevance score | Default 0.7 (re-ranked by relevance.py) | AI-assessed 0.0-1.0 |
 
 ### Depth settings
 
@@ -183,13 +183,14 @@ After both searches complete:
 
 | File | Purpose |
 |---|---|
-| `scripts/last30days.py` | Main orchestrator, concurrent execution |
-| `scripts/lib/openai_reddit.py` | Reddit search via OpenAI Responses API |
-| `scripts/lib/reddit_enrich.py` | Fetch real engagement data from Reddit JSON API |
-| `scripts/lib/xai_x.py` | X search via xAI API |
-| `scripts/lib/bird_x.py` | X search via bundled Bird client (free) |
-| `scripts/lib/models.py` | Auto-select best available model |
-| `scripts/lib/env.py` | API key loading, source detection |
-| `scripts/lib/http.py` | HTTP transport with retries |
-| `scripts/lib/score.py` | Relevance scoring |
-| `scripts/lib/dedupe.py` | URL-based deduplication |
+| `skills/last30days/scripts/last30days.py` | Main CLI entry point |
+| `skills/last30days/scripts/lib/pipeline.py` | Multi-source retrieval orchestration |
+| `skills/last30days/scripts/lib/reddit_public.py` | Reddit public JSON search |
+| `skills/last30days/scripts/lib/reddit_enrich.py` | Fetch real engagement data from Reddit JSON API |
+| `skills/last30days/scripts/lib/xai_x.py` | X search via xAI API |
+| `skills/last30days/scripts/lib/bird_x.py` | X search via bundled Bird client (free) |
+| `skills/last30days/scripts/lib/providers.py` | Reasoning provider and model selection |
+| `skills/last30days/scripts/lib/env.py` | API key loading, source detection |
+| `skills/last30days/scripts/lib/http.py` | HTTP transport with retries |
+| `skills/last30days/scripts/lib/relevance.py` | Query matching and relevance scoring |
+| `skills/last30days/scripts/lib/dedupe.py` | URL-based deduplication |

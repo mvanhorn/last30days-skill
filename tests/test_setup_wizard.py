@@ -1,16 +1,10 @@
 """Tests for the first-run setup wizard module."""
 
-import os
-import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 import pytest
-
-# Add scripts dir to path
-SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
 
 from lib import setup_wizard
 

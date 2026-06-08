@@ -1,4 +1,4 @@
-from scripts.lib import env
+from lib import env
 
 
 def test_include_sources_defaults_to_empty_string(monkeypatch, tmp_path):

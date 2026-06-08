@@ -1,12 +1,9 @@
 import json
 import os
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 import evaluate_search_quality as evaluator
 
@@ -125,7 +122,7 @@ class EvaluatorV3Tests(unittest.TestCase):
                 topic="test topic",
                 query_type="general",
                 items=[{"key": "a"}],
-                judge_model="gemini-3.1-flash-lite-preview",
+                judge_model="gemini-3.1-flash-lite",
                 gemini_api_key="key",
             )
             self.assertEqual({"a": 3}, cached)
@@ -136,7 +133,7 @@ class EvaluatorV3Tests(unittest.TestCase):
                 topic="test topic",
                 query_type="general",
                 items=[],
-                judge_model="gemini-3.1-flash-lite-preview",
+                judge_model="gemini-3.1-flash-lite",
                 gemini_api_key=None,
             )
             self.assertEqual({}, skipped)
@@ -201,7 +198,6 @@ class EvaluatorV3Tests(unittest.TestCase):
             metrics = json.loads((tmp_path / "metrics.json").read_text())
             self.assertIn("| topic a | 0.10 | 0.30 |", summary)
             self.assertEqual("HEAD~1", metrics["baseline"])
-
 
 if __name__ == "__main__":
     unittest.main()

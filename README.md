@@ -14,21 +14,19 @@
 
 This README tracks the current v3 pipeline. The runtime skill spec lives in [skills/last30days/SKILL.md](skills/last30days/SKILL.md), which is the source of truth for the latest command and setup behavior.
 
-Claude Code:
+**Claude Code (recommended — auto-updates via marketplace):**
 ```
 /plugin marketplace add mvanhorn/last30days-skill
+/plugin install last30days
 ```
 
-OpenClaw:
+**Codex, Cursor, Copilot, Gemini CLI, or any of 50+ [Agent Skills](https://agentskills.io) hosts:**
 ```
-clawhub install last30days-official
+npx skills add mvanhorn/last30days-skill -g
 ```
+(`-g` installs globally for your user, available across all projects. Drop it to scope per-project.)
 
-Hermes:
-```
-# The skill auto-deploys when you run sync.sh
-# Or manually copy to ~/.hermes/skills/research/last30days/
-```
+More install options (claude.ai web, OpenClaw, manual) in the [Install](#install) section below.
 
 Zero config. Reddit, HN, Polymarket, and GitHub work immediately. Run it once and the setup wizard unlocks X, YouTube, TikTok, and more in 30 seconds.
 
@@ -68,6 +66,7 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 | **Hacker News** | The developer consensus. 825 points, 899 comments. Where technical people actually argue. |
 | **Polymarket** | Not opinions. Odds. Backed by real money. 96% confidence on album sales. 4% on an acquisition. |
 | **GitHub** | For people: PR velocity, top repos by stars, release notes. For topics: issues and discussions. |
+| **Digg** | Curated story clusters from Digg's AI 1000 leaderboard (~1000 high-signal AI accounts on X), with attributable inline quotes (no X auth required). Auto-enabled when `digg-pp-cli` is on PATH. |
 | **Threads** | The post-Twitter text layer. Conversations from creators and brands. |
 | **Pinterest** | Visual discovery. Pins, saves, and comments on products and ideas. |
 | **Bluesky** | The decentralized social layer. AT Protocol posts from the post-Twitter migration. |
@@ -96,15 +95,27 @@ The synthesis ranks by what real people actually engaged with. Social relevancy,
 
 ## What v3 Changed
 
-### Budgeted context for synthesis handoff
+### Shareable HTML briefs
 
-`--emit=context` now compiles context with `contextweaver` before handing it to an LLM. This enforces an answer-phase token budget and appends a short `Context build stats` line showing candidates, includes, drops, and prompt token count.
+Ask for an HTML brief and the skill saves a self-contained, dark-mode, print-friendly file you can drop into Slack, email, or Notion. No raw markdown leaks. Inline CSS, system-font fallbacks behind Inter and JetBrains Mono. No JavaScript. Works offline.
 
-Tune the budget with either env var:
-- `LAST30DAYS_CONTEXT_BUDGET_ANSWER`
-- `LAST30DAYS_CONTEXT_BUDGET`
+```
+/last30days OpenClaw --emit=html
+```
 
-Default is `6000` tokens.
+or just ask in plain language:
+
+```
+/last30days OpenClaw, give me a shareable HTML brief
+/last30days Cursor IDE for slack
+/last30days Anthropic earnings export as html
+```
+
+The skill emits the synthesis in chat as usual AND saves a brief to `${LAST30DAYS_MEMORY_DIR}/{topic}-brief.html` (defaults to `~/Documents/Last30Days/`). The chat response ends with the file path so you can `open` it or drag it into a message.
+
+What's in the file: badge, inline metadata line, the model's synthesis verbatim with all citations, the engine footer (✅ All agents reported back! tree), and a colophon noting the topic + how to re-run. Data quality warnings (degraded run, thin evidence, etc.) stay in the engine's stderr logs; they never leak into the shareable artifact.
+
+For direct CLI use without the model in the loop, the engine also accepts `--synthesis-file PATH` to convert any markdown synthesis to HTML.
 
 ### Intelligent search: the killer feature
 
@@ -124,6 +135,10 @@ When the same story appears on Reddit, X, and YouTube, v3 merges them into one c
 
 "CLI vs MCP" used to run three serial passes (12+ minutes). v3 runs one pass with entity-aware subqueries for both sides simultaneously. Same depth, 3 minutes.
 
+### Auto-discovered competitor comparisons
+
+`/last30days OpenAI --competitors` tells the hosting reasoning model to discover the top 2 peers via WebSearch (Anthropic, xAI), run Step 0.55 per entity, and invoke the engine with `"OpenAI vs Anthropic vs xAI"` and a per-entity `--competitors-plan` JSON. The engine fans out 3 full pipelines in parallel, saves a `*-raw.md` file per entity, and merges them into a 3-way comparison. Same mechanics power `/last30days "OpenAI vs Anthropic vs xAI"` directly.
+
 ### GitHub person-mode
 
 When the topic is a person, the engine switches from keyword search to author-scoped queries. Instead of "who mentioned this name in an issue body," it answers: what are they shipping and where is it landing?
@@ -138,8 +153,10 @@ Say "eli5 on" after any research run. The synthesis rewrites in plain language. 
 
 - **Free Reddit comments.** Public JSON gives you threads + top comments with upvote counts. No API key, no ScrapeCreators. Just works.
 - **YouTube transcripts that actually work.** Widened candidate pool 3x past music videos to reach talk/review content with captions.
-- **Threads, Pinterest, YouTube comments.** Opt-in sources via ScrapeCreators. Set `INCLUDE_SOURCES=tiktok,instagram` and add threads, pinterest, youtube_comments for more.
-- **Perplexity Sonar.** Grounded web search with citations via OpenRouter. Add `OPENROUTER_API_KEY` to unlock.
+- **TikTok, Instagram, Threads.** All three activate automatically once `SCRAPECREATORS_API_KEY` is set — same key, same per-call cost. Suppress any of them with `EXCLUDE_SOURCES=tiktok,instagram,threads` (any comma-separated subset).
+- **Pinterest.** Per-query opt-in (visual pins, narrow utility): the model passes `--search=pinterest` for the runs that need it. Requires `SCRAPECREATORS_API_KEY`.
+- **YouTube + TikTok comments.** Persistent opt-in via `INCLUDE_SOURCES=youtube_comments,tiktok_comments` because each video pulls N extra ScrapeCreators calls on top of the base search. Surface top comments with vote counts the same way Reddit does.
+- **Perplexity Sonar.** Grounded web search with citations via OpenRouter. Add `OPENROUTER_API_KEY` and `INCLUDE_SOURCES=perplexity` (it's a separate paid API — opt-in keeps you from being surprise-billed).
 - **Polymarket noise filtering.** Common-word disambiguation prevents "Apple" from matching "Will Apple release a car?"
 - **Resilient Reddit.** Timeout budgets and runtime fallback. One slow thread doesn't kill the whole run.
 - **Fun judge v2.** Humor scoring baked into the narrative. Reddit's cleverest one-liners mixed into the synthesis where they fit, not dumped in a separate section.
@@ -151,12 +168,61 @@ Say "eli5 on" after any research run. The synthesis rewrites in plain language. 
 
 ## Install
 
-| Surface | Install |
-|---------|---------|
-| **claude.ai** (web) | [Download `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) and upload via Settings > Capabilities > Skills > + |
-| **Claude Code** | `/plugin marketplace add mvanhorn/last30days-skill` |
-| **OpenClaw** | `clawhub install last30days-official` |
-| **Gemini CLI** | Clone then `gemini extensions install ./last30days-skill` (see below) |
+| Surface | Install | Updates |
+|---------|---------|---------|
+| **Claude Code** (recommended) | `/plugin marketplace add mvanhorn/last30days-skill` | Auto via marketplace, or `claude plugin update last30days@last30days-skill` |
+| **Codex, Cursor, Copilot, Gemini CLI, GitHub Copilot, or any of 50+ [Agent Skills](https://agentskills.io) hosts** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
+| **claude.ai** (web) | [Download `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) and upload via Settings > Capabilities > Skills > + | Re-download and re-upload |
+| **OpenClaw** | `clawhub install last30days-official` | `clawhub update last30days-official` |
+
+### Claude Code (recommended)
+
+```
+/plugin marketplace add mvanhorn/last30days-skill
+```
+
+Recommended because the Claude Code marketplace handles updates for you — the plugin cache is versioned and auto-refreshes when a new release publishes. Run `claude plugin update last30days@last30days-skill` to force a check.
+
+If you'd rather use the agent-skills install path on Claude Code, that's also supported:
+
+```
+npx skills add mvanhorn/last30days-skill -g -a claude-code
+```
+
+The native plugin and the `npx skills` install can coexist. Note that Claude Code does not dedupe across install methods: if you have both the marketplace plugin and the `npx skills` copy active, `/last30days` will show two entries. Use one install method per machine.
+
+### Codex, Cursor, Copilot, Gemini CLI, and other Agent Skills hosts
+
+Install via the open [Agent Skills](https://agentskills.io) CLI — supports 50+ harnesses including `codex`, `cursor`, `github-copilot`, `gemini-cli`, `claude-code`, `windsurf`, `cline`, `continue`, `roo`, `aider-desk`, `opencode`, `goose`, and more (full list on the [vercel-labs/skills repo](https://github.com/vercel-labs/skills)).
+
+```bash
+npx skills add mvanhorn/last30days-skill -g
+```
+
+The `-g` (global) flag installs to your user directory so the skill is available across all projects. Without `-g`, `npx skills` installs project-locally into `./.skills/` (committed with the repo). For a research-the-world tool, global is what you want.
+
+By default this installs for whichever harness `npx skills` detects. To target a specific one (or multiple):
+
+```bash
+npx skills add mvanhorn/last30days-skill -g -a codex
+npx skills add mvanhorn/last30days-skill -g -a cursor
+npx skills add mvanhorn/last30days-skill -g -a gemini-cli
+npx skills add mvanhorn/last30days-skill -g -a codex -a cursor
+```
+
+Update later with:
+
+```bash
+npx skills update last30days -g
+```
+
+Or update everything you've installed globally via `npx skills`:
+
+```bash
+npx skills update -g
+```
+
+List and remove with `npx skills list -g` and `npx skills remove last30days -g`.
 
 ### claude.ai (web)
 
@@ -164,15 +230,7 @@ Say "eli5 on" after any research run. The synthesis rewrites in plain language. 
 2. Go to [claude.ai Settings > Capabilities > Skills](https://claude.ai/settings/capabilities)
 3. Click the `+` button in the Skills panel and drop the file in
 
-Enable "Code execution and file creation" under Capabilities first - skills won't run without it.
-
-### Claude Code
-
-```
-/plugin marketplace add mvanhorn/last30days-skill
-```
-
-Update later with `claude plugin update last30days@last30days-skill`.
+Enable "Code execution and file creation" under Capabilities first — skills won't run without it.
 
 ### OpenClaw
 
@@ -180,22 +238,14 @@ Update later with `claude plugin update last30days@last30days-skill`.
 clawhub install last30days-official
 ```
 
-### Gemini CLI
-
-Gemini CLI v0.9.0 has an upstream installer bug that can fail with `Configuration file not found at /tmp/gemini-extensionXXXXXX/gemini-extension.json` ([upstream issue](https://github.com/google-gemini/gemini-cli/issues/11452)). Workaround:
-
-```bash
-git clone https://github.com/mvanhorn/last30days-skill
-gemini extensions install ./last30days-skill
-```
-
 ### Manual (developer)
 
 ```bash
-git clone https://github.com/mvanhorn/last30days-skill.git ~/.claude/skills/last30days
+git clone https://github.com/mvanhorn/last30days-skill.git
+ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.claude/skills/last30days
 ```
 
-Or build the claude.ai `.skill` file from source: `bash scripts/build-skill.sh` produces `dist/last30days.skill`.
+The symlink keeps the install in sync with your working tree as you edit — no re-copy needed. For `claude.ai`, build the `.skill` file from source: `bash skills/last30days/scripts/build-skill.sh` produces `dist/last30days.skill`.
 
 Reddit (with comments), Hacker News, Polymarket, and GitHub work immediately. Zero configuration. Run `/last30days` once and the setup wizard unlocks more sources in 30 seconds.
 
@@ -209,9 +259,39 @@ These platforms don't have relationships with each other. X doesn't know what Re
 | X / Twitter | Log into x.com in any browser | Free |
 | YouTube | `brew install yt-dlp` | Free |
 | Bluesky | App password from bsky.app | Free |
-| TikTok + Instagram + Threads + Pinterest + YouTube comments | ScrapeCreators key | 10,000 free calls |
+| TikTok + Instagram + Threads + Pinterest + YouTube comments | ScrapeCreators key | 100 free credits, then PAYG |
 | Perplexity Sonar | OpenRouter key | Pay as you go |
 | Web search | Brave Search key | 2,000 free queries/month |
+
+### macOS Keychain (optional)
+
+On macOS you can store keys in the system Keychain instead of a `.env` file. The skill picks them up automatically as the lowest-priority source — `.env` files and process environment still win on collision.
+
+```bash
+# Interactive setup — prompts for each known key, skip with empty input
+skills/last30days/scripts/setup-keychain.sh
+
+# Or store a single key by hand
+security add-generic-password -a "$USER" -s last30days-XAI_API_KEY -w "xai-..."
+
+# Inspect / clean up
+skills/last30days/scripts/setup-keychain.sh --list
+skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
+```
+
+Items are stored under service name `last30days-<KEY>` for the current user. On non-Darwin platforms the loader is a no-op, so there is no behaviour change for Linux/Windows users.
+
+See [CONFIGURATION.md](CONFIGURATION.md) for the full per-source key matrix, reasoning provider priority, and web-search backend priority.
+
+## Configuration
+
+Two things you'll likely want to know on day one:
+
+**Where research files are saved.** `LAST30DAYS_MEMORY_DIR` defaults to `~/Documents/Last30Days/` (Windows: `C:\Users\<you>\Documents\Last30Days\`). Override by setting that env var to any path in your shell, or `--save-dir <path>` per run. Use `--save-suffix=<name>` to keep multiple variations of the same topic separate (e.g. per client). Each run produces `<slug>-raw[-suffix].md`.
+
+**Trend monitoring across runs.** The default mode produces a fresh markdown snapshot per run. To accumulate findings over time, add `--store` to persist into a SQLite database, then use [`scripts/watchlist.py`](skills/last30days/scripts/watchlist.py) for scheduled runs (with optional Slack / webhook delivery on new findings) and [`scripts/briefing.py`](skills/last30days/scripts/briefing.py) for daily / weekly digests. The full cadence pattern is in [CONFIGURATION.md](CONFIGURATION.md#trend-monitoring-store--watchlist--briefings).
+
+Per-client wrapper scripts, custom category-peer subreddits, and the experimental beta channel for in-progress customizations are also documented in [CONFIGURATION.md](CONFIGURATION.md).
 
 ## How it works
 

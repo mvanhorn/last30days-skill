@@ -1,19 +1,15 @@
 """Tests for hackernews.py - HN search via Algolia API."""
 
 import json
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
-
 from lib import hackernews
 
-
 # === Helper Functions ===
+
 
 def create_mock_hit(
     object_id="12345",
@@ -40,8 +36,8 @@ def create_mock_hit(
         "url": url,
     }
 
-
 # === Tests for _date_to_unix() ===
+
 
 def test_date_to_unix_basic():
     """Test converting YYYY-MM-DD to Unix timestamp."""
@@ -59,8 +55,8 @@ def test_date_to_unix_leap_day():
     expected = datetime(2024, 2, 29, tzinfo=timezone.utc).timestamp()
     assert result == int(expected)
 
-
 # === Tests for _unix_to_date() ===
+
 
 def test_unix_to_date_basic():
     """Test converting Unix timestamp to YYYY-MM-DD."""
@@ -77,8 +73,8 @@ def test_unix_to_date_with_time():
     
     assert result == "2026-01-15"
 
-
 # === Tests for _strip_html() ===
+
 
 def test_strip_html_basic():
     """Test HTML stripping and entity decoding."""
@@ -113,8 +109,8 @@ def test_strip_html_entities():
     # Entities are decoded
     assert "&" in result or "test" in result
 
-
 # === Tests for _title_matches_query() ===
+
 
 def test_title_matches_query_basic():
     """Test basic query matching."""
@@ -160,17 +156,50 @@ def test_title_matches_query_empty_query():
 
 
 def test_title_matches_query_partial_match():
-    """Test that all query words must match."""
+    """Any-word matching: at least one query token in title is enough.
+
+    Previously required *all* tokens, which killed every hit on multi-keyword
+    theme queries like 'claude, personal agents, agentic infra' since no real
+    HN title contains all 5 tokens verbatim. Token-overlap relevance at parse
+    time still demotes weak matches, so the loosened gate is safe.
+    """
     title = "New AI framework"
     query = "AI blockchain"
-    
-    # "blockchain" is not in title, so should fail
-    assert hackernews._title_matches_query(title, query) is False
 
+    # "AI" matches as a whole word, even though "blockchain" doesn't appear
+    assert hackernews._title_matches_query(title, query) is True
+
+
+def test_title_matches_query_no_token_in_title():
+    """If no query token appears in the title at all, reject."""
+    assert hackernews._title_matches_query("New rust compiler", "AI blockchain") is False
+
+
+def test_title_matches_query_word_boundary_not_substring():
+    """Short tokens must match on word boundaries, not as substrings.
+
+    Without word-boundary matching, 'ai' would falsely match 'email',
+    'rail', 'artists', etc.
+    """
+    # 'ai' as a substring of 'email' must not match
+    assert hackernews._title_matches_query("New email service", "ai blockchain") is False
+    # 'ai' as a whole word does match
+    assert hackernews._title_matches_query("Cool AI tool launched", "ai blockchain") is True
+
+
+def test_title_matches_query_flattens_hyphens_and_commas():
+    """Query tokens split on hyphens/commas the same way search_hackernews
+    flattens them, so the post-filter stays aligned with what Algolia saw."""
+    # query 'ts-bun-node' flattens to ['ts', 'bun', 'node']; title contains 'bun'
+    assert hackernews._title_matches_query("Bun 1.2 released", "ts-bun-node") is True
+    # query 'rust, go, zig' flattens; title contains 'go'
+    assert hackernews._title_matches_query("Go 1.24 generics update", "rust, go, zig") is True
 
 # === Tests for search_hackernews() ===
 
 @patch('lib.hackernews.http.request')
+
+
 def test_search_hackernews_basic(mock_request):
     """Test basic HN search."""
     mock_request.return_value = {
@@ -189,8 +218,9 @@ def test_search_hackernews_basic(mock_request):
     assert len(result["hits"]) == 1
     assert mock_request.called
 
-
 @patch('lib.hackernews.http.request')
+
+
 def test_search_hackernews_depth_config(mock_request):
     """Test that depth parameter controls hit count."""
     mock_request.return_value = {"hits": [], "nbHits": 0}
@@ -203,8 +233,9 @@ def test_search_hackernews_depth_config(mock_request):
     
     assert "hitsPerPage=15" in url
 
-
 @patch('lib.hackernews.http.request')
+
+
 def test_search_hackernews_date_filtering(mock_request):
     """Test that date range is applied correctly."""
     mock_request.return_value = {"hits": [], "nbHits": 0}
@@ -218,8 +249,9 @@ def test_search_hackernews_date_filtering(mock_request):
     assert "numericFilters" in url
     assert "created_at_i" in url
 
-
 @patch('lib.hackernews.http.request')
+
+
 def test_search_hackernews_http_error_handling(mock_request):
     """Test graceful handling of HTTP errors."""
     from lib.http import HTTPError
@@ -231,8 +263,9 @@ def test_search_hackernews_http_error_handling(mock_request):
     assert result["hits"] == []
     assert "error" in result
 
-
 @patch('lib.hackernews.http.request')
+
+
 def test_search_hackernews_engagement_filter(mock_request):
     """Test that low-engagement stories are filtered."""
     mock_request.return_value = {"hits": [], "nbHits": 0}
@@ -245,8 +278,8 @@ def test_search_hackernews_engagement_filter(mock_request):
     # Should filter for points > 2 (URL-encoded)
     assert "points" in url and "%3E2" in url
 
-
 # === Tests for parse_hackernews_response() ===
+
 
 def test_parse_hackernews_response_basic():
     """Test parsing basic Algolia response."""
@@ -370,8 +403,8 @@ def test_parse_hackernews_response_empty_response():
     
     assert items == []
 
-
 # === Tests for engagement scoring ===
+
 
 def test_engagement_score_calculation():
     """Test that engagement dict contains points and comments."""
@@ -402,7 +435,6 @@ def test_engagement_score_zero_values():
     engagement = items[0]["engagement"]
     assert engagement["points"] == 0
     assert engagement["comments"] == 0
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

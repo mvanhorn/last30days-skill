@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 # Import the internal parser directly for testability (avoids platform check)
-from scripts.lib.safari_cookies import (
+from lib.safari_cookies import (
     _parse_binary_cookies,
     extract_safari_cookies_macos,
 )
@@ -93,8 +93,9 @@ def _build_binary_cookies_file(pages: list[bytes]) -> bytes:
 
     return data
 
-
 @pytest.fixture
+
+
 def x_cookies_file() -> bytes:
     """Build a minimal valid binary cookies file with .x.com cookies."""
     rec1 = _build_cookie_record(".x.com", "auth_token", "test_auth_abc123")
@@ -151,32 +152,102 @@ class TestMultiplePages:
 class TestErrorPaths:
     def test_file_not_found(self, tmp_path: Path):
         with patch(
-            "scripts.lib.safari_cookies.Path.home", return_value=tmp_path
-        ), patch("scripts.lib.safari_cookies.sys") as mock_sys:
+            "lib.safari_cookies.Path.home", return_value=tmp_path
+        ), patch("lib.safari_cookies.sys") as mock_sys:
             mock_sys.platform = "darwin"
             mock_sys.stderr = sys.stderr
             result = extract_safari_cookies_macos("x.com", ["auth_token"])
         assert result is None
 
+    def test_prefers_sandboxed_safari_cookie_path(
+        self, tmp_path: Path, x_cookies_file: bytes
+    ):
+        sandbox_dir = (
+            tmp_path
+            / "Library"
+            / "Containers"
+            / "com.apple.Safari"
+            / "Data"
+            / "Library"
+            / "Cookies"
+        )
+        sandbox_dir.mkdir(parents=True)
+        (sandbox_dir / "Cookies.binarycookies").write_bytes(x_cookies_file)
+
+        legacy_dir = tmp_path / "Library" / "Cookies"
+        legacy_dir.mkdir(parents=True)
+        legacy_data = _build_binary_cookies_file(
+            [_build_page([_build_cookie_record(".x.com", "auth_token", "legacy")])]
+        )
+        (legacy_dir / "Cookies.binarycookies").write_bytes(legacy_data)
+
+        with patch(
+            "lib.safari_cookies.Path.home", return_value=tmp_path
+        ), patch("lib.safari_cookies.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            mock_sys.stderr = sys.stderr
+            result = extract_safari_cookies_macos("x.com", ["auth_token", "ct0"])
+
+        assert result is not None
+        assert result["auth_token"] == "test_auth_abc123"
+        assert result["ct0"] == "test_ct0_xyz789"
+
+    def test_falls_back_to_legacy_safari_cookie_path(self, tmp_path: Path):
+        # Sandboxed path is intentionally NOT created — only the legacy path exists.
+        legacy_dir = tmp_path / "Library" / "Cookies"
+        legacy_dir.mkdir(parents=True)
+        legacy_data = _build_binary_cookies_file(
+            [_build_page([_build_cookie_record(".x.com", "auth_token", "legacy_auth")])]
+        )
+        (legacy_dir / "Cookies.binarycookies").write_bytes(legacy_data)
+
+        sandbox_path = (
+            tmp_path
+            / "Library"
+            / "Containers"
+            / "com.apple.Safari"
+            / "Data"
+            / "Library"
+            / "Cookies"
+            / "Cookies.binarycookies"
+        )
+        assert not sandbox_path.exists()
+
+        with patch(
+            "lib.safari_cookies.Path.home", return_value=tmp_path
+        ), patch("lib.safari_cookies.sys") as mock_sys:
+            mock_sys.platform = "darwin"
+            mock_sys.stderr = sys.stderr
+            result = extract_safari_cookies_macos("x.com", ["auth_token"])
+
+        assert result is not None
+        assert result["auth_token"] == "legacy_auth"
+
     def test_permission_denied(self, tmp_path: Path, capsys):
-        cookie_dir = tmp_path / "Library" / "Cookies"
+        cookie_dir = (
+            tmp_path
+            / "Library"
+            / "Containers"
+            / "com.apple.Safari"
+            / "Data"
+            / "Library"
+            / "Cookies"
+        )
         cookie_dir.mkdir(parents=True)
         cookie_file = cookie_dir / "Cookies.binarycookies"
         cookie_file.write_bytes(b"cook")
-        cookie_file.chmod(0o000)
 
-        try:
-            with patch(
-                "scripts.lib.safari_cookies.Path.home", return_value=tmp_path
-            ), patch("scripts.lib.safari_cookies.sys") as mock_sys:
-                mock_sys.platform = "darwin"
-                mock_sys.stderr = sys.stderr
-                result = extract_safari_cookies_macos("x.com", ["auth_token"])
-            assert result is None
-            captured = capsys.readouterr()
-            assert "Full Disk Access" in captured.err
-        finally:
-            cookie_file.chmod(0o644)
+        with patch(
+            "lib.safari_cookies.Path.home", return_value=tmp_path
+        ), patch("lib.safari_cookies.sys") as mock_sys, patch.object(
+            Path, "read_bytes", side_effect=PermissionError
+        ):
+            mock_sys.platform = "darwin"
+            mock_sys.stderr = sys.stderr
+            result = extract_safari_cookies_macos("x.com", ["auth_token"])
+        assert result is None
+        captured = capsys.readouterr()
+        assert "Full Disk Access" in captured.err
 
     def test_truncated_magic_only(self):
         result = _parse_binary_cookies(b"cook", "x.com", ["auth_token"])
@@ -203,7 +274,7 @@ class TestErrorPaths:
         assert result is None
 
     def test_non_darwin_returns_none(self):
-        with patch("scripts.lib.safari_cookies.sys") as mock_sys:
+        with patch("lib.safari_cookies.sys") as mock_sys:
             mock_sys.platform = "linux"
             result = extract_safari_cookies_macos("x.com", ["auth_token"])
         assert result is None

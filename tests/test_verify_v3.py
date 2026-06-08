@@ -4,7 +4,7 @@ from pathlib import Path
 
 
 def load_verify_module():
-    path = Path(__file__).resolve().parents[1] / "scripts" / "verify_v3.py"
+    path = Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts" / "verify_v3.py"
     spec = importlib.util.spec_from_file_location("verify_v3_module", path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader

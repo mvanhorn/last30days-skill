@@ -23,7 +23,7 @@ v3 has full GitHub search: issues, PRs, person-mode profiles, project-mode repos
 ### @thinkun
 [PR #116](https://github.com/mvanhorn/last30days-skill/pull/116) - Resilient Reddit, prevent enrichment timeout from discarding results
 v3 has parallel enrichment with per-item timeouts. No results are ever dropped.
-> _Add your bio, website, or anything you'd like here._
+> Thinker, technologist, AI expert, music-tinkerer. Founder of [Thinkun](https://thinkun.com). [@thinkun on GitHub](https://github.com/thinkun) · [@unthink on X](https://x.com/unthink)
 
 ### @thomasmktong
 [PR #124](https://github.com/mvanhorn/last30days-skill/pull/124) - Pure Python Reddit fallback

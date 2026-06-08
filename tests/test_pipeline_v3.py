@@ -1,10 +1,6 @@
-import sys
 import threading
 import unittest
-from pathlib import Path
 from unittest.mock import patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from lib import pipeline
 from lib import http
@@ -27,6 +23,60 @@ class PipelineV3Tests(unittest.TestCase):
         # Grounding items now enter the ranked pool (web search backends produce real items)
         self.assertIn("grounding", report.items_by_source)
         self.assertEqual("gemini", report.provider_runtime.reasoning_provider)
+
+    def test_planner_trace_always_fires_on_mock_run(self):
+        """Unit 5: The unified planner trace emits one summary line plus one
+        line per subquery on every run, regardless of --debug. 2026-04-19
+        Hermes Agent Use Cases failure: retrieval-breadth issues were invisible
+        because the internal planner path logged nothing.
+        """
+        import io
+        import contextlib
+        buf = io.StringIO()
+        with contextlib.redirect_stderr(buf):
+            pipeline.run(
+                topic="test topic",
+                config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+                depth="quick",
+                requested_sources=["reddit", "x", "grounding"],
+                mock=True,
+            )
+        output = buf.getvalue()
+        self.assertIn("[Planner] Plan: intent=", output)
+        self.assertIn("subqueries=", output)
+        self.assertIn("source=", output)
+        # At least one per-subquery line.
+        self.assertIn("[Planner]   sq1 label=", output)
+
+    def test_parallel_web_backend_enables_grounding_source(self):
+        plan = {
+            "intent": "news",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "timeline",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "test topic",
+                    "ranking_query": "What happened with test topic?",
+                    "sources": ["grounding"],
+                }
+            ],
+            "source_weights": {"grounding": 1.0},
+        }
+        report = pipeline.run(
+            topic="test topic",
+            config={"LAST30DAYS_REASONING_PROVIDER": "auto"},
+            depth="quick",
+            requested_sources=["grounding"],
+            web_backend="parallel",
+            external_plan=plan,
+        )
+        # Anchor on the stable source key, not the exact wording of the
+        # grounding.py error message. Phrasing can shift (e.g., when the
+        # missing-key check moves or the message is reworded) without
+        # changing the contract that the grounding source registers an
+        # error when its required backend key is unset.
+        self.assertIn("grounding", report.errors_by_source)
 
 
 class TestSourceFetchCap(unittest.TestCase):
@@ -879,6 +929,81 @@ class TestZeroKeyPipelineRun(unittest.TestCase):
         for candidate in report.ranked_candidates:
             self.assertEqual("fallback-local-score", candidate.explanation)
 
+
+class TestExcludeSources(unittest.TestCase):
+    """EXCLUDE_SOURCES env var filters sources out of available_sources().
+
+    The existing INCLUDE_SOURCES allowlist (used by Perplexity opt-in) does
+    not cover this case — tiktok and instagram are added unconditionally
+    when SCRAPECREATORS_API_KEY is set, with no way to opt out short of
+    unsetting the key. EXCLUDE_SOURCES gives runs a per-invocation denylist.
+    """
+
+    def test_excludes_tiktok_and_instagram(self):
+        config = {
+            "SCRAPECREATORS_API_KEY": "test-key",
+            "EXCLUDE_SOURCES": "tiktok,instagram",
+        }
+        sources = pipeline.available_sources(config)
+        self.assertNotIn("tiktok", sources)
+        self.assertNotIn("instagram", sources)
+        self.assertIn("reddit", sources)
+        self.assertIn("hackernews", sources)
+
+    def test_no_exclusion_when_unset(self):
+        config = {"SCRAPECREATORS_API_KEY": "test-key"}
+        sources = pipeline.available_sources(config)
+        self.assertIn("tiktok", sources)
+        self.assertIn("instagram", sources)
+
+    def test_empty_exclude_sources_is_noop(self):
+        config = {
+            "SCRAPECREATORS_API_KEY": "test-key",
+            "EXCLUDE_SOURCES": "",
+        }
+        sources = pipeline.available_sources(config)
+        self.assertIn("tiktok", sources)
+        self.assertIn("instagram", sources)
+
+    def test_whitespace_and_case_insensitive(self):
+        config = {
+            "SCRAPECREATORS_API_KEY": "test-key",
+            "EXCLUDE_SOURCES": " TikTok , INSTAGRAM ",
+        }
+        sources = pipeline.available_sources(config)
+        self.assertNotIn("tiktok", sources)
+        self.assertNotIn("instagram", sources)
+
+    def test_excludes_non_scrapecreators_source(self):
+        """EXCLUDE_SOURCES applies to any source, not just SC-backed ones."""
+        config = {"EXCLUDE_SOURCES": "hackernews"}
+        sources = pipeline.available_sources(config)
+        self.assertNotIn("hackernews", sources)
+        self.assertIn("reddit", sources)
+
+
+class TestExcludeSourcesEndToEnd(unittest.TestCase):
+    """Wiring regression: EXCLUDE_SOURCES from the process environment must
+    reach available_sources() via env.get_config(). The unit tests above
+    construct config dicts directly; this one exercises the env-to-config
+    path so a missing entry in env.py's keys list is caught immediately."""
+
+    def test_exclude_sources_from_env_propagates_through_get_config(self):
+        import os
+        from unittest.mock import patch as _patch
+        from lib import env as env_mod
+        from importlib import reload
+        with _patch.dict(os.environ, {
+            "LAST30DAYS_CONFIG_DIR": "",
+            "EXCLUDE_SOURCES": "tiktok,instagram",
+            "SCRAPECREATORS_API_KEY": "fake",
+        }, clear=False):
+            reload(env_mod)
+            cfg = env_mod.get_config()
+        self.assertEqual(cfg.get("EXCLUDE_SOURCES"), "tiktok,instagram")
+        sources = pipeline.available_sources(cfg)
+        self.assertNotIn("tiktok", sources)
+        self.assertNotIn("instagram", sources)
 
 if __name__ == "__main__":
     unittest.main()

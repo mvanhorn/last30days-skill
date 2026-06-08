@@ -1,8 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from lib import rerank, schema
 
@@ -172,15 +168,216 @@ class RerankV3Tests(unittest.TestCase):
             plan=make_plan(),
             candidates=[first, second],
             provider=provider,
-            model="gemini-3.1-flash-lite-preview",
+            model="gemini-3.1-flash-lite",
             shortlist_size=1,
         )
-        self.assertEqual("gemini-3.1-flash-lite-preview", provider.model)
+        self.assertEqual("gemini-3.1-flash-lite", provider.model)
         self.assertEqual(95.0, first.rerank_score)
         self.assertEqual("high fit", first.explanation)
-        self.assertEqual("fallback-local-score", second.explanation)
+        # Tail is scored via the fallback (may or may not carry the entity-miss
+        # suffix depending on topic-title overlap; assert the base tag is present).
+        self.assertIn("fallback-local-score", second.explanation or "")
         self.assertEqual(first.candidate_id, ranked[0].candidate_id)
 
+
+class EntityGroundingTests(unittest.TestCase):
+    """Unit 4: Reranker entity-grounding demotion. 2026-04-19 Hermes Agent
+    Use Cases failure: an off-topic video about Claude Managed Agents
+    scored 51 and ranked #2 with zero Hermes content.
+    """
+
+    def _candidate(self, title: str, snippet: str = "") -> schema.Candidate:
+        return schema.Candidate(
+            candidate_id=f"c-{title[:10]}",
+            item_id="i1",
+            source="youtube",
+            title=title,
+            url="https://example.com",
+            snippet=snippet,
+            subquery_labels=["primary"],
+            native_ranks={"primary:youtube": 1},
+            local_relevance=0.8,
+            freshness=80,
+            engagement=50,
+            source_quality=0.7,
+            rrf_score=0.02,
+        )
+
+    def test_primary_entity_strips_intent_modifier(self):
+        self.assertEqual("Hermes Agent", rerank._primary_entity("Hermes Agent use cases"))
+        self.assertEqual("Hermes Agent Actual", rerank._primary_entity("Hermes Agent Actual Use Cases"))
+        self.assertEqual("Claude Code", rerank._primary_entity("Claude Code workflows"))
+        self.assertEqual("DSPy", rerank._primary_entity("DSPy tutorial"))
+
+    def test_primary_entity_leaves_bare_entity_unchanged(self):
+        self.assertEqual("Kanye West", rerank._primary_entity("Kanye West"))
+        self.assertEqual("Nous Research", rerank._primary_entity("Nous Research"))
+
+    def test_fallback_demotes_candidate_without_primary_entity(self):
+        on_topic = self._candidate("Hermes Agent: Self-Improving AI", "Nous Research Hermes walkthrough")
+        off_topic = self._candidate("I Tested Claude's Managed Agents", "What you need to know about Anthropic's new managed agents")
+        rerank._apply_fallback_scores([on_topic, off_topic], primary_entity="Hermes Agent")
+        self.assertGreater(on_topic.final_score, off_topic.final_score)
+        self.assertIn("entity-miss", off_topic.explanation or "")
+        self.assertEqual(on_topic.explanation, "fallback-local-score")
+
+    def test_fallback_match_is_case_insensitive(self):
+        on_topic = self._candidate("HERMES agent rocks", "some text")
+        rerank._apply_fallback_scores([on_topic], primary_entity="Hermes Agent")
+        self.assertEqual("fallback-local-score", on_topic.explanation)
+
+    def test_fallback_skips_demotion_for_empty_text_candidates(self):
+        empty = self._candidate("", "")
+        rerank._apply_fallback_scores([empty], primary_entity="Hermes Agent")
+        self.assertEqual("fallback-local-score", empty.explanation)
+
+    def test_fallback_skips_demotion_when_no_primary_entity(self):
+        off = self._candidate("Completely unrelated", "snippet")
+        rerank._apply_fallback_scores([off], primary_entity="")
+        self.assertEqual("fallback-local-score", off.explanation)
+
+    def test_llm_prompt_includes_primary_entity_grounding_hint(self):
+        candidate = self._candidate("Something", "snippet text")
+        plan = make_plan()
+        prompt = rerank._build_prompt(
+            "Hermes Agent use cases", plan, [candidate], primary_entity="Hermes Agent"
+        )
+        self.assertIn("Primary entity grounding", prompt)
+        self.assertIn("Hermes Agent", prompt)
+
+    def test_llm_prompt_omits_grounding_hint_when_no_primary_entity(self):
+        candidate = self._candidate("Something", "snippet text")
+        plan = make_plan()
+        prompt = rerank._build_prompt("", plan, [candidate], primary_entity="")
+        self.assertNotIn("Primary entity grounding", prompt)
+
+
+class ExpandedHaystackTests(unittest.TestCase):
+    """Unit 3: Entity-grounding haystack covers transcript snippets,
+    transcript highlights, top comments, and comment insights - not
+    just title + snippet.
+    """
+
+    def _youtube_candidate(self, title: str, transcript_snippet: str = "",
+                           transcript_highlights: list[str] | None = None) -> schema.Candidate:
+        c = schema.Candidate(
+            candidate_id=f"c-{title[:10]}",
+            item_id="i1",
+            source="youtube",
+            title=title,
+            url="https://youtube.com/watch?v=x",
+            snippet="",
+            subquery_labels=["primary"],
+            native_ranks={"primary:youtube": 1},
+            local_relevance=0.8,
+            freshness=80,
+            engagement=50,
+            source_quality=0.7,
+            rrf_score=0.02,
+        )
+        c.metadata = {}
+        if transcript_snippet:
+            c.metadata["transcript_snippet"] = transcript_snippet
+        if transcript_highlights:
+            c.metadata["transcript_highlights"] = transcript_highlights
+        return c
+
+    def test_entity_found_in_transcript_snippet_avoids_demotion(self):
+        # Title + snippet miss the entity, but the transcript contains it.
+        c = self._youtube_candidate(
+            "Weekly roundup",
+            transcript_snippet="In this video I walk through using Hermes Agent in production.",
+        )
+        rerank._apply_fallback_scores([c], primary_entity="Hermes Agent")
+        self.assertEqual("fallback-local-score", c.explanation)
+
+    def test_entity_found_in_transcript_highlights_avoids_demotion(self):
+        c = self._youtube_candidate(
+            "Some review",
+            transcript_highlights=[
+                "Today we're talking about Hermes Agent",
+                "Let's compare it to the alternatives",
+            ],
+        )
+        rerank._apply_fallback_scores([c], primary_entity="Hermes Agent")
+        self.assertEqual("fallback-local-score", c.explanation)
+
+    def test_entity_missing_everywhere_still_demoted_for_video(self):
+        # Nate Herk "Managed Agents" case: no Hermes in title, snippet,
+        # or transcript - demotion fires.
+        c = self._youtube_candidate(
+            "I Tested Claude's New Managed Agents",
+            transcript_snippet="Managed agents are Anthropic's new product with ClickUp and cron...",
+        )
+        rerank._apply_fallback_scores([c], primary_entity="Hermes Agent")
+        self.assertIn("entity-miss", c.explanation)
+
+    def test_entity_found_in_reddit_top_comments_avoids_demotion(self):
+        c = schema.Candidate(
+            candidate_id="r1",
+            item_id="i1",
+            source="reddit",
+            title="Best agent framework?",
+            url="https://reddit.com/r/x",
+            snippet="",
+            subquery_labels=["primary"],
+            native_ranks={"primary:reddit": 1},
+            local_relevance=0.8, freshness=80, engagement=50,
+            source_quality=0.7, rrf_score=0.02,
+        )
+        c.metadata = {
+            "top_comments": [
+                {"excerpt": "I've been using Hermes Agent for a month and it's great"},
+                {"text": "another comment"},
+            ],
+        }
+        rerank._apply_fallback_scores([c], primary_entity="Hermes Agent")
+        self.assertEqual("fallback-local-score", c.explanation)
+
+    def test_entity_found_in_comment_insights_avoids_demotion(self):
+        c = schema.Candidate(
+            candidate_id="r2", item_id="i1", source="reddit",
+            title="AI tools", url="https://reddit.com/r/x", snippet="",
+            subquery_labels=["primary"],
+            native_ranks={"primary:reddit": 1},
+            local_relevance=0.8, freshness=80, engagement=50,
+            source_quality=0.7, rrf_score=0.02,
+        )
+        c.metadata = {
+            "comment_insights": ["Consensus: Hermes Agent handles long sessions best"],
+        }
+        rerank._apply_fallback_scores([c], primary_entity="Hermes Agent")
+        self.assertEqual("fallback-local-score", c.explanation)
+
+    def test_truly_empty_candidate_still_skipped(self):
+        # Image-only TikTok with no text anywhere - do not penalize.
+        c = self._youtube_candidate("")  # empty title
+        rerank._apply_fallback_scores([c], primary_entity="Hermes Agent")
+        self.assertEqual("fallback-local-score", c.explanation)
+
+    def test_final_score_secondary_penalty_applied_on_entity_miss(self):
+        # When fallback flags entity-miss, final_score gets an ADDITIONAL
+        # -20 penalty beyond the rerank_score reduction. Verify by
+        # comparing final_score for a demoted candidate vs an identical
+        # candidate that matched the entity.
+        off_topic = self._youtube_candidate("Managed Agents from Anthropic")
+        on_topic = self._youtube_candidate(
+            "Hermes Agent walkthrough",
+            transcript_snippet="Hermes Agent review",
+        )
+        rerank._apply_fallback_scores([off_topic, on_topic], primary_entity="Hermes Agent")
+        # Gap should be well above the rerank_score-only path's 0.60 * 25 = 15;
+        # with the secondary penalty it's 15 + 20 = 35 points.
+        gap = on_topic.final_score - off_topic.final_score
+        self.assertGreater(gap, 25.0,
+            f"entity-miss demotion gap only {gap:.1f}; secondary penalty may not be firing")
+
+    def test_secondary_penalty_not_applied_when_entity_match(self):
+        on_topic = self._youtube_candidate("Hermes Agent: use cases")
+        rerank._apply_fallback_scores([on_topic], primary_entity="Hermes Agent")
+        # Explanation does NOT contain entity-miss, so secondary penalty
+        # should not fire; final_score reflects only base signal.
+        self.assertNotIn("entity-miss", on_topic.explanation or "")
 
 if __name__ == "__main__":
     unittest.main()

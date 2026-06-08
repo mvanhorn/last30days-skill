@@ -1,6 +1,6 @@
 # Search Quality Eval
 
-`scripts/evaluate_search_quality.py` is an optional local evaluation step for retrieval quality. It is not part of the user-facing runtime and does not need to run in CI by default.
+`skills/last30days/scripts/evaluate_search_quality.py` is an optional local evaluation step for retrieval quality. It is not part of the user-facing runtime and does not need to run in CI by default.
 
 What it does:
 
@@ -18,13 +18,13 @@ What it does:
 Recommended usage:
 
 ```bash
-uv run python scripts/evaluate_search_quality.py
+uv run python skills/last30days/scripts/evaluate_search_quality.py
 ```
 
 Useful flags:
 
 ```bash
-uv run python scripts/evaluate_search_quality.py \
+uv run python skills/last30days/scripts/evaluate_search_quality.py \
   --baseline-rev origin/main \
   --candidate-rev HEAD \
   --no-default-topics \

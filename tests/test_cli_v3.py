@@ -1,6 +1,6 @@
-# ruff: noqa: E402
 import json
 import io
+import shutil
 import tempfile
 import subprocess
 import sys
@@ -10,12 +10,10 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "scripts"))
-
 import last30days as cli
 from lib import schema
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliV3Tests(unittest.TestCase):
@@ -27,8 +25,8 @@ class CliV3Tests(unittest.TestCase):
             generated_at="2026-03-16T00:00:00+00:00",
             provider_runtime=schema.ProviderRuntime(
                 reasoning_provider="gemini",
-                planner_model="gemini-3.1-flash-lite-preview",
-                rerank_model="gemini-3.1-flash-lite-preview",
+                planner_model="gemini-3.1-flash-lite",
+                rerank_model="gemini-3.1-flash-lite",
             ),
             query_plan=schema.QueryPlan(
                 intent="comparison",
@@ -53,7 +51,7 @@ class CliV3Tests(unittest.TestCase):
 
     def test_mock_json_cli(self):
         result = subprocess.run(
-            [sys.executable, "scripts/last30days.py", "test topic", "--mock", "--emit=json"],
+            [sys.executable, "skills/last30days/scripts/last30days.py", "test topic", "--mock", "--emit=json"],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -70,6 +68,26 @@ class CliV3Tests(unittest.TestCase):
             ["grounding", "reddit", "hackernews"],
             cli.parse_search_flag("web, reddit, hn, web"),
         )
+
+    def test_parse_search_flag_accepts_optional_social_sources(self):
+        self.assertEqual(
+            ["threads", "pinterest"],
+            cli.parse_search_flag("threads, pinterest"),
+        )
+
+    def test_explicit_threads_search_uses_scrapecreators_key_without_include_sources(self):
+        available = cli.pipeline.available_sources(
+            {"SCRAPECREATORS_API_KEY": "test-key", "INCLUDE_SOURCES": ""},
+            requested_sources=["threads"],
+        )
+        self.assertIn("threads", available)
+
+    def test_explicit_perplexity_search_uses_openrouter_key_without_include_sources(self):
+        available = cli.pipeline.available_sources(
+            {"OPENROUTER_API_KEY": "test-key", "INCLUDE_SOURCES": ""},
+            requested_sources=["perplexity"],
+        )
+        self.assertIn("perplexity", available)
 
     def test_parse_search_flag_rejects_invalid_or_empty_inputs(self):
         with self.assertRaises(SystemExit):
@@ -114,13 +132,13 @@ class CliV3Tests(unittest.TestCase):
     def test_slugify_and_emit_output_cover_supported_modes(self):
         report = self.make_report()
         self.assertEqual("openclaw-vs-nanoclaw", cli.slugify(report.topic))
-        self.assertEqual("last30days v3.0.0 CLI.", cli.__doc__)
+        self.assertEqual("last30days CLI.", cli.__doc__)
 
         compact = cli.emit_output(report, "compact")
         json_output = cli.emit_output(report, "json")
         context = cli.emit_output(report, "context")
 
-        self.assertIn("# last30days v3.0.0", compact)
+        self.assertIn("# last30days v", compact)
         self.assertIn('"topic": "OpenClaw vs NanoClaw"', json_output)
         self.assertIsInstance(context, str)
 
@@ -142,6 +160,30 @@ class CliV3Tests(unittest.TestCase):
                 cli.save_output(report, "md", tmp)
         _, kwargs = write_text.call_args
         self.assertEqual("utf-8", kwargs.get("encoding"))
+
+    def test_compute_save_path_display_uses_posix_slashes_under_home(self):
+        # Regression: f"~/{relative}" stringified pathlib.Path with the
+        # OS-native separator, producing "~/Documents\\Last30Days\\..." on
+        # Windows that no shell or File Explorer could open. The fix is
+        # f"~/{relative.as_posix()}" which forces forward slashes regardless
+        # of host OS. On POSIX hosts this asserts the contract for
+        # cross-platform safety; on Windows hosts it would fail without the fix.
+        real_home = Path.home()
+        tmp_under_home = Path(tempfile.mkdtemp(prefix="l30d_save_path_", dir=str(real_home)))
+        try:
+            save_dir = tmp_under_home / "Documents" / "Last30Days"
+            save_dir.mkdir(parents=True, exist_ok=True)
+            display = cli.compute_save_path_display(
+                str(save_dir), "british airways middle east", "v3", "compact"
+            )
+            self.assertTrue(display.startswith("~/"), f"Expected '~/' prefix, got: {display}")
+            self.assertNotIn("\\", display, f"Backslash leaked into display: {display}")
+            self.assertTrue(
+                display.endswith("british-airways-middle-east-raw-v3.md"),
+                f"Expected slug+suffix at end, got: {display}",
+            )
+        finally:
+            shutil.rmtree(tmp_under_home, ignore_errors=True)
 
     def test_persist_report_updates_run_status_on_success_and_failure(self):
         report = self.make_report()
@@ -215,6 +257,50 @@ class CliV3Tests(unittest.TestCase):
         fake_progress.show_promo.assert_called_once_with("both", diag=diag)
         self.assertIn("# rendered", stdout.getvalue())
 
+    def test_main_canonicalizes_explicit_github_repo_flags(self):
+        report = self.make_report()
+        diag = {
+            "available_sources": ["grounding"],
+            "providers": {"google": True, "openai": False, "xai": False},
+            "x_backend": None,
+            "bird_installed": True,
+            "bird_authenticated": False,
+            "bird_username": None,
+            "native_web_backend": "brave",
+        }
+        with mock.patch.object(cli.env, "get_config", return_value={}), \
+             mock.patch.object(cli.pipeline, "diagnose", return_value=diag), \
+             mock.patch.object(cli.pipeline, "run", return_value=report) as run_mock, \
+             mock.patch.object(cli, "emit_output", return_value="# rendered"), \
+             mock.patch.object(sys, "argv", [
+                 "last30days.py",
+                 "claude",
+                 "code",
+                 "vs",
+                 "codex",
+                 "--github-repo",
+                 "openai/codex,anthropics/claude-code-action",
+             ]):
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                rc = cli.main()
+        self.assertEqual(0, rc)
+        # In vs-mode main + competitors run in parallel via ThreadPoolExecutor,
+        # so the order of pipeline.run invocations is non-deterministic. Find
+        # the main runner's call by predicate on the canonicalized github_repos
+        # rather than by index.
+        expected_repos = ["openai/codex", "anthropics/claude-code"]
+        main_call = next(
+            (c for c in run_mock.call_args_list if c.kwargs.get("github_repos") == expected_repos),
+            None,
+        )
+        self.assertIsNotNone(
+            main_call,
+            f"No pipeline.run call had github_repos={expected_repos}; "
+            f"saw {[c.kwargs.get('github_repos') for c in run_mock.call_args_list]}",
+        )
+        self.assertIn("[GitHub] Canonicalized repos:", stderr.getvalue())
 
 if __name__ == "__main__":
     unittest.main()
