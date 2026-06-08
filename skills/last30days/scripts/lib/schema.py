@@ -1,10 +1,10 @@
 """Core data model for the v3.0.0 last30days pipeline."""
 
+import datetime, re
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Literal
-
 
 def _drop_none(value: Any) -> Any:
     """Recursively remove None values from dataclass-derived structures."""
@@ -172,9 +172,56 @@ class RetrievalBundle:
         self.items_by_source.setdefault(source, []).extend(items)
 
 
-def to_dict(value: Any) -> Any:
-    """Serialize dataclasses and nested containers."""
-    return _drop_none(value)
+# Keys that must never appear in the public JSON output
+_INTERNAL_KEY_PATTERN = re.compile(r'^_')
+
+
+def _scrub(obj):
+    """Recursively remove private (_-prefixed) keys from dicts."""
+    if isinstance(obj, dict):
+        return {k: _scrub(v) for k, v in obj.items()
+                if not _INTERNAL_KEY_PATTERN.match(k)}
+    if isinstance(obj, list):
+        return [_scrub(i) for i in obj]
+    return obj
+
+
+def to_dict(report: "Report") -> dict:
+    sources = {
+        source: [_scrub(item.to_dict()) for item in items]
+        for source, items in report.items_by_source.items()
+    }
+    total = sum(len(v) for v in sources.values())
+    top_source = max(sources, key=lambda k: len(sources[k]), default=None)
+
+    return {
+        # --- Stable contract fields ---
+        "schema_version": "1.0",        # bump on breaking changes
+        "topic": report.topic,
+        "generated_at": datetime.datetime.now(
+            datetime.timezone.utc).isoformat(),
+        "lookback_days": report.query_plan.lookback_days,
+
+        # --- Source data ---
+        "sources": sources,
+        "errors": dict(report.errors_by_source),
+
+        # --- Programmatic triage ---
+        "engagement_summary": {
+            "total_items": total,
+            "top_signal_source": top_source,
+            "items_by_source": {k: len(v) for k, v in sources.items()},
+        },
+
+        # --- Optional synthesis passthrough ---
+        "synthesis": report.artifacts.get("synthesis_md") or None,
+
+        # --- Query metadata ---
+        "query_plan": _scrub(report.query_plan.to_dict()
+                             if hasattr(report.query_plan, "to_dict")
+                             else {}),
+        "resolved": _scrub(report.artifacts.get("resolved") or {}),
+    }
 
 
 def provider_runtime_from_dict(payload: dict[str, Any]) -> ProviderRuntime:
