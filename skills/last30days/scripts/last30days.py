@@ -134,6 +134,8 @@ def emit_output(
     synthesis_md: str | None = None,
 ) -> str:
     if emit == "json":
+        if synthesis_md:
+            report.artifacts["synthesis_md"] = synthesis_md
         return json.dumps(schema.to_dict(report), indent=2, sort_keys=True)
     if emit == "html":
         return html_render.render_html(
@@ -610,10 +612,10 @@ def main() -> int:
 
     synthesis_md = None
     if args.synthesis_file:
-        if args.emit == "html":
+        if args.emit in {"html", "json"}:          # ← add "json"
             synthesis_md = read_synthesis_file(args.synthesis_file)
         else:
-            sys.stderr.write("[last30days] Warning: --synthesis-file is only used with --emit=html; ignoring.\n")
+            sys.stderr.write("[last30days] Warning: --synthesis-file is only used with --emit=html/json; ignoring.\n")
 
     if not os.environ.get("LAST30DAYS_SKIP_PREFLIGHT"):
         from lib import preflight
