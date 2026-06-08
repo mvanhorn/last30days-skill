@@ -120,6 +120,8 @@ class LastRunStateTests(unittest.TestCase):
         env = os.environ.copy()
         env["HOME"] = str(Path(tmp) / "home")
         env["SETUP_COMPLETE"] = "true"
+        # Strip credentials that could bleed in from the test-runner environment
+        # and corrupt source-count baseline comparisons.
         for key in ("AUTH_TOKEN", "CT0", "XAI_API_KEY", "BSKY_HANDLE", "EXA_API_KEY", "SCRAPECREATORS_API_KEY"):
             env.pop(key, None)
         env.update(env_overrides)
