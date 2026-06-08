@@ -139,8 +139,24 @@ class EvaluatorV3Tests(unittest.TestCase):
             self.assertEqual({}, skipped)
 
     def test_create_eval_env_and_run_last30days(self):
+        credential_env = {
+            key: ""
+            for key in (
+                "GEMINI_API_KEY",
+                "GOOGLE_GENAI_API_KEY",
+                "OPENAI_API_KEY",
+                "XAI_API_KEY",
+                "SCRAPECREATORS_API_KEY",
+                "BSKY_HANDLE",
+                "BSKY_APP_PASSWORD",
+                "TRUTHSOCIAL_TOKEN",
+                "AUTH_TOKEN",
+                "CT0",
+            )
+        }
+        credential_env.update({"PATH": "/bin", "GOOGLE_API_KEY": "env-google"})
         with mock.patch.object(evaluator.envlib, "get_config", return_value={"OPENAI_API_KEY": "config-openai"}):
-            with mock.patch.dict("os.environ", {"PATH": "/bin", "GOOGLE_API_KEY": "env-google"}, clear=False):
+            with mock.patch.dict("os.environ", credential_env, clear=False):
                 created = evaluator.create_eval_env()
         self.assertEqual("/bin", created["PATH"])
         self.assertEqual("env-google", created["GOOGLE_API_KEY"])
