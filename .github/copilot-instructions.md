@@ -12,7 +12,7 @@ This file contains Copilot-specific additions. See AGENTS.md for the shared cros
 Before suggesting a pull request:
 
 - Confirm that pytest passes.
-- If changes were made under skills/last30days/scripts/lib/, confirm the install copy has been refreshed with:
+- If changes were made anywhere under skills/last30days/, confirm the install copy has been refreshed with:
 
 npx skills add . -g -y
 
