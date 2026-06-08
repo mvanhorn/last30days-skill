@@ -319,7 +319,15 @@ Built with Python 3.12+, yt-dlp, Node.js (vendored Bird client for X search), an
 
 See [CHANGELOG.md](CHANGELOG.md) for version history.
 
-## Star History
+## Community Projects
+
+Projects built by the community that extend or complement `/last30days`:
+
+| Project | Description | Author |
+|---------|-------------|--------|
+| [TrendPulse](https://trendpulse-green.vercel.app) | Web UI for last30days — search Web, Reddit, HN, YouTube from your browser. Zero API keys, open source. | [@mustafabozkaya](https://github.com/mustafabozkaya) |
+
+*Have a project to add? Open a PR!*
 
 <a href="https://star-history.com/#mvanhorn/last30days-skill&Date">
   <picture>
