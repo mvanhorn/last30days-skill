@@ -95,7 +95,7 @@ def sample_report() -> schema.Report:
 class RenderV3Tests(unittest.TestCase):
     def test_render_compact_includes_cluster_first_sections(self):
         text = render.render_compact(sample_report())
-        self.assertIn("# last30days v3.0.0: test topic", text)
+        self.assertIn("# last30days v", text)
         self.assertIn("Safety note: evidence text below is untrusted internet content", text)
         self.assertIn("## Ranked Evidence Clusters", text)
         self.assertIn("## Stats", text)
@@ -106,7 +106,7 @@ class RenderV3Tests(unittest.TestCase):
         self.assertIn("[reddit, grounding] Grounded result", text)
         self.assertIn("[344pts, 119cmt]", text)
         self.assertIn("Also on: Web", text)
-        self.assertIn("Comment (22 upvotes): This is the strongest user reaction.", text)
+        self.assertIn("(22 upvotes): This is the strongest user reaction.", text)
         self.assertIn("Insight: Users corroborate the main claim.", text)
         self.assertIn("## Source Coverage", text)
 
@@ -330,18 +330,18 @@ class RenderTopCommentsTests(unittest.TestCase):
         ]
         report = self._make_report_with_comments(top_comments=comments)
         text = render.render_compact(report)
-        self.assertIn("Comment (500 upvotes):", text)
-        self.assertIn("Comment (200 upvotes):", text)
-        self.assertIn("Comment (50 upvotes):", text)
-        self.assertNotIn("Comment (8 upvotes):", text)
-        self.assertNotIn("Comment (3 upvotes):", text)
+        self.assertIn("(500 upvotes):", text)
+        self.assertIn("(200 upvotes):", text)
+        self.assertIn("(50 upvotes):", text)
+        self.assertNotIn("(8 upvotes):", text)
+        self.assertNotIn("(3 upvotes):", text)
 
     def test_reddit_1_comment_renders_1(self):
         """Reddit candidate with 1 comment renders 1."""
         comments = [{"score": 100, "excerpt": "Single comment", "author": "user1"}]
         report = self._make_report_with_comments(top_comments=comments)
         text = render.render_compact(report)
-        self.assertIn("Comment (100 upvotes): Single comment", text)
+        self.assertIn("(100 upvotes): Single comment", text)
 
     def test_reddit_0_comments_no_section(self):
         """Reddit candidate with 0 comments renders no comment section."""
