@@ -120,7 +120,10 @@ fi
 
 # Setup done but check for ScrapeCreators
 HAS_SCRAPECREATORS="${ENV_SCRAPECREATORS_API_KEY:-${SCRAPECREATORS_API_KEY:-}}"
-HAS_X="${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}"
+HAS_X=""
+if [[ -n "${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}" && -n "${ENV_CT0:-${CT0:-}}" ]]; then
+  HAS_X="yes"
+fi
 HAS_XAI="${ENV_XAI_API_KEY:-${XAI_API_KEY:-}}"
 HAS_YTDLP=""
 if command -v yt-dlp &>/dev/null; then

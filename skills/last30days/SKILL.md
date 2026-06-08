@@ -1477,6 +1477,7 @@ If the research output contains a `**🔍 Research Coverage:**` block, render it
 Question: "X/Twitter wasn't searched. Want to unlock it?"
 Options:
 - "Scan my browser cookies (free)" - Get consent, run cookie scan, write BROWSER_CONSENT=true + FROM_BROWSER=auto to .env
+- "I have AUTH_TOKEN and CT0 from my browser" - Ask them to paste each value, then write AUTH_TOKEN=<value>\nCT0=<value> to .env
 - "I have an xAI API key" - Ask them to paste it, write XAI_API_KEY to .env
 - "Skip for now"
 

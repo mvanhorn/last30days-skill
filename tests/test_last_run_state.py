@@ -1,5 +1,6 @@
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -107,6 +108,66 @@ class LastRunStateTests(unittest.TestCase):
 
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("Ready —", result.stdout)
+
+    @staticmethod
+    def _extract_source_count(output: str) -> int:
+        match = re.search(r"Ready — (\d+) sources active", output)
+        if not match:
+            raise AssertionError(f"Could not find source count in: {repr(output[:200])}")
+        return int(match.group(1))
+
+    def _run_hook(self, tmp: str, env_overrides: dict[str, str]) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env["HOME"] = str(Path(tmp) / "home")
+        env["SETUP_COMPLETE"] = "true"
+        env.update(env_overrides)
+        return subprocess.run(
+            ["bash", "hooks/scripts/check-config.sh"],
+            cwd=REPO_ROOT,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    def test_x_not_counted_with_only_auth_token(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            neither = self._extract_source_count(
+                self._run_hook(tmp, {}).stdout
+            )
+            only_auth = self._extract_source_count(
+                self._run_hook(tmp, {"AUTH_TOKEN": "test_auth"}).stdout
+            )
+            self.assertEqual(
+                only_auth, neither,
+                "X should not be counted when only AUTH_TOKEN is set (CT0 missing)",
+            )
+
+    def test_x_not_counted_with_only_ct0(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            neither = self._extract_source_count(
+                self._run_hook(tmp, {}).stdout
+            )
+            only_ct0 = self._extract_source_count(
+                self._run_hook(tmp, {"CT0": "test_ct0"}).stdout
+            )
+            self.assertEqual(
+                only_ct0, neither,
+                "X should not be counted when only CT0 is set (AUTH_TOKEN missing)",
+            )
+
+    def test_x_counted_when_both_auth_token_and_ct0(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            neither = self._extract_source_count(
+                self._run_hook(tmp, {}).stdout
+            )
+            both = self._extract_source_count(
+                self._run_hook(tmp, {"AUTH_TOKEN": "test_auth", "CT0": "test_ct0"}).stdout
+            )
+            self.assertEqual(
+                both, neither + 1,
+                "X should add 1 source when both AUTH_TOKEN and CT0 are set",
+            )
 
 class TestSkillMdFirstRunReference(unittest.TestCase):
     """Verifies SKILL.md references that exist in the CLI."""

@@ -82,8 +82,11 @@ SCRAPECREATORS_API_KEY=<your-scrapecreators-key>
 INCLUDE_SOURCES=tiktok,instagram
 
 # X authentication (one option only)
-XAI_API_KEY=<your-xai-key>
-# OR cookie-jar (no key needed; logs in via your browser session)
+AUTH_TOKEN=<your-auth-token>
+CT0=<your-ct0-token>
+# OR xAI API key (paid)
+# XAI_API_KEY=<your-xai-key>
+# OR cookie-jar (free; logs in via your browser session)
 # FROM_BROWSER=firefox
 
 # Bluesky
