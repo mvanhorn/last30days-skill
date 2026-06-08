@@ -19,3 +19,4 @@ bash scripts/sync.sh                                        # Deploy to ~/.claud
 - `lib/__init__.py` must be bare package marker (comment only, NO eager imports)
 - After edits: run `bash scripts/sync.sh` to deploy
 - Git remotes: origin=private, upstream=public
+- For `--emit=context`, budget is controlled by `LAST30DAYS_CONTEXT_BUDGET_ANSWER` (or `LAST30DAYS_CONTEXT_BUDGET`) and defaults to `6000`

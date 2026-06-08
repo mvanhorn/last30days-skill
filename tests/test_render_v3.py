@@ -1,6 +1,10 @@
+import io
 import sys
+import types
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
@@ -119,6 +123,129 @@ class RenderV3Tests(unittest.TestCase):
         self.assertIn("## Source Errors", text)
         self.assertIn("HTTP 400: Bad Request", text)
         self.assertIn("X:", text)
+
+    def test_render_context_uses_contextweaver_and_emits_stats(self):
+        class FakeContextItem:
+            def __init__(self, id, kind, text, parent_id=None, **kwargs):
+                self.id = id
+                self.kind = kind
+                self.text = text
+                self.parent_id = parent_id
+
+        class FakeContextManager:
+            last_budget_tokens = None
+
+            def __init__(self):
+                self.items = []
+
+            def ingest(self, item):
+                self.items.append(item)
+
+            def build_sync(self, *, phase, query, budget_tokens=None):
+                del phase, query
+                FakeContextManager.last_budget_tokens = budget_tokens
+                stats = types.SimpleNamespace(
+                    total_candidates=12,
+                    included_count=6,
+                    dropped_count=6,
+                    prompt_tokens=987,
+                    dropped_reasons={"budget": 4, "dedup": 2},
+                )
+                return types.SimpleNamespace(
+                    prompt="Topic: test topic\nTop clusters:\n- Grounded result",
+                    stats=stats,
+                )
+
+        fake_pkg = types.ModuleType("contextweaver")
+        fake_context_pkg = types.ModuleType("contextweaver.context")
+        fake_manager_mod = types.ModuleType("contextweaver.context.manager")
+        fake_types_mod = types.ModuleType("contextweaver.types")
+        fake_manager_mod.ContextManager = FakeContextManager
+        fake_types_mod.ContextItem = FakeContextItem
+        fake_types_mod.ItemKind = types.SimpleNamespace(
+            user_turn="user_turn",
+            plan_state="plan_state",
+            doc_snippet="doc_snippet",
+        )
+        fake_types_mod.Phase = types.SimpleNamespace(answer="answer")
+
+        stderr = io.StringIO()
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "contextweaver": fake_pkg,
+                "contextweaver.context": fake_context_pkg,
+                "contextweaver.context.manager": fake_manager_mod,
+                "contextweaver.types": fake_types_mod,
+            },
+            clear=False,
+        ), mock.patch.dict(
+            "os.environ",
+            {"LAST30DAYS_CONTEXT_BUDGET": "4321"},
+            clear=False,
+        ), redirect_stderr(stderr):
+            text = render.render_context(sample_report())
+
+        self.assertIn("Top clusters:", text)
+        self.assertIn("Grounded result", text)
+        self.assertIn("Context build stats:", text)
+        self.assertIn("dropped_reasons=budget=4, dedup=2", text)
+        self.assertEqual(4321, FakeContextManager.last_budget_tokens)
+        self.assertIn("[ContextWeaver] answer budget=4321", stderr.getvalue())
+
+    def test_render_context_falls_back_when_contextweaver_build_fails(self):
+        class FakeContextItem:
+            def __init__(self, id, kind, text, parent_id=None, **kwargs):
+                self.id = id
+                self.kind = kind
+                self.text = text
+                self.parent_id = parent_id
+
+        class FakeContextManager:
+            def ingest(self, item):
+                del item
+
+            def build_sync(self, *, phase, query, budget_tokens=None):
+                del phase, query, budget_tokens
+                raise RuntimeError("boom")
+
+        fake_pkg = types.ModuleType("contextweaver")
+        fake_context_pkg = types.ModuleType("contextweaver.context")
+        fake_manager_mod = types.ModuleType("contextweaver.context.manager")
+        fake_types_mod = types.ModuleType("contextweaver.types")
+        fake_manager_mod.ContextManager = FakeContextManager
+        fake_types_mod.ContextItem = FakeContextItem
+        fake_types_mod.ItemKind = types.SimpleNamespace(
+            user_turn="user_turn",
+            plan_state="plan_state",
+            doc_snippet="doc_snippet",
+        )
+        fake_types_mod.Phase = types.SimpleNamespace(answer="answer")
+
+        stderr = io.StringIO()
+        with mock.patch.dict(
+            sys.modules,
+            {
+                "contextweaver": fake_pkg,
+                "contextweaver.context": fake_context_pkg,
+                "contextweaver.context.manager": fake_manager_mod,
+                "contextweaver.types": fake_types_mod,
+            },
+            clear=False,
+        ), redirect_stderr(stderr):
+            text = render.render_context(sample_report())
+
+        self.assertIn("Topic: test topic", text)
+        self.assertIn("Top clusters:", text)
+        self.assertIn("Grounded result", text)
+        self.assertIn("build failed, using fallback renderer", stderr.getvalue())
+
+    def test_context_budget_tokens_uses_default_on_invalid_env(self):
+        stderr = io.StringIO()
+        with mock.patch.dict("os.environ", {"LAST30DAYS_CONTEXT_BUDGET": "bad"}, clear=False), redirect_stderr(stderr):
+            value = render._context_budget_tokens()
+        self.assertEqual(6000, value)
+        self.assertIn("invalid integer", stderr.getvalue())
 
 
 class RenderTopCommentsTests(unittest.TestCase):

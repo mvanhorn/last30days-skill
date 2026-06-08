@@ -5,6 +5,7 @@ description = "Multi-source last-30-days research skill"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+  "contextweaver>=0.14,<0.15",
   "requests>=2.32,<3",
 ]
 

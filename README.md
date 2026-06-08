@@ -96,6 +96,16 @@ The synthesis ranks by what real people actually engaged with. Social relevancy,
 
 ## What v3 Changed
 
+### Budgeted context for synthesis handoff
+
+`--emit=context` now compiles context with `contextweaver` before handing it to an LLM. This enforces an answer-phase token budget and appends a short `Context build stats` line showing candidates, includes, drops, and prompt token count.
+
+Tune the budget with either env var:
+- `LAST30DAYS_CONTEXT_BUDGET_ANSWER`
+- `LAST30DAYS_CONTEXT_BUDGET`
+
+Default is `6000` tokens.
+
 ### Intelligent search: the killer feature
 
 The v3 engine doesn't just search for your topic. It figures out *where* to search before the search begins. Type "OpenClaw" and the engine resolves @steipete (Peter Steinberger, the creator), r/openclaw, r/ClaudeCode, and the right YouTube channels and TikTok hashtags - all via a new Python pre-research brain built by [@j-sperling](https://github.com/j-sperling). The old engine searched keywords. The new engine understands your topic first, then searches the right people and communities.
