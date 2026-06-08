@@ -12,12 +12,14 @@ This file contains Copilot-specific additions. See AGENTS.md for the shared cros
 Before suggesting a pull request:
 
 - Confirm that pytest passes.
-- If changes were made under scripts/lib/, confirm any required sync.sh workflow has been run.
+- If changes were made under skills/last30days/scripts/lib/, confirm the install copy has been refreshed with:
+
+npx skills add . -g -y
 
 ## Vendor exclusion zone
 
-- Never suggest changes to scripts/lib/vendor/.
-- Treat scripts/lib/vendor/ as a no-touch zone.
+- Never suggest changes to skills/last30days/scripts/lib/vendor/.
+- Treat skills/last30days/scripts/lib/vendor/ as a no-touch zone.
 
 ## CI expectations
 
