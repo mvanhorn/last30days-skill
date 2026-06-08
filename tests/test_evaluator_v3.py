@@ -141,18 +141,7 @@ class EvaluatorV3Tests(unittest.TestCase):
     def test_create_eval_env_and_run_last30days(self):
         credential_env = {
             key: ""
-            for key in (
-                "GEMINI_API_KEY",
-                "GOOGLE_GENAI_API_KEY",
-                "OPENAI_API_KEY",
-                "XAI_API_KEY",
-                "SCRAPECREATORS_API_KEY",
-                "BSKY_HANDLE",
-                "BSKY_APP_PASSWORD",
-                "TRUTHSOCIAL_TOKEN",
-                "AUTH_TOKEN",
-                "CT0",
-            )
+            for key in evaluator.EVAL_CREDENTIAL_ENV_KEYS
         }
         credential_env.update({"PATH": "/bin", "GOOGLE_API_KEY": "env-google"})
         with mock.patch.object(evaluator.envlib, "get_config", return_value={"OPENAI_API_KEY": "config-openai"}):
