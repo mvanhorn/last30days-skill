@@ -1,17 +1,14 @@
 [project]
 name = "last30days-skill"
-version = "3.0.0"
+version = "3.3.2"
 description = "Multi-source last-30-days research skill"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = [
-  "contextweaver>=0.14,<0.15",
-  "requests>=2.32,<3",
-]
+dependencies = []
 
 [dependency-groups]
 dev = [
-  "pytest>=9,<10",
+  "pytest>=9.0.3,<10",
   "pytest-cov>=7,<8",
 ]
 
@@ -25,9 +22,9 @@ addopts = [
 
 [tool.coverage.run]
 branch = true
-source = ["scripts", "tests"]
+source = ["skills/last30days/scripts", "tests"]
 omit = [
-  "scripts/lib/vendor/*",
+  "skills/last30days/scripts/lib/vendor/*",
   "dist/*",
 ]
 
@@ -35,7 +32,6 @@ omit = [
 skip_empty = true
 show_missing = true
 omit = [
-  "scripts/lib/vendor/*",
+  "skills/last30days/scripts/lib/vendor/*",
   "dist/*",
 ]
-
