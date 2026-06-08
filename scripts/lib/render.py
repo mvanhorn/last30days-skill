@@ -222,7 +222,6 @@ def _format_item_engagement(item: schema.SourceItem) -> str:
 
 
 def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
-    fallback = _render_context_fallback(report, cluster_limit=cluster_limit)
     try:
         from contextweaver.context.manager import ContextManager
         from contextweaver.types import ContextItem, ItemKind, Phase
@@ -231,7 +230,7 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
             f"[ContextWeaver] unavailable, using fallback renderer: {type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
-        return fallback
+        return _render_context_fallback(report, cluster_limit=cluster_limit)
 
     try:
         budget_tokens = _context_budget_tokens()
@@ -287,7 +286,7 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
             f"[ContextWeaver] build failed, using fallback renderer: {type(exc).__name__}: {exc}",
             file=sys.stderr,
         )
-        return fallback
+        return _render_context_fallback(report, cluster_limit=cluster_limit)
 
 
 def _context_budget_tokens() -> int:
@@ -299,17 +298,17 @@ def _context_budget_tokens() -> int:
             value = int(raw)
         except ValueError:
             print(
-                f"[ContextWeaver] invalid integer in {key}={raw!r}; using default {_DEFAULT_CONTEXT_BUDGET_ANSWER}",
+                f"[ContextWeaver] invalid integer in {key}={raw!r}; trying next fallback",
                 file=sys.stderr,
             )
-            return _DEFAULT_CONTEXT_BUDGET_ANSWER
+            continue
         if value > 0:
             return value
         print(
-            f"[ContextWeaver] non-positive {key}={raw!r}; using default {_DEFAULT_CONTEXT_BUDGET_ANSWER}",
+            f"[ContextWeaver] non-positive {key}={raw!r}; trying next fallback",
             file=sys.stderr,
         )
-        return _DEFAULT_CONTEXT_BUDGET_ANSWER
+        continue
     return _DEFAULT_CONTEXT_BUDGET_ANSWER
 
 
