@@ -1,10 +1,11 @@
 """Core data model for the v3.0.0 last30days pipeline."""
 
-import datetime, re
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Literal
+
+import datetime, re
 
 def _drop_none(value: Any) -> Any:
     """Recursively remove None values from dataclass-derived structures."""
