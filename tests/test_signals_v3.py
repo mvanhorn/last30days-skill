@@ -195,28 +195,28 @@ class SignalsV3Tests(unittest.TestCase):
             freshness_mode="evergreen_ok",
         )
         self.assertEqual("relevant", ranked[0].item_id)
+def test_prune_low_relevance_keeps_stronger_matches():
+    strong = schema.SourceItem(
+        item_id="strong",
+        source="reddit",
+        title="Deploy to Fly.io",
+        body="Step-by-step Fly.io deploy guide.",
+        url="https://example.com/strong",
+        local_relevance=0.3,
+    )
+    weak = schema.SourceItem(
+        item_id="weak",
+        source="reddit",
+        title="Battlefield update",
+        body="Patch notes.",
+        url="https://example.com/weak",
+        local_relevance=0.0,
+    )
 
-    def test_prune_low_relevance_keeps_stronger_matches(self):
-        strong = schema.SourceItem(
-            item_id="strong",
-            source="reddit",
-            title="Deploy to Fly.io",
-            body="Step-by-step Fly.io deploy guide.",
-            url="https://example.com/strong",
-            local_relevance=0.3,
-        )
-        weak = schema.SourceItem(
-            item_id="weak",
-            source="reddit",
-            title="Battlefield update",
-            body="Patch notes.",
-            url="https://example.com/weak",
-            local_relevance=0.0,
-        )
-        pruned = signals.prune_low_relevance([strong, weak], minimum=0.1)
-        self.assertEqual(["strong"], [item.item_id for item in pruned])
+    pruned = signals.prune_low_relevance([strong, weak], minimum=0.1)
 
-    def test_prune_low_relevance_falls_back_when_all_are_weak(self):
+    assert ["strong"] == [item.item_id for item in pruned]
+    def test_prune_low_relevance_falls_back_when_all_are_weak():
         weak = schema.SourceItem(
             item_id="weak",
             source="reddit",
@@ -226,10 +226,23 @@ class SignalsV3Tests(unittest.TestCase):
             metadata={"local_relevance": 0.02},
         )
         pruned = signals.prune_low_relevance([weak], minimum=0.1)
-        self.assertEqual(["weak"], [item.item_id for item in pruned])
+        assert ["weak"] == [item.item_id for item in pruned]
 
     # -- Iteration 1: HN engagement bug --
+def test_prune_low_relevance_keeps_youtube_with_transcript():
+    youtube_item = schema.SourceItem(
+        item_id="yt1",
+        source="youtube",
+        title="Random Video Title",
+        body="",
+        url="https://youtube.com/watch?v=123",
+        local_relevance=0.01,
+        metadata={"transcript_snippet": "Detailed discussion about AI coding agents."},
+    )
 
+    pruned = signals.prune_low_relevance([youtube_item], minimum=0.15)
+
+    assert ["yt1"] == [item.item_id for item in pruned]
     def test_hackernews_parse_emits_comments_key(self):
         """parse_hackernews_response must emit 'comments' (not 'num_comments')."""
         response = {

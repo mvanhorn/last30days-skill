@@ -239,14 +239,27 @@ def prune_low_relevance(
 
     def passes(item: schema.SourceItem) -> bool:
         rel = item.local_relevance if item.local_relevance is not None else 0.0
+
+        transcript = ""
+        if isinstance(item.metadata, dict):
+            transcript = item.metadata.get("transcript_snippet", "")
+
+        if item.source == "youtube" and transcript:
+            return True
+
         if rel < minimum:
             return False
-        if item.source in _SOCIAL_SOURCES and (item.engagement_score is None or item.engagement_score == 0):
+
+        if item.source in _SOCIAL_SOURCES and (
+            item.engagement_score is None or item.engagement_score == 0
+        ):
             if rel < minimum * 1.5:
                 return False
+
         sole_source = sources_present == {item.source}
         if not _passes_engagement_floor(item, sole_source):
             return False
+
         return True
 
     filtered = [item for item in items if passes(item)]
