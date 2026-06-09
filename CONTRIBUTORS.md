@@ -54,6 +54,7 @@ v3 has durable watchlist with multi-source storage and extended time windows.
 
 ## Past Contributors
 
+- [@zaydiscold](https://github.com/zaydiscold) - Multi-key rotation for SCRAPECREATORS_API_KEY ([#268](https://github.com/mvanhorn/last30days-skill/pull/268))
 - [@JosephOIbrahim](https://github.com/JosephOIbrahim) - Windows Unicode fix ([#17](https://github.com/mvanhorn/last30days-skill/pull/17))
 - [@levineam](https://github.com/levineam) - Model fallback for unverified orgs ([#16](https://github.com/mvanhorn/last30days-skill/pull/16))
 - [@jonthebeef](https://github.com/jonthebeef) - Early testing and feedback
