@@ -217,6 +217,69 @@ class TestExtractFirefoxCookies:
         assert result is not None
         assert result["auth_token"] == "fallback_token"
 
+    def test_non_default_profile_with_cookies(self, mock_firefox_env):
+        """Falls back to non-default profile when default has no X cookies."""
+        profiles_dir = mock_firefox_env(
+            profiles={
+                "aaa111.default": [
+                    (".example.com", "session", "sess_other"),
+                ],
+                "bbb222.release": [
+                    (".x.com", "auth_token", "tok_nondefault"),
+                    (".x.com", "ct0", "ct0_nondefault"),
+                ],
+            },
+            profiles_ini=textwrap.dedent("""\
+                [General]
+                StartWithLastProfile=1
+
+                [Profile0]
+                Name=default
+                IsRelative=1
+                Path=aaa111.default
+                Default=1
+
+                [Profile1]
+                Name=release
+                IsRelative=1
+                Path=bbb222.release
+            """),
+        )
+
+        with patch(
+            "lib.cookie_extract._get_firefox_profiles_dir",
+            return_value=profiles_dir,
+        ):
+            result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
+
+        assert result is not None
+        assert result["auth_token"] == "tok_nondefault"
+        assert result["ct0"] == "ct0_nondefault"
+
+    def test_multiple_profiles_none_have_cookies(self, mock_firefox_env):
+        """Returns None when no profile has matching cookies."""
+        profiles_dir = mock_firefox_env(
+            profiles={
+                "aaa111.default": [
+                    (".example.com", "session", "sess_a"),
+                ],
+                "bbb222.release": [
+                    (".other.com", "other", "val_b"),
+                ],
+            },
+        )
+
+        with patch(
+            "lib.cookie_extract._get_firefox_profiles_dir",
+            return_value=profiles_dir,
+        ), patch(
+            "lib.cookie_extract._is_wsl",
+            return_value=False,
+        ):
+            result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
+
+        assert result is None
+
 
 class TestExtractCookiesAuto:
     """Tests for extract_cookies with browser='auto'."""
