@@ -31,8 +31,16 @@ load_env_vars() {
       # Skip comments, empty lines
       [[ "$key" =~ ^[[:space:]]*# ]] && continue
       [[ -z "$key" ]] && continue
-      key=$(echo "$key" | xargs)
-      value=$(echo "$value" | xargs | sed 's/^["'\''"]//;s/["'\''"]$//')
+      # Trim leading/trailing whitespace using bash parameter expansion so
+      # that values containing unbalanced shell-quote characters (e.g. an
+      # apostrophe mid-token like "xai-Toms'key123") do not cause xargs to
+      # exit 1 under set -euo pipefail and crash the SessionStart hook.
+      # (xargs parses shell quoting; parameter expansion does not.)
+      key="${key#"${key%%[! ]*}"}"   # strip leading spaces
+      key="${key%"${key##*[! ]}"}"   # strip trailing spaces
+      value="${value#"${value%%[! ]*}"}"  # strip leading spaces
+      value="${value%"${value##*[! ]}"}"  # strip trailing spaces
+      value=$(echo "$value" | sed 's/^["'\''"]//;s/["'\''"]$//')
       # Strip inline comments (# preceded by whitespace) to prevent
       # command substitution in backtick-containing comments
       value="${value%%[[:space:]]#*}"
