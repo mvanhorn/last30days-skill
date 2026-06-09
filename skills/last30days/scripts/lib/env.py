@@ -137,8 +137,15 @@ def _load_keychain(keys: list[str]) -> dict[str, str]:
     if not user:
         try:
             import pwd
-            user = pwd.getpwuid(os.getuid()).pw_name
-        except (ImportError, AttributeError):
+        except ImportError:
+            pwd = None
+
+        if pwd is not None:
+            try:
+                user = pwd.getpwuid(os.getuid()).pw_name
+            except AttributeError:
+                user = "unknown"
+        else:
             user = "unknown"
     env: dict[str, str] = {}
     for key in keys:

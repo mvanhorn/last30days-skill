@@ -28,6 +28,8 @@ def get_shell_cmd(cmd_str: str) -> list[str]:
             return ["cmd", "/c", "exit 0"]
         elif cmd_str == "echo ok":
             return ["cmd", "/c", "echo ok"]
+        else:
+            raise ValueError(f"No Windows command mapping for: {cmd_str}")
     return ["sh", "-c", cmd_str]
 
 
@@ -81,6 +83,7 @@ class TestRunWithTimeout(unittest.TestCase):
                 timeout=5,
             )
 
+    def test_env_is_passed_through(self):
         import os
         env = {"LAST30DAYS_TEST_VAR": "custom_value"}
         if IS_WINDOWS:
