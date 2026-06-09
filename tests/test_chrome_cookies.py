@@ -2,12 +2,15 @@
 
 import hashlib
 import sqlite3
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from unittest import mock
 
 import pytest
+
+OPENSSL_AVAILABLE = shutil.which("openssl") is not None
 
 from lib.chrome_cookies import (
     CHROME_COOKIES_DB,
@@ -160,6 +163,7 @@ class TestKeyDerivation:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not OPENSSL_AVAILABLE, reason="openssl not installed")
 class TestDecryption:
     def test_decrypt_v10_roundtrip(self):
         """Encrypt then decrypt — verifies the full pipeline works."""
@@ -230,6 +234,7 @@ class TestKeychainDenied:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(not OPENSSL_AVAILABLE, reason="openssl not installed")
 class TestOpensslNotFound:
     def test_openssl_missing(self):
         encrypted = _encrypt_value_v10("test", KNOWN_AES_KEY)
@@ -264,6 +269,7 @@ class TestUnencryptedCookies:
 
 
 class TestFullExtraction:
+    @pytest.mark.skipif(not OPENSSL_AVAILABLE, reason="openssl not installed")
     def test_encrypted_cookies_extracted(self, tmp_path):
         """End-to-end: create DB with real v10-encrypted values, extract them."""
         auth_val = "my_auth_token_123"
@@ -302,6 +308,7 @@ class TestFullExtraction:
 
         assert result is None
 
+    @pytest.mark.skipif(not OPENSSL_AVAILABLE, reason="openssl not installed")
     def test_chrome130_db_version_24(self, tmp_path):
         """Chrome 130+ with db_version >= 24 strips SHA-256 prefix."""
         auth_val = "token_for_chrome130"

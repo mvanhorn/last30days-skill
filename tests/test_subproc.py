@@ -4,16 +4,37 @@ Covers the process-group cleanup path, timeout behavior, success path,
 PID callback wiring, and environment inheritance.
 """
 
+import platform
 import unittest
 from unittest.mock import patch
 
 from lib import subproc
 
+IS_WINDOWS = platform.system() == "Windows"
+
+def get_shell_cmd(cmd_str: str) -> list[str]:
+    if IS_WINDOWS:
+        if cmd_str == "echo hello":
+            return ["cmd", "/c", "echo hello"]
+        elif cmd_str == "exit 3":
+            return ["cmd", "/c", "exit 3"]
+        elif cmd_str == "echo err >&2":
+            return ["cmd", "/c", "echo err 1>&2"]
+        elif cmd_str in ("sleep 10", "sleep 10 & wait"):
+            return ["powershell", "-Command", "Start-Sleep 10"]
+        elif cmd_str == "echo $LAST30DAYS_TEST_VAR":
+            return ["cmd", "/c", "echo %LAST30DAYS_TEST_VAR%"]
+        elif cmd_str == "true":
+            return ["cmd", "/c", "exit 0"]
+        elif cmd_str == "echo ok":
+            return ["cmd", "/c", "echo ok"]
+    return ["sh", "-c", cmd_str]
+
 
 class TestRunWithTimeout(unittest.TestCase):
     def test_success_returns_stdout(self):
         result = subproc.run_with_timeout(
-            ["sh", "-c", "echo hello"],
+            get_shell_cmd("echo hello"),
             timeout=5,
         )
         self.assertEqual(result.returncode, 0)
@@ -22,14 +43,14 @@ class TestRunWithTimeout(unittest.TestCase):
 
     def test_nonzero_exit_returns_returncode_not_exception(self):
         result = subproc.run_with_timeout(
-            ["sh", "-c", "exit 3"],
+            get_shell_cmd("exit 3"),
             timeout=5,
         )
         self.assertEqual(result.returncode, 3)
 
     def test_captures_stderr(self):
         result = subproc.run_with_timeout(
-            ["sh", "-c", "echo err >&2"],
+            get_shell_cmd("echo err >&2"),
             timeout=5,
         )
         self.assertEqual(result.stderr.strip(), "err")
@@ -37,7 +58,7 @@ class TestRunWithTimeout(unittest.TestCase):
     def test_timeout_raises_subproctimeout(self):
         with self.assertRaises(subproc.SubprocTimeout):
             subproc.run_with_timeout(
-                ["sh", "-c", "sleep 10"],
+                get_shell_cmd("sleep 10"),
                 timeout=1,
             )
 
@@ -47,7 +68,7 @@ class TestRunWithTimeout(unittest.TestCase):
             # Parent shell spawns a child that sleeps long.
             # Without process-group cleanup, the child would orphan.
             subproc.run_with_timeout(
-                ["sh", "-c", "sleep 10 & wait"],
+                get_shell_cmd("sleep 10 & wait"),
                 timeout=1,
             )
 
@@ -60,18 +81,25 @@ class TestRunWithTimeout(unittest.TestCase):
                 timeout=5,
             )
 
-    def test_env_is_passed_through(self):
+        import os
+        env = {"LAST30DAYS_TEST_VAR": "custom_value"}
+        if IS_WINDOWS:
+            for k in ("SystemRoot", "SystemDrive", "PATH", "COMSPEC", "TEMP", "TMP"):
+                if k in os.environ:
+                    env[k] = os.environ[k]
+        else:
+            env["PATH"] = "/usr/bin:/bin"
         result = subproc.run_with_timeout(
-            ["sh", "-c", "echo $LAST30DAYS_TEST_VAR"],
+            get_shell_cmd("echo $LAST30DAYS_TEST_VAR"),
             timeout=5,
-            env={"LAST30DAYS_TEST_VAR": "custom_value", "PATH": "/usr/bin:/bin"},
+            env=env,
         )
         self.assertEqual(result.stdout.strip(), "custom_value")
 
     def test_on_pid_callback_receives_pid(self):
         seen_pids = []
         subproc.run_with_timeout(
-            ["sh", "-c", "true"],
+            get_shell_cmd("true"),
             timeout=5,
             on_pid=lambda pid: seen_pids.append(pid),
         )
@@ -86,7 +114,7 @@ class TestRunWithTimeout(unittest.TestCase):
 
         # Should not raise, callback exception is swallowed.
         result = subproc.run_with_timeout(
-            ["sh", "-c", "echo ok"],
+            get_shell_cmd("echo ok"),
             timeout=5,
             on_pid=raising_callback,
         )

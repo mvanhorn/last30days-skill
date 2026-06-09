@@ -2,6 +2,7 @@ import json
 import os
 import subprocess
 import sys
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,6 +19,7 @@ def run_last30days(topic: str, env: dict[str, str]) -> subprocess.CompletedProce
         env=env,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
 
@@ -49,6 +51,7 @@ class LastRunStateTests(unittest.TestCase):
             self.assertEqual(payload["topic"], "custom config query")
             self.assertGreaterEqual(payload["total"], 0)
 
+    @unittest.skipIf(shutil.which("bash") is None, "bash not available")
     def test_hook_reads_last_run_from_custom_config_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_dir = Path(tmp) / "custom-config"
