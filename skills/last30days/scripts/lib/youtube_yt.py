@@ -168,6 +168,19 @@ def _wrap_ytdlp_cmd(cmd: List[str]) -> List[str]:
     return ["ssh", "-o", "BatchMode=yes", "--", host, remote_cmd]
 
 
+def _ytdlp_env() -> Dict[str, str]:
+    """Env for yt-dlp subprocesses. Strip PYTHONHOME/PYTHONPATH so a pip
+    console-script ``yt-dlp.exe`` resolves its own bundled interpreter instead
+    of inheriting the parent Python's home. uv/pyenv-installed pythons export
+    PYTHONHOME, which otherwise makes ``yt-dlp.exe`` fail to ``import yt_dlp``
+    (ModuleNotFoundError) when the engine runs under such an interpreter.
+    """
+    env = os.environ.copy()
+    env.pop("PYTHONHOME", None)
+    env.pop("PYTHONPATH", None)
+    return env
+
+
 def _extract_core_subject(topic: str) -> str:
     """Extract core subject from verbose query for YouTube search.
 
@@ -294,7 +307,7 @@ def search_youtube(
     cmd = _wrap_ytdlp_cmd(cmd)
 
     try:
-        result = subproc.run_with_timeout(cmd, timeout=120)
+        result = subproc.run_with_timeout(cmd, timeout=120, env=_ytdlp_env())
     except subproc.SubprocTimeout:
         _log("YouTube search timed out (120s)")
         return {"items": [], "error": "Search timed out"}
@@ -514,7 +527,7 @@ def _fetch_transcript_ytdlp(video_id: str, temp_dir: str) -> Optional[str]:
     ]
 
     try:
-        subproc.run_with_timeout(cmd, timeout=30)
+        subproc.run_with_timeout(cmd, timeout=30, env=_ytdlp_env())
     except subproc.SubprocTimeout:
         return None
     except FileNotFoundError:
