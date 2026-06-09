@@ -588,12 +588,19 @@ def main() -> int:
             return 0
         sys.stderr.write("Running auto-setup...\n")
         results = setup_wizard.run_auto_setup(config)
+        config_file = setup_wizard.resolve_env_path(config, env.CONFIG_FILE)
+        results["scrapecreators_auto_auth"] = setup_wizard.auto_auth_scrapecreators(
+            config, config_file,
+        )
         from_browser = "auto"
         if results.get("cookies_found"):
             first_browser = next(iter(results["cookies_found"].values()))
             from_browser = first_browser
-        setup_wizard.write_setup_config(env.CONFIG_FILE, from_browser=from_browser)
-        results["env_written"] = True
+        if config_file:
+            setup_wizard.write_setup_config(config_file, from_browser=from_browser)
+            results["env_written"] = True
+        else:
+            results["env_written"] = False
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")
         return 0
 

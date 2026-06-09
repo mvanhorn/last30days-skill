@@ -9,6 +9,7 @@ import json
 import logging
 import shutil
 import subprocess
+import os
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -98,6 +99,119 @@ def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
     return results
 
 
+def _existing_env_keys(env_path: Path) -> Tuple[set, str]:
+    """Return existing .env keys and content without exposing values."""
+    existing_keys: set = set()
+    existing_content = ""
+    if env_path.exists():
+        existing_content = env_path.read_text(encoding="utf-8")
+        for line in existing_content.splitlines():
+            stripped = line.strip()
+            if stripped and not stripped.startswith("#") and "=" in stripped:
+                key = stripped.split("=", 1)[0].strip()
+                existing_keys.add(key)
+    return existing_keys, existing_content
+
+
+def _env_value_has_content(raw_value: str) -> bool:
+    """Return True when a raw .env value is semantically non-empty."""
+    value = raw_value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+        value = value[1:-1].strip()
+    return bool(value)
+
+
+def _chmod_private(env_path: Path) -> None:
+    """Restrict an env file containing minted secrets to the current user."""
+    env_path.chmod(0o600)
+
+
+def resolve_env_path(config: Dict[str, Any], fallback: Optional[Path]) -> Optional[Path]:
+    """Return the active env file path for persistence."""
+    configured = config.get("_CONFIG_FILE")
+    return Path(configured) if configured else fallback
+
+
+def write_env_key(env_path: Optional[Path], key: str, value: str) -> bool:
+    """Persist a single env key without overwriting non-empty values."""
+    if not env_path or not key or not value:
+        return False
+    try:
+        env_path = Path(env_path)
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+        existing_keys, existing_content = _existing_env_keys(env_path)
+        if key in existing_keys:
+            lines = existing_content.splitlines(keepends=True)
+            for idx, line in enumerate(lines):
+                stripped = line.strip()
+                if stripped.startswith("#") or "=" not in stripped:
+                    continue
+                existing_key, existing_value = stripped.split("=", 1)
+                if existing_key.strip() != key:
+                    continue
+                if _env_value_has_content(existing_value):
+                    return True
+                newline = "\n" if line.endswith("\n") else ""
+                lines[idx] = f"{key}={value}{newline}"
+                env_path.write_text("".join(lines), encoding="utf-8")
+                _chmod_private(env_path)
+                return True
+            return True
+        with open(env_path, "a", encoding="utf-8") as f:
+            if existing_content and not existing_content.endswith("\n"):
+                f.write("\n")
+            f.write(f"{key}={value}\n")
+        _chmod_private(env_path)
+        return True
+    except OSError as exc:
+        logger.error("Failed to write %s to %s: %s", key, env_path, exc)
+        return False
+
+
+def _auto_auth_disabled(config: Dict[str, Any]) -> bool:
+    """Return True when the user deliberately opted out of auto-auth."""
+    raw = os.environ.get("LAST30DAYS_NO_AUTO_AUTH") or config.get("LAST30DAYS_NO_AUTO_AUTH")
+    return str(raw or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def auto_auth_scrapecreators(config: Dict[str, Any], env_path: Optional[Path]) -> Dict[str, Any]:
+    """Mint and persist SCRAPECREATORS_API_KEY when it is missing.
+
+    The returned dict is safe for JSON/probe output: it never includes the
+    minted API key, only status/method/persistence metadata.
+    """
+    if config.get("SCRAPECREATORS_API_KEY"):
+        return {"attempted": False, "status": "present", "persisted": True}
+    if _auto_auth_disabled(config):
+        return {
+            "attempted": False,
+            "status": "skipped",
+            "reason": "LAST30DAYS_NO_AUTO_AUTH",
+            "persisted": False,
+        }
+
+    result = run_github_auth()
+    status = str(result.get("status") or "error")
+    api_key = result.get("api_key")
+    persisted = False
+    if status == "success" and api_key:
+        config["SCRAPECREATORS_API_KEY"] = api_key
+        persisted = write_env_key(env_path, "SCRAPECREATORS_API_KEY", api_key)
+
+    safe: Dict[str, Any] = {
+        "attempted": True,
+        "status": status,
+        "persisted": persisted,
+    }
+    if result.get("method"):
+        safe["method"] = result.get("method")
+    if result.get("user_code"):
+        safe["user_code"] = result.get("user_code")
+    if result.get("message"):
+        safe["message"] = result.get("message")
+    return safe
+
+
 def write_setup_config(env_path: Path, from_browser: str = "auto") -> bool:
     """Write SETUP_COMPLETE and FROM_BROWSER to the .env file.
 
@@ -116,15 +230,7 @@ def write_setup_config(env_path: Path, from_browser: str = "auto") -> bool:
         env_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Read existing content to avoid overwriting keys
-        existing_keys: set = set()
-        existing_content = ""
-        if env_path.exists():
-            existing_content = env_path.read_text(encoding="utf-8")
-            for line in existing_content.splitlines():
-                stripped = line.strip()
-                if stripped and not stripped.startswith("#") and "=" in stripped:
-                    key = stripped.split("=", 1)[0].strip()
-                    existing_keys.add(key)
+        existing_keys, existing_content = _existing_env_keys(env_path)
 
         lines_to_add = []
         if "SETUP_COMPLETE" not in existing_keys:
@@ -182,6 +288,15 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
     else:
         lines.append("  - yt-dlp not found (install with: brew install yt-dlp)")
 
+    scrapecreators_auth = results.get("scrapecreators_auto_auth") or {}
+    if scrapecreators_auth.get("status") == "success" and scrapecreators_auth.get("persisted"):
+        method = scrapecreators_auth.get("method") or "GitHub"
+        lines.append(f"  - ScrapeCreators API key auto-configured via GitHub {method} auth")
+    elif scrapecreators_auth.get("status") == "skipped":
+        lines.append("  - ScrapeCreators auto-auth skipped")
+    elif scrapecreators_auth.get("attempted"):
+        lines.append("  - ScrapeCreators auto-auth did not complete; set SCRAPECREATORS_API_KEY manually if needed")
+
     env_written = results.get("env_written", False)
     if env_written:
         lines.append("")
@@ -205,7 +320,7 @@ _OPENCLAW_KEY_NAMES = [
 ]
 
 
-def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
+def run_openclaw_setup(config: Dict[str, Any], env_path: Optional[Path] = None) -> Dict[str, Any]:
     """Server-side setup probe: no cookies, just tool + key availability.
 
     Returns a dict suitable for JSON output to stdout so that SKILL.md
@@ -214,6 +329,15 @@ def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
     yt_dlp = shutil.which("yt-dlp") is not None
     node = shutil.which("node") is not None
     python3 = shutil.which("python3") is not None
+
+    if env_path is None:
+        try:
+            from . import env as env_module
+            env_path = env_module.CONFIG_FILE
+        except Exception:
+            env_path = None
+
+    scrapecreators_auto_auth = auto_auth_scrapecreators(config, resolve_env_path(config, env_path))
 
     keys: Dict[str, bool] = {}
     for key_name in _OPENCLAW_KEY_NAMES:
@@ -235,6 +359,7 @@ def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
         "python3": python3,
         "keys": keys,
         "x_method": x_method,
+        "scrapecreators_auto_auth": scrapecreators_auto_auth,
     }
 
 

@@ -315,6 +315,7 @@ def get_config() -> dict[str, Any]:
         ('LAST30DAYS_X_MODEL', None),
         ('LAST30DAYS_X_BACKEND', None),
         ('LAST30DAYS_STORE', None),
+        ('LAST30DAYS_NO_AUTO_AUTH', None),
         ('OPENAI_MODEL_PIN', None),
         ('XAI_MODEL_PIN', None),
         ('SCRAPECREATORS_API_KEY', None),
@@ -371,6 +372,9 @@ def get_config() -> dict[str, Any]:
         config['_CONFIG_SOURCE'] = 'keychain'
     else:
         config['_CONFIG_SOURCE'] = 'env_only'
+    active_config_file = project_env_path or CONFIG_FILE
+    if active_config_file:
+        config['_CONFIG_FILE'] = str(active_config_file)
 
     # Extract browser credentials if configured
     browser_creds = extract_browser_credentials(config)

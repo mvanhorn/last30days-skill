@@ -48,11 +48,12 @@ On first run, the skill will guide you through setup:
    - Scans browser cookies for X/Twitter
    - Checks/installs yt-dlp for YouTube
    - Configures free sources (Reddit, HN, Polymarket)
+   - If `SCRAPECREATORS_API_KEY` is missing, tries to mint one from your GitHub identity via the existing `gh` CLI auth first, then GitHub device auth fallback
 
-2. **Optional: ScrapeCreators**
+2. **Optional: ScrapeCreators fallback**
    - Adds TikTok, Instagram, Reddit backup
    - 100 free credits (no expiration)
-   - Sign up at scrapecreators.com
+   - If auto-auth fails or you opt out with `LAST30DAYS_NO_AUTO_AUTH=1`, sign up at scrapecreators.com and set `SCRAPECREATORS_API_KEY` manually
 
 3. **Optional: API Keys**
    - XAI_API_KEY for X/Twitter (alternative to browser cookies)

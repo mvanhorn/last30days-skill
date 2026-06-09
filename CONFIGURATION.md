@@ -44,6 +44,8 @@ The skill reads keys from a `.env` file. Two locations are supported, in priorit
 
 Override the global location with `LAST30DAYS_CONFIG_DIR=/path` (or `LAST30DAYS_CONFIG_DIR=""` for no-config mode). File permissions should be `600` on POSIX hosts - the engine warns on every run if they aren't.
 
+First-run setup auto-mints `SCRAPECREATORS_API_KEY` when it is missing by calling the existing GitHub auth flow (`gh auth token` first, GitHub device auth fallback) and persisting the returned key to the selected `.env`. Set `LAST30DAYS_NO_AUTO_AUTH=1` to skip this attempt and keep ScrapeCreators manual-only.
+
 The project-scoped file is the cleanest pattern for **per-client setups**: drop a `.claude/last30days.env` into each client folder (`SCRAPECREATORS_API_KEY`, `INCLUDE_SOURCES`, `LAST30DAYS_MEMORY_DIR`, `BSKY_HANDLE`, etc), `cd` into that folder, and the skill picks up that client's configuration automatically. No wrapper scripts needed for the common case.
 
 **Source-by-source** - what each key unlocks:
@@ -77,6 +79,7 @@ BRAVE_API_KEY=<your-brave-key>
 
 # Optional sources
 SCRAPECREATORS_API_KEY=<your-scrapecreators-key>
+# Set LAST30DAYS_NO_AUTO_AUTH=1 to skip first-run GitHub auto-minting
 INCLUDE_SOURCES=tiktok,instagram
 
 # X authentication (one option only)

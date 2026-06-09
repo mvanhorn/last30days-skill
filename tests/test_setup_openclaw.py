@@ -17,7 +17,7 @@ class TestRunOpenclawSetup:
     def test_all_tools_present_no_keys(self, mock_which):
         """All CLI tools found, no API keys configured."""
         mock_which.side_effect = lambda cmd: f"/usr/bin/{cmd}"
-        config = {}
+        config = {"LAST30DAYS_NO_AUTO_AUTH": "1"}
 
         result = setup_wizard.run_openclaw_setup(config)
 
@@ -35,7 +35,7 @@ class TestRunOpenclawSetup:
                 return None
             return f"/usr/bin/{cmd}"
         mock_which.side_effect = which_side
-        config = {}
+        config = {"LAST30DAYS_NO_AUTO_AUTH": "1"}
 
         result = setup_wizard.run_openclaw_setup(config)
 
@@ -51,6 +51,7 @@ class TestRunOpenclawSetup:
             "XAI_API_KEY": "xai-abc123",
             "BRAVE_API_KEY": "brav-xyz",
             "SCRAPECREATORS_API_KEY": "",  # empty = falsy
+            "LAST30DAYS_NO_AUTO_AUTH": "1",
         }
 
         result = setup_wizard.run_openclaw_setup(config)
@@ -58,6 +59,133 @@ class TestRunOpenclawSetup:
         assert result["keys"]["xai"] is True
         assert result["keys"]["brave"] is True
         assert result["keys"]["scrapecreators"] is False
+
+    @patch("lib.setup_wizard.run_github_auth")
+    @patch("shutil.which")
+    def test_missing_scrapecreators_key_auto_auths_and_persists(self, mock_which, mock_auth, tmp_path):
+        """OpenClaw first-run mints and persists ScrapeCreators when absent."""
+        mock_which.return_value = "/usr/bin/tool"
+        mock_auth.return_value = {
+            "status": "success",
+            "method": "pat",
+            "api_key": "sc_live_auto_minted",
+            "github_username": "octocat",
+        }
+        env_path = tmp_path / ".env"
+
+        result = setup_wizard.run_openclaw_setup({}, env_path=env_path)
+
+        mock_auth.assert_called_once()
+        assert result["keys"]["scrapecreators"] is True
+        assert result["scrapecreators_auto_auth"] == {
+            "attempted": True,
+            "status": "success",
+            "method": "pat",
+            "persisted": True,
+        }
+        content = env_path.read_text()
+        assert "SCRAPECREATORS_API_KEY=sc_live_auto_minted" in content
+
+    @patch("lib.setup_wizard.run_github_auth")
+    @patch("shutil.which")
+    def test_auto_auth_replaces_blank_existing_env_key(self, mock_which, mock_auth, tmp_path):
+        """A blank existing ScrapeCreators key is replaced with the minted key."""
+        mock_which.return_value = "/usr/bin/tool"
+        mock_auth.return_value = {
+            "status": "success",
+            "method": "device",
+            "api_key": "sc_live_from_blank",
+        }
+        env_path = tmp_path / ".env"
+        env_path.write_text("SCRAPECREATORS_API_KEY=\nFROM_BROWSER=chrome\n")
+
+        result = setup_wizard.run_openclaw_setup({}, env_path=env_path)
+
+        assert result["keys"]["scrapecreators"] is True
+        assert result["scrapecreators_auto_auth"]["persisted"] is True
+        assert env_path.read_text().splitlines() == [
+            "SCRAPECREATORS_API_KEY=sc_live_from_blank",
+            "FROM_BROWSER=chrome",
+        ]
+
+    @patch("lib.setup_wizard.run_github_auth")
+    @patch("shutil.which")
+    def test_auto_auth_replaces_quoted_blank_existing_env_key(self, mock_which, mock_auth, tmp_path):
+        """A quoted blank ScrapeCreators key is also replaced."""
+        mock_which.return_value = "/usr/bin/tool"
+        mock_auth.return_value = {
+            "status": "success",
+            "method": "device",
+            "api_key": "sc_live_from_quoted_blank",
+        }
+        env_path = tmp_path / ".env"
+        env_path.write_text('SCRAPECREATORS_API_KEY=""\nFROM_BROWSER=chrome\n')
+
+        result = setup_wizard.run_openclaw_setup({}, env_path=env_path)
+
+        assert result["keys"]["scrapecreators"] is True
+        assert result["scrapecreators_auto_auth"]["persisted"] is True
+        assert env_path.read_text().splitlines() == [
+            "SCRAPECREATORS_API_KEY=sc_live_from_quoted_blank",
+            "FROM_BROWSER=chrome",
+        ]
+
+    @patch("lib.setup_wizard.run_github_auth")
+    @patch("shutil.which")
+    def test_auto_auth_persists_key_with_private_permissions(self, mock_which, mock_auth, tmp_path):
+        """A newly persisted ScrapeCreators key is written mode 0600."""
+        mock_which.return_value = "/usr/bin/tool"
+        mock_auth.return_value = {
+            "status": "success",
+            "method": "pat",
+            "api_key": "sc_live_private_mode",
+        }
+        env_path = tmp_path / ".env"
+
+        result = setup_wizard.run_openclaw_setup({}, env_path=env_path)
+
+        assert result["scrapecreators_auto_auth"]["persisted"] is True
+        assert oct(env_path.stat().st_mode & 0o777) == "0o600"
+
+    @patch("lib.setup_wizard.run_github_auth")
+    @patch("shutil.which")
+    def test_auto_auth_prefers_project_env_path_from_config(self, mock_which, mock_auth, tmp_path):
+        """Project-scoped config receives minted keys instead of the global fallback."""
+        mock_which.return_value = "/usr/bin/tool"
+        mock_auth.return_value = {
+            "status": "success",
+            "method": "pat",
+            "api_key": "sc_live_project_env",
+        }
+        global_env = tmp_path / "global.env"
+        project_env = tmp_path / ".claude" / "last30days.env"
+        project_env.parent.mkdir()
+        project_env.write_text("SCRAPECREATORS_API_KEY=\n")
+        config = {"_CONFIG_FILE": str(project_env)}
+
+        result = setup_wizard.run_openclaw_setup(config, env_path=global_env)
+
+        assert result["scrapecreators_auto_auth"]["persisted"] is True
+        assert "SCRAPECREATORS_API_KEY=sc_live_project_env" in project_env.read_text()
+        assert not global_env.exists()
+
+    @patch("lib.setup_wizard.run_github_auth")
+    @patch("shutil.which")
+    def test_auto_auth_opt_out_leaves_scrapecreators_missing(self, mock_which, mock_auth, tmp_path):
+        """LAST30DAYS_NO_AUTO_AUTH skips the OpenClaw auto-auth attempt."""
+        mock_which.return_value = "/usr/bin/tool"
+        config = {"LAST30DAYS_NO_AUTO_AUTH": "1"}
+
+        result = setup_wizard.run_openclaw_setup(config, env_path=tmp_path / ".env")
+
+        mock_auth.assert_not_called()
+        assert result["keys"]["scrapecreators"] is False
+        assert result["scrapecreators_auto_auth"] == {
+            "attempted": False,
+            "status": "skipped",
+            "reason": "LAST30DAYS_NO_AUTO_AUTH",
+            "persisted": False,
+        }
 
     def test_openclaw_metadata_keeps_scrapecreators_optional(self):
         """OpenClaw metadata should not hard-require the ScrapeCreators key."""
@@ -76,7 +204,7 @@ class TestRunOpenclawSetup:
     def test_x_method_xai(self, mock_which):
         """x_method is 'xai' when XAI_API_KEY is set."""
         mock_which.return_value = None
-        config = {"XAI_API_KEY": "xai-key"}
+        config = {"XAI_API_KEY": "xai-key", "LAST30DAYS_NO_AUTO_AUTH": "1"}
 
         result = setup_wizard.run_openclaw_setup(config)
 
@@ -86,7 +214,7 @@ class TestRunOpenclawSetup:
     def test_x_method_cookies(self, mock_which):
         """x_method is 'cookies' when AUTH_TOKEN + CT0 are set."""
         mock_which.return_value = None
-        config = {"AUTH_TOKEN": "tok", "CT0": "ct0val"}
+        config = {"AUTH_TOKEN": "tok", "CT0": "ct0val", "LAST30DAYS_NO_AUTO_AUTH": "1"}
 
         result = setup_wizard.run_openclaw_setup(config)
 
@@ -96,7 +224,7 @@ class TestRunOpenclawSetup:
     def test_x_method_xai_over_cookies(self, mock_which):
         """XAI takes priority over cookies for x_method."""
         mock_which.return_value = None
-        config = {"XAI_API_KEY": "xai-key", "AUTH_TOKEN": "tok", "CT0": "ct0val"}
+        config = {"XAI_API_KEY": "xai-key", "AUTH_TOKEN": "tok", "CT0": "ct0val", "LAST30DAYS_NO_AUTO_AUTH": "1"}
 
         result = setup_wizard.run_openclaw_setup(config)
 
@@ -106,7 +234,7 @@ class TestRunOpenclawSetup:
     def test_x_method_null_when_nothing(self, mock_which):
         """x_method is None when no X access configured."""
         mock_which.return_value = None
-        config = {}
+        config = {"LAST30DAYS_NO_AUTO_AUTH": "1"}
 
         result = setup_wizard.run_openclaw_setup(config)
 
@@ -116,7 +244,7 @@ class TestRunOpenclawSetup:
     def test_output_is_json_serializable(self, mock_which):
         """Result can be serialized to JSON without errors."""
         mock_which.return_value = "/usr/bin/something"
-        config = {"XAI_API_KEY": "k", "OPENAI_API_KEY": "ok"}
+        config = {"XAI_API_KEY": "k", "OPENAI_API_KEY": "ok", "LAST30DAYS_NO_AUTO_AUTH": "1"}
 
         result = setup_wizard.run_openclaw_setup(config)
         serialized = json.dumps(result)

@@ -3,6 +3,9 @@
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
+import sys
+
+import last30days
 
 import pytest
 
@@ -299,6 +302,16 @@ class TestGetSetupStatusText:
         text = setup_wizard.get_setup_status_text(results)
         assert "Installed yt-dlp via Homebrew" in text
 
+    def test_status_text_scrapecreators_auto_auth_success(self):
+        """Status text reports successful ScrapeCreators auto-auth."""
+        results = {
+            "cookies_found": {},
+            "ytdlp_installed": True,
+            "scrapecreators_auto_auth": {"attempted": True, "status": "success", "method": "pat", "persisted": True},
+        }
+        text = setup_wizard.get_setup_status_text(results)
+        assert "ScrapeCreators API key auto-configured via GitHub pat auth" in text
+
     def test_status_text_install_failed(self):
         """Status text for failed yt-dlp install."""
         results = {
@@ -334,3 +347,35 @@ class TestSetupSubcommand:
         args = parser.parse_args(["AI", "video", "tools"])
         topic = " ".join(args.topic) if args.topic else None
         assert topic.strip().lower() != "setup"
+
+    @patch("lib.setup_wizard.run_auto_setup", return_value={"cookies_found": {}, "ytdlp_installed": True, "ytdlp_action": "already_installed", "env_written": False})
+    @patch("lib.setup_wizard.auto_auth_scrapecreators", return_value={"attempted": True, "status": "success", "method": "device", "persisted": True})
+    @patch("lib.setup_wizard.write_setup_config", return_value=True)
+    @patch("lib.env.CONFIG_FILE", Path("/tmp/last30days-test.env"))
+    def test_default_setup_auto_auths_scrapecreators_before_persisting_setup(self, mock_write, mock_auth, mock_setup, monkeypatch):
+        """Hermes/default first-run setup auto-auths ScrapeCreators when missing."""
+        monkeypatch.setattr(sys, "argv", ["last30days.py", "setup"])
+
+        rc = last30days.main()
+
+        assert rc == 0
+        mock_auth.assert_called_once()
+        auth_config, auth_env_path = mock_auth.call_args.args
+        assert auth_config.get("SCRAPECREATORS_API_KEY") is None
+        assert auth_env_path == Path("/tmp/last30days-test.env")
+        mock_write.assert_called_once_with(Path("/tmp/last30days-test.env"), from_browser="auto")
+
+    @patch("lib.env.get_config", return_value={"_CONFIG_FILE": "/tmp/project/.claude/last30days.env"})
+    @patch("lib.setup_wizard.run_auto_setup", return_value={"cookies_found": {}, "ytdlp_installed": True, "ytdlp_action": "already_installed", "env_written": False})
+    @patch("lib.setup_wizard.auto_auth_scrapecreators", return_value={"attempted": True, "status": "success", "method": "device", "persisted": True})
+    @patch("lib.setup_wizard.write_setup_config", return_value=True)
+    @patch("lib.env.CONFIG_FILE", Path("/tmp/global.env"))
+    def test_default_setup_persists_auto_auth_to_active_project_env(self, mock_write, mock_auth, mock_setup, mock_config, monkeypatch):
+        """Hermes/default setup writes minted keys to the active project env."""
+        monkeypatch.setattr(sys, "argv", ["last30days.py", "setup"])
+
+        rc = last30days.main()
+
+        assert rc == 0
+        assert mock_auth.call_args.args[1] == Path("/tmp/project/.claude/last30days.env")
+        mock_write.assert_called_once_with(Path("/tmp/project/.claude/last30days.env"), from_browser="auto")

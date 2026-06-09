@@ -138,6 +138,34 @@ def test_get_config_global_file_outranks_keychain(clean_env, tmp_path, monkeypat
         cfg = env.get_config()
     assert cfg["XAI_API_KEY"] == "xai-from-file"
     assert cfg["_CONFIG_SOURCE"].startswith("global:")
+    assert cfg["_CONFIG_FILE"] == str(cfg_file)
+
+
+def test_get_config_records_project_env_as_active_config_file(clean_env, tmp_path, monkeypatch):
+    global_file = tmp_path / "global.env"
+    global_file.write_text("SCRAPECREATORS_API_KEY=sc_global\n")
+    project_dir = tmp_path / "project"
+    project_env = project_dir / ".claude" / "last30days.env"
+    project_env.parent.mkdir(parents=True)
+    project_env.write_text("SCRAPECREATORS_API_KEY=\n")
+    monkeypatch.setattr(env, "CONFIG_FILE", global_file)
+    monkeypatch.chdir(project_dir)
+
+    with mock.patch.object(env, "_load_keychain", return_value={}):
+        cfg = env.get_config()
+
+    assert cfg["_CONFIG_SOURCE"] == f"project:{project_env}"
+    assert cfg["_CONFIG_FILE"] == str(project_env)
+    assert cfg["SCRAPECREATORS_API_KEY"] == "sc_global"
+
+
+def test_get_config_loads_no_auto_auth_from_env_file(clean_env, tmp_path, monkeypatch):
+    cfg_file = tmp_path / "global.env"
+    cfg_file.write_text("LAST30DAYS_NO_AUTO_AUTH=1\n")
+    monkeypatch.setattr(env, "CONFIG_FILE", cfg_file)
+    with mock.patch.object(env, "_load_keychain", return_value={}):
+        cfg = env.get_config()
+    assert cfg["LAST30DAYS_NO_AUTO_AUTH"] == "1"
 
 
 def test_get_config_openai_key_can_come_from_keychain(clean_env):
