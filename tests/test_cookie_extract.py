@@ -267,6 +267,21 @@ class TestExtractFirefoxCookies:
                     (".other.com", "other", "val_b"),
                 ],
             },
+            profiles_ini=textwrap.dedent("""\
+                [General]
+                StartWithLastProfile=1
+
+                [Profile0]
+                Name=default
+                IsRelative=1
+                Path=aaa111.default
+                Default=1
+
+                [Profile1]
+                Name=release
+                IsRelative=1
+                Path=bbb222.release
+            """),
         )
 
         with patch(

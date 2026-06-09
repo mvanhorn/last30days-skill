@@ -197,29 +197,29 @@ def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -
     profiles for matching cookies.  This handles multi-profile setups
     where the user is logged into x.com on a non-default profile.
     """
-    tried: list[Path] = []
     default_profile = _find_default_profile(profiles_dir)
+    profiles_tried = 0
     if default_profile is not None:
         result = _query_cookies_db(default_profile / "cookies.sqlite", domain, cookie_names)
         if result is not None:
             return result
-        tried.append(default_profile)
+        profiles_tried = 1
     # Fallback: scan every profile directory for matching cookies
     try:
         for child in sorted(profiles_dir.iterdir()):
             if not child.is_dir():
                 continue
-            if child in tried:
+            if default_profile is not None and child == default_profile:
                 continue
             db = child / "cookies.sqlite"
             if db.is_file():
                 result = _query_cookies_db(db, domain, cookie_names)
                 if result is not None:
                     return result
-                tried.append(child)
+                profiles_tried += 1
     except OSError:
         pass
-    logger.debug("No matching cookies found in %d Firefox profile(s)", len(tried))
+    logger.debug("No matching cookies found in %d Firefox profile(s)", profiles_tried)
     return None
 
 
