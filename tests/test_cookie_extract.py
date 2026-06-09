@@ -1,8 +1,10 @@
 """Tests for browser cookie extraction module."""
 
 import configparser
+import os
 import sqlite3
 import textwrap
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from unittest.mock import patch
 
@@ -11,6 +13,7 @@ import pytest
 from lib.cookie_extract import (
     extract_cookies,
     extract_firefox_cookies,
+    _query_cookies_db,
     _find_default_profile,
     _get_firefox_profiles_dir,
 )
@@ -91,6 +94,34 @@ def mock_firefox_env(tmp_path):
 
 class TestExtractFirefoxCookies:
     """Tests for extract_firefox_cookies."""
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not reliable on Windows")
+    def test_temp_cookie_db_copy_is_owner_only(self, tmp_path):
+        """Copied cookie DB temp files are chmodded owner-only before read."""
+        db_path = tmp_path / "cookies.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE moz_cookies (name TEXT NOT NULL, value TEXT NOT NULL, host TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO moz_cookies (name, value, host) VALUES (?, ?, ?)",
+            ("auth_token", "tok_abc123", ".x.com"),
+        )
+        conn.commit()
+        conn.close()
+        os.chmod(db_path, 0o644)
+
+        real_connect = sqlite3.connect
+
+        def assert_temp_copy_locked(path, *args, **kwargs):
+            if Path(str(path)) != db_path:
+                assert Path(str(path)).stat().st_mode & 0o777 == 0o600
+            return real_connect(path, *args, **kwargs)
+
+        with patch("lib.cookie_extract.sqlite3.connect", side_effect=assert_temp_copy_locked):
+            result = _query_cookies_db(db_path, ".x.com", ["auth_token"])
+
+        assert result == {"auth_token": "tok_abc123"}
 
     def test_valid_cookies_extracted(self, mock_firefox_env):
         """Cookies for the target domain are returned correctly."""
