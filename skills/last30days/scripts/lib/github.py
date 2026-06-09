@@ -73,6 +73,27 @@ def resolve_token(token: Optional[str] = None) -> Optional[str]:
     return _resolve_token(token)
 
 
+# Proxy for GitHub API HTTP, injected from config. On some networks api.github.com
+# is only reachable via a local proxy (e.g. mihomo/Verge TUN bypass); urllib does
+# not honor HTTP(S)_PROXY unless an opener with a ProxyHandler is built. None /
+# "off" = direct connection.
+_proxy: Optional[str] = None
+
+
+def set_proxy(proxy: Optional[str]):
+    """Inject the proxy URL for GitHub API requests, from config."""
+    global _proxy
+    _proxy = (proxy or "").strip() or None
+
+
+def _build_opener() -> urllib.request.OpenerDirector:
+    """Build a urllib opener, routing through the configured proxy when set."""
+    if _proxy and _proxy.lower() not in ("off", "none", "0"):
+        handler = urllib.request.ProxyHandler({"http": _proxy, "https": _proxy})
+        return urllib.request.build_opener(handler)
+    return urllib.request.build_opener()
+
+
 def _fetch_json(
     url: str,
     token: Optional[str] = None,
@@ -88,7 +109,7 @@ def _fetch_json(
 
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _build_opener().open(req, timeout=timeout) as resp:
             body = resp.read().decode("utf-8")
             return json.loads(body)
     except urllib.error.HTTPError as e:

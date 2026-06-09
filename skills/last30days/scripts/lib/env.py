@@ -314,6 +314,8 @@ def get_config() -> dict[str, Any]:
         ('LAST30DAYS_RERANK_MODEL', None),
         ('LAST30DAYS_X_MODEL', None),
         ('LAST30DAYS_X_BACKEND', None),
+        ('LAST30DAYS_X_PROXY', None),
+        ('LAST30DAYS_PROXY', None),
         ('LAST30DAYS_STORE', None),
         ('OPENAI_MODEL_PIN', None),
         ('XAI_MODEL_PIN', None),
@@ -378,6 +380,18 @@ def get_config() -> dict[str, Any]:
         if not config.get(key):
             config[key] = value
             config[f"_{key}_SOURCE"] = "browser"
+
+    # Route proxy-gated sources through a configured proxy (general key, with the
+    # X-specific key as a back-compat fallback). X/bird is also wired in
+    # get_x_source(); GitHub's urllib opener is wired here so any get_config()
+    # consumer picks it up before a search runs.
+    _proxy_url = config.get("LAST30DAYS_PROXY") or config.get("LAST30DAYS_X_PROXY")
+    if _proxy_url:
+        try:
+            from . import github as _github
+            _github.set_proxy(_proxy_url)
+        except Exception:
+            pass
 
     return config
 
@@ -501,6 +515,7 @@ def get_x_source(config: dict[str, Any]) -> str | None:
     has_bird_creds = bool(config.get('AUTH_TOKEN') and config.get('CT0'))
     if has_bird_creds:
         bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
+    bird_x.set_proxy(config.get('LAST30DAYS_PROXY') or config.get('LAST30DAYS_X_PROXY'))
 
     if preferred == 'xai':
         return 'xai' if config.get('XAI_API_KEY') else None
@@ -689,6 +704,7 @@ def get_x_source_status(config: dict[str, Any]) -> dict[str, Any]:
 
     if config.get('AUTH_TOKEN') and config.get('CT0'):
         bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
+    bird_x.set_proxy(config.get('LAST30DAYS_PROXY') or config.get('LAST30DAYS_X_PROXY'))
     bird_status = bird_x.get_bird_status()
     xai_available = bool(config.get('XAI_API_KEY'))
 

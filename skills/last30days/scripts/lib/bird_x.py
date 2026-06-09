@@ -44,6 +44,19 @@ DEPTH_CONFIG = {
 # Module-level credentials injected from .env config
 _credentials: Dict[str, str] = {}
 
+# Proxy URL for the X (bird) Node subprocess, injected from .env config
+# (LAST30DAYS_X_PROXY). Node 24's undici fetch ignores HTTP(S)_PROXY unless
+# NODE_USE_ENV_PROXY=1, so on networks where x.com is only reachable through a
+# local proxy (e.g. mihomo/Verge TUN bypass) we route the subprocess through it.
+# None / "off" = direct connection.
+_x_proxy: Optional[str] = None
+
+
+def set_proxy(proxy: Optional[str]):
+    """Inject the proxy URL the X (bird) Node subprocess should use, from config."""
+    global _x_proxy
+    _x_proxy = proxy or None
+
 
 def set_credentials(auth_token: Optional[str], ct0: Optional[str]):
     """Inject AUTH_TOKEN/CT0 from .env config so Node subprocesses can use them."""
@@ -70,6 +83,13 @@ def _subprocess_env() -> Dict[str, str]:
     # Hard-disable browser-cookie fallback so normal pipeline runs never hit
     # Safari/Chrome Keychain prompts during source detection or search.
     env["BIRD_DISABLE_BROWSER_COOKIES"] = "1"
+    # Route the X fetch through a configured proxy when set. Node 24+ undici only
+    # honors HTTP(S)_PROXY when NODE_USE_ENV_PROXY=1, so set both.
+    proxy = (_x_proxy or env.get("HTTPS_PROXY") or env.get("HTTP_PROXY") or "").strip()
+    if proxy and proxy.lower() not in ("off", "none", "0"):
+        env["HTTPS_PROXY"] = proxy
+        env["HTTP_PROXY"] = proxy
+        env["NODE_USE_ENV_PROXY"] = "1"
     return env
 
 
