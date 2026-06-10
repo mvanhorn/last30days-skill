@@ -311,8 +311,8 @@ def _build_nudge_text(
             bonus_hints.append("Pinterest")
         if bonus_hints:
             free_suggestions.append(
-                f"Your SC key also powers {', '.join(bonus_hints)} and YouTube comments. "
-                "Add them to INCLUDE_SOURCES in your .env to enable."
+                f"Your ScrapeCreators primary path also covers {', '.join(bonus_hints)} and YouTube comments. "
+                "Add them to INCLUDE_SOURCES in your .env to enable; Apify can remain configured as fallback."
             )
 
     if free_suggestions:
@@ -324,8 +324,9 @@ def _build_nudge_text(
     # Bonus sources mention (non-blocking)
     if not has_sc:
         lines.append(
-            "Bonus: TikTok and Instagram are available with a free "
-            "ScrapeCreators key at scrapecreators.com (no affiliation)."
+            "Bonus: TikTok, Instagram, Threads, and Pinterest can use "
+            "ScrapeCreators as the primary path, with Apify available as "
+            "the fallback path when configured."
         )
     else:
         lines.append("last30days has no affiliation with any API provider.")

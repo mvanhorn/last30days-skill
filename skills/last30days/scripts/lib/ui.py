@@ -195,12 +195,14 @@ Some examples of what you can do:
 - "last30 watch AI video tools monthly"
 - "last30 what have you found about AI video?"
 
+TikTok, Instagram, Threads, and Pinterest can use ScrapeCreators as the primary path, with Apify configured as a fallback path when needed.
+
 Just start with "last30" and talk to me like normal.
 """
 
 # Shorter promo for single missing key
 PROMO_SINGLE_KEY = {
-    "reddit": "\n💡 Unlock TikTok and Instagram with SCRAPECREATORS_API_KEY - 100 free credits, no CC - scrapecreators.com\n",
+    "reddit": "\n💡 Unlock TikTok, Instagram, Threads, and Pinterest with SCRAPECREATORS_API_KEY as the primary path. Apify can be configured as a fallback path.\n",
     "x": "\n💡 Unlock X: log into x.com in Firefox or Safari, then re-run. Or add AUTH_TOKEN/CT0 or XAI_API_KEY.\n",
     "web": "\n💡 You can unlock native grounded web search with BRAVE_API_KEY or SERPER_API_KEY.\n",
 }
@@ -500,6 +502,7 @@ def show_diagnostic_banner(diag: dict):
     has_youtube = "youtube" in available_sources
     has_web = "grounding" in available_sources
     has_xiaohongshu = "xiaohongshu" in available_sources
+    social_provider_status = diag.get("social_provider_status") or {}
     x_backend = diag.get("x_backend")
     native_web_backend = diag.get("native_web_backend")
 
@@ -546,6 +549,10 @@ def show_diagnostic_banner(diag: dict):
         if has_xiaohongshu:
             lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Xiaohongshu{Colors.RESET} — API connected + logged in         {Colors.DIM}│{Colors.RESET}")
 
+        pinterest_status = social_provider_status.get("pinterest") if isinstance(social_provider_status, dict) else None
+        if isinstance(pinterest_status, dict) and pinterest_status.get("enabled_but_opt_in"):
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.BLUE}ℹ Pinterest{Colors.RESET} — provider ready, opt-in source        {Colors.DIM}│{Colors.RESET}")
+
         # Web
         if has_web:
             backend = native_web_backend or "native"
@@ -587,6 +594,10 @@ def show_diagnostic_banner(diag: dict):
 
         if has_xiaohongshu:
             lines.append("│  ✅ Xiaohongshu — API connected + logged in         │")
+
+        pinterest_status = social_provider_status.get("pinterest") if isinstance(social_provider_status, dict) else None
+        if isinstance(pinterest_status, dict) and pinterest_status.get("enabled_but_opt_in"):
+            lines.append("│  ℹ Pinterest — provider ready, opt-in source       │")
 
         if has_web:
             backend = native_web_backend or "native"

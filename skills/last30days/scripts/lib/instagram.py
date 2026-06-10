@@ -13,10 +13,11 @@ import sys
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
-from . import dates, http, log
+from . import apify_runner, dates, http, log
 from .relevance import token_overlap_relevance as _compute_relevance
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com"
+APIFY_INSTAGRAM_ACTOR = "apify~instagram-hashtag-scraper"
 
 # Depth configurations: how many results to fetch / captions to extract
 DEPTH_CONFIG = {
@@ -161,7 +162,7 @@ def _parse_date(item: Dict[str, Any]) -> Optional[str]:
     Handles taken_at as ISO string (e.g. "2026-02-26T16:00:00.000Z")
     or unix timestamp.
     """
-    ts = item.get("taken_at")
+    ts = item.get("taken_at") or item.get("timestamp")
     if not ts:
         return None
 
@@ -225,7 +226,7 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         elif isinstance(owner_raw, str):
             author_name = owner_raw
         else:
-            author_name = ""
+            author_name = raw.get("ownerUsername") or ""
 
         # Duration
         duration = raw.get("video_duration")
@@ -262,6 +263,53 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
             "caption_snippet": "",  # populated by fetch_captions
         })
     return items
+
+
+def _search_instagram_apify(
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    tokens: List[str] | None,
+) -> Dict[str, Any]:
+    """Search Instagram keyword results via Apify hashtag actor."""
+    if not apify_runner.dedupe_tokens(tokens):
+        return {"items": [], "error": "No APIFY_API_TOKEN configured", "provider": "apify"}
+
+    depth_cfg = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
+    core_topic = _extract_core_subject(topic)
+    payload = {
+        "hashtags": [_to_hashtag_form(core_topic)],
+        "searchType": "reels",
+        "resultsLimit": depth_cfg["results_per_page"],
+        "keywordSearch": True,
+    }
+    _log(
+        f"Searching Instagram via Apify for '{core_topic}' "
+        f"(depth={depth}, count={depth_cfg['results_per_page']})"
+    )
+
+    try:
+        raw_items = apify_runner.run_actor_dataset_items(
+            APIFY_INSTAGRAM_ACTOR,
+            payload,
+            tokens,
+            timeout=60,
+        )
+    except Exception as e:
+        _log(f"Apify error: {e}")
+        return {"items": [], "error": f"{type(e).__name__}: {e}", "provider": "apify"}
+
+    items = _parse_items(raw_items[:depth_cfg["results_per_page"]], core_topic)
+    in_range = [i for i in items if i["date"] and from_date <= i["date"] <= to_date]
+    if in_range:
+        items = in_range
+    else:
+        _log(f"No Instagram reels within date range, keeping all {len(items)}")
+
+    items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
+    _log(f"Found {len(items)} Instagram reels via Apify")
+    return {"items": items, "provider": "apify"}
 
 
 def _user_reels(
@@ -302,6 +350,7 @@ def search_instagram(
     to_date: str,
     depth: str = "default",
     token: str = None,
+    apify_tokens: List[str] | None = None,
 ) -> Dict[str, Any]:
     """Search Instagram Reels via ScrapeCreators API.
 
@@ -315,8 +364,10 @@ def search_instagram(
     Returns:
         Dict with 'items' list and optional 'error'.
     """
+    if not token and apify_tokens:
+        return _search_instagram_apify(topic, from_date, to_date, depth, apify_tokens)
     if not token:
-        return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
+        return {"items": [], "error": "No Instagram provider token configured"}
 
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     core_topic = _extract_core_subject(topic)
@@ -349,11 +400,14 @@ def search_instagram(
                 _log(f"IG search retry failed: {retry_e}")
                 return {"items": [], "error": f"{type(retry_e).__name__}: {retry_e}"}
         else:
+            if getattr(e, "status_code", None) == 402 and apify_tokens:
+                _log("ScrapeCreators returned 402, falling back to Apify")
+                return _search_instagram_apify(topic, from_date, to_date, depth, apify_tokens)
             _log(f"ScrapeCreators error: {e}")
-            return {"items": [], "error": f"{type(e).__name__}: {e}"}
+            return {"items": [], "error": f"{type(e).__name__}: {e}", "provider": "scrapecreators"}
     except Exception as e:
         _log(f"ScrapeCreators error: {e}")
-        return {"items": [], "error": f"{type(e).__name__}: {e}"}
+        return {"items": [], "error": f"{type(e).__name__}: {e}", "provider": "scrapecreators"}
 
     # Items are in the 'reels' array (ScrapeCreators v2 response)
     raw_items = data.get("reels") or data.get("items") or data.get("data") or []
@@ -378,7 +432,7 @@ def search_instagram(
     items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
 
     _log(f"Found {len(items)} Instagram reels")
-    return {"items": items}
+    return {"items": items, "provider": "scrapecreators"}
 
 
 def fetch_captions(
@@ -469,6 +523,7 @@ def search_and_enrich(
     to_date: str,
     depth: str = "default",
     token: str = None,
+    apify_tokens: List[str] | None = None,
     ig_creators: List[str] | None = None,
 ) -> Dict[str, Any]:
     """Full Instagram search: find reels, then fetch captions for top results.
@@ -493,7 +548,9 @@ def search_and_enrich(
     last_error = None
 
     # Step 0: Creator reels (high-signal, runs first)
-    if ig_creators and token:
+    sc_enabled = bool(token)
+
+    if ig_creators and sc_enabled:
         for creator in ig_creators:
             raw_items = _user_reels(creator, token)
             parsed = _parse_items(raw_items, core_topic)
@@ -506,9 +563,10 @@ def search_and_enrich(
     # Step 1: Multi-query keyword search — run ScrapeCreators for each expanded query
     queries = expand_instagram_queries(topic, depth)
     for q in queries:
-        search_result = search_instagram(q, from_date, to_date, depth, token)
+        search_result = search_instagram(q, from_date, to_date, depth, token, apify_tokens=apify_tokens)
         if search_result.get("error"):
             last_error = search_result["error"]
+        provider = search_result.get("provider", "scrapecreators" if sc_enabled else "apify")
         for item in search_result.get("items", []):
             vid = item.get("video_id", "")
             if vid and vid not in seen_ids:
@@ -522,7 +580,7 @@ def search_and_enrich(
         return {"items": [], "error": last_error}
 
     # Step 2: Fetch captions for top N
-    captions = fetch_captions(items, token, depth)
+    captions = fetch_captions(items, token, depth) if provider == "scrapecreators" else {}
 
     # Step 3: Attach captions to items
     for item in items:
@@ -531,7 +589,7 @@ def search_and_enrich(
         if caption:
             item["caption_snippet"] = caption
 
-    return {"items": items, "error": last_error}
+    return {"items": items, "error": last_error, "provider": provider}
 
 
 def parse_instagram_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:

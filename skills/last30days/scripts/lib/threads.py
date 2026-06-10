@@ -11,10 +11,11 @@ import math
 import re
 from typing import Any, Dict, List, Optional
 
-from . import dates, http, log
+from . import apify_runner, dates, http, log
 from .relevance import token_overlap_relevance as _compute_relevance
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/threads"
+APIFY_THREADS_ACTOR = "automation-lab~threads-scraper"
 
 # Depth configurations: how many results to fetch
 DEPTH_CONFIG = {
@@ -36,6 +37,9 @@ def _extract_core_subject(topic: str) -> str:
         'latest', 'new', 'news', 'update', 'updates',
         'trending', 'hottest', 'popular', 'viral',
         'practices', 'features', 'recommendations', 'advice',
+        'relations', 'relationship', 'status', 'developments',
+        'development', 'overview', 'stance', 'policy', 'tensions',
+        'tension', 'conflict',
     })
     return extract_core_subject(topic, noise=_THREADS_NOISE)
 
@@ -47,7 +51,7 @@ def _parse_date(item: Dict[str, Any]) -> Optional[str]:
     (unix timestamps in Meta APIs), then created_at, published_at, and
     date (ISO 8601 strings). dates.parse_date() handles both.
     """
-    for key in ("taken_at", "create_time", "created_at", "published_at", "date"):
+    for key in ("taken_at", "create_time", "created_at", "published_at", "date", "timestamp"):
         val = item.get(key)
         if val is None:
             continue
@@ -80,14 +84,14 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
             handle = user
             display_name = user
         else:
-            handle = ""
-            display_name = ""
+            handle = raw.get("username") or ""
+            display_name = raw.get("fullName") or handle
 
         # Engagement metrics
-        likes = raw.get("like_count") or raw.get("likes") or 0
-        replies = raw.get("reply_count") or raw.get("replies") or 0
-        reposts = raw.get("repost_count") or raw.get("reposts") or 0
-        quotes = raw.get("quote_count") or raw.get("quotes") or 0
+        likes = raw.get("like_count") or raw.get("likes") or raw.get("likeCount") or 0
+        replies = raw.get("reply_count") or raw.get("replies") or raw.get("replyCount") or 0
+        reposts = raw.get("repost_count") or raw.get("reposts") or raw.get("repostCount") or 0
+        quotes = raw.get("quote_count") or raw.get("quotes") or raw.get("quoteCount") or 0
 
         date_str = _parse_date(raw)
 
@@ -124,12 +128,59 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
     return items
 
 
+def _search_threads_apify(
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    tokens: List[str] | None,
+) -> Dict[str, Any]:
+    """Search Threads posts via Apify actor."""
+    if not apify_runner.dedupe_tokens(tokens):
+        return {"items": [], "error": "No APIFY_API_TOKEN configured", "provider": "apify"}
+
+    config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
+    core_topic = _extract_core_subject(topic)
+    payload = {
+        "mode": "search",
+        "searchQueries": [core_topic],
+        "maxPosts": config["results"],
+        "includeProfile": False,
+        "postedAfter": f"{from_date}T00:00:00Z",
+        "postedBefore": f"{to_date}T23:59:59Z",
+    }
+    _log(f"Searching Threads via Apify for '{core_topic}' (depth={depth}, limit={config['results']})")
+
+    try:
+        raw_items = apify_runner.run_actor_dataset_items(
+            APIFY_THREADS_ACTOR,
+            payload,
+            tokens,
+            timeout=60,
+        )
+    except Exception as e:
+        _log(f"Apify error: {e}")
+        return {"items": [], "error": f"{type(e).__name__}: {e}", "provider": "apify"}
+
+    items = _parse_items(raw_items[:config["results"]], core_topic)
+    in_range = [i for i in items if i["date"] and from_date <= i["date"] <= to_date]
+    if in_range:
+        items = in_range
+    else:
+        _log(f"No Threads posts within date range, keeping all {len(items)}")
+
+    items.sort(key=lambda x: x["engagement"]["likes"], reverse=True)
+    _log(f"Found {len(items)} Threads posts via Apify")
+    return {"items": items, "provider": "apify"}
+
+
 def search_threads(
     topic: str,
     from_date: str,
     to_date: str,
     depth: str = "default",
     token: str = None,
+    apify_tokens: List[str] | None = None,
 ) -> Dict[str, Any]:
     """Search Threads via ScrapeCreators API.
 
@@ -143,8 +194,10 @@ def search_threads(
     Returns:
         Dict with 'items' list and optional 'error'.
     """
+    if not token and apify_tokens:
+        return _search_threads_apify(topic, from_date, to_date, depth, apify_tokens)
     if not token:
-        return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
+        return {"items": [], "error": "No Threads provider token configured"}
 
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     core_topic = _extract_core_subject(topic)
@@ -159,9 +212,15 @@ def search_threads(
             timeout=30,
             retries=2,
         )
+    except http.HTTPError as e:
+        if e.status_code == 402 and apify_tokens:
+            _log("ScrapeCreators returned 402, falling back to Apify")
+            return _search_threads_apify(topic, from_date, to_date, depth, apify_tokens)
+        _log(f"ScrapeCreators error: {e}")
+        return {"items": [], "error": f"{type(e).__name__}: {e}", "provider": "scrapecreators"}
     except Exception as e:
         _log(f"ScrapeCreators error: {e}")
-        return {"items": [], "error": f"{type(e).__name__}: {e}"}
+        return {"items": [], "error": f"{type(e).__name__}: {e}", "provider": "scrapecreators"}
 
     # Extract items from response (try common SC response shapes)
     raw_items = (
@@ -193,7 +252,7 @@ def search_threads(
     items.sort(key=lambda x: x["engagement"]["likes"], reverse=True)
 
     _log(f"Found {len(items)} Threads posts")
-    return {"items": items}
+    return {"items": items, "provider": "scrapecreators"}
 
 
 def parse_threads_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -518,6 +518,17 @@ def _show_runtime_ui(
         source_counts=counts,
         display_sources=display_sources,
     )
+    provider_parts = []
+    for source in display_sources:
+        trace = report.source_provider_runtime.get(source) or {}
+        actual = trace.get("actual_provider_used")
+        if not actual:
+            continue
+        suffix = " (fallback)" if trace.get("fallback_triggered") else ""
+        provider_parts.append(f"{source}={actual}{suffix}")
+    if provider_parts:
+        sys.stderr.write(f"[Providers] {', '.join(provider_parts)}\n")
+        sys.stderr.flush()
     promo = _missing_sources_for_promo(diag)
     # The `web` promo nudges users to set BRAVE_API_KEY / SERPER_API_KEY, which
     # is wrong advice when a hosting reasoning model (Claude Code, Codex,
@@ -547,6 +558,7 @@ def _write_last_run(topic: str, report: "schema.Report") -> None:
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "sources": counts,
             "total": sum(counts.values()),
+            "source_provider_runtime": report.source_provider_runtime,
         }
         (target / "last-run.json").write_text(json.dumps(payload, indent=2))
     except Exception:

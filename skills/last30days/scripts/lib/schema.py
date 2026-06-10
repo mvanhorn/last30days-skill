@@ -153,6 +153,7 @@ class Report:
     ranked_candidates: list[Candidate]
     items_by_source: dict[str, list[SourceItem]]
     errors_by_source: dict[str, str]
+    source_provider_runtime: dict[str, dict[str, Any]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     artifacts: dict[str, Any] = field(default_factory=dict)
 
@@ -164,6 +165,7 @@ class RetrievalBundle:
     items_by_source_and_query: dict[tuple[str, str], list[SourceItem]] = field(default_factory=dict)
     items_by_source: dict[str, list[SourceItem]] = field(default_factory=dict)
     errors_by_source: dict[str, str] = field(default_factory=dict)
+    source_provider_runtime: dict[str, dict[str, Any]] = field(default_factory=dict)
     artifacts: dict[str, Any] = field(default_factory=dict)
 
     def add_items(self, label: str, source: str, items: list[SourceItem]) -> None:
@@ -287,6 +289,7 @@ def report_from_dict(payload: dict[str, Any]) -> Report:
             for source, items in (payload.get("items_by_source") or {}).items()
         },
         errors_by_source=dict(payload.get("errors_by_source") or {}),
+        source_provider_runtime=dict(payload.get("source_provider_runtime") or {}),
         warnings=list(payload.get("warnings") or []),
         artifacts=dict(payload.get("artifacts") or {}),
     )

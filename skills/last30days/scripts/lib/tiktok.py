@@ -9,11 +9,14 @@ API docs: https://scrapecreators.com/docs
 
 import re
 import sys
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Set
 
 from . import dates, http, log
+from . import apify_runner
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/tiktok"
+APIFY_TIKTOK_ACTOR = "clockworks~tiktok-scraper"
 
 # Depth configurations: how many results to fetch / captions to extract
 DEPTH_CONFIG = {
@@ -104,9 +107,38 @@ def _log(msg: str):
     log.source_log("TikTok", msg)
 
 
+def _looks_like_apify_token(token: str | None) -> bool:
+    """Heuristic to distinguish Apify tokens from ScrapeCreators keys."""
+    return bool(token and token.startswith("apify_api_"))
+
+
+def _apify_date_filter(from_date: str, to_date: str) -> str:
+    """Map exact date range to Apify's coarse TikTok search filters."""
+    try:
+        start = datetime.strptime(from_date, "%Y-%m-%d").date()
+        end = datetime.strptime(to_date, "%Y-%m-%d").date()
+        span_days = max(1, (end - start).days + 1)
+    except ValueError:
+        return "PAST_MONTH"
+
+    if span_days <= 1:
+        return "PAST_24_HOURS"
+    if span_days <= 7:
+        return "PAST_WEEK"
+    if span_days <= 31:
+        return "PAST_MONTH"
+    if span_days <= 92:
+        return "PAST_3_MONTHS"
+    if span_days <= 183:
+        return "PAST_6_MONTHS"
+    return "ALL_TIME"
+
+
 def _parse_date(item: Dict[str, Any]) -> Optional[str]:
-    """Parse date from ScrapeCreators TikTok item to YYYY-MM-DD."""
+    """Parse date from TikTok item to YYYY-MM-DD."""
     ts = item.get("create_time")
+    if ts is None:
+        ts = item.get("createTime")
     if ts:
         try:
             return dates.timestamp_to_date(int(ts))
@@ -136,17 +168,33 @@ def _clean_webvtt(text: str) -> str:
 
 
 def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[str, Any]]:
-    """Parse raw TikTok items into normalized dicts."""
+    """Parse ScrapeCreators or Apify TikTok items into normalized dicts."""
     items = []
     for raw in raw_items:
-        video_id = str(raw.get("aweme_id", ""))
-        text = raw.get("desc", "")
+        video_id = str(raw.get("aweme_id") or raw.get("id") or "")
+        text = raw.get("desc") or raw.get("text") or ""
 
         stats = raw.get("statistics") if isinstance(raw.get("statistics"), dict) else {}
-        play_count = stats.get("play_count") if stats.get("play_count") is not None else 0
-        digg_count = stats.get("digg_count") if stats.get("digg_count") is not None else 0
-        comment_count = stats.get("comment_count") if stats.get("comment_count") is not None else 0
-        share_count = stats.get("share_count") if stats.get("share_count") is not None else 0
+        play_count = (
+            stats.get("play_count")
+            if stats.get("play_count") is not None
+            else (raw.get("playCount") or 0)
+        )
+        digg_count = (
+            stats.get("digg_count")
+            if stats.get("digg_count") is not None
+            else (raw.get("diggCount") or 0)
+        )
+        comment_count = (
+            stats.get("comment_count")
+            if stats.get("comment_count") is not None
+            else (raw.get("commentCount") or 0)
+        )
+        share_count = (
+            stats.get("share_count")
+            if stats.get("share_count") is not None
+            else (raw.get("shareCount") or 0)
+        )
 
         author_raw = raw.get("author")
         if isinstance(author_raw, dict):
@@ -154,14 +202,31 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         elif isinstance(author_raw, str):
             author_name = author_raw
         else:
-            author_name = ""
+            author_meta = raw.get("authorMeta") if isinstance(raw.get("authorMeta"), dict) else {}
+            author_name = (
+                author_meta.get("name")
+                or raw.get("authorName")
+                or ""
+            )
 
-        share_url = raw.get("share_url", "")
+        share_url = raw.get("share_url") or raw.get("shareUrl") or raw.get("webVideoUrl") or ""
         text_extra = raw.get("text_extra") or []
-        hashtag_names = [t.get("hashtag_name", "") for t in text_extra
-                         if isinstance(t, dict) and t.get("hashtag_name")]
+        hashtag_names = [
+            t.get("hashtag_name", "")
+            for t in text_extra
+            if isinstance(t, dict) and t.get("hashtag_name")
+        ]
+        if not hashtag_names:
+            hashtags = raw.get("hashtags") or []
+            hashtag_names = [
+                t.get("name", "")
+                for t in hashtags
+                if isinstance(t, dict) and t.get("name")
+            ]
 
         video_raw = raw.get("video")
+        if not isinstance(video_raw, dict):
+            video_raw = raw.get("videoMeta")
         duration = video_raw.get("duration") if isinstance(video_raw, dict) else None
 
         date_str = _parse_date(raw)
@@ -193,6 +258,55 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
             "caption_snippet": "",  # populated by fetch_captions
         })
     return items
+
+
+def _search_tiktok_apify(
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    tokens: List[str] | None,
+) -> Dict[str, Any]:
+    """Search TikTok videos via Apify actor."""
+    if not apify_runner.dedupe_tokens(tokens):
+        return {"items": [], "error": "No APIFY_API_TOKEN configured", "provider": "apify"}
+
+    config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
+    core_topic = _extract_core_subject(topic)
+    _log(
+        f"Searching TikTok via Apify for '{core_topic}' "
+        f"(depth={depth}, count={config['results_per_page']})"
+    )
+
+    payload = {
+        "searchQueries": [core_topic],
+        "searchSection": "/video",
+        "resultsPerPage": config["results_per_page"],
+        "videoSearchSorting": "MOST_RELEVANT",
+        "videoSearchDateFilter": _apify_date_filter(from_date, to_date),
+    }
+
+    try:
+        raw_items = apify_runner.run_actor_dataset_items(
+            APIFY_TIKTOK_ACTOR,
+            payload,
+            tokens,
+            timeout=60,
+        )
+    except Exception as e:
+        _log(f"Apify error: {e}")
+        return {"items": [], "error": f"{type(e).__name__}: {e}", "provider": "apify"}
+
+    items = _parse_items(raw_items[:config["results_per_page"]], core_topic)
+    in_range = [i for i in items if i["date"] and from_date <= i["date"] <= to_date]
+    if in_range:
+        items = in_range
+    else:
+        _log(f"No Apify videos within date range, keeping all {len(items)}")
+
+    items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
+    _log(f"Found {len(items)} TikTok videos via Apify")
+    return {"items": items, "provider": "apify"}
 
 
 def _hashtag_search(
@@ -266,8 +380,9 @@ def search_tiktok(
     to_date: str,
     depth: str = "default",
     token: str = None,
+    apify_tokens: List[str] | None = None,
 ) -> Dict[str, Any]:
-    """Search TikTok via ScrapeCreators API.
+    """Search TikTok via ScrapeCreators, falling back to Apify when needed.
 
     Args:
         topic: Search topic
@@ -279,8 +394,13 @@ def search_tiktok(
     Returns:
         Dict with 'items' list and optional 'error'.
     """
+    if _looks_like_apify_token(token):
+        return _search_tiktok_apify(topic, from_date, to_date, depth, [token, *(apify_tokens or [])])
+
+    if not token and apify_tokens:
+        return _search_tiktok_apify(topic, from_date, to_date, depth, apify_tokens)
     if not token:
-        return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
+        return {"items": [], "error": "No TikTok provider token configured"}
 
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     core_topic = _extract_core_subject(topic)
@@ -295,9 +415,15 @@ def search_tiktok(
             timeout=30,
             retries=2,
         )
+    except http.HTTPError as e:
+        if e.status_code == 402 and apify_tokens:
+            _log("ScrapeCreators returned 402, falling back to Apify")
+            return _search_tiktok_apify(topic, from_date, to_date, depth, apify_tokens)
+        _log(f"ScrapeCreators error: {e}")
+        return {"items": [], "error": f"{type(e).__name__}: {e}", "provider": "scrapecreators"}
     except Exception as e:
         _log(f"ScrapeCreators error: {e}")
-        return {"items": [], "error": f"{type(e).__name__}: {e}"}
+        return {"items": [], "error": f"{type(e).__name__}: {e}", "provider": "scrapecreators"}
 
     # Items are nested under aweme_info
     raw_entries = data.get("search_item_list") or data.get("data") or []
@@ -327,7 +453,7 @@ def search_tiktok(
     items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
 
     _log(f"Found {len(items)} TikTok videos")
-    return {"items": items}
+    return {"items": items, "provider": "scrapecreators"}
 
 
 def fetch_captions(
@@ -408,6 +534,7 @@ def search_and_enrich(
     to_date: str,
     depth: str = "default",
     token: str = None,
+    apify_tokens: List[str] | None = None,
     hashtags: List[str] | None = None,
     creators: List[str] | None = None,
 ) -> Dict[str, Any]:
@@ -433,8 +560,10 @@ def search_and_enrich(
     items: List[Dict[str, Any]] = []
     last_error = None
 
-    # Step 0a: Hashtag search (high-signal, runs first)
-    if hashtags and token:
+    sc_enabled = bool(token and not _looks_like_apify_token(token))
+
+    # Step 0a: Hashtag search (high-signal, ScrapeCreators only)
+    if hashtags and sc_enabled:
         for hashtag in hashtags:
             raw_items = _hashtag_search(hashtag, token)
             parsed = _parse_items(raw_items, core_topic)
@@ -444,8 +573,8 @@ def search_and_enrich(
                     seen_ids.add(vid)
                     items.append(item)
 
-    # Step 0b: Creator profile videos (high-signal)
-    if creators and token:
+    # Step 0b: Creator profile videos (high-signal, ScrapeCreators only)
+    if creators and sc_enabled:
         for creator in creators:
             raw_items = _profile_videos(creator, token)
             parsed = _parse_items(raw_items, core_topic)
@@ -457,10 +586,12 @@ def search_and_enrich(
 
     # Step 1: Multi-query keyword search — run ScrapeCreators for each expanded query
     queries = expand_tiktok_queries(topic, depth)
+    used_provider = "scrapecreators" if sc_enabled else "apify"
     for q in queries:
-        search_result = search_tiktok(q, from_date, to_date, depth, token)
+        search_result = search_tiktok(q, from_date, to_date, depth, token, apify_tokens=apify_tokens)
         if search_result.get("error"):
             last_error = search_result["error"]
+        used_provider = search_result.get("provider", used_provider)
         for item in search_result.get("items", []):
             vid = item.get("video_id", "")
             if vid and vid not in seen_ids:
@@ -474,7 +605,7 @@ def search_and_enrich(
         return {"items": [], "error": last_error}
 
     # Step 2: Fetch captions for top N
-    captions = fetch_captions(items, token, depth)
+    captions = fetch_captions(items, token, depth) if used_provider == "scrapecreators" else {}
 
     # Step 3: Attach captions to items
     for item in items:
@@ -483,7 +614,7 @@ def search_and_enrich(
         if caption:
             item["caption_snippet"] = caption
 
-    return {"items": items, "error": last_error}
+    return {"items": items, "error": last_error, "provider": used_provider}
 
 
 def parse_tiktok_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:

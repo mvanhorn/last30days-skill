@@ -11,9 +11,10 @@ import re
 import sys
 from typing import Any, Dict, List, Optional, Set
 
-from . import dates, http, log
+from . import apify_runner, dates, http, log
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/pinterest"
+APIFY_PINTEREST_ACTOR = "automation-lab~pinterest-scraper"
 
 # Depth configurations: how many results to fetch
 DEPTH_CONFIG = {
@@ -69,7 +70,7 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         elif isinstance(pinner, str):
             author_name = pinner
         else:
-            author_name = ""
+            author_name = raw.get("pinnerUsername") or raw.get("pinnerName") or ""
 
         # URL
         url = raw.get("link") or raw.get("url") or ""
@@ -79,6 +80,15 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         # Board info (container for pins)
         board = raw.get("board") or {}
         board_name = board.get("name", "") if isinstance(board, dict) else ""
+        if not board_name:
+            board_name = raw.get("boardName", "")
+
+        date_str = None
+        created_at = raw.get("createdAt")
+        if created_at:
+            parsed = dates.parse_date(str(created_at))
+            if parsed:
+                date_str = parsed.strftime("%Y-%m-%d")
 
         # Compute relevance
         relevance = _compute_relevance(core_topic, description, [])
@@ -89,6 +99,7 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
             "url": url,
             "author": author_name,
             "board": board_name,
+            "date": date_str,
             "engagement": {
                 "saves": save_count,
                 "comments": comment_count,
@@ -97,6 +108,49 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
             "why_relevant": f"Pinterest: {description[:60]}" if description else f"Pinterest: {core_topic}",
         })
     return items
+
+
+def _search_pinterest_apify(
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    tokens: List[str] | None,
+) -> Dict[str, Any]:
+    """Search Pinterest pins via Apify actor."""
+    if not apify_runner.dedupe_tokens(tokens):
+        return {"items": [], "error": "No APIFY_API_TOKEN configured", "provider": "apify"}
+
+    config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
+    core_topic = _extract_core_subject(topic)
+    payload = {
+        "searchQueries": [core_topic],
+        "maxPins": config["results_per_page"],
+    }
+    _log(
+        f"Searching Pinterest via Apify for '{core_topic}' "
+        f"(depth={depth}, count={config['results_per_page']})"
+    )
+
+    try:
+        raw_items = apify_runner.run_actor_dataset_items(
+            APIFY_PINTEREST_ACTOR,
+            payload,
+            tokens,
+            timeout=60,
+        )
+    except Exception as e:
+        _log(f"Apify error: {e}")
+        return {"items": [], "error": f"{type(e).__name__}: {e}", "provider": "apify"}
+
+    items = _parse_items(raw_items[:config["results_per_page"]], core_topic)
+    in_range = [i for i in items if i.get("date") and from_date <= i["date"] <= to_date]
+    if in_range:
+        items = in_range
+
+    items.sort(key=lambda x: x["engagement"]["saves"], reverse=True)
+    _log(f"Found {len(items)} Pinterest pins via Apify")
+    return {"items": items, "provider": "apify"}
 
 
 def parse_pinterest_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -114,6 +168,7 @@ def search_pinterest(
     to_date: str,
     depth: str = "default",
     token: str = None,
+    apify_tokens: List[str] | None = None,
 ) -> Dict[str, Any]:
     """Search Pinterest via ScrapeCreators API.
 
@@ -127,8 +182,10 @@ def search_pinterest(
     Returns:
         Dict with 'items' list and optional 'error'.
     """
+    if not token and apify_tokens:
+        return _search_pinterest_apify(topic, from_date, to_date, depth, apify_tokens)
     if not token:
-        return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
+        return {"items": [], "error": "No Pinterest provider token configured"}
 
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     core_topic = _extract_core_subject(topic)
@@ -143,9 +200,15 @@ def search_pinterest(
             timeout=30,
             retries=2,
         )
+    except http.HTTPError as e:
+        if e.status_code == 402 and apify_tokens:
+            _log("ScrapeCreators returned 402, falling back to Apify")
+            return _search_pinterest_apify(topic, from_date, to_date, depth, apify_tokens)
+        _log(f"ScrapeCreators error: {e}")
+        return {"items": [], "error": f"{type(e).__name__}: {e}", "provider": "scrapecreators"}
     except Exception as e:
         _log(f"ScrapeCreators error: {e}")
-        return {"items": [], "error": f"{type(e).__name__}: {e}"}
+        return {"items": [], "error": f"{type(e).__name__}: {e}", "provider": "scrapecreators"}
 
     # Extract items from response - try common SC response shapes
     raw_items = data.get("pins") or data.get("results") or data.get("data") or data.get("items") or []
@@ -160,4 +223,4 @@ def search_pinterest(
     items.sort(key=lambda x: x["engagement"]["saves"], reverse=True)
 
     _log(f"Found {len(items)} Pinterest pins")
-    return {"items": items}
+    return {"items": items, "provider": "scrapecreators"}

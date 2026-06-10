@@ -40,6 +40,7 @@ KEYCHAIN_SERVICE_PREFIX = "last30days-"
 KEYCHAIN_KEYS = (
     "OPENAI_API_KEY", "XAI_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
     "GOOGLE_GENAI_API_KEY", "SCRAPECREATORS_API_KEY", "APIFY_API_TOKEN",
+    "APIFY_API_TOKEN_BACKUP",
     "AUTH_TOKEN", "CT0", "BSKY_HANDLE", "BSKY_APP_PASSWORD",
     "TRUTHSOCIAL_TOKEN", "BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY",
     "OPENROUTER_API_KEY", "PARALLEL_API_KEY", "XQUIK_API_KEY",
@@ -319,6 +320,7 @@ def get_config() -> dict[str, Any]:
         ('XAI_MODEL_PIN', None),
         ('SCRAPECREATORS_API_KEY', None),
         ('APIFY_API_TOKEN', None),
+        ('APIFY_API_TOKEN_BACKUP', None),
         ('AUTH_TOKEN', None),
         ('CT0', None),
         ('BSKY_HANDLE', None),
@@ -594,12 +596,22 @@ def is_tiktok_available(config: dict[str, Any]) -> bool:
 
     Returns True if SCRAPECREATORS_API_KEY or APIFY_API_TOKEN is set.
     """
-    return bool(config.get('SCRAPECREATORS_API_KEY') or config.get('APIFY_API_TOKEN'))
+    return bool(config.get('SCRAPECREATORS_API_KEY') or get_apify_tokens(config))
 
 
 def get_tiktok_token(config: dict[str, Any]) -> str:
     """Get TikTok API token, preferring ScrapeCreators over legacy Apify."""
     return config.get('SCRAPECREATORS_API_KEY') or config.get('APIFY_API_TOKEN') or ''
+
+
+def get_apify_tokens(config: dict[str, Any]) -> list[str]:
+    """Return configured Apify tokens in priority order."""
+    tokens: list[str] = []
+    for key in ('APIFY_API_TOKEN', 'APIFY_API_TOKEN_BACKUP'):
+        value = (config.get(key) or '').strip()
+        if value and value not in tokens:
+            tokens.append(value)
+    return tokens
 
 
 def _parse_include_sources(config: dict[str, Any]) -> set[str]:
@@ -616,16 +628,15 @@ def is_threads_available(config: dict[str, Any]) -> bool:
     cost shape, so the same default-on rule applies. Suppress via
     EXCLUDE_SOURCES=threads.
     """
-    return bool(config.get('SCRAPECREATORS_API_KEY'))
+    return bool(config.get('SCRAPECREATORS_API_KEY') or get_apify_tokens(config))
 
 
 def is_instagram_available(config: dict[str, Any]) -> bool:
     """Check if Instagram source is available (ScrapeCreators).
 
-    Returns True if SCRAPECREATORS_API_KEY is set.
-    Instagram uses the same key as TikTok.
+    Returns True if SCRAPECREATORS_API_KEY or APIFY_API_TOKEN is set.
     """
-    return bool(config.get('SCRAPECREATORS_API_KEY'))
+    return bool(config.get('SCRAPECREATORS_API_KEY') or get_apify_tokens(config))
 
 
 def get_instagram_token(config: dict[str, Any]) -> str:
@@ -722,7 +733,7 @@ def is_pinterest_available(config: dict[str, Any]) -> bool:
     INCLUDE_SOURCES (or requested_sources at the pipeline level).  Pinterest
     is opt-in because not every topic benefits from visual pin results.
     """
-    return bool(config.get('SCRAPECREATORS_API_KEY'))
+    return bool(config.get('SCRAPECREATORS_API_KEY') or get_apify_tokens(config))
 
 
 def get_pinterest_token(config: dict[str, Any]) -> str:

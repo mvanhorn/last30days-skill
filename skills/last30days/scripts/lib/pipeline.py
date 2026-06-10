@@ -99,9 +99,10 @@ def normalize_requested_sources(sources: list[str] | None) -> list[str] | None:
 
 def available_sources(config: dict[str, Any], requested_sources: list[str] | None = None) -> list[str]:
     available: list[str] = []
+    apify_tokens = env.get_apify_tokens(config)
     # reddit_public needs no API key - always available
     available.append("reddit")
-    if config.get("SCRAPECREATORS_API_KEY"):
+    if config.get("SCRAPECREATORS_API_KEY") or apify_tokens:
         available.extend(["tiktok", "instagram"])
     if env.get_x_source(config):
         available.append("x")
@@ -138,6 +139,143 @@ def available_sources(config: dict[str, Any], requested_sources: list[str] | Non
     return available
 
 
+def _social_provider_status(config: dict[str, Any]) -> dict[str, Any]:
+    """Describe which provider each social source will use at runtime."""
+    has_sc = bool(config.get("SCRAPECREATORS_API_KEY"))
+    apify_tokens = env.get_apify_tokens(config)
+    has_apify = bool(apify_tokens)
+
+    def _primary(sc_first: bool = True) -> str | None:
+        if sc_first and has_sc:
+            return "scrapecreators"
+        if has_apify:
+            return "apify"
+        if has_sc:
+            return "scrapecreators"
+        return None
+
+    def _fallback(sc_first: bool = True) -> str | None:
+        primary = _primary(sc_first)
+        if primary == "scrapecreators" and has_apify:
+            return "apify"
+        if primary == "apify" and has_sc:
+            return "scrapecreators"
+        return None
+
+    return {
+        "reddit": {
+            "enabled": True,
+            "primary": "keyless_public",
+            "fallback": "rss_shreddit",
+            "apify_token_count": 0,
+        },
+        "tiktok": {
+            "enabled": env.is_tiktok_available(config),
+            "primary": _primary(sc_first=True),
+            "fallback": _fallback(sc_first=True),
+            "apify_token_count": len(apify_tokens),
+        },
+        "instagram": {
+            "enabled": env.is_instagram_available(config),
+            "primary": _primary(sc_first=True),
+            "fallback": _fallback(sc_first=True),
+            "apify_token_count": len(apify_tokens),
+        },
+        "threads": {
+            "enabled": env.is_threads_available(config),
+            "primary": _primary(sc_first=True),
+            "fallback": _fallback(sc_first=True),
+            "apify_token_count": len(apify_tokens),
+        },
+        "pinterest": {
+            "enabled": env.is_pinterest_available(config),
+            "enabled_but_opt_in": True,
+            "primary": _primary(sc_first=True),
+            "fallback": _fallback(sc_first=True),
+            "apify_token_count": len(apify_tokens),
+        },
+    }
+
+
+def _configured_source_provider_runtime(source: str, config: dict[str, Any]) -> dict[str, Any]:
+    """Return configured primary/fallback provider info for one source."""
+    social = _social_provider_status(config)
+    if source in social:
+        status = dict(social[source])
+        return {
+            "configured_primary": status.get("primary"),
+            "configured_fallback": status.get("fallback"),
+            "enabled_but_opt_in": bool(status.get("enabled_but_opt_in")),
+        }
+    if source == "youtube":
+        primary = "yt_dlp" if which("yt-dlp") else "scrapecreators" if env.is_youtube_sc_available(config) else None
+        fallback = "scrapecreators" if primary == "yt_dlp" and env.is_youtube_sc_available(config) else None
+        return {"configured_primary": primary, "configured_fallback": fallback}
+    if source == "x":
+        backend = env.get_x_source(config)
+        return {"configured_primary": backend or None, "configured_fallback": None}
+    if source == "grounding":
+        backend = None
+        if config.get("BRAVE_API_KEY"):
+            backend = "brave"
+        elif config.get("EXA_API_KEY"):
+            backend = "exa"
+        elif config.get("SERPER_API_KEY"):
+            backend = "serper"
+        elif config.get("PARALLEL_API_KEY"):
+            backend = "parallel"
+        return {"configured_primary": backend, "configured_fallback": None}
+    return {"configured_primary": source, "configured_fallback": None}
+
+
+def _build_source_provider_trace(
+    source: str,
+    config: dict[str, Any],
+    actual_provider_used: str | None,
+    *,
+    fallback_triggered: bool | None = None,
+) -> dict[str, Any]:
+    """Construct runtime trace for the provider actually used by a source."""
+    configured = _configured_source_provider_runtime(source, config)
+    configured_primary = configured.get("configured_primary")
+    configured_fallback = configured.get("configured_fallback")
+    if fallback_triggered is None:
+        fallback_triggered = bool(
+            actual_provider_used
+            and configured_fallback
+            and actual_provider_used == configured_fallback
+            and actual_provider_used != configured_primary
+        )
+    trace = {
+        "configured_primary": configured_primary,
+        "configured_fallback": configured_fallback,
+        "actual_provider_used": actual_provider_used,
+        "fallback_triggered": bool(fallback_triggered),
+    }
+    if configured.get("enabled_but_opt_in"):
+        trace["enabled_but_opt_in"] = True
+    return trace
+
+
+def _merge_stream_artifact(bundle: schema.RetrievalBundle, artifact: dict[str, Any]) -> None:
+    """Merge source/runtime artifacts from one retrieval stream into the bundle."""
+    if not artifact:
+        return
+    if artifact.get("grounding"):
+        bundle.artifacts.setdefault("grounding", []).append(artifact["grounding"])
+    trace = artifact.get("source_provider_runtime")
+    if isinstance(trace, dict):
+        source = trace.get("source")
+        if source:
+            payload = dict(trace)
+            payload.pop("source", None)
+            existing = bundle.source_provider_runtime.get(source) or {}
+            merged = {**existing, **payload}
+            if existing.get("fallback_triggered") or payload.get("fallback_triggered"):
+                merged["fallback_triggered"] = True
+            bundle.source_provider_runtime[source] = merged
+
+
 def diagnose(config: dict[str, Any], requested_sources: list[str] | None = None) -> dict[str, Any]:
     requested_sources = normalize_requested_sources(requested_sources)
     google_key = _google_key(config)
@@ -157,6 +295,7 @@ def diagnose(config: dict[str, Any], requested_sources: list[str] | None = None)
         "xai": bool(config.get("XAI_API_KEY")),
         "openrouter": bool(config.get("OPENROUTER_API_KEY")),
     }
+    apify_tokens = env.get_apify_tokens(config)
     return {
         "providers": providers_status,
         "local_mode": not any(providers_status.values()),
@@ -167,7 +306,10 @@ def diagnose(config: dict[str, Any], requested_sources: list[str] | None = None)
         "bird_username": x_status["bird_username"],
         "native_web_backend": native_web_backend,
         "has_scrapecreators": bool(config.get("SCRAPECREATORS_API_KEY")),
+        "has_apify": bool(apify_tokens),
+        "apify_token_count": len(apify_tokens),
         "has_github": bool(config.get("GITHUB_TOKEN") or which("gh")),
+        "social_provider_status": _social_provider_status(config),
         "available_sources": available_sources(config, requested_sources),
     }
 
@@ -410,8 +552,7 @@ def run(
             )
             normalized = normalized[: settings["per_stream_limit"]]
             bundle.add_items(subquery.label, source, normalized)
-            if artifact:
-                bundle.artifacts.setdefault("grounding", []).append(artifact)
+            _merge_stream_artifact(bundle, artifact)
 
     # Phase 2: supplemental entity-based searches
     _run_supplemental_searches(
@@ -494,6 +635,7 @@ def run(
         ranked_candidates=ranked_candidates,
         items_by_source=items_by_source,
         errors_by_source=bundle.errors_by_source,
+        source_provider_runtime=bundle.source_provider_runtime,
         warnings=warnings,
         artifacts=bundle.artifacts,
     )
@@ -796,8 +938,8 @@ def _retry_thin_sources(
         weight=0.3,
     )
 
-    def _retry_one_source(source: str) -> tuple[str, list[schema.SourceItem]]:
-        raw_items, _artifact = _retrieve_stream(
+    def _retry_one_source(source: str) -> tuple[str, list[schema.SourceItem], dict]:
+        raw_items, artifact = _retrieve_stream(
             topic=topic,
             subquery=retry_subquery,
             source=source,
@@ -819,7 +961,7 @@ def _retry_thin_sources(
             freshness_mode=plan.freshness_mode,
             ranking_query=retry_subquery.ranking_query,
         )
-        return source, normalized[:settings["per_stream_limit"]]
+        return source, normalized[:settings["per_stream_limit"]], artifact
 
     retryable = [s for s in thin_sources if s not in rate_limited_sources]
 
@@ -829,7 +971,7 @@ def _retry_thin_sources(
         for future in as_completed(futures):
             source = futures[future]
             try:
-                source, normalized = future.result()
+                source, normalized, artifact = future.result()
                 existing_urls = {item.url for item in bundle.items_by_source.get(source, []) if item.url}
                 new_items = [item for item in normalized if item.url not in existing_urls]
 
@@ -837,6 +979,7 @@ def _retry_thin_sources(
                     bundle.items_by_source.setdefault(source, []).extend(new_items)
                     primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
                     bundle.items_by_source_and_query.setdefault((primary_label, source), []).extend(new_items)
+                _merge_stream_artifact(bundle, artifact)
             except Exception as exc:
                 print(f"[Pipeline] Retry failed for {source}: {type(exc).__name__}: {exc}", file=sys.stderr)
 
@@ -867,8 +1010,16 @@ def _retrieve_stream(
     if mock:
         return _mock_stream_results(source, subquery)
     if source == "grounding":
-        return grounding.web_search(
+        items, grounding_artifact = grounding.web_search(
             subquery.search_query, date_range, config, backend=web_backend)
+        actual_provider = grounding_artifact.get("label") if grounding_artifact else None
+        return items, {
+            "grounding": grounding_artifact,
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, actual_provider),
+            },
+        }
     if source == "reddit":
         # Use raw_topic so expand_reddit_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
@@ -880,7 +1031,14 @@ def _retrieve_stream(
                 subreddits=subreddits,
             )
             if public_results:
-                return public_results, {}
+                return public_results, {
+                    "source_provider_runtime": {
+                        "source": source,
+                        **_build_source_provider_trace(
+                            source, config, "keyless_public", fallback_triggered=False,
+                        ),
+                    },
+                }
         except Exception as exc:
             sys.stderr.write(
                 f"[Reddit] Public search failed ({type(exc).__name__}: {exc})"
@@ -900,7 +1058,14 @@ def _retrieve_stream(
                     token=config.get("SCRAPECREATORS_API_KEY"),
                     subreddits=subreddits,
                 )
-                return reddit.parse_reddit_response(result), {}
+                return reddit.parse_reddit_response(result), {
+                    "source_provider_runtime": {
+                        "source": source,
+                        **_build_source_provider_trace(
+                            source, config, "scrapecreators", fallback_triggered=True,
+                        ),
+                    },
+                }
             except Exception as exc:
                 sys.stderr.write(
                     f"[Reddit] ScrapeCreators backup also failed "
@@ -911,7 +1076,12 @@ def _retrieve_stream(
         backend = runtime.x_search_backend or env.get_x_source(config)
         if backend == "bird":
             result = bird_x.search_x(subquery.search_query, from_date, to_date, depth=depth)
-            return bird_x.parse_bird_response(result, query=subquery.search_query), {}
+            return bird_x.parse_bird_response(result, query=subquery.search_query), {
+                "source_provider_runtime": {
+                    "source": source,
+                    **_build_source_provider_trace(source, config, "bird"),
+                },
+            }
         if backend == "xai":
             model = config.get("LAST30DAYS_X_MODEL") or config.get("XAI_MODEL_PIN") or providers.XAI_DEFAULT
             result = xai_x.search_x(
@@ -922,10 +1092,20 @@ def _retrieve_stream(
                 to_date,
                 depth=depth,
             )
-            return xai_x.parse_x_response(result), {}
+            return xai_x.parse_x_response(result), {
+                "source_provider_runtime": {
+                    "source": source,
+                    **_build_source_provider_trace(source, config, "xai"),
+                },
+            }
         if backend == "xurl":
             result = xurl_x.search_x(subquery.search_query, depth=depth)
-            return xurl_x.parse_x_response(result, topic=subquery.search_query), {}
+            return xurl_x.parse_x_response(result, topic=subquery.search_query), {
+                "source_provider_runtime": {
+                    "source": source,
+                    **_build_source_provider_trace(source, config, "xurl"),
+                },
+            }
         raise RuntimeError("No X backend is available.")
     if source == "youtube":
         # Use raw_topic so expand_youtube_queries() generates diverse variants
@@ -948,7 +1128,18 @@ def _retrieve_stream(
         if items and env.is_youtube_comments_available(config):
             sc_token = config.get("SCRAPECREATORS_API_KEY", "")
             youtube_yt.enrich_with_comments(items, token=sc_token)
-        return items, {}
+        actual_provider = "yt_dlp" if which("yt-dlp") and items else "scrapecreators" if items else None
+        return items, {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(
+                    source,
+                    config,
+                    actual_provider,
+                    fallback_triggered=bool(actual_provider == "scrapecreators" and which("yt-dlp")),
+                ),
+            },
+        }
     if source == "tiktok":
         # Use raw_topic so expand_tiktok_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
@@ -959,6 +1150,7 @@ def _retrieve_stream(
             to_date,
             depth=depth,
             token=env.get_tiktok_token(config),
+            apify_tokens=env.get_apify_tokens(config),
             hashtags=tiktok_hashtags,
             creators=tiktok_creators,
         )
@@ -966,7 +1158,12 @@ def _retrieve_stream(
         if items and env.is_tiktok_comments_available(config):
             sc_token = config.get("SCRAPECREATORS_API_KEY", "")
             tiktok.enrich_with_comments(items, token=sc_token)
-        return items, {}
+        return items, {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, result.get("provider")),
+            },
+        }
     if source == "instagram":
         # Use raw_topic so expand_instagram_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
@@ -977,35 +1174,73 @@ def _retrieve_stream(
             to_date,
             depth=depth,
             token=env.get_instagram_token(config),
+            apify_tokens=env.get_apify_tokens(config),
             ig_creators=ig_creators,
         )
-        return instagram.parse_instagram_response(result), {}
+        return instagram.parse_instagram_response(result), {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, result.get("provider")),
+            },
+        }
     if source == "hackernews":
         result = hackernews.search_hackernews(subquery.search_query, from_date, to_date, depth=depth)
-        return hackernews.parse_hackernews_response(result, query=subquery.search_query), {}
+        return hackernews.parse_hackernews_response(result, query=subquery.search_query), {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, "hn_algolia"),
+            },
+        }
     if source == "digg":
         result = digg.search_digg(subquery.search_query, from_date, to_date, depth=depth)
         items = digg.parse_digg_response(result, query=subquery.search_query)
         # Enrichment with attached X posts is deferred to
         # _finalize_items_by_source so it runs on the items that actually
         # survive dedupe rather than on top-K of the raw fanout.
-        return items, {}
+        return items, {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, "digg_pp_cli"),
+            },
+        }
     if source == "bluesky":
         result = bluesky.search_bluesky(subquery.search_query, from_date, to_date, depth=depth, config=config)
-        return bluesky.parse_bluesky_response(result), {}
+        return bluesky.parse_bluesky_response(result), {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, "bluesky_api"),
+            },
+        }
     if source == "threads":
+        threads_query = raw_topic or subquery.search_query
         result = threads.search_threads(
-            subquery.search_query, from_date, to_date,
+            threads_query, from_date, to_date,
             depth=depth,
             token=config.get("SCRAPECREATORS_API_KEY"),
+            apify_tokens=env.get_apify_tokens(config),
         )
-        return threads.parse_threads_response(result), {}
+        return threads.parse_threads_response(result), {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, result.get("provider")),
+            },
+        }
     if source == "truthsocial":
         result = truthsocial.search_truthsocial(subquery.search_query, from_date, to_date, depth=depth, config=config)
-        return truthsocial.parse_truthsocial_response(result), {}
+        return truthsocial.parse_truthsocial_response(result), {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, "truthsocial_browser_token"),
+            },
+        }
     if source == "polymarket":
         result = polymarket.search_polymarket(subquery.search_query, from_date, to_date, depth=depth)
-        return polymarket.parse_polymarket_response(result, topic=subquery.search_query), {}
+        return polymarket.parse_polymarket_response(result, topic=subquery.search_query), {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, "polymarket_gamma"),
+            },
+        }
     if source == "github":
         # Resolve once at the pipeline boundary so search and enrich
         # share the result; otherwise each call would re-run the env
@@ -1014,31 +1249,63 @@ def _retrieve_stream(
         response = github.search_github(subquery.search_query, from_date, to_date, depth=depth, token=token)
         items = github.parse_github_response(response)
         items = github.enrich_with_comments(items, depth=depth, token=token)
-        return items, {}
+        return items, {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, "github_api"),
+            },
+        }
     if source == "pinterest":
+        pinterest_query = raw_topic or subquery.search_query
         result = pinterest.search_pinterest(
-            subquery.search_query, from_date, to_date,
+            pinterest_query, from_date, to_date,
             depth=depth,
             token=env.get_pinterest_token(config),
+            apify_tokens=env.get_apify_tokens(config),
         )
-        return pinterest.parse_pinterest_response(result), {}
+        return pinterest.parse_pinterest_response(result), {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, result.get("provider")),
+            },
+        }
     if source == "xiaohongshu":
-        return xiaohongshu_api.search_feeds(
+        items = xiaohongshu_api.search_feeds(
             subquery.search_query,
             from_date,
             to_date,
             env.get_xiaohongshu_api_base(config),
             depth=depth,
-        ), {}
+        )
+        return items, {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, "xiaohongshu_http_api"),
+            },
+        }
     if source == "perplexity":
-        return perplexity.search(subquery.search_query, date_range, config, deep=config.get("_deep_research", False))
+        items, artifact = perplexity.search(
+            subquery.search_query, date_range, config, deep=config.get("_deep_research", False),
+        )
+        return items, {
+            **artifact,
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, "perplexity_sonar"),
+            },
+        }
     if source == "xquik":
         result = xquik.search_xquik(
             subquery.search_query, from_date, to_date,
             depth=depth,
             token=env.get_xquik_token(config),
         )
-        return xquik.parse_xquik_response(result), {}
+        return xquik.parse_xquik_response(result), {
+            "source_provider_runtime": {
+                "source": source,
+                **_build_source_provider_trace(source, config, "xquik"),
+            },
+        }
     raise RuntimeError(f"Unsupported source: {source}")
 
 
