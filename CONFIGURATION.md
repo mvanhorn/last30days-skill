@@ -103,6 +103,16 @@ The skill defaults to `api.bsky.app` for `searchPosts`, which is the canonical a
 BSKY_SEARCH_HOST=api.bsky.app   # default — change only if Bluesky moves
 ```
 
+### Default source set (`LAST30DAYS_DEFAULT_SEARCH`)
+
+By default the engine decides the source set per query (everything available, minus `EXCLUDE_SOURCES`). To pin a **fixed** source set for every run without passing `--search` each time — and without patching `SKILL.md`, which a release would overwrite — set:
+
+```bash
+LAST30DAYS_DEFAULT_SEARCH=reddit,x,youtube,hn
+```
+
+Accepts the same comma-separated names and aliases as `--search` (`web` → grounding, `hn` → hackernews, `bsky` → bluesky). Precedence: an explicit `--search` on the command line always wins; `LAST30DAYS_DEFAULT_SEARCH` applies only when the flag is omitted; when neither is set, per-query behavior is unchanged. `INCLUDE_SOURCES` / `EXCLUDE_SOURCES` keep their existing additive/subtractive roles on whichever set is selected.
+
 ---
 
 ## Reasoning provider priority

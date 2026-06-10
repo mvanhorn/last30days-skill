@@ -74,7 +74,7 @@ def _cleanup_children() -> None:
 atexit.register(_cleanup_children)
 
 
-def parse_search_flag(raw: str) -> list[str]:
+def parse_search_flag(raw: str, flag_name: str = "--search") -> list[str]:
     sources = []
     for source in raw.split(","):
         source = source.strip().lower()
@@ -82,12 +82,26 @@ def parse_search_flag(raw: str) -> list[str]:
             continue
         normalized = pipeline.SEARCH_ALIAS.get(source, source)
         if normalized not in pipeline.MOCK_AVAILABLE_SOURCES:
-            raise SystemExit(f"Unknown search source: {source}")
+            raise SystemExit(f"Unknown search source in {flag_name}: {source}")
         if normalized not in sources:
             sources.append(normalized)
     if not sources:
-        raise SystemExit("--search requires at least one source.")
+        raise SystemExit(f"{flag_name} requires at least one source.")
     return sources
+
+
+def resolve_requested_sources(args_search: str | None, config: dict) -> list[str] | None:
+    """Resolve the requested source set: explicit --search wins, then the
+    LAST30DAYS_DEFAULT_SEARCH config key (env var or .env file), then None
+    (per-query default behavior). The config fallback lets users pin a fixed
+    source set that survives upgrades without patching SKILL.md (#442).
+    """
+    if args_search:
+        return parse_search_flag(args_search)
+    default_search = (config.get("LAST30DAYS_DEFAULT_SEARCH") or "").strip()
+    if default_search:
+        return parse_search_flag(default_search, flag_name="LAST30DAYS_DEFAULT_SEARCH")
+    return None
 
 
 def slugify(value: str) -> str:
@@ -597,7 +611,7 @@ def main() -> int:
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")
         return 0
 
-    requested_sources = parse_search_flag(args.search) if args.search else None
+    requested_sources = resolve_requested_sources(args.search, config)
     diag = pipeline.diagnose(config, requested_sources)
 
     if args.diagnose:

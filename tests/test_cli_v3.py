@@ -95,6 +95,34 @@ class CliV3Tests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             cli.parse_search_flag(" , ")
 
+    def test_resolve_requested_sources_flag_wins_over_config_default(self):
+        sources = cli.resolve_requested_sources(
+            "reddit", {"LAST30DAYS_DEFAULT_SEARCH": "x,youtube"},
+        )
+        self.assertEqual(["reddit"], sources)
+
+    def test_resolve_requested_sources_falls_back_to_config_default(self):
+        sources = cli.resolve_requested_sources(
+            None, {"LAST30DAYS_DEFAULT_SEARCH": "web, reddit, hn"},
+        )
+        self.assertEqual(["grounding", "reddit", "hackernews"], sources)
+
+    def test_resolve_requested_sources_none_when_neither_set(self):
+        self.assertIsNone(cli.resolve_requested_sources(None, {}))
+        self.assertIsNone(
+            cli.resolve_requested_sources(None, {"LAST30DAYS_DEFAULT_SEARCH": ""})
+        )
+        self.assertIsNone(
+            cli.resolve_requested_sources(None, {"LAST30DAYS_DEFAULT_SEARCH": "  "})
+        )
+
+    def test_resolve_requested_sources_invalid_config_default_names_env_var(self):
+        with self.assertRaises(SystemExit) as exc:
+            cli.resolve_requested_sources(
+                None, {"LAST30DAYS_DEFAULT_SEARCH": "notasource"},
+            )
+        self.assertIn("LAST30DAYS_DEFAULT_SEARCH", str(exc.exception))
+
     def test_build_parser_accepts_days_alias_and_preserves_topic_tokens(self):
         parser = cli.build_parser()
         args, extra = parser.parse_known_args(["--days", "7", "biosecurity", "ai", "agents"])
