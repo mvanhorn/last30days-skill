@@ -80,6 +80,60 @@ class LastRunStateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Last run: "custom hook query"', result.stdout)
 
+    def test_hook_exits_0_when_no_last_run(self):
+        """Script exits 0 when ScrapeCreators configured but no prior run (last-run.json absent)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["HOME"] = str(Path(tmp) / "home")
+            env["SETUP_COMPLETE"] = "true"
+            env["ENV_SCRAPECREATORS_API_KEY"] = "sk-test"
+
+            result = subprocess.run(
+                ["bash", "hooks/scripts/check-config.sh"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Ready —", result.stdout)
+            self.assertNotIn("Last run:", result.stdout)
+
+    def test_hook_shows_last_run_when_json_exists(self):
+        """Script exits 0 and shows last-run summary when last-run.json exists."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp) / "custom-config"
+            config_dir.mkdir()
+            (config_dir / "last-run.json").write_text(
+                json.dumps(
+                    {
+                        "topic": "prior research",
+                        "timestamp": "2026-06-01T12:00:00+00:00",
+                        "sources": {"reddit": 5},
+                        "total": 5,
+                    }
+                )
+            )
+            env = os.environ.copy()
+            env["HOME"] = str(Path(tmp) / "home")
+            env["SETUP_COMPLETE"] = "true"
+            env["ENV_SCRAPECREATORS_API_KEY"] = "sk-test"
+            env["LAST30DAYS_CONFIG_DIR"] = str(config_dir)
+
+            result = subprocess.run(
+                ["bash", "hooks/scripts/check-config.sh"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Last run: "prior research"', result.stdout)
+
 
 class TestSkillMdFirstRunReference(unittest.TestCase):
     """Verifies SKILL.md references that exist in the CLI."""
