@@ -618,8 +618,8 @@ def _is_safe_link_url(url: str) -> bool:
     stripped = url.strip()
     if not stripped:
         return False
-    # Reject any control characters (e.g. `javascript&#x3a;alert(1)` decoded
-    # to a literal CR/LF that the browser would treat as a scheme separator).
+    # Reject any control characters (e.g. `java\x0Dscript:` where a bare CR is
+    # smuggled into the scheme name and stripped by the browser's URL parser).
     if any(ord(ch) < 0x20 for ch in stripped):
         return False
     # No scheme — relative URL or fragment. Allow.
