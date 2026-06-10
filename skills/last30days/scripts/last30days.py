@@ -931,10 +931,12 @@ def main() -> int:
     # Show quality nudge if applicable
     try:
         from lib import quality_nudge
+        from lib import youtube_yt as _youtube_yt
         # Populate transcript-fetch ratio so quality_nudge can detect the
         # degraded-YouTube failure mode (videos returned but transcripts
         # silently failed - typically a stale yt-dlp binary).
         youtube_items = report.items_by_source.get("youtube") or []
+        _yt_fetch_stats = _youtube_yt.get_transcript_fetch_stats()
         instagram_items = report.items_by_source.get("instagram") or []
         research_results = {
             "youtube_videos_count": len(youtube_items),
@@ -951,6 +953,13 @@ def main() -> int:
             "youtube_captions_disabled_count": sum(
                 1 for it in youtube_items if it.metadata.get("captions_disabled")
             ),
+            # Actual yt-dlp fetch outcomes for this run. The counts above are
+            # computed from post-pruning items, so they can't tell "fetches
+            # failed (stale binary)" from "fetches succeeded but the videos
+            # were pruned downstream"; the latter was producing false
+            # stale-yt-dlp nudges (#531).
+            "youtube_transcript_fetch_attempts": _yt_fetch_stats["attempts"],
+            "youtube_transcript_fetch_failures": _yt_fetch_stats["failures"],
             # Track Instagram returned-zero-items so quality_nudge can detect
             # the silent-failure case (SC configured but the v2 reels endpoint
             # 500'd through both the original query and the hashtag retry).

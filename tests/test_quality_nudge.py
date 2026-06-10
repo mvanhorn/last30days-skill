@@ -377,6 +377,72 @@ class TestYouTubeCaptionsDisabledDoesNotFalseFlag:
         assert "youtube" in q["core_degraded"]
 
 
+class TestStaleNudgeRequiresActualFetchFailures:
+    """Zero failed fetches must suppress the stale-yt-dlp nudge (#531).
+
+    The report counts (youtube_videos_count / youtube_transcripts_count) are
+    computed from post-pruning items. A run where every transcript fetch
+    succeeded but the fetched videos were later pruned by freshness scoring
+    looks identical to a stale-binary run from those counts alone, producing
+    a false "stale yt-dlp binary" nudge. When actual fetch outcomes are
+    available and show zero failures, the binary demonstrably works.
+    """
+
+    def test_zero_failures_does_not_flag(self):
+        # The #531 repro: 2 in-report videos, 0 transcripts among them, but
+        # all 6 attempted fetches succeeded (on videos pruned later).
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 2,
+                "youtube_transcripts_count": 0,
+                "youtube_captions_disabled_count": 0,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 0,
+            },
+        )
+        assert "youtube" not in q["core_degraded"]
+
+    def test_actual_failures_still_flag(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 6,
+                "youtube_transcripts_count": 0,
+                "youtube_captions_disabled_count": 0,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 6,
+            },
+        )
+        assert "youtube" in q["core_degraded"]
+
+    def test_missing_fetch_stats_preserves_existing_behavior(self):
+        # Callers that don't pass fetch stats (or the SC path, which doesn't
+        # use the local yt-dlp binary) fall back to the ratio heuristic.
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 6,
+                "youtube_transcripts_count": 0,
+                "youtube_captions_disabled_count": 0,
+            },
+        )
+        assert "youtube" in q["core_degraded"]
+
+    def test_zero_attempts_preserves_existing_behavior(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 6,
+                "youtube_transcripts_count": 0,
+                "youtube_captions_disabled_count": 0,
+                "youtube_transcript_fetch_attempts": 0,
+                "youtube_transcript_fetch_failures": 0,
+            },
+        )
+        assert "youtube" in q["core_degraded"]
+
+
 class TestInstagramSilentFailure:
     """Instagram is a `bonus` source via SC. Silent-failure detection: if SC
     is configured but the source returned zero items, surface a nudge so the

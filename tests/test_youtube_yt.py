@@ -404,6 +404,132 @@ class TestSearchAndTranscribe(unittest.TestCase):
         ft_mock.assert_not_called()
 
 
+class TestTranscriptBudgetWindowing(unittest.TestCase):
+    """Transcript candidates must prefer in-window videos (#531).
+
+    Pure view-sorted selection lets an evergreen back-catalog (kept by the
+    soft date filter when in-window yield is low) consume every transcript
+    slot with videos the freshness scorer later discards, leaving the
+    surviving recent videos with 0 transcripts.
+    """
+
+    FROM_DATE = "2026-03-01"
+    TO_DATE = "2026-03-31"
+
+    def setUp(self):
+        youtube_yt.reset_transcript_fetch_stats()
+
+    def _make_item(self, video_id, views, date):
+        return {
+            "video_id": video_id,
+            "title": f"Video {video_id}",
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_name": "TestChannel",
+            "date": date,
+            "engagement": {"views": views, "likes": 10, "comments": 5},
+            "relevance": 0.8,
+            "why_relevant": "test",
+            "description": "test desc",
+            "duration": 600,
+        }
+
+    def _run(self, items, fake_parallel=None):
+        if fake_parallel is None:
+            def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None):
+                return {vid: "A detailed transcript about the topic." for vid in video_ids}
+        with mock.patch.object(youtube_yt, "search_youtube", return_value={"items": items}), \
+             mock.patch.object(youtube_yt, "fetch_transcripts_parallel", side_effect=fake_parallel) as ft_mock:
+            result = youtube_yt.search_and_transcribe(
+                "test topic", self.FROM_DATE, self.TO_DATE, depth="default",
+            )
+        return result, ft_mock
+
+    def test_in_window_videos_get_transcript_budget_first(self):
+        # Evergreen back-catalog dominates views; only 2 videos are in-window.
+        # Old behavior: candidates = top 6 by views (all out-of-window), so
+        # the in-window videos that survive freshness scoring get 0 transcripts.
+        items = [
+            self._make_item(f"old{i}", 1_000_000 - i, "2024-01-15")
+            for i in range(6)
+        ] + [
+            self._make_item("recent1", 5_000, "2026-03-20"),
+            self._make_item("recent2", 1_000, "2026-03-10"),
+        ]
+
+        _, ft_mock = self._run(items)
+
+        called_ids = ft_mock.call_args[0][0]
+        self.assertEqual(
+            called_ids[:2], ["recent1", "recent2"],
+            "In-window videos must occupy the first transcript slots",
+        )
+
+    def test_view_order_preserved_within_each_window_half(self):
+        items = [
+            self._make_item("recent_low", 100, "2026-03-10"),
+            self._make_item("recent_high", 9_000, "2026-03-20"),
+            self._make_item("old_high", 1_000_000, "2024-01-15"),
+            self._make_item("old_low", 500_000, "2024-06-01"),
+        ]
+
+        _, ft_mock = self._run(items)
+
+        called_ids = ft_mock.call_args[0][0]
+        self.assertEqual(called_ids, ["recent_high", "recent_low", "old_high", "old_low"])
+
+    def test_all_in_window_behavior_unchanged(self):
+        # When every video is in-window, selection stays pure view-sorted.
+        items = [
+            self._make_item("a", 1_000, "2026-03-10"),
+            self._make_item("b", 3_000, "2026-03-12"),
+            self._make_item("c", 2_000, "2026-03-14"),
+        ]
+
+        _, ft_mock = self._run(items)
+
+        called_ids = ft_mock.call_args[0][0]
+        self.assertEqual(called_ids, ["b", "c", "a"])
+
+    def test_fetch_stats_track_attempts_and_failures(self):
+        items = [
+            self._make_item("ok1", 3_000, "2026-03-20"),
+            self._make_item("fail1", 2_000, "2026-03-15"),
+            self._make_item("nocap1", 1_000, "2026-03-10"),
+        ]
+
+        def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None):
+            result = {}
+            for vid in video_ids:
+                if vid.startswith("nocap"):
+                    result[vid] = None
+                    if out_captions_disabled is not None:
+                        out_captions_disabled.add(vid)
+                elif vid.startswith("fail"):
+                    result[vid] = None
+                else:
+                    result[vid] = "A detailed transcript about the topic."
+            return result
+
+        self._run(items, fake_parallel)
+
+        stats = youtube_yt.get_transcript_fetch_stats()
+        self.assertEqual(stats["attempts"], 3)
+        # Captions-disabled videos can never succeed; they are not failures.
+        self.assertEqual(stats["failures"], 1)
+
+    def test_fetch_stats_zero_failures_when_all_succeed(self):
+        # The #531 scenario: every fetch succeeds (on videos later pruned by
+        # freshness scoring). failures must be 0 so quality_nudge does not
+        # blame a stale yt-dlp binary.
+        items = [self._make_item(f"v{i}", 1_000 * (i + 1), "2024-01-15") for i in range(4)]
+
+        self._run(items)
+
+        stats = youtube_yt.get_transcript_fetch_stats()
+        self.assertEqual(stats["attempts"], 4)
+        self.assertEqual(stats["failures"], 0)
+
+
 class TestYtdlpSSHRouting(unittest.TestCase):
     """LAST30DAYS_YOUTUBE_SSH_HOST routes yt-dlp invocations through SSH for residential IP."""
 

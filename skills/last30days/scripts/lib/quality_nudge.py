@@ -63,11 +63,22 @@ def _is_youtube_degraded(research_results: dict, threshold: float) -> bool:
     who turned off captions can never produce a transcript, so counting that
     video toward "fetch failures" produces false positives. A single
     captions-disabled video in a small result set was tripping the nudge.
+
+    When actual fetch outcomes are available, they take precedence over the
+    post-pruning ratio: the report counts only see items that survived
+    freshness/relevance pruning, so a run where every transcript fetch
+    succeeded but the fetched videos were later pruned looks identical to a
+    stale-binary run (#531). Zero failures across attempted fetches proves
+    the binary works - don't flag.
     """
     videos = int(research_results.get("youtube_videos_count") or 0)
     transcripts = int(research_results.get("youtube_transcripts_count") or 0)
     captions_disabled = int(research_results.get("youtube_captions_disabled_count") or 0)
     if videos <= 0:
+        return False
+    fetch_attempts = int(research_results.get("youtube_transcript_fetch_attempts") or 0)
+    fetch_failures = int(research_results.get("youtube_transcript_fetch_failures") or 0)
+    if fetch_attempts > 0 and fetch_failures == 0:
         return False
     eligible = videos - captions_disabled
     if eligible <= 0:
