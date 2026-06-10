@@ -114,7 +114,9 @@ if [[ -z "$SETUP_COMPLETE" && -z "$CONFIG_FILE" && -z "${OPENAI_API_KEY:-}" && -
 Reddit, Hacker News, and Polymarket work out of the box.
 The setup wizard can unlock X/Twitter, YouTube, and more.
 EOF
-  [[ -n "$LAST_RUN_LINE" ]] && echo "$LAST_RUN_LINE"
+  if [[ -n "$LAST_RUN_LINE" ]]; then
+    echo "$LAST_RUN_LINE"
+  fi
   exit 0
 fi
 
