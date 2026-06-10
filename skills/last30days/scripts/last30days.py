@@ -1005,29 +1005,106 @@ def main() -> int:
             save_path=footer_save_path,
             synthesis_md=synthesis_md,
         )
-    if args.save_dir:
+    # Check if github is set up
+    from lib.github import resolve_token
+    has_github_setup = bool(resolve_token() or config.get("SCRAPECREATORS_API_KEY"))
+
+    save_dir = args.save_dir
+    if not save_dir and has_github_setup:
+        global_env = env.load_env_file(env.CONFIG_FILE) if env.CONFIG_FILE else {}
+        save_dir = os.environ.get("LAST30DAYS_MEMORY_DIR") or global_env.get("LAST30DAYS_MEMORY_DIR") or "~/Documents/Last30Days"
+        save_dir = str(Path(save_dir).expanduser().resolve())
+
+    dashboard_md_path = None
+    if save_dir:
         # Save the main topic's raw file (single-entity or comparison main).
         save_path = save_output(
             report,
             args.emit,
-            args.save_dir,
+            save_dir,
             suffix=args.save_suffix or "",
             synthesis_md=synthesis_md,
             topic_override=comparison_topic(entity_reports) if is_comparison_html else None,
             rendered_content=rendered if is_comparison_html else None,
         )
         sys.stderr.write(f"[last30days] Saved output to {save_path}\n")
+        dashboard_md_path = save_path
+
+        # If user did not emit markdown, or if they did but we want to make sure it's the correct format for the dashboard
+        if args.emit not in ("compact", "md") or not save_path.name.endswith(".md"):
+            dashboard_md_path = save_output(
+                report,
+                "compact",
+                save_dir,
+                suffix=args.save_suffix or "",
+                synthesis_md=synthesis_md,
+                topic_override=comparison_topic(entity_reports) if is_comparison_html else None,
+            )
+            sys.stderr.write(f"[last30days] Saved dashboard report to {dashboard_md_path}\n")
+
         # Competitor / vs-mode: also save a per-entity raw file for each peer.
         # Matches historical vs-mode behavior (N passes → N save files).
         if entity_reports and len(entity_reports) > 1:
             for label, entity_report in entity_reports[1:]:
                 peer_path = save_output(
-                    entity_report, args.emit, args.save_dir,
+                    entity_report, args.emit, save_dir,
                     suffix=args.save_suffix or "",
                     synthesis_md=synthesis_md,
                 )
                 sys.stderr.write(f"[last30days] Saved output to {peer_path}\n")
+                if args.emit not in ("compact", "md") or not peer_path.name.endswith(".md"):
+                    save_output(
+                        entity_report, "compact", save_dir,
+                        suffix=args.save_suffix or "",
+                        synthesis_md=synthesis_md,
+                    )
         sys.stderr.flush()
+
+    if has_github_setup and dashboard_md_path:
+        import socket
+        import time
+        import webbrowser
+        port = 3000
+        server_running = False
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.settimeout(0.5)
+                if s.connect_ex(('127.0.0.1', port)) == 0:
+                    server_running = True
+        except Exception:
+            pass
+
+        if not server_running:
+            import shutil
+            if shutil.which("node") is None:
+                sys.stderr.write(f"\n[last30days] 'node' is not installed or not in PATH. Please install Node.js to run the dashboard.\n")
+            else:
+                global_env = env.load_env_file(env.CONFIG_FILE) if env.CONFIG_FILE else {}
+                dashboard_dir = os.environ.get("LAST30DAYS_DASHBOARD_DIR") or global_env.get("LAST30DAYS_DASHBOARD_DIR") or "/home/lazorr/Documents/Last30DaysWeb"
+                server_js = Path(dashboard_dir) / "server.js"
+                if server_js.exists():
+                    sys.stderr.write(f"\n[last30days] Dashboard server is not running. Starting it in background...\n")
+                    import subprocess
+                    subprocess.Popen(
+                        ["node", "server.js"],
+                        cwd=str(dashboard_dir),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        start_new_session=True
+                    )
+                    time.sleep(1.0)
+                else:
+                    sys.stderr.write(f"\n[last30days] Dashboard server script not found at {server_js}. Cannot start server.\n")
+
+        report_id = dashboard_md_path.name.replace(".md", "")
+        dashboard_url = f"http://localhost:3000/?report={report_id}"
+        sys.stderr.write(f"\n[last30days] Opening outcomes in dashboard at: {dashboard_url}\n\n")
+        webbrowser.open(dashboard_url)
+
+        # Print brief completion message instead of full markdown report in terminal
+        print(f"Research complete. Results loaded into the web dashboard.")
+        return 0
+
     print(rendered)
     return 0
 

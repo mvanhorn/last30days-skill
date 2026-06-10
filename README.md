@@ -117,6 +117,14 @@ What's in the file: badge, inline metadata line, the model's synthesis verbatim 
 
 For direct CLI use without the model in the loop, the engine also accepts `--synthesis-file PATH` to convert any markdown synthesis to HTML.
 
+### Web Dashboard Redirection
+
+When you have a GitHub setup (or `SCRAPECREATORS_API_KEY` configured), running the CLI will automatically redirect your outcomes to the local web dashboard for a visual reading experience:
+*   **Auto-Save:** Saves the report to your `LAST30DAYS_MEMORY_DIR` directory (defaults to `~/Documents/Last30Days`).
+*   **Auto-Start Server:** Verifies if the Node/Express server is running on port 3000. If not, it spawns it in the background automatically.
+*   **Browser Redirection:** Launches your default web browser directly to the dashboard, loading and highlighting the specific report: `http://localhost:3000/?report=<report-id>`.
+*   **Clean Terminal:** Suppresses the raw markdown output in the terminal, showing a brief success indicator instead.
+
 ### Intelligent search: the killer feature
 
 The v3 engine doesn't just search for your topic. It figures out *where* to search before the search begins. Type "OpenClaw" and the engine resolves @steipete (Peter Steinberger, the creator), r/openclaw, r/ClaudeCode, and the right YouTube channels and TikTok hashtags - all via a new Python pre-research brain built by [@j-sperling](https://github.com/j-sperling). The old engine searched keywords. The new engine understands your topic first, then searches the right people and communities.
