@@ -36,8 +36,8 @@ load_env_vars() {
       # Skip comments, empty lines
       [[ "$key" =~ ^[[:space:]]*# ]] && continue
       [[ -z "$key" ]] && continue
-      key=$(echo "$key" | xargs)
-      value=$(echo "$value" | xargs | sed 's/^["'\''"]//;s/["'\''"]$//')
+      key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      value=$(echo "$value" | sed -e 's/^[[:space:]]*//;s/[[:space:]]*$//' -e 's/^["'\''"]//;s/["'\''"]$//')
       # Strip inline comments (# preceded by whitespace) to prevent
       # command substitution in backtick-containing comments
       value="${value%%[[:space:]]#*}"

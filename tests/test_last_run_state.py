@@ -80,6 +80,33 @@ class LastRunStateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Last run: "custom hook query"', result.stdout)
 
+    def test_hook_parses_dotenv_with_unbalanced_quote(self):
+        """Script exits 0 when .env contains an unbalanced quote in a value."""
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            config_dir = home / ".config" / "last30days"
+            config_dir.mkdir(parents=True)
+            env_file = config_dir / ".env"
+            env_file.write_text(
+                "SETUP_COMPLETE=true\n"
+                "XAI_API_KEY=xai-key-with-apostrophe's-ok\n"
+                "AUTH_TOKEN=test-auth\n"
+                "CT0=test-ct0\n"
+            )
+            env = os.environ.copy()
+            env["HOME"] = str(home)
+
+            result = subprocess.run(
+                ["bash", "hooks/scripts/check-config.sh"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Ready —", result.stdout)
 
 class TestSkillMdFirstRunReference(unittest.TestCase):
     """Verifies SKILL.md references that exist in the CLI."""
