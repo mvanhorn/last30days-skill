@@ -400,32 +400,47 @@ COOKIE_DOMAINS: dict[str, dict[str, Any]] = {
 }
 
 
-def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
-    """Extract auth cookies from local browsers.
+def cookie_extraction_browsers(config: dict[str, Any]) -> list[str]:
+    """Browsers to try for cookie extraction, honoring FROM_BROWSER.
 
-    Default behavior (FROM_BROWSER unset): tries Firefox and Safari only.
-    These read local files silently with no system dialogs.  Chrome is
-    skipped because ``security find-generic-password`` triggers a macOS
-    Keychain prompt that cannot be reliably suppressed.
+    Default (FROM_BROWSER unset): Firefox and Safari only. These read local
+    files silently with no system dialogs. Chrome/Brave are skipped because
+    reading their cookies on macOS requires the "Chrome Safe Storage" Keychain
+    key, which triggers a system password prompt that cannot be reliably
+    suppressed.
 
-    Set ``FROM_BROWSER=auto`` to also try Chrome (accepts the dialog),
-    or ``FROM_BROWSER=off`` to disable extraction entirely.
+    - ``FROM_BROWSER=firefox|chrome|safari`` - that single browser.
+    - ``FROM_BROWSER=auto`` - also try Chrome (the user has accepted the dialog).
+    - ``FROM_BROWSER=off`` - returns [] (extraction disabled).
+
+    Returning the browser list from one place keeps the setup wizard and the
+    steady-state path on the same policy, so neither surprises the user with an
+    unrequested Keychain prompt.
     """
     from_browser = (config.get("FROM_BROWSER") or "").strip().lower()
     if from_browser == "off":
+        return []
+    if from_browser in ("firefox", "chrome", "safari"):
+        return [from_browser]
+    if from_browser == "auto":
+        return ["firefox", "safari", "chrome"]
+    return ["firefox", "safari"]
+
+
+def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
+    """Extract auth cookies from local browsers.
+
+    Browser selection (and the Chrome-prompt caveat) is handled by
+    ``cookie_extraction_browsers``; this function just runs the extraction for
+    each configured cookie domain.
+    """
+    browsers = cookie_extraction_browsers(config)
+    if not browsers:
         return {}
     try:
         from . import cookie_extract
     except ImportError:
         return {}
-    # Determine which browsers to try
-    if from_browser in ("firefox", "chrome", "safari"):
-        browsers = [from_browser]
-    elif from_browser == "auto":
-        browsers = ["firefox", "safari", "chrome"]
-    else:
-        # Default: silent browsers only (no Keychain dialog)
-        browsers = ["firefox", "safari"]
     extracted: dict[str, str] = {}
     for _service, spec in COOKIE_DOMAINS.items():
         if all(config.get(env_key) for env_key in spec["mapping"].values()):

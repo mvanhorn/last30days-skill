@@ -588,10 +588,13 @@ def main() -> int:
             return 0
         sys.stderr.write("Running auto-setup...\n")
         results = setup_wizard.run_auto_setup(config)
-        from_browser = "auto"
+        # Persist only the browser that actually yielded cookies. When none did,
+        # leave FROM_BROWSER unset so the safe default (Firefox/Safari, no
+        # Keychain prompt) applies instead of pinning "auto", which would make
+        # every subsequent run probe Chrome and re-trigger the prompt.
+        from_browser = None
         if results.get("cookies_found"):
-            first_browser = next(iter(results["cookies_found"].values()))
-            from_browser = first_browser
+            from_browser = next(iter(results["cookies_found"].values()))
         setup_wizard.write_setup_config(env.CONFIG_FILE, from_browser=from_browser)
         results["env_written"] = True
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")
