@@ -140,6 +140,7 @@ class TestFinalizeWiring(unittest.TestCase):
             )
         backfill.assert_called_once()
         self.assertEqual(backfill.call_args.kwargs.get("depth"), "deep")
+        self.assertEqual(backfill.call_args.kwargs.get("topic"), "claude code skills")
 
     def test_finalize_skips_backfill_in_mock_mode(self):
         from lib import pipeline
