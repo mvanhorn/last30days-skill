@@ -642,6 +642,65 @@ def fetch_transcripts_parallel(
     return results
 
 
+def backfill_transcripts(items: List[Any], topic: str = "", depth: str = "default") -> None:
+    """Second-pass transcript fetch for finalized items that lack one.
+
+    search_and_transcribe() spends its transcript budget on each search's
+    top-by-views candidates, but the pipeline's final selection ranks by
+    relevance - the two orderings can be fully disjoint, shipping a brief
+    where every surviving video is transcript-less while the fetched
+    transcripts ride videos that never appear (#542). Designed to run from
+    _finalize_items_by_source() so the per-depth budget is spent on the
+    survivors, mirroring the digg post-selection enrichment.
+
+    Mutates SourceItem.metadata in place; safe no-op when the budget is
+    already met, yt-dlp is missing, or every survivor has a transcript.
+    """
+    limit = TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"])
+    if limit <= 0 or not items or not is_ytdlp_installed():
+        return
+    have = sum(
+        1 for it in items
+        if it.metadata.get("transcript_highlights") or it.metadata.get("transcript_snippet")
+    )
+    need = limit - have
+    if need <= 0:
+        return
+    missing = [
+        it for it in items
+        if it.item_id
+        and not it.metadata.get("transcript_highlights")
+        and not it.metadata.get("transcript_snippet")
+        and not it.metadata.get("captions_disabled")
+    ]
+    # Attempt extra candidates because some videos lack captions - the same
+    # 3x heuristic the retrieval-time pass uses.
+    attempts = missing[: need * 3]
+    if not attempts:
+        return
+    _log(f"Backfilling transcripts for {len(attempts)} finalized videos (target: {need})")
+    captions_disabled: Set[str] = set()
+    transcripts = fetch_transcripts_parallel(
+        [it.item_id for it in attempts],
+        out_captions_disabled=captions_disabled,
+    )
+    for it in attempts:
+        if it.item_id in captions_disabled:
+            # Feeds quality_nudge's degraded-ratio denominator, same as the
+            # retrieval-time pass.
+            it.metadata["captions_disabled"] = True
+            continue
+        transcript = transcripts.get(it.item_id)
+        if not transcript:
+            continue
+        it.metadata["transcript_snippet"] = transcript
+        highlights = extract_transcript_highlights(transcript, topic)
+        if highlights:
+            it.metadata["transcript_highlights"] = highlights
+        if not it.snippet:
+            it.snippet = " ".join(transcript.split()[:80])
+
+
 def search_and_transcribe(
     topic: str,
     from_date: str,
