@@ -30,7 +30,9 @@ def is_first_run(config: Dict[str, Any]) -> bool:
 def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
     """Perform the auto-setup actions.
 
-    - Runs cookie extraction in auto mode for all registered domains
+    - Runs cookie extraction for all registered domains, trying the browsers
+      from ``env.cookie_extraction_browsers()`` (honors ``FROM_BROWSER``;
+      defaults to Firefox/Safari, so no Chrome Keychain prompt)
     - Checks if yt-dlp is installed
 
     Returns:

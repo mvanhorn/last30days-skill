@@ -588,13 +588,15 @@ def main() -> int:
             return 0
         sys.stderr.write("Running auto-setup...\n")
         results = setup_wizard.run_auto_setup(config)
-        # Persist only the browser that actually yielded cookies. When none did,
-        # leave FROM_BROWSER unset so the safe default (Firefox/Safari, no
-        # Keychain prompt) applies instead of pinning "auto", which would make
-        # every subsequent run probe Chrome and re-trigger the prompt.
-        from_browser = None
-        if results.get("cookies_found"):
-            from_browser = next(iter(results["cookies_found"].values()))
+        # Persist FROM_BROWSER only when every service's cookies came from the
+        # SAME single browser — then we can fast-path future runs to it. If
+        # different services matched different browsers, or none matched, leave
+        # FROM_BROWSER unset: the safe default (Firefox/Safari) then covers all
+        # of them with no Keychain prompt. We deliberately do NOT pin "auto"
+        # here (it would re-probe Chrome and re-trigger the prompt) nor a single
+        # browser (it would silently skip the service that used the other one).
+        found_browsers = set(results.get("cookies_found", {}).values())
+        from_browser = found_browsers.pop() if len(found_browsers) == 1 else None
         setup_wizard.write_setup_config(env.CONFIG_FILE, from_browser=from_browser)
         results["env_written"] = True
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")
