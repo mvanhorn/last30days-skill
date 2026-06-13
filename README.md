@@ -174,6 +174,7 @@ Say "eli5 on" after any research run. The synthesis rewrites in plain language. 
 | **Codex, Cursor, Copilot, Gemini CLI, GitHub Copilot, or any of 50+ [Agent Skills](https://agentskills.io) hosts** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
 | **claude.ai** (web) | [Download `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) and upload via Settings > Capabilities > Skills > + | Re-download and re-upload |
 | **OpenClaw** | `clawhub install last30days-official` | `clawhub update last30days-official` |
+| **pi** | `pi install https://github.com/<you>/last30days-skill` or `pi install /path/to/checkout` | `pi update https://github.com/<you>/last30days-skill` or pull local checkout + `/reload` |
 
 ### Claude Code (recommended)
 
@@ -237,6 +238,29 @@ Enable "Code execution and file creation" under Capabilities first — skills wo
 ```bash
 clawhub install last30days-official
 ```
+
+### pi
+
+This repo ships a pi-native package bridge with typed tools and concise pi commands:
+
+```bash
+pi install /absolute/path/to/last30days-skill
+# or install a fork
+pi install https://github.com/<you>/last30days-skill
+```
+
+Then in pi:
+
+```text
+/reload
+/last30days OpenAI --quick
+/last30days "Claude Code vs OpenClaw" --deep --days 14
+/last30days Cursor IDE --emit html
+/last30days-doctor
+/last30days-config
+```
+
+The package exposes `last30days_research` and `last30days_diagnose` tools for natural-language use inside pi. More details: [docs/pi.md](docs/pi.md).
 
 ### Manual (developer)
 

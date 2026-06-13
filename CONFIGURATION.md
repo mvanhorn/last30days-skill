@@ -185,7 +185,7 @@ The schedule field stored on each topic is metadata - the actual cron / Task Sch
 
 ## Per-client patterns
 
-The skill is built to flex around different client environments. Four patterns that compose well:
+The skill is built to flex around different client environments. Five patterns that compose well:
 
 ### 1. Per-client `.claude/last30days.env` (preferred when you cd into client folders)
 
@@ -226,13 +226,27 @@ l30d-client() {
 # Usage: l30d-client acme "british airways middle east"
 ```
 
-### 3. Custom category-peer subreddits
+### 3. Pi package bridge
+
+Pi users can install this repo as a native pi package rather than via the generic Agent Skills installer:
+
+```bash
+pi install /absolute/path/to/last30days-skill
+# or a fork / git URL
+pi install https://github.com/<you>/last30days-skill
+```
+
+The pi package loads `extensions/index.ts` and `pi-skills/last30days/SKILL.md`, exposing typed tools (`last30days_research`, `last30days_diagnose`) plus `/last30days`, `/last30days-doctor`, `/last30days-config`, and `/last30days-open`. See [docs/pi.md](docs/pi.md).
+
+For project-scoped client work, install from the project with `pi install -l /absolute/path/to/last30days-skill`; teammates who trust the project will get the same package entry from `.pi/settings.json`.
+
+### 4. Custom category-peer subreddits
 
 [`scripts/lib/categories.py`](skills/last30days/scripts/lib/categories.py) holds a table of `(category_id, trigger_keywords, peer_subreddits)`. If a client lives in a vertical that isn't covered (legal-tech, real-estate-tech, B2B HR SaaS), add a row. Pure data, no logic.
 
 Section 2a of `SKILL.md` documents the merging rule the skill applies when your topic matches a category.
 
-### 4. Pre-built `--competitors-plan` JSON
+### 5. Pre-built `--competitors-plan` JSON
 
 For competitor-vs-comparisons that recur, a pre-written JSON skeleton per client industry saves real time:
 

@@ -17,15 +17,27 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Build .skill artifact
         run: |
           bash skills/last30days/scripts/build-skill.sh
           test -f dist/last30days.skill
 
+      - name: Verify and pack pi package
+        run: |
+          npm run verify:pi
+          npm pack
+
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/last30days.skill
+          files: |
+            dist/last30days.skill
+            last30days-pi-*.tgz
           generate_release_notes: true
           draft: false
           prerelease: false

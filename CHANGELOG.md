@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Pi package bridge (`package.json`, `extensions/index.ts`, `pi-skills/last30days/SKILL.md`, `docs/pi.md`) exposing the engine as pi tools, slash commands, and a concise pi-native skill.
+- `last30days_research` and `last30days_diagnose` tools for natural-language pi use.
+- Pi commands: `/last30days`, `/last30days-doctor`, `/last30days-config`, `/last30days-open`, and `/last30days-skill`.
+- `npm run verify:pi` packaging smoke check for pi release hygiene.
+
 ## [3.3.2] - 2026-06-06
 
 ### Fixed

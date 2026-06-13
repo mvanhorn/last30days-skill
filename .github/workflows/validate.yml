@@ -22,5 +22,13 @@ jobs:
       - name: Set up Python
         run: uv python install 3.12
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify pi package
+        run: npm run verify:pi
+
       - name: Run test suite
         run: uv run pytest

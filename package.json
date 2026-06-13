@@ -1,0 +1,54 @@
+{
+  "name": "last30days-pi",
+  "version": "0.1.0",
+  "description": "Pi package that exposes the last30days research engine as pi tools, commands, and a skill",
+  "license": "MIT",
+  "homepage": "https://github.com/mvanhorn/last30days-skill",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mvanhorn/last30days-skill.git"
+  },
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-skill",
+    "research",
+    "last30days"
+  ],
+  "files": [
+    "extensions",
+    "pi-skills",
+    "skills/last30days/SKILL.md",
+    "skills/last30days/agents/**/*",
+    "skills/last30days/references/**/*",
+    "skills/last30days/scripts/**/*.py",
+    "skills/last30days/scripts/**/*.sh",
+    "skills/last30days/scripts/lib/vendor/**/*",
+    "scripts/verify-pi-package.mjs",
+    "README.md",
+    "CONFIGURATION.md",
+    "docs/pi.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "verify:pi": "node scripts/verify-pi-package.mjs",
+    "pack:dry-run": "npm pack --json --dry-run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ],
+    "skills": [
+      "./pi-skills"
+    ]
+  }
+}
