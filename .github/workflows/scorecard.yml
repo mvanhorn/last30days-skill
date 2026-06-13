@@ -27,7 +27,13 @@ jobs:
   analysis:
     name: Scorecard analysis
     runs-on: ubuntu-latest
+    # Job-level permissions fully replace the top-level block (unlisted scopes
+    # default to none), so the reads checkout and Scorecard need are explicit.
     permissions:
+      # Needed by actions/checkout to clone the repo, and by Scorecard to read
+      # workflow files for its Dangerous-Workflow / Token-Permissions checks.
+      contents: read
+      actions: read
       # Needed to upload the SARIF results to the code-scanning dashboard.
       security-events: write
       # Needed to publish results and obtain a badge (uses OIDC, no secrets).

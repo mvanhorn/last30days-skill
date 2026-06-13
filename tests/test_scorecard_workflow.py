@@ -32,11 +32,16 @@ def test_scorecard_runs_on_schedule_and_default_branch() -> None:
     assert "- main" in text
 
 
-def test_scorecard_requests_minimal_write_permissions() -> None:
+def test_scorecard_requests_minimal_permissions() -> None:
     text = _workflow_text()
 
     # Top-level is read-only; only the analysis job widens what it needs.
     assert "permissions: read-all" in text
+    # Job-level permissions fully replace the top-level block, so the reads
+    # checkout and Scorecard require must be listed explicitly or they default
+    # to none and every run fails.
+    assert "contents: read" in text
+    assert "actions: read" in text
     assert "security-events: write" in text
     assert "id-token: write" in text
 
