@@ -86,7 +86,7 @@ class TestRunWithTimeout(unittest.TestCase):
         real_hasattr = builtins.hasattr
 
         def selective_hasattr(obj, name):
-            if obj is real_os and name in ("killpg", "getpgid"):
+            if obj is real_os and name in ("killpg", "getpgid", "setsid"):
                 return False
             return real_hasattr(obj, name)
 
