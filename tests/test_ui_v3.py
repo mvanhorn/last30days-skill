@@ -6,6 +6,23 @@ from unittest import mock
 from lib import ui
 
 
+class PromoMessageTests(unittest.TestCase):
+    def test_x_promo_mentions_firefox_chrome_and_windows_limitation(self):
+        msg = ui.PROMO_SINGLE_KEY["x"]
+        self.assertIn("Firefox", msg, "Firefox should be listed as supported")
+        self.assertIn("Windows", msg, "Windows limitation should be mentioned")
+        self.assertIn("AUTH_TOKEN", msg, "AUTH_TOKEN/CT0 fallback should be listed")
+        self.assertIn("XAI_API_KEY", msg, "XAI_API_KEY fallback should be listed")
+
+    def test_x_promo_does_not_mention_firefox_or_safari_only(self):
+        msg = ui.PROMO_SINGLE_KEY["x"]
+        self.assertNotEqual(
+            msg,
+            '\n\U0001f4a1 Unlock X: log into x.com in Firefox or Safari, then re-run. Or add AUTH_TOKEN/CT0 or XAI_API_KEY.\n',
+            "Promo should no longer say 'Firefox or Safari' without qualification",
+        )
+
+
 class UiV3Tests(unittest.TestCase):
     def test_show_diagnostic_banner_uses_v3_source_model(self):
         diag = {

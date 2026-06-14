@@ -2,6 +2,8 @@
 
 Extracts cookies from local browser databases (Firefox, Chrome, Brave, Safari)
 to enable zero-config authentication for services like X/Twitter.
+Note: Chrome/Brave extraction is macOS-only; Windows Chrome/Edge use
+DPAPI-encrypted stores that are not yet supported.
 
 Only uses Python stdlib — no external dependencies.
 """

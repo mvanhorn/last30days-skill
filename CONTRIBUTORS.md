@@ -54,6 +54,7 @@ v3 has durable watchlist with multi-source storage and extended time windows.
 
 ## Past Contributors
 
+- [@23241a6749](https://github.com/23241a6749) - Windows cp1252 encoding fix ([#550](https://github.com/mvanhorn/last30days-skill/pull/550)), Windows killpg guard ([#552](https://github.com/mvanhorn/last30days-skill/pull/552)), browser cookie message clarity ([#387](https://github.com/mvanhorn/last30days-skill/issues/387))
 - [@JosephOIbrahim](https://github.com/JosephOIbrahim) - Windows Unicode fix ([#17](https://github.com/mvanhorn/last30days-skill/pull/17))
 - [@levineam](https://github.com/levineam) - Model fallback for unverified orgs ([#16](https://github.com/mvanhorn/last30days-skill/pull/16))
 - [@jonthebeef](https://github.com/jonthebeef) - Early testing and feedback

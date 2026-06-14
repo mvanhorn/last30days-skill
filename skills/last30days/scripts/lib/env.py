@@ -407,6 +407,8 @@ def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
     These read local files silently with no system dialogs.  Chrome is
     skipped because ``security find-generic-password`` triggers a macOS
     Keychain prompt that cannot be reliably suppressed.
+    On Windows only Firefox cookie extraction is supported; Chrome and
+    Edge use DPAPI-encrypted cookie stores that are not yet supported.
 
     Set ``FROM_BROWSER=auto`` to also try Chrome (accepts the dialog),
     or ``FROM_BROWSER=off`` to disable extraction entirely.
