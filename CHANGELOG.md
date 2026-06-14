@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `check-config.sh` no longer exits 1 when `last-run.json` is absent and `SCRAPECREATORS_API_KEY` is configured — the trailing `[[ -n ... ]] && echo` has been changed to an `if` block so its `$? = 1` doesn't leak to the script's exit code ([#440](https://github.com/mvanhorn/last30days-skill/issues/440))
+
+>>>>>>> 875dd15 (fix(hook): replace trailing && echo with if block so absent last-run.json doesn't leak exit 1)
 ## [3.3.2] - 2026-06-06
 
 ### Fixed

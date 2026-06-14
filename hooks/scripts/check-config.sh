@@ -161,12 +161,12 @@ if [[ -n "$HAS_SCRAPECREATORS" ]]; then
   # Fully configured — compact ready message
   echo "/last30days: Ready — ${SOURCE_COUNT} sources active."
   echo "  Research any topic across social + market + web sources (last 30 days)."
-  [[ -n "$LAST_RUN_LINE" ]] && echo "$LAST_RUN_LINE"
+  if [[ -n "$LAST_RUN_LINE" ]]; then echo "$LAST_RUN_LINE"; fi
 else
   # Setup done but missing ScrapeCreators — recommend it
   echo "/last30days: Ready — ${SOURCE_COUNT} sources active."
   echo "  Research any topic across social + market + web sources (last 30 days)."
-  [[ -n "$LAST_RUN_LINE" ]] && echo "$LAST_RUN_LINE"
+  if [[ -n "$LAST_RUN_LINE" ]]; then echo "$LAST_RUN_LINE"; fi
   echo "  Tip: Add ScrapeCreators for Reddit comments + TikTok + Instagram."
   echo "  100 free credits, no credit card — scrapecreators.com"
   echo "  last30days has no affiliation with any API provider."

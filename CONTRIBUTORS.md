@@ -57,3 +57,4 @@ v3 has durable watchlist with multi-source storage and extended time windows.
 - [@JosephOIbrahim](https://github.com/JosephOIbrahim) - Windows Unicode fix ([#17](https://github.com/mvanhorn/last30days-skill/pull/17))
 - [@levineam](https://github.com/levineam) - Model fallback for unverified orgs ([#16](https://github.com/mvanhorn/last30days-skill/pull/16))
 - [@jonthebeef](https://github.com/jonthebeef) - Early testing and feedback
+- [@23241a6749](https://github.com/23241a6749) - hook exit code fix: replace trailing `&&` echo in check-config.sh with `if` block so absent last-run.json doesn't leak exit 1 ([#440](https://github.com/mvanhorn/last30days-skill/issues/440))

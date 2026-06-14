@@ -79,6 +79,28 @@ class LastRunStateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Last run: "custom hook query"', result.stdout)
 
+    def test_hook_exits_0_when_last_run_absent_and_sc_configured(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp) / "no-last-run"
+            config_dir.mkdir()
+            env = os.environ.copy()
+            env["HOME"] = str(Path(tmp) / "home")
+            env["LAST30DAYS_CONFIG_DIR"] = str(config_dir)
+            env["SCRAPECREATORS_API_KEY"] = "sk-test-440"
+
+            result = subprocess.run(
+                ["bash", "hooks/scripts/check-config.sh"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, f"exit code was {result.returncode}, stderr: {result.stderr}")
+            self.assertIn("Ready —", result.stdout)
+            self.assertNotIn("Last run:", result.stdout)
+
 
 if __name__ == "__main__":
     unittest.main()
