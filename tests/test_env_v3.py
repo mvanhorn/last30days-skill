@@ -1,9 +1,36 @@
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from lib import bird_x, env
+
+
+class LoadEnvFileEncodingTests(unittest.TestCase):
+    def test_load_env_file_reads_utf8_with_non_ascii(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            utf8_content = (
+                'SCRAPECREATORS_API_KEY=sk-test-🚀\n'
+                'XAI_API_KEY="xai-key-with-äöü"\n'
+                '# Note: emoji and umlauts work ✓\n'
+            )
+            env_file.write_text(utf8_content, encoding="utf-8")
+            result = env.load_env_file(env_file)
+            self.assertEqual(result["SCRAPECREATORS_API_KEY"], "sk-test-🚀")
+            self.assertEqual(result["XAI_API_KEY"], "xai-key-with-äöü")
+
+    def test_load_env_file_cp1252_cannot_break_utf8_decode(self):
+        """If a .env file happens to be saved as cp1252 (Windows default),
+        loading it as utf-8 must not silently produce mojibake or crash."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env_file = Path(tmp) / ".env"
+            raw = 'KEY=value\n# 💡 Windows tip\n'
+            env_file.write_text(raw, encoding="utf-8")
+            result = env.load_env_file(env_file)
+            self.assertIn("KEY", result)
+            self.assertEqual(result["KEY"], "value")
 
 
 class EnvV3Tests(unittest.TestCase):

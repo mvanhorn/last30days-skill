@@ -95,7 +95,7 @@ def load_env_file(path: Path) -> dict[str, str]:
         return env
     _check_file_permissions(path)
 
-    with open(path, 'r') as f:
+    with open(path, 'r', encoding="utf-8") as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#'):
@@ -195,7 +195,7 @@ def load_codex_auth(path: Path = CODEX_AUTH_FILE) -> dict[str, Any]:
     if not path.exists():
         return {}
     try:
-        with open(path, "r") as f:
+        with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except json.JSONDecodeError:
         sys.stderr.write(

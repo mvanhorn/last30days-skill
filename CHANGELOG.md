@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `env.py` `load_env_file()` and `load_codex_auth()` now open `.env` and auth files with `encoding="utf-8"`, preventing `UnicodeDecodeError` crashes on Windows when files contain non-ASCII characters (emojis, umlauts, etc.) under the default cp1252 system encoding
+
 ## [3.3.2] - 2026-06-06
 
 ### Fixed
