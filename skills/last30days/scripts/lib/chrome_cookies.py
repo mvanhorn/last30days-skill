@@ -213,9 +213,6 @@ def _extract_chromium_cookies_macos(
         logger.info("%s cookies database not found at %s", keychain_service, db_path)
         return None
 
-    passphrase = _get_chromium_encryption_key(keychain_service)
-    aes_key = _derive_aes_key(passphrase) if passphrase else None
-
     # Copy DB to temp file (browser locks the original while running)
     tmp_fd = None
     tmp_path = None
@@ -251,12 +248,23 @@ def _extract_chromium_cookies_macos(
         cursor.execute(query, params)
 
         results: dict[str, str] = {}
+        aes_key = None
+        key_fetched = False
         for name, value, encrypted_value in cursor.fetchall():
             if value:
                 results[name] = value
                 continue
 
             if encrypted_value and encrypted_value[:3] == b"v10":
+                if not key_fetched:
+                    # Fetch the Keychain key lazily — only once we actually have
+                    # an encrypted cookie to decrypt. This avoids a macOS
+                    # Keychain prompt for browsers that don't hold the requested
+                    # cookie, which matters for FROM_BROWSER=auto across several
+                    # installed Chromium browsers.
+                    passphrase = _get_chromium_encryption_key(keychain_service)
+                    aes_key = _derive_aes_key(passphrase) if passphrase else None
+                    key_fetched = True
                 if aes_key is None:
                     logger.debug("Skipping encrypted cookie %s — no Keychain access", name)
                     continue
@@ -296,23 +304,40 @@ def extract_chrome_cookies_macos(domain: str, cookie_names: list[str]) -> Option
     )
 
 
+def _profile_cookie_db(profile_dir: Path) -> Optional[Path]:
+    """Return the Cookies DB inside a profile dir, or None.
+
+    Prefers the modern ``Network/Cookies`` location (Chromium >= 96 moved the
+    cookie store into a per-profile ``Network/`` subdirectory) and falls back
+    to the legacy flat ``Cookies`` file. Different browsers and versions use
+    different layouts, so both are probed.
+    """
+    for rel in ("Network/Cookies", "Cookies"):
+        candidate = profile_dir / rel
+        if candidate.exists():
+            return candidate
+    return None
+
+
 def _find_chromium_cookies_db(base_dir: Path) -> Optional[Path]:
     """Find a Chromium-based browser's Cookies database under base_dir.
 
-    Checks the Default profile first, then a Cookies file directly under
-    base_dir (Opera's layout), then numbered "Profile N" directories by
-    most-recently-modified. Chromium browsers create extra profiles as
-    "Profile 1", "Profile 2", etc. alongside Default; the most recently used
-    one is the likeliest to hold current cookies. Lexicographic sort would
-    visit "Profile 10" before "Profile 2", which can return the wrong profile.
+    Checks the Default profile first, then the base dir itself (Opera's flat
+    layout), then numbered "Profile N" directories by most-recently-modified.
+    Each location is probed for both the modern ``Network/Cookies`` and legacy
+    ``Cookies`` paths (see _profile_cookie_db). Chromium browsers create extra
+    profiles as "Profile 1", "Profile 2", etc. alongside Default; the most
+    recently used one is the likeliest to hold current cookies. Lexicographic
+    sort would visit "Profile 10" before "Profile 2", which can return the
+    wrong profile, so we sort by mtime.
     """
-    default = base_dir / "Default" / "Cookies"
-    if default.exists():
-        return default
+    found = _profile_cookie_db(base_dir / "Default")
+    if found:
+        return found
 
-    direct = base_dir / "Cookies"
-    if direct.exists():
-        return direct
+    found = _profile_cookie_db(base_dir)
+    if found:
+        return found
 
     try:
         candidates = [
@@ -320,9 +345,9 @@ def _find_chromium_cookies_db(base_dir: Path) -> Optional[Path]:
             if child.is_dir() and child.name.startswith("Profile ")
         ]
         for child in sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True):
-            candidate = child / "Cookies"
-            if candidate.exists():
-                return candidate
+            found = _profile_cookie_db(child)
+            if found:
+                return found
     except OSError:
         pass
 

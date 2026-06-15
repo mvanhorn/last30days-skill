@@ -83,8 +83,9 @@ INCLUDE_SOURCES=tiktok,instagram
 XAI_API_KEY=<your-xai-key>
 # OR cookie-jar (no key needed; logs in via your browser session).
 # Unset = Firefox + Safari (silent). FROM_BROWSER=auto also tries the Chromium
-# family (Chrome, Brave, Edge, Vivaldi, Opera, Arc, Chromium) - those prompt
-# once for macOS Keychain access. Or name a single browser, e.g. brave/edge.
+# family (Chrome, Brave, Edge, Vivaldi, Opera, Arc, Chromium); it only prompts
+# for macOS Keychain access on the browser that actually holds your X cookies.
+# Or name a single browser, e.g. brave/edge.
 # FROM_BROWSER=firefox
 
 # Bluesky

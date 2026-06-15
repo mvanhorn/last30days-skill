@@ -59,6 +59,29 @@ def _make_cookies_db(path, rows, db_version: int = 20) -> None:
     conn.close()
 
 
+def _make_encrypted_cookies_db(path, rows, db_version: int = 24) -> None:
+    """Create a Cookies DB with v10-encrypted_value rows (empty value column)."""
+    conn = sqlite3.connect(str(path))
+    c = conn.cursor()
+    c.execute("CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)")
+    c.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('version', ?)", (str(db_version),))
+    c.execute(
+        "CREATE TABLE cookies ("
+        "  host_key TEXT NOT NULL,"
+        "  name TEXT NOT NULL,"
+        "  value TEXT NOT NULL DEFAULT '',"
+        "  encrypted_value BLOB NOT NULL DEFAULT x''"
+        ")"
+    )
+    for host_key, name, encrypted_value in rows:
+        c.execute(
+            "INSERT INTO cookies (host_key, name, value, encrypted_value) VALUES (?, ?, ?, ?)",
+            (host_key, name, "", encrypted_value),
+        )
+    conn.commit()
+    conn.close()
+
+
 # ---------------------------------------------------------------------------
 # env.py: FROM_BROWSER selects the right browsers
 # ---------------------------------------------------------------------------
@@ -225,3 +248,70 @@ class TestFindChromiumCookiesDb:
 
     def test_returns_none_when_missing(self, tmp_path):
         assert _find_chromium_cookies_db(tmp_path) is None
+
+    def test_prefers_network_cookies_over_flat(self, tmp_path):
+        """Modern Chromium (>=96) stores under Default/Network/Cookies."""
+        (tmp_path / "Default" / "Network").mkdir(parents=True)
+        net = tmp_path / "Default" / "Network" / "Cookies"
+        net.touch()
+        (tmp_path / "Default" / "Cookies").touch()  # legacy flat also present
+        assert _find_chromium_cookies_db(tmp_path) == net
+
+    def test_network_cookies_in_numbered_profile(self, tmp_path):
+        (tmp_path / "Profile 1" / "Network").mkdir(parents=True)
+        net = tmp_path / "Profile 1" / "Network" / "Cookies"
+        net.touch()
+        assert _find_chromium_cookies_db(tmp_path) == net
+
+
+class TestLazyKeychain:
+    """The Keychain key is fetched only when an encrypted cookie must be decrypted.
+
+    This keeps FROM_BROWSER=auto from prompting for every installed Chromium
+    browser - only the one actually holding the requested cookie prompts.
+    """
+
+    def _edge_at(self, tmp_path, rows, encrypted=False):
+        base = tmp_path / "Edge"
+        (base / "Default").mkdir(parents=True)
+        db = base / "Default" / "Cookies"
+        if encrypted:
+            _make_encrypted_cookies_db(db, rows)
+        else:
+            _make_cookies_db(db, rows)
+        return base
+
+    def test_keychain_not_fetched_for_plain_values(self, tmp_path):
+        base = self._edge_at(tmp_path, [(".x.com", "auth_token", "plain_tok")])
+        with (
+            patch.dict("lib.chrome_cookies.CHROMIUM_BROWSER_PROFILES",
+                       {"edge": (base, "Microsoft Edge Safe Storage")}),
+            patch("lib.chrome_cookies._get_chromium_encryption_key") as key_mock,
+        ):
+            result = extract_chromium_browser_cookies_macos("edge", ".x.com", ["auth_token"])
+        assert result == {"auth_token": "plain_tok"}
+        key_mock.assert_not_called()  # no decryption needed -> no Keychain prompt
+
+    def test_keychain_not_fetched_when_no_match(self, tmp_path):
+        base = self._edge_at(tmp_path, [(".other.com", "auth_token", "x")])
+        with (
+            patch.dict("lib.chrome_cookies.CHROMIUM_BROWSER_PROFILES",
+                       {"edge": (base, "Microsoft Edge Safe Storage")}),
+            patch("lib.chrome_cookies._get_chromium_encryption_key") as key_mock,
+        ):
+            result = extract_chromium_browser_cookies_macos("edge", ".x.com", ["auth_token"])
+        assert result is None
+        key_mock.assert_not_called()  # cookie absent -> no Keychain prompt
+
+    def test_keychain_fetched_and_decrypts_v10(self, tmp_path):
+        base = self._edge_at(tmp_path, [(".x.com", "auth_token", b"v10ciphertextbytes")], encrypted=True)
+        with (
+            patch.dict("lib.chrome_cookies.CHROMIUM_BROWSER_PROFILES",
+                       {"edge": (base, "Microsoft Edge Safe Storage")}),
+            patch("lib.chrome_cookies._get_chromium_encryption_key", return_value=b"passphrase") as key_mock,
+            patch("lib.chrome_cookies._decrypt_v10_value", return_value="decrypted_tok") as dec_mock,
+        ):
+            result = extract_chromium_browser_cookies_macos("edge", ".x.com", ["auth_token"])
+        assert result == {"auth_token": "decrypted_tok"}
+        key_mock.assert_called_once_with("Microsoft Edge Safe Storage")
+        assert dec_mock.called
