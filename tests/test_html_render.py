@@ -221,6 +221,8 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         )
         self.assertNotIn("<a ", rendered)
         self.assertNotIn("href=", rendered)
+        # The label still surfaces as plain text so context isn't lost.
+        self.assertIn("click", rendered)
 
     def test_markdown_links_strip_leading_whitespace_javascript(self):
         """Leading whitespace in the URL must not let a `javascript:` payload

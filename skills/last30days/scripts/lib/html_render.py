@@ -614,6 +614,14 @@ def _is_safe_link_url(url: str) -> bool:
 
     The scheme check is case-insensitive and tolerant of surrounding
     whitespace per RFC 3986.
+
+    Precondition: ``url`` must already have been through ``html.escape`` (as it
+    is at the sole caller in ``_inline_markdown``). The safety of the no-scheme
+    branch relies on ``&`` having been escaped to ``&amp;`` so an entity-encoded
+    colon like ``&#58;`` cannot survive into the rendered ``href`` and be
+    decoded back to ``:`` by the browser. Passing a *raw* URL here (e.g.
+    ``javascript&#58;alert(1)``) would see no literal ``:``, return ``True``,
+    and emit a clickable payload — do not call this on un-escaped input.
     """
     stripped = url.strip()
     if not stripped:
