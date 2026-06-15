@@ -309,7 +309,9 @@ def build_parser() -> argparse.ArgumentParser:
             "hosting model has already resolved per-entity handles and subs."
         ),
     )
+    parser.add_argument("--no-dashboard", action="store_true", help="Disable automatic local web dashboard redirection and browser launch.")
     return parser
+
 
 
 def parse_competitors_plan(raw: str | None) -> dict[str, dict]:
@@ -1012,7 +1014,7 @@ def main() -> int:
     save_dir = args.save_dir
     if not save_dir and has_github_setup:
         global_env = env.load_env_file(env.CONFIG_FILE) if env.CONFIG_FILE else {}
-        save_dir = os.environ.get("LAST30DAYS_MEMORY_DIR") or global_env.get("LAST30DAYS_MEMORY_DIR") or "~/Documents/Last30Days"
+        save_dir = os.environ.get("LAST30DAYS_MEMORY_DIR") or global_env.get("LAST30DAYS_MEMORY_DIR") or str(Path.home() / "Documents" / "Last30Days")
         save_dir = str(Path(save_dir).expanduser().resolve())
 
     dashboard_md_path = None
@@ -1058,9 +1060,19 @@ def main() -> int:
                         suffix=args.save_suffix or "",
                         synthesis_md=synthesis_md,
                     )
-        sys.stderr.flush()
+    is_testing = "pytest" in sys.modules or "unittest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("LAST30DAYS_TESTING")
+    is_json = args.emit == "json"
+    is_terminal = sys.stdout.isatty()
+    should_redirect = (
+        has_github_setup
+        and dashboard_md_path
+        and not args.no_dashboard
+        and not is_testing
+        and not is_json
+        and is_terminal
+    )
 
-    if has_github_setup and dashboard_md_path:
+    if should_redirect:
         import socket
         import time
         import webbrowser
@@ -1080,17 +1092,20 @@ def main() -> int:
                 sys.stderr.write(f"\n[last30days] 'node' is not installed or not in PATH. Please install Node.js to run the dashboard.\n")
             else:
                 global_env = env.load_env_file(env.CONFIG_FILE) if env.CONFIG_FILE else {}
-                dashboard_dir = os.environ.get("LAST30DAYS_DASHBOARD_DIR") or global_env.get("LAST30DAYS_DASHBOARD_DIR") or "/home/lazorr/Documents/Last30DaysWeb"
+                dashboard_dir = os.environ.get("LAST30DAYS_DASHBOARD_DIR") or global_env.get("LAST30DAYS_DASHBOARD_DIR") or str(Path(__file__).resolve().parents[4])
                 server_js = Path(dashboard_dir) / "server.js"
                 if server_js.exists():
                     sys.stderr.write(f"\n[last30days] Dashboard server is not running. Starting it in background...\n")
                     import subprocess
+                    popen_kwargs = {}
+                    if os.name != "nt":
+                        popen_kwargs["start_new_session"] = True
                     subprocess.Popen(
                         ["node", "server.js"],
                         cwd=str(dashboard_dir),
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
-                        start_new_session=True
+                        **popen_kwargs
                     )
                     time.sleep(1.0)
                 else:
