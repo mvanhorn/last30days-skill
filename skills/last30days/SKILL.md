@@ -558,7 +558,7 @@ If `--agent` appears in ARGUMENTS (e.g., `/last30days plaud granola --agent`):
 5. **Skip** the follow-up invitation ("I'm now an expert on X...")
 6. **Output** the complete research report and stop - do not wait for further input
 
-Agent mode saves raw research data to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`) automatically via `--save-dir` (handled by the script, no extra tool calls).
+Agent mode saves raw research data to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`) automatically via `--save-dir` (handled by the script, no extra tool calls). Use `--output <file>` only when a caller needs the rendered stdout artifact at an exact path, with the format controlled by `--emit`.
 
 Agent mode report format:
 

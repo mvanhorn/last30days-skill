@@ -126,6 +126,13 @@ def save_output(
     return out_path
 
 
+def save_rendered_output(rendered_content: str, output_file: str) -> Path:
+    out_path = Path(output_file).expanduser().resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.write_text(rendered_content, encoding="utf-8")
+    return out_path
+
+
 def emit_output(
     report: schema.Report,
     emit: str,
@@ -204,6 +211,17 @@ def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str)
         return raw.as_posix()
 
 
+def compute_output_path_display(output_file: str) -> str:
+    """Compute the user-friendly explicit output path shown in render footers."""
+    raw = Path(output_file).expanduser().resolve()
+    try:
+        home = Path.home().resolve()
+        relative = raw.relative_to(home)
+        return f"~/{relative.as_posix()}"
+    except ValueError:
+        return raw.as_posix()
+
+
 def read_synthesis_file(path: str) -> str:
     try:
         return Path(path).expanduser().read_text(encoding="utf-8")
@@ -246,6 +264,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock", action="store_true", help="Use mock retrieval fixtures")
     parser.add_argument("--diagnose", action="store_true", help="Print provider and source availability")
     parser.add_argument("--save-dir", help="Optional directory for saving the rendered output")
+    parser.add_argument("--output", help="Optional exact file path for saving the rendered output")
     parser.add_argument("--synthesis-file", help="Markdown synthesis to embed in --emit=html output")
     parser.add_argument("--store", action="store_true", help="Persist ranked findings to the SQLite research store")
     parser.add_argument("--x-handle", help="X handle for targeted supplemental search")
@@ -969,7 +988,9 @@ def main() -> int:
     # gate once so the footer-display and save-output paths can't disagree.
     is_comparison_html = bool(entity_reports) and args.emit == "html"
     footer_save_path = None
-    if args.save_dir:
+    if args.output:
+        footer_save_path = compute_output_path_display(args.output)
+    elif args.save_dir:
         save_topic_for_display = comparison_topic(entity_reports) if is_comparison_html else report.topic
         footer_save_path = compute_save_path_display(
             args.save_dir, save_topic_for_display, args.save_suffix or "", args.emit
@@ -1005,6 +1026,10 @@ def main() -> int:
             save_path=footer_save_path,
             synthesis_md=synthesis_md,
         )
+    if args.output:
+        output_path = save_rendered_output(rendered, args.output)
+        sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
+        sys.stderr.flush()
     if args.save_dir:
         # Save the main topic's raw file (single-entity or comparison main).
         save_path = save_output(

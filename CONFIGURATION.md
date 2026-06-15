@@ -29,6 +29,7 @@ Each run produces one file per topic, slug-named:
 
 **Per-run overrides:**
 - `--save-dir <path>` - one-off output location.
+- `--output <file>` - write the rendered output to an exact file path, using the format selected by `--emit`.
 - `--save-suffix <name>` - distinguish runs of the same topic (e.g. per client: `--save-suffix=acme`).
 
 The footer line `📎 Raw results saved to ${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}/<slug>-raw.md` is the canonical pointer; if it shows backslashes on Windows update past v3.1.1.
