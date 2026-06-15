@@ -214,7 +214,15 @@ End of OUTPUT CONTRACT. The laws above are the contract; everything below is imp
 
 # HOW TO INVOKE THIS SKILL (READ FIRST, FOLLOW EVERY TIME)
 
-**STEP 0 - LOAD WEBSEARCH FIRST.** Your literal first tool call on every `/last30days` invocation MUST be:
+**STRAIGHTFORWARD / SINGLE-PROMPT PATH (RECOMMENDED):**
+If the user wants a straightforward run with minimal permission prompts (or by default to be fast and user-friendly), you can bypass the manual pre-flight steps (Step 0.5, Step 0.55, Step 0.75) and directly run the Python engine in a single `Bash` command with the `--auto-resolve` flag. The engine-side auto-resolver will automatically resolve X handles, subreddits, GitHub repositories, and context under the hood using local credentials.
+Example invocation:
+```bash
+python3 skills/last30days/scripts/last30days.py "topic" --auto-resolve
+```
+This reduces the entire operation to a single user confirmation prompt.
+
+**STEP 0 - LOAD WEBSEARCH FIRST (For manual multi-step planning path only).** Your literal first tool call on every manual `/last30days` invocation MUST be:
 
 ```
 ToolSearch select:WebSearch
@@ -223,6 +231,7 @@ ToolSearch select:WebSearch
 WebSearch is a **deferred tool** in Claude Code v2.1.114. The frontmatter of this file authorizes it (`allowed-tools: ... WebSearch`) but the runtime lists it as "schemas are NOT loaded." Calling WebSearch without `ToolSearch select:WebSearch` first will fail or do nothing. That friction is the documented cause of the second-most-common failure mode of this skill: the model sees "WebSearch is there but deferred," takes the low-friction path, skips Step 0.5 and 0.55, and runs the engine bare with only keyword search. The output looks fine but misses founder X timelines, GitHub repo activity, and subreddit-specific threads.
 
 Load WebSearch first. No exceptions. Then proceed to the branching rule below.
+
 
 **STEP 1 - RUN THE ENGINE. You MUST run `scripts/last30days.py` via Bash. Do not produce output from WebSearch alone.**
 
