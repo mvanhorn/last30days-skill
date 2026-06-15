@@ -433,7 +433,11 @@ def extract_cookies_with_source(
         result = extractor(domain, cookie_names)
         return (result, browser) if result is not None else None
 
-    # Auto mode: try browsers in platform-appropriate order
+    # Auto mode: try browsers in platform-appropriate order.
+    # Note: the skill's own entry point (env.extract_browser_credentials) builds
+    # its own list that tries the SILENT browsers (Firefox, Safari) first to
+    # avoid macOS Keychain prompts. This standalone "auto" is Chromium-first; the
+    # two orderings are intentional for their respective callers.
     system = platform.system()
     if system == "Darwin":
         order = ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium", "firefox", "safari"]

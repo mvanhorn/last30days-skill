@@ -24,7 +24,10 @@ logger = logging.getLogger(__name__)
 
 # Cookie DB locations on macOS
 _APP_SUPPORT = Path.home() / "Library" / "Application Support"
-CHROME_COOKIES_DB = _APP_SUPPORT / "Google" / "Chrome" / "Default" / "Cookies"
+CHROME_BASE_DIR = _APP_SUPPORT / "Google" / "Chrome"
+# Kept for backward compatibility; resolution now goes through the profile
+# finder (which also handles the modern Network/Cookies layout).
+CHROME_COOKIES_DB = CHROME_BASE_DIR / "Default" / "Cookies"
 BRAVE_BASE_DIR = _APP_SUPPORT / "BraveSoftware" / "Brave-Browser"
 
 # Other Chromium-based browsers, keyed by FROM_BROWSER name. Each maps to
@@ -298,9 +301,18 @@ def _extract_chromium_cookies_macos(
 
 
 def extract_chrome_cookies_macos(domain: str, cookie_names: list[str]) -> Optional[dict[str, str]]:
-    """Extract cookies from Chrome on macOS."""
+    """Extract cookies from Chrome on macOS.
+
+    Resolves the cookie DB through the shared profile finder so Chrome gets the
+    same modern ``Default/Network/Cookies`` (Chromium >= 96) and legacy
+    ``Default/Cookies`` probing as the rest of the Chromium family.
+    """
+    db_path = _find_chromium_cookies_db(CHROME_BASE_DIR)
+    if db_path is None:
+        logger.info("Chrome cookies database not found under %s", CHROME_BASE_DIR)
+        return None
     return _extract_chromium_cookies_macos(
-        CHROME_COOKIES_DB, "Chrome Safe Storage", domain, cookie_names
+        db_path, "Chrome Safe Storage", domain, cookie_names
     )
 
 

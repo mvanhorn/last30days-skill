@@ -200,8 +200,8 @@ class TestDecryption:
 class TestChromeNotInstalled:
     def test_db_not_found(self):
         with mock.patch(
-            "lib.chrome_cookies.CHROME_COOKIES_DB",
-            Path("/nonexistent/path/Cookies"),
+            "lib.chrome_cookies._find_chromium_cookies_db",
+            return_value=None,
         ):
             result = extract_chrome_cookies_macos(".x.com", ["auth_token"])
             assert result is None
@@ -251,7 +251,7 @@ class TestUnencryptedCookies:
             (".x.com", "ct0", "plain_ct0_value", b""),
         ])
 
-        with mock.patch("lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
+        with mock.patch("lib.chrome_cookies._find_chromium_cookies_db", return_value=Path(db_path)):
             # No keychain needed for unencrypted values
             with mock.patch("lib.chrome_cookies._get_chrome_encryption_key", return_value=None):
                 result = extract_chrome_cookies_macos(".x.com", ["auth_token", "ct0"])
@@ -279,7 +279,7 @@ class TestFullExtraction:
             (".other.com", "other", "", b""),  # unrelated cookie
         ])
 
-        with mock.patch("lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
+        with mock.patch("lib.chrome_cookies._find_chromium_cookies_db", return_value=Path(db_path)):
             with mock.patch(
                 "lib.chrome_cookies._get_chromium_encryption_key",
                 return_value=KNOWN_PASSPHRASE,
@@ -296,7 +296,7 @@ class TestFullExtraction:
             (".other.com", "session", "val", b""),
         ])
 
-        with mock.patch("lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
+        with mock.patch("lib.chrome_cookies._find_chromium_cookies_db", return_value=Path(db_path)):
             with mock.patch("lib.chrome_cookies._get_chrome_encryption_key", return_value=None):
                 result = extract_chrome_cookies_macos(".x.com", ["auth_token"])
 
@@ -312,7 +312,7 @@ class TestFullExtraction:
             (".x.com", "auth_token", "", encrypted_auth),
         ], db_version=24)
 
-        with mock.patch("lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
+        with mock.patch("lib.chrome_cookies._find_chromium_cookies_db", return_value=Path(db_path)):
             with mock.patch(
                 "lib.chrome_cookies._get_chromium_encryption_key",
                 return_value=KNOWN_PASSPHRASE,
