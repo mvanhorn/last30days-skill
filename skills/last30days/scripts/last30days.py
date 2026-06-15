@@ -1011,9 +1011,10 @@ def main() -> int:
     from lib.github import resolve_token
     has_github_setup = bool(resolve_token() or config.get("SCRAPECREATORS_API_KEY"))
 
+    global_env = env.load_env_file(env.CONFIG_FILE) if env.CONFIG_FILE else {}
+
     save_dir = args.save_dir
     if not save_dir and has_github_setup:
-        global_env = env.load_env_file(env.CONFIG_FILE) if env.CONFIG_FILE else {}
         save_dir = os.environ.get("LAST30DAYS_MEMORY_DIR") or global_env.get("LAST30DAYS_MEMORY_DIR") or str(Path.home() / "Documents" / "Last30Days")
         save_dir = str(Path(save_dir).expanduser().resolve())
 
@@ -1030,6 +1031,7 @@ def main() -> int:
             rendered_content=rendered if is_comparison_html else None,
         )
         sys.stderr.write(f"[last30days] Saved output to {save_path}\n")
+        sys.stderr.flush()
         dashboard_md_path = save_path
 
         # If user did not emit markdown, or if they did but we want to make sure it's the correct format for the dashboard
@@ -1043,6 +1045,7 @@ def main() -> int:
                 topic_override=comparison_topic(entity_reports) if is_comparison_html else None,
             )
             sys.stderr.write(f"[last30days] Saved dashboard report to {dashboard_md_path}\n")
+            sys.stderr.flush()
 
         # Competitor / vs-mode: also save a per-entity raw file for each peer.
         # Matches historical vs-mode behavior (N passes → N save files).
@@ -1054,6 +1057,7 @@ def main() -> int:
                     synthesis_md=synthesis_md,
                 )
                 sys.stderr.write(f"[last30days] Saved output to {peer_path}\n")
+                sys.stderr.flush()
                 if args.emit not in ("compact", "md") or not peer_path.name.endswith(".md"):
                     save_output(
                         entity_report, "compact", save_dir,
@@ -1076,49 +1080,97 @@ def main() -> int:
         import socket
         import time
         import webbrowser
+        import urllib.parse
+        
         port = 3000
-        server_running = False
+        server_ready = False
+        
+        # Check if server is already running
         try:
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 s.settimeout(0.5)
                 if s.connect_ex(('127.0.0.1', port)) == 0:
-                    server_running = True
+                    server_ready = True
         except Exception:
             pass
 
-        if not server_running:
+        if not server_ready:
             import shutil
             if shutil.which("node") is None:
                 sys.stderr.write(f"\n[last30days] 'node' is not installed or not in PATH. Please install Node.js to run the dashboard.\n")
+                sys.stderr.flush()
             else:
-                global_env = env.load_env_file(env.CONFIG_FILE) if env.CONFIG_FILE else {}
-                dashboard_dir = os.environ.get("LAST30DAYS_DASHBOARD_DIR") or global_env.get("LAST30DAYS_DASHBOARD_DIR") or str(Path(__file__).resolve().parents[4])
-                server_js = Path(dashboard_dir) / "server.js"
-                if server_js.exists():
-                    sys.stderr.write(f"\n[last30days] Dashboard server is not running. Starting it in background...\n")
-                    import subprocess
-                    popen_kwargs = {}
-                    if os.name != "nt":
-                        popen_kwargs["start_new_session"] = True
-                    subprocess.Popen(
-                        ["node", "server.js"],
-                        cwd=str(dashboard_dir),
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        **popen_kwargs
-                    )
-                    time.sleep(1.0)
+                # Resolve dashboard directory dynamically with search list for robustness
+                candidates = [
+                    Path(__file__).resolve().parents[4],
+                    Path(__file__).resolve().parents[3],
+                ]
+                dashboard_dir = os.environ.get("LAST30DAYS_DASHBOARD_DIR") or global_env.get("LAST30DAYS_DASHBOARD_DIR")
+                
+                if not dashboard_dir:
+                    for candidate in candidates:
+                        if (candidate / "server.js").exists():
+                            dashboard_dir = str(candidate)
+                            break
+                if not dashboard_dir:
+                    candidate = Path.home() / "Documents/Last30DaysWeb"
+                    if (candidate / "server.js").exists():
+                        dashboard_dir = str(candidate)
+                
+                if dashboard_dir:
+                    server_js = Path(dashboard_dir) / "server.js"
+                    if server_js.exists():
+                        sys.stderr.write(f"\n[last30days] Dashboard server is not running. Starting it in background...\n")
+                        sys.stderr.flush()
+                        import subprocess
+                        popen_kwargs = {}
+                        if os.name != "nt":
+                            popen_kwargs["start_new_session"] = True
+                        try:
+                            subprocess.Popen(
+                                ["node", "server.js"],
+                                cwd=str(dashboard_dir),
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                **popen_kwargs
+                            )
+                            
+                            # Active polling loop for Express socket binding (timeout 5s)
+                            start_time = time.time()
+                            while time.time() - start_time < 5.0:
+                                try:
+                                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                                        s.settimeout(0.1)
+                                        if s.connect_ex(('127.0.0.1', port)) == 0:
+                                            server_ready = True
+                                            break
+                                except Exception:
+                                    pass
+                                time.sleep(0.1)
+                        except Exception as e:
+                            sys.stderr.write(f"\n[last30days] Error spawning dashboard server: {e}\n")
+                            sys.stderr.flush()
+                    else:
+                        sys.stderr.write(f"\n[last30days] Dashboard server script not found at {server_js}. Cannot start server.\n")
+                        sys.stderr.flush()
                 else:
-                    sys.stderr.write(f"\n[last30days] Dashboard server script not found at {server_js}. Cannot start server.\n")
+                    sys.stderr.write(f"\n[last30days] Dashboard server directory not resolved. Cannot start server.\n")
+                    sys.stderr.flush()
 
-        report_id = dashboard_md_path.name.replace(".md", "")
-        dashboard_url = f"http://localhost:3000/?report={report_id}"
-        sys.stderr.write(f"\n[last30days] Opening outcomes in dashboard at: {dashboard_url}\n\n")
-        webbrowser.open(dashboard_url)
+        if server_ready:
+            report_id = dashboard_md_path.name.replace(".md", "")
+            encoded_report_id = urllib.parse.quote(report_id)
+            dashboard_url = f"http://localhost:3000/?report={encoded_report_id}"
+            sys.stderr.write(f"\n[last30days] Opening outcomes in dashboard at: {dashboard_url}\n\n")
+            sys.stderr.flush()
+            webbrowser.open(dashboard_url)
 
-        # Print brief completion message instead of full markdown report in terminal
-        print(f"Research complete. Results loaded into the web dashboard.")
-        return 0
+            # Print brief completion message instead of full markdown report in terminal
+            print(f"Research complete. Results loaded into the web dashboard.")
+            return 0
+        else:
+            sys.stderr.write(f"\n[last30days] Dashboard server could not be reached on port {port}. Displaying terminal output instead.\n\n")
+            sys.stderr.flush()
 
     print(rendered)
     return 0
