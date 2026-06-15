@@ -201,7 +201,7 @@ Just start with "last30" and talk to me like normal.
 # Shorter promo for single missing key
 PROMO_SINGLE_KEY = {
     "reddit": "\n💡 Unlock TikTok and Instagram with SCRAPECREATORS_API_KEY - 100 free credits, no CC - scrapecreators.com\n",
-    "x": "\n💡 Unlock X: log into x.com in Firefox or Safari, then re-run. Or add AUTH_TOKEN/CT0 or XAI_API_KEY.\n",
+    "x": "\n💡 Unlock X: log into x.com in Firefox or Safari, then re-run (for Chrome, Brave, Edge, Arc, Vivaldi or Opera, set FROM_BROWSER=auto). Or add AUTH_TOKEN/CT0 or XAI_API_KEY.\n",
     "web": "\n💡 You can unlock native grounded web search with BRAVE_API_KEY or SERPER_API_KEY.\n",
 }
 

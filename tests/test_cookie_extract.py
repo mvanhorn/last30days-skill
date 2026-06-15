@@ -222,19 +222,22 @@ class TestExtractCookiesAuto:
     """Tests for extract_cookies with browser='auto'."""
 
     def test_auto_macos_tries_chrome_then_firefox(self, mock_firefox_env):
-        """On macOS, auto tries Chrome first, falls back to Firefox if Chrome fails."""
+        """On macOS, auto tries the Chromium family first, falls back to Firefox."""
         profiles_dir = mock_firefox_env()
 
+        # Mock every Chromium-family extractor to None so the test is hermetic
+        # regardless of which browsers are actually installed/logged-in on the
+        # machine running it (auto tries these before Firefox).
         with (
             patch("lib.cookie_extract.platform.system", return_value="Darwin"),
-            patch(
-                "lib.cookie_extract.extract_chrome_cookies",
-                return_value=None,
-            ),
-            patch(
-                "lib.cookie_extract.extract_safari_cookies",
-                return_value=None,
-            ),
+            patch("lib.cookie_extract.extract_chrome_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_brave_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_edge_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_vivaldi_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_opera_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_arc_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_chromium_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_safari_cookies", return_value=None),
             patch(
                 "lib.cookie_extract._get_firefox_profiles_dir",
                 return_value=profiles_dir,
@@ -242,7 +245,7 @@ class TestExtractCookiesAuto:
         ):
             result = extract_cookies("auto", ".x.com", ["auth_token", "ct0"])
 
-        # Chrome and Safari return None, Firefox succeeds
+        # All Chromium browsers and Safari return None, Firefox succeeds
         assert result is not None
         assert result["auth_token"] == "tok_abc123"
         assert result["ct0"] == "ct0_xyz789"

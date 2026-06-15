@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Browser-cookie auth for X/Twitter now covers the full Chromium family on macOS - Brave, Microsoft Edge, Vivaldi, Opera, Arc, and Chromium - alongside the existing Chrome, Firefox, and Safari. They all share Chrome's v10 AES-128-CBC decryption, differing only in profile path and Keychain service name, so they run through one shared decryption core. Set `FROM_BROWSER=auto` to try every browser, or `FROM_BROWSER=<name>` (e.g. `brave`, `edge`, `arc`) to target one ([#572](https://github.com/mvanhorn/last30days-skill/pull/572)).
+
+### Fixed
+
+- `extract_browser_credentials()` silently ignored Brave even though the lower-level `cookie_extract` layer already supported it: `FROM_BROWSER=brave` fell back to Firefox/Safari and `FROM_BROWSER=auto` never tried Brave. The env wiring now passes Brave - and the rest of the Chromium family - through to the extractor ([#572](https://github.com/mvanhorn/last30days-skill/pull/572)).
+
 ## [3.3.2] - 2026-06-06
 
 ### Fixed

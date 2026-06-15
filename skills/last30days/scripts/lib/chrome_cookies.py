@@ -1,12 +1,13 @@
-"""Chrome and Brave cookie extraction for macOS.
+"""Chromium-family cookie extraction for macOS.
 
 Extracts cookies from Chromium-based browser SQLite databases using only
 stdlib modules and the system openssl CLI (ships with macOS). Zero pip
 dependencies.
 
 Chromium on macOS uses v10 encryption (AES-128-CBC with Keychain-stored key).
-Chrome and Brave share the same algorithm; only the DB path and Keychain
-service name differ.
+Every Chromium-based browser (Chrome, Brave, Edge, Vivaldi, Opera, Arc,
+Chromium) shares the same algorithm; only the profile directory and Keychain
+service name differ, so they all run through the same decryption core.
 This is NOT affected by Windows App-Bound Encryption (v20).
 """
 
@@ -22,8 +23,22 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Cookie DB locations on macOS
-CHROME_COOKIES_DB = Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "Default" / "Cookies"
-BRAVE_BASE_DIR = Path.home() / "Library" / "Application Support" / "BraveSoftware" / "Brave-Browser"
+_APP_SUPPORT = Path.home() / "Library" / "Application Support"
+CHROME_COOKIES_DB = _APP_SUPPORT / "Google" / "Chrome" / "Default" / "Cookies"
+BRAVE_BASE_DIR = _APP_SUPPORT / "BraveSoftware" / "Brave-Browser"
+
+# Other Chromium-based browsers, keyed by FROM_BROWSER name. Each maps to
+# (profile base directory, macOS Keychain service name). Chrome and Brave keep
+# their dedicated helpers below for backward compatibility; everything here is
+# resolved generically by extract_chromium_browser_cookies_macos(). Keychain
+# service names follow Chromium's "<Browser> Safe Storage" convention.
+CHROMIUM_BROWSER_PROFILES: dict[str, tuple[Path, str]] = {
+    "edge": (_APP_SUPPORT / "Microsoft Edge", "Microsoft Edge Safe Storage"),
+    "vivaldi": (_APP_SUPPORT / "Vivaldi", "Vivaldi Safe Storage"),
+    "opera": (_APP_SUPPORT / "com.operasoftware.Opera", "Opera Safe Storage"),
+    "arc": (_APP_SUPPORT / "Arc" / "User Data", "Arc Safe Storage"),
+    "chromium": (_APP_SUPPORT / "Chromium", "Chromium Safe Storage"),
+}
 
 # Chromium v10 encryption constants (shared by Chrome and Brave)
 CHROME_SALT = b"saltysalt"
@@ -281,22 +296,27 @@ def extract_chrome_cookies_macos(domain: str, cookie_names: list[str]) -> Option
     )
 
 
-def _find_brave_cookies_db() -> Optional[Path]:
-    """Find Brave's Cookies database on macOS.
+def _find_chromium_cookies_db(base_dir: Path) -> Optional[Path]:
+    """Find a Chromium-based browser's Cookies database under base_dir.
 
-    Tries the Default profile first, then scans numbered Profile directories
-    by most-recently-modified. Brave creates extra profiles as "Profile 1",
-    "Profile 2", etc. alongside Default; the most recently used one is the
-    likeliest to hold current cookies. Lexicographic sort would visit
-    "Profile 10" before "Profile 2", which can return the wrong profile.
+    Checks the Default profile first, then a Cookies file directly under
+    base_dir (Opera's layout), then numbered "Profile N" directories by
+    most-recently-modified. Chromium browsers create extra profiles as
+    "Profile 1", "Profile 2", etc. alongside Default; the most recently used
+    one is the likeliest to hold current cookies. Lexicographic sort would
+    visit "Profile 10" before "Profile 2", which can return the wrong profile.
     """
-    default = BRAVE_BASE_DIR / "Default" / "Cookies"
+    default = base_dir / "Default" / "Cookies"
     if default.exists():
         return default
 
+    direct = base_dir / "Cookies"
+    if direct.exists():
+        return direct
+
     try:
         candidates = [
-            child for child in BRAVE_BASE_DIR.iterdir()
+            child for child in base_dir.iterdir()
             if child.is_dir() and child.name.startswith("Profile ")
         ]
         for child in sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True):
@@ -307,6 +327,11 @@ def _find_brave_cookies_db() -> Optional[Path]:
         pass
 
     return None
+
+
+def _find_brave_cookies_db() -> Optional[Path]:
+    """Find Brave's Cookies database on macOS (Default, then Profile N)."""
+    return _find_chromium_cookies_db(BRAVE_BASE_DIR)
 
 
 def extract_brave_cookies_macos(domain: str, cookie_names: list[str]) -> Optional[dict[str, str]]:
@@ -320,3 +345,24 @@ def extract_brave_cookies_macos(domain: str, cookie_names: list[str]) -> Optiona
         logger.info("Brave cookies database not found under %s", BRAVE_BASE_DIR)
         return None
     return _extract_chromium_cookies_macos(db_path, "Brave Safe Storage", domain, cookie_names)
+
+
+def extract_chromium_browser_cookies_macos(
+    browser: str, domain: str, cookie_names: list[str]
+) -> Optional[dict[str, str]]:
+    """Extract cookies from a registry-defined Chromium browser on macOS.
+
+    Covers every browser in CHROMIUM_BROWSER_PROFILES (Edge, Vivaldi, Opera,
+    Arc, Chromium). They all reuse Chrome's v10 AES-128-CBC encryption; only
+    the profile directory and Keychain service name differ.
+    """
+    spec = CHROMIUM_BROWSER_PROFILES.get(browser)
+    if spec is None:
+        logger.debug("Unknown Chromium browser: %s", browser)
+        return None
+    base_dir, keychain_service = spec
+    db_path = _find_chromium_cookies_db(base_dir)
+    if db_path is None:
+        logger.info("%s cookies database not found under %s", keychain_service, base_dir)
+        return None
+    return _extract_chromium_cookies_macos(db_path, keychain_service, domain, cookie_names)
