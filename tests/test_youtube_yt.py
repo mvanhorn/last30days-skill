@@ -332,6 +332,79 @@ class TestInferQueryIntent(unittest.TestCase):
         self.assertEqual(youtube_yt._infer_query_intent("Kanye West"), "breaking_news")
 
 
+class TestTranscriptCandidateSortKey(unittest.TestCase):
+    """Tests for _transcript_candidate_sort_key recency-boosted ordering."""
+
+    def _make_item(self, video_id, views, date_str):
+        return {
+            "video_id": video_id,
+            "title": f"Video {video_id}",
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_name": "TestChannel",
+            "date": date_str,
+            "engagement": {"views": views, "likes": 10, "comments": 5},
+            "relevance": 0.8,
+            "why_relevant": "test",
+            "description": "test desc",
+            "duration": 600,
+        }
+
+    def test_recency_breaks_views_tie(self):
+        """When views are equal, the more recent video gets a higher sort key."""
+        new = self._make_item("new", 100_000, "2026-06-13")
+        old = self._make_item("old", 100_000, "2026-06-01")
+        self.assertGreater(
+            youtube_yt._transcript_candidate_sort_key(new),
+            youtube_yt._transcript_candidate_sort_key(old),
+        )
+
+    def test_old_high_view_can_still_qualify_for_transcript(self):
+        """An old video with very high views still gets a transcript slot;
+        recency is a tiebreaker, not a gate."""
+        old_high = self._make_item("old_high", 10_000_000, "2026-05-01")
+        recent_low = self._make_item("recent_low", 100, "2026-06-13")
+        self.assertGreater(
+            youtube_yt._transcript_candidate_sort_key(old_high),
+            youtube_yt._transcript_candidate_sort_key(recent_low),
+        )
+
+    def test_no_date_falls_to_back(self):
+        """An item with no date gets recency 0, sorting behind dated items."""
+        no_date = self._make_item("no_date", 50_000, "")
+        dated = self._make_item("dated", 50_000, "2026-06-10")
+        self.assertGreater(
+            youtube_yt._transcript_candidate_sort_key(dated),
+            youtube_yt._transcript_candidate_sort_key(no_date),
+        )
+
+    def test_transcript_candidates_pick_recent_over_old_same_views(self):
+        """search_and_transcribe selects candidates by (views, recency),
+        so a mid-view recent video is tried before an equal-view old video."""
+        items = [
+            self._make_item("old", 100_000, "2026-06-01"),
+            self._make_item("recent", 100_000, "2026-06-13"),
+            self._make_item("mid", 50_000, "2026-06-10"),
+        ]
+
+        def fake_search(*args, **kwargs):
+            return {"items": items}
+
+        call_args_list = []
+
+        def fake_fetch(video_ids, max_workers=5, out_captions_disabled=None):
+            call_args_list.extend(video_ids)
+            return {vid: "transcript" for vid in video_ids}
+
+        with mock.patch.object(youtube_yt, "search_youtube", side_effect=fake_search), \
+             mock.patch.object(youtube_yt, "fetch_transcripts_parallel", side_effect=fake_fetch):
+            youtube_yt.search_and_transcribe("test", "2026-06-01", "2026-06-14", depth="default")
+
+        # transcript_limit=2, attempt_count=4 (limited to 3 items)
+        # Sorted by (views, recency): recent(100k,100) > old(100k,57) > mid(50k,67)
+        self.assertEqual(call_args_list[:2], ["recent", "old"],
+                         "Recent video should be tried before equal-view older video")
+
+
 class TestSearchAndTranscribe(unittest.TestCase):
     """Tests for search_and_transcribe() end-to-end flow."""
 

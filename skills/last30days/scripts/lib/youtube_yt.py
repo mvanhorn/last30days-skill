@@ -36,7 +36,7 @@ TRANSCRIPT_LIMITS = {
 # Max words to keep from each transcript
 TRANSCRIPT_MAX_WORDS = 5000
 
-from . import http, log, subproc
+from . import dates, http, log, subproc
 from .relevance import token_overlap_relevance as _compute_relevance
 
 
@@ -642,6 +642,18 @@ def fetch_transcripts_parallel(
     return results
 
 
+def _transcript_candidate_sort_key(item: dict) -> tuple:
+    """Sort key for transcript candidate selection.
+
+    Combines views with recency so that recent videos (which survive
+    strict_recent freshness pruning) are prioritised over old high-view
+    videos whose transcripts would be discarded downstream.
+    """
+    views = item.get("engagement", {}).get("views", 0) or 0
+    recency = dates.recency_score(item.get("date", ""))
+    return (views, recency)
+
+
 def search_and_transcribe(
     topic: str,
     from_date: str,
@@ -680,7 +692,10 @@ def search_and_transcribe(
     if not items:
         return search_result
 
-    # Step 2: Fetch transcripts for top videos by views.
+    # Step 2: Fetch transcripts for top videos.
+    # Sort candidates by a combination of views and recency so that recent
+    # videos (which survive strict_recent pruning) are not starved of
+    # transcript budget by older high-view-count outliers.
     # Try more candidates than the limit because some videos (music videos,
     # short clips) lack captions. Attempt up to 3x the limit so we have a
     # good chance of reaching the target number of successful transcripts.
@@ -689,7 +704,10 @@ def search_and_transcribe(
     captions_disabled_ids: Set[str] = set()
     if transcript_limit > 0:
         attempt_count = min(len(items), transcript_limit * 3)
-        candidate_ids = [item["video_id"] for item in items[:attempt_count]]
+        transcript_candidates = sorted(
+            items, key=_transcript_candidate_sort_key, reverse=True,
+        )
+        candidate_ids = [item["video_id"] for item in transcript_candidates[:attempt_count]]
         _log(f"Fetching transcripts for up to {attempt_count} videos (target: {transcript_limit}): {candidate_ids}")
         transcripts = fetch_transcripts_parallel(
             candidate_ids, out_captions_disabled=captions_disabled_ids,
