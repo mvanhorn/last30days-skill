@@ -21,7 +21,10 @@ OPENAI_MODELS_URL = "https://api.openai.com/v1/models"
 # Ordered by cost-efficiency for web_search + JSON extraction tasks.
 # Mini models first: same structured extraction quality at ~3x lower cost.
 OPENAI_FALLBACK_MODELS = ["gpt-5-mini", "gpt-4.1-mini", "gpt-4.1", "gpt-4o"]
-CODEX_FALLBACK_MODELS = ["gpt-5.1-codex-mini", "gpt-5.2"]
+# The ChatGPT Codex backend (chatgpt.com/backend-api/codex) only accepts a
+# subset of models — it rejects the *-codex and -mini variants with HTTP 400.
+# gpt-5.5 is the working general model for web_search + JSON extraction there.
+CODEX_FALLBACK_MODELS = ["gpt-5.5"]
 
 # xAI API - Agent Tools API requires grok-4 family
 # Non-reasoning: same price, faster, no unnecessary thinking tokens.
