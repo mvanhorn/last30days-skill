@@ -98,13 +98,19 @@ def _parse_codex_stream(raw: str) -> Dict[str, Any]:
     """Parse SSE stream from Codex responses into a response-like dict."""
     events = _parse_sse_stream_raw(raw)
 
-    # Prefer explicit completed response payload if present
+    # Prefer explicit completed response payload if present.
+    # The Codex backend can emit a completed response with an EMPTY output
+    # array (text arrives only via delta events) — skip those so the delta
+    # reconstruction fallback below can recover the message text.
     for evt in reversed(events):
         if isinstance(evt, dict):
+            candidate = None
             if evt.get("type") == "response.completed" and isinstance(evt.get("response"), dict):
-                return evt["response"]
-            if isinstance(evt.get("response"), dict):
-                return evt["response"]
+                candidate = evt["response"]
+            elif isinstance(evt.get("response"), dict):
+                candidate = evt["response"]
+            if candidate and candidate.get("output"):
+                return candidate
 
     # Fallback: reconstruct output text from deltas
     output_text = ""
@@ -230,6 +236,9 @@ def _build_payload(model: str, instructions_text: str, input_text: str, auth_sou
             }
         ]
         payload["stream"] = True
+        # Codex GPT-5.x models default to slower reasoning; low effort keeps
+        # search+extract quality while fitting the per-source timeout budget.
+        payload["reasoning"] = {"effort": "low"}
     return payload
 
 
@@ -592,14 +601,21 @@ def parse_reddit_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
         print(f"[REDDIT WARNING] No output text found in OpenAI response. Keys present: {list(response.keys())}", flush=True)
         return items
 
-    # Extract JSON from the response
-    json_match = re.search(r'\{[\s\S]*"items"[\s\S]*\}', output_text)
-    if json_match:
+    # Extract JSON from the response. The model can emit multiple JSON
+    # objects back to back; a greedy regex spanning all of them makes
+    # json.loads fail with "Extra data", so decode objects individually.
+    decoder = json.JSONDecoder()
+    pos = output_text.find("{")
+    while pos != -1 and not items:
         try:
-            data = json.loads(json_match.group())
-            items = data.get("items", [])
+            data, end = decoder.raw_decode(output_text, pos)
         except json.JSONDecodeError:
-            pass
+            pos = output_text.find("{", pos + 1)
+            continue
+        if isinstance(data, dict) and isinstance(data.get("items"), list):
+            items = data["items"]
+            break
+        pos = output_text.find("{", end)
 
     # Validate and clean items
     clean_items = []
