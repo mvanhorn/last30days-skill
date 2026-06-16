@@ -44,7 +44,8 @@ def _extract_core_subject(topic: str) -> str:
         'practices', 'features', 'recommendations', 'advice',
         'or', 'and',
     })
-    return extract_core_subject(topic, noise=_THREADS_NOISE, max_words=2)
+    core = extract_core_subject(topic, noise=_THREADS_NOISE, max_words=2)
+    return " ".join(core.rstrip("?!.").split()[:2])
 
 
 def _parse_date(item: Dict[str, Any]) -> Optional[str]:
