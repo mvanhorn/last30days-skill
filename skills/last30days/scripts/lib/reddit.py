@@ -7,6 +7,7 @@ Requires SCRAPECREATORS_API_KEY in config (same key as TikTok + Instagram).
 API docs: https://scrapecreators.com/docs
 """
 
+import math
 import re
 import sys
 import time
@@ -24,6 +25,13 @@ def _first_of(*values, default=None):
 from . import dates, http, log
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/reddit"
+
+# Reddit's highest-upvote content (relationship drama, AITA, viral news) often
+# has near-zero topic overlap. Engagement-only ranking floats it above on-topic
+# posts, especially on bare global searches where no subreddits were resolved
+# upstream. A relevance floor + relevance-first ranking (see _relevance_rank_key
+# below and RELEVANCE_FLOOR / MIN_ON_TOPIC in relevance.py) keeps an off-topic
+# viral post from ever outranking an on-topic one.
 
 # Depth configurations: how many API calls per phase
 DEPTH_CONFIG = {
@@ -48,7 +56,7 @@ DEPTH_CONFIG = {
 }
 
 from .query import extract_core_subject as _query_extract
-from .relevance import token_overlap_relevance
+from .relevance import token_overlap_relevance, RELEVANCE_FLOOR, MIN_ON_TOPIC
 
 # Reddit-specific noise words (preserves original smaller set)
 NOISE_WORDS = frozenset({
@@ -250,6 +258,18 @@ def _total_engagement(item: Dict[str, Any]) -> int:
     score = eng.get("score", 0) or 0
     num_comments = eng.get("num_comments", 0) or 0
     return score + num_comments
+
+
+def _relevance_rank_key(item: Dict[str, Any]) -> float:
+    """Rank by relevance first, with a bounded engagement bonus as tiebreaker.
+
+    The log-scaled bonus is capped at 0.25 so it orders similarly-relevant posts
+    by discussion volume but is too small to lift an off-topic post (relevance
+    ~0) above an on-topic one (relevance >= RELEVANCE_FLOOR).
+    """
+    rel = item.get("relevance") or 0.0
+    eng_bonus = min(0.25, math.log10(_total_engagement(item) + 1) / 20.0)
+    return rel + eng_bonus
 
 
 def _normalize_post(post: Dict[str, Any], idx: int, source_label: str = "global", query: str = "") -> Dict[str, Any]:
@@ -555,11 +575,24 @@ def search_reddit(
     else:
         _log(f"No posts within date range, keeping all {len(all_items)}")
 
-    # === Phase 6: Sort by engagement (upvotes + comment count) ===
-    all_items.sort(
-        key=lambda x: _total_engagement(x),
-        reverse=True,
-    )
+    # === Phase 6: Relevance floor + relevance-weighted ranking ===
+    # Drop the off-topic tail when enough on-topic posts remain (guard mirrors
+    # the date filter: keep all if too few clear the floor). When too few clear
+    # the soft floor, still strip zero-overlap posts (relevance exactly 0 = no
+    # title/body token match at all, never on-topic) whenever anything relevant
+    # remains, so viral high-upvote junk can't fill the section. Then rank by
+    # relevance with a bounded engagement bonus (see RELEVANCE_FLOOR note above).
+    before = len(all_items)
+    on_topic = [it for it in all_items if (it.get("relevance") or 0) >= RELEVANCE_FLOOR]
+    if len(on_topic) >= MIN_ON_TOPIC:
+        all_items = on_topic
+    else:
+        nonzero = [it for it in all_items if (it.get("relevance") or 0) > 0]
+        if nonzero:
+            all_items = nonzero
+    if len(all_items) < before:
+        _log(f"Relevance floor dropped {before - len(all_items)} off-topic posts")
+    all_items.sort(key=_relevance_rank_key, reverse=True)
 
     # Re-index IDs
     for i, item in enumerate(all_items):

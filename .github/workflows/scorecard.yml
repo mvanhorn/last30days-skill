@@ -1,0 +1,69 @@
+name: Scorecard
+
+# OpenSSF Scorecard tracks broader repo security-health drift (branch
+# protection, token permissions, pinned actions, dangerous workflows, CI
+# tests, maintenance signals) on a schedule, complementing the per-diff
+# dependency-audit and secret-scan jobs in security.yml.
+#
+# Advisory-first: this workflow only measures and publishes a score, and it
+# never blocks merges. It runs on the default branch (Scorecard needs repo-level
+# data and a token, so it is not meaningful on PR forks) plus a weekly schedule
+# so regressions in security health surface even when no code changes.
+
+on:
+  branch_protection_rule:
+  schedule:
+    # Weekly, Mondays at 07:00 UTC.
+    - cron: '0 7 * * 1'
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+# Top-level token is read-only; the analysis job widens only what it needs.
+permissions: read-all
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    runs-on: ubuntu-latest
+    # Job-level permissions fully replace the top-level block (unlisted scopes
+    # default to none), so the reads checkout and Scorecard need are explicit.
+    permissions:
+      # Needed by actions/checkout to clone the repo, and by Scorecard to read
+      # workflow files for its Dangerous-Workflow / Token-Permissions checks.
+      contents: read
+      actions: read
+      # Needed to upload the SARIF results to the code-scanning dashboard.
+      security-events: write
+      # Needed to publish results and obtain a badge (uses OIDC, no secrets).
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Run OpenSSF Scorecard
+        uses: ossf/scorecard-action@v2.4.3
+        with:
+          results_file: scorecard.sarif
+          results_format: sarif
+          # Publishes results to the OpenSSF REST API for the public badge and
+          # trend tracking. Set to false if maintainers prefer to keep the
+          # score private (the SARIF upload below still works either way).
+          publish_results: true
+
+      # Retain the raw SARIF as a build artifact for offline inspection.
+      - name: Upload artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: scorecard-sarif
+          path: scorecard.sarif
+          retention-days: 5
+
+      - name: Upload SARIF to code-scanning
+        uses: github/codeql-action/upload-sarif@v4
+        with:
+          sarif_file: scorecard.sarif

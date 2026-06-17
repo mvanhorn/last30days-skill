@@ -21,6 +21,13 @@ def source_log(prefix: str, msg: str, *, tty_only: bool = True) -> None:
         msg: Message text.
         tty_only: If True, only log when stderr is a TTY (avoids cluttering
                   non-interactive output like Claude Code).
+
+    CONVENTION: source modules under `lib/` must call this with
+    `tty_only=False`. The default exists to keep ad-hoc callers quiet, but
+    a source module's logs are observability — silently dropping them under
+    Claude Code, Codex, or CI hides both failures and success signals from
+    the user and the synthesis LLM. The convention is enforced by
+    `tests/test_source_log_visibility.py`.
     """
     if tty_only and not sys.stderr.isatty():
         return

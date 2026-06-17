@@ -595,6 +595,56 @@ def _promote_meta_marker(body: str) -> str:
 
 _ENGINE_FOOTER_STORE: dict[str, str] = {}
 
+# Schemes allowed in synthesized markdown links. The HTML artifact is opened in
+# a browser, so a permissive link parser exposes a stored-XSS vector: a
+# `[label](javascript:...)` or `[label](data:text/html,...)` link surviving the
+# LLM synthesis would render as a clickable script payload in the saved file.
+# Restrict link URLs to a small allowlist of schemes and accept relative URLs
+# (no scheme, no `:` before the first `/` or `?`). Anything else is rendered as
+# plain bracketed text so the label remains readable.
+_SAFE_LINK_SCHEMES = frozenset({"http", "https", "mailto"})
+
+
+def _is_safe_link_url(url: str) -> bool:
+    """Return True if a markdown link URL is safe to render as an `<a href>`.
+
+    A URL is safe if it either:
+    - has no scheme (relative URL, fragment, or path-only), or
+    - uses a scheme in the allowlist (http, https, mailto).
+
+    The scheme check is case-insensitive and tolerant of surrounding
+    whitespace per RFC 3986.
+
+    Precondition: ``url`` must already have been through ``html.escape`` (as it
+    is at the sole caller in ``_inline_markdown``). The safety of the no-scheme
+    branch relies on ``&`` having been escaped to ``&amp;`` so an entity-encoded
+    colon like ``&#58;`` cannot survive into the rendered ``href`` and be
+    decoded back to ``:`` by the browser. Passing a *raw* URL here (e.g.
+    ``javascript&#58;alert(1)``) would see no literal ``:``, return ``True``,
+    and emit a clickable payload — do not call this on un-escaped input.
+    """
+    stripped = url.strip()
+    if not stripped:
+        return False
+    # Reject any control characters (e.g. `java\x0Dscript:` where a bare CR is
+    # smuggled into the scheme name and stripped by the browser's URL parser).
+    if any(ord(ch) < 0x20 for ch in stripped):
+        return False
+    # No scheme — relative URL or fragment. Allow.
+    colon = stripped.find(":")
+    if colon == -1:
+        return True
+    slash = stripped.find("/")
+    question = stripped.find("?")
+    hash_ = stripped.find("#")
+    # The first `:` that comes after a `/`, `?`, or `#` is path/query/fragment,
+    # not a scheme separator. e.g. `/path:with:colons` is a relative URL.
+    earlier = [pos for pos in (slash, question, hash_) if 0 <= pos < colon]
+    if earlier:
+        return True
+    scheme = stripped[:colon].lower()
+    return scheme in _SAFE_LINK_SCHEMES
+
 
 def _inline_markdown(text: str) -> str:
     escaped = html.escape(text, quote=True)
@@ -607,11 +657,20 @@ def _inline_markdown(text: str) -> str:
 
     escaped = re.sub(r"`([^`]+)`", code_replace, escaped)
     escaped = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", escaped)
-    escaped = re.sub(
-        r"\[([^\]]+)\]\(([^)\s]+)\)",
-        r'<a href="\2">\1</a>',
-        escaped,
-    )
+
+    def link_replace(match: re.Match[str]) -> str:
+        label = match.group(1)
+        url = match.group(2)
+        # `url` is HTML-escaped (so `"` is `&quot;`, etc.) but
+        # `html.unescape` decoding before the scheme check would let a
+        # `javascript&#58;alert(1)` payload through. Inspect the literal
+        # bytes the regex captured instead — that matches what the browser
+        # ultimately sees in the href attribute.
+        if not _is_safe_link_url(url):
+            return f"[{label}]({url})"
+        return f'<a href="{url}" rel="noopener noreferrer">{label}</a>'
+
+    escaped = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)", link_replace, escaped)
     for token, value in code_tokens.items():
         escaped = escaped.replace(token, value)
     return escaped
