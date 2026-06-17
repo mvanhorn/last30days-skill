@@ -3,14 +3,14 @@
 Agent Skills package for researching any topic across Reddit, X, YouTube, and web. Installable across Claude Code (most common host), Codex, Cursor, GitHub Copilot, Gemini CLI, and 50+ other [Agent Skills](https://agentskills.io) hosts. Python scripts with multi-source search aggregation.
 
 ## Structure
-- `skills/last30days/SKILL.md` — canonical skill definition / runtime spec the model reads when the slash command fires (`SKILL-original.md` at repo root is the historical v1 spec, kept for reference only)
+- `skills/last30days/SKILL.md` — canonical skill definition / runtime spec the model reads when the slash command fires
 - `skills/last30days/scripts/last30days.py` — main research engine
 - `skills/last30days/scripts/lib/` — search, enrichment, rendering modules
 - `skills/last30days/scripts/lib/vendor/bird-search/` — vendored X search client
 - `docs/solutions/` — documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`)
 - `CONCEPTS.md` — shared domain vocabulary (Skill, Engine, Harness, Beta channel) — relevant when orienting to the codebase or discussing project terminology
 - `CONFIGURATION.md` — user-facing knobs (env vars, flags, per-host install patterns); keep in sync per the rules below
-- `CHANGELOG.md` / `release-notes.md` — release history and human-readable notes (CHANGELOG = structured, release-notes = launch copy)
+- `CHANGELOG.md` — structured release history (launch copy lives in GitHub Releases)
 - `HERMES_SETUP.md` — install instructions for the Hermes harness specifically
 
 ## Orientation
@@ -38,6 +38,7 @@ Python 3.12+ required. Use `uv` for the env; the venv lives at `.venv/`.
 - `lib/__init__.py` must be bare package marker (comment only, NO eager imports)
 - One-time setup: `npx skills add . -g -y` copies the skill into `~/.agents/skills/<name>/` (real directory) and, for harnesses that support symlinked skill dirs, drops a per-host symlink pointing at that copy. **Working-tree edits do NOT propagate automatically** — the `~/.agents/skills/<name>/` copy is frozen at install time. To sync after edits, re-run `npx skills add . -g -y`. For live-edit on a dev machine, replace the install copy with a symlink to the working tree: `ln -sfn "$PWD/skills/last30days" ~/.agents/skills/last30days` (run from the repo root).
 - Git remote: origin = public (`mvanhorn/last30days-skill`)
+- Every `lib/*.py` call to `log.source_log(...)` must pass `tty_only=False`. The default is `True`, which silently drops every line when stderr isn't a TTY (Claude Code, Codex, CI, captured output) — turning source observability into invisible failure. Enforced by `tests/test_source_log_visibility.py`.
 
 ## Security hygiene
 - Never commit real API keys, browser cookies, auth tokens, app passwords, access tokens, or `.env` contents.

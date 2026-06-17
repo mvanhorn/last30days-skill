@@ -22,6 +22,7 @@ import json
 import shutil
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
 
 from . import log, subproc
 from .relevance import token_overlap_relevance
@@ -53,7 +54,7 @@ POSTS_TIMEOUT = 15
 
 
 def _log(msg: str) -> None:
-    log.source_log("Digg", msg)
+    log.source_log("Digg", msg, tty_only=False)
 
 
 def _is_available() -> bool:
@@ -296,6 +297,20 @@ def parse_digg_response(
     return items
 
 
+def _is_safe_http_url(url: str) -> bool:
+    """True iff ``url`` parses with an http or https scheme.
+
+    Used to reject upstream-supplied post URLs whose scheme would be
+    dangerous in a rendered ``<a href>`` (``javascript:``, ``data:``,
+    ``file:``, ``vbscript:``, ``about:``).
+    """
+    try:
+        scheme = urlparse(url).scheme.lower()
+    except ValueError:
+        return False
+    return scheme in ("http", "https")
+
+
 def _parse_post(raw_post: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Reduce a digg post payload into the small dict render uses.
 
@@ -315,6 +330,17 @@ def _parse_post(raw_post: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     x_url = str(raw_post.get("xUrl") or "").strip()
     if not x_url:
+        return None
+    if not _is_safe_http_url(x_url):
+        # Security-class drop: an upstream-supplied URL with a dangerous
+        # scheme. Force tty_only=False so the rejection is visible in
+        # non-interactive runs (Claude Code), which is the actual attack
+        # surface — the default tty_only=True would suppress it there.
+        log.source_log(
+            "Digg",
+            f"dropped post with unsafe xUrl scheme: {x_url!r}",
+            tty_only=False,
+        )
         return None
     return {
         "username": username,

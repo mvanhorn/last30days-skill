@@ -9,6 +9,8 @@ The score is intentionally query-centric:
 import re
 from typing import List, Optional, Set
 
+from . import cjk
+
 # Stopwords for relevance computation (common English words that dilute token overlap)
 STOPWORDS = frozenset({
     'the', 'a', 'an', 'to', 'for', 'how', 'is', 'in', 'of', 'on',
@@ -16,7 +18,23 @@ STOPWORDS = frozenset({
     'your', 'i', 'me', 'we', 'you', 'what', 'are', 'do', 'can',
     'its', 'be', 'or', 'not', 'no', 'so', 'if', 'but', 'about',
     'all', 'just', 'get', 'has', 'have', 'was', 'will',
-})
+    # Hebrew function words / prepositions / conjunctions
+    'את', 'של', 'על', 'עם', 'אל', 'כי', 'לא', 'הוא', 'היא', 'הם',
+    'הן', 'אנו', 'אנחנו', 'זה', 'זו', 'זאת', 'כל', 'יש', 'אין',
+    'כבר', 'רק', 'גם', 'כן', 'אם', 'או', 'אבל', 'כך', 'מה', 'מי',
+    'איך', 'למה', 'כמה', 'היה', 'הייתה', 'היו', 'יהיה', 'יהיו',
+    # Hebrew definite article / prefixes appearing as standalone tokens after split
+    'ה', 'ב', 'ל', 'מ', 'כ', 'ו', 'ש',
+}) | cjk.CHINESE_STOPWORDS
+
+# Shared relevance-ranking thresholds for the Reddit pipelines (keyed + keyless).
+# Single source of truth so both paths apply identical thresholds to the same
+# query. RELEVANCE_FLOOR: posts below this are off-topic; the zero-overlap tail is
+# dropped when anything relevant remains. MIN_ON_TOPIC: how many posts must clear
+# the soft floor before it is applied wholesale.
+RELEVANCE_FLOOR = 0.1
+MIN_ON_TOPIC = 5
+
 
 # Synonym groups for relevance scoring (bidirectional expansion)
 # Superset of all platform-specific synonym dicts
@@ -56,8 +74,12 @@ def tokenize(text: str) -> Set[str]:
     """Lowercase, strip punctuation, remove stopwords, drop single-char tokens.
 
     Expands tokens with synonyms for better cross-domain matching.
+
+    Chinese text is segmented via cjk.segment (jieba or character bigrams) so
+    overlap scoring works on Chinese sources; ASCII text keeps the original
+    whitespace path.
     """
-    words = re.sub(r'[^\w\s]', ' ', text.lower()).split()
+    words = cjk.segment(text)
     tokens = {w for w in words if w not in STOPWORDS and len(w) > 1}
     expanded = set(tokens)
     for t in tokens:
@@ -151,8 +173,18 @@ def token_overlap_relevance(
     phrase_bonus = 0.0
     normalized_query = prepared.normalized_phrase
     normalized_text = _normalize_phrase(combined)
-    if normalized_query and normalized_query in normalized_text:
-        phrase_bonus = 0.12 if len(normalized_query.split()) > 1 else 0.16
+    if normalized_query:
+        contained = normalized_query in normalized_text
+        if not contained and cjk.has_cjk(normalized_query):
+            # CJK has no inter-word spaces, so a multi-token Chinese query like
+            # "国产大模型 测评" never appears verbatim in continuous source text
+            # ("...国产大模型的最新测评"). Retry the containment with spaces
+            # removed so the phrase bonus isn't permanently dead for Chinese.
+            # Gated on has_cjk so English ("react hooks") keeps space-sensitive
+            # matching and doesn't gain spurious bonuses from concatenation.
+            contained = normalized_query.replace(" ", "") in normalized_text.replace(" ", "")
+        if contained:
+            phrase_bonus = 0.12 if len(normalized_query.split()) > 1 else 0.16
 
     base = (
         0.55 * (coverage ** 1.35) +

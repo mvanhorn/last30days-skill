@@ -206,6 +206,43 @@ def test_parse_post_drops_missing_body_or_handle_or_url():
     assert digg._parse_post({"author": {"username": "x"}, "body": "txt", "xUrl": ""}) is None
     assert digg._parse_post(None) is None  # type: ignore[arg-type]
 
+
+def test_parse_post_drops_non_http_scheme_xurl():
+    """Any non-http(s) scheme on xUrl yields no post.
+
+    A malicious Digg API response (or compromised upstream) could set xUrl to
+    javascript:, data:text/html;..., file:, vbscript:, etc. The HTML report
+    renders the xUrl into an <a href> attribute, so any non-web scheme is a
+    stored-XSS or local-file vector when the user clicks the attribution.
+    """
+    for bad_url in (
+        "javascript:alert(1)",
+        "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+        "vbscript:msgbox(1)",
+        "file:///etc/passwd",
+        "about:blank",
+    ):
+        out = digg._parse_post(_post(x_url=bad_url))
+        assert out is None, f"expected non-http xUrl to be dropped, got: {out}"
+
+    # http and https remain accepted.
+    assert digg._parse_post(_post(x_url="https://x.com/a/status/1")) is not None
+    assert digg._parse_post(_post(x_url="http://x.com/a/status/1")) is not None
+
+
+def test_parse_post_logs_unsafe_xurl_rejection_even_in_non_tty(capsys):
+    """Security-class drops must be observable in non-interactive runs.
+
+    The default ``log.source_log`` path is TTY-gated; without forcing
+    ``tty_only=False`` the rejection is invisible in Claude Code runs,
+    which is exactly the attack surface. Guard against silent regression.
+    """
+    digg._parse_post(_post(x_url="javascript:alert(1)"))
+    err = capsys.readouterr().err
+    assert "[Digg] dropped post with unsafe xUrl scheme" in err
+    assert "javascript:alert(1)" in err
+
+
 # === _run_cli / search_digg with stubbed subprocess ===
 
 
