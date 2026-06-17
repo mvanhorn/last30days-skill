@@ -903,13 +903,13 @@ def render_full(report: schema.Report) -> str:
             # Transcript highlights for YouTube
             highlights = item.metadata.get("transcript_highlights", [])
             if highlights:
-                lines.append("  Highlights:")
+                lines.append("  Highlights (auto-generated transcript; may contain transcription errors):")
                 for hl in highlights[:5]:
                     lines.append(f'    - "{hl[:200]}"')
             # Full transcript snippet for YouTube
             transcript = item.metadata.get("transcript_snippet", "")
             if transcript and len(transcript) > 100:
-                lines.append(f"  <details><summary>Transcript ({len(transcript.split())} words)</summary>")
+                lines.append(f"  <details><summary>Transcript ({len(transcript.split())} words; auto-generated — may contain transcription errors)</summary>")
                 lines.append(f"  {transcript[:5000]}")
                 lines.append("  </details>")
             # Polymarket outcome prices and market details
@@ -1090,7 +1090,7 @@ def _render_candidate(candidate: schema.Candidate, prefix: str) -> list[str]:
         lines.append(f"   - Insight: {_truncate(insight, 220)}")
     highlights = _transcript_highlights(primary)
     if highlights:
-        lines.append("   - Highlights:")
+        lines.append("   - Highlights (auto-generated transcript; may contain transcription errors):")
         for hl in highlights:
             lines.append(f'     - "{_truncate(hl, 200)}"')
     return lines

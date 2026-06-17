@@ -12,6 +12,7 @@ This is NOT affected by Windows App-Bound Encryption (v20).
 
 import hashlib
 import logging
+import os
 import shutil
 import sqlite3
 import subprocess
@@ -20,6 +21,13 @@ from pathlib import Path
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _lock_temp_cookie_copy(path: str) -> None:
+    """Restrict copied cookie DB temp files to the current user on POSIX."""
+    if os.name == "nt":
+        return
+    Path(path).chmod(0o600)
 
 # Cookie DB locations on macOS
 CHROME_COOKIES_DB = Path.home() / "Library" / "Application Support" / "Google" / "Chrome" / "Default" / "Cookies"
@@ -207,6 +215,7 @@ def _extract_chromium_cookies_macos(
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
         shutil.copy2(str(db_path), tmp_path)
+        _lock_temp_cookie_copy(tmp_path)
     except Exception as e:
         logger.info("Failed to copy %s cookies database: %s", keychain_service, e)
         if tmp_path:

@@ -1,11 +1,15 @@
+import io
 import json
 import os
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stderr
 from pathlib import Path
+from unittest import mock
 
+import last30days as cli
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 LAST30DAYS_SCRIPT = REPO_ROOT / "skills" / "last30days" / "scripts" / "last30days.py"
@@ -80,6 +84,27 @@ class LastRunStateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn('Last run: "custom hook query"', result.stdout)
 
+    def test_hook_exits_0_when_no_last_run(self):
+        """Script exits 0 when ScrapeCreators configured but no prior run (last-run.json absent)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            env = os.environ.copy()
+            env["HOME"] = str(Path(tmp) / "home")
+            env["SETUP_COMPLETE"] = "true"
+            env["ENV_SCRAPECREATORS_API_KEY"] = "sk-test"
+
+            result = subprocess.run(
+                ["bash", "hooks/scripts/check-config.sh"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Ready —", result.stdout)
+            self.assertNotIn("Last run:", result.stdout)
+
     def test_hook_parses_dotenv_with_unbalanced_quote(self):
         """Script exits 0 when .env contains an unbalanced quote in a value."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -108,6 +133,40 @@ class LastRunStateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("Ready —", result.stdout)
 
+    def test_hook_shows_last_run_when_json_exists(self):
+        """Script exits 0 and shows last-run summary when last-run.json exists."""
+        with tempfile.TemporaryDirectory() as tmp:
+            config_dir = Path(tmp) / "custom-config"
+            config_dir.mkdir()
+            (config_dir / "last-run.json").write_text(
+                json.dumps(
+                    {
+                        "topic": "prior research",
+                        "timestamp": "2026-06-01T12:00:00+00:00",
+                        "sources": {"reddit": 5},
+                        "total": 5,
+                    }
+                )
+            )
+            env = os.environ.copy()
+            env["HOME"] = str(Path(tmp) / "home")
+            env["SETUP_COMPLETE"] = "true"
+            env["ENV_SCRAPECREATORS_API_KEY"] = "sk-test"
+            env["LAST30DAYS_CONFIG_DIR"] = str(config_dir)
+
+            result = subprocess.run(
+                ["bash", "hooks/scripts/check-config.sh"],
+                cwd=REPO_ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Last run: "prior research"', result.stdout)
+
+
 class TestSkillMdFirstRunReference(unittest.TestCase):
     """Verifies SKILL.md references that exist in the CLI."""
 
@@ -118,19 +177,26 @@ class TestSkillMdFirstRunReference(unittest.TestCase):
             "SKILL.md should not reference the missing nux-wizard.md file",
         )
 
-    def test_setup_subcommand_exists(self):
-        """The setup subcommand referenced in SKILL.md must exist."""
-        result = subprocess.run(
-            [sys.executable, str(LAST30DAYS_SCRIPT), "setup", "--help"],
-            cwd=REPO_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        self.assertEqual(result.returncode, 0, result.stderr)
+    def test_skill_md_references_setup_command(self):
+        content = SKILL_MD.read_text(encoding="utf-8")
         self.assertIn(
-            "usage:", result.stdout.lower(),
-            "--help should print usage for setup subcommand",
+            "last30days.py setup", content,
+            "SKILL.md should reference the Python setup subcommand",
         )
+
+    def test_setup_subcommand_dispatches(self):
+        """topic 'setup' must reach setup_wizard, not be swallowed by argparse."""
+        with mock.patch.object(cli.env, "get_config", return_value={}), \
+             mock.patch("lib.setup_wizard.run_auto_setup", return_value={"cookies_found": {}}) as mock_setup, \
+             mock.patch("lib.setup_wizard.write_setup_config") as mock_write, \
+             mock.patch("lib.setup_wizard.get_setup_status_text", return_value="ok"), \
+             mock.patch.object(sys, "argv", ["last30days.py", "setup"]):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                rc = cli.main()
+        self.assertEqual(0, rc)
+        mock_setup.assert_called_once()
+        mock_write.assert_called_once()
 
 
 if __name__ == "__main__":
