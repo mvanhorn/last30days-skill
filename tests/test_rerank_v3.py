@@ -221,10 +221,35 @@ class EntityGroundingTests(unittest.TestCase):
         self.assertIn("entity-miss", off_topic.explanation or "")
         self.assertEqual(on_topic.explanation, "fallback-local-score")
 
+    def test_fallback_grounds_on_head_token_not_full_phrase(self):
+        # Regression: a 323-pt HN thread titled "Stripe is friendly to
+        # 'friendly fraud'" was demoted to score 0 on a "Stripe payments"
+        # query because it lacked the trailing word "payments". The brand
+        # token alone must ground the item - trailing descriptors are search
+        # hints, not part of the entity.
+        brand_only = self._candidate(
+            "Stripe is friendly to 'friendly fraud'", "discussion of chargebacks and disputes"
+        )
+        rerank._apply_fallback_scores([brand_only], primary_entity="Stripe payments")
+        self.assertEqual("fallback-local-score", brand_only.explanation)
+        self.assertNotIn("entity-miss", brand_only.explanation or "")
+
+    def test_fallback_still_demotes_when_head_token_absent_on_multiword_topic(self):
+        # The fix must not neuter the demotion: an item that never names the
+        # brand head token stays demoted even on a multi-word topic.
+        off_topic = self._candidate(
+            "PayPal raises dispute fees again", "merchants react to the new pricing"
+        )
+        rerank._apply_fallback_scores([off_topic], primary_entity="Stripe payments")
+        self.assertIn("entity-miss", off_topic.explanation or "")
+
     def test_fallback_match_is_case_insensitive(self):
         on_topic = self._candidate("HERMES agent rocks", "some text")
         rerank._apply_fallback_scores([on_topic], primary_entity="Hermes Agent")
         self.assertEqual("fallback-local-score", on_topic.explanation)
+
+    def test_entity_grounded_is_case_insensitive_without_caller_preprocessing(self):
+        self.assertTrue(rerank._entity_grounded("HERMES agent rocks", "Hermes Agent"))
 
     def test_fallback_skips_demotion_for_empty_text_candidates(self):
         empty = self._candidate("", "")
