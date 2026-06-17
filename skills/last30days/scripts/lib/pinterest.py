@@ -41,7 +41,7 @@ def _extract_core_subject(topic: str) -> str:
 
 
 def _log(msg: str):
-    log.source_log("Pinterest", msg)
+    log.source_log("Pinterest", msg, tty_only=False)
 
 
 def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[str, Any]]:
@@ -138,7 +138,7 @@ def search_pinterest(
     try:
         data = http.get(
             f"{SCRAPECREATORS_BASE}/search",
-            params={"keyword": core_topic},
+            params={"query": core_topic},
             headers=http.scrapecreators_headers(token),
             timeout=30,
             retries=2,

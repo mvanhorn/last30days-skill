@@ -223,6 +223,53 @@ def post_raw(url: str, json_data: Dict[str, Any], headers: Optional[Dict[str, st
     return request("POST", url, headers=headers, json_data=json_data, raw=True, **kwargs)
 
 
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+    "AppleWebKit/537.36 (KHTML, like Gecko) "
+    "Chrome/124.0.0.0 Safari/537.36"
+)
+
+
+def get_text(
+    url: str,
+    timeout: int = DEFAULT_TIMEOUT,
+    retries: int = 2,
+    accept: str = "*/*",
+    headers: Optional[Dict[str, str]] = None,
+) -> Optional[str]:
+    """Fetch a URL and return decoded text, or None on any failure.
+
+    Keyless helper for Reddit RSS and shreddit HTML endpoints — the free path
+    that replaced the now-403 ``.json`` endpoints. Sends a browser User-Agent
+    and never raises: returns None on HTTP error, network failure, or timeout
+    so tiered callers can fall through to the next source.
+
+    Args:
+        url: Request URL
+        timeout: HTTP timeout per attempt in seconds
+        retries: Number of retries on failure (kept low — these tiers fail fast)
+        accept: Accept header value (e.g. "application/atom+xml", "text/html")
+        headers: Optional extra headers merged over the defaults
+
+    Returns:
+        Decoded response body as text, or None on failure.
+    """
+    merged = {
+        "User-Agent": BROWSER_USER_AGENT,
+        "Accept": accept,
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    if headers:
+        merged.update(headers)
+    try:
+        return request(
+            "GET", url, headers=merged, timeout=timeout, retries=retries, raw=True
+        )
+    except HTTPError as e:
+        log(f"get_text failed ({e}): {url}")
+        return None
+
+
 def scrapecreators_headers(token: str) -> Dict[str, str]:
     """Build ScrapeCreators request headers (x-api-key + JSON content type)."""
     return {

@@ -7,48 +7,42 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   dependency-audit:
     name: Dependency audit
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
-
-      - name: Set up Python
-        run: uv python install 3.12
-
-      - name: Export locked dependency set
-        run: |
-          uv export \
-            --locked \
-            --all-groups \
-            --no-hashes \
-            --format requirements.txt \
-            --output-file /tmp/last30days-requirements.txt
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
       # Advisory-first: visibility before enforcement. This repo handles API keys,
       # cookies, browser tokens, and local env files, so dependency CVEs should be
       # visible in CI logs even before the project has a clean blocking baseline.
       # Set continue-on-error: false once a clean baseline run is confirmed.
-      - name: Run pip-audit against locked dependencies
+      - name: Run uv audit against locked dependencies
         continue-on-error: true
-        run: uvx --python 3.12 pip-audit -r /tmp/last30days-requirements.txt --progress-spinner=off
+        run: uv audit --locked
 
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout full history for diff-aware scanning
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       # Advisory-first: this reports verified secrets in pull requests and pushes to
       # main, but does not block merges until maintainers confirm a clean baseline.
@@ -59,7 +53,7 @@ jobs:
       # examples; use obvious dummy values and env-based auth patterns instead.
       - name: Run TruffleHog OSS secret scan
         if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: trufflesecurity/trufflehog@v3.95.2
+        uses: trufflesecurity/trufflehog@17456f8c7d042d8c82c9a8ca9e937231f9f42e26 # v3.95.2
         continue-on-error: true
         with:
           path: ./

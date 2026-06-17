@@ -22,7 +22,9 @@ The contract: the synthesis still appears in chat as the primary output. The HTM
 #    summarize, do not reorder. The HTML must read identically to the chat
 #    response in voice and citations.
 SYNTHESIS_FILE="/tmp/last30days-synthesis-${CLAUDE_SESSION_ID}.md"
-cat > "$SYNTHESIS_FILE" <<'SYNTHESIS_EOF'
+# >| not >: fixed path may already exist on a same-session re-run; a plain >
+# is refused under `set -o noclobber`.
+cat >| "$SYNTHESIS_FILE" <<'SYNTHESIS_EOF'
 What I learned:
 
 **{First headline}** - {body with [name](url) inline citations}
@@ -38,14 +40,31 @@ KEY PATTERNS from the research:
 SYNTHESIS_EOF
 
 # 2. Convert the synthesis to a self-contained HTML file via the engine.
-#    The engine reuses the cache from your earlier engine run (same topic
-#    + plan), so this second invocation is typically <1s on cache hit.
+#    REPLAY THE SAME SCOPE FLAGS as your original run (--plan, --hiring-signals,
+#    resolved --x-handle/--subreddits/etc). The engine re-runs the pipeline to
+#    build the badge metadata line and footer; if you omit the scope flags it
+#    takes the generic multi-source path and the artifact's footer/metadata will
+#    describe a DIFFERENT dataset than your synthesis body (observed: a 74s
+#    mismatched re-run on a --hiring-signals brief). Same flags = footer matches
+#    the brief.
 SLUG=$(echo "$TOPIC" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')
 HTML_PATH="${LAST30DAYS_MEMORY_DIR}/${SLUG}-brief.html"
+# Collision guard: the `> "$HTML_PATH"` redirect below OVERWRITES - the engine
+# does NOT auto-date the brief (its date-suffix logic applies only to --save-dir
+# raw files, not to this redirected --emit=html stream). So if the clean name
+# already exists, date-suffix it here to avoid clobbering a prior brief.
+if [ -f "$HTML_PATH" ]; then
+  HTML_PATH="${LAST30DAYS_MEMORY_DIR}/${SLUG}-brief-$(date +%F).html"
+fi
 "${LAST30DAYS_PYTHON}" "${SKILL_ROOT}/scripts/last30days.py" "${TOPIC}" \
   --emit=html \
   --synthesis-file "$SYNTHESIS_FILE" \
-  > "$HTML_PATH"
+  "${SCOPE_FLAGS[@]}" \
+  >| "$HTML_PATH"   # >| not >: noclobber-safe write to the collision-guarded path
+#    where SCOPE_FLAGS is the same array you passed the first time, e.g.
+#    SCOPE_FLAGS=(--hiring-signals --plan "$QUERY_PLAN_FILE" --x-handle=acme).
+#    For a scoped --hiring-signals brief, --hiring-signals MUST be here too so
+#    the footer reflects the jobs-scoped board, not a generic crawl.
 
 # 3. Append ONE line to your already-emitted chat response, after the
 #    invitation block. Use a paperclip emoji as a visible signal that an
@@ -79,7 +98,8 @@ If the user runs `/last30days OpenClaw` normally, sees the synthesis in chat, an
 - Do NOT save HTML if the user didn't ask. The sparse mode (no synthesis) produces a thin file; not useful as a shareable.
 - Do NOT add content to the temp file beyond your synthesis prose. The badge / footer / colophon come from the engine.
 - Do NOT change the file path convention. `${LAST30DAYS_MEMORY_DIR}/${SLUG}-brief.html` is the canonical location.
-- Do NOT silently overwrite an existing file without telling the user. If `$HTML_PATH` already exists from a prior run, the engine will pick a date-suffixed name (`{slug}-brief-YYYY-MM-DD.html`) automatically; just print whichever path the redirect produced.
+- Do NOT silently overwrite an existing file. The `--emit=html` output is written via a shell redirect (`>| "$HTML_PATH"`), which OVERWRITES the collision-guarded path — use `>|` not `>` because `set -o noclobber` refuses plain `>` when the file already exists. The collision guard in step 2 handles same-topic re-runs: if `{slug}-brief.html` already exists it date-suffixes to `{slug}-brief-YYYY-MM-DD.html`. Always print whichever path the redirect actually used.
+
 - Do NOT include the data quality warning text in the temp file or in your final chat line. Warnings are an engine-stderr concern, not an artifact concern.
 
 ## Edge cases

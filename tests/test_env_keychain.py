@@ -108,6 +108,9 @@ def clean_env(monkeypatch, tmp_path):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(env, "CONFIG_FILE", tmp_path / "does-not-exist.env")
     monkeypatch.chdir(tmp_path)  # no project .env in this tree either
+    # Neutralize the pass(1) source so these tests don't pick up a real pass
+    # store on the host running them (tests that exercise pass override this).
+    monkeypatch.setattr(env, "_load_pass", lambda *a, **k: {})
 
 
 def test_get_config_reports_keychain_source(clean_env):

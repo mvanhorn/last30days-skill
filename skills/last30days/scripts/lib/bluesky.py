@@ -96,7 +96,7 @@ _TOKEN_MAX_AGE_SECONDS = 5400  # 90 minutes (conservative, tokens last ~2 hours)
 
 
 def _log(msg: str):
-    log.source_log("Bluesky", msg)
+    log.source_log("Bluesky", msg, tty_only=False)
 
 
 def _create_session(handle: str, app_password: str) -> Optional[str]:

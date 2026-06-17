@@ -33,7 +33,7 @@ RESULT_CAP = {
 
 
 def _log(msg: str):
-    log.source_log("PM", msg)
+    log.source_log("PM", msg, tty_only=False)
 
 
 def _extract_core_subject(topic: str) -> str:

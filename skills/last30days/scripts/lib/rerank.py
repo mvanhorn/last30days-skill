@@ -247,6 +247,30 @@ def _candidate_haystack(candidate: schema.Candidate) -> str:
     return " ".join(parts).lower()
 
 
+def _entity_grounded(haystack: str, primary_entity: str) -> bool:
+    """True if the candidate text plausibly mentions the primary entity.
+
+    Grounds on the HEAD token of the primary entity (the brand / proper-noun
+    core), not the full multi-word phrase. Trailing tokens are usually category
+    descriptors the user/planner appended for search ("Stripe payments"), not
+    part of the entity, so requiring the whole phrase over-demotes on-entity
+    items that omit the descriptor. Items that never name the brand at all still
+    miss the head token and stay demoted.
+
+    Trade-off: a proper noun with a generic head ("New York Times" -> "new")
+    under-demotes rather than over-demotes - the safe direction, since the
+    observed harm was burying real high-engagement signal. Substring (not
+    word-boundary) matching is likewise deliberate: it catches plurals and
+    compounds ("stripes"), and vacuous matches from very short heads ("X",
+    "Go") merely disable the penalty rather than burying good items.
+    """
+    haystack = haystack.lower()
+    tokens = primary_entity.lower().split()
+    if not tokens:
+        return True
+    return tokens[0] in haystack
+
+
 def _fallback_tuple(candidate: schema.Candidate, *, primary_entity: str = "") -> tuple[float, str]:
     score = (
         (candidate.local_relevance * 100.0 * 0.7)
@@ -254,17 +278,15 @@ def _fallback_tuple(candidate: schema.Candidate, *, primary_entity: str = "") ->
         + (candidate.source_quality * 100.0 * 0.1)
     )
     reason = "fallback-local-score"
-    # Entity-grounding demotion: if the primary entity (topic minus intent
-    # modifier) is not present anywhere in the candidate's text surfaces
+    # Entity-grounding demotion: subtract ENTITY_MISS_PENALTY when the candidate
+    # never mentions the primary entity's head token, across all text surfaces
     # (title, snippet, transcript, transcript highlights, top comments,
-    # insights), subtract ENTITY_MISS_PENALTY. Skip for candidates with
-    # NO text anywhere (e.g., image-only TikToks) to avoid penalizing
-    # thin-text sources unfairly. 2026-04-19 Nate Herk "Managed Agents"
-    # video ranked #2 on a Hermes query despite zero Hermes mentions
-    # because the old haystack only checked title + snippet.
+    # insights). Skip for candidates with NO text anywhere (e.g. image-only
+    # TikToks) so thin-text sources aren't penalized unfairly. See
+    # _entity_grounded for why grounding keys on the head token, not the phrase.
     if primary_entity:
         haystack = _candidate_haystack(candidate)
-        if haystack.strip() and primary_entity.lower() not in haystack:
+        if haystack.strip() and not _entity_grounded(haystack, primary_entity):
             score -= ENTITY_MISS_PENALTY
             reason = "fallback-local-score (entity-miss demotion)"
     return max(0.0, min(100.0, score)), reason

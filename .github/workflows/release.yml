@@ -7,25 +7,37 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
+
 
 jobs:
   build-and-release:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Build .skill artifact
         run: |
           bash skills/last30days/scripts/build-skill.sh
           test -f dist/last30days.skill
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Attest .skill artifact provenance
+        uses: actions/attest-build-provenance@v4
         with:
-          files: dist/last30days.skill
-          generate_release_notes: true
-          draft: false
-          prerelease: false
+          subject-path: dist/last30days.skill
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            dist/last30days.skill \
+            --generate-notes \
+            --verify-tag
