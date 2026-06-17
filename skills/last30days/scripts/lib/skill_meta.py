@@ -24,7 +24,7 @@ def read_skill_version(skill_md_path: Path) -> str | None:
     or unquoted YAML version scalars.
     """
     try:
-        text = skill_md_path.read_text()
+        text = skill_md_path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):
         return None
     match = _VERSION_RE.search(text)

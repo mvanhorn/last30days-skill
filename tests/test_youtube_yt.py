@@ -5,6 +5,7 @@ import os
 import tempfile
 import unittest
 import urllib.error
+from datetime import datetime, timedelta, timezone
 from unittest import mock
 
 from lib import youtube_yt
@@ -332,6 +333,83 @@ class TestInferQueryIntent(unittest.TestCase):
         self.assertEqual(youtube_yt._infer_query_intent("Kanye West"), "breaking_news")
 
 
+class TestTranscriptCandidateSortKey(unittest.TestCase):
+    """Tests for _transcript_candidate_sort_key recency-boosted ordering."""
+
+    @staticmethod
+    def _d(days_ago: int) -> str:
+        return (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+
+    def _make_item(self, video_id, views, date_str):
+        return {
+            "video_id": video_id,
+            "title": f"Video {video_id}",
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_name": "TestChannel",
+            "date": date_str,
+            "engagement": {"views": views, "likes": 10, "comments": 5},
+            "relevance": 0.8,
+            "why_relevant": "test",
+            "description": "test desc",
+            "duration": 600,
+        }
+
+    def test_recency_breaks_views_tie(self):
+        """When views are equal, the more recent video gets a higher sort key."""
+        new = self._make_item("new", 100_000, self._d(1))
+        old = self._make_item("old", 100_000, self._d(13))
+        self.assertGreater(
+            youtube_yt._transcript_candidate_sort_key(new),
+            youtube_yt._transcript_candidate_sort_key(old),
+        )
+
+    def test_old_high_view_can_still_qualify_for_transcript(self):
+        """An old video with very high views still gets a transcript slot;
+        recency is a tiebreaker, not a gate."""
+        old_high = self._make_item("old_high", 10_000_000, self._d(45))
+        recent_low = self._make_item("recent_low", 100, self._d(1))
+        self.assertGreater(
+            youtube_yt._transcript_candidate_sort_key(old_high),
+            youtube_yt._transcript_candidate_sort_key(recent_low),
+        )
+
+    def test_no_date_falls_to_back(self):
+        """An item with no date gets recency 0, sorting behind dated items."""
+        no_date = self._make_item("no_date", 50_000, "")
+        dated = self._make_item("dated", 50_000, self._d(5))
+        self.assertGreater(
+            youtube_yt._transcript_candidate_sort_key(dated),
+            youtube_yt._transcript_candidate_sort_key(no_date),
+        )
+
+    def test_transcript_candidates_pick_recent_over_old_same_views(self):
+        """search_and_transcribe selects candidates by (views, recency),
+        so a recent video is tried before an equal-view older video."""
+        items = [
+            self._make_item("old", 100_000, self._d(13)),
+            self._make_item("recent", 100_000, self._d(1)),
+            self._make_item("mid", 50_000, self._d(5)),
+        ]
+
+        def fake_search(*args, **kwargs):
+            return {"items": items}
+
+        call_args_list = []
+
+        def fake_fetch(video_ids, max_workers=5, out_captions_disabled=None):
+            call_args_list.extend(video_ids)
+            return {vid: "transcript" for vid in video_ids}
+
+        with mock.patch.object(youtube_yt, "search_youtube", side_effect=fake_search), \
+             mock.patch.object(youtube_yt, "fetch_transcripts_parallel", side_effect=fake_fetch):
+            youtube_yt.search_and_transcribe("test", self._d(14), self._d(0), depth="default")
+
+        # transcript_limit=2, attempt_count=4 (limited to 3 items)
+        # Sorted by (views, recency): recent(100k) > old(100k) > mid(50k)
+        self.assertEqual(call_args_list[:2], ["recent", "old"],
+                         "Recent video should be tried before equal-view older video")
+
+
 class TestSearchAndTranscribe(unittest.TestCase):
     """Tests for search_and_transcribe() end-to-end flow."""
 
@@ -404,14 +482,8 @@ class TestSearchAndTranscribe(unittest.TestCase):
         ft_mock.assert_not_called()
 
 
-class TestTranscriptBudgetWindowing(unittest.TestCase):
-    """Transcript candidates must prefer in-window videos (#531).
-
-    Pure view-sorted selection lets an evergreen back-catalog (kept by the
-    soft date filter when in-window yield is low) consume every transcript
-    slot with videos the freshness scorer later discards, leaving the
-    surviving recent videos with 0 transcripts.
-    """
+class TestTranscriptFetchStats(unittest.TestCase):
+    """Track yt-dlp fetch outcomes for quality_nudge (#531 false stale-yt-dlp nudge)."""
 
     FROM_DATE = "2026-03-01"
     TO_DATE = "2026-03-31"
@@ -438,57 +510,10 @@ class TestTranscriptBudgetWindowing(unittest.TestCase):
             def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None):
                 return {vid: "A detailed transcript about the topic." for vid in video_ids}
         with mock.patch.object(youtube_yt, "search_youtube", return_value={"items": items}), \
-             mock.patch.object(youtube_yt, "fetch_transcripts_parallel", side_effect=fake_parallel) as ft_mock:
-            result = youtube_yt.search_and_transcribe(
+             mock.patch.object(youtube_yt, "fetch_transcripts_parallel", side_effect=fake_parallel):
+            return youtube_yt.search_and_transcribe(
                 "test topic", self.FROM_DATE, self.TO_DATE, depth="default",
             )
-        return result, ft_mock
-
-    def test_in_window_videos_get_transcript_budget_first(self):
-        # Evergreen back-catalog dominates views; only 2 videos are in-window.
-        # Old behavior: candidates = top 6 by views (all out-of-window), so
-        # the in-window videos that survive freshness scoring get 0 transcripts.
-        items = [
-            self._make_item(f"old{i}", 1_000_000 - i, "2024-01-15")
-            for i in range(6)
-        ] + [
-            self._make_item("recent1", 5_000, "2026-03-20"),
-            self._make_item("recent2", 1_000, "2026-03-10"),
-        ]
-
-        _, ft_mock = self._run(items)
-
-        called_ids = ft_mock.call_args[0][0]
-        self.assertEqual(
-            called_ids[:2], ["recent1", "recent2"],
-            "In-window videos must occupy the first transcript slots",
-        )
-
-    def test_view_order_preserved_within_each_window_half(self):
-        items = [
-            self._make_item("recent_low", 100, "2026-03-10"),
-            self._make_item("recent_high", 9_000, "2026-03-20"),
-            self._make_item("old_high", 1_000_000, "2024-01-15"),
-            self._make_item("old_low", 500_000, "2024-06-01"),
-        ]
-
-        _, ft_mock = self._run(items)
-
-        called_ids = ft_mock.call_args[0][0]
-        self.assertEqual(called_ids, ["recent_high", "recent_low", "old_high", "old_low"])
-
-    def test_all_in_window_behavior_unchanged(self):
-        # When every video is in-window, selection stays pure view-sorted.
-        items = [
-            self._make_item("a", 1_000, "2026-03-10"),
-            self._make_item("b", 3_000, "2026-03-12"),
-            self._make_item("c", 2_000, "2026-03-14"),
-        ]
-
-        _, ft_mock = self._run(items)
-
-        called_ids = ft_mock.call_args[0][0]
-        self.assertEqual(called_ids, ["b", "c", "a"])
 
     def test_fetch_stats_track_attempts_and_failures(self):
         items = [

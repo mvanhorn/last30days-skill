@@ -208,6 +208,19 @@ class PlannerV3Tests(unittest.TestCase):
         self.assertIn("youtube", sources)
         self.assertIn("reddit", sources)
 
+    def test_product_plan_can_include_jobs_source(self):
+        plan = planner.plan_query(
+            topic="Listen Labs features",
+            available_sources=["reddit", "youtube", "jobs", "hackernews"],
+            requested_sources=None,
+            depth="default",
+            provider=None,
+            model=None,
+        )
+        self.assertEqual("product", plan.intent)
+        self.assertIn("jobs", plan.subqueries[0].sources)
+        self.assertGreater(plan.source_weights["jobs"], plan.source_weights["youtube"])
+
     def test_prediction_includes_tiktok_and_instagram(self):
         """TikTok and Instagram are no longer excluded from prediction intent."""
         plan = planner.plan_query(

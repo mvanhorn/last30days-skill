@@ -78,6 +78,111 @@ class PipelineV3Tests(unittest.TestCase):
         # error when its required backend key is unset.
         self.assertIn("grounding", report.errors_by_source)
 
+    def test_hiring_signals_mode_enables_jobs_source_in_mock_run(self):
+        report = pipeline.run(
+            topic="Listen Labs",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            requested_sources=["jobs"],
+            mock=True,
+            hiring_signals_mode=True,
+        )
+        self.assertIn("jobs", report.items_by_source)
+        self.assertIn("hiring_signals", report.artifacts)
+        self.assertTrue(report.artifacts["hiring_signals"]["include"])
+
+    def test_hiring_signals_mode_defaults_to_jobs_source(self):
+        report = pipeline.run(
+            topic="Listen Labs",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            mock=True,
+            hiring_signals_mode=True,
+        )
+        self.assertEqual(["jobs"], sorted(report.items_by_source))
+        self.assertTrue(report.artifacts["hiring_signals"]["include"])
+
+    def test_standard_company_run_fetches_jobs_for_signal_gate(self):
+        report = pipeline.run(
+            topic="Listen Labs",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            mock=True,
+        )
+        self.assertIn("jobs", report.items_by_source)
+        self.assertIn("hiring_signals", report.artifacts)
+
+    def test_standard_mock_run_does_not_add_jobs_for_generic_topic(self):
+        report = pipeline.run(
+            topic="how to deploy on Fly.io",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            mock=True,
+        )
+        self.assertNotIn("jobs", report.items_by_source)
+        self.assertNotIn("hiring_signals", report.artifacts)
+
+    def test_single_word_generic_topic_does_not_add_jobs(self):
+        report = pipeline.run(
+            topic="bitcoin",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            mock=True,
+        )
+        self.assertNotIn("jobs", report.items_by_source)
+        self.assertNotIn("hiring_signals", report.artifacts)
+
+    def test_question_comparison_topic_does_not_add_jobs(self):
+        report = pipeline.run(
+            topic="Python vs Ruby benchmark?",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            mock=True,
+        )
+        self.assertNotIn("jobs", report.items_by_source)
+        self.assertNotIn("hiring_signals", report.artifacts)
+
+    def test_bare_language_comparison_topics_do_not_add_jobs(self):
+        for topic in ("python vs ruby", "Python vs Ruby"):
+            with self.subTest(topic=topic):
+                self.assertFalse(pipeline._company_topic_likely(topic))
+
+    def test_company_comparison_topics_add_jobs(self):
+        for topic in ("Stripe vs Brex", "OpenAI versus Anthropic"):
+            with self.subTest(topic=topic):
+                self.assertTrue(pipeline._company_topic_likely(topic))
+
+    def test_standard_mode_omits_weak_large_company_jobs_signal(self):
+        with patch("lib.pipeline._retrieve_stream") as mock_retrieve:
+            def fake_retrieve(**kwargs):
+                if kwargs["source"] == "jobs":
+                    return (
+                        [
+                            {
+                                "id": "J1",
+                                "title": "Retail Associate",
+                                "description": "Store operations",
+                                "url": "https://example.com/jobs/1",
+                                "department": "Retail",
+                                "date": "2026-06-01",
+                                "provider": "mock",
+                            }
+                        ],
+                        {},
+                    )
+                return pipeline._mock_stream_results(kwargs["source"], kwargs["subquery"])
+
+            mock_retrieve.side_effect = fake_retrieve
+            report = pipeline.run(
+                topic="Apple",
+                config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+                depth="quick",
+                requested_sources=["jobs"],
+                mock=True,
+            )
+        self.assertNotIn("jobs", report.items_by_source)
+        self.assertFalse(report.artifacts["hiring_signals"]["include"])
+
 
 class TestSourceFetchCap(unittest.TestCase):
     """X source fetch count must be capped by MAX_SOURCE_FETCHES."""
@@ -86,6 +191,10 @@ class TestSourceFetchCap(unittest.TestCase):
         """MAX_SOURCE_FETCHES must cap X at 2 to prevent 429 cascades."""
         self.assertIn("x", pipeline.MAX_SOURCE_FETCHES)
         self.assertEqual(pipeline.MAX_SOURCE_FETCHES["x"], 2)
+
+    def test_jobs_capped_in_max_source_fetches(self):
+        self.assertIn("jobs", pipeline.MAX_SOURCE_FETCHES)
+        self.assertEqual(pipeline.MAX_SOURCE_FETCHES["jobs"], 1)
 
     def test_cap_logic_limits_source_submissions(self):
         """Verify the cap logic skips submissions beyond the limit."""
