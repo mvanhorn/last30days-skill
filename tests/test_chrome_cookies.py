@@ -1,6 +1,7 @@
 """Tests for Chrome cookie extraction on macOS."""
 
 import hashlib
+import os
 import sqlite3
 import subprocess
 import tempfile
@@ -19,6 +20,7 @@ from lib.chrome_cookies import (
     _get_chrome_encryption_key,
     _get_db_version,
     _remove_pkcs7_padding,
+    _extract_chromium_cookies_macos,
     _decrypt_v10_value,
     extract_chrome_cookies_macos,
 )
@@ -243,6 +245,32 @@ class TestOpensslNotFound:
 
 
 class TestUnencryptedCookies:
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not reliable on Windows")
+    def test_temp_cookie_db_copy_is_owner_only(self, tmp_path):
+        """Copied Chromium cookie DB temp files are chmodded owner-only before read."""
+        db_path = tmp_path / "Cookies"
+        _create_chrome_cookies_db(str(db_path), [
+            (".x.com", "auth_token", "plain_token_value", b""),
+        ])
+        os.chmod(db_path, 0o644)
+
+        real_connect = sqlite3.connect
+
+        def assert_temp_copy_locked(path, *args, **kwargs):
+            if Path(str(path)) != db_path:
+                assert Path(str(path)).stat().st_mode & 0o777 == 0o600
+            return real_connect(path, *args, **kwargs)
+
+        with mock.patch("lib.chrome_cookies.sqlite3.connect", side_effect=assert_temp_copy_locked):
+            result = _extract_chromium_cookies_macos(
+                db_path,
+                "Chrome Safe Storage",
+                ".x.com",
+                ["auth_token"],
+            )
+
+        assert result == {"auth_token": "plain_token_value"}
+
     def test_plain_value_returned(self, tmp_path):
         """Unencrypted cookies (value column populated) returned without decryption."""
         db_path = str(tmp_path / "Cookies")

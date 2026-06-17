@@ -4,6 +4,8 @@ Covers the process-group cleanup path, timeout behavior, success path,
 PID callback wiring, and environment inheritance.
 """
 
+import builtins
+import os as real_os
 import unittest
 from unittest.mock import patch
 
@@ -78,6 +80,22 @@ class TestRunWithTimeout(unittest.TestCase):
         self.assertEqual(len(seen_pids), 1)
         self.assertIsInstance(seen_pids[0], int)
         self.assertGreater(seen_pids[0], 0)
+
+    def test_timeout_falls_back_to_kill_when_killpg_unavailable(self):
+        """Simulate Windows (no killpg/getpgid) — should fall back to proc.kill()."""
+        real_hasattr = builtins.hasattr
+
+        def selective_hasattr(obj, name):
+            if obj is real_os and name in ("killpg", "getpgid", "setsid"):
+                return False
+            return real_hasattr(obj, name)
+
+        with patch.object(builtins, "hasattr", side_effect=selective_hasattr):
+            with self.assertRaises(subproc.SubprocTimeout):
+                subproc.run_with_timeout(
+                    ["sh", "-c", "sleep 10"],
+                    timeout=1,
+                )
 
     def test_on_pid_callback_exceptions_are_suppressed(self):
         """If the PID callback raises, the subprocess should still run to completion."""

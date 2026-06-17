@@ -11,6 +11,7 @@ Only uses Python stdlib — no external dependencies.
 import configparser
 import functools
 import logging
+import os
 import platform
 import shutil
 import sqlite3
@@ -19,6 +20,13 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _lock_temp_cookie_copy(path: str) -> None:
+    """Restrict copied cookie DB temp files to the current user on POSIX."""
+    if os.name == "nt":
+        return
+    Path(path).chmod(0o600)
 
 
 @functools.lru_cache(maxsize=1)
@@ -150,6 +158,7 @@ def _query_cookies_db(
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
         shutil.copy2(str(db_path), tmp_path)
+        _lock_temp_cookie_copy(tmp_path)
 
         conn = sqlite3.connect(tmp_path)
         try:
@@ -191,12 +200,36 @@ def _query_cookies_db(
 
 
 def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -> Optional[Dict[str, str]]:
-    """Try to extract cookies from a Firefox profiles directory."""
-    profile_path = _find_default_profile(profiles_dir)
-    if profile_path is None:
-        logger.debug("No Firefox profile found in %s", profiles_dir)
-        return None
-    return _query_cookies_db(profile_path / "cookies.sqlite", domain, cookie_names)
+    """Try to extract cookies from a Firefox profiles directory.
+
+    Tries the default profile first, then falls back to scanning all
+    profiles for matching cookies.  This handles multi-profile setups
+    where the user is logged into x.com on a non-default profile.
+    """
+    default_profile = _find_default_profile(profiles_dir)
+    profiles_tried = 0
+    if default_profile is not None:
+        result = _query_cookies_db(default_profile / "cookies.sqlite", domain, cookie_names)
+        if result is not None:
+            return result
+        profiles_tried = 1
+    # Fallback: scan every profile directory for matching cookies
+    try:
+        for child in sorted(profiles_dir.iterdir()):
+            if not child.is_dir():
+                continue
+            if default_profile is not None and child == default_profile:
+                continue
+            db = child / "cookies.sqlite"
+            if db.is_file():
+                result = _query_cookies_db(db, domain, cookie_names)
+                if result is not None:
+                    return result
+                profiles_tried += 1
+    except OSError:
+        pass
+    logger.debug("No matching cookies found in %d Firefox profile(s)", profiles_tried)
+    return None
 
 
 def extract_firefox_cookies(
