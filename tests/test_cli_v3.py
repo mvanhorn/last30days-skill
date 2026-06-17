@@ -102,6 +102,15 @@ class CliV3Tests(unittest.TestCase):
         self.assertEqual(["biosecurity", "ai", "agents"], args.topic)
         self.assertEqual([], extra)
 
+    def test_build_parser_accepts_explicit_output_file(self):
+        parser = cli.build_parser()
+        args, extra = parser.parse_known_args(
+            ["--emit", "json", "--output", "results/run.json", "biosecurity"]
+        )
+        self.assertEqual("results/run.json", args.output)
+        self.assertEqual(["biosecurity"], args.topic)
+        self.assertEqual([], extra)
+
     def test_ensure_supported_python_rejects_old_interpreter_with_actionable_error(self):
         stderr = io.StringIO()
         with redirect_stderr(stderr):
@@ -161,6 +170,13 @@ class CliV3Tests(unittest.TestCase):
         _, kwargs = write_text.call_args
         self.assertEqual("utf-8", kwargs.get("encoding"))
 
+    def test_save_rendered_output_writes_exact_file_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out_path = Path(tmp) / "nested" / "results.json"
+            saved = cli.save_rendered_output('{"ok": true}', str(out_path))
+            self.assertEqual(out_path.resolve(), saved)
+            self.assertEqual('{"ok": true}', out_path.read_text(encoding="utf-8"))
+
     def test_compute_save_path_display_uses_posix_slashes_under_home(self):
         # Regression: f"~/{relative}" stringified pathlib.Path with the
         # OS-native separator, producing "~/Documents\\Last30Days\\..." on
@@ -182,6 +198,18 @@ class CliV3Tests(unittest.TestCase):
                 display.endswith("british-airways-middle-east-raw-v3.md"),
                 f"Expected slug+suffix at end, got: {display}",
             )
+        finally:
+            shutil.rmtree(tmp_under_home, ignore_errors=True)
+
+    def test_compute_output_path_display_uses_posix_slashes_under_home(self):
+        real_home = Path.home()
+        tmp_under_home = Path(tempfile.mkdtemp(prefix="l30d_output_path_", dir=str(real_home)))
+        try:
+            output_path = tmp_under_home / "Documents" / "Last30Days" / "run.json"
+            display = cli.compute_output_path_display(str(output_path))
+            self.assertTrue(display.startswith("~/"), f"Expected '~/' prefix, got: {display}")
+            self.assertNotIn("\\", display, f"Backslash leaked into display: {display}")
+            self.assertTrue(display.endswith("Documents/Last30Days/run.json"), display)
         finally:
             shutil.rmtree(tmp_under_home, ignore_errors=True)
 
@@ -256,6 +284,95 @@ class CliV3Tests(unittest.TestCase):
         )
         fake_progress.show_promo.assert_called_once_with("both", diag=diag)
         self.assertIn("# rendered", stdout.getvalue())
+
+    def test_main_writes_rendered_output_to_explicit_file(self):
+        report = self.make_report()
+        diag = {
+            "available_sources": ["grounding"],
+            "providers": {"google": True, "openai": False, "xai": False},
+            "x_backend": None,
+            "bird_installed": True,
+            "bird_authenticated": False,
+            "bird_username": None,
+            "native_web_backend": "brave",
+        }
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "exports" / "run.json"
+            with mock.patch.object(cli.env, "get_config", return_value={}), \
+                 mock.patch.object(cli.pipeline, "diagnose", return_value=diag), \
+                 mock.patch.object(cli.pipeline, "run", return_value=report), \
+                 mock.patch.object(cli, "emit_output", return_value='{"rendered": true}') as emit, \
+                 mock.patch.object(sys, "argv", [
+                     "last30days.py",
+                     "test",
+                     "topic",
+                     "--emit=json",
+                     "--output",
+                     str(output_path),
+                 ]):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    rc = cli.main()
+            self.assertEqual(0, rc)
+            emit.assert_called_once()
+            self.assertEqual('{"rendered": true}\n', stdout.getvalue())
+            self.assertEqual('{"rendered": true}', output_path.read_text(encoding="utf-8"))
+            self.assertIn(f"[last30days] Saved output to {output_path.resolve()}", stderr.getvalue())
+
+    def test_main_combines_output_and_save_dir_for_comparison_html(self):
+        report = self.make_report()
+        diag = {
+            "available_sources": ["grounding"],
+            "providers": {"google": True, "openai": False, "xai": False},
+            "x_backend": None,
+            "bird_installed": True,
+            "bird_authenticated": False,
+            "bird_username": None,
+            "native_web_backend": "brave",
+        }
+        fake_progress = mock.Mock()
+        with tempfile.TemporaryDirectory() as tmp:
+            output_path = Path(tmp) / "exports" / "comparison.html"
+            save_dir = Path(tmp) / "saved"
+            with mock.patch.object(cli.env, "get_config", return_value={}), \
+                 mock.patch.object(cli.pipeline, "diagnose", return_value=diag), \
+                 mock.patch.object(cli.pipeline, "run", return_value=report), \
+                 mock.patch.object(cli.ui, "ProgressDisplay", return_value=fake_progress), \
+                 mock.patch.object(
+                     cli, "emit_comparison_output", return_value="<html>comparison</html>"
+                 ) as emit_comparison, \
+                 mock.patch.object(cli, "emit_output", return_value="<html>peer</html>"), \
+                 mock.patch.object(sys, "argv", [
+                     "last30days.py",
+                     "Alpha",
+                     "vs",
+                     "Beta",
+                     "--mock",
+                     "--emit=html",
+                     "--output",
+                     str(output_path),
+                     "--save-dir",
+                     str(save_dir),
+                 ]):
+                stdout = io.StringIO()
+                stderr = io.StringIO()
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    rc = cli.main()
+
+            self.assertEqual(0, rc)
+            output_display = cli.compute_output_path_display(str(output_path))
+            _, kwargs = emit_comparison.call_args
+            self.assertEqual(output_display, kwargs["save_path"])
+            self.assertEqual("<html>comparison</html>\n", stdout.getvalue())
+            self.assertEqual("<html>comparison</html>", output_path.read_text(encoding="utf-8"))
+            comparison_saved = save_dir / "alpha-vs-beta-raw-html.html"
+            self.assertEqual(
+                "<html>comparison</html>",
+                comparison_saved.read_text(encoding="utf-8"),
+            )
+            self.assertIn(f"[last30days] Saved output to {output_path.resolve()}", stderr.getvalue())
+            self.assertIn(f"[last30days] Saved output to {comparison_saved.resolve()}", stderr.getvalue())
 
     def test_main_canonicalizes_explicit_github_repo_flags(self):
         report = self.make_report()

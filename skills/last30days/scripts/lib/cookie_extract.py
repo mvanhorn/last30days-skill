@@ -2,6 +2,8 @@
 
 Extracts cookies from local browser databases (Firefox, Chrome, Brave, Safari)
 to enable zero-config authentication for services like X/Twitter.
+Note: Chrome/Brave extraction is macOS-only; Windows Chrome/Edge use
+DPAPI-encrypted stores that are not yet supported.
 
 Only uses Python stdlib — no external dependencies.
 """
@@ -9,6 +11,7 @@ Only uses Python stdlib — no external dependencies.
 import configparser
 import functools
 import logging
+import os
 import platform
 import shutil
 import sqlite3
@@ -17,6 +20,13 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _lock_temp_cookie_copy(path: str) -> None:
+    """Restrict copied cookie DB temp files to the current user on POSIX."""
+    if os.name == "nt":
+        return
+    Path(path).chmod(0o600)
 
 
 @functools.lru_cache(maxsize=1)
@@ -148,6 +158,7 @@ def _query_cookies_db(
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
         shutil.copy2(str(db_path), tmp_path)
+        _lock_temp_cookie_copy(tmp_path)
 
         conn = sqlite3.connect(tmp_path)
         try:

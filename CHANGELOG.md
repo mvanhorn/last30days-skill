@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **First-party positioning research + pitch-vs-pulse synthesis (company / product / service topics).** A new mandatory research step captures each entity's current stated positioning from first-party sources (homepage, docs, pricing) rather than from memory. The fetched pitch grounds `What it is` descriptions (entities described as they pitch themselves today), helps reject unrelated brand-name noise, and feeds an evidence-triggered prose beat: when the month's conversation directly supports a specific claim, cuts against one, or is squarely about the pitched ground, the synthesis says so anchored to the top thread — and stays silent when the pulse is orthogonal to the pitch, because a manufactured connection is worse than omission. Claims are tested at matched altitude (specific claims against specific threads; broad taglines are never graded against individual items), and statements stay windowed to the 30 days — no trend verdicts. Scoped to entities with an identifiable first party: people are always excluded (even founders whose companies qualify), as are events, abstract concepts, and ownerless topics like Bitcoin; the beat requires positioning fetched during the run, never from memory.
+
+### Changed
+
+- Updated "Unlock X" promo message to mention Chrome/macOS support and Windows Firefox-only limitation instead of generic "Firefox or Safari" ([#387](https://github.com/mvanhorn/last30days-skill/issues/387))
+
+### Fixed
+
+- YouTube transcript budget prioritises recent videos (by a combination of views and recency) instead of views alone, preventing transcript slots from being consumed by old high-view-count videos that would be discarded by strict_recent freshness pruning ([#531](https://github.com/mvanhorn/last30days-skill/issues/531))
+- YouTube items with successfully extracted transcripts are no longer pruned by title-only relevance scoring; the transcript content proves substantive topical coverage even when the video title has low lexical overlap with the query ([#468](https://github.com/mvanhorn/last30days-skill/issues/468))
+- First-run setup wizard in SKILL.md now references the existing Python setup wizard (`last30days.py setup`) instead of the missing `nux-wizard.md` file, so first-run setup actually runs on new installs. ([#574](https://github.com/mvanhorn/last30days-skill/issues/574))
+- `check-config.sh` no longer exits 1 when a `.env` value contains an unbalanced quote — replaced `xargs` (which interprets quotes) with `sed` for whitespace trimming in `load_env_vars` ([#506](https://github.com/mvanhorn/last30days-skill/issues/506))
+- `subproc.py` `run_with_timeout()` now guards `os.killpg` / `os.getpgid` with `hasattr`, preventing an uncaught `AttributeError` crash when a subprocess times out on Windows where these functions don't exist ([#527](https://github.com/mvanhorn/last30days-skill/issues/527))
+- Entity-grounding rerank demotion now keys on the head token of the primary entity instead of requiring the full multi-word phrase as a contiguous substring. A high-engagement on-entity item (e.g. a 323-pt HN thread titled "Stripe is friendly to 'friendly fraud'") is no longer demoted to score 0 on a `Stripe payments` query just because it lacks the trailing search-hint word. The intended demotion still fires for items that never name the brand at all. The keyless Reddit comment-enrichment slot selection (`_slot_priority`), which mirrors this signal, was updated to the same head-token grounding so the two paths stay consistent.
+- `--plan` / `--competitors-plan` file reads now specify `encoding="utf-8"` and catch `UnicodeDecodeError`, preventing crashes on non-ASCII content like accented entity names on Windows (cp1252). `check_perms()` in `check-config.sh` now skips the POSIX 600-permission check on MSYS/MinGW/Cygwin where `stat` runs in noacl mode. `skill_meta.py` `read_skill_version()` now passes `encoding="utf-8"` so SKILL.md emoji doesn't break version detection on Windows. ([#549](https://github.com/mvanhorn/last30days-skill/issues/549))
+
 ## [3.3.2] - 2026-06-06
 
 ### Fixed
