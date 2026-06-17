@@ -39,7 +39,7 @@ ENRICH_LIMITS = {
 
 
 def _log(msg: str):
-    log.source_log("HN", msg)
+    log.source_log("HN", msg, tty_only=False)
 
 
 def _date_to_unix(date_str: str) -> int:
