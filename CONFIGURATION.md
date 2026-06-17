@@ -234,7 +234,7 @@ The schedule field stored on each topic is metadata - the actual cron / Task Sch
 
 ## Optional companion web dashboard (`--dashboard`)
 
-For a visual reading experience, you can route research outcomes to a local web-based Node/Express dashboard. 
+For a visual reading experience, you can route research outcomes to a local web-based Node/Express dashboard. The companion project repository is available at **[Last30DaysWeb](https://github.com/0xlazorr/Last30DaysWeb)**. 
 
 **Enabling:**
 *   Pass `--dashboard` on the command line.
