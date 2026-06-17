@@ -1,8 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import relevance
 
@@ -46,7 +42,6 @@ class RelevanceCoreV3Tests(unittest.TestCase):
             hashtags=["ClaudeCode", "BuildInPublic"],
         )
         self.assertGreater(score, 0.0)
-
 
 if __name__ == "__main__":
     unittest.main()

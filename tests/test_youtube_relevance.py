@@ -1,11 +1,8 @@
 """Tests for YouTube relevance scoring."""
 
-import sys
 import unittest
-from pathlib import Path
 
 # Add lib to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
 
 from lib.relevance import token_overlap_relevance as _compute_relevance, tokenize as _tokenize
 
@@ -104,7 +101,6 @@ class TestComputeRelevance(unittest.TestCase):
     def test_single_word_no_match(self):
         result = _compute_relevance("Seedance", "Random cooking video")
         self.assertEqual(result, 0.0)
-
 
 if __name__ == "__main__":
     unittest.main()

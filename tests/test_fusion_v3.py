@@ -1,8 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import fusion, schema
 
@@ -51,7 +47,6 @@ class FusionV3Tests(unittest.TestCase):
         self.assertEqual(2, len(merged.native_ranks))
         self.assertEqual({"reddit", "x"}, set(merged.sources))
         self.assertEqual(2, len(merged.source_items))
-
 
     def test_diversify_pool_guarantees_min_per_qualifying_source(self):
         """Every qualifying source (local_relevance >= 0.25) gets at least 2
@@ -117,7 +112,6 @@ class FusionV3Tests(unittest.TestCase):
                 2,
                 f"Source '{src}' has {source_counts.get(src, 0)} items, expected >= 2",
             )
-
 
     def test_diversify_pool_denies_slots_for_low_relevance_source(self):
         """Sources with best local_relevance < 0.25 do not get reserved slots.
@@ -438,7 +432,6 @@ class TestUrlNormalization(unittest.TestCase):
             _normalize_url("https://Reddit.com/r/Test"),
             _normalize_url("https://reddit.com/r/test"),
         )
-
 
 if __name__ == "__main__":
     unittest.main()

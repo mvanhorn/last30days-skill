@@ -1,8 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import entity_extract
 
@@ -52,7 +48,6 @@ class TestExtractSubreddits(unittest.TestCase):
 
     def test_empty_items(self):
         self.assertEqual([], entity_extract._extract_subreddits([]))
-
 
 if __name__ == "__main__":
     unittest.main()

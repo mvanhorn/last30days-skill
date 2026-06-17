@@ -21,7 +21,7 @@ DEPTH_CONFIG = {
 
 
 def _log(msg: str):
-    log.source_log("TruthSocial", msg)
+    log.source_log("TruthSocial", msg, tty_only=False)
 
 
 def _strip_html(html: str) -> str:

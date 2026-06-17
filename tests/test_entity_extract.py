@@ -1,11 +1,8 @@
 """Tests for entity_extract module."""
 
-import sys
 import unittest
-from pathlib import Path
 
 # Add lib to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
 
 from lib import entity_extract
 
@@ -161,7 +158,6 @@ class TestExtractEntities(unittest.TestCase):
     def test_return_keys(self):
         result = entity_extract.extract_entities([], [])
         self.assertSetEqual(set(result.keys()), {"x_handles", "x_hashtags", "reddit_subreddits"})
-
 
 if __name__ == "__main__":
     unittest.main()

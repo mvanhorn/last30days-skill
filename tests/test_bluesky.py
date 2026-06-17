@@ -1,12 +1,9 @@
 """Tests for bluesky module."""
 
 import os
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch, MagicMock
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
 from lib import bluesky
 
 
@@ -356,7 +353,6 @@ class TestAppPasswordFormat(unittest.TestCase):
     def test_rejects_list(self):
         # Defensive: don't crash on iterables
         self.assertFalse(bluesky._validate_app_password_format(["wfwp", "cq7o", "5six", "7wy5"]))
-
 
 if __name__ == "__main__":
     unittest.main()

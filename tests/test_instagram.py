@@ -1,8 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib.instagram import _parse_items
 
@@ -62,7 +58,6 @@ class TestExpandInstagramQueries(unittest.TestCase):
         from lib.instagram import expand_instagram_queries
         queries = expand_instagram_queries("Kanye West", "quick")
         self.assertEqual(len(queries), 1)
-
 
 if __name__ == "__main__":
     unittest.main()

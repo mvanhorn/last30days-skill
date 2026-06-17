@@ -5,12 +5,9 @@ to SKILL.md frontmatter. These tests use monkeypatch to swap the render module's
 __file__ attribute, which controls where the walk starts.
 """
 
-import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import render
 
@@ -131,7 +128,6 @@ class SkillVersionFallbackTests(unittest.TestCase):
 
         with patch.object(render, "__file__", str(fake_render)):
             self.assertEqual("5.5.5", render._skill_version())
-
 
 if __name__ == "__main__":
     unittest.main()

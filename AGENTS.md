@@ -3,12 +3,15 @@
 Agent Skills package for researching any topic across Reddit, X, YouTube, and web. Installable across Claude Code (most common host), Codex, Cursor, GitHub Copilot, Gemini CLI, and 50+ other [Agent Skills](https://agentskills.io) hosts. Python scripts with multi-source search aggregation.
 
 ## Structure
-- `skills/last30days/SKILL.md` — canonical skill definition
+- `skills/last30days/SKILL.md` — canonical skill definition / runtime spec the model reads when the slash command fires
 - `skills/last30days/scripts/last30days.py` — main research engine
 - `skills/last30days/scripts/lib/` — search, enrichment, rendering modules
 - `skills/last30days/scripts/lib/vendor/bird-search/` — vendored X search client
 - `docs/solutions/` — documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`)
 - `CONCEPTS.md` — shared domain vocabulary (Skill, Engine, Harness, Beta channel) — relevant when orienting to the codebase or discussing project terminology
+- `CONFIGURATION.md` — user-facing knobs (env vars, flags, per-host install patterns); keep in sync per the rules below
+- `CHANGELOG.md` — structured release history (launch copy lives in GitHub Releases)
+- `HERMES_SETUP.md` — install instructions for the Hermes harness specifically
 
 ## Orientation
 - This is an Agent Skills package, not a CLI tool. The product is the slash-command-invoked skill (`/last30days <topic>` in most harnesses); `scripts/last30days.py` is implementation. Claude Code is the most common host but not the only one — features must work across every harness the skill installs into.
@@ -20,12 +23,22 @@ Agent Skills package for researching any topic across Reddit, X, YouTube, and we
 ```bash
 # Dev/fallback: direct engine invocation (scripting, cron, or engine testing only)
 python3 skills/last30days/scripts/last30days.py "test query" --emit=compact
-npx skills add . -g -y   # one-time: symlink this repo into every detected harness's skill dir
+npx skills add . -g -y   # copies skill into ~/.agents/skills/<name>/ (frozen at install time); re-run to sync working-tree edits — see Rules below
+
+# Tests (pytest, ~89 files under tests/, configured in pyproject.toml)
+uv run pytest                              # full suite
+uv run pytest tests/test_dedupe_v3.py      # single file
+uv run pytest tests/test_dedupe_v3.py -k some_case   # single case
+uv run pytest --cov                        # with coverage (skips lib/vendor/)
+```
+
+Python 3.12+ required. Use `uv` for the env; the venv lives at `.venv/`.
 
 ## Rules
 - `lib/__init__.py` must be bare package marker (comment only, NO eager imports)
-- One-time setup: `npx skills add . -g -y` creates symlinks from each detected harness's skill dir to this repo. Edits in the working tree propagate live to every harness — no re-deploy step needed.
+- One-time setup: `npx skills add . -g -y` copies the skill into `~/.agents/skills/<name>/` (real directory) and, for harnesses that support symlinked skill dirs, drops a per-host symlink pointing at that copy. **Working-tree edits do NOT propagate automatically** — the `~/.agents/skills/<name>/` copy is frozen at install time. To sync after edits, re-run `npx skills add . -g -y`. For live-edit on a dev machine, replace the install copy with a symlink to the working tree: `ln -sfn "$PWD/skills/last30days" ~/.agents/skills/last30days` (run from the repo root).
 - Git remote: origin = public (`mvanhorn/last30days-skill`)
+- Every `lib/*.py` call to `log.source_log(...)` must pass `tty_only=False`. The default is `True`, which silently drops every line when stderr isn't a TTY (Claude Code, Codex, CI, captured output) — turning source observability into invisible failure. Enforced by `tests/test_source_log_visibility.py`.
 
 ## Security hygiene
 - Never commit real API keys, browser cookies, auth tokens, app passwords, access tokens, or `.env` contents.

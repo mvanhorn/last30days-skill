@@ -1,19 +1,15 @@
 """Tests for xurl_x module."""
 
 import json
-import sys
 import unittest
-from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
-
 from lib import xurl_x
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _make_api_response(tweets=None, users=None):
     """Build a minimal X API v2 search/recent response."""
@@ -24,10 +20,10 @@ def _make_api_response(tweets=None, users=None):
         resp["includes"] = {"users": users}
     return resp
 
-
 # ---------------------------------------------------------------------------
 # is_available
 # ---------------------------------------------------------------------------
+
 
 class TestIsAvailable(unittest.TestCase):
     def test_returns_true_when_xurl_authenticated(self):
@@ -62,10 +58,10 @@ class TestIsAvailable(unittest.TestCase):
         with mock.patch("subprocess.run", return_value=completed):
             self.assertFalse(xurl_x.is_available())
 
-
 # ---------------------------------------------------------------------------
 # search_x
 # ---------------------------------------------------------------------------
+
 
 class TestSearchX(unittest.TestCase):
     def test_returns_parsed_json_on_success(self):
@@ -127,10 +123,10 @@ class TestSearchX(unittest.TestCase):
         n_idx = call_args.index("-n")
         self.assertEqual(int(call_args[n_idx + 1]), xurl_x.DEPTH_CONFIG["default"])
 
-
 # ---------------------------------------------------------------------------
 # parse_x_response
 # ---------------------------------------------------------------------------
+
 
 class TestParseXResponse(unittest.TestCase):
     def _tweet(self, id_, text, author_id, created_at=None, metrics=None):
@@ -240,10 +236,10 @@ class TestParseXResponse(unittest.TestCase):
         items = xurl_x.parse_x_response(resp)
         self.assertEqual(items[0]["why_relevant"], "")
 
-
 # ---------------------------------------------------------------------------
 # DEPTH_CONFIG
 # ---------------------------------------------------------------------------
+
 
 class TestDepthConfig(unittest.TestCase):
     def test_all_standard_depths_present(self):
@@ -255,7 +251,6 @@ class TestDepthConfig(unittest.TestCase):
             xurl_x.DEPTH_CONFIG["deep"],
             xurl_x.DEPTH_CONFIG["quick"],
         )
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,4 +1,3 @@
-# ruff: noqa: E402
 """Tests for per-entity save files when running vs-mode or --competitors.
 
 Each entity's sub-run produces its own {entity-slug}-raw.md. Single-entity
@@ -15,7 +14,6 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "last30days" / "scripts"))
 
 
 def _engine_path() -> Path:
@@ -35,7 +33,7 @@ class PerEntitySaveFilesTests(unittest.TestCase):
             *argv,
         ]
         env = {**os.environ, "LAST30DAYS_SKIP_PREFLIGHT": "1"}
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", env=env)
         return result, save_dir
 
     def test_vs_mode_produces_per_entity_files(self):
@@ -78,7 +76,6 @@ class PerEntitySaveFilesTests(unittest.TestCase):
         content = anthropic_file.read_text()
         self.assertIn("## Resolved Entities", content)
         self.assertIn("**Anthropic**", content)
-
 
 if __name__ == "__main__":
     unittest.main()

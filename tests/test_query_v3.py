@@ -1,8 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import query
 
@@ -38,7 +34,6 @@ class QueryV3Tests(unittest.TestCase):
         self.assertIn("multi-agent", terms)
         self.assertIn("Claude Code", terms)
         self.assertIn("React Native", terms)
-
 
 if __name__ == "__main__":
     unittest.main()

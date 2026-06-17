@@ -1,10 +1,6 @@
 """Tests for query.py — shared query utilities."""
 
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
 
 from lib.query import NOISE_WORDS, extract_compound_terms, extract_core_subject
 
@@ -126,7 +122,6 @@ class TestNoiseWordsCompleteness(unittest.TestCase):
             self.assertIn(w, NOISE_WORDS)
 
 
-
 class TestExtractCompoundTerms(unittest.TestCase):
     """Tests for extract_compound_terms()."""
 
@@ -147,7 +142,6 @@ class TestExtractCompoundTerms(unittest.TestCase):
         terms = extract_compound_terms("vc-backed start-up")
         self.assertIn("vc-backed", terms)
         self.assertIn("start-up", terms)
-
 
 if __name__ == "__main__":
     unittest.main()

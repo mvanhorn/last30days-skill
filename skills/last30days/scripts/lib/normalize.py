@@ -54,11 +54,19 @@ def normalize_source_items(
         "xiaohongshu": _normalize_grounding,
         "github": _normalize_github,
         "perplexity": _normalize_grounding,
+        "jobs": _normalize_jobs,
     }
     normalizer = normalizers.get(source)
     if normalizer is None:
         raise ValueError(f"Unsupported source: {source}")
     normalized = [normalizer(source, item, index, from_date, to_date) for index, item in enumerate(items)]
+    if source == "jobs":
+        # A careers board is a snapshot of CURRENTLY OPEN roles. An open posting
+        # is current evidence regardless of when it was posted, so date-windowing
+        # it drops still-open roles (the "Founding Research Scientist, Human
+        # Simulation" miss: 26 open roles filtered to 3 by a 30-day window).
+        # Keep the full board; recency is annotated, not used to drop.
+        return normalized
     require_date = source == "grounding"
     filtered = filter_by_date_range(normalized, from_date, to_date, require_date=require_date)
     if filtered:
@@ -234,6 +242,46 @@ def _normalize_x(
         engagement=item.get("engagement") or {},
         relevance_hint=item.get("relevance", 0.5),
         why_relevant=str(item.get("why_relevant") or ""),
+    )
+
+
+def _normalize_jobs(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    description = str(item.get("description") or item.get("snippet") or "").strip()
+    title = str(item.get("title") or "").strip()
+    department = str(item.get("department") or "").strip()
+    location = str(item.get("location") or "").strip()
+    body = "\n".join(part for part in [title, department, location, description] if part)
+    provider = str(item.get("provider") or "").strip()
+    return _source_item(
+        item_id=str(item.get("id") or f"J{index + 1}"),
+        source=source,
+        title=title or f"Job posting {index + 1}",
+        body=body,
+        url=str(item.get("url") or ""),
+        author=provider or None,
+        container=department or None,
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date),
+        engagement={"open_roles": 1},
+        relevance_hint=item.get("relevance", 0.65),
+        why_relevant=str(item.get("why_relevant") or "Public job posting"),
+        snippet=description[:500],
+        metadata={
+            "provider": provider,
+            "department": department,
+            "departments": item.get("departments") or ([department] if department else []),
+            "location": location,
+            "offices": item.get("offices") or [],
+            "board_token": item.get("board_token") or "",
+            "source_url": item.get("source_url") or "",
+            "source_domain": item.get("source_domain") or _domain_from_url(str(item.get("url") or "")) or "",
+        },
     )
 
 

@@ -1,19 +1,14 @@
-# ruff: noqa: E402
 """Tests for --competitors-plan JSON parsing and per-entity kwargs threading."""
 
 from __future__ import annotations
 
 import io
 import json
-import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
 from unittest import mock
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "last30days" / "scripts"))
 
 import last30days as cli
 
@@ -45,6 +40,22 @@ class ParseCompetitorsPlanTests(unittest.TestCase):
             out = cli.parse_competitors_plan(path)
             self.assertEqual(out["anthropic"]["x_handle"], "AnthropicAI")
             self.assertEqual(out["anthropic"]["github_user"], "anthropics")
+        finally:
+            Path(path).unlink(missing_ok=True)
+
+    def test_file_with_non_ascii_content(self):
+        """Plan file with non-ASCII characters (e.g. accented names) reads without UnicodeDecodeError."""
+        with tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".json", delete=False,
+        ) as f:
+            f.write(
+                b'{"Nestl\xc3\xa9": {"x_handle": "Nestle", "subreddits": ["nestle"]}}'
+            )
+            path = f.name
+        try:
+            out = cli.parse_competitors_plan(path)
+            self.assertIn("nestlé", out)
+            self.assertEqual(out["nestlé"]["x_handle"], "Nestle")
         finally:
             Path(path).unlink(missing_ok=True)
 
@@ -174,7 +185,6 @@ class SubrunKwargsForTests(unittest.TestCase):
 
         kwargs = cli.subrun_kwargs_for("X", {}, resolved=resolved)
         self.assertEqual(kwargs["_context"], "Resolved context")
-
 
 if __name__ == "__main__":
     unittest.main()

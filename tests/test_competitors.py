@@ -1,17 +1,11 @@
-# ruff: noqa: E402
 """Tests for scripts/lib/competitors.discover_competitors."""
 
 from __future__ import annotations
 
 import io
-import sys
 import unittest
 from contextlib import redirect_stderr
-from pathlib import Path
 from unittest import mock
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "last30days" / "scripts"))
 
 from lib import competitors
 
@@ -22,7 +16,6 @@ def _serp(items: list[tuple[str, str]]) -> list[dict]:
         {"title": title, "snippet": snippet, "url": "https://example.test/"}
         for title, snippet in items
     ]
-
 
 OPENAI_SERP = _serp(
     [
@@ -146,7 +139,6 @@ class CompetitorDiscoveryTests(unittest.TestCase):
     def test_count_zero_returns_empty(self):
         results = self._run(OPENAI_SERP, "OpenAI", count=0)
         self.assertEqual(results, [])
-
 
 if __name__ == "__main__":
     unittest.main()

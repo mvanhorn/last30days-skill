@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 
-from . import schema
+from . import cjk, schema
 
 STOPWORDS = frozenset(
     {
@@ -31,7 +31,7 @@ STOPWORDS = frozenset(
         "do",
         "can",
     }
-)
+) | cjk.CHINESE_STOPWORDS
 
 
 def normalize_text(text: str) -> str:
@@ -61,12 +61,12 @@ def jaccard_similarity(left: set[str], right: set[str]) -> float:
 def token_jaccard(text_a: str, text_b: str) -> float:
     tokens_a = {
         token
-        for token in normalize_text(text_a).split()
+        for token in cjk.segment(normalize_text(text_a))
         if len(token) > 1 and token not in STOPWORDS
     }
     tokens_b = {
         token
-        for token in normalize_text(text_b).split()
+        for token in cjk.segment(normalize_text(text_b))
         if len(token) > 1 and token not in STOPWORDS
     }
     return jaccard_similarity(tokens_a, tokens_b)
@@ -81,7 +81,7 @@ def hybrid_similarity(text_a: str, text_b: str) -> float:
 
 def _tokenize(normalized: str) -> frozenset[str]:
     return frozenset(
-        tok for tok in normalized.split()
+        tok for tok in cjk.segment(normalized)
         if len(tok) > 1 and tok not in STOPWORDS
     )
 
@@ -110,10 +110,25 @@ def item_text(item: schema.SourceItem) -> str:
 
 
 def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list[schema.SourceItem]:
-    """Remove near-duplicates while keeping earlier, better-scored items."""
+    """Remove near-duplicates while keeping earlier, better-scored items.
+
+    Jobs are deduped by exact URL only: distinct postings on the same careers
+    board share heavy boilerplate (company intro, "TL;DR", benefits) that trips
+    fuzzy text similarity and collapses unrelated roles (a 26-role board fell to
+    7). A unique posting URL is an unambiguous identity, so use it instead.
+    """
     kept: list[schema.SourceItem] = []
     kept_prepared: list[_PreparedText] = []
+    seen_job_urls: set[str] = set()
     for item in items:
+        if item.source == "jobs":
+            url = (item.url or "").strip()
+            if url and url in seen_job_urls:
+                continue
+            if url:
+                seen_job_urls.add(url)
+            kept.append(item)
+            continue
         text = item_text(item)
         if not text:
             kept.append(item)

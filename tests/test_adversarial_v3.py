@@ -5,11 +5,7 @@ comparisons, 'difference between X and Y' phrasing, trailing context
 leaking into entities, degenerate inputs, and false-positive resistance.
 """
 
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import planner
 
@@ -192,7 +188,6 @@ class TestNoiseWordEntities(unittest.TestCase):
     def test_go_not_stripped(self):
         entities = planner._comparison_entities("Swift vs Rust vs Go")
         self.assertTrue(any("Go" in e for e in entities))
-
 
 if __name__ == "__main__":
     unittest.main()

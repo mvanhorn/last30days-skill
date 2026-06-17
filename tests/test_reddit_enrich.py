@@ -1,12 +1,10 @@
 """Tests for reddit_enrich.py — comment enrichment and parsing."""
 
 import json
-import sys
 import unittest
 from pathlib import Path
 
 # Add lib to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
 
 from lib import reddit_enrich
 
@@ -123,7 +121,6 @@ class TestExtractCommentInsights(unittest.TestCase):
         comments = [{"body": f"Comment number {i} " + "x" * 50} for i in range(20)]
         insights = reddit_enrich.extract_comment_insights(comments, limit=3)
         self.assertLessEqual(len(insights), 3)
-
 
 if __name__ == "__main__":
     unittest.main()

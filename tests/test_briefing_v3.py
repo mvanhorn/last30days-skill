@@ -1,10 +1,7 @@
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 import briefing
 import store
@@ -51,7 +48,6 @@ class BriefingV3Tests(unittest.TestCase):
                 self.assertEqual("utf-8", kwargs["encoding"])
             finally:
                 briefing.BRIEFS_DIR = old_briefs_dir
-
 
 if __name__ == "__main__":
     unittest.main()

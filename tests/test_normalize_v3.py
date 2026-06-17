@@ -1,8 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import normalize
 
@@ -224,7 +220,6 @@ class NormalizeV3Tests(unittest.TestCase):
             "2026-03-17",
         )
         self.assertEqual([], normalized)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,13 +1,10 @@
 """Tests for instagram.py — ScrapeCreators Instagram search module."""
 
 import os
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 # Add lib to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
 
 from lib import instagram
 from lib.relevance import tokenize as _tokenize
@@ -252,7 +249,6 @@ class TestTranscriptTimeoutConfig(unittest.TestCase):
             instagram.fetch_captions(items, token="fake-token")
             kwargs = mock_http_get.call_args.kwargs
             self.assertEqual(kwargs["timeout"], 30.0)
-
 
 if __name__ == "__main__":
     unittest.main()

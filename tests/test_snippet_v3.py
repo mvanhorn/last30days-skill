@@ -1,8 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import schema, snippet
 
@@ -57,7 +53,6 @@ class SnippetV3Tests(unittest.TestCase):
         item = make_item(body=body)
         result = snippet.extract_best_snippet(item, "openclaw nanoclaw ironclaw", max_words=20)
         self.assertIn("openclaw nanoclaw ironclaw", result)
-
 
 if __name__ == "__main__":
     unittest.main()

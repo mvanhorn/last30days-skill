@@ -1,11 +1,7 @@
 import io
-import sys
 import unittest
 from contextlib import redirect_stderr
-from pathlib import Path
 from unittest.mock import patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import resolve
 from lib.resolve import MAX_SUBS, _merge_category_peers
@@ -362,7 +358,6 @@ class AutoResolveCategoryIntegration(unittest.TestCase):
     def test_no_backend_returns_category_none(self):
         result = resolve.auto_resolve("test topic", {})
         self.assertIsNone(result["category"])
-
 
 if __name__ == "__main__":
     unittest.main()

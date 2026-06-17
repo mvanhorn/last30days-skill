@@ -1,16 +1,10 @@
-# ruff: noqa: E402
 """CLI parsing and validation for --competitors / --competitors-list."""
 
 from __future__ import annotations
 
 import io
-import sys
 import unittest
 from contextlib import redirect_stderr
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "last30days" / "scripts"))
 
 import last30days as cli
 
@@ -131,7 +125,6 @@ class CompetitorsCliTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as cm, redirect_stderr(io.StringIO()):
             cli.resolve_competitors_args(args)
         self.assertEqual(cm.exception.code, 2)
-
 
 if __name__ == "__main__":
     unittest.main()

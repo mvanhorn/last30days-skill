@@ -1,11 +1,8 @@
 """Tests for reddit.py — ScrapeCreators Reddit search module."""
 
-import sys
 import unittest
-from pathlib import Path
 
 # Add lib to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
 
 from lib import reddit
 
@@ -175,7 +172,6 @@ class TestPostRelevance(unittest.TestCase):
             "",
         )
         self.assertGreater(score, 0.7)
-
 
 if __name__ == "__main__":
     unittest.main()

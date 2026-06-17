@@ -1,9 +1,5 @@
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib.xquik import (
     DEPTH_CONFIG,
@@ -269,7 +265,6 @@ class TestDepthConfig(unittest.TestCase):
 
     def test_deep_has_most_queries(self):
         self.assertGreater(DEPTH_CONFIG["deep"]["queries"], DEPTH_CONFIG["quick"]["queries"])
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,16 +1,10 @@
-# ruff: noqa: E402
 """Tests for planner.plan_query internal_subrun quiet mode."""
 
 from __future__ import annotations
 
 import io
-import sys
 import unittest
 from contextlib import redirect_stderr
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "last30days" / "scripts"))
 
 from lib import planner
 
@@ -49,7 +43,6 @@ class PlannerQuietModeTests(unittest.TestCase):
         # The plan itself is deterministic fallback; verify note carries
         # no planner-error indication.
         self.assertGreater(len(plan.subqueries), 0)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -22,13 +22,22 @@ SOURCE_LABELS = {
 
 def _is_x_active(config: dict, research_results: dict) -> bool:
     """Check if X source is active (has credentials AND didn't error)."""
-    has_creds = bool(config.get("AUTH_TOKEN") or config.get("XAI_API_KEY"))
+    has_creds = _has_x_credentials(config)
     if not has_creds:
         return False
     # If X errored this run, it's configured but broken
     if research_results.get("x_error"):
         return False
     return True
+
+
+def _has_x_credentials(config: dict) -> bool:
+    """Return True when any X/Twitter source credential is configured."""
+    return bool(
+        config.get("AUTH_TOKEN")
+        or config.get("XAI_API_KEY")
+        or config.get("XQUIK_API_KEY")
+    )
 
 
 def _is_youtube_active(config: dict, research_results: dict) -> bool:
@@ -63,11 +72,22 @@ def _is_youtube_degraded(research_results: dict, threshold: float) -> bool:
     who turned off captions can never produce a transcript, so counting that
     video toward "fetch failures" produces false positives. A single
     captions-disabled video in a small result set was tripping the nudge.
+
+    When actual fetch outcomes are available, they take precedence over the
+    post-pruning ratio: the report counts only see items that survived
+    freshness/relevance pruning, so a run where every transcript fetch
+    succeeded but the fetched videos were later pruned looks identical to a
+    stale-binary run (#531). Zero failures across attempted fetches proves
+    the binary works - don't flag.
     """
     videos = int(research_results.get("youtube_videos_count") or 0)
     transcripts = int(research_results.get("youtube_transcripts_count") or 0)
     captions_disabled = int(research_results.get("youtube_captions_disabled_count") or 0)
     if videos <= 0:
+        return False
+    fetch_attempts = int(research_results.get("youtube_transcript_fetch_attempts") or 0)
+    fetch_failures = int(research_results.get("youtube_transcript_fetch_failures") or 0)
+    if fetch_attempts > 0 and fetch_failures == 0:
         return False
     eligible = videos - captions_disabled
     if eligible <= 0:
@@ -146,7 +166,7 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
     core_active.append("reddit")
 
     # X
-    has_x_creds = bool(config.get("AUTH_TOKEN") or config.get("XAI_API_KEY"))
+    has_x_creds = _has_x_credentials(config)
     if _is_x_active(config, research_results):
         core_active.append("x")
     else:
@@ -257,9 +277,10 @@ def _build_nudge_text(
         else:
             free_suggestions.append(
                 "X/Twitter: real-time posts with likes and reposts - the fastest "
-                "signal for breaking topics. Two options: log into x.com in your "
+                "signal for breaking topics. Three options: log into x.com in your "
                 "browser and re-run (cookies detected automatically), or add "
-                "XAI_API_KEY to your .env (no browser access, get key at api.x.ai)."
+                "XAI_API_KEY to your .env (get key at api.x.ai), or add "
+                "XQUIK_API_KEY to your .env (get key at xquik.com)."
             )
 
     if "youtube" in core_missing:

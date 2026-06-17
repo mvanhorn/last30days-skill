@@ -1,4 +1,3 @@
-# ruff: noqa: E402
 """Regression tests: main-topic flags must not leak into competitor sub-runs.
 
 Based on 2026-04-22 Kanye West --competitors receipt where Drake and
@@ -10,14 +9,9 @@ via closure capture, config mutation, or any other path.
 from __future__ import annotations
 
 import io
-import sys
 import unittest
 from contextlib import redirect_stderr
-from pathlib import Path
 from unittest import mock
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "last30days" / "scripts"))
 
 
 def _fake_report(topic: str):
@@ -190,7 +184,6 @@ class SubRunIsolationTests(unittest.TestCase):
             "ICEMAN",
             by_topic["Kendrick Lamar"]["config"].get("_auto_resolve_context", ""),
         )
-
 
 if __name__ == "__main__":
     unittest.main()

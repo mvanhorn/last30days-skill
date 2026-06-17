@@ -9,10 +9,8 @@ from unittest.mock import patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days"))
-
 # Import the internal parser directly for testability (avoids platform check)
-from scripts.lib.safari_cookies import (
+from lib.safari_cookies import (
     _parse_binary_cookies,
     extract_safari_cookies_macos,
 )
@@ -95,8 +93,9 @@ def _build_binary_cookies_file(pages: list[bytes]) -> bytes:
 
     return data
 
-
 @pytest.fixture
+
+
 def x_cookies_file() -> bytes:
     """Build a minimal valid binary cookies file with .x.com cookies."""
     rec1 = _build_cookie_record(".x.com", "auth_token", "test_auth_abc123")
@@ -153,8 +152,8 @@ class TestMultiplePages:
 class TestErrorPaths:
     def test_file_not_found(self, tmp_path: Path):
         with patch(
-            "scripts.lib.safari_cookies.Path.home", return_value=tmp_path
-        ), patch("scripts.lib.safari_cookies.sys") as mock_sys:
+            "lib.safari_cookies.Path.home", return_value=tmp_path
+        ), patch("lib.safari_cookies.sys") as mock_sys:
             mock_sys.platform = "darwin"
             mock_sys.stderr = sys.stderr
             result = extract_safari_cookies_macos("x.com", ["auth_token"])
@@ -183,8 +182,8 @@ class TestErrorPaths:
         (legacy_dir / "Cookies.binarycookies").write_bytes(legacy_data)
 
         with patch(
-            "scripts.lib.safari_cookies.Path.home", return_value=tmp_path
-        ), patch("scripts.lib.safari_cookies.sys") as mock_sys:
+            "lib.safari_cookies.Path.home", return_value=tmp_path
+        ), patch("lib.safari_cookies.sys") as mock_sys:
             mock_sys.platform = "darwin"
             mock_sys.stderr = sys.stderr
             result = extract_safari_cookies_macos("x.com", ["auth_token", "ct0"])
@@ -215,8 +214,8 @@ class TestErrorPaths:
         assert not sandbox_path.exists()
 
         with patch(
-            "scripts.lib.safari_cookies.Path.home", return_value=tmp_path
-        ), patch("scripts.lib.safari_cookies.sys") as mock_sys:
+            "lib.safari_cookies.Path.home", return_value=tmp_path
+        ), patch("lib.safari_cookies.sys") as mock_sys:
             mock_sys.platform = "darwin"
             mock_sys.stderr = sys.stderr
             result = extract_safari_cookies_macos("x.com", ["auth_token"])
@@ -239,8 +238,8 @@ class TestErrorPaths:
         cookie_file.write_bytes(b"cook")
 
         with patch(
-            "scripts.lib.safari_cookies.Path.home", return_value=tmp_path
-        ), patch("scripts.lib.safari_cookies.sys") as mock_sys, patch.object(
+            "lib.safari_cookies.Path.home", return_value=tmp_path
+        ), patch("lib.safari_cookies.sys") as mock_sys, patch.object(
             Path, "read_bytes", side_effect=PermissionError
         ):
             mock_sys.platform = "darwin"
@@ -275,7 +274,7 @@ class TestErrorPaths:
         assert result is None
 
     def test_non_darwin_returns_none(self):
-        with patch("scripts.lib.safari_cookies.sys") as mock_sys:
+        with patch("lib.safari_cookies.sys") as mock_sys:
             mock_sys.platform = "linux"
             result = extract_safari_cookies_macos("x.com", ["auth_token"])
         assert result is None

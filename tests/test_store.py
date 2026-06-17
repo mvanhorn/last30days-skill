@@ -9,14 +9,13 @@ from pathlib import Path
 import pytest
 
 # Import the module under test
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
 
 import store
 from lib import schema
 
-
 @pytest.fixture
+
+
 def temp_db():
     """Create a temporary database for testing."""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -36,8 +35,9 @@ def temp_db():
     if db_path.exists():
         db_path.unlink()
 
-
 @pytest.fixture
+
+
 def sample_report():
     """Create a sample Report with multiple sources including HN and Polymarket."""
     return schema.report_from_dict({
@@ -179,8 +179,8 @@ def sample_report():
         "warnings": [],
     })
 
-
 # === Tests for findings_from_report() ===
+
 
 def test_findings_from_report_processes_all_sources(sample_report):
     """Test that findings_from_report extracts items from all sources in items_by_source."""
@@ -324,8 +324,8 @@ def test_findings_from_report_handles_missing_fields():
     assert f["relevance_score"] == 0.5
     assert f["summary"] == "Content"  # Falls back to body
 
-
 # === Tests for store_findings() ===
+
 
 def test_store_findings_basic(temp_db, sample_report):
     """Test basic storage of findings."""
@@ -565,6 +565,7 @@ def test_store_findings_updates_existing_sighting_for_same_run(temp_db):
     assert sightings[0]["source_title"] == "Reddit 1 updated"
     assert sightings[0]["engagement_score"] == 15.0
 
+
 def test_get_latest_completed_runs_returns_newest_completed_only(temp_db):
     """Test latest-run lookup ignores failed runs and orders newest first."""
     topic = store.add_topic("Test Topic")
@@ -672,8 +673,8 @@ def test_update_validates_allowed_columns(temp_db, sample_report):
     with pytest.raises(ValueError, match="invalid_finding_column"):
         store.update_finding(finding_id, invalid_finding_column="x")
 
-
 # === Tests for topic management ===
+
 
 def test_add_topic(temp_db):
     """Test adding a topic."""
@@ -742,8 +743,8 @@ def test_list_topics(temp_db):
         assert "last_run" in topic
         assert "last_status" in topic
 
-
 # === Tests for get_new_findings() ===
+
 
 def test_get_new_findings(temp_db, sample_report):
     """Test retrieving new findings for a topic."""
@@ -778,7 +779,6 @@ def test_get_new_findings_filters_by_date(temp_db, sample_report):
     new_findings = store.get_new_findings(topic["id"], since=yesterday)
 
     assert len(new_findings) == 4
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

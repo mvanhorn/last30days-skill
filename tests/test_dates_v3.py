@@ -1,9 +1,5 @@
-import sys
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import dates
 
@@ -57,7 +53,6 @@ class DatesV3Tests(unittest.TestCase):
         self.assertEqual(0, dates.recency_score(old))
         self.assertEqual(100, dates.recency_score(future))
         self.assertEqual(0, dates.recency_score(None))
-
 
 if __name__ == "__main__":
     unittest.main()
