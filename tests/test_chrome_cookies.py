@@ -253,7 +253,7 @@ class TestUnencryptedCookies:
 
         with mock.patch("lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
             # No keychain needed for unencrypted values
-            with mock.patch("lib.chrome_cookies._get_chrome_encryption_key", return_value=None):
+            with mock.patch("lib.chrome_cookies._get_chromium_encryption_key", return_value=None):
                 result = extract_chrome_cookies_macos(".x.com", ["auth_token", "ct0"])
 
         assert result == {"auth_token": "plain_token_value", "ct0": "plain_ct0_value"}
@@ -297,7 +297,7 @@ class TestFullExtraction:
         ])
 
         with mock.patch("lib.chrome_cookies.CHROME_COOKIES_DB", Path(db_path)):
-            with mock.patch("lib.chrome_cookies._get_chrome_encryption_key", return_value=None):
+            with mock.patch("lib.chrome_cookies._get_chromium_encryption_key", return_value=None):
                 result = extract_chrome_cookies_macos(".x.com", ["auth_token"])
 
         assert result is None
