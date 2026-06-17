@@ -57,7 +57,7 @@ jobs:
 
       # Retain the raw SARIF as a build artifact for offline inspection.
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: scorecard-sarif
           path: scorecard.sarif
