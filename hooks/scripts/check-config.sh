@@ -11,6 +11,11 @@ GLOBAL_ENV="$HOME/.config/last30days/.env"
 check_perms() {
   local file="$1"
   if [[ ! -f "$file" ]]; then return; fi
+  # Git-for-Windows / MSYS / Cygwin run stat in noacl mode (always 644),
+  # so this POSIX check is a false positive. Windows perms use ACLs.
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) return ;;
+  esac
   local perms
   # Try GNU stat first (Linux), fall back to BSD stat (macOS).
   # On Linux, `stat -f` prints filesystem info (not permissions) and exits 0,

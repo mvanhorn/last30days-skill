@@ -57,3 +57,4 @@ v3 has durable watchlist with multi-source storage and extended time windows.
 - [@JosephOIbrahim](https://github.com/JosephOIbrahim) - Windows Unicode fix ([#17](https://github.com/mvanhorn/last30days-skill/pull/17))
 - [@levineam](https://github.com/levineam) - Model fallback for unverified orgs ([#16](https://github.com/mvanhorn/last30days-skill/pull/16))
 - [@jonthebeef](https://github.com/jonthebeef) - Early testing and feedback
+- [@23241a6749](https://github.com/23241a6749) - Windows cp1252 fixes: utf-8 plan-file reads, skill_meta version-detection encoding, MSYS noacl permission check skip ([#549](https://github.com/mvanhorn/last30days-skill/pull/549));  first-run setup wizard fix: SKILL.md references existing Python setup wizard instead of missing nux-wizard.md ([#574](https://github.com/mvanhorn/last30days-skill/pull/574))

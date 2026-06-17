@@ -255,6 +255,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Web search backend (default: auto, tries Brave then Exa then Serper then Parallel)")
     parser.add_argument("--deep-research", action="store_true",
                         help="Use Perplexity Deep Research (~$0.90/query) for in-depth analysis. Requires OPENROUTER_API_KEY.")
+    parser.add_argument("--hiring-signals", action="store_true",
+                        help="Analyze public jobs/careers postings as evidence-backed company focus signals.")
     parser.add_argument("--plan", help="JSON query plan (skips internal LLM planner). Can be a JSON string or a file path.")
     parser.add_argument("--save-suffix", help="Suffix for saved output filename (e.g., 'gemini' → kanye-west-raw-gemini.md)")
     parser.add_argument("--subreddits", help="Comma-separated subreddit names to search (e.g., SaaS,Entrepreneur)")
@@ -325,8 +327,8 @@ def parse_competitors_plan(raw: str | None) -> dict[str, dict]:
     plan_str = raw
     if os.path.isfile(plan_str):
         try:
-            plan_str = open(plan_str).read()
-        except OSError as exc:
+            plan_str = open(plan_str, encoding="utf-8").read()
+        except (OSError, UnicodeDecodeError) as exc:
             sys.stderr.write(f"[CompetitorsPlan] Cannot read plan file: {exc}\n")
             raise SystemExit(2)
     try:
@@ -638,7 +640,11 @@ def main() -> int:
             import json as _json
             plan_str = args.plan
             if os.path.isfile(plan_str):
-                plan_str = open(plan_str).read()
+                try:
+                    plan_str = open(plan_str, encoding="utf-8").read()
+                except (OSError, UnicodeDecodeError) as exc:
+                    sys.stderr.write(f"[Planner] Cannot read --plan file: {exc}\n")
+                    raise SystemExit(2)
             try:
                 external_plan = _json.loads(plan_str)
             except _json.JSONDecodeError as exc:
@@ -752,6 +758,7 @@ def main() -> int:
                 lookback_days=args.lookback_days,
                 github_user=github_user,
                 github_repos=github_repos,
+                hiring_signals_mode=args.hiring_signals,
             )
             r.artifacts["resolved"] = {
                 "entity": topic,
@@ -879,6 +886,7 @@ def main() -> int:
                     github_repos=kwargs["github_repos"],
                     web_backend=args.web_backend,
                     lookback_days=args.lookback_days,
+                    hiring_signals_mode=args.hiring_signals,
                     internal_subrun=True,
                 )
                 report.artifacts["resolved"] = resolved_effective
@@ -928,40 +936,42 @@ def main() -> int:
         )
         sys.stderr.flush()
 
-    # Show quality nudge if applicable
-    try:
-        from lib import quality_nudge
-        # Populate transcript-fetch ratio so quality_nudge can detect the
-        # degraded-YouTube failure mode (videos returned but transcripts
-        # silently failed - typically a stale yt-dlp binary).
-        youtube_items = report.items_by_source.get("youtube") or []
-        instagram_items = report.items_by_source.get("instagram") or []
-        research_results = {
-            "youtube_videos_count": len(youtube_items),
-            "youtube_transcripts_count": sum(
-                1 for it in youtube_items
-                if (it.metadata.get("transcript_highlights") or it.metadata.get("transcript_snippet"))
-            ),
-            "youtube_error": report.errors_by_source.get("youtube"),
-            "x_error": report.errors_by_source.get("x"),
-            # Captions-disabled videos can never produce a transcript regardless
-            # of yt-dlp version; subtract them from the degraded-ratio
-            # denominator so a single uploader-disabled video does not trip the
-            # "stale yt-dlp" nudge.
-            "youtube_captions_disabled_count": sum(
-                1 for it in youtube_items if it.metadata.get("captions_disabled")
-            ),
-            # Track Instagram returned-zero-items so quality_nudge can detect
-            # the silent-failure case (SC configured but the v2 reels endpoint
-            # 500'd through both the original query and the hashtag retry).
-            "instagram_items_count": len(instagram_items),
-        }
-        quality = quality_nudge.compute_quality_score(config, research_results)
-        if quality.get("nudge_text"):
-            sys.stderr.write(f"\n{quality['nudge_text']}\n")
-            sys.stderr.flush()
-    except Exception:
-        pass
+    # Show quality nudge if applicable. Explicit hiring-signal runs are
+    # intentionally jobs-focused, so generic source setup advice is noise.
+    if not args.hiring_signals:
+        try:
+            from lib import quality_nudge
+            # Populate transcript-fetch ratio so quality_nudge can detect the
+            # degraded-YouTube failure mode (videos returned but transcripts
+            # silently failed - typically a stale yt-dlp binary).
+            youtube_items = report.items_by_source.get("youtube") or []
+            instagram_items = report.items_by_source.get("instagram") or []
+            research_results = {
+                "youtube_videos_count": len(youtube_items),
+                "youtube_transcripts_count": sum(
+                    1 for it in youtube_items
+                    if (it.metadata.get("transcript_highlights") or it.metadata.get("transcript_snippet"))
+                ),
+                "youtube_error": report.errors_by_source.get("youtube"),
+                "x_error": report.errors_by_source.get("x"),
+                # Captions-disabled videos can never produce a transcript regardless
+                # of yt-dlp version; subtract them from the degraded-ratio
+                # denominator so a single uploader-disabled video does not trip the
+                # "stale yt-dlp" nudge.
+                "youtube_captions_disabled_count": sum(
+                    1 for it in youtube_items if it.metadata.get("captions_disabled")
+                ),
+                # Track Instagram returned-zero-items so quality_nudge can detect
+                # the silent-failure case (SC configured but the v2 reels endpoint
+                # 500'd through both the original query and the hashtag retry).
+                "instagram_items_count": len(instagram_items),
+            }
+            quality = quality_nudge.compute_quality_score(config, research_results)
+            if quality.get("nudge_text"):
+                sys.stderr.write(f"\n{quality['nudge_text']}\n")
+                sys.stderr.flush()
+        except Exception:
+            pass
 
     fun_level = config.get("FUN_LEVEL", "medium").lower()
     # Comparison HTML is the one case where the saved file's title and content

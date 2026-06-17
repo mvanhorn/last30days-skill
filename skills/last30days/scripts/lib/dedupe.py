@@ -110,10 +110,25 @@ def item_text(item: schema.SourceItem) -> str:
 
 
 def dedupe_items(items: list[schema.SourceItem], threshold: float = 0.7) -> list[schema.SourceItem]:
-    """Remove near-duplicates while keeping earlier, better-scored items."""
+    """Remove near-duplicates while keeping earlier, better-scored items.
+
+    Jobs are deduped by exact URL only: distinct postings on the same careers
+    board share heavy boilerplate (company intro, "TL;DR", benefits) that trips
+    fuzzy text similarity and collapses unrelated roles (a 26-role board fell to
+    7). A unique posting URL is an unambiguous identity, so use it instead.
+    """
     kept: list[schema.SourceItem] = []
     kept_prepared: list[_PreparedText] = []
+    seen_job_urls: set[str] = set()
     for item in items:
+        if item.source == "jobs":
+            url = (item.url or "").strip()
+            if url and url in seen_job_urls:
+                continue
+            if url:
+                seen_job_urls.add(url)
+            kept.append(item)
+            continue
         text = item_text(item)
         if not text:
             kept.append(item)

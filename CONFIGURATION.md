@@ -64,6 +64,7 @@ The project-scoped file is the cleanest pattern for **per-client setups**: drop 
 | TruthSocial | `TRUTHSOCIAL_TOKEN` | TruthSocial items | yes |
 | Web search | one of: `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY` | `--auto-resolve` and Step 2 supplements | Brave has a free tier; native WebSearch on Claude Code / Codex / Gemini works as a fallback |
 | Perplexity Deep Research | `OPENROUTER_API_KEY` | `--deep-research` flag (~$0.90/query) | no |
+| Jobs / careers pages | none for public ATS pages; web backend improves fallback discovery | `--hiring-signals` and strong Hiring Signals in standard company reports | yes |
 | Apify (alternate scraper) | `APIFY_API_TOKEN` | fallback for Reddit/TikTok/Instagram when ScrapeCreators is exhausted | yes (limited) |
 
 **Example `.env` skeleton** (placeholders only - replace with your own values):
@@ -130,6 +131,18 @@ Used by `--auto-resolve` (when WebSearch isn't available from the host) and Step
 5. **Host's native WebSearch** - Claude Code, Codex, Gemini all have one built in
 
 Visible quality difference between hosts with vs without a configured backend. If your client setup produces thinner results than yours, this is usually why.
+
+---
+
+### `--hiring-signals` flag
+
+Use `--hiring-signals` for a focused company hiring-signal report:
+
+```bash
+python3 skills/last30days/scripts/last30days.py "Listen Labs" --hiring-signals
+```
+
+The engine treats public jobs/careers postings as evidence of focus or priority shifts, not exact roadmap predictions. Standard company runs may include Hiring Signals automatically when multiple current roles support the same interpretation; weak or unavailable hiring evidence is omitted.
 
 ---
 

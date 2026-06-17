@@ -138,7 +138,7 @@ def search_pinterest(
     try:
         data = http.get(
             f"{SCRAPECREATORS_BASE}/search",
-            params={"keyword": core_topic},
+            params={"query": core_topic},
             headers=http.scrapecreators_headers(token),
             timeout=30,
             retries=2,

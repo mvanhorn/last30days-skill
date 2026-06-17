@@ -39,9 +39,3 @@ The research flow available with no API keys: source data is gathered by scrapin
 ### Comment-enrichment slots
 
 The small, depth-dependent budget of Reddit posts whose comments get fetched in the Keyless path. Slot selection is relevance-aware: posts that pass Entity grounding claim slots first, so the budget is not spent on high-engagement posts that final ranking will demote anyway.
-
-## Distribution
-
-### Beta channel
-
-A parallel install of the Skill, sourced from the private `mvanhorn/last30days-skill-private` repo and installed as `/last30days-beta` rather than `/last30days`. The Beta channel exists so experimental changes can be tested by real users before they ship to the public `/last30days`. Promotion from Beta to public happens via a review PR against this (public) repo — Beta-only changes never ship to public without that PR. The Beta channel workflow guide lives in `BETA.md` in the private repo.

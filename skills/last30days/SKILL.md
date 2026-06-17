@@ -56,6 +56,7 @@ metadata:
       - social-media
       - analysis
       - web-search
+      - hiring-signals
       - ai-skill
       - clawhub
 ---
@@ -282,11 +283,11 @@ Before proceeding to Step 1, handle first-run setup.
 - If the file exists and contains `SETUP_COMPLETE=true`, skip Step 0 entirely and go to Step 1 (CRITICAL: Parse User Intent below). Do NOT announce that setup is complete. The user does not need a status message on every run.
 
 **If this IS a first run:**
-- Use the Read tool to load `skills/last30days/nux-wizard.md` (relative to the skill root).
-- Follow the wizard's instructions end-to-end. The wizard handles platform detection (OpenClaw vs Claude Code), auto vs manual setup, ScrapeCreators opt-in, and the initial topic picker.
+- Run `python3 skills/last30days/scripts/last30days.py setup` (relative to the skill root) to launch the setup wizard.
+- Follow the wizard's prompts end-to-end. The wizard handles platform detection (OpenClaw vs Claude Code), auto vs manual setup, browser cookie extraction, ScrapeCreators opt-in, and the initial topic picker.
 - After the wizard writes `SETUP_COMPLETE=true` to `~/.config/last30days/.env`, proceed to research.
 
-The wizard lives in a separate file so the common-case (already set up) path through this file is short and the voice-contract rules further down stay in context.
+The setup wizard lives as a Python module so it works across all hosts (Claude Code, Codex, Cursor, etc.) and the common-case (already set up) path through this file stays short.
 
 ---
 
@@ -332,6 +333,7 @@ Common patterns:
 - If yt-dlp is installed (check `which yt-dlp`): add YouTube
 - If SCRAPECREATORS_API_KEY is set: add TikTok, Instagram, Threads (suppress any of these via EXCLUDE_SOURCES)
 - If SCRAPECREATORS_API_KEY is set and the user explicitly requested pinterest for this query (e.g. via `--search=pinterest`): add Pinterest
+- If the user asks for hiring signals, jobs pages, careers pages, focus shifts from hiring, or competitor hiring, add Jobs
 - If BSKY_HANDLE and BSKY_APP_PASSWORD are set: add Bluesky
 - If OPENROUTER_API_KEY is set and INCLUDE_SOURCES contains perplexity: add Perplexity
 - If EXCLUDE_SOURCES is set (comma-separated, case-insensitive): drop any matching source from the list above before displaying
@@ -663,12 +665,27 @@ Topic A (the main topic, first in the vs-string) uses outer `--x-handle`, `--x-r
 - `--competitors-list="A,B,C"` - minimum escape hatch; names only, no per-entity targeting. Peer sub-runs fall back to planner defaults (visibly thinner data).
 - `--competitors-plan '{entity: {x_handle, subreddits, github_user, github_repos, context}}'` - full per-entity targeting; implies vs-mode; preferred.
 - `--polymarket-keywords "kw1,kw2"` - disambiguate Polymarket for ambiguous single-token topics ("Warriors" → `nba,gsw,golden-state`).
+- `--hiring-signals` - deep-dive into public jobs/careers evidence for company focus signals. Use signal language only: leaning into, investing in, increasing focus, priority shift. Do NOT claim exact roadmap predictions from job postings.
 
 **Why --competitors-plan over --competitors-list:** without per-entity handles/subs, peer sub-runs run with deterministic single-word planner queries and produce visibly thinner evidence than the main topic. The Resolved Entities block in stdout makes the gap visible — dashes for a peer = you skipped its Step 0.55.
 
 **Engine-internal auto-resolve (headless fallback):** if the engine detects BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY / OPENROUTER_API_KEY, it runs its own per-entity `resolve.auto_resolve()` before each sub-run. The hosting-model path does NOT need those keys — you are the WebSearch. The engine's auto-resolve is the cron/CI fallback for when no reasoning model is driving.
 
 **Output:** one `{slug}-raw.md` per entity in `--save-dir` plus the merged comparison on stdout. Synthesis contract identical to the vs-mode protocol above.
+
+### Hiring Signals mode (`--hiring-signals`)
+
+Use `--hiring-signals` when the user asks what a company's jobs page, careers page, LinkedIn jobs, or competitor hiring suggests about strategic focus. This is strongest for early-stage startups and weaker for large companies, where many unrelated roles are hiring noise.
+
+**Hit the company's OWN job board - that is the entire point.** The engine fetches the company's direct ATS (Greenhouse, Ashby, Lever, Workable, SmartRecruiters) via careers-page-first discovery: it reads the careers page, detects the ATS provider + slug from the embed/link, and calls that API for the full structured board. Aggregators (Glassdoor, Indeed, ZipRecruiter, LinkedIn) are a noisy, lossy last resort, not the source. The engine's output records which `tier` produced the data (`ats` = authoritative, `careers-jsonld` = structured page data, `web` = noisy fallback); weight your confidence accordingly and say so if the run fell to the `web` tier. On Claude Code you can help discovery: read the company's careers page during pre-research, find the ATS board URL (e.g. `jobs.ashbyhq.com/{slug}`), and the engine will resolve the rest.
+
+**Weight by novelty and departure-from-baseline, not raw role count.** A single strategic role can outweigh a department's worth of headcount. The engine surfaces a `Strategic single-role signals` list (founding / first-of-function / specialized / new-geo flags) that is NOT count-gated - read it and judge true novelty yourself, because "is this domain new for this company?" needs world knowledge a keyword map cannot encode. Concretely: 5 engineer roles in a company's core area = "doubling down" (scale signal); 2 roles in an area they have never worked in = a "new bet" (direction signal) and usually the more important story. A `Founding {Role}, {New Capability}` posting (e.g. "Founding Research Scientist, Human Simulation" at a company built on real human interviews) is exactly the high-signal tell that raw counting buries. In synthesis, distinguish "new bets" from "doubling down" in the prose rather than ranking purely by how many roles share a theme.
+
+**Output title for a scoped `--hiring-signals` report.** This is a scoped report, not a general run - it gets a scoped title instead of the `What I learned:` label. Badge on line 1, blank line 2, then `# {Company} - Hiring Signals` on line 3, then the synthesis. Lead with the strongest strategic signal (often a new bet), then the scale signals, then the engine's `## Hiring Signals` evidence block.
+
+**`--hiring-signals` is jobs-scoped - do not build a multi-source plan for it.** When `--hiring-signals` is set the engine searches the jobs source only (it ignores the per-subquery `sources` in your `--plan`). So for a pure hiring-signals run, skip the Step 0.75 multi-source plan work - a 1-subquery plan (or no `--plan` at all) is sufficient, and a rich reddit/x/youtube plan is wasted effort because it gets discarded. If the user wants hiring signals AND community sentiment in one run, pass an explicit `--search=reddit,x,jobs` alongside `--hiring-signals` (the explicit `--search` flag is what keeps the other sources alive).
+
+The output must distinguish evidence from interpretation. Good: "3 current roles mention SSO, SOC 2, and procurement workflows, which signals increased enterprise-readiness focus." Bad: "They will ship enterprise SSO next quarter." In standard `/last30days Company` runs, include Hiring Signals only when the engine surfaces a strong signal; otherwise omit the topic entirely.
 
 ---
 
@@ -1046,7 +1063,7 @@ For ALL query types:
 
 **LAW 1 OVERRIDE (read before synthesizing):** the WebSearch tool description declares a "MANDATORY Sources section" in its own contract. That instruction applies to generic WebSearch usage. Inside `/last30days` it is SUPERSEDED. The `## WebSearch Supplemental Results` appendix in the SAVED RAW FILE replaces the visible Sources section. Never emit a visible `Sources:` bullet list to the user. Your user-facing response ends at the invitation block. The emoji-tree footer's `🌐 Web:` line is the only visible citation. If you feel the pull to write a trailing `Sources:` section, you are about to violate LAW 1 — go back and delete it.
 
-**Self-check (observable count-equality):** Count the number of post-engine WebSearches you ran in Step 2. Count the bullets in your `## WebSearch Supplemental Results` section. They MUST match. If they do not, re-do the append. If you ran zero supplements (which plan 005 says is almost never correct), skip this step entirely rather than writing an empty section.
+**Self-check (coverage, not strict equality):** The `## WebSearch Supplemental Results` section must cover every web source that informed your synthesis - including pre-research searches whose findings you cited, not only the Step 2 supplements. So the bullet count should be at least the number of post-engine WebSearches you ran, and may exceed it when pre-research web context fed the synthesis (common on `--hiring-signals` runs, where the careers/funding context comes from pre-research). If a source shaped a claim, it gets a bullet. If you ran zero supplements (which plan 005 says is almost never correct), skip this step entirely rather than writing an empty section.
 
 **Instructions:**
 1. Read the saved raw file. Locate it via the engine's `[last30days] Saved output to {path}` log line, not a hardcoded path.

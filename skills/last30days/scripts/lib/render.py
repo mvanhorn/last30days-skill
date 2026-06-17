@@ -70,6 +70,7 @@ SOURCE_LABELS = {
     "github": "GitHub",
     "digg": "Digg",
     "perplexity": "Perplexity",
+    "jobs": "Jobs",
 }
 
 
@@ -135,6 +136,10 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
     # block below) vs "synthesize from" (this block).
     lines.append("<!-- EVIDENCE FOR SYNTHESIS: read this, do not emit verbatim. Transform into `What I learned:` prose per LAW 2. -->")
     lines.append("")
+    hiring_block = _render_hiring_signals(report)
+    if hiring_block:
+        lines.extend(hiring_block)
+        lines.append("")
     lines.append("## Ranked Evidence Clusters")
     lines.append("")
     candidate_by_id = {candidate.candidate_id: candidate for candidate in report.ranked_candidates}
@@ -208,8 +213,13 @@ def render_for_html(
         *_render_badge(),
         *_render_html_metadata(report),
     ]
+    hiring_block = _render_hiring_signals(report)
     if synthesis_md:
         lines.extend(["", synthesis_md.strip()])
+        if hiring_block and "## Hiring Signals" not in synthesis_md:
+            lines.extend(["", *hiring_block])
+    elif hiring_block:
+        lines.extend(["", *hiring_block])
     # Data quality warnings are NOT rendered into the HTML artifact. The HTML
     # is meant to be shared (Slack, email, Notion); recipients haven't asked
     # for technical commentary about how the run was produced. Generators see
@@ -425,6 +435,8 @@ def _render_pre_research_warning(report: schema.Report) -> list[str]:
 
     Returns empty list when flags are present or topic is not eligible.
     """
+    if report.artifacts.get("hiring_signals_mode"):
+        return []
     flags_present = bool(report.artifacts.get("pre_research_flags_present", False))
     if flags_present:
         return []
@@ -469,6 +481,8 @@ def _render_degraded_run_warning(report: schema.Report) -> list[str]:
     user because Claude hid stderr. User-visible stdout block is the
     backstop that makes silent degradation impossible.
     """
+    if report.artifacts.get("hiring_signals_mode"):
+        return []
     plan_source = report.artifacts.get("plan_source", "unknown")
     flags_present = bool(report.artifacts.get("pre_research_flags_present", False))
     if plan_source != "deterministic":
@@ -851,7 +865,7 @@ def render_full(report: schema.Report) -> str:
     lines.append("## All Items by Source")
     lines.append("")
     source_order = ["reddit", "x", "youtube", "tiktok", "instagram", "threads", "pinterest",
-                    "hackernews", "bluesky", "truthsocial", "polymarket", "grounding", "xiaohongshu", "github", "digg", "perplexity"]
+                    "hackernews", "bluesky", "truthsocial", "polymarket", "grounding", "xiaohongshu", "github", "digg", "perplexity", "jobs"]
     for source in source_order:
         items = report.items_by_source.get(source, [])
         if not items:
@@ -948,6 +962,9 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
     freshness_warning = _assess_data_freshness(report)
     if freshness_warning:
         lines.append(f"Freshness warning: {freshness_warning}")
+    hiring_block = _render_hiring_signals(report)
+    if hiring_block:
+        lines.extend(["", *hiring_block, ""])
     lines.append("Top clusters:")
     for cluster in report.clusters[:cluster_limit]:
         lines.append(f"- {cluster.title} [{', '.join(_source_label(source) for source in cluster.sources)}]")
@@ -968,6 +985,71 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
         lines.append("Warnings:")
         lines.extend(f"- {warning}" for warning in report.warnings)
     return "\n".join(lines).strip() + "\n"
+
+
+def _render_hiring_signals(report: schema.Report) -> list[str]:
+    summary = report.artifacts.get("hiring_signals")
+    if not isinstance(summary, dict):
+        return []
+    signals = summary.get("signals") or []
+    include = bool(summary.get("include"))
+    mode = summary.get("mode") or "standard"
+    if not include and mode != "explicit":
+        return []
+
+    out = [
+        "## Hiring Signals",
+        "",
+        (
+            f"- Mode: {mode}; company-size tier: "
+            f"{summary.get('company_size_tier') or 'unknown'}"
+        ),
+    ]
+    if not signals:
+        reason = summary.get("omitted_reason") or "no reliable hiring signal found"
+        out.append(f"- No reliable hiring signal found: {reason}.")
+        return out
+
+    out.append(
+        "- Interpret these as focus or priority signals, not exact roadmap predictions."
+    )
+    for signal in signals[:4]:
+        evidence = signal.get("evidence") or []
+        out.append(
+            f"- {signal.get('theme', 'hiring theme')}: "
+            f"{signal.get('interpretation', 'possible hiring focus')} "
+            f"(confidence: {signal.get('confidence', 'low')}; "
+            f"evidence: {signal.get('evidence_count', len(evidence))} roles)"
+        )
+        for item in evidence[:3]:
+            title = item.get("title") or "Job posting"
+            url = item.get("url") or ""
+            dept = item.get("department") or ""
+            date = item.get("published_at") or "date unknown"
+            link = f"[{title}]({url})" if url else title
+            detail = " | ".join(part for part in [dept, date] if part)
+            out.append(f"  - {link}" + (f" ({detail})" if detail else ""))
+
+    strategic = summary.get("strategic_candidates") or []
+    if strategic:
+        out.append("")
+        out.append(
+            "- Strategic single-role signals (judge novelty yourself - a founding "
+            "or first-of-function role can outweigh a whole department; in synthesis, "
+            "distinguish \"new bets\" from \"doubling down\"):"
+        )
+        for cand in strategic[:8]:
+            title = cand.get("title") or "Job posting"
+            url = cand.get("url") or ""
+            flags = ", ".join(cand.get("flags") or [])
+            dept = cand.get("department") or ""
+            location = cand.get("location") or ""
+            date = cand.get("published_at") or "date unknown"
+            link = f"[{title}]({url})" if url else title
+            detail = " | ".join(part for part in [dept, location, date] if part)
+            tag = f" [{flags}]" if flags else ""
+            out.append(f"  - {link}{tag}" + (f" ({detail})" if detail else ""))
+    return out
 
 
 def _render_candidate(candidate: schema.Candidate, prefix: str) -> list[str]:
@@ -1254,6 +1336,9 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
     ("truthsocial", "🇺🇸", "Truth Social", "post",     [("likes", "likes"), ("reposts", "reposts")]),
     ("github",      "🐙", "GitHub",       "item",     [("reactions", "reactions"), ("comments", "comments")]),
     ("digg",        "⛏️", "Digg",         "cluster",  [("postCount", "posts"), ("uniqueAuthors", "authors")]),
+    # Jobs must appear so a scoped --hiring-signals run (jobs-only) still emits
+    # the LAW 5 footer; without it the footer was dropped entirely.
+    ("jobs",        "💼", "Jobs",         "role",     []),
 ]
 
 
