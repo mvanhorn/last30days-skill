@@ -20,7 +20,7 @@ ALLOWED_INTENTS = {
 ALLOWED_CLUSTER_MODES = {"none", "story", "workflow", "market", "debate"}
 QUICK_SOURCE_PRIORITY = {
     "factual": ["hackernews", "reddit", "x", "xquik", "youtube"],
-    "product": ["youtube", "reddit", "x", "xquik", "tiktok"],
+    "product": ["jobs", "youtube", "reddit", "x", "xquik", "tiktok"],
     "concept": ["hackernews", "reddit", "x", "xquik", "youtube"],
     "opinion": ["reddit", "x", "xquik", "youtube", "hackernews"],
     "how_to": ["youtube", "reddit", "x", "xquik", "hackernews"],
@@ -30,7 +30,7 @@ QUICK_SOURCE_PRIORITY = {
 }
 SOURCE_PRIORITY = {
     "factual": ["hackernews", "reddit", "x", "youtube"],
-    "product": ["youtube", "reddit", "x", "tiktok", "hackernews"],
+    "product": ["jobs", "youtube", "reddit", "x", "tiktok", "hackernews"],
     "concept": ["hackernews", "reddit", "x", "youtube"],
     "opinion": ["reddit", "x", "youtube", "hackernews"],
     "how_to": ["youtube", "reddit", "x", "hackernews"],
@@ -73,6 +73,7 @@ SOURCE_CAPABILITIES = {
     "github": {"discussion", "link"},
     "grounding": {"web", "reference", "link"},
     "perplexity": {"web", "reference", "analysis"},
+    "jobs": {"jobs", "company_signal", "link"},
 }
 DEFAULT_INTENT_CAPABILITIES = {
     "comparison": {"discussion", "video", "web", "reference", "social", "link", "market"},
@@ -530,6 +531,10 @@ def _default_source_weights(intent: str, sources: list[str]) -> dict[str, float]
                 base[source] += bonus
     elif intent == "factual":
         for source, bonus in {"reddit": 0.8, "x": 0.5}.items():
+            if source in base:
+                base[source] += bonus
+    elif intent == "product":
+        for source, bonus in {"jobs": 0.8, "youtube": 0.5}.items():
             if source in base:
                 base[source] += bonus
     return base

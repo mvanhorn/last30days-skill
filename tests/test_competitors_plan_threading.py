@@ -43,6 +43,22 @@ class ParseCompetitorsPlanTests(unittest.TestCase):
         finally:
             Path(path).unlink(missing_ok=True)
 
+    def test_file_with_non_ascii_content(self):
+        """Plan file with non-ASCII characters (e.g. accented names) reads without UnicodeDecodeError."""
+        with tempfile.NamedTemporaryFile(
+            mode="wb", suffix=".json", delete=False,
+        ) as f:
+            f.write(
+                b'{"Nestl\xc3\xa9": {"x_handle": "Nestle", "subreddits": ["nestle"]}}'
+            )
+            path = f.name
+        try:
+            out = cli.parse_competitors_plan(path)
+            self.assertIn("nestlé", out)
+            self.assertEqual(out["nestlé"]["x_handle"], "Nestle")
+        finally:
+            Path(path).unlink(missing_ok=True)
+
     def test_case_insensitive_key_normalization(self):
         raw = '{"DRAKE": {"x_handle": "Drake"}}'
         out = cli.parse_competitors_plan(raw)

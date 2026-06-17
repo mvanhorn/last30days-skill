@@ -29,6 +29,7 @@ Each run produces one file per topic, slug-named:
 
 **Per-run overrides:**
 - `--save-dir <path>` - one-off output location.
+- `--output <file>` - write the rendered output to an exact file path, using the format selected by `--emit`.
 - `--save-suffix <name>` - distinguish runs of the same topic (e.g. per client: `--save-suffix=acme`).
 
 The footer line `📎 Raw results saved to ${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}/<slug>-raw.md` is the canonical pointer; if it shows backslashes on Windows update past v3.1.1.
@@ -64,6 +65,7 @@ The project-scoped file is the cleanest pattern for **per-client setups**: drop 
 | TruthSocial | `TRUTHSOCIAL_TOKEN` | TruthSocial items | yes |
 | Web search | one of: `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY` | `--auto-resolve` and Step 2 supplements | Brave has a free tier; native WebSearch on Claude Code / Codex / Gemini works as a fallback |
 | Perplexity Deep Research | `OPENROUTER_API_KEY` | `--deep-research` flag (~$0.90/query) | no |
+| Jobs / careers pages | none for public ATS pages; web backend improves fallback discovery | `--hiring-signals` and strong Hiring Signals in standard company reports | yes |
 | Apify (alternate scraper) | `APIFY_API_TOKEN` | fallback for Reddit/TikTok/Instagram when ScrapeCreators is exhausted | yes (limited) |
 
 **Example `.env` skeleton** (placeholders only - replace with your own values):
@@ -80,8 +82,15 @@ SCRAPECREATORS_API_KEY=<your-scrapecreators-key>
 INCLUDE_SOURCES=tiktok,instagram
 
 # X authentication (one option only)
-XAI_API_KEY=<your-xai-key>
-# OR cookie-jar (no key needed; logs in via your browser session)
+AUTH_TOKEN=<your-auth-token>
+CT0=<your-ct0-token>
+# OR xAI API key (paid)
+# XAI_API_KEY=<your-xai-key>
+# OR cookie-jar (free; logs in via your browser session).
+# Unset = Firefox + Safari (silent). FROM_BROWSER=auto also tries the Chromium
+# family (Chrome, Brave, Edge, Vivaldi, Opera, Arc, Chromium); it only prompts
+# for macOS Keychain access on the browser that actually holds your X cookies.
+# Or name a single browser, e.g. brave/edge. On Windows only Firefox is supported.
 # FROM_BROWSER=firefox
 
 # Bluesky
@@ -92,6 +101,41 @@ BSKY_APP_PASSWORD=<your-app-password>
 After editing: `chmod 600 ~/.config/last30days/.env` (or `chmod 600 .claude/last30days.env` if using the project-scoped variant).
 
 **Troubleshooting:** if a source you expected to see isn't appearing in results, run `python3 scripts/last30days.py --diagnose`. It prints a per-source availability report (which keys were detected, which CLIs are installed, which backends are reachable) without running a full search.
+
+### Encrypted credential sources (Keychain / pass)
+
+If you'd rather not keep keys in a plaintext `.env`, the loader has two
+encrypted sources that decrypt secrets transiently at call time (never written
+to disk, never logged). Both are **lowest-priority and additive** — an explicit
+`.env` or process-env value always overrides them, so you can mix and match. The
+`pass` source is only consulted for keys still missing after the higher-priority
+sources, so a box that merely has `pass` installed pays no decrypt cost when
+everything is already in `.env`.
+
+| Platform | Source | Store keys with | Lookup convention |
+|---|---|---|---|
+| macOS | Keychain | `scripts/setup-keychain.sh` | service name `last30days-<KEY>` |
+| Linux / Unix (anywhere `pass` exists, incl. macOS) | [`pass`(1)](https://www.passwordstore.org/) | `scripts/setup-pass.sh` | pass path `last30days/<KEY>` |
+
+```bash
+# macOS Keychain
+./scripts/setup-keychain.sh                 # interactive; --list / --delete KEY
+
+# pass(1) — Linux/Unix analog
+./scripts/setup-pass.sh                      # interactive; --list / --delete KEY
+./scripts/setup-pass.sh SCRAPECREATORS_API_KEY   # just one key
+```
+
+The `pass` source honors `PASSWORD_STORE_DIR`. If your store organizes secrets
+under a different prefix, point the loader at it with `LAST30DAYS_PASS_PREFIX`
+(works from your `.env` too, and must match where `setup-pass.sh` wrote them).
+The prefix is used verbatim, so keep the trailing separator:
+
+```bash
+export LAST30DAYS_PASS_PREFIX="secrets/last30days/"   # default: last30days/
+```
+
+Both sources cover the same key set as the `.env` skeleton above.
 
 ### Bluesky app-password format and search host
 
@@ -130,6 +174,18 @@ Used by `--auto-resolve` (when WebSearch isn't available from the host) and Step
 5. **Host's native WebSearch** - Claude Code, Codex, Gemini all have one built in
 
 Visible quality difference between hosts with vs without a configured backend. If your client setup produces thinner results than yours, this is usually why.
+
+---
+
+### `--hiring-signals` flag
+
+Use `--hiring-signals` for a focused company hiring-signal report:
+
+```bash
+python3 skills/last30days/scripts/last30days.py "Listen Labs" --hiring-signals
+```
+
+The engine treats public jobs/careers postings as evidence of focus or priority shifts, not exact roadmap predictions. Standard company runs may include Hiring Signals automatically when multiple current roles support the same interpretation; weak or unavailable hiring evidence is omitted.
 
 ---
 
@@ -264,5 +320,5 @@ This is the right home for client-specific changes you don't intend to upstream 
 
 - The CLI flag surface: `python3 scripts/last30days.py --help`
 - The skill contract (voice, LAWs, pre-flight protocol): [`skills/last30days/SKILL.md`](skills/last30days/SKILL.md)
-- Engine spec (some sections stale; SKILL.md wins on conflicts): [`SPEC.md`](SPEC.md)
+- Shared package vocabulary and engine/harness terminology: [`CONCEPTS.md`](CONCEPTS.md)
 - Contributor guidance: [`CONTRIBUTORS.md`](CONTRIBUTORS.md)

@@ -38,6 +38,7 @@ Python 3.12+ required. Use `uv` for the env; the venv lives at `.venv/`.
 - `lib/__init__.py` must be bare package marker (comment only, NO eager imports)
 - One-time setup: `npx skills add . -g -y` copies the skill into `~/.agents/skills/<name>/` (real directory) and, for harnesses that support symlinked skill dirs, drops a per-host symlink pointing at that copy. **Working-tree edits do NOT propagate automatically** — the `~/.agents/skills/<name>/` copy is frozen at install time. To sync after edits, re-run `npx skills add . -g -y`. For live-edit on a dev machine, replace the install copy with a symlink to the working tree: `ln -sfn "$PWD/skills/last30days" ~/.agents/skills/last30days` (run from the repo root).
 - Git remote: origin = public (`mvanhorn/last30days-skill`)
+- Every `lib/*.py` call to `log.source_log(...)` must pass `tty_only=False`. The default is `True`, which silently drops every line when stderr isn't a TTY (Claude Code, Codex, CI, captured output) — turning source observability into invisible failure. Enforced by `tests/test_source_log_visibility.py`.
 
 ## Security hygiene
 - Never commit real API keys, browser cookies, auth tokens, app passwords, access tokens, or `.env` contents.
