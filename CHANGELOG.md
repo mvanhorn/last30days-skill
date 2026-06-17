@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+### Added
+
+- Browser-cookie auth for X/Twitter now covers the full Chromium family on macOS - Brave, Microsoft Edge, Vivaldi, Opera, Arc, and Chromium - alongside the existing Chrome, Firefox, and Safari. They all share Chrome's v10 AES-128-CBC decryption, differing only in profile path and Keychain service name, so they run through one shared decryption core. The profile finder probes both the modern `Default/Network/Cookies` layout (Chromium >= 96) and the legacy flat `Default/Cookies`, and Chrome now resolves through that same finder so it picks up the modern layout too. Set `FROM_BROWSER=auto` to try every browser, or `FROM_BROWSER=<name>` (e.g. `brave`, `edge`, `arc`) to target one. Verified end-to-end on real Brave and Edge installs ([#572](https://github.com/mvanhorn/last30days-skill/pull/572)).
+- **First-party positioning research + pitch-vs-pulse synthesis (company / product / service topics).** A new mandatory research step captures each entity's current stated positioning from first-party sources (homepage, docs, pricing) rather than from memory. The fetched pitch grounds `What it is` descriptions (entities described as they pitch themselves today), helps reject unrelated brand-name noise, and feeds an evidence-triggered prose beat: when the month's conversation directly supports a specific claim, cuts against one, or is squarely about the pitched ground, the synthesis says so anchored to the top thread — and stays silent when the pulse is orthogonal to the pitch, because a manufactured connection is worse than omission. Claims are tested at matched altitude (specific claims against specific threads; broad taglines are never graded against individual items), and statements stay windowed to the 30 days — no trend verdicts. Scoped to entities with an identifiable first party: people are always excluded (even founders whose companies qualify), as are events, abstract concepts, and ownerless topics like Bitcoin; the beat requires positioning fetched during the run, never from memory.
+
+### Changed
+
+- Updated "Unlock X" promo message to mention Chrome/macOS support and Windows Firefox-only limitation instead of generic "Firefox or Safari" ([#387](https://github.com/mvanhorn/last30days-skill/issues/387))
+
+### Fixed
+
+- `extract_browser_credentials()` silently ignored Brave even though the lower-level `cookie_extract` layer already supported it: `FROM_BROWSER=brave` fell back to Firefox/Safari and `FROM_BROWSER=auto` never tried Brave. The env wiring now passes Brave - and the rest of the Chromium family - through to the extractor ([#572](https://github.com/mvanhorn/last30days-skill/pull/572)).
+- Chromium cookie extraction now fetches the macOS Keychain key lazily - only when an encrypted cookie actually needs decrypting. Previously the key was fetched as soon as the cookie DB existed, so `FROM_BROWSER=auto` could trigger a Keychain prompt for every installed Chromium browser. Now only the browser that actually holds the requested cookie prompts ([#572](https://github.com/mvanhorn/last30days-skill/pull/572)).
+- YouTube transcript budget prioritises recent videos (by a combination of views and recency) instead of views alone, preventing transcript slots from being consumed by old high-view-count videos that would be discarded by strict_recent freshness pruning ([#531](https://github.com/mvanhorn/last30days-skill/issues/531))
+- YouTube items with successfully extracted transcripts are no longer pruned by title-only relevance scoring; the transcript content proves substantive topical coverage even when the video title has low lexical overlap with the query ([#468](https://github.com/mvanhorn/last30days-skill/issues/468))
+- First-run setup wizard in SKILL.md now references the existing Python setup wizard (`last30days.py setup`) instead of the missing `nux-wizard.md` file, so first-run setup actually runs on new installs. ([#574](https://github.com/mvanhorn/last30days-skill/issues/574))
+- `check-config.sh` no longer exits 1 on the ScrapeCreators-configured path when no prior run exists (empty `LAST_RUN_LINE`) — swapped `&&` guard for an `if` block that always exits cleanly ([#463](https://github.com/mvanhorn/last30days-skill/issues/463))
+- `check-config.sh` no longer exits 1 when a `.env` value contains an unbalanced quote — replaced `xargs` (which interprets quotes) with `sed` for whitespace trimming in `load_env_vars` ([#506](https://github.com/mvanhorn/last30days-skill/issues/506))
+- X/Twitter `.env` template now includes `CT0` alongside `AUTH_TOKEN` in the example skeleton ([CONFIGURATION.md](CONFIGURATION.md)), and the just-in-time unlock wizard offers AUTH_TOKEN/CT0 cookie entry ([#396](https://github.com/mvanhorn/last30days-skill/issues/396))
+- `check-config.sh` no longer counts X as an active source when only `AUTH_TOKEN` is set without `CT0` — both cookies are now required to credit X in the source count ([#396](https://github.com/mvanhorn/last30days-skill/issues/396))
+- Firefox cookie extraction now falls back to scanning non-default profiles when the default profile has no matching X cookies, fixing multi-profile setups where login lives on a non-default profile ([#498](https://github.com/mvanhorn/last30days-skill/issues/498))
+- `subproc.py` `run_with_timeout()` now guards `os.killpg` / `os.getpgid` with `hasattr`, preventing an uncaught `AttributeError` crash when a subprocess times out on Windows where these functions don't exist ([#527](https://github.com/mvanhorn/last30days-skill/issues/527))
+- Entity-grounding rerank demotion now keys on the head token of the primary entity instead of requiring the full multi-word phrase as a contiguous substring. A high-engagement on-entity item (e.g. a 323-pt HN thread titled "Stripe is friendly to 'friendly fraud'") is no longer demoted to score 0 on a `Stripe payments` query just because it lacks the trailing search-hint word. The intended demotion still fires for items that never name the brand at all. The keyless Reddit comment-enrichment slot selection (`_slot_priority`), which mirrors this signal, was updated to the same head-token grounding so the two paths stay consistent.
+- `--plan` / `--competitors-plan` file reads now specify `encoding="utf-8"` and catch `UnicodeDecodeError`, preventing crashes on non-ASCII content like accented entity names on Windows (cp1252). `check_perms()` in `check-config.sh` now skips the POSIX 600-permission check on MSYS/MinGW/Cygwin where `stat` runs in noacl mode. `skill_meta.py` `read_skill_version()` now passes `encoding="utf-8"` so SKILL.md emoji doesn't break version detection on Windows. ([#549](https://github.com/mvanhorn/last30days-skill/issues/549))
+
+
+## [3.3.2] - 2026-06-06
+
+### Fixed
+
+- Keyless Reddit comment enrichment now spends its limited slots on entity-matching posts first (mirroring rerank's entity-miss demotion signal) instead of raw upvote order, so off-topic high-upvote threads from broad subreddits no longer consume the comment budget only to be demoted afterward ([#484](https://github.com/mvanhorn/last30days-skill/pull/484))
+
 ## [3.3.1] - 2026-05-30
 
 ### Fixed

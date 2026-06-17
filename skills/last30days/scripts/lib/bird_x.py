@@ -252,10 +252,11 @@ def _run_bird_search(query: str, count: int, timeout: int) -> Dict[str, Any]:
                 log.source_log(
                     "X/bird",
                     f"{log_msg}; retrying in {JSON_DECODE_RETRY_DELAY:.0f}s",
+                    tty_only=False,
                 )
                 time.sleep(JSON_DECODE_RETRY_DELAY)
                 continue
-            log.source_log("X/bird", log_msg)
+            log.source_log("X/bird", log_msg, tty_only=False)
             return {
                 "error": (
                     f"Invalid JSON response after {MAX_JSON_DECODE_RETRIES} attempts "

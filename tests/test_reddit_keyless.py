@@ -166,3 +166,105 @@ class TestSearchAndEnrich:
             reddit_keyless.search_and_enrich("t", "2026-05-01", "2026-05-31", depth="quick")
         # quick depth enriches only top 3 posts
         assert fc.call_count == reddit_keyless.ENRICH_LIMITS["quick"]
+
+
+class TestSlotPriority:
+    """Enrichment slot selection prefers entity-matching posts (R1-R3)."""
+
+    @staticmethod
+    def _titled(i, title, score=0, selftext=""):
+        p = _post(i)
+        p["title"] = title
+        p["selftext"] = selftext
+        p["score"] = score
+        p["engagement"]["score"] = score
+        return p
+
+    def test_on_topic_low_score_beats_off_topic_high_score(self):
+        # 3 off-topic monsters + 2 on-topic small threads; quick depth = 3 slots.
+        posts = [
+            self._titled(1, "Stop asking what model to run", score=2662),
+            self._titled(2, "RTX 4090 PSA", score=2068),
+            self._titled(3, "Gemma 4 release", score=997),
+            self._titled(4, "My OpenClaw self-migrated", score=73),
+            self._titled(5, "Using openclaw with Claude API key is so expensive", score=47),
+        ]
+        enriched_urls = []
+
+        def _capture(url):
+            enriched_urls.append(url)
+            return {"top_comments": [], "comment_insights": [], "num_comments": None}
+
+        with mock.patch.object(reddit_keyless, "_discover", return_value=posts), \
+             mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments",
+                               side_effect=_capture):
+            reddit_keyless.search_and_enrich(
+                "openclaw", "2026-05-01", "2026-05-31", depth="quick")
+        assert posts[3]["url"] in enriched_urls
+        assert posts[4]["url"] in enriched_urls
+        assert len(enriched_urls) == reddit_keyless.ENRICH_LIMITS["quick"]
+
+    def test_slot_priority_grounds_on_head_token_not_full_phrase(self):
+        # Mirrors rerank's head-token grounding: a post naming the brand head
+        # ("Stripe") lands in the match tier even without the trailing search
+        # descriptor ("payments"), so it is not buried under an unrelated
+        # high-upvote post that never names the brand.
+        head_only = self._titled(1, "Stripe is friendly to 'friendly fraud'", score=5)
+        off_topic = self._titled(2, "PayPal raises dispute fees again", score=900)
+        out = reddit_keyless._slot_priority("Stripe payments", [off_topic, head_only])
+        assert out[0] is head_only
+        assert out[1] is off_topic
+
+    def test_intent_modifier_topic_prioritizes_head_token_match(self):
+        # Intent-modifier topics still partition by the brand head token: the
+        # on-entity post wins over a high-upvote post that never names the brand.
+        on_topic = self._titled(1, "Hermes Agent v0.13 is great", score=1)
+        off_topic = self._titled(2, "LangGraph tutorial walkthrough", score=900)
+        out = reddit_keyless._slot_priority("Hermes Agent review", [off_topic, on_topic])
+        assert out[0] is on_topic
+
+    def test_all_miss_keeps_score_order_and_full_slots(self):
+        posts = [self._titled(i, f"Gemma thread {i}", score=1000 - i) for i in range(5)]
+        out = reddit_keyless._slot_priority("openclaw", posts)
+        assert out == posts  # order unchanged
+        with mock.patch.object(reddit_keyless, "_discover", return_value=posts), \
+             mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments",
+                               return_value={"top_comments": [], "comment_insights": [],
+                                             "num_comments": None}) as fc:
+            reddit_keyless.search_and_enrich(
+                "openclaw", "2026-05-01", "2026-05-31", depth="quick")
+        assert fc.call_count == reddit_keyless.ENRICH_LIMITS["quick"]
+
+    def test_same_tier_order_preserved(self):
+        posts = [self._titled(i, f"openclaw thread {i}", score=100 - i) for i in range(4)]
+        out = reddit_keyless._slot_priority("openclaw", posts)
+        assert out == posts
+
+    def test_empty_entity_falls_back_to_token_overlap(self):
+        # Pure intent-modifier topic yields no primary entity; fallback path
+        # must not raise and must keep every post.
+        posts = [self._titled(1, "Post one"), self._titled(2, "review of things")]
+        out = reddit_keyless._slot_priority("review", posts)
+        assert len(out) == 2
+        assert {p["url"] for p in out} == {p["url"] for p in posts}
+
+    def test_selftext_match_lands_in_match_tier(self):
+        body_match = self._titled(1, "Need help with my setup", score=2,
+                                  selftext="my openclaw agent keeps asking for ssh keys")
+        off_topic = self._titled(2, "Gemma 4 with QAT", score=700)
+        out = reddit_keyless._slot_priority("openclaw", [off_topic, body_match])
+        assert out[0] is body_match
+
+    def test_none_score_posts_do_not_break_partition(self):
+        p1 = self._titled(1, "openclaw tips")
+        p1["engagement"]["score"] = None
+        p2 = self._titled(2, "Gemma news")
+        p2["engagement"]["score"] = None
+        out = reddit_keyless._slot_priority("openclaw", [p2, p1])
+        assert out[0] is p1
+
+    def test_partition_never_raises(self):
+        posts = [self._titled(1, "openclaw tips", score=1)]
+        with mock.patch("lib.rerank._primary_entity", side_effect=Exception("boom")):
+            out = reddit_keyless._slot_priority("openclaw", posts)
+        assert out == posts

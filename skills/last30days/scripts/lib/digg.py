@@ -53,7 +53,7 @@ POSTS_TIMEOUT = 15
 
 
 def _log(msg: str) -> None:
-    log.source_log("Digg", msg)
+    log.source_log("Digg", msg, tty_only=False)
 
 
 def _is_available() -> bool:

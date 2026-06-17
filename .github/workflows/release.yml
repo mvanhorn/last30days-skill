@@ -5,7 +5,11 @@ on:
     tags:
       - "v*"
 
-permissions: {}
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
 
 jobs:
   build-and-release:
@@ -23,6 +27,11 @@ jobs:
         run: |
           bash skills/last30days/scripts/build-skill.sh
           test -f dist/last30days.skill
+
+      - name: Attest .skill artifact provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: dist/last30days.skill
 
       - name: Create GitHub release
         env:

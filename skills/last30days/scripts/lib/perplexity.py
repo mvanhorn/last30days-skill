@@ -20,7 +20,7 @@ MODEL_DEEP_RESEARCH = "perplexity/sonar-deep-research"
 
 
 def _log(msg: str):
-    log.source_log("Perplexity", msg)
+    log.source_log("Perplexity", msg, tty_only=False)
 
 
 def _domain(url: str) -> str:
