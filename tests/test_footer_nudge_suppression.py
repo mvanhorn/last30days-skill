@@ -49,7 +49,7 @@ class FooterNudgeSuppressionTests(unittest.TestCase):
         # .claude/last30days.env above the repo on the contributor's machine.
         with tempfile.TemporaryDirectory() as tmp:
             return subprocess.run(
-                cmd, capture_output=True, text=True, env=env, cwd=tmp,
+                cmd, capture_output=True, text=True, encoding="utf-8", env=env, cwd=tmp,
             )
 
     def test_bare_run_emits_web_promo(self):

@@ -33,10 +33,29 @@ TRANSCRIPT_LIMITS = {
     "deep": 8,
 }
 
+# Cumulative yt-dlp transcript-fetch stats for the current process. The final
+# report only sees post-pruning items, so it can't distinguish "fetches failed
+# (stale binary)" from "fetches succeeded but the videos were pruned later".
+# quality_nudge reads these via last30days.py to suppress the stale-yt-dlp
+# nudge when every attempted fetch actually succeeded. yt-dlp path only: the
+# nudge diagnoses the local binary, not the ScrapeCreators API.
+_TRANSCRIPT_FETCH_STATS = {"attempts": 0, "failures": 0}
+
+
+def get_transcript_fetch_stats() -> Dict[str, int]:
+    """Return cumulative transcript-fetch stats for this process."""
+    return dict(_TRANSCRIPT_FETCH_STATS)
+
+
+def reset_transcript_fetch_stats() -> None:
+    """Reset cumulative transcript-fetch stats (used by tests)."""
+    _TRANSCRIPT_FETCH_STATS["attempts"] = 0
+    _TRANSCRIPT_FETCH_STATS["failures"] = 0
+
 # Max words to keep from each transcript
 TRANSCRIPT_MAX_WORDS = 5000
 
-from . import http, log, subproc
+from . import dates, http, log, subproc
 from .relevance import token_overlap_relevance as _compute_relevance
 
 
@@ -643,19 +662,7 @@ def fetch_transcripts_parallel(
 
 
 def backfill_transcripts(items: List[Any], topic: str = "", depth: str = "default") -> None:
-    """Second-pass transcript fetch for finalized items that lack one.
-
-    search_and_transcribe() spends its transcript budget on each search's
-    top-by-views candidates, but the pipeline's final selection ranks by
-    relevance - the two orderings can be fully disjoint, shipping a brief
-    where every surviving video is transcript-less while the fetched
-    transcripts ride videos that never appear (#542). Designed to run from
-    _finalize_items_by_source() so the per-depth budget is spent on the
-    survivors, mirroring the digg post-selection enrichment.
-
-    Mutates SourceItem.metadata in place; safe no-op when the budget is
-    already met, yt-dlp is missing, or every survivor has a transcript.
-    """
+    """Second-pass transcript fetch for finalized items that lack one (#542)."""
     limit = TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"])
     if limit <= 0 or not items or not is_ytdlp_installed():
         return
@@ -673,8 +680,6 @@ def backfill_transcripts(items: List[Any], topic: str = "", depth: str = "defaul
         and not it.metadata.get("transcript_snippet")
         and not it.metadata.get("captions_disabled")
     ]
-    # Attempt extra candidates because some videos lack captions - the same
-    # 3x heuristic the retrieval-time pass uses.
     attempts = missing[: need * 3]
     if not attempts:
         return
@@ -686,8 +691,6 @@ def backfill_transcripts(items: List[Any], topic: str = "", depth: str = "defaul
     )
     for it in attempts:
         if it.item_id in captions_disabled:
-            # Feeds quality_nudge's degraded-ratio denominator, same as the
-            # retrieval-time pass.
             it.metadata["captions_disabled"] = True
             continue
         transcript = transcripts.get(it.item_id)
@@ -699,6 +702,18 @@ def backfill_transcripts(items: List[Any], topic: str = "", depth: str = "defaul
             it.metadata["transcript_highlights"] = highlights
         if not it.snippet:
             it.snippet = " ".join(transcript.split()[:80])
+
+
+def _transcript_candidate_sort_key(item: dict) -> tuple:
+    """Sort key for transcript candidate selection.
+
+    Combines views with recency so that recent videos (which survive
+    strict_recent freshness pruning) are prioritised over old high-view
+    videos whose transcripts would be discarded downstream.
+    """
+    views = item.get("engagement", {}).get("views", 0) or 0
+    recency = dates.recency_score(item.get("date", ""))
+    return (views, recency)
 
 
 def search_and_transcribe(
@@ -739,7 +754,10 @@ def search_and_transcribe(
     if not items:
         return search_result
 
-    # Step 2: Fetch transcripts for top videos by views.
+    # Step 2: Fetch transcripts for top videos.
+    # Sort candidates by a combination of views and recency so that recent
+    # videos (which survive strict_recent pruning) are not starved of
+    # transcript budget by older high-view-count outliers.
     # Try more candidates than the limit because some videos (music videos,
     # short clips) lack captions. Attempt up to 3x the limit so we have a
     # good chance of reaching the target number of successful transcripts.
@@ -748,10 +766,20 @@ def search_and_transcribe(
     captions_disabled_ids: Set[str] = set()
     if transcript_limit > 0:
         attempt_count = min(len(items), transcript_limit * 3)
-        candidate_ids = [item["video_id"] for item in items[:attempt_count]]
+        transcript_candidates = sorted(
+            items, key=_transcript_candidate_sort_key, reverse=True,
+        )
+        candidate_ids = [item["video_id"] for item in transcript_candidates[:attempt_count]]
         _log(f"Fetching transcripts for up to {attempt_count} videos (target: {transcript_limit}): {candidate_ids}")
         transcripts = fetch_transcripts_parallel(
             candidate_ids, out_captions_disabled=captions_disabled_ids,
+        )
+        # Record fetch outcomes (captions-disabled videos can never succeed,
+        # so they don't count as failures) for the stale-yt-dlp nudge.
+        _TRANSCRIPT_FETCH_STATS["attempts"] += len(candidate_ids)
+        _TRANSCRIPT_FETCH_STATS["failures"] += sum(
+            1 for vid in candidate_ids
+            if not transcripts.get(vid) and vid not in captions_disabled_ids
         )
     else:
         _log(f"Transcript limit is 0 for depth={depth}, skipping transcript fetch")
@@ -1007,8 +1035,13 @@ def search_youtube_sc(
     transcript_limit = TRANSCRIPT_LIMITS.get(depth, TRANSCRIPT_LIMITS["default"])
     if transcript_limit > 0 and items:
         attempt_count = min(len(items), transcript_limit * 3)
+        # Same in-window-first ordering as search_and_transcribe(): don't let
+        # an out-of-window back-catalog (kept by the soft date filter above)
+        # consume the transcript budget of videos the freshness scorer keeps.
+        in_window = [i for i in items if i.get("date") and i["date"] >= from_date]
+        out_of_window = [i for i in items if not (i.get("date") and i["date"] >= from_date)]
         _log(f"Fetching SC transcripts for up to {attempt_count} videos (target: {transcript_limit})")
-        for item in items[:attempt_count]:
+        for item in (in_window + out_of_window)[:attempt_count]:
             vid = item["video_id"]
             if not vid:
                 continue

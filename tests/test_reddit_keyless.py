@@ -204,18 +204,22 @@ class TestSlotPriority:
         assert posts[4]["url"] in enriched_urls
         assert len(enriched_urls) == reddit_keyless.ENRICH_LIMITS["quick"]
 
-    def test_multiword_topic_uses_substring_not_token_overlap(self):
-        # "claude tips" clears token overlap for "Claude Code" but rerank
-        # demotes it; the partition must mirror rerank's substring test.
-        token_only = self._titled(1, "claude tips", score=500)
-        full_entity = self._titled(2, "Claude Code best setup", score=5)
-        out = reddit_keyless._slot_priority("Claude Code", [token_only, full_entity])
-        assert out[0] is full_entity
-        assert out[1] is token_only
+    def test_slot_priority_grounds_on_head_token_not_full_phrase(self):
+        # Mirrors rerank's head-token grounding: a post naming the brand head
+        # ("Stripe") lands in the match tier even without the trailing search
+        # descriptor ("payments"), so it is not buried under an unrelated
+        # high-upvote post that never names the brand.
+        head_only = self._titled(1, "Stripe is friendly to 'friendly fraud'", score=5)
+        off_topic = self._titled(2, "PayPal raises dispute fees again", score=900)
+        out = reddit_keyless._slot_priority("Stripe payments", [off_topic, head_only])
+        assert out[0] is head_only
+        assert out[1] is off_topic
 
-    def test_intent_modifier_stripped_from_topic(self):
+    def test_intent_modifier_topic_prioritizes_head_token_match(self):
+        # Intent-modifier topics still partition by the brand head token: the
+        # on-entity post wins over a high-upvote post that never names the brand.
         on_topic = self._titled(1, "Hermes Agent v0.13 is great", score=1)
-        off_topic = self._titled(2, "Hermes Birkin unboxing", score=900)
+        off_topic = self._titled(2, "LangGraph tutorial walkthrough", score=900)
         out = reddit_keyless._slot_priority("Hermes Agent review", [off_topic, on_topic])
         assert out[0] is on_topic
 

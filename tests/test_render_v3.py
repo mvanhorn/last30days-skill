@@ -632,5 +632,93 @@ class YoutubeFooterTranscriptRatioTests(unittest.TestCase):
         # No YouTube footer line at all - so no transcript segment either
         self.assertNotIn("with transcripts", text)
 
+
+class TranscriptCaveatTests(unittest.TestCase):
+    """Transcript-derived text must be labelled as auto-generated wherever it
+    is emitted, so the synthesizing model does not treat caption homophone
+    errors (e.g. "basil fears" for "basal fears") as verbatim quotes (#82).
+    """
+
+    def _youtube_item(self) -> schema.SourceItem:
+        return schema.SourceItem(
+            item_id="yt1",
+            source="youtube",
+            title="Interview video",
+            body="Description.",
+            url="https://youtube.com/watch?v=v1",
+            container="some-channel",
+            published_at="2026-04-15",
+            date_confidence="high",
+            engagement={"views": 1000, "likes": 100},
+            metadata={
+                "transcript_highlights": ["She identifies eight basil fears."],
+                "transcript_snippet": "And basil you mean like of the body? " * 5,
+            },
+        )
+
+    def _report(self) -> schema.Report:
+        return schema.Report(
+            topic="test topic",
+            range_from="2026-04-01",
+            range_to="2026-05-01",
+            generated_at="2026-05-01T00:00:00+00:00",
+            provider_runtime=schema.ProviderRuntime(
+                reasoning_provider="gemini",
+                planner_model="gemini",
+                rerank_model="gemini",
+            ),
+            query_plan=schema.QueryPlan(
+                intent="general",
+                freshness_mode="balanced_recent",
+                cluster_mode="none",
+                raw_topic="test topic",
+                subqueries=[schema.SubQuery(
+                    label="primary", search_query="test topic",
+                    ranking_query="What about test topic?", sources=["youtube"],
+                )],
+                source_weights={"youtube": 1.0},
+            ),
+            clusters=[],
+            ranked_candidates=[],
+            items_by_source={"youtube": [self._youtube_item()]},
+            errors_by_source={},
+        )
+
+    def test_render_full_labels_highlights_and_transcript_as_auto_generated(self):
+        text = render.render_full(self._report())
+        self.assertIn(
+            "Highlights (auto-generated transcript; may contain transcription errors):",
+            text,
+        )
+        self.assertIn("auto-generated — may contain transcription errors)</summary>", text)
+        self.assertNotIn("\n  Highlights:\n", text)
+
+    def test_render_candidate_labels_highlights_as_auto_generated(self):
+        item = self._youtube_item()
+        candidate = schema.Candidate(
+            candidate_id="c1",
+            item_id=item.item_id,
+            source="youtube",
+            title=item.title,
+            url=item.url,
+            snippet="A snippet.",
+            subquery_labels=["primary"],
+            native_ranks={"youtube": 1},
+            local_relevance=1.0,
+            freshness=1,
+            engagement=1000,
+            source_quality=1.0,
+            rrf_score=1.0,
+            sources=["youtube"],
+            source_items=[item],
+        )
+        lines = render._render_candidate(candidate, "1.")
+        text = "\n".join(lines)
+        self.assertIn(
+            "Highlights (auto-generated transcript; may contain transcription errors):",
+            text,
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
