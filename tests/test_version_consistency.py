@@ -63,7 +63,11 @@ class TestVersionConsistency(unittest.TestCase):
                 continue
 
             for line_number, line in enumerate(lines, start=1):
-                if "~/Documents/Last30Days" not in line and "$HOME/Documents/Last30Days" not in line:
+                has_memory_path = (
+                    ("~/Documents/Last30Days" in line and "~/Documents/Last30DaysWeb" not in line)
+                    or ("$HOME/Documents/Last30Days" in line and "$HOME/Documents/Last30DaysWeb" not in line)
+                )
+                if not has_memory_path:
                     continue
                 allowed_default = (
                     "LAST30DAYS_MEMORY_DIR" in line

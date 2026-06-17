@@ -124,7 +124,7 @@ For direct CLI use without the model in the loop, the engine also accepts `--syn
 You can opt-in to redirecting your outcomes to an optional local Node/Express web dashboard for a visual reading experience by passing the `--dashboard` CLI flag or setting the `LAST30DAYS_DASHBOARD=1` environment variable:
 *   **Opt-in Trigger:** `--dashboard` flag or `LAST30DAYS_DASHBOARD=1` environment variable.
 *   **Auto-Save:** Saves the report to your `LAST30DAYS_MEMORY_DIR` directory (defaults to `~/Documents/Last30Days`).
-*   **Auto-Start Server:** Verifies if the local Node/Express server is running on port 3000. If offline, it dynamically spawns it in the background using the script at `LAST30DAYS_DASHBOARD_DIR` (defaults to `/home/lazorr/Documents/Last30DaysWeb`).
+*   **Auto-Start Server:** Verifies if the local Node/Express server is running on port 3000. If offline, it dynamically spawns it in the background using the script at `LAST30DAYS_DASHBOARD_DIR` (defaults to `~/Documents/Last30DaysWeb`).
 *   **Browser Redirection:** Launches your default web browser directly to the dashboard, loading and highlighting the specific report: `http://localhost:3000/?report=<report-id>`.
 *   **Clean Terminal:** Suppresses the raw markdown output in the terminal, showing a brief success indicator instead.
 

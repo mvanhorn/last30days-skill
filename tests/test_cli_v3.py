@@ -1,6 +1,7 @@
 import json
 import io
 import os
+os.environ["LAST30DAYS_TESTING"] = "1"
 import shutil
 import tempfile
 import subprocess
@@ -436,6 +437,7 @@ class CliV3Tests(unittest.TestCase):
              mock.patch.object(cli.pipeline, "run", return_value=report), \
              mock.patch.object(cli, "emit_output", return_value="# rendered"), \
              mock.patch.object(cli, "save_output", return_value=Path("/tmp/fake_report.md")), \
+             mock.patch("lib.github.resolve_token", return_value=None), \
              mock.patch.object(sys, "argv", ["last30days.py", "test topic"]):
             stdout = io.StringIO()
             stderr = io.StringIO()
@@ -473,6 +475,7 @@ class CliV3Tests(unittest.TestCase):
              mock.patch.object(cli, "emit_output", return_value="# rendered"), \
              mock.patch.object(cli, "save_output", return_value=Path("/tmp/fake_report.md")), \
              mock.patch.dict(os.environ, {"LAST30DAYS_TEST_DASHBOARD": "1"}), \
+             mock.patch("lib.github.resolve_token", return_value=None), \
              mock.patch("socket.socket") as mock_socket_cls, \
              mock.patch("webbrowser.open") as mock_webbrowser_open, \
              mock.patch("subprocess.Popen", side_effect=popen_side_effect) as mock_popen, \

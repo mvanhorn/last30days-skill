@@ -1109,9 +1109,7 @@ def main() -> int:
                         synthesis_md=synthesis_md,
                     )
     is_testing = (
-        "pytest" in sys.modules 
-        or "unittest" in sys.modules 
-        or os.environ.get("PYTEST_CURRENT_TEST") 
+        os.environ.get("PYTEST_CURRENT_TEST") 
         or os.environ.get("LAST30DAYS_TESTING")
     ) and not os.environ.get("LAST30DAYS_TEST_DASHBOARD")
     is_json = args.emit == "json"
@@ -1206,7 +1204,7 @@ def main() -> int:
                     sys.stderr.flush()
 
         if server_ready:
-            report_id = dashboard_md_path.name.replace(".md", "")
+            report_id = dashboard_md_path.name.removesuffix(".md")
             encoded_report_id = urllib.parse.quote(report_id)
             dashboard_url = f"http://localhost:3000/?report={encoded_report_id}"
             sys.stderr.write(f"\n[last30days] Opening outcomes in dashboard at: {dashboard_url}\n\n")
