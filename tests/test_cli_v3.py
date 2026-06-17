@@ -459,6 +459,12 @@ class CliV3Tests(unittest.TestCase):
             "native_web_backend": "brave",
         }
         
+        original_exists = Path.exists
+        def exists_side_effect(self, *args, **kwargs):
+            if self.name == "server.js":
+                return True
+            return original_exists(self, *args, **kwargs)
+
         original_popen = subprocess.Popen
         def popen_side_effect(*args, **kwargs):
             cmd = args[0] if args else kwargs.get("args")
@@ -480,7 +486,7 @@ class CliV3Tests(unittest.TestCase):
              mock.patch("webbrowser.open") as mock_webbrowser_open, \
              mock.patch("subprocess.Popen", side_effect=popen_side_effect) as mock_popen, \
              mock.patch("shutil.which", return_value="/usr/bin/node"), \
-             mock.patch.object(cli.Path, "exists", return_value=True), \
+             mock.patch.object(cli.Path, "exists", autospec=True, side_effect=exists_side_effect), \
              mock.patch.object(sys, "argv", ["last30days.py", "test topic", "--dashboard"]):
             
             mock_socket = mock.Mock()
