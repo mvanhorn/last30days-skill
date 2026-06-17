@@ -25,6 +25,7 @@ DEPTH_CONFIG = {
 # Max words to keep from each caption
 CAPTION_MAX_WORDS = 500
 
+from .query import infer_query_intent
 from .relevance import token_overlap_relevance as _compute_relevance
 
 
@@ -32,20 +33,6 @@ def _extract_core_subject(topic: str) -> str:
     """Extract core subject from verbose query for TikTok search."""
     from .query import VIRAL_NOISE, extract_core_subject
     return extract_core_subject(topic, noise=VIRAL_NOISE)
-
-
-def _infer_query_intent(topic: str) -> str:
-    """Tiny local intent classifier for TikTok query expansion."""
-    text = topic.lower().strip()
-    if re.search(r"\b(vs|versus|compare|difference between)\b", text):
-        return "comparison"
-    if re.search(r"\b(how to|tutorial|guide|setup|step by step|deploy|install)\b", text):
-        return "how_to"
-    if re.search(r"\b(thoughts on|worth it|should i|opinion|review)\b", text):
-        return "opinion"
-    if re.search(r"\b(pricing|feature|features|best .* for)\b", text):
-        return "product"
-    return "breaking_news"
 
 
 def expand_tiktok_queries(topic: str, depth: str) -> List[str]:
@@ -67,7 +54,7 @@ def expand_tiktok_queries(topic: str, depth: str) -> List[str]:
     if core.lower() != original_clean.lower() and len(original_clean.split()) <= 8:
         queries.append(original_clean)
 
-    qtype = _infer_query_intent(topic)
+    qtype = infer_query_intent(topic)
 
     # Intent-specific TikTok content-type variants
     if qtype in ("breaking_news", "opinion"):

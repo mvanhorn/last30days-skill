@@ -8,6 +8,7 @@ from lib.query import (
     VIRAL_NOISE,
     extract_compound_terms,
     extract_core_subject,
+    infer_query_intent,
 )
 
 
@@ -145,6 +146,7 @@ class TestSharedAdapterNoiseSets(unittest.TestCase):
             'latest', 'new', 'news', 'update', 'updates',
             'trending', 'hottest', 'popular', 'viral',
             'practices', 'features', 'recommendations', 'advice',
+            'or', 'and',
         }
         self.assertEqual(set(SOCIAL_NOISE), expected)
 
@@ -179,6 +181,49 @@ class TestSharedAdapterNoiseSets(unittest.TestCase):
         self.assertIn("react", result)
         self.assertNotIn("killer", result)
         self.assertNotIn("prompting", result)
+
+
+class TestInferQueryIntent(unittest.TestCase):
+    """Tests for infer_query_intent() — the shared canonical classifier.
+
+    Adapters previously kept five near-duplicate copies with subtle drift
+    (reddit added `prediction` and the longest `how_to` regex; youtube had
+    a partial extension; instagram and tiktok lagged). Canonical here is
+    reddit's superset.
+    """
+
+    def test_comparison(self):
+        self.assertEqual(infer_query_intent("Claude vs Gemini"), "comparison")
+        self.assertEqual(infer_query_intent("difference between X and Y"), "comparison")
+
+    def test_how_to_base(self):
+        self.assertEqual(infer_query_intent("how to deploy Kubernetes"), "how_to")
+        self.assertEqual(infer_query_intent("install nginx"), "how_to")
+        self.assertEqual(infer_query_intent("setup OAuth tutorial"), "how_to")
+
+    def test_how_to_extended_keywords(self):
+        # Bare imperatives covered by reddit's extended regex.
+        self.assertEqual(infer_query_intent("configure DNS"), "how_to")
+        self.assertEqual(infer_query_intent("troubleshoot router"), "how_to")
+        self.assertEqual(infer_query_intent("debug python"), "how_to")
+        self.assertEqual(infer_query_intent("fix kernel panic"), "how_to")
+
+    def test_opinion(self):
+        self.assertEqual(infer_query_intent("thoughts on Claude Code"), "opinion")
+        self.assertEqual(infer_query_intent("should I buy a Pixel"), "opinion")
+
+    def test_product(self):
+        self.assertEqual(infer_query_intent("best laptop for programming"), "product")
+        self.assertEqual(infer_query_intent("Surface pricing"), "product")
+
+    def test_prediction(self):
+        self.assertEqual(infer_query_intent("predict the 2028 election"), "prediction")
+        self.assertEqual(infer_query_intent("odds Trump wins"), "prediction")
+        self.assertEqual(infer_query_intent("forecast Q4 earnings"), "prediction")
+
+    def test_breaking_news_default(self):
+        self.assertEqual(infer_query_intent("Kanye West"), "breaking_news")
+        self.assertEqual(infer_query_intent("OpenAI"), "breaking_news")
 
 
 class TestExtractCompoundTerms(unittest.TestCase):

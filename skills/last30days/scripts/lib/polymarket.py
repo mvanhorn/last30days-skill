@@ -300,7 +300,14 @@ def _extract_domain_queries(topic: str, events: List[Dict]) -> List[str]:
 
 
 def _infer_query_intent(topic: str) -> str:
-    """Tiny local fallback for Polymarket search tuning only."""
+    """Narrower local classifier for Polymarket search tuning only.
+
+    Deliberately does NOT delegate to ``query.infer_query_intent``:
+    Polymarket only needs the prediction/non-prediction split, and the
+    broader classifier would route queries to ``how_to``, ``opinion``,
+    ``product``, etc. without any matching expansion branch downstream.
+    Keep this narrow until polymarket grows additional intents.
+    """
     text = topic.lower().strip()
     if re.search(r"\b(predict|prediction|odds|forecast|chance|probability|will .* win)\b", text):
         return "prediction"

@@ -127,6 +127,40 @@ def extract_core_subject(
     return result.rstrip('?!.') if not max_words else (result or topic.lower().strip())
 
 
+def infer_query_intent(topic: str) -> str:
+    """Classify a topic into a coarse intent for adapter query expansion.
+
+    Returns one of: ``comparison``, ``how_to``, ``opinion``, ``product``,
+    ``prediction``, ``breaking_news`` (default).
+
+    The ``how_to`` regex covers both prefixed forms (``how to install``)
+    and bare imperatives (``configure``, ``troubleshoot``, ``debug``,
+    ``fix``). Adapters that previously kept their own copy of this
+    classifier had drifted to subtly different word lists; this is the
+    superset.
+
+    Polymarket keeps a custom narrower classifier (prediction-only) and
+    does NOT delegate here; its expansion only needs that signal.
+    """
+    text = topic.lower().strip()
+    if re.search(r"\b(vs|versus|compare|difference between)\b", text):
+        return "comparison"
+    if re.search(
+        r"\b(how to|tutorial|guide|setup|step by step|deploy|install|"
+        r"configuration|configure|troubleshoot|troubleshooting|error|errors|"
+        r"fix|debug)\b",
+        text,
+    ):
+        return "how_to"
+    if re.search(r"\b(thoughts on|worth it|should i|opinion|review)\b", text):
+        return "opinion"
+    if re.search(r"\b(pricing|feature|features|best .* for)\b", text):
+        return "product"
+    if re.search(r"\b(predict|prediction|odds|forecast|chance)\b", text):
+        return "prediction"
+    return "breaking_news"
+
+
 def extract_compound_terms(topic: str) -> List[str]:
     """Detect multi-word terms that should be quoted in search queries.
 

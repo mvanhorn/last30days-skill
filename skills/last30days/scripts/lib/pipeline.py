@@ -178,6 +178,18 @@ def diagnose(config: dict[str, Any], requested_sources: list[str] | None = None)
     }
 
 
+def _inner_max_workers(stream_count: int, *, internal_subrun: bool) -> int:
+    """Worker-pool size for the per-stream fanout inside a single pipeline run.
+
+    Top-level runs use up to 16 workers. Subruns of ``run_competitor_fanout``
+    cap the inner pool to 4 so a six-way competitor fan-out stays below
+    roughly 30 worker threads in aggregate instead of ~96.
+    """
+    if internal_subrun:
+        return max(2, min(4, stream_count or 1))
+    return max(4, min(16, stream_count or 1))
+
+
 def run(
     *,
     topic: str,
@@ -356,7 +368,7 @@ def run(
         for source in subquery.sources
         if source in available
     )
-    max_workers = max(4, min(16, stream_count or 1))
+    max_workers = _inner_max_workers(stream_count, internal_subrun=internal_subrun)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for subquery in plan.subqueries:
             for source in subquery.sources:

@@ -820,6 +820,7 @@ def main() -> int:
                 lookback_days=args.lookback_days,
                 github_user=github_user,
                 github_repos=github_repos,
+                internal_subrun=comp_enabled,
                 hiring_signals_mode=args.hiring_signals,
             )
             r.artifacts["resolved"] = {
