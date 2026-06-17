@@ -381,6 +381,8 @@ def get_config() -> dict[str, Any]:
         ('LAST30DAYS_STORE', None),
         ('OPENAI_MODEL_PIN', None),
         ('XAI_MODEL_PIN', None),
+        ('OPENAI_BASE_URL', None),
+        ('XAI_BASE_URL', None),
         ('SCRAPECREATORS_API_KEY', None),
         ('APIFY_API_TOKEN', None),
         ('AUTH_TOKEN', None),

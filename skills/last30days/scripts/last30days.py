@@ -574,6 +574,27 @@ def _write_last_run(topic: str, report: "schema.Report") -> None:
         pass
 
 
+def _propagate_config_to_environ() -> None:
+    """Push relevant env keys to os.environ so provider modules can read them.
+
+    The env.get_config() function reads from a .env file, but providers.py
+    reads from os.environ directly. Without this, OPENAI_BASE_URL and
+    XAI_BASE_URL overrides are silently ignored. This is a no-op for
+    keys that are already set in process env.
+    """
+    try:
+        config = env.get_config()
+    except Exception:
+        return
+    for key in ("OPENAI_BASE_URL", "XAI_BASE_URL"):
+        val = config.get(key)
+        if val and not os.environ.get(key):
+            os.environ[key] = val
+
+
+_propagate_config_to_environ()
+
+
 def main() -> int:
     parser = build_parser()
     # Use parse_known_args so setup sub-flags (--device-auth, --github,
