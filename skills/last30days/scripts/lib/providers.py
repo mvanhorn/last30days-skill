@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import sys
 from typing import Any
@@ -144,7 +145,7 @@ class OpenAIClient(ReasoningClient):
             "temperature": 0,
         }
         response = http.post(
-            OPENAI_RESPONSES_URL,
+            os.environ.get("OPENAI_BASE_URL", OPENAI_RESPONSES_URL),
             payload,
             headers={
                 "Authorization": f"Bearer {self.token}",
@@ -175,7 +176,7 @@ class XAIClient(ReasoningClient):
             "input": [{"role": "user", "content": prompt}],
         }
         response = http.post(
-            XAI_RESPONSES_URL,
+            os.environ.get("XAI_BASE_URL", XAI_RESPONSES_URL),
             payload,
             headers={
                 "Authorization": f"Bearer {self.api_key}",

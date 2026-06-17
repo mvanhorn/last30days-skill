@@ -101,7 +101,7 @@ def expand_tiktok_queries(topic: str, depth: str) -> List[str]:
 
 
 def _log(msg: str):
-    log.source_log("TikTok", msg)
+    log.source_log("TikTok", msg, tty_only=False)
 
 
 def _parse_date(item: Dict[str, Any]) -> Optional[str]:
