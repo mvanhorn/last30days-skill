@@ -3,11 +3,7 @@
 Migrated from test_youtube_relevance.py + new hashtag/synonym tests.
 """
 
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
 
 from lib.relevance import STOPWORDS, SYNONYMS, token_overlap_relevance, tokenize
 
@@ -125,7 +121,6 @@ class TestHashtagRelevance(unittest.TestCase):
         rel1 = token_overlap_relevance("test query", "test content", None)
         rel2 = token_overlap_relevance("test query", "test content")
         self.assertEqual(rel1, rel2)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,10 +1,6 @@
 """Unit tests for dedupe.py: text normalization, similarity metrics, and deduplication."""
 
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import dedupe
 from lib.schema import SourceItem
@@ -16,10 +12,10 @@ def _item(title: str, body: str = "", source: str = "reddit", item_id: str = "t1
         url="https://example.com", engagement={}, metadata={},
     )
 
-
 # ---------------------------------------------------------------------------
 # normalize_text
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeText(unittest.TestCase):
 
@@ -35,10 +31,10 @@ class TestNormalizeText(unittest.TestCase):
     def test_empty_string(self):
         self.assertEqual(dedupe.normalize_text(""), "")
 
-
 # ---------------------------------------------------------------------------
 # get_ngrams
 # ---------------------------------------------------------------------------
+
 
 class TestGetNgrams(unittest.TestCase):
 
@@ -58,10 +54,10 @@ class TestGetNgrams(unittest.TestCase):
         ngrams = dedupe.get_ngrams("A!B")
         self.assertEqual(ngrams, {"a b"})
 
-
 # ---------------------------------------------------------------------------
 # jaccard_similarity
 # ---------------------------------------------------------------------------
+
 
 class TestJaccardSimilarity(unittest.TestCase):
 
@@ -81,10 +77,10 @@ class TestJaccardSimilarity(unittest.TestCase):
     def test_both_empty(self):
         self.assertAlmostEqual(dedupe.jaccard_similarity(set(), set()), 0.0)
 
-
 # ---------------------------------------------------------------------------
 # token_jaccard
 # ---------------------------------------------------------------------------
+
 
 class TestTokenJaccard(unittest.TestCase):
 
@@ -105,10 +101,10 @@ class TestTokenJaccard(unittest.TestCase):
         # "am" is len 2, "great"/"terrible" are content
         self.assertGreater(result, 0.0)
 
-
 # ---------------------------------------------------------------------------
 # hybrid_similarity
 # ---------------------------------------------------------------------------
+
 
 class TestHybridSimilarity(unittest.TestCase):
 
@@ -131,10 +127,10 @@ class TestHybridSimilarity(unittest.TestCase):
             max(ngram_sim, token_sim),
         )
 
-
 # ---------------------------------------------------------------------------
 # item_text
 # ---------------------------------------------------------------------------
+
 
 class TestItemText(unittest.TestCase):
 
@@ -159,10 +155,10 @@ class TestItemText(unittest.TestCase):
         self.assertIn("john", text)
         self.assertIn("r/python", text)
 
-
 # ---------------------------------------------------------------------------
 # dedupe_items
 # ---------------------------------------------------------------------------
+
 
 class TestDedupeItems(unittest.TestCase):
 
@@ -211,7 +207,6 @@ class TestDedupeItems(unittest.TestCase):
         # With threshold=0.3, these similar items collapse
         result_loose = dedupe.dedupe_items(items, threshold=0.3)
         self.assertEqual(len(result_loose), 1)
-
 
 if __name__ == "__main__":
     unittest.main()

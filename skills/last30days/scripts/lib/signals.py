@@ -20,6 +20,7 @@ SOURCE_QUALITY = {
     "polymarket": 0.5,
     "instagram": 0.58,
     "tiktok": 0.58,
+    "jobs": 0.72,
 }
 
 
@@ -238,6 +239,11 @@ def prune_low_relevance(
     sources_present = {item.source for item in items}
 
     def passes(item: schema.SourceItem) -> bool:
+        # YouTube items with successfully extracted transcripts should not
+        # be pruned by title-only relevance scoring — the transcript content
+        # already proves substantive topical coverage.
+        if item.source == "youtube" and item.snippet:
+            return True
         rel = item.local_relevance if item.local_relevance is not None else 0.0
         if rel < minimum:
             return False

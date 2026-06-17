@@ -1,18 +1,14 @@
 """Tests for watchlist.py delivery functions (PR #86 feature)."""
 
-import sys
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
-
 import watchlist
 from lib.http import HTTPError
 
-
 # === Tests for _format_delivery_message() ===
+
 
 def test_format_message_announce_mode():
     """Test announce mode formatting (default mode with emoji)."""
@@ -56,10 +52,11 @@ def test_format_message_handles_zero_counts():
     assert "0 new" in message
     assert "0 updated" in message
 
-
 # === Tests for _send_slack_webhook() ===
 
 @patch('watchlist.http.post')
+
+
 def test_send_slack_webhook_format(mock_post):
     """Test that Slack webhook uses correct format."""
     watchlist._send_slack_webhook(
@@ -74,8 +71,9 @@ def test_send_slack_webhook_format(mock_post):
     assert call_args[1]["json_data"] == {"text": "Test message"}
     assert call_args[1]["timeout"] == 10
 
-
 @patch('watchlist.http.post')
+
+
 def test_send_slack_webhook_raises_on_error(mock_post):
     """Test that Slack webhook raises on HTTP error."""
     mock_post.side_effect = HTTPError("HTTP 400", 400)
@@ -86,10 +84,11 @@ def test_send_slack_webhook_raises_on_error(mock_post):
             "Test message"
         )
 
-
 # === Tests for _send_generic_webhook() ===
 
 @patch('watchlist.http.post')
+
+
 def test_send_generic_webhook_format(mock_post):
     """Test that generic webhook uses correct format."""
     watchlist._send_generic_webhook(
@@ -108,8 +107,9 @@ def test_send_generic_webhook_format(mock_post):
     assert "timestamp" in json_data
     assert isinstance(json_data["timestamp"], float)
 
-
 @patch('watchlist.http.post')
+
+
 def test_send_generic_webhook_raises_on_error(mock_post):
     """Test that generic webhook raises on HTTP error."""
     mock_post.side_effect = HTTPError("HTTP 500", 500)
@@ -120,11 +120,12 @@ def test_send_generic_webhook_raises_on_error(mock_post):
             "Test message"
         )
 
-
 # === Tests for _deliver_findings() ===
 
 @patch('watchlist.store.get_setting')
 @patch('watchlist.http.post')
+
+
 def test_deliver_findings_sends_when_new_greater_than_zero(mock_post, mock_get_setting):
     """Test that delivery fires when new > 0."""
     mock_get_setting.side_effect = lambda key, default="": {
@@ -136,9 +137,10 @@ def test_deliver_findings_sends_when_new_greater_than_zero(mock_post, mock_get_s
 
     assert mock_post.called
 
-
 @patch('watchlist.store.get_setting')
 @patch('watchlist.http.post')
+
+
 def test_deliver_findings_skips_when_new_is_zero(mock_post, mock_get_setting):
     """Test that delivery is skipped when new=0."""
     mock_get_setting.side_effect = lambda key, default="": {
@@ -150,9 +152,10 @@ def test_deliver_findings_skips_when_new_is_zero(mock_post, mock_get_setting):
 
     assert not mock_post.called
 
-
 @patch('watchlist.store.get_setting')
 @patch('watchlist.http.post')
+
+
 def test_deliver_findings_skips_when_channel_empty(mock_post, mock_get_setting):
     """Test that delivery is skipped when delivery_channel is empty."""
     mock_get_setting.side_effect = lambda key, default="": {
@@ -164,9 +167,10 @@ def test_deliver_findings_skips_when_channel_empty(mock_post, mock_get_setting):
 
     assert not mock_post.called
 
-
 @patch('watchlist.store.get_setting')
 @patch('watchlist.http.post')
+
+
 def test_deliver_findings_uses_slack_format_for_slack_urls(mock_post, mock_get_setting):
     """Test that Slack URLs trigger Slack-specific format."""
     mock_get_setting.side_effect = lambda key, default="": {
@@ -180,9 +184,10 @@ def test_deliver_findings_uses_slack_format_for_slack_urls(mock_post, mock_get_s
     assert "text" in json_data
     assert "Test Topic" in json_data["text"]
 
-
 @patch('watchlist.store.get_setting')
 @patch('watchlist.http.post')
+
+
 def test_deliver_findings_uses_generic_format_for_other_urls(mock_post, mock_get_setting):
     """Test that non-Slack URLs trigger generic format."""
     mock_get_setting.side_effect = lambda key, default="": {
@@ -197,9 +202,10 @@ def test_deliver_findings_uses_generic_format_for_other_urls(mock_post, mock_get
     assert "source" in json_data
     assert "timestamp" in json_data
 
-
 @patch('watchlist.store.get_setting')
 @patch('watchlist.http.post')
+
+
 def test_deliver_findings_handles_failure_gracefully(mock_post, mock_get_setting, capsys):
     """Test that delivery failures don't crash the process."""
     mock_get_setting.side_effect = lambda key, default="": {
@@ -215,9 +221,10 @@ def test_deliver_findings_handles_failure_gracefully(mock_post, mock_get_setting
     captured = capsys.readouterr()
     assert "Delivery failed" in captured.err
 
-
 @patch('watchlist.store.get_setting')
 @patch('watchlist.http.post')
+
+
 def test_deliver_findings_respects_delivery_mode(mock_post, mock_get_setting):
     """Test that different delivery modes produce different messages."""
     mock_get_setting.side_effect = lambda key, default="": {
@@ -239,7 +246,6 @@ def test_deliver_findings_respects_delivery_mode(mock_post, mock_get_setting):
 
     silent_message = mock_post.call_args[1]["json_data"]["message"]
     assert "📰" not in silent_message
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

@@ -1,10 +1,6 @@
 """Tests for Truth Social source module."""
-import sys
 import unittest
-from pathlib import Path
 from unittest.mock import patch, MagicMock
-
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
 
 from lib import truthsocial
 
@@ -228,7 +224,6 @@ class TestParseTruthSocialResponse(unittest.TestCase):
         items = truthsocial.parse_truthsocial_response(response)
         self.assertNotIn("<", items[0]["text"])
         self.assertNotIn(">", items[0]["text"])
-
 
 if __name__ == "__main__":
     unittest.main()

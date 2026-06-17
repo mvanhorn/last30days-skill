@@ -1,15 +1,9 @@
-# ruff: noqa: E402
 """Tests for render.render_comparison_multi and emit_comparison_output."""
 
 from __future__ import annotations
 
 import json
-import sys
 import unittest
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "last30days" / "scripts"))
 
 import last30days as cli
 from lib import render, schema
@@ -107,6 +101,11 @@ class RenderComparisonMultiTests(unittest.TestCase):
         self.assertIn("## xAI", rendered)
         # Scaffold table header has a column per entity
         self.assertIn("| Dimension | OpenAI | Anthropic | xAI |", rendered)
+        # No verdict row: the pitch-vs-pulse signal ships as synthesis prose,
+        # not a table axis (early drafts emitted a "Setting the narrative?" row)
+        self.assertNotIn("Setting the narrative?", rendered)
+        # "What it is" grounds in positioning fetched this run, never memory
+        self.assertIn("never from memory", rendered)
         # Envelope scaffolding present
         self.assertIn("EVIDENCE FOR SYNTHESIS", rendered)
         self.assertIn("END OF last30days CANONICAL OUTPUT", rendered)
@@ -299,7 +298,6 @@ class EmitComparisonOutputTests(unittest.TestCase):
         reports = [("A", _build_report("A", ["Thing A"]))]
         with self.assertRaises(SystemExit):
             cli.emit_comparison_output(reports, emit="xml")
-
 
 if __name__ == "__main__":
     unittest.main()

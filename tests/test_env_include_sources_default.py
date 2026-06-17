@@ -1,9 +1,4 @@
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days"))
-
-from scripts.lib import env
+from lib import env
 
 
 def test_include_sources_defaults_to_empty_string(monkeypatch, tmp_path):

@@ -5,11 +5,7 @@ tests exercise transitively but don't assert on directly. A regression in
 any of these functions would silently degrade output quality.
 """
 
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import planner, rerank, render, signals, schema
 
@@ -34,10 +30,10 @@ def _candidate(source: str = "reddit", **kwargs) -> schema.Candidate:
     defaults.update(kwargs)
     return schema.Candidate(**defaults)
 
-
 # ---------------------------------------------------------------------------
 # rerank._fallback_tuple
 # ---------------------------------------------------------------------------
+
 
 class TestFallbackTuple(unittest.TestCase):
 
@@ -58,10 +54,10 @@ class TestFallbackTuple(unittest.TestCase):
         low = _candidate(local_relevance=0.1, freshness=50, source_quality=0.7)
         self.assertGreater(rerank._fallback_tuple(high)[0], rerank._fallback_tuple(low)[0])
 
-
 # ---------------------------------------------------------------------------
 # rerank._normalized_rrf
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizedRrf(unittest.TestCase):
 
@@ -77,10 +73,10 @@ class TestNormalizedRrf(unittest.TestCase):
         result = rerank._normalized_rrf(1.0)
         self.assertLessEqual(result, 100.0)
 
-
 # ---------------------------------------------------------------------------
 # render._assess_data_freshness
 # ---------------------------------------------------------------------------
+
 
 class TestAssessDataFreshness(unittest.TestCase):
 
@@ -120,10 +116,10 @@ class TestAssessDataFreshness(unittest.TestCase):
         result = render._assess_data_freshness(report)
         self.assertIsNone(result)
 
-
 # ---------------------------------------------------------------------------
 # render._format_date
 # ---------------------------------------------------------------------------
+
 
 class TestFormatDate(unittest.TestCase):
 
@@ -138,10 +134,10 @@ class TestFormatDate(unittest.TestCase):
     def test_none_item(self):
         self.assertIn("unknown", render._format_date(None).lower())
 
-
 # ---------------------------------------------------------------------------
 # render._format_actor
 # ---------------------------------------------------------------------------
+
 
 class TestFormatActor(unittest.TestCase):
 
@@ -157,10 +153,10 @@ class TestFormatActor(unittest.TestCase):
         item = _item(source="youtube", author="Fireship")
         self.assertEqual(render._format_actor(item), "Fireship")
 
-
 # ---------------------------------------------------------------------------
 # render._format_engagement
 # ---------------------------------------------------------------------------
+
 
 class TestFormatEngagement(unittest.TestCase):
 
@@ -174,10 +170,10 @@ class TestFormatEngagement(unittest.TestCase):
         item = _item(engagement={})
         self.assertIsNone(render._format_engagement(item))
 
-
 # ---------------------------------------------------------------------------
 # render._format_corroboration
 # ---------------------------------------------------------------------------
+
 
 class TestFormatCorroboration(unittest.TestCase):
 
@@ -191,10 +187,10 @@ class TestFormatCorroboration(unittest.TestCase):
         c = _candidate(sources=["reddit"])
         self.assertIsNone(render._format_corroboration(c))
 
-
 # ---------------------------------------------------------------------------
 # render._format_explanation
 # ---------------------------------------------------------------------------
+
 
 class TestFormatExplanation(unittest.TestCase):
 
@@ -206,10 +202,10 @@ class TestFormatExplanation(unittest.TestCase):
         c = _candidate(explanation="Directly compares frameworks")
         self.assertEqual(render._format_explanation(c), "Directly compares frameworks")
 
-
 # ---------------------------------------------------------------------------
 # render._fmt_pairs and _format_number
 # ---------------------------------------------------------------------------
+
 
 class TestFmtPairs(unittest.TestCase):
 
@@ -231,10 +227,10 @@ class TestFormatNumber(unittest.TestCase):
     def test_small_integer(self):
         self.assertEqual(render._format_number(42), "42")
 
-
 # ---------------------------------------------------------------------------
 # render._truncate
 # ---------------------------------------------------------------------------
+
 
 class TestTruncate(unittest.TestCase):
 
@@ -246,10 +242,10 @@ class TestTruncate(unittest.TestCase):
         self.assertTrue(result.endswith("..."))
         self.assertEqual(len(result), 50)
 
-
 # ---------------------------------------------------------------------------
 # planner._normalize_subquery_weights
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeSubqueryWeights(unittest.TestCase):
 
@@ -270,10 +266,10 @@ class TestNormalizeSubqueryWeights(unittest.TestCase):
         normed = planner._normalize_subquery_weights(sqs)
         self.assertAlmostEqual(normed[0].weight / normed[1].weight, 4.0)
 
-
 # ---------------------------------------------------------------------------
 # planner._normalize_weights
 # ---------------------------------------------------------------------------
+
 
 class TestNormalizeWeights(unittest.TestCase):
 
@@ -285,10 +281,10 @@ class TestNormalizeWeights(unittest.TestCase):
         result = planner._normalize_weights({"a": 2.0, "b": -1.0})
         self.assertAlmostEqual(result["b"], 0.0)
 
-
 # ---------------------------------------------------------------------------
 # planner._trim_subqueries_for_depth
 # ---------------------------------------------------------------------------
+
 
 class TestTrimSubqueriesForDepth(unittest.TestCase):
 
@@ -318,10 +314,10 @@ class TestTrimSubqueriesForDepth(unittest.TestCase):
         # Deep comparison should also use capability expansion, not trim
         self.assertGreaterEqual(len(result[0].sources), 4)
 
-
 # ---------------------------------------------------------------------------
 # signals.annotate_stream
 # ---------------------------------------------------------------------------
+
 
 class TestAnnotateStream(unittest.TestCase):
 
@@ -345,10 +341,10 @@ class TestAnnotateStream(unittest.TestCase):
         annotated = signals.annotate_stream(items, "test query", "balanced_recent")
         self.assertEqual(annotated[0].item_id, "high")
 
-
 # ---------------------------------------------------------------------------
 # signals.prune_low_relevance
 # ---------------------------------------------------------------------------
+
 
 class TestPruneLowRelevance(unittest.TestCase):
 
@@ -369,10 +365,10 @@ class TestPruneLowRelevance(unittest.TestCase):
         result = signals.prune_low_relevance(items, minimum=0.1)
         self.assertEqual(len(result), 1)  # fallback keeps all
 
-
 # ---------------------------------------------------------------------------
 # Bug fixes found by PR review agents
 # ---------------------------------------------------------------------------
+
 
 class TestDaysAgoZeroFalsy(unittest.TestCase):
     """render._assess_data_freshness must not treat days_ago=0 as falsy."""
@@ -455,7 +451,6 @@ class TestGenericEngagementFormatter(unittest.TestCase):
             # Should contain numeric values, not dict keys as numbers
             self.assertIn("500", result)
 
-
 if __name__ == "__main__":
     unittest.main()
 
@@ -519,7 +514,6 @@ class TestDefaultDepthDoesNotCapSources(unittest.TestCase):
             model=None,
         )
         self.assertLessEqual(len(plan.subqueries[0].sources), 3)
-
 
 
 class TestRerankWeightBalance(unittest.TestCase):

@@ -1,19 +1,13 @@
-# ruff: noqa: E402
 """Tests for scripts/lib/fanout.run_competitor_fanout."""
 
 from __future__ import annotations
 
 import io
-import sys
 import threading
 import time
 import unittest
 from contextlib import redirect_stderr
-from pathlib import Path
 from unittest import mock
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "last30days" / "scripts"))
 
 from lib import fanout
 
@@ -154,7 +148,6 @@ class FanoutOrchestratorTests(unittest.TestCase):
                 competitor_runner=comp_runner,
             )
         self.assertEqual([label for label, _ in results], ["OpenAI"])
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,18 +1,14 @@
 """Tests for polymarket.py - Polymarket prediction market search."""
 
 import json
-import sys
-from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
-
 from lib import polymarket
 
-
 # === Helper Functions ===
+
 
 def create_mock_event(
     event_id="evt-123",
@@ -60,8 +56,8 @@ def create_mock_market(
         "liquidity": liquidity,
     }
 
-
 # === Tests for _extract_core_subject() ===
+
 
 def test_extract_core_subject_basic():
     """Test basic subject extraction."""
@@ -86,8 +82,8 @@ def test_extract_core_subject_multiple_prefixes():
     result = polymarket._extract_core_subject("research AI models")
     assert result == "AI models"
 
-
 # === Tests for _expand_queries() ===
+
 
 def test_expand_queries_basic():
     """Test basic query expansion."""
@@ -132,8 +128,8 @@ def test_expand_queries_cap_at_six():
     
     assert len(queries) <= 6
 
-
 # === Tests for _passes_topic_filter() ===
+
 
 def test_passes_topic_filter_match():
     """Test that matching events pass the filter."""
@@ -194,8 +190,8 @@ def test_passes_topic_filter_multi_word_edge_exactly_three():
         "Tesla stock price", "Tesla quarterly earnings"
     ) is False  # only "tesla" matches, needs 2
 
-
 # === Tests for _parse_outcome_prices() ===
+
 
 def test_parse_outcome_prices_basic():
     """Test basic outcome price parsing."""
@@ -259,8 +255,8 @@ def test_parse_outcome_prices_invalid_json():
     
     assert result == []
 
-
 # === Tests for _format_price_movement() ===
+
 
 def test_format_price_movement_one_day():
     """Test formatting one-day price movement."""
@@ -322,8 +318,8 @@ def test_format_price_movement_missing_data():
     
     assert result is None
 
-
 # === Tests for _shorten_question() ===
+
 
 def test_shorten_question_will_pattern():
     """Test shortening 'Will X...' questions."""
@@ -354,8 +350,8 @@ def test_shorten_question_long():
     
     assert len(result) <= 40
 
-
 # === Tests for search_polymarket() ===
+
 
 def test_search_polymarket_result_cap():
     """Test that result cap configuration exists."""
@@ -385,8 +381,9 @@ def test_search_polymarket_query_expansion():
     # Should expand to multiple queries
     assert len(queries) >= 2
 
-
 @patch('lib.polymarket.http.post')
+
+
 def test_search_polymarket_http_error_handling(mock_post):
     """Test graceful handling of HTTP errors."""
     from lib.http import HTTPError
@@ -397,8 +394,8 @@ def test_search_polymarket_http_error_handling(mock_post):
     # Should return structure with error
     assert "events" in result or "error" in result
 
-
 # === Tests for parse_polymarket_response() ===
+
 
 def test_parse_polymarket_response_basic():
     """Test basic response parsing."""
@@ -472,8 +469,8 @@ def test_parse_polymarket_response_engagement():
         # Check for volume or liquidity fields
         assert "volume24hr" in items[0] or "liquidity" in items[0] or isinstance(items[0], dict)
 
-
 # === Tests for engagement scoring ===
+
 
 def test_engagement_with_volume():
     """Test engagement calculation with volume."""
@@ -491,8 +488,8 @@ def test_engagement_with_volume():
         # volume24hr should be captured
         assert "volume24hr" in engagement or isinstance(engagement, dict)
 
-
 # === Tests for noise-word query skipping ===
+
 
 def test_expand_queries_skips_noise_words():
     """Noise words like 'west' should not become standalone queries."""
@@ -520,8 +517,8 @@ def test_expand_queries_all_noise_words_keeps_phrase():
     lowered = [q.lower() for q in queries]
     assert "north" not in lowered or "north west" in lowered  # only as part of phrase
 
-
 # === Tests for per-item relevance floor ===
+
 
 def test_per_item_relevance_floor_drops_zero_items():
     """Items with relevance 0.0 should be dropped even if best item is high."""
@@ -558,7 +555,6 @@ def test_per_item_relevance_floor_no_drops_when_all_high():
     ]
     filtered = [i for i in items if i["relevance"] >= 0.10]
     assert len(filtered) == 3
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

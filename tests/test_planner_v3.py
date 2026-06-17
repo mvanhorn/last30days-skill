@@ -1,8 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import planner
 
@@ -96,6 +92,41 @@ class PlannerV3Tests(unittest.TestCase):
         self.assertEqual(1, len(plan.subqueries))
         self.assertEqual(["reddit", "x"], plan.subqueries[0].sources)
 
+    def test_quick_mode_preserves_explicit_requested_sources(self):
+        raw = {
+            "intent": "product",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "debate",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "AI coding agents",
+                    "ranking_query": "What are people saying about AI coding agents?",
+                    "sources": ["reddit", "youtube", "grounding", "digg"],
+                    "weight": 1.0,
+                }
+            ],
+        }
+        plan = planner._sanitize_plan(
+            raw,
+            "AI coding agents",
+            ["reddit", "youtube", "grounding", "digg"],
+            ["reddit", "youtube", "grounding", "digg"],
+            "quick",
+        )
+        self.assertIn("digg", plan.subqueries[0].sources)
+
+    def test_quick_mode_preserves_explicit_requested_sources_in_fallback_plan(self):
+        plan = planner.plan_query(
+            topic="AI coding agents",
+            available_sources=["reddit", "youtube", "github"],
+            requested_sources=["reddit", "github"],
+            depth="quick",
+            provider=None,
+            model=None,
+        )
+        self.assertIn("github", plan.subqueries[0].sources)
+
     def test_default_comparison_uses_all_capable_sources(self):
         plan = planner.plan_query(
             topic="codex vs claude code",
@@ -176,6 +207,19 @@ class PlannerV3Tests(unittest.TestCase):
         # how_to routing should include youtube (longform) over tiktok/instagram
         self.assertIn("youtube", sources)
         self.assertIn("reddit", sources)
+
+    def test_product_plan_can_include_jobs_source(self):
+        plan = planner.plan_query(
+            topic="Listen Labs features",
+            available_sources=["reddit", "youtube", "jobs", "hackernews"],
+            requested_sources=None,
+            depth="default",
+            provider=None,
+            model=None,
+        )
+        self.assertEqual("product", plan.intent)
+        self.assertIn("jobs", plan.subqueries[0].sources)
+        self.assertGreater(plan.source_weights["jobs"], plan.source_weights["youtube"])
 
     def test_prediction_includes_tiktok_and_instagram(self):
         """TikTok and Instagram are no longer excluded from prediction intent."""
@@ -451,7 +495,6 @@ class FallbackDefaultsTests(unittest.TestCase):
         output = buf.getvalue()
         self.assertIn("LLM planning failed", output)
         self.assertNotIn("No --plan passed", output)
-
 
 if __name__ == "__main__":
     unittest.main()

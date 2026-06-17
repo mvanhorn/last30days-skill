@@ -1,9 +1,5 @@
 import json
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import providers
 
@@ -161,7 +157,6 @@ class TestParseCodexStream(unittest.TestCase):
 
     def test_done_only_stream(self):
         self.assertEqual({}, providers._parse_codex_stream("data: [DONE]\n\n"))
-
 
 if __name__ == "__main__":
     unittest.main()

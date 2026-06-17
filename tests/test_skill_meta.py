@@ -6,15 +6,13 @@ regex coverage inside the helper could pass CI because render.py's fallback
 to "?" swallows the signal.
 """
 
-import sys
 import tempfile
 import unittest
 from pathlib import Path
 
+from lib.skill_meta import read_skill_version
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "skills" / "last30days" / "scripts"))
-from lib.skill_meta import read_skill_version  # noqa: E402
 
 
 class ReadSkillVersionTests(unittest.TestCase):
@@ -55,7 +53,6 @@ class ReadSkillVersionTests(unittest.TestCase):
         path = self.tmp_path / "SKILL.md"
         path.write_bytes(bytes(range(128, 256)))
         self.assertIsNone(read_skill_version(path))
-
 
 if __name__ == "__main__":
     unittest.main()

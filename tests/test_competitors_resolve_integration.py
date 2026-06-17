@@ -1,4 +1,3 @@
-# ruff: noqa: E402
 """Integration tests for per-entity Step 0.55 resolution inside competitor fan-out."""
 
 from __future__ import annotations
@@ -7,11 +6,7 @@ import io
 import sys
 import unittest
 from contextlib import redirect_stderr
-from pathlib import Path
 from unittest import mock
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "last30days" / "scripts"))
 
 
 def _fake_report(topic: str):
@@ -325,7 +320,6 @@ class PerEntityResolveTests(unittest.TestCase):
             return report
 
         return [runner(c) for c in competitors]
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -13,16 +13,11 @@ Fixture reference: `tests/fixtures/prompting-gpt-image-2-resolved-block.md`.
 """
 
 import io
-import sys
 import unittest
 from contextlib import redirect_stderr
-from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
-
 from lib import resolve
-
 
 OPENAI_BRAND_SUBREDDIT_RESULTS = [
     {
@@ -139,7 +134,6 @@ class PromptingGptImage2RegressionGuard(unittest.TestCase):
         self.assertEqual(result["subreddits"], ["Kanye"])
         self.assertIsNone(result["category"])
         self.assertNotIn("Matched category=", buf.getvalue())
-
 
 if __name__ == "__main__":
     unittest.main()

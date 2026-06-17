@@ -1,14 +1,11 @@
 import re
-import sys
 import unittest
 from pathlib import Path
 
+from lib.skill_meta import read_skill_version
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = ROOT / "skills" / "last30days"
-
-sys.path.insert(0, str(SKILL_ROOT / "scripts"))
-from lib.skill_meta import read_skill_version  # noqa: E402
 
 
 def _skill_version() -> str:
@@ -76,7 +73,6 @@ class TestVersionConsistency(unittest.TestCase):
                     offenders.append(f"{path.relative_to(ROOT)}:{line_number}: {line.strip()}")
 
         self.assertEqual([], offenders)
-
 
 if __name__ == "__main__":
     unittest.main()

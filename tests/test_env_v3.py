@@ -1,10 +1,7 @@
 import os
-import sys
 import unittest
 from pathlib import Path
 from unittest import mock
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import bird_x, env
 
@@ -68,7 +65,6 @@ class ThreadsAvailabilityTests(unittest.TestCase):
             "SCRAPECREATORS_API_KEY": "k",
             "INCLUDE_SOURCES": "",
         }))
-
 
 if __name__ == "__main__":
     unittest.main()

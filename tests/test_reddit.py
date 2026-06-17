@@ -1,8 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib.reddit import (
     _extract_date,
@@ -263,7 +259,6 @@ class TestEnrichmentBudget(unittest.TestCase):
         self.assertEqual(len(result), 3)
         enriched = [i for i in result if i.get("top_comments")]
         self.assertEqual(len(enriched), 0)
-
 
 if __name__ == "__main__":
     unittest.main()

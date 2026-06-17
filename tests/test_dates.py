@@ -1,12 +1,9 @@
 """Tests for dates module."""
 
-import sys
 import unittest
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 # Add lib to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
 
 from lib import dates
 
@@ -108,7 +105,6 @@ class TestRecencyScore(unittest.TestCase):
     def test_none_date_is_0(self):
         result = dates.recency_score(None)
         self.assertEqual(result, 0)
-
 
 if __name__ == "__main__":
     unittest.main()

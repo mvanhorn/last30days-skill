@@ -12,18 +12,14 @@ from __future__ import annotations
 
 import re
 import subprocess
-import sys
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
-
-from lib import env  # noqa: E402
+from lib import env
 
 SETUP_KEYCHAIN_SH = Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts" / "setup-keychain.sh"
-
 
 # ---------------------------------------------------------------------------
 # _load_keychain unit tests
@@ -93,11 +89,9 @@ def test_load_keychain_skips_empty_stdout():
          mock.patch("subprocess.run", return_value=_run_result(0, "")):
         assert env._load_keychain(["XAI_API_KEY"]) == {}
 
-
 # ---------------------------------------------------------------------------
 # get_config integration tests
 # ---------------------------------------------------------------------------
-
 
 @pytest.fixture
 def clean_env(monkeypatch, tmp_path):
@@ -114,6 +108,9 @@ def clean_env(monkeypatch, tmp_path):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setattr(env, "CONFIG_FILE", tmp_path / "does-not-exist.env")
     monkeypatch.chdir(tmp_path)  # no project .env in this tree either
+    # Neutralize the pass(1) source so these tests don't pick up a real pass
+    # store on the host running them (tests that exercise pass override this).
+    monkeypatch.setattr(env, "_load_pass", lambda *a, **k: {})
 
 
 def test_get_config_reports_keychain_source(clean_env):
@@ -153,7 +150,6 @@ def test_get_config_openai_key_can_come_from_keychain(clean_env):
         cfg = env.get_config()
     assert cfg["OPENAI_API_KEY"] == "sk-from-kc"
     assert cfg["OPENAI_AUTH_SOURCE"] == "api_key"
-
 
 # ---------------------------------------------------------------------------
 # Drift guard: lib/env.py KEYCHAIN_KEYS and setup-keychain.sh ALL_KEYS must

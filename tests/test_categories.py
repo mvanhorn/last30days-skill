@@ -7,11 +7,7 @@ where prompting techniques actually live.
 """
 
 import re
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import categories
 from lib.categories import CATEGORY_PEERS, detect_category, peer_subs_for
@@ -148,7 +144,6 @@ class CategoryMapInvariants(unittest.TestCase):
         # Sanity check: the map is intentionally small and curated.
         self.assertGreaterEqual(len(CATEGORY_PEERS), 8)
         self.assertLessEqual(len(CATEGORY_PEERS), 20)
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -62,6 +62,17 @@ def _resolve_token(token: Optional[str] = None) -> Optional[str]:
     return None
 
 
+def resolve_token(token: Optional[str] = None) -> Optional[str]:
+    """Public alias for ``_resolve_token``.
+
+    The pipeline calls this once before ``search_github`` and
+    ``enrich_with_comments`` so the ``gh auth token`` subprocess fallback
+    only fires once per query when ``GITHUB_TOKEN`` is unset, instead of
+    twice (once per call site).
+    """
+    return _resolve_token(token)
+
+
 def _fetch_json(
     url: str,
     token: Optional[str] = None,
@@ -142,8 +153,14 @@ def search_github(
     to_date: str,
     depth: str = "default",
     token: Optional[str] = None,
-) -> List[Dict[str, Any]]:
-    """Search GitHub Issues and PRs.
+) -> Dict[str, Any]:
+    """Search GitHub Issues and PRs (HTTP fetch only).
+
+    Returns a raw envelope shaped like every other adapter's ``search_X``:
+    ``{"items": [raw GitHub API items], "context": {core, from_date,
+    to_date, count}}``. Normalization, date filtering, and sorting move
+    to ``parse_github_response``; comment enrichment moves to
+    ``enrich_with_comments``.
 
     Args:
         topic: Search topic
@@ -153,15 +170,23 @@ def search_github(
         token: Optional GitHub token (falls back to env/gh CLI)
 
     Returns:
-        List of normalized item dicts. Empty list on any failure.
+        Dict envelope. Empty ``items`` list on any failure.
     """
+    count = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
+    core = extract_core_subject(topic)
     resolved_token = _resolve_token(token)
     if not resolved_token:
         _log("No GitHub token available (set GITHUB_TOKEN or install gh CLI)")
-        return []
-
-    count = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
-    core = extract_core_subject(topic)
+        return {
+            "items": [],
+            "error": "no token",
+            "context": {
+                "core": core,
+                "from_date": from_date,
+                "to_date": to_date,
+                "count": count,
+            },
+        }
     _log(f"Searching for '{core}' (raw: '{topic}', since {from_date}, count={count})")
 
     # Build search query with date filter
@@ -176,12 +201,41 @@ def search_github(
 
     data = _fetch_json(url, token=resolved_token, timeout=30)
     if not data:
-        return []
+        return {"items": [], "context": {"core": core, "from_date": from_date,
+                                          "to_date": to_date, "count": count}}
 
     raw_items = data.get("items", [])
     _log(f"Found {len(raw_items)} issues/PRs")
 
-    items = []
+    return {
+        "items": raw_items,
+        "context": {
+            "core": core,
+            "from_date": from_date,
+            "to_date": to_date,
+            "count": count,
+        },
+    }
+
+
+def parse_github_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Normalize a ``search_github`` envelope into the skill's item shape.
+
+    Pure function: no I/O, no token, no enrichment. Applies the date
+    filter using the search context and sorts by relevance.
+    """
+    if not isinstance(response, dict):
+        return []
+    raw_items = response.get("items") or []
+    if not isinstance(raw_items, list):
+        return []
+    context = response.get("context") or {}
+    core = context.get("core") or ""
+    from_date = context.get("from_date") or ""
+    to_date = context.get("to_date") or ""
+    count = context.get("count") or DEPTH_LIMITS["default"]
+
+    items: List[Dict[str, Any]] = []
     for i, item in enumerate(raw_items[:count]):
         html_url = item.get("html_url", "")
         repo = _parse_repo_from_url(html_url)
@@ -224,20 +278,34 @@ def search_github(
             },
         })
 
-    # Enrich top items with comments
-    items = _enrich_top_items(items, depth, resolved_token)
-
     # Date filter
-    filtered = []
-    for item in items:
-        d = item.get("date")
-        if d is None or (from_date <= d <= to_date):
-            filtered.append(item)
+    if from_date and to_date:
+        items = [
+            item for item in items
+            if item.get("date") is None or (from_date <= item["date"] <= to_date)
+        ]
 
-    # Sort by relevance
-    filtered.sort(key=lambda x: x.get("relevance", 0), reverse=True)
+    items.sort(key=lambda x: x.get("relevance", 0), reverse=True)
+    return items
 
-    return filtered
+
+def enrich_with_comments(
+    items: List[Dict[str, Any]],
+    depth: str = "default",
+    token: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Fetch top comments for top-K items by reactions and attach to metadata.
+
+    Mutates and returns ``items``. Resolves ``token`` via env/gh CLI when
+    not supplied, matching ``search_github``'s fallback chain.
+    """
+    if not items:
+        return items
+    resolved_token = _resolve_token(token)
+    if not resolved_token:
+        _log("No GitHub token available for comment enrichment")
+        return items
+    return _enrich_top_items(items, depth, resolved_token)
 
 
 def _enrich_top_items(

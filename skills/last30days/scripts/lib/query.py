@@ -10,6 +10,10 @@ PREFIXES = [
     'what are people saying about', 'what do people think about',
     'how do i use', 'how to use', 'how to',
     'what are', 'what is', 'tips for', 'best practices for',
+    # Hebrew question/meta prefixes
+    'מה יש חדש ב', 'מה יש חדש על', 'מה אנשים אומרים על',
+    'מה חדש ב', 'מה חדש על', 'איך להשתמש ב',
+    'מהם המוצרים של', 'מה הם', 'מהם',
 ]
 
 # Multi-word suffixes (used by bird_x)
@@ -41,6 +45,12 @@ NOISE_WORDS = frozenset({
     'using', 'uses', 'use',
     # Misc filler
     'people', 'saying', 'think', 'said', 'lately',
+    # Hebrew function words / prepositions / filler
+    'מה', 'מי', 'איך', 'למה', 'איפה', 'מתי', 'כמה', 'האם',
+    'של', 'על', 'עם', 'אל', 'את', 'בין', 'כי', 'כן', 'לא',
+    'יש', 'אין', 'כבר', 'רק', 'גם', 'אבל', 'כך', 'זה', 'זו',
+    'חדש', 'חדשים', 'טוב', 'טובים', 'הכי', 'ביותר',
+    'מוצרים', 'מבצע', 'מבצעים', 'חדשות', 'עדכונים',
 })
 
 

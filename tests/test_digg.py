@@ -5,20 +5,16 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
-
-from lib import digg  # noqa: E402
-from lib import subproc  # noqa: E402
-
+from lib import digg
+from lib import subproc
 
 # === Helpers ===
+
 
 def _cluster(
     cluster_url_id: str = "abc123xy",
@@ -66,8 +62,8 @@ def _post(
 def _stdout_for(payload: dict) -> subproc.SubprocResult:
     return subproc.SubprocResult(returncode=0, stdout=json.dumps(payload), stderr="")
 
-
 # === _parse_first_post_age ===
+
 
 def test_parse_first_post_age_days():
     today = datetime(2026, 5, 9, tzinfo=timezone.utc)
@@ -104,8 +100,8 @@ def test_parse_first_post_age_invalid():
     assert digg._parse_first_post_age("d") is None
     assert digg._parse_first_post_age("-3d") is None
 
-
 # === parse_digg_response ===
+
 
 def test_parse_response_happy_path():
     response = {
@@ -193,8 +189,8 @@ def test_parse_response_engagement_rank_score():
     assert by_id["top"]["engagement"]["rank_score"] == 50.0
     assert by_id["off-leaderboard"]["engagement"]["rank_score"] == 0.0
 
-
 # === _parse_post ===
+
 
 def test_parse_post_happy():
     out = digg._parse_post(_post(username="adam", body="Hello world"))
@@ -211,7 +207,44 @@ def test_parse_post_drops_missing_body_or_handle_or_url():
     assert digg._parse_post(None) is None  # type: ignore[arg-type]
 
 
+def test_parse_post_drops_non_http_scheme_xurl():
+    """Any non-http(s) scheme on xUrl yields no post.
+
+    A malicious Digg API response (or compromised upstream) could set xUrl to
+    javascript:, data:text/html;..., file:, vbscript:, etc. The HTML report
+    renders the xUrl into an <a href> attribute, so any non-web scheme is a
+    stored-XSS or local-file vector when the user clicks the attribution.
+    """
+    for bad_url in (
+        "javascript:alert(1)",
+        "data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg==",
+        "vbscript:msgbox(1)",
+        "file:///etc/passwd",
+        "about:blank",
+    ):
+        out = digg._parse_post(_post(x_url=bad_url))
+        assert out is None, f"expected non-http xUrl to be dropped, got: {out}"
+
+    # http and https remain accepted.
+    assert digg._parse_post(_post(x_url="https://x.com/a/status/1")) is not None
+    assert digg._parse_post(_post(x_url="http://x.com/a/status/1")) is not None
+
+
+def test_parse_post_logs_unsafe_xurl_rejection_even_in_non_tty(capsys):
+    """Security-class drops must be observable in non-interactive runs.
+
+    The default ``log.source_log`` path is TTY-gated; without forcing
+    ``tty_only=False`` the rejection is invisible in Claude Code runs,
+    which is exactly the attack surface. Guard against silent regression.
+    """
+    digg._parse_post(_post(x_url="javascript:alert(1)"))
+    err = capsys.readouterr().err
+    assert "[Digg] dropped post with unsafe xUrl scheme" in err
+    assert "javascript:alert(1)" in err
+
+
 # === _run_cli / search_digg with stubbed subprocess ===
+
 
 def test_search_digg_binary_missing_returns_empty(monkeypatch):
     monkeypatch.setattr(digg.shutil, "which", lambda _: None)
@@ -280,8 +313,8 @@ def test_search_digg_empty_query_short_circuits(monkeypatch):
     assert out["results"] == []
     called.assert_not_called()
 
-
 # === enrich_with_top_posts ===
+
 
 def test_enrich_with_top_posts_attaches_posts(monkeypatch):
     monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
@@ -357,8 +390,8 @@ def test_enrich_top_k_zero_skips_all(monkeypatch):
     digg.enrich_with_top_posts(items, top_k=0)
     fake.assert_not_called()
 
-
 # === enrich_source_items (post-dedupe path) ===
+
 
 class _FakeSourceItem:
     def __init__(self, source, item_id, engagement, metadata):
@@ -410,14 +443,14 @@ def test_enrich_source_items_falls_back_to_item_id(monkeypatch):
     digg.enrich_source_items(items, top_k=1)
     assert captured["cluster_id"] == "fallbackid"
 
-
 # === Live tests (opt-in) ===
 
 LIVE = os.environ.get("LAST30DAYS_DIGG_LIVE", "").lower() in ("1", "true", "yes")
 HAVE_BIN = shutil.which(digg.CLI_BIN) is not None
 
-
 @pytest.mark.skipif(not (LIVE and HAVE_BIN), reason="LAST30DAYS_DIGG_LIVE not set or digg-pp-cli missing")
+
+
 class TestLiveDigg:
     def test_search_returns_clusters(self):
         out = digg.search_digg("claude code", "2026-04-09", "2026-05-09", depth="quick")
@@ -450,7 +483,6 @@ class TestLiveDigg:
     def test_missing_cluster_id_graceful(self):
         posts = digg.fetch_top_posts("notarealclusterid", posts_per=2)
         assert posts == []
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

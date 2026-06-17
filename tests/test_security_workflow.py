@@ -20,7 +20,7 @@ def test_security_workflow_runs_dependency_audit_advisory_first() -> None:
     text = _workflow_text()
 
     assert "dependency-audit:" in text
-    assert "pip-audit" in text
+    assert "uv audit --locked" in text
     assert "continue-on-error: true" in text
     assert "Set continue-on-error: false once a clean baseline run is confirmed" in text
 

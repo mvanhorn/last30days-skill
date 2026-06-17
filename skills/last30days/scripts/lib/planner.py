@@ -4,8 +4,17 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 
 from . import http, providers, query, schema
+
+# Hebrew Unicode block: U+0590–U+05FF
+_HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
+
+
+def detect_language(text: str) -> str | None:
+    """Return 'he' if the text contains Hebrew characters, else None."""
+    return 'he' if _HEBREW_RE.search(text) else None
 
 ALLOWED_INTENTS = {
     "factual",
@@ -20,7 +29,7 @@ ALLOWED_INTENTS = {
 ALLOWED_CLUSTER_MODES = {"none", "story", "workflow", "market", "debate"}
 QUICK_SOURCE_PRIORITY = {
     "factual": ["hackernews", "reddit", "x", "xquik", "youtube"],
-    "product": ["youtube", "reddit", "x", "xquik", "tiktok"],
+    "product": ["jobs", "youtube", "reddit", "x", "xquik", "tiktok"],
     "concept": ["hackernews", "reddit", "x", "xquik", "youtube"],
     "opinion": ["reddit", "x", "xquik", "youtube", "hackernews"],
     "how_to": ["youtube", "reddit", "x", "xquik", "hackernews"],
@@ -30,7 +39,7 @@ QUICK_SOURCE_PRIORITY = {
 }
 SOURCE_PRIORITY = {
     "factual": ["hackernews", "reddit", "x", "youtube"],
-    "product": ["youtube", "reddit", "x", "tiktok", "hackernews"],
+    "product": ["jobs", "youtube", "reddit", "x", "tiktok", "hackernews"],
     "concept": ["hackernews", "reddit", "x", "youtube"],
     "opinion": ["reddit", "x", "youtube", "hackernews"],
     "how_to": ["youtube", "reddit", "x", "hackernews"],
@@ -73,6 +82,7 @@ SOURCE_CAPABILITIES = {
     "github": {"discussion", "link"},
     "grounding": {"web", "reference", "link"},
     "perplexity": {"web", "reference", "analysis"},
+    "jobs": {"jobs", "company_signal", "link"},
 }
 DEFAULT_INTENT_CAPABILITIES = {
     "comparison": {"discussion", "video", "web", "reference", "social", "link", "market"},
@@ -274,7 +284,15 @@ def _sanitize_plan(
         freshness_mode=freshness_mode,
         cluster_mode=cluster_mode,
         raw_topic=topic,
-        subqueries=_normalize_subquery_weights(_trim_subqueries_for_depth(subqueries, intent, depth, eligible_sources)),
+        subqueries=_normalize_subquery_weights(
+            _trim_subqueries_for_depth(
+                subqueries,
+                intent,
+                depth,
+                eligible_sources,
+                requested_sources=requested_sources,
+            )
+        ),
         source_weights=source_weights,
         notes=[str(note).strip() for note in raw.get("notes") or [] if str(note).strip()],
     )
@@ -307,6 +325,7 @@ def _trim_subqueries_for_depth(
     intent: str,
     depth: str,
     available_sources: list[str],
+    requested_sources: list[str] | None = None,
 ) -> list[schema.SubQuery]:
     # At non-quick depth, expand sources: use capability routing for intents
     # that define it, or all available sources otherwise. The LLM planner may
@@ -336,6 +355,15 @@ def _trim_subqueries_for_depth(
     for subquery in subqueries:
         if depth in {"quick", "default"}:
             preferred_sources = ranked_sources[:limit]
+            if requested_sources:
+                requested = [
+                    source
+                    for source in requested_sources
+                    if source in available_sources and source in subquery.sources
+                ]
+                for source in requested:
+                    if source not in preferred_sources:
+                        preferred_sources.append(source)
         else:
             preferred_sources = [source for source in ranked_sources if source in subquery.sources][:limit]
             if len(preferred_sources) < limit:
@@ -365,6 +393,14 @@ def _fallback_plan(
     note: str = "fallback-plan",
 ) -> schema.QueryPlan:
     intent = _infer_intent(topic)
+    # Hebrew-language topics: elevate web search (grounding) to the front of
+    # the source list since Reddit/HN/GitHub are English-dominant platforms.
+    # Grounding covers Ynet, Walla, Mako, N12 etc. if a web search key is set.
+    if detect_language(topic) == 'he' and 'grounding' in available_sources:
+        ordered = ['grounding'] + [s for s in available_sources if s != 'grounding']
+        available_sources = ordered
+        if requested_sources:
+            requested_sources = ['grounding'] + [s for s in requested_sources if s != 'grounding']
     allowed_sources = requested_sources or available_sources
     source_weights = _default_source_weights(intent, allowed_sources)
     core = query.extract_core_subject(topic, max_words=6, strip_suffixes=True)
@@ -428,7 +464,13 @@ def _fallback_plan(
         cluster_mode=_default_cluster_mode(intent),
         raw_topic=topic,
         subqueries=_normalize_subquery_weights(
-            _trim_subqueries_for_depth(subqueries[:_max_subqueries(intent, topic)], intent, depth, list(source_weights))
+            _trim_subqueries_for_depth(
+                subqueries[:_max_subqueries(intent, topic)],
+                intent,
+                depth,
+                list(source_weights),
+                requested_sources=requested_sources,
+            )
         ),
         source_weights=_normalize_weights(source_weights),
         notes=[note],
@@ -506,6 +548,10 @@ def _default_source_weights(intent: str, sources: list[str]) -> dict[str, float]
                 base[source] += bonus
     elif intent == "factual":
         for source, bonus in {"reddit": 0.8, "x": 0.5}.items():
+            if source in base:
+                base[source] += bonus
+    elif intent == "product":
+        for source, bonus in {"jobs": 0.8, "youtube": 0.5}.items():
             if source in base:
                 base[source] += bonus
     return base

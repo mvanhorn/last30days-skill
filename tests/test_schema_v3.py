@@ -1,8 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import schema
 
@@ -83,7 +79,6 @@ class SchemaV3Tests(unittest.TestCase):
         self.assertEqual(0, item.engagement_score)
         self.assertEqual(0.0, item.source_quality)
         self.assertEqual(0.0, item.local_rank_score)
-
 
 if __name__ == "__main__":
     unittest.main()

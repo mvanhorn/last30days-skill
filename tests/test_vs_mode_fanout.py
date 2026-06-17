@@ -1,4 +1,3 @@
-# ruff: noqa: E402
 """Tests for vs-mode routing into the competitor fanout.
 
 A topic containing " vs " / " versus " triggers N-pass fanout (not the
@@ -9,13 +8,8 @@ pipeline.run() with its own Step 0.55 targeting.
 from __future__ import annotations
 
 import io
-import sys
 import unittest
 from contextlib import redirect_stderr
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "last30days" / "scripts"))
 
 from lib import planner
 
@@ -57,7 +51,6 @@ class VsModeEntityDetectionTests(unittest.TestCase):
         # Defense against silly input — two "Drake"s should collapse.
         result = planner._comparison_entities("Drake vs Drake")
         self.assertEqual(result, ["Drake"])
-
 
 if __name__ == "__main__":
     unittest.main()

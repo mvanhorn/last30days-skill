@@ -1,8 +1,4 @@
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import cluster, schema
 
@@ -195,7 +191,6 @@ class TestClusterUncertainty(unittest.TestCase):
         ]
         result = cluster._cluster_uncertainty(candidates)
         self.assertEqual("thin-evidence", result)
-
 
 if __name__ == "__main__":
     unittest.main()

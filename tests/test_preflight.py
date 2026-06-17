@@ -6,11 +6,7 @@ public v3.0.8 and still returned junk for queries like 'birthday gift for
 cannot bypass by skipping SKILL.md.
 """
 
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib import preflight
 
@@ -122,7 +118,6 @@ class TestRefuseMessage(unittest.TestCase):
         msg = preflight.check_class_1_trap("birthday gift for 40 year old")
         assert msg is not None
         self.assertIn("birthday gift for 40 year old", msg)
-
 
 if __name__ == "__main__":
     unittest.main()

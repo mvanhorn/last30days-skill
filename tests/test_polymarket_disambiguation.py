@@ -1,14 +1,8 @@
-# ruff: noqa: E402
 """Tests for --polymarket-keywords filter and filter_items_against_keywords."""
 
 from __future__ import annotations
 
-import sys
 import unittest
-from pathlib import Path
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "last30days" / "scripts"))
 
 from lib import polymarket
 
@@ -68,7 +62,6 @@ class FilterItemsAgainstKeywordsTests(unittest.TestCase):
         items = [_item("Glasgow Warriors"), _item("Rogue Warriors")]
         out = polymarket.filter_items_against_keywords(items, ["nba", "gsw"])
         self.assertEqual(out, [])
-
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,12 +1,6 @@
 """Tests for the fun judge heuristic fallback in rerank.py."""
 
-import sys
-from pathlib import Path
-
 import pytest
-
-SCRIPTS_DIR = Path(__file__).parent.parent / "skills" / "last30days" / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
 
 from lib import schema
 from lib.rerank import _apply_single_fun_fallback, _extract_comment_text

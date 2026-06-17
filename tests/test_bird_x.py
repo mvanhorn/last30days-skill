@@ -2,15 +2,11 @@ import json
 import os
 import shutil
 import subprocess
-import sys
 import textwrap
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
-
 from lib.bird_x import parse_bird_response
-
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VENDORED_BIRD = REPO_ROOT / "skills" / "last30days" / "scripts" / "lib" / "vendor" / "bird-search" / "bird-search.mjs"
@@ -30,7 +26,6 @@ class TestBirdXEngagementZero(unittest.TestCase):
         items = parse_bird_response(tweets, "test query")
         self.assertEqual(0, items[0]["engagement"]["likes"])
         self.assertEqual(5, items[0]["engagement"]["reposts"])
-
 
 @unittest.skipUnless(shutil.which("node"), "node is required for vendored Bird tests")
 class TestVendoredBirdRuntime(unittest.TestCase):
@@ -304,7 +299,6 @@ class TestRunBirdSearchJsonDecodeRetry(unittest.TestCase):
 
         self.assertEqual(response, timeout_error)
         mock_sleep.assert_not_called()
-
 
 if __name__ == "__main__":
     unittest.main()

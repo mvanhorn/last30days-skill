@@ -16,8 +16,26 @@ The Python script (`scripts/last30days.py`) the Skill's SKILL.md invokes to do t
 
 The agent runtime that loads Skills and invokes them on the user's behalf. Claude Code is the most common Harness for this Skill but not the only one — Codex, Cursor, GitHub Copilot, Gemini CLI, and the rest of the Agent Skills ecosystem also count. "Multi-harness" describes a Skill that works correctly across every Harness it installs into; features written without multi-harness awareness (e.g., engine flags with no SKILL.md integration, or paths hardcoded to one Harness's install layout) regress on Harnesses other than the one they were tested against.
 
-## Distribution
+## Research pipeline
 
-### Beta channel
+### Primary entity
 
-A parallel install of the Skill, sourced from the private `mvanhorn/last30days-skill-private` repo and installed as `/last30days-beta` rather than `/last30days`. The Beta channel exists so experimental changes can be tested by real users before they ship to the public `/last30days`. Promotion from Beta to public happens via a review PR against this (public) repo — Beta-only changes never ship to public without that PR. The Beta channel workflow guide lives in `BETA.md` in the private repo.
+The brand or proper-noun core of a research topic — the topic with its Intent modifier stripped. It is what the research is *about*, as distinct from how the user phrased the search.
+
+### Intent modifier
+
+A trailing word or phrase in a topic that expresses what the user wants to know rather than what the topic is ("review", "use cases", "pricing"). Stripped when deriving the Primary entity.
+
+### Entity grounding
+
+The check that a candidate item plausibly mentions the Primary entity before final ranking. Grounding keys on the head token (first word) of the Primary entity rather than the full phrase — trailing words are usually search descriptors, so requiring them falsely demotes on-entity items.
+
+An item that fails grounding receives a decisive entity-miss demotion, designed so engagement cannot rescue off-entity content. Because the demotion is decisive, the grounding bar is deliberately conservative: its failure modes degrade toward "no penalty," never toward burying on-entity signal.
+
+### Keyless path
+
+The research flow available with no API keys: source data is gathered by scraping and RSS rather than authenticated APIs, and ranking falls back to local scoring instead of LLM-based reranking. This is the free tier of the Skill; lexical quality safeguards like Entity grounding matter most here, because no LLM is available to judge relevance semantically.
+
+### Comment-enrichment slots
+
+The small, depth-dependent budget of Reddit posts whose comments get fetched in the Keyless path. Slot selection is relevance-aware: posts that pass Entity grounding claim slots first, so the budget is not spent on high-engagement posts that final ranking will demote anyway.

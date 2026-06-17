@@ -1,4 +1,3 @@
-# ruff: noqa: E402
 """Tests for the BRAVE/SERPER web-promo suppression when hosting-model-driven."""
 
 from __future__ import annotations
@@ -11,7 +10,6 @@ import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO_ROOT / "skills" / "last30days" / "scripts"))
 
 
 def _engine() -> Path:
@@ -51,7 +49,7 @@ class FooterNudgeSuppressionTests(unittest.TestCase):
         # .claude/last30days.env above the repo on the contributor's machine.
         with tempfile.TemporaryDirectory() as tmp:
             return subprocess.run(
-                cmd, capture_output=True, text=True, env=env, cwd=tmp,
+                cmd, capture_output=True, text=True, encoding="utf-8", env=env, cwd=tmp,
             )
 
     def test_bare_run_emits_web_promo(self):
@@ -89,7 +87,6 @@ class FooterNudgeSuppressionTests(unittest.TestCase):
             combined,
             msg="web promo should be suppressed when --plan is passed",
         )
-
 
 if __name__ == "__main__":
     unittest.main()

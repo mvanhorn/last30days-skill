@@ -5,18 +5,13 @@ HN, Polymarket, Reddit (always active), X, YouTube.
 ScrapeCreators adds TikTok + Instagram as bonus sources, not core.
 """
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
-
 import pytest
 from unittest.mock import patch
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _base_config(**overrides):
     """Return a minimal config dict."""
@@ -24,6 +19,7 @@ def _base_config(**overrides):
         "AUTH_TOKEN": None,
         "CT0": None,
         "XAI_API_KEY": None,
+        "XQUIK_API_KEY": None,
         "SCRAPECREATORS_API_KEY": None,
     }
     config.update(overrides)
@@ -52,10 +48,10 @@ def _compute(config_overrides=None, result_overrides=None, ytdlp_installed=False
     with patch.object(youtube_yt, "is_ytdlp_installed", return_value=ytdlp_installed):
         return compute_quality_score(config, results)
 
-
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
 
 class TestBaseline:
     """HN + Polymarket + Reddit always active (no X, no YT) -> 60%."""
@@ -102,6 +98,20 @@ class TestXCookies:
 
     def test_nudge_mentions_yt_only(self):
         q = _compute(config_overrides={"AUTH_TOKEN": "tok123"})
+        assert "YouTube" in q["nudge_text"]
+        assert "X/Twitter" not in q["nudge_text"]
+
+
+class TestXquikKey:
+    """+Xquik key -> 80% without browser-cookie or xAI credentials."""
+
+    def test_score_80(self):
+        q = _compute(config_overrides={"XQUIK_API_KEY": "xq_test"})
+        assert q["score_pct"] == 80
+        assert "x" in q["core_active"]
+
+    def test_nudge_mentions_yt_only(self):
+        q = _compute(config_overrides={"XQUIK_API_KEY": "xq_test"})
         assert "YouTube" in q["nudge_text"]
         assert "X/Twitter" not in q["nudge_text"]
 
@@ -171,6 +181,7 @@ class TestSCDoesNotAffectCoreScore:
         )
         assert q["nudge_text"] is not None
         assert "x.com" in q["nudge_text"].lower()
+        assert "XQUIK_API_KEY" in q["nudge_text"]
 
 
 class TestDisclaimerAlwaysPresent:
@@ -382,6 +393,72 @@ class TestYouTubeCaptionsDisabledDoesNotFalseFlag:
         assert "youtube" in q["core_degraded"]
 
 
+class TestStaleNudgeRequiresActualFetchFailures:
+    """Zero failed fetches must suppress the stale-yt-dlp nudge (#531).
+
+    The report counts (youtube_videos_count / youtube_transcripts_count) are
+    computed from post-pruning items. A run where every transcript fetch
+    succeeded but the fetched videos were later pruned by freshness scoring
+    looks identical to a stale-binary run from those counts alone, producing
+    a false "stale yt-dlp binary" nudge. When actual fetch outcomes are
+    available and show zero failures, the binary demonstrably works.
+    """
+
+    def test_zero_failures_does_not_flag(self):
+        # The #531 repro: 2 in-report videos, 0 transcripts among them, but
+        # all 6 attempted fetches succeeded (on videos pruned later).
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 2,
+                "youtube_transcripts_count": 0,
+                "youtube_captions_disabled_count": 0,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 0,
+            },
+        )
+        assert "youtube" not in q["core_degraded"]
+
+    def test_actual_failures_still_flag(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 6,
+                "youtube_transcripts_count": 0,
+                "youtube_captions_disabled_count": 0,
+                "youtube_transcript_fetch_attempts": 6,
+                "youtube_transcript_fetch_failures": 6,
+            },
+        )
+        assert "youtube" in q["core_degraded"]
+
+    def test_missing_fetch_stats_preserves_existing_behavior(self):
+        # Callers that don't pass fetch stats (or the SC path, which doesn't
+        # use the local yt-dlp binary) fall back to the ratio heuristic.
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 6,
+                "youtube_transcripts_count": 0,
+                "youtube_captions_disabled_count": 0,
+            },
+        )
+        assert "youtube" in q["core_degraded"]
+
+    def test_zero_attempts_preserves_existing_behavior(self):
+        q = _compute(
+            ytdlp_installed=True,
+            result_overrides={
+                "youtube_videos_count": 6,
+                "youtube_transcripts_count": 0,
+                "youtube_captions_disabled_count": 0,
+                "youtube_transcript_fetch_attempts": 0,
+                "youtube_transcript_fetch_failures": 0,
+            },
+        )
+        assert "youtube" in q["core_degraded"]
+
+
 class TestInstagramSilentFailure:
     """Instagram is a `bonus` source via SC. Silent-failure detection: if SC
     is configured but the source returned zero items, surface a nudge so the
@@ -576,4 +653,3 @@ class TestInstagramSilentFailure:
             result_overrides={"instagram_items_count": 0},
         )
         assert "instagram" in q["bonus_errored"]
-

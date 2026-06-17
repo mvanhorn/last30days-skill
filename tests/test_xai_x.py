@@ -1,9 +1,5 @@
 import json
-import sys
 import unittest
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"))
 
 from lib.xai_x import parse_x_response
 
@@ -62,7 +58,6 @@ class TestXaiXEngagementZero(unittest.TestCase):
         self.assertEqual(3, eng["reposts"])
         self.assertEqual(1, eng["replies"])
         self.assertEqual(0, eng["quotes"])
-
 
 if __name__ == "__main__":
     unittest.main()

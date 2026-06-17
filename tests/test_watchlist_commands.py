@@ -3,21 +3,19 @@
 import json
 import sqlite3
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 import pytest
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "skills" / "last30days" / "scripts"))
-
 import store
 import watchlist
 from lib import schema
 
-
 @pytest.fixture
+
+
 def temp_db():
     """Create a temporary database for testing."""
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
@@ -37,8 +35,8 @@ def temp_db():
     if db_path.exists():
         db_path.unlink()
 
-
 # === Tests for cmd_add() ===
+
 
 def test_cmd_add_basic(temp_db, capsys):
     """Test adding a topic with default schedule."""
@@ -104,8 +102,8 @@ def test_cmd_add_with_search_queries(temp_db, capsys):
     queries = json.loads(topic["search_queries"])
     assert queries == ["query1", "query2", "query3"]
 
-
 # === Tests for cmd_remove() ===
+
 
 def test_cmd_remove_existing_topic(temp_db, capsys):
     """Test removing an existing topic."""
@@ -139,8 +137,8 @@ def test_cmd_remove_nonexistent_topic(temp_db, capsys):
     assert output["action"] == "not_found"
     assert output["topic"] == "Nonexistent Topic"
 
-
 # === Tests for cmd_list() ===
+
 
 def test_cmd_list_empty(temp_db, capsys):
     """Test listing when no topics exist."""
@@ -176,8 +174,8 @@ def test_cmd_list_with_topics(temp_db, capsys):
     topic_names = {t["name"] for t in output["topics"]}
     assert topic_names == {"Topic 1", "Topic 2", "Topic 3"}
 
-
 # === Tests for cmd_delta() ===
+
 
 def test_cmd_delta_outputs_topic_delta(temp_db, capsys):
     """Test printing the latest watchlist delta as JSON."""
@@ -231,8 +229,8 @@ def test_cmd_delta_unknown_topic_exits(temp_db):
     with pytest.raises(SystemExit):
         watchlist.cmd_delta(args)
 
-
 # === Tests for cmd_config() ===
+
 
 def test_cmd_config_delivery(temp_db, capsys):
     """Test configuring delivery channel."""
@@ -276,10 +274,11 @@ def test_cmd_config_unknown_key(temp_db):
     with pytest.raises(SystemExit):
         watchlist.cmd_config(args)
 
-
 # === Tests for _run_topic() ===
 
 @patch('watchlist.subprocess.run')
+
+
 def test_run_topic_success(mock_subprocess, temp_db):
     """Test successful topic run."""
     topic = store.add_topic("Test Topic")
@@ -364,8 +363,9 @@ def test_run_topic_success(mock_subprocess, temp_db):
     assert result["new"] == 1
     assert result["topic"] == "Test Topic"
 
-
 @patch('watchlist.subprocess.run')
+
+
 def test_run_topic_failure(mock_subprocess, temp_db):
     """Test topic run failure."""
     topic = store.add_topic("Test Topic")
@@ -381,8 +381,9 @@ def test_run_topic_failure(mock_subprocess, temp_db):
     assert result["status"] == "failed"
     assert "Error message" in result["error"]
 
-
 @patch('watchlist.subprocess.run')
+
+
 def test_run_topic_timeout(mock_subprocess, temp_db):
     """Test topic run timeout."""
     topic = store.add_topic("Test Topic")
@@ -395,9 +396,10 @@ def test_run_topic_timeout(mock_subprocess, temp_db):
     assert result["status"] == "failed"
     assert result["error"] == "timeout"
 
-
 @patch('watchlist.subprocess.run')
 @patch('watchlist._deliver_findings')
+
+
 def test_run_topic_calls_delivery(mock_deliver, mock_subprocess, temp_db):
     """Test that successful run calls delivery."""
     topic = store.add_topic("Test Topic")
@@ -484,10 +486,11 @@ def test_run_topic_calls_delivery(mock_deliver, mock_subprocess, temp_db):
     assert call_args[0] == "Test Topic"
     assert call_args[1]["new"] == 1
 
-
 # === Tests for cmd_run_one() ===
 
 @patch('watchlist._run_topic')
+
+
 def test_cmd_run_one(mock_run, temp_db, capsys):
     """Test running a single topic."""
     topic = store.add_topic("Test Topic")
@@ -521,10 +524,11 @@ def test_cmd_run_one_nonexistent_topic(temp_db, capsys):
     with pytest.raises(SystemExit):
         watchlist.cmd_run_one(args)
 
-
 # === Tests for cmd_run_all() ===
 
 @patch('watchlist._run_topic')
+
+
 def test_cmd_run_all_no_topics(mock_run, temp_db, capsys):
     """Test running all topics when none exist."""
     args = Mock()
@@ -537,8 +541,9 @@ def test_cmd_run_all_no_topics(mock_run, temp_db, capsys):
     
     assert "No enabled topics" in output["message"]
 
-
 @patch('watchlist._run_topic')
+
+
 def test_cmd_run_all_multiple_topics(mock_run, temp_db, capsys):
     """Test running multiple topics."""
     # Add topics
@@ -564,9 +569,10 @@ def test_cmd_run_all_multiple_topics(mock_run, temp_db, capsys):
     assert output["action"] == "run_all"
     assert len(output["results"]) == 2
 
-
 @patch('watchlist._run_topic')
 @patch('watchlist.store.get_daily_cost')
+
+
 def test_cmd_run_all_respects_budget(mock_cost, mock_run, temp_db, capsys):
     """Test that run-all respects daily budget."""
     # Add topics
@@ -598,7 +604,6 @@ def test_cmd_run_all_respects_budget(mock_cost, mock_run, temp_db, capsys):
     skipped = [r for r in results if r["status"] == "skipped"]
     
     assert len(skipped) == 3  # All 3 topics skipped
-
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
