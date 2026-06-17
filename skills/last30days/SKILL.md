@@ -255,17 +255,62 @@ Research ANY topic across Reddit, X, YouTube, and other sources. Surface what pe
 Before running any `last30days.py` command in this skill, resolve a Python 3.12+ interpreter once and keep it in `LAST30DAYS_PYTHON`:
 
 ```bash
-for py in python3.14 python3.13 python3.12 python3; do
-  command -v "$py" >/dev/null 2>&1 || continue
-  "$py" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || continue
-  LAST30DAYS_PYTHON="$py"
-  break
-done
+try_last30days_python() {
+  candidate="$1"
+  [ -n "$candidate" ] || return 1
+  if [ -x "$candidate" ]; then
+    :
+  elif command -v "$candidate" >/dev/null 2>&1; then
+    :
+  else
+    return 1
+  fi
+  "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || return 1
+  LAST30DAYS_PYTHON="$candidate"
+  return 0
+}
+
+windows_path_to_unix() {
+  path="$1"
+  [ -n "$path" ] || return 1
+  if command -v cygpath >/dev/null 2>&1; then
+    cygpath -u "$path"
+  else
+    printf '%s\n' "$path"
+  fi
+}
 
 if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
-  echo "ERROR: last30days v3 requires Python 3.12+. Install python3.12 or python3.13 and rerun." >&2
+  while IFS= read -r windows_python_root; do
+    [ -n "$windows_python_root" ] && [ -d "$windows_python_root" ] || continue
+    while IFS= read -r py; do
+      try_last30days_python "$py" && break 2
+    done <<EOF_PYTHON_CANDIDATES
+$(find "$windows_python_root" -maxdepth 2 -type f -iname python.exe 2>/dev/null | sort -r)
+EOF_PYTHON_CANDIDATES
+  done <<EOF_WINDOWS_PYTHON_ROOTS
+$([ -n "${LOCALAPPDATA:-}" ] && printf '%s\n' "$(windows_path_to_unix "$LOCALAPPDATA")/Programs/Python")
+$([ -n "${ProgramFiles:-}" ] && windows_path_to_unix "$ProgramFiles")
+$([ -n "${PROGRAMFILES:-}" ] && windows_path_to_unix "$PROGRAMFILES")
+$(program_files_x86="$(printenv 'ProgramFiles(x86)' 2>/dev/null || true)"; [ -n "$program_files_x86" ] && windows_path_to_unix "$program_files_x86")
+EOF_WINDOWS_PYTHON_ROOTS
+fi
+
+if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
+  for py in python3.14 python3.13 python3.12 python3 python; do
+    try_last30days_python "$py" && break
+  done
+fi
+
+if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
+  echo "ERROR: last30days v3 requires Python 3.12+. Install Python 3.12+ or set LAST30DAYS_PYTHON to a supported interpreter." >&2
   exit 1
 fi
+
+"${LAST30DAYS_PYTHON}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || {
+  echo "ERROR: LAST30DAYS_PYTHON must point to Python 3.12+." >&2
+  exit 1
+}
 
 LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
 ```
@@ -376,7 +421,7 @@ Known keyword-trap classes and how to handle each:
 **Class 2: Numeric / age keyword trap**
 - Pattern: topic contains a specific number that collides with unrelated content (42 = Jackie Robinson + Hitchhiker's + a 42" quilt; 40 = 40th anniversary posts; 50 = state-count posts; 100 = bench-press posts).
 - Why it fails: the number dominates retrieval and pulls in unrelated content. A search that prominently features "42" returns jersey-number posts; a search for "the 100" returns TV-show posts.
-- Action: Strip the number from the engine search query unless it is semantically load-bearing (e.g., "GPT-4" yes, "40 year old man" no, "Area 51" yes, "top 10 foods" no). Keep the number in the user's original framing for context; drop it from the engine query. Document in Resolved: "Dropping '{number}' from the search query - it is a keyword trap that pulls in unrelated content. Search will cover the concept generically."
+- Action: Strip the number from the engine search query unless changing or removing it would change the topic itself (e.g., "GPT-4" yes, "40 year old man" no, "Area 51" yes, "top 10 foods" no). Keep the number in the user's original framing for context; drop it from the engine query. Document in Resolved: "Dropping '{number}' from the search query - it is a keyword trap that pulls in unrelated content. Search will cover the concept generically."
 
 **Class 3: Overly-literal concept phrase**
 - Pattern: `how to use X`, `what is Y`, `tutorial for Z`, `explain A` — tutorial-shaped phrasing where social posts are in different vocabulary.
@@ -635,7 +680,7 @@ PLAN_EOF
   --competitors-plan "$COMPETITORS_PLAN_FILE"
 ```
 
-**The quoted heredoc marker `'PLAN_EOF'` is load-bearing** — quoting suppresses shell interpolation so apostrophes, `$`, backticks, etc. pass through verbatim. If you ever switch to an unquoted `<<PLAN_EOF`, every variable reference and apostrophe inside the JSON becomes a parse hazard.
+**Keep the heredoc marker quoted as `'PLAN_EOF'`.** Quoting suppresses shell interpolation so apostrophes, `$`, backticks, etc. pass through verbatim. If you ever switch to an unquoted `<<PLAN_EOF`, every variable reference and apostrophe inside the JSON becomes a parse hazard.
 
 Topic A (the main topic, first in the vs-string) uses outer `--x-handle`, `--x-related`, `--subreddits`, `--github-user`, `--github-repo`, `--tiktok-*`, `--ig-creators` as usual. Topics B and C get their targeting from `--competitors-plan` entries (keyed by entity name, case-insensitive).
 
@@ -1238,7 +1283,7 @@ Also mentioned (exists, not recommended): [comma-separated list with one-line no
 - Ignoring anti-signal quotes. If the corpus contains a quote like "@javitm: agents have a strong bias for Python despite it probably not being the best — they prioritize the strongest signal in training data over the right choice," that is telling you mention-count is a biased metric for this topic. Read it; surface it; do not ignore it.
 - Stress-test your top pick before emitting. Ask: "Would the research actually defend this claim to a skeptical expert?" If the answer is no, re-rank.
 
-**Named failure mode (2026-04-18):** On `best programming language for AI agents`, Opus 4.7 led with `🏆 Most mentioned: Python (15+x mentions)` and put Go at #3 with 7x mentions. Model self-debug: "I counted when I should have judged. The single most load-bearing quote in the whole research was @javitm saying agents have a bias for Python despite it probably not being the best. I read that quote and then ranked by mention count anyway. The Flask-creator switching to Go was the real headline; I buried it." Do not repeat this failure.
+**Named failure mode (2026-04-18):** On `best programming language for AI agents`, Opus 4.7 led with `🏆 Most mentioned: Python (15+x mentions)` and put Go at #3 with 7x mentions. Model self-debug: "I counted when I should have judged. @javitm's quote should have changed the ranking because it called Python mentions a bias signal, not evidence of fit. I read that quote and then ranked by mention count anyway. The Flask-creator switching to Go was the real headline; I buried it." Do not repeat this failure.
 
 **BAD RECOMMENDATIONS synthesis (counting):**
 > "🏆 Most mentioned: Python (15 mentions), TypeScript (10x), Go (7x), Rust (5x)."
@@ -1477,6 +1522,7 @@ If the research output contains a `**🔍 Research Coverage:**` block, render it
 Question: "X/Twitter wasn't searched. Want to unlock it?"
 Options:
 - "Scan my browser cookies (free)" - Get consent, run cookie scan, write BROWSER_CONSENT=true + FROM_BROWSER=auto to .env
+- "I have AUTH_TOKEN and CT0 from my browser" - Ask them to paste each value, then write AUTH_TOKEN=<value>\nCT0=<value> to .env
 - "I have an xAI API key" - Ask them to paste it, write XAI_API_KEY to .env
 - "Skip for now"
 

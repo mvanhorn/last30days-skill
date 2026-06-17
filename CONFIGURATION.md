@@ -82,8 +82,15 @@ SCRAPECREATORS_API_KEY=<your-scrapecreators-key>
 INCLUDE_SOURCES=tiktok,instagram
 
 # X authentication (one option only)
-XAI_API_KEY=<your-xai-key>
-# OR cookie-jar (no key needed; logs in via your browser session)
+AUTH_TOKEN=<your-auth-token>
+CT0=<your-ct0-token>
+# OR xAI API key (paid)
+# XAI_API_KEY=<your-xai-key>
+# OR cookie-jar (free; logs in via your browser session).
+# Unset = Firefox + Safari (silent). FROM_BROWSER=auto also tries the Chromium
+# family (Chrome, Brave, Edge, Vivaldi, Opera, Arc, Chromium); it only prompts
+# for macOS Keychain access on the browser that actually holds your X cookies.
+# Or name a single browser, e.g. brave/edge. On Windows only Firefox is supported.
 # FROM_BROWSER=firefox
 
 # Bluesky
@@ -313,5 +320,5 @@ This is the right home for client-specific changes you don't intend to upstream 
 
 - The CLI flag surface: `python3 scripts/last30days.py --help`
 - The skill contract (voice, LAWs, pre-flight protocol): [`skills/last30days/SKILL.md`](skills/last30days/SKILL.md)
-- Engine spec (some sections stale; SKILL.md wins on conflicts): [`SPEC.md`](SPEC.md)
+- Shared package vocabulary and engine/harness terminology: [`CONCEPTS.md`](CONCEPTS.md)
 - Contributor guidance: [`CONTRIBUTORS.md`](CONTRIBUTORS.md)

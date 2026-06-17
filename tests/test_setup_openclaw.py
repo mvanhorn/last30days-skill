@@ -62,7 +62,7 @@ class TestRunOpenclawSetup:
     def test_openclaw_metadata_keeps_scrapecreators_optional(self):
         """OpenClaw metadata should not hard-require the ScrapeCreators key."""
         skill_md = Path(__file__).parent.parent / "skills" / "last30days" / "SKILL.md"
-        text = skill_md.read_text()
+        text = skill_md.read_text(encoding="utf-8")
         assert "SCRAPECREATORS_API_KEY" in text
         expected = (
             "requires:\n"
@@ -383,74 +383,6 @@ class TestRunFullDeviceAuth:
         mock_browser.assert_not_called()
 
 
-class TestAuthWithPat:
-    """Tests for auth_with_pat()."""
-
-    @patch("lib.setup_wizard.urlopen")
-    def test_success(self, mock_urlopen):
-        """Valid PAT -> returns dict with api_key."""
-        resp = MagicMock()
-        resp.read.return_value = json.dumps({
-            "api_key": "sc_live_test123",
-            "github_username": "testuser",
-            "credits_remaining": 100,
-        }).encode()
-        resp.__enter__ = lambda s: s
-        resp.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = resp
-
-        result = setup_wizard.auth_with_pat("gho_validtoken")
-
-        assert result is not None
-        assert result["api_key"] == "sc_live_test123"
-        assert result["github_username"] == "testuser"
-
-    @patch("lib.setup_wizard.urlopen")
-    def test_invalid_token_returns_none(self, mock_urlopen):
-        """HTTP 401 (invalid token) -> returns None."""
-        from urllib.error import HTTPError
-        mock_urlopen.side_effect = HTTPError(
-            url="https://api.scrapecreators.com/v1/github/pat/auth",
-            code=401, msg="Unauthorized", hdrs={}, fp=None,
-        )
-
-        result = setup_wizard.auth_with_pat("gho_badtoken")
-        assert result is None
-
-    @patch("lib.setup_wizard.urlopen")
-    def test_insufficient_scope_returns_none(self, mock_urlopen):
-        """HTTP 422 (insufficient scope) -> returns None."""
-        from urllib.error import HTTPError
-        mock_urlopen.side_effect = HTTPError(
-            url="https://api.scrapecreators.com/v1/github/pat/auth",
-            code=422, msg="Unprocessable", hdrs={}, fp=None,
-        )
-
-        result = setup_wizard.auth_with_pat("gho_noscope")
-        assert result is None
-
-    @patch("lib.setup_wizard.urlopen")
-    def test_network_error_returns_none(self, mock_urlopen):
-        """URLError -> returns None."""
-        from urllib.error import URLError
-        mock_urlopen.side_effect = URLError("Connection refused")
-
-        result = setup_wizard.auth_with_pat("gho_anytoken")
-        assert result is None
-
-    @patch("lib.setup_wizard.urlopen")
-    def test_no_api_key_in_response(self, mock_urlopen):
-        """Response without api_key -> returns None."""
-        resp = MagicMock()
-        resp.read.return_value = json.dumps({"error": "something"}).encode()
-        resp.__enter__ = lambda s: s
-        resp.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = resp
-
-        result = setup_wizard.auth_with_pat("gho_validtoken")
-        assert result is None
-
-
 class TestClipboardDeviceAuth:
     """Tests for clipboard-first behavior in run_full_device_auth()."""
 
@@ -500,51 +432,11 @@ class TestClipboardDeviceAuth:
 
 
 class TestRunGithubAuth:
-    """Tests for run_github_auth() — PAT-first with device fallback."""
-
-    @patch("lib.setup_wizard.auth_with_pat")
-    @patch("subprocess.run")
-    @patch("shutil.which", return_value="/usr/local/bin/gh")
-    def test_pat_success(self, mock_which, mock_subproc, mock_pat):
-        """gh found + valid token + PAT endpoint success -> pat method."""
-        mock_subproc.return_value = MagicMock(
-            returncode=0, stdout="gho_testtoken123\n",
-        )
-        mock_pat.return_value = {
-            "api_key": "sc_live_fromPAT",
-            "github_username": "testuser",
-        }
-
-        result = setup_wizard.run_github_auth(timeout=10)
-
-        assert result["status"] == "success"
-        assert result["method"] == "pat"
-        assert result["api_key"] == "sc_live_fromPAT"
+    """Tests for run_github_auth() — device flow only."""
 
     @patch("lib.setup_wizard.run_full_device_auth")
-    @patch("lib.setup_wizard.auth_with_pat", return_value=None)
-    @patch("subprocess.run")
-    @patch("shutil.which", return_value="/usr/local/bin/gh")
-    def test_pat_fails_falls_to_device(self, mock_which, mock_subproc, mock_pat, mock_device):
-        """gh found + PAT endpoint fails -> falls through to device flow."""
-        mock_subproc.return_value = MagicMock(
-            returncode=0, stdout="gho_badtoken\n",
-        )
-        mock_device.return_value = {
-            "status": "success", "method": "device",
-            "api_key": "sc_live_fromDevice",
-        }
-
-        result = setup_wizard.run_github_auth(timeout=10)
-
-        assert result["status"] == "success"
-        assert result["method"] == "device"
-        mock_device.assert_called_once()
-
-    @patch("lib.setup_wizard.run_full_device_auth")
-    @patch("shutil.which", return_value=None)
-    def test_no_gh_goes_to_device(self, mock_which, mock_device):
-        """gh not installed -> straight to device flow."""
+    def test_goes_to_device_flow(self, mock_device):
+        """Setup never forwards a local gh PAT to ScrapeCreators."""
         mock_device.return_value = {
             "status": "success", "method": "device",
             "api_key": "sc_live_deviceOnly",
@@ -554,21 +446,12 @@ class TestRunGithubAuth:
 
         assert result["status"] == "success"
         assert result["method"] == "device"
+        mock_device.assert_called_once_with(timeout=10)
 
     @patch("lib.setup_wizard.run_full_device_auth")
-    @patch("subprocess.run")
-    @patch("shutil.which", return_value="/usr/local/bin/gh")
-    def test_gh_not_logged_in_falls_to_device(self, mock_which, mock_subproc, mock_device):
-        """gh exists but not logged in (exit code 1) -> device flow."""
-        mock_subproc.return_value = MagicMock(
-            returncode=1, stdout="", stderr="not logged in",
-        )
-        mock_device.return_value = {
-            "status": "success", "method": "device",
-            "api_key": "sc_live_fallback",
-        }
-
-        result = setup_wizard.run_github_auth(timeout=10)
-
-        assert result["status"] == "success"
-        assert result["method"] == "device"
+    @patch("subprocess.run", side_effect=AssertionError("must not read gh auth token"))
+    def test_does_not_shell_out_for_gh_token(self, mock_subproc, mock_device):
+        mock_device.return_value = {"status": "timeout", "user_code": "ABCD-1234"}
+        result = setup_wizard.run_github_auth(timeout=1)
+        assert result["status"] == "timeout"
+        mock_subproc.assert_not_called()

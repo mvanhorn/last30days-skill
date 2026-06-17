@@ -30,7 +30,9 @@ def is_first_run(config: Dict[str, Any]) -> bool:
 def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
     """Perform the auto-setup actions.
 
-    - Runs cookie extraction in auto mode for all registered domains
+    - Runs cookie extraction for all registered domains, trying the browsers
+      from ``env.cookie_extraction_browsers()`` (honors ``FROM_BROWSER``;
+      defaults to Firefox/Safari, so no Chrome Keychain prompt)
     - Checks if yt-dlp is installed
 
     Returns:
@@ -40,23 +42,30 @@ def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
           env_written: bool (always False here — caller writes config separately)
     """
     from . import cookie_extract
-    from .env import COOKIE_DOMAINS
+    from .env import COOKIE_DOMAINS, cookie_extraction_browsers
 
     cookies_found: Dict[str, str] = {}
+
+    # Honor FROM_BROWSER and default to the silent browsers (Firefox/Safari).
+    # Using "auto" here used to probe Chrome unconditionally, triggering a
+    # "Chrome Safe Storage" Keychain prompt on first run that the steady-state
+    # path deliberately avoids. Chrome is now opt-in via FROM_BROWSER=chrome|auto.
+    # An empty list (FROM_BROWSER=off) makes the inner loop a no-op.
+    browsers = cookie_extraction_browsers(config)
 
     for source_name, spec in COOKIE_DOMAINS.items():
         domain = spec["domain"]
         cookie_names = spec["cookies"]
 
-        try:
-            result = cookie_extract.extract_cookies_with_source("auto", domain, cookie_names)
-        except Exception as exc:
-            logger.debug("Cookie extraction failed for %s: %s", source_name, exc)
-            continue
-
-        if result is not None:
-            _cookies, browser_name = result
-            cookies_found[source_name] = browser_name
+        for browser in browsers:
+            try:
+                result = cookie_extract.extract_cookies_with_source(browser, domain, cookie_names)
+            except Exception as exc:
+                logger.debug("Cookie extraction failed for %s via %s: %s", source_name, browser, exc)
+                continue
+            if result is not None and result[0]:
+                cookies_found[source_name] = result[1]
+                break  # Found cookies for this service, stop trying browsers
 
     # Check yt-dlp availability and install via Homebrew if missing
     ytdlp_action: str
@@ -98,7 +107,7 @@ def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
     return results
 
 
-def write_setup_config(env_path: Path, from_browser: str = "auto") -> bool:
+def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
     """Write SETUP_COMPLETE and FROM_BROWSER to the .env file.
 
     Creates the file and parent directories if needed.
@@ -106,7 +115,12 @@ def write_setup_config(env_path: Path, from_browser: str = "auto") -> bool:
 
     Args:
         env_path: Path to the .env file (e.g. ~/.config/last30days/.env)
-        from_browser: Browser extraction mode to write (default: "auto")
+        from_browser: Browser extraction mode to persist. Pass the browser that
+            actually yielded cookies (e.g. "firefox") to fast-path future runs.
+            Pass None (default) to NOT pin FROM_BROWSER — the steady-state
+            default (Firefox/Safari, no Keychain prompt) then applies. We avoid
+            persisting "auto" because it makes every later run probe Chrome and
+            re-trigger the Keychain prompt.
 
     Returns:
         True if config was written successfully, False on error.
@@ -129,7 +143,7 @@ def write_setup_config(env_path: Path, from_browser: str = "auto") -> bool:
         lines_to_add = []
         if "SETUP_COMPLETE" not in existing_keys:
             lines_to_add.append("SETUP_COMPLETE=true")
-        if "FROM_BROWSER" not in existing_keys:
+        if from_browser and "FROM_BROWSER" not in existing_keys:
             lines_to_add.append(f"FROM_BROWSER={from_browser}")
 
         if not lines_to_add:
@@ -236,44 +250,6 @@ def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
         "keys": keys,
         "x_method": x_method,
     }
-
-
-# ---------------------------------------------------------------------------
-# PAT auth flow (GitHub token via ScrapeCreators)
-# ---------------------------------------------------------------------------
-
-_PAT_BASE = "https://api.scrapecreators.com/v1/github/pat"
-
-
-def auth_with_pat(github_token: str) -> Optional[Dict[str, Any]]:
-    """Authenticate with ScrapeCreators using a GitHub PAT.
-
-    POSTs the token to the PAT auth endpoint. ScrapeCreators verifies it
-    against GitHub's API, creates/finds the account, and returns an API key.
-
-    Returns:
-        Dict with api_key, github_username, etc. on success, None on failure.
-    """
-    try:
-        req = Request(f"{_PAT_BASE}/auth", data=b"", method="POST")
-        req.add_header("Authorization", f"Bearer {github_token}")
-        with urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-    except HTTPError as exc:
-        if exc.code == 422:
-            logger.warning("PAT auth: insufficient scope — user needs user:email")
-        else:
-            logger.warning("PAT auth failed: %s", exc)
-        return None
-    except (URLError, OSError) as exc:
-        logger.warning("PAT auth request failed: %s", exc)
-        return None
-
-    if not data.get("api_key"):
-        logger.warning("PAT auth returned no api_key: %s", data)
-        return None
-
-    return data
 
 
 # ---------------------------------------------------------------------------
@@ -485,52 +461,16 @@ def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# Unified GitHub auth: PAT first, device flow fallback
+# Unified GitHub auth
 # ---------------------------------------------------------------------------
 
 
 def run_github_auth(timeout: int = 300) -> Dict[str, Any]:
-    """Try PAT auth via gh CLI, fall back to device flow.
+    """Run the --github setup path via device auth only.
 
-    1. Check for `gh` CLI
-    2. If found, run `gh auth token` to get a PAT
-    3. POST PAT to ScrapeCreators — if it works, done
-    4. If PAT fails for any reason, fall through to device flow
+    Kept as the semantic entry point for GitHub-backed setup; this path must
+    not read or forward local GitHub CLI tokens.
 
     Returns JSON-serializable dict with status, method, and api_key.
     """
-    import sys
-
-    # Step 1: Try PAT via gh CLI
-    gh_path = shutil.which("gh")
-    if gh_path:
-        try:
-            result = subprocess.run(
-                ["gh", "auth", "token"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode == 0 and result.stdout.strip():
-                token = result.stdout.strip()
-                print("Found gh CLI — trying PAT auth...", file=sys.stderr)
-                pat_result = auth_with_pat(token)
-                if pat_result and pat_result.get("api_key"):
-                    return {
-                        "status": "success",
-                        "method": "pat",
-                        "api_key": pat_result["api_key"],
-                        "github_username": pat_result.get("github_username", ""),
-                    }
-                # PAT failed — might be insufficient scope
-                print(
-                    "PAT auth didn't work (scope or endpoint issue). "
-                    "Falling back to GitHub device flow...",
-                    file=sys.stderr,
-                )
-        except Exception as exc:
-            logger.debug("gh auth token failed: %s", exc)
-
-    # Step 2: Fall back to device flow
-    if not gh_path:
-        print("gh CLI not found — using GitHub device flow...", file=sys.stderr)
-
     return run_full_device_auth(timeout=timeout)

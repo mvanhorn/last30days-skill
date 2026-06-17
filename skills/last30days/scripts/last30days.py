@@ -254,7 +254,10 @@ def persist_report(report: schema.Report) -> dict[str, int]:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Research a topic across live social, market, and grounded web sources.")
+    parser = argparse.ArgumentParser(
+        description="Research a topic across live social, market, and grounded web sources.",
+        allow_abbrev=False,
+    )
     parser.add_argument("topic", nargs="*", help="Research topic")
     parser.add_argument("--emit", default="compact", choices=["compact", "json", "context", "md", "html"])
     parser.add_argument("--search", help="Comma-separated source list")
@@ -574,6 +577,27 @@ def _write_last_run(topic: str, report: "schema.Report") -> None:
         pass
 
 
+def _propagate_config_to_environ() -> None:
+    """Push relevant env keys to os.environ so provider modules can read them.
+
+    The env.get_config() function reads from a .env file, but providers.py
+    reads from os.environ directly. Without this, OPENAI_BASE_URL and
+    XAI_BASE_URL overrides are silently ignored. This is a no-op for
+    keys that are already set in process env.
+    """
+    try:
+        config = env.get_config()
+    except Exception:
+        return
+    for key in ("OPENAI_BASE_URL", "XAI_BASE_URL"):
+        val = config.get(key)
+        if val and not os.environ.get(key):
+            os.environ[key] = val
+
+
+_propagate_config_to_environ()
+
+
 def main() -> int:
     parser = build_parser()
     # Use parse_known_args so setup sub-flags (--device-auth, --github,
@@ -609,10 +633,15 @@ def main() -> int:
             return 0
         sys.stderr.write("Running auto-setup...\n")
         results = setup_wizard.run_auto_setup(config)
-        from_browser = "auto"
-        if results.get("cookies_found"):
-            first_browser = next(iter(results["cookies_found"].values()))
-            from_browser = first_browser
+        # Persist FROM_BROWSER only when every service's cookies came from the
+        # SAME single browser — then we can fast-path future runs to it. If
+        # different services matched different browsers, or none matched, leave
+        # FROM_BROWSER unset: the safe default (Firefox/Safari) then covers all
+        # of them with no Keychain prompt. We deliberately do NOT pin "auto"
+        # here (it would re-probe Chrome and re-trigger the prompt) nor a single
+        # browser (it would silently skip the service that used the other one).
+        found_browsers = set(results.get("cookies_found", {}).values())
+        from_browser = found_browsers.pop() if len(found_browsers) == 1 else None
         setup_wizard.write_setup_config(env.CONFIG_FILE, from_browser=from_browser)
         results["env_written"] = True
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")
@@ -960,10 +989,12 @@ def main() -> int:
     if not args.hiring_signals:
         try:
             from lib import quality_nudge
+            from lib import youtube_yt as _youtube_yt
             # Populate transcript-fetch ratio so quality_nudge can detect the
             # degraded-YouTube failure mode (videos returned but transcripts
             # silently failed - typically a stale yt-dlp binary).
             youtube_items = report.items_by_source.get("youtube") or []
+            _yt_fetch_stats = _youtube_yt.get_transcript_fetch_stats()
             instagram_items = report.items_by_source.get("instagram") or []
             research_results = {
                 "youtube_videos_count": len(youtube_items),
@@ -980,6 +1011,13 @@ def main() -> int:
                 "youtube_captions_disabled_count": sum(
                     1 for it in youtube_items if it.metadata.get("captions_disabled")
                 ),
+                # Actual yt-dlp fetch outcomes for this run. The counts above are
+                # computed from post-pruning items, so they can't tell "fetches
+                # failed (stale binary)" from "fetches succeeded but the videos
+                # were pruned downstream"; the latter was producing false
+                # stale-yt-dlp nudges (#531).
+                "youtube_transcript_fetch_attempts": _yt_fetch_stats["attempts"],
+                "youtube_transcript_fetch_failures": _yt_fetch_stats["failures"],
                 # Track Instagram returned-zero-items so quality_nudge can detect
                 # the silent-failure case (SC configured but the v2 reels endpoint
                 # 500'd through both the original query and the hashtag retry).
