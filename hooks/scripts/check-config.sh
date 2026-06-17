@@ -11,6 +11,11 @@ GLOBAL_ENV="$HOME/.config/last30days/.env"
 check_perms() {
   local file="$1"
   if [[ ! -f "$file" ]]; then return; fi
+  # Git-for-Windows / MSYS / Cygwin run stat in noacl mode (always 644),
+  # so this POSIX check is a false positive. Windows perms use ACLs.
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) return ;;
+  esac
   local perms
   # Try GNU stat first (Linux), fall back to BSD stat (macOS).
   # On Linux, `stat -f` prints filesystem info (not permissions) and exits 0,
@@ -31,8 +36,8 @@ load_env_vars() {
       # Skip comments, empty lines
       [[ "$key" =~ ^[[:space:]]*# ]] && continue
       [[ -z "$key" ]] && continue
-      key=$(echo "$key" | xargs)
-      value=$(echo "$value" | xargs | sed 's/^["'\''"]//;s/["'\''"]$//')
+      key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      value=$(echo "$value" | sed -e 's/^[[:space:]]*//;s/[[:space:]]*$//' -e 's/^["'\''"]//;s/["'\''"]$//')
       # Strip inline comments (# preceded by whitespace) to prevent
       # command substitution in backtick-containing comments
       value="${value%%[[:space:]]#*}"
@@ -109,13 +114,18 @@ if [[ -z "$SETUP_COMPLETE" && -z "$CONFIG_FILE" && -z "${OPENAI_API_KEY:-}" && -
 Reddit, Hacker News, and Polymarket work out of the box.
 The setup wizard can unlock X/Twitter, YouTube, and more.
 EOF
-  [[ -n "$LAST_RUN_LINE" ]] && echo "$LAST_RUN_LINE"
+  if [[ -n "$LAST_RUN_LINE" ]]; then
+    echo "$LAST_RUN_LINE"
+  fi
   exit 0
 fi
 
 # Setup done but check for ScrapeCreators
 HAS_SCRAPECREATORS="${ENV_SCRAPECREATORS_API_KEY:-${SCRAPECREATORS_API_KEY:-}}"
-HAS_X="${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}"
+HAS_X=""
+if [[ -n "${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}" && -n "${ENV_CT0:-${CT0:-}}" ]]; then
+  HAS_X="yes"
+fi
 HAS_XAI="${ENV_XAI_API_KEY:-${XAI_API_KEY:-}}"
 HAS_YTDLP=""
 if command -v yt-dlp &>/dev/null; then
@@ -161,12 +171,16 @@ if [[ -n "$HAS_SCRAPECREATORS" ]]; then
   # Fully configured — compact ready message
   echo "/last30days: Ready — ${SOURCE_COUNT} sources active."
   echo "  Research any topic across social + market + web sources (last 30 days)."
-  [[ -n "$LAST_RUN_LINE" ]] && echo "$LAST_RUN_LINE"
+  if [[ -n "$LAST_RUN_LINE" ]]; then
+    echo "$LAST_RUN_LINE"
+  fi
 else
   # Setup done but missing ScrapeCreators — recommend it
   echo "/last30days: Ready — ${SOURCE_COUNT} sources active."
   echo "  Research any topic across social + market + web sources (last 30 days)."
-  [[ -n "$LAST_RUN_LINE" ]] && echo "$LAST_RUN_LINE"
+  if [[ -n "$LAST_RUN_LINE" ]]; then
+    echo "$LAST_RUN_LINE"
+  fi
   echo "  Tip: Add ScrapeCreators for Reddit comments + TikTok + Instagram."
   echo "  100 free credits, no credit card — scrapecreators.com"
   echo "  last30days has no affiliation with any API provider."
