@@ -1,5 +1,6 @@
 import json
 import io
+import os
 import shutil
 import tempfile
 import subprocess
@@ -302,5 +303,80 @@ class CliV3Tests(unittest.TestCase):
         )
         self.assertIn("[GitHub] Canonicalized repos:", stderr.getvalue())
 
+    def test_main_does_not_redirect_to_dashboard_by_default(self):
+        report = self.make_report()
+        diag = {
+            "available_sources": ["grounding"],
+            "providers": {"google": True, "openai": False, "xai": False},
+            "x_backend": None,
+            "bird_installed": True,
+            "bird_authenticated": False,
+            "bird_username": None,
+            "native_web_backend": "brave",
+        }
+        with mock.patch.object(cli.env, "get_config", return_value={}), \
+             mock.patch.object(cli.pipeline, "diagnose", return_value=diag), \
+             mock.patch.object(cli.pipeline, "run", return_value=report), \
+             mock.patch.object(cli, "emit_output", return_value="# rendered"), \
+             mock.patch.object(cli, "save_output", return_value=Path("/tmp/fake_report.md")), \
+             mock.patch.object(sys, "argv", ["last30days.py", "test topic"]):
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                rc = cli.main()
+        self.assertEqual(0, rc)
+        self.assertIn("# rendered", stdout.getvalue())
+        self.assertNotIn("Research complete. Results loaded into the web dashboard.", stdout.getvalue())
+
+    def test_main_redirects_to_dashboard_when_opted_in(self):
+        report = self.make_report()
+        diag = {
+            "available_sources": ["grounding"],
+            "providers": {"google": True, "openai": False, "xai": False},
+            "x_backend": None,
+            "bird_installed": True,
+            "bird_authenticated": False,
+            "bird_username": None,
+            "native_web_backend": "brave",
+        }
+        
+        original_popen = subprocess.Popen
+        def popen_side_effect(*args, **kwargs):
+            cmd = args[0] if args else kwargs.get("args")
+            if isinstance(cmd, list) and len(cmd) > 1 and cmd[0] == "node" and "server.js" in cmd[1]:
+                return mock.Mock()
+            if isinstance(cmd, str) and "node" in cmd and "server.js" in cmd:
+                return mock.Mock()
+            return original_popen(*args, **kwargs)
+
+
+        with mock.patch.object(cli.env, "get_config", return_value={}), \
+             mock.patch.object(cli.pipeline, "diagnose", return_value=diag), \
+             mock.patch.object(cli.pipeline, "run", return_value=report), \
+             mock.patch.object(cli, "emit_output", return_value="# rendered"), \
+             mock.patch.object(cli, "save_output", return_value=Path("/tmp/fake_report.md")), \
+             mock.patch.dict(os.environ, {"LAST30DAYS_TEST_DASHBOARD": "1"}), \
+             mock.patch("socket.socket") as mock_socket_cls, \
+             mock.patch("webbrowser.open") as mock_webbrowser_open, \
+             mock.patch("subprocess.Popen", side_effect=popen_side_effect) as mock_popen, \
+             mock.patch("shutil.which", return_value="/usr/bin/node"), \
+             mock.patch.object(cli.Path, "exists", return_value=True), \
+             mock.patch.object(sys, "argv", ["last30days.py", "test topic", "--dashboard"]):
+            
+            mock_socket = mock.Mock()
+            mock_socket.connect_ex.side_effect = [1, 0]
+            mock_socket_cls.return_value.__enter__.return_value = mock_socket
+            
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                rc = cli.main()
+        
+        self.assertEqual(0, rc)
+        self.assertIn("Research complete. Results loaded into the web dashboard.", stdout.getvalue())
+        mock_webbrowser_open.assert_called_once_with("http://localhost:3000/?report=fake_report")
+        self.assertTrue(mock_popen.called)
+
 if __name__ == "__main__":
     unittest.main()
+

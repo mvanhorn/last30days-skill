@@ -309,7 +309,7 @@ def build_parser() -> argparse.ArgumentParser:
             "hosting model has already resolved per-entity handles and subs."
         ),
     )
-    parser.add_argument("--no-dashboard", action="store_true", help="Disable automatic local web dashboard redirection and browser launch.")
+    parser.add_argument("--dashboard", action="store_true", help="Enable automatic local web dashboard redirection and browser launch.")
     return parser
 
 
@@ -1013,8 +1013,16 @@ def main() -> int:
 
     global_env = env.load_env_file(env.CONFIG_FILE) if env.CONFIG_FILE else {}
 
+    dashboard_opt_in = (
+        args.dashboard
+        or os.environ.get("LAST30DAYS_DASHBOARD") in ("1", "true")
+        or os.environ.get("LAST30DAYS_DASHBOARD_ENABLED") in ("1", "true")
+        or global_env.get("LAST30DAYS_DASHBOARD") in ("1", "true")
+        or global_env.get("LAST30DAYS_DASHBOARD_ENABLED") in ("1", "true")
+    )
+
     save_dir = args.save_dir
-    if not save_dir and has_github_setup:
+    if not save_dir and (has_github_setup or dashboard_opt_in):
         save_dir = os.environ.get("LAST30DAYS_MEMORY_DIR") or global_env.get("LAST30DAYS_MEMORY_DIR") or str(Path.home() / "Documents" / "Last30Days")
         save_dir = str(Path(save_dir).expanduser().resolve())
 
@@ -1064,13 +1072,17 @@ def main() -> int:
                         suffix=args.save_suffix or "",
                         synthesis_md=synthesis_md,
                     )
-    is_testing = "pytest" in sys.modules or "unittest" in sys.modules or os.environ.get("PYTEST_CURRENT_TEST") or os.environ.get("LAST30DAYS_TESTING")
+    is_testing = (
+        "pytest" in sys.modules 
+        or "unittest" in sys.modules 
+        or os.environ.get("PYTEST_CURRENT_TEST") 
+        or os.environ.get("LAST30DAYS_TESTING")
+    ) and not os.environ.get("LAST30DAYS_TEST_DASHBOARD")
     is_json = args.emit == "json"
-    is_terminal = sys.stdout.isatty()
+    is_terminal = sys.stdout.isatty() or os.environ.get("LAST30DAYS_TEST_DASHBOARD")
     should_redirect = (
-        has_github_setup
-        and dashboard_md_path
-        and not args.no_dashboard
+        dashboard_md_path
+        and dashboard_opt_in
         and not is_testing
         and not is_json
         and is_terminal

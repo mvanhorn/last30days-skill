@@ -183,6 +183,20 @@ The schedule field stored on each topic is metadata - the actual cron / Task Sch
 
 ---
 
+## Optional companion web dashboard (`--dashboard`)
+
+For a visual reading experience, you can route research outcomes to a local web-based Node/Express dashboard. 
+
+**Enabling:**
+*   Pass `--dashboard` on the command line.
+*   Or set `LAST30DAYS_DASHBOARD=true` or `LAST30DAYS_DASHBOARD=1` in your env or `.env` file.
+
+**Dashboard Environment Variables:**
+*   `LAST30DAYS_DASHBOARD_DIR` - Path to the dashboard directory containing `server.js`.
+*   `LAST30DAYS_MEMORY_DIR` - Path to the reports directory (defaults to `~/Documents/Last30Days/`).
+
+---
+
 ## Per-client patterns
 
 The skill is built to flex around different client environments. Four patterns that compose well:
