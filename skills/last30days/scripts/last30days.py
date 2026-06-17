@@ -1075,7 +1075,7 @@ def main() -> int:
         dashboard_md_path = save_path
 
         # If user did not emit markdown, or if they did but we want to make sure it's the correct format for the dashboard
-        if args.emit not in ("compact", "md") or not save_path.name.endswith(".md"):
+        if dashboard_opt_in and (args.emit not in ("compact", "md") or not save_path.name.endswith(".md")):
             dashboard_md_path = save_output(
                 report,
                 "compact",
@@ -1098,7 +1098,7 @@ def main() -> int:
                 )
                 sys.stderr.write(f"[last30days] Saved output to {peer_path}\n")
                 sys.stderr.flush()
-                if args.emit not in ("compact", "md") or not peer_path.name.endswith(".md"):
+                if dashboard_opt_in and (args.emit not in ("compact", "md") or not peer_path.name.endswith(".md")):
                     save_output(
                         entity_report, "compact", save_dir,
                         suffix=args.save_suffix or "",
