@@ -1043,10 +1043,6 @@ def main() -> int:
         sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
         sys.stderr.flush()
 
-    # Check if github is set up
-    from lib.github import resolve_token
-    has_github_setup = bool(resolve_token() or config.get("SCRAPECREATORS_API_KEY"))
-
     global_env = env.load_env_file(env.CONFIG_FILE) if env.CONFIG_FILE else {}
 
     dashboard_opt_in = (
