@@ -46,6 +46,15 @@ KEYCHAIN_KEYS = (
     "XIAOHONGSHU_API_BASE",
 )
 
+# pass(1) integration: Linux/Unix analog of the Keychain source. Each key in
+# KEYCHAIN_KEYS is looked up at pass path f"{prefix}{KEY}", the direct analog of
+# Keychain's "last30days-<KEY>" service-name convention, so any user stores keys
+# under one namespace without editing code. The prefix is resolved at call time
+# (in get_config) from LAST30DAYS_PASS_PREFIX in the process env or a config
+# file, falling back to this default; included verbatim, so keep the trailing
+# separator. Honors PASSWORD_STORE_DIR.
+DEFAULT_PASS_PATH_PREFIX = "last30days/"
+
 AuthSource = Literal["api_key", "codex", "none"]
 AuthStatus = Literal["ok", "missing", "expired", "missing_account_id"]
 
@@ -130,11 +139,23 @@ def _load_keychain(keys: list[str]) -> dict[str, str]:
         return {}
 
     import subprocess
-    import pwd
     # USER can be unset under sudo, in Docker without --env USER, or in some CI
     # runners; fall back to the OS user record so lookups still match items
     # stored by setup-keychain.sh (which uses $USER).
-    user = os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+    user = os.environ.get("USER")
+    if not user:
+        try:
+            import pwd
+        except ImportError:
+            pwd = None
+
+        if pwd is not None:
+            try:
+                user = pwd.getpwuid(os.getuid()).pw_name
+            except AttributeError:
+                user = "unknown"
+        else:
+            user = "unknown"
     env: dict[str, str] = {}
     for key in keys:
         try:
@@ -149,6 +170,45 @@ def _load_keychain(keys: list[str]) -> dict[str, str]:
             continue
         if result.returncode == 0 and result.stdout.strip():
             env[key] = result.stdout.strip()
+    return env
+
+
+def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
+    """Load credentials from a pass(1) store (no-op if `pass` is absent).
+
+    The Linux/Unix analog of the macOS Keychain source. Each env-var name is
+    looked up at pass path ``f"{prefix}{key}"`` — mirroring Keychain's
+    ``last30days-<key>`` service-name convention — so any user stores keys under
+    that namespace without editing code (prefix overridable via
+    ``LAST30DAYS_PASS_PREFIX``). The secret is decrypted in a subprocess and
+    read from stdout's first line (pass keeps the secret there; any metadata
+    follows) — never written to disk, never logged. Honors ``PASSWORD_STORE_DIR``.
+    Missing entries and failures are silent: pass is a lowest-priority, additive
+    source like Keychain, so an explicit .env or process-env value still wins.
+    """
+    import shutil
+    pass_bin = shutil.which("pass")
+    if not pass_bin:
+        return {}
+
+    import subprocess
+    env: dict[str, str] = {}
+    for key in keys:
+        try:
+            result = subprocess.run(
+                [pass_bin, "show", f"{prefix}{key}"],
+                capture_output=True, text=True, timeout=5,
+                encoding="utf-8", errors="replace",
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            # A timeout (GPG/pinentry hanging) or exec failure isn't a per-key
+            # condition — it means the store is unusable right now. Stop instead
+            # of paying the timeout once per key; otherwise a locked store would
+            # stall every config load by 5s x len(keys). A genuinely missing key
+            # returns fast with a non-zero exit and is handled below.
+            break
+        if result.returncode == 0 and result.stdout.strip():
+            env[key] = result.stdout.strip().splitlines()[0]
     return env
 
 
@@ -291,6 +351,22 @@ def get_config() -> dict[str, Any]:
     # Loaded before openai_auth so OPENAI_API_KEY can come from Keychain too.
     keychain_env = _load_keychain(list(KEYCHAIN_KEYS))
     merged_env = {**keychain_env, **merged_env}
+    # pass(1) store: Linux/Unix analog of Keychain at convention path
+    # {prefix}<KEY>. Decrypts transiently so secrets stay encrypted at rest (no
+    # plaintext .env). Lowest priority: Keychain, the config files, and process
+    # env all win over it. Two efficiency guards so a user who merely has `pass`
+    # on PATH doesn't pay for it: resolve the prefix from the loaded config/env
+    # (not import time, so a .env-set LAST30DAYS_PASS_PREFIX is honored), and
+    # probe ONLY keys still unset after the higher-priority sources — an empty
+    # list short-circuits with no gpg/pinentry calls at all.
+    pass_prefix = (
+        os.environ.get("LAST30DAYS_PASS_PREFIX")
+        or merged_env.get("LAST30DAYS_PASS_PREFIX")
+        or DEFAULT_PASS_PATH_PREFIX
+    )
+    pass_missing = [k for k in KEYCHAIN_KEYS if k not in os.environ and not merged_env.get(k)]
+    pass_env = _load_pass(pass_missing, pass_prefix)
+    merged_env = {**pass_env, **merged_env}
 
     openai_auth = get_openai_auth(merged_env)
 
@@ -369,6 +445,8 @@ def get_config() -> dict[str, Any]:
         config['_CONFIG_SOURCE'] = f'global:{CONFIG_FILE}'
     elif keychain_env:
         config['_CONFIG_SOURCE'] = 'keychain'
+    elif pass_env:
+        config['_CONFIG_SOURCE'] = 'pass'
     else:
         config['_CONFIG_SOURCE'] = 'env_only'
 
@@ -400,40 +478,54 @@ COOKIE_DOMAINS: dict[str, dict[str, Any]] = {
 }
 
 
+def cookie_extraction_browsers(config: dict[str, Any]) -> list[str]:
+    """Browsers to try for cookie extraction, honoring FROM_BROWSER.
+
+    Default (FROM_BROWSER unset): Firefox and Safari only. These read local
+    files silently with no system dialogs. The Chromium family (Chrome, Brave,
+    Edge, Vivaldi, Opera, Arc, Chromium) is skipped because reading their
+    cookies on macOS requires the browser's Safe Storage Keychain key, which
+    triggers a system password prompt that cannot be reliably suppressed. On
+    Windows only Firefox cookie extraction is supported; Chrome and Edge use
+    DPAPI-encrypted cookie stores that are not yet supported.
+
+    - ``FROM_BROWSER=<name>`` - a single browser (e.g. ``firefox``, ``brave``,
+      ``edge``, ``arc``).
+    - ``FROM_BROWSER=auto`` - also try every Chromium browser (user accepts the
+      Keychain dialog when needed).
+    - ``FROM_BROWSER=off`` - returns [] (extraction disabled).
+
+    Returning the browser list from one place keeps the setup wizard and the
+    steady-state path on the same policy, so neither surprises the user with an
+    unrequested Keychain prompt.
+    """
+    silent_browsers = ["firefox", "safari"]
+    chromium_browsers = ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"]
+    from_browser = (config.get("FROM_BROWSER") or "").strip().lower()
+    if from_browser == "off":
+        return []
+    if from_browser in silent_browsers or from_browser in chromium_browsers:
+        return [from_browser]
+    if from_browser == "auto":
+        return silent_browsers + chromium_browsers
+    return list(silent_browsers)
+
+
+
 def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
     """Extract auth cookies from local browsers.
 
-    Default behavior (FROM_BROWSER unset): tries Firefox and Safari only.
-    These read local files silently with no system dialogs.  The Chromium
-    family (Chrome, Brave, Edge, Vivaldi, Opera, Arc, Chromium) is skipped by
-    default because ``security find-generic-password`` triggers a macOS
-    Keychain prompt that cannot be reliably suppressed.
-
-    Set ``FROM_BROWSER=auto`` to also try every Chromium browser (accepts the
-    dialog), ``FROM_BROWSER=<name>`` to target a single browser (e.g.
-    ``brave``, ``edge``, ``arc``), or ``FROM_BROWSER=off`` to disable
-    extraction entirely.
+    Browser selection (and the Chrome-prompt caveat) is handled by
+    ``cookie_extraction_browsers``; this function just runs the extraction for
+    each configured cookie domain.
     """
-    from_browser = (config.get("FROM_BROWSER") or "").strip().lower()
-    if from_browser == "off":
+    browsers = cookie_extraction_browsers(config)
+    if not browsers:
         return {}
     try:
         from . import cookie_extract
     except ImportError:
         return {}
-    # Determine which browsers to try. Firefox and Safari read local files
-    # silently; the Chromium family shares Chrome's v10 encryption and may
-    # trigger a one-time macOS Keychain prompt, so they are only tried when
-    # FROM_BROWSER explicitly opts in (a single name or "auto").
-    silent_browsers = ["firefox", "safari"]
-    chromium_browsers = ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"]
-    if from_browser in silent_browsers or from_browser in chromium_browsers:
-        browsers = [from_browser]
-    elif from_browser == "auto":
-        browsers = silent_browsers + chromium_browsers
-    else:
-        # Default: silent browsers only (no Keychain dialog)
-        browsers = silent_browsers
     extracted: dict[str, str] = {}
     for _service, spec in COOKIE_DOMAINS.items():
         if all(config.get(env_key) for env_key in spec["mapping"].values()):

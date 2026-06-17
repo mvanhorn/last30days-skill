@@ -30,7 +30,9 @@ def is_first_run(config: Dict[str, Any]) -> bool:
 def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
     """Perform the auto-setup actions.
 
-    - Runs cookie extraction in auto mode for all registered domains
+    - Runs cookie extraction for all registered domains, trying the browsers
+      from ``env.cookie_extraction_browsers()`` (honors ``FROM_BROWSER``;
+      defaults to Firefox/Safari, so no Chrome Keychain prompt)
     - Checks if yt-dlp is installed
 
     Returns:
@@ -40,23 +42,30 @@ def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
           env_written: bool (always False here — caller writes config separately)
     """
     from . import cookie_extract
-    from .env import COOKIE_DOMAINS
+    from .env import COOKIE_DOMAINS, cookie_extraction_browsers
 
     cookies_found: Dict[str, str] = {}
+
+    # Honor FROM_BROWSER and default to the silent browsers (Firefox/Safari).
+    # Using "auto" here used to probe Chrome unconditionally, triggering a
+    # "Chrome Safe Storage" Keychain prompt on first run that the steady-state
+    # path deliberately avoids. Chrome is now opt-in via FROM_BROWSER=chrome|auto.
+    # An empty list (FROM_BROWSER=off) makes the inner loop a no-op.
+    browsers = cookie_extraction_browsers(config)
 
     for source_name, spec in COOKIE_DOMAINS.items():
         domain = spec["domain"]
         cookie_names = spec["cookies"]
 
-        try:
-            result = cookie_extract.extract_cookies_with_source("auto", domain, cookie_names)
-        except Exception as exc:
-            logger.debug("Cookie extraction failed for %s: %s", source_name, exc)
-            continue
-
-        if result is not None:
-            _cookies, browser_name = result
-            cookies_found[source_name] = browser_name
+        for browser in browsers:
+            try:
+                result = cookie_extract.extract_cookies_with_source(browser, domain, cookie_names)
+            except Exception as exc:
+                logger.debug("Cookie extraction failed for %s via %s: %s", source_name, browser, exc)
+                continue
+            if result is not None and result[0]:
+                cookies_found[source_name] = result[1]
+                break  # Found cookies for this service, stop trying browsers
 
     # Check yt-dlp availability and install via Homebrew if missing
     ytdlp_action: str
@@ -98,7 +107,7 @@ def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
     return results
 
 
-def write_setup_config(env_path: Path, from_browser: str = "auto") -> bool:
+def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
     """Write SETUP_COMPLETE and FROM_BROWSER to the .env file.
 
     Creates the file and parent directories if needed.
@@ -106,7 +115,12 @@ def write_setup_config(env_path: Path, from_browser: str = "auto") -> bool:
 
     Args:
         env_path: Path to the .env file (e.g. ~/.config/last30days/.env)
-        from_browser: Browser extraction mode to write (default: "auto")
+        from_browser: Browser extraction mode to persist. Pass the browser that
+            actually yielded cookies (e.g. "firefox") to fast-path future runs.
+            Pass None (default) to NOT pin FROM_BROWSER — the steady-state
+            default (Firefox/Safari, no Keychain prompt) then applies. We avoid
+            persisting "auto" because it makes every later run probe Chrome and
+            re-trigger the Keychain prompt.
 
     Returns:
         True if config was written successfully, False on error.
@@ -129,7 +143,7 @@ def write_setup_config(env_path: Path, from_browser: str = "auto") -> bool:
         lines_to_add = []
         if "SETUP_COMPLETE" not in existing_keys:
             lines_to_add.append("SETUP_COMPLETE=true")
-        if "FROM_BROWSER" not in existing_keys:
+        if from_browser and "FROM_BROWSER" not in existing_keys:
             lines_to_add.append(f"FROM_BROWSER={from_browser}")
 
         if not lines_to_add:
