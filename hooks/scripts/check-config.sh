@@ -11,6 +11,11 @@ GLOBAL_ENV="$HOME/.config/last30days/.env"
 check_perms() {
   local file="$1"
   if [[ ! -f "$file" ]]; then return; fi
+  # Git-for-Windows / MSYS / Cygwin run stat in noacl mode (always 644),
+  # so this POSIX check is a false positive. Windows perms use ACLs.
+  case "$(uname -s 2>/dev/null)" in
+    MINGW*|MSYS*|CYGWIN*) return ;;
+  esac
   local perms
   # Try GNU stat first (Linux), fall back to BSD stat (macOS).
   # On Linux, `stat -f` prints filesystem info (not permissions) and exits 0,
@@ -31,8 +36,8 @@ load_env_vars() {
       # Skip comments, empty lines
       [[ "$key" =~ ^[[:space:]]*# ]] && continue
       [[ -z "$key" ]] && continue
-      key=$(echo "$key" | xargs)
-      value=$(echo "$value" | xargs | sed 's/^["'\''"]//;s/["'\''"]$//')
+      key=$(echo "$key" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+      value=$(echo "$value" | sed -e 's/^[[:space:]]*//;s/[[:space:]]*$//' -e 's/^["'\''"]//;s/["'\''"]$//')
       # Strip inline comments (# preceded by whitespace) to prevent
       # command substitution in backtick-containing comments
       value="${value%%[[:space:]]#*}"
