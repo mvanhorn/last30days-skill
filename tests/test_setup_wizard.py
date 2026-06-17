@@ -177,7 +177,13 @@ class TestWriteSetupConfig:
     """Tests for write_setup_config()."""
 
     def test_creates_new_env_file(self):
-        """Creates .env file with SETUP_COMPLETE and FROM_BROWSER."""
+        """Creates .env with SETUP_COMPLETE; omits FROM_BROWSER when unspecified.
+
+        With no detected browser we must NOT pin FROM_BROWSER=auto, because
+        that makes every later run probe Chrome and re-trigger the macOS
+        Keychain prompt. Leaving it unset applies the safe Firefox/Safari
+        default instead.
+        """
         with tempfile.TemporaryDirectory() as tmpdir:
             env_path = Path(tmpdir) / "subdir" / ".env"
 
@@ -187,7 +193,7 @@ class TestWriteSetupConfig:
             assert env_path.exists()
             content = env_path.read_text()
             assert "SETUP_COMPLETE=true" in content
-            assert "FROM_BROWSER=auto" in content
+            assert "FROM_BROWSER" not in content
 
     def test_appends_to_existing_file(self):
         """Appends to existing .env without overwriting keys."""
@@ -202,9 +208,9 @@ class TestWriteSetupConfig:
             # Original keys preserved
             assert "XAI_API_KEY=my-key" in content
             assert "AUTH_TOKEN=tok123" in content
-            # New keys appended
+            # SETUP_COMPLETE appended; FROM_BROWSER omitted (no browser detected)
             assert "SETUP_COMPLETE=true" in content
-            assert "FROM_BROWSER=auto" in content
+            assert "FROM_BROWSER" not in content
 
     def test_does_not_overwrite_existing_keys(self):
         """If SETUP_COMPLETE or FROM_BROWSER already exist, don't duplicate."""
@@ -249,7 +255,7 @@ class TestWriteSetupConfig:
             env_path = Path(tmpdir) / ".env"
             env_path.write_text("EXISTING_KEY=value")  # no trailing newline
 
-            result = setup_wizard.write_setup_config(env_path)
+            result = setup_wizard.write_setup_config(env_path, from_browser="firefox")
 
             assert result is True
             content = env_path.read_text()
@@ -258,6 +264,55 @@ class TestWriteSetupConfig:
             assert len(lines) == 3
             assert lines[0] == "EXISTING_KEY=value"
             assert "SETUP_COMPLETE=true" in lines[1]
+
+
+class TestCookieExtractionBrowsers:
+    """Tests for env.cookie_extraction_browsers() — the shared browser policy."""
+
+    def test_default_excludes_chrome(self):
+        """FROM_BROWSER unset -> Firefox/Safari only, never Chrome (no prompt)."""
+        from lib import env
+        browsers = env.cookie_extraction_browsers({})
+        assert "chrome" not in browsers
+        assert browsers == ["firefox", "safari"]
+
+    def test_off_disables_extraction(self):
+        from lib import env
+        assert env.cookie_extraction_browsers({"FROM_BROWSER": "off"}) == []
+
+    def test_auto_opts_into_chrome(self):
+        from lib import env
+        assert "chrome" in env.cookie_extraction_browsers({"FROM_BROWSER": "auto"})
+
+    def test_specific_browser(self):
+        from lib import env
+        assert env.cookie_extraction_browsers({"FROM_BROWSER": "chrome"}) == ["chrome"]
+
+
+class TestWizardDoesNotProbeChromeByDefault:
+    """Regression: first-run setup must not silently read Chrome cookies."""
+
+    @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
+    @patch("shutil.which", return_value=None)
+    def test_default_run_never_requests_chrome(self, _mock_which, mock_extract):
+        setup_wizard.run_auto_setup({})
+        requested_browsers = {call.args[0] for call in mock_extract.call_args_list}
+        assert "chrome" not in requested_browsers
+        assert requested_browsers <= {"firefox", "safari"}
+
+    @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
+    @patch("shutil.which", return_value=None)
+    def test_from_browser_auto_does_request_chrome(self, _mock_which, mock_extract):
+        setup_wizard.run_auto_setup({"FROM_BROWSER": "auto"})
+        requested_browsers = {call.args[0] for call in mock_extract.call_args_list}
+        assert "chrome" in requested_browsers
+
+    @patch("lib.cookie_extract.extract_cookies_with_source")
+    @patch("shutil.which", return_value=None)
+    def test_from_browser_off_skips_extraction(self, _mock_which, mock_extract):
+        results = setup_wizard.run_auto_setup({"FROM_BROWSER": "off"})
+        mock_extract.assert_not_called()
+        assert results["cookies_found"] == {}
 
 
 class TestGetSetupStatusText:

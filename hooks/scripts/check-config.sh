@@ -135,13 +135,18 @@ Reddit, Hacker News, and Polymarket work out of the box.
 The setup wizard can unlock X/Twitter, YouTube, and more.
 EOF
   fi
-  [[ -n "$LAST_RUN_LINE" ]] && echo "$LAST_RUN_LINE"
+  if [[ -n "$LAST_RUN_LINE" ]]; then
+    echo "$LAST_RUN_LINE"
+  fi
   exit 0
 fi
 
 # Setup done but check for ScrapeCreators
 HAS_SCRAPECREATORS="${ENV_SCRAPECREATORS_API_KEY:-${SCRAPECREATORS_API_KEY:-}}"
-HAS_X="${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}"
+HAS_X=""
+if [[ -n "${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}" && -n "${ENV_CT0:-${CT0:-}}" ]]; then
+  HAS_X="yes"
+fi
 HAS_XAI="${ENV_XAI_API_KEY:-${XAI_API_KEY:-}}"
 HAS_BSKY="${ENV_BSKY_HANDLE:-${BSKY_HANDLE:-}}"
 HAS_EXA="${ENV_EXA_API_KEY:-${EXA_API_KEY:-}}"
@@ -183,12 +188,16 @@ if [[ -n "$HAS_SCRAPECREATORS" ]]; then
   # Fully configured — compact ready message
   echo "/last30days: Ready — ${SOURCE_COUNT} sources active."
   echo "  Research any topic across social + market + web sources (last 30 days)."
-  [[ -n "$LAST_RUN_LINE" ]] && echo "$LAST_RUN_LINE"
+  if [[ -n "$LAST_RUN_LINE" ]]; then
+    echo "$LAST_RUN_LINE"
+  fi
 else
   # Setup done but missing ScrapeCreators — recommend it
   echo "/last30days: Ready — ${SOURCE_COUNT} sources active."
   echo "  Research any topic across social + market + web sources (last 30 days)."
-  [[ -n "$LAST_RUN_LINE" ]] && echo "$LAST_RUN_LINE"
+  if [[ -n "$LAST_RUN_LINE" ]]; then
+    echo "$LAST_RUN_LINE"
+  fi
   echo "  Tip: Add ScrapeCreators for Reddit comments + TikTok + Instagram."
   echo "  100 free credits, no credit card — scrapecreators.com"
   echo "  last30days has no affiliation with any API provider."

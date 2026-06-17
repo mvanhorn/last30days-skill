@@ -139,11 +139,23 @@ def _load_keychain(keys: list[str]) -> dict[str, str]:
         return {}
 
     import subprocess
-    import pwd
     # USER can be unset under sudo, in Docker without --env USER, or in some CI
     # runners; fall back to the OS user record so lookups still match items
     # stored by setup-keychain.sh (which uses $USER).
-    user = os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+    user = os.environ.get("USER")
+    if not user:
+        try:
+            import pwd
+        except ImportError:
+            pwd = None
+
+        if pwd is not None:
+            try:
+                user = pwd.getpwuid(os.getuid()).pw_name
+            except AttributeError:
+                user = "unknown"
+        else:
+            user = "unknown"
     env: dict[str, str] = {}
     for key in keys:
         try:
@@ -381,6 +393,8 @@ def get_config() -> dict[str, Any]:
         ('LAST30DAYS_STORE', None),
         ('OPENAI_MODEL_PIN', None),
         ('XAI_MODEL_PIN', None),
+        ('OPENAI_BASE_URL', None),
+        ('XAI_BASE_URL', None),
         ('SCRAPECREATORS_API_KEY', None),
         ('APIFY_API_TOKEN', None),
         ('AUTH_TOKEN', None),
@@ -466,34 +480,54 @@ COOKIE_DOMAINS: dict[str, dict[str, Any]] = {
 }
 
 
+def cookie_extraction_browsers(config: dict[str, Any]) -> list[str]:
+    """Browsers to try for cookie extraction, honoring FROM_BROWSER.
+
+    Default (FROM_BROWSER unset): Firefox and Safari only. These read local
+    files silently with no system dialogs. The Chromium family (Chrome, Brave,
+    Edge, Vivaldi, Opera, Arc, Chromium) is skipped because reading their
+    cookies on macOS requires the browser's Safe Storage Keychain key, which
+    triggers a system password prompt that cannot be reliably suppressed. On
+    Windows only Firefox cookie extraction is supported; Chrome and Edge use
+    DPAPI-encrypted cookie stores that are not yet supported.
+
+    - ``FROM_BROWSER=<name>`` - a single browser (e.g. ``firefox``, ``brave``,
+      ``edge``, ``arc``).
+    - ``FROM_BROWSER=auto`` - also try every Chromium browser (user accepts the
+      Keychain dialog when needed).
+    - ``FROM_BROWSER=off`` - returns [] (extraction disabled).
+
+    Returning the browser list from one place keeps the setup wizard and the
+    steady-state path on the same policy, so neither surprises the user with an
+    unrequested Keychain prompt.
+    """
+    silent_browsers = ["firefox", "safari"]
+    chromium_browsers = ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"]
+    from_browser = (config.get("FROM_BROWSER") or "").strip().lower()
+    if from_browser == "off":
+        return []
+    if from_browser in silent_browsers or from_browser in chromium_browsers:
+        return [from_browser]
+    if from_browser == "auto":
+        return silent_browsers + chromium_browsers
+    return list(silent_browsers)
+
+
+
 def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
     """Extract auth cookies from local browsers.
 
-    Default behavior (FROM_BROWSER unset): tries Firefox and Safari only.
-    These read local files silently with no system dialogs.  Chrome is
-    skipped because ``security find-generic-password`` triggers a macOS
-    Keychain prompt that cannot be reliably suppressed.
-    On Windows only Firefox cookie extraction is supported; Chrome and
-    Edge use DPAPI-encrypted cookie stores that are not yet supported.
-
-    Set ``FROM_BROWSER=auto`` to also try Chrome (accepts the dialog),
-    or ``FROM_BROWSER=off`` to disable extraction entirely.
+    Browser selection (and the Chrome-prompt caveat) is handled by
+    ``cookie_extraction_browsers``; this function just runs the extraction for
+    each configured cookie domain.
     """
-    from_browser = (config.get("FROM_BROWSER") or "").strip().lower()
-    if from_browser == "off":
+    browsers = cookie_extraction_browsers(config)
+    if not browsers:
         return {}
     try:
         from . import cookie_extract
     except ImportError:
         return {}
-    # Determine which browsers to try
-    if from_browser in ("firefox", "chrome", "safari"):
-        browsers = [from_browser]
-    elif from_browser == "auto":
-        browsers = ["firefox", "safari", "chrome"]
-    else:
-        # Default: silent browsers only (no Keychain dialog)
-        browsers = ["firefox", "safari"]
     extracted: dict[str, str] = {}
     for _service, spec in COOKIE_DOMAINS.items():
         if all(config.get(env_key) for env_key in spec["mapping"].values()):

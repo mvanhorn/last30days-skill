@@ -20,6 +20,14 @@ STOPWORDS = frozenset({
     'all', 'just', 'get', 'has', 'have', 'was', 'will',
 }) | cjk.CHINESE_STOPWORDS
 
+# Shared relevance-ranking thresholds for the Reddit pipelines (keyed + keyless).
+# Single source of truth so both paths apply identical thresholds to the same
+# query. RELEVANCE_FLOOR: posts below this are off-topic; the zero-overlap tail is
+# dropped when anything relevant remains. MIN_ON_TOPIC: how many posts must clear
+# the soft floor before it is applied wholesale.
+RELEVANCE_FLOOR = 0.1
+MIN_ON_TOPIC = 5
+
 # Synonym groups for relevance scoring (bidirectional expansion)
 # Superset of all platform-specific synonym dicts
 SYNONYMS = {
