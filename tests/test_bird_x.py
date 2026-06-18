@@ -302,3 +302,68 @@ class TestRunBirdSearchJsonDecodeRetry(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestXFromAndAboutLanes(unittest.TestCase):
+    """U7/U8: FROM lane drops the topic-AND; ABOUT lane queries @handle and
+    excludes the handle's own tweets."""
+
+    def _result(self, body_items):
+        import json as _j
+        class _R:
+            returncode = 0
+            stderr = ""
+        r = _R()
+        r.stdout = _j.dumps({"items": body_items})
+        return r
+
+    def test_from_lane_drops_topic_and(self):
+        from unittest import mock
+        from lib import bird_x
+        captured = []
+
+        def fake_run(cmd, timeout=None, env=None):
+            captured.append(cmd[2])  # the query string arg
+            return self._result([])
+
+        with mock.patch.object(bird_x.subproc, "run_with_timeout", side_effect=fake_run):
+            bird_x.search_handles(["xuezhao"], "lan xuezhao", "2026-05-19", count_per=1)
+        self.assertEqual(captured[0], "from:xuezhao since:2026-05-19")
+        self.assertNotIn("lan xuezhao", captured[0])
+
+    def test_mention_lane_queries_at_handle(self):
+        from unittest import mock
+        from lib import bird_x
+        captured = []
+
+        def fake_run(cmd, timeout=None, env=None):
+            captured.append(cmd[2])
+            return self._result([])
+
+        with mock.patch.object(bird_x.subproc, "run_with_timeout", side_effect=fake_run):
+            bird_x.search_mentions(["xuezhao"], "2026-05-19", count_per=1)
+        self.assertEqual(captured[0], "@xuezhao since:2026-05-19")
+
+    def test_mention_lane_excludes_own_tweets(self):
+        from unittest import mock
+        from lib import bird_x
+        parsed = [
+            {"url": "https://x.com/xuezhao/status/1", "title": "own tweet"},
+            {"url": "https://x.com/fan99/status/2", "title": "mention of them"},
+        ]
+        with mock.patch.object(bird_x.subproc, "run_with_timeout",
+                               return_value=self._result([{"id": "x"}])), \
+             mock.patch.object(bird_x, "parse_bird_response", return_value=parsed):
+            out = bird_x.search_mentions(["xuezhao"], "2026-05-19", count_per=5)
+        urls = [it["url"] for it in out]
+        self.assertNotIn("https://x.com/xuezhao/status/1", urls)  # own excluded
+        self.assertIn("https://x.com/fan99/status/2", urls)        # mention kept
+
+    def test_mention_lane_empty_when_no_mentions(self):
+        from unittest import mock
+        from lib import bird_x
+        with mock.patch.object(bird_x.subproc, "run_with_timeout",
+                               return_value=self._result([])), \
+             mock.patch.object(bird_x, "parse_bird_response", return_value=[]):
+            out = bird_x.search_mentions(["xuezhao"], "2026-05-19")
+        self.assertEqual(out, [])

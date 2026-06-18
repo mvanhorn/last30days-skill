@@ -352,12 +352,15 @@ def search_handles(
 ) -> List[Dict[str, Any]]:
     """Search specific X handles for topic-related content.
 
-    Runs targeted Bird searches using `from:handle topic` syntax.
-    Used in Phase 2 supplemental search after entity extraction.
+    Pulls each handle's actual timeline via `from:handle since:` — the FROM
+    lane (tweets BY the person), engagement-weighted downstream. The topic is
+    used for relevance RANKING, never AND'd into the query: X search is literal,
+    so `from:handle <their name>` only matched tweets where they wrote their own
+    name and returned ~0. Used in Phase 2 after entity extraction.
 
     Args:
         handles: List of X handles to search (without @)
-        topic: Search topic (core subject), or None for unfiltered search
+        topic: Search topic — used for relevance ranking only, not the query
         from_date: Start date (YYYY-MM-DD)
         count_per: Results to request per handle
 
@@ -368,10 +371,8 @@ def search_handles(
 
     def _search_one_handle(handle: str) -> List[Dict[str, Any]]:
         handle = handle.lstrip("@")
-        if core_topic:
-            query = f"from:{handle} {core_topic} since:{from_date}"
-        else:
-            query = f"from:{handle} since:{from_date}"
+        # Always unfiltered: pull the timeline, rank by topic relevance below.
+        query = f"from:{handle} since:{from_date}"
 
         cmd = [
             "node", str(_BIRD_SEARCH_MJS),
@@ -412,6 +413,73 @@ def search_handles(
         for future in as_completed(futures):
             all_items.extend(future.result())
 
+    return all_items
+
+
+def search_mentions(
+    handles: List[str],
+    from_date: str,
+    count_per: int = 5,
+) -> List[Dict[str, Any]]:
+    """Search for tweets ABOUT/TO each handle — the mention lane.
+
+    Queries `@handle since:` (tweets that mention the account) and excludes the
+    handle's OWN tweets (those belong to the FROM lane via search_handles), so
+    this surfaces what OTHERS are saying about the person. Engagement-weighted
+    downstream; deduped against the FROM lane by URL at normalize time.
+
+    Args:
+        handles: List of X handles (without @)
+        from_date: Start date (YYYY-MM-DD)
+        count_per: Results to request per handle
+
+    Returns:
+        List of raw item dicts (same format as parse_bird_response output).
+    """
+    def _search_one(handle: str) -> List[Dict[str, Any]]:
+        handle = handle.lstrip("@")
+        query = f"@{handle} since:{from_date}"
+        cmd = [
+            "node", str(_BIRD_SEARCH_MJS),
+            query,
+            "--count", str(count_per),
+            "--json",
+        ]
+        try:
+            result = subproc.run_with_timeout(cmd, timeout=15, env=_subprocess_env())
+        except subproc.SubprocTimeout:
+            _log(f"Mention search timed out for @{handle}")
+            return []
+        except OSError as e:
+            _log(f"Mention search error for @{handle}: {e}")
+            return []
+        if result.returncode != 0:
+            _log(f"Mention search failed for @{handle}: {result.stderr.strip()}")
+            return []
+        output = result.stdout.strip()
+        if not output:
+            return []
+        try:
+            response = json.loads(output)
+        except json.JSONDecodeError:
+            _log(f"Invalid JSON from mention search for @{handle}")
+            return []
+        items = parse_bird_response(response, query=None)
+        # ABOUT lane = OTHERS mentioning the handle. Drop the handle's own tweets
+        # (the FROM lane already covers those); identify by the status URL author.
+        hl = handle.lower()
+        about = [it for it in items
+                 if f"x.com/{hl}/status" not in (it.get("url") or "").lower()]
+        _log(f"Searching: {query} -> {len(about)} mentions")
+        return about
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    all_items: List[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=min(5, len(handles))) as executor:
+        futures = {executor.submit(_search_one, h): h for h in handles}
+        for future in as_completed(futures):
+            all_items.extend(future.result())
     return all_items
 
 
