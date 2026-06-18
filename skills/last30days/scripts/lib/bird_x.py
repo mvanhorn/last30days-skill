@@ -336,9 +336,17 @@ def search_x(
         }
         candidates = [w for w in core_words if w not in low_signal]
         if candidates:
+            # Keep an entity anchor (the first distinctive topic token) in the
+            # retry so it can't collapse to a bare generic token like "compound"
+            # and flood the X pool with off-topic noise. Add the strongest
+            # (longest) distinctive token when it differs from the anchor;
+            # otherwise query the anchor alone. Better to return 0 than to
+            # over-broaden to an unanchored generic term.
+            anchor = candidates[0]
             strongest = max(candidates, key=len)
-            _log(f"0 results for '{core_topic}', retrying with strongest token '{strongest}'")
-            query = f"{strongest} since:{from_date}"
+            retry_terms = anchor if strongest == anchor else f"{anchor} {strongest}"
+            _log(f"0 results for '{core_topic}', retrying anchored on '{retry_terms}'")
+            query = f"{retry_terms} since:{from_date}"
             response = _run_bird_search(query, count, timeout)
 
     return response

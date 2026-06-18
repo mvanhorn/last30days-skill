@@ -302,3 +302,49 @@ class TestRunBirdSearchJsonDecodeRetry(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestStrongestTokenRetryAnchored(unittest.TestCase):
+    """The last-chance retry must keep an entity anchor, not collapse to a bare
+    generic token (e.g. 'compound') that floods the X pool with off-topic noise.
+    """
+
+    def test_last_chance_retry_keeps_entity_anchor(self):
+        from unittest import mock
+        from lib import bird_x
+
+        queries = []
+
+        def fake_run(query, count, timeout):
+            queries.append(query)
+            return {"items": []}  # always 0 → forces every retry tier
+
+        # extract_compound_terms may run; let it. Force all bird calls empty.
+        with mock.patch.object(bird_x, "_run_bird_search", side_effect=fake_run):
+            bird_x.search_x("trevin chow ai agents compound", "2026-05-19", "2026-06-18")
+
+        self.assertTrue(queries, "expected at least one bird query")
+        last = queries[-1]
+        # The final (last-chance) query keeps the entity anchor ...
+        self.assertIn("trevin", last)
+        # ... and is NOT a bare generic token query.
+        self.assertFalse(last.startswith("compound "), f"bare generic retry: {last!r}")
+        self.assertNotEqual(last, "compound since:2026-05-19")
+
+    def test_retry_with_single_distinctive_token_no_crash(self):
+        from unittest import mock
+        from lib import bird_x
+
+        queries = []
+
+        def fake_run(query, count, timeout):
+            queries.append(query)
+            return {"items": []}
+
+        with mock.patch.object(bird_x, "_run_bird_search", side_effect=fake_run):
+            # 'trending tools' is all low-signal except nothing distinctive ->
+            # whatever survives, the retry must not crash and stays anchored.
+            bird_x.search_x("agentcookie", "2026-05-19", "2026-06-18")
+
+        self.assertTrue(queries)
+        self.assertIn("agentcookie", queries[-1])
