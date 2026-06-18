@@ -181,3 +181,22 @@ def extract_compound_terms(topic: str) -> List[str]:
         terms.append(match.group())
 
     return terms
+
+
+def leading_mentions(text: Optional[str]) -> List[str]:
+    """Handles a post is directed at: the leading run of @mentions in the text.
+
+    X replies open with the target handle(s) (e.g. "@someone thanks!"), so the
+    leading run identifies who the post is addressed to. A mention later in the
+    body is not a reply target and is intentionally ignored. Returns normalized
+    (``@``-stripped, lowercased) handles, in order. Shared by every X-shaped
+    source adapter (bird, xquik) so leading-mention parsing has one definition.
+    """
+    out: List[str] = []
+    for token in (text or "").split():
+        tok = token.strip(",.:;!?")
+        if tok.startswith("@") and len(tok) > 1:
+            out.append(tok[1:].lower())
+        else:
+            break
+    return out

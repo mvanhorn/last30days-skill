@@ -189,6 +189,11 @@ def _parse_tweet(
 
     text = str(tweet.get("text", "")).strip()[:500]
 
+    # Leading-run @mentions = who the post is directed at (reply target). Shared
+    # parser with bird so the first-party interaction signal fires for xquik too.
+    from .query import leading_mentions
+    mentioned_handles = leading_mentions(text)
+
     # Build engagement dict with full metrics
     engagement = {
         "likes": _safe_int(tweet.get("likeCount")),
@@ -206,6 +211,7 @@ def _parse_tweet(
         "author_handle": username,
         "date": date,
         "engagement": engagement,
+        "mentioned_handles": mentioned_handles,
         "relevance": _compute_relevance(query, text) if query else 0.7,
         "why_relevant": "",
     }

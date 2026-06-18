@@ -266,5 +266,41 @@ class TestDepthConfig(unittest.TestCase):
     def test_deep_has_most_queries(self):
         self.assertGreater(DEPTH_CONFIG["deep"]["queries"], DEPTH_CONFIG["quick"]["queries"])
 
+class TestMentionedHandles(unittest.TestCase):
+    """U3: xquik items carry leading-run @mentions so the first-party
+    interaction signal fires (shared parser with bird)."""
+
+    def _tweet(self, text):
+        return {
+            "id": "1", "text": text, "createdAt": "2026-06-15T12:00:00Z",
+            "author": {"username": "subject"},
+        }
+
+    def test_leading_mentions_captured(self):
+        item = _parse_tweet(self._tweet("@jack @pmarca thoughts on this"), 0, "topic")
+        self.assertEqual(["jack", "pmarca"], item["mentioned_handles"])
+
+    def test_midbody_mention_ignored(self):
+        item = _parse_tweet(self._tweet("I think @jack is right"), 0, "topic")
+        self.assertEqual([], item["mentioned_handles"])
+
+    def test_no_mentions(self):
+        item = _parse_tweet(self._tweet("Grok 4 just shipped"), 0, "topic")
+        self.assertEqual([], item["mentioned_handles"])
+
+
+class TestNormalizePropagatesMentions(unittest.TestCase):
+    """U3: _normalize_x carries xquik mentioned_handles into metadata so rerank
+    can read them."""
+
+    def test_mentioned_handles_reach_metadata(self):
+        from lib import normalize
+        item = _parse_tweet(
+            {"id": "1", "text": "@jack hi", "createdAt": "2026-06-15T12:00:00Z",
+             "author": {"username": "subject"}}, 0, "topic")
+        normalized = normalize.normalize_source_items("xquik", [item], "2026-05-19", "2026-06-18")
+        self.assertEqual(["jack"], normalized[0].metadata.get("mentioned_handles"))
+
+
 if __name__ == "__main__":
     unittest.main()
