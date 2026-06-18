@@ -864,3 +864,128 @@ class TranscriptCaveatTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRenderTopCommentsBlock(unittest.TestCase):
+    """U3: vote-ranked Top Community Comments across ALL candidates, inside the
+    EVIDENCE envelope, so the funniest lines reach the synthesizing model even
+    when Best Takes is empty (no LLM fun-scorer in the engine subprocess)."""
+
+    def _cand(self, cid, source, score, body, author="u1", url=None):
+        u = url or f"https://example.com/{source}/{cid}"
+        item = schema.SourceItem(
+            item_id=f"i-{cid}", source=source, title=f"Post {cid}", body="b", url=u,
+            container="c", published_at="2026-03-15", date_confidence="high",
+            engagement={"score": 100, "num_comments": 10},
+            metadata={"top_comments": [{"score": score, "excerpt": body, "author": author}]},
+        )
+        return schema.Candidate(
+            candidate_id=cid, item_id=f"i-{cid}", source=source, title=f"Post {cid}", url=u,
+            snippet="s", subquery_labels=["primary"], native_ranks={f"primary:{source}": 1},
+            local_relevance=0.9, freshness=90, engagement=80, source_quality=1.0,
+            rrf_score=0.02, rerank_score=90, final_score=85, sources=[source], source_items=[item],
+        )
+
+    def _report(self, candidates, representative_ids):
+        cluster = schema.Cluster(
+            cluster_id="cl-1", title="Test cluster",
+            candidate_ids=[c.candidate_id for c in candidates],
+            representative_ids=representative_ids, sources=["reddit"], score=90,
+        )
+        return schema.Report(
+            topic="test topic", range_from="2026-02-14", range_to="2026-03-16",
+            generated_at="2026-03-16T00:00:00+00:00",
+            provider_runtime=schema.ProviderRuntime(
+                reasoning_provider="gemini", planner_model="m", rerank_model="m"),
+            query_plan=schema.QueryPlan(
+                intent="breaking_news", freshness_mode="strict_recent", cluster_mode="story",
+                raw_topic="test topic",
+                subqueries=[schema.SubQuery(label="primary", search_query="t",
+                                            ranking_query="t?", sources=["reddit"])],
+                source_weights={"reddit": 1.0}),
+            clusters=[cluster], ranked_candidates=candidates,
+            items_by_source={"reddit": [c.source_items[0] for c in candidates]},
+            errors_by_source={},
+        )
+
+    def test_block_renders_with_2plus_comments(self):
+        report = self._report(
+            [self._cand("a", "reddit", 500, "first funny line here"),
+             self._cand("b", "reddit", 50, "second funny line here")],
+            representative_ids=["a"])
+        text = render.render_compact(report)
+        self.assertIn("## Top Community Comments", text)
+        self.assertIn("first funny line here", text)
+
+    def test_includes_comment_on_non_representative_candidate(self):
+        """The headline fix: a funny comment on a candidate NOT chosen as the
+        cluster representative still surfaces (the Kanye 'TurkiYe' case)."""
+        rep = self._cand("rep", "reddit", 300, "boring representative comment")
+        hidden = self._cand("hidden", "reddit", 1335, "Is anyone surprised it is called TurkiYe")
+        report = self._report([rep, hidden], representative_ids=["rep"])  # hidden NOT a rep
+        text = render.render_compact(report)
+        block = text.split("## Top Community Comments", 1)[1]
+        self.assertIn("TurkiYe", block)
+
+    def test_block_inside_evidence_envelope(self):
+        report = self._report(
+            [self._cand("a", "reddit", 500, "first funny line here"),
+             self._cand("b", "reddit", 50, "second funny line here")],
+            representative_ids=["a"])
+        text = render.render_compact(report)
+        open_i = text.index("EVIDENCE FOR SYNTHESIS: read this")
+        end_i = text.index("END EVIDENCE FOR SYNTHESIS")
+        blk_i = text.index("## Top Community Comments")
+        self.assertTrue(open_i < blk_i < end_i, "block must sit inside the EVIDENCE envelope")
+
+    def test_sorted_by_normalized_vote_cross_platform(self):
+        # Equal raw 600: Reddit normalizes higher than TikTok (smaller reference),
+        # so the Reddit gem ranks above the TikTok line despite same raw count.
+        # TikTok 600 is above its 500 min-score threshold so it isn't filtered.
+        report = self._report(
+            [self._cand("r", "reddit", 600, "reddit gem line here"),
+             self._cand("t", "tiktok", 600, "low tiktok line here")],
+            representative_ids=["r"])
+        block = render.render_compact(report).split("## Top Community Comments", 1)[1]
+        self.assertLess(block.index("reddit gem"), block.index("low tiktok"))
+
+    def test_entries_carry_url(self):
+        report = self._report(
+            [self._cand("a", "reddit", 500, "first funny line here", url="https://reddit.com/x"),
+             self._cand("b", "reddit", 50, "second funny line here")],
+            representative_ids=["a"])
+        block = render.render_compact(report).split("## Top Community Comments", 1)[1]
+        self.assertIn("https://reddit.com/x", block)
+
+    def test_omitted_when_fewer_than_two(self):
+        report = self._report([self._cand("a", "reddit", 500, "only one comment line")],
+                              representative_ids=["a"])
+        text = render.render_compact(report)
+        self.assertNotIn("## Top Community Comments", text)
+        # footer/envelope intact
+        self.assertIn("END EVIDENCE FOR SYNTHESIS", text)
+
+    def test_dedupes_identical_comments(self):
+        report = self._report(
+            [self._cand("a", "reddit", 500, "duplicate line text here"),
+             self._cand("b", "reddit", 400, "duplicate line text here"),
+             self._cand("c", "reddit", 300, "a distinct third comment line")],
+            representative_ids=["a"])
+        block = render.render_compact(report).split("## Top Community Comments", 1)[1]
+        self.assertEqual(block.count("duplicate line text here"), 1)
+        self.assertIn("a distinct third comment line", block)
+
+
+class TestCommentAttributionPrefix(unittest.TestCase):
+    def test_strips_existing_at_prefix_youtube(self):
+        # YouTube/TikTok authors already carry '@' from enrichment -> no '@@'.
+        self.assertEqual(render._comment_attribution("youtube", "@ml-dz9ww"), "@ml-dz9ww")
+        self.assertEqual(render._comment_attribution("tiktok", "@creator"), "@creator")
+
+    def test_adds_prefix_when_missing(self):
+        self.assertEqual(render._comment_attribution("youtube", "alice"), "@alice")
+        self.assertEqual(render._comment_attribution("reddit", "bob"), "u/bob")
+
+    def test_deleted_author_is_comment(self):
+        self.assertEqual(render._comment_attribution("reddit", "[deleted]"), "Comment")
+        self.assertEqual(render._comment_attribution("reddit", None), "Comment")
