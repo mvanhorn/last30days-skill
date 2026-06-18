@@ -501,6 +501,35 @@ class TestSupplementalSearches(unittest.TestCase):
             f"Duplicate URL found: {urls}",
         )
 
+    @patch("lib.bird_x.search_mentions")
+    @patch("lib.bird_x.search_handles")
+    @patch("lib.entity_extract.extract_entities")
+    def test_from_lane_uses_raised_cap_mention_lane_modest(self, mock_extract, mock_handles, mock_mentions):
+        """U4: the FROM lane (subject's own timeline) uses the raised per-handle
+        cap; the mention lane stays modest."""
+        mock_extract.return_value = {"x_handles": ["subject1"], "x_hashtags": [], "reddit_subreddits": []}
+        mock_handles.return_value = []
+        mock_mentions.return_value = []
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/subject1/status/1", author="subject1", body="hi"),
+        ]
+        pipeline._run_supplemental_searches(
+            topic="subject1",
+            bundle=bundle,
+            plan=_make_plan("subject1"),
+            config={},
+            depth="default",
+            date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime("bird"),
+            mock=False,
+            rate_limited_sources=set(),
+            rate_limit_lock=threading.Lock(),
+        )
+        from_call = mock_handles.call_args_list[0]
+        self.assertEqual(pipeline.FROM_LANE_COUNT_PER, from_call.kwargs.get("count_per"))
+        self.assertEqual(pipeline.MENTION_LANE_COUNT_PER, mock_mentions.call_args.kwargs.get("count_per"))
+
     def test_phase2_skipped_in_quick_mode(self):
         """_run_supplemental_searches should return immediately when depth='quick'."""
         bundle = schema.RetrievalBundle()

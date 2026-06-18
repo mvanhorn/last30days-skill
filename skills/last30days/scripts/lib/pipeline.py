@@ -68,6 +68,14 @@ SEARCH_ALIAS = {
 
 MAX_SOURCE_FETCHES: dict[str, int] = {"x": 2, "jobs": 1}
 
+# Per-handle result caps for the X handle-search lanes. The FROM lane (the
+# subject's own timeline) is the single best source for a person topic, so it
+# gets the highest cap; the ABOUT (mention) and related-handle lanes stay
+# modest so total volume and request budget don't balloon.
+FROM_LANE_COUNT_PER = 8
+MENTION_LANE_COUNT_PER = 5
+RELATED_HANDLE_COUNT_PER = 3
+
 MOCK_AVAILABLE_SOURCES = [
     "reddit",
     "x",
@@ -875,13 +883,13 @@ def _run_supplemental_searches(
         from_items: list = []
         about_items: list = []
         try:
-            from_items = bird_x.search_handles(handles, topic, from_date, count_per=3)
+            from_items = bird_x.search_handles(handles, topic, from_date, count_per=FROM_LANE_COUNT_PER)
         except Exception as exc:
             print(f"[Pipeline] Phase 2 FROM-lane search failed: {exc}", file=sys.stderr)
             if not bundle.items_by_source.get("x"):
                 bundle.errors_by_source["x"] = f"Phase 2 FROM-lane: {exc}"
         try:
-            about_items = bird_x.search_mentions(handles, from_date, count_per=3)
+            about_items = bird_x.search_mentions(handles, from_date, count_per=MENTION_LANE_COUNT_PER)
         except Exception as exc:
             print(f"[Pipeline] Phase 2 ABOUT-lane search failed: {exc}", file=sys.stderr)
         raw_items = from_items + about_items
@@ -905,7 +913,7 @@ def _run_supplemental_searches(
     if related_handles:
         try:
             raw_items = bird_x.search_handles(
-                related_handles, topic, from_date, count_per=3,
+                related_handles, topic, from_date, count_per=RELATED_HANDLE_COUNT_PER,
             )
         except Exception as exc:
             print(f"[Pipeline] Phase 2 related handle search failed: {exc}", file=sys.stderr)
