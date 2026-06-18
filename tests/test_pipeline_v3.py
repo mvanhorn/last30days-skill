@@ -455,6 +455,24 @@ class TestSupplementalSearches(unittest.TestCase):
         x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
         self.assertIn("https://x.com/analyst1/status/999", x_urls)
 
+    @patch("lib.xquik.search_xquik", return_value={"items": []})
+    def test_xquik_topic_lane_uses_anchored_query(self, mock_search):
+        """U6: xquik consumes the anchored subquery.search_query (#611
+        disambiguation), not the bare raw_topic."""
+        anchored = schema.SubQuery(
+            label="primary", search_query="kevin rose digg founder",
+            ranking_query="What has Kevin Rose, founder of Digg, been doing?",
+            sources=["xquik"],
+        )
+        pipeline._retrieve_stream(
+            topic="kevin rose digg founder", subquery=anchored, source="xquik",
+            config={"XQUIK_API_KEY": "k"}, depth="default",
+            date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None),
+            mock=False, raw_topic="kevin rose",
+        )
+        mock_search.assert_called_once()
+        self.assertEqual("kevin rose digg founder", mock_search.call_args[0][0])
+
     @patch("lib.env.get_xquik_token", return_value="k")
     @patch("lib.env.is_xquik_available", return_value=True)
     @patch("lib.env.get_x_source", return_value=None)
