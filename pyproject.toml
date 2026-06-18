@@ -1,6 +1,6 @@
 [project]
 name = "last30days-skill"
-version = "3.3.2"
+version = "3.4.0"
 description = "Multi-source last-30-days research skill"
 readme = "README.md"
 requires-python = ">=3.12"
