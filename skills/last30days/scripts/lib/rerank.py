@@ -25,6 +25,14 @@ ENTITY_MISS_PENALTY = 25.0
 # neutral floor so it survives into the visible band.
 FIRST_PARTY_AUTHOR_CREDIT = 5.0
 
+# Engagement rescue: a high-engagement X post that is on-topic (entity-grounded
+# or first-party) cannot be fully zeroed by the other penalties. The floor is a
+# function of the post's engagement percentile *within the run's X pool* (so it
+# adapts to each topic's engagement scale) and is bounded by RESCUE_FLOOR_MAX.
+# Critically it is NEVER applied to entity-miss-demoted (off-topic collision)
+# posts, so viral name-collision noise (Lanzhou clips, namesakes) stays buried.
+RESCUE_FLOOR_MAX = 40.0
+
 # Intent modifiers to strip before extracting the primary entity so that,
 # for example, "Hermes Agent use cases" yields primary_entity="hermes agent"
 # rather than "hermes agent use cases". Kept in sync with
@@ -119,6 +127,8 @@ def rerank_candidates(
     if len(candidates) > shortlist_size:
         tail = candidates[shortlist_size:]
         _apply_fallback_scores(tail, primary_entity=primary_entity, resolved_handles=handles)
+
+    _apply_engagement_rescue(candidates, primary_entity=primary_entity, resolved_handles=handles)
 
     return sorted(
         candidates,
@@ -261,6 +271,61 @@ def _is_first_party(candidate: schema.Candidate, resolved_handles: set[str]) -> 
     if not resolved_handles:
         return False
     return _candidate_author_handle(candidate) in resolved_handles
+
+
+def _is_x_candidate(candidate: schema.Candidate) -> bool:
+    """True when the candidate originates from X (top-level or any source item)."""
+    if candidate.source == "x":
+        return True
+    return any(getattr(item, "source", None) == "x" for item in candidate.source_items)
+
+
+def _candidate_engagement(candidate: schema.Candidate) -> float:
+    return candidate.engagement if candidate.engagement is not None else 0.0
+
+
+def _is_entity_grounded(candidate: schema.Candidate, primary_entity: str) -> bool:
+    """Whether the candidate plausibly mentions the primary entity in its text.
+
+    Mirrors the grounding gate used for the entity-miss demotion: no
+    primary_entity means everything is grounded; otherwise the candidate must
+    have text that contains the entity's head token.
+    """
+    if not primary_entity:
+        return True
+    haystack = _candidate_haystack(candidate)
+    return bool(haystack.strip()) and _entity_grounded(haystack, primary_entity)
+
+
+def _rescue_floor(percentile: float) -> float:
+    """Engagement rescue floor: 0 at/below the median, scaling linearly to
+    RESCUE_FLOOR_MAX at the top of the X pool."""
+    if percentile <= 0.5:
+        return 0.0
+    return ((percentile - 0.5) / 0.5) * RESCUE_FLOOR_MAX
+
+
+def _apply_engagement_rescue(
+    candidates: list[schema.Candidate], *, primary_entity: str, resolved_handles: set[str]
+) -> None:
+    """Floor final_score for high-engagement X posts that are first-party or
+    entity-grounded, so a viral on-topic post can't sit at ~0. Off-topic
+    (entity-miss) collision posts are excluded, preserving noise suppression.
+    """
+    x_cands = [c for c in candidates if _is_x_candidate(c)]
+    if len(x_cands) < 2:
+        return
+    engagements = sorted(_candidate_engagement(c) for c in x_cands)
+    n = len(engagements)
+    for c in x_cands:
+        if not (_is_first_party(c, resolved_handles) or _is_entity_grounded(c, primary_entity)):
+            continue
+        e = _candidate_engagement(c)
+        # Percentile rank in [0, 1]: fraction of the X pool strictly below e.
+        percentile = sum(1 for v in engagements if v < e) / (n - 1)
+        floor = _rescue_floor(percentile)
+        if floor > c.final_score:
+            c.final_score = floor
 
 
 def _candidate_haystack(candidate: schema.Candidate) -> str:

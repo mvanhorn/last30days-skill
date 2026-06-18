@@ -515,5 +515,90 @@ class FirstPartyAuthorshipTests(unittest.TestCase):
         self.assertFalse(rerank._is_first_party(c, set()))
 
 
+class EngagementRescueTests(unittest.TestCase):
+    """U3: a high-engagement X post that is on-topic (first-party or grounded)
+    cannot sit at ~0; off-topic collision posts are NOT rescued."""
+
+    def _x(self, *, author, text, engagement, final_score, explanation):
+        item = schema.SourceItem(
+            item_id="x", source="x", title=text, body=text,
+            url="https://x.com/a/status/1", author=author, snippet=text,
+        )
+        c = schema.Candidate(
+            candidate_id=f"x-{author}-{engagement}",
+            item_id="x",
+            source="x",
+            title=text,
+            url=item.url,
+            snippet=text,
+            subquery_labels=["primary"],
+            native_ranks={"primary:x": 1},
+            local_relevance=0.5,
+            freshness=50,
+            engagement=engagement,
+            source_quality=0.6,
+            rrf_score=0.02,
+            source_items=[item],
+        )
+        c.final_score = final_score
+        c.explanation = explanation
+        return c
+
+    def test_top_engagement_first_party_is_floored(self):
+        low = self._x(author="other", text="Matt Van Horn news", engagement=1,
+                      final_score=10, explanation="fallback-local-score")
+        mid = self._x(author="other2", text="Matt Van Horn update", engagement=50,
+                      final_score=10, explanation="fallback-local-score")
+        top = self._x(author="mvanhorn", text="quick reply no entity", engagement=100,
+                      final_score=3, explanation="fallback-local-score (first-party authorship)")
+        rerank._apply_engagement_rescue(
+            [low, mid, top], primary_entity="Matt Van Horn", resolved_handles={"mvanhorn"}
+        )
+        self.assertGreaterEqual(top.final_score, rerank.RESCUE_FLOOR_MAX - 0.001)
+
+    def test_top_engagement_entity_miss_is_not_rescued(self):
+        # Off-topic collision post with the highest engagement must stay buried.
+        grounded = self._x(author="x", text="Matt Van Horn ships", engagement=1,
+                           final_score=20, explanation="fallback-local-score")
+        offtopic_top = self._x(author="namesake", text="totally different person lunch", engagement=100,
+                               final_score=2,
+                               explanation="fallback-local-score (entity-miss demotion)")
+        rerank._apply_engagement_rescue(
+            [grounded, offtopic_top], primary_entity="Matt Van Horn", resolved_handles={"mvanhorn"}
+        )
+        self.assertEqual(2, offtopic_top.final_score)
+
+    def test_median_engagement_not_meaningfully_floored(self):
+        low = self._x(author="a", text="Matt Van Horn", engagement=1,
+                      final_score=8, explanation="fallback-local-score")
+        median = self._x(author="b", text="Matt Van Horn", engagement=50,
+                         final_score=8, explanation="fallback-local-score")
+        high = self._x(author="c", text="Matt Van Horn", engagement=100,
+                       final_score=8, explanation="fallback-local-score")
+        rerank._apply_engagement_rescue(
+            [low, median, high], primary_entity="Matt Van Horn", resolved_handles=set()
+        )
+        self.assertEqual(8, median.final_score)  # percentile 0.5 -> floor 0
+
+    def test_non_x_candidate_unaffected(self):
+        reddit = make_candidate(4.0)  # reddit candidate (module-level helper)
+        reddit.final_score = 3.0
+        x1 = self._x(author="mvanhorn", text="hi", engagement=1, final_score=3,
+                     explanation="fallback-local-score (first-party authorship)")
+        x2 = self._x(author="mvanhorn", text="hi", engagement=100, final_score=3,
+                     explanation="fallback-local-score (first-party authorship)")
+        rerank._apply_engagement_rescue(
+            [reddit, x1, x2], primary_entity="Matt Van Horn", resolved_handles={"mvanhorn"}
+        )
+        self.assertEqual(3.0, reddit.final_score)
+
+    def test_single_or_empty_x_pool_no_error(self):
+        rerank._apply_engagement_rescue([], primary_entity="x", resolved_handles=set())
+        solo = self._x(author="mvanhorn", text="hi", engagement=100, final_score=2,
+                       explanation="fallback-local-score (first-party authorship)")
+        rerank._apply_engagement_rescue([solo], primary_entity="x", resolved_handles={"mvanhorn"})
+        self.assertEqual(2, solo.final_score)  # pool < 2 -> no-op
+
+
 if __name__ == "__main__":
     unittest.main()
