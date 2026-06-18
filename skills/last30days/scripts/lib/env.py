@@ -130,11 +130,15 @@ def _load_keychain(keys: list[str]) -> dict[str, str]:
         return {}
 
     import subprocess
-    import pwd
-    # USER can be unset under sudo, in Docker without --env USER, or in some CI
-    # runners; fall back to the OS user record so lookups still match items
-    # stored by setup-keychain.sh (which uses $USER).
-    user = os.environ.get("USER") or pwd.getpwuid(os.getuid()).pw_name
+    try:
+        import pwd as _pwd
+        # USER can be unset under sudo, in Docker without --env USER, or in some CI
+        # runners; fall back to the OS user record so lookups still match items
+        # stored by setup-keychain.sh (which uses $USER).
+        user = os.environ.get("USER") or _pwd.getpwuid(os.getuid()).pw_name
+    except (ImportError, AttributeError):
+        import getpass
+        user = getpass.getuser()
     env: dict[str, str] = {}
     for key in keys:
         try:
