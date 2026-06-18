@@ -33,6 +33,15 @@ FIRST_PARTY_AUTHOR_CREDIT = 5.0
 # posts, so viral name-collision noise (Lanzhou clips, namesakes) stays buried.
 RESCUE_FLOOR_MAX = 40.0
 
+# Interaction signal: a first-party post directed AT another account (a reply /
+# leading @mention) carries relational signal — who the subject is personally
+# engaging — that no keyword or like-count surfaces. It is floated to a minimum
+# final_score so it survives into the visible band regardless of engagement,
+# and tagged (candidate.metadata["interaction_targets"]) so the synthesizing
+# model reads it as relational, not noise. Floor (not additive) so it composes
+# with the engagement rescue without unbounded stacking.
+INTERACTION_FLOOR = 35.0
+
 # Intent modifiers to strip before extracting the primary entity so that,
 # for example, "Hermes Agent use cases" yields primary_entity="hermes agent"
 # rather than "hermes agent use cases". Kept in sync with
@@ -129,6 +138,7 @@ def rerank_candidates(
         _apply_fallback_scores(tail, primary_entity=primary_entity, resolved_handles=handles)
 
     _apply_engagement_rescue(candidates, primary_entity=primary_entity, resolved_handles=handles)
+    _apply_interaction_signal(candidates, resolved_handles=handles)
 
     return sorted(
         candidates,
@@ -303,6 +313,45 @@ def _rescue_floor(percentile: float) -> float:
     if percentile <= 0.5:
         return 0.0
     return ((percentile - 0.5) / 0.5) * RESCUE_FLOOR_MAX
+
+
+def _candidate_mentioned_handles(candidate: schema.Candidate) -> set[str]:
+    """Normalized handles the candidate's post is directed at (leading @mentions
+    parsed at ingest into source-item metadata)."""
+    handles: set[str] = set()
+    for item in candidate.source_items:
+        for h in (item.metadata or {}).get("mentioned_handles") or []:
+            norm = str(h).lstrip("@").strip().lower()
+            if norm:
+                handles.add(norm)
+    return handles
+
+
+def _interaction_targets(candidate: schema.Candidate, resolved_handles: set[str]) -> set[str]:
+    """Accounts a first-party post is directed at, excluding the subject's own
+    handles. Empty unless the candidate is first-party AND addresses someone
+    other than the subject."""
+    if not _is_first_party(candidate, resolved_handles):
+        return set()
+    return _candidate_mentioned_handles(candidate) - resolved_handles
+
+
+def _apply_interaction_signal(
+    candidates: list[schema.Candidate], *, resolved_handles: set[str]
+) -> None:
+    """Float and tag first-party posts directed at another account. The relational
+    tell (the subject personally engaging someone) is invisible to keyword and
+    engagement scoring, so these are floored into the visible band and tagged so
+    synthesis reads them as signal."""
+    if not resolved_handles:
+        return
+    for c in candidates:
+        targets = _interaction_targets(c, resolved_handles)
+        if not targets:
+            continue
+        c.metadata = {**(c.metadata or {}), "interaction_targets": sorted(targets)}
+        if c.final_score < INTERACTION_FLOOR:
+            c.final_score = INTERACTION_FLOOR
 
 
 def _apply_engagement_rescue(

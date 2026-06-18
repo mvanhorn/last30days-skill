@@ -505,3 +505,32 @@ class TestStrongestTokenRetryAnchored(unittest.TestCase):
 
         self.assertTrue(queries)
         self.assertIn("agentcookie", queries[-1])
+
+
+class LeadingMentionsTests(unittest.TestCase):
+    """U5: leading @mentions parsed from post text identify reply targets."""
+
+    def test_single_leading_mention(self):
+        from lib import bird_x
+        self.assertEqual(["alpha"], bird_x._leading_mentions("@alpha thanks so much!"))
+
+    def test_multiple_leading_mentions(self):
+        from lib import bird_x
+        self.assertEqual(["alpha", "beta"], bird_x._leading_mentions("@alpha @beta hi"))
+
+    def test_in_body_mention_not_collected(self):
+        from lib import bird_x
+        self.assertEqual([], bird_x._leading_mentions("hello @gamma nice work"))
+
+    def test_punctuation_stripped(self):
+        from lib import bird_x
+        self.assertEqual(["alpha"], bird_x._leading_mentions("@alpha, nice"))
+
+    def test_empty_text(self):
+        from lib import bird_x
+        self.assertEqual([], bird_x._leading_mentions(""))
+        self.assertEqual([], bird_x._leading_mentions(None))
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -600,5 +600,62 @@ class EngagementRescueTests(unittest.TestCase):
         self.assertEqual(2, solo.final_score)  # pool < 2 -> no-op
 
 
+class InteractionSignalTests(unittest.TestCase):
+    """U5: a first-party post directed at another account is tagged and floated
+    regardless of like-count. Synthetic handles only (R7)."""
+
+    def _x(self, *, author, mentioned, final_score=2.0):
+        item = schema.SourceItem(
+            item_id="x", source="x", title="t", body="t",
+            url="https://x.com/a/status/1", author=author, snippet="t",
+            metadata={"mentioned_handles": list(mentioned)} if mentioned else {},
+        )
+        c = schema.Candidate(
+            candidate_id=f"x-{author}-{'-'.join(mentioned) or 'none'}",
+            item_id="x", source="x", title="t", url=item.url, snippet="t",
+            subquery_labels=["primary"], native_ranks={"primary:x": 1},
+            local_relevance=0.5, freshness=50, engagement=1, source_quality=0.6,
+            rrf_score=0.02, source_items=[item],
+        )
+        c.final_score = final_score
+        return c
+
+    def test_first_party_reply_is_tagged_and_floated(self):
+        c = self._x(author="subject", mentioned=["beta"], final_score=2.0)
+        rerank._apply_interaction_signal([c], resolved_handles={"subject"})
+        self.assertEqual(["beta"], c.metadata.get("interaction_targets"))
+        self.assertGreaterEqual(c.final_score, rerank.INTERACTION_FLOOR)
+
+    def test_first_party_no_mentions_not_interaction(self):
+        c = self._x(author="subject", mentioned=[], final_score=2.0)
+        rerank._apply_interaction_signal([c], resolved_handles={"subject"})
+        self.assertNotIn("interaction_targets", c.metadata)
+        self.assertEqual(2.0, c.final_score)
+
+    def test_third_party_mentioning_subject_not_floated(self):
+        # A stranger @-ing the subject is not first-party; not an interaction here.
+        c = self._x(author="stranger", mentioned=["subject"], final_score=2.0)
+        rerank._apply_interaction_signal([c], resolved_handles={"subject"})
+        self.assertNotIn("interaction_targets", c.metadata)
+        self.assertEqual(2.0, c.final_score)
+
+    def test_self_mention_only_not_interaction(self):
+        # Subject addressing only their own (resolved) handles -> no other target.
+        c = self._x(author="subject", mentioned=["subject_alt"], final_score=2.0)
+        rerank._apply_interaction_signal([c], resolved_handles={"subject", "subject_alt"})
+        self.assertNotIn("interaction_targets", c.metadata)
+
+    def test_empty_resolved_handles_is_noop(self):
+        c = self._x(author="subject", mentioned=["beta"], final_score=2.0)
+        rerank._apply_interaction_signal([c], resolved_handles=set())
+        self.assertNotIn("interaction_targets", c.metadata)
+        self.assertEqual(2.0, c.final_score)
+
+    def test_float_does_not_lower_an_already_high_score(self):
+        c = self._x(author="subject", mentioned=["beta"], final_score=80.0)
+        rerank._apply_interaction_signal([c], resolved_handles={"subject"})
+        self.assertEqual(80.0, c.final_score)  # floor only lifts, never lowers
+
+
 if __name__ == "__main__":
     unittest.main()

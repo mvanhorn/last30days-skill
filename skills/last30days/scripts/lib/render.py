@@ -1195,6 +1195,12 @@ def _render_candidate(candidate: schema.Candidate, prefix: str) -> list[str]:
     ]
     if candidate.fun_score is not None and candidate.fun_score >= 50:
         detail_parts.append(f"fun:{candidate.fun_score:.0f}")
+    # First-party interaction tag: this is the subject's own post directed at
+    # another account (a reply/mention). Signals a relationship the synthesis
+    # should read even at low engagement, not noise.
+    interaction_targets = (candidate.metadata or {}).get("interaction_targets")
+    if interaction_targets:
+        detail_parts.append("interaction:→@" + ",@".join(interaction_targets[:2]))
     details = " | ".join(part for part in detail_parts if part)
     lines = [
         f"{prefix} [{schema.candidate_source_label(candidate)}] {candidate.title}",

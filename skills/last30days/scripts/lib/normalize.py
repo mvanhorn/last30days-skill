@@ -230,6 +230,7 @@ def _normalize_x(
     to_date: str,
 ) -> schema.SourceItem:
     text = str(item.get("text") or "").strip()
+    mentioned = item.get("mentioned_handles") or []
     return _source_item(
         item_id=str(item.get("id") or f"X{index + 1}"),
         source=source,
@@ -242,6 +243,7 @@ def _normalize_x(
         engagement=item.get("engagement") or {},
         relevance_hint=item.get("relevance", 0.5),
         why_relevant=str(item.get("why_relevant") or ""),
+        metadata={"mentioned_handles": list(mentioned)} if mentioned else {},
     )
 
 

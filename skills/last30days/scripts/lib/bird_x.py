@@ -24,6 +24,24 @@ MAX_JSON_DECODE_RETRIES = 2
 JSON_DECODE_RETRY_DELAY = 5.0  # seconds between retry attempts
 
 
+def _leading_mentions(text: str) -> list:
+    """Handles a post is directed at: the leading run of @mentions in the text.
+
+    X replies open with the target handle(s) (e.g. "@someone thanks!"), so the
+    leading run identifies who the post is addressed to. A mention later in the
+    body is not a reply target and is intentionally ignored. Returns normalized
+    (``@``-stripped, lowercased) handles, in order.
+    """
+    out: list = []
+    for token in (text or "").split():
+        tok = token.strip(",.:;!?")
+        if tok.startswith("@") and len(tok) > 1:
+            out.append(tok[1:].lower())
+        else:
+            break
+    return out
+
+
 def _first_of(*values):
     """Return first value that is not None."""
     for v in values:
@@ -608,11 +626,16 @@ def parse_bird_response(response: Dict[str, Any], query: str = "") -> List[Dict[
                     engagement[key] = None
 
         # Build normalized item
+        text = str(tweet.get("text", tweet.get("full_text", ""))).strip()[:500]
         item = {
             "id": f"X{i+1}",
-            "text": str(tweet.get("text", tweet.get("full_text", ""))).strip()[:500],
+            "text": text,
             "url": url,
             "author_handle": author_handle.lstrip("@"),
+            # Leading @mentions parsed from the post text identify who a reply is
+            # directed at (X replies open with the target handle(s)). Used by the
+            # interaction-signal classifier in rerank.
+            "mentioned_handles": _leading_mentions(text),
             "date": date,
             "engagement": engagement if any(v is not None for v in engagement.values()) else None,
             "why_relevant": "",  # Bird doesn't provide relevance explanations
