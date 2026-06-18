@@ -115,6 +115,40 @@ def is_bird_authenticated() -> Optional[str]:
     return None
 
 
+_probe_cache: Optional[Optional[bool]] = "unset"  # "unset" | True | False | None
+
+
+def probe_works(timeout: int = 8) -> Optional[bool]:
+    """Cheap runtime check that X auth actually returns data.
+
+    Returns True when a 1-result probe comes back without an error, False on a
+    clear failure (auth error / generic search failure), and None when the
+    result is inconclusive (network timeout) so callers can fail open and keep
+    the static credential-presence status rather than reporting a false-down.
+    Cached per process so repeated diagnose calls don't re-probe.
+    """
+    global _probe_cache
+    if _probe_cache != "unset":
+        return _probe_cache  # type: ignore[return-value]
+    if not (_has_injected_credentials() or _has_process_credentials()):
+        _probe_cache = False
+        return False
+    from datetime import datetime, timedelta, timezone
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+    # @x (the platform's own account) posts frequently, so a no-error response
+    # means auth works even if this particular window is quiet.
+    resp = _run_bird_search(f"from:x since:{since}", count=1, timeout=timeout)
+    if isinstance(resp, dict) and resp.get("error"):
+        err = str(resp.get("error")).lower()
+        if "timed out" in err or "timeout" in err:
+            _probe_cache = None  # inconclusive — don't downgrade on a transient timeout
+            return None
+        _probe_cache = False
+        return False
+    _probe_cache = True
+    return True
+
+
 def check_npm_available() -> bool:
     """Check if npm is available (kept for API compatibility).
 
@@ -402,7 +436,11 @@ def search_handles(
         except json.JSONDecodeError:
             _log(f"Invalid JSON from handle search for @{handle}")
             return []
-        return parse_bird_response(response, query=core_topic)
+        items = parse_bird_response(response, query=core_topic)
+        # Log on success/empty too (not only on failure): a silent handle search
+        # made the from: query look like it never ran and caused wrong diagnoses.
+        _log(f"Searching: {query} -> {len(items)} results")
+        return items
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
