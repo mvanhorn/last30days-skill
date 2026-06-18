@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-06-18
+
 ### Added
 
 - **First-party X posts are no longer buried.** A post authored by one of the run's resolved handles (`--x-handle`, `--x-related`, the GitHub user) is now treated as first-class evidence: it is exempt from the entity-miss demotion (a post never repeats its own author's name, so the body-text grounding check used to zero out the subject's own highest-signal posts) and gets a small authorship credit. Third-party collision-noise suppression is unchanged.
