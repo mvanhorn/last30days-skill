@@ -600,6 +600,85 @@ class EngagementRescueTests(unittest.TestCase):
         self.assertEqual(2, solo.final_score)  # pool < 2 -> no-op
 
 
+class FirstPartyFloorTests(unittest.TestCase):
+    """Greptile #613 follow-up: close the LLM-path gap. A first-party post that
+    the LLM rerank capped low must still clear the zero band, and the LLM prompt
+    must mark first-party posts so the model doesn't cap them."""
+
+    def _x(self, *, author, final_score):
+        item = schema.SourceItem(
+            item_id="x", source="x", title="t", body="t",
+            url="https://x.com/a/status/1", author=author, snippet="t",
+        )
+        c = schema.Candidate(
+            candidate_id=f"x-{author}-{final_score}",
+            item_id="x", source="x", title="t", url=item.url, snippet="t",
+            subquery_labels=["primary"], native_ranks={"primary:x": 1},
+            local_relevance=0.5, freshness=50, engagement=1, source_quality=0.6,
+            rrf_score=0.02, source_items=[item],
+        )
+        c.final_score = final_score
+        return c
+
+    def test_first_party_floored_even_when_llm_capped_low(self):
+        # Simulates the LLM path: a first-party post scored low (capped) lands
+        # below the floor; the backstop lifts it into the visible band.
+        c = self._x(author="subject", final_score=4.0)
+        rerank._apply_first_party_floor([c], resolved_handles={"subject"})
+        self.assertGreaterEqual(c.final_score, rerank.FIRST_PARTY_FLOOR)
+
+    def test_floor_never_lowers_a_higher_score(self):
+        c = self._x(author="subject", final_score=70.0)
+        rerank._apply_first_party_floor([c], resolved_handles={"subject"})
+        self.assertEqual(70.0, c.final_score)
+
+    def test_third_party_not_floored(self):
+        c = self._x(author="stranger", final_score=4.0)
+        rerank._apply_first_party_floor([c], resolved_handles={"subject"})
+        self.assertEqual(4.0, c.final_score)
+
+    def test_empty_handles_noop(self):
+        c = self._x(author="subject", final_score=4.0)
+        rerank._apply_first_party_floor([c], resolved_handles=set())
+        self.assertEqual(4.0, c.final_score)
+
+    def test_llm_prompt_marks_first_party_and_exempts_it(self):
+        item = schema.SourceItem(
+            item_id="x", source="x", title="quick reply", body="quick reply",
+            url="https://x.com/subject/status/1", author="subject", snippet="quick reply",
+        )
+        c = schema.Candidate(
+            candidate_id="x-subject", item_id="x", source="x", title="quick reply",
+            url=item.url, snippet="quick reply", subquery_labels=["primary"],
+            native_ranks={"primary:x": 1}, local_relevance=0.5, freshness=50,
+            engagement=1, source_quality=0.6, rrf_score=0.02, source_items=[item],
+        )
+        prompt = rerank._build_prompt(
+            "Matt Van Horn", make_plan(), [c], primary_entity="Matt Van Horn",
+            resolved_handles={"subject"},
+        )
+        self.assertIn("first_party: true (authored by the subject)", prompt)
+        self.assertIn("author: @subject", prompt)
+        self.assertIn("EXEMPT from this cap", prompt)
+
+    def test_llm_prompt_no_first_party_flag_for_third_party(self):
+        item = schema.SourceItem(
+            item_id="x", source="x", title="t", body="t",
+            url="https://x.com/other/status/1", author="other", snippet="t",
+        )
+        c = schema.Candidate(
+            candidate_id="x-other", item_id="x", source="x", title="t",
+            url=item.url, snippet="t", subquery_labels=["primary"],
+            native_ranks={"primary:x": 1}, local_relevance=0.5, freshness=50,
+            engagement=1, source_quality=0.6, rrf_score=0.02, source_items=[item],
+        )
+        prompt = rerank._build_prompt(
+            "Matt Van Horn", make_plan(), [c], primary_entity="Matt Van Horn",
+            resolved_handles={"subject"},
+        )
+        self.assertNotIn("first_party: true (authored by the subject)", prompt)
+
+
 class InteractionSignalTests(unittest.TestCase):
     """U5: a first-party post directed at another account is tagged and floated
     regardless of like-count. Synthetic handles only (R7)."""

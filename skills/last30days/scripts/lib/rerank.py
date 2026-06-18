@@ -42,6 +42,16 @@ RESCUE_FLOOR_MAX = 40.0
 # with the engagement rescue without unbounded stacking.
 INTERACTION_FLOOR = 35.0
 
+# First-party survival floor. A post authored by a resolved handle must clear
+# the zero band regardless of which scoring path ran. The fallback path already
+# exempts it from the entity-miss penalty, but on the LLM rerank path the model
+# is instructed to cap any candidate that doesn't name the entity at <=30 (and a
+# post never names its own author), which would re-bury plain low-engagement
+# first-party posts. This floor is the deterministic backstop; it is modest
+# (well below strong on-topic evidence at 50+) so authorship buys visibility,
+# not a win.
+FIRST_PARTY_FLOOR = 25.0
+
 # Intent modifiers to strip before extracting the primary entity so that,
 # for example, "Hermes Agent use cases" yields primary_entity="hermes agent"
 # rather than "hermes agent use cases". Kept in sync with
@@ -124,7 +134,9 @@ def rerank_candidates(
     primary_entity = _primary_entity(topic)
     if provider and model and shortlisted:
         try:
-            response = provider.generate_json(model, _build_prompt(topic, plan, shortlisted, primary_entity))
+            response = provider.generate_json(
+                model, _build_prompt(topic, plan, shortlisted, primary_entity, resolved_handles=handles)
+            )
             _apply_llm_scores(shortlisted, response, resolved_handles=handles)
         except (ValueError, KeyError, json.JSONDecodeError, OSError, http.HTTPError) as exc:
             import sys
@@ -137,6 +149,7 @@ def rerank_candidates(
         tail = candidates[shortlist_size:]
         _apply_fallback_scores(tail, primary_entity=primary_entity, resolved_handles=handles)
 
+    _apply_first_party_floor(candidates, resolved_handles=handles)
     _apply_engagement_rescue(candidates, primary_entity=primary_entity, resolved_handles=handles)
     _apply_interaction_signal(candidates, resolved_handles=handles)
 
@@ -168,23 +181,39 @@ def _fenced_untrusted_content(candidate_block: str) -> str:
     )
 
 
-def _build_prompt(topic: str, plan: schema.QueryPlan, candidates: list[schema.Candidate], primary_entity: str = "") -> str:
+def _build_prompt(
+    topic: str,
+    plan: schema.QueryPlan,
+    candidates: list[schema.Candidate],
+    primary_entity: str = "",
+    resolved_handles: set[str] | None = None,
+) -> str:
+    handles = resolved_handles or set()
     ranking_queries = "\n".join(
         f"- {subquery.label}: {subquery.ranking_query}"
         for subquery in plan.subqueries
     )
+
+    def _candidate_lines(candidate: schema.Candidate) -> list[str]:
+        author = _candidate_author_handle(candidate)
+        lines = [
+            f"- candidate_id: {candidate.candidate_id}",
+            f"  sources: {schema.candidate_source_label(candidate)}",
+            f"  title: {candidate.title[:220]}",
+            f"  snippet: {candidate.snippet[:420]}",
+            f"  date: {schema.candidate_best_published_at(candidate) or 'unknown'}",
+            f"  matched_subqueries: {', '.join(candidate.subquery_labels)}",
+        ]
+        if author:
+            lines.append(f"  author: @{author}")
+        # Flag first-party posts so the model does not apply the entity-grounding
+        # cap to the subject's own posts (which never name their own author).
+        if author and author in handles:
+            lines.append("  first_party: true (authored by the subject)")
+        return lines
+
     candidate_block = "\n".join(
-        "\n".join(
-            [
-                f"- candidate_id: {candidate.candidate_id}",
-                f"  sources: {schema.candidate_source_label(candidate)}",
-                f"  title: {candidate.title[:220]}",
-                f"  snippet: {candidate.snippet[:420]}",
-                f"  date: {schema.candidate_best_published_at(candidate) or 'unknown'}",
-                f"  matched_subqueries: {', '.join(candidate.subquery_labels)}",
-            ]
-        )
-        for candidate in candidates
+        "\n".join(_candidate_lines(candidate)) for candidate in candidates
     )
     grounding_hint = ""
     if primary_entity:
@@ -194,7 +223,10 @@ def _build_prompt(topic: str, plan: schema.QueryPlan, candidates: list[schema.Ca
             "in its title or snippet should score no higher than 30, regardless of other "
             "signals. Do not let a candidate match the topic vicinity without matching the "
             "entity itself. 2026-04-19 Hermes Agent Use Cases failure: a Nate Herk video "
-            "about Claude's Managed Agents scored 51 with zero Hermes content.\n"
+            "about Claude's Managed Agents scored 51 with zero Hermes content. "
+            "EXCEPTION: a candidate marked `first_party: true` is the subject's own post - "
+            "it is first-class evidence about the subject and is EXEMPT from this cap. Score "
+            "it on its own merits (a person rarely names themselves in their own post).\n"
         )
     return f"""
 Judge search-result relevance for a last-30-days research pipeline.
@@ -352,6 +384,22 @@ def _apply_interaction_signal(
         c.metadata = {**(c.metadata or {}), "interaction_targets": sorted(targets)}
         if c.final_score < INTERACTION_FLOOR:
             c.final_score = INTERACTION_FLOOR
+
+
+def _apply_first_party_floor(
+    candidates: list[schema.Candidate], *, resolved_handles: set[str]
+) -> None:
+    """Floor every first-party post above the zero band, on any scoring path.
+
+    Backstops the LLM rerank path, where the grounding hint would otherwise cap
+    a first-party post (which never names its own author) at <=30 and re-bury
+    it. Floor only lifts; it never lowers a post the scorer rated higher.
+    """
+    if not resolved_handles:
+        return
+    for c in candidates:
+        if _is_first_party(c, resolved_handles) and c.final_score < FIRST_PARTY_FLOOR:
+            c.final_score = FIRST_PARTY_FLOOR
 
 
 def _apply_engagement_rescue(

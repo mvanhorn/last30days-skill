@@ -25,7 +25,7 @@ JSON_DECODE_RETRY_DELAY = 5.0  # seconds between retry attempts
 
 
 def _leading_mentions(text: str) -> list:
-    """Handles a post is directed at: the leading run of @mentions in the text.
+    """Return the handles a post is directed at: the leading run of @mentions in the text.
 
     X replies open with the target handle(s) (e.g. "@someone thanks!"), so the
     leading run identifies who the post is addressed to. A mention later in the
