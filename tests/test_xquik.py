@@ -340,6 +340,89 @@ class TestExpandGuard(unittest.TestCase):
         self.assertEqual(["Grok 4"], qs)
 
 
+class TestProbeWorks(unittest.TestCase):
+    """U5: honest diagnose probe — tri-state, surfaces the unpaid (402) case."""
+
+    def setUp(self):
+        import lib.xquik as xq
+        xq._probe_cache = ("unset", "")
+
+    @patch("lib.xquik.http.get")
+    def test_funded_key_works(self, mock_get):
+        from lib import xquik
+        mock_get.return_value = {"tweets": [{"id": "1"}]}
+        self.assertIs(True, xquik.probe_works("k"))
+        self.assertEqual("ok", xquik.probe_reason())
+
+    @patch("lib.xquik.http.get")
+    def test_unpaid_402_is_false_with_reason(self, mock_get):
+        from lib import xquik, http as http_mod
+        mock_get.side_effect = http_mod.HTTPError("Payment Required", status_code=402)
+        self.assertIs(False, xquik.probe_works("k"))
+        self.assertIn("unpaid", xquik.probe_reason())
+
+    @patch("lib.xquik.http.get")
+    def test_auth_401_is_false(self, mock_get):
+        from lib import xquik, http as http_mod
+        mock_get.side_effect = http_mod.HTTPError("Unauthorized", status_code=401)
+        self.assertIs(False, xquik.probe_works("k"))
+        self.assertIn("auth failed", xquik.probe_reason())
+
+    @patch("lib.xquik.http.get")
+    def test_timeout_is_inconclusive_fail_open(self, mock_get):
+        from lib import xquik
+        mock_get.side_effect = TimeoutError("timed out")
+        self.assertIsNone(xquik.probe_works("k"))
+
+    def test_no_token_is_false(self):
+        from lib import xquik
+        self.assertIs(False, xquik.probe_works(""))
+        self.assertIn("no XQUIK_API_KEY", xquik.probe_reason())
+
+    @patch("lib.xquik.http.get")
+    def test_result_is_cached(self, mock_get):
+        from lib import xquik
+        mock_get.return_value = {"tweets": [{"id": "1"}]}
+        xquik.probe_works("k")
+        xquik.probe_works("k")
+        self.assertEqual(1, mock_get.call_count)
+
+
+class TestDiagnoseSurfacesXquik(unittest.TestCase):
+    """U5: get_x_source_status reports xquik as the active X source when bird/
+    xAI/xurl are absent, and surfaces the probe reason."""
+
+    def setUp(self):
+        import lib.xquik as xq
+        xq._probe_cache = ("unset", "")
+
+    @patch("lib.xquik.http.get")
+    @patch("lib.xurl_x.is_available", return_value=False)
+    @patch("lib.bird_x.get_bird_status")
+    def test_xquik_is_active_x_source_when_only_key(self, mock_bird, _xurl, mock_get):
+        from lib import env
+        mock_bird.return_value = {"installed": False, "authenticated": False,
+                                  "username": "", "can_install": False}
+        mock_get.return_value = {"tweets": [{"id": "1"}]}
+        status = env.get_x_source_status({"XQUIK_API_KEY": "k"}, probe=True)
+        self.assertEqual("xquik", status["source"])
+        self.assertTrue(status["xquik_available"])
+        self.assertIs(True, status["xquik_working"])
+
+    @patch("lib.xurl_x.is_available", return_value=False)
+    @patch("lib.bird_x.get_bird_status")
+    def test_unpaid_xquik_not_active_source(self, mock_bird, _xurl):
+        from lib import env, http as http_mod
+        import lib.xquik as xq
+        mock_bird.return_value = {"installed": False, "authenticated": False,
+                                  "username": "", "can_install": False}
+        with patch("lib.xquik.http.get", side_effect=http_mod.HTTPError("pay", status_code=402)):
+            status = env.get_x_source_status({"XQUIK_API_KEY": "k"}, probe=True)
+        self.assertIsNone(status["source"])  # unpaid key is not a usable X source
+        self.assertIs(False, status["xquik_working"])
+        self.assertIn("unpaid", status["xquik_status"])
+
+
 class TestMentionedHandles(unittest.TestCase):
     """U3: xquik items carry leading-run @mentions so the first-party
     interaction signal fires (shared parser with bird)."""

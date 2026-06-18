@@ -8,10 +8,14 @@ bookmarks). Requires an API key from xquik.com.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from . import http, log
 from .relevance import token_overlap_relevance as _compute_relevance
+
+# Per-process probe cache: (state, reason). state is "unset" until probed, then
+# True (funded/working) | False (auth/payment failure) | None (inconclusive).
+_probe_cache: tuple = ("unset", "")
 
 # Depth configurations: number of results to request per query
 DEPTH_CONFIG = {
@@ -239,6 +243,53 @@ def search_mentions(
             break
         items.extend(it for it in got if not _is_own(it.get("url", ""), handle))
     return items
+
+
+def probe_works(token: str, timeout: int = 8) -> Optional[bool]:
+    """Cheap runtime check that the xquik key actually returns data.
+
+    Mirrors ``bird_x.probe_works`` for the hosted key-based X path so
+    ``--diagnose`` reflects reality instead of static key presence. Returns
+    True (funded/working), False (a clear auth/payment failure — 401/403, or
+    402 when the key is configured but unpaid, the live failure mode we hit),
+    or None (inconclusive: timeout / transient HTTP) so callers fail open.
+    The human-readable reason is available via ``probe_reason()``. Cached per
+    process so repeated diagnose calls don't re-probe.
+    """
+    global _probe_cache
+    if _probe_cache[0] != "unset":
+        return _probe_cache[0]
+    if not token:
+        _probe_cache = (False, "no XQUIK_API_KEY configured")
+        return False
+    from datetime import timedelta, timezone
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+    # @x (the platform's own account) posts frequently, so a no-error response
+    # means the key works even if this particular window is quiet.
+    q = f"from:x since:{since}"
+    full_url = f"{_BASE_URL}/x/tweets/search?q={_url_encode(q)}&queryType=Top&limit=1"
+    try:
+        http.get(full_url, headers={"X-Api-Key": token}, timeout=timeout, retries=0)
+    except http.HTTPError as exc:
+        status = getattr(exc, "status_code", None)
+        if status == 402:
+            _probe_cache = (False, "xquik key unpaid (402)")
+        elif status in (401, 403):
+            _probe_cache = (False, f"xquik auth failed ({status})")
+        else:
+            # 5xx / unexpected status — inconclusive, don't report a false-down.
+            _probe_cache = (None, f"xquik probe inconclusive ({status})")
+        return _probe_cache[0]
+    except Exception as exc:
+        _probe_cache = (None, f"xquik probe inconclusive ({type(exc).__name__})")
+        return None
+    _probe_cache = (True, "ok")
+    return True
+
+
+def probe_reason() -> str:
+    """Human-readable reason for the last ``probe_works`` result (or '')."""
+    return _probe_cache[1]
 
 
 def search_and_enrich(

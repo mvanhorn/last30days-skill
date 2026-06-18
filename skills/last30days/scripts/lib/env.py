@@ -867,15 +867,35 @@ def get_x_source_status(config: dict[str, Any], probe: bool = False) -> dict[str
             bird_status["authenticated"] = False
             bird_status["username"] = "probe failed (no working X auth)"
 
-    # Determine active source
+    # Xquik: the key-based X source for the hosted product (no bird there).
+    # Probe so --diagnose reports the true state — funded, or configured-but-
+    # unpaid (402) — instead of false-green on mere key presence.
+    xquik_available = is_xquik_available(config)
+    xquik_working: bool | None = None
+    xquik_status = ""
+    if xquik_available:
+        if probe:
+            from . import xquik
+            xquik_working = xquik.probe_works(get_xquik_token(config))
+            xquik_status = xquik.probe_reason()
+        else:
+            xquik_status = "configured (not probed)"
+
+    # Determine active source. Bird (agent host) and xAI win when present; the
+    # hosted product has neither, so xquik is the active X source there. A probe
+    # that clearly failed (False) means xquik is not actually usable.
     if bird_status["authenticated"]:
         source = 'bird'
     elif xai_available:
         source = 'xai'
     else:
-        # Fall back to xurl CLI
         from . import xurl_x as _xurl_check
-        source = 'xurl' if _xurl_check.is_available() else None
+        if _xurl_check.is_available():
+            source = 'xurl'
+        elif xquik_available and xquik_working is not False:
+            source = 'xquik'
+        else:
+            source = None
 
     from . import xurl_x as _xurl_x
     return {
@@ -885,6 +905,9 @@ def get_x_source_status(config: dict[str, Any], probe: bool = False) -> dict[str
         "bird_username": bird_status["username"],
         "xai_available": xai_available,
         "xurl_available": _xurl_x.is_available(),
+        "xquik_available": xquik_available,
+        "xquik_working": xquik_working,
+        "xquik_status": xquik_status,
         "can_install_bird": bird_status["can_install"],
     }
 
