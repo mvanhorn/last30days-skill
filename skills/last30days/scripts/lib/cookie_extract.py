@@ -157,7 +157,12 @@ def _query_cookies_db(
     tmp_path = None
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
-        shutil.copy2(str(db_path), tmp_path)
+        # mkstemp creates the file 0600. copy2 would copy the source's mode
+        # (Firefox cookies.sqlite is commonly 0644, looser on WSL /mnt/c) onto
+        # the temp file, leaving live session secrets world-readable in shared
+        # /tmp until the chmod below runs. copyfile writes content only and
+        # leaves the 0600 perms intact, closing that window.
+        shutil.copyfile(str(db_path), tmp_path)
         _lock_temp_cookie_copy(tmp_path)
 
         conn = sqlite3.connect(tmp_path)
