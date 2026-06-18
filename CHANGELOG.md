@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **First-party X posts are no longer buried.** A post authored by one of the run's resolved handles (`--x-handle`, `--x-related`, the GitHub user) is now treated as first-class evidence: it is exempt from the entity-miss demotion (a post never repeats its own author's name, so the body-text grounding check used to zero out the subject's own highest-signal posts) and gets a small authorship credit. Third-party collision-noise suppression is unchanged.
+- **Engagement rescue for on-topic X posts.** A high-engagement X post that is first-party or entity-grounded gets a `final_score` floor scaled by its engagement percentile within the run's X pool, so a viral on-topic post can't sit at ~0. Off-topic name-collision posts are explicitly excluded.
+- **First-party interaction signal.** A first-party post directed at another account (a reply / leading @mention) is floated into the visible band regardless of like-count and tagged `interaction:→@handle` in the EVIDENCE block, so the synthesis reads it as a relationship signal rather than low-engagement noise. New **LAW 10** in SKILL.md teaches the model to surface first-party posts and read the interaction tag.
+
+### Changed
+
+- The X FROM lane (the subject's own timeline) now pulls up to 8 posts per handle (was 3); the about/related lanes stay modest.
+
 ## [3.5.0] - 2026-06-18
 
 ### Added
