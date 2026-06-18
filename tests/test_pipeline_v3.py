@@ -455,6 +455,43 @@ class TestSupplementalSearches(unittest.TestCase):
         x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
         self.assertIn("https://x.com/analyst1/status/999", x_urls)
 
+    @patch("lib.env.get_xquik_token", return_value="k")
+    @patch("lib.env.is_xquik_available", return_value=True)
+    @patch("lib.env.get_x_source", return_value=None)
+    @patch("lib.xquik.search_mentions", return_value=[])
+    @patch("lib.xquik.search_handles")
+    @patch("lib.entity_extract.extract_entities")
+    def test_handle_lanes_route_to_xquik_when_no_bird(
+        self, mock_extract, mock_xq_handles, mock_xq_mentions, *_patches
+    ):
+        """U2: with no bird backend but an xquik key, FROM/ABOUT lanes run via
+        xquik and items land under the 'xquik' slug (not 'x')."""
+        mock_extract.return_value = {"x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": []}
+        mock_xq_handles.return_value = [{
+            "id": "XF1", "text": "from analyst1", "url": "https://x.com/analyst1/status/777",
+            "author_handle": "analyst1", "date": "2026-03-15",
+            "engagement": {"likes": 30}, "relevance": 0.8, "why_relevant": "",
+        }]
+
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="tweet about AI"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime(None), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+
+        mock_xq_handles.assert_called_once()
+        xquik_urls = {item.url for item in bundle.items_by_source.get("xquik", [])}
+        self.assertIn("https://x.com/analyst1/status/777", xquik_urls)
+        # Must NOT have been added under the bird 'x' slug.
+        self.assertNotIn("https://x.com/analyst1/status/777",
+                         {i.url for i in bundle.items_by_source.get("x", [])})
+
     @patch("lib.bird_x.search_handles")
     @patch("lib.entity_extract.extract_entities")
     def test_supplemental_items_deduplicated_by_url(self, mock_extract, mock_handles):

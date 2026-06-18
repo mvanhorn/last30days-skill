@@ -266,6 +266,80 @@ class TestDepthConfig(unittest.TestCase):
     def test_deep_has_most_queries(self):
         self.assertGreater(DEPTH_CONFIG["deep"]["queries"], DEPTH_CONFIG["quick"]["queries"])
 
+class TestIsOwn(unittest.TestCase):
+    def test_own_tweet_detected(self):
+        from lib.xquik import _is_own
+        self.assertTrue(_is_own("https://x.com/elonmusk/status/123", "elonmusk"))
+        self.assertTrue(_is_own("https://twitter.com/elonmusk/status/123", "@elonmusk"))
+
+    def test_other_author_not_own(self):
+        from lib.xquik import _is_own
+        self.assertFalse(_is_own("https://x.com/someoneelse/status/123", "elonmusk"))
+
+    def test_empty_handle_or_url(self):
+        from lib.xquik import _is_own
+        self.assertFalse(_is_own("", "elonmusk"))
+        self.assertFalse(_is_own("https://x.com/a/status/1", ""))
+
+
+class TestFromLane(unittest.TestCase):
+    def _resp(self, username, tid="1"):
+        return {"tweets": [{
+            "id": tid, "text": "anything", "createdAt": "2026-06-15T12:00:00Z",
+            "likeCount": 10, "author": {"username": username},
+        }]}
+
+    def test_from_query_shape_and_no_topic_anded(self):
+        from lib import xquik
+        with patch("lib.xquik.http.get", return_value=self._resp("elonmusk")) as m:
+            items = xquik.search_handles(["@elonmusk"], "Grok 4", "2026-05-19", "2026-06-18",
+                                         count_per=8, token="k")
+        url = m.call_args[0][0]
+        self.assertIn("from%3Aelonmusk", url)        # from:elonmusk url-encoded
+        self.assertIn("since%3A2026-05-19", url)
+        self.assertNotIn("Grok", url)                 # topic must NOT be AND'd into query
+        self.assertEqual(1, len(items))
+        self.assertEqual("XF1", items[0]["id"])       # FROM-lane id prefix
+
+    def test_no_token_or_no_handles_returns_empty(self):
+        from lib import xquik
+        self.assertEqual([], xquik.search_handles(["@x"], "t", "a", "b", token=""))
+        self.assertEqual([], xquik.search_handles([], "t", "a", "b", token="k"))
+
+
+class TestAboutLane(unittest.TestCase):
+    def test_mentions_drop_own_tweets(self):
+        from lib import xquik
+        resp = {"tweets": [
+            {"id": "1", "text": "@elonmusk nice", "createdAt": "2026-06-15T12:00:00Z",
+             "author": {"username": "fan"}},
+            {"id": "2", "text": "my own post", "createdAt": "2026-06-15T12:00:00Z",
+             "author": {"username": "elonmusk"}},
+        ]}
+        with patch("lib.xquik.http.get", return_value=resp) as m:
+            items = xquik.search_mentions(["elonmusk"], "2026-05-19", "2026-06-18",
+                                          topic="Grok 4", count_per=5, token="k")
+        url = m.call_args[0][0]
+        self.assertIn("%40elonmusk", url)             # @elonmusk url-encoded
+        authors = {it["author_handle"] for it in items}
+        self.assertIn("fan", authors)
+        self.assertNotIn("elonmusk", authors)         # own tweet dropped
+
+
+class TestExpandGuard(unittest.TestCase):
+    @patch("lib.xquik._extract_core_subject", return_value="news")
+    def test_bare_generic_core_falls_back_to_topic(self, _m):
+        # #607: a single bare generic core must not be the query for a
+        # multi-word topic — fall back to the full topic.
+        qs = expand_xquik_queries("Grok 4 news", "quick")
+        self.assertEqual(["Grok 4 news"], qs)
+
+    @patch("lib.xquik._extract_core_subject", return_value="Grok 4")
+    def test_multiword_core_kept(self, _m):
+        qs = expand_xquik_queries("Grok 4 latest", "quick")
+        self.assertEqual(["Grok 4"], qs)
+
+
 class TestMentionedHandles(unittest.TestCase):
     """U3: xquik items carry leading-run @mentions so the first-party
     interaction signal fires (shared parser with bird)."""

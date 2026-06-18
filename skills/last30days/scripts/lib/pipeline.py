@@ -855,13 +855,35 @@ def _run_supplemental_searches(
     if not handles and not related_handles:
         return
 
-    # Check if X is rate-limited
-    if "x" in rate_limited_sources:
-        return
-
+    # Pick the X handle-search backend. Bird (agent-skill host) scrapes X
+    # GraphQL with the user's cookies; the hosted product has no bird, so the
+    # key-based xquik source runs the same FROM/ABOUT lanes. Both the native
+    # "x" lane and the xquik lane get X-quality ranking (schema.is_x_source).
     backend = runtime.x_search_backend or env.get_x_source(config)
-    if backend != "bird":
-        return  # Handle search only works with Bird CLI
+    xquik_token = env.get_xquik_token(config) if env.is_xquik_available(config) else ""
+
+    if backend == "bird":
+        x_slug = "x"
+
+        def _from_lane(hs: list, count: int) -> list:
+            return bird_x.search_handles(hs, topic, from_date, count_per=count)
+
+        def _about_lane(hs: list, count: int) -> list:
+            return bird_x.search_mentions(hs, from_date, count_per=count)
+    elif xquik_token:
+        x_slug = "xquik"
+
+        def _from_lane(hs: list, count: int) -> list:
+            return xquik.search_handles(hs, topic, from_date, to_date, count_per=count, token=xquik_token)
+
+        def _about_lane(hs: list, count: int) -> list:
+            return xquik.search_mentions(hs, from_date, to_date, topic=topic, count_per=count, token=xquik_token)
+    else:
+        return  # no key-based X handle source available
+
+    # Skip if the chosen X source is rate-limited.
+    if x_slug in rate_limited_sources:
+        return
 
     # Collect existing URLs for deduplication
     existing_urls = {
@@ -883,27 +905,27 @@ def _run_supplemental_searches(
         from_items: list = []
         about_items: list = []
         try:
-            from_items = bird_x.search_handles(handles, topic, from_date, count_per=FROM_LANE_COUNT_PER)
+            from_items = _from_lane(handles, FROM_LANE_COUNT_PER)
         except Exception as exc:
             print(f"[Pipeline] Phase 2 FROM-lane search failed: {exc}", file=sys.stderr)
-            if not bundle.items_by_source.get("x"):
-                bundle.errors_by_source["x"] = f"Phase 2 FROM-lane: {exc}"
+            if not bundle.items_by_source.get(x_slug):
+                bundle.errors_by_source[x_slug] = f"Phase 2 FROM-lane: {exc}"
         try:
-            about_items = bird_x.search_mentions(handles, from_date, count_per=MENTION_LANE_COUNT_PER)
+            about_items = _about_lane(handles, MENTION_LANE_COUNT_PER)
         except Exception as exc:
             print(f"[Pipeline] Phase 2 ABOUT-lane search failed: {exc}", file=sys.stderr)
         raw_items = from_items + about_items
 
         if raw_items:
             normalized = _normalize_score_dedupe(
-                "x", raw_items, from_date, to_date,
+                x_slug, raw_items, from_date, to_date,
                 freshness_mode=plan.freshness_mode,
                 ranking_query=ranking_query,
             )
             # Deduplicate against Phase 1 URLs
             normalized = [item for item in normalized if item.url not in existing_urls]
             if normalized:
-                bundle.add_items(primary_label, "x", normalized)
+                bundle.add_items(primary_label, x_slug, normalized)
                 # Update existing URLs for related-handle dedup
                 for item in normalized:
                     if item.url:
@@ -912,16 +934,14 @@ def _run_supplemental_searches(
     # Search related handles with lower weight (0.3)
     if related_handles:
         try:
-            raw_items = bird_x.search_handles(
-                related_handles, topic, from_date, count_per=RELATED_HANDLE_COUNT_PER,
-            )
+            raw_items = _from_lane(related_handles, RELATED_HANDLE_COUNT_PER)
         except Exception as exc:
             print(f"[Pipeline] Phase 2 related handle search failed: {exc}", file=sys.stderr)
             raw_items = []
 
         if raw_items:
             normalized = _normalize_score_dedupe(
-                "x", raw_items, from_date, to_date,
+                x_slug, raw_items, from_date, to_date,
                 freshness_mode=plan.freshness_mode,
                 ranking_query=ranking_query,
             )
@@ -930,7 +950,7 @@ def _run_supplemental_searches(
             if normalized:
                 # Use a separate subquery label with lower weight so RRF
                 # scores related-handle results below primary results.
-                bundle.add_items("supplemental-related", "x", normalized)
+                bundle.add_items("supplemental-related", x_slug, normalized)
                 # Register the supplemental-related label in the plan for fusion
                 if not any(sq.label == "supplemental-related" for sq in plan.subqueries):
                     plan.subqueries.append(
@@ -938,7 +958,7 @@ def _run_supplemental_searches(
                             label="supplemental-related",
                             search_query=", ".join(related_handles),
                             ranking_query=ranking_query,
-                            sources=["x"],
+                            sources=[x_slug],
                             weight=0.3,
                         )
                     )
