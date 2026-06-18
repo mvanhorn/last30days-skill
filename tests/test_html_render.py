@@ -238,6 +238,41 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         self.assertNotIn("<a ", rendered)
         self.assertNotIn("href=", rendered)
 
+    def test_meta_marker_escapes_payload_through_pipeline(self):
+        """A META marker carrying markup must not render as live HTML.
+
+        The marker is exempted from the comment-strip pass and promoted into a
+        <div class="meta">. Its text can come from LLM-synthesized content
+        derived from untrusted source bodies, so a crafted
+        `<!-- META: <img src=x onerror=...> -->` must be escaped, not rendered.
+        """
+        md = "intro\n\n<!-- META: <img src=x onerror=alert(1)> -->\n\nmore"
+        body = html_render._markdown_to_html(md)
+        body = html_render._wrap_engine_footer(body)
+        body = html_render._promote_meta_marker(body)
+        self.assertNotIn("<img", body)
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", body)
+
+    def test_meta_marker_escapes_raw_fallback(self):
+        """The raw (unescaped) META fallback path must also escape its payload."""
+        body = html_render._promote_meta_marker(
+            "<!-- META: <img src=x onerror=alert(1)> -->"
+        )
+        self.assertNotIn("<img", body)
+        self.assertEqual(
+            body, '<div class="meta">&lt;img src=x onerror=alert(1)&gt;</div>'
+        )
+
+    def test_meta_marker_preserves_plain_text(self):
+        """Legitimate date/source-name markers render unchanged (no double-escape)."""
+        body = html_render._promote_meta_marker(
+            "<!-- META: 2026-01-01 to 2026-01-31 · reddit, x -->"
+        )
+        self.assertEqual(
+            body,
+            '<div class="meta">2026-01-01 to 2026-01-31 · reddit, x</div>',
+        )
+
     def test_markdown_links_allow_relative_url(self):
         rendered = html_render._markdown_to_html("[home](/path?x=1#section)")
         self.assertIn(
