@@ -349,6 +349,7 @@ class TestXFromAndAboutLanes(unittest.TestCase):
         from lib import bird_x
         parsed = [
             {"url": "https://x.com/xuezhao/status/1", "title": "own tweet"},
+            {"url": "https://twitter.com/xuezhao/status/3", "title": "own legacy-domain tweet"},
             {"url": "https://x.com/fan99/status/2", "title": "mention of them"},
         ]
         with mock.patch.object(bird_x.subproc, "run_with_timeout",
@@ -356,8 +357,9 @@ class TestXFromAndAboutLanes(unittest.TestCase):
              mock.patch.object(bird_x, "parse_bird_response", return_value=parsed):
             out = bird_x.search_mentions(["xuezhao"], "2026-05-19", count_per=5)
         urls = [it["url"] for it in out]
-        self.assertNotIn("https://x.com/xuezhao/status/1", urls)  # own excluded
-        self.assertIn("https://x.com/fan99/status/2", urls)        # mention kept
+        self.assertNotIn("https://x.com/xuezhao/status/1", urls)          # own (x.com) excluded
+        self.assertNotIn("https://twitter.com/xuezhao/status/3", urls)    # own (twitter.com) excluded
+        self.assertIn("https://x.com/fan99/status/2", urls)              # mention kept
 
     def test_mention_lane_empty_when_no_mentions(self):
         from unittest import mock

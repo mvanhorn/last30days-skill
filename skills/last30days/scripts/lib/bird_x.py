@@ -468,8 +468,12 @@ def search_mentions(
         # ABOUT lane = OTHERS mentioning the handle. Drop the handle's own tweets
         # (the FROM lane already covers those); identify by the status URL author.
         hl = handle.lower()
-        about = [it for it in items
-                 if f"x.com/{hl}/status" not in (it.get("url") or "").lower()]
+        # The Bird API may return either x.com or twitter.com permalinks, so
+        # match both when excluding the handle's own tweets.
+        def _is_own(url):
+            u = (url or "").lower()
+            return f"x.com/{hl}/status" in u or f"twitter.com/{hl}/status" in u
+        about = [it for it in items if not _is_own(it.get("url"))]
         _log(f"Searching: {query} -> {len(about)} mentions")
         return about
 

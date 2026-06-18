@@ -859,15 +859,21 @@ def _run_supplemental_searches(
     # ABOUT lane (tweets mentioning them). Both engagement-weighted and deduped
     # by URL at normalize time.
     if handles:
+        # Independent try/except per lane so a failure in one does not discard
+        # the other's already-computed results.
+        from_items: list = []
+        about_items: list = []
         try:
             from_items = bird_x.search_handles(handles, topic, from_date, count_per=3)
-            about_items = bird_x.search_mentions(handles, from_date, count_per=3)
-            raw_items = from_items + about_items
         except Exception as exc:
-            print(f"[Pipeline] Phase 2 handle search failed: {exc}", file=sys.stderr)
+            print(f"[Pipeline] Phase 2 FROM-lane search failed: {exc}", file=sys.stderr)
             if not bundle.items_by_source.get("x"):
-                bundle.errors_by_source["x"] = f"Phase 2 handle search: {exc}"
-            raw_items = []
+                bundle.errors_by_source["x"] = f"Phase 2 FROM-lane: {exc}"
+        try:
+            about_items = bird_x.search_mentions(handles, from_date, count_per=3)
+        except Exception as exc:
+            print(f"[Pipeline] Phase 2 ABOUT-lane search failed: {exc}", file=sys.stderr)
+        raw_items = from_items + about_items
 
         if raw_items:
             normalized = _normalize_score_dedupe(
