@@ -67,6 +67,7 @@ SOURCE_LABELS = {
     "truthsocial": "Truth Social",
     "xiaohongshu": "Xiaohongshu",
     "x": "X",
+    "xquik": "X (xquik)",
     "github": "GitHub",
     "digg": "Digg",
     "perplexity": "Perplexity",
@@ -1058,7 +1059,7 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
             source_label = _source_label(candidate.source)
             primary = schema.candidate_primary_item(candidate)
             author = primary.author if primary else None
-            if author and candidate.source in ("x", "tiktok", "instagram", "threads"):
+            if author and candidate.source in ("x", "xquik", "tiktok", "instagram", "threads"):
                 attribution = f"@{author} on {source_label}"
             elif author and candidate.source == "reddit":
                 container = primary.container if primary else None
@@ -1465,6 +1466,7 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
     # (source_key,  emoji, display_name, item_word_singular, [(engagement_key, word)])
     ("reddit",      "🟠", "Reddit",       "thread",   [("score", "upvotes"), ("num_comments", "comments")]),
     ("x",           "🔵", "X",            "post",     [("likes", "likes"), ("reposts", "reposts")]),
+    ("xquik",       "🔵", "X (xquik)",    "post",     [("likes", "likes"), ("reposts", "reposts")]),
     ("youtube",     "🔴", "YouTube",      "video",    [("views", "views")]),  # transcripts appended below in _build_source_footer_lines
     ("tiktok",      "🎵", "TikTok",       "video",    [("views", "views"), ("likes", "likes")]),
     ("instagram",   "📸", "Instagram",    "reel",     [("views", "views"), ("likes", "likes")]),
@@ -1568,7 +1570,7 @@ def _top_voices_footer_line(report: schema.Report) -> str | None:
     """
     handle_items = {
         source: report.items_by_source.get(source) or []
-        for source in ("x", "bluesky", "truthsocial", "youtube", "tiktok", "instagram", "threads")
+        for source in ("x", "xquik", "bluesky", "truthsocial", "youtube", "tiktok", "instagram", "threads")
     }
     handle_counts: Counter[str] = Counter()
     for items in handle_items.values():
@@ -1731,6 +1733,7 @@ def _format_actor(item: schema.SourceItem | None) -> str | None:
 ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "reddit":       [("score", "pts"), ("num_comments", "cmt")],
     "x":            [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
+    "xquik":        [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "youtube":      [("views", "views"), ("likes", "likes"), ("comments", "cmt")],
     "tiktok":       [("views", "views"), ("likes", "likes"), ("comments", "cmt")],
     "instagram":    [("views", "views"), ("likes", "likes"), ("comments", "cmt")],

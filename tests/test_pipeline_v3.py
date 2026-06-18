@@ -477,6 +477,34 @@ class TestSupplementalSearches(unittest.TestCase):
     @patch("lib.env.is_xquik_available", return_value=True)
     @patch("lib.env.get_x_source", return_value=None)
     @patch("lib.xquik.search_mentions", return_value=[])
+    @patch("lib.xquik.search_handles", return_value=[])
+    @patch("lib.entity_extract.extract_entities")
+    def test_entity_extract_reads_xquik_slug_phase1_items(
+        self, mock_extract, *_patches
+    ):
+        """P1: on the hosted path Phase 1 X items live under 'xquik'; entity
+        extraction must read them (not only the 'x' slug) so handle lanes can
+        derive authors."""
+        mock_extract.return_value = {"x_handles": [], "x_hashtags": [], "reddit_subreddits": []}
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["xquik"] = [
+            _make_source_item("xquik", "XQ1", "https://x.com/analyst1/status/1",
+                              author="analyst1", body="tweet about AI safety"),
+        ]
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime(None), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+        mock_extract.assert_called_once()
+        x_dicts = mock_extract.call_args[0][1]  # 2nd positional arg
+        self.assertIn("analyst1", {d.get("author_handle") for d in x_dicts})
+
+    @patch("lib.env.get_xquik_token", return_value="k")
+    @patch("lib.env.is_xquik_available", return_value=True)
+    @patch("lib.env.get_x_source", return_value=None)
+    @patch("lib.xquik.search_mentions", return_value=[])
     @patch("lib.xquik.search_handles")
     @patch("lib.entity_extract.extract_entities")
     def test_handle_lanes_route_to_xquik_when_no_bird(

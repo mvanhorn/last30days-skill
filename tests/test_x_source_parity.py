@@ -152,7 +152,13 @@ class TestRenderXquikSection(unittest.TestCase):
             items_by_source={"xquik": [item]}, errors_by_source={},
         )
         text = render.render_full(report)
-        self.assertIn("### Xquik (1 items)", text)
+        self.assertIn("### X (xquik) (1 items)", text)
+
+    def test_xquik_in_footer_sources(self):
+        # P2: xquik must have a LAW-5 emoji-footer entry so its presence is
+        # visible on the hosted product (where all X data is xquik).
+        keys = {row[0] for row in render._FOOTER_SOURCES}
+        self.assertIn("xquik", keys)
 
 
 class TestFirstPartyAndInteractionXquik(unittest.TestCase):

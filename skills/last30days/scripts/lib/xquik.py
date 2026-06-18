@@ -144,6 +144,11 @@ def _execute_search(
         response = http.get(full_url, headers={"X-Api-Key": token}, timeout=30, retries=2)
     except http.HTTPError as exc:
         status = getattr(exc, "status_code", None)
+        if status == 402:
+            # Unpaid key — fatal for the source, and surfaced on the real search
+            # path (not just --diagnose) so a live run reports it instead of
+            # settling silently empty.
+            return [], "Xquik key unpaid (402)"
         if status in (401, 403):
             return [], f"Xquik auth failed ({status})"
         _log(f"HTTP error for '{label}': {exc}")

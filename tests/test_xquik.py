@@ -240,6 +240,16 @@ class TestSearchXquik(unittest.TestCase):
         self.assertIn("auth failed", result.get("error", ""))
 
     @patch("lib.xquik.http.get")
+    def test_unpaid_402_surfaces_error_on_real_path(self, mock_get):
+        # An unpaid key (402) must surface an error on the normal search path,
+        # not settle silently empty — diagnose is opt-in.
+        from lib import http as http_mod
+        mock_get.side_effect = http_mod.HTTPError("Payment Required", status_code=402)
+        result = search_xquik("test", "2026-01-01", "2026-03-01", token="unpaid-key")
+        self.assertEqual(result["items"], [])
+        self.assertIn("unpaid", result.get("error", "").lower())
+
+    @patch("lib.xquik.http.get")
     def test_empty_tweets_list(self, mock_get):
         mock_get.return_value = {"tweets": []}
         result = search_xquik("obscure topic", "2026-01-01", "2026-03-01", token="key")

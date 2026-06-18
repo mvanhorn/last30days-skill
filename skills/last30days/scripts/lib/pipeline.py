@@ -812,10 +812,15 @@ def _run_supplemental_searches(
 
     from_date, to_date = date_range
 
-    # Convert SourceItems to dicts for entity_extract
+    # Convert SourceItems to dicts for entity_extract. Pull from every X-shaped
+    # slug — on the hosted product Phase 1 X items live under "xquik", not "x",
+    # so reading only "x" would starve entity extraction (and thus the FROM/
+    # ABOUT handle lanes) of authors on exactly the path this feature targets.
     x_dicts = [
         {"author_handle": item.author or "", "text": item.body or ""}
-        for item in bundle.items_by_source.get("x", [])
+        for slug, items in bundle.items_by_source.items()
+        if schema.is_x_source(slug)
+        for item in items
     ]
     reddit_dicts = [
         {
