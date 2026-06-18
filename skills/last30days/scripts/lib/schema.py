@@ -6,6 +6,21 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Literal
 
 
+# X-shaped sources: platforms whose items are X/Twitter posts and should share
+# the native "x" ranking treatment (engagement weights, first-party authorship,
+# interaction signals, render section). The hosted product has no bird (bird
+# needs a logged-in user's browser cookies), so its X data comes from key-based
+# REST sources — xquik today, xurl/xai variants — all carrying x.com permalinks
+# and full engagement. Gates key off this set so a new X backend earns X-quality
+# ranking by joining the set, not by editing every call site.
+X_SOURCE_SLUGS: frozenset[str] = frozenset({"x", "xquik", "xurl", "xai"})
+
+
+def is_x_source(source: str | None) -> bool:
+    """True when a source slug is an X/Twitter-shaped source (native or key-based)."""
+    return source in X_SOURCE_SLUGS
+
+
 def _drop_none(value: Any) -> Any:
     """Recursively remove None values from dataclass-derived structures."""
     if is_dataclass(value):

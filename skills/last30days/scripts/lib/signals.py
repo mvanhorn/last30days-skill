@@ -25,7 +25,12 @@ SOURCE_QUALITY = {
 
 
 def source_quality(source: str) -> float:
-    return SOURCE_QUALITY.get(source, 0.6)
+    if source in SOURCE_QUALITY:
+        return SOURCE_QUALITY[source]
+    # X-shaped key-based sources (xquik, etc.) share native X's quality score.
+    if schema.is_x_source(source):
+        return SOURCE_QUALITY["x"]
+    return 0.6
 
 
 def local_relevance(
@@ -222,6 +227,11 @@ def engagement_raw(item: schema.SourceItem) -> float | None:
     if item.source == "tiktok":
         return _tiktok_engagement(item)
     weights = ENGAGEMENT_WEIGHTS.get(item.source)
+    # X-shaped key-based sources (xquik, etc.) carry the same likes/reposts/
+    # replies/quotes engagement shape as native X, so they use the X weights
+    # instead of falling through to the generic average.
+    if weights is None and schema.is_x_source(item.source):
+        weights = ENGAGEMENT_WEIGHTS["x"]
     if weights:
         return _weighted_engagement(item, weights)
     return _generic_engagement(item)
@@ -318,7 +328,7 @@ def prune_low_relevance(
         rel = item.local_relevance if item.local_relevance is not None else 0.0
         if rel < minimum:
             return False
-        if item.source in _SOCIAL_SOURCES and (item.engagement_score is None or item.engagement_score == 0):
+        if (item.source in _SOCIAL_SOURCES or schema.is_x_source(item.source)) and (item.engagement_score is None or item.engagement_score == 0):
             if rel < minimum * 1.5:
                 return False
         sole_source = sources_present == {item.source}

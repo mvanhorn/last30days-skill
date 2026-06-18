@@ -316,10 +316,11 @@ def _is_first_party(candidate: schema.Candidate, resolved_handles: set[str]) -> 
 
 
 def _is_x_candidate(candidate: schema.Candidate) -> bool:
-    """True when the candidate originates from X (top-level or any source item)."""
-    if candidate.source == "x":
+    """True when the candidate originates from an X-shaped source (native ``x`` or
+    a key-based source like ``xquik``), at the top level or in any source item."""
+    if schema.is_x_source(candidate.source):
         return True
-    return any(getattr(item, "source", None) == "x" for item in candidate.source_items)
+    return any(schema.is_x_source(getattr(item, "source", None)) for item in candidate.source_items)
 
 
 def _candidate_engagement(candidate: schema.Candidate) -> float:

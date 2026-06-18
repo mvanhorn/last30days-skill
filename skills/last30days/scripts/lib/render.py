@@ -888,7 +888,7 @@ def render_full(report: schema.Report) -> str:
     # ALL items by source (flat dump, v2-style)
     lines.append("## All Items by Source")
     lines.append("")
-    source_order = ["reddit", "x", "youtube", "tiktok", "instagram", "threads", "pinterest",
+    source_order = ["reddit", "x", "xquik", "youtube", "tiktok", "instagram", "threads", "pinterest",
                     "hackernews", "bluesky", "truthsocial", "polymarket", "grounding", "xiaohongshu", "github", "digg", "perplexity", "jobs"]
     for source in source_order:
         items = report.items_by_source.get(source, [])
