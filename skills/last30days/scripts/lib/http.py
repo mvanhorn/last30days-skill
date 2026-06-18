@@ -11,9 +11,40 @@ import urllib.request
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 
+from . import cost_markers
 from . import log as _log
 
 DEFAULT_TIMEOUT = 30
+
+# Paid per-call APIs identifiable by a distinct host. All callers funnel through
+# request(), so host detection here captures every call for real-cost billing
+# (plan 2026-06-17-001 U3 ScrapeCreators, U4 search backends). NOTE: Perplexity
+# is intentionally absent — it shares openrouter.ai with the reasoning LLM
+# clients (already billed in providers.generate_json), so it is billed at its own
+# call site (perplexity.py) where the model is known.
+_PAID_HOSTS = {
+    "api.scrapecreators.com": "scrapecreators",
+    "api.search.brave.com": "brave",
+    "api.exa.ai": "exa",
+    "google.serper.dev": "serper",
+    "api.parallel.ai": "parallel",
+}
+_SC_SOURCE_RE = re.compile(r"api\.scrapecreators\.com/v\d+/([a-z0-9_-]+)", re.I)
+
+
+def _paid_provider_for(url: str):
+    """Return the paid-API provider slug for a URL's host, or None."""
+    for host, provider in _PAID_HOSTS.items():
+        if host in (url or ""):
+            return provider
+    return None
+
+
+def _scrapecreators_source(url: str) -> str:
+    """Short source slug (reddit/tiktok/instagram/...) from a ScrapeCreators URL,
+    for the per-model cost breakdown. Falls back to 'scrapecreators'."""
+    m = _SC_SOURCE_RE.search(url or "")
+    return m.group(1).lower() if m else "scrapecreators"
 
 
 def log(msg: str):
@@ -108,6 +139,14 @@ def request(
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 body = response.read().decode('utf-8')
                 log(f"Response: {response.status} ({len(body)} bytes)")
+                # One marker per successful paid call (U3 ScrapeCreators, U4
+                # search backends). Emitted once on success, so retries of a
+                # failed call are not charged. ScrapeCreators carries its source
+                # as the model for a per-source breakdown.
+                _paid = _paid_provider_for(url)
+                if _paid:
+                    _model = _scrapecreators_source(url) if _paid == "scrapecreators" else ""
+                    cost_markers.emit_cost(_paid, model=_model)
                 if raw:
                     return body
                 return json.loads(body) if body else {}

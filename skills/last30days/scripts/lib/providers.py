@@ -8,7 +8,7 @@ import re
 import sys
 from typing import Any
 
-from . import env, http, schema
+from . import cost_markers, env, http, schema
 
 GEMINI_FLASH_LITE = "gemini-3.1-flash-lite"
 GEMINI_PRO = "gemini-3.1-pro-preview"
@@ -50,6 +50,12 @@ class ReasoningClient:
         tools: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         text = self.generate_text(model, prompt, tools=tools, response_mime_type="application/json")
+        # Real-cost billing (plan 2026-06-17-001 U2): one marker per reasoning
+        # call. planner / rerank / fun scoring all route through generate_json,
+        # so this single point captures every reasoning-LLM cost. Emit only after
+        # a successful response (the call was billed); a failed call raises above
+        # and the worker's estimate fallback covers the gap.
+        cost_markers.emit_cost(self.name, model=model)
         return extract_json(text)
 
 

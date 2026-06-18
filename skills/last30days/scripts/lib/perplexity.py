@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from urllib.parse import urlparse
 
-from . import http, log
+from . import cost_markers, http, log
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -86,6 +86,11 @@ def search(
     except Exception as e:
         _log(f"Request failed: {e}")
         return [], {}
+
+    # Real-cost billing (U4): one marker per successful Perplexity call, model-
+    # keyed so deep research is priced ~100x sonar-pro. Billed here (not in the
+    # http chokepoint) because openrouter.ai is shared with the reasoning LLMs.
+    cost_markers.emit_cost("perplexity", model=model.split("/")[-1])
 
     # Parse response
     choices = data.get("choices", [])
