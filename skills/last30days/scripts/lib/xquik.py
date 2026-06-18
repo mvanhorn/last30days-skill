@@ -105,6 +105,7 @@ def search_xquik(
             q, cfg["limit"], token,
             label=query_text, id_prefix="XQ",
             seen_ids=seen_ids, relevance_query=query_text,
+            index_offset=len(all_items),
         )
         if auth_error:
             # Auth/payment failure is fatal for the whole source (e.g. 401/403,
@@ -125,6 +126,7 @@ def _execute_search(
     id_prefix: str,
     seen_ids: set[str],
     relevance_query: str,
+    index_offset: int = 0,
 ) -> tuple[List[Dict[str, Any]], str | None]:
     """Run one Xquik search call and parse its tweets.
 
@@ -133,6 +135,8 @@ def _execute_search(
     return ``([], None)`` so one bad lane never discards another's results.
     ``relevance_query`` (the topic) is what items are scored against — for the
     handle lanes that differs from the search query (``from:handle``).
+    ``index_offset`` keeps item ids unique across multiple calls that share an
+    accumulator (multi-query topic search, per-handle lanes).
     """
     full_url = f"{_BASE_URL}/x/tweets/search?q={_url_encode(q)}&queryType=Top&limit={limit}"
     _log(f"Searching: {label}")
@@ -159,7 +163,7 @@ def _execute_search(
         if tweet_id in seen_ids:
             continue
         seen_ids.add(tweet_id)
-        item = _parse_tweet(tweet, len(items), relevance_query, id_prefix=id_prefix)
+        item = _parse_tweet(tweet, index_offset + len(items), relevance_query, id_prefix=id_prefix)
         if item:
             items.append(item)
     return items, None
@@ -204,6 +208,7 @@ def search_handles(
             q, count_per, token,
             label=f"from:{handle}", id_prefix="XF",
             seen_ids=seen_ids, relevance_query=topic,
+            index_offset=len(items),
         )
         if auth_error:
             break  # fatal auth/payment failure — stop, keep what we have
@@ -238,6 +243,7 @@ def search_mentions(
             q, count_per, token,
             label=f"@{handle}", id_prefix="XA",
             seen_ids=seen_ids, relevance_query=topic,
+            index_offset=len(items),
         )
         if auth_error:
             break

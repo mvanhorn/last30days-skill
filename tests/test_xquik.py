@@ -306,6 +306,20 @@ class TestFromLane(unittest.TestCase):
         self.assertEqual([], xquik.search_handles(["@x"], "t", "a", "b", token=""))
         self.assertEqual([], xquik.search_handles([], "t", "a", "b", token="k"))
 
+    def test_item_ids_unique_across_handles(self):
+        # Different tweets across two handles must not collide on item id.
+        from lib import xquik
+        responses = [
+            {"tweets": [{"id": "1", "text": "a", "createdAt": "2026-06-15T12:00:00Z",
+                         "author": {"username": "h1"}}]},
+            {"tweets": [{"id": "2", "text": "b", "createdAt": "2026-06-15T12:00:00Z",
+                         "author": {"username": "h2"}}]},
+        ]
+        with patch("lib.xquik.http.get", side_effect=responses):
+            items = xquik.search_handles(["h1", "h2"], "topic", "2026-05-19", "2026-06-18", token="k")
+        ids = [it["id"] for it in items]
+        self.assertEqual(len(ids), len(set(ids)))
+
 
 class TestAboutLane(unittest.TestCase):
     def test_mentions_drop_own_tweets(self):
