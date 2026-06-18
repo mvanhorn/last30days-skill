@@ -178,6 +178,10 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
     if best_takes:
         lines.extend([""] + best_takes)
 
+    top_comments = _render_top_comments(report)
+    if top_comments:
+        lines.extend([""] + top_comments)
+
     lines.extend(_render_source_coverage(report))
     # Close EVIDENCE FOR SYNTHESIS envelope before anything that passes through verbatim.
     lines.append("")
@@ -1898,6 +1902,10 @@ def _comment_attribution(source: str | None, author: str | None) -> str:
     if not author or author in ("[deleted]", "[removed]"):
         return "Comment"
     prefix = _HANDLE_PREFIX.get(source or "", "")
+    # Some sources (YouTube/TikTok) already store the author with a leading '@';
+    # strip it before re-prefixing so we don't emit '@@handle'.
+    if prefix and author.startswith(prefix):
+        author = author[len(prefix):]
     return f"{prefix}{author}" if prefix else author
 
 
@@ -2041,6 +2049,51 @@ def _render_best_takes(candidates, limit=5, threshold=70.0, vote_weight=_FUN_LEV
         score_tag = f"(fun:{candidate.fun_score:.0f}{crowd_tag})"
         reason = f" -- {candidate.fun_explanation}" if candidate.fun_explanation and candidate.fun_explanation != "heuristic-fallback" else ""
         lines.append(f'- "{_truncate(text, 280)}" -- {attribution} {score_tag}{reason}')
+    return lines
+
+
+def _render_top_comments(report, limit: int = 8) -> list[str]:
+    """Vote-ranked community comments across ALL ranked candidates — not just the
+    top-cluster representatives — surfaced into the EVIDENCE block so the reading
+    model can weave the funniest/highest-engagement lines into the synthesis.
+
+    This exists because `_render_best_takes` only populates when the engine has an
+    LLM fun-scorer (a paid provider the subprocess usually lacks), so in normal
+    use the funniest comments never reach the model. This block always surfaces
+    the crowd-voted comments and leaves the funny/quotable SELECTION to the model
+    (a capable fun judge). Ranking is per-platform-normalized so one platform
+    can't crowd out the rest; each line carries the verbatim comment/post URL so
+    the model can cite without reconstructing a link.
+    """
+    seen: set[str] = set()
+    scored: list[tuple[float, schema.Candidate, schema.SourceItem, dict, str]] = []
+    for cand in report.ranked_candidates:
+        for item in cand.source_items:
+            # _top_comments_list applies the per-source min-score threshold and
+            # the 3-per-item cap, so trivial comments don't surface here either.
+            for tc in _top_comments_list(item):
+                if not isinstance(tc, dict):
+                    continue
+                body = (tc.get("excerpt") or tc.get("text") or tc.get("body") or "").strip()
+                if len(body) < 12:
+                    continue
+                key = body[:60].lower()
+                if key in seen:
+                    continue
+                seen.add(key)
+                strength = signals.normalized_comment_vote(cand.source, tc.get("score"))
+                scored.append((strength, cand, item, tc, body))
+    if len(scored) < 2:
+        return []
+    scored.sort(key=lambda row: -row[0])
+    lines = ["## Top Community Comments", ""]
+    for _strength, cand, _item, tc, body in scored[:limit]:
+        score = tc.get("score", "")
+        vote_label = _vote_label_for(cand.source)
+        attribution = _comment_attribution(cand.source, tc.get("author"))
+        url = tc.get("url") or cand.url or ""
+        url_part = f" — {url}" if url else ""
+        lines.append(f'- "{_truncate(body, 240)}" — {attribution} ({score} {vote_label}){url_part}')
     return lines
 
 

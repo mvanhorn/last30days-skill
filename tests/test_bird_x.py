@@ -369,3 +369,139 @@ class TestXFromAndAboutLanes(unittest.TestCase):
              mock.patch.object(bird_x, "parse_bird_response", return_value=[]):
             out = bird_x.search_mentions(["xuezhao"], "2026-05-19")
         self.assertEqual(out, [])
+class TestProbeAndDiagnoseHonesty(unittest.TestCase):
+    """U5: --diagnose probe + true auth lane; X is not reported green when dead."""
+
+    def setUp(self):
+        from lib import bird_x
+        bird_x._probe_cache = "unset"
+        bird_x._credentials = {"AUTH_TOKEN": "t", "CT0": "c"}  # injected creds present
+
+    def tearDown(self):
+        from lib import bird_x
+        bird_x._probe_cache = "unset"
+        bird_x._credentials = {}
+
+    def test_probe_true_when_response_ok(self):
+        from unittest import mock
+        from lib import bird_x
+        with mock.patch.object(bird_x, "_run_bird_search", return_value={"items": [{"id": "1"}]}):
+            self.assertTrue(bird_x.probe_works())
+
+    def test_probe_false_on_auth_error(self):
+        from unittest import mock
+        from lib import bird_x
+        with mock.patch.object(bird_x, "_run_bird_search",
+                               return_value={"error": "Missing auth_token", "items": []}):
+            self.assertIs(bird_x.probe_works(), False)
+
+    def test_probe_none_on_timeout_inconclusive(self):
+        from unittest import mock
+        from lib import bird_x
+        with mock.patch.object(bird_x, "_run_bird_search",
+                               return_value={"error": "Search timed out after 8s", "items": []}):
+            self.assertIsNone(bird_x.probe_works())
+
+    def test_probe_false_when_no_credentials(self):
+        from unittest import mock
+        from lib import bird_x
+        bird_x._credentials = {}
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertIs(bird_x.probe_works(), False)
+
+    def test_probe_cached_per_process(self):
+        from unittest import mock
+        from lib import bird_x
+        with mock.patch.object(bird_x, "_run_bird_search",
+                               return_value={"items": [{"id": "1"}]}) as m:
+            bird_x.probe_works()
+            bird_x.probe_works()
+            self.assertEqual(m.call_count, 1)  # cached, not re-run
+
+    def test_get_x_source_status_reports_true_lane(self):
+        from unittest import mock
+        from lib import env, bird_x
+        cfg = {"AUTH_TOKEN": "t", "CT0": "c", "_AUTH_TOKEN_SOURCE": "browser"}
+        with mock.patch.object(bird_x, "get_bird_status",
+                               return_value={"installed": True, "authenticated": True,
+                                             "username": "env AUTH_TOKEN", "can_install": True}):
+            status = env.get_x_source_status(cfg, probe=False)
+        self.assertEqual(status["bird_username"], "browser AUTH_TOKEN")
+
+    def test_diagnose_probe_downgrades_when_dead(self):
+        from unittest import mock
+        from lib import env, bird_x
+        cfg = {"AUTH_TOKEN": "t", "CT0": "c", "_AUTH_TOKEN_SOURCE": "browser"}
+        with mock.patch.object(bird_x, "get_bird_status",
+                               return_value={"installed": True, "authenticated": True,
+                                             "username": "env AUTH_TOKEN", "can_install": True}), \
+             mock.patch.object(bird_x, "probe_works", return_value=False):
+            status = env.get_x_source_status(cfg, probe=True)
+        self.assertFalse(status["bird_authenticated"])
+        self.assertIn("no working X auth", status["bird_username"])
+
+
+class TestHandleSearchLogsOnSuccess(unittest.TestCase):
+    """U6: handle searches log query + count on success, not only on failure."""
+
+    def test_search_handles_logs_on_success(self):
+        from unittest import mock
+        from lib import bird_x
+
+        class _R:
+            returncode = 0
+            stdout = '{"items": [{"id": "1"}]}'
+            stderr = ""
+
+        logged = []
+        with mock.patch.object(bird_x.subproc, "run_with_timeout", return_value=_R()), \
+             mock.patch.object(bird_x, "_log", side_effect=lambda m: logged.append(m)):
+            bird_x.search_handles(["mvanhorn"], "matt van horn", "2026-05-19", count_per=1)
+        self.assertTrue(any("Searching:" in m for m in logged),
+                        f"expected a Searching: log on success, got {logged}")
+
+
+class TestStrongestTokenRetryAnchored(unittest.TestCase):
+    """The last-chance retry must keep an entity anchor, not collapse to a bare
+    generic token (e.g. 'compound') that floods the X pool with off-topic noise.
+    """
+
+    def test_last_chance_retry_keeps_entity_anchor(self):
+        from unittest import mock
+        from lib import bird_x
+
+        queries = []
+
+        def fake_run(query, count, timeout):
+            queries.append(query)
+            return {"items": []}  # always 0 → forces every retry tier
+
+        # extract_compound_terms may run; let it. Force all bird calls empty.
+        with mock.patch.object(bird_x, "_run_bird_search", side_effect=fake_run):
+            bird_x.search_x("trevin chow ai agents compound", "2026-05-19", "2026-06-18")
+
+        self.assertTrue(queries, "expected at least one bird query")
+        last = queries[-1]
+        # The final (last-chance) query keeps the entity anchor ...
+        self.assertIn("trevin", last)
+        # ... and is NOT a bare generic token query.
+        self.assertFalse(last.startswith("compound "), f"bare generic retry: {last!r}")
+        self.assertNotEqual(last, "compound since:2026-05-19")
+
+    def test_retry_with_single_distinctive_token_no_crash(self):
+        from unittest import mock
+        from lib import bird_x
+
+        queries = []
+
+        def fake_run(query, count, timeout):
+            queries.append(query)
+            return {"items": []}
+
+        with mock.patch.object(bird_x, "_run_bird_search", side_effect=fake_run):
+            # 'trending tools' is all low-signal except nothing distinctive ->
+            # whatever survives, the retry must not crash and stays anchored.
+            bird_x.search_x("agentcookie", "2026-05-19", "2026-06-18")
+
+        self.assertTrue(queries)
+        self.assertIn("agentcookie", queries[-1])

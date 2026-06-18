@@ -154,7 +154,7 @@ def available_sources(config: dict[str, Any], requested_sources: list[str] | Non
 def diagnose(config: dict[str, Any], requested_sources: list[str] | None = None) -> dict[str, Any]:
     requested_sources = normalize_requested_sources(requested_sources)
     google_key = _google_key(config)
-    x_status = env.get_x_source_status(config)
+    x_status = env.get_x_source_status(config, probe=True)
     native_web_backend = None
     if config.get("BRAVE_API_KEY"):
         native_web_backend = "brave"

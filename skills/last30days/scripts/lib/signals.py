@@ -115,6 +115,20 @@ _VOTE_LOG_REFERENCE: dict[str, float] = {
 _VOTE_LOG_REFERENCE_DEFAULT = 7.6
 
 
+def normalized_comment_vote(source: str, score: "float | int | None") -> float:
+    """Normalize a single comment's vote count to [0,1] within its platform.
+
+    Same per-platform reference as ``top_comment_vote_signal`` so a 22k-like
+    TikTok comment and a 600-upvote Reddit comment rank on a comparable scale.
+    Used to rank the cross-candidate Top Community Comments block.
+    """
+    base = log1p_safe(score)
+    if base <= 0.0:
+        return 0.0
+    ref = _VOTE_LOG_REFERENCE.get(source, _VOTE_LOG_REFERENCE_DEFAULT)
+    return max(0.0, min(1.0, base / ref))
+
+
 def top_comment_vote_signal(candidate: schema.Candidate) -> float:
     """Strength of a candidate's most-upvoted top comment, as [0,1].
 

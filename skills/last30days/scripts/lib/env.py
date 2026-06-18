@@ -833,8 +833,15 @@ def is_xiaohongshu_available(config: dict[str, Any]) -> bool:
 is_apify_available = is_tiktok_available
 
 
-def get_x_source_status(config: dict[str, Any]) -> dict[str, Any]:
+def get_x_source_status(config: dict[str, Any], probe: bool = False) -> dict[str, Any]:
     """Get detailed X source status for UI decisions.
+
+    Args:
+        probe: when True, run a cheap 1-tweet bird probe and downgrade
+            ``bird_authenticated`` to False when X clearly returns nothing,
+            so ``--diagnose`` reflects runtime reality instead of static
+            credential presence. A transient timeout leaves the status
+            unchanged (fail open).
 
     Returns:
         Dict with keys: source, bird_installed, bird_authenticated,
@@ -846,6 +853,19 @@ def get_x_source_status(config: dict[str, Any]) -> dict[str, Any]:
         bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
     bird_status = bird_x.get_bird_status()
     xai_available = bool(config.get('XAI_API_KEY'))
+
+    # Report the TRUE auth lane (browser / env / keychain) rather than the static
+    # "env AUTH_TOKEN" label — tokens usually come from live browser cookies, and
+    # mislabeling the lane sent past debugging down a 30-minute wrong path.
+    if bird_status["authenticated"]:
+        lane = config.get('_AUTH_TOKEN_SOURCE') or 'env'
+        bird_status["username"] = f"{lane} AUTH_TOKEN"
+
+    # Optional runtime probe: don't show X green when it's effectively dead.
+    if probe and bird_status["authenticated"]:
+        if bird_x.probe_works() is False:
+            bird_status["authenticated"] = False
+            bird_status["username"] = "probe failed (no working X auth)"
 
     # Determine active source
     if bird_status["authenticated"]:
