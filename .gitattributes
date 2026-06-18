@@ -25,7 +25,6 @@ assets/        export-ignore
 # Historical + repo-only manifests
 SPEC.md            export-ignore
 TASKS.md           export-ignore
-test-run.log       export-ignore
 CONTRIBUTORS.md    export-ignore
 HERMES_SETUP.md    export-ignore
 CHANGELOG.md       export-ignore

@@ -1,5 +1,6 @@
 # Private benchmark / evaluation artifacts — never push to upstream
 docs/comparison-results/
+test-run.log
 scripts/evaluate-synthesis.py
 scripts/generate-synthesis-inputs.py
 fixtures/polymarket_sample.json
