@@ -155,5 +155,42 @@ class TestRenderXquikSection(unittest.TestCase):
         self.assertIn("### Xquik (1 items)", text)
 
 
+class TestFirstPartyAndInteractionXquik(unittest.TestCase):
+    """U4: first-party authorship floor and the interaction float fire for
+    xquik candidates (source-agnostic rerank, now fed xquik author + mentions)."""
+
+    def _cand(self, *, author, mentioned=None, final_score=3.0):
+        item = schema.SourceItem(
+            item_id="x", source="xquik", title="t", body="t",
+            url="https://x.com/a/status/1", author=author, snippet="t",
+            metadata={"mentioned_handles": mentioned} if mentioned else {},
+        )
+        c = schema.Candidate(
+            candidate_id=f"xq-{author}", item_id="x", source="xquik", title="t",
+            url=item.url, snippet="t", subquery_labels=["primary"],
+            native_ranks={"primary:xquik": 1}, local_relevance=0.5, freshness=50,
+            engagement=10, source_quality=0.6, rrf_score=0.02, source_items=[item],
+        )
+        c.final_score = final_score
+        return c
+
+    def test_first_party_xquik_floored(self):
+        c = self._cand(author="mvanhorn", final_score=3.0)
+        rerank._apply_first_party_floor([c], resolved_handles={"mvanhorn"})
+        self.assertEqual(rerank.FIRST_PARTY_FLOOR, c.final_score)
+
+    def test_non_first_party_xquik_not_floored(self):
+        c = self._cand(author="randomuser", final_score=3.0)
+        rerank._apply_first_party_floor([c], resolved_handles={"mvanhorn"})
+        self.assertEqual(3.0, c.final_score)
+
+    def test_interaction_float_xquik(self):
+        # first-party xquik post directed at another account -> interaction float
+        c = self._cand(author="mvanhorn", mentioned=["trevin"], final_score=3.0)
+        rerank._apply_interaction_signal([c], resolved_handles={"mvanhorn"})
+        self.assertGreaterEqual(c.final_score, rerank.INTERACTION_FLOOR)
+        self.assertIn("trevin", c.metadata.get("interaction_targets", []))
+
+
 if __name__ == "__main__":
     unittest.main()
