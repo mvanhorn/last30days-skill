@@ -404,5 +404,116 @@ class ExpandedHaystackTests(unittest.TestCase):
         # should not fire; final_score reflects only base signal.
         self.assertNotIn("entity-miss", on_topic.explanation or "")
 
+class FirstPartyAuthorshipTests(unittest.TestCase):
+    """U2: a post authored by one of the run's resolved handles is first-party
+    evidence and is exempt from the entity-miss demotion. Nobody repeats their
+    own name in their own post, so the body-text grounding check would
+    otherwise bury the subject's own highest-signal posts.
+    """
+
+    def _x_candidate(self, *, author: str | None, text: str) -> schema.Candidate:
+        item = schema.SourceItem(
+            item_id="x1",
+            source="x",
+            title=text,
+            body=text,
+            url="https://x.com/somebody/status/1",
+            author=author,
+            snippet=text,
+        )
+        return schema.Candidate(
+            candidate_id=f"x-{author or 'none'}",
+            item_id="x1",
+            source="x",
+            title=text,
+            url=item.url,
+            snippet=text,
+            subquery_labels=["primary"],
+            native_ranks={"primary:x": 1},
+            local_relevance=0.5,
+            freshness=80,
+            engagement=50,
+            source_quality=0.6,
+            rrf_score=0.02,
+            source_items=[item],
+        )
+
+    def test_first_party_post_exempt_from_entity_miss(self):
+        # The subject's own post that never repeats their name. Without the
+        # exemption this is the canonical score-0 failure; with it, no demotion.
+        c = self._x_candidate(author="mvanhorn", text="every agentic engineering hack I know")
+        rerank._apply_fallback_scores(
+            [c], primary_entity="Matt Van Horn", resolved_handles={"mvanhorn"}
+        )
+        self.assertIn("first-party", c.explanation or "")
+        self.assertNotIn("entity-miss", c.explanation or "")
+
+    def test_third_party_off_topic_still_demoted(self):
+        # Regression guard: collision-noise suppression is untouched. A stranger
+        # whose post omits the entity is still demoted even when handles resolve.
+        c = self._x_candidate(author="randomuser", text="some unrelated take about lunch")
+        rerank._apply_fallback_scores(
+            [c], primary_entity="Matt Van Horn", resolved_handles={"mvanhorn"}
+        )
+        self.assertIn("entity-miss", c.explanation or "")
+
+    def test_first_party_outscores_its_own_demoted_baseline(self):
+        # Same post, with vs without the exemption: the exempted score is higher
+        # (no -25 rerank / -20 final), lifting it out of the zero band.
+        text = "every agentic engineering hack I know"
+        exempt = self._x_candidate(author="mvanhorn", text=text)
+        demoted = self._x_candidate(author="stranger", text=text)
+        rerank._apply_fallback_scores(
+            [exempt], primary_entity="Matt Van Horn", resolved_handles={"mvanhorn"}
+        )
+        rerank._apply_fallback_scores(
+            [demoted], primary_entity="Matt Van Horn", resolved_handles={"mvanhorn"}
+        )
+        self.assertGreater(exempt.final_score, demoted.final_score)
+
+    def test_author_match_is_case_and_at_insensitive(self):
+        c = self._x_candidate(author="@MVanHorn", text="no entity name here")
+        rerank._apply_fallback_scores(
+            [c], primary_entity="Matt Van Horn", resolved_handles={"mvanhorn"}
+        )
+        self.assertIn("first-party", c.explanation or "")
+
+    def test_empty_author_behaves_as_before(self):
+        # No author -> not first-party; off-topic text -> demoted as it would be
+        # pre-change.
+        c = self._x_candidate(author=None, text="unrelated content")
+        rerank._apply_fallback_scores(
+            [c], primary_entity="Matt Van Horn", resolved_handles={"mvanhorn"}
+        )
+        self.assertIn("entity-miss", c.explanation or "")
+
+    def test_no_resolved_handles_is_pure_regression(self):
+        # Empty handle set -> first-party path never engages; identical to the
+        # prior behavior for the same off-topic post.
+        c = self._x_candidate(author="mvanhorn", text="unrelated content")
+        rerank._apply_fallback_scores([c], primary_entity="Matt Van Horn", resolved_handles=set())
+        self.assertIn("entity-miss", c.explanation or "")
+
+    def test_authorship_credit_does_not_outrank_strong_third_party(self):
+        # Authorship lifts off the floor but must not beat a genuinely strong
+        # on-topic third-party item (high LLM relevance).
+        first_party = self._x_candidate(author="mvanhorn", text="quick reply, no entity")
+        rerank._apply_fallback_scores(
+            [first_party], primary_entity="Matt Van Horn", resolved_handles={"mvanhorn"}
+        )
+        strong_third_party = self._x_candidate(author="press", text="Matt Van Horn ships Printing Press")
+        strong_third_party.rerank_score = 90.0
+        strong_third_party.explanation = "llm"
+        strong_third_party.final_score = rerank._final_score(strong_third_party)
+        self.assertGreater(strong_third_party.final_score, first_party.final_score)
+
+    def test_candidate_author_handle_helper(self):
+        c = self._x_candidate(author="@SomeOne", text="hi")
+        self.assertEqual("someone", rerank._candidate_author_handle(c))
+        self.assertTrue(rerank._is_first_party(c, {"someone"}))
+        self.assertFalse(rerank._is_first_party(c, {"other"}))
+        self.assertFalse(rerank._is_first_party(c, set()))
+
+
 if __name__ == "__main__":
     unittest.main()

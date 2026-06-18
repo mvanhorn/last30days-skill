@@ -17,6 +17,14 @@ from . import http, providers, query, schema, signals
 # Hermes content.
 ENTITY_MISS_PENALTY = 25.0
 
+# Small additive credit for a post authored by one of the run's resolved
+# handles (see rerank_candidates / _fallback_tuple). Deliberately small: the
+# goal is to stop *burying* first-party posts, not to auto-win the ranking on
+# authorship alone. A strong on-topic third-party item (high LLM relevance)
+# still outranks a thin first-party one; this only lifts first-party off the
+# neutral floor so it survives into the visible band.
+FIRST_PARTY_AUTHOR_CREDIT = 5.0
+
 # Intent modifiers to strip before extracting the primary entity so that,
 # for example, "Hermes Agent use cases" yields primary_entity="hermes agent"
 # rather than "hermes agent use cases". Kept in sync with
@@ -83,24 +91,34 @@ def rerank_candidates(
     provider: providers.ReasoningClient | None,
     model: str | None,
     shortlist_size: int,
+    resolved_handles: set[str] | None = None,
 ) -> list[schema.Candidate]:
-    """Rerank the fused shortlist, demoting candidates the reranker scored as irrelevant."""
+    """Rerank the fused shortlist, demoting candidates the reranker scored as irrelevant.
+
+    ``resolved_handles`` is the normalized (``@``-stripped, lowercased) set of
+    handles the run resolved for the topic (``--x-handle``, ``--x-related``, and
+    the GitHub user). A candidate authored by one of these is first-party: it is
+    exempted from the entity-miss demotion in ``_fallback_tuple`` (a post almost
+    never repeats its own author's name, so the body-text grounding check would
+    otherwise bury the subject's own highest-signal posts).
+    """
+    handles = resolved_handles or set()
     shortlisted = candidates[:shortlist_size]
     primary_entity = _primary_entity(topic)
     if provider and model and shortlisted:
         try:
             response = provider.generate_json(model, _build_prompt(topic, plan, shortlisted, primary_entity))
-            _apply_llm_scores(shortlisted, response)
+            _apply_llm_scores(shortlisted, response, resolved_handles=handles)
         except (ValueError, KeyError, json.JSONDecodeError, OSError, http.HTTPError) as exc:
             import sys
             print(f"[Rerank] LLM reranking failed, using local fallback: {type(exc).__name__}: {exc}", file=sys.stderr)
-            _apply_fallback_scores(shortlisted, primary_entity=primary_entity)
+            _apply_fallback_scores(shortlisted, primary_entity=primary_entity, resolved_handles=handles)
     else:
-        _apply_fallback_scores(shortlisted, primary_entity=primary_entity)
+        _apply_fallback_scores(shortlisted, primary_entity=primary_entity, resolved_handles=handles)
 
     if len(candidates) > shortlist_size:
         tail = candidates[shortlist_size:]
-        _apply_fallback_scores(tail, primary_entity=primary_entity)
+        _apply_fallback_scores(tail, primary_entity=primary_entity, resolved_handles=handles)
 
     return sorted(
         candidates,
@@ -187,7 +205,10 @@ Scoring guidance:
 """.strip()
 
 
-def _apply_llm_scores(candidates: list[schema.Candidate], payload: dict) -> None:
+def _apply_llm_scores(
+    candidates: list[schema.Candidate], payload: dict, *, resolved_handles: set[str] | None = None
+) -> None:
+    handles = resolved_handles or set()
     scores = {}
     for row in payload.get("scores") or []:
         if not isinstance(row, dict):
@@ -200,18 +221,46 @@ def _apply_llm_scores(candidates: list[schema.Candidate], payload: dict) -> None
             str(row.get("reason") or "").strip() or None,
         )
     for candidate in candidates:
-        rerank_score, reason = scores.get(candidate.candidate_id, _fallback_tuple(candidate))
+        rerank_score, reason = scores.get(
+            candidate.candidate_id, _fallback_tuple(candidate, resolved_handles=handles)
+        )
         candidate.rerank_score = rerank_score
         candidate.explanation = reason
         candidate.final_score = _final_score(candidate)
 
 
-def _apply_fallback_scores(candidates: list[schema.Candidate], *, primary_entity: str = "") -> None:
+def _apply_fallback_scores(
+    candidates: list[schema.Candidate], *, primary_entity: str = "", resolved_handles: set[str] | None = None
+) -> None:
+    handles = resolved_handles or set()
     for candidate in candidates:
-        rerank_score, reason = _fallback_tuple(candidate, primary_entity=primary_entity)
+        rerank_score, reason = _fallback_tuple(candidate, primary_entity=primary_entity, resolved_handles=handles)
         candidate.rerank_score = rerank_score
         candidate.explanation = reason
         candidate.final_score = _final_score(candidate)
+
+
+def _candidate_author_handle(candidate: schema.Candidate) -> str:
+    """Representative normalized author handle for a candidate, or '' if none.
+
+    Reads ``SourceItem.author`` (set from the X ``author_handle`` in
+    normalize._normalize_x, already ``@``-stripped) on the first authored
+    source item, falling back to that item's ``metadata.author_handle``.
+    Normalized ``@``-stripped + lowercased to match the resolved-handle set.
+    """
+    for item in candidate.source_items:
+        raw = item.author or (item.metadata or {}).get("author_handle") or ""
+        handle = str(raw).lstrip("@").strip().lower()
+        if handle:
+            return handle
+    return ""
+
+
+def _is_first_party(candidate: schema.Candidate, resolved_handles: set[str]) -> bool:
+    """True when the candidate is authored by one of the run's resolved handles."""
+    if not resolved_handles:
+        return False
+    return _candidate_author_handle(candidate) in resolved_handles
 
 
 def _candidate_haystack(candidate: schema.Candidate) -> str:
@@ -271,13 +320,27 @@ def _entity_grounded(haystack: str, primary_entity: str) -> bool:
     return tokens[0] in haystack
 
 
-def _fallback_tuple(candidate: schema.Candidate, *, primary_entity: str = "") -> tuple[float, str]:
+def _fallback_tuple(
+    candidate: schema.Candidate, *, primary_entity: str = "", resolved_handles: set[str] | None = None
+) -> tuple[float, str]:
     score = (
         (candidate.local_relevance * 100.0 * 0.7)
         + (candidate.freshness * 0.2)
         + (candidate.source_quality * 100.0 * 0.1)
     )
     reason = "fallback-local-score"
+    # First-party authorship grounding: a post authored by one of the run's
+    # resolved handles is first-class evidence about the subject and is exempt
+    # from the entity-miss demotion below. Nobody repeats their own name in
+    # their own post, so the body-text grounding check would otherwise bury the
+    # subject's own highest-signal posts (the single richest vein on X for a
+    # person topic). Because the reason string carries no "entity-miss" marker,
+    # _final_score's secondary penalty (which greps for it) is also skipped.
+    # A small bounded credit lifts a first-party post just off neutral without
+    # letting authorship alone outrank a genuinely strong on-topic third party.
+    if resolved_handles and _is_first_party(candidate, resolved_handles):
+        score += FIRST_PARTY_AUTHOR_CREDIT
+        return max(0.0, min(100.0, score)), "fallback-local-score (first-party authorship)"
     # Entity-grounding demotion: subtract ENTITY_MISS_PENALTY when the candidate
     # never mentions the primary entity's head token, across all text surfaces
     # (title, snippet, transcript, transcript highlights, top comments,

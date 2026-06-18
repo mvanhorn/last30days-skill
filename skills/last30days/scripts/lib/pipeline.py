@@ -523,6 +523,16 @@ def run(
         bundle.items_by_source, topic=topic, config=config, depth=depth, mock=mock,
     )
     candidates = weighted_rrf(bundle.items_by_source_and_query, plan, pool_limit=settings["pool_limit"])
+    # Normalized set of handles this run resolved for the topic. A candidate
+    # authored by one of these is first-party and is exempted from the
+    # entity-miss demotion in rerank (a post never repeats its own author's
+    # name, so the body-text grounding check would otherwise zero out the
+    # subject's own highest-signal posts).
+    resolved_handles = {
+        h.lstrip("@").strip().lower()
+        for h in ([x_handle, github_user, *(x_related or [])])
+        if h and h.strip()
+    }
     ranked_candidates = rerank.rerank_candidates(
         topic=topic,
         plan=plan,
@@ -530,6 +540,7 @@ def run(
         provider=None if mock else reasoning_provider,
         model=None if mock else runtime.rerank_model,
         shortlist_size=settings["rerank_limit"],
+        resolved_handles=resolved_handles,
     )
     rerank.score_fun(
         topic=topic,
