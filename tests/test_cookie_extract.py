@@ -124,6 +124,7 @@ class TestExtractFirefoxCookies:
 
         assert result == {"auth_token": "tok_abc123"}
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission model does not apply on Windows; mkstemp is 0o666 there")
     def test_temp_cookie_copy_never_world_readable(self, tmp_path):
         """The temp copy must be private the instant it exists, not only after
         the lock chmod. Regression for the TOCTOU window where copy2 widened the
