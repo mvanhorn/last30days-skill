@@ -99,7 +99,7 @@ def search_hackernews(
     params = {
         "query": core_flat,
         "tags": "story",
-        "numericFilters": f"created_at_i>{from_ts},created_at_i<{to_ts},points>2",
+        "numericFilters": f"created_at_i>{from_ts},created_at_i<{to_ts}",
         "hitsPerPage": str(count),
     }
     # Algolia defaults to AND across query tokens, so a 4-5 word theme query
@@ -121,8 +121,10 @@ def search_hackernews(
         _log(f"Search failed: {e}")
         return {"hits": [], "error": str(e)}
 
-    hits = response.get("hits", [])
-    _log(f"Found {len(hits)} stories")
+    # Algolia dropped `points` from numericAttributesForFiltering, so a
+    # server-side points>2 filter 400s the whole request. Floor it client-side.
+    response["hits"] = [h for h in response.get("hits", []) if (h.get("points") or 0) > 2]
+    _log(f"Found {len(response['hits'])} stories")
     return response
 
 
