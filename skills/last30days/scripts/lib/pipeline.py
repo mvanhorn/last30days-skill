@@ -76,6 +76,10 @@ FROM_LANE_COUNT_PER = 8
 MENTION_LANE_COUNT_PER = 5
 RELATED_HANDLE_COUNT_PER = 3
 
+
+def _has_perplexity_provider(config: dict[str, Any]) -> bool:
+    return bool(config.get("PERPLEXITY_API_KEY") or config.get("OPENROUTER_API_KEY"))
+
 MOCK_AVAILABLE_SOURCES = [
     "reddit",
     "x",
@@ -141,7 +145,7 @@ def available_sources(config: dict[str, Any], requested_sources: list[str] | Non
         available.append("jobs")
     # Perplexity Sonar: opt-in additive source via INCLUDE_SOURCES=perplexity
     include_sources = (config.get("INCLUDE_SOURCES") or "").lower().split(",")
-    if config.get("OPENROUTER_API_KEY") and (
+    if _has_perplexity_provider(config) and (
         "perplexity" in include_sources or (requested_sources and "perplexity" in requested_sources)
     ):
         available.append("perplexity")
@@ -177,10 +181,14 @@ def diagnose(config: dict[str, Any], requested_sources: list[str] | None = None)
         "openai": bool(config.get("OPENAI_API_KEY")) and config.get("OPENAI_AUTH_STATUS") == env.AUTH_STATUS_OK,
         "xai": bool(config.get("XAI_API_KEY")),
         "openrouter": bool(config.get("OPENROUTER_API_KEY")),
+        "perplexity": bool(config.get("PERPLEXITY_API_KEY")),
     }
+    reasoning_provider_available = any(
+        providers_status[name] for name in ("google", "openai", "xai", "openrouter")
+    )
     return {
         "providers": providers_status,
-        "local_mode": not any(providers_status.values()),
+        "local_mode": not reasoning_provider_available,
         "reasoning_provider": (config.get("LAST30DAYS_REASONING_PROVIDER") or "auto").lower(),
         "x_backend": x_status["source"],
         "bird_installed": x_status["bird_installed"],

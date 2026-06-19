@@ -46,6 +46,30 @@ class EnvV3Tests(unittest.TestCase):
         path.stat.assert_not_called()
         write.assert_not_called()
 
+    def test_get_config_includes_perplexity_knobs(self):
+        overrides = {
+            "LAST30DAYS_PERPLEXITY_MODE": "search",
+            "LAST30DAYS_PERPLEXITY_MODEL": "sonar-reasoning-pro",
+            "LAST30DAYS_PERPLEXITY_MAX_RESULTS": "3",
+            "LAST30DAYS_PERPLEXITY_SEARCH_CONTEXT_SIZE": "low",
+            "LAST30DAYS_PERPLEXITY_SEARCH_MODE": "academic",
+            "LAST30DAYS_PERPLEXITY_DOMAIN_FILTER": "example.com",
+            "LAST30DAYS_PERPLEXITY_LANGUAGE_FILTER": "en",
+            "LAST30DAYS_PERPLEXITY_COUNTRY": "US",
+            "LAST30DAYS_PERPLEXITY_RECENCY_FILTER": "week",
+            "LAST30DAYS_PERPLEXITY_REASONING_EFFORT": "high",
+            "LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS": "600",
+        }
+        with mock.patch.object(env, "CONFIG_FILE", None), \
+             mock.patch.object(env, "_find_project_env", return_value=None), \
+             mock.patch("lib.env._load_keychain", return_value={}), \
+             mock.patch("lib.env._load_pass", return_value={}), \
+             mock.patch.dict(os.environ, overrides, clear=False):
+            config = env.get_config()
+
+        for key, value in overrides.items():
+            self.assertEqual(value, config[key])
+
 
 class ThreadsAvailabilityTests(unittest.TestCase):
     """Threads is in the SC default-on family: same key, same per-call cost

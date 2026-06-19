@@ -198,7 +198,6 @@ class TestSourceFetchCap(unittest.TestCase):
 
     def test_cap_logic_limits_source_submissions(self):
         """Verify the cap logic skips submissions beyond the limit."""
-        cap = pipeline.MAX_SOURCE_FETCHES.get("x", float("inf"))
         subquery_sources = [
             ["x", "reddit", "youtube"],
             ["x", "reddit", "youtube"],
@@ -228,7 +227,7 @@ class TestSourceFetchCap(unittest.TestCase):
         mock_retrieve.side_effect = lambda **kwargs: pipeline._mock_stream_results(
             kwargs["source"], kwargs["subquery"]
         )
-        report = pipeline.run(
+        pipeline.run(
             topic="compare iPhone vs Android vs Pixel vs Samsung",
             config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
             depth="quick",
@@ -295,7 +294,7 @@ class TestRateLimitSharing(unittest.TestCase):
         self.assertEqual(artifact, {})
 
 
-class TestThinSourceRetry(unittest.TestCase):
+class TestThinSourceRetryPlannedSource(unittest.TestCase):
     @patch("lib.pipeline._retrieve_stream")
     def test_retry_includes_planned_source_with_zero_initial_items(self, mock_retrieve):
         mock_retrieve.return_value = (
@@ -740,7 +739,6 @@ class TestThinSourceRetry(unittest.TestCase):
             )
             # x (non-errored, thin) should be retried; reddit (errored) should not
             if mock_retrieve.call_count > 0:
-                retried_sources = [call.kwargs.get("source") or call.args[2] for call in mock_retrieve.call_args_list if hasattr(call, 'kwargs')]
                 self.assertNotIn("reddit", [c.kwargs.get("source") for c in mock_retrieve.call_args_list])
 
     def test_retry_skipped_in_quick_mode(self):
@@ -1118,6 +1116,23 @@ class TestExcludeSources(unittest.TestCase):
         sources = pipeline.available_sources(config)
         self.assertNotIn("hackernews", sources)
         self.assertIn("reddit", sources)
+
+
+class TestPerplexityAvailability(unittest.TestCase):
+    def test_perplexity_source_not_available_with_direct_key_without_opt_in(self):
+        sources = pipeline.available_sources({"PERPLEXITY_API_KEY": "test-key"})
+        self.assertNotIn("perplexity", sources)
+
+    def test_perplexity_source_available_with_direct_key(self):
+        sources = pipeline.available_sources(
+            {"PERPLEXITY_API_KEY": "test-key", "INCLUDE_SOURCES": "perplexity"}
+        )
+        self.assertIn("perplexity", sources)
+
+    def test_perplexity_diagnose_reports_direct_provider(self):
+        diag = pipeline.diagnose({"PERPLEXITY_API_KEY": "test-key"})
+        self.assertTrue(diag["providers"]["perplexity"])
+        self.assertTrue(diag["local_mode"])
 
 
 class TestKeylessGroundingAvailability(unittest.TestCase):

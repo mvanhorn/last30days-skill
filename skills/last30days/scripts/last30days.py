@@ -298,7 +298,7 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=["auto", "brave", "exa", "serper", "parallel", "none"],
                         help="Web search backend (default: auto, tries Brave then Exa then Serper then Parallel)")
     parser.add_argument("--deep-research", action="store_true",
-                        help="Use Perplexity Deep Research (~$0.90/query) for in-depth analysis. Requires OPENROUTER_API_KEY.")
+                        help="Use Perplexity Deep Research (~$0.90/query) for in-depth analysis. Requires PERPLEXITY_API_KEY or OPENROUTER_API_KEY.")
     parser.add_argument("--hiring-signals", action="store_true",
                         help="Analyze public jobs/careers postings as evidence-backed company focus signals.")
     parser.add_argument("--plan", help="JSON query plan (skips internal LLM planner). Can be a JSON string or a file path.")
@@ -792,8 +792,8 @@ def main() -> int:
 
         # --deep-research: auto-enable perplexity source and set deep flag
         if args.deep_research:
-            if not config.get("OPENROUTER_API_KEY"):
-                print("Error: --deep-research requires OPENROUTER_API_KEY", file=sys.stderr)
+            if not (config.get("PERPLEXITY_API_KEY") or config.get("OPENROUTER_API_KEY")):
+                print("Error: --deep-research requires PERPLEXITY_API_KEY or OPENROUTER_API_KEY", file=sys.stderr)
                 sys.exit(1)
             config["_deep_research"] = True
             # Auto-enable perplexity in INCLUDE_SOURCES
@@ -889,7 +889,7 @@ def main() -> int:
                         "\n"
                         "HEADLESS / CRON PATH (no hosting model available): set "
                         "BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY / "
-                        "OPENROUTER_API_KEY and re-run.\n"
+                        "PERPLEXITY_API_KEY / OPENROUTER_API_KEY and re-run.\n"
                         "\n"
                         "MINIMUM ESCAPE HATCH: pass --competitors-list 'A,B,C' to skip "
                         "discovery. Without --competitors-plan, peer sub-runs fall back to "

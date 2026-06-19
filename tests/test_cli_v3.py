@@ -90,6 +90,13 @@ class CliV3Tests(unittest.TestCase):
         )
         self.assertIn("perplexity", available)
 
+    def test_explicit_perplexity_search_uses_direct_key_without_include_sources(self):
+        available = cli.pipeline.available_sources(
+            {"PERPLEXITY_API_KEY": "test-key", "INCLUDE_SOURCES": ""},
+            requested_sources=["perplexity"],
+        )
+        self.assertIn("perplexity", available)
+
     def test_parse_search_flag_rejects_invalid_or_empty_inputs(self):
         with self.assertRaises(SystemExit):
             cli.parse_search_flag("unknown")

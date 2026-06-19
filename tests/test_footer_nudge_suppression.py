@@ -42,7 +42,7 @@ class FooterNudgeSuppressionTests(unittest.TestCase):
         # triggers deterministically in mock + no-backend. Also strip X cookie
         # credentials so XAI_API_KEY is the unambiguous X backend.
         for key in ("BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY",
-                    "PARALLEL_API_KEY", "OPENROUTER_API_KEY",
+                    "PARALLEL_API_KEY", "OPENROUTER_API_KEY", "PERPLEXITY_API_KEY",
                     "AUTH_TOKEN", "CT0", "LAST30DAYS_X_BACKEND"):
             env.pop(key, None)
         # Run from a tmpdir so _find_project_env() can't walk up into any

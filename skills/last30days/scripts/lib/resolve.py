@@ -76,6 +76,7 @@ def _has_backend(config: dict) -> bool:
         or config.get("SERPER_API_KEY")
         or config.get("PARALLEL_API_KEY")
         or config.get("OPENROUTER_API_KEY")
+        or config.get("PERPLEXITY_API_KEY")
     )
 
 

@@ -70,7 +70,7 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 | **Threads** | The post-Twitter text layer. Conversations from creators and brands. |
 | **Pinterest** | Visual discovery. Pins, saves, and comments on products and ideas. |
 | **Bluesky** | The decentralized social layer. AT Protocol posts from the post-Twitter migration. |
-| **Perplexity** | Grounded web search with citations via Sonar Pro. |
+| **Perplexity** | Grounded Sonar synthesis, raw Search API rows, and Deep Research. |
 | **Web** | The editorial coverage, the blog comparisons. One signal of many, not the only one. |
 
 Community contributors keep adding more. Truth Social, Xiaohongshu (RED), and others are in the engine with more on the way.
@@ -158,7 +158,7 @@ Say "eli5 on" after any research run. The synthesis rewrites in plain language. 
 - **TikTok, Instagram, Threads.** All three activate automatically once `SCRAPECREATORS_API_KEY` is set — same key, same per-call cost. Suppress any of them with `EXCLUDE_SOURCES=tiktok,instagram,threads` (any comma-separated subset).
 - **Pinterest.** Per-query opt-in (visual pins, narrow utility): the model passes `--search=pinterest` for the runs that need it. Requires `SCRAPECREATORS_API_KEY`.
 - **YouTube comments + transcript fallback.** Both activate automatically once `SCRAPECREATORS_API_KEY` is set, the same default-on backup tier. Transcripts only fall back to ScrapeCreators when yt-dlp fails (no credit spent on success); comments are bounded to the top few videos (~3 extra calls per run). Suppress comments with `EXCLUDE_SOURCES=youtube_comments`. **TikTok comments** stay opt-in via `INCLUDE_SOURCES=tiktok_comments`. Surface top comments with vote counts the same way Reddit does.
-- **Perplexity Sonar.** Grounded web search with citations via OpenRouter. Add `OPENROUTER_API_KEY` and `INCLUDE_SOURCES=perplexity` (it's a separate paid API — opt-in keeps you from being surprise-billed).
+- **Perplexity Sonar / Search API / Deep Research.** Grounded web search via direct Perplexity (`PERPLEXITY_API_KEY`) or OpenRouter Sonar fallback (`OPENROUTER_API_KEY`). Add one of those keys plus `INCLUDE_SOURCES=perplexity` (it's a separate paid API - opt-in keeps you from being surprise-billed). Direct Perplexity can return Sonar synthesis, raw ranked Search API rows, or both.
 - **Polymarket noise filtering.** Common-word disambiguation prevents "Apple" from matching "Will Apple release a car?"
 - **Resilient Reddit.** Timeout budgets and runtime fallback. One slow thread doesn't kill the whole run.
 - **Fun judge v2.** Humor scoring baked into the narrative. Reddit's cleverest one-liners mixed into the synthesis where they fit, not dumped in a separate section.
@@ -287,7 +287,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 | YouTube | `brew install yt-dlp` | Free |
 | Bluesky | App password from bsky.app | Free |
 | TikTok + Instagram + Threads + Pinterest + YouTube comments | ScrapeCreators key | 100 free credits, then PAYG |
-| Perplexity Sonar | OpenRouter key | Pay as you go |
+| Perplexity Sonar / Search API / Deep Research | Perplexity key, or OpenRouter key as Sonar fallback | Pay as you go |
 | Web search | Brave Search key | 2,000 free queries/month |
 
 ### macOS Keychain (optional)
