@@ -20,6 +20,7 @@ metadata:
         - XAI_API_KEY
         - OPENROUTER_API_KEY
         - PARALLEL_API_KEY
+        - DIFFBOT_API_KEY
         - BRAVE_API_KEY
         - APIFY_API_TOKEN
         - AUTH_TOKEN
@@ -333,6 +334,7 @@ Common patterns:
 - If SCRAPECREATORS_API_KEY is set: add TikTok, Instagram, Threads (suppress any of these via EXCLUDE_SOURCES)
 - If SCRAPECREATORS_API_KEY is set and the user explicitly requested pinterest for this query (e.g. via `--search=pinterest`): add Pinterest
 - If BSKY_HANDLE and BSKY_APP_PASSWORD are set: add Bluesky
+- If DIFFBOT_API_KEY is set: add Diffbot (suppress via EXCLUDE_SOURCES=diffbot)
 - If OPENROUTER_API_KEY is set and INCLUDE_SOURCES contains perplexity: add Perplexity
 - If EXCLUDE_SOURCES is set (comma-separated, case-insensitive): drop any matching source from the list above before displaying
 
@@ -830,7 +832,8 @@ Only show lines for platforms where something was resolved. Skip empty lines. On
       "search_query": "kanye west",
       "ranking_query": "What notable events involving Kanye West happened in the last 30 days?",
       "sources": ["reddit", "x", "hackernews", "youtube", "tiktok", "instagram"],
-      "weight": 1.0
+      "weight": 1.0,
+      "term_specificity": {"kanye": 95, "west": 40}
     },
     {
       "label": "album",
@@ -865,8 +868,9 @@ Only show lines for platforms where something was resolved. Skip empty lines. On
 - For predictions: include Polymarket in sources
 - For how_to: prioritize YouTube (tutorials) and Reddit (guides)
 - Primary subquery weight = 1.0, secondary = 0.6-0.8, peripheral = 0.3-0.5
+- **OPTIONAL `term_specificity` (only helps the Diffbot source; omit if DIFFBOT_API_KEY is not set):** a `{term: score}` map where score is 0-100 for how *distinctive* each word in your `search_query` is - 0 = generic ("ipo", "news", "stock"), 100 = highly distinctive (a brand, ticker, or proper noun like "spacex", "spcx", "starlink"). The engine uses this to weight a per-term headline-match boost so articles with the distinctive terms in their title rank higher, while generic terms barely move ranking. You are the best judge of distinctiveness - e.g. the ticker "spcx" is highly specific (95) even though it is short, which a length heuristic would get wrong. Keys should be the individual words/phrases of your `search_query`; any term you omit falls back to a length-based default. Example for "spacex ipo": `{"spacex": 95, "ipo": 25}`.
 
-**Available sources (include ALL in primary subquery):** reddit, x, youtube, tiktok, instagram, hackernews, polymarket. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg clusters - only if `digg-pp-cli` is on PATH)
+**Available sources (include ALL in primary subquery):** reddit, x, youtube, tiktok, instagram, hackernews, polymarket. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), diffbot (Diffbot KG Article/news index - only if DIFFBOT_API_KEY is set), digg (Digg clusters - only if `digg-pp-cli` is on PATH)
 
 **Intent → freshness_mode mapping:**
 - breaking_news, prediction → `strict_recent`
@@ -1690,6 +1694,7 @@ Want another prompt? Just tell me what you're creating next.
 - Runs `yt-dlp` locally for YouTube search and transcript extraction (no API key, public data)
 - Sends search queries to ScrapeCreators API (`api.scrapecreators.com`) for TikTok and Instagram search, transcript/caption extraction (PAYG after 100 free credits)
 - Optionally sends search queries to Brave Search API, Parallel AI API, or OpenRouter API for web search
+- Optionally sends date-bounded Article queries to the Diffbot Knowledge Graph DQL API (`POST https://kg.diffbot.com/kg/v3/dql`) for news/article discovery (requires DIFFBOT_API_KEY; the key is passed as the `token` query parameter, per Diffbot's API design)
 - Fetches public Reddit thread data from `reddit.com` for engagement metrics
 - Stores research findings in local SQLite database (watchlist mode only)
 - Saves research briefings as .md files to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`)

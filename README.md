@@ -71,6 +71,7 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 | **Pinterest** | Visual discovery. Pins, saves, and comments on products and ideas. |
 | **Bluesky** | The decentralized social layer. AT Protocol posts from the post-Twitter migration. |
 | **Perplexity** | Grounded web search with citations via Sonar Pro. |
+| **Diffbot** | The news & article index. Date-bounded articles from the Diffbot Knowledge Graph, ranked by relevance and freshness. Auto-enabled when `DIFFBOT_API_KEY` is set. |
 | **Web** | The editorial coverage, the blog comparisons. One signal of many, not the only one. |
 
 Community contributors keep adding more. Truth Social, Xiaohongshu (RED), and others are in the engine with more on the way.
@@ -261,6 +262,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 | Bluesky | App password from bsky.app | Free |
 | TikTok + Instagram + Threads + Pinterest + YouTube comments | ScrapeCreators key | 100 free credits, then PAYG |
 | Perplexity Sonar | OpenRouter key | Pay as you go |
+| Diffbot (news/articles) | Diffbot API token | Free tier, then pay as you go |
 | Web search | Brave Search key | 2,000 free queries/month |
 
 ### macOS Keychain (optional)

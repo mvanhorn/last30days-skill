@@ -54,6 +54,7 @@ def normalize_source_items(
         "xiaohongshu": _normalize_grounding,
         "github": _normalize_github,
         "perplexity": _normalize_grounding,
+        "diffbot": _normalize_grounding,
     }
     normalizer = normalizers.get(source)
     if normalizer is None:

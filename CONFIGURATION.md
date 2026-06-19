@@ -63,6 +63,7 @@ The project-scoped file is the cleanest pattern for **per-client setups**: drop 
 | Bluesky | `BSKY_HANDLE` + `BSKY_APP_PASSWORD` | Bluesky items | yes (app password at bsky.app) |
 | TruthSocial | `TRUTHSOCIAL_TOKEN` | TruthSocial items | yes |
 | Web search | one of: `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY` | `--auto-resolve` and Step 2 supplements | Brave has a free tier; native WebSearch on Claude Code / Codex / Gemini works as a fallback |
+| Diffbot (KG Articles) | `DIFFBOT_API_KEY` (this is your Diffbot **token** — Diffbot's dashboard labels the credential "token") | Article/news items from the Diffbot Knowledge Graph | yes — Diffbot offers a free tier ([sign up](https://app.diffbot.com/account/)); runs automatically when set, suppress via `EXCLUDE_SOURCES=diffbot` |
 | Perplexity Deep Research | `OPENROUTER_API_KEY` | `--deep-research` flag (~$0.90/query) | no |
 | Apify (alternate scraper) | `APIFY_API_TOKEN` | fallback for Reddit/TikTok/Instagram when ScrapeCreators is exhausted | yes (limited) |
 
@@ -78,6 +79,11 @@ BRAVE_API_KEY=<your-brave-key>
 # Optional sources
 SCRAPECREATORS_API_KEY=<your-scrapecreators-key>
 INCLUDE_SOURCES=tiktok,instagram
+
+# Diffbot KG Articles — paste your Diffbot account "token" here (Diffbot
+# labels the credential "token"; Diffbot offers a free tier).
+# Default-on once set; suppress with EXCLUDE_SOURCES=diffbot.
+DIFFBOT_API_KEY=<your-diffbot-token>
 
 # X authentication (one option only)
 XAI_API_KEY=<your-xai-key>

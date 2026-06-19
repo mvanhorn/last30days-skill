@@ -35,6 +35,33 @@ class PlannerV3Tests(unittest.TestCase):
         self.assertIn("youtube", plan.source_weights)
         self.assertEqual("evergreen_ok", plan.freshness_mode)
 
+    def test_term_specificity_survives_sanitize_trim_and_normalize(self):
+        # Regression: _normalize_subquery_weights and _trim_subqueries_for_depth
+        # rebuild SubQuery objects; they must copy term_specificity through or the
+        # driving LLM's per-term title-boost scores are silently dropped before
+        # reaching the Diffbot source.
+        raw = {
+            "intent": "breaking_news",
+            "freshness_mode": "strict_recent",
+            "cluster_mode": "story",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "spacex ipo",
+                    "ranking_query": "What happened with the SpaceX IPO?",
+                    "sources": ["diffbot"],
+                    "weight": 1.0,
+                    "term_specificity": {"spacex": 95, "ipo": 25},
+                }
+            ],
+        }
+        plan = planner._sanitize_plan(
+            raw, "spacex ipo", ["diffbot", "reddit", "hackernews"], None, "default",
+        )
+        self.assertEqual(
+            {"spacex": 95.0, "ipo": 25.0}, plan.subqueries[0].term_specificity
+        )
+
     def test_comparison_uses_deterministic_plan_and_preserves_entities(self):
         plan = planner.plan_query(
             topic="openclaw vs nanoclaw vs ironclaw",

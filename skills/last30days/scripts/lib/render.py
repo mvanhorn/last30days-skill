@@ -70,6 +70,7 @@ SOURCE_LABELS = {
     "github": "GitHub",
     "digg": "Digg",
     "perplexity": "Perplexity",
+    "diffbot": "Diffbot",
 }
 
 

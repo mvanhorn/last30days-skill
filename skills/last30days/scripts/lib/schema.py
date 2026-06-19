@@ -47,6 +47,10 @@ class SubQuery:
     ranking_query: str
     sources: list[str]
     weight: float = 1.0
+    # Optional {term: specificity score 0-100} from the driving LLM. Consumed by
+    # the Diffbot source to weight its per-term title boost by judged
+    # distinctiveness; ignored by sources that don't use it.
+    term_specificity: dict[str, float] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not self.sources:
@@ -186,6 +190,19 @@ def provider_runtime_from_dict(payload: dict[str, Any]) -> ProviderRuntime:
     )
 
 
+def _coerce_term_specificity(raw: Any) -> dict[str, float]:
+    """Parse a {term: score} map, dropping non-numeric entries defensively."""
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for key, value in raw.items():
+        try:
+            out[str(key)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return out
+
+
 def subquery_from_dict(payload: dict[str, Any]) -> SubQuery:
     return SubQuery(
         label=payload["label"],
@@ -193,6 +210,7 @@ def subquery_from_dict(payload: dict[str, Any]) -> SubQuery:
         ranking_query=payload["ranking_query"],
         sources=list(payload.get("sources") or []),
         weight=float(payload.get("weight") or 1.0),
+        term_specificity=_coerce_term_specificity(payload.get("term_specificity")),
     )
 
 

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Diffbot Knowledge Graph source** — date-bounded article/news discovery via the Diffbot DQL API, auto-enabled when `DIFFBOT_API_KEY` is set (suppress with `EXCLUDE_SOURCES=diffbot`). Each search fans out across multiple `text:`-clause formulations per depth (quick 2 / default 3 / deep 4), boosted toward fresher articles and, via the optional plan-level `term_specificity` hint, toward distinctive headline terms. Since Diffbot exposes no per-document relevance score, relevance is synthesized from each hit's rank in its relevance-ordered response.
+
 ## [3.3.2] - 2026-06-06
 
 ### Fixed

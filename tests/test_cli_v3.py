@@ -89,6 +89,17 @@ class CliV3Tests(unittest.TestCase):
         )
         self.assertIn("perplexity", available)
 
+    def test_parse_search_flag_accepts_diffbot_and_db_alias(self):
+        self.assertEqual(["diffbot"], cli.parse_search_flag("diffbot"))
+        self.assertEqual(["diffbot"], cli.parse_search_flag("db"))
+
+    def test_explicit_diffbot_search_uses_api_key_without_include_sources(self):
+        available = cli.pipeline.available_sources(
+            {"DIFFBOT_API_KEY": "test-key", "INCLUDE_SOURCES": ""},
+            requested_sources=["diffbot"],
+        )
+        self.assertIn("diffbot", available)
+
     def test_parse_search_flag_rejects_invalid_or_empty_inputs(self):
         with self.assertRaises(SystemExit):
             cli.parse_search_flag("unknown")

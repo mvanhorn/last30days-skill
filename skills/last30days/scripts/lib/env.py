@@ -331,6 +331,7 @@ def get_config() -> dict[str, Any]:
         ('OPENROUTER_API_KEY', None),
         ('PARALLEL_API_KEY', None),
         ('XQUIK_API_KEY', None),
+        ('DIFFBOT_API_KEY', None),
         ('FROM_BROWSER', None),
         ('SETUP_COMPLETE', None),
         ('INCLUDE_SOURCES', ''),
@@ -728,6 +729,21 @@ def is_pinterest_available(config: dict[str, Any]) -> bool:
 def get_pinterest_token(config: dict[str, Any]) -> str:
     """Get Pinterest API token (same ScrapeCreators key as TikTok/Instagram)."""
     return config.get('SCRAPECREATORS_API_KEY') or ''
+
+
+# Diffbot
+def is_diffbot_available(config: dict[str, Any]) -> bool:
+    """Check if Diffbot Knowledge Graph Article search is available.
+
+    Requires DIFFBOT_API_KEY. Runs automatically when set; suppress via
+    EXCLUDE_SOURCES=diffbot.
+    """
+    return bool(config.get('DIFFBOT_API_KEY'))
+
+
+def get_diffbot_token(config: dict[str, Any]) -> str:
+    """Get the Diffbot API key (passed to the DQL endpoint as the ``token`` param)."""
+    return config.get('DIFFBOT_API_KEY') or ''
 
 
 # Xquik
