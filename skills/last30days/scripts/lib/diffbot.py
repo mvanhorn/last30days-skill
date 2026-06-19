@@ -359,13 +359,13 @@ def search_diffbot(
     Returns:
         Merged DQL JSON response: the ``data`` rows from every formulation
         concatenated (most-specific formulation first) under one ``{"data": [...]}``
-        plus a ``hits`` count. Returns an empty ``{"data": []}`` when no token is
-        supplied. Cross-formulation URL duplicates are collapsed (and used as a
+        plus a ``hits`` count. Returns an empty ``{"data": [], "hits": 0}`` when
+        no token is supplied. Cross-formulation URL duplicates are collapsed (and used as a
         relevance signal) downstream in ``parse_diffbot_response``. HTTP errors
         propagate so the pipeline's 429/5xx handling and errors_by_source apply.
     """
     if not token:
-        return {"data": []}
+        return {"data": [], "hits": 0}
     cfg = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     num_queries, size = cfg["queries"], cfg["size"]
     clauses = _text_clauses(topic)

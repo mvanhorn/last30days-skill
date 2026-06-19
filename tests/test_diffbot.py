@@ -297,7 +297,7 @@ def test_parse_handles_empty_and_malformed_responses():
 
 def test_search_returns_empty_without_token():
     result = diffbot.search_diffbot("OpenAI", "2026-05-01", "2026-06-13", token="")
-    assert result == {"data": []}
+    assert result == {"data": [], "hits": 0}
 
 
 @patch("lib.diffbot.http.request")
