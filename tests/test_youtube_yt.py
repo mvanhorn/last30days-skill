@@ -174,12 +174,16 @@ class TestYtDlpSubLangs(unittest.TestCase):
                      youtube_yt.subproc,
                      "run_with_timeout",
                      return_value=self._fake_result(returncode=1),
-                 ):
+                 ) as run_mock:
                 vtt = youtube_yt._fetch_transcript_ytdlp("abc123", temp_dir, status)
 
         self.assertIsNotNone(vtt)
         self.assertIn("english transcript", vtt)
         self.assertNotIn("ytdlp_error", status)
+        # Salvage must short-circuit the retry loop: yt-dlp must not be called a
+        # second time when a partial VTT is already on disk (locks in the
+        # no-retry guarantee against a future salvage-after-retry regression).
+        self.assertEqual(run_mock.call_count, 1)
 
     def test_vtt_matching_respects_non_default_priority(self):
         """When multiple tracks exist, the user-requested priority wins
