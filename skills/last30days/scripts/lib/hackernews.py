@@ -93,13 +93,18 @@ def search_hackernews(
     core_flat = _flatten_query_for_algolia(core)
     _log(f"Searching for '{core_flat}' (raw: '{topic}', since {from_date}, count={count})")
 
-    # Use relevance-sorted search with minimum engagement filter.
+    # Use relevance-sorted search. The HN Algolia index only allows
+    # `created_at_i` in numericFilters; `points` is NOT in its
+    # `numericAttributesForFiltering`, so a `points>N` clause makes the API
+    # return HTTP 400 ("invalid numeric attribute(points)") and zero stories.
+    # Low-engagement stories are demoted by parse-time relevance scoring
+    # (rank + engagement_boost in parse_hackernews_response) instead.
     # NOTE: restrictSearchableAttributes=title omitted intentionally — it would
     # miss Ask HN/Show HN threads where the topic appears in the body.
     params = {
         "query": core_flat,
         "tags": "story",
-        "numericFilters": f"created_at_i>{from_ts},created_at_i<{to_ts},points>2",
+        "numericFilters": f"created_at_i>{from_ts},created_at_i<{to_ts}",
         "hitsPerPage": str(count),
     }
     # Algolia defaults to AND across query tokens, so a 4-5 word theme query

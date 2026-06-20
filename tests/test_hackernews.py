@@ -266,17 +266,26 @@ def test_search_hackernews_http_error_handling(mock_request):
 @patch('lib.hackernews.http.request')
 
 
-def test_search_hackernews_engagement_filter(mock_request):
-    """Test that low-engagement stories are filtered."""
+def test_search_hackernews_no_points_numericfilter(mock_request):
+    """numericFilters must NOT include a `points` clause.
+
+    `points` is not in the HN Algolia index's `numericAttributesForFiltering`,
+    so a `points>2` clause returns HTTP 400 ("invalid numeric attribute(points)")
+    and zero stories. Engagement is reflected in parse-time relevance scoring
+    instead. This guards against the invalid filter being reintroduced.
+
+    (Previously this test asserted `points` + `%3E2` were present in the URL,
+    pinning the very bug that broke every HN query — a bug-encoding test.)
+    """
     mock_request.return_value = {"hits": [], "nbHits": 0}
-    
+
     hackernews.search_hackernews("test", "2026-01-01", "2026-01-31")
-    
-    call_args = mock_request.call_args[0]
-    url = call_args[1]
-    
-    # Should filter for points > 2 (URL-encoded)
-    assert "points" in url and "%3E2" in url
+
+    url = mock_request.call_args[0][1]
+
+    # Date filter stays; the invalid points filter must be gone.
+    assert "created_at_i" in url
+    assert "points" not in url
 
 # === Tests for parse_hackernews_response() ===
 
