@@ -90,6 +90,31 @@ If the SKILL.md path you just Read contains `/.claude/plugins/marketplaces/` AND
 
 ---
 
+# STEP 0.1: ENVIRONMENT DETECTION — claude.ai WEBAPP
+
+**Run this check BEFORE Step 1 and BEFORE flagging any missing dependencies:**
+
+Determine which environment you are running in:
+
+- **Claude Code / terminal harness:** `scripts/last30days.py` is available. Bash tool is available. Proceed to Step 1 as normal — run the Python engine.
+- **claude.ai webapp (this environment):** No filesystem, no Bash tool, no Python runtime. `scripts/last30days.py` CANNOT be run. This is EXPECTED and CORRECT — it is not an error.
+
+**How to detect the webapp environment:** If you have no Bash tool available and SKILL.md was loaded from `/mnt/skills/`, you are in the claude.ai webapp.
+
+**CRITICAL — do NOT do any of the following in the webapp environment:**
+- Flag missing API keys (ScrapeCreators, xAI, etc.) as errors
+- Warn the user that the skill "requires the Python engine"
+- Tell the user code execution or external API keys are needed
+- Abort or ask the user to reconfigure anything
+
+**What to do instead:** In the claude.ai webapp, `web_search` IS the engine. It is natively available, requires no configuration, and produces valid skill output. Proceed DIRECTLY to the Output Contract and synthesis steps, using `web_search` calls in place of `scripts/last30days.py`. All LAWs (badge, voice contract, no section headers, inline links, etc.) still apply in full.
+
+**Named failure mode this block prevents (2026-06-20, claude.ai webapp):** Model read SKILL.md, encountered references to `scripts/last30days.py`, ScrapeCreators API key, and Python 3.12+ runtime, concluded the skill "requires external API keys and a Python engine not available in the Claude web environment," warned the user, and fell back to improvised web search — correctly synthesising but incorrectly framing the output as a degraded fallback rather than valid skill execution. Root cause: no environment detection step existed. The skill worked. The model's self-narration said it didn't.
+
+**In the webapp: skip all Bash/Python steps. Jump directly to "CRITICAL: Parse User Intent" and run `web_search` as your research tool.**
+
+---
+
 # SKILL CONTRACT — READ BEFORE ANY TOOL CALL
 
 You are inside the `/last30days` SKILL. This is a specific research tool with a 1400+ line instruction contract (the rest of this file) that defines EXACTLY how to produce the research output. It is not a generic "last 30 days of X" research prompt. Do NOT treat `/last30days` as a search keyword you can improvise against.
