@@ -154,6 +154,33 @@ class TestYtDlpSubLangs(unittest.TestCase):
         self.assertIsNotNone(vtt)
         self.assertIn("Hola mundo", vtt)
 
+    def test_partial_success_returns_vtt_despite_nonzero_exit(self):
+        """A non-zero yt-dlp exit must not discard a VTT already on disk.
+
+        Regression for the 0/N-transcripts bug: with the default
+        ``--sub-lang en,es,pt``, an English video fetches ``en`` successfully,
+        then ``es``/``pt`` hit a 429 and yt-dlp exits non-zero. The ``en``
+        track is already written and must be returned, not discarded (and not
+        retried back into the same rate limit).
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            (Path(temp_dir) / "abc123.en.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nThis is the english transcript.\n",
+                encoding="utf-8",
+            )
+            status: dict = {}
+            with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+                 mock.patch.object(
+                     youtube_yt.subproc,
+                     "run_with_timeout",
+                     return_value=self._fake_result(returncode=1),
+                 ):
+                vtt = youtube_yt._fetch_transcript_ytdlp("abc123", temp_dir, status)
+
+        self.assertIsNotNone(vtt)
+        self.assertIn("english transcript", vtt)
+        self.assertNotIn("ytdlp_error", status)
+
     def test_vtt_matching_respects_non_default_priority(self):
         """When multiple tracks exist, the user-requested priority wins
         over alphabetical order (regression for the Greptile review on #486)."""

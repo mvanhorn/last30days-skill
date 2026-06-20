@@ -668,6 +668,18 @@ def _fetch_transcript_ytdlp(
             # Genuine no-captions: return quietly (caller may still try direct).
             return None
 
+        # Non-zero exit, but yt-dlp may have written a usable VTT before the
+        # failing language errored. With the default `--sub-lang en,es,pt`, an
+        # English video fetches `en` fine, then `es`/`pt` hit a 429 and yt-dlp
+        # exits non-zero — yet the `en` track is already on disk. A partial
+        # success is still a real transcript, so salvage any VTT before
+        # classifying this as an error (and, worse, retrying straight back into
+        # the same rate limit). This is the root cause of the 0/N transcript
+        # runs reported when every video had captions.
+        partial_vtt = _read_vtt(video_id, temp_dir)
+        if partial_vtt is not None:
+            return partial_vtt
+
         # Non-zero exit == a real error worth classifying & surfacing.
         stderr = (result.stderr or "").strip()
         snippet = (stderr.splitlines()[-1][:200] if stderr
