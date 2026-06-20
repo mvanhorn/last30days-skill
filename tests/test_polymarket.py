@@ -347,8 +347,31 @@ def test_shorten_question_long():
     """Test truncation of very long questions."""
     long_q = "A" * 100
     result = polymarket._shorten_question(long_q)
-    
+
     assert len(result) <= 40
+
+
+def test_shorten_question_fallback_strips_leading_article():
+    """The truncation fallback must not keep a leading article like 'an' or 'the'.
+
+    Without stripping, a question like 'an Anthropic Claude model scores...' yields
+    a lead name of just 'an', which renders as the mangled 'an 19%' footer fragment.
+    """
+    result = polymarket._shorten_question(
+        "an Anthropic Claude model scores at the top of the leaderboard this month"
+    )
+    lower = result.lower()
+    assert not lower.startswith("a ")
+    assert not lower.startswith("an ")
+    assert not lower.startswith("the ")
+
+
+def test_shorten_question_fallback_keeps_non_article_lead():
+    """Stripping only removes a leading article, not the first informative word."""
+    result = polymarket._shorten_question(
+        "Anthropic ships a major Claude model update before the end of this month"
+    )
+    assert result.lower().startswith("anthropic")
 
 # === Tests for search_polymarket() ===
 
@@ -464,10 +487,50 @@ def test_parse_polymarket_response_engagement():
     }
     
     items = polymarket.parse_polymarket_response(response, topic="AI")
-    
+
     if items:  # If not filtered
         # Check for volume or liquidity fields
         assert "volume24hr" in items[0] or "liquidity" in items[0] or isinstance(items[0], dict)
+
+
+def _claude_downtime_response():
+    """An off-topic Polymarket event that mentions only the generic word 'Claude'."""
+    return {
+        "events": [
+            create_mock_event(
+                event_id="evt-noise",
+                title="Will Claude go down 3-5 times in June?",
+                slug="claude-downtime",
+            ),
+        ]
+    }
+
+
+def test_parse_polymarket_response_filters_noise_on_full_subquery():
+    """A multi-word subquery filters off-topic 'Claude downtime' noise.
+
+    'Claude Code subagents workflow' carries 3 informative words; the downtime
+    title matches only one ('claude'), so the min-2 rule drops it.
+    """
+    items = polymarket.parse_polymarket_response(
+        _claude_downtime_response(), topic="Claude Code subagents workflow"
+    )
+    assert items == []
+
+
+def test_parse_polymarket_response_narrow_subquery_leaks_noise():
+    """The SAME off-topic market leaks through a single-word subquery.
+
+    'claude' has one informative word, so the min-match threshold drops to 1 and
+    the downtime market passes. Because the pipeline previously fed the per-subquery
+    search_query, filtering swung between these two outcomes across the fanout;
+    keying off the stable original topic makes it consistent. This pair pins that
+    threshold-by-word-count behavior the wiring fix depends on.
+    """
+    items = polymarket.parse_polymarket_response(
+        _claude_downtime_response(), topic="claude"
+    )
+    assert len(items) == 1
 
 # === Tests for engagement scoring ===
 

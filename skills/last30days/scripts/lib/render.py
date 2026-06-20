@@ -1287,6 +1287,9 @@ def _shorten_polymarket_title(title: str) -> str:
         words = t.split()
         t = " ".join(words[:6])
 
+    # Drop a leading article so the descriptor doesn't read "an Anthropic Claude..."
+    t = re.sub(r"^(?:a|an|the)\s+", "", t, flags=re.I)
+
     return t
 
 
@@ -1318,12 +1321,21 @@ def _polymarket_top_markets(items: list[schema.SourceItem], limit: int = 3) -> l
         if not descriptor:
             continue
 
-        # For binary Yes/No markets (lead_name == "Yes"), the "Yes" is implicit - omit it.
-        # For named outcomes (e.g. "Kanye" in a multi-way market), keep the outcome name.
-        if lead_name.lower() == "yes":
+        # Append the outcome name only when it adds information. It's redundant when
+        # empty, a binary Yes/No proxy, a bare article ("an"/"the"), or already the
+        # leading token of the descriptor — appending it then yields noise like
+        # "...score at: an 19%" or a doubled token.
+        label = (lead_name or "").strip()
+        descriptor_lead = descriptor.split()[0].lower() if descriptor.split() else ""
+        redundant = (
+            not label
+            or label.lower() in ("yes", "no", "a", "an", "the")
+            or label.lower() == descriptor_lead
+        )
+        if redundant:
             summaries.append(f"{descriptor} {pct}")
         else:
-            summaries.append(f"{descriptor}: {lead_name} {pct}")
+            summaries.append(f"{descriptor}: {label} {pct}")
 
     return summaries
 

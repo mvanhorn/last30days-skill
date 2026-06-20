@@ -1238,7 +1238,12 @@ def _retrieve_stream(
         return truthsocial.parse_truthsocial_response(result), {}
     if source == "polymarket":
         result = polymarket.search_polymarket(subquery.search_query, from_date, to_date, depth=depth)
-        return polymarket.parse_polymarket_response(result, topic=subquery.search_query), {}
+        # Relevance filtering keys off the stable original research topic, not the
+        # per-subquery search_query (which narrows differently on each fanout pass
+        # and would let off-topic markets through on broad subqueries while dropping
+        # everything on narrow ones).
+        relevance_topic = raw_topic or topic or subquery.search_query
+        return polymarket.parse_polymarket_response(result, topic=relevance_topic), {}
     if source == "github":
         # Resolve once at the pipeline boundary so search and enrich
         # share the result; otherwise each call would re-run the env

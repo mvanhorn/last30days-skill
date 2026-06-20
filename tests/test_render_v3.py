@@ -989,3 +989,77 @@ class TestCommentAttributionPrefix(unittest.TestCase):
     def test_deleted_author_is_comment(self):
         self.assertEqual(render._comment_attribution("reddit", "[deleted]"), "Comment")
         self.assertEqual(render._comment_attribution("reddit", None), "Comment")
+
+
+class TestShortenPolymarketTitle(unittest.TestCase):
+    def test_fallback_strips_leading_article(self):
+        # A long question that falls through to the 6-word fallback must not keep
+        # a leading article -> avoids descriptors like "an Anthropic Claude model".
+        title = "Will an Anthropic Claude model score at the top of the leaderboard?"
+        result = render._shorten_polymarket_title(title)
+        lower = result.lower()
+        self.assertFalse(lower.startswith("a "))
+        self.assertFalse(lower.startswith("an "))
+        self.assertFalse(lower.startswith("the "))
+
+    def test_fallback_keeps_non_article_lead(self):
+        title = "Anthropic releases a major Claude model update that changes everything soon"
+        result = render._shorten_polymarket_title(title)
+        self.assertTrue(result.lower().startswith("anthropic"))
+
+
+class TestPolymarketTopMarkets(unittest.TestCase):
+    @staticmethod
+    def _pm_item(question, outcome_name, price, volume=1000):
+        return schema.SourceItem(
+            item_id="pm1",
+            source="polymarket",
+            title=question,
+            body="",
+            url="https://polymarket.com/event/x",
+            engagement={"volume": volume},
+            metadata={
+                "question": question,
+                "outcome_prices": [(outcome_name, price)],
+            },
+        )
+
+    def test_article_outcome_is_suppressed(self):
+        # The real-world mangled case: descriptor "...score at" + lead name "an".
+        # The outcome label is an article -> render "<descriptor> <pct>", no ": an ".
+        item = self._pm_item(
+            "Will an Anthropic Claude model score at the top of the leaderboard?",
+            "an",
+            0.19,
+        )
+        lines = render._polymarket_top_markets([item])
+        self.assertEqual(len(lines), 1)
+        line = lines[0]
+        self.assertNotIn(": an ", line)
+        self.assertIn("19%", line)
+
+    def test_yes_outcome_is_suppressed(self):
+        item = self._pm_item("Will the bill pass this session?", "Yes", 0.65)
+        line = render._polymarket_top_markets([item])[0]
+        self.assertNotIn(": Yes ", line)
+        self.assertIn("65%", line)
+
+    def test_no_outcome_is_suppressed(self):
+        item = self._pm_item("Will the bill pass this session?", "No", 0.30)
+        line = render._polymarket_top_markets([item])[0]
+        self.assertNotIn(": No ", line)
+        self.assertIn("30%", line)
+
+    def test_redundant_lead_token_is_suppressed(self):
+        # Outcome name duplicates the descriptor's first token -> no doubling.
+        item = self._pm_item("Arizona wins the tournament", "Arizona", 0.42)
+        line = render._polymarket_top_markets([item])[0]
+        self.assertNotIn(": Arizona ", line)
+        # Descriptor itself still carries the name once.
+        self.assertIn("Arizona", line)
+
+    def test_named_outcome_is_kept(self):
+        # A genuinely informative multi-way outcome name is preserved.
+        item = self._pm_item("Who wins the primary?", "Kanye", 0.12)
+        line = render._polymarket_top_markets([item])[0]
+        self.assertIn(": Kanye ", line)
