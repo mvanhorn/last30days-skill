@@ -282,6 +282,10 @@ class PerplexityProviderTests(unittest.TestCase):
             )
 
         self.assertEqual(perplexity.PERPLEXITY_ASYNC_URL, post.call_args.args[0])
+        self.assertEqual(
+            perplexity.PERPLEXITY_ASYNC_URL,
+            perplexity._provider({"PERPLEXITY_API_KEY": "pplx-test"}, deep=True)[2],
+        )
         create_payload = post.call_args.args[1]
         self.assertEqual("sonar-deep-research", create_payload["request"]["model"])
         self.assertTrue(create_payload["idempotency_key"].startswith("last30days:"))
@@ -374,6 +378,38 @@ class PerplexityProviderTests(unittest.TestCase):
         self.assertEqual("POLL_ERROR", artifact["asyncLocalStatus"])
         self.assertEqual(1, artifact["asyncPollCount"])
         self.assertEqual(429, artifact["asyncPollStatusCode"])
+
+    def test_direct_deep_research_malformed_completed_preserves_async_id(self):
+        with patch("lib.perplexity.http.post", return_value={
+            "id": "async-1",
+            "status": "CREATED",
+            "created_at": 123,
+        }), \
+             patch("lib.perplexity.http.get", return_value={
+                 "id": "async-1",
+                 "status": "COMPLETED",
+                 "created_at": 123,
+                 "completed_at": 130,
+                 "response": None,
+             }):
+            items, artifact = perplexity.search(
+                "test topic",
+                ("2026-05-01", "2026-06-01"),
+                {"PERPLEXITY_API_KEY": "pplx-test"},
+                deep=True,
+            )
+
+        self.assertEqual([], items)
+        self.assertEqual("failed", artifact["error"])
+        self.assertEqual("async-1", artifact["asyncRequestId"])
+        self.assertEqual("COMPLETED", artifact["asyncStatus"])
+        self.assertEqual("FAILED_REMOTE", artifact["asyncLocalStatus"])
+        self.assertEqual(1, artifact["asyncPollCount"])
+        self.assertEqual(130, artifact["asyncCompletedAt"])
+        self.assertEqual(
+            "Async Deep Research completed without response",
+            artifact["asyncErrorMessage"],
+        )
 
     def test_missing_keys_skip_without_http(self):
         with patch("lib.perplexity.http.post") as post:

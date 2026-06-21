@@ -86,7 +86,8 @@ def _provider(config: dict, deep: bool) -> tuple[str, str, str, str] | None:
     """Return (provider, api_key, url, model), preferring direct Perplexity."""
     if config.get("PERPLEXITY_API_KEY"):
         model = _direct_model(config, deep)
-        return "perplexity", config["PERPLEXITY_API_KEY"], PERPLEXITY_URL, model
+        url = PERPLEXITY_ASYNC_URL if deep else PERPLEXITY_URL
+        return "perplexity", config["PERPLEXITY_API_KEY"], url, model
     if config.get("OPENROUTER_API_KEY"):
         model = OPENROUTER_MODEL_DEEP_RESEARCH if deep else OPENROUTER_MODEL_SONAR_PRO
         return "openrouter", config["OPENROUTER_API_KEY"], OPENROUTER_URL, model
@@ -99,7 +100,7 @@ def _config_text(config: dict, key: str) -> str:
 
 def _csv_values(raw: str, limit: int | None = None) -> list[str]:
     values = [part.strip() for part in raw.split(",") if part.strip()]
-    return values[:limit] if limit else values
+    return values[:limit] if limit is not None else values
 
 
 def _direct_model(config: dict, deep: bool) -> str:
@@ -377,7 +378,12 @@ def _poll_async_sonar(json_data: dict, headers: dict, config: dict) -> tuple[dic
         if status == "COMPLETED":
             response = data.get("response")
             if not isinstance(response, dict):
-                raise http.HTTPError("Async Deep Research completed without response")
+                metadata = _async_metadata(
+                    data, request_id, timeout_seconds, idempotency_key, poll_count,
+                    "FAILED_REMOTE",
+                )
+                metadata["asyncErrorMessage"] = "Async Deep Research completed without response"
+                raise AsyncDeepResearchFailed(metadata)
             return response, _async_metadata(
                 data, request_id, timeout_seconds, idempotency_key, poll_count,
                 "COMPLETED_REMOTE",
