@@ -178,8 +178,12 @@ if [[ -n "$HAS_SCRAPECREATORS" ]]; then
   # whitespace) so the matching mirrors pipeline.py's .strip().lower() parsing.
   SC_ADD=3
   EXCLUDED="${ENV_EXCLUDE_SOURCES:-${EXCLUDE_SOURCES:-}}"
-  EXCLUDED_NORM=$(printf '%s' "$EXCLUDED" | tr '[:upper:]' '[:lower:]' \
-    | sed -E 's/[[:space:]]*,[[:space:]]*/,/g; s/^[[:space:]]+//; s/[[:space:]]+$//')
+  if [[ -n "$EXCLUDED" ]]; then
+    EXCLUDED_NORM=$(printf '%s' "$EXCLUDED" | tr '[:upper:]' '[:lower:]' \
+      | sed -E 's/[[:space:]]*,[[:space:]]*/,/g; s/^[[:space:]]+//; s/[[:space:]]+$//')
+  else
+    EXCLUDED_NORM=""
+  fi
   if [[ ",$EXCLUDED_NORM," == *",tiktok,"* ]]; then
     SC_ADD=$((SC_ADD - 1))
   fi

@@ -74,6 +74,18 @@ class TestRunAutoSetup:
 
     @patch("lib.cookie_extract.extract_cookies_with_source")
     @patch("shutil.which")
+    def test_partial_cookie_set_not_reported_as_found(self, mock_which, mock_extract):
+        """A source is found only when every required cookie is present."""
+        mock_extract.return_value = ({"auth_token": "abc"}, "chrome")
+        mock_which.return_value = None
+
+        config = {}
+        results = setup_wizard.run_auto_setup(config)
+
+        assert "x" not in results["cookies_found"]
+
+    @patch("lib.cookie_extract.extract_cookies_with_source")
+    @patch("shutil.which")
     def test_cookie_extraction_exception(self, mock_which, mock_extract):
         """Cookie extraction raising an exception is handled gracefully."""
         mock_extract.side_effect = Exception("DB locked")
@@ -478,7 +490,8 @@ class TestGetSetupStatusText:
             "env_written": True,
         }
         text = setup_wizard.get_setup_status_text(results)
-        assert "X cookies found in chrome" in text
+        assert "X browser cookies found in chrome" in text
+        assert "last30days.py --diagnose" in text
         assert "yt-dlp already installed" in text
         assert "Configuration saved" in text
 

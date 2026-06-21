@@ -221,7 +221,7 @@ End of OUTPUT CONTRACT. The laws above are the contract; everything below is imp
 
 # HOW TO INVOKE THIS SKILL (READ FIRST, FOLLOW EVERY TIME)
 
-**STEP 0 - LOAD WEBSEARCH FIRST.** Your literal first tool call on every `/last30days` invocation MUST be:
+**STEP 0 - LOAD WEBSEARCH FIRST WHEN THE HARNESS EXPOSES IT.** On Claude Code, your literal first tool call on every `/last30days` invocation MUST be:
 
 ```
 ToolSearch select:WebSearch
@@ -229,7 +229,9 @@ ToolSearch select:WebSearch
 
 WebSearch is a **deferred tool** in Claude Code v2.1.114. The frontmatter of this file authorizes it (`allowed-tools: ... WebSearch`) but the runtime lists it as "schemas are NOT loaded." Calling WebSearch without `ToolSearch select:WebSearch` first will fail or do nothing. That friction is the documented cause of the second-most-common failure mode of this skill: the model sees "WebSearch is there but deferred," takes the low-friction path, skips Step 0.5 and 0.55, and runs the engine bare with only keyword search. The output looks fine but misses founder X timelines, GitHub repo activity, and subreddit-specific threads.
 
-Load WebSearch first. No exceptions. Then proceed to the branching rule below.
+If the current harness is Codex and `ToolSearch select:WebSearch` returns no tool, do **not** stop and do **not** pretend WebSearch is available. Treat this as the no-WebSearch platform branch for Step 0.55 / Step 0.75, add `--auto-resolve` to the engine command, and use the platform's ordinary web/search tool only for the post-engine supplement step when available. This is a degraded but valid path; report missing source coverage honestly in the synthesis.
+
+Load WebSearch first when available. Then proceed to the branching rule below.
 
 **STEP 1 - RUN THE ENGINE. You MUST run `scripts/last30days.py` via Bash. Do not produce output from WebSearch alone.**
 

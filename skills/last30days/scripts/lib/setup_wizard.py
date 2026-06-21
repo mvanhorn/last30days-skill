@@ -72,7 +72,17 @@ def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
                 logger.debug("Cookie extraction failed for %s via %s: %s", source_name, browser, exc)
                 continue
             if result is not None and result[0]:
-                cookies_found[source_name] = result[1]
+                cookies, browser_name = result
+                if not all(name in cookies and cookies[name] for name in cookie_names):
+                    logger.debug(
+                        "Incomplete cookies for %s via %s: found %s, required %s",
+                        source_name,
+                        browser_name,
+                        sorted(cookies.keys()),
+                        sorted(cookie_names),
+                    )
+                    continue
+                cookies_found[source_name] = browser_name
                 break  # Found cookies for this service, stop trying browsers
 
     # Check yt-dlp availability and install via Homebrew if missing
@@ -346,7 +356,10 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
     cookies_found = results.get("cookies_found", {})
     if cookies_found:
         for source, browser in cookies_found.items():
-            lines.append(f"  - {source.upper()} cookies found in {browser}")
+            lines.append(
+                f"  - {source.upper()} browser cookies found in {browser} "
+                "(best-effort; run `last30days.py --diagnose` to verify the source is active)"
+            )
     else:
         lines.append("  - No browser cookies found for X/Twitter")
 
