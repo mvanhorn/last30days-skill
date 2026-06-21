@@ -53,7 +53,7 @@ jobs:
       # examples; use obvious dummy values and env-based auth patterns instead.
       - name: Run TruffleHog OSS secret scan
         if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: trufflesecurity/trufflehog@17456f8c7d042d8c82c9a8ca9e937231f9f42e26 # v3.95.2
+        uses: trufflesecurity/trufflehog@d411fff7b8879a62509f3fa98c07f247ac089a51 # v3.95.5
         continue-on-error: true
         with:
           path: ./
