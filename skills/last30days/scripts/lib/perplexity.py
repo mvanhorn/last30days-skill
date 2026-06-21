@@ -257,16 +257,19 @@ def _build_search_payload(query: str, date_range: tuple[str, str], config: dict)
     if languages:
         payload["search_language_filter"] = languages
 
-    recency = _config_text(config, "LAST30DAYS_PERPLEXITY_RECENCY_FILTER").lower()
-    if recency in SEARCH_RECENCY_FILTERS:
-        payload["search_recency_filter"] = recency
-
     after = _mmddyyyy(from_date)
     before = _mmddyyyy(to_date)
     if after:
         payload["search_after_date_filter"] = after
     if before:
         payload["search_before_date_filter"] = before
+
+    # Perplexity Search API rejects search_recency_filter when explicit
+    # published-date filters are present. last30days already passes an exact
+    # date range, so prefer that and keep recency only for undated callers.
+    recency = _config_text(config, "LAST30DAYS_PERPLEXITY_RECENCY_FILTER").lower()
+    if recency in SEARCH_RECENCY_FILTERS and not (after or before):
+        payload["search_recency_filter"] = recency
 
     return payload
 

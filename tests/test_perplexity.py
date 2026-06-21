@@ -127,6 +127,7 @@ class PerplexityProviderTests(unittest.TestCase):
             "LAST30DAYS_PERPLEXITY_COUNTRY": "us",
             "LAST30DAYS_PERPLEXITY_DOMAIN_FILTER": "example.com,example.org",
             "LAST30DAYS_PERPLEXITY_LANGUAGE_FILTER": "en",
+            "LAST30DAYS_PERPLEXITY_RECENCY_FILTER": "year",
         }
         with patch("lib.perplexity.http.post", return_value=response) as post:
             items, artifact = perplexity.search(
@@ -144,9 +145,21 @@ class PerplexityProviderTests(unittest.TestCase):
         self.assertEqual(["example.com", "example.org"], payload["search_domain_filter"])
         self.assertEqual("05/01/2026", payload["search_after_date_filter"])
         self.assertEqual("06/01/2026", payload["search_before_date_filter"])
+        self.assertNotIn("search_recency_filter", payload)
         self.assertEqual("search", artifact["mode"])
         self.assertEqual("Ranked result", items[0]["title"])
         self.assertEqual("2026-05-20", items[0]["metadata"]["last_updated"])
+
+    def test_search_api_keeps_recency_filter_when_no_exact_dates_are_available(self):
+        payload = perplexity._build_search_payload(
+            "test topic",
+            ("not-a-date", "also-not-a-date"),
+            {"LAST30DAYS_PERPLEXITY_RECENCY_FILTER": "week"},
+        )
+
+        self.assertEqual("week", payload["search_recency_filter"])
+        self.assertNotIn("search_after_date_filter", payload)
+        self.assertNotIn("search_before_date_filter", payload)
 
     def test_both_mode_keeps_synthesis_and_dedupes_raw_rows(self):
         search_response = {
