@@ -1473,7 +1473,7 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
     ("hackernews",  "🟡", "HN",           "story",    [("points", "points"), ("comments", "comments")]),
     ("bluesky",     "🦋", "Bluesky",      "post",     [("likes", "likes"), ("reposts", "reposts")]),
     ("truthsocial", "🇺🇸", "Truth Social", "post",     [("likes", "likes"), ("reposts", "reposts")]),
-    ("github",      "🐙", "GitHub",       "item",     [("reactions", "reactions"), ("comments", "comments")]),
+    ("github",      "🐙", "GitHub",       "item",     [("stars", "stars"), ("merged_prs", "merged"), ("reactions", "reactions"), ("comments", "comments")]),
     ("digg",        "⛏️", "Digg",         "cluster",  [("postCount", "posts"), ("uniqueAuthors", "authors")]),
     # Jobs must appear so a scoped --hiring-signals run (jobs-only) still emits
     # the LAW 5 footer; without it the footer was dropped entirely.
@@ -1740,7 +1740,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "bluesky":      [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "truthsocial":  [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "polymarket":   [],
-    "github":       [("reactions", "react"), ("comments", "cmt")],
+    "github":       [("stars", "stars"), ("merged_prs", "merged"), ("reactions", "react"), ("comments", "cmt")],
     "perplexity":   [("citations", "cite")],
     "digg":         [("postCount", "posts"), ("uniqueAuthors", "auth")],
 }

@@ -628,7 +628,7 @@ def search_github_person(
         "snippet": velocity_text,
         "relevance": 0.95,
         "why_relevant": f"GitHub profile: @{username} - {merged_count} PRs merged across {num_repos} repos",
-        "engagement": {"reactions": merged_count, "comments": total_prs},
+        "engagement": {"merged_prs": merged_count, "comments": total_prs},
         "metadata": {
             "labels": ["person-profile", "velocity"],
             "state": "open",
@@ -689,7 +689,7 @@ def search_github_person(
                 "snippet": "\n".join(snippet_parts),
                 "relevance": min(0.9, 0.6 + math.log1p(stars) / 30 + min(0.15, pr_count / 20)),
                 "why_relevant": f"GitHub contribution: {pr_count} PRs merged to {repo} ({stars_str} stars)",
-                "engagement": {"reactions": stars, "comments": pr_count},
+                "engagement": {"stars": stars, "comments": pr_count},
                 "metadata": {
                     "labels": ["person-profile", "external-repo"],
                     "state": "open",
@@ -747,7 +747,7 @@ def search_github_person(
                 "snippet": "\n".join(snippet_parts),
                 "relevance": min(0.95, 0.7 + math.log1p(stars) / 25),
                 "why_relevant": f"GitHub own project: {repo_name} ({stars_str} stars)",
-                "engagement": {"reactions": stars, "comments": open_issues},
+                "engagement": {"stars": stars, "comments": open_issues},
                 "metadata": {
                     "labels": ["person-profile", "own-repo"],
                     "state": "open",
@@ -867,7 +867,7 @@ def search_github_project(
                 "snippet": "\n".join(snippet_parts),
                 "relevance": min(0.95, 0.7 + math.log1p(stars) / 25),
                 "why_relevant": f"GitHub project: {repo} ({stars_str} stars, live)",
-                "engagement": {"reactions": stars, "comments": open_issues},
+                "engagement": {"stars": stars, "comments": open_issues},
                 "metadata": {
                     "labels": ["project-mode"],
                     "state": "open",
