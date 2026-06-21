@@ -194,6 +194,37 @@ def _error_artifact(exc: Exception) -> dict:
     return artifact
 
 
+def _empty_async_sonar_artifact(
+    provider: str,
+    model: str,
+    deep: bool,
+    query: str,
+    data: dict,
+    async_artifact: dict,
+    error: str,
+    message: str,
+) -> dict:
+    if not async_artifact:
+        return {}
+    artifact = {
+        "label": "perplexity",
+        "provider": provider,
+        "mode": PERPLEXITY_MODE_SONAR,
+        "endpoint": "async-sonar",
+        "model": model,
+        "deep": deep,
+        "query": query,
+        "error": error,
+        "synthesisLength": 0,
+        "citationCount": 0,
+        "usage": _usage(data),
+        **async_artifact,
+    }
+    if not artifact.get("asyncErrorMessage"):
+        artifact["asyncErrorMessage"] = message
+    return artifact
+
+
 def _build_sonar_payload(prompt: str, model: str, date_range: tuple[str, str], config: dict) -> dict:
     payload = {
         "model": model,
@@ -510,14 +541,27 @@ def _sonar_search(
     choices = data.get("choices", [])
     if not choices:
         _log("No choices in response")
-        return [], {}
+        return [], _empty_async_sonar_artifact(
+            provider, model, deep, query, data, async_artifact,
+            "empty_choices",
+            "Async Deep Research completed without choices",
+        )
 
-    synthesis = choices[0].get("message", {}).get("content", "")
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    message = choice.get("message")
+    message = message if isinstance(message, dict) else {}
+    synthesis = message.get("content") or ""
+    if not isinstance(synthesis, str):
+        synthesis = ""
     if not synthesis:
         _log("Empty synthesis content")
-        return [], {}
+        return [], _empty_async_sonar_artifact(
+            provider, model, deep, query, data, async_artifact,
+            "empty_synthesis",
+            "Async Deep Research completed with empty synthesis",
+        )
 
-    citations = _extract_citations(data, choices[0])
+    citations = _extract_citations(data, choice)
 
     _log(f"Got synthesis ({len(synthesis)} chars) with {len(citations)} citations")
 

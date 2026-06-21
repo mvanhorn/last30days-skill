@@ -411,6 +411,116 @@ class PerplexityProviderTests(unittest.TestCase):
             artifact["asyncErrorMessage"],
         )
 
+    def test_direct_deep_research_empty_choices_preserves_async_id(self):
+        with patch("lib.perplexity.http.post", return_value={
+            "id": "async-1",
+            "status": "CREATED",
+            "created_at": 123,
+        }) as post, \
+             patch("lib.perplexity.http.get", return_value={
+                 "id": "async-1",
+                 "status": "COMPLETED",
+                 "created_at": 123,
+                 "completed_at": 130,
+                 "response": {
+                     "choices": [],
+                     "usage": {"total_tokens": 321},
+                 },
+             }):
+            items, artifact = perplexity.search(
+                "test topic",
+                ("2026-05-01", "2026-06-01"),
+                {"PERPLEXITY_API_KEY": "pplx-test"},
+                deep=True,
+            )
+
+        self.assertEqual([], items)
+        self.assertEqual("empty_choices", artifact["error"])
+        self.assertEqual("async-1", artifact["asyncRequestId"])
+        self.assertEqual("COMPLETED", artifact["asyncStatus"])
+        self.assertEqual("COMPLETED_REMOTE", artifact["asyncLocalStatus"])
+        self.assertEqual(1, artifact["asyncPollCount"])
+        self.assertEqual(130, artifact["asyncCompletedAt"])
+        self.assertEqual(
+            post.call_args.args[1]["idempotency_key"],
+            artifact["asyncIdempotencyKey"],
+        )
+        self.assertEqual(321, artifact["usage"]["total_tokens"])
+        self.assertEqual(
+            "Async Deep Research completed without choices",
+            artifact["asyncErrorMessage"],
+        )
+
+    def test_direct_deep_research_empty_synthesis_preserves_async_id(self):
+        with patch("lib.perplexity.http.post", return_value={
+            "id": "async-1",
+            "status": "CREATED",
+            "created_at": 123,
+        }) as post, \
+             patch("lib.perplexity.http.get", return_value={
+                 "id": "async-1",
+                 "status": "COMPLETED",
+                 "created_at": 123,
+                 "completed_at": 130,
+                 "response": {
+                     "choices": [{"message": {"content": ""}}],
+                 },
+             }):
+            items, artifact = perplexity.search(
+                "test topic",
+                ("2026-05-01", "2026-06-01"),
+                {"PERPLEXITY_API_KEY": "pplx-test"},
+                deep=True,
+            )
+
+        self.assertEqual([], items)
+        self.assertEqual("empty_synthesis", artifact["error"])
+        self.assertEqual("async-1", artifact["asyncRequestId"])
+        self.assertEqual("COMPLETED", artifact["asyncStatus"])
+        self.assertEqual("COMPLETED_REMOTE", artifact["asyncLocalStatus"])
+        self.assertEqual(1, artifact["asyncPollCount"])
+        self.assertEqual(130, artifact["asyncCompletedAt"])
+        self.assertEqual(
+            post.call_args.args[1]["idempotency_key"],
+            artifact["asyncIdempotencyKey"],
+        )
+        self.assertEqual(
+            "Async Deep Research completed with empty synthesis",
+            artifact["asyncErrorMessage"],
+        )
+
+    def test_direct_deep_research_malformed_choice_preserves_async_id(self):
+        with patch("lib.perplexity.http.post", return_value={
+            "id": "async-1",
+            "status": "CREATED",
+            "created_at": 123,
+        }) as post, \
+             patch("lib.perplexity.http.get", return_value={
+                 "id": "async-1",
+                 "status": "COMPLETED",
+                 "created_at": 123,
+                 "completed_at": 130,
+                 "response": {
+                     "choices": [None],
+                 },
+             }):
+            items, artifact = perplexity.search(
+                "test topic",
+                ("2026-05-01", "2026-06-01"),
+                {"PERPLEXITY_API_KEY": "pplx-test"},
+                deep=True,
+            )
+
+        self.assertEqual([], items)
+        self.assertEqual("empty_synthesis", artifact["error"])
+        self.assertEqual("async-1", artifact["asyncRequestId"])
+        self.assertEqual("COMPLETED", artifact["asyncStatus"])
+        self.assertEqual("COMPLETED_REMOTE", artifact["asyncLocalStatus"])
+        self.assertEqual(
+            post.call_args.args[1]["idempotency_key"],
+            artifact["asyncIdempotencyKey"],
+        )
+
     def test_missing_keys_skip_without_http(self):
         with patch("lib.perplexity.http.post") as post:
             items, artifact = perplexity.search(
