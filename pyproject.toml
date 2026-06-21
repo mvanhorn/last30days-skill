@@ -8,7 +8,7 @@ dependencies = []
 
 [dependency-groups]
 dev = [
-  "pytest>=9.0.3,<10",
+  "pytest>=9.1.0,<10",
   "pytest-cov>=7,<8",
 ]
 
