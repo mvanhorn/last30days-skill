@@ -43,6 +43,7 @@ def normalize_source_items(
         "tiktok": lambda s, i, idx, fd, td: _normalize_shortform_video(s, i, idx, fd, td, "TK", "TikTok post"),
         "instagram": lambda s, i, idx, fd, td: _normalize_shortform_video(s, i, idx, fd, td, "IG", "Instagram reel"),
         "hackernews": _normalize_hackernews,
+        "stocktwits": _normalize_stocktwits,
         "bluesky": lambda s, i, idx, fd, td: _normalize_microblog(s, i, idx, fd, td, "BS", "Bluesky post"),
         "truthsocial": lambda s, i, idx, fd, td: _normalize_microblog(s, i, idx, fd, td, "TS", "Truth Social post"),
         "threads": lambda s, i, idx, fd, td: _normalize_microblog(s, i, idx, fd, td, "TH", "Threads post"),
@@ -180,6 +181,32 @@ def _source_item(
         why_relevant=why_relevant.strip(),
         snippet=snippet.strip(),
         metadata=metadata or {},
+    )
+
+
+def _normalize_stocktwits(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    meta = item.get("metadata") or {}
+    return _source_item(
+        item_id=str(item.get("id") or f"ST{index + 1}"),
+        source=source,
+        title=str(item.get("title") or ""),
+        body=str(item.get("snippet") or ""),
+        url=str(item.get("url") or ""),
+        author=str(item.get("author") or "") or None,
+        container=str(meta.get("symbol") or "") or None,
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.7),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=str(item.get("snippet") or "")[:400],
+        metadata=meta,   # carries sentiment + symbol-level bull/bear aggregate
     )
 
 
