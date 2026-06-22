@@ -24,10 +24,15 @@ def ensure_supported_python(version_info: tuple[int, int, int] | object | None =
     major, minor, micro = tuple(version_info[:3])
     if (major, minor) >= MIN_PYTHON:
         return
+    req = f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}"
     sys.stderr.write(
-        "last30days v3 requires Python 3.12+.\n"
+        f"last30days v3 requires Python {req}+.\n"
         f"Detected Python {major}.{minor}.{micro}.\n"
-        "Install and use python3.12 or python3.13, then rerun this command.\n"
+        f"Install with:\n"
+        f"  Mac:     brew install python@{req}\n"
+        f"  Windows: winget install Python.Python.{req}\n"
+        f"  Linux:   sudo apt install python{req}  (or pyenv install {req})\n"
+        f"Then rerun: python{req} <path-to-script> setup\n"
     )
     raise SystemExit(1)
 
