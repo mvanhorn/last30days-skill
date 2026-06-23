@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Consent-driven first-run onboarding.** Step 0 now drives an in-chat consent flow instead of a silent `setup` run: the model asks before reading browser cookies (decline runs with `FROM_BROWSER=off` — still installs yt-dlp + Digg), surfaces the macOS Full Disk Access fix when a cookie read is permission-denied, and offers the ScrapeCreators GitHub signup on every first run. A successful `setup --github` now **persists `SCRAPECREATORS_API_KEY` automatically** (`setup_wizard.write_api_key`, 0o600) and masks the key in stdout so the secret never lands in the host model's captured output. Follows the first-run gate fix (#659).
+
+### Fixed
+- **First-run setup no longer runs silently.** The prior Step 0 told the model to run `setup` and "follow the wizard's prompts end-to-end", but the wizard has no prompts — so onboarding extracted cookies, installed tools, and wrote `SETUP_COMPLETE` with zero interaction and never offered the ScrapeCreators signup. Reproduced 2026-06-22 (Fredy Montero, fresh macOS).
+
 ## [3.8.0] - 2026-06-21
 
 ### Added
