@@ -388,7 +388,7 @@ The engine reads `LAST30DAYS_MEMORY_DIR` from either the process env or `~/.conf
 
 **Follow these steps IN ORDER. Do NOT skip ahead to research. The sequence is: (1) welcome text → (2) setup modal → (3) run setup if chosen → (4) ScrapeCreators offer modal → (5) source opt-in modal → (6) first-topic picker. Start at step 1.**
 
-**Step 1: Display this welcome text ONCE as a normal message (not blockquoted). Then IMMEDIATELY call AskUserQuestion - do not repeat the welcome text inside the modal.**
+**Step 1 - Welcome.** Display this welcome text ONCE as a normal message (not blockquoted).
 
 Welcome to /last30days!
 
@@ -403,13 +403,17 @@ Auto setup gives you the core sources free in about 30 seconds:
 
 Want TikTok and Instagram too? ScrapeCreators adds those (10,000 free calls, scrapecreators.com). No kickbacks, no affiliation.
 
-**Then call AskUserQuestion with ONLY this question and these options:**
+**Step 2 - Setup choice.** Then IMMEDIATELY call AskUserQuestion with ONLY this question and these options (do not repeat the welcome text inside the modal):
 
 Question: "How would you like to set up?"
 Options:
 - "Auto setup (~30 seconds) - scans browser cookies for X + installs yt-dlp (YouTube) and the Digg CLI"
 - "Manual setup - show me what to configure"
 - "Skip for now - Reddit (with comments), HN, Polymarket, GitHub (if `gh` installed), Web"
+
+**Step 3 - Run setup based on the choice.**
+
+**If the user picks Skip for now:** write `SETUP_COMPLETE=true` to `~/.config/last30days/.env` (append-only; run `mkdir -p ~/.config/last30days && touch ~/.config/last30days/.env` first if the file does not exist) so the wizard does NOT re-fire on every subsequent run, then skip straight to Step 6 (the topic picker). Do not run any `setup` command - the always-on sources (Reddit, HN, Polymarket, GitHub, Web) need no setup.
 
 **If the user picks Auto setup:**
 
@@ -459,9 +463,9 @@ Options:
 
 If the user picks an example, run research with it. If "Type my own", ask what they want. **If the user already supplied a topic with the command (e.g. `/last30days Mercer Island`), SKIP this picker and use their topic directly.**
 
-**END OF FIRST-RUN WIZARD.** Everything in the Modal Flow ONLY runs on first run. If `SETUP_COMPLETE=true` exists, skip ALL of it - no welcome, no modals, no topic picker - and go straight to Step 1.
+**END OF FIRST-RUN WIZARD.** Everything in the Modal Flow ONLY runs on first run. If `SETUP_COMPLETE=true` exists, skip ALL of it - no welcome, no modals, no topic picker - and go straight to research (Parse User Intent).
 
-**If the user picked Manual setup** at Step 1, follow the **Manual Setup Guide** below instead of the Auto branch.
+**If the user picked Manual setup** at Step 2, follow the **Manual Setup Guide** below instead of the Auto branch (the guide writes `SETUP_COMPLETE=true` itself), then continue to Step 6.
 
 ---
 
@@ -471,8 +475,8 @@ For hosts without interactive modal prompts (OpenClaw, Codex, Cursor, Gemini CLI
 
 **1. Welcome.** One short branded line, e.g.: `Welcome to /last30days - let me get you set up (about 30 seconds).`
 
-**2. Cookie consent (ask BEFORE reading anything).** Example: `I can read your browser cookies (Firefox/Safari) to unlock X/Twitter and other logged-in sources. Want me to? (yes / no)` **Wait for the answer.**
-   - On **yes** → run `python3 skills/last30days/scripts/last30days.py setup`. Extracts cookies (Firefox/Safari, never Chrome) and best-effort installs yt-dlp (YouTube) and the free, keyless Digg CLI (`digg-pp-cli` via `@mvanhorn/printing-press-library install digg --cli-only`; activates only when on the agent subprocess PATH, typically `$HOME/.local/bin`; reports honestly if off-PATH; recommend-only if `npx` is unavailable).
+**2. Cookie consent (ask BEFORE reading anything).** First check if `BROWSER_CONSENT=true` already exists in `~/.config/last30days/.env` (e.g. granted in a prior Claude Code session); if so, skip this prompt and run `setup` directly. Otherwise ask. Example: `I can read your browser cookies (Firefox/Safari) to unlock X/Twitter and other logged-in sources. Want me to? (yes / no)` **Wait for the answer.**
+   - On **yes** → run `python3 skills/last30days/scripts/last30days.py setup` (and append `BROWSER_CONSENT=true` to `.env` after it completes). Extracts cookies (Firefox/Safari, never Chrome) and best-effort installs yt-dlp (YouTube) and the free, keyless Digg CLI (`digg-pp-cli` via `@mvanhorn/printing-press-library install digg --cli-only`; activates only when on the agent subprocess PATH, typically `$HOME/.local/bin`; reports honestly if off-PATH; recommend-only if `npx` is unavailable).
    - On **no** → run `FROM_BROWSER=off python3 skills/last30days/scripts/last30days.py setup`. Skips all cookie reads; still installs yt-dlp and Digg, still writes `SETUP_COMPLETE`.
 
 **3. Full Disk Access remediation (macOS only).** After `setup`, inspect stderr. If it contains `Permission denied reading Cookies.binarycookies` on macOS, surface: `macOS blocked the cookie read. To enable X/Twitter: System Settings > Privacy & Security > Full Disk Access > enable your terminal (or the Claude app), then I can retry.` Offer ONE retry. If skipped, continue.

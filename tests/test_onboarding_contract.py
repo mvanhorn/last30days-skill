@@ -100,7 +100,16 @@ class TestOnboardingContract(unittest.TestCase):
     def test_full_disk_access_remediation_present(self):
         self.assertIn("Permission denied reading Cookies.binarycookies", self.modal)
         self.assertIn("Full Disk Access", self.modal)
+        self.assertIn("Permission denied reading Cookies.binarycookies", self.prose)
         self.assertIn("Full Disk Access", self.prose)
+
+    def test_skip_path_writes_setup_complete(self):
+        """The 'Skip for now' setup choice must write SETUP_COMPLETE or the wizard loops."""
+        skip_idx = self.modal.find("If the user picks Skip for now")
+        self.assertGreater(skip_idx, -1, "no Skip-for-now handling in modal flow")
+        # The skip branch must persist the completion flag in its own paragraph.
+        skip_para = self.modal[skip_idx:skip_idx + 400]
+        self.assertIn("SETUP_COMPLETE=true", skip_para)
 
     # --- ScrapeCreators signup + persisted edge case ---
 
