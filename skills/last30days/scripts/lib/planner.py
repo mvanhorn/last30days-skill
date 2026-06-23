@@ -354,7 +354,23 @@ def _trim_subqueries_for_depth(
     trimmed = []
     for subquery in subqueries:
         if depth in {"quick", "default"}:
-            preferred_sources = ranked_sources[:limit]
+            # Honor the plan's explicit per-subquery sources (ranked by
+            # priority) so an external plan asking for tiktok/instagram/reddit
+            # is not silently trimmed away in favor of priority defaults like
+            # jobs/youtube. Only fall back to the priority top-N when the plan
+            # lists no usable source for this subquery.
+            # Choose from the plan's OWN sources (priority-ranked, then any
+            # plan sources absent from the priority table like instagram), then
+            # apply the depth limit. This keeps quick fast (still capped) while
+            # honoring an external plan that asked for tiktok/instagram instead
+            # of silently substituting priority defaults like jobs/youtube.
+            preferred_sources = [s for s in ranked_sources if s in subquery.sources]
+            for source in subquery.sources:
+                if source in available_sources and source not in preferred_sources:
+                    preferred_sources.append(source)
+            preferred_sources = preferred_sources[:limit]
+            if not preferred_sources:
+                preferred_sources = ranked_sources[:limit]
             if requested_sources:
                 requested = [
                     source
