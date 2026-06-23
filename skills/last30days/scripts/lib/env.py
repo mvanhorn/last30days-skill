@@ -121,6 +121,83 @@ def load_env_file(path: Path) -> dict[str, str]:
     return env
 
 
+def _load_op_service_account_token() -> str | None:
+    """Best-effort load of the 1Password service token for non-interactive runs."""
+    token = os.environ.get("OP_SERVICE_ACCOUNT_TOKEN")
+    if token:
+        return token
+
+    zshrc = Path.home() / ".zshrc"
+    if not zshrc.exists():
+        return None
+
+    try:
+        for line in zshrc.read_text(errors="ignore").splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("export OP_SERVICE_ACCOUNT_TOKEN="):
+                continue
+            _, _, value = stripped.partition("=")
+            value = value.strip()
+            if value and value[0] in ('"', "'") and value[-1] == value[0]:
+                value = value[1:-1]
+            return value or None
+    except OSError:
+        return None
+
+    return None
+
+
+def resolve_secret_reference(value: str | None) -> str | None:
+    """Resolve 1Password ``op://...`` references without exposing secret values.
+
+    The installed wrapper normally resolves these with ``op run``. Agents can
+    still invoke the Python engine directly from SKILL.md, so the config loader
+    also resolves references in-process and treats failures as missing keys.
+    """
+    if not isinstance(value, str) or not value.startswith("op://"):
+        return value
+
+    import shutil
+    import subprocess
+
+    op_bin = shutil.which("op") or "/opt/homebrew/bin/op"
+    if not Path(op_bin).exists():
+        return None
+
+    child_env = os.environ.copy()
+    token = _load_op_service_account_token()
+    if token:
+        child_env["OP_SERVICE_ACCOUNT_TOKEN"] = token
+
+    try:
+        result = subprocess.run(
+            [op_bin, "read", value],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=20,
+            env=child_env,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    resolved = result.stdout.strip()
+    return resolved or None
+
+
+def _resolve_secret_references(values: dict[str, str]) -> dict[str, str]:
+    """Resolve any supported secret references in a config-source map."""
+    resolved: dict[str, str] = {}
+    for key, value in values.items():
+        secret = resolve_secret_reference(value)
+        if secret is not None:
+            resolved[key] = secret
+    return resolved
+
+
 def _load_keychain(keys: list[str]) -> dict[str, str]:
     """Load credentials from macOS Keychain (no-op on other platforms).
 
@@ -288,7 +365,7 @@ def get_codex_access_token() -> tuple[str | None, str]:
 
 def get_openai_auth(file_env: dict[str, str]) -> OpenAIAuth:
     """Resolve OpenAI auth from API key or Codex login."""
-    api_key = os.environ.get('OPENAI_API_KEY') or file_env.get('OPENAI_API_KEY')
+    api_key = resolve_secret_reference(os.environ.get('OPENAI_API_KEY')) or file_env.get('OPENAI_API_KEY')
     if api_key:
         return OpenAIAuth(
             token=api_key,
@@ -338,18 +415,18 @@ def get_config() -> dict[str, Any]:
       4. macOS Keychain items prefixed ``last30days-`` (Darwin only)
     """
     # Load from global config file
-    file_env = load_env_file(CONFIG_FILE) if CONFIG_FILE else {}
+    file_env = _resolve_secret_references(load_env_file(CONFIG_FILE)) if CONFIG_FILE else {}
 
     # Load from per-project config (overrides global)
     project_env_path = _find_project_env()
-    project_env = load_env_file(project_env_path) if project_env_path else {}
+    project_env = _resolve_secret_references(load_env_file(project_env_path)) if project_env_path else {}
 
     # Merge file sources: project > global
     merged_env = {**file_env, **project_env}
 
     # Keychain is the lowest-priority source (Darwin only; no-op elsewhere).
     # Loaded before openai_auth so OPENAI_API_KEY can come from Keychain too.
-    keychain_env = _load_keychain(list(KEYCHAIN_KEYS))
+    keychain_env = _resolve_secret_references(_load_keychain(list(KEYCHAIN_KEYS)))
     merged_env = {**keychain_env, **merged_env}
     # pass(1) store: Linux/Unix analog of Keychain at convention path
     # {prefix}<KEY>. Decrypts transiently so secrets stay encrypted at rest (no
@@ -365,7 +442,7 @@ def get_config() -> dict[str, Any]:
         or DEFAULT_PASS_PATH_PREFIX
     )
     pass_missing = [k for k in KEYCHAIN_KEYS if k not in os.environ and not merged_env.get(k)]
-    pass_env = _load_pass(pass_missing, pass_prefix)
+    pass_env = _resolve_secret_references(_load_pass(pass_missing, pass_prefix))
     merged_env = {**pass_env, **merged_env}
 
     openai_auth = get_openai_auth(merged_env)
@@ -443,7 +520,7 @@ def get_config() -> dict[str, Any]:
     ]
 
     for key, default in keys:
-        config[key] = os.environ.get(key) or merged_env.get(key, default)
+        config[key] = resolve_secret_reference(os.environ.get(key)) or merged_env.get(key, default)
 
     # Backward-compat: ScrapeCreators' own examples and tutorials use the
     # SCRAPE_CREATORS_API_KEY spelling (with underscore between SCRAPE and
@@ -451,7 +528,10 @@ def get_config() -> dict[str, Any]:
     # don't silently end up with has_scrapecreators=False. Canonical name
     # wins when both are set.
     if not config.get('SCRAPECREATORS_API_KEY'):
-        legacy = os.environ.get('SCRAPE_CREATORS_API_KEY') or merged_env.get('SCRAPE_CREATORS_API_KEY')
+        legacy = (
+            resolve_secret_reference(os.environ.get('SCRAPE_CREATORS_API_KEY'))
+            or merged_env.get('SCRAPE_CREATORS_API_KEY')
+        )
         if legacy:
             config['SCRAPECREATORS_API_KEY'] = legacy
 
