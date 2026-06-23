@@ -668,12 +668,20 @@ def main() -> int:
             results = setup_wizard.run_openclaw_setup(config)
             print(json.dumps(results))
             return 0
-        if "--github" in extra_argv:
-            results = setup_wizard.run_github_auth()
-            print(json.dumps(results))
-            return 0
-        if "--device-auth" in extra_argv:
-            results = setup_wizard.run_full_device_auth()
+        if "--github" in extra_argv or "--device-auth" in extra_argv:
+            if "--github" in extra_argv:
+                results = setup_wizard.run_github_auth()
+            else:
+                results = setup_wizard.run_full_device_auth()
+            # Persist the returned key so the paid sources activate on the next
+            # run, and mask it in stdout so the secret never lands in the host
+            # model's captured Bash output.
+            api_key = results.get("api_key")
+            if results.get("status") == "success" and api_key:
+                results["persisted"] = setup_wizard.write_api_key(env.CONFIG_FILE, api_key)
+                results["api_key"] = setup_wizard.mask_api_key(api_key)
+            else:
+                results["persisted"] = False
             print(json.dumps(results))
             return 0
         sys.stderr.write("Running auto-setup...\n")

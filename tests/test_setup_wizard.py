@@ -417,6 +417,108 @@ class TestWriteSetupConfig:
             assert "SETUP_COMPLETE=true" in lines[1]
 
 
+class TestWriteApiKey:
+    """Tests for write_api_key() — persisting the ScrapeCreators signup key."""
+
+    def test_writes_key_with_secret_permissions(self):
+        """Key is written and the file is 0o600 (owner read/write only)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / "subdir" / ".env"
+
+            result = setup_wizard.write_api_key(env_path, "sc_live_abcdef123456")
+
+            assert result is True
+            assert env_path.exists()
+            assert "SCRAPECREATORS_API_KEY=sc_live_abcdef123456" in env_path.read_text()
+            assert (env_path.stat().st_mode & 0o777) == 0o600
+
+    def test_value_round_trips_through_env_loader(self):
+        """Persisted key reloads to the exact original value."""
+        from lib import env as env_mod
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+
+            setup_wizard.write_api_key(env_path, "sc_live_abcdef123456")
+
+            loaded = env_mod.load_env_file(env_path)
+            assert loaded["SCRAPECREATORS_API_KEY"] == "sc_live_abcdef123456"
+
+    def test_idempotent_when_key_already_present(self):
+        """If the key already exists, do not duplicate or overwrite it."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text("SCRAPECREATORS_API_KEY=existing_key\n")
+
+            result = setup_wizard.write_api_key(env_path, "sc_new_value")
+
+            assert result is True
+            content = env_path.read_text()
+            assert content.count("SCRAPECREATORS_API_KEY") == 1
+            assert "existing_key" in content
+            assert "sc_new_value" not in content
+
+    def test_appends_without_clobbering_other_keys(self):
+        """Existing unrelated keys are preserved."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+            env_path.write_text("SETUP_COMPLETE=true\nFROM_BROWSER=firefox\n")
+
+            setup_wizard.write_api_key(env_path, "sc_key_xyz")
+
+            content = env_path.read_text()
+            assert "SETUP_COMPLETE=true" in content
+            assert "FROM_BROWSER=firefox" in content
+            assert "SCRAPECREATORS_API_KEY=sc_key_xyz" in content
+
+    def test_value_with_whitespace_is_quoted(self):
+        """A pathological value with whitespace is quoted so it round-trips."""
+        from lib import env as env_mod
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+
+            setup_wizard.write_api_key(env_path, "key with space")
+
+            content = env_path.read_text()
+            assert 'SCRAPECREATORS_API_KEY="key with space"' in content
+            assert env_mod.load_env_file(env_path)["SCRAPECREATORS_API_KEY"] == "key with space"
+
+    def test_empty_key_returns_false_and_writes_nothing(self):
+        """An empty api_key persists nothing and reports failure."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            env_path = Path(tmpdir) / ".env"
+
+            assert setup_wizard.write_api_key(env_path, "") is False
+            assert not env_path.exists()
+
+    def test_unwritable_target_returns_false(self):
+        """Unwritable target dir -> False, no exception escapes."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            ro_dir = Path(tmpdir) / "ro"
+            ro_dir.mkdir()
+            ro_dir.chmod(0o500)  # no write
+            try:
+                result = setup_wizard.write_api_key(ro_dir / "sub" / ".env", "sc_key")
+                assert result is False
+            finally:
+                ro_dir.chmod(0o700)  # restore so tempdir cleanup succeeds
+
+
+class TestMaskApiKey:
+    """Tests for mask_api_key() — non-secret display form."""
+
+    def test_masks_long_key(self):
+        masked = setup_wizard.mask_api_key("sc_live_abcdef123456")
+        assert "abcdef" not in masked
+        assert masked.endswith("3456")
+        assert masked.startswith("sc_")
+
+    def test_short_key_collapses_to_placeholder(self):
+        assert setup_wizard.mask_api_key("short") == "sc_…"
+
+    def test_empty_key_collapses_to_placeholder(self):
+        assert setup_wizard.mask_api_key("") == "sc_…"
+
+
 class TestCookieExtractionBrowsers:
     """Tests for env.cookie_extraction_browsers() — the shared browser policy."""
 

@@ -330,6 +330,63 @@ def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
         return False
 
 
+def write_api_key(env_path: Path, api_key: str, key_name: str = "SCRAPECREATORS_API_KEY") -> bool:
+    """Append an API key to the .env file as a 0o600 secret.
+
+    Reuses the same secret-safe write path as ``write_setup_config`` so the
+    value lands with restrictive permissions and round-trips through
+    ``env.load_env_file``. Idempotent: if ``key_name`` is already present in
+    the file, nothing is written and the existing value is preserved (we never
+    clobber a key the user may have set by hand).
+
+    Args:
+        env_path: Path to the .env file (e.g. ~/.config/last30days/.env).
+        api_key: The raw key value to persist.
+        key_name: The env var name to write (default SCRAPECREATORS_API_KEY).
+
+    Returns:
+        True if the key was written or already present, False on error or when
+        ``api_key`` is empty.
+    """
+    if not api_key:
+        return False
+    try:
+        env_path = Path(env_path)
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing_content = ""
+        if env_path.exists():
+            existing_content = env_path.read_text(encoding="utf-8")
+            for line in existing_content.splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and "=" in stripped:
+                    if stripped.split("=", 1)[0].strip() == key_name:
+                        return True  # Already configured; do not duplicate
+
+        line = f"{key_name}={_format_env_value(api_key)}\n"
+        with _open_secret_append(env_path) as f:
+            if existing_content and not existing_content.endswith("\n"):
+                f.write("\n")
+            f.write(line)
+
+        return True
+
+    except OSError as exc:
+        logger.error("Failed to write API key to %s: %s", env_path, exc)
+        return False
+
+
+def mask_api_key(api_key: str) -> str:
+    """Return a non-secret display form of an API key (prefix + last 4).
+
+    Used so the key never appears verbatim in stdout the host model captures.
+    Short or empty keys collapse to a fixed placeholder.
+    """
+    if not api_key or len(api_key) <= 8:
+        return "sc_…"
+    return f"{api_key[:3]}…{api_key[-4:]}"
+
+
 def get_setup_status_text(results: Dict[str, Any]) -> str:
     """Return a human-readable summary of auto-setup results.
 
