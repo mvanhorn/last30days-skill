@@ -51,13 +51,18 @@ The footer line `📎 Raw results saved to ${LAST30DAYS_MEMORY_DIR:-$HOME/Docume
 
 ## First-run onboarding
 
-On the very first `/last30days` run (no `~/.config/last30days/.env`, or `SETUP_COMPLETE` not set), the skill runs a consent-driven onboarding the model drives in chat. It has three consent points:
+On the very first `/last30days` run (no `~/.config/last30days/.env`, or `SETUP_COMPLETE` not set), the skill runs a consent-driven onboarding the model drives in chat. It takes one of two forms depending on the host:
+
+- **Claude Code Modal Flow** - the restored v3.0.0 guided NUX, used on hosts with `AskUserQuestion` (Claude Code). A welcome message, then modals for Auto/Manual/Skip setup, cookie consent, the ScrapeCreators signup offer, a TikTok/Instagram `INCLUDE_SOURCES` opt-in, and a first-topic picker.
+- **Non-Modal Prose Flow** - the same work done conversationally on hosts without modals (OpenClaw, Codex, Cursor, Gemini CLI, raw CLI).
+
+Both share the same consent points:
 
 1. **Browser cookies** - the model asks before reading anything. On yes it extracts Firefox/Safari cookies (never Chrome, to avoid a macOS Keychain prompt) to unlock X/Twitter and other logged-in sources, and installs yt-dlp + the keyless Digg CLI. On no it runs setup with `FROM_BROWSER=off` (skips all cookie reads, still installs the tools).
 2. **Full Disk Access (macOS)** - if a cookie read is permission-denied, the model surfaces the System Settings > Privacy & Security > Full Disk Access fix and offers one retry.
-3. **ScrapeCreators GitHub signup** - offered on every first run. On consent it runs `setup --github`, which opens a browser for GitHub device-auth and, on success, **persists `SCRAPECREATORS_API_KEY` automatically** (0o600, masked in output) so TikTok, Instagram, Threads, Pinterest, X, and YouTube comments/transcripts activate on the next run. Decline anytime; you can run it later by asking to set up ScrapeCreators.
+3. **ScrapeCreators GitHub signup** - offered on every first run (10,000 free calls). On consent it runs `setup --github`, which opens a browser for GitHub device-auth (or registers instantly via the `gh` CLI when installed) and, on success, **persists `SCRAPECREATORS_API_KEY` automatically** (0o600, masked in output) so TikTok, Instagram, X, YouTube comments, and the SC Reddit/YouTube backups activate on the next run. Decline anytime; you can run it later by asking to set up ScrapeCreators. (Threads and Pinterest are not surfaced in onboarding but remain available via `INCLUDE_SOURCES`.)
 
-Re-run onboarding by deleting `~/.config/last30days/.env`. The mechanical work lives in `scripts/lib/setup_wizard.py`; the consent conversation is specified in `skills/last30days/SKILL.md` Step 0.
+Re-run onboarding by deleting `~/.config/last30days/.env`. The mechanical work lives in `scripts/lib/setup_wizard.py`; the consent conversation and both host flows are specified in `skills/last30days/SKILL.md` Step 0. The original v3.0.0 wizard is captured at `docs/reference/old-nux-wizard-v3.0.0.md`.
 
 ---
 
