@@ -338,18 +338,32 @@ The engine reads `LAST30DAYS_MEMORY_DIR` from either the process env or `~/.conf
 
 ## Step 0: First-Run Setup Wizard
 
-Before proceeding to Step 1, handle first-run setup.
+Before proceeding to Step 1, handle first-run setup. **You are the conversational driver.** The Python setup script does only mechanical work (cookie reads, tool installs, the GitHub device-auth flow) - it CANNOT prompt the user, because it runs as a non-interactive subprocess. So consent happens HERE, in chat: you ask, the user answers, and you gate each subprocess call on the answer. Do NOT just run `setup` and report the result - that is the silent-onboarding regression this section exists to prevent.
 
 **First-run detection (silent, no commands, no output to user):**
 - If `~/.config/last30days/.env` does NOT exist, this is a first run.
 - If the file exists and contains `SETUP_COMPLETE=true`, skip Step 0 entirely and go to Step 1 (CRITICAL: Parse User Intent below). Do NOT announce that setup is complete. The user does not need a status message on every run.
 
-**If this IS a first run:**
-- Run `python3 skills/last30days/scripts/last30days.py setup` (relative to the skill root) to launch the setup wizard.
-- Follow the wizard's prompts end-to-end. The wizard handles platform detection (OpenClaw vs Claude Code), auto vs manual setup, browser cookie extraction, ScrapeCreators opt-in, a best-effort auto-install of the free, keyless Digg CLI (`digg-pp-cli` via `@mvanhorn/printing-press-library install digg --cli-only` — Digg activates only when the binary is on the **agent subprocess PATH**, typically `$HOME/.local/bin`; setup reports honestly if the CLI is installed off-PATH; recommend-only if `npx` is unavailable), and the initial topic picker.
-- After the wizard writes `SETUP_COMPLETE=true` to `~/.config/last30days/.env`, proceed to research.
+**Named onboarding contract (2026-06-22, silent-wizard regression - Fredy Montero run):** the prior version of this step said "Run `setup` ... follow the wizard's prompts end-to-end." But `run_auto_setup()` has NO prompts - it extracts cookies, installs yt-dlp + Digg, and writes `SETUP_COMPLETE` with zero interaction. So the model ran the silent path, never asked consent before reading browser cookies, never surfaced the macOS Full Disk Access fix, and never offered the ScrapeCreators GitHub signup that unlocks TikTok/Instagram/X/Threads. The fix is the ordered, consent-first sequence below. Do not "simplify" it back to a bare `setup` call - the consent prompts are the feature.
 
-The setup wizard lives as a Python module so it works across all hosts (Claude Code, Codex, Cursor, etc.) and the common-case (already set up) path through this file stays short.
+**If this IS a first run, run this onboarding sequence in order. Each numbered step is a turn: present it, then wait for the user where it says to wait.**
+
+**1. Welcome.** One short branded line, e.g.: `Welcome to /last30days - let me get you set up (about 30 seconds).`
+
+**2. Cookie consent (ask BEFORE reading anything).** Tell the user you'd like to read their browser cookies and what it unlocks, then ask. Example: `I can read your browser cookies (Firefox/Safari) to unlock X/Twitter and other logged-in sources. Want me to? (yes / no)` **Wait for the answer.**
+   - On **yes** → run `python3 skills/last30days/scripts/last30days.py setup` (relative to the skill root). This extracts cookies (Firefox/Safari by default - never Chrome, to avoid a Keychain prompt) and best-effort installs yt-dlp (YouTube) and the free, keyless Digg CLI (`digg-pp-cli` via `@mvanhorn/printing-press-library install digg --cli-only`; Digg activates only when the binary is on the **agent subprocess PATH**, typically `$HOME/.local/bin`; setup reports honestly if installed off-PATH; recommend-only if `npx` is unavailable).
+   - On **no** → run the same command with cookie reads disabled for that invocation: `FROM_BROWSER=off python3 skills/last30days/scripts/last30days.py setup`. This skips all cookie extraction but STILL installs yt-dlp and Digg, and still writes `SETUP_COMPLETE`. Do not attempt any cookie read after a no.
+
+**3. Full Disk Access remediation (macOS only).** After the `setup` run, inspect its stderr. If it contains `Permission denied reading Cookies.binarycookies` and the platform is macOS, the OS blocked the read - surface the fix instead of swallowing it: `macOS blocked the cookie read. To enable X/Twitter: System Settings > Privacy & Security > Full Disk Access > enable your terminal (or the Claude app), then I can retry.` Offer ONE retry of step 2's `setup` command. If the user skips, continue.
+
+**4. ScrapeCreators signup offer (every first run, consent BEFORE launching the browser).** Always offer this. Explain it grants free credits that unlock TikTok, Instagram, Threads, Pinterest, X, and YouTube comments/transcripts, and that it opens a GitHub authorization page in the browser. Do NOT hard-code a specific credit count - say "free credits" (the exact grant is set server-side). Ask, e.g.: `Want to unlock TikTok, Instagram, X and more? I can sign you up for ScrapeCreators with GitHub (free credits) - it opens a browser to authorize. (yes / no)` **Wait for the answer.**
+   - On **yes** → run `python3 skills/last30days/scripts/last30days.py setup --github`. Tell the user a browser window will open and to authorize with the code shown. On success the engine persists the key automatically and returns JSON with `"persisted": true` and a MASKED `api_key` (the raw key never appears - do not ask for or echo it). Confirm the paid sources are now active.
+   - On **timeout / denied** → tell the user it didn't complete and offer to retry or skip.
+   - On **no** → note they can run it anytime later by asking to set up ScrapeCreators, then continue.
+
+**5. Complete.** Once `SETUP_COMPLETE=true` is written, briefly confirm which sources are now active (read the `setup --github` JSON `persisted` field, or re-run `--diagnose`) and proceed to research.
+
+The setup wizard lives as a Python module so its mechanical work runs across all hosts (Claude Code, Codex, Cursor, etc.) while you drive the consent conversation above. The common-case (already set up) path through this file stays short.
 
 ---
 
