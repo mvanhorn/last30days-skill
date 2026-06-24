@@ -17,6 +17,8 @@ This README tracks the current v3 pipeline. The runtime skill spec lives in [ski
 **Claude Code (recommended — auto-updates via marketplace):**
 ```
 /plugin marketplace add mvanhorn/last30days-skill
+```
+```
 /plugin install last30days
 ```
 
