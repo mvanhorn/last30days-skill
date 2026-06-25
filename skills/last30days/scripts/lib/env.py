@@ -126,9 +126,9 @@ def _check_file_permissions(path: Path) -> None:
         mode = path.stat().st_mode
         # Check if group or other can read (bits 0o044)
         if mode & 0o044:
+            os.chmod(path, 0o600)
             sys.stderr.write(
-                f"[last30days] WARNING: {path} is readable by other users. "
-                f"Run: chmod 600 {path}\n"
+                f"[last30days] Fixed permissions on {path} (chmod 600)\n"
             )
             sys.stderr.flush()
     except OSError as exc:

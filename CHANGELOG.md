@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `_check_file_permissions` now auto-fixes the `.env` secrets file permissions (`chmod 600`) instead of only printing a warning, preventing secret exfiltration on shared machines ([#573](https://github.com/mvanhorn/last30days-skill/issues/573))
 - Firefox profile detection on Linux now checks `$XDG_CONFIG_HOME/mozilla/firefox` (or its default `~/.config/mozilla/firefox`) in addition to `~/.mozilla/firefox`, fixing cookie extraction on distros that honour the XDG Base Directory Specification ([#667](https://github.com/mvanhorn/last30days-skill/issues/667))
 
 ## [3.8.1] - 2026-06-22
