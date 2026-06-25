@@ -77,3 +77,40 @@ def test_no_host_search_uses_auto_resolve_and_leaves_native_signal_unset():
     assert "--auto-resolve" in step0
     assert "LAST30DAYS_NATIVE_SEARCH=1" in step0
     assert "Leave it unset when the agent session has no web-search tool" in step0
+
+
+def _law8_block() -> str:
+    text = SKILL_MD.read_text(encoding="utf-8")
+    start = text.find("**LAW 8 -")
+    assert start != -1, "missing LAW 8 marker"
+    end = text.find("**LAW 9 -", start)
+    assert end != -1, "missing LAW 9 marker (LAW 8 block end)"
+    return text[start:end]
+
+
+def test_law8_is_renderer_aware_with_both_regimes():
+    # LAW 8 must keep the inline-link default for hidden-link hosts AND carry a
+    # plain-label branch for visible-URL hosts. Codex rendered every inline link
+    # as `label (https://...)`, so a single-renderer LAW 8 produced URL soup.
+    law8 = _law8_block()
+    assert "Hidden-link hosts (Claude Code)" in law8
+    assert "Visible-URL hosts (Codex" in law8
+    assert "URL soup" in law8
+    # Hidden-link default must remain inline `[name](url)` (no Claude Code regression).
+    assert "`[name](url)`" in law8
+
+
+def test_law8_host_detection_is_deterministic_via_claudecode():
+    law8 = _law8_block()
+    assert "CLAUDECODE" in law8
+    # The detection must be stated as deterministic, not left to the model guessing.
+    assert "do not guess" in law8
+
+
+def test_plan_invocation_warns_against_bash_lc_apostrophe_wrapper():
+    # Codex aborted its first engine run by wrapping the query-plan heredoc in
+    # `bash -lc '...'`; the outer single quote ended at the first apostrophe in a
+    # ranking string. The guidance must steer off that wrapper explicitly.
+    text = SKILL_MD.read_text(encoding="utf-8")
+    assert "bash -lc '...'" in text
+    assert "unmatched" in text

@@ -15,8 +15,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - MCP Go tests (`mcp/`) now run in CI on every push/PR alongside the Python test suite, so MCP server regressions are caught before merge ([#621](https://github.com/mvanhorn/last30days-skill/issues/621))
 - PR dependency review gate blocks merges that introduce new vulnerable dependencies ([#551](https://github.com/mvanhorn/last30days-skill/issues/551))
 
+### Changed
+
+- Citations are now renderer-aware (LAW 8). On hidden-link hosts (Claude Code) every citation stays an inline `[name](url)` link as before; on visible-URL hosts (Codex, Cursor, Gemini CLI, raw CLI) citations render as plain source labels so the narrative no longer turns into `label (https://...)` URL soup. The host is detected deterministically from the `CLAUDECODE` environment variable, and full URLs remain reachable through the engine footer and the saved raw file.
+
 ### Fixed
 
+- The query-plan invocation guidance now warns against wrapping the heredoc in `bash -lc '...'` / `zsh -lc '...'`, whose single quotes terminate at the first apostrophe in a ranking string and abort the engine run with `unmatched "` on Codex. The quoted `<<'PLAN_EOF'` heredoc is already apostrophe-safe; the `-lc` wrapper was the hazard.
 - Firefox profile detection on Linux now checks `$XDG_CONFIG_HOME/mozilla/firefox` (or its default `~/.config/mozilla/firefox`) in addition to `~/.mozilla/firefox`, fixing cookie extraction on distros that honour the XDG Base Directory Specification ([#667](https://github.com/mvanhorn/last30days-skill/issues/667))
 
 ## [3.8.1] - 2026-06-22
