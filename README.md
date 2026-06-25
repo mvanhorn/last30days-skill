@@ -15,12 +15,6 @@
 This README tracks the current v3 pipeline. The runtime skill spec lives in [skills/last30days/SKILL.md](skills/last30days/SKILL.md), which is the source of truth for the latest command and setup behavior.
 
 **Claude Code (recommended — auto-updates via marketplace):**
-```
-/plugin marketplace add mvanhorn/last30days-skill
-```
-```
-/plugin install last30days
-```
 
 **Codex, Cursor, Copilot, Gemini CLI, or any of 50+ [Agent Skills](https://agentskills.io) hosts:**
 ```
