@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from collections import Counter
 
-from . import reddit_rss, reddit_shreddit, reddit_listing
+from . import reddit_rss, reddit_shreddit, reddit_listing, reddit_arctic
 # Scores are backfilled from popular derived subreddits, so an engagement-first
 # final sort buries on-topic RSS hits under viral off-topic posts. A relevance
 # floor + relevance-first final ranking keeps the section on-topic. Thresholds
@@ -138,6 +138,25 @@ def _discover(
             _apply_scores(p, score_map[pid])
         seen.add(p["url"])
         merged.append(p)
+
+    # Backfill scores for RSS-only posts (no listing card scored them) from the
+    # free arctic-shift archive. Posts already scored by a listing keep that
+    # live score; arctic only fills the gap, and is best-effort (never raises).
+    need = [pid for p in merged
+            if not (p.get("engagement", {}).get("score"))
+            for pid in [reddit_listing._post_id(p["url"])] if pid]
+    if need:
+        scores = reddit_arctic.fetch_scores(need)
+        filled = 0
+        for p in merged:
+            if p.get("engagement", {}).get("score"):
+                continue
+            pid = reddit_listing._post_id(p["url"])
+            if pid in scores:
+                _apply_scores(p, scores[pid])
+                filled += 1
+        if filled:
+            _log(f"arctic-shift backfilled {filled} post scores")
     return merged
 
 

@@ -1155,6 +1155,29 @@ def _fetch_x_backend(backend, subquery, from_date, to_date, depth, config):
     return items, (err or "")
 
 
+def _reddit_post_key(item: dict) -> str:
+    """Stable per-thread dedupe key (base36 post id from the url/permalink)."""
+    url = item.get("url") or item.get("permalink") or ""
+    m = re.search(r"/comments/([A-Za-z0-9]+)", url)
+    return m.group(1) if m else url
+
+
+def _merge_reddit_items(free: list[dict], sc: list[dict]) -> list[dict]:
+    """Merge free + ScrapeCreators Reddit items, free first, deduped by post id.
+
+    Used when the thinness-floor trigger backfills a thin free run with SC, so a
+    thread present in both is never double-listed.
+    """
+    merged = list(free)
+    seen = {_reddit_post_key(it) for it in free}
+    for it in sc:
+        key = _reddit_post_key(it)
+        if key and key not in seen:
+            seen.add(key)
+            merged.append(it)
+    return merged
+
+
 def _retrieve_stream(
     *,
     topic: str,
@@ -1241,14 +1264,20 @@ def _retrieve_stream(
                 )
             return [], {}
 
-        # Default: public Reddit first (free, gets comments); SC as backup
+        # Default: public Reddit first (free). ScrapeCreators backfills when the
+        # free path is empty OR returns fewer than the configured thinness floor
+        # (LAST30DAYS_REDDIT_SC_MIN_ITEMS, default 0 = empty-only — today's
+        # behavior, no extra credit spend unless the user opts in).
+        try:
+            min_items = int(config.get("LAST30DAYS_REDDIT_SC_MIN_ITEMS") or 0)
+        except (TypeError, ValueError):
+            min_items = 0
+        public_results: list[dict] = []
         try:
             public_results = reddit_public.search_reddit_public(
                 reddit_query, from_date, to_date, depth=depth,
                 subreddits=subreddits, dedicated_subreddits=dedicated_subreddits,
-            )
-            if public_results:
-                return public_results, {}
+            ) or []
         except Exception as exc:
             sys.stderr.write(
                 f"[Reddit] Public search failed ({type(exc).__name__}: {exc})"
@@ -1257,20 +1286,28 @@ def _retrieve_stream(
                 sys.stderr.write("\n")
                 return [], {}
             sys.stderr.write(", using ScrapeCreators backup\n")
-        if has_sc_key:
-            try:
-                result = reddit.search_and_enrich(
-                    reddit_query, from_date, to_date, depth=depth,
-                    token=config.get("SCRAPECREATORS_API_KEY"),
-                    subreddits=subreddits,
-                )
-                return reddit.parse_reddit_response(result), {}
-            except Exception as exc:
-                sys.stderr.write(
-                    f"[Reddit] ScrapeCreators backup also failed "
-                    f"({type(exc).__name__}: {exc})\n"
-                )
-        return [], {}
+        # Enough free results, or no key to backfill with -> done.
+        if len(public_results) > min_items or not has_sc_key:
+            return public_results, {}
+        if public_results:
+            sys.stderr.write(
+                f"[Reddit] Free path returned {len(public_results)} "
+                f"(below the {min_items}-item floor); backfilling with ScrapeCreators\n"
+            )
+        try:
+            result = reddit.search_and_enrich(
+                reddit_query, from_date, to_date, depth=depth,
+                token=config.get("SCRAPECREATORS_API_KEY"),
+                subreddits=subreddits,
+            )
+            sc_items = reddit.parse_reddit_response(result)
+        except Exception as exc:
+            sys.stderr.write(
+                f"[Reddit] ScrapeCreators backup also failed "
+                f"({type(exc).__name__}: {exc})\n"
+            )
+            return public_results, {}
+        return _merge_reddit_items(public_results, sc_items), {}
     if source == "x":
         # One X source, an ordered chain of interchangeable backends. Try the
         # primary; fall through to the next only if it returns nothing or errors.

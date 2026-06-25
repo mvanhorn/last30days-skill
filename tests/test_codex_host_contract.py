@@ -114,3 +114,13 @@ def test_plan_invocation_warns_against_bash_lc_apostrophe_wrapper():
     text = SKILL_MD.read_text(encoding="utf-8")
     assert "bash -lc '...'" in text
     assert "unmatched" in text
+
+
+def test_step055_documents_dedicated_vs_broad_subreddits():
+    # Step 0.55 must instruct the model to split entity-home (dedicated) subs from
+    # broad subs and pass them via --dedicated-subreddits, which the engine pulls
+    # in full and exempts from the relevance floor.
+    text = SKILL_MD.read_text(encoding="utf-8")
+    assert "RESOLVED_DEDICATED_SUBREDDITS" in text
+    assert "--dedicated-subreddits" in text
+    assert "relevance floor" in text
