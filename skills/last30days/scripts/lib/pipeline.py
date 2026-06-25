@@ -1196,6 +1196,7 @@ def _retrieve_stream(
         # Use raw_topic so expand_reddit_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         reddit_query = raw_topic or subquery.search_query
+        dedicated_subreddits = config.get("_dedicated_subreddits") or None
         has_sc_key = bool(config.get("SCRAPECREATORS_API_KEY"))
         sc_first = (
             has_sc_key
@@ -1244,7 +1245,7 @@ def _retrieve_stream(
         try:
             public_results = reddit_public.search_reddit_public(
                 reddit_query, from_date, to_date, depth=depth,
-                subreddits=subreddits,
+                subreddits=subreddits, dedicated_subreddits=dedicated_subreddits,
             )
             if public_results:
                 return public_results, {}

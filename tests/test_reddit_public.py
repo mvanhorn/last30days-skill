@@ -278,25 +278,23 @@ class TestDepthLimits:
 class TestSearchRedditPublicHighLevel:
     """Test the high-level search_reddit_public interface."""
 
-    @mock.patch("lib.reddit_public.urllib.request.urlopen")
-    def test_date_filtering(self, mock_urlopen):
-        listing = _make_reddit_listing([
-            {
-                "title": "In range",
-                "permalink": "/r/test/comments/aaa/in_range/",
-                "created_utc": 1711670400,  # 2024-03-29
-            },
-            {
-                "title": "Out of range",
-                "permalink": "/r/test/comments/bbb/out_of_range/",
-                "created_utc": 1609459200,  # 2021-01-01
-            },
-        ])
-        mock_urlopen.return_value = _mock_urlopen_ok(listing)
-
-        results = reddit_public.search_reddit_public(
-            "test", "2024-03-01", "2024-03-31"
-        )
+    def test_date_filtering(self):
+        # search_reddit_public delegates to the keyless pipeline, which filters
+        # discovered posts to the requested date window. (search.json is gone, so
+        # the filter is verified at the keyless discovery seam, not via .json.)
+        def _p(title, slug, date):
+            return {
+                "id": "", "title": title, "score": 0, "num_comments": 0,
+                "url": f"https://www.reddit.com/r/test/comments/{slug}/x/",
+                "subreddit": "test", "author": "u", "selftext": "", "date": date,
+                "engagement": {"score": 0, "num_comments": 0}, "relevance": 0.0,
+                "metadata": {},
+            }
+        posts = [_p("In range", "aaa", "2024-03-29"), _p("Out of range", "bbb", "2021-01-01")]
+        with mock.patch("lib.reddit_keyless._discover", return_value=posts), \
+             mock.patch("lib.reddit_keyless.reddit_shreddit.fetch_comments",
+                        return_value={"top_comments": [], "comment_insights": [], "num_comments": None}):
+            results = reddit_public.search_reddit_public("test", "2024-03-01", "2024-03-31")
 
         titles = [r["title"] for r in results]
         assert "In range" in titles
@@ -345,5 +343,5 @@ class TestSearchRedditPublicDelegatesToKeyless:
         assert results == [{"id": "R1", "title": "x"}]
         mock_keyless.assert_called_once_with(
             "test", "2024-03-01", "2024-03-31",
-            depth="quick", subreddits=["ClaudeAI"],
+            depth="quick", subreddits=["ClaudeAI"], dedicated_subreddits=None,
         )

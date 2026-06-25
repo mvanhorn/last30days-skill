@@ -140,15 +140,20 @@ def fetch_listings(
     subreddits: List[str],
     depth: str = "default",
     query: str = "",
+    sorts: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Fetch scored post cards across subreddits × depth-appropriate sorts.
+    """Fetch scored post cards across subreddits × sorts.
 
     Returns deduped normalized posts (with real scores), unranked/unsliced —
     the caller merges these with other sources, ranks, and slices.
+
+    ``sorts`` overrides the depth-derived sort set. Dedicated-subreddit lanes
+    pass ``["top", "hot", "new"]`` so fresh threads (which the top-of-month
+    listing misses) are caught with their scores regardless of depth.
     """
     if not subreddits:
         return []
-    sorts = LISTING_SORTS.get(depth, LISTING_SORTS["default"])
+    sorts = sorts or LISTING_SORTS.get(depth, LISTING_SORTS["default"])
     jobs = [(sub, sort) for sub in subreddits for sort in sorts]
     all_posts: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)) or 1) as executor:

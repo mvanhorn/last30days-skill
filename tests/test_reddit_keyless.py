@@ -26,22 +26,11 @@ def _scored(i, score, ncmt=0):
     return p
 
 
-class TestDiscoveryTierOrder:
-    """Tier 0 (.json) is tried first; RSS + scored listings are the keyless path."""
+class TestDiscovery:
+    """RSS breadth + scored listings are the keyless discovery path (no .json)."""
 
-    def test_tier0_success_skips_keyless(self):
-        with mock.patch.object(reddit_keyless, "_tier0_json", return_value=[_post(1)]) as t0, \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss") as rss, \
-             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings") as lst:
-            out = reddit_keyless._discover("topic", "default", None)
-        assert len(out) == 1
-        t0.assert_called_once()
-        rss.assert_not_called()
-        lst.assert_not_called()
-
-    def test_tier0_empty_falls_to_keyless(self):
-        with mock.patch.object(reddit_keyless, "_tier0_json", return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
+    def test_keyless_path_runs_rss_and_listings(self):
+        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
                                return_value=[_post(1), _post(2)]) as rss, \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
                                return_value=[]):
@@ -53,8 +42,7 @@ class TestDiscoveryTierOrder:
         # RSS finds post 1 (no score); listing card for post 1 carries the score.
         rss_post = _post(1)
         listing_post = _scored(1, score=52692, ncmt=1743)
-        with mock.patch.object(reddit_keyless, "_tier0_json", return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
+        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
                                return_value=[rss_post]), \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
                                return_value=[listing_post]):
@@ -69,8 +57,7 @@ class TestDiscoveryTierOrder:
         rss_post = _post(7)  # url .../000007/...
         listing_post = _scored(7, score=999)
         listing_post["url"] = "https://www.reddit.com/r/test/comments/zzzzzz/other/"
-        with mock.patch.object(reddit_keyless, "_tier0_json", return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
+        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
                                return_value=[rss_post]), \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
                                return_value=[listing_post]):
@@ -85,8 +72,7 @@ class TestDiscoveryTierOrder:
         rss_post = _post(1)  # on-topic keyword match
         offtopic_listing = _scored(99, score=88888)  # high score, unrelated sub
         offtopic_listing["url"] = "https://www.reddit.com/r/random/comments/zzz999/x/"
-        with mock.patch.object(reddit_keyless, "_tier0_json", return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
+        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
                                return_value=[rss_post]), \
              mock.patch.object(reddit_keyless, "_top_subreddits", return_value=["random"]), \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
@@ -96,9 +82,8 @@ class TestDiscoveryTierOrder:
         assert rss_post["url"] in urls
         assert offtopic_listing["url"] not in urls  # not merged as discovery
 
-    def test_tier0_never_raises(self):
-        with mock.patch("lib.reddit_public.search", side_effect=Exception("boom")), \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss", return_value=[]), \
+    def test_discover_never_raises_returns_empty(self):
+        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss", return_value=[]), \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", return_value=[]):
             assert reddit_keyless._discover("t", "default", None) == []
 
