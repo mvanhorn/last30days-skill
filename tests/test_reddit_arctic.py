@@ -60,6 +60,17 @@ class TestFetchScores:
         assert g.call_count == 1
         assert set(out) == {"a", "b"}
 
+    def test_cache_is_size_bounded(self):
+        # The in-run memo never grows past CACHE_MAX; scores are still returned
+        # for the current call once the cache is full.
+        with mock.patch.object(reddit_arctic, "CACHE_MAX", 1), \
+             mock.patch.object(reddit_arctic.http, "get",
+                               return_value=_resp([{"id": "a", "score": 1, "num_comments": 0},
+                                                   {"id": "b", "score": 2, "num_comments": 0}])):
+            out = reddit_arctic.fetch_scores(["a", "b"])
+        assert set(out) == {"a", "b"}            # both returned
+        assert len(reddit_arctic._cache) <= 1    # cache stayed bounded
+
     def test_empty_input_makes_no_call(self):
         with mock.patch.object(reddit_arctic.http, "get") as g:
             out = reddit_arctic.fetch_scores([])

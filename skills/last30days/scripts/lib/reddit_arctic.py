@@ -25,11 +25,11 @@ BATCH = 50          # ids per request
 TIMEOUT = 15
 MAX_BATCHES = 3     # cap total requests per run (bounds latency + rate-limit risk)
 PACE_SECONDS = 0.4  # gap between batches; arctic-shift answers 422 "slow down"
-# In-run memo: base36 id -> {score, num_comments}. Intentionally module-level
-# and TTL-less for the single-run CLI (one process per `/last30days` invocation),
-# which keeps batches deduped. It is NOT safe to rely on for a long-lived
-# import (worker/server): a future such caller should pass its own cache or add
-# a TTL. Tests clear it via reddit_arctic._cache.clear().
+CACHE_MAX = 4096    # hard size bound so the in-run memo can never grow unbounded
+# In-run memo: base36 id -> {score, num_comments}. Module-level so repeated
+# fetch_scores calls within one `/last30days` run (e.g. across subqueries) reuse
+# results, but capped at CACHE_MAX entries (never reached in a normal CLI run).
+# Tests clear it via reddit_arctic._cache.clear().
 _cache: Dict[str, Dict[str, int]] = {}
 
 
@@ -86,6 +86,7 @@ def fetch_scores(post_ids: List[str]) -> Dict[str, Dict[str, int]]:
                 }
             except (TypeError, ValueError):
                 continue
-            _cache[rid] = entry
+            if len(_cache) < CACHE_MAX:
+                _cache[rid] = entry
             out[rid] = entry
     return out
