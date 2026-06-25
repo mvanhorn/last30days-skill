@@ -92,7 +92,7 @@ class PlannerV3Tests(unittest.TestCase):
         self.assertEqual(1, len(plan.subqueries))
         self.assertEqual(["reddit", "x"], plan.subqueries[0].sources)
 
-    def test_quick_mode_preserves_explicit_requested_sources(self):
+    def test_quick_mode_prioritizes_explicit_requested_sources_within_cap(self):
         raw = {
             "intent": "product",
             "freshness_mode": "balanced_recent",
@@ -111,10 +111,11 @@ class PlannerV3Tests(unittest.TestCase):
             raw,
             "AI coding agents",
             ["reddit", "youtube", "grounding", "digg"],
-            ["reddit", "youtube", "grounding", "digg"],
+            ["digg", "reddit", "youtube", "grounding"],
             "quick",
         )
         self.assertIn("digg", plan.subqueries[0].sources)
+        self.assertLessEqual(len(plan.subqueries[0].sources), 2)
 
     def test_quick_mode_preserves_explicit_requested_sources_in_fallback_plan(self):
         plan = planner.plan_query(

@@ -356,25 +356,31 @@ def _trim_subqueries_for_depth(
         # Quick depth only reaches this block. Honor the plan's explicit
         # per-subquery sources: prefer priority-ranked plan sources first, then
         # append any plan sources absent from the priority table (e.g.
-        # instagram), and cap the planner-selected set to the quick-depth
-        # limit. Fall back to the priority top-N only when the subquery lists
-        # no usable source.
-        preferred_sources = [s for s in ranked_sources if s in subquery.sources]
+        # instagram). Explicit --search sources are user overrides, so they get
+        # first claim on the quick slots when present. The final list remains
+        # capped to the quick-depth limit.
+        plan_sources = [s for s in ranked_sources if s in subquery.sources]
         for source in subquery.sources:
+            if source not in plan_sources:
+                plan_sources.append(source)
+        if not plan_sources:
+            plan_sources = ranked_sources[:limit]
+        preferred_sources: list[str] = []
+        if requested_sources:
+            for source in requested_sources:
+                if (
+                    source in available_sources
+                    and source in subquery.sources
+                    and source not in preferred_sources
+                ):
+                    preferred_sources.append(source)
+                    if len(preferred_sources) >= limit:
+                        break
+        for source in plan_sources:
+            if len(preferred_sources) >= limit:
+                break
             if source not in preferred_sources:
                 preferred_sources.append(source)
-        preferred_sources = preferred_sources[:limit]
-        if not preferred_sources:
-            preferred_sources = ranked_sources[:limit]
-        if requested_sources:
-            requested = [
-                source
-                for source in requested_sources
-                if source in available_sources and source in subquery.sources
-            ]
-            for source in requested:
-                if source not in preferred_sources:
-                    preferred_sources.append(source)
         trimmed.append(
             schema.SubQuery(
                 label=subquery.label,
