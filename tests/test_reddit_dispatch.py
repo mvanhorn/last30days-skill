@@ -63,6 +63,13 @@ class TestThinnessFloor:
         sc.assert_not_called()
         assert len(items) == 3
 
+    def test_exactly_floor_is_acceptable_no_backfill(self):
+        # MIN_ITEMS=N means N results are acceptable; only fewer than N backfills.
+        cfg = {**self.KEY, "LAST30DAYS_REDDIT_SC_MIN_ITEMS": "3"}
+        items, sc = self._run(cfg, [_item("a"), _item("b"), _item("c")], [_item("z")])
+        sc.assert_not_called()
+        assert len(items) == 3
+
     def test_no_key_never_calls_sc(self):
         items, sc = self._run({"LAST30DAYS_REDDIT_SC_MIN_ITEMS": "5"}, [_item("a")], [_item("z")])
         sc.assert_not_called()

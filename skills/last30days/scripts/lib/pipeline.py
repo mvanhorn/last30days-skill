@@ -1286,8 +1286,10 @@ def _retrieve_stream(
                 sys.stderr.write("\n")
                 return [], {}
             sys.stderr.write(", using ScrapeCreators backup\n")
-        # Enough free results, or no key to backfill with -> done.
-        if len(public_results) > min_items or not has_sc_key:
+        # Enough free results, or no key to backfill with -> done. max(min_items,
+        # 1) keeps the default (min_items=0) as empty-only AND treats exactly
+        # `min_items` results as acceptable (no backfill) for min_items > 0.
+        if len(public_results) >= max(min_items, 1) or not has_sc_key:
             return public_results, {}
         if public_results:
             sys.stderr.write(

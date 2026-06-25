@@ -25,7 +25,12 @@ BATCH = 50          # ids per request
 TIMEOUT = 15
 MAX_BATCHES = 3     # cap total requests per run (bounds latency + rate-limit risk)
 PACE_SECONDS = 0.4  # gap between batches; arctic-shift answers 422 "slow down"
-_cache: Dict[str, Dict[str, int]] = {}  # in-run memo: base36 id -> {score, num_comments}
+# In-run memo: base36 id -> {score, num_comments}. Intentionally module-level
+# and TTL-less for the single-run CLI (one process per `/last30days` invocation),
+# which keeps batches deduped. It is NOT safe to rely on for a long-lived
+# import (worker/server): a future such caller should pass its own cache or add
+# a TTL. Tests clear it via reddit_arctic._cache.clear().
+_cache: Dict[str, Dict[str, int]] = {}
 
 
 def _log(msg: str) -> None:
