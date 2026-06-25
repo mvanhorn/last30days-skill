@@ -28,6 +28,19 @@ jobs:
       - name: Run uv audit against locked dependencies
         run: uv audit --locked
 
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
+
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-latest
