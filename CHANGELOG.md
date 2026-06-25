@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Free Reddit gets dedicated-subreddit lanes: entity-home subs (e.g. r/Kanye for "Kanye West", via the new `--dedicated-subreddits` flag) are pulled in full from top+hot+new listings and exempt from the relevance floor, since the whole sub is the topic. Fixes the over-aggressive floor that dropped on-topic posts whose titles lacked the entity name.
+- `reddit_arctic` resolves upvote counts for threads found only via RSS search (which carries no score) using the free, keyless arctic-shift archive — batched, paced, cached, and graceful-degrading. Reddit now gets headlines-with-points and best-comments-with-points entirely for free, at parity with ScrapeCreators.
+- `LAST30DAYS_REDDIT_SC_MIN_ITEMS` (default 0 = unchanged empty-only behavior): set above 0 to let the ScrapeCreators backup backfill a thin free Reddit run instead of sitting idle. Backfilled items merge deduped by post id.
+
+### Removed
+
+- The permanently-403 `search.json` Tier 0 is gone from the keyless Reddit path; discovery is RSS breadth + shreddit listing partials (real scores) + the dedicated-sub lanes, with no wasted 403 calls.
+
 ## [3.8.2] - 2026-06-25
 
 ### Added
