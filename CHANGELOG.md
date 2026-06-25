@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `bird_x.py` / `subproc.py` — `os.killpg(os.getpgid(...))` timeout handler on Windows now falls through safely to `proc.kill()` instead of crashing with `AttributeError` ([#91](https://github.com/mvanhorn/last30days-skill/issues/91))
+
 ## [3.3.2] - 2026-06-06
 
 ### Fixed
