@@ -699,6 +699,16 @@ def x_backend_chain(config: dict[str, Any]) -> list[str]:
     """
     from . import bird_x
     has_bird_creds = bool(config.get('AUTH_TOKEN') and config.get('CT0'))
+
+    # plan_only mode (--diagnose/--preflight) skips cookie extraction as a
+    # privacy safeguard.  When FROM_BROWSER is set to a browser that can serve
+    # X cookies (firefox, safari), treat bird as potentially available so the
+    # startup hook doesn't falsely report "X unreachable".
+    if not has_bird_creds and config.get('_BROWSER_COOKIE_MODE') == 'plan_only':
+        browsers = config.get('_BROWSER_COOKIE_BROWSERS') or []
+        if any(b in ('firefox', 'safari') for b in browsers):
+            has_bird_creds = True
+
     if has_bird_creds:
         bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
 
