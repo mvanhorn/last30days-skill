@@ -709,8 +709,11 @@ def x_backend_chain(config: dict[str, Any]) -> list[str]:
         if any(b in ('firefox', 'safari') for b in browsers):
             has_bird_creds = True
 
-    if has_bird_creds:
-        bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
+    # Only seed credentials when the real values exist; in plan_only mode
+    # has_bird_creds is spoofed for availability reporting, but the cookie
+    # values themselves were never read and would be None.
+    if has_bird_creds and config.get('AUTH_TOKEN') and config.get('CT0'):
+        bird_x.set_credentials(config['AUTH_TOKEN'], config['CT0'])
 
     preferred = (config.get('LAST30DAYS_X_BACKEND') or '').lower()
     if preferred in _X_BACKEND_ORDER:

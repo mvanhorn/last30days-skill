@@ -39,11 +39,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-<<<<<<< HEAD
 - The query-plan invocation guidance now warns against wrapping the heredoc in `bash -lc '...'` / `zsh -lc '...'`, whose single quotes terminate at the first apostrophe in a ranking string and abort the engine run with `unmatched "` on Codex. The quoted `<<'PLAN_EOF'` heredoc is already apostrophe-safe; the `-lc` wrapper was the hazard.
-=======
 - `--diagnose` / `--preflight` no longer falsely reports X as unreachable when browser cookies are configured but cookie reading is skipped for privacy (`plan_only` mode). The X backend chain now treats bird as potentially available when `FROM_BROWSER` points to Firefox or Safari ([#692](https://github.com/mvanhorn/last30days-skill/issues/692))
->>>>>>> bd5591c (fix: --diagnose no longer falsely reports X unreachable when browser cookies are configured (#692))
 - Firefox profile detection on Linux now checks `$XDG_CONFIG_HOME/mozilla/firefox` (or its default `~/.config/mozilla/firefox`) in addition to `~/.mozilla/firefox`, fixing cookie extraction on distros that honour the XDG Base Directory Specification ([#667](https://github.com/mvanhorn/last30days-skill/issues/667))
 
 ## [3.8.1] - 2026-06-22
