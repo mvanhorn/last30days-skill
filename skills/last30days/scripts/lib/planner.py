@@ -78,6 +78,7 @@ SOURCE_CAPABILITIES = {
     "truthsocial": {"discussion", "social"},
     "polymarket": {"market"},
     "digg": {"discussion", "social", "link"},
+    "arxiv": {"reference", "analysis", "link"},
     "xiaohongshu": {"video", "video_shortform", "social"},
     "github": {"discussion", "link"},
     "grounding": {"web", "reference", "link"},

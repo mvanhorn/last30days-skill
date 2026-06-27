@@ -12,6 +12,7 @@ from shutil import which
 from typing import Any
 
 from . import (
+    arxiv,
     bird_x,
     bluesky,
     dates,
@@ -99,6 +100,7 @@ MOCK_AVAILABLE_SOURCES = [
     "threads",
     "pinterest",
     "digg",
+    "arxiv",
     "jobs",
     "linkedin",
 ]
@@ -147,6 +149,10 @@ def available_sources(
     available.append("github")
     if which("digg-pp-cli"):
         available.append("digg")
+    # arXiv is default-on when its Printing Press CLI is installed (zero auth).
+    # The adapter relevance-and-recency gates so it stays quiet off-topic.
+    if which("arxiv-pp-cli"):
+        available.append("arxiv")
     if env.is_bluesky_available(config):
         available.append("bluesky")
     if env.is_truthsocial_available(config):
@@ -223,6 +229,7 @@ def diagnose(
     external_commands = {
         "yt-dlp": bool(which("yt-dlp")),
         "digg-pp-cli": bool(which("digg-pp-cli")),
+        "arxiv-pp-cli": bool(which("arxiv-pp-cli")),
         "gh": bool(which("gh")),
     }
     credential_destinations = {
@@ -1457,6 +1464,12 @@ def _retrieve_stream(
         # _finalize_items_by_source so it runs on the items that actually
         # survive dedupe rather than on top-K of the raw fanout.
         return items, {}
+    if source == "arxiv":
+        result = arxiv.search_arxiv(subquery.search_query, from_date, to_date, depth=depth)
+        # Relevance keys off the stable research topic, not the per-subquery
+        # search_query, so off-topic narrowing does not let weak matches through.
+        relevance_topic = raw_topic or topic or subquery.search_query
+        return arxiv.parse_arxiv_response(result, query=relevance_topic), {}
     if source == "bluesky":
         result = bluesky.search_bluesky(subquery.search_query, from_date, to_date, depth=depth, config=config)
         return bluesky.parse_bluesky_response(result), {}
@@ -1594,6 +1607,20 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
                 "posts": [],
                 "relevance": 0.71,
                 "why_relevant": "Mock Digg cluster",
+            },
+        ],
+        "arxiv": [
+            {
+                "id": "http://arxiv.org/abs/2606.00001v1",
+                "title": f"A Survey of {subquery.search_query}",
+                "url": "https://arxiv.org/abs/2606.00001v1",
+                "summary": f"We present a comprehensive study of {subquery.search_query} and its recent advances.",
+                "author": "Ada Lovelace et al.",
+                "authors": ["Ada Lovelace", "Alan Turing"],
+                "date": dates.get_date_range(20)[0],
+                "engagement": {},
+                "relevance": 0.86,
+                "why_relevant": "Mock arXiv paper",
             },
         ],
         "jobs": [
