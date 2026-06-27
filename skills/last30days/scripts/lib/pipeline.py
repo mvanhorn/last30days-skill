@@ -46,6 +46,7 @@ from . import (
     threads,
     tiktok,
     truthsocial,
+    trustpilot,
     xai_x,
     xiaohongshu_api,
     xquik,
@@ -103,6 +104,7 @@ MOCK_AVAILABLE_SOURCES = [
     "digg",
     "arxiv",
     "techmeme",
+    "trustpilot",
     "jobs",
     "linkedin",
 ]
@@ -159,6 +161,11 @@ def available_sources(
     # local sync before each run's first search).
     if which("techmeme-pp-cli"):
         available.append("techmeme")
+    # Trustpilot is default-on when its CLI is installed. The adapter gates to
+    # brand-shaped topics and degrades to empty in browser-disabled contexts,
+    # so it only ever harvests a WAF cookie on a company topic.
+    if which("trustpilot-pp-cli"):
+        available.append("trustpilot")
     if env.is_bluesky_available(config):
         available.append("bluesky")
     if env.is_truthsocial_available(config):
@@ -237,6 +244,7 @@ def diagnose(
         "digg-pp-cli": bool(which("digg-pp-cli")),
         "arxiv-pp-cli": bool(which("arxiv-pp-cli")),
         "techmeme-pp-cli": bool(which("techmeme-pp-cli")),
+        "trustpilot-pp-cli": bool(which("trustpilot-pp-cli")),
         "gh": bool(which("gh")),
     }
     credential_destinations = {
@@ -1481,6 +1489,14 @@ def _retrieve_stream(
         result = techmeme.search_techmeme(subquery.search_query, from_date, to_date, depth=depth)
         relevance_topic = raw_topic or topic or subquery.search_query
         return techmeme.parse_techmeme_response(result, query=relevance_topic), {}
+    if source == "trustpilot":
+        # Brand-shape gate keys off the stable research topic, not the narrowed
+        # per-subquery search_query, so the company is detected consistently.
+        relevance_topic = raw_topic or topic or subquery.search_query
+        result = trustpilot.search_trustpilot(
+            relevance_topic, from_date, to_date, depth=depth, config=config
+        )
+        return trustpilot.parse_trustpilot_response(result, query=relevance_topic), {}
     if source == "bluesky":
         result = bluesky.search_bluesky(subquery.search_query, from_date, to_date, depth=depth, config=config)
         return bluesky.parse_bluesky_response(result), {}
@@ -1644,6 +1660,21 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
                 "engagement": {},
                 "relevance": 0.83,
                 "why_relevant": "Mock Techmeme headline",
+            },
+        ],
+        "trustpilot": [
+            {
+                "id": "example.com",
+                "title": f"{subquery.search_query}: TrustScore 3.4",
+                "url": "https://www.trustpilot.com/review/example.com",
+                "summary": f"Across recent reviews, customers were split on {subquery.search_query}: some praised support, others cited delays.",
+                "name": subquery.search_query,
+                "trustScore": 3.4,
+                "reviewCount": 128,
+                "date": dates.get_date_range(1)[0],
+                "engagement": {"reviews": 128, "trustScore": 3.4},
+                "relevance": 0.8,
+                "why_relevant": "Mock Trustpilot sentiment",
             },
         ],
         "jobs": [

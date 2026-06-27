@@ -52,6 +52,7 @@ def normalize_source_items(
         "digg": _normalize_digg,
         "arxiv": _normalize_arxiv,
         "techmeme": _normalize_techmeme,
+        "trustpilot": _normalize_trustpilot,
         "grounding": _normalize_grounding,
         "xiaohongshu": _normalize_grounding,
         "github": _normalize_github,
@@ -577,6 +578,45 @@ def _normalize_techmeme(
         snippet=title[:400],
         metadata={
             "publication": source_name,
+        },
+    )
+
+
+def _normalize_trustpilot(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for Trustpilot company sentiment.
+
+    One item per company. The AI summary (already balanced positive/negative)
+    is the body. TrustScore and review count are engagement and metadata.
+    """
+    title = str(item.get("title") or "").strip()
+    name = str(item.get("name") or "").strip()
+    summary = str(item.get("summary") or "").strip()
+    body = "\n\n".join(part for part in [title, summary] if part)
+    return _source_item(
+        item_id=str(item.get("id") or f"TP{index + 1}"),
+        source=source,
+        title=title or (f"{name} on Trustpilot" if name else f"Trustpilot reviews {index + 1}"),
+        body=body,
+        url=str(item.get("url") or ""),
+        author=name or None,
+        container="Trustpilot",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="low"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.6),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=summary[:400],
+        metadata={
+            "name": name,
+            "trustScore": item.get("trustScore"),
+            "reviewCount": item.get("reviewCount"),
+            "aiSummary": summary,
         },
     )
 

@@ -80,6 +80,7 @@ SOURCE_CAPABILITIES = {
     "digg": {"discussion", "social", "link"},
     "arxiv": {"reference", "analysis", "link"},
     "techmeme": {"discussion", "link", "reference"},
+    "trustpilot": {"reference", "company_signal", "social"},
     "xiaohongshu": {"video", "video_shortform", "social"},
     "github": {"discussion", "link"},
     "grounding": {"web", "reference", "link"},

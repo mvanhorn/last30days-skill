@@ -129,6 +129,7 @@ SOURCE_COMPLETION_ORDER = [
     "digg",
     "arxiv",
     "techmeme",
+    "trustpilot",
 ]
 
 SOURCE_COMPLETION_META = {
@@ -146,6 +147,7 @@ SOURCE_COMPLETION_META = {
     "digg": ("Digg", "cluster", "clusters", Colors.YELLOW),
     "arxiv": ("arXiv", "paper", "papers", Colors.RED),
     "techmeme": ("Techmeme", "headline", "headlines", Colors.CYAN),
+    "trustpilot": ("Trustpilot", "review", "reviews", Colors.GREEN),
 }
 
 

@@ -15,6 +15,7 @@ SOURCE_QUALITY = {
     "digg": 0.85,
     "arxiv": 0.9,
     "techmeme": 0.85,
+    "trustpilot": 0.78,
     "reddit": 0.6,
     "x": 0.68,
     "bluesky": 0.66,
@@ -164,6 +165,7 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "truthsocial":  [("likes", 0.45), ("reposts", 0.30), ("replies", 0.25)],
     "polymarket":   [("volume", 0.60), ("liquidity", 0.40)],
     "digg":         [("postCount", 0.40), ("uniqueAuthors", 0.30), ("rank_score", 0.30)],
+    "trustpilot":   [("reviews", 1.0)],
 }
 
 
