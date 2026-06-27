@@ -52,6 +52,22 @@ def test_non_brand_topics_stay_quiet(topic):
     assert not trustpilot.is_brand_shaped(topic)
 
 
+@pytest.mark.parametrize("topic", [
+    "Python", "React", "Docker", "Rust", "Linux", "Swift", "Java",
+    "Kubernetes", "PostgreSQL", "Node",
+])
+def test_single_word_tech_names_are_not_brands(topic):
+    # A bare capitalized language/framework/tool name is a technology query,
+    # not a company-review intent -- it must not trigger the Trustpilot CLI.
+    assert not trustpilot.is_brand_shaped(topic)
+
+
+def test_tech_company_still_reachable_by_domain():
+    # The conservative tech-token gate does not block explicit company intent:
+    # a domain still resolves (e.g. wanting docker.com's reviews specifically).
+    assert trustpilot.is_brand_shaped("docker.com")
+
+
 def test_company_identifier_prefers_domain():
     assert trustpilot._company_identifier("reviews of chownow.com please") == "chownow.com"
     assert trustpilot._company_identifier("ChowNow") == "ChowNow"

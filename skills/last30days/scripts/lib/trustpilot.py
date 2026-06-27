@@ -50,6 +50,23 @@ _GENERIC_TOKENS = {
     "how", "what", "why", "agents", "agent", "memory", "tips", "news",
 }
 
+# Single-word programming languages, frameworks, runtimes, OSes, and dev tools.
+# A bare capitalized "Python"/"React"/"Docker" query is overwhelmingly about the
+# technology, not a company's customer reviews -- letting it through would both
+# trigger the Chrome harvest and risk surfacing an unrelated company that shares
+# the name. A user who genuinely wants the company can use its domain
+# (e.g. "docker.com"), which still passes via the domain branch.
+_TECH_TOKENS = {
+    "python", "javascript", "typescript", "java", "rust", "ruby", "php",
+    "kotlin", "scala", "golang", "swift", "elixir", "erlang", "haskell",
+    "react", "vue", "angular", "svelte", "django", "flask", "rails", "spring",
+    "node", "nodejs", "deno", "bun", "express", "nextjs", "nuxt",
+    "linux", "ubuntu", "debian", "fedora", "windows", "macos", "android",
+    "docker", "kubernetes", "k8s", "terraform", "ansible", "nginx",
+    "redis", "postgres", "postgresql", "mysql", "sqlite", "mongodb", "kafka",
+    "graphql", "webpack", "vite", "rust", "wasm",
+}
+
 
 def _log(msg: str) -> None:
     log.source_log("Trustpilot", msg, tty_only=False)
@@ -96,7 +113,7 @@ def is_brand_shaped(topic: str) -> bool:
     words = text.split()
     if len(words) > 2:
         return False
-    if any(w.lower() in _GENERIC_TOKENS for w in words):
+    if any(w.lower() in _GENERIC_TOKENS or w.lower() in _TECH_TOKENS for w in words):
         return False
     # At least one token must look like a proper noun (leading capital).
     return any(w[:1].isupper() for w in words)
