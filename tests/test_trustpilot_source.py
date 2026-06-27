@@ -8,7 +8,29 @@ from __future__ import annotations
 
 import pytest
 
-from lib import trustpilot
+from lib import pipeline, trustpilot
+
+
+# ---- opt-in availability gating (off by default) ----
+
+def test_not_available_by_default(monkeypatch):
+    monkeypatch.setattr(pipeline, "which", lambda name: f"/usr/bin/{name}")
+    avail = pipeline.available_sources({})
+    assert "trustpilot" not in avail  # opt-in: absent without INCLUDE_SOURCES
+    # the zero-auth pair stays default-on
+    assert "arxiv" in avail and "techmeme" in avail
+
+
+def test_available_when_included(monkeypatch):
+    monkeypatch.setattr(pipeline, "which", lambda name: f"/usr/bin/{name}")
+    avail = pipeline.available_sources({"INCLUDE_SOURCES": "trustpilot"})
+    assert "trustpilot" in avail
+
+
+def test_available_when_requested(monkeypatch):
+    monkeypatch.setattr(pipeline, "which", lambda name: f"/usr/bin/{name}")
+    avail = pipeline.available_sources({}, requested_sources=["trustpilot"])
+    assert "trustpilot" in avail
 
 
 # ---- brand-shape gate ----

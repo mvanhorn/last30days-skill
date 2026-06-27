@@ -71,10 +71,13 @@ def test_install_failed_nonzero_rc(monkeypatch, no_off_path):
     assert "boom" in stderr
 
 
-def test_install_default_pp_sources_covers_all_three(monkeypatch):
+def test_install_default_pp_sources_covers_default_on_pair(monkeypatch):
+    # Only the zero-auth default-on sources are auto-installed. Trustpilot is
+    # opt-in (INCLUDE_SOURCES=trustpilot) and intentionally excluded here.
     monkeypatch.setattr(sw.shutil, "which", lambda name: f"/usr/bin/{name}")
     out = sw.install_default_pp_sources()
-    assert set(out.keys()) == {"arxiv", "techmeme", "trustpilot"}
+    assert set(out.keys()) == {"arxiv", "techmeme"}
+    assert "trustpilot" not in out
     for entry in out.values():
         assert entry["action"] == "already_installed"
         assert entry["installed"] is True

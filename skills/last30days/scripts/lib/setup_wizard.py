@@ -241,10 +241,13 @@ def _install_digg_cli() -> Tuple[bool, str, str, str]:
 # Additional default-on Printing Press sources installed the same way as Digg:
 # (engine source key, slug for `install <slug>`, binary name). These activate in
 # ``pipeline.available_sources()`` when ``shutil.which`` resolves the binary.
+# Trustpilot is intentionally NOT here: it is opt-in (INCLUDE_SOURCES=trustpilot)
+# because of its headless-Chrome cookie harvest, so auto-installing its binary
+# for a source that stays off by default would be wasted work. Opting in installs
+# it on demand via `npx ... install trustpilot --cli-only` (see CONFIGURATION.md).
 PP_DEFAULT_SOURCES: list[tuple[str, str, str]] = [
     ("arxiv", "arxiv", "arxiv-pp-cli"),
     ("techmeme", "techmeme", "techmeme-pp-cli"),
-    ("trustpilot", "trustpilot", "trustpilot-pp-cli"),
 ]
 
 

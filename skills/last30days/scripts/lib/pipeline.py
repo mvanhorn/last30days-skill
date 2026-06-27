@@ -161,11 +161,6 @@ def available_sources(
     # local sync before each run's first search).
     if which("techmeme-pp-cli"):
         available.append("techmeme")
-    # Trustpilot is default-on when its CLI is installed. The adapter gates to
-    # brand-shaped topics and degrades to empty in browser-disabled contexts,
-    # so it only ever harvests a WAF cookie on a company topic.
-    if which("trustpilot-pp-cli"):
-        available.append("trustpilot")
     if env.is_bluesky_available(config):
         available.append("bluesky")
     if env.is_truthsocial_available(config):
@@ -195,6 +190,14 @@ def available_sources(
         "linkedin" in include_sources or (requested_sources and "linkedin" in requested_sources)
     ):
         available.append("linkedin")
+    # Trustpilot: opt-in additive source via INCLUDE_SOURCES=trustpilot (same
+    # consent pattern as Perplexity/LinkedIn). Off by default -- unlike arXiv and
+    # Techmeme, which are zero-auth, it can spawn a one-time headless-Chrome WAF
+    # cookie harvest on a brand topic, so activating it is the user's choice.
+    if which("trustpilot-pp-cli") and (
+        "trustpilot" in include_sources or (requested_sources and "trustpilot" in requested_sources)
+    ):
+        available.append("trustpilot")
     if requested_sources and "xiaohongshu" in requested_sources and env.is_xiaohongshu_available(config):
         available.append("xiaohongshu")
     if env.is_threads_available(config):
