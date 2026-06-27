@@ -238,7 +238,10 @@ class TestDiggAutoInstall:
 
         results = setup_wizard.run_auto_setup({})
 
-        mock_subproc.assert_called_once_with(
+        # The wizard now also best-effort-installs the additional default-on
+        # Printing Press sources (arxiv/techmeme/trustpilot), so digg is one of
+        # several install calls rather than the only one.
+        mock_subproc.assert_any_call(
             ["npx", "-y", setup_wizard.PRINTING_PRESS_NPM, "install", "digg", "--cli-only"],
             capture_output=True, text=True, timeout=setup_wizard.DIGG_INSTALL_TIMEOUT,
         )

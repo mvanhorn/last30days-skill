@@ -105,6 +105,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         ytdlp_action = "no_homebrew"
 
     digg_installed, digg_action, digg_stderr, digg_path = _install_digg_cli()
+    pp_sources = install_default_pp_sources()
 
     results: Dict[str, Any] = {
         "cookies_found": cookies_found,
@@ -112,6 +113,9 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         "ytdlp_action": ytdlp_action,
         "digg_installed": digg_installed,
         "digg_action": digg_action,
+        # Per-CLI status for the additional default-on Printing Press sources
+        # (arxiv, techmeme, trustpilot): {source: {installed, action, ...}}.
+        "pp_sources": pp_sources,
         "env_written": False,
     }
     if ytdlp_action == "install_failed":
@@ -232,6 +236,103 @@ def _install_digg_cli() -> Tuple[bool, str, str, str]:
     stderr = proc.stderr or "install completed but digg-pp-cli was not found"
     logger.warning("npx install digg failed verification: %s", stderr)
     return False, "install_failed", stderr, ""
+
+
+# Additional default-on Printing Press sources installed the same way as Digg:
+# (engine source key, slug for `install <slug>`, binary name). These activate in
+# ``pipeline.available_sources()`` when ``shutil.which`` resolves the binary.
+PP_DEFAULT_SOURCES: list[tuple[str, str, str]] = [
+    ("arxiv", "arxiv", "arxiv-pp-cli"),
+    ("techmeme", "techmeme", "techmeme-pp-cli"),
+    ("trustpilot", "trustpilot", "trustpilot-pp-cli"),
+]
+
+
+def _pp_bin_candidate_paths(bin_name: str) -> list[Path]:
+    """Known install locations for a Printing Press CLI binary (slug-parameterized
+    mirror of ``_digg_bin_candidate_paths``)."""
+    home = Path.home()
+    candidates: list[Path] = [home / ".local" / "bin" / bin_name]
+    gopath = os.environ.get("GOPATH")
+    if gopath:
+        candidates.append(Path(gopath) / "bin" / bin_name)
+    candidates.append(home / "go" / "bin" / bin_name)
+    if os.name == "nt":
+        local_app = os.environ.get("LOCALAPPDATA") or os.environ.get("LocalAppData")
+        if local_app:
+            candidates.append(
+                Path(local_app) / "Programs" / "PrintingPress" / "bin" / f"{bin_name}.exe"
+            )
+    return candidates
+
+
+def _pp_off_path_binary(bin_name: str) -> Optional[str]:
+    for candidate in _pp_bin_candidate_paths(bin_name):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def _install_pp_cli(slug: str, bin_name: str) -> Tuple[bool, str, str, str]:
+    """Best-effort install of a Printing Press CLI binary.
+
+    Slug-parameterized mirror of ``_install_digg_cli``: never raises, degrades
+    to recommend-only when the installer is unavailable. Returns
+    ``(engine_active, action, stderr, off_path_binary)`` with the same action
+    taxonomy: already_installed | installed | installed_off_path |
+    install_failed | no_npx.
+    """
+    on_path = shutil.which(bin_name)
+    if on_path:
+        return True, "already_installed", "", ""
+    off_path = _pp_off_path_binary(bin_name)
+    if off_path:
+        return False, "installed_off_path", "", off_path
+    if shutil.which("npx") is None:
+        return False, "no_npx", "", ""
+    try:
+        proc = subprocess.run(
+            ["npx", "-y", PRINTING_PRESS_NPM, "install", slug, "--cli-only"],
+            capture_output=True, text=True, timeout=DIGG_INSTALL_TIMEOUT,
+        )
+    except Exception as exc:
+        logger.warning("npx install %s exception: %s", slug, exc)
+        return False, "install_failed", str(exc), ""
+    if proc.returncode != 0:
+        stderr = proc.stderr or f"npx install {slug} exited {proc.returncode}"
+        logger.warning("npx install %s failed (rc=%s): %s", slug, proc.returncode, stderr)
+        return False, "install_failed", stderr, ""
+    on_path = shutil.which(bin_name)
+    if on_path:
+        return True, "installed", "", ""
+    off_path = _pp_off_path_binary(bin_name)
+    if off_path:
+        combined = (proc.stderr or "").strip()
+        if combined:
+            logger.warning("%s installed off PATH: %s", bin_name, combined)
+        return False, "installed_off_path", combined, off_path
+    stderr = proc.stderr or f"install completed but {bin_name} was not found"
+    logger.warning("npx install %s failed verification: %s", slug, stderr)
+    return False, "install_failed", stderr, ""
+
+
+def install_default_pp_sources() -> Dict[str, Dict[str, Any]]:
+    """Best-effort install of every additional default-on Printing Press source.
+
+    Returns ``{source_key: {installed, action, stderr?, path?}}`` so the wizard
+    can report per-CLI status alongside Digg without raising on any single
+    failure.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for source_key, slug, bin_name in PP_DEFAULT_SOURCES:
+        installed, action, stderr, off_path = _install_pp_cli(slug, bin_name)
+        entry: Dict[str, Any] = {"installed": installed, "action": action}
+        if action == "install_failed" and stderr:
+            entry["stderr"] = stderr
+        if off_path:
+            entry["path"] = off_path
+        out[source_key] = entry
+    return out
 
 
 def _open_secret_append(path: Path):
