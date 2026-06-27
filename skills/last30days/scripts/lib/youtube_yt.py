@@ -333,6 +333,9 @@ def search_youtube(
         "--no-warnings",
         "--no-download",
     ]
+    proxy = os.environ.get("YOUTUBE_PROXY")
+    if proxy:
+        cmd.extend(["--proxy", proxy])
     cmd = _wrap_ytdlp_cmd(cmd)
     ssh_host = _ytdlp_ssh_host()
 
@@ -551,10 +554,12 @@ def _fetch_transcript_ytdlp_via_ssh(video_id: str, ssh_host: str) -> Optional[st
     url = f"https://www.youtube.com/watch?v={video_id}"
     quoted_url = shlex.quote(url)
     sub_langs = shlex.quote(_ytdlp_sub_langs())
+    proxy = os.environ.get("YOUTUBE_PROXY")
+    proxy_arg = f"--proxy {shlex.quote(proxy)} " if proxy else ""
     remote_script = (
         "set -e; "
         "TMPD=$(mktemp -d); "
-        "yt-dlp --ignore-config --no-cookies-from-browser "
+        f"yt-dlp --ignore-config --no-cookies-from-browser {proxy_arg}"
         f"--write-auto-subs --sub-lang {sub_langs} --sub-format vtt "
         "--skip-download --no-warnings "
         f'-o "$TMPD/%(id)s" {quoted_url} >/dev/null 2>&1 || true; '
@@ -680,6 +685,9 @@ def _fetch_transcript_ytdlp(
         "-o", f"{temp_dir}/%(id)s",
         f"https://www.youtube.com/watch?v={video_id}",
     ]
+    proxy = os.environ.get("YOUTUBE_PROXY")
+    if proxy:
+        cmd.extend(["--proxy", proxy])
 
     timeout = _transcript_fast_timeout() if fast_fail else _TRANSCRIPT_TIMEOUT
     attempts = 1 if fast_fail else _TRANSCRIPT_MAX_RETRIES + 1
