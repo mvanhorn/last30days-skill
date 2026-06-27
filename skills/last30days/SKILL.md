@@ -412,6 +412,7 @@ Auto setup gives you the core sources free in about 30 seconds:
 - Reddit with comments - public JSON, no API key needed.
 - YouTube search + transcripts - installs yt-dlp (open source, 190K+ GitHub stars).
 - Digg - trending news, GitHub stars, and pipeline feeds - installs the free, keyless Digg CLI.
+- arXiv (📄) + Techmeme (📰) + Trustpilot (⭐) - research papers, tech-news headlines, and brand review sentiment - install free Printing Press CLIs. arXiv and Techmeme run keyless on any topic; Trustpilot activates only on company/brand topics (and does a one-time ~10s browser cookie step on first company lookup).
 - Hacker News + Polymarket + GitHub (auto-on if the `gh` CLI is installed) - always on, zero config.
 
 Want TikTok and Instagram too? ScrapeCreators adds those (10,000 free calls, scrapecreators.com). No kickbacks, no affiliation.
