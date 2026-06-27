@@ -80,10 +80,11 @@ def _ensure_synced() -> None:
         _log(f"sync skipped: {exc}")
 
 
-def _build_search_args(topic: str, limit: int) -> List[str]:
+def _build_search_args(topic: str) -> List[str]:
     # --json (not --agent) avoids --compact, which blanks headline records on
-    # pre-PR-1383 binaries. --max-results bounds the result set when supported.
-    return [CLI_BIN, "search", topic, "--json", "--max-results", str(limit)]
+    # pre-PR-1383 binaries. Techmeme's `search` has no result-limit flag, so the
+    # depth cap is applied client-side after parsing.
+    return [CLI_BIN, "search", topic, "--json"]
 
 
 def _coerce_list(data: Any) -> List[Dict[str, Any]]:
@@ -150,9 +151,13 @@ def search_techmeme(
         return {"results": [], "error": f"{CLI_BIN} not on PATH"}
     _ensure_synced()
     limit = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
-    cmd = _build_search_args(topic, limit)
-    _log(f"search '{topic}' (limit={limit})")
+    cmd = _build_search_args(topic)
+    _log(f"search '{topic}' (cap={limit})")
     response = _run_cli(cmd, timeout=SEARCH_TIMEOUT)
+    # Techmeme returns all matches; apply the depth cap client-side.
+    records = response.get("results") or []
+    if isinstance(records, list) and len(records) > limit:
+        response["results"] = records[:limit]
     _log(f"found {len(response.get('results') or [])} records")
     return response
 

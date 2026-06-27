@@ -21,11 +21,13 @@ def _reset_sync_flag():
 # ---- surface choice ----
 
 def test_search_args_use_json_not_agent():
-    args = techmeme._build_search_args("AI agents", 16)
+    args = techmeme._build_search_args("AI agents")
     assert "--json" in args
     # --agent implies --compact, which blanked records pre-PR-1383.
     assert "--agent" not in args
     assert "--compact" not in args
+    # Techmeme `search` has no result-limit flag; --max-results breaks it.
+    assert "--max-results" not in args
     assert "search" in args and "AI agents" in args
 
 
