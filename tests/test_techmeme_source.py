@@ -13,9 +13,9 @@ from lib import techmeme
 
 @pytest.fixture(autouse=True)
 def _reset_sync_flag():
-    techmeme._SYNCED = False
+    techmeme._LAST_SYNC = techmeme._NEVER_SYNCED
     yield
-    techmeme._SYNCED = False
+    techmeme._LAST_SYNC = techmeme._NEVER_SYNCED
 
 
 # ---- surface choice ----
@@ -97,6 +97,43 @@ def test_sync_runs_once_per_process(monkeypatch):
     techmeme._ensure_synced()
     sync_calls = [c for c in calls if "sync" in c]
     assert len(sync_calls) == 1
+
+
+def test_sync_failure_is_swallowed_and_latched(monkeypatch):
+    """A sync that raises must not propagate, and the TTL stamp must still latch
+    so search proceeds against the existing cache."""
+    def boom(cmd, timeout):
+        raise techmeme.subproc.SubprocTimeout("sync timed out")
+    monkeypatch.setattr(techmeme.subproc, "run_with_timeout", boom)
+    techmeme._ensure_synced()  # must not raise
+    assert techmeme._LAST_SYNC != techmeme._NEVER_SYNCED  # latched despite failure
+
+
+@pytest.mark.parametrize("depth,cap", [("quick", 8), ("default", 16), ("deep", 30)])
+def test_depth_cap_truncates_client_side(monkeypatch, depth, cap):
+    """Techmeme `search` has no limit flag, so the depth cap is applied after
+    parsing -- regression guard for the other half of the --max-results fix."""
+    records = [
+        {"num": i, "source": "x.com", "headline": f"A real headline sentence number {i}",
+         "link": f"https://t.co/{i}"}
+        for i in range(cap + 12)
+    ]
+    monkeypatch.setattr(techmeme, "_is_available", lambda: True)
+    monkeypatch.setattr(techmeme, "_ensure_synced", lambda: None)
+    monkeypatch.setattr(techmeme, "_run_cli", lambda cmd, timeout: {"results": list(records)})
+    out = techmeme.search_techmeme("topic", "2026-06-01", "2026-06-27", depth=depth)
+    assert len(out["results"]) == cap
+
+
+@pytest.mark.parametrize("words,expected", [(3, False), (4, True)])
+def test_story_headline_word_count_boundary(words, expected):
+    headline = " ".join(["word"] * words)
+    assert techmeme._is_story_headline(headline, "x.com") is expected
+
+
+def test_story_headline_rejects_when_equal_to_source():
+    # A >=4-word headline that exactly equals its source is still a header row.
+    assert not techmeme._is_story_headline("the daily example tribune", "the daily example tribune")
 
 
 def test_binary_absent_returns_empty(monkeypatch):

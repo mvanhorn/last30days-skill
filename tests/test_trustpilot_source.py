@@ -58,6 +58,19 @@ def test_browser_opt_out_skips_even_for_brand(monkeypatch):
     assert called == []  # opt-out prevents the harvest-prone CLI call
 
 
+def test_browser_opt_out_via_env_var_no_config(monkeypatch):
+    """The production path: the env var is set but never propagated into the
+    config dict. The os.environ fallback must still skip the harvest."""
+    called = []
+    monkeypatch.setattr(trustpilot, "_is_available", lambda: True)
+    monkeypatch.setattr(trustpilot, "_run_cli", lambda *a, **k: called.append(a) or {})
+    monkeypatch.setenv(trustpilot.NO_BROWSER_ENV, "1")
+    # config is None / lacks the key, mirroring env.get_config's allowlist gap.
+    out = trustpilot.search_trustpilot("ChowNow", "2026-06-01", "2026-06-27", config=None)
+    assert out == {"results": []}
+    assert called == []
+
+
 # ---- happy path + field mapping ----
 
 def test_happy_path_maps_info_envelope():

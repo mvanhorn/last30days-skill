@@ -26,6 +26,7 @@ Default-on safety (three gates):
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 from typing import Any, Dict, List, Optional
@@ -64,8 +65,17 @@ def _truthy(value: Any) -> bool:
 
 
 def _harvest_allowed(config: Optional[Dict[str, Any]]) -> bool:
-    """False when the browser opt-out is set (automated/headless contexts)."""
+    """False when the browser opt-out is set (automated/headless contexts).
+
+    Reads the opt-out from the merged config AND directly from the process
+    environment. The env fallback is load-bearing: ``config`` is assembled from
+    an allowlist in ``env.get_config``, so a fallback here guarantees the
+    documented kill-switch works even when the key is not propagated into
+    config (e.g. a bare ``LAST30DAYS_TRUSTPILOT_NO_BROWSER=1`` in cron/CI).
+    """
     if config and _truthy(config.get(NO_BROWSER_ENV)):
+        return False
+    if _truthy(os.environ.get(NO_BROWSER_ENV)):
         return False
     return True
 

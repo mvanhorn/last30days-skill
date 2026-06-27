@@ -67,8 +67,12 @@ def _build_search_query(topic: str) -> str:
     Inner double-quotes are stripped (arXiv has no phrase-escaping); the outer
     quotes plus ``all:`` give a phrase-scoped relevance search.
     """
-    cleaned = " ".join(topic.replace('"', " ").split())
-    return f'all:"{cleaned}"'
+    return f'all:"{_clean_phrase(topic)}"'
+
+
+def _clean_phrase(topic: str) -> str:
+    """Strip quotes and collapse whitespace into a phrase for the query."""
+    return " ".join(topic.replace('"', " ").split())
 
 
 def _build_search_args(topic: str, limit: int) -> List[str]:
@@ -159,6 +163,10 @@ def search_arxiv(
     """
     if not topic or not topic.strip():
         return {"results": []}
+    # A topic of only quote characters cleans to an empty phrase (all:""),
+    # which is a topic-blind query; bail rather than search for nothing.
+    if not _clean_phrase(topic):
+        return {"results": []}
     limit = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     cmd = _build_search_args(topic, limit)
     _log(f"query '{topic}' (relevance, max={limit})")
@@ -238,7 +246,10 @@ def parse_arxiv_response(
             # No usable date -> cannot honor the recency contract; drop.
             continue
         age_days = (now - published).days
-        if age_days > RECENCY_DAYS or age_days < 0:
+        # Allow a one-day grace on the future side: a paper announced later in
+        # the same UTC day yields age_days == -1 (timedelta.days floors toward
+        # negative); dropping it as "future" would discard the freshest work.
+        if age_days > RECENCY_DAYS or age_days < -1:
             continue
 
         summary = " ".join(str(entry.get("summary") or "").split()).strip()

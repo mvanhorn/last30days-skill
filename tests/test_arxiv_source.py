@@ -124,3 +124,44 @@ def test_empty_topic_returns_empty():
 def test_parse_handles_non_list_results():
     assert arxiv.parse_arxiv_response({"results": "oops"}, query="x", today=NOW) == []
     assert arxiv.parse_arxiv_response({}, query="x", today=NOW) == []
+
+
+def test_quote_only_topic_returns_empty():
+    # A topic of only quote characters cleans to an empty phrase; don't search.
+    assert arxiv.search_arxiv('"', "2026-06-01", "2026-06-27") == {"results": []}
+
+
+def test_same_day_future_timestamp_is_kept():
+    # A paper announced later the same UTC day yields age_days == -1; the
+    # one-day grace keeps it rather than dropping it as "future".
+    later_today = NOW.replace(hour=23, minute=59).strftime("%Y-%m-%dT%H:%M:00Z")
+    resp = {"results": [_entry("Fresh paper", later_today)]}
+    items = arxiv.parse_arxiv_response(resp, query="fresh paper", today=NOW.replace(hour=1))
+    assert len(items) == 1
+
+
+class _Proc:
+    def __init__(self, rc, out, err=""):
+        self.returncode, self.stdout, self.stderr = rc, out, err
+
+
+def test_run_cli_flattens_nested_envelope(monkeypatch):
+    monkeypatch.setattr(arxiv, "_is_available", lambda: True)
+    payload = '{"meta":{},"results":{"entries":[{"title":"X"}]}}'
+    monkeypatch.setattr(arxiv.subproc, "run_with_timeout", lambda cmd, timeout: _Proc(0, payload))
+    resp = arxiv.search_arxiv("topic", "2026-06-01", "2026-06-27")
+    assert resp["results"] == [{"title": "X"}]
+
+
+def test_run_cli_nonzero_exit_returns_error(monkeypatch):
+    monkeypatch.setattr(arxiv, "_is_available", lambda: True)
+    monkeypatch.setattr(arxiv.subproc, "run_with_timeout", lambda cmd, timeout: _Proc(1, "", "boom\nmore"))
+    resp = arxiv.search_arxiv("topic", "2026-06-01", "2026-06-27")
+    assert resp["results"] == [] and "boom" in resp["error"]
+
+
+def test_run_cli_bad_json_returns_error(monkeypatch):
+    monkeypatch.setattr(arxiv, "_is_available", lambda: True)
+    monkeypatch.setattr(arxiv.subproc, "run_with_timeout", lambda cmd, timeout: _Proc(0, "not json"))
+    resp = arxiv.search_arxiv("topic", "2026-06-01", "2026-06-27")
+    assert resp["results"] == [] and "error" in resp

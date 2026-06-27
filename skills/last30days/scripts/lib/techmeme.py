@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import json
 import shutil
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List
 
@@ -48,9 +50,17 @@ MIN_HEADLINE_WORDS = 4
 SEARCH_TIMEOUT = 30
 SYNC_TIMEOUT = 40
 
-# Sync at most once per process; a last30days run is one process and the cache
-# is sub-second to refresh.
-_SYNCED = False
+# Refresh the local cache at most once per TTL window, guarded by a lock so
+# concurrent fan-out threads do not double-sync (two processes writing the same
+# cache file). A monotonic timestamp -- not a bare bool -- so a long-lived host
+# process or multi-report fan-out re-syncs instead of serving a stale cache
+# indefinitely (headlines are dated to the sync time, so staleness would
+# misrepresent old news as current).
+_SYNC_LOCK = threading.Lock()
+_SYNC_TTL = 600.0  # seconds
+_LAST_SYNC = 0.0
+# Sentinel used by tests to force a sync regardless of the TTL window.
+_NEVER_SYNCED = float("-inf")
 
 
 def _log(msg: str) -> None:
@@ -67,17 +77,22 @@ def _today_iso() -> str:
 
 
 def _ensure_synced() -> None:
-    """Refresh the local headline cache once per process. Best-effort: a sync
-    failure is logged and ignored (search can still run on an existing cache)."""
-    global _SYNCED
-    if _SYNCED:
-        return
-    _SYNCED = True  # set first so a failure does not retry every subquery
-    try:
-        subproc.run_with_timeout([CLI_BIN, "sync", "--agent"], timeout=SYNC_TIMEOUT)
-        _log("synced headline cache")
-    except (subproc.SubprocTimeout, FileNotFoundError, OSError) as exc:
-        _log(f"sync skipped: {exc}")
+    """Refresh the local headline cache at most once per TTL window.
+
+    Lock-guarded so concurrent fan-out threads do not double-sync. Best-effort:
+    a sync failure is logged and ignored (search can still run on an existing
+    cache), and the timestamp is stamped before the call so a failing sync does
+    not retry on every subquery within the window."""
+    global _LAST_SYNC
+    with _SYNC_LOCK:
+        if time.monotonic() - _LAST_SYNC < _SYNC_TTL:
+            return
+        _LAST_SYNC = time.monotonic()  # stamp first: a failure does not retry
+        try:
+            subproc.run_with_timeout([CLI_BIN, "sync", "--agent"], timeout=SYNC_TIMEOUT)
+            _log("synced headline cache")
+        except (subproc.SubprocTimeout, FileNotFoundError, OSError) as exc:
+            _log(f"sync skipped: {exc}")
 
 
 def _build_search_args(topic: str) -> List[str]:
