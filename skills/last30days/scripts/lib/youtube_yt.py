@@ -452,6 +452,10 @@ def _fetch_transcript_direct(
     Scrapes the watch page HTML for the captions track URL in
     ytInitialPlayerResponse, then fetches the VTT subtitle file.
 
+    Returns None immediately when YOUTUBE_PROXY is set because
+    urllib does not support SOCKS proxies — the ScrapeCreators
+    fallback handles those cases instead.
+
     Args:
         video_id: YouTube video ID
         timeout: HTTP request timeout in seconds
@@ -462,6 +466,10 @@ def _fetch_transcript_direct(
     Returns:
         Raw VTT text, or None if captions are unavailable.
     """
+    if os.environ.get("YOUTUBE_PROXY"):
+        _log("YOUTUBE_PROXY set: skipping direct HTTP transcript (urllib cannot use SOCKS proxy)")
+        return None
+
     watch_url = f"https://www.youtube.com/watch?v={video_id}"
     headers = {
         "User-Agent": _YT_USER_AGENT,
