@@ -14,6 +14,7 @@ SOURCE_QUALITY = {
     "youtube": 0.85,
     "digg": 0.85,
     "arxiv": 0.9,
+    "techmeme": 0.85,
     "reddit": 0.6,
     "x": 0.68,
     "bluesky": 0.66,

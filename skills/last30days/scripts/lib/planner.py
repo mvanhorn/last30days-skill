@@ -79,6 +79,7 @@ SOURCE_CAPABILITIES = {
     "polymarket": {"market"},
     "digg": {"discussion", "social", "link"},
     "arxiv": {"reference", "analysis", "link"},
+    "techmeme": {"discussion", "link", "reference"},
     "xiaohongshu": {"video", "video_shortform", "social"},
     "github": {"discussion", "link"},
     "grounding": {"web", "reference", "link"},

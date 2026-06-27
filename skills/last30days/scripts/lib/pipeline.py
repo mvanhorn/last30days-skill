@@ -42,6 +42,7 @@ from . import (
     schema,
     signals,
     snippet,
+    techmeme,
     threads,
     tiktok,
     truthsocial,
@@ -101,6 +102,7 @@ MOCK_AVAILABLE_SOURCES = [
     "pinterest",
     "digg",
     "arxiv",
+    "techmeme",
     "jobs",
     "linkedin",
 ]
@@ -153,6 +155,10 @@ def available_sources(
     # The adapter relevance-and-recency gates so it stays quiet off-topic.
     if which("arxiv-pp-cli"):
         available.append("arxiv")
+    # Techmeme is default-on when its CLI is installed (zero auth; sub-second
+    # local sync before each run's first search).
+    if which("techmeme-pp-cli"):
+        available.append("techmeme")
     if env.is_bluesky_available(config):
         available.append("bluesky")
     if env.is_truthsocial_available(config):
@@ -230,6 +236,7 @@ def diagnose(
         "yt-dlp": bool(which("yt-dlp")),
         "digg-pp-cli": bool(which("digg-pp-cli")),
         "arxiv-pp-cli": bool(which("arxiv-pp-cli")),
+        "techmeme-pp-cli": bool(which("techmeme-pp-cli")),
         "gh": bool(which("gh")),
     }
     credential_destinations = {
@@ -1470,6 +1477,10 @@ def _retrieve_stream(
         # search_query, so off-topic narrowing does not let weak matches through.
         relevance_topic = raw_topic or topic or subquery.search_query
         return arxiv.parse_arxiv_response(result, query=relevance_topic), {}
+    if source == "techmeme":
+        result = techmeme.search_techmeme(subquery.search_query, from_date, to_date, depth=depth)
+        relevance_topic = raw_topic or topic or subquery.search_query
+        return techmeme.parse_techmeme_response(result, query=relevance_topic), {}
     if source == "bluesky":
         result = bluesky.search_bluesky(subquery.search_query, from_date, to_date, depth=depth, config=config)
         return bluesky.parse_bluesky_response(result), {}
@@ -1621,6 +1632,18 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
                 "engagement": {},
                 "relevance": 0.86,
                 "why_relevant": "Mock arXiv paper",
+            },
+        ],
+        "techmeme": [
+            {
+                "id": "https://www.techmeme.com/260627/p1",
+                "title": f"Major development in {subquery.search_query} reshapes the industry",
+                "url": "https://www.techmeme.com/260627/p1",
+                "source_name": "techcrunch.com",
+                "date": dates.get_date_range(1)[0],
+                "engagement": {},
+                "relevance": 0.83,
+                "why_relevant": "Mock Techmeme headline",
             },
         ],
         "jobs": [

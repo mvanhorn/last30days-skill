@@ -51,6 +51,7 @@ def normalize_source_items(
         "polymarket": _normalize_polymarket,
         "digg": _normalize_digg,
         "arxiv": _normalize_arxiv,
+        "techmeme": _normalize_techmeme,
         "grounding": _normalize_grounding,
         "xiaohongshu": _normalize_grounding,
         "github": _normalize_github,
@@ -541,6 +542,41 @@ def _normalize_arxiv(
         metadata={
             "authors": authors,
             "summary": summary,
+        },
+    )
+
+
+def _normalize_techmeme(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for Techmeme headlines.
+
+    The headline is both title and body (Techmeme carries no abstract). The
+    publication is the container/author. No engagement signal in the search
+    shape, so ranking leans on relevance and recency.
+    """
+    title = str(item.get("title") or "").strip()
+    source_name = str(item.get("source_name") or "").strip()
+    return _source_item(
+        item_id=str(item.get("id") or f"TM{index + 1}"),
+        source=source,
+        title=title or f"Techmeme headline {index + 1}",
+        body=title,
+        url=str(item.get("url") or ""),
+        author=source_name or None,
+        container=source_name or "Techmeme",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="low"),
+        engagement={},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=title[:400],
+        metadata={
+            "publication": source_name,
         },
     )
 
