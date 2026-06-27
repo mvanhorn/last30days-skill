@@ -420,6 +420,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('XAI_MODEL_PIN', None),
         ('OPENAI_BASE_URL', None),
         ('XAI_BASE_URL', None),
+        ('OPENROUTER_BASE_URL', None),
         ('SCRAPECREATORS_API_KEY', None),
         ('APIFY_API_TOKEN', None),
         ('AUTH_TOKEN', None),
