@@ -810,11 +810,7 @@ def render_compact(
         lines.extend(comparison_scaffold)
 
     footer = _render_emoji_footer(report, save_path)
-    if footer:
-        lines.append("")
-        lines.append("<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->")
-        lines.extend(footer)
-        lines.append("<!-- END PASS-THROUGH FOOTER -->")
+    _append_pass_through_footer(lines, footer)
 
     lines.extend(_render_canonical_boundary())
 
@@ -1028,10 +1024,16 @@ def _dedupe_notes(notes: list[str]) -> list[str]:
 
 def _append_html_footer(lines: list[str], report: schema.Report, save_path: str | None) -> None:
     footer = _render_emoji_footer(report, save_path)
+    _append_pass_through_footer(lines, footer)
+
+
+def _append_pass_through_footer(lines: list[str], footer: list[str]) -> None:
+    if not footer:
+        return
     lines.append("")
-    lines.append("<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->")
+    lines.append("```text")
     lines.extend(footer)
-    lines.append("<!-- END PASS-THROUGH FOOTER -->")
+    lines.append("```")
 
 
 def _render_synthesis_directive() -> list[str]:
@@ -1085,7 +1087,9 @@ def _render_canonical_boundary() -> list[str]:
         "---",
         "# END OF last30days CANONICAL OUTPUT",
         "",
-        "Pass through ONLY the PASS-THROUGH FOOTER block verbatim (emoji-tree stats).",
+        "Pass through ONLY the fenced `text` footer block above (emoji-tree stats).",
+        "Keep the code fence, so Markdown does not turn `---` into horizontal",
+        "rules or distort the tree.",
         "The EVIDENCE FOR SYNTHESIS block above it is raw evidence for your synthesis,",
         "not output. Transform it into `What I learned:` prose paragraphs per LAW 2.",
         "",
@@ -1381,11 +1385,7 @@ def render_comparison_multi(
     lines.extend(scaffold)
 
     footer = _render_emoji_footer(main_report, save_path)
-    if footer:
-        lines.append("")
-        lines.append("<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->")
-        lines.extend(footer)
-        lines.append("<!-- END PASS-THROUGH FOOTER -->")
+    _append_pass_through_footer(lines, footer)
 
     lines.extend(_render_canonical_boundary())
 
