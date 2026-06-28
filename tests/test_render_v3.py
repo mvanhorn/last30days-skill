@@ -336,7 +336,7 @@ class RenderV3Tests(unittest.TestCase):
 
 
 class OutputEnvelopeTests(unittest.TestCase):
-    """LAW 6 envelope comments: scope "pass through verbatim" unambiguously.
+    """LAW 6 envelopes: scope "pass through verbatim" unambiguously.
 
     Added 2026-04-19 after the Hermes Agent Use Cases failure where two
     consecutive runs dumped `## Ranked Evidence Clusters` as user output.
@@ -359,11 +359,13 @@ class OutputEnvelopeTests(unittest.TestCase):
 
     def test_pass_through_footer_envelope_wraps_emoji_tree(self):
         text = render.render_compact(sample_report())
-        self.assertIn("<!-- PASS-THROUGH FOOTER:", text)
-        self.assertIn("<!-- END PASS-THROUGH FOOTER -->", text)
-        # Emoji footer sits between the two markers.
-        open_idx = text.index("<!-- PASS-THROUGH FOOTER:")
-        close_idx = text.index("<!-- END PASS-THROUGH FOOTER -->")
+        self.assertIn("```text\n---\n", text)
+        self.assertIn("\n---\n```\n\n---\n# END OF last30days CANONICAL OUTPUT", text)
+        self.assertNotIn("<!-- PASS-THROUGH FOOTER:", text)
+        self.assertNotIn("<!-- END PASS-THROUGH FOOTER -->", text)
+        # Emoji footer sits inside the fenced text block.
+        open_idx = text.index("```text\n---\n")
+        close_idx = text.index("\n---\n```\n\n---\n# END OF last30days CANONICAL OUTPUT")
         self.assertIn("All agents reported back!", text[open_idx:close_idx])
 
     def _perplexity_item(self, item_id: str, citations: int) -> schema.SourceItem:
@@ -455,9 +457,9 @@ class OutputEnvelopeTests(unittest.TestCase):
 
     def test_canonical_boundary_scopes_pass_through_to_footer(self):
         text = render.render_compact(sample_report())
-        # New boundary text scopes verbatim to the PASS-THROUGH FOOTER block,
+        # Boundary text scopes verbatim to the fenced footer block,
         # not everything above.
-        self.assertIn("Pass through ONLY the PASS-THROUGH FOOTER block verbatim", text)
+        self.assertIn("Pass through ONLY the fenced `text` footer block above", text)
         # Self-check string is present so the model has a concrete failure signal.
         self.assertIn("### 1.", text)
         self.assertIn("LAW 6", text)
@@ -470,8 +472,11 @@ class OutputEnvelopeTests(unittest.TestCase):
         text = render.render_compact(sample_report())
         self.assertEqual(text.count("<!-- EVIDENCE FOR SYNTHESIS:"), 1)
         self.assertEqual(text.count("<!-- END EVIDENCE FOR SYNTHESIS -->"), 1)
-        self.assertEqual(text.count("<!-- PASS-THROUGH FOOTER:"), 1)
-        self.assertEqual(text.count("<!-- END PASS-THROUGH FOOTER -->"), 1)
+        self.assertEqual(text.count("```text\n---\n"), 1)
+        self.assertEqual(
+            text.count("\n---\n```\n\n---\n# END OF last30days CANONICAL OUTPUT"),
+            1,
+        )
 
     def test_no_dangling_envelope_open_without_close(self):
         # Open/close counts must always match, even for empty clusters.
@@ -482,9 +487,10 @@ class OutputEnvelopeTests(unittest.TestCase):
             text.count("<!-- EVIDENCE FOR SYNTHESIS:"),
             text.count("<!-- END EVIDENCE FOR SYNTHESIS -->"),
         )
+        self.assertEqual(text.count("```text\n---\n"), 1)
         self.assertEqual(
-            text.count("<!-- PASS-THROUGH FOOTER:"),
-            text.count("<!-- END PASS-THROUGH FOOTER -->"),
+            text.count("\n---\n```\n\n---\n# END OF last30days CANONICAL OUTPUT"),
+            1,
         )
 
 

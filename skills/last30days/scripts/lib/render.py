@@ -728,8 +728,8 @@ def render_compact(
     # evidence for the model to READ, not output to emit. LAW 6 in SKILL.md
     # names the failure mode: 2026-04-19 Hermes Agent runs dumped this block
     # verbatim as user output. The envelope comments give the model an
-    # unambiguous scope for "pass through verbatim" (the PASS-THROUGH FOOTER
-    # block below) vs "synthesize from" (this block).
+    # unambiguous scope for "pass through verbatim" (the fenced footer block
+    # below) vs "synthesize from" (this block).
     lines.append("<!-- EVIDENCE FOR SYNTHESIS: read this, do not emit verbatim. Transform into `What I learned:` prose per LAW 2. -->")
     lines.append("")
     # Echo the synthesis contract early so it survives tail truncation (#726).
@@ -1079,7 +1079,7 @@ def _render_canonical_boundary() -> list[str]:
     "Pass through the lines ABOVE this boundary verbatim" phrasing was
     ambiguous about scope and led two consecutive runs to dump the
     `## Ranked Evidence Clusters` scratchpad as user output. The current
-    phrasing scopes pass-through to the PASS-THROUGH FOOTER block only and
+    phrasing scopes pass-through to the fenced footer block only and
     gives the model a concrete self-check string (`### 1.` + score tuple).
     """
     return [
