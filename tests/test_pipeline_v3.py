@@ -273,6 +273,33 @@ class TestSourceFetchCap(unittest.TestCase):
             f"X should be fetched at most 2 times, got {len(x_calls)}",
         )
 
+    @patch("lib.pipeline._retrieve_stream")
+    def test_zero_source_fetch_override_suppresses_capped_source(self, mock_retrieve):
+        """A 0 override is explicit and should suppress capped-source submissions."""
+        mock_retrieve.side_effect = lambda **kwargs: pipeline._mock_stream_results(
+            kwargs["source"], kwargs["subquery"]
+        )
+        pipeline.run(
+            topic="compare iPhone vs Android vs Pixel vs Samsung",
+            config={
+                "LAST30DAYS_REASONING_PROVIDER": "gemini",
+                "_max_source_fetches": 0,
+            },
+            depth="quick",
+            requested_sources=["reddit", "x"],
+            mock=True,
+        )
+        x_calls = [
+            call for call in mock_retrieve.call_args_list
+            if call.kwargs.get("source") == "x"
+        ]
+        reddit_calls = [
+            call for call in mock_retrieve.call_args_list
+            if call.kwargs.get("source") == "reddit"
+        ]
+        self.assertEqual([], x_calls)
+        self.assertGreater(len(reddit_calls), 0)
+
 
 class TestRateLimitSharing(unittest.TestCase):
     """429 signals should be shared across subqueries."""
