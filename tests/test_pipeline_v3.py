@@ -27,6 +27,15 @@ class DepthSettingsOverrideTests(unittest.TestCase):
         settings = pipeline._resolve_depth_settings("deep", {"_max_results": 10})
         self.assertEqual(10, settings["rerank_limit"])
 
+    def test_zero_override_is_honored_not_swallowed(self):
+        # 0 is a valid explicit value (e.g. disable a source), not "unset".
+        settings = pipeline._resolve_depth_settings(
+            "deep", {"_max_results": 0, "_max_per_source": 0}
+        )
+        self.assertEqual(0, settings["pool_limit"])
+        self.assertEqual(0, settings["rerank_limit"])
+        self.assertEqual(0, settings["per_stream_limit"])
+
 
 class PipelineV3Tests(unittest.TestCase):
     def test_mock_pipeline_report_without_live_credentials(self):

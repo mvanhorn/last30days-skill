@@ -81,11 +81,13 @@ def _resolve_depth_settings(depth: str, config: dict[str, Any]) -> dict[str, int
     cap (`--max-source-fetches`) is applied separately at the fetch site.
     """
     settings = dict(DEPTH_SETTINGS[depth])
+    # `is not None` (not truthiness) so an explicit 0 is honored as a real lower
+    # bound rather than ignored as "unset" — matches how main() stashes these.
     max_per_source = config.get("_max_per_source")
-    if max_per_source:
+    if max_per_source is not None:
         settings["per_stream_limit"] = int(max_per_source)
     max_results = config.get("_max_results")
-    if max_results:
+    if max_results is not None:
         settings["pool_limit"] = int(max_results)
         settings["rerank_limit"] = int(max_results)
     return settings
@@ -477,7 +479,9 @@ def run(
                 # --plan fetches, instead of only the first two.
                 cap = MAX_SOURCE_FETCHES.get(source)
                 _cap_override = config.get("_max_source_fetches")
-                if cap is not None and _cap_override:
+                if cap is not None and _cap_override is not None:
+                    # `is not None` so --max-source-fetches 0 (disable fetching a
+                    # capped source) is honored instead of falling back to default.
                     cap = int(_cap_override)
                 if cap is not None:
                     current = source_fetch_count.get(source, 0)
