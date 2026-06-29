@@ -7,6 +7,27 @@ from lib import http
 from lib import schema
 
 
+class DepthSettingsOverrideTests(unittest.TestCase):
+    def test_no_overrides_returns_depth_defaults(self):
+        settings = pipeline._resolve_depth_settings("deep", {})
+        self.assertEqual(pipeline.DEPTH_SETTINGS["deep"], settings)
+
+    def test_overrides_raise_caps_and_do_not_mutate_module_defaults(self):
+        before = dict(pipeline.DEPTH_SETTINGS["deep"])
+        settings = pipeline._resolve_depth_settings(
+            "deep", {"_max_per_source": 60, "_max_results": 200}
+        )
+        self.assertEqual(60, settings["per_stream_limit"])
+        self.assertEqual(200, settings["pool_limit"])
+        self.assertEqual(200, settings["rerank_limit"])
+        # Module-level defaults must be untouched (issue #716 regression guard).
+        self.assertEqual(before, pipeline.DEPTH_SETTINGS["deep"])
+
+    def test_overrides_can_also_lower_caps(self):
+        settings = pipeline._resolve_depth_settings("deep", {"_max_results": 10})
+        self.assertEqual(10, settings["rerank_limit"])
+
+
 class PipelineV3Tests(unittest.TestCase):
     def test_mock_pipeline_report_without_live_credentials(self):
         report = pipeline.run(

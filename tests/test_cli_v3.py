@@ -169,6 +169,25 @@ class CliV3Tests(unittest.TestCase):
         self.assertEqual(["biosecurity"], args.topic)
         self.assertEqual([], extra)
 
+    def test_build_parser_accepts_result_cap_overrides(self):
+        parser = cli.build_parser()
+        args, extra = parser.parse_known_args(
+            ["--max-results", "200", "--max-per-source", "60",
+             "--max-source-fetches", "8", "figma config 2026"]
+        )
+        self.assertEqual(200, args.max_results)
+        self.assertEqual(60, args.max_per_source)
+        self.assertEqual(8, args.max_source_fetches)
+        self.assertEqual(["figma config 2026"], args.topic)
+        self.assertEqual([], extra)
+
+    def test_result_cap_overrides_default_to_none(self):
+        parser = cli.build_parser()
+        args, _ = parser.parse_known_args(["figma config 2026"])
+        self.assertIsNone(args.max_results)
+        self.assertIsNone(args.max_per_source)
+        self.assertIsNone(args.max_source_fetches)
+
     def test_research_unknown_flag_fails_before_config_load(self):
         with mock.patch.object(
             cli.env, "get_config", side_effect=AssertionError("config should not load")

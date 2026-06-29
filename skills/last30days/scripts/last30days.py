@@ -378,6 +378,17 @@ def build_parser() -> argparse.ArgumentParser:
             "When set, --days looks back from this date instead of today."
             ),
     )
+    parser.add_argument("--max-results", dest="max_results", type=int,
+                        help="Override the final ranked-pool cap (pool_limit/rerank_limit) from the depth profile. "
+                             "Use for high-volume topics where the default (deep=60) under-covers. See issue #716.")
+    parser.add_argument("--max-per-source", dest="max_per_source", type=int,
+                        help="Override the per-stream cap (per_stream_limit) applied to each (source, subquery) before "
+                             "pooling. Raising it increases unique-item yield when one source has many relevant items. "
+                             "See issue #716.")
+    parser.add_argument("--max-source-fetches", dest="max_source_fetches", type=int,
+                        help="Override the per-source fetch cap (MAX_SOURCE_FETCHES, default x=2) that limits how many "
+                             "subqueries actually fetch a capped source. Raise it so every X subquery in a multi-angle "
+                             "--plan runs instead of just the first two. See issue #716.")
     parser.add_argument("--auto-resolve", action="store_true",
                         help="Use web search to discover subreddits/handles before planning (for platforms without WebSearch)")
     parser.add_argument("--github-user", help="GitHub username for person-mode search (e.g., steipete)")
@@ -1078,6 +1089,15 @@ def main() -> int:
     progress.start_processing()
 
     depth = "deep" if args.deep else "quick" if args.quick else "default"
+    # CLI overrides for the depth profile's result caps (issue #716). Stashed on
+    # config so pipeline.run() can apply them without widening its signature; the
+    # comparison path inherits them via `entity_config = dict(config)`.
+    if args.max_results is not None:
+        config["_max_results"] = args.max_results
+    if args.max_per_source is not None:
+        config["_max_per_source"] = args.max_per_source
+    if args.max_source_fetches is not None:
+        config["_max_source_fetches"] = args.max_source_fetches
     try:
         x_related = [h.strip() for h in args.x_related.split(",") if h.strip()] if args.x_related else None
         subreddits = [s.strip().removeprefix("r/") for s in args.subreddits.split(",") if s.strip()] if args.subreddits else None
