@@ -172,7 +172,7 @@ def load_env_file(path: Path) -> dict[str, str]:
         return env
     _check_file_permissions(path)
 
-    with open(path, 'r') as f:
+    with open(path, 'r', encoding='utf-8-sig') as f:
         for line in f:
             line = line.strip()
             if not line or line.startswith('#'):
