@@ -422,6 +422,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('XAI_BASE_URL', None),
         ('SCRAPECREATORS_API_KEY', None),
         ('APIFY_API_TOKEN', None),
+        ('GITHUB_TOKEN', None),
         ('AUTH_TOKEN', None),
         ('CT0', None),
         ('BSKY_HANDLE', None),
