@@ -99,7 +99,7 @@ def search_hackernews(
     params = {
         "query": core_flat,
         "tags": "story",
-        "numericFilters": f"created_at_i>{from_ts},created_at_i<{to_ts},points>2",
+        "numericFilters": f"created_at_i>{from_ts},created_at_i<{to_ts}",
         "hitsPerPage": str(count),
     }
     # Algolia defaults to AND across query tokens, so a 4-5 word theme query
@@ -122,9 +122,14 @@ def search_hackernews(
         return {"hits": [], "error": str(e)}
 
     hits = response.get("hits", [])
+
+    # points is not a filterable Algolia attribute; filter client-side
+    hits = [h for h in hits if (h.get("points") or 0) > 2]
+
+    response["hits"] = hits
+
     _log(f"Found {len(hits)} stories")
     return response
-
 
 _WORD_BOUNDARY_RE_CACHE: Dict[str, "re.Pattern[str]"] = {}
 
