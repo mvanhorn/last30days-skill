@@ -108,8 +108,29 @@ class TestDiagnoseSurfacesPending:
         assert diag["x_pending_browser_auth"] is False
 
     def test_available_sources_no_double_x(self):
-        # When X is available outright, the elif must not also append a 2nd "x".
+        # When X is available outright, the else branch must not also append a 2nd "x".
         cfg = _cfg(FROM_BROWSER="chrome")
         with mock.patch("lib.env.get_x_source", return_value="bird"):
             sources = pipeline.available_sources(cfg)
         assert sources.count("x") == 1
+
+    def test_available_sources_uses_precomputed_x_pending(self):
+        # diagnose() passes x_pending in to avoid a second predicate evaluation;
+        # when provided, available_sources must not call the predicate itself.
+        cfg = _cfg(FROM_BROWSER="chrome")
+        with mock.patch("lib.env.get_x_source", return_value=None), \
+             mock.patch("lib.env.x_pending_browser_auth",
+                        side_effect=AssertionError("must use precomputed x_pending")):
+            assert "x" in pipeline.available_sources(cfg, x_pending=True)
+            assert "x" not in pipeline.available_sources(cfg, x_pending=False)
+
+    def test_diagnose_evaluates_predicate_once(self):
+        # The tidy: x_pending_browser_auth runs exactly once per diagnose() call.
+        cfg = _cfg(FROM_BROWSER="chrome")
+        with mock.patch("lib.env.get_x_source", return_value=None), \
+             mock.patch("lib.bird_x.is_bird_installed", return_value=True), \
+             mock.patch("lib.env.x_pending_browser_auth", wraps=env.x_pending_browser_auth) as spy:
+            diag = pipeline.diagnose(cfg, safe=True)
+        assert spy.call_count == 1
+        assert "x" in diag["available_sources"]
+        assert diag["x_pending_browser_auth"] is True

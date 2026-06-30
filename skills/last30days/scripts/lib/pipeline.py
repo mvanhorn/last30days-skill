@@ -115,7 +115,12 @@ def normalize_requested_sources(sources: list[str] | None) -> list[str] | None:
     return normalized
 
 
-def available_sources(config: dict[str, Any], requested_sources: list[str] | None = None) -> list[str]:
+def available_sources(
+    config: dict[str, Any],
+    requested_sources: list[str] | None = None,
+    *,
+    x_pending: bool | None = None,
+) -> list[str]:
     available: list[str] = []
     # reddit_public needs no API key - always available
     available.append("reddit")
@@ -123,12 +128,17 @@ def available_sources(config: dict[str, Any], requested_sources: list[str] | Non
         available.extend(["tiktok", "instagram"])
     if env.get_x_source(config):
         available.append("x")
-    elif env.x_pending_browser_auth(config):
+    else:
         # Safe inspection (--diagnose/--preflight) skips browser-cookie
         # extraction, so get_x_source is None even though a real run would
         # authenticate X via FROM_BROWSER. Report it as available so consumers
         # of available_sources (SKILL.md ACTIVE_SOURCES_LIST) don't under-report.
-        available.append("x")
+        # diagnose() precomputes the predicate and passes it via x_pending to
+        # avoid evaluating it twice in one diagnose() call.
+        if x_pending is None:
+            x_pending = env.x_pending_browser_auth(config)
+        if x_pending:
+            available.append("x")
     if which("yt-dlp") or env.is_youtube_sc_available(config):
         available.append("youtube")
     available.extend(["hackernews", "polymarket"])
@@ -189,6 +199,8 @@ def diagnose(
     requested_sources = normalize_requested_sources(requested_sources)
     google_key = _google_key(config)
     x_status = env.get_x_source_status(config, probe=not safe)
+    # Compute once and reuse for both the diag flag and available_sources below.
+    x_pending = env.x_pending_browser_auth(config)
     native_web_backend = None
     if config.get("BRAVE_API_KEY"):
         native_web_backend = "brave"
@@ -236,7 +248,7 @@ def diagnose(
         "bird_installed": x_status["bird_installed"],
         "bird_authenticated": x_status["bird_authenticated"],
         "bird_username": x_status["bird_username"],
-        "x_pending_browser_auth": env.x_pending_browser_auth(config),
+        "x_pending_browser_auth": x_pending,
         "xquik_available": x_status.get("xquik_available", False),
         "xquik_working": x_status.get("xquik_working"),
         "xquik_status": x_status.get("xquik_status", ""),
@@ -244,7 +256,7 @@ def diagnose(
         "native_search": env.is_native_search(config),
         "has_scrapecreators": bool(config.get("SCRAPECREATORS_API_KEY")),
         "has_github": bool(config.get("GITHUB_TOKEN") or which("gh")),
-        "available_sources": available_sources(config, requested_sources),
+        "available_sources": available_sources(config, requested_sources, x_pending=x_pending),
         "safe": safe,
         "config_source": config.get("_CONFIG_SOURCE"),
         "ignored_project_config": config.get("_IGNORED_PROJECT_CONFIG"),
