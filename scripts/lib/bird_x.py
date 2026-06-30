@@ -177,6 +177,8 @@ def _run_bird_search(query: str, count: int, timeout: int) -> Dict[str, Any]:
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             preexec_fn=preexec,
             env=_subprocess_env(),
         )
@@ -205,15 +207,27 @@ def _run_bird_search(query: str, count: int, timeout: int) -> Dict[str, Any]:
             except Exception:
                 pass
 
-        if proc.returncode != 0:
-            error = stderr.strip() if stderr else "Bird search failed"
-            return {"error": error, "items": []}
-
         output = stdout.strip() if stdout else ""
+
+        # Windows/Node 24: the vendored Bird CLI uses native fetch (undici), and
+        # calling process.exit() while keep-alive sockets are still closing trips a
+        # libuv assertion (UV_HANDLE_CLOSING, src/win/async.c) -> non-zero exit code
+        # AFTER it has already written a complete, valid JSON result to stdout.
+        # So: if stdout has parseable JSON, trust it regardless of the exit code;
+        # only treat a non-zero exit as a real failure when stdout is empty/garbage.
         if not output:
+            if proc.returncode != 0:
+                error = stderr.strip() if stderr else "Bird search failed"
+                return {"error": error, "items": []}
             return {"items": []}
 
-        parsed = json.loads(output)
+        try:
+            parsed = json.loads(output)
+        except json.JSONDecodeError:
+            if proc.returncode != 0:
+                error = stderr.strip() if stderr else "Bird search failed"
+                return {"error": error, "items": []}
+            raise
         if isinstance(parsed, list):
             return {"items": parsed}
         return parsed
