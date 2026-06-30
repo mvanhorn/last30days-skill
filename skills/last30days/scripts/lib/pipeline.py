@@ -123,6 +123,12 @@ def available_sources(config: dict[str, Any], requested_sources: list[str] | Non
         available.extend(["tiktok", "instagram"])
     if env.get_x_source(config):
         available.append("x")
+    elif env.x_pending_browser_auth(config):
+        # Safe inspection (--diagnose/--preflight) skips browser-cookie
+        # extraction, so get_x_source is None even though a real run would
+        # authenticate X via FROM_BROWSER. Report it as available so consumers
+        # of available_sources (SKILL.md ACTIVE_SOURCES_LIST) don't under-report.
+        available.append("x")
     if which("yt-dlp") or env.is_youtube_sc_available(config):
         available.append("youtube")
     available.extend(["hackernews", "polymarket"])
@@ -230,6 +236,7 @@ def diagnose(
         "bird_installed": x_status["bird_installed"],
         "bird_authenticated": x_status["bird_authenticated"],
         "bird_username": x_status["bird_username"],
+        "x_pending_browser_auth": env.x_pending_browser_auth(config),
         "xquik_available": x_status.get("xquik_available", False),
         "xquik_working": x_status.get("xquik_working"),
         "xquik_status": x_status.get("xquik_status", ""),
