@@ -267,17 +267,16 @@ def test_search_hackernews_http_error_handling(mock_request):
 
 
 def test_search_hackernews_engagement_filter(mock_request):
-    """Test that low-engagement stories are filtered."""
+    """Test that engagement filtering is done client-side."""
     mock_request.return_value = {"hits": [], "nbHits": 0}
-    
+
     hackernews.search_hackernews("test", "2026-01-01", "2026-01-31")
-    
+
     call_args = mock_request.call_args[0]
     url = call_args[1]
-    
-    # Should filter for points > 2 (URL-encoded)
-    assert "points" in url and "%3E2" in url
 
+    # points should NOT be sent as an Algolia numeric filter
+    assert "points" not in url
 # === Tests for parse_hackernews_response() ===
 
 
