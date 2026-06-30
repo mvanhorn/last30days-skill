@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `--diagnose` / `--preflight` no longer falsely reports X as unreachable when X auth comes from `FROM_BROWSER` browser cookies. These modes run in `plan_only` and skip cookie extraction for privacy (no Keychain access), so X was dropped from `available_sources` even though a real run authenticates fine. A new side-effect-free `env.x_pending_browser_auth` predicate now reports X as available-pending-browser-auth (and surfaces an `x_pending_browser_auth` flag in `--diagnose`) by keying only on the already-resolved browser list — no cookie is read. Covers every configured browser, including Chrome. ([#692](https://github.com/mvanhorn/last30days-skill/issues/692); first reported and fixed by @23241a6749 in #700)
+
 ## [3.8.3] - 2026-06-25
 
 ### Added
