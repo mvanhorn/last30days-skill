@@ -51,11 +51,15 @@ def normalize_source_items(
         "pinterest": _normalize_pinterest,
         "polymarket": _normalize_polymarket,
         "digg": _normalize_digg,
+        "arxiv": _normalize_arxiv,
+        "techmeme": _normalize_techmeme,
+        "trustpilot": _normalize_trustpilot,
         "grounding": _normalize_grounding,
         "xiaohongshu": _normalize_grounding,
         "github": _normalize_github,
         "perplexity": _normalize_grounding,
         "jobs": _normalize_jobs,
+        "linkedin": _normalize_linkedin,
     }
     normalizer = normalizers.get(source)
     if normalizer is None:
@@ -529,6 +533,121 @@ def _normalize_digg(
     )
 
 
+def _normalize_arxiv(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for arXiv papers.
+
+    The abstract (summary) is the body that feeds rerank and synthesis. arXiv
+    has no engagement signal, so engagement is empty and ranking leans on
+    relevance and recency.
+    """
+    title = str(item.get("title") or "").strip()
+    summary = str(item.get("summary") or "").strip()
+    body = "\n\n".join(part for part in [title, summary] if part)
+    authors = item.get("authors") or []
+    if not isinstance(authors, list):
+        authors = []
+    paper_id = str(item.get("id") or f"AX{index + 1}")
+    return _source_item(
+        item_id=paper_id,
+        source=source,
+        title=title or f"arXiv paper {index + 1}",
+        body=body,
+        url=str(item.get("url") or ""),
+        author=str(item.get("author") or "") or None,
+        container="arXiv",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement={},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=summary[:400],
+        metadata={
+            "authors": authors,
+            "summary": summary,
+        },
+    )
+
+
+def _normalize_techmeme(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for Techmeme headlines.
+
+    The headline is both title and body (Techmeme carries no abstract). The
+    publication is the container/author. No engagement signal in the search
+    shape, so ranking leans on relevance and recency.
+    """
+    title = str(item.get("title") or "").strip()
+    source_name = str(item.get("source_name") or "").strip()
+    return _source_item(
+        item_id=str(item.get("id") or f"TM{index + 1}"),
+        source=source,
+        title=title or f"Techmeme headline {index + 1}",
+        body=title,
+        url=str(item.get("url") or ""),
+        author=source_name or None,
+        container=source_name or "Techmeme",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="low"),
+        engagement={},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=title[:400],
+        metadata={
+            "publication": source_name,
+        },
+    )
+
+
+def _normalize_trustpilot(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for Trustpilot company sentiment.
+
+    One item per company. The AI summary (already balanced positive/negative)
+    is the body. TrustScore and review count are engagement and metadata.
+    """
+    title = str(item.get("title") or "").strip()
+    name = str(item.get("name") or "").strip()
+    summary = str(item.get("summary") or "").strip()
+    body = "\n\n".join(part for part in [title, summary] if part)
+    return _source_item(
+        item_id=str(item.get("id") or f"TP{index + 1}"),
+        source=source,
+        title=title or (f"{name} on Trustpilot" if name else f"Trustpilot reviews {index + 1}"),
+        body=body,
+        url=str(item.get("url") or ""),
+        author=name or None,
+        container="Trustpilot",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="low"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.6),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=summary[:400],
+        metadata={
+            "name": name,
+            "trustScore": item.get("trustScore"),
+            "reviewCount": item.get("reviewCount"),
+            "aiSummary": summary,
+        },
+    )
+
+
 def _normalize_polymarket(
     source: str,
     item: dict[str, Any],
@@ -626,4 +745,42 @@ def _normalize_grounding(
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=snippet,
         metadata=item.get("metadata") or {},
+    )
+
+
+def _normalize_linkedin(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for LinkedIn posts and articles via ScrapeCreators.
+
+    A LinkedIn article (Pulse long-form, under a /pulse/ URL) is treated as
+    high signal: it ranks above ordinary posts. Detection is belt-and-suspenders
+    — honor the parser's `is_article` flag, and re-derive from the URL so an
+    article still ranks high even if the flag wasn't set upstream.
+    """
+    text = str(item.get("text") or "").strip()
+    author = str(item.get("author") or "").strip()
+    url = str(item.get("url") or "").strip()
+    is_article = bool(item.get("is_article")) or "/pulse/" in url.lower()
+    kind = "article" if is_article else "post"
+    default_relevance = 0.9 if is_article else 0.5
+    return _source_item(
+        item_id=str(item.get("id") or f"LI{index + 1}"),
+        source=source,
+        title=text[:140] or f"LinkedIn {kind} {index + 1}",
+        body=text,
+        url=url,
+        author=author,
+        container="LinkedIn Article" if is_article else "LinkedIn",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="medium"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", default_relevance),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=text[:200],
+        metadata={"author_display": author, "is_article": is_article},
     )

@@ -252,6 +252,18 @@ def test_cmd_config_delivery(temp_db, capsys):
     assert output["key"] == "delivery_channel"
 
 
+def test_cmd_config_delivery_rejects_non_https(temp_db):
+    """A non-https delivery channel is rejected at write time, not stored."""
+    args = Mock()
+    args.key = "delivery"
+    args.value = "http://evil.example/hooks.slack.com"
+
+    with pytest.raises(SystemExit):
+        watchlist.cmd_config(args)
+
+    assert not store.get_setting("delivery_channel")
+
+
 def test_cmd_config_budget(temp_db, capsys):
     """Test configuring daily budget."""
     args = Mock()

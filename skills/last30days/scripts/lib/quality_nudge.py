@@ -40,13 +40,24 @@ def _has_x_credentials(config: dict) -> bool:
     )
 
 
-def _is_youtube_active(config: dict, research_results: dict) -> bool:
-    """Check if YouTube source is active (yt-dlp installed)."""
+def _has_ytdlp() -> bool:
+    """Return True when the local/free YouTube lane is available."""
     try:
         from . import youtube_yt
-        has_ytdlp = youtube_yt.is_ytdlp_installed()
+        return bool(youtube_yt.is_ytdlp_installed())
     except Exception:
-        has_ytdlp = False
+        return False
+
+
+def _youtube_returned_data(research_results: dict) -> bool:
+    """Return True when YouTube produced usable items through any provider."""
+    videos = int(research_results.get("youtube_videos_count") or 0)
+    transcripts = int(research_results.get("youtube_transcripts_count") or 0)
+    return videos > 0 or transcripts > 0
+
+
+def _is_youtube_active(config: dict, research_results: dict, *, has_ytdlp: bool) -> bool:
+    """Check if YouTube source is active (yt-dlp installed)."""
     if not has_ytdlp:
         return False
     if research_results.get("youtube_error"):
@@ -139,7 +150,8 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
         research_results: Dict with keys like x_error, youtube_error,
             reddit_error reflecting what happened this run. Optional keys
             ``youtube_videos_count`` and ``youtube_transcripts_count`` enable
-            degraded-YouTube detection (transcript-fetch ratio below threshold).
+            degraded-YouTube detection (transcript-fetch ratio below threshold,
+            or fallback/provider data returned without local yt-dlp).
             Optional key ``instagram_items_count`` enables silent-failure
             detection for the bonus Instagram source.
 
@@ -175,7 +187,9 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
             core_errored.append("x")
 
     # YouTube
-    yt_active = _is_youtube_active(config, research_results)
+    has_ytdlp = _has_ytdlp()
+    yt_active = _is_youtube_active(config, research_results, has_ytdlp=has_ytdlp)
+    youtube_returned_data = _youtube_returned_data(research_results)
     if yt_active:
         core_active.append("youtube")
         # Active means yt-dlp is installed and search did not error at the top
@@ -185,14 +199,18 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
         threshold = float(config.get("DEGRADED_TRANSCRIPT_THRESHOLD") or DEFAULT_DEGRADED_TRANSCRIPT_THRESHOLD)
         if _is_youtube_degraded(research_results, threshold):
             core_degraded.append("youtube")
+    elif youtube_returned_data and not research_results.get("youtube_error"):
+        # YouTube produced data through a fallback/provider lane even though the
+        # local free yt-dlp lane is unavailable. Count the source as present,
+        # but surface it as degraded so users do not see the contradictory
+        # "Missing: YouTube" ending after a report with YouTube evidence.
+        # has_ytdlp is provably False here: yt_active is False and youtube_error
+        # is excluded by this guard, leaving unavailable yt-dlp as the cause.
+        core_active.append("youtube")
+        core_degraded.append("youtube")
     else:
         core_missing.append("youtube")
         # Check if configured but errored (yt-dlp installed but failed this run)
-        try:
-            from . import youtube_yt
-            has_ytdlp = youtube_yt.is_ytdlp_installed()
-        except Exception:
-            has_ytdlp = False
         if has_ytdlp and research_results.get("youtube_error"):
             core_errored.append("youtube")
 
@@ -213,6 +231,7 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
         has_sc=has_sc,
         active_sources=active_sources,
         bonus_errored=bonus_errored,
+        has_ytdlp=has_ytdlp,
     ) if (core_missing or core_degraded or bonus_errored) else None
 
     return {
@@ -234,6 +253,7 @@ def _build_nudge_text(
     has_sc: bool = False,
     active_sources: list = None,
     bonus_errored: List[str] = None,
+    has_ytdlp: bool = False,
 ) -> str:
     """Build human-readable nudge text describing what was missed or degraded.
 
@@ -298,20 +318,29 @@ def _build_nudge_text(
         videos = int(research_results.get("youtube_videos_count") or 0)
         transcripts = int(research_results.get("youtube_transcripts_count") or 0)
         captions_disabled = int(research_results.get("youtube_captions_disabled_count") or 0)
-        captions_note = ""
-        if captions_disabled > 0:
-            captions_note = (
-                f" ({captions_disabled} of those had captions disabled by the "
-                "uploader, which is a separate cause and not fixable on your end)"
+        if not has_ytdlp and _youtube_returned_data(research_results):
+            free_suggestions.append(
+                f"YouTube returned {videos} videos and {transcripts} transcripts "
+                "through a fallback/provider path, but local yt-dlp is not "
+                "installed. Install yt-dlp to enable the free local YouTube lane "
+                "and reduce reliance on fallback providers: brew install yt-dlp "
+                "(macOS), scoop install yt-dlp (Windows), or pip install -U yt-dlp."
             )
-        free_suggestions.append(
-            f"YouTube returned {videos} videos but only {transcripts} transcripts "
-            f"captured{captions_note}. The most common remaining cause is a stale "
-            "yt-dlp binary - YouTube's caption format changes frequently and old "
-            "binaries silently fail every transcript. Update via your package "
-            "manager: scoop update yt-dlp (Windows), brew upgrade yt-dlp (macOS), "
-            "or pip install -U yt-dlp."
-        )
+        else:
+            captions_note = ""
+            if captions_disabled > 0:
+                captions_note = (
+                    f" ({captions_disabled} of those had captions disabled by the "
+                    "uploader, which is a separate cause and not fixable on your end)"
+                )
+            free_suggestions.append(
+                f"YouTube returned {videos} videos but only {transcripts} transcripts "
+                f"captured{captions_note}. The most common remaining cause is a stale "
+                "yt-dlp binary - YouTube's caption format changes frequently and old "
+                "binaries silently fail every transcript. Update via your package "
+                "manager: scoop update yt-dlp (Windows), brew upgrade yt-dlp (macOS), "
+                "or pip install -U yt-dlp."
+            )
 
     if "instagram" in bonus_errored:
         free_suggestions.append(

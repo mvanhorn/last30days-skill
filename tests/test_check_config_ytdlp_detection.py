@@ -44,8 +44,11 @@ def _run_hook(env_overrides: dict[str, str], path_override: str | None = None) -
     env.update(env_overrides)
     if path_override is not None:
         env["PATH"] = path_override
+    bash_path = shutil.which("bash")
+    if bash_path is None:
+        pytest.skip("bash not on PATH")
     return subprocess.run(
-        ["bash", str(HOOK)],
+        [bash_path, str(HOOK)],
         capture_output=True,
         text=True,
         env=env,
@@ -53,12 +56,21 @@ def _run_hook(env_overrides: dict[str, str], path_override: str | None = None) -
     )
 
 
-def _bash_dir() -> str:
-    """Directory containing the bash binary, so PATH overrides still let us run bash."""
-    bash_path = shutil.which("bash")
-    if bash_path is None:
-        pytest.skip("bash not on PATH")
-    return str(Path(bash_path).parent)
+def _tool_path_without_ytdlp(tmp_path: Path) -> str:
+    """Build a tiny PATH with hook dependencies but no yt-dlp."""
+    tool_bin = tmp_path / "tool_bin"
+    tool_bin.mkdir(exist_ok=True)
+    for name in ("cat", "id", "mkdir", "python3", "sed", "stat", "tr", "uname"):
+        target = shutil.which(name)
+        if target is None:
+            if name == "python3":
+                continue
+            pytest.skip(f"{name} not on PATH")
+        link = tool_bin / name
+        if not link.exists():
+            link.symlink_to(target)
+    assert shutil.which("yt-dlp", path=str(tool_bin)) is None
+    return str(tool_bin)
 
 
 def _write_fake_last_run(tmp_path: Path) -> str:
@@ -106,7 +118,7 @@ def test_new_user_with_ytdlp_says_youtube_works(tmp_path: Path):
 
     # PATH must contain bash (so the hook can run) AND the fake yt-dlp dir.
     # Putting fake_bin FIRST means any real yt-dlp elsewhere is shadowed.
-    path = f"{fake_bin}:{_bash_dir()}"
+    path = f"{fake_bin}:{_tool_path_without_ytdlp(tmp_path)}"
     assert shutil.which("yt-dlp", path=path) is not None, (
         "test pre-condition: fake yt-dlp should resolve on the override PATH"
     )
@@ -134,7 +146,7 @@ def test_new_user_with_ytdlp_says_youtube_works(tmp_path: Path):
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 def test_new_user_without_ytdlp_unchanged_welcome(tmp_path: Path):
     """A new user without yt-dlp should see the original wizard-unlock copy."""
-    path = _bash_dir()
+    path = _tool_path_without_ytdlp(tmp_path)
     assert shutil.which("yt-dlp", path=path) is None, (
         "test pre-condition: yt-dlp should not resolve on the minimal PATH"
     )
@@ -171,7 +183,7 @@ def test_setup_done_user_source_count_includes_ytdlp(tmp_path: Path):
     fake_bin.mkdir()
     (fake_bin / "yt-dlp").touch()
     (fake_bin / "yt-dlp").chmod(0o755)
-    path_with = f"{fake_bin}:{_bash_dir()}"
+    path_with = f"{fake_bin}:{_tool_path_without_ytdlp(tmp_path)}"
     assert shutil.which("yt-dlp", path=path_with) is not None
 
     with_yt = _run_hook(base_env, path_override=path_with)
@@ -179,7 +191,7 @@ def test_setup_done_user_source_count_includes_ytdlp(tmp_path: Path):
     count_with = _parse_source_count(with_yt.stdout)
 
     # 2) Run WITHOUT yt-dlp (minimal PATH)
-    path_without = _bash_dir()
+    path_without = _tool_path_without_ytdlp(tmp_path)
     assert shutil.which("yt-dlp", path=path_without) is None
 
     without_yt = _run_hook(base_env, path_override=path_without)
@@ -193,3 +205,51 @@ def test_setup_done_user_source_count_includes_ytdlp(tmp_path: Path):
         f"Stdout with:    {with_yt.stdout!r}\n"
         f"Stdout without: {without_yt.stdout!r}"
     )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_keychain_credentials_avoid_new_user_welcome(tmp_path: Path):
+    """macOS Keychain credentials should count as configured for the status hook."""
+    fake_bin = tmp_path / "fake_bin_keychain"
+    fake_bin.mkdir()
+
+    uname = fake_bin / "uname"
+    uname.write_text("#!/bin/sh\necho Darwin\n", encoding="utf-8")
+    uname.chmod(0o755)
+
+    security = fake_bin / "security"
+    security.write_text(
+        """#!/bin/sh
+service=""
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-s" ]; then
+    service="$2"
+    shift 2
+  else
+    shift
+  fi
+done
+case "$service" in
+  last30days-XAI_API_KEY|last30days-SCRAPECREATORS_API_KEY) exit 0 ;;
+  *) exit 44 ;;
+esac
+""",
+        encoding="utf-8",
+    )
+    security.chmod(0o755)
+
+    cfg_dir = _write_fake_last_run(tmp_path)
+    path = f"{fake_bin}:{_tool_path_without_ytdlp(tmp_path)}"
+    result = _run_hook(
+        {
+            "HOME": str(tmp_path),
+            "LAST30DAYS_CONFIG_DIR": cfg_dir,
+        },
+        path_override=path,
+    )
+
+    assert result.returncode == 0, f"hook failed: stderr={result.stderr!r}"
+    assert "Ready to use. Run /last30days" not in result.stdout
+    assert "Ready" in result.stdout
+    assert "sources active" in result.stdout
+    assert "Tip: Add ScrapeCreators" not in result.stdout

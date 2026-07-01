@@ -1276,6 +1276,36 @@ class TestPerplexityAvailability(unittest.TestCase):
         self.assertTrue(diag["local_mode"])
 
 
+class TestLinkedinAvailability(unittest.TestCase):
+    """LinkedIn is power-user opt-in (INCLUDE_SOURCES=linkedin), unlike
+    tiktok/instagram which activate on SCRAPECREATORS_API_KEY alone. This
+    keeps existing SCRAPECREATORS_API_KEY holders from silently picking up a
+    new source — and spending new credits — on their next run."""
+
+    def test_not_available_with_key_alone(self):
+        sources = pipeline.available_sources({"SCRAPECREATORS_API_KEY": "test-key"})
+        self.assertNotIn("linkedin", sources)
+        # tiktok/instagram remain unconditional with just the key
+        self.assertIn("tiktok", sources)
+        self.assertIn("instagram", sources)
+
+    def test_available_with_key_and_include_sources(self):
+        sources = pipeline.available_sources(
+            {"SCRAPECREATORS_API_KEY": "test-key", "INCLUDE_SOURCES": "linkedin"}
+        )
+        self.assertIn("linkedin", sources)
+
+    def test_available_with_key_and_requested_sources(self):
+        sources = pipeline.available_sources(
+            {"SCRAPECREATORS_API_KEY": "test-key"}, requested_sources=["linkedin"]
+        )
+        self.assertIn("linkedin", sources)
+
+    def test_not_available_with_include_sources_but_no_key(self):
+        sources = pipeline.available_sources({"INCLUDE_SOURCES": "linkedin"})
+        self.assertNotIn("linkedin", sources)
+
+
 class TestKeylessGroundingAvailability(unittest.TestCase):
     """Grounding (general web) availability is host-aware.
 

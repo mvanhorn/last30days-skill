@@ -117,15 +117,14 @@ class TestEnvBrowserSelection:
             assert browser in tried, f"auto should try {browser}"
 
     @patch("lib.cookie_extract.extract_cookies")
-    def test_default_still_silent_only(self, mock_extract):
-        """Default (no FROM_BROWSER) stays Firefox+Safari - no Keychain prompt."""
+    def test_default_skips_browser_cookie_reads(self, mock_extract):
+        """Default (no FROM_BROWSER) reads no local browser cookies."""
         mock_extract.return_value = None
         config = _base_config()
 
         extract_browser_credentials(config)
 
-        tried = {call[0][0] for call in mock_extract.call_args_list}
-        assert tried == {"firefox", "safari"}
+        mock_extract.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

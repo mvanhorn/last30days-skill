@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from lib import cookie_extract
 from lib.cookie_extract import (
     extract_cookies,
     extract_firefox_cookies,
@@ -122,6 +123,38 @@ class TestExtractFirefoxCookies:
             result = _query_cookies_db(db_path, ".x.com", ["auth_token"])
 
         assert result == {"auth_token": "tok_abc123"}
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission model does not apply on Windows; mkstemp is 0o666 there")
+    def test_temp_cookie_copy_never_world_readable(self, tmp_path):
+        """The temp copy must be private the instant it exists, not only after
+        the lock chmod. Regression for the TOCTOU window where copy2 widened the
+        0600 mkstemp file to the source's 0644 before _lock_temp_cookie_copy ran.
+        """
+        db_path = tmp_path / "cookies.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE moz_cookies (name TEXT NOT NULL, value TEXT NOT NULL, host TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO moz_cookies (name, value, host) VALUES (?, ?, ?)",
+            ("auth_token", "tok_abc123", ".x.com"),
+        )
+        conn.commit()
+        conn.close()
+        os.chmod(db_path, 0o644)  # loose source perms, as Firefox ships them
+
+        observed = {}
+        real_lock = cookie_extract._lock_temp_cookie_copy
+
+        def spy(path):
+            # Mode of the copy as it exists right after copyfile, before chmod.
+            observed["mode_after_copy"] = os.stat(path).st_mode & 0o777
+            return real_lock(path)
+
+        with patch.object(cookie_extract, "_lock_temp_cookie_copy", side_effect=spy):
+            _query_cookies_db(db_path, ".x.com", ["auth_token"])
+
+        assert observed["mode_after_copy"] == 0o600
 
     def test_valid_cookies_extracted(self, mock_firefox_env):
         """Cookies for the target domain are returned correctly."""

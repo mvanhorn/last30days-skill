@@ -176,7 +176,8 @@ class TestRunWithTimeout(unittest.TestCase):
 
             def wait(self, timeout=None):
                 # First wait (timeout=5) forces the SIGKILL escalation branch;
-                # the final wait() (no timeout) returns.
+                # the final bounded wait is swallowed if the process still
+                # refuses to exit.
                 if timeout is not None:
                     raise TimeoutExpired(cmd="x", timeout=timeout)
                 return 0

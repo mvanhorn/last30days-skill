@@ -2,7 +2,8 @@
 set -euo pipefail
 
 # Check last30days configuration status and show appropriate welcome message.
-# Priority: .claude/last30days.env > ~/.config/last30days/.env > env vars
+# Priority for this status hook:
+# .claude/last30days.env > ~/.config/last30days/.env > env vars > Keychain presence
 
 PROJECT_ENV=".claude/last30days.env"
 GLOBAL_ENV="$HOME/.config/last30days/.env"
@@ -35,8 +36,7 @@ check_perms() {
   # every Linux session start and printed a false WARNING.
   perms=$(stat -c '%a' "$file" 2>/dev/null || stat -f '%Lp' "$file" 2>/dev/null || echo "")
   if [[ -n "$perms" && "$perms" != "600" && "$perms" != "400" ]]; then
-    echo "/last30days: WARNING — $file has permissions $perms (should be 600)."
-    echo "  Fix: chmod 600 $file"
+    chmod 600 "$file" && echo "/last30days: WARNING — $file had permissions $perms — auto-fixed with chmod 600" || echo "/last30days: WARNING — $file has permissions $perms (should be 600). Fix: chmod 600 $file"
   fi
 }
 
@@ -96,7 +96,40 @@ if [[ -n "$CONFIG_FILE" ]]; then
   load_env_vars "$CONFIG_FILE"
 fi
 
-# Check SETUP_COMPLETE (from file or env)
+# Load Keychain item presence for status checks without reading secret values.
+# Runtime credential resolution still happens in lib/env.py; this hook only
+# needs to avoid stale first-run/source-count messages.
+load_keychain_presence() {
+  case "$(uname -s 2>/dev/null)" in
+    Darwin*) ;;
+    *) return 0 ;;
+  esac
+  command -v security >/dev/null 2>&1 || return 0
+
+  local user key env_var current
+  user="${USER:-}"
+  if [[ -z "$user" ]]; then
+    user="$(id -un 2>/dev/null || true)"
+  fi
+  [[ -n "$user" ]] || return 0
+
+  for key in SETUP_COMPLETE OPENAI_API_KEY SCRAPECREATORS_API_KEY AUTH_TOKEN CT0 XAI_API_KEY BSKY_HANDLE EXA_API_KEY; do
+    env_var="ENV_${key}"
+    current="${!env_var:-}"
+    if [[ -z "$current" ]]; then
+      current="${!key:-}"
+    fi
+    [[ -n "$current" ]] && continue
+    if security find-generic-password -a "$user" -s "last30days-${key}" >/dev/null 2>&1; then
+      printf -v "ENV_${key}" '%s' "keychain"
+    fi
+  done
+  return 0
+}
+
+load_keychain_presence
+
+# Check SETUP_COMPLETE (from file, env, or Keychain presence)
 SETUP_COMPLETE="${ENV_SETUP_COMPLETE:-${SETUP_COMPLETE:-}}"
 
 # Compute last-run summary line (if last-run.json exists)
@@ -145,7 +178,7 @@ if command -v yt-dlp &>/dev/null; then
 fi
 
 # If setup has never been run, show welcome message for new users
-if [[ -z "$SETUP_COMPLETE" && -z "$CONFIG_FILE" && -z "${OPENAI_API_KEY:-}" && -z "${SCRAPECREATORS_API_KEY:-}" && -z "${AUTH_TOKEN:-}" && -z "${XAI_API_KEY:-}" ]]; then
+if [[ -z "$SETUP_COMPLETE" && -z "$CONFIG_FILE" && -z "${ENV_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}" && -z "${ENV_SCRAPECREATORS_API_KEY:-${SCRAPECREATORS_API_KEY:-}}" && -z "${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}" && -z "${ENV_XAI_API_KEY:-${XAI_API_KEY:-}}" ]]; then
   if [[ -n "$HAS_YTDLP" ]]; then
     # YouTube is already working via the on-system yt-dlp binary — don't list
     # it as something the wizard needs to unlock. See #394.

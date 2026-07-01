@@ -21,11 +21,28 @@ def _skill_version() -> str:
 
 
 class TestPluginContract(unittest.TestCase):
-    def test_codex_plugin_scaffold_stays_removed(self) -> None:
-        # .codex-plugin/ was removed in the resolver-collapse refactor; Codex users
-        # install via `npx skills add` or `~/.codex/skills/`. A reintroduction would
-        # silently fork the install surface.
-        self.assertFalse((ROOT / ".codex-plugin").exists())
+    def test_codex_plugin_manifest_uses_repo_skill_root(self) -> None:
+        manifest = _json(ROOT / ".codex-plugin" / "plugin.json")
+
+        self.assertEqual("last30days", manifest["name"])
+        self.assertEqual("./skills/", manifest["skills"])
+        self.assertEqual("last30days", manifest["interface"]["displayName"])
+
+    def test_codex_marketplace_points_at_repo_root_plugin(self) -> None:
+        marketplace = _json(ROOT / ".agents" / "plugins" / "marketplace.json")
+        plugins = marketplace.get("plugins") or []
+        plugin_by_name = {plugin["name"]: plugin for plugin in plugins}
+
+        self.assertEqual("last30days-skill", marketplace["name"])
+        self.assertIn("last30days", plugin_by_name)
+        plugin = plugin_by_name["last30days"]
+        self.assertEqual(
+            {
+                "source": "url",
+                "url": "https://github.com/mvanhorn/last30days-skill.git",
+            },
+            plugin["source"],
+        )
 
     def test_versions_match_across_manifests(self) -> None:
         pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
@@ -33,6 +50,7 @@ class TestPluginContract(unittest.TestCase):
 
         self.assertEqual(version, _skill_version())
         self.assertEqual(version, _json(ROOT / ".claude-plugin" / "plugin.json")["version"])
+        self.assertEqual(version, _json(ROOT / ".codex-plugin" / "plugin.json")["version"])
         self.assertEqual(version, _json(ROOT / "gemini-extension.json")["version"])
 
         marketplace = _json(ROOT / ".claude-plugin" / "marketplace.json")

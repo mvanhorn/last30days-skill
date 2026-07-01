@@ -39,6 +39,23 @@ class HiringSignalsTests(unittest.TestCase):
         self.assertEqual("mega-cap", summary["company_size_tier"])
         self.assertIn("too diffuse", summary["omitted_reason"])
 
+    def test_fortune_500_customer_boilerplate_does_not_make_startup_large_enterprise(self):
+        items = [
+            job(
+                "Founding Enterprise Solutions Engineer",
+                "Help Fortune 500 customers adopt SSO, SOC 2, and procurement workflows.",
+                "Sales",
+            ),
+            job(
+                "Security Platform Engineer",
+                "Build enterprise security, audit, and admin workflows for Fortune 500 customers.",
+                "Engineering",
+            ),
+        ]
+        summary = hiring_signals.analyze(items, explicit=False, topic="Listen Labs")
+        self.assertEqual("startup", summary["company_size_tier"])
+        self.assertTrue(summary["include"])
+
     def test_explicit_mode_keeps_low_confidence_signal(self):
         items = [job("Customer Success Manager", "support enterprise customers", "Success")]
         summary = hiring_signals.analyze(items, explicit=True, topic="Acme")

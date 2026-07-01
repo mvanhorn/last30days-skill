@@ -127,6 +127,9 @@ SOURCE_COMPLETION_ORDER = [
     "grounding",
     "xiaohongshu",
     "digg",
+    "arxiv",
+    "techmeme",
+    "trustpilot",
 ]
 
 SOURCE_COMPLETION_META = {
@@ -142,6 +145,9 @@ SOURCE_COMPLETION_META = {
     "grounding": ("Web", "result", "results", Colors.GREEN),
     "xiaohongshu": ("Xiaohongshu", "post", "posts", Colors.RED),
     "digg": ("Digg", "cluster", "clusters", Colors.YELLOW),
+    "arxiv": ("arXiv", "paper", "papers", Colors.RED),
+    "techmeme": ("Techmeme", "headline", "headlines", Colors.CYAN),
+    "trustpilot": ("Trustpilot", "review", "reviews", Colors.GREEN),
 }
 
 
@@ -200,7 +206,7 @@ Just start with "last30" and talk to me like normal.
 
 # Shorter promo for single missing key
 PROMO_SINGLE_KEY = {
-    "reddit": "\n💡 Unlock TikTok and Instagram with SCRAPECREATORS_API_KEY - 100 free credits, no CC - scrapecreators.com\n",
+    "reddit": "\n💡 Unlock TikTok and Instagram with SCRAPECREATORS_API_KEY - 10,000 free calls, no CC - scrapecreators.com\n",
     "x": "\n💡 Unlock X: log into x.com in your browser, then re-run. "
          "Firefox works on all platforms. Safari works on macOS (detected automatically). "
          "Chrome, Brave, Edge, Arc, Vivaldi, Opera, or Chromium on macOS require "
@@ -214,7 +220,7 @@ BIRD_AUTH_HELP = f"""
 {Colors.YELLOW}Bird authentication failed.{Colors.RESET}
 
 To fix this:
-1. Add AUTH_TOKEN and CT0 to ~/.config/last30days/.env or .claude/last30days.env
+1. Add AUTH_TOKEN and CT0 to ~/.config/last30days/.env, or to trusted .claude/last30days.env with LAST30DAYS_TRUST_PROJECT_CONFIG=1
 2. Or set XAI_API_KEY for the xAI fallback backend
 """
 
@@ -222,7 +228,7 @@ BIRD_AUTH_HELP_PLAIN = """
 Bird authentication failed.
 
 To fix this:
-1. Add AUTH_TOKEN and CT0 to ~/.config/last30days/.env or .claude/last30days.env
+1. Add AUTH_TOKEN and CT0 to ~/.config/last30days/.env, or to trusted .claude/last30days.env with LAST30DAYS_TRUST_PROJECT_CONFIG=1
 2. Or set XAI_API_KEY for the xAI fallback backend
 """
 

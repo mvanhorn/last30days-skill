@@ -2,12 +2,9 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import json
 import os
 import sys
-import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -27,12 +24,17 @@ else:
     CONFIG_DIR = Path.home() / ".config" / "last30days"
     CONFIG_FILE = CONFIG_DIR / ".env"
 
-CODEX_AUTH_FILE = Path(os.environ.get("CODEX_AUTH_FILE", str(Path.home() / ".codex" / "auth.json")))
-
 # macOS Keychain integration: items stored with this service prefix are picked
 # up automatically on Darwin as the lowest-priority credential source.
 # Example: `security add-generic-password -a "$USER" -s last30days-XAI_API_KEY -w "xai-..."`.
 KEYCHAIN_SERVICE_PREFIX = "last30days-"
+
+# Optional non-secret aliases for users who already store API keys under a
+# different Keychain naming convention. Configure as JSON in
+# LAST30DAYS_KEYCHAIN_ALIASES, for example:
+# {"XAI_API_KEY":{"account":"keychain-user","service":"existing-xai-api-key"}}
+# A string value is shorthand for {"service": "..."} with the current user.
+KEYCHAIN_ALIASES_ENV = "LAST30DAYS_KEYCHAIN_ALIASES"
 
 # Single source of truth for which credentials the Keychain loader looks up.
 # The setup-keychain.sh helper mirrors this list and is held in sync via
@@ -55,17 +57,14 @@ KEYCHAIN_KEYS = (
 # separator. Honors PASSWORD_STORE_DIR.
 DEFAULT_PASS_PATH_PREFIX = "last30days/"
 
-AuthSource = Literal["api_key", "codex", "none"]
-AuthStatus = Literal["ok", "missing", "expired", "missing_account_id"]
+AuthSource = Literal["api_key", "none"]
+AuthStatus = Literal["ok", "missing"]
 
 AUTH_SOURCE_API_KEY: AuthSource = "api_key"
-AUTH_SOURCE_CODEX: AuthSource = "codex"
 AUTH_SOURCE_NONE: AuthSource = "none"
 
 AUTH_STATUS_OK: AuthStatus = "ok"
 AUTH_STATUS_MISSING: AuthStatus = "missing"
-AUTH_STATUS_EXPIRED: AuthStatus = "expired"
-AUTH_STATUS_MISSING_ACCOUNT_ID: AuthStatus = "missing_account_id"
 
 
 @dataclass(frozen=True)
@@ -73,8 +72,38 @@ class OpenAIAuth:
     token: str | None
     source: AuthSource
     status: AuthStatus
-    account_id: str | None
-    codex_auth_file: str
+
+
+BrowserCookieMode = Literal["off", "read", "plan_only"]
+
+
+@dataclass(frozen=True)
+class ConfigLoadPolicy:
+    """Local-read gates for configuration loading.
+
+    Bare library calls use the safe default: no browser-cookie extraction and no
+    project-scoped config. CLI entry points can opt into narrower behavior after
+    parsing command intent.
+    """
+
+    browser_cookies: BrowserCookieMode = "off"
+    allow_project_config: bool = False
+    inspect_ignored_project_config: bool = False
+
+
+def _truthy(value: Any) -> bool:
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _project_config_trusted(policy: ConfigLoadPolicy, file_env: dict[str, Any]) -> bool:
+    if policy.allow_project_config:
+        return True
+    process_value = os.environ.get("LAST30DAYS_TRUST_PROJECT_CONFIG")
+    if process_value is not None:
+        return _truthy(process_value)
+    return _truthy(file_env.get("LAST30DAYS_TRUST_PROJECT_CONFIG"))
 
 
 def _check_file_permissions(path: Path) -> None:
@@ -121,13 +150,63 @@ def load_env_file(path: Path) -> dict[str, str]:
     return env
 
 
-def _load_keychain(keys: list[str]) -> dict[str, str]:
+def _parse_keychain_aliases(raw: str | None) -> dict[str, list[dict[str, str]]]:
+    """Parse non-secret Keychain alias metadata from JSON.
+
+    Supported forms:
+      {"XAI_API_KEY": "existing-xai-api-key"}
+      {"XAI_API_KEY": {"service": "existing-xai-api-key", "account": "keychain-user"}}
+      {"XAI_API_KEY": [{"service": "primary"}, {"service": "fallback"}]}
+
+    Invalid entries are ignored so a typo never blocks canonical
+    `last30days-<KEY>` lookups; malformed JSON emits a warning.
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        sys.stderr.write(
+            f"[last30days] WARNING: {KEYCHAIN_ALIASES_ENV} is not valid JSON; "
+            f"ignoring Keychain aliases while keeping canonical lookups enabled: {exc}\n"
+        )
+        sys.stderr.flush()
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    allowed = set(KEYCHAIN_KEYS)
+    aliases: dict[str, list[dict[str, str]]] = {}
+    for key, spec in parsed.items():
+        if key not in allowed:
+            continue
+        specs = spec if isinstance(spec, list) else [spec]
+        clean_specs: list[dict[str, str]] = []
+        for item in specs:
+            if isinstance(item, str):
+                service = item.strip()
+                account = ""
+            elif isinstance(item, dict):
+                service = str(item.get("service", "")).strip()
+                account = str(item.get("account", "")).strip()
+            else:
+                continue
+            if service:
+                clean_specs.append({"service": service, "account": account})
+        if clean_specs:
+            aliases[key] = clean_specs
+    return aliases
+
+
+def _load_keychain(keys: list[str], aliases: dict[str, list[dict[str, str]]] | None = None) -> dict[str, str]:
     """Load credentials from macOS Keychain (no-op on other platforms).
 
     Each key is looked up as a generic password with service name
     ``f"{KEYCHAIN_SERVICE_PREFIX}{key}"`` for the current user. Missing items
-    and lookup failures are silent — Keychain is the lowest-priority source
-    and is meant to be additive over `.env` files and process environment.
+    then fall back to optional alias metadata from
+    ``LAST30DAYS_KEYCHAIN_ALIASES``. Lookup failures are silent — Keychain is
+    the lowest-priority source and is meant to be additive over `.env` files
+    and process environment.
     """
     import platform
     if platform.system() != "Darwin":
@@ -157,19 +236,32 @@ def _load_keychain(keys: list[str]) -> dict[str, str]:
         else:
             user = "unknown"
     env: dict[str, str] = {}
-    for key in keys:
+
+    def lookup(account: str, service: str) -> str:
         try:
             result = subprocess.run(
                 [security, "find-generic-password",
-                 "-a", user,
-                 "-s", f"{KEYCHAIN_SERVICE_PREFIX}{key}",
+                 "-a", account,
+                 "-s", service,
                  "-w"],
                 capture_output=True, text=True, timeout=5,
             )
         except (subprocess.TimeoutExpired, OSError):
-            continue
+            return ""
         if result.returncode == 0 and result.stdout.strip():
-            env[key] = result.stdout.strip()
+            return result.stdout.strip()
+        return ""
+
+    for key in keys:
+        value = lookup(user, f"{KEYCHAIN_SERVICE_PREFIX}{key}")
+        if not value and aliases:
+            for alias in aliases.get(key, []):
+                alias_account = alias.get("account") or user
+                value = lookup(alias_account, alias["service"])
+                if value:
+                    break
+        if value:
+            env[key] = value
     return env
 
 
@@ -212,102 +304,20 @@ def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
     return env
 
 
-def _decode_jwt_payload(token: str) -> dict[str, Any] | None:
-    """Decode JWT payload without verification."""
-    try:
-        parts = token.split(".")
-        if len(parts) < 2:
-            return None
-        payload_b64 = parts[1]
-        pad = "=" * (-len(payload_b64) % 4)
-        decoded = base64.urlsafe_b64decode(payload_b64 + pad)
-        return json.loads(decoded.decode("utf-8"))
-    except (json.JSONDecodeError, UnicodeDecodeError, binascii.Error, IndexError) as exc:
-        sys.stderr.write(f"[last30days] WARNING: malformed JWT token: {exc}\n")
-        sys.stderr.flush()
-        return None
-
-
-def _token_expired(token: str, leeway_seconds: int = 60) -> bool:
-    """Check if JWT token is expired."""
-    payload = _decode_jwt_payload(token)
-    if not payload:
-        return False
-    exp = payload.get("exp")
-    if not exp:
-        return False
-    return exp <= (time.time() + leeway_seconds)
-
-
-def extract_chatgpt_account_id(access_token: str) -> str | None:
-    """Extract chatgpt_account_id from JWT token."""
-    payload = _decode_jwt_payload(access_token)
-    if not payload:
-        return None
-    auth_claim = payload.get("https://api.openai.com/auth", {})
-    if isinstance(auth_claim, dict):
-        return auth_claim.get("chatgpt_account_id")
-    return None
-
-
-def load_codex_auth(path: Path = CODEX_AUTH_FILE) -> dict[str, Any]:
-    """Load Codex auth JSON."""
-    if not path.exists():
-        return {}
-    try:
-        with open(path, "r") as f:
-            return json.load(f)
-    except json.JSONDecodeError:
-        sys.stderr.write(
-            f"[last30days] WARNING: {path} exists but contains invalid JSON -- ignoring\n"
-        )
-        sys.stderr.flush()
-        return {}
-
-
-def get_codex_access_token() -> tuple[str | None, str]:
-    """Get Codex access token from auth.json.
-
-    Returns:
-        (token, status) where status is 'ok', 'missing', or 'expired'
-    """
-    auth = load_codex_auth()
-    token = None
-    if isinstance(auth, dict):
-        tokens = auth.get("tokens") or {}
-        if isinstance(tokens, dict):
-            token = tokens.get("access_token")
-        if not token:
-            token = auth.get("access_token")
-    if not token:
-        return None, AUTH_STATUS_MISSING
-    if _token_expired(token):
-        return None, AUTH_STATUS_EXPIRED
-    return token, AUTH_STATUS_OK
-
-
 def get_openai_auth(file_env: dict[str, str]) -> OpenAIAuth:
-    """Resolve OpenAI auth from API key or Codex login."""
+    """Resolve OpenAI API auth from explicit user-provided API keys."""
     api_key = os.environ.get('OPENAI_API_KEY') or file_env.get('OPENAI_API_KEY')
     if api_key:
         return OpenAIAuth(
             token=api_key,
             source=AUTH_SOURCE_API_KEY,
             status=AUTH_STATUS_OK,
-            account_id=None,
-            codex_auth_file=str(CODEX_AUTH_FILE),
         )
-
-    # Codex auth (chatgpt.com backend) intentionally skipped.
-    # The endpoint is unstable and causes crashes when the token expires.
-    # Users who want OpenAI should set OPENAI_API_KEY explicitly.
 
     return OpenAIAuth(
         token=None,
         source=AUTH_SOURCE_NONE,
         status=AUTH_STATUS_MISSING,
-        account_id=None,
-        codex_auth_file=str(CODEX_AUTH_FILE),
     )
 
 
@@ -315,41 +325,55 @@ def _find_project_env() -> Path | None:
     """Find per-project .env by walking up from cwd.
 
     Searches for .claude/last30days.env in each parent directory,
-    stopping at the user's home directory or filesystem root.
+    stopping at the git root, user's home directory, or filesystem root.
     """
     cwd = Path.cwd()
     for parent in [cwd, *cwd.parents]:
         candidate = parent / '.claude' / 'last30days.env'
         if candidate.exists():
             return candidate
+        if (parent / ".git").exists():
+            break
         # Stop at filesystem root or home
         if parent == Path.home() or parent == parent.parent:
             break
     return None
 
 
-def get_config() -> dict[str, Any]:
+def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     """Load configuration from multiple sources.
 
     Priority (highest wins):
       1. Environment variables (os.environ)
-      2. .claude/last30days.env (per-project config)
+      2. Trusted .claude/last30days.env (per-project config)
       3. ~/.config/last30days/.env (global config)
       4. macOS Keychain items prefixed ``last30days-`` (Darwin only)
     """
+    policy = policy or ConfigLoadPolicy()
     # Load from global config file
     file_env = load_env_file(CONFIG_FILE) if CONFIG_FILE else {}
 
-    # Load from per-project config (overrides global)
-    project_env_path = _find_project_env()
+    # Load per-project config only when trust comes from process env, global
+    # user config, or an explicit policy. A project file cannot grant trust to
+    # itself because it is not parsed until after this decision.
+    project_config_trusted = _project_config_trusted(policy, file_env)
+    project_env_path = _find_project_env() if project_config_trusted else None
     project_env = load_env_file(project_env_path) if project_env_path else {}
+    ignored_project_env_path = None
+    ignored_project_keys: list[str] = []
+    if not project_config_trusted and policy.inspect_ignored_project_config:
+        ignored_project_env_path = _find_project_env()
+        if ignored_project_env_path:
+            ignored_project_keys = sorted(load_env_file(ignored_project_env_path).keys())
 
     # Merge file sources: project > global
     merged_env = {**file_env, **project_env}
 
     # Keychain is the lowest-priority source (Darwin only; no-op elsewhere).
     # Loaded before openai_auth so OPENAI_API_KEY can come from Keychain too.
-    keychain_env = _load_keychain(list(KEYCHAIN_KEYS))
+    keychain_aliases_raw = os.environ.get(KEYCHAIN_ALIASES_ENV) or merged_env.get(KEYCHAIN_ALIASES_ENV)
+    keychain_aliases = _parse_keychain_aliases(keychain_aliases_raw)
+    keychain_env = _load_keychain(list(KEYCHAIN_KEYS), keychain_aliases)
     merged_env = {**keychain_env, **merged_env}
     # pass(1) store: Linux/Unix analog of Keychain at convention path
     # {prefix}<KEY>. Decrypts transiently so secrets stay encrypted at rest (no
@@ -375,8 +399,6 @@ def get_config() -> dict[str, Any]:
         'OPENAI_API_KEY': openai_auth.token,
         'OPENAI_AUTH_SOURCE': openai_auth.source,
         'OPENAI_AUTH_STATUS': openai_auth.status,
-        'OPENAI_CHATGPT_ACCOUNT_ID': openai_auth.account_id,
-        'CODEX_AUTH_FILE': openai_auth.codex_auth_file,
     }
 
     keys = [
@@ -390,6 +412,8 @@ def get_config() -> dict[str, Any]:
         ('LAST30DAYS_RERANK_MODEL', None),
         ('LAST30DAYS_X_MODEL', None),
         ('LAST30DAYS_X_BACKEND', None),
+        ('LAST30DAYS_REDDIT_BACKEND', None),
+        ('LAST30DAYS_REDDIT_SC_MIN_ITEMS', None),
         ('LAST30DAYS_STORE', None),
         ('LAST30DAYS_MEMORY_DIR', None),
         ('OPENAI_MODEL_PIN', None),
@@ -428,13 +452,18 @@ def get_config() -> dict[str, Any]:
         ('LAST30DAYS_NATIVE_SEARCH', None),
         # Optional SearXNG instance for the keyless-search fallback rung.
         ('LAST30DAYS_SEARXNG_URL', None),
+        # Truthy -> disable Trustpilot's headless-Chrome WAF-cookie harvest in
+        # automated contexts (cron/CI/eval). Read by trustpilot._harvest_allowed.
+        ('LAST30DAYS_TRUSTPILOT_NO_BROWSER', None),
         ('FROM_BROWSER', None),
+        ('LAST30DAYS_TRUST_PROJECT_CONFIG', None),
         ('SETUP_COMPLETE', None),
         ('INCLUDE_SOURCES', ''),
         ('EXCLUDE_SOURCES', ''),
         ('LAST30DAYS_DEFAULT_SEARCH', ''),
         ('LAST30DAYS_YOUTUBE_SSH_HOST', None),
         ('LAST30DAYS_TRANSCRIPT_TIMEOUT', None),
+        (KEYCHAIN_ALIASES_ENV, None),
         # Whisper transcription provider for caption-free audio/video. Groq's
         # free tier is preferred; OPENAI_API_KEY is the paid backstop (already
         # resolved above via openai_auth).
@@ -476,13 +505,18 @@ def get_config() -> dict[str, Any]:
         config['_CONFIG_SOURCE'] = 'pass'
     else:
         config['_CONFIG_SOURCE'] = 'env_only'
+    if ignored_project_env_path:
+        config['_IGNORED_PROJECT_CONFIG'] = str(ignored_project_env_path)
+        config['_IGNORED_PROJECT_CONFIG_KEYS'] = ignored_project_keys
+    config['_BROWSER_COOKIE_MODE'] = policy.browser_cookies
+    config['_BROWSER_COOKIE_BROWSERS'] = cookie_extraction_browsers(config)
 
-    # Extract browser credentials if configured
-    browser_creds = extract_browser_credentials(config)
-    for key, value in browser_creds.items():
-        if not config.get(key):
-            config[key] = value
-            config[f"_{key}_SOURCE"] = "browser"
+    if policy.browser_cookies == "read":
+        browser_creds = extract_browser_credentials(config)
+        for key, value in browser_creds.items():
+            if not config.get(key):
+                config[key] = value
+                config[f"_{key}_SOURCE"] = "browser"
 
     return config
 
@@ -508,16 +542,17 @@ COOKIE_DOMAINS: dict[str, dict[str, Any]] = {
 def cookie_extraction_browsers(config: dict[str, Any]) -> list[str]:
     """Browsers to try for cookie extraction, honoring FROM_BROWSER.
 
-    Default (FROM_BROWSER unset): Firefox and Safari only. These read local
-    files silently with no system dialogs. The Chromium family (Chrome, Brave,
-    Edge, Vivaldi, Opera, Arc, Chromium) is skipped because reading their
-    cookies on macOS requires the browser's Safe Storage Keychain key, which
-    triggers a system password prompt that cannot be reliably suppressed. On
-    Windows only Firefox cookie extraction is supported; Chrome and Edge use
-    DPAPI-encrypted cookie stores that are not yet supported.
+    Default (FROM_BROWSER unset): no browser-cookie reads. The Chromium family
+    (Chrome, Brave, Edge, Vivaldi, Opera, Arc, Chromium) is available only when
+    explicitly selected because reading their cookies on macOS requires the
+    browser's Safe Storage Keychain key, which triggers a system password prompt
+    that cannot be reliably suppressed. On Windows only Firefox cookie
+    extraction is supported; Chrome and Edge use DPAPI-encrypted cookie stores
+    that are not yet supported.
 
     - ``FROM_BROWSER=<name>`` - a single browser (e.g. ``firefox``, ``brave``,
       ``edge``, ``arc``).
+    - ``FROM_BROWSER=firefox,safari`` - a comma-separated explicit browser list.
     - ``FROM_BROWSER=auto`` - also try every Chromium browser (user accepts the
       Keychain dialog when needed).
     - ``FROM_BROWSER=off`` - returns [] (extraction disabled).
@@ -528,14 +563,37 @@ def cookie_extraction_browsers(config: dict[str, Any]) -> list[str]:
     """
     silent_browsers = ["firefox", "safari"]
     chromium_browsers = ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"]
+    known_browsers = silent_browsers + chromium_browsers
     from_browser = (config.get("FROM_BROWSER") or "").strip().lower()
+    if not from_browser:
+        return []
     if from_browser == "off":
         return []
-    if from_browser in silent_browsers or from_browser in chromium_browsers:
-        return [from_browser]
     if from_browser == "auto":
         return silent_browsers + chromium_browsers
-    return list(silent_browsers)
+    if "," in from_browser:
+        requested = [b.strip() for b in from_browser.split(",") if b.strip()]
+        resolved = [b for b in requested if b in known_browsers]
+        unknown = [b for b in requested if b not in known_browsers]
+        if unknown:
+            sys.stderr.write(
+                "[last30days] WARNING: FROM_BROWSER ignored unrecognized browser(s): "
+                f"{', '.join(unknown)} (known: {', '.join(known_browsers)})\n"
+            )
+            sys.stderr.flush()
+        return resolved
+    if from_browser in known_browsers:
+        return [from_browser]
+    # Non-empty, not off/auto, not a known browser, not a list: unrecognized.
+    # Warn rather than fail silently so a typo (FROM_BROWSER=chrme) is visible
+    # instead of looking like "no cookies found".
+    sys.stderr.write(
+        f"[last30days] WARNING: FROM_BROWSER='{from_browser}' is not a recognized "
+        f"browser; no cookies will be read (known: {', '.join(known_browsers)}, "
+        "or 'auto'/'off')\n"
+    )
+    sys.stderr.flush()
+    return []
 
 
 
@@ -584,9 +642,11 @@ def get_x_source_with_method(config: dict[str, Any]) -> tuple[str | None, str]:
     return None, "none"
 
 
-def config_exists() -> bool:
+def config_exists(policy: ConfigLoadPolicy | None = None) -> bool:
     """Check if any configuration source exists."""
-    if _find_project_env():
+    policy = policy or ConfigLoadPolicy()
+    file_env = load_env_file(CONFIG_FILE) if CONFIG_FILE and CONFIG_FILE.exists() else {}
+    if _project_config_trusted(policy, file_env) and _find_project_env():
         return True
     if CONFIG_FILE:
         return CONFIG_FILE.exists()
@@ -660,6 +720,39 @@ def get_x_source(config: dict[str, Any]) -> str | None:
     """
     chain = x_backend_chain(config)
     return chain[0] if chain else None
+
+
+def x_pending_browser_auth(config: dict[str, Any]) -> bool:
+    """True when X is not available now but ``FROM_BROWSER`` will authenticate it at run time.
+
+    ``--diagnose`` / ``--preflight`` load config in ``plan_only`` mode, which
+    deliberately skips browser-cookie extraction (no Keychain popup,
+    ``reads_values: false``). As a result ``get_x_source`` returns None and X is
+    dropped from ``available_sources`` even though a normal run would extract the
+    same cookies and authenticate X fine. This predicate reports that
+    "available pending browser auth" state without reading a single cookie — it
+    keys only on the already-resolved browser list (``cookie_extraction_browsers``
+    derives it from ``FROM_BROWSER`` alone, no secrets), bird being installed, and
+    X having a cookie-domain mapping. Side-effect free, so the safe-inspection
+    contract of diagnose/preflight is preserved.
+
+    Returns False whenever X is already available outright (static AUTH_TOKEN/CT0,
+    or xAI/xurl/xquik backend), and in ``read`` mode (a real run has already
+    extracted creds, so its status must be unchanged — never "pending").
+    """
+    # Already available via a static backend (bird creds, xAI, xurl, xquik).
+    if get_x_source(config):
+        return False
+    # Only meaningful in inspection modes that skip extraction; a real ``read``
+    # run has already attempted extraction and must report its true state.
+    if config.get('_BROWSER_COOKIE_MODE') == 'read':
+        return False
+    if 'x' not in COOKIE_DOMAINS:
+        return False
+    if not cookie_extraction_browsers(config):
+        return False
+    from . import bird_x
+    return bird_x.is_bird_installed()
 
 
 def is_ytdlp_available() -> bool:

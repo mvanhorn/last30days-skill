@@ -1,12 +1,16 @@
 """Tests for OpenClaw setup and device auth functions."""
 
+import io
 import json
+import sys
 import time
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
 
 import pytest
 
+import last30days as cli
 from lib import setup_wizard
 
 
@@ -504,3 +508,49 @@ class TestRunGithubAuth:
         result = setup_wizard.run_github_auth(timeout=1)
         assert result["status"] == "timeout"
         mock_subproc.assert_not_called()
+
+
+class TestSetupGithubCliWiring:
+    """Tests for the `setup --github` CLI branch: persist + mask the key."""
+
+    def _run_setup_github(self, tmp_path, monkeypatch):
+        """Invoke `setup --github` in-process, return (parsed_json, env_path)."""
+        env_path = tmp_path / ".env"
+        monkeypatch.setattr(cli.env, "CONFIG_FILE", env_path)
+        monkeypatch.setattr(sys, "argv", ["last30days", "setup", "--github"])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cli.main()
+        assert rc == 0
+        return json.loads(buf.getvalue()), env_path
+
+    @patch("lib.setup_wizard.run_github_auth")
+    def test_success_persists_and_masks(self, mock_auth, tmp_path, monkeypatch):
+        """Success -> key written to .env, stdout JSON masked, persisted true."""
+        mock_auth.return_value = {
+            "status": "success", "method": "device",
+            "api_key": "sc_live_supersecret9999", "user_code": "ABCD-1234",
+        }
+
+        payload, env_path = self._run_setup_github(tmp_path, monkeypatch)
+
+        # Key persisted to disk with the real value
+        assert "SCRAPECREATORS_API_KEY=sc_live_supersecret9999" in env_path.read_text()
+        # JSON reports persistence and the raw secret never appears in stdout
+        assert payload["persisted"] is True
+        assert payload["status"] == "success"
+        assert payload["api_key"] != "sc_live_supersecret9999"
+        assert "supersecret9999" not in json.dumps(payload)
+        # Useful non-secret fields survive
+        assert payload["user_code"] == "ABCD-1234"
+
+    @patch("lib.setup_wizard.run_github_auth")
+    def test_timeout_persists_nothing(self, mock_auth, tmp_path, monkeypatch):
+        """Timeout -> no key on disk, persisted false."""
+        mock_auth.return_value = {"status": "timeout", "user_code": "WXYZ-5678"}
+
+        payload, env_path = self._run_setup_github(tmp_path, monkeypatch)
+
+        assert payload["persisted"] is False
+        assert not env_path.exists()
+        assert payload["status"] == "timeout"

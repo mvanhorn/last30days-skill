@@ -419,6 +419,74 @@ def test_store_findings_increments_sighting_count(temp_db, sample_report):
     conn.close()
 
 
+def test_store_findings_upserts_on_concurrent_duplicate_url(temp_db, monkeypatch):
+    """A stale dedup read (a concurrent run that inserted the same URL between
+    our SELECT and INSERT) must upsert, not raise IntegrityError and lose the
+    whole batch. Regression for the SELECT-then-INSERT race in store_findings."""
+    topic = store.add_topic("Test Topic")
+    finding = {
+        "source": "reddit",
+        "source_url": "https://reddit.com/race",
+        "source_title": "Race",
+        "engagement_score": 5.0,
+    }
+
+    # First run inserts the URL.
+    run1 = store.record_run(topic["id"], source_mode="v3")
+    store.store_findings(run1, topic["id"], [finding])
+
+    # Force the dedup lookup to miss the now-existing URL, so store_findings
+    # takes the INSERT path for a row that is already present — exactly what a
+    # racing writer's stale read produces.
+    real_connect = store._connect
+    dedup_prefix = (
+        "SELECT id, source_url, engagement_score FROM findings WHERE source_url IN"
+    )
+
+    class StaleReadConn:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, params=()):
+            if sql.strip().startswith(dedup_prefix):
+                return self._conn.execute(
+                    "SELECT id, source_url, engagement_score FROM findings WHERE 0"
+                )
+            return self._conn.execute(sql, params)
+
+        def __getattr__(self, name):
+            return getattr(self._conn, name)
+
+    monkeypatch.setattr(
+        store, "_connect", lambda *a, **k: StaleReadConn(real_connect(*a, **k))
+    )
+
+    run2 = store.record_run(topic["id"], source_mode="v3")
+    # Without ON CONFLICT this raises sqlite3.IntegrityError on the UNIQUE
+    # source_url and rolls back the batch.
+    counts = store.store_findings(run2, topic["id"], [{**finding, "engagement_score": 9.0}])
+
+    # The conflict-resolved row is an update, not a new finding. The counters
+    # must reflect that, not inflate findings_new.
+    assert counts == {"new": 0, "updated": 1}
+
+    conn = sqlite3.connect(str(temp_db))
+    rows = conn.execute(
+        "SELECT engagement_score, sighting_count FROM findings WHERE source_url = ?",
+        ("https://reddit.com/race",),
+    ).fetchall()
+    run_counts = conn.execute(
+        "SELECT findings_new, findings_updated FROM research_runs WHERE id = ?",
+        (run2,),
+    ).fetchone()
+    conn.close()
+
+    assert len(rows) == 1  # not duplicated, not crashed
+    assert rows[0][0] == 9.0  # engagement upgraded via max()
+    assert rows[0][1] == 2  # sighting_count bumped by the conflict update
+    assert run_counts == (0, 1)  # research_runs counters not inflated
+
+
 def test_store_findings_skips_items_without_url(temp_db):
     """Test that findings without URLs are skipped."""
     topic = store.add_topic("Test Topic")

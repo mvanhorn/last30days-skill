@@ -17,9 +17,9 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliV3Tests(unittest.TestCase):
-    def make_report(self) -> schema.Report:
+    def make_report(self, topic: str = "OpenClaw vs NanoClaw") -> schema.Report:
         return schema.Report(
-            topic="OpenClaw vs NanoClaw",
+            topic=topic,
             range_from="2026-02-14",
             range_to="2026-03-16",
             generated_at="2026-03-16T00:00:00+00:00",
@@ -32,12 +32,12 @@ class CliV3Tests(unittest.TestCase):
                 intent="comparison",
                 freshness_mode="balanced_recent",
                 cluster_mode="debate",
-                raw_topic="OpenClaw vs NanoClaw",
+                raw_topic=topic,
                 subqueries=[
                     schema.SubQuery(
                         label="primary",
-                        search_query="openclaw vs nanoclaw",
-                        ranking_query="How does OpenClaw compare to NanoClaw?",
+                        search_query=topic.lower(),
+                        ranking_query=f"What are people saying about {topic}?",
                         sources=["grounding"],
                     )
                 ],
@@ -63,6 +63,28 @@ class CliV3Tests(unittest.TestCase):
         self.assertIn("query_plan", payload)
         self.assertIn("ranked_candidates", payload)
         self.assertIn("clusters", payload)
+
+    def test_invalid_plan_json_exits_nonzero(self):
+        """Malformed --plan JSON must fail fast, not silently fall back to the
+        internal planner and burn a paid run the user did not ask for."""
+        result = subprocess.run(
+            [
+                sys.executable,
+                "skills/last30days/scripts/last30days.py",
+                "test topic",
+                "--mock",
+                "--emit=json",
+                "--plan",
+                "{not valid json",
+            ],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(2, result.returncode, result.stderr)
+        self.assertIn("Invalid --plan JSON", result.stderr)
 
     def test_parse_search_flag_normalizes_aliases_and_dedupes(self):
         self.assertEqual(
@@ -146,6 +168,58 @@ class CliV3Tests(unittest.TestCase):
         self.assertEqual("results/run.json", args.output)
         self.assertEqual(["biosecurity"], args.topic)
         self.assertEqual([], extra)
+
+    def test_research_unknown_flag_fails_before_config_load(self):
+        with mock.patch.object(
+            cli.env, "get_config", side_effect=AssertionError("config should not load")
+        ), mock.patch.object(sys, "argv", ["last30days.py", "topic", "--save"]):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), self.assertRaises(SystemExit) as exc:
+                cli.main()
+        self.assertEqual(2, exc.exception.code)
+        self.assertIn("--save", stderr.getvalue())
+
+    def test_agent_is_skill_argument_not_python_cli_flag(self):
+        with mock.patch.object(
+            cli.env, "get_config", side_effect=AssertionError("config should not load")
+        ), mock.patch.object(sys, "argv", ["last30days.py", "topic", "--agent"]):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), self.assertRaises(SystemExit) as exc:
+                cli.main()
+        self.assertEqual(2, exc.exception.code)
+        self.assertIn("skill arguments", stderr.getvalue())
+
+    def test_agent_error_includes_other_unknown_flags(self):
+        with mock.patch.object(
+            cli.env, "get_config", side_effect=AssertionError("config should not load")
+        ), mock.patch.object(sys, "argv", ["last30days.py", "topic", "--agent", "--save"]):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), self.assertRaises(SystemExit) as exc:
+                cli.main()
+        self.assertEqual(2, exc.exception.code)
+        message = stderr.getvalue()
+        self.assertIn("--agent", message)
+        self.assertIn("--save", message)
+
+    def test_setup_passthrough_flags_remain_scoped_to_setup(self):
+        with mock.patch.object(cli.env, "get_config", return_value={}), \
+             mock.patch("lib.setup_wizard.run_github_auth", return_value={"status": "cancelled"}), \
+             mock.patch.object(sys, "argv", ["last30days.py", "setup", "--github"]):
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                rc = cli.main()
+        self.assertEqual(0, rc)
+
+    def test_setup_rejects_unknown_passthrough_flag_before_config_load(self):
+        with mock.patch.object(
+            cli.env, "get_config", side_effect=AssertionError("config should not load")
+        ), mock.patch.object(sys, "argv", ["last30days.py", "setup", "--bad"]):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr), self.assertRaises(SystemExit) as exc:
+                cli.main()
+        self.assertEqual(2, exc.exception.code)
+        self.assertIn("--bad", stderr.getvalue())
 
     def test_ensure_supported_python_rejects_old_interpreter_with_actionable_error(self):
         stderr = io.StringIO()
@@ -369,7 +443,6 @@ class CliV3Tests(unittest.TestCase):
             self.assertIn(f"[last30days] Saved output to {output_path.resolve()}", stderr.getvalue())
 
     def test_main_combines_output_and_save_dir_for_comparison_html(self):
-        report = self.make_report()
         diag = {
             "available_sources": ["grounding"],
             "providers": {"google": True, "openai": False, "xai": False},
@@ -380,12 +453,16 @@ class CliV3Tests(unittest.TestCase):
             "native_web_backend": "brave",
         }
         fake_progress = mock.Mock()
+
+        def run_report(*_args, **kwargs):
+            return self.make_report(topic=kwargs["topic"])
+
         with tempfile.TemporaryDirectory() as tmp:
             output_path = Path(tmp) / "exports" / "comparison.html"
             save_dir = Path(tmp) / "saved"
             with mock.patch.object(cli.env, "get_config", return_value={}), \
                  mock.patch.object(cli.pipeline, "diagnose", return_value=diag), \
-                 mock.patch.object(cli.pipeline, "run", return_value=report), \
+                 mock.patch.object(cli.pipeline, "run", side_effect=run_report), \
                  mock.patch.object(cli.ui, "ProgressDisplay", return_value=fake_progress), \
                  mock.patch.object(
                      cli, "emit_comparison_output", return_value="<html>comparison</html>"
@@ -419,8 +496,16 @@ class CliV3Tests(unittest.TestCase):
                 "<html>comparison</html>",
                 comparison_saved.read_text(encoding="utf-8"),
             )
+            peer_saved = save_dir / "beta-raw-html.html"
+            self.assertEqual("<html>peer</html>", peer_saved.read_text(encoding="utf-8"))
             self.assertIn(f"[last30days] Saved output to {output_path.resolve()}", stderr.getvalue())
             self.assertIn(f"[last30days] Saved output to {comparison_saved.resolve()}", stderr.getvalue())
+            self.assertIn(f"[last30days] Saved output to {peer_saved.resolve()}", stderr.getvalue())
+            self.assertIn(
+                f"[last30days] Comparison artifact set: main={comparison_saved.resolve()}; "
+                f"peers={peer_saved.resolve()}",
+                stderr.getvalue(),
+            )
 
     def test_main_canonicalizes_explicit_github_repo_flags(self):
         report = self.make_report()

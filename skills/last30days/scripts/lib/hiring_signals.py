@@ -96,6 +96,14 @@ def analyze(
 
 def infer_company_size(items: list[schema.SourceItem], *, topic: str = "") -> str:
     """Infer a coarse company-size tier from jobs evidence."""
+    topic_lower = topic.lower()
+    firmographic_text = " ".join(
+        " ".join([
+            str(item.metadata.get("company_size") or ""),
+            topic,
+        ])
+        for item in items
+    ).lower()
     text = " ".join(
         " ".join([
             item.title,
@@ -111,9 +119,9 @@ def infer_company_size(items: list[schema.SourceItem], *, topic: str = "") -> st
     # never the job-description body - JDs list enterprise customers (e.g.
     # "trusted by Microsoft, Google"), which would misclassify a startup as
     # mega-cap and suppress its real signals.
-    if re.search(r"\b(apple|uber|google|microsoft|amazon|meta|netflix)\b", topic.lower()):
+    if re.search(r"\b(apple|uber|google|microsoft|amazon|meta|netflix)\b", topic_lower):
         return "mega-cap"
-    if count >= 200 or re.search(r"\b(fortune 500|thousands of employees)\b", text):
+    if count >= 200 or re.search(r"\b(fortune 500|thousands of employees)\b", firmographic_text):
         return "large-enterprise"
     if count >= 35 or re.search(r"\b(series [cd]|public company)\b", text):
         return "growth"

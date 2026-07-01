@@ -193,6 +193,10 @@ def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # WAL lets readers coexist with one writer, but two writers (cron + user)
+    # still contend for the write lock. Default busy_timeout is 0, so the loser
+    # raises "database is locked" instantly; wait instead.
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -452,16 +456,41 @@ def store_findings(
                 update_rows,
             )
         if insert_rows:
+            # source_url is UNIQUE. The SELECT above is not atomic with this
+            # write, so a concurrent run (cron + user) can insert the same URL
+            # between our read and write. Upsert on conflict instead of letting
+            # IntegrityError abort the whole batch and lose every finding.
             conn.executemany(
                 """INSERT INTO findings
                    (run_id, topic_id, source, source_url, source_title,
                     author, content, summary, engagement_score, relevance_score)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(source_url) DO UPDATE SET
+                       last_seen = datetime('now'),
+                       sighting_count = sighting_count + 1,
+                       engagement_score = max(
+                           engagement_score, excluded.engagement_score),
+                       run_id = excluded.run_id""",
                 insert_rows,
             )
 
         new_count = len(insert_rows)
         updated_count = len(update_rows)
+        if insert_rows:
+            # A row whose URL was inserted by a concurrent run between our SELECT
+            # and the upsert resolves via ON CONFLICT (an update, not a new row),
+            # bumping its sighting_count above 1. Re-derive the split so
+            # research_runs.findings_new isn't inflated by conflict-resolved rows
+            # (source_url is field index 3 in each insert tuple).
+            inserted_urls = [row[3] for row in insert_rows]
+            placeholders = ",".join("?" for _ in inserted_urls)
+            conflicted = conn.execute(
+                f"SELECT COUNT(*) FROM findings "
+                f"WHERE source_url IN ({placeholders}) AND sighting_count > 1",
+                inserted_urls,
+            ).fetchone()[0]
+            new_count -= conflicted
+            updated_count += conflicted
         _record_sightings(conn, run_id, topic_id, with_urls, existing_by_url)
         conn.execute(
             "UPDATE research_runs SET findings_new = ?, findings_updated = ? WHERE id = ?",

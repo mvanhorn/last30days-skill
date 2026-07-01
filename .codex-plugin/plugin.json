@@ -1,0 +1,50 @@
+{
+  "name": "last30days",
+  "version": "3.8.3",
+  "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and the web.",
+  "author": {
+    "name": "Matt Van Horn",
+    "email": "mvanhorn@gmail.com",
+    "url": "https://github.com/mvanhorn"
+  },
+  "homepage": "https://github.com/mvanhorn/last30days-skill",
+  "repository": "https://github.com/mvanhorn/last30days-skill",
+  "license": "MIT",
+  "keywords": [
+    "competitor research",
+    "research",
+    "reddit",
+    "twitter",
+    "youtube",
+    "tiktok",
+    "instagram",
+    "trends",
+    "prompts",
+    "polymarket",
+    "github",
+    "perplexity",
+    "threads",
+    "pinterest",
+    "hacker-news"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "last30days",
+    "shortDescription": "Research what people are saying about a topic now.",
+    "longDescription": "last30days adds a Codex skill for researching any topic based on recent discussion and engagement signals across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and the web.",
+    "developerName": "Matt Van Horn",
+    "category": "Research",
+    "capabilities": [
+      "Interactive",
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://github.com/mvanhorn/last30days-skill",
+    "defaultPrompt": [
+      "TikTok shop trends",
+      "Codex vs Cursor",
+      "best travel credit cards"
+    ],
+    "brandColor": "#6F42C1"
+  }
+}

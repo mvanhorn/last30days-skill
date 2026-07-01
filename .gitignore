@@ -1,5 +1,6 @@
 # Private benchmark / evaluation artifacts — never push to upstream
 docs/comparison-results/
+test-run.log
 scripts/evaluate-synthesis.py
 scripts/generate-synthesis-inputs.py
 fixtures/polymarket_sample.json
@@ -7,6 +8,7 @@ docs/v2.1-tweets.md
 docs/30-day-anniversary-thread.md
 docs/30-day-anniversary-tweets.md
 variants/open/references/research.md
+docs/investigations/
 
 # OS / tool files
 .DS_Store
@@ -42,6 +44,7 @@ htmlcov/
 
 # Internal planning docs (ce:plan output) — keep local, don't publish
 docs/plans/
+docs/brainstorms/
 .context/
 
 /work

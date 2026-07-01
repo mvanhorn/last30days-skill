@@ -282,12 +282,30 @@ def get_judgments(
 ) -> dict[str, int]:
     cache_file = output_dir / "judgments" / f"{slug}.json"
     cache_file.parent.mkdir(parents=True, exist_ok=True)
+    stale_cache = False
     if cache_file.exists():
         payload = json.loads(cache_file.read_text())
-        return {row["id"]: int(row["grade"]) for row in payload.get("judgments") or []}
+        # The cache key is the topic slug alone, but judgments are model-
+        # specific. Only reuse the cache when it was produced by the same judge
+        # model; otherwise re-judge, so a --judge-model change cannot return
+        # stale grades that silently skew precision@k / nDCG. Caches written
+        # before judge_model was recorded miss here and get refreshed once.
+        if payload.get("judge_model") == judge_model:
+            return {row["id"]: int(row["grade"]) for row in payload.get("judgments") or []}
+        stale_cache = True
     if not gemini_api_key or not items:
+        if stale_cache:
+            # Discarded a different-model cache but can't re-judge. Returning {}
+            # scores every item as ungraded (zero precision@k / nDCG); say so
+            # rather than letting the run report silently wrong numbers.
+            sys.stderr.write(
+                f"[Eval] Cached judgments for {slug!r} were graded by a different "
+                f"judge model and no Gemini API key is set to re-judge; returning "
+                f"no grades (metrics for this topic will be zero).\n"
+            )
         return {}
     payload = call_gemini_judge(gemini_api_key, judge_model, build_judge_prompt(topic, query_type, items))
+    payload["judge_model"] = judge_model
     cache_file.write_text(json.dumps(payload, indent=2))
     return {row["id"]: int(row["grade"]) for row in payload.get("judgments") or []}
 

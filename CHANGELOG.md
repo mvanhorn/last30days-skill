@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `--diagnose` / `--preflight` no longer falsely reports X as unreachable when X auth comes from `FROM_BROWSER` browser cookies. These modes run in `plan_only` and skip cookie extraction for privacy (no Keychain access), so X was dropped from `available_sources` even though a real run authenticates fine. A new side-effect-free `env.x_pending_browser_auth` predicate now reports X as available-pending-browser-auth (and surfaces an `x_pending_browser_auth` flag in `--diagnose`) by keying only on the already-resolved browser list — no cookie is read. Covers every configured browser, including Chrome. ([#692](https://github.com/mvanhorn/last30days-skill/issues/692); first reported and fixed by @23241a6749 in #700)
+
+## [3.8.3] - 2026-06-25
+
+### Added
+
+- Free Reddit gets dedicated-subreddit lanes: entity-home subs (e.g. r/Kanye for "Kanye West", via the new `--dedicated-subreddits` flag) are pulled in full from top+hot+new listings and exempt from the relevance floor, since the whole sub is the topic. Fixes the over-aggressive floor that dropped on-topic posts whose titles lacked the entity name.
+- `reddit_arctic` resolves upvote counts for threads found only via RSS search (which carries no score) using the free, keyless arctic-shift archive — batched, paced, cached, and graceful-degrading. Reddit now gets headlines-with-points and best-comments-with-points entirely for free, at parity with ScrapeCreators.
+- `LAST30DAYS_REDDIT_SC_MIN_ITEMS` (default 0 = unchanged empty-only behavior): set above 0 to let the ScrapeCreators backup backfill a thin free Reddit run instead of sitting idle. Backfilled items merge deduped by post id.
+
+### Removed
+
+- The permanently-403 `search.json` Tier 0 is gone from the keyless Reddit path; discovery is RSS breadth + shreddit listing partials (real scores) + the dedicated-sub lanes, with no wasted 403 calls.
+
+## [3.8.2] - 2026-06-25
+
+### Added
+
+- Advisory Semgrep SAST scan runs on every push/PR as part of the Security workflow, catching source-level security bugs using Semgrep CE community rules ([#563](https://github.com/mvanhorn/last30days-skill/issues/563))
+- Scheduled OSV-Scanner vulnerability-drift workflow scans repository lockfiles weekly and uploads SARIF results to GitHub code scanning, catching newly disclosed CVEs in the dependency tree even between PRs ([#571](https://github.com/mvanhorn/last30days-skill/issues/571))
+- `LAST30DAYS_REDDIT_BACKEND=scrapecreators` makes ScrapeCreators the primary Reddit backend with the public path as fallback. Users with a ScrapeCreators key who were getting shallow public data will now get full nested comment trees by setting this flag ([#589](https://github.com/mvanhorn/last30days-skill/issues/589))
+- MCP Go tests (`mcp/`) now run in CI on every push/PR alongside the Python test suite, so MCP server regressions are caught before merge ([#621](https://github.com/mvanhorn/last30days-skill/issues/621))
+- PR dependency review gate blocks merges that introduce new vulnerable dependencies ([#551](https://github.com/mvanhorn/last30days-skill/issues/551))
+
+### Changed
+
+- Citations are now renderer-aware (LAW 8). On hidden-link hosts (Claude Code) every citation stays an inline `[name](url)` link as before; on visible-URL hosts (Codex, Cursor, Gemini CLI, raw CLI) citations render as plain source labels so the narrative no longer turns into `label (https://...)` URL soup. The host is detected deterministically from the `CLAUDECODE` environment variable, and full URLs remain reachable through the engine footer and the saved raw file.
+
+### Fixed
+
+- The query-plan invocation guidance now warns against wrapping the heredoc in `bash -lc '...'` / `zsh -lc '...'`, whose single quotes terminate at the first apostrophe in a ranking string and abort the engine run with `unmatched "` on Codex. The quoted `<<'PLAN_EOF'` heredoc is already apostrophe-safe; the `-lc` wrapper was the hazard.
+- Firefox profile detection on Linux now checks `$XDG_CONFIG_HOME/mozilla/firefox` (or its default `~/.config/mozilla/firefox`) in addition to `~/.mozilla/firefox`, fixing cookie extraction on distros that honour the XDG Base Directory Specification ([#667](https://github.com/mvanhorn/last30days-skill/issues/667))
+
+## [3.8.1] - 2026-06-22
+
+### Added
+- **Restored the v3.0.0 first-run NUX wizard (Claude Code Modal Flow).** Step 0 now restores the original guided, `AskUserQuestion`-driven onboarding that eroded over time: a welcome message, an Auto/Manual/Skip setup modal, a cookie-consent modal, the ScrapeCreators signup offer, a TikTok/Instagram `INCLUDE_SOURCES` opt-in, and a first-topic picker. It is gated to hosts with modals; hosts without (OpenClaw, Codex, Cursor, Gemini CLI) get the equivalent **Non-Modal Prose Flow**. Digg is threaded into the install messaging alongside yt-dlp everywhere it appears, the ScrapeCreators credit count is `10,000 free calls`, and the flow is locked against re-erosion by `tests/test_onboarding_contract.py`. Builds on the consent-driven foundation from #659/#660. Original wizard captured at `docs/reference/old-nux-wizard-v3.0.0.md`.
+- **Consent-driven first-run onboarding.** Step 0 now drives an in-chat consent flow instead of a silent `setup` run: the model asks before reading browser cookies (decline runs with `FROM_BROWSER=off` — still installs yt-dlp + Digg), surfaces the macOS Full Disk Access fix when a cookie read is permission-denied, and offers the ScrapeCreators GitHub signup on every first run. A successful `setup --github` now **persists `SCRAPECREATORS_API_KEY` automatically** (`setup_wizard.write_api_key`, 0o600) and masks the key in stdout so the secret never lands in the host model's captured output. Follows the first-run gate fix (#659).
+
+### Fixed
+- **First-run setup no longer runs silently.** The prior Step 0 told the model to run `setup` and "follow the wizard's prompts end-to-end", but the wizard has no prompts — so onboarding extracted cookies, installed tools, and wrote `SETUP_COMPLETE` with zero interaction and never offered the ScrapeCreators signup. Reproduced 2026-06-22 (Fredy Montero, fresh macOS).
+
 ## [3.8.0] - 2026-06-21
 
 ### Added
@@ -54,6 +98,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The X FROM lane (the subject's own timeline) now pulls up to 8 posts per handle (was 3); the about/related lanes stay modest.
+
+### Fixed
+
+- Secrets `.env` and its parent config directory are now auto-tightened to `0o600`/`0o700` after creation, and `check-config.sh`'s `check_perms` now auto-fixes loose permissions with `chmod 600` instead of warning only ([#573](https://github.com/mvanhorn/last30days-skill/issues/573))
 
 ## [3.5.0] - 2026-06-18
 

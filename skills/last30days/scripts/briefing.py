@@ -188,7 +188,15 @@ def generate_weekly() -> dict:
             "this_week_engagement": this_engagement,
             "last_week_engagement": last_engagement,
             "engagement_change_pct": round(engagement_change, 1),
-            "top_findings": this_week[:5],  # Top 5 by engagement (already sorted)
+            # get_new_findings returns first_seen DESC, so sort by engagement
+            # before slicing — otherwise the digest headlines the most recent
+            # items, not the highest-engagement ones (the daily path keys on
+            # engagement too).
+            "top_findings": sorted(
+                this_week,
+                key=lambda f: f.get("engagement_score", 0),
+                reverse=True,
+            )[:5],
         })
 
     result = {

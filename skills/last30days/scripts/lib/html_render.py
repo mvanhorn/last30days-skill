@@ -574,7 +574,15 @@ def _promote_meta_marker(body: str) -> str:
     Both collapse to ``<div class="meta">TEXT</div>``.
     """
     def replace(match: re.Match[str]) -> str:
-        text = match.group(1).strip()
+        # The marker survives the comment-strip pass, and the markdown reaching
+        # this point can include LLM-synthesized content derived from untrusted
+        # web/social bodies. The escaped-form branches below carry text the
+        # markdown pass already entity-escaped, while the raw-form fallbacks do
+        # not — so normalize with unescape, then escape exactly once. A crafted
+        # `<!-- META: <img src=x onerror=...> -->` thus cannot render as live
+        # markup in the saved, shareable HTML artifact, and legitimate
+        # date/source-name markers render unchanged.
+        text = html.escape(html.unescape(match.group(1).strip()))
         return f'<div class="meta">{text}</div>'
 
     # Escaped form (most common after markdown conversion)

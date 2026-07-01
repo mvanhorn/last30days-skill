@@ -17,20 +17,31 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
-      # Advisory-first: visibility before enforcement. This repo handles API keys,
-      # cookies, browser tokens, and local env files, so dependency CVEs should be
-      # visible in CI logs even before the project has a clean blocking baseline.
-      # Set continue-on-error: false once a clean baseline run is confirmed.
+      # Block known vulnerabilities in the locked Python dependency graph.
       - name: Run uv audit against locked dependencies
-        continue-on-error: true
         run: uv audit --locked
+
+  dependency-review:
+    name: Dependency review
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@3b139cfc5fae8b618d3eae3675e383bb1769c019 # v4.5.0
 
   secret-scan:
     name: Secret scan
@@ -39,23 +50,40 @@ jobs:
       contents: read
     steps:
       - name: Checkout full history for diff-aware scanning
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
 
-      # Advisory-first: this reports verified secrets in pull requests and pushes to
-      # main, but does not block merges until maintainers confirm a clean baseline.
-      # The TruffleHog action automatically scans the PR range for pull_request
-      # events and the pushed commit range for push events.
-      # Set continue-on-error: false once a clean baseline run is confirmed.
-      # Contributor policy: never commit real secrets in fixtures, tests, docs, or
-      # examples; use obvious dummy values and env-based auth patterns instead.
+      # The action derives the commit range from the GitHub event and fails on
+      # verified secrets. Keep output limited to verified findings to avoid noisy
+      # unverified annotations.
       - name: Run TruffleHog OSS secret scan
-        if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-        uses: trufflesecurity/trufflehog@17456f8c7d042d8c82c9a8ca9e937231f9f42e26 # v3.95.2
-        continue-on-error: true
+        uses: trufflesecurity/trufflehog@30d5bb91af1a771378349dbbb0c82129392acf70 # v3.95.6
         with:
-          path: ./
-          version: v3.95.2
-          extra_args: --only-verified
+          version: 3.95.5
+          extra_args: --results=verified
+
+  sast-scan:
+    name: SAST scan
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    container:
+      image: semgrep/semgrep@sha256:06938c1f365d3f67b8cedd8bc117607ae64253f88a0e768e9da9408548927dd6 # v1.167.0
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      # Advisory-first: visibility before enforcement. Semgrep CE scans
+      # the repository with the community rule set (Python, shell, YAML,
+      # JavaScript, Go) to catch source-level security bugs before they
+      # reach production. Set continue-on-error: false once a clean baseline
+      # is confirmed.
+      - name: Run Semgrep SAST scan
+        continue-on-error: true
+        env:
+          SEMGREP_SEND_METRICS: off
+        run: semgrep scan --config=auto

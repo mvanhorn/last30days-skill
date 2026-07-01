@@ -41,6 +41,37 @@ def _run_result(returncode: int, stdout: str = "") -> subprocess.CompletedProces
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
 
 
+def test_parse_keychain_aliases_accepts_string_and_object_forms():
+    raw = (
+        '{"XAI_API_KEY":"existing-xai-api-key",'
+        '"BRAVE_API_KEY":{"account":"keychain-user","service":"existing-brave-api-key"}}'
+    )
+    assert env._parse_keychain_aliases(raw) == {
+        "XAI_API_KEY": [{"service": "existing-xai-api-key", "account": ""}],
+        "BRAVE_API_KEY": [{"service": "existing-brave-api-key", "account": "keychain-user"}],
+    }
+
+
+def test_parse_keychain_aliases_accepts_ordered_fallback_list():
+    raw = '{"XAI_API_KEY":[{"service":"primary-xai"},{"account":"keychain-user","service":"fallback-xai"}]}'
+    assert env._parse_keychain_aliases(raw) == {
+        "XAI_API_KEY": [
+            {"service": "primary-xai", "account": ""},
+            {"service": "fallback-xai", "account": "keychain-user"},
+        ],
+    }
+
+
+def test_parse_keychain_aliases_warns_on_invalid_json_and_ignores_unknown_keys(capsys):
+    assert env._parse_keychain_aliases("not json") == {}
+    warning = capsys.readouterr().err
+    assert "LAST30DAYS_KEYCHAIN_ALIASES is not valid JSON" in warning
+    assert "canonical lookups enabled" in warning
+
+    assert env._parse_keychain_aliases('{"NOT_A_KEY":"secret-service"}') == {}
+    assert capsys.readouterr().err == ""
+
+
 def test_load_keychain_loads_present_keys_skips_missing():
     def fake_run(cmd, **kwargs):
         service = cmd[cmd.index("-s") + 1]
@@ -56,6 +87,49 @@ def test_load_keychain_loads_present_keys_skips_missing():
         result = env._load_keychain(["XAI_API_KEY", "BRAVE_API_KEY", "OPENAI_API_KEY"])
 
     assert result == {"XAI_API_KEY": "xai-abc", "BRAVE_API_KEY": "brv-xyz"}
+
+
+def test_load_keychain_uses_alias_when_canonical_missing():
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        account = cmd[cmd.index("-a") + 1]
+        service = cmd[cmd.index("-s") + 1]
+        calls.append((account, service))
+        if account == "keychain-user" and service == "existing-xai-api-key":
+            return _run_result(0, "xai-alias\n")
+        return _run_result(44)
+
+    aliases = {"XAI_API_KEY": [{"account": "keychain-user", "service": "existing-xai-api-key"}]}
+    with mock.patch("platform.system", return_value="Darwin"), \
+         mock.patch("shutil.which", return_value="/usr/bin/security"), \
+         mock.patch.dict("os.environ", {"USER": "mortimer"}, clear=False), \
+         mock.patch("subprocess.run", side_effect=fake_run):
+        result = env._load_keychain(["XAI_API_KEY"], aliases)
+
+    assert result == {"XAI_API_KEY": "xai-alias"}
+    assert calls == [
+        ("mortimer", "last30days-XAI_API_KEY"),
+        ("keychain-user", "existing-xai-api-key"),
+    ]
+
+
+def test_load_keychain_canonical_wins_over_alias():
+    def fake_run(cmd, **kwargs):
+        service = cmd[cmd.index("-s") + 1]
+        if service == "last30days-XAI_API_KEY":
+            return _run_result(0, "xai-canonical\n")
+        if service == "existing-xai-api-key":
+            return _run_result(0, "xai-alias\n")
+        return _run_result(44)
+
+    aliases = {"XAI_API_KEY": [{"account": "keychain-user", "service": "existing-xai-api-key"}]}
+    with mock.patch("platform.system", return_value="Darwin"), \
+         mock.patch("shutil.which", return_value="/usr/bin/security"), \
+         mock.patch("subprocess.run", side_effect=fake_run):
+        result = env._load_keychain(["XAI_API_KEY"], aliases)
+
+    assert result == {"XAI_API_KEY": "xai-canonical"}
 
 
 def test_load_keychain_strips_whitespace_and_newlines():
@@ -141,6 +215,45 @@ def test_get_config_global_file_outranks_keychain(clean_env, tmp_path, monkeypat
         cfg = env.get_config()
     assert cfg["XAI_API_KEY"] == "xai-from-file"
     assert cfg["_CONFIG_SOURCE"].startswith("global:")
+
+
+def test_get_config_passes_aliases_from_global_file(clean_env, tmp_path, monkeypatch):
+    cfg_file = tmp_path / "global.env"
+    cfg_file.write_text(
+        'LAST30DAYS_KEYCHAIN_ALIASES={"XAI_API_KEY":{"account":"keychain-user","service":"existing-xai-api-key"}}\n'
+    )
+    monkeypatch.setattr(env, "CONFIG_FILE", cfg_file)
+
+    def fake_load_keychain(keys, aliases=None):
+        assert aliases == {
+            "XAI_API_KEY": [{"account": "keychain-user", "service": "existing-xai-api-key"}],
+        }
+        return {"XAI_API_KEY": "xai-from-alias"}
+
+    with mock.patch.object(env, "_load_keychain", side_effect=fake_load_keychain):
+        cfg = env.get_config()
+
+    assert cfg["XAI_API_KEY"] == "xai-from-alias"
+    assert cfg["LAST30DAYS_KEYCHAIN_ALIASES"].startswith('{"XAI_API_KEY"')
+
+
+def test_get_config_passes_aliases_from_process_env(clean_env, monkeypatch):
+    monkeypatch.setenv(
+        "LAST30DAYS_KEYCHAIN_ALIASES",
+        '{"XAI_API_KEY":{"account":"keychain-user","service":"existing-xai-api-key"}}',
+    )
+
+    def fake_load_keychain(keys, aliases=None):
+        assert aliases == {
+            "XAI_API_KEY": [{"account": "keychain-user", "service": "existing-xai-api-key"}],
+        }
+        return {"XAI_API_KEY": "xai-from-env-alias"}
+
+    with mock.patch.object(env, "_load_keychain", side_effect=fake_load_keychain):
+        cfg = env.get_config()
+
+    assert cfg["XAI_API_KEY"] == "xai-from-env-alias"
+    assert cfg["LAST30DAYS_KEYCHAIN_ALIASES"].startswith('{"XAI_API_KEY"')
 
 
 def test_get_config_openai_key_can_come_from_keychain(clean_env):

@@ -5,10 +5,7 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
-  id-token: write
-  attestations: write
+permissions: {}
 
 
 jobs:
@@ -18,12 +15,12 @@ jobs:
   build-skill:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
       id-token: write
       attestations: write
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -34,12 +31,12 @@ jobs:
           test -f dist/last30days.skill
 
       - name: Attest .skill artifact provenance
-        uses: actions/attest-build-provenance@v4
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
           subject-path: dist/last30days.skill
 
       - name: Upload skill artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: last30days-skill
           path: dist/last30days.skill
@@ -49,6 +46,13 @@ jobs:
   # zip layout; we only supply the pre-built binary via --skip-build.
   build-mcpb:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      MCPB_OUTPUT: mcp/build/last30days-pp-mcp-${{ matrix.goos }}-${{ matrix.goarch }}.mcpb
+      MCPB_PLATFORM: ${{ matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
@@ -64,14 +68,15 @@ jobs:
             platform: linux/amd64
     steps:
       - name: Checkout
-        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Set up Go
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
-          go-version: stable
+          go-version-file: mcp/go.mod
+          cache: false
 
       - name: Install printing-press
         # Pin to a known-good PP release so the bundle command's behavior
@@ -92,10 +97,11 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+          RELEASE_VERSION: ${{ github.ref_name }}
         run: |
           mkdir -p mcp/build
           go -C mcp build \
-            -ldflags "-X main.Version=${{ github.ref_name }}" \
+            -ldflags "-X main.Version=${RELEASE_VERSION}" \
             -o build/last30days-pp-mcp \
             ./cmd/last30days-pp-mcp
 
@@ -108,24 +114,30 @@ jobs:
           printing-press bundle mcp \
             --skip-build \
             --binary mcp/build/last30days-pp-mcp \
-            --platform ${{ matrix.platform }} \
-            --output mcp/build/last30days-pp-mcp-${{ matrix.goos }}-${{ matrix.goarch }}.mcpb
+            --platform "${MCPB_PLATFORM}" \
+            --output "${MCPB_OUTPUT}"
+
+      - name: Attest .mcpb artifact provenance
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: ${{ env.MCPB_OUTPUT }}
 
       - name: Upload .mcpb artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mcpb-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: mcp/build/last30days-pp-mcp-${{ matrix.goos }}-${{ matrix.goarch }}.mcpb
+          path: ${{ env.MCPB_OUTPUT }}
 
   # Gather every platform artifact and attach to one GitHub release.
   release:
     needs: [build-skill, build-mcpb]
     runs-on: ubuntu-latest
     permissions:
+      actions: read
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist
           merge-multiple: true
@@ -133,8 +145,9 @@ jobs:
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
-          gh release create "${GITHUB_REF_NAME}" \
+          gh release create "${RELEASE_TAG}" \
             dist/last30days.skill \
             dist/last30days-pp-mcp-*.mcpb \
             --generate-notes \

@@ -28,12 +28,12 @@ def is_first_run(config: Dict[str, Any]) -> bool:
     return not config.get("SETUP_COMPLETE")
 
 
-def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
+def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = False) -> Dict[str, Any]:
     """Perform the auto-setup actions.
 
-    - Runs cookie extraction for all registered domains, trying the browsers
-      from ``env.cookie_extraction_browsers()`` (honors ``FROM_BROWSER``;
-      defaults to Firefox/Safari, so no Chrome Keychain prompt)
+    - Optionally runs cookie extraction for all registered domains, trying the
+      browsers from ``env.cookie_extraction_browsers()``. Browser reads are off
+      unless ``allow_browser_cookies`` is true.
     - Checks if yt-dlp is installed
     - Best-effort install of digg-pp-cli (Printing Press library)
 
@@ -49,31 +49,31 @@ def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
           digg_stderr: present when digg_action is install_failed
           digg_path: present when digg_action is installed_off_path (binary on disk, not on PATH)
     """
-    from . import cookie_extract
     from .env import COOKIE_DOMAINS, cookie_extraction_browsers
 
     cookies_found: Dict[str, str] = {}
 
-    # Honor FROM_BROWSER and default to the silent browsers (Firefox/Safari).
-    # Using "auto" here used to probe Chrome unconditionally, triggering a
-    # "Chrome Safe Storage" Keychain prompt on first run that the steady-state
-    # path deliberately avoids. Chrome is now opt-in via FROM_BROWSER=chrome|auto.
-    # An empty list (FROM_BROWSER=off) makes the inner loop a no-op.
-    browsers = cookie_extraction_browsers(config)
+    if allow_browser_cookies:
+        from . import cookie_extract
 
-    for source_name, spec in COOKIE_DOMAINS.items():
-        domain = spec["domain"]
-        cookie_names = spec["cookies"]
+        cookie_config = dict(config)
+        if not (cookie_config.get("FROM_BROWSER") or "").strip():
+            cookie_config["FROM_BROWSER"] = "firefox,safari"
+        browsers = cookie_extraction_browsers(cookie_config)
 
-        for browser in browsers:
-            try:
-                result = cookie_extract.extract_cookies_with_source(browser, domain, cookie_names)
-            except Exception as exc:
-                logger.debug("Cookie extraction failed for %s via %s: %s", source_name, browser, exc)
-                continue
-            if result is not None and result[0]:
-                cookies_found[source_name] = result[1]
-                break  # Found cookies for this service, stop trying browsers
+        for source_name, spec in COOKIE_DOMAINS.items():
+            domain = spec["domain"]
+            cookie_names = spec["cookies"]
+
+            for browser in browsers:
+                try:
+                    result = cookie_extract.extract_cookies_with_source(browser, domain, cookie_names)
+                except Exception as exc:
+                    logger.debug("Cookie extraction failed for %s via %s: %s", source_name, browser, exc)
+                    continue
+                if result is not None and result[0]:
+                    cookies_found[source_name] = result[1]
+                    break  # Found cookies for this service, stop trying browsers
 
     # Check yt-dlp availability and install via Homebrew if missing
     ytdlp_action: str
@@ -105,6 +105,7 @@ def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
         ytdlp_action = "no_homebrew"
 
     digg_installed, digg_action, digg_stderr, digg_path = _install_digg_cli()
+    pp_sources = install_default_pp_sources()
 
     results: Dict[str, Any] = {
         "cookies_found": cookies_found,
@@ -112,6 +113,9 @@ def run_auto_setup(config: Dict[str, Any]) -> Dict[str, Any]:
         "ytdlp_action": ytdlp_action,
         "digg_installed": digg_installed,
         "digg_action": digg_action,
+        # Per-CLI status for the additional default-on Printing Press sources
+        # (arxiv, techmeme, trustpilot): {source: {installed, action, ...}}.
+        "pp_sources": pp_sources,
         "env_written": False,
     }
     if ytdlp_action == "install_failed":
@@ -234,6 +238,106 @@ def _install_digg_cli() -> Tuple[bool, str, str, str]:
     return False, "install_failed", stderr, ""
 
 
+# Additional default-on Printing Press sources installed the same way as Digg:
+# (engine source key, slug for `install <slug>`, binary name). These activate in
+# ``pipeline.available_sources()`` when ``shutil.which`` resolves the binary.
+# Trustpilot is intentionally NOT here: it is opt-in (INCLUDE_SOURCES=trustpilot)
+# because of its headless-Chrome cookie harvest, so auto-installing its binary
+# for a source that stays off by default would be wasted work. Opting in installs
+# it on demand via `npx ... install trustpilot --cli-only` (see CONFIGURATION.md).
+PP_DEFAULT_SOURCES: list[tuple[str, str, str]] = [
+    ("arxiv", "arxiv", "arxiv-pp-cli"),
+    ("techmeme", "techmeme", "techmeme-pp-cli"),
+]
+
+
+def _pp_bin_candidate_paths(bin_name: str) -> list[Path]:
+    """Known install locations for a Printing Press CLI binary (slug-parameterized
+    mirror of ``_digg_bin_candidate_paths``)."""
+    home = Path.home()
+    candidates: list[Path] = [home / ".local" / "bin" / bin_name]
+    gopath = os.environ.get("GOPATH")
+    if gopath:
+        candidates.append(Path(gopath) / "bin" / bin_name)
+    candidates.append(home / "go" / "bin" / bin_name)
+    if os.name == "nt":
+        local_app = os.environ.get("LOCALAPPDATA") or os.environ.get("LocalAppData")
+        if local_app:
+            candidates.append(
+                Path(local_app) / "Programs" / "PrintingPress" / "bin" / f"{bin_name}.exe"
+            )
+    return candidates
+
+
+def _pp_off_path_binary(bin_name: str) -> Optional[str]:
+    for candidate in _pp_bin_candidate_paths(bin_name):
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return None
+
+
+def _install_pp_cli(slug: str, bin_name: str) -> Tuple[bool, str, str, str]:
+    """Best-effort install of a Printing Press CLI binary.
+
+    Slug-parameterized mirror of ``_install_digg_cli``: never raises, degrades
+    to recommend-only when the installer is unavailable. Returns
+    ``(engine_active, action, stderr, off_path_binary)`` with the same action
+    taxonomy: already_installed | installed | installed_off_path |
+    install_failed | no_npx.
+    """
+    on_path = shutil.which(bin_name)
+    if on_path:
+        return True, "already_installed", "", ""
+    off_path = _pp_off_path_binary(bin_name)
+    if off_path:
+        return False, "installed_off_path", "", off_path
+    if shutil.which("npx") is None:
+        return False, "no_npx", "", ""
+    try:
+        proc = subprocess.run(
+            ["npx", "-y", PRINTING_PRESS_NPM, "install", slug, "--cli-only"],
+            capture_output=True, text=True, timeout=DIGG_INSTALL_TIMEOUT,
+        )
+    except Exception as exc:
+        logger.warning("npx install %s exception: %s", slug, exc)
+        return False, "install_failed", str(exc), ""
+    if proc.returncode != 0:
+        stderr = proc.stderr or f"npx install {slug} exited {proc.returncode}"
+        logger.warning("npx install %s failed (rc=%s): %s", slug, proc.returncode, stderr)
+        return False, "install_failed", stderr, ""
+    on_path = shutil.which(bin_name)
+    if on_path:
+        return True, "installed", "", ""
+    off_path = _pp_off_path_binary(bin_name)
+    if off_path:
+        combined = (proc.stderr or "").strip()
+        if combined:
+            logger.warning("%s installed off PATH: %s", bin_name, combined)
+        return False, "installed_off_path", combined, off_path
+    stderr = proc.stderr or f"install completed but {bin_name} was not found"
+    logger.warning("npx install %s failed verification: %s", slug, stderr)
+    return False, "install_failed", stderr, ""
+
+
+def install_default_pp_sources() -> Dict[str, Dict[str, Any]]:
+    """Best-effort install of every additional default-on Printing Press source.
+
+    Returns ``{source_key: {installed, action, stderr?, path?}}`` so the wizard
+    can report per-CLI status alongside Digg without raising on any single
+    failure.
+    """
+    out: Dict[str, Dict[str, Any]] = {}
+    for source_key, slug, bin_name in PP_DEFAULT_SOURCES:
+        installed, action, stderr, off_path = _install_pp_cli(slug, bin_name)
+        entry: Dict[str, Any] = {"installed": installed, "action": action}
+        if action == "install_failed" and stderr:
+            entry["stderr"] = stderr
+        if off_path:
+            entry["path"] = off_path
+        out[source_key] = entry
+    return out
+
+
 def _open_secret_append(path: Path):
     """Open ``path`` for appending as a 0o600 secret file with no readable window.
 
@@ -328,6 +432,63 @@ def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
     except OSError as exc:
         logger.error("Failed to write setup config to %s: %s", env_path, exc)
         return False
+
+
+def write_api_key(env_path: Path, api_key: str, key_name: str = "SCRAPECREATORS_API_KEY") -> bool:
+    """Append an API key to the .env file as a 0o600 secret.
+
+    Reuses the same secret-safe write path as ``write_setup_config`` so the
+    value lands with restrictive permissions and round-trips through
+    ``env.load_env_file``. Idempotent: if ``key_name`` is already present in
+    the file, nothing is written and the existing value is preserved (we never
+    clobber a key the user may have set by hand).
+
+    Args:
+        env_path: Path to the .env file (e.g. ~/.config/last30days/.env).
+        api_key: The raw key value to persist.
+        key_name: The env var name to write (default SCRAPECREATORS_API_KEY).
+
+    Returns:
+        True if the key was written or already present, False on error or when
+        ``api_key`` is empty.
+    """
+    if not api_key:
+        return False
+    try:
+        env_path = Path(env_path)
+        env_path.parent.mkdir(parents=True, exist_ok=True)
+
+        existing_content = ""
+        if env_path.exists():
+            existing_content = env_path.read_text(encoding="utf-8")
+            for line in existing_content.splitlines():
+                stripped = line.strip()
+                if stripped and not stripped.startswith("#") and "=" in stripped:
+                    if stripped.split("=", 1)[0].strip() == key_name:
+                        return True  # Already configured; do not duplicate
+
+        line = f"{key_name}={_format_env_value(api_key)}\n"
+        with _open_secret_append(env_path) as f:
+            if existing_content and not existing_content.endswith("\n"):
+                f.write("\n")
+            f.write(line)
+
+        return True
+
+    except OSError as exc:
+        logger.error("Failed to write API key to %s: %s", env_path, exc)
+        return False
+
+
+def mask_api_key(api_key: str) -> str:
+    """Return a non-secret display form of an API key (prefix + last 4).
+
+    Used so the key never appears verbatim in stdout the host model captures.
+    Short or empty keys collapse to a fixed placeholder.
+    """
+    if not api_key or len(api_key) <= 8:
+        return "sc_…"
+    return f"{api_key[:3]}…{api_key[-4:]}"
 
 
 def get_setup_status_text(results: Dict[str, Any]) -> str:

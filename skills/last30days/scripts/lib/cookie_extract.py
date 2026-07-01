@@ -69,7 +69,16 @@ def _get_firefox_profiles_dir() -> Optional[Path]:
     if system == "Darwin":
         path = Path.home() / "Library" / "Application Support" / "Firefox"
     elif system == "Linux":
+        # Default location for most distros
         path = Path.home() / ".mozilla" / "firefox"
+        if path.is_dir():
+            return path
+        # Some distros (e.g. Fedora) honour $XDG_CONFIG_HOME
+        xdg_config = os.environ.get("XDG_CONFIG_HOME")
+        if xdg_config and os.path.isabs(xdg_config):
+            path = Path(xdg_config) / "mozilla" / "firefox"
+        else:
+            path = Path.home() / ".config" / "mozilla" / "firefox"
     else:
         # Windows: %APPDATA%\Mozilla\Firefox — best-effort
         appdata = Path.home() / "AppData" / "Roaming" / "Mozilla" / "Firefox"
@@ -157,7 +166,12 @@ def _query_cookies_db(
     tmp_path = None
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
-        shutil.copy2(str(db_path), tmp_path)
+        # mkstemp creates the file 0600. copy2 would copy the source's mode
+        # (Firefox cookies.sqlite is commonly 0644, looser on WSL /mnt/c) onto
+        # the temp file, leaving live session secrets world-readable in shared
+        # /tmp until the chmod below runs. copyfile writes content only and
+        # leaves the 0600 perms intact, closing that window.
+        shutil.copyfile(str(db_path), tmp_path)
         _lock_temp_cookie_copy(tmp_path)
 
         conn = sqlite3.connect(tmp_path)

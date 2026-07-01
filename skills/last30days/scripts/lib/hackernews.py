@@ -31,6 +31,9 @@ DEPTH_CONFIG = {
     "deep": 60,
 }
 
+MIN_STORY_POINTS = 2
+HN_OVERFETCH_MULTIPLIER = 2
+
 ENRICH_LIMITS = {
     "quick": 3,
     "default": 5,
@@ -83,6 +86,7 @@ def search_hackernews(
         Dict with Algolia response (contains 'hits' list).
     """
     count = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
+    fetch_count = count * HN_OVERFETCH_MULTIPLIER
     from_ts = _date_to_unix(from_date)
     to_ts = _date_to_unix(to_date) + 86400  # Include the end date
 
@@ -97,15 +101,15 @@ def search_hackernews(
     # `created_at_i` in numericFilters; `points` is NOT in its
     # `numericAttributesForFiltering`, so a `points>N` clause makes the API
     # return HTTP 400 ("invalid numeric attribute(points)") and zero stories.
-    # Low-engagement stories are demoted by parse-time relevance scoring
-    # (rank + engagement_boost in parse_hackernews_response) instead.
+    # Low-engagement stories are filtered client-side after overfetching so the
+    # invalid numeric filter is not reintroduced.
     # NOTE: restrictSearchableAttributes=title omitted intentionally — it would
     # miss Ask HN/Show HN threads where the topic appears in the body.
     params = {
         "query": core_flat,
         "tags": "story",
         "numericFilters": f"created_at_i>{from_ts},created_at_i<{to_ts}",
-        "hitsPerPage": str(count),
+        "hitsPerPage": str(fetch_count),
     }
     # Algolia defaults to AND across query tokens, so a 4-5 word theme query
     # matches no stories. Mark all-but-the-first token as optional so Algolia
@@ -126,7 +130,17 @@ def search_hackernews(
         _log(f"Search failed: {e}")
         return {"hits": [], "error": str(e)}
 
-    hits = response.get("hits", [])
+    raw_hits = response.get("hits", [])
+    qualifying_hits = [
+        hit for hit in raw_hits
+        if (hit.get("points") or 0) > MIN_STORY_POINTS
+    ]
+    hits = qualifying_hits[:count]
+    dropped_low_engagement = len(raw_hits) - len(qualifying_hits)
+    if dropped_low_engagement:
+        _log(f"Filtered {dropped_low_engagement}/{len(raw_hits)} low-engagement stories")
+    if len(hits) != len(raw_hits):
+        response = {**response, "hits": hits}
     _log(f"Found {len(hits)} stories")
     return response
 

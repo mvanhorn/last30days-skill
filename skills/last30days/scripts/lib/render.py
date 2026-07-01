@@ -69,6 +69,9 @@ SOURCE_LABELS = {
     "x": "X",
     "github": "GitHub",
     "digg": "Digg",
+    "arxiv": "arXiv",
+    "techmeme": "Techmeme",
+    "trustpilot": "Trustpilot",
     "perplexity": "Perplexity",
     "jobs": "Jobs",
 }
@@ -471,8 +474,9 @@ def _render_pre_research_warning(report: schema.Report) -> list[str]:
         "- Subreddit-specific threads on dedicated communities",
         "- Topic-specific TikTok and Instagram creators",
         "",
-        "To fix: in a fresh Claude Code window, run `ToolSearch select:WebSearch` first,",
-        f"then rerun `/last30days {report.topic}`. The skill will resolve handles",
+        "To fix: in a fresh agent session (Claude Code, Codex, Hermes, Gemini, or any runtime),",
+        "ensure your runtime's web-search tool is active, then",
+        f"rerun `/last30days {report.topic}`. The skill will resolve handles",
         "and communities before calling the engine this time, producing richer results.",
         "",
         "If this topic really is abstract (e.g. \"AI regulation\") and doesn't need",
@@ -1487,6 +1491,9 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
     ("truthsocial", "🇺🇸", "Truth Social", "post",     [("likes", "likes"), ("reposts", "reposts")]),
     ("github",      "🐙", "GitHub",       "item",     [("stars", "stars"), ("merged_prs", "merged"), ("reactions", "reactions"), ("comments", "comments")]),
     ("digg",        "⛏️", "Digg",         "cluster",  [("postCount", "posts"), ("uniqueAuthors", "authors")]),
+    ("arxiv",       "📄", "arXiv",        "paper",    []),
+    ("techmeme",    "📰", "Techmeme",     "headline", []),
+    ("trustpilot",  "⭐", "Trustpilot",   "review",   [("reviews", "reviews")]),
     # Jobs must appear so a scoped --hiring-signals run (jobs-only) still emits
     # the LAW 5 footer; without it the footer was dropped entirely.
     ("jobs",        "💼", "Jobs",         "role",     []),
@@ -1755,6 +1762,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "github":       [("stars", "stars"), ("merged_prs", "merged"), ("reactions", "react"), ("comments", "cmt")],
     "perplexity":   [("citations", "cite")],
     "digg":         [("postCount", "posts"), ("uniqueAuthors", "auth")],
+    "trustpilot":   [("reviews", "reviews")],
 }
 
 

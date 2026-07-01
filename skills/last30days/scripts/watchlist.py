@@ -8,6 +8,7 @@ import json
 import subprocess
 import sys
 import time
+import urllib.parse
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
@@ -28,10 +29,22 @@ def _deliver_findings(topic_name: str, counts: dict) -> None:
     mode = store.get_setting("delivery_mode", "announce")
     message = _format_delivery_message(topic_name, counts, mode)
     
+    # Require https before routing. The old "hooks.slack.com" in channel
+    # substring test ran before any scheme check, so a channel like
+    # http://evil.example/hooks.slack.com was treated as Slack and POSTed in
+    # cleartext to the wrong host. Match Slack on the exact hostname instead.
+    parsed = urllib.parse.urlparse(channel)
+    if parsed.scheme != "https":
+        print(
+            f"Delivery skipped: delivery_channel must be an https:// URL, got {channel!r}",
+            file=sys.stderr,
+        )
+        return
+
     try:
-        if "hooks.slack.com" in channel:
+        if parsed.hostname == "hooks.slack.com":
             _send_slack_webhook(channel, message)
-        elif channel.startswith("https://"):
+        else:
             _send_generic_webhook(channel, message)
     except Exception as e:
         # Don't fail the research run if delivery fails
@@ -171,6 +184,11 @@ def _run_topic(topic: dict) -> dict:
                 "--quick",
                 "--lookback-days",
                 "90",
+                # Watchlist is an unattended cron host: never probe browser
+                # cookies (matches the MCP server). Avoids a silent Chromium
+                # read / unattended macOS Keychain prompt when a user has set
+                # FROM_BROWSER=auto for interactive use.
+                "--no-browser-cookies",
             ],
             capture_output=True,
             text=True,
@@ -236,8 +254,15 @@ def cmd_config(args):
         print(json.dumps({"action": "config", "key": "daily_budget", "value": str(args.value)}))
         return
     if args.key == "delivery":
-        store.set_setting("delivery_channel", str(args.value))
-        print(json.dumps({"action": "config", "key": "delivery_channel", "value": str(args.value)}))
+        value = str(args.value)
+        # Reject a non-https channel at write time so the operator gets
+        # immediate feedback, rather than discovering it via a stderr line
+        # buried in a research run hours later. Matches the delivery-time guard
+        # in _deliver_findings.
+        if value and urllib.parse.urlparse(value).scheme != "https":
+            raise SystemExit(f"delivery_channel must be an https:// URL, got {value!r}")
+        store.set_setting("delivery_channel", value)
+        print(json.dumps({"action": "config", "key": "delivery_channel", "value": value}))
         return
     raise SystemExit(f"Unknown config key: {args.key}")
 

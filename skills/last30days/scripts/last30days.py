@@ -24,10 +24,15 @@ def ensure_supported_python(version_info: tuple[int, int, int] | object | None =
     major, minor, micro = tuple(version_info[:3])
     if (major, minor) >= MIN_PYTHON:
         return
+    req = f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}"
     sys.stderr.write(
-        "last30days v3 requires Python 3.12+.\n"
+        f"last30days v3 requires Python {req}+.\n"
         f"Detected Python {major}.{minor}.{micro}.\n"
-        "Install and use python3.12 or python3.13, then rerun this command.\n"
+        f"Install with:\n"
+        f"  Mac:     brew install python@{req}\n"
+        f"  Windows: winget install Python.Python.{req}\n"
+        f"  Linux:   sudo apt install python{req}  (or pyenv install {req})\n"
+        f"Then rerun: python{req} <path-to-script> setup\n"
     )
     raise SystemExit(1)
 
@@ -42,7 +47,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import dates, env, html_render, pipeline, render, schema, ui
+from lib import dates, env, html_render, permission_preflight, pipeline, render, schema, ui
 
 _child_pids: set[int] = set()
 _child_pids_lock = threading.Lock()
@@ -151,6 +156,45 @@ def save_rendered_output(rendered_content: str, output_file: str) -> Path:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(rendered_content, encoding="utf-8")
     return out_path
+
+
+def _publish_metadata_path(html_path: Path) -> Path:
+    return html_path.with_name(f"{html_path.name}.publish.json")
+
+
+def _write_publish_metadata(html_path: Path, publish_result: dict[str, object]) -> None:
+    payload = {
+        "url": publish_result.get("url"),
+        "site_id": publish_result.get("site_id"),
+        "status": publish_result.get("status"),
+        "published_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    _publish_metadata_path(html_path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def publish_rendered_html(
+    rendered: str,
+    *,
+    password: str | None = None,
+    companion_paths: list[Path] | None = None,
+) -> dict[str, object]:
+    from lib import html_publish
+
+    result = html_publish.publish_html(rendered, password=password)
+    metadata_errors: list[str] = []
+    for path in companion_paths or []:
+        try:
+            _write_publish_metadata(path, result)
+        except OSError as exc:
+            metadata_errors.append(f"{path}: {exc}")
+    if metadata_errors:
+        result = dict(result)
+        result["_metadata_errors"] = metadata_errors
+    return result
+
+
+def _publish_password_for_args(args: argparse.Namespace) -> str | None:
+    return (args.publish_password or os.environ.get("LAST30DAYS_PUBLISH_PASSWORD") or None)
 
 
 def emit_output(
@@ -288,9 +332,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--debug", action="store_true", help="Enable HTTP debug logging")
     parser.add_argument("--mock", action="store_true", help="Use mock retrieval fixtures")
     parser.add_argument("--diagnose", action="store_true", help="Print provider and source availability")
+    parser.add_argument("--preflight", action="store_true",
+                        help="Print a safe human-readable permission preflight")
+    parser.add_argument("--preflight-report-on-save-dir", help=argparse.SUPPRESS)
+    parser.add_argument("--no-browser-cookies", action="store_true",
+                        help="Disable browser-cookie extraction even when FROM_BROWSER is configured")
     parser.add_argument("--save-dir", help="Optional directory for saving the rendered output")
     parser.add_argument("--output", help="Optional exact file path for saving the rendered output")
     parser.add_argument("--synthesis-file", help="Markdown synthesis to embed in --emit=html output")
+    parser.add_argument("--publish-html", action="store_true",
+                        help="Publish --emit=html output to ht-ml.app (explicit opt-in; public by default)")
+    parser.add_argument("--publish-password",
+                        help="Optional shared password for --publish-html; prefer LAST30DAYS_PUBLISH_PASSWORD to avoid exposing secrets in process lists")
     parser.add_argument("--store", action="store_true", help="Persist ranked findings to the SQLite research store")
     parser.add_argument("--x-handle", help="X handle for targeted supplemental search")
     parser.add_argument("--x-related", help="Comma-separated related X handles (searched with lower weight)")
@@ -303,7 +356,8 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Analyze public jobs/careers postings as evidence-backed company focus signals.")
     parser.add_argument("--plan", help="JSON query plan (skips internal LLM planner). Can be a JSON string or a file path.")
     parser.add_argument("--save-suffix", help="Suffix for saved output filename (e.g., 'gemini' → kanye-west-raw-gemini.md)")
-    parser.add_argument("--subreddits", help="Comma-separated subreddit names to search (e.g., SaaS,Entrepreneur)")
+    parser.add_argument("--subreddits", help="Comma-separated broad/category subreddit names to search (e.g., SaaS,Entrepreneur)")
+    parser.add_argument("--dedicated-subreddits", help="Comma-separated entity-home subreddit names (e.g., Kanye,WestSubEver). Pulled in full (top+hot+new) and exempt from the relevance floor since the whole sub is the topic.")
     parser.add_argument("--tiktok-hashtags", help="Comma-separated TikTok hashtags without # (e.g., tella,screenrecording)")
     parser.add_argument("--tiktok-creators", help="Comma-separated TikTok creator handles (e.g., TellaHQ,taborplace)")
     parser.add_argument("--ig-creators", help="Comma-separated Instagram creator handles (e.g., tella.tv,laborstories)")
@@ -595,7 +649,50 @@ def _show_runtime_ui(
         progress.show_promo(promo, diag=diag)
 
 
-def _write_last_run(topic: str, report: "schema.Report") -> None:
+REPORT_CACHE_VERSION = "last30days-report-cache/v1"
+DEFAULT_REPORT_CACHE_TTL_SECONDS = 3600
+
+
+def _last_report_cache_path() -> Path | None:
+    if env.CONFIG_DIR is None:
+        return None
+    return env.CONFIG_DIR / "last-report.json"
+
+
+def _report_cache_ttl_seconds(config: dict[str, object]) -> int:
+    raw = os.environ.get("LAST30DAYS_REPORT_CACHE_TTL_SECONDS")
+    if raw is None:
+        raw = config.get("LAST30DAYS_REPORT_CACHE_TTL_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_REPORT_CACHE_TTL_SECONDS
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_REPORT_CACHE_TTL_SECONDS
+
+
+def _is_report_cache_fresh(timestamp: object, ttl_seconds: int) -> bool:
+    if ttl_seconds <= 0:
+        return False
+    if not isinstance(timestamp, str) or not timestamp:
+        return False
+    try:
+        created_at = datetime.datetime.fromisoformat(timestamp)
+    except ValueError:
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+    age = datetime.datetime.now(datetime.timezone.utc) - created_at.astimezone(
+        datetime.timezone.utc
+    )
+    return age.total_seconds() <= ttl_seconds
+
+
+def _write_last_run(
+    topic: str,
+    report: "schema.Report",
+    entity_reports: list[tuple[str, schema.Report]] | None = None,
+) -> None:
     try:
         if env.CONFIG_DIR is None:
             return
@@ -607,13 +704,163 @@ def _write_last_run(topic: str, report: "schema.Report") -> None:
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "sources": counts,
             "total": sum(counts.values()),
+            "report_cache": str(target / "last-report.json"),
+            "comparison": bool(entity_reports),
         }
         (target / "last-run.json").write_text(json.dumps(payload, indent=2))
+        cached_reports = entity_reports or [(report.topic, report)]
+        cache_payload = {
+            "schema": REPORT_CACHE_VERSION,
+            "topic": topic,
+            "timestamp": payload["timestamp"],
+            "comparison": bool(entity_reports),
+            "reports": [
+                {"entity": label, "report": schema.to_dict(cached_report)}
+                for label, cached_report in cached_reports
+            ],
+        }
+        (target / "last-report.json").write_text(json.dumps(cache_payload, indent=2))
     except Exception:
         pass
 
 
-def _propagate_config_to_environ() -> None:
+def _load_last_report_cache(
+    topic: str,
+    ttl_seconds: int = DEFAULT_REPORT_CACHE_TTL_SECONDS,
+) -> tuple[schema.Report, list[tuple[str, schema.Report]] | None, Path] | None:
+    cache_path = _last_report_cache_path()
+    if cache_path is None or not cache_path.exists():
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        if payload.get("schema") != REPORT_CACHE_VERSION:
+            return None
+        if not _is_report_cache_fresh(payload.get("timestamp"), ttl_seconds):
+            return None
+        cached_topic = str(payload.get("topic") or "").strip().lower()
+        if cached_topic != topic.strip().lower():
+            return None
+        reports_payload = payload.get("reports") or []
+        if not reports_payload:
+            return None
+        entity_reports = [
+            (str(item.get("entity") or ""), schema.report_from_dict(item["report"]))
+            for item in reports_payload
+            if isinstance(item, dict) and isinstance(item.get("report"), dict)
+        ]
+        if not entity_reports:
+            return None
+        if payload.get("comparison"):
+            if len(entity_reports) < 2:
+                return None
+            if len(entity_reports) != len(reports_payload):
+                return None
+            return entity_reports[0][1], entity_reports, cache_path
+        return entity_reports[0][1], None, cache_path
+    except Exception:
+        return None
+
+
+def _render_save_and_print(
+    args: argparse.Namespace,
+    report: schema.Report,
+    entity_reports: list[tuple[str, schema.Report]] | None,
+    synthesis_md: str | None,
+    config: dict[str, object],
+) -> int:
+    fun_level = str(config.get("FUN_LEVEL", "medium")).lower()
+    # Comparison HTML is the one case where the saved file's title and content
+    # have to be overridden away from the leading entity's report. Compute the
+    # gate once so the footer-display and save-output paths can't disagree.
+    is_comparison_html = bool(entity_reports) and args.emit == "html"
+    footer_save_path = None
+    if args.output:
+        footer_save_path = compute_output_path_display(args.output)
+    elif args.save_dir:
+        save_topic_for_display = comparison_topic(entity_reports) if is_comparison_html else report.topic
+        footer_save_path = compute_save_path_display(
+            args.save_dir, save_topic_for_display, args.save_suffix or "", args.emit
+        )
+
+    if entity_reports:
+        rendered = emit_comparison_output(
+            entity_reports,
+            args.emit,
+            fun_level=fun_level,
+            save_path=footer_save_path,
+            synthesis_md=synthesis_md,
+        )
+    else:
+        rendered = emit_output(
+            report,
+            args.emit,
+            fun_level=fun_level,
+            save_path=footer_save_path,
+            synthesis_md=synthesis_md,
+        )
+    publish_companion_paths: list[Path] = []
+    if args.output:
+        output_path = save_rendered_output(rendered, args.output)
+        if args.emit == "html":
+            publish_companion_paths.append(output_path)
+        sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
+        sys.stderr.flush()
+    if args.save_dir:
+        # Save the main topic's raw file (single-entity or comparison main).
+        save_path = save_output(
+            report,
+            args.emit,
+            args.save_dir,
+            suffix=args.save_suffix or "",
+            synthesis_md=synthesis_md,
+            topic_override=comparison_topic(entity_reports) if is_comparison_html else None,
+            rendered_content=rendered if is_comparison_html else None,
+        )
+        if args.emit == "html":
+            publish_companion_paths.append(save_path)
+        sys.stderr.write(f"[last30days] Saved output to {save_path}\n")
+        comparison_peer_paths: list[Path] = []
+        # Competitor / vs-mode: also save a per-entity raw file for each peer.
+        # Matches historical vs-mode behavior (N passes -> N save files).
+        if entity_reports and len(entity_reports) > 1:
+            for label, entity_report in entity_reports[1:]:
+                peer_path = save_output(
+                    entity_report, args.emit, args.save_dir,
+                    suffix=args.save_suffix or "",
+                    synthesis_md=synthesis_md,
+                )
+                comparison_peer_paths.append(peer_path)
+                sys.stderr.write(f"[last30days] Saved output to {peer_path}\n")
+            peers_display = ", ".join(str(path) for path in comparison_peer_paths)
+            sys.stderr.write(
+                f"[last30days] Comparison artifact set: main={save_path}; "
+                f"peers={peers_display}\n"
+            )
+        sys.stderr.flush()
+    if args.publish_html:
+        try:
+            publish_result = publish_rendered_html(
+                rendered,
+                password=_publish_password_for_args(args),
+                companion_paths=publish_companion_paths,
+            )
+            sys.stderr.write(f"[last30days] Published HTML to {publish_result['url']}\n")
+            for warning in publish_result.get("_metadata_errors") or []:
+                sys.stderr.write(f"[last30days] Publish metadata warning: {warning}\n")
+            if publish_result.get("update_key"):
+                sys.stderr.write(
+                    "[last30days] ht-ml.app returned an update key; not writing it "
+                    "to stdout, HTML, or publish metadata.\n"
+                )
+            sys.stderr.flush()
+        except Exception as exc:
+            sys.stderr.write(f"[last30days] HTML publish failed: {exc}\n")
+            sys.stderr.flush()
+    print(rendered)
+    return 0
+
+
+def _propagate_config_to_environ(config: dict[str, object]) -> None:
     """Push relevant env keys to os.environ so provider modules can read them.
 
     The env.get_config() function reads from a .env file, but providers.py
@@ -621,17 +868,72 @@ def _propagate_config_to_environ() -> None:
     XAI_BASE_URL overrides are silently ignored. This is a no-op for
     keys that are already set in process env.
     """
-    try:
-        config = env.get_config()
-    except Exception:
-        return
     for key in ("OPENAI_BASE_URL", "XAI_BASE_URL"):
         val = config.get(key)
         if val and not os.environ.get(key):
             os.environ[key] = val
 
 
-_propagate_config_to_environ()
+def _setup_allows_browser_cookies(args: argparse.Namespace, extra_argv: list[str]) -> bool:
+    return (
+        not args.no_browser_cookies
+        and not args.diagnose
+        and not args.preflight
+        and "--allow-browser-cookies" in extra_argv
+    )
+
+
+SETUP_PASSTHROUGH_FLAGS = {
+    "--allow-browser-cookies",
+    "--device-auth",
+    "--github",
+    "--openclaw",
+}
+
+SKILL_ONLY_FLAGS = {
+    "--agent",
+}
+
+
+def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv: list[str]) -> None:
+    if not extra_argv:
+        return
+    if topic.lower() == "setup":
+        unsupported = [arg for arg in extra_argv if arg not in SETUP_PASSTHROUGH_FLAGS]
+        if unsupported:
+            parser.error(
+                "unsupported setup argument(s): "
+                + ", ".join(unsupported)
+                + f"; supported setup passthrough flags are {', '.join(sorted(SETUP_PASSTHROUGH_FLAGS))}"
+            )
+        return
+    skill_only = [arg for arg in extra_argv if arg in SKILL_ONLY_FLAGS]
+    other_unknown = [arg for arg in extra_argv if arg not in SKILL_ONLY_FLAGS]
+    if skill_only:
+        message = (
+            "unsupported Python CLI argument(s): "
+            + ", ".join(skill_only)
+            + "; these are skill arguments and must not be forwarded to scripts/last30days.py"
+        )
+        if other_unknown:
+            message += "; also unsupported: " + ", ".join(other_unknown)
+        parser.error(message)
+    parser.error("unsupported Python CLI argument(s): " + ", ".join(extra_argv))
+
+
+def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: list[str]) -> env.ConfigLoadPolicy:
+    if args.no_browser_cookies:
+        browser_mode = "off"
+    elif args.diagnose or args.preflight:
+        browser_mode = "plan_only"
+    elif topic.lower() == "setup":
+        browser_mode = "read" if _setup_allows_browser_cookies(args, extra_argv) else "off"
+    else:
+        browser_mode = "read"
+    return env.ConfigLoadPolicy(
+        browser_cookies=browser_mode,
+        inspect_ignored_project_config=args.diagnose or args.preflight,
+    )
 
 
 def main() -> int:
@@ -642,7 +944,11 @@ def main() -> int:
     if args.debug:
         os.environ["LAST30DAYS_DEBUG"] = "1"
 
-    config = env.get_config()
+    topic = " ".join(args.topic).strip()
+    original_topic = topic
+    _validate_extra_argv(parser, topic, extra_argv)
+    config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
+    _propagate_config_to_environ(config)
 
     # Env-var fallback for --save-dir, mirroring the LAST30DAYS_STORE pattern below.
     # Uses `is None` / `is not None` checks (not truthy `or`) at every layer so that
@@ -660,31 +966,59 @@ def main() -> int:
     if config.get("LAST30DAYS_YOUTUBE_SSH_HOST") and "LAST30DAYS_YOUTUBE_SSH_HOST" not in os.environ:
         os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = config["LAST30DAYS_YOUTUBE_SSH_HOST"]
 
+    if args.preflight:
+        requested_sources = resolve_requested_sources(args.search, config)
+        diag = pipeline.diagnose(config, requested_sources, safe=True)
+        if args.save_dir or args.preflight_report_on_save_dir:
+            preflight = permission_preflight.build(
+                config,
+                diag,
+                planned_save_dir=args.save_dir,
+                report_on_save_dir=args.preflight_report_on_save_dir,
+            )
+        else:
+            preflight = diag["permission_preflight"]
+        if args.emit == "json":
+            print(json.dumps(preflight, indent=2, sort_keys=True))
+        else:
+            print(permission_preflight.render_text(preflight), end="")
+        return 0
+
     # Handle setup subcommand
-    topic = " ".join(args.topic).strip()
     if topic.lower() == "setup":
         from lib import setup_wizard
         if "--openclaw" in extra_argv:
             results = setup_wizard.run_openclaw_setup(config)
             print(json.dumps(results))
             return 0
-        if "--github" in extra_argv:
-            results = setup_wizard.run_github_auth()
-            print(json.dumps(results))
-            return 0
-        if "--device-auth" in extra_argv:
-            results = setup_wizard.run_full_device_auth()
+        if "--github" in extra_argv or "--device-auth" in extra_argv:
+            if "--github" in extra_argv:
+                results = setup_wizard.run_github_auth()
+            else:
+                results = setup_wizard.run_full_device_auth()
+            # Persist the returned key so the paid sources activate on the next
+            # run, and mask it in stdout so the secret never lands in the host
+            # model's captured Bash output.
+            api_key = results.get("api_key")
+            if results.get("status") == "success" and api_key:
+                results["persisted"] = setup_wizard.write_api_key(env.CONFIG_FILE, api_key)
+                results["api_key"] = setup_wizard.mask_api_key(api_key)
+            else:
+                results["persisted"] = False
             print(json.dumps(results))
             return 0
         sys.stderr.write("Running auto-setup...\n")
-        results = setup_wizard.run_auto_setup(config)
+        results = setup_wizard.run_auto_setup(
+            config,
+            allow_browser_cookies=_setup_allows_browser_cookies(args, extra_argv),
+        )
         # Persist FROM_BROWSER only when every service's cookies came from the
         # SAME single browser — then we can fast-path future runs to it. If
         # different services matched different browsers, or none matched, leave
-        # FROM_BROWSER unset: the safe default (Firefox/Safari) then covers all
-        # of them with no Keychain prompt. We deliberately do NOT pin "auto"
-        # here (it would re-probe Chrome and re-trigger the prompt) nor a single
-        # browser (it would silently skip the service that used the other one).
+        # FROM_BROWSER unset so the safe default remains no browser-cookie
+        # reads. We deliberately do NOT pin "auto" here (it would re-probe
+        # Chrome and re-trigger the prompt) nor a single browser (it would
+        # silently skip the service that used the other one).
         found_browsers = set(results.get("cookies_found", {}).values())
         from_browser = found_browsers.pop() if len(found_browsers) == 1 else None
         setup_wizard.write_setup_config(env.CONFIG_FILE, from_browser=from_browser)
@@ -693,7 +1027,7 @@ def main() -> int:
         return 0
 
     requested_sources = resolve_requested_sources(args.search, config)
-    diag = pipeline.diagnose(config, requested_sources)
+    diag = pipeline.diagnose(config, requested_sources, safe=args.diagnose)
 
     if args.diagnose:
         print(json.dumps(diag, indent=2, sort_keys=True))
@@ -701,6 +1035,9 @@ def main() -> int:
 
     if not topic:
         parser.print_usage(sys.stderr)
+        return 2
+    if args.publish_html and args.emit != "html":
+        sys.stderr.write("[last30days] --publish-html requires --emit=html\n")
         return 2
 
     synthesis_md = None
@@ -717,6 +1054,26 @@ def main() -> int:
             sys.stderr.write(refuse_msg)
             return 2
 
+    if args.emit == "html" and synthesis_md is not None:
+        cached = _load_last_report_cache(
+            topic,
+            ttl_seconds=_report_cache_ttl_seconds(config),
+        )
+        if cached is not None:
+            cached_report, cached_entity_reports, cache_path = cached
+            sys.stderr.write(
+                f"[last30days] Reusing cached report data from {cache_path}\n"
+            )
+            sys.stderr.flush()
+            return _render_save_and_print(
+                args, cached_report, cached_entity_reports, synthesis_md, config
+            )
+        sys.stderr.write(
+            "[last30days] No matching cached report data for "
+            "--emit=html --synthesis-file; running fresh research.\n"
+        )
+        sys.stderr.flush()
+
     progress = ui.ProgressDisplay(topic, show_banner=True)
     progress.start_processing()
 
@@ -724,6 +1081,7 @@ def main() -> int:
     try:
         x_related = [h.strip() for h in args.x_related.split(",") if h.strip()] if args.x_related else None
         subreddits = [s.strip().removeprefix("r/") for s in args.subreddits.split(",") if s.strip()] if args.subreddits else None
+        dedicated_subreddits = [s.strip().removeprefix("r/") for s in args.dedicated_subreddits.split(",") if s.strip()] if args.dedicated_subreddits else None
         tiktok_hashtags = [h.strip().lstrip("#") for h in args.tiktok_hashtags.split(",") if h.strip()] if args.tiktok_hashtags else None
         tiktok_creators = [c.strip().lstrip("@") for c in args.tiktok_creators.split(",") if c.strip()] if args.tiktok_creators else None
         ig_creators = [c.strip().lstrip("@") for c in args.ig_creators.split(",") if c.strip()] if args.ig_creators else None
@@ -742,6 +1100,10 @@ def main() -> int:
                 external_plan = _json.loads(plan_str)
             except _json.JSONDecodeError as exc:
                 sys.stderr.write(f"[Planner] Invalid --plan JSON: {exc}\n")
+                # Fail fast instead of silently dropping to the internal planner
+                # and burning a paid run the user did not ask for. Mirrors the
+                # --plan file-read branch above and parse_competitors_plan.
+                raise SystemExit(2)
 
         # Auto-resolve: use web search to discover subreddits/handles before planning.
         # This is the engine-side equivalent of SKILL.md Steps 0.55/0.75 for platforms
@@ -832,6 +1194,12 @@ def main() -> int:
                 f"[Competitors] vs-mode: routing to N-pass fanout: "
                 f"{' vs '.join(vs_entities)}\n"
             )
+
+        # Dedicated subs ride the config dict (already threaded to every source
+        # fetch) so the keyless Reddit path can pull them floor-exempt without
+        # widening pipeline.run / _retrieve_stream signatures.
+        if dedicated_subreddits:
+            config["_dedicated_subreddits"] = dedicated_subreddits
 
         def _main_runner() -> schema.Report:
             r = pipeline.run(
@@ -1014,7 +1382,7 @@ def main() -> int:
         report, progress, diag,
         suppress_web_promo=bool(external_plan or comp_plan),
     )
-    _write_last_run(topic, report)
+    _write_last_run(original_topic, report, entity_reports=entity_reports)
     # LAST30DAYS_STORE env var = persistence default-on. Read both os.environ
     # (for shell-exported users) and config (for users who set it in
     # ~/.config/last30days/.env, which env.py loads but does not propagate
@@ -1078,20 +1446,6 @@ def main() -> int:
         except Exception:
             pass
 
-    fun_level = config.get("FUN_LEVEL", "medium").lower()
-    # Comparison HTML is the one case where the saved file's title and content
-    # have to be overridden away from the leading entity's report. Compute the
-    # gate once so the footer-display and save-output paths can't disagree.
-    is_comparison_html = bool(entity_reports) and args.emit == "html"
-    footer_save_path = None
-    if args.output:
-        footer_save_path = compute_output_path_display(args.output)
-    elif args.save_dir:
-        save_topic_for_display = comparison_topic(entity_reports) if is_comparison_html else report.topic
-        footer_save_path = compute_save_path_display(
-            args.save_dir, save_topic_for_display, args.save_suffix or "", args.emit
-        )
-
     # Signal to render_compact whether pre-research flags were supplied.
     # Used to emit a Pre-Research Status warning when the model skipped
     # Step 0.5 / 0.55 and invoked the engine bare on an eligible topic.
@@ -1106,51 +1460,7 @@ def main() -> int:
     )
     report.artifacts["pre_research_flags_present"] = pre_research_flags_present
 
-    if entity_reports:
-        rendered = emit_comparison_output(
-            entity_reports,
-            args.emit,
-            fun_level=fun_level,
-            save_path=footer_save_path,
-            synthesis_md=synthesis_md,
-        )
-    else:
-        rendered = emit_output(
-            report,
-            args.emit,
-            fun_level=fun_level,
-            save_path=footer_save_path,
-            synthesis_md=synthesis_md,
-        )
-    if args.output:
-        output_path = save_rendered_output(rendered, args.output)
-        sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
-        sys.stderr.flush()
-    if args.save_dir:
-        # Save the main topic's raw file (single-entity or comparison main).
-        save_path = save_output(
-            report,
-            args.emit,
-            args.save_dir,
-            suffix=args.save_suffix or "",
-            synthesis_md=synthesis_md,
-            topic_override=comparison_topic(entity_reports) if is_comparison_html else None,
-            rendered_content=rendered if is_comparison_html else None,
-        )
-        sys.stderr.write(f"[last30days] Saved output to {save_path}\n")
-        # Competitor / vs-mode: also save a per-entity raw file for each peer.
-        # Matches historical vs-mode behavior (N passes → N save files).
-        if entity_reports and len(entity_reports) > 1:
-            for label, entity_report in entity_reports[1:]:
-                peer_path = save_output(
-                    entity_report, args.emit, args.save_dir,
-                    suffix=args.save_suffix or "",
-                    synthesis_md=synthesis_md,
-                )
-                sys.stderr.write(f"[last30days] Saved output to {peer_path}\n")
-        sys.stderr.flush()
-    print(rendered)
-    return 0
+    return _render_save_and_print(args, report, entity_reports, synthesis_md, config)
 
 
 if __name__ == "__main__":
