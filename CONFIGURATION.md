@@ -312,6 +312,17 @@ Privacy note: the keyless floor sends the query (to DuckDuckGo / your SearXNG in
 
 Visible quality difference between hosts with vs without native search or a configured backend. If your client setup produces thinner results than yours, this is usually why.
 
+### YouTube degraded-run detection
+
+When yt-dlp is stale it still returns search results but fails to fetch transcripts for every video. The engine detects this and surfaces a `DEGRADED RUN WARNING` in the output. The detection threshold is a ratio (fetched transcripts ÷ videos returned); the default `0.5` means two or more failures in a four-video result triggers the warning. Tune per-environment:
+
+```bash
+DEGRADED_TRANSCRIPT_THRESHOLD=0.3   # more tolerant: allow more misses before warning
+DEGRADED_TRANSCRIPT_THRESHOLD=0.8   # stricter: warn even on a single miss in a small result
+```
+
+Set to `0` to disable the nudge entirely (not recommended — a stale yt-dlp silently produces weak briefs).
+
 ---
 
 ### `--hiring-signals` flag
