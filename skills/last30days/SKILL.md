@@ -340,7 +340,11 @@ fi
 if [ -z "${LAST30DAYS_PYTHON:-}" ] && command -v uv >/dev/null 2>&1; then
   uv_py="$(uv python find 3.12 2>/dev/null)"
   if [ -z "$uv_py" ] || [ ! -x "$uv_py" ]; then
-    uv python install 3.12 >/dev/null 2>&1 && uv_py="$(uv python find 3.12 2>/dev/null)"
+    if uv python install 3.12 >/dev/null 2>&1; then
+      uv_py="$(uv python find 3.12 2>/dev/null)"
+    else
+      echo "WARN: 'uv python install 3.12' failed (network, disk space, or proxy?); falling through to the version-gate error below." >&2
+    fi
   fi
   try_last30days_python "$uv_py"
 fi
