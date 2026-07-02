@@ -334,6 +334,17 @@ if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
   done
 fi
 
+# uv fallback: on hosts without a system 3.12 but with `uv` on PATH (most agent
+# sandboxes: Cowork, Codex, etc.), provision a managed 3.12 automatically instead
+# of hard-failing. No-op when uv is absent — those hosts still hit the error below.
+if [ -z "${LAST30DAYS_PYTHON:-}" ] && command -v uv >/dev/null 2>&1; then
+  uv_py="$(uv python find 3.12 2>/dev/null)"
+  if [ -z "$uv_py" ] || [ ! -x "$uv_py" ]; then
+    uv python install 3.12 >/dev/null 2>&1 && uv_py="$(uv python find 3.12 2>/dev/null)"
+  fi
+  try_last30days_python "$uv_py"
+fi
+
 if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
   echo "ERROR: last30days v3 requires Python 3.12+. Install Python 3.12+ or set LAST30DAYS_PYTHON to a supported interpreter." >&2
   exit 1
