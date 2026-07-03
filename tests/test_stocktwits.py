@@ -29,6 +29,32 @@ def test_non_financial_topic_resolves_to_nothing():
     assert stocktwits.detect_symbols("Apple pie recipe", resolve=True) == []
 
 
+def test_general_topics_with_ambiguous_words_do_not_trip_the_gate():
+    # Regression guard for the tightened _FINANCE_HINTS: these everyday phrases
+    # contain words that USED to trip the gate (share/token/coin/bear) and must
+    # never register stocktwits for a non-financial run.
+    for topic in (
+        "how to share files on iPhone",
+        "Claude token limits",
+        "coin collecting for beginners",
+        "bear attacks in Yellowstone",
+        "bull riding championship",
+    ):
+        assert not stocktwits.is_financial_topic(topic), topic
+        assert stocktwits.detect_symbols(topic, resolve=False) == [], topic
+
+
+def test_finance_vocabulary_still_trips_the_gate():
+    for topic in (
+        "bullish on NVDA earnings",
+        "TSLA stock forecast",
+        "best dividend stocks",
+        "altcoin season predictions",
+        "bitcoin price",
+    ):
+        assert stocktwits.is_financial_topic(topic), topic
+
+
 def test_name_resolution_only_fires_for_financial_topics():
     # "Apple pie recipe" trips no finance hint -> no symbol-search call at all.
     with patch.object(stocktwits, "_get_json") as mock_get:

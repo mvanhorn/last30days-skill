@@ -15,8 +15,10 @@ API: public, no auth. Symbol stream + symbol search endpoints. Unauthenticated
 quota is ~200 requests/hour and is rate-limited per IP — keep pagination small.
 Respect StockTwits' API terms if this is ever shipped beyond personal use.
 
-When wired into the engine, swap the urllib calls for `from . import http` and
-the print logger for `log.source_log("StockTwits", ...)` to match siblings.
+NOTE: uses raw urllib rather than the shared `from . import http` helper.
+Every call is wrapped in try/except and degrades to a partial/empty result, but
+switching to the shared helper (429 Retry-After, retry budget, backoff) is a
+known follow-up to match siblings like hackernews.py.
 """
 
 from __future__ import annotations
@@ -37,9 +39,18 @@ _SEARCH_URL = "https://api.stocktwits.com/api/2/search/symbols.json"
 # Topic must look financial before we even try to resolve a symbol. This is the
 # coarse gate; symbol resolution is the fine gate.
 _FINANCE_HINTS = re.compile(
-    r"\b(stock|stocks|shares?|ticker|cashtag|equit(?:y|ies)|price target|"
+    # Unambiguous finance vocabulary only. Bare "share/token/coin/bull/bear"
+    # were removed: they misfire on general topics ("share files", "token
+    # limits", "coin collecting", "bear attacks") and would inject stock chatter
+    # into non-financial runs.
+    r"\b(stock|stocks|ticker|cashtag|equit(?:y|ies)|price target|"
     r"earnings|premarket|pre-?market|after\s?hours|dividend|valuation|"
-    r"crypto|token|coin|altcoin|defi|market cap|bull(?:ish)?|bear(?:ish)?|"
+    r"crypto|altcoin|defi|market cap|bullish|bearish|"
+    # Unambiguous crypto names so "bitcoin price" gates without a cashtag.
+    # Short aliases (eth, sol, ada, doge, ripple) stay OUT of the gate: they
+    # collide with everyday topics (ETH Zurich, ADA compliance, doge memes);
+    # they still resolve via _CRYPTO_ALIASES once the gate fires another way.
+    r"bitcoin|btc|ethereum|solana|dogecoin|cardano|xrp|"
     r"\$[A-Za-z]{1,5}(?:\.[A-Z])?)\b",
     re.IGNORECASE,
 )
