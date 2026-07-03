@@ -564,11 +564,18 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
             lines.append(f"  - {name} CLI already installed ({name} active)")
         elif action == "installed_off_path":
             path = entry.get("path", "")
-            lines.append(
-                f"  - {name} CLI installed but not on PATH — add its install "
-                "directory to PATH and restart your agent session/gateway for "
-                f"{name} to activate"
-            )
+            if path:
+                lines.append(
+                    f"  - {name} CLI at {path} but not on PATH — add "
+                    f"{os.path.dirname(os.path.expanduser(path))} to PATH and "
+                    f"restart your agent session/gateway for {name} to activate"
+                )
+            else:
+                lines.append(
+                    f"  - {name} CLI installed but not on PATH — add its install "
+                    "directory to PATH and restart your agent session/gateway for "
+                    f"{name} to activate"
+                )
         elif action == "install_failed":
             lines.append(
                 f"  - {name} CLI install failed — run "
