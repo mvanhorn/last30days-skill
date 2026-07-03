@@ -553,6 +553,40 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
             f"{DIGG_INSTALL_CMD}"
         )
 
+    pp_sources = results.get("pp_sources", {})
+    pp_name: dict[str, str] = {"arxiv": "arXiv", "techmeme": "Techmeme"}
+    for source_key, entry in sorted(pp_sources.items()):
+        name = pp_name.get(source_key, source_key.title())
+        action = entry.get("action", "")
+        if action == "installed":
+            lines.append(f"  - Installed {name} CLI ({name} source now active)")
+        elif action == "already_installed":
+            lines.append(f"  - {name} CLI already installed ({name} active)")
+        elif action == "installed_off_path":
+            path = entry.get("path", "")
+            if path:
+                lines.append(
+                    f"  - {name} CLI at {path} but not on PATH — add "
+                    f"{os.path.dirname(os.path.expanduser(path))} to PATH and "
+                    f"restart your agent session/gateway for {name} to activate"
+                )
+            else:
+                lines.append(
+                    f"  - {name} CLI installed but not on PATH — add its install "
+                    "directory to PATH and restart your agent session/gateway for "
+                    f"{name} to activate"
+                )
+        elif action == "install_failed":
+            lines.append(
+                f"  - {name} CLI install failed — run "
+                f"`npx -y {PRINTING_PRESS_NPM} install {source_key} --cli-only` manually"
+            )
+        elif action == "no_npx":
+            lines.append(
+                f"  - {name} CLI not installed (free, optional). Install Node/npx, "
+                f"then: `npx -y {PRINTING_PRESS_NPM} install {source_key} --cli-only`"
+            )
+
     env_written = results.get("env_written", False)
     if env_written:
         lines.append("")
