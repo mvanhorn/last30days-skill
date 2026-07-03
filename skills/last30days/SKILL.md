@@ -278,7 +278,7 @@ If your Bash call to `last30days.py` does NOT include the FULL pre-flight checkl
 
 # last30days v3.8.3: Research Any Topic from the Last 30 Days
 
-> **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`). X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars). Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
+> **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`). X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars). Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). On hosts with `uv` and no Python 3.12+, the preflight may install a uv-managed CPython 3.12 (one-time ~28MB download, announced on stderr). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
 
 Research ANY topic across Reddit, X, YouTube, and other sources. Surface what people are actually discussing, recommending, betting on, and debating right now.
 
@@ -338,10 +338,11 @@ fi
 # sandboxes: Cowork, Codex, etc.), provision a managed 3.12 automatically instead
 # of hard-failing. No-op when uv is absent — those hosts still hit the error below.
 if [ -z "${LAST30DAYS_PYTHON:-}" ] && command -v uv >/dev/null 2>&1; then
-  uv_py="$(uv python find 3.12 2>/dev/null)"
+  uv_py="$(uv python find '>=3.12' 2>/dev/null)"
   if [ -z "$uv_py" ] || [ ! -x "$uv_py" ]; then
-    if uv python install 3.12 >/dev/null 2>&1; then
-      uv_py="$(uv python find 3.12 2>/dev/null)"
+    echo "NOTE: no Python 3.12+ found; installing a managed CPython 3.12 via uv (~28MB, one-time)." >&2
+    if UV_HTTP_TIMEOUT=30 uv python install 3.12 >/dev/null 2>&1; then
+      uv_py="$(uv python find '>=3.12' 2>/dev/null)"
     else
       echo "WARN: 'uv python install 3.12' failed (network, disk space, or proxy?); falling through to the version-gate error below." >&2
     fi
@@ -364,7 +365,7 @@ LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
 
 **PYTHON VERSION GATE — when the Runtime Preflight Bash block above exits with a Python version error:**
 
-If the preflight script emits `ERROR: last30days v3 requires Python 3.12+` (or `LAST30DAYS_PYTHON must point to Python 3.12+`) and exits, you MUST:
+If the preflight script (including the uv fallback above) emits `ERROR: last30days v3 requires Python 3.12+` (or `LAST30DAYS_PYTHON must point to Python 3.12+`) and exits, you MUST:
 
 1. Display this message to the user:
    > "The last30days engine needs Python 3.12+. Your system has an older version. Install it with one command:
@@ -450,9 +451,9 @@ Options:
 Get cookie consent first. Check if `BROWSER_CONSENT=true` already exists in `~/.config/last30days/.env`; if so, skip the consent prompt and run `setup --allow-browser-cookies` directly. Otherwise **call AskUserQuestion:**
 Question: "Auto setup will scan your browser (Firefox/Safari) for x.com cookies to authenticate X search. Cookies are read live, not saved to disk. OK to proceed?"
 Options:
-- "Yes, scan my cookies for X" - run `python3 skills/last30days/scripts/last30days.py setup --allow-browser-cookies` (relative to the skill root). Append `BROWSER_CONSENT=true` to `.env` after setup completes.
-- "Skip X, just set up YouTube + Digg" - run `FROM_BROWSER=off python3 skills/last30days/scripts/last30days.py setup`. Skips all cookie reads; still installs yt-dlp and Digg.
-- "I have an xAI API key instead" - ask them to paste it, write `XAI_API_KEY` to `.env`, then run `FROM_BROWSER=off python3 skills/last30days/scripts/last30days.py setup` (installs yt-dlp + Digg, no cookie read).
+- "Yes, scan my cookies for X" - run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup --allow-browser-cookies` (relative to the skill root). Append `BROWSER_CONSENT=true` to `.env` after setup completes.
+- "Skip X, just set up YouTube + Digg" - run `FROM_BROWSER=off "${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup`. Skips all cookie reads; still installs yt-dlp and Digg.
+- "I have an xAI API key instead" - ask them to paste it, write `XAI_API_KEY` to `.env`, then run `FROM_BROWSER=off "${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup` (installs yt-dlp + Digg, no cookie read).
 
 The consented `setup --allow-browser-cookies` run extracts cookies (Firefox/Safari by default - never Chrome, to avoid a macOS Keychain prompt, unless `FROM_BROWSER=auto` or a named Chromium browser was explicitly configured) and best-effort installs yt-dlp (YouTube) and the free, keyless Digg CLI (`digg-pp-cli` via `@mvanhorn/printing-press-library install digg --cli-only`; Digg activates only when the binary is on the **agent subprocess PATH**, typically `$HOME/.local/bin`; setup reports honestly if installed off-PATH; recommend-only if `npx` is unavailable). Show the user what was found and installed - including whether Digg landed on PATH (active) or off-PATH (installed but not yet active).
 
@@ -467,7 +468,7 @@ Before the modal, run `which gh` via Bash silently; store as gh_available.
 **Call AskUserQuestion:**
 Question: "Want to add TikTok, Instagram, and the ScrapeCreators backups? (We don't get a cut.)"
 Options:
-- "ScrapeCreators via GitHub (fastest, recommended)" - If gh_available, description: "Registers via GitHub CLI in ~2 seconds - no browser." If NOT gh_available, description: "Copies a one-time code to your clipboard and opens GitHub to authorize." After selection: if gh_available, display "Registering via GitHub CLI..."; if not, display "I'll copy a one-time code to your clipboard and open GitHub. When prompted for a device code, just paste (Cmd+V / Ctrl+V)." Then run `python3 skills/last30days/scripts/last30days.py setup --github` with a 5-minute timeout. Parse the JSON. On `status == "success"` the engine persists the key automatically and returns `"persisted": true` with a MASKED `api_key` (the raw key never appears - do not ask for or echo it); confirm "You're in! 10,000 free calls. TikTok, Instagram, YouTube comments, and the Reddit/YouTube backups are now active." On `status == "success"` but `"persisted": false` (key write failed, e.g. a permissions error), do NOT claim sources are active - tell the user the signup worked but saving the key failed, and have them add `SCRAPECREATORS_API_KEY=<key>` to `~/.config/last30days/.env` manually (the raw key is masked in output, so re-run `setup --github` or retrieve it from scrapecreators.com to get the value). On `status` `timeout`/`error`, show "GitHub auth didn't complete - no worries, sign up at scrapecreators.com or try again later," then offer the web option.
+- "ScrapeCreators via GitHub (fastest, recommended)" - If gh_available, description: "Registers via GitHub CLI in ~2 seconds - no browser." If NOT gh_available, description: "Copies a one-time code to your clipboard and opens GitHub to authorize." After selection: if gh_available, display "Registering via GitHub CLI..."; if not, display "I'll copy a one-time code to your clipboard and open GitHub. When prompted for a device code, just paste (Cmd+V / Ctrl+V)." Then run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup --github` with a 5-minute timeout. Parse the JSON. On `status == "success"` the engine persists the key automatically and returns `"persisted": true` with a MASKED `api_key` (the raw key never appears - do not ask for or echo it); confirm "You're in! 10,000 free calls. TikTok, Instagram, YouTube comments, and the Reddit/YouTube backups are now active." On `status == "success"` but `"persisted": false` (key write failed, e.g. a permissions error), do NOT claim sources are active - tell the user the signup worked but saving the key failed, and have them add `SCRAPECREATORS_API_KEY=<key>` to `~/.config/last30days/.env` manually (the raw key is masked in output, so re-run `setup --github` or retrieve it from scrapecreators.com to get the value). On `status` `timeout`/`error`, show "GitHub auth didn't complete - no worries, sign up at scrapecreators.com or try again later," then offer the web option.
 - "Open scrapecreators.com (Google sign-in)" - run `open https://scrapecreators.com` via Bash, then ask them to paste the API key. Write `SCRAPECREATORS_API_KEY={key}` to `~/.config/last30days/.env`.
 - "I have a key" - accept the key, write to `.env`.
 - "Skip for now" - proceed without ScrapeCreators.
@@ -505,16 +506,16 @@ For hosts without interactive modal prompts (OpenClaw, Codex, Cursor, Gemini CLI
 
 **1. Welcome.** One short branded line, e.g.: `Welcome to /last30days - let me get you set up (about 30 seconds).`
 
-**2. Permission preflight.** Run `${LAST30DAYS_PYTHON:-python3} "${SKILL_DIR}/scripts/last30days.py" --preflight` using the directory of the `SKILL.md` you loaded, then summarize the human-readable result before setup: config source, project config trust/ignore state, planned browser-cookie mode, planned writes, optional commands, and active/ignored endpoint overrides. This is safe: it does not read browser-cookie values, does not write setup/config/report files, and does not run research. For Codex desktop and other folder-mode hosts, if hidden `.claude/last30days.env` project config is shown as ignored, tell the user it remains ignored unless `LAST30DAYS_TRUST_PROJECT_CONFIG=1` is set from the process environment or global config. Do not block normal research on missing optional commands; describe them as optional coverage.
+**2. Permission preflight.** Run `"${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" --preflight` using the directory of the `SKILL.md` you loaded, then summarize the human-readable result before setup: config source, project config trust/ignore state, planned browser-cookie mode, planned writes, optional commands, and active/ignored endpoint overrides. This is safe: it does not read browser-cookie values, does not write setup/config/report files, and does not run research. For Codex desktop and other folder-mode hosts, if hidden `.claude/last30days.env` project config is shown as ignored, tell the user it remains ignored unless `LAST30DAYS_TRUST_PROJECT_CONFIG=1` is set from the process environment or global config. Do not block normal research on missing optional commands; describe them as optional coverage.
 
 **3. Cookie consent (ask BEFORE reading anything).** First check if `BROWSER_CONSENT=true` already exists in `~/.config/last30days/.env` (e.g. granted in a prior Claude Code session); if so, skip this prompt and run `setup --allow-browser-cookies` directly. Otherwise ask. Example: `I can read your browser cookies (Firefox/Safari) to unlock X/Twitter and other logged-in sources. Want me to? (yes / no)` **Wait for the answer.**
-   - On **yes** → run `python3 skills/last30days/scripts/last30days.py setup --allow-browser-cookies` (and append `BROWSER_CONSENT=true` to `.env` after it completes). Extracts cookies (Firefox/Safari, never Chrome unless `FROM_BROWSER=auto` or a named Chromium browser was explicitly configured) and best-effort installs yt-dlp (YouTube) and the free, keyless Digg CLI (`digg-pp-cli` via `@mvanhorn/printing-press-library install digg --cli-only`; activates only when on the agent subprocess PATH, typically `$HOME/.local/bin`; reports honestly if off-PATH; recommend-only if `npx` is unavailable).
-   - On **no** → run `FROM_BROWSER=off python3 skills/last30days/scripts/last30days.py setup`. Skips all cookie reads; still installs yt-dlp and Digg, still writes `SETUP_COMPLETE`.
+   - On **yes** → run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup --allow-browser-cookies` (and append `BROWSER_CONSENT=true` to `.env` after it completes). Extracts cookies (Firefox/Safari, never Chrome unless `FROM_BROWSER=auto` or a named Chromium browser was explicitly configured) and best-effort installs yt-dlp (YouTube) and the free, keyless Digg CLI (`digg-pp-cli` via `@mvanhorn/printing-press-library install digg --cli-only`; activates only when on the agent subprocess PATH, typically `$HOME/.local/bin`; reports honestly if off-PATH; recommend-only if `npx` is unavailable).
+   - On **no** → run `FROM_BROWSER=off "${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup`. Skips all cookie reads; still installs yt-dlp and Digg, still writes `SETUP_COMPLETE`.
 
 **4. Full Disk Access remediation (macOS only).** After `setup`, inspect stderr. If it contains `Permission denied reading Cookies.binarycookies` on macOS, surface: `macOS blocked the cookie read. To enable X/Twitter: System Settings > Privacy & Security > Full Disk Access > enable your terminal (or the Claude app), then I can retry.` Offer ONE retry. If skipped, continue.
 
 **5. ScrapeCreators signup offer (every first run, consent BEFORE launching the browser).** Explain it grants 10,000 free calls that unlock TikTok, Instagram, YouTube comments, plus a Reddit backup and a YouTube transcript fallback, and that it opens a GitHub authorization page. Ask, e.g.: `Want to unlock TikTok, Instagram, and more? I can sign you up for ScrapeCreators with GitHub (10,000 free calls) - it opens a browser to authorize. (yes / no)` **Wait for the answer.**
-   - On **yes** → run `python3 skills/last30days/scripts/last30days.py setup --github`. A browser window opens; the user authorizes with the code shown. On success the engine persists the key automatically and returns `"persisted": true` with a MASKED `api_key` (never ask for or echo the raw key). Confirm the paid sources are active.
+   - On **yes** → run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup --github`. A browser window opens; the user authorizes with the code shown. On success the engine persists the key automatically and returns `"persisted": true` with a MASKED `api_key` (never ask for or echo the raw key). Confirm the paid sources are active.
    - On **success but `"persisted": false`** (auth completed yet the key write failed) → do NOT claim sources are active. Tell the user signup worked but saving failed, and have them add `SCRAPECREATORS_API_KEY=<key>` to `~/.config/last30days/.env` manually (the raw key is masked in output, so re-run `setup --github` or retrieve it from scrapecreators.com to get the value).
    - On **timeout / denied** → tell the user it didn't complete and offer to retry or skip.
    - On **no** → note they can run it later by asking to set up ScrapeCreators, then continue.
