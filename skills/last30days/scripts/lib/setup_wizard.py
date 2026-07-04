@@ -29,6 +29,36 @@ def is_first_run(config: Dict[str, Any]) -> bool:
     return not config.get("SETUP_COMPLETE")
 
 
+_WELCOME_TEXT = """Welcome to /last30days!
+
+I research any topic across Reddit, X, YouTube, and more - synthesizing what people are actually saying right now.
+
+Auto setup gives you the core sources free in about 30 seconds:
+- X/Twitter - reads your browser cookies to authenticate (read live each run, never saved to disk). I check Chrome first (fastest - a one-time macOS Keychain prompt may appear; click Always Allow), then Firefox and Safari.
+- Reddit with comments - public JSON, no API key needed.
+- YouTube search + transcripts - installs yt-dlp (open source, 190K+ GitHub stars).
+- Digg - trending news, GitHub stars, and pipeline feeds - installs the free, keyless Digg CLI.
+- arXiv (papers) + Techmeme (tech-news) - install free, keyless Printing Press CLIs and run on any topic (arXiv is relevance + recency gated to research topics).
+- StockTwits - retail trader sentiment - auto-on when your topic is a ticker or crypto (e.g. "$NVDA earnings", "bitcoin"), off for everything else.
+- Trustpilot - brand/company review sentiment - opt-in (add trustpilot to INCLUDE_SOURCES), off by default.
+- Hacker News + Polymarket + GitHub (auto-on if the gh CLI is installed) - always on, zero config.
+
+Want TikTok and Instagram too? ScrapeCreators adds those (10,000 free calls, scrapecreators.com). No kickbacks, no affiliation.
+
+Power users can turn on more sources in the Manual Setup guide (LinkedIn, Bluesky, Perplexity, and others) - each needs its own credential, so they are off by default."""
+
+
+def render_welcome() -> str:
+    """Return the first-run welcome text.
+
+    Owned by the engine (single source of truth) so the model relays it rather
+    than re-authoring it -- authored prose gets skipped, relayed command output
+    does not. Mirrors the SKILL.md welcome; keep in sync if the source set
+    changes.
+    """
+    return _WELCOME_TEXT
+
+
 def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = False) -> Dict[str, Any]:
     """Perform the auto-setup actions.
 
@@ -827,32 +857,58 @@ def fetch_api_key(access_token: str) -> Optional[str]:
     return api_key
 
 
-def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
-    """Run the complete GitHub device auth flow and return JSON-serializable result.
+def _device_handle_path() -> Path:
+    """Where run_github_start persists the device_code/interval for run_github_poll.
 
-    Chains: start device flow -> open browser -> poll -> fetch API key.
-    Designed to be called from the CLI and have its stdout parsed by the LLM.
-
-    Returns:
-        Dict with status and relevant fields:
-        - {"status": "success", "api_key": "sc_...", "user_code": "ABCD-1234"}
-        - {"status": "error", "message": "..."}
-        - {"status": "timeout", "user_code": "ABCD-1234"}
-        - {"status": "denied"}
+    Kept next to the .env in the config dir; falls back to the OS temp dir when
+    no config dir is resolvable (clean/no-config mode).
     """
+    try:
+        from . import env as _env
+
+        if _env.CONFIG_FILE:
+            return _env.CONFIG_FILE.parent / ".github-device-handle.json"
+    except Exception:
+        pass
+    import tempfile
+
+    return Path(tempfile.gettempdir()) / "last30days-github-device-handle.json"
+
+
+def run_github_start() -> Dict[str, Any]:
+    """Submit the GitHub device flow, surface the code, and return immediately.
+
+    Does NOT poll. Copies the code to the clipboard, prints it to stdout (so a
+    foreground caller sees it without any background/poll orchestration), opens
+    the browser, and persists the poll handle for ``run_github_poll``.
+
+    Returns one of:
+      - {"status": "already_registered", "api_key": <raw>, ...}  (key already saved)
+      - {"status": "awaiting_authorization", "user_code": ..., "verification_uri": ...}
+      - {"status": "error", "message": ...}
+    """
+    import sys
     import webbrowser
 
-    # Step 1: Start device flow
+    # Already-registered short-circuit: a saved key means no device dance. The
+    # key is returned raw here and masked at the CLI boundary before print.
+    existing = _existing_scrapecreators_key()
+    if existing:
+        return {
+            "status": "already_registered",
+            "method": "existing",
+            "api_key": existing,
+            "persisted": True,
+        }
+
     result = run_device_auth()
     if result is None:
         return {"status": "error", "message": "Failed to start device auth flow"}
 
     device_code, user_code, verification_uri, interval = result
 
-    import sys
-
-    # Step 1b: Validate the code shape BEFORE copying, labeling, or emitting it.
-    # A non-conforming user_code (e.g. a key-shaped value) is never surfaced as a
+    # Validate the code shape BEFORE copying, labeling, or emitting it. A
+    # non-conforming user_code (e.g. a key-shaped value) is never surfaced as a
     # GitHub device code; we stop rather than instruct the user to paste garbage.
     if not _DEVICE_CODE_RE.match(user_code):
         logger.warning("Device auth returned a non-device-shaped user_code; aborting.")
@@ -861,10 +917,7 @@ def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
             "message": "ScrapeCreators returned an unexpected device-code format.",
         }
 
-    # Step 1c: Surface the code immediately on stdout as a structured line so a
-    # backgrounded caller can read and show it right away, instead of waiting for
-    # the whole process to exit. The final status blob is still printed at exit,
-    # so consumers parse the LAST JSON line for final status.
+    # Structured stdout line for machine consumers.
     print(
         json.dumps(
             {
@@ -876,18 +929,27 @@ def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
         flush=True,
     )
 
-    # Step 2: Copy code to clipboard BEFORE opening browser
+    # Copy the code to the clipboard BEFORE opening the browser.
     clipboard_ok = False
     if sys.platform == "darwin":
         try:
-            subprocess.run(
-                ["pbcopy"], input=user_code.encode(), check=True, timeout=5,
-            )
+            subprocess.run(["pbcopy"], input=user_code.encode(), check=True, timeout=5)
             clipboard_ok = True
         except Exception:
             pass  # pbcopy unavailable or failed, fall through
 
-    # Step 3: Show code prominently, then open browser
+    # Print the code as a plain HUMAN line on stdout too, so a foreground caller
+    # sees it in the returned output even without reading the JSON. The clipboard
+    # claim is only made when pbcopy actually succeeded (else: type it).
+    if clipboard_ok:
+        print(
+            f"Your GitHub code: {user_code}  (already on your clipboard - just paste it, Cmd+V)",
+            flush=True,
+        )
+    else:
+        print(f"Your GitHub code: {user_code}  (type it on the GitHub page)", flush=True)
+
+    # Human box on stderr for direct-terminal users.
     clipboard_hint = "  (copied to clipboard)" if clipboard_ok else ""
     code_line = f"  Your code: {user_code}{clipboard_hint}"
     action_line = "  Paste it on the GitHub page that just opened"
@@ -898,32 +960,93 @@ def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
     print(f"|{action_line.ljust(width)}|", file=sys.stderr)
     print(f"+{border}+", file=sys.stderr)
 
+    # Persist the poll handle (0o600) for run_github_poll.
+    handle = _device_handle_path()
+    try:
+        handle.parent.mkdir(parents=True, exist_ok=True)
+        handle.write_text(
+            json.dumps({"device_code": device_code, "interval": interval, "user_code": user_code}),
+            encoding="utf-8",
+        )
+        os.chmod(handle, 0o600)
+    except Exception as exc:
+        logger.warning("Could not persist device handle: %s", exc)
+
     if verification_uri:
         try:
             webbrowser.open(verification_uri)
         except Exception:
             print(f"Open: {verification_uri}", file=sys.stderr)
 
+    return {
+        "status": "awaiting_authorization",
+        "user_code": user_code,
+        "verification_uri": verification_uri,
+        "clipboard_ok": clipboard_ok,
+    }
+
+
+def run_github_poll(timeout: int = 300, *, _handle: Optional[Tuple[str, int, str]] = None) -> Dict[str, Any]:
+    """Poll for authorization using the handle run_github_start persisted.
+
+    Returns success (with the fetched key), timeout, or the honest
+    "Authorized but failed to fetch API key" branch. Deletes the handle when
+    the flow terminates.
+    """
+    import sys
+
+    if _handle is not None:
+        device_code, interval, user_code = _handle
+    else:
+        handle = _device_handle_path()
+        try:
+            data = json.loads(handle.read_text(encoding="utf-8"))
+            device_code = data["device_code"]
+            interval = int(data.get("interval", 5))
+            user_code = data.get("user_code", "")
+        except Exception:
+            return {
+                "status": "error",
+                "message": "No pending GitHub device flow; run setup --github-start first.",
+            }
+
     print("Waiting for authorization...", file=sys.stderr, flush=True)
-
-    # Step 4: Poll for token (with periodic code reminders)
     access_token = poll_device_auth(
-        device_code, interval, timeout=timeout,
-        user_code=user_code, clipboard_ok=clipboard_ok,
+        device_code, interval, timeout=timeout, user_code=user_code, clipboard_ok=True
     )
-    if access_token is None:
-        return {"status": "timeout", "user_code": user_code, "clipboard_ok": clipboard_ok}
 
-    # Step 4: Fetch API key
+    def _cleanup() -> None:
+        try:
+            _device_handle_path().unlink()
+        except Exception:
+            pass
+
+    if access_token is None:
+        _cleanup()
+        return {"status": "timeout", "user_code": user_code}
+
     api_key = fetch_api_key(access_token)
+    _cleanup()
     if api_key is None:
         return {
             "status": "error",
             "message": "Authorized but failed to fetch API key",
-            "clipboard_ok": clipboard_ok,
         }
 
-    return {"status": "success", "method": "device", "api_key": api_key, "user_code": user_code, "clipboard_ok": clipboard_ok}
+    return {"status": "success", "method": "device", "api_key": api_key, "user_code": user_code}
+
+
+def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
+    """Back-compat one-shot: start the device flow, then poll to completion.
+
+    Equivalent to run_github_start() followed by run_github_poll(). Kept so
+    callers of ``setup --github`` / ``--device-auth`` still work; the model-driven
+    wizard uses the two-command split (start then poll) instead.
+    """
+    started = run_github_start()
+    if started.get("status") != "awaiting_authorization":
+        return started  # already_registered or error
+    return run_github_poll(timeout=timeout)
 
 
 # ---------------------------------------------------------------------------
@@ -932,23 +1055,10 @@ def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
 
 
 def run_github_auth(timeout: int = 300) -> Dict[str, Any]:
-    """Run the --github setup path via device auth only.
+    """Run the --github setup path via device auth (one-shot, back-compat).
 
-    Kept as the semantic entry point for GitHub-backed setup; this path must
-    not read or forward local GitHub CLI tokens.
-
-    Returns JSON-serializable dict with status, method, and api_key.
+    The existing-key short-circuit now lives in run_github_start; this delegates
+    to the start+poll chain. This path must not read or forward local GitHub CLI
+    tokens.
     """
-    # Already-registered short-circuit: if a key is already saved, return it
-    # without forcing another device dance. The key is returned raw here and
-    # masked at the CLI boundary before print (see last30days.py), so it never
-    # lands unmasked in the host's captured stdout.
-    existing = _existing_scrapecreators_key()
-    if existing:
-        return {
-            "status": "already_registered",
-            "method": "existing",
-            "api_key": existing,
-            "persisted": True,
-        }
     return run_full_device_auth(timeout=timeout)

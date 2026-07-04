@@ -16,6 +16,8 @@ wizard in PR #659 and flattened it before this restoration).
 import unittest
 from pathlib import Path
 
+from lib import setup_wizard
+
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
 
@@ -53,7 +55,7 @@ class TestOnboardingContract(unittest.TestCase):
     def test_modal_flow_stage_order(self):
         """Welcome -> setup modal -> cookie consent -> SC offer -> opt-in -> picker."""
         anchors = [
-            "Welcome to /last30days!",
+            "Step 1 - Welcome (REQUIRED FIRST",
             "How would you like to set up?",
             "scan your browser",  # cookie-consent modal
             "Want to add TikTok and Instagram?",  # SC offer
@@ -179,9 +181,16 @@ class TestOnboardingContract(unittest.TestCase):
         """Full Disk Access is framed as Safari-only, not the default path."""
         self.assertNotIn("scan your browser (Firefox/Safari)", self.modal)
 
+    def test_welcome_relayed_from_engine(self):
+        """The modal relays the engine-owned welcome verbatim (single source of
+        truth) rather than inlining it, so it can't be skipped or drift."""
+        self.assertIn("last30days.py --welcome", self.modal)
+        self.assertIn("VERBATIM", self.modal)
+
     def test_stocktwits_surfaced_as_conditional(self):
-        """StockTwits is advertised in the welcome as a ticker/crypto-gated source."""
-        self.assertIn("StockTwits", self.modal)
+        """StockTwits is advertised in the engine welcome as a ticker/crypto-gated
+        source (welcome text moved out of SKILL.md into the engine)."""
+        self.assertIn("StockTwits", setup_wizard.render_welcome())
 
     # --- Honest GitHub device-code copy (U4/U7) ---
 
@@ -191,9 +200,12 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertNotIn("Registers via GitHub CLI in ~2 seconds", self.step0)
 
     def test_device_code_surfacing_orchestration_present(self):
-        """Both flows must surface the device code, not block on a spinner."""
-        self.assertIn("device_code_ready", self.modal)
-        self.assertIn("device_code_ready", self.prose)
+        """Both flows use the deterministic two-command split (start returns the
+        code fast, then poll) instead of a background-and-surface spinner."""
+        self.assertIn("setup --github-start", self.modal)
+        self.assertIn("setup --github-poll", self.modal)
+        self.assertIn("setup --github-start", self.prose)
+        self.assertIn("setup --github-poll", self.prose)
 
     def test_already_registered_status_handled(self):
         self.assertIn("already_registered", self.modal)
@@ -219,8 +231,9 @@ class TestOnboardingContract(unittest.TestCase):
         and makes surfacing the code a required step (the bug the user hit).
         """
         self.assertIn("on your clipboard", self.modal)
-        self.assertIn("paste", self.modal.lower()[self.modal.find("device_code_ready"):])
-        self.assertIn("REQUIRED", self.modal)
+        # Surfacing the code is a required, explicit step in the new split flow.
+        self.assertIn("SHOW THE CODE", self.modal)
+        self.assertIn("just paste", self.modal)
 
     # --- Honest 'authorized but no key' branch, distinct from auth-failed (U4) ---
 

@@ -334,6 +334,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--diagnose", action="store_true", help="Print provider and source availability")
     parser.add_argument("--preflight", action="store_true",
                         help="Print a safe human-readable permission preflight")
+    parser.add_argument("--welcome", action="store_true",
+                        help="Print the first-run welcome text (engine-owned; relay verbatim)")
     parser.add_argument("--preflight-report-on-save-dir", help=argparse.SUPPRESS)
     parser.add_argument("--no-browser-cookies", action="store_true",
                         help="Disable browser-cookie extraction even when FROM_BROWSER is configured")
@@ -899,6 +901,8 @@ SETUP_PASSTHROUGH_FLAGS = {
     "--allow-browser-cookies",
     "--device-auth",
     "--github",
+    "--github-start",
+    "--github-poll",
     "--openclaw",
 }
 
@@ -956,6 +960,11 @@ def main() -> int:
     if args.debug:
         os.environ["LAST30DAYS_DEBUG"] = "1"
 
+    if args.welcome:
+        from lib import setup_wizard
+        print(setup_wizard.render_welcome())
+        return 0
+
     topic = " ".join(args.topic).strip()
     original_topic = topic
     _validate_extra_argv(parser, topic, extra_argv)
@@ -1003,8 +1012,12 @@ def main() -> int:
             results = setup_wizard.run_openclaw_setup(config)
             print(json.dumps(results))
             return 0
-        if "--github" in extra_argv or "--device-auth" in extra_argv:
-            if "--github" in extra_argv:
+        if any(f in extra_argv for f in ("--github", "--device-auth", "--github-start", "--github-poll")):
+            if "--github-start" in extra_argv:
+                results = setup_wizard.run_github_start()
+            elif "--github-poll" in extra_argv:
+                results = setup_wizard.run_github_poll()
+            elif "--github" in extra_argv:
                 results = setup_wizard.run_github_auth()
             else:
                 results = setup_wizard.run_full_device_auth()

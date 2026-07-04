@@ -74,29 +74,62 @@ class TestDeviceCodeReadyEmission:
 
 
 class TestAlreadyRegistered:
-    """U6: an existing key short-circuits without the device dance."""
+    """An existing key short-circuits run_github_start without the device dance."""
 
-    @patch("lib.setup_wizard.run_full_device_auth")
+    @patch("lib.setup_wizard.run_device_auth")
     @patch("lib.setup_wizard._existing_scrapecreators_key")
-    def test_existing_key_short_circuits(self, mock_existing, mock_full):
+    def test_existing_key_short_circuits_start(self, mock_existing, mock_device):
         mock_existing.return_value = "sc_live_realkey1234567890"
 
-        result = setup_wizard.run_github_auth(timeout=1)
+        result = setup_wizard.run_github_start()
 
         assert result["status"] == "already_registered"
         assert result["persisted"] is True
-        mock_full.assert_not_called()  # no device dance
+        mock_device.assert_not_called()  # no /code submit, no browser
 
-    @patch("lib.setup_wizard.run_full_device_auth")
+    @patch("webbrowser.open")
+    @patch("lib.setup_wizard.subprocess.run")
+    @patch("lib.setup_wizard.run_device_auth")
     @patch("lib.setup_wizard._existing_scrapecreators_key")
-    def test_no_existing_key_runs_device_flow(self, mock_existing, mock_full):
+    def test_no_existing_key_starts_device_flow(
+        self, mock_existing, mock_device, mock_pbcopy, mock_browser
+    ):
         mock_existing.return_value = None
-        mock_full.return_value = {"status": "success", "api_key": "sc_new"}
+        mock_device.return_value = ("dev-code", "819B-F71B", "https://github.com/login/device", 5)
 
-        result = setup_wizard.run_github_auth(timeout=1)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            result = setup_wizard.run_github_start()
+
+        assert result["status"] == "awaiting_authorization"
+        assert result["user_code"] == "819B-F71B"
+        mock_device.assert_called_once()
+        # The code is printed to stdout as a plain human line (the whole point).
+        assert "819B-F71B" in out.getvalue()
+
+    @patch("lib.setup_wizard._device_handle_path")
+    @patch("lib.setup_wizard.fetch_api_key")
+    @patch("lib.setup_wizard.poll_device_auth")
+    def test_poll_reads_handle_and_returns_key(self, mock_poll, mock_fetch, mock_handle, tmp_path):
+        import json as _json
+        handle = tmp_path / "h.json"
+        handle.write_text(_json.dumps({"device_code": "dc", "interval": 1, "user_code": "819B-F71B"}))
+        mock_handle.return_value = handle
+        mock_poll.return_value = "access-token"
+        mock_fetch.return_value = "sc_polled_key"
+
+        result = setup_wizard.run_github_poll(timeout=1)
 
         assert result["status"] == "success"
-        mock_full.assert_called_once()
+        assert result["api_key"] == "sc_polled_key"
+        assert not handle.exists()  # handle cleaned up
+
+    @patch("lib.setup_wizard._device_handle_path")
+    def test_poll_without_handle_errors_cleanly(self, mock_handle, tmp_path):
+        mock_handle.return_value = tmp_path / "missing.json"
+        result = setup_wizard.run_github_poll(timeout=1)
+        assert result["status"] == "error"
+        assert "github-start" in result["message"]
 
     def test_already_registered_key_is_masked_before_output(self):
         # Defense-in-depth: the mask helper must not echo the raw key.
