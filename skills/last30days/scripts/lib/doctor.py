@@ -1,0 +1,603 @@
+"""Unified `doctor` health surface: aggregate, tier rollup, render (U4).
+
+One command answers "what's broken, what's serving, and what do I run to
+fix it" by composing the existing health layers instead of replacing them:
+
+- U1 ``lib/health.py``      dependency probes (ok/missing/broken/timeout)
+- U2 ``lib/backends.py``    chain descriptors + "will use" prediction
+- U3 ``lib/prescriptions.py`` the single remediation vocabulary
+- ``lib/pipeline.diagnose`` + ``lib/permission_preflight`` for the
+  engine-level availability and permission summary
+
+The legacy ``--diagnose`` / ``--preflight`` flags keep their frozen JSON
+shapes (see ``tests/test_diagnose_compat.py``); anything new appears ONLY
+in ``doctor --json``.
+
+Tier rollup (the R1 machine contract). Per source, ``tier`` is the
+four-value rollup and ``status`` preserves the most specific state:
+
+| condition                                            | status        | tier  |
+|------------------------------------------------------|---------------|-------|
+| probes pass, credentials (if any) present            | ok            | ok    |
+| usable but degraded (fallback serving, partial)      | degraded      | warn  |
+| opt-in not enabled / key-gated unconfigured          | opt-in /      | off   |
+|                                                      | unconfigured  |       |
+| configured but missing / broken / timeout / error    | that status   | error |
+
+Semantics and guarantees:
+
+- ``active_backend`` is a PREDICTION ("will use"), never an observation
+  (KTD 4). Reddit is conditional mode: honest wording, no single winner.
+- On a native-search host with no web keys, engine-side web search is
+  intentionally off — doctor reports tier ``off`` with a host-native note,
+  never a false-alarm error. Web search has NO env pin, only the
+  ``--web-backend`` flag; the record says so.
+- No cookie reads (plan-only, like ``--diagnose``); no secret values
+  anywhere — key presence is booleans only.
+- Per-source exception isolation: one failing probe becomes that source's
+  ``error`` record; it can never blank the report.
+- Reporting problems is a successful run: the exit code is always 0.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional
+
+from . import backends, env, health, prescriptions
+
+# Rollup tiers (R1).
+TIER_OK = "ok"
+TIER_WARN = "warn"
+TIER_OFF = "off"
+TIER_ERROR = "error"
+
+# Specific statuses and the rollup row each maps to.
+TIER_BY_STATUS: Dict[str, str] = {
+    "ok": TIER_OK,
+    "degraded": TIER_WARN,
+    "opt-in": TIER_OFF,
+    "unconfigured": TIER_OFF,
+    "missing": TIER_ERROR,
+    "broken": TIER_ERROR,
+    "timeout": TIER_ERROR,
+    "error": TIER_ERROR,
+}
+
+GLYPHS = {TIER_OK: "✓", TIER_WARN: "!", TIER_OFF: "○", TIER_ERROR: "✗"}
+
+GROUP_HEADERS = (
+    (TIER_OK, "Ready"),
+    (TIER_WARN, "Degraded"),
+    (TIER_OFF, "Off"),
+    (TIER_ERROR, "Errors"),
+)
+
+# Report order: chained sources first, then free, then key-gated/opt-in.
+SOURCE_ORDER = (
+    "reddit",
+    "x",
+    "youtube",
+    "web",
+    "hackernews",
+    "polymarket",
+    "github",
+    "digg",
+    "tiktok",
+    "instagram",
+    "threads",
+    "bluesky",
+    "truthsocial",
+    "perplexity",
+    "linkedin",
+    "pinterest",
+    "xiaohongshu",
+    "jobs",
+)
+
+# Key-presence booleans for the setup block. NEVER values.
+KEY_PRESENCE_VARS = (
+    "SCRAPECREATORS_API_KEY",
+    "XAI_API_KEY",
+    "XQUIK_API_KEY",
+    "BRAVE_API_KEY",
+    "EXA_API_KEY",
+    "SERPER_API_KEY",
+    "PARALLEL_API_KEY",
+    "GROQ_API_KEY",
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "OPENROUTER_API_KEY",
+    "PERPLEXITY_API_KEY",
+    "GITHUB_TOKEN",
+    "TRUTHSOCIAL_TOKEN",
+    "BSKY_APP_PASSWORD",
+)
+
+_SKILL_MD = Path(__file__).resolve().parents[2] / "SKILL.md"
+
+# Failing statuses ranked most-specific-first for chained rollups: a broken
+# shim outranks a timeout outranks a generic error when naming the source's
+# status (all three roll up to tier error regardless).
+_SPECIFIC_FAILURES = (health.BROKEN, health.TIMEOUT, health.ERROR)
+
+
+def _truthy(value: Any) -> bool:
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _fix_text(entry: prescriptions.Prescription) -> str:
+    """Render a registry entry as one actionable fix line (NL + CLI forms)."""
+    if entry.fix_cli and entry.fix_cli not in entry.fix_nl:
+        return f"{entry.fix_nl} (cli: {entry.fix_cli})"
+    return entry.fix_nl
+
+
+def _record(
+    *,
+    status: str,
+    mode: str = "single",
+    backends_list: Optional[List[Dict[str, Any]]] = None,
+    active_backend: Optional[str] = None,
+    fix: str = "",
+    requires: str = "",
+    note: str = "",
+    detail: str = "",
+    pin_var: Optional[str] = None,
+    pin_flag: Optional[str] = None,
+    pinned: bool = False,
+) -> Dict[str, Any]:
+    return {
+        "tier": TIER_BY_STATUS[status],
+        "status": status,
+        "mode": mode,
+        "backends": backends_list,
+        "active_backend": active_backend,
+        "fix": fix,
+        "requires": requires,
+        "note": note,
+        "detail": detail,
+        "pin_var": pin_var,
+        "pin_flag": pin_flag,
+        "pinned": pinned,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Chained sources (via U2 descriptors)
+# ---------------------------------------------------------------------------
+
+def _finding_json(finding: backends.BackendFinding) -> Dict[str, Any]:
+    return {
+        "name": finding.name,
+        "status": finding.status,
+        "detail": finding.detail,
+        "requires": finding.requires,
+        "fix": finding.prescription,
+    }
+
+
+def _chained_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
+    descriptor = backends.get_descriptor(source)
+    res = backends.resolve(source, config)
+    findings_json = [_finding_json(f) for f in res.findings]
+    common = dict(
+        mode=res.mode,
+        backends_list=findings_json,
+        active_backend=res.active_backend,
+        pin_var=descriptor.pin_var,
+        pin_flag=descriptor.pin_flag,
+        pinned=res.pinned,
+    )
+
+    if res.mode == backends.MODE_CONDITIONAL:
+        # Reddit: honest conditional wording (U2, verbatim), never a winner.
+        return _record(status="ok", note=res.conditional,
+                       requires=res.findings[0].requires if res.findings else "",
+                       **common)
+
+    by_name = {f.name: f for f in res.findings}
+    if res.tier == backends.TIER_OK:
+        active = by_name.get(res.active_backend)
+        return _record(status="ok", note=res.summary,
+                       requires=active.requires if active else "", **common)
+    if res.tier == backends.TIER_WARN:
+        active = by_name.get(res.active_backend)
+        return _record(status="degraded", note=res.summary,
+                       detail=active.detail if active else "",
+                       fix=res.prescription,
+                       requires=active.requires if active else "", **common)
+
+    # res.tier == error: separate "nothing configured" (tier off) from
+    # "configured but broken" (tier error).
+    if source == "web" and env.is_native_search(config):
+        # The engine's web lanes are all unavailable BECAUSE the host brings
+        # its own (better) native search — intentionally off, no false alarm.
+        return _record(
+            status="unconfigured",
+            note=(
+                "host-native search active (LAST30DAYS_NATIVE_SEARCH): the "
+                "host's own web search serves this run; set a web key only "
+                "if you want engine-side web search"
+            ),
+            requires=res.findings[0].requires if res.findings else "",
+            **common,
+        )
+    if res.findings and all(f.status == health.MISSING for f in res.findings):
+        return _record(
+            status="unconfigured",
+            fix=res.prescription,
+            requires=res.findings[0].requires if res.findings else "",
+            note=f"no backend configured (chain: {' -> '.join(res.chain)})",
+            **common,
+        )
+    # Something IS configured/installed but won't serve: name the most
+    # specific failure in chain order.
+    status = "error"
+    fix = res.prescription
+    detail = ""
+    for wanted in _SPECIFIC_FAILURES:
+        failed = next((f for f in res.findings if f.status == wanted), None)
+        if failed is not None:
+            status = wanted
+            fix = failed.prescription or res.prescription
+            detail = failed.detail
+            break
+    return _record(status=status, fix=fix, detail=detail,
+                   requires=res.findings[0].requires if res.findings else "",
+                   **common)
+
+
+# ---------------------------------------------------------------------------
+# Single-backend sources
+# ---------------------------------------------------------------------------
+
+def _sc_fix() -> str:
+    return _fix_text(prescriptions.get("scrapecreators", "key_missing"))
+
+
+def _sc_gated_record(config: Dict[str, Any], purpose: str) -> Dict[str, Any]:
+    if config.get("SCRAPECREATORS_API_KEY"):
+        return _record(status="ok", requires="SCRAPECREATORS_API_KEY",
+                       detail=f"SCRAPECREATORS_API_KEY present ({purpose})")
+    return _record(status="unconfigured", requires="SCRAPECREATORS_API_KEY",
+                   fix=_sc_fix())
+
+
+def _reddit_record(config):
+    return _chained_record("reddit", config)
+
+
+def _x_record(config):
+    return _chained_record("x", config)
+
+
+def _youtube_record(config):
+    record = _chained_record("youtube", config)
+    if record["status"] == "ok" and not env.transcription_providers(config):
+        # Usable, but the caption-free transcript backstop is unavailable.
+        entry = prescriptions.get("youtube", "transcription_key_missing")
+        record["note"] = (record["note"] + "; " if record["note"] else "") + (
+            "no transcription key for caption-free videos"
+        )
+        record["fix"] = _fix_text(entry)
+    return record
+
+
+def _web_record(config):
+    return _chained_record("web", config)
+
+
+def _hackernews_record(config):
+    return _record(status="ok", requires="none (free Algolia API)")
+
+
+def _polymarket_record(config):
+    return _record(status="ok", requires="none (public API)")
+
+
+def _github_record(config):
+    authed = bool(config.get("GITHUB_TOKEN") or shutil.which("gh"))
+    detail = (
+        "authenticated tier (GITHUB_TOKEN or gh CLI)"
+        if authed
+        else "unauthenticated REST tier (lower rate limits; GITHUB_TOKEN or gh raises them)"
+    )
+    return _record(status="ok", detail=detail,
+                   requires="none (GITHUB_TOKEN or gh CLI optional)")
+
+
+def _digg_record(config):
+    probe = health.probe_dependency("digg-pp-cli")
+    requires = "digg-pp-cli on the agent-subprocess PATH"
+    if probe.ok:
+        return _record(status="ok", detail=probe.detail, requires=requires)
+    entry = prescriptions.for_dependency_probe(probe)
+    fix = _fix_text(entry) if entry else probe.prescription
+    if probe.status == health.MISSING and "installed at" not in probe.detail:
+        # Never installed: an optional source that simply isn't enabled.
+        return _record(status="opt-in", fix=fix, detail=probe.detail, requires=requires)
+    # Installed but off-PATH, broken, or timing out: configured-but-broken.
+    return _record(status=probe.status, fix=fix, detail=probe.detail, requires=requires)
+
+
+def _tiktok_record(config):
+    return _sc_gated_record(config, "tiktok")
+
+
+def _instagram_record(config):
+    return _sc_gated_record(config, "instagram")
+
+
+def _threads_record(config):
+    return _sc_gated_record(config, "threads")
+
+
+def _bluesky_record(config):
+    if env.is_bluesky_available(config):
+        return _record(status="ok", requires="BSKY_HANDLE + BSKY_APP_PASSWORD")
+    return _record(
+        status="unconfigured",
+        requires="BSKY_HANDLE + BSKY_APP_PASSWORD",
+        fix=_fix_text(prescriptions.get("bluesky", "app_password_missing")),
+    )
+
+
+def _truthsocial_record(config):
+    if env.is_truthsocial_available(config):
+        return _record(status="ok", requires="TRUTHSOCIAL_TOKEN")
+    return _record(
+        status="unconfigured",
+        requires="TRUTHSOCIAL_TOKEN",
+        fix=_fix_text(prescriptions.get("truthsocial", "token_missing")),
+    )
+
+
+def _perplexity_record(config):
+    requires = "PERPLEXITY_API_KEY or OPENROUTER_API_KEY + INCLUDE_SOURCES=perplexity"
+    has_key = bool(config.get("PERPLEXITY_API_KEY") or config.get("OPENROUTER_API_KEY"))
+    include = (config.get("INCLUDE_SOURCES") or "").lower()
+    if not has_key:
+        return _record(
+            status="unconfigured", requires=requires,
+            fix=(
+                "set PERPLEXITY_API_KEY or OPENROUTER_API_KEY in "
+                "~/.config/last30days/.env, then add perplexity to INCLUDE_SOURCES"
+            ),
+        )
+    if "perplexity" in include:
+        return _record(status="ok", requires=requires)
+    return _record(
+        status="opt-in", requires=requires,
+        fix="add perplexity to INCLUDE_SOURCES (or request it via --search perplexity)",
+        note="key present; source runs only when opted in",
+    )
+
+
+def _linkedin_record(config):
+    requires = "SCRAPECREATORS_API_KEY + INCLUDE_SOURCES=linkedin"
+    if not config.get("SCRAPECREATORS_API_KEY"):
+        return _record(status="unconfigured", requires=requires, fix=_sc_fix())
+    include = (config.get("INCLUDE_SOURCES") or "").lower()
+    if "linkedin" in include:
+        return _record(status="ok", requires=requires)
+    return _record(
+        status="opt-in", requires=requires,
+        fix="add linkedin to INCLUDE_SOURCES (or request it via --search linkedin)",
+        note="key present; power-user opt-in, never auto-activates",
+    )
+
+
+def _pinterest_record(config):
+    requires = "SCRAPECREATORS_API_KEY; requested-only (--search pinterest)"
+    if not config.get("SCRAPECREATORS_API_KEY"):
+        return _record(status="unconfigured", requires=requires, fix=_sc_fix())
+    return _record(
+        status="opt-in", requires=requires,
+        fix="request it explicitly via --search pinterest (or INCLUDE_SOURCES)",
+        note="key present; runs only when requested",
+    )
+
+
+def _xiaohongshu_record(config):
+    requires = "xiaohongshu-mcp service (XIAOHONGSHU_API_BASE); requested-only"
+    entry = prescriptions.get("xiaohongshu", "service_unreachable")
+    if config.get("XIAOHONGSHU_API_BASE"):
+        return _record(
+            status="ok", requires=requires,
+            note=(
+                "XIAOHONGSHU_API_BASE configured; service reachability is not "
+                "probed (doctor makes no network calls)"
+            ),
+        )
+    return _record(status="opt-in", requires=requires, fix=_fix_text(entry))
+
+
+def _jobs_record(config):
+    return _record(
+        status="opt-in",
+        requires="none; activates for company topics or --hiring-signals",
+        note="on-demand source: no configuration needed",
+    )
+
+
+_SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
+    "reddit": _reddit_record,
+    "x": _x_record,
+    "youtube": _youtube_record,
+    "web": _web_record,
+    "hackernews": _hackernews_record,
+    "polymarket": _polymarket_record,
+    "github": _github_record,
+    "digg": _digg_record,
+    "tiktok": _tiktok_record,
+    "instagram": _instagram_record,
+    "threads": _threads_record,
+    "bluesky": _bluesky_record,
+    "truthsocial": _truthsocial_record,
+    "perplexity": _perplexity_record,
+    "linkedin": _linkedin_record,
+    "pinterest": _pinterest_record,
+    "xiaohongshu": _xiaohongshu_record,
+    "jobs": _jobs_record,
+}
+
+
+# ---------------------------------------------------------------------------
+# Aggregation
+# ---------------------------------------------------------------------------
+
+def _engine_version() -> str:
+    try:
+        from . import skill_meta
+
+        version = skill_meta.read_skill_version(_SKILL_MD)
+    except Exception:
+        version = None
+    return version or "unknown"
+
+
+def _setup_block(config: Dict[str, Any]) -> Dict[str, Any]:
+    keys_present = {var: bool(config.get(var)) for var in KEY_PRESENCE_VARS}
+    keys_present["x_browser_cookies"] = bool(
+        config.get("AUTH_TOKEN") and config.get("CT0")
+    )
+    keys_present["bluesky_app_password"] = bool(
+        config.get("BSKY_HANDLE") and config.get("BSKY_APP_PASSWORD")
+    )
+    return {
+        "setup_complete": _truthy(config.get("SETUP_COMPLETE")),
+        "keys_present": keys_present,
+    }
+
+
+def _permissions_block(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Secret-free permission summary via the existing preflight provider."""
+    from . import pipeline
+
+    diag = pipeline.diagnose(config, None, safe=True)
+    return diag["permission_preflight"]
+
+
+def build_report(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Aggregate every health provider into one report dict.
+
+    Per-source exceptions are isolated: a failing builder yields an
+    ``error`` record for that source and the rest of the report survives.
+    """
+    sources: Dict[str, Dict[str, Any]] = {}
+    for name in SOURCE_ORDER:
+        try:
+            sources[name] = _SOURCE_BUILDERS[name](config)
+        except Exception as exc:  # one bad probe must not blank the report
+            sources[name] = _record(
+                status="error",
+                detail=f"probe failed: {type(exc).__name__}: {exc}",
+                fix=_fix_text(prescriptions.get(name, "probe_error")),
+            )
+
+    try:
+        permissions = _permissions_block(config)
+    except Exception as exc:
+        permissions = {"status": "unavailable", "error": f"{type(exc).__name__}: {exc}"}
+
+    return {
+        "engine_version": _engine_version(),
+        "config": {
+            "global_env": str(env.CONFIG_FILE) if env.CONFIG_FILE else None,
+            "config_source": config.get("_CONFIG_SOURCE"),
+        },
+        "setup": _setup_block(config),
+        "permissions": permissions,
+        "sources": sources,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Renderers
+# ---------------------------------------------------------------------------
+
+def render_json(report: Dict[str, Any]) -> str:
+    return json.dumps(report, indent=2, sort_keys=True)
+
+
+def _source_line(name: str, record: Dict[str, Any]) -> str:
+    glyph = GLYPHS.get(record["tier"], "?")
+    parts = [f"  {glyph} {name}"]
+    descriptors: List[str] = []
+    if record["status"] not in ("ok",):
+        descriptors.append(record["status"])
+    if record.get("note"):
+        descriptors.append(record["note"])
+    elif record.get("detail") and record["tier"] != TIER_OK:
+        descriptors.append(record["detail"])
+    if descriptors:
+        parts.append(" — " + "; ".join(descriptors))
+    if record["tier"] != TIER_OK and record.get("fix"):
+        parts.append(f"; fix: {record['fix']}")
+    return "".join(parts)
+
+
+def render_text(report: Dict[str, Any]) -> str:
+    lines: List[str] = [f"last30days doctor — engine v{report['engine_version']}"]
+    config_block = report.get("config") or {}
+    if config_block.get("global_env"):
+        line = f"config: {config_block['global_env']}"
+        if config_block.get("config_source"):
+            line += f" (source: {config_block['config_source']})"
+        lines.append(line)
+
+    setup = report.get("setup") or {}
+    present = sorted(
+        name for name, is_set in (setup.get("keys_present") or {}).items() if is_set
+    )
+    setup_state = "complete" if setup.get("setup_complete") else "not recorded"
+    lines.append(
+        f"setup: {setup_state}; credentials present: "
+        + (", ".join(present) if present else "none")
+        + " (values never shown)"
+    )
+
+    permissions = report.get("permissions") or {}
+    if permissions.get("status"):
+        browser = ((permissions.get("local_reads") or {}).get("browser_cookies") or {})
+        lines.append(
+            f"permissions: {permissions['status']}"
+            + (f"; browser cookies: {browser.get('status')}" if browser else "")
+        )
+
+    grouped: Dict[str, List[str]] = {tier: [] for tier, _ in GROUP_HEADERS}
+    for name, record in (report.get("sources") or {}).items():
+        grouped.setdefault(record["tier"], []).append(_source_line(name, record))
+
+    for tier, header in GROUP_HEADERS:
+        entries = grouped.get(tier) or []
+        lines.append("")
+        lines.append(f"{header}:")
+        if entries:
+            lines.extend(entries)
+        else:
+            lines.append("  (none)")
+
+    lines.append("")
+    lines.append(
+        "doctor reports problems without failing; run the printed fixes, "
+        "then re-run doctor"
+    )
+    return "\n".join(lines) + "\n"
+
+
+def run(config: Dict[str, Any], *, emit_json: bool = False) -> int:
+    """Build and print the doctor report. Always exits 0 (reporting
+    problems is a successful run)."""
+    report = build_report(config)
+    if emit_json:
+        print(render_json(report))
+    else:
+        print(render_text(report), end="")
+    return 0
