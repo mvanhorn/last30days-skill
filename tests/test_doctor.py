@@ -349,6 +349,28 @@ class TopicWordDispatch(unittest.TestCase):
         self.assertIn("--json", stderr.getvalue())
 
 
+class IncludeSourcesTokenParsing(unittest.TestCase):
+    """Opt-in gates match whole INCLUDE_SOURCES tokens, never substrings."""
+
+    def test_substring_token_does_not_enable_linkedin(self):
+        report = _build({
+            "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
+            "INCLUDE_SOURCES": "notlinkedincorp",
+        })
+        record = report["sources"]["linkedin"]
+        self.assertEqual("opt-in", record["status"])
+        self.assertEqual("off", record["tier"])
+
+    def test_exact_token_enables_linkedin(self):
+        report = _build({
+            "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
+            "INCLUDE_SOURCES": "linkedin",
+        })
+        record = report["sources"]["linkedin"]
+        self.assertEqual("ok", record["status"])
+        self.assertEqual("ok", record["tier"])
+
+
 class NativeSearchHost(unittest.TestCase):
     """Scenario 6: native-search host with no web keys -> off, not error."""
 

@@ -182,12 +182,17 @@ class DependencyProbe:
     detail: str = ""
     prescription: str = ""
     owner_pkg_manager: str = ""
+    # True for the on-disk-but-off-PATH case: MISSING (the engine gate would
+    # not pass) but the fix is a PATH edit, not an install.
+    off_path: bool = False
 
     @property
     def ok(self) -> bool:
         return self.status == OK
 
 
+# Safe under the GIL (dict get/set are atomic) and each dependency name is
+# probed from a single builder today; worst case is one redundant probe.
 _dependency_probe_cache: Dict[str, DependencyProbe] = {}
 
 
@@ -215,6 +220,20 @@ def _is_pp_cli(name: str) -> bool:
 def _pp_install_cmd(name: str) -> str:
     slug = name[: -len(_PP_CLI_SUFFIX)]
     return f"npx -y {_PRINTING_PRESS_NPM} install {slug} --cli-only"
+
+
+def pp_install_cmd(slug: str) -> str:
+    """Public catalog-install command for the Printing Press CLI ``<slug>-pp-cli``."""
+    return _pp_install_cmd(f"{slug}{_PP_CLI_SUFFIX}")
+
+
+def static_prescription(name: str, manager: str) -> Tuple[str, str]:
+    """Public ``(install, reinstall)`` strings for one dependency/manager pair.
+
+    Reads the static table without probing manager availability; raises
+    KeyError for unknown pairs so consumers fail loudly at import time.
+    """
+    return _MANAGER_PRESCRIPTIONS[name][manager]
 
 
 def _prescription(name: str, kind: str) -> Tuple[str, str]:
@@ -315,6 +334,7 @@ def _probe_dependency_uncached(name: str, timeout: float) -> DependencyProbe:
                 detail=f"{name} is installed at {off_path} but that directory is not on this process's PATH",
                 prescription=f'add {hint} to PATH (e.g. export PATH="{hint}:$PATH") so {name} resolves',
                 owner_pkg_manager="",
+                off_path=True,
             )
         prescription, manager = _prescription(name, "install")
         return DependencyProbe(

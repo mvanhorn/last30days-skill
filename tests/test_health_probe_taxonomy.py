@@ -48,6 +48,7 @@ class TestMissing:
              mock.patch.object(health, "_off_path_candidate_dirs", return_value=[]):
             probe = health.probe_dependency("yt-dlp")
         assert probe.status == health.MISSING
+        assert probe.off_path is False  # genuinely absent, not merely off-PATH
         assert probe.prescription == "brew install yt-dlp"
         assert probe.owner_pkg_manager == "brew"
         assert "not found on PATH" in probe.detail
@@ -192,6 +193,7 @@ class TestOffPath:
              mock.patch.object(health, "_off_path_candidate_dirs", return_value=[tmp_path]):
             probe = health.probe_dependency("digg-pp-cli")
         assert probe.status == health.MISSING
+        assert probe.off_path is True
         assert "PATH" in probe.prescription
         assert str(tmp_path) in probe.prescription or "$HOME" in probe.prescription
         assert str(binary) in probe.detail or "$HOME" in probe.detail

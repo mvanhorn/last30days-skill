@@ -686,20 +686,7 @@ def _report_cache_ttl_seconds(config: dict[str, object]) -> int:
 
 
 def _is_report_cache_fresh(timestamp: object, ttl_seconds: int) -> bool:
-    if ttl_seconds <= 0:
-        return False
-    if not isinstance(timestamp, str) or not timestamp:
-        return False
-    try:
-        created_at = datetime.datetime.fromisoformat(timestamp)
-    except ValueError:
-        return False
-    if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
-    age = datetime.datetime.now(datetime.timezone.utc) - created_at.astimezone(
-        datetime.timezone.utc
-    )
-    return age.total_seconds() <= ttl_seconds
+    return env.is_timestamp_fresh(timestamp, ttl_seconds)
 
 
 def _write_last_run(

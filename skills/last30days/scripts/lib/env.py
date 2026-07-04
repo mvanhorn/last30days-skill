@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 import os
 import sys
@@ -95,6 +96,31 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def is_timestamp_fresh(timestamp_value: Any, ttl_seconds: int) -> bool:
+    """True when ``timestamp_value`` (ISO-8601 string) is within ``ttl_seconds``.
+
+    Shared freshness gate for the doctor cache and the report cache. The guard
+    order is load-bearing: a non-positive TTL disables caching entirely, a
+    non-string or empty timestamp is stale, a malformed timestamp is stale,
+    naive timestamps are treated as UTC, and a future timestamp (negative age)
+    counts as fresh.
+    """
+    if ttl_seconds <= 0:
+        return False
+    if not isinstance(timestamp_value, str) or not timestamp_value:
+        return False
+    try:
+        created_at = datetime.datetime.fromisoformat(timestamp_value)
+    except ValueError:
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+    age = datetime.datetime.now(datetime.timezone.utc) - created_at.astimezone(
+        datetime.timezone.utc
+    )
+    return age.total_seconds() <= ttl_seconds
 
 
 def _project_config_trusted(policy: ConfigLoadPolicy, file_env: dict[str, Any]) -> bool:

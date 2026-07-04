@@ -250,6 +250,7 @@ class TestDependencyProbeComposition:
                 "that directory is not on this process's PATH"
             ),
             prescription='add $HOME/.local/bin to PATH (e.g. export PATH="$HOME/.local/bin:$PATH") so digg-pp-cli resolves',
+            off_path=True,
         )
         entry = prescriptions.for_dependency_probe(probe)
         assert entry is not None

@@ -41,6 +41,7 @@ Semantics and guarantees:
 
 from __future__ import annotations
 
+import concurrent.futures
 import datetime
 import json
 import os
@@ -49,23 +50,22 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from . import backends, env, health, prescriptions
+from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
-# Rollup tiers (R1).
-TIER_OK = "ok"
-TIER_WARN = "warn"
+# Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
 TIER_OFF = "off"
-TIER_ERROR = "error"
 
-# Specific statuses and the rollup row each maps to.
+# Specific statuses and the rollup row each maps to. The doctor-local
+# statuses "opt-in" and "unconfigured" have no health constant.
 TIER_BY_STATUS: Dict[str, str] = {
-    "ok": TIER_OK,
-    "degraded": TIER_WARN,
+    health.OK: TIER_OK,
+    health.DEGRADED: TIER_WARN,
     "opt-in": TIER_OFF,
     "unconfigured": TIER_OFF,
-    "missing": TIER_ERROR,
-    "broken": TIER_ERROR,
-    "timeout": TIER_ERROR,
-    "error": TIER_ERROR,
+    health.MISSING: TIER_ERROR,
+    health.BROKEN: TIER_ERROR,
+    health.TIMEOUT: TIER_ERROR,
+    health.ERROR: TIER_ERROR,
 }
 
 GLYPHS = {TIER_OK: "✓", TIER_WARN: "!", TIER_OFF: "○", TIER_ERROR: "✗"}
@@ -119,18 +119,10 @@ KEY_PRESENCE_VARS = (
     "BSKY_APP_PASSWORD",
 )
 
-_SKILL_MD = Path(__file__).resolve().parents[2] / "SKILL.md"
-
 # Failing statuses ranked most-specific-first for chained rollups: a broken
 # shim outranks a timeout outranks a generic error when naming the source's
 # status (all three roll up to tier error regardless).
 _SPECIFIC_FAILURES = (health.BROKEN, health.TIMEOUT, health.ERROR)
-
-
-def _truthy(value: Any) -> bool:
-    if value is None:
-        return False
-    return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _fix_text(entry: prescriptions.Prescription) -> str:
@@ -199,18 +191,18 @@ def _chained_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
 
     if res.mode == backends.MODE_CONDITIONAL:
         # Reddit: honest conditional wording (U2, verbatim), never a winner.
-        return _record(status="ok", note=res.conditional,
+        return _record(status=health.OK, note=res.conditional,
                        requires=res.findings[0].requires if res.findings else "",
                        **common)
 
     by_name = {f.name: f for f in res.findings}
     if res.tier == backends.TIER_OK:
         active = by_name.get(res.active_backend)
-        return _record(status="ok", note=res.summary,
+        return _record(status=health.OK, note=res.summary,
                        requires=active.requires if active else "", **common)
     if res.tier == backends.TIER_WARN:
         active = by_name.get(res.active_backend)
-        return _record(status="degraded", note=res.summary,
+        return _record(status=health.DEGRADED, note=res.summary,
                        detail=active.detail if active else "",
                        fix=res.prescription,
                        requires=active.requires if active else "", **common)
@@ -240,7 +232,7 @@ def _chained_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
         )
     # Something IS configured/installed but won't serve: name the most
     # specific failure in chain order.
-    status = "error"
+    status = health.ERROR
     fix = res.prescription
     detail = ""
     for wanted in _SPECIFIC_FAILURES:
@@ -265,7 +257,7 @@ def _sc_fix() -> str:
 
 def _sc_gated_record(config: Dict[str, Any], purpose: str) -> Dict[str, Any]:
     if config.get("SCRAPECREATORS_API_KEY"):
-        return _record(status="ok", requires="SCRAPECREATORS_API_KEY",
+        return _record(status=health.OK, requires="SCRAPECREATORS_API_KEY",
                        detail=f"SCRAPECREATORS_API_KEY present ({purpose})")
     return _record(status="unconfigured", requires="SCRAPECREATORS_API_KEY",
                    fix=_sc_fix())
@@ -281,7 +273,7 @@ def _x_record(config):
 
 def _youtube_record(config):
     record = _chained_record("youtube", config)
-    if record["status"] == "ok" and not env.transcription_providers(config):
+    if record["status"] == health.OK and not env.transcription_providers(config):
         # Usable, but the caption-free transcript backstop is unavailable.
         entry = prescriptions.get("youtube", "transcription_key_missing")
         record["note"] = (record["note"] + "; " if record["note"] else "") + (
@@ -296,11 +288,11 @@ def _web_record(config):
 
 
 def _hackernews_record(config):
-    return _record(status="ok", requires="none (free Algolia API)")
+    return _record(status=health.OK, requires="none (free Algolia API)")
 
 
 def _polymarket_record(config):
-    return _record(status="ok", requires="none (public API)")
+    return _record(status=health.OK, requires="none (public API)")
 
 
 def _github_record(config):
@@ -310,7 +302,7 @@ def _github_record(config):
         if authed
         else "unauthenticated REST tier (lower rate limits; GITHUB_TOKEN or gh raises them)"
     )
-    return _record(status="ok", detail=detail,
+    return _record(status=health.OK, detail=detail,
                    requires="none (GITHUB_TOKEN or gh CLI optional)")
 
 
@@ -318,10 +310,10 @@ def _digg_record(config):
     probe = health.probe_dependency("digg-pp-cli")
     requires = "digg-pp-cli on the agent-subprocess PATH"
     if probe.ok:
-        return _record(status="ok", detail=probe.detail, requires=requires)
+        return _record(status=health.OK, detail=probe.detail, requires=requires)
     entry = prescriptions.for_dependency_probe(probe)
     fix = _fix_text(entry) if entry else probe.prescription
-    if probe.status == health.MISSING and "installed at" not in probe.detail:
+    if probe.status == health.MISSING and not probe.off_path:
         # Never installed: an optional source that simply isn't enabled.
         return _record(status="opt-in", fix=fix, detail=probe.detail, requires=requires)
     # Installed but off-PATH, broken, or timing out: configured-but-broken.
@@ -342,7 +334,7 @@ def _threads_record(config):
 
 def _bluesky_record(config):
     if env.is_bluesky_available(config):
-        return _record(status="ok", requires="BSKY_HANDLE + BSKY_APP_PASSWORD")
+        return _record(status=health.OK, requires="BSKY_HANDLE + BSKY_APP_PASSWORD")
     return _record(
         status="unconfigured",
         requires="BSKY_HANDLE + BSKY_APP_PASSWORD",
@@ -352,7 +344,7 @@ def _bluesky_record(config):
 
 def _truthsocial_record(config):
     if env.is_truthsocial_available(config):
-        return _record(status="ok", requires="TRUTHSOCIAL_TOKEN")
+        return _record(status=health.OK, requires="TRUTHSOCIAL_TOKEN")
     return _record(
         status="unconfigured",
         requires="TRUTHSOCIAL_TOKEN",
@@ -363,7 +355,7 @@ def _truthsocial_record(config):
 def _perplexity_record(config):
     requires = "PERPLEXITY_API_KEY or OPENROUTER_API_KEY + INCLUDE_SOURCES=perplexity"
     has_key = bool(config.get("PERPLEXITY_API_KEY") or config.get("OPENROUTER_API_KEY"))
-    include = (config.get("INCLUDE_SOURCES") or "").lower()
+    include = env._parse_include_sources(config)
     if not has_key:
         return _record(
             status="unconfigured", requires=requires,
@@ -373,7 +365,7 @@ def _perplexity_record(config):
             ),
         )
     if "perplexity" in include:
-        return _record(status="ok", requires=requires)
+        return _record(status=health.OK, requires=requires)
     return _record(
         status="opt-in", requires=requires,
         fix="add perplexity to INCLUDE_SOURCES (or request it via --search perplexity)",
@@ -385,9 +377,8 @@ def _linkedin_record(config):
     requires = "SCRAPECREATORS_API_KEY + INCLUDE_SOURCES=linkedin"
     if not config.get("SCRAPECREATORS_API_KEY"):
         return _record(status="unconfigured", requires=requires, fix=_sc_fix())
-    include = (config.get("INCLUDE_SOURCES") or "").lower()
-    if "linkedin" in include:
-        return _record(status="ok", requires=requires)
+    if "linkedin" in env._parse_include_sources(config):
+        return _record(status=health.OK, requires=requires)
     return _record(
         status="opt-in", requires=requires,
         fix="add linkedin to INCLUDE_SOURCES (or request it via --search linkedin)",
@@ -411,7 +402,7 @@ def _xiaohongshu_record(config):
     entry = prescriptions.get("xiaohongshu", "service_unreachable")
     if config.get("XIAOHONGSHU_API_BASE"):
         return _record(
-            status="ok", requires=requires,
+            status=health.OK, requires=requires,
             note=(
                 "XIAOHONGSHU_API_BASE configured; service reachability is not "
                 "probed (doctor makes no network calls)"
@@ -456,12 +447,15 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
 
 def _engine_version() -> str:
     try:
-        from . import skill_meta
+        from . import render
 
-        version = skill_meta.read_skill_version(_SKILL_MD)
+        version = render._skill_version()
     except Exception:
         version = None
-    return version or "unknown"
+    # render's parent-walking helper falls back to "?"; doctor says "unknown".
+    if not version or version == "?":
+        return "unknown"
+    return version
 
 
 def _setup_block(config: Dict[str, Any]) -> Dict[str, Any]:
@@ -473,7 +467,7 @@ def _setup_block(config: Dict[str, Any]) -> Dict[str, Any]:
         config.get("BSKY_HANDLE") and config.get("BSKY_APP_PASSWORD")
     )
     return {
-        "setup_complete": _truthy(config.get("SETUP_COMPLETE")),
+        "setup_complete": env._truthy(config.get("SETUP_COMPLETE")),
         "keys_present": keys_present,
     }
 
@@ -492,17 +486,28 @@ def build_report(config: Dict[str, Any]) -> Dict[str, Any]:
     Per-source exceptions are isolated: a failing builder yields an
     ``error`` record for that source and the rest of the report survives.
     """
-    sources: Dict[str, Dict[str, Any]] = {}
-    for name in SOURCE_ORDER:
+    def _build_one(name: str) -> Dict[str, Any]:
         try:
-            sources[name] = _SOURCE_BUILDERS[name](config)
+            return _SOURCE_BUILDERS[name](config)
         except Exception as exc:  # one bad probe must not blank the report
-            sources[name] = _record(
-                status="error",
+            return _record(
+                status=health.ERROR,
                 detail=f"probe failed: {type(exc).__name__}: {exc}",
                 fix=_fix_text(prescriptions.get(name, "probe_error")),
             )
 
+    # Builders are independent probes (subprocess/filesystem bound), so run
+    # them concurrently. ``pool.map`` preserves SOURCE_ORDER, keeping the
+    # sources dict insertion order — and render grouping — deterministic.
+    with concurrent.futures.ThreadPoolExecutor(
+        max_workers=min(8, len(SOURCE_ORDER))
+    ) as pool:
+        sources: Dict[str, Dict[str, Any]] = dict(
+            zip(SOURCE_ORDER, pool.map(_build_one, SOURCE_ORDER))
+        )
+
+    # Sequential on purpose: the permission preflight composes pipeline
+    # diagnostics and must not race the source builders.
     try:
         permissions = _permissions_block(config)
     except Exception as exc:
@@ -532,7 +537,7 @@ def _source_line(name: str, record: Dict[str, Any]) -> str:
     glyph = GLYPHS.get(record["tier"], "?")
     parts = [f"  {glyph} {name}"]
     descriptors: List[str] = []
-    if record["status"] not in ("ok",):
+    if record["status"] not in (health.OK,):
         descriptors.append(record["status"])
     if record.get("note"):
         descriptors.append(record["note"])
@@ -641,20 +646,7 @@ def cache_ttl_seconds(config: Dict[str, Any]) -> int:
 
 
 def _is_fresh(timestamp: Any, ttl_seconds: int) -> bool:
-    if ttl_seconds <= 0:
-        return False
-    if not isinstance(timestamp, str) or not timestamp:
-        return False
-    try:
-        created_at = datetime.datetime.fromisoformat(timestamp)
-    except ValueError:
-        return False
-    if created_at.tzinfo is None:
-        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
-    age = datetime.datetime.now(datetime.timezone.utc) - created_at.astimezone(
-        datetime.timezone.utc
-    )
-    return age.total_seconds() <= ttl_seconds
+    return env.is_timestamp_fresh(timestamp, ttl_seconds)
 
 
 def read_cached_report(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:

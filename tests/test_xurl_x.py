@@ -26,6 +26,11 @@ def _make_api_response(tweets=None, users=None):
 
 
 class TestIsAvailable(unittest.TestCase):
+    def setUp(self):
+        # is_available() memoizes per process; isolate every test.
+        xurl_x.clear_availability_cache()
+        self.addCleanup(xurl_x.clear_availability_cache)
+
     def test_returns_true_when_xurl_authenticated(self):
         completed = mock.Mock(returncode=0, stdout='{"username": "testuser"}')
         with mock.patch("subprocess.run", return_value=completed):

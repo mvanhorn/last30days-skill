@@ -31,12 +31,33 @@ DEPTH_CONFIG = {
 }
 
 
+# Memoized availability, mirroring health.py's per-process dependency-probe
+# cache: doctor consults xurl twice per run (backends._probe_xurl and
+# env.get_x_source_status via pipeline.diagnose), and each uncached check
+# spawns an `xurl whoami` subprocess. None means "not yet probed".
+_availability_cache: Optional[bool] = None
+
+
+def clear_availability_cache() -> None:
+    """Reset the memoized is_available() result (tests, or a re-check after auth)."""
+    global _availability_cache
+    _availability_cache = None
+
+
 def is_available() -> bool:
     """Check if xurl is installed and has valid authentication.
 
     Returns True only if xurl binary is found AND the user is authenticated
     (i.e. ``xurl whoami`` exits 0 and returns a username field).
+    Memoized per process; ``clear_availability_cache()`` resets.
     """
+    global _availability_cache
+    if _availability_cache is None:
+        _availability_cache = _is_available_uncached()
+    return _availability_cache
+
+
+def _is_available_uncached() -> bool:
     try:
         result = subprocess.run(
             ["xurl", "whoami"],

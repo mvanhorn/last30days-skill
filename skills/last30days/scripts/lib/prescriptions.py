@@ -40,9 +40,9 @@ SETUP_BROWSER_COOKIES_CLI = f"{ENGINE_CLI} setup --allow-browser-cookies"
 SETUP_GITHUB_CLI = f"{ENGINE_CLI} setup --github"
 
 # U1 owns these remediation strings; reference them instead of restating.
-_YTDLP_BREW_INSTALL, _YTDLP_BREW_REINSTALL = health._MANAGER_PRESCRIPTIONS["yt-dlp"]["brew"]
-_YTDLP_PIPX_REINSTALL = health._MANAGER_PRESCRIPTIONS["yt-dlp"]["pipx"][1]
-_DIGG_PP_INSTALL_CLI = health._pp_install_cmd("digg-pp-cli")
+_YTDLP_BREW_INSTALL, _YTDLP_BREW_REINSTALL = health.static_prescription("yt-dlp", "brew")
+_YTDLP_PIPX_REINSTALL = health.static_prescription("yt-dlp", "pipx")[1]
+_DIGG_PP_INSTALL_CLI = health.pp_install_cmd("digg")
 
 GENERIC_FIX_NL = "see CONFIGURATION.md for setup options for this source"
 
@@ -241,10 +241,10 @@ def _dependency_failure(probe: health.DependencyProbe) -> Optional[Tuple[str, st
             return ("youtube", "ytdlp_missing")
         return ("youtube", "ytdlp_broken")  # BROKEN and TIMEOUT: reinstall class
     if probe.name == "digg-pp-cli":
-        # health reports off-PATH binaries as MISSING with an "installed at"
-        # detail; the distinction only picks cause/NL wording — the probe's
-        # own prescription wins the CLI form either way.
-        if probe.status == health.MISSING and "installed at" in probe.detail:
+        # health reports off-PATH binaries as MISSING with ``off_path=True``;
+        # the distinction only picks cause/NL wording — the probe's own
+        # prescription wins the CLI form either way.
+        if probe.status == health.MISSING and probe.off_path:
             return ("digg", "pp_cli_off_path")
         return ("digg", "pp_cli_missing")
     return None
