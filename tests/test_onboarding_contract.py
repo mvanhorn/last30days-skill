@@ -229,8 +229,9 @@ class TestOnboardingContract(unittest.TestCase):
 
         an already-linked account), not lumped into 'auth didn't complete'.
         """
-        self.assertIn("Authorized but failed to fetch API key", self.modal)
-        self.assertIn("already linked", self.modal)
+        for slice_name, slice_text in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn("Authorized but failed to fetch API key", slice_text, slice_name)
+            self.assertIn("already linked", slice_text, slice_name)
 
     # --- Legacy guarantees retained ---
 
