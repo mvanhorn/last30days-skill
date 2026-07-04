@@ -8,6 +8,7 @@ presents it), but this module provides the detection and setup actions.
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -665,6 +666,24 @@ def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
 
 _DEVICE_BASE = "https://api.scrapecreators.com/v1/github/device"
 
+# A GitHub device code is always XXXX-XXXX (uppercase alphanumerics). We validate
+# user_code against this before copying, labeling, or emitting it so a malformed
+# or key-shaped value (e.g. a returning-account server response) is never
+# mislabeled as a device code or leaked to stdout/clipboard.
+_DEVICE_CODE_RE = re.compile(r"^[0-9A-Z]{4}-[0-9A-Z]{4}$")
+
+
+def _existing_scrapecreators_key() -> Optional[str]:
+    """Return the SCRAPECREATORS_API_KEY already saved in the .env, if any."""
+    try:
+        from . import env as _env
+
+        if _env.CONFIG_FILE and _env.CONFIG_FILE.exists():
+            return _env.load_env_file(_env.CONFIG_FILE).get("SCRAPECREATORS_API_KEY") or None
+    except Exception as exc:  # never let a config-read failure block auth
+        logger.debug("Could not read existing ScrapeCreators key: %s", exc)
+    return None
+
 
 def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
     """Start the device authorization flow.
@@ -691,7 +710,11 @@ def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
     interval = data.get("interval", 5)
 
     if not device_code or not user_code:
-        logger.warning("Device auth returned incomplete response: %s", data)
+        # Log only the response's key names, never its values — a returning
+        # account's response could carry a raw API key we must not write to logs.
+        logger.warning(
+            "Device auth returned incomplete response (keys: %s)", sorted(data.keys())
+        )
         return None
 
     return (device_code, user_code, verification_uri or "", interval)
@@ -817,6 +840,31 @@ def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
 
     import sys
 
+    # Step 1b: Validate the code shape BEFORE copying, labeling, or emitting it.
+    # A non-conforming user_code (e.g. a key-shaped value) is never surfaced as a
+    # GitHub device code; we stop rather than instruct the user to paste garbage.
+    if not _DEVICE_CODE_RE.match(user_code):
+        logger.warning("Device auth returned a non-device-shaped user_code; aborting.")
+        return {
+            "status": "error",
+            "message": "ScrapeCreators returned an unexpected device-code format.",
+        }
+
+    # Step 1c: Surface the code immediately on stdout as a structured line so a
+    # backgrounded caller can read and show it right away, instead of waiting for
+    # the whole process to exit. The final status blob is still printed at exit,
+    # so consumers parse the LAST JSON line for final status.
+    print(
+        json.dumps(
+            {
+                "event": "device_code_ready",
+                "user_code": user_code,
+                "verification_uri": verification_uri,
+            }
+        ),
+        flush=True,
+    )
+
     # Step 2: Copy code to clipboard BEFORE opening browser
     clipboard_ok = False
     if sys.platform == "darwin":
@@ -880,4 +928,16 @@ def run_github_auth(timeout: int = 300) -> Dict[str, Any]:
 
     Returns JSON-serializable dict with status, method, and api_key.
     """
+    # Already-registered short-circuit: if a key is already saved, return it
+    # without forcing another device dance. The key is returned raw here and
+    # masked at the CLI boundary before print (see last30days.py), so it never
+    # lands unmasked in the host's captured stdout.
+    existing = _existing_scrapecreators_key()
+    if existing:
+        return {
+            "status": "already_registered",
+            "method": "existing",
+            "api_key": existing,
+            "persisted": True,
+        }
     return run_full_device_auth(timeout=timeout)

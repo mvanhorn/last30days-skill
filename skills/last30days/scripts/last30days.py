@@ -1000,8 +1000,16 @@ def main() -> int:
             # run, and mask it in stdout so the secret never lands in the host
             # model's captured Bash output.
             api_key = results.get("api_key")
-            if results.get("status") == "success" and api_key:
-                results["persisted"] = setup_wizard.write_api_key(env.CONFIG_FILE, api_key)
+            status = results.get("status")
+            if api_key:
+                if status == "success":
+                    results["persisted"] = setup_wizard.write_api_key(env.CONFIG_FILE, api_key)
+                elif status == "already_registered":
+                    results["persisted"] = True  # key was already saved
+                else:
+                    results.setdefault("persisted", False)
+                # Mask for EVERY status that carries a key, not just success, so
+                # the raw secret never reaches the host model's captured stdout.
                 results["api_key"] = setup_wizard.mask_api_key(api_key)
             else:
                 results["persisted"] = False
