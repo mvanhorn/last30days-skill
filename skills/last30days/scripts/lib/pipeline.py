@@ -1330,11 +1330,11 @@ def _retrieve_stream(
         has_sc_key = bool(config.get("SCRAPECREATORS_API_KEY"))
         sc_first = (
             has_sc_key
-            and (config.get("LAST30DAYS_REDDIT_BACKEND") or "").lower()
+            and (config.get(env.REDDIT_BACKEND_PIN_VAR) or "").lower()
             == "scrapecreators"
         )
         if sc_first:
-            # LAST30DAYS_REDDIT_BACKEND=scrapecreators: SC primary, public fallback
+            # env.REDDIT_BACKEND_PIN_VAR=scrapecreators: SC primary, public fallback
             try:
                 result = reddit.search_and_enrich(
                     reddit_query, from_date, to_date, depth=depth,
@@ -1373,10 +1373,10 @@ def _retrieve_stream(
 
         # Default: public Reddit first (free). ScrapeCreators backfills when the
         # free path is empty OR returns fewer than the configured thinness floor
-        # (LAST30DAYS_REDDIT_SC_MIN_ITEMS, default 0 = empty-only — today's
+        # (env.REDDIT_SC_MIN_ITEMS_VAR, default 0 = empty-only — today's
         # behavior, no extra credit spend unless the user opts in).
         try:
-            min_items = int(config.get("LAST30DAYS_REDDIT_SC_MIN_ITEMS") or 0)
+            min_items = int(config.get(env.REDDIT_SC_MIN_ITEMS_VAR) or 0)
         except (TypeError, ValueError):
             min_items = 0
         public_results: list[dict] = []

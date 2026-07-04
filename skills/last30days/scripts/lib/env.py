@@ -965,6 +965,24 @@ def _parse_exclude_sources(config: dict[str, Any]) -> set[str]:
     return {s.strip().lower() for s in raw.split(',') if s.strip()}
 
 
+def include_sources(config: dict[str, Any]) -> set[str]:
+    """Public view of the parsed INCLUDE_SOURCES set.
+
+    Thin wrapper over ``_parse_include_sources`` so other modules (doctor,
+    etc.) don't reach into env's privates.
+    """
+    return _parse_include_sources(config)
+
+
+def is_setup_complete(config: dict[str, Any]) -> bool:
+    """Whether guided setup marked this config complete (SETUP_COMPLETE truthy).
+
+    Thin wrapper over ``_truthy`` so other modules don't reach into env's
+    privates.
+    """
+    return _truthy(config.get('SETUP_COMPLETE'))
+
+
 def is_threads_available(config: dict[str, Any]) -> bool:
     """Check if the Threads credential is available.
 

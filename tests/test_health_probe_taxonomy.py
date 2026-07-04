@@ -245,3 +245,82 @@ class TestCachingAndRegistry:
         assert probe.status == health.MISSING
         assert "install espn --cli-only" in probe.prescription
         assert probe.owner_pkg_manager == "npx"
+
+
+class TestWindowsPrintingPressCandidates:
+    """F15 regression (docs/solutions/integration-issues/
+    digg-cli-agent-path-setup-wizard.md): the Windows managed install dir
+    (%LOCALAPPDATA%/Programs/PrintingPress/bin) must be in the shared
+    candidate-dir source so an installed-but-off-PATH digg-pp-cli gets a
+    PATH fix, never "never installed".
+
+    os.name is patched only in health's namespace (a delegating stub) —
+    patching the global os.name would flip pathlib to WindowsPath and break
+    Path construction on posix.
+    """
+
+    class _NtOs:
+        """Delegates to the real os module but reports name == 'nt'."""
+        name = "nt"
+
+        def __getattr__(self, attr):
+            return getattr(os, attr)
+
+    def _nt(self):
+        return mock.patch.object(health, "os", self._NtOs())
+
+    def test_windows_dir_in_candidates_when_localappdata_set(self, tmp_path):
+        with self._nt(), \
+             mock.patch.dict(os.environ, {"LOCALAPPDATA": str(tmp_path)}):
+            dirs = health._off_path_candidate_dirs()
+        assert tmp_path / "Programs" / "PrintingPress" / "bin" in dirs
+
+    def test_windows_dir_absent_without_localappdata(self):
+        env_clean = {k: v for k, v in os.environ.items()
+                     if k.lower() != "localappdata"}
+        with self._nt(), \
+             mock.patch.dict(os.environ, env_clean, clear=True):
+            assert health.windows_printing_press_bin_dir() is None
+
+    def test_posix_has_no_windows_dir(self, tmp_path):
+        with mock.patch.dict(os.environ, {"LOCALAPPDATA": str(tmp_path)}):
+            assert health.windows_printing_press_bin_dir() is None
+
+    def test_windows_off_path_digg_reports_path_fix(self, tmp_path):
+        # Binary present ONLY in the PrintingPress dir: missing + off_path +
+        # PATH prescription — the documented failure mode said "never installed".
+        pp_dir = tmp_path / "Programs" / "PrintingPress" / "bin"
+        pp_dir.mkdir(parents=True)
+        binary = pp_dir / "digg-pp-cli.exe"
+        binary.write_text("#!/bin/sh\necho ok\n")
+        binary.chmod(binary.stat().st_mode | stat.S_IXUSR)
+        fake_home = tmp_path / "home"
+        with self._nt(), \
+             mock.patch.dict(os.environ,
+                             {"LOCALAPPDATA": str(tmp_path),
+                              "GOPATH": str(tmp_path / "gopath")}), \
+             mock.patch.object(health.Path, "home", return_value=fake_home), \
+             mock.patch.object(health.shutil, "which",
+                               side_effect=_which_map({"npx": "/x/npx"})):
+            probe = health.probe_dependency("digg-pp-cli")
+        assert probe.status == health.MISSING
+        assert probe.off_path is True
+        assert "PATH" in probe.prescription
+        assert str(pp_dir) in probe.prescription or str(pp_dir) in probe.detail
+
+    def test_setup_wizard_digg_candidates_derive_from_shared_dirs(self, tmp_path):
+        # setup_wizard appends the Digg filename variants to the SAME shared
+        # dir list health owns — including the .exe in the Windows managed dir.
+        from lib import setup_wizard
+
+        with self._nt(), \
+             mock.patch.dict(os.environ, {"LOCALAPPDATA": str(tmp_path)}):
+            shared = health.installer_bin_dirs()
+            candidates = setup_wizard._digg_bin_candidate_paths()
+        pp_dir = tmp_path / "Programs" / "PrintingPress" / "bin"
+        assert pp_dir in shared
+        assert [c.parent for c in candidates] == shared
+        assert pp_dir / "digg-pp-cli.exe" in candidates
+        for candidate in candidates:
+            if candidate.parent != pp_dir:
+                assert candidate.name == "digg-pp-cli"

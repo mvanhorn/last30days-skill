@@ -260,19 +260,50 @@ def _prescription(name: str, kind: str) -> Tuple[str, str]:
     return f"{verb} {name} and ensure it is on PATH", ""
 
 
-def _off_path_candidate_dirs() -> List[Path]:
-    """Directories where installers drop binaries that PATH may not cover.
+def windows_printing_press_bin_dir() -> Optional[Path]:
+    """Windows managed install dir for Printing Press CLIs, when applicable.
 
-    Mirrors setup_wizard's Digg candidates but is dependency-agnostic: the
-    Printing Press library default (~/.local/bin), Go bins, and the Homebrew
-    prefixes (an agent subprocess PATH sometimes omits even those).
+    Returns ``%LOCALAPPDATA%/Programs/PrintingPress/bin`` on Windows when
+    LOCALAPPDATA is set; ``None`` otherwise.
+    """
+    if os.name != "nt":
+        return None
+    local_app = os.environ.get("LOCALAPPDATA") or os.environ.get("LocalAppData")
+    if not local_app:
+        return None
+    return Path(local_app) / "Programs" / "PrintingPress" / "bin"
+
+
+def installer_bin_dirs() -> List[Path]:
+    """Installer-managed bin dirs shared with setup_wizard's Digg candidates.
+
+    Single source of truth for where installers drop binaries: the Printing
+    Press library default (~/.local/bin), Go bins, and — on Windows — the
+    managed %LOCALAPPDATA%/Programs/PrintingPress/bin dir.
+    ``setup_wizard._digg_bin_candidate_paths`` derives its Digg-specific
+    paths from this list; keep the two in lockstep by editing only here.
     """
     home = Path.home()
     dirs = [home / ".local" / "bin"]
     gopath = os.environ.get("GOPATH")
     if gopath:
         dirs.append(Path(gopath) / "bin")
-    dirs.extend([home / "go" / "bin", Path("/opt/homebrew/bin"), Path("/usr/local/bin")])
+    dirs.append(home / "go" / "bin")
+    win_dir = windows_printing_press_bin_dir()
+    if win_dir is not None:
+        dirs.append(win_dir)
+    return dirs
+
+
+def _off_path_candidate_dirs() -> List[Path]:
+    """Directories where installers drop binaries that PATH may not cover.
+
+    The shared installer dirs (``installer_bin_dirs``, which also backs
+    setup_wizard's Digg candidates) plus the Homebrew prefixes (an agent
+    subprocess PATH sometimes omits even those).
+    """
+    dirs = installer_bin_dirs()
+    dirs.extend([Path("/opt/homebrew/bin"), Path("/usr/local/bin")])
     return dirs
 
 

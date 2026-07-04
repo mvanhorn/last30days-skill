@@ -357,7 +357,7 @@ def _truthsocial_record(config):
 def _perplexity_record(config):
     requires = "PERPLEXITY_API_KEY or OPENROUTER_API_KEY + INCLUDE_SOURCES=perplexity"
     has_key = bool(config.get("PERPLEXITY_API_KEY") or config.get("OPENROUTER_API_KEY"))
-    include = env._parse_include_sources(config)
+    include = env.include_sources(config)
     if not has_key:
         return _record(
             status="unconfigured", requires=requires,
@@ -379,7 +379,7 @@ def _linkedin_record(config):
     requires = "SCRAPECREATORS_API_KEY + INCLUDE_SOURCES=linkedin"
     if not config.get("SCRAPECREATORS_API_KEY"):
         return _record(status="unconfigured", requires=requires, fix=_sc_fix())
-    if "linkedin" in env._parse_include_sources(config):
+    if "linkedin" in env.include_sources(config):
         return _record(status=health.OK, requires=requires)
     return _record(
         status="opt-in", requires=requires,
@@ -469,7 +469,7 @@ def _setup_block(config: Dict[str, Any]) -> Dict[str, Any]:
         config.get("BSKY_HANDLE") and config.get("BSKY_APP_PASSWORD")
     )
     return {
-        "setup_complete": env._truthy(config.get("SETUP_COMPLETE")),
+        "setup_complete": env.is_setup_complete(config),
         "keys_present": keys_present,
     }
 

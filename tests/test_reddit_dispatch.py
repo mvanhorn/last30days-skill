@@ -3,7 +3,9 @@ that the keyless path never calls search.json (U2)."""
 
 from unittest import mock
 
-from lib import pipeline, reddit_keyless, schema
+from pathlib import Path
+
+from lib import env, pipeline, reddit_keyless, schema
 
 
 def _subquery():
@@ -107,3 +109,44 @@ class TestNoSearchJson:
              mock.patch("lib.reddit_keyless.reddit_listing.fetch_listings", return_value=[]):
             reddit_keyless._discover("topic", "default", ["test"])
         json_search.assert_not_called()
+
+
+class TestEnvConstantParity:
+    """F2 regression (restate-as-mirror drift): pipeline's Reddit gating must
+    key off env's declared constants (env.REDDIT_BACKEND_PIN_VAR /
+    env.REDDIT_SC_MIN_ITEMS_VAR) — never restated raw strings that can drift
+    from the single source of truth in lib/env.py."""
+
+    def _run(self, config, public, sc_parsed):
+        with mock.patch("lib.reddit_public.search_reddit_public",
+                        return_value=public) as pub, \
+             mock.patch("lib.reddit.search_and_enrich", return_value={"raw": 1}) as sc, \
+             mock.patch("lib.reddit.parse_reddit_response", return_value=sc_parsed):
+            items, _ = pipeline._retrieve_stream(
+                topic="kanye", subquery=_subquery(), source="reddit", config=config,
+                depth="quick", date_range=("2026-05-26", "2026-06-25"),
+                runtime=_runtime(), mock=False,
+            )
+        return items, pub, sc
+
+    def test_pipeline_source_has_no_raw_reddit_env_literals(self):
+        # The declared constants live in env.py; pipeline.py must not restate
+        # the raw LAST30DAYS_REDDIT_* strings (comments included — they drift too).
+        source = Path(pipeline.__file__).read_text()
+        assert "LAST30DAYS_REDDIT_" not in source
+
+    def test_backend_pin_constant_flips_gating_to_sc_primary(self):
+        # Keyed via the env constant, not a raw string: pin=scrapecreators
+        # makes SC primary and skips the free path entirely.
+        cfg = {"SCRAPECREATORS_API_KEY": "k", env.REDDIT_BACKEND_PIN_VAR: "scrapecreators"}
+        items, pub, sc = self._run(cfg, [_item("a")], [_item("z")])
+        sc.assert_called_once()
+        pub.assert_not_called()
+        assert _ids(items) == ["z"]
+
+    def test_min_items_constant_drives_thinness_backfill(self):
+        # Keyed via the env constant: floor of 5 vs 1 free item -> SC backfill.
+        cfg = {"SCRAPECREATORS_API_KEY": "k", env.REDDIT_SC_MIN_ITEMS_VAR: "5"}
+        items, pub, sc = self._run(cfg, [_item("a")], [_item("z")])
+        sc.assert_called_once()
+        assert _ids(items) == ["a", "z"]

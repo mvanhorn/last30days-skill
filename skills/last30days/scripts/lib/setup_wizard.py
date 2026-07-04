@@ -178,22 +178,22 @@ def _digg_bin_candidate_paths() -> list[Path]:
     """Known install locations for digg-pp-cli (Printing Press library defaults).
 
     Order: current installer default (~/.local/bin), legacy Go bins, Windows
-    managed dir. ``pipeline.available_sources()`` only activates Digg when
+    managed dir. The directory list is ``health.installer_bin_dirs()`` — the
+    shared single source — with the Digg filename variants appended (plain
+    name for Unix-style dirs, ``.exe`` in the Windows managed dir).
+    ``pipeline.available_sources()`` only activates Digg when
     ``shutil.which`` resolves on PATH — probing these dirs is for setup
     verification and honest off-PATH messaging, not engine activation.
     """
-    home = Path.home()
-    candidates: list[Path] = [home / ".local" / "bin" / DIGG_CLI_BIN]
-    gopath = os.environ.get("GOPATH")
-    if gopath:
-        candidates.append(Path(gopath) / "bin" / DIGG_CLI_BIN)
-    candidates.append(home / "go" / "bin" / DIGG_CLI_BIN)
-    if os.name == "nt":
-        local_app = os.environ.get("LOCALAPPDATA") or os.environ.get("LocalAppData")
-        if local_app:
-            candidates.append(
-                Path(local_app) / "Programs" / "PrintingPress" / "bin" / f"{DIGG_CLI_BIN}.exe"
-            )
+    from . import health
+
+    win_dir = health.windows_printing_press_bin_dir()
+    candidates: list[Path] = []
+    for directory in health.installer_bin_dirs():
+        if win_dir is not None and directory == win_dir:
+            candidates.append(directory / f"{DIGG_CLI_BIN}.exe")
+        else:
+            candidates.append(directory / DIGG_CLI_BIN)
     return candidates
 
 
