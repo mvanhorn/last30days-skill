@@ -131,6 +131,48 @@ class TestAlreadyRegistered:
         assert result["status"] == "error"
         assert "github-start" in result["message"]
 
+    @patch("lib.setup_wizard._device_handle_path")
+    @patch("lib.setup_wizard.fetch_api_key")
+    @patch("lib.setup_wizard.poll_device_auth")
+    def test_poll_passes_real_clipboard_state(self, mock_poll, mock_fetch, mock_handle, tmp_path):
+        """clipboard_ok is read from the handle, not hardcoded True, so the poll
+        reminder never falsely claims the code is on the clipboard."""
+        import json as _json
+        handle = tmp_path / "h.json"
+        handle.write_text(
+            _json.dumps({"device_code": "dc", "interval": 1, "user_code": "819B-F71B", "clipboard_ok": False})
+        )
+        mock_handle.return_value = handle
+        mock_poll.return_value = "tok"
+        mock_fetch.return_value = "sc_k"
+
+        setup_wizard.run_github_poll(timeout=1)
+
+        assert mock_poll.call_args.kwargs["clipboard_ok"] is False
+
+    @patch("lib.setup_wizard._device_handle_path")
+    @patch("lib.setup_wizard.fetch_api_key")
+    @patch("lib.setup_wizard.poll_device_auth")
+    @patch("lib.setup_wizard._start_device_flow")
+    def test_oneshot_uses_in_memory_handle_when_file_write_fails(
+        self, mock_start, mock_poll, mock_fetch, mock_handle, tmp_path
+    ):
+        """run_full_device_auth hands the handle to poll in-memory, so a broken
+        handle-file path can't strand the one-shot."""
+        mock_handle.return_value = tmp_path / "does-not-exist" / "h.json"  # unwritable/unreadable
+        mock_start.return_value = (
+            {"status": "awaiting_authorization", "user_code": "819B-F71B"},
+            {"device_code": "dc", "interval": 1, "user_code": "819B-F71B", "clipboard_ok": True},
+        )
+        mock_poll.return_value = "tok"
+        mock_fetch.return_value = "sc_oneshot_key"
+
+        result = setup_wizard.run_full_device_auth(timeout=1)
+
+        assert result["status"] == "success"
+        assert result["api_key"] == "sc_oneshot_key"
+        mock_poll.assert_called_once()  # reached poll without a readable handle file
+
     def test_already_registered_key_is_masked_before_output(self):
         # Defense-in-depth: the mask helper must not echo the raw key.
         masked = setup_wizard.mask_api_key("sc_live_realkey1234567890")

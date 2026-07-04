@@ -875,17 +875,16 @@ def _device_handle_path() -> Path:
     return Path(tempfile.gettempdir()) / "last30days-github-device-handle.json"
 
 
-def run_github_start() -> Dict[str, Any]:
-    """Submit the GitHub device flow, surface the code, and return immediately.
+def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
+    """Submit the GitHub device flow and surface the code, without polling.
 
-    Does NOT poll. Copies the code to the clipboard, prints it to stdout (so a
-    foreground caller sees it without any background/poll orchestration), opens
-    the browser, and persists the poll handle for ``run_github_poll``.
-
-    Returns one of:
-      - {"status": "already_registered", "api_key": <raw>, ...}  (key already saved)
-      - {"status": "awaiting_authorization", "user_code": ..., "verification_uri": ...}
-      - {"status": "error", "message": ...}
+    Returns ``(public_result, handle)``. ``handle`` is None for the
+    already-registered and error cases (nothing to poll); otherwise it carries
+    the private poll state (``device_code``/``interval``/``user_code``/
+    ``clipboard_ok``) that never belongs in the public, stdout-printed result.
+    Callers either persist the handle to a file (``run_github_start``, for a
+    separate poll process) or hand it straight to ``run_github_poll`` in-memory
+    (``run_full_device_auth``, so a failed file write can't strand the one-shot).
     """
     import sys
     import webbrowser
@@ -894,16 +893,19 @@ def run_github_start() -> Dict[str, Any]:
     # key is returned raw here and masked at the CLI boundary before print.
     existing = _existing_scrapecreators_key()
     if existing:
-        return {
-            "status": "already_registered",
-            "method": "existing",
-            "api_key": existing,
-            "persisted": True,
-        }
+        return (
+            {
+                "status": "already_registered",
+                "method": "existing",
+                "api_key": existing,
+                "persisted": True,
+            },
+            None,
+        )
 
     result = run_device_auth()
     if result is None:
-        return {"status": "error", "message": "Failed to start device auth flow"}
+        return ({"status": "error", "message": "Failed to start device auth flow"}, None)
 
     device_code, user_code, verification_uri, interval = result
 
@@ -912,10 +914,13 @@ def run_github_start() -> Dict[str, Any]:
     # GitHub device code; we stop rather than instruct the user to paste garbage.
     if not _DEVICE_CODE_RE.match(user_code):
         logger.warning("Device auth returned a non-device-shaped user_code; aborting.")
-        return {
-            "status": "error",
-            "message": "ScrapeCreators returned an unexpected device-code format.",
-        }
+        return (
+            {
+                "status": "error",
+                "message": "ScrapeCreators returned an unexpected device-code format.",
+            },
+            None,
+        )
 
     # Structured stdout line for machine consumers.
     print(
@@ -960,59 +965,78 @@ def run_github_start() -> Dict[str, Any]:
     print(f"|{action_line.ljust(width)}|", file=sys.stderr)
     print(f"+{border}+", file=sys.stderr)
 
-    # Persist the poll handle (0o600) for run_github_poll.
-    handle = _device_handle_path()
-    try:
-        handle.parent.mkdir(parents=True, exist_ok=True)
-        handle.write_text(
-            json.dumps({"device_code": device_code, "interval": interval, "user_code": user_code}),
-            encoding="utf-8",
-        )
-        os.chmod(handle, 0o600)
-    except Exception as exc:
-        logger.warning("Could not persist device handle: %s", exc)
-
     if verification_uri:
         try:
             webbrowser.open(verification_uri)
         except Exception:
             print(f"Open: {verification_uri}", file=sys.stderr)
 
-    return {
+    public = {
         "status": "awaiting_authorization",
         "user_code": user_code,
         "verification_uri": verification_uri,
         "clipboard_ok": clipboard_ok,
     }
+    handle = {
+        "device_code": device_code,
+        "interval": interval,
+        "user_code": user_code,
+        "clipboard_ok": clipboard_ok,
+    }
+    return (public, handle)
 
 
-def run_github_poll(timeout: int = 300, *, _handle: Optional[Tuple[str, int, str]] = None) -> Dict[str, Any]:
-    """Poll for authorization using the handle run_github_start persisted.
+def run_github_start() -> Dict[str, Any]:
+    """Start the device flow and persist the poll handle for a later
+    ``run_github_poll`` process. Returns the public result (never the private
+    device_code). See ``_start_device_flow`` for the returned statuses."""
+    public, handle = _start_device_flow()
+    if handle is not None:
+        # Persist the poll handle (0o600) so a separate --github-poll process can
+        # resume it. Best-effort: the in-memory one-shot path does not depend on
+        # this write succeeding.
+        path = _device_handle_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(handle), encoding="utf-8")
+            os.chmod(path, 0o600)
+        except Exception as exc:
+            logger.warning("Could not persist device handle: %s", exc)
+    return public
 
-    Returns success (with the fetched key), timeout, or the honest
-    "Authorized but failed to fetch API key" branch. Deletes the handle when
-    the flow terminates.
+
+def run_github_poll(timeout: int = 300, *, _handle: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Poll for authorization using the handle from start.
+
+    ``_handle`` (in-memory, from the one-shot) takes precedence over the
+    persisted handle file. Returns success (with the fetched key), timeout, or
+    the honest "Authorized but failed to fetch API key" branch. Deletes the
+    persisted handle when the flow terminates.
     """
     import sys
 
     if _handle is not None:
-        device_code, interval, user_code = _handle
+        data = _handle
     else:
-        handle = _device_handle_path()
         try:
-            data = json.loads(handle.read_text(encoding="utf-8"))
-            device_code = data["device_code"]
-            interval = int(data.get("interval", 5))
-            user_code = data.get("user_code", "")
+            data = json.loads(_device_handle_path().read_text(encoding="utf-8"))
         except Exception:
             return {
                 "status": "error",
                 "message": "No pending GitHub device flow; run setup --github-start first.",
             }
 
+    device_code = data["device_code"]
+    interval = int(data.get("interval", 5))
+    user_code = data.get("user_code", "")
+    # Read the real clipboard state so the polling reminder never falsely claims
+    # the code is on the clipboard (non-macOS, or a failed pbcopy). Missing key
+    # (older handle) defaults to False -- don't overstate.
+    clipboard_ok = bool(data.get("clipboard_ok", False))
+
     print("Waiting for authorization...", file=sys.stderr, flush=True)
     access_token = poll_device_auth(
-        device_code, interval, timeout=timeout, user_code=user_code, clipboard_ok=True
+        device_code, interval, timeout=timeout, user_code=user_code, clipboard_ok=clipboard_ok
     )
 
     def _cleanup() -> None:
@@ -1039,14 +1063,15 @@ def run_github_poll(timeout: int = 300, *, _handle: Optional[Tuple[str, int, str
 def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
     """Back-compat one-shot: start the device flow, then poll to completion.
 
-    Equivalent to run_github_start() followed by run_github_poll(). Kept so
-    callers of ``setup --github`` / ``--device-auth`` still work; the model-driven
-    wizard uses the two-command split (start then poll) instead.
+    Passes the poll handle to ``run_github_poll`` IN MEMORY, so a failed handle-
+    file write can't strand the one-shot. Kept so callers of ``setup --github`` /
+    ``--device-auth`` still work; the model-driven wizard uses the two-command
+    split (start then poll) instead.
     """
-    started = run_github_start()
-    if started.get("status") != "awaiting_authorization":
-        return started  # already_registered or error
-    return run_github_poll(timeout=timeout)
+    public, handle = _start_device_flow()
+    if handle is None:
+        return public  # already_registered or error
+    return run_github_poll(timeout=timeout, _handle=handle)
 
 
 # ---------------------------------------------------------------------------
