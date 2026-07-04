@@ -1391,5 +1391,50 @@ class TestInnerMaxWorkers(unittest.TestCase):
         )
 
 
+class TestScrapeCreatorsTierGating(unittest.TestCase):
+    """The onboarding Recommended vs Everything tiers must be real.
+
+    Recommended (key, no INCLUDE_SOURCES) = TikTok + Instagram only.
+    Everything (INCLUDE_SOURCES lists them) = also Threads, Pinterest, ...
+    """
+
+    KEY = {"SCRAPECREATORS_API_KEY": "k"}
+
+    def test_recommended_tier_runs_tiktok_instagram(self):
+        avail = pipeline.available_sources(dict(self.KEY))
+        self.assertIn("tiktok", avail)
+        self.assertIn("instagram", avail)
+
+    def test_threads_off_without_include_sources(self):
+        self.assertNotIn("threads", pipeline.available_sources(dict(self.KEY)))
+
+    def test_threads_on_with_include_sources(self):
+        cfg = {**self.KEY, "INCLUDE_SOURCES": "threads"}
+        self.assertIn("threads", pipeline.available_sources(cfg))
+
+    def test_pinterest_off_without_include_sources(self):
+        self.assertNotIn("pinterest", pipeline.available_sources(dict(self.KEY)))
+
+    def test_pinterest_on_with_persisted_include_sources(self):
+        # Regression: this failed before U6 because the pinterest gate read
+        # requested_sources only and ignored a persisted INCLUDE_SOURCES.
+        cfg = {**self.KEY, "INCLUDE_SOURCES": "pinterest"}
+        self.assertIn("pinterest", pipeline.available_sources(cfg))
+
+    def test_pinterest_on_via_requested_sources(self):
+        # The per-run --sources path must still work.
+        avail = pipeline.available_sources(dict(self.KEY), requested_sources=["pinterest"])
+        self.assertIn("pinterest", avail)
+
+    def test_everything_tier_enables_all(self):
+        cfg = {
+            **self.KEY,
+            "INCLUDE_SOURCES": "tiktok,instagram,threads,pinterest,youtube_comments,tiktok_comments",
+        }
+        avail = pipeline.available_sources(cfg)
+        self.assertIn("threads", avail)
+        self.assertIn("pinterest", avail)
+
+
 if __name__ == "__main__":
     unittest.main()

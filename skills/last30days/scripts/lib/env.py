@@ -764,17 +764,16 @@ def is_ytdlp_available() -> bool:
 def is_youtube_comments_available(config: dict[str, Any]) -> bool:
     """Check if YouTube comment enrichment is available.
 
-    Default-on when SCRAPECREATORS_API_KEY is set — the same key-only backup
-    tier as the YouTube transcript fallback (``is_youtube_sc_available``). Cost
-    is bounded by ``enrich_with_comments(max_videos=3)`` (~3 credits per run).
-    Suppress via ``EXCLUDE_SOURCES=youtube_comments``.
+    Opt-in: requires SCRAPECREATORS_API_KEY AND ``youtube_comments`` in
+    ``INCLUDE_SOURCES`` (mirrors ``is_tiktok_comments_available``). Cost is
+    bounded by ``enrich_with_comments(max_videos=3)`` (~3 credits per run).
 
-    Note: TikTok/Instagram comments remain explicit ``INCLUDE_SOURCES`` opt-ins
-    (see ``is_tiktok_comments_available``); only YouTube comments are default-on.
+    Part of the onboarding "Everything" tier — the "Recommended" tier
+    (TikTok/Instagram, no INCLUDE_SOURCES) does not fetch comments.
     """
     if not config.get('SCRAPECREATORS_API_KEY'):
         return False
-    return 'youtube_comments' not in _parse_exclude_sources(config)
+    return 'youtube_comments' in _parse_include_sources(config)
 
 
 def is_tiktok_comments_available(config: dict[str, Any]) -> bool:
@@ -895,12 +894,12 @@ def _parse_exclude_sources(config: dict[str, Any]) -> set[str]:
 
 
 def is_threads_available(config: dict[str, Any]) -> bool:
-    """Check if Threads source is available.
+    """Check if the Threads credential is available.
 
-    Returns True when SCRAPECREATORS_API_KEY is set. Threads runs alongside
-    TikTok and Instagram as part of the SC family — same key, same per-call
-    cost shape, so the same default-on rule applies. Suppress via
-    EXCLUDE_SOURCES=threads.
+    Returns True when SCRAPECREATORS_API_KEY is set. This is an availability
+    predicate only: whether Threads is actually *scheduled* is gated in the
+    pipeline's ``available_sources`` by an ``INCLUDE_SOURCES=threads`` opt-in
+    (the onboarding "Everything" tier), so a key alone no longer runs Threads.
     """
     return bool(config.get('SCRAPECREATORS_API_KEY'))
 

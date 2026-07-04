@@ -204,9 +204,19 @@ def available_sources(
         available.append("trustpilot")
     if requested_sources and "xiaohongshu" in requested_sources and env.is_xiaohongshu_available(config):
         available.append("xiaohongshu")
-    if env.is_threads_available(config):
+    # Threads: opt-in via INCLUDE_SOURCES (same pattern as perplexity/linkedin).
+    # Was auto-on with the key; gated so the onboarding "Everything" tier is a
+    # real choice vs the "Recommended" (TikTok/Instagram) tier.
+    if env.is_threads_available(config) and (
+        "threads" in include_sources or (requested_sources and "threads" in requested_sources)
+    ):
         available.append("threads")
-    if requested_sources and "pinterest" in requested_sources and env.is_pinterest_available(config):
+    # Pinterest: opt-in via INCLUDE_SOURCES. Previously read requested_sources
+    # only, so a persisted INCLUDE_SOURCES=pinterest never activated it; now it
+    # honors both the per-run --sources list and the saved config.
+    if env.is_pinterest_available(config) and (
+        "pinterest" in include_sources or (requested_sources and "pinterest" in requested_sources)
+    ):
         available.append("pinterest")
     # xquik is a backend of the single "x" source (see env.x_backend_chain),
     # not a separate parallel source — registered via the "x" entry above.

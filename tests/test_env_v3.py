@@ -83,8 +83,13 @@ class ThreadsAvailabilityTests(unittest.TestCase):
         self.assertFalse(env.is_threads_available({}))
         self.assertFalse(env.is_threads_available({"INCLUDE_SOURCES": "threads"}))
 
-    def test_threads_does_not_require_include_sources(self):
-        """Regression guard: INCLUDE_SOURCES should not be needed."""
+    def test_threads_availability_predicate_is_key_only(self):
+        """is_threads_available is availability-only (key present).
+
+        Scheduling is gated separately by INCLUDE_SOURCES in the pipeline's
+        available_sources (see TestScrapeCreatorsTierGating) — the predicate
+        itself only reports whether the credential exists.
+        """
         self.assertTrue(env.is_threads_available({
             "SCRAPECREATORS_API_KEY": "k",
             "INCLUDE_SOURCES": "",
