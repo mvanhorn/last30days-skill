@@ -46,7 +46,7 @@ from dataclasses import dataclass
 from shutil import which
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from . import env, health
+from . import env, health, prescriptions
 
 # Resolution modes.
 MODE_ALTERNATIVE = "alternative"  # probe-ordered chain, first-usable wins
@@ -67,9 +67,16 @@ WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "key
 # fallback when yt-dlp is absent or fails — see lib/pipeline.py).
 YOUTUBE_BACKEND_ORDER: Tuple[str, ...] = ("yt-dlp", "scrapecreators")
 
+# Chain-failure fixes embed the registry's CLI forms (KTD 7): the command a
+# backend finding prescribes and the one doctor/quality-nudge render for the
+# same failure mode come from one entry and cannot drift.
 _SC_PRESCRIPTION = (
     "set SCRAPECREATORS_API_KEY (free 10,000-call signup: "
-    "python3 skills/last30days/scripts/last30days.py setup --github)"
+    f"{prescriptions.get('scrapecreators', 'key_missing').fix_cli})"
+)
+_X_COOKIES_PRESCRIPTION = (
+    "run setup with browser-cookie consent: "
+    f"{prescriptions.get('x', 'cookies_missing').fix_cli}"
 )
 
 
@@ -226,10 +233,7 @@ def _probe_bird(config: Dict[str, Any]) -> BackendFinding:
             name="bird",
             status=health.MISSING,
             detail="X browser cookies (AUTH_TOKEN/CT0) not configured",
-            prescription=(
-                "run setup with browser-cookie consent: "
-                "python3 skills/last30days/scripts/last30days.py setup --allow-browser-cookies"
-            ),
+            prescription=_X_COOKIES_PRESCRIPTION,
             requires=requires,
         )
     return BackendFinding(
