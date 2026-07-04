@@ -720,8 +720,8 @@ def _write_last_run(
             ],
         }
         (target / "last-report.json").write_text(json.dumps(cache_payload, indent=2))
-    except Exception:
-        pass
+    except Exception as exc:
+        sys.stderr.write(f"[last30days] Failed to write run cache: {exc}\n")
 
 
 def _load_last_report_cache(
