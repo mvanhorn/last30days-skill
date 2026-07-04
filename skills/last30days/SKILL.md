@@ -452,7 +452,7 @@ The consented `setup --allow-browser-cookies` run extracts cookies (Chrome/Chrom
 
 **Step 4: ScrapeCreators offer (every first run).** Show this as plain text, then a modal:
 
-ScrapeCreators adds TikTok and Instagram - 10,000 free calls, no credit card. Your key also acts as a backup that keeps your free sources working when they hit rate limits: it fetches Reddit if public Reddit gets blocked, and YouTube search/transcripts if yt-dlp gets throttled. (We don't get a cut.) You can add even more sources in the next step.
+ScrapeCreators adds TikTok and Instagram - posts AND top comments - plus YouTube comments, all on by default. 10,000 free calls, no credit card. Your key also auto-enriches Reddit (runs public + ScrapeCreators merged for wider coverage) and backstops YouTube search if yt-dlp gets throttled. (We don't get a cut.) You can widen coverage even further in the next step.
 
 Before the modal, run `which gh` via Bash silently; store as gh_available.
 

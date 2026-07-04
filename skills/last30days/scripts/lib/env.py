@@ -764,12 +764,13 @@ def is_ytdlp_available() -> bool:
 def is_youtube_comments_available(config: dict[str, Any]) -> bool:
     """Check if YouTube comment enrichment is available.
 
-    Opt-in: requires SCRAPECREATORS_API_KEY AND ``youtube_comments`` in
+    Requires SCRAPECREATORS_API_KEY AND ``youtube_comments`` in
     ``INCLUDE_SOURCES`` (mirrors ``is_tiktok_comments_available``). Cost is
     bounded by ``enrich_with_comments(max_videos=3)`` (~3 credits per run).
 
-    Part of the onboarding "Everything" tier — the "Recommended" tier
-    (TikTok/Instagram, no INCLUDE_SOURCES) does not fetch comments.
+    In the default onboarding tier: the Recommended tier now enables comments
+    (posts on -> comments on for TikTok/Instagram/YouTube), writing
+    ``youtube_comments`` into INCLUDE_SOURCES.
     """
     if not config.get('SCRAPECREATORS_API_KEY'):
         return False
