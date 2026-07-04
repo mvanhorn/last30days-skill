@@ -21,7 +21,11 @@ unparseable). The adapter windows records to the research range
 masquerade as current news. Records with no usable date -- old binaries emit
 no ``date`` key at all -- are kept but flow downstream with no date, so
 ``normalize._normalize_techmeme`` assigns ``date_confidence: low``. Headlines
-are never stamped with today's date. Old binaries also print prose
+are never stamped with today's date. (This deliberately diverges from
+``lib/arxiv.py``, which drops entries with unparseable dates -- arXiv's feed
+reliably carries dates, so an unparseable one is anomalous; Techmeme's old
+binaries emit no ``date`` key at all, so dropping would zero out the source
+for every user on an old binary.) Old binaries also print prose
 (``No results for "q"``) to stdout on zero hits; that parses as an empty
 result set, not a decode failure. Publication-name header rows (very short
 ``headline`` values) are dropped; ranking is topic relevance plus rank decay.
@@ -167,17 +171,32 @@ def search_techmeme(
     if isinstance(records, list):
         # Hard date window: drop records whose date falls outside the research
         # range; keep undated records (old binaries / unparseable markup).
-        in_window = []
+        dated_in_window = []
+        undated = []
+        dropped = 0
         for rec in records:
             iso = _record_iso_date(rec)
-            if iso is None or from_date <= iso <= to_date:
-                in_window.append(rec)
-        dropped = len(records) - len(in_window)
+            if iso is None:
+                undated.append(rec)
+            elif from_date <= iso <= to_date:
+                dated_in_window.append(rec)
+            else:
+                dropped += 1
         if dropped:
             _log(f"dropped {dropped} records outside {from_date}..{to_date}")
-        # Techmeme returns all matches; apply the depth cap after windowing so
-        # stale records never consume cap slots.
-        response["results"] = in_window[:limit]
+        if records and not dated_in_window and not dropped:
+            # Every record lacks a usable date: old techmeme-pp-cli (no date
+            # key) or a Techmeme markup change upstream. Windowing is inactive.
+            _log(
+                "no records carry usable dates; date windowing inactive "
+                "(old techmeme-pp-cli binary or upstream markup change; "
+                "upgrade via `npx -y @mvanhorn/printing-press install techmeme`)"
+            )
+        # Techmeme returns all matches; apply the depth cap after windowing.
+        # Dated in-window records take cap slots first so undated archive
+        # hits can never evict confirmed-fresh stories; undated records fill
+        # whatever slots remain.
+        response["results"] = (dated_in_window + undated)[:limit]
     _log(f"found {len(response.get('results') or [])} records")
     return response
 
