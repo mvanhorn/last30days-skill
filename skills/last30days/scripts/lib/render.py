@@ -2097,9 +2097,12 @@ def _render_top_comments(report, limit: int = 8) -> list[str]:
     scored: list[tuple[float, schema.Candidate, schema.SourceItem, dict, str]] = []
     for cand in report.ranked_candidates:
         for item in cand.source_items:
-            # _top_comments_list applies the per-source min-score threshold and
-            # the 3-per-item cap, so trivial comments don't surface here either.
-            for tc in _top_comments_list(item):
+            # Pass min_score=0 here: the cross-platform list deliberately does
+            # NOT gate on the per-platform absolute floor, because a less-watched
+            # video's killer low-vote top comment is gold too. The 3-per-item cap
+            # still applies; cross-platform fairness is handled by the rank-based
+            # round-robin below, and the model makes the final quotable pick.
+            for tc in _top_comments_list(item, min_score=0):
                 if not isinstance(tc, dict):
                     continue
                 body = (tc.get("excerpt") or tc.get("text") or tc.get("body") or "").strip()
@@ -2113,9 +2116,28 @@ def _render_top_comments(report, limit: int = 8) -> list[str]:
                 scored.append((strength, cand, item, tc, body))
     if len(scored) < 2:
         return []
-    scored.sort(key=lambda row: -row[0])
+    # Rank-based cross-platform diversity: group by platform, rank each
+    # platform's comments by within-platform vote strength, then interleave by
+    # rank -- every platform's #1, then every #2, then every #3, and so on. This
+    # makes the top-3-of-each-platform outrank the 4th-of-any and guarantees each
+    # platform's #1 a slot, instead of a global vote sort where one viral
+    # platform sweeps the list. Absolute vote counts are NOT compared across
+    # platforms (a less-watched video's killer 50-like comment is gold too);
+    # vote strength only orders comments *within* a platform and breaks ties
+    # among same-rank picks. The model still makes the final quotable pick.
+    by_source: dict[str, list] = {}
+    for row in scored:
+        by_source.setdefault(row[1].source, []).append(row)
+    for src_rows in by_source.values():
+        src_rows.sort(key=lambda row: -row[0])
+    ordered: list = []
+    deepest = max(len(rows) for rows in by_source.values())
+    for rank in range(deepest):
+        tier = [rows[rank] for rows in by_source.values() if len(rows) > rank]
+        tier.sort(key=lambda row: -row[0])  # among same-rank picks, strongest first
+        ordered.extend(tier)
     lines = ["## Top Community Comments", ""]
-    for _strength, cand, _item, tc, body in scored[:limit]:
+    for _strength, cand, _item, tc, body in ordered[:limit]:
         score = tc.get("score", "")
         vote_label = _vote_label_for(cand.source)
         attribution = _comment_attribution(cand.source, tc.get("author"))

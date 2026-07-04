@@ -297,6 +297,59 @@ class RenderTopCommentsTests(unittest.TestCase):
             errors_by_source={},
         )
 
+    def _diversity_candidate(self, source, item_id, comments):
+        item = schema.SourceItem(
+            item_id=item_id, source=source, title="t", body="b",
+            url=f"https://example.com/{item_id}", published_at="2026-03-15",
+            engagement={"views": 1000}, metadata={"top_comments": comments},
+        )
+        return schema.Candidate(
+            candidate_id=item_id, item_id=item_id, source=source, title="t",
+            url=f"https://example.com/{item_id}", snippet="s",
+            subquery_labels=["primary"], native_ranks={"primary:" + source: 1},
+            local_relevance=0.9, freshness=90, engagement=88, source_quality=1.0,
+            rrf_score=0.02, rerank_score=92, final_score=90, sources=[source],
+            source_items=[item],
+        )
+
+    def _diversity_report(self, candidates):
+        return schema.Report(
+            topic="t", range_from="2026-02-14", range_to="2026-03-16",
+            generated_at="2026-03-16T00:00:00+00:00",
+            provider_runtime=schema.ProviderRuntime(
+                reasoning_provider="gemini", planner_model="m", rerank_model="m"),
+            query_plan=schema.QueryPlan(
+                intent="breaking_news", freshness_mode="strict_recent",
+                cluster_mode="story", raw_topic="t",
+                subqueries=[schema.SubQuery(label="primary", search_query="t", ranking_query="t?", sources=["youtube"])],
+                source_weights={"youtube": 1.0}),
+            clusters=[], ranked_candidates=candidates,
+            items_by_source={}, errors_by_source={})
+
+    def test_top_comments_rank_based_diversity(self):
+        """U3: a viral platform can't sweep the list -- top-3-of-each beats
+        4th-of-any. 4 YouTube videos (3 high-vote comments each) + 1 TikTok video
+        (2 low-vote comments) must still surface BOTH TikTok comments."""
+        yt_cands = []
+        for v in range(4):
+            comments = [
+                {"score": 3000 - v * 100 - i, "excerpt": f"youtube video {v} comment {i} text", "author": f"yt{v}{i}"}
+                for i in range(3)
+            ]
+            yt_cands.append(self._diversity_candidate("youtube", f"yt{v}", comments))
+        tt_cand = self._diversity_candidate("tiktok", "tt0", [
+            {"score": 50, "excerpt": "tiktok killer comment one text", "author": "ttA"},
+            {"score": 40, "excerpt": "tiktok killer comment two text", "author": "ttB"},
+        ])
+        report = self._diversity_report(yt_cands + [tt_cand])
+        lines = render._render_top_comments(report, limit=8)
+        blob = "\n".join(lines)
+        # Both low-vote TikTok comments surface despite 12 higher-vote YouTube ones.
+        self.assertIn("tiktok killer comment one text", blob)
+        self.assertIn("tiktok killer comment two text", blob)
+        # TikTok's #1 appears before YouTube's 3rd-ranked comment (round-robin).
+        self.assertLess(blob.index("tiktok killer comment one"), blob.index("comment 2 text"))
+
     def test_reddit_5_comments_renders_top_3(self):
         """Reddit candidate with 5 comments (scores 500, 200, 50, 8, 3) renders 3."""
         comments = [
@@ -354,10 +407,15 @@ class RenderTopCommentsTests(unittest.TestCase):
         ]
         report = self._make_report_with_comments(source="youtube", top_comments=comments)
         text = render.render_compact(report)
-        # YouTube authors render with @ prefix now.
+        # YouTube authors render with @ prefix; "likes" label.
         self.assertIn("@alice (120 likes): legit fire tutorial", text)
         self.assertIn("@bob (60 likes): saved me hours", text)
-        self.assertNotIn("@carol (10 likes)", text)
+        # The per-candidate CARD still applies the 50-like threshold: carol (10)
+        # does not appear on the card (colon-format line).
+        self.assertNotIn("@carol (10 likes):", text)
+        # But the cross-platform Top Community Comments list surfaces her (U3:
+        # rank-based, no absolute floor -- a low-vote comment can be gold).
+        self.assertIn('"below threshold" — @carol (10 likes)', text)
 
     def test_reddit_comment_without_author_falls_back_to_legacy_label(self):
         """When author is missing or [deleted], render falls back to 'Comment (...)'."""
@@ -400,7 +458,13 @@ class RenderTopCommentsTests(unittest.TestCase):
         text = render.render_compact(report)
         self.assertIn("@a (2000 likes): this aged well", text)
         self.assertIn("@b (600 likes): so real", text)
-        self.assertNotIn("@c (400 likes)", text)
+        # Card still applies the 500 threshold: c (400) not on the card.
+        self.assertNotIn("@c (400 likes):", text)
+        # Community list surfaces c (it's the item's #3, within the 3-per-item cap;
+        # U3 drops the absolute floor there).
+        self.assertIn('"below tt threshold" — @c (400 likes)', text)
+        # d (50) is the item's 4th comment -> dropped by the 3-per-item cap, so it
+        # never appears anywhere.
         self.assertNotIn("@d (50 likes)", text)
 
 
