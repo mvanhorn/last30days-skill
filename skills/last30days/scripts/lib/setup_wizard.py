@@ -29,9 +29,9 @@ def is_first_run(config: Dict[str, Any]) -> bool:
     return not config.get("SETUP_COMPLETE")
 
 
-_WELCOME_TEXT = """Welcome to /last30days!
+_WELCOME_TEXT = """Welcome to /last30days! I research any topic across Reddit, X, YouTube, TikTok, Digg, arXiv, Techmeme & more - what people actually said in the last 30 days. Let's get you set up (~30s).
 
-I research any topic across Reddit, X, YouTube, and more - synthesizing what people are actually saying right now.
+I synthesize what people are actually saying right now across social, news, and market sources.
 
 Auto setup gives you the core sources free in about 30 seconds:
 - X/Twitter - reads your browser cookies to authenticate (read live each run, never saved to disk). I check Chrome first (fastest - a one-time macOS Keychain prompt may appear; click Always Allow), then Firefox and Safari.

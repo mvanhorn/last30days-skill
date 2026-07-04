@@ -417,19 +417,21 @@ When both `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` are set, the engine run
 
 ### Claude Code Modal Flow
 
-**Follow these steps IN ORDER. Do NOT skip ahead to research. The sequence is: (1) welcome text → (2) setup modal → (3) run setup if chosen → (4) ScrapeCreators offer modal → (5) source opt-in modal → (6) first-topic picker. Start at step 1.**
+**Follow these steps IN ORDER. Do NOT skip ahead to research. The sequence is: (1) welcome (built into the setup modal) → (2) setup modal → (3) run setup if chosen → (4) ScrapeCreators offer modal → (5) source opt-in modal → (6) first-topic picker. Start at step 1.**
 
-**Step 1 - Welcome (REQUIRED FIRST — do not skip).** Run the engine's welcome command and show its output to the user VERBATIM as a normal chat message (not blockquoted) BEFORE calling any AskUserQuestion modal. Do NOT summarize, reformat, shorten, or rewrite it - reproduce it exactly. Skipping the welcome and jumping straight to the setup modal is a bug. Show it ONCE.
+**Step 1 - Welcome.** The welcome pitch is delivered INSIDE the Step 2 setup modal, NOT as a separate message. Claude Code folds Bash/tool output behind "ctrl+o to expand", so a separate welcome message - or a `--welcome` command run - gets buried and the user never sees it. The AskUserQuestion modal is the only always-fully-visible surface, so the pitch lives in its question text. Do NOT run a separate `--welcome` command in this modal flow, and do NOT try to print the welcome as a chat message before the modal; go straight to Step 2. (The `--welcome` command still exists for the Non-Modal Prose Flow below, where there is no modal.)
 
-Run: `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py --welcome` (relative to the skill root) and print its stdout verbatim. The welcome text is engine-owned (single source of truth) so it cannot drift or be accidentally skipped; your job is only to relay it.
+**Step 2 - Welcome + setup choice (one modal).** Call AskUserQuestion with EXACTLY this question and these options. Reproduce the question verbatim, including the welcome pitch on the first lines:
 
-**Step 2 - Setup choice.** After the welcome message from Step 1 has been shown, call AskUserQuestion with ONLY this question and these options (do not repeat the welcome text inside the modal):
+Question:
+"Welcome to /last30days! I research any topic across Reddit, X, YouTube, TikTok, Digg, arXiv, Techmeme, HN, Polymarket & more - pulling what people actually said in the last 30 days.
 
-Question: "How would you like to set up?"
+How would you like to set up?"
+
 Options:
-- "Auto setup (~30 seconds) - scans browser cookies for X + installs yt-dlp (YouTube), Digg, arXiv, and Techmeme CLIs"
-- "Manual setup - show me what to configure"
-- "Skip for now - Reddit (with comments), HN, Polymarket, GitHub (if `gh` installed), Web"
+- "Auto setup (~30s)" - description: "Scan browser cookies for X + install yt-dlp (YouTube), Digg, arXiv, Techmeme. Reddit/HN/Polymarket/GitHub/Web work out of the box. Add TikTok + Instagram after via ScrapeCreators (10k free calls)."
+- "Manual setup" - description: "Show me each source and credential to configure by hand."
+- "Skip for now" - description: "Just the free no-setup sources: Reddit (with comments), HN, Polymarket, GitHub, Web."
 
 **Step 3 - Run setup based on the choice.**
 
