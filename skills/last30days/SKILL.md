@@ -474,15 +474,15 @@ Options:
 - "I have a key" - accept the key, write to `.env`.
 - "Skip for now" - proceed without ScrapeCreators. No TikTok/Instagram, and no ScrapeCreators backup if Reddit or YouTube get rate-limited (your free sources still work).
 
-**Step 5: Source opt-in (only if a ScrapeCreators key was saved, not if skipped).** Plain text then modal:
+**Step 5: Source opt-in (only if a ScrapeCreators key was saved, not if skipped).** Comments are the DEFAULT, never an opt-in - there is no posts-only tier. Plain text then modal:
 
-Your key is set - TikTok and Instagram are on for every run, plus the Reddit/YouTube backups. Want to add even more?
+Your key is set. On by default: TikTok + Instagram (posts AND top comments), YouTube comments, and Reddit auto-enrichment (public + ScrapeCreators). Want the widest net?
 
 **Call AskUserQuestion:**
-Question: "Which ScrapeCreators sources do you want on?"
+Question: "Which ScrapeCreators sources?"
 Options:
-- "TikTok + Instagram (recommended)" - the default: TikTok and Instagram on every run (~2-4 credits per run), plus the Reddit/YouTube rate-limit backups. Write NO `INCLUDE_SOURCES` line (TikTok/Instagram are on automatically with the key). Confirm: "TikTok and Instagram are on, plus the Reddit/YouTube backups if the free sources get rate-limited."
-- "Everything (Threads, Pinterest, comments)" - all of the above plus Threads, Pinterest, and YouTube + TikTok/Instagram comment sentiment. Widest coverage, more credits per run. Append `INCLUDE_SOURCES=tiktok,instagram,threads,pinterest,youtube_comments,tiktok_comments` to `~/.config/last30days/.env` (the list must include `tiktok,instagram` so they are not treated as excluded). Confirm: "Everything's on: TikTok, Instagram, Threads, Pinterest, and comment sentiment, plus the Reddit/YouTube backups."
+- "TikTok + Instagram + all comments (recommended)" - the default: posts AND top comments (ranked by votes) for TikTok + Instagram, plus YouTube comments. Reddit is auto-enriched too. Append `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments` to `~/.config/last30days/.env` (the list must include `tiktok,instagram` so they are not treated as excluded). Confirm: "TikTok, Instagram, and top YouTube/TikTok/Instagram comments are on, plus Reddit auto-enrichment."
+- "Everything (also Threads + Pinterest)" - everything above plus Threads and Pinterest searches. Most coverage, most credits. Append `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments,threads,pinterest`. Confirm: "Everything's on: posts + comments for TikTok/Instagram/YouTube, plus Threads and Pinterest."
 
 **Step 6: First-topic picker.** Once `SETUP_COMPLETE=true` is written, **call AskUserQuestion:**
 Question: "What do you want to research first?"
@@ -522,9 +522,9 @@ For hosts without interactive modal prompts (OpenClaw, Codex, Cursor, Gemini CLI
    - On **timeout, or any other error** → tell the user it didn't complete and offer to retry or the web signup at scrapecreators.com.
    - On **no** → note they can run it later by asking to set up ScrapeCreators, then continue.
 
-**5b. Source tier (only if a key was saved).** Your key runs TikTok and Instagram on every search plus the Reddit/YouTube backups. Ask whether they want more, e.g.: `Want just TikTok + Instagram (recommended), or Everything - also Threads, Pinterest, and comment sentiment (more credits per run)? (recommended / everything)` **Wait for the answer.**
-   - On **recommended** → write NO `INCLUDE_SOURCES` line (TikTok/Instagram are already on with the key). Confirm TikTok and Instagram are on plus the backups.
-   - On **everything** → append `INCLUDE_SOURCES=tiktok,instagram,threads,pinterest,youtube_comments,tiktok_comments` to `~/.config/last30days/.env` (include `tiktok,instagram` so they are not treated as excluded). Confirm Threads, Pinterest, and comment sentiment are now on too.
+**5b. Source tier (only if a key was saved).** Comments are the default, never opt-in. Your key runs TikTok + Instagram posts AND top comments, YouTube comments, and Reddit auto-enrichment. Ask whether they want the widest net, e.g.: `Recommended is TikTok + Instagram + all comments (posts and top comments for TikTok/Instagram plus YouTube comments). Or Everything - also Threads + Pinterest (more credits). (recommended / everything)` **Wait for the answer.**
+   - On **recommended** → append `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments` to `~/.config/last30days/.env` (include `tiktok,instagram` so they are not treated as excluded). Confirm posts + top comments for TikTok/Instagram/YouTube are on, plus Reddit auto-enrichment.
+   - On **everything** → append `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments,threads,pinterest`. Confirm Threads and Pinterest are on too.
 
 **6. Complete.** Once `SETUP_COMPLETE=true` is written, briefly confirm which sources are now active (read the `setup --github` JSON `persisted` field, re-run `--preflight` for a human permission summary, or re-run safe `--diagnose` for JSON) and proceed to research. For Codex desktop, Cursor, Gemini CLI, and raw folder-mode hosts, hidden `.claude/last30days.env` project config is ignored unless `LAST30DAYS_TRUST_PROJECT_CONFIG=1` is set from the process environment or global config; do not tell the user a project file is active unless diagnose reports it as the config source.
 

@@ -59,7 +59,7 @@ class TestOnboardingContract(unittest.TestCase):
             "How would you like to set up?",
             "your browser's x.com cookies",  # cookie-consent modal
             "Want to add TikTok and Instagram?",  # SC offer
-            "Which ScrapeCreators sources do you want on?",  # source opt-in
+            "Which ScrapeCreators sources?",  # source opt-in
             "What do you want to research first?",  # topic picker
         ]
         idxs = [self.modal.find(a) for a in anchors]
@@ -180,10 +180,25 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertNotIn("Threads", before)
         self.assertNotIn("Pinterest", before)
 
-    def test_everything_tier_writes_full_include_sources(self):
-        """The Everything option persists the full opt-in list (incl. tiktok,instagram)."""
+    def test_recommended_tier_writes_comments_by_default(self):
+        """Comments are the DEFAULT: the recommended option enables YouTube +
+        TikTok + Instagram comments (posts on -> comments on)."""
         step5 = self._modal_step5()
-        self.assertIn("INCLUDE_SOURCES=tiktok,instagram,threads,pinterest,youtube_comments,tiktok_comments", step5)
+        self.assertIn(
+            "INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments",
+            step5,
+        )
+        # There is no posts-only tier.
+        self.assertIn("recommended", step5.lower())
+        self.assertIn("comments", step5.lower())
+
+    def test_everything_tier_writes_full_include_sources(self):
+        """The Everything option persists the full list incl. Threads + Pinterest."""
+        step5 = self._modal_step5()
+        self.assertIn(
+            "INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments,threads,pinterest",
+            step5,
+        )
 
     # --- Chrome-first cookie scan (U2/U3) ---
 
