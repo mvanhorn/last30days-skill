@@ -189,8 +189,9 @@ def search_techmeme(
             # key) or a Techmeme markup change upstream. Windowing is inactive.
             _log(
                 "no records carry usable dates; date windowing inactive "
-                "(old techmeme-pp-cli binary or upstream markup change; "
-                "upgrade via `npx -y @mvanhorn/printing-press install techmeme`)"
+                "(old techmeme-pp-cli binary or upstream markup change; upgrade "
+                "via `npx -y @mvanhorn/printing-press-library install techmeme "
+                "--cli-only`)"
             )
         # Techmeme returns all matches; apply the depth cap after windowing.
         # Dated in-window records take cap slots first so undated archive
