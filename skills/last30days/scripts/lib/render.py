@@ -1890,6 +1890,7 @@ _TOP_COMMENT_MIN_SCORE: dict[str, int] = {
     "reddit": 10,
     "youtube": 50,
     "tiktok": 500,
+    "instagram": 5,
     "hackernews": 5,
 }
 _TOP_COMMENT_VOTE_LABEL: dict[str, str] = {
@@ -1897,6 +1898,7 @@ _TOP_COMMENT_VOTE_LABEL: dict[str, str] = {
     "hackernews": "points",
     "youtube": "likes",
     "tiktok": "likes",
+    "instagram": "likes",
 }
 
 

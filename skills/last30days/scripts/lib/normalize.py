@@ -388,9 +388,10 @@ def _normalize_shortform_video(
             "hashtags": item.get("hashtags") or [],
             "top_comments": _remap_comments(
                 item.get("top_comments") or [],
-                # TikTok uses digg_count as the vote field; Instagram has no
-                # comment fetcher today so the key is harmlessly absent.
-                score_keys=("score", "digg_count", "likes"),
+                # Instagram comments use comment_like_count as the vote field
+                # (ScrapeCreators /v2/instagram/post/comments); digg_count/likes
+                # kept for shape compatibility.
+                score_keys=("score", "comment_like_count", "digg_count", "likes"),
                 excerpt_keys=("excerpt", "text"),
             ),
         },

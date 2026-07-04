@@ -86,6 +86,32 @@ class SignalsV3Tests(unittest.TestCase):
         )
         self.assertAlmostEqual(expected, signals.engagement_raw(item), places=6)
 
+    def test_instagram_engagement_adds_top_comment_slot(self):
+        """U2: IG gets the same 0.10 top-comment carve-out as TikTok, so a
+        highly-liked IG comment lifts its post's ranking."""
+        item = schema.SourceItem(
+            item_id="ig1",
+            source="instagram",
+            title="Title",
+            body="Body",
+            url="https://www.instagram.com/reel/ABC/",
+            engagement={"views": 100000, "likes": 5000, "comments": 500},
+            metadata={"top_comments": [{"score": 1200}]},
+        )
+        expected = (
+            0.45 * math.log1p(100000)
+            + 0.27 * math.log1p(5000)
+            + 0.18 * math.log1p(500)
+            + 0.10 * math.log1p(1200)
+        )
+        self.assertAlmostEqual(expected, signals.engagement_raw(item), places=6)
+
+    def test_instagram_comment_vote_uses_instagram_reference(self):
+        """U2: normalized_comment_vote uses the instagram reference, not the default."""
+        strength = signals.normalized_comment_vote("instagram", 5000)
+        self.assertGreater(strength, 0.0)
+        self.assertLessEqual(strength, 1.0)
+
     def test_youtube_ranking_promotes_viral_comment_thread(self):
         """A moderately-viewed YouTube video with a 10k-like comment should
         outrank a slightly-higher-viewed video with no high-signal comments."""
@@ -385,10 +411,12 @@ class SignalsV3Tests(unittest.TestCase):
         )
         result = signals.engagement_raw(item)
         self.assertIsNotNone(result)
+        # U2: IG now uses _instagram_engagement (video-shaped, with a 0.10
+        # top-comment carve-out); no top comment here so that term is 0.
         expected = (
-            0.50 * math.log1p(8000)
-            + 0.30 * math.log1p(1500)
-            + 0.20 * math.log1p(100)
+            0.45 * math.log1p(8000)
+            + 0.27 * math.log1p(1500)
+            + 0.18 * math.log1p(100)
         )
         self.assertAlmostEqual(expected, result)
 
@@ -408,7 +436,7 @@ class SignalsV3Tests(unittest.TestCase):
         )
         result = signals.engagement_raw(item)
         self.assertIsNotNone(result)
-        expected = 0.20 * math.log1p(50)
+        expected = 0.18 * math.log1p(50)
         self.assertAlmostEqual(expected, result)
 
     def test_hackernews_engagement_all_zero_returns_none(self):
