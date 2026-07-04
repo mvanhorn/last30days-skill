@@ -429,6 +429,7 @@ Auto setup gives you the core sources free in about 30 seconds:
 - YouTube search + transcripts - installs yt-dlp (open source, 190K+ GitHub stars).
 - Digg - trending news, GitHub stars, and pipeline feeds - installs the free, keyless Digg CLI.
 - arXiv (📄) + Techmeme (📰) - research papers and tech-news headlines - install free, keyless Printing Press CLIs and run on any topic (arXiv is relevance + recency gated to research topics).
+- StockTwits (📈) - retail trader sentiment - auto-on when your topic is a ticker or crypto (e.g. "$NVDA earnings", "bitcoin"), off for everything else.
 - Trustpilot (⭐) - brand/company review sentiment - opt-in (add `trustpilot` to `INCLUDE_SOURCES`), off by default because it can do a one-time ~10s headless browser cookie step on first company lookup. Install with `npx -y @mvanhorn/printing-press-library@0.1.16 install trustpilot --cli-only`.
 - Hacker News + Polymarket + GitHub (auto-on if the `gh` CLI is installed) - always on, zero config.
 
