@@ -57,7 +57,7 @@ class TestOnboardingContract(unittest.TestCase):
         anchors = [
             "Welcome to /last30days!",  # welcome pitch, embedded in the setup modal
             "How would you like to set up?",
-            "scan your browser",  # cookie-consent modal
+            "your browser's x.com cookies",  # cookie-consent modal
             "Want to add TikTok and Instagram?",  # SC offer
             "Which ScrapeCreators sources do you want on?",  # source opt-in
             "What do you want to research first?",  # topic picker
@@ -70,8 +70,24 @@ class TestOnboardingContract(unittest.TestCase):
     def test_modal_uses_askuserquestion(self):
         self.assertIn("AskUserQuestion", self.modal)
 
+    def test_cookie_consent_names_all_installed_clis(self):
+        """The cookie-consent modal must not frame X cookies as instead-of the CLIs,
+        and must name arXiv + Techmeme (not just 'YouTube + Digg') since auto-setup
+        installs all four regardless of the cookie choice."""
+        consent = self.modal[self.modal.find("your browser's x.com cookies"):]
+        consent = consent[: consent.find("Full Disk Access")]  # bound to the consent modal
+        for cli in ("yt-dlp", "Digg", "arXiv", "Techmeme"):
+            self.assertIn(cli, consent, cli)
+        # The "skip X" option still installs the CLIs (not framed as X-or-CLIs).
+        self.assertIn("Skip X - just the CLIs", consent)
+
+    def test_github_option_advertises_auto_clipboard(self):
+        """The recommended GitHub option tells the user the code is auto-copied to
+        their clipboard, so they just paste it."""
+        self.assertIn("clipboard automatically", self.modal)
+
     def test_modal_cookie_consent_before_setup(self):
-        consent = self.modal.find("scan your browser")
+        consent = self.modal.find("your browser's x.com cookies")
         setup = self.modal.find("last30days.py setup")
         self.assertGreater(consent, -1, "no cookie-consent modal in modal flow")
         self.assertGreater(setup, -1, "no setup invocation in modal flow")
