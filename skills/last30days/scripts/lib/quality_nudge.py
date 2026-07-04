@@ -325,7 +325,11 @@ def _build_nudge_text(
         captions_disabled = int(research_results.get("youtube_captions_disabled_count") or 0)
         if not has_ytdlp and _youtube_returned_data(research_results):
             install = prescriptions.get("youtube", "ytdlp_missing")
-            scoop_install, pip_install = install.alt_cli
+            # Tolerant lookup: alt_cli makes no arity promise, so an entry
+            # gaining/losing a platform alternate must degrade the wording,
+            # never crash the nudge path.
+            scoop_install = install.alt_cli[0] if len(install.alt_cli) > 0 else install.fix_cli
+            pip_install = install.alt_cli[1] if len(install.alt_cli) > 1 else scoop_install
             free_suggestions.append(
                 f"YouTube returned {videos} videos and {transcripts} transcripts "
                 "through a fallback/provider path, but local yt-dlp is not "
@@ -341,7 +345,9 @@ def _build_nudge_text(
                     "uploader, which is a separate cause and not fixable on your end)"
                 )
             update = prescriptions.get("youtube", "ytdlp_stale")
-            scoop_update, pip_update = update.alt_cli
+            # Same tolerant lookup as the install branch above.
+            scoop_update = update.alt_cli[0] if len(update.alt_cli) > 0 else update.fix_cli
+            pip_update = update.alt_cli[1] if len(update.alt_cli) > 1 else scoop_update
             free_suggestions.append(
                 f"YouTube returned {videos} videos but only {transcripts} transcripts "
                 f"captured{captions_note}. The most common remaining cause is a stale "

@@ -330,3 +330,18 @@ class TestBackendComposition:
         assert entry.fix_cli in finding.prescription
         # test_backend_descriptors requires the key name to stay present.
         assert "SCRAPECREATORS_API_KEY" in finding.prescription
+
+
+class TestAltCliArityPin:
+    """Greptile PR review: quality_nudge composes YouTube nudges from the two
+    platform alternates on the ytdlp entries. The consumer is now tolerant of
+    any arity (degrades wording instead of crashing), and this pin keeps the
+    wording rich: both entries must keep at least the scoop + pip alternates."""
+
+    @pytest.mark.parametrize("failure", ["ytdlp_missing", "ytdlp_stale"])
+    def test_ytdlp_entries_keep_two_platform_alternates(self, failure):
+        entry = prescriptions.get("youtube", failure)
+        assert len(entry.alt_cli) >= 2, (
+            f"youtube/{failure} lost a platform alternate; quality_nudge "
+            "wording degrades (tolerant, but fix the entry or the prose)"
+        )

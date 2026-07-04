@@ -247,7 +247,8 @@ def diagnose(
     google_key = _google_key(config)
     x_status = env.get_x_source_status(config, probe=not safe)
     # Compute once and reuse for both the diag flag and available_sources below.
-    x_pending = env.x_pending_browser_auth(config)
+    # safe=True (doctor/--diagnose/--preflight) must stay network-free.
+    x_pending = env.x_pending_browser_auth(config, local_only=safe)
     native_web_backend = None
     if config.get("BRAVE_API_KEY"):
         native_web_backend = "brave"

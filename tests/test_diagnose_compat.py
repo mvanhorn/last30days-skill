@@ -23,10 +23,11 @@ The two real consumers, each with an explicit test:
 hooks/scripts/check-config.sh is NOT a JSON consumer (it reads env files and
 last-run.json, never engine JSON) — deliberately no compat test for it.
 
-NOTE: snapshots recorded against commit HEAD pre-v3.9.0 (5006b92, post-LinkedIn
-merge). Re-record these frozen key sets when the v3.9.0 source wave lands —
-that wave legitimately extends `available_sources` membership (values, not
-shape) and may add sources; the SHAPES here must otherwise stay frozen.
+NOTE: snapshots re-recorded against the committed v3.10.0 baseline
+(origin/main a5b3ca1, post-v3.9.x source wave: arxiv/techmeme/stocktwits/
+trustpilot + the x_pending_browser_auth diag flag). The SHAPES here must
+otherwise stay frozen; re-record only when a committed baseline legitimately
+changes them.
 """
 
 import io
@@ -38,11 +39,12 @@ from unittest import mock
 
 import last30days as cli
 
-# Source names the engine can emit in available_sources today (pre-v3.9.0).
+# Source names the engine can emit in available_sources today (v3.10.0).
 KNOWN_SOURCE_NAMES = {
     "reddit", "x", "youtube", "tiktok", "instagram", "hackernews", "bluesky",
     "truthsocial", "polymarket", "grounding", "xiaohongshu", "github",
     "perplexity", "threads", "pinterest", "digg", "jobs", "linkedin",
+    "arxiv", "techmeme", "stocktwits", "trustpilot",
 }
 
 # ---------------------------------------------------------------------------
@@ -64,6 +66,7 @@ DIAGNOSE_TOP_KEYS = {
     "native_search",
     "has_scrapecreators",
     "has_github",
+    "x_pending_browser_auth",
     "available_sources",
     "safe",
     "config_source",
@@ -79,7 +82,7 @@ DIAGNOSE_TOP_KEYS = {
 
 DIAGNOSE_PROVIDERS_KEYS = {"google", "openai", "xai", "openrouter", "perplexity"}
 DIAGNOSE_BROWSER_COOKIES_KEYS = {"mode", "browsers", "reads_values"}
-DIAGNOSE_EXTERNAL_COMMANDS_KEYS = {"yt-dlp", "digg-pp-cli", "gh"}
+DIAGNOSE_EXTERNAL_COMMANDS_KEYS = {"yt-dlp", "digg-pp-cli", "arxiv-pp-cli", "techmeme-pp-cli", "trustpilot-pp-cli", "gh"}
 DIAGNOSE_CREDENTIAL_DESTINATIONS_KEYS = {"global_env"}
 
 PREFLIGHT_TOP_KEYS = {

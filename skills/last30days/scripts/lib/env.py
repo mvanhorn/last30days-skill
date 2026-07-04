@@ -779,7 +779,7 @@ def get_x_source(config: dict[str, Any], local_only: bool = False) -> str | None
     return chain[0] if chain else None
 
 
-def x_pending_browser_auth(config: dict[str, Any]) -> bool:
+def x_pending_browser_auth(config: dict[str, Any], local_only: bool = False) -> bool:
     """True when X is not available now but ``FROM_BROWSER`` will authenticate it at run time.
 
     ``--diagnose`` / ``--preflight`` load config in ``plan_only`` mode, which
@@ -798,7 +798,9 @@ def x_pending_browser_auth(config: dict[str, Any]) -> bool:
     extracted creds, so its status must be unchanged — never "pending").
     """
     # Already available via a static backend (bird creds, xAI, xurl, xquik).
-    if get_x_source(config):
+    # local_only (doctor/safe-diagnose) answers the xurl leg from the token
+    # store instead of the live `xurl whoami` network call.
+    if get_x_source(config, local_only=local_only):
         return False
     # Only meaningful in inspection modes that skip extraction; a real ``read``
     # run has already attempted extraction and must report its true state.
