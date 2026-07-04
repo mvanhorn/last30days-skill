@@ -41,7 +41,9 @@ Semantics and guarantees:
 
 from __future__ import annotations
 
+import datetime
 import json
+import os
 import shutil
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -592,10 +594,126 @@ def render_text(report: Dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
-def run(config: Dict[str, Any], *, emit_json: bool = False) -> int:
-    """Build and print the doctor report. Always exits 0 (reporting
-    problems is a successful run)."""
-    report = build_report(config)
+# ---------------------------------------------------------------------------
+# Cross-invocation cache (U5 / R5, KTD 8)
+#
+# Doctor writes its JSON result beside the existing ``last-run.json``
+# convention (env.CONFIG_DIR) so the SKILL.md standing rule's pre-research
+# check costs one file read on the healthy path instead of a dozen probe
+# subprocesses. ``--cached`` serves the stored report within the TTL and
+# falls through to a live run (rewriting the cache) when the file is stale,
+# absent, or corrupt — corruption is treated as absence, never a crash.
+# An explicit ``doctor`` (no ``--cached``) always runs live and refreshes.
+# ---------------------------------------------------------------------------
+
+CACHE_FILENAME = "doctor-cache.json"
+
+# TTL in SECONDS (env-tunable via LAST30DAYS_DOCTOR_TTL; registered in
+# lib/env.py's get_config key list so a .env-set value is not swallowed).
+DEFAULT_CACHE_TTL_SECONDS = 900
+
+# Config vars whose values must never land in the cache file. Doctor output
+# carries no secrets by design (key presence is booleans only); this belt-and-
+# suspenders check refuses to persist the cache if a seeded value ever leaks.
+_SECRET_CONFIG_VARS = KEY_PRESENCE_VARS + (
+    "AUTH_TOKEN", "CT0", "APIFY_API_TOKEN", "GOOGLE_GENAI_API_KEY",
+)
+
+
+def cache_path() -> Optional[Path]:
+    """The doctor cache file, beside last-run.json (None in clean mode)."""
+    if env.CONFIG_DIR is None:
+        return None
+    return env.CONFIG_DIR / CACHE_FILENAME
+
+
+def cache_ttl_seconds(config: Dict[str, Any]) -> int:
+    """LAST30DAYS_DOCTOR_TTL in seconds; process env > config; default 900."""
+    raw: Any = os.environ.get("LAST30DAYS_DOCTOR_TTL")
+    if raw is None:
+        raw = (config or {}).get("LAST30DAYS_DOCTOR_TTL")
+    if raw is None or raw == "":
+        return DEFAULT_CACHE_TTL_SECONDS
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_CACHE_TTL_SECONDS
+
+
+def _is_fresh(timestamp: Any, ttl_seconds: int) -> bool:
+    if ttl_seconds <= 0:
+        return False
+    if not isinstance(timestamp, str) or not timestamp:
+        return False
+    try:
+        created_at = datetime.datetime.fromisoformat(timestamp)
+    except ValueError:
+        return False
+    if created_at.tzinfo is None:
+        created_at = created_at.replace(tzinfo=datetime.timezone.utc)
+    age = datetime.datetime.now(datetime.timezone.utc) - created_at.astimezone(
+        datetime.timezone.utc
+    )
+    return age.total_seconds() <= ttl_seconds
+
+
+def read_cached_report(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Return the cached report when present, well-formed, and within TTL.
+
+    Any failure mode — unreadable file, invalid JSON, wrong shape, bad or
+    stale timestamp — returns None (cache treated as absent, never a crash).
+    """
+    path = cache_path()
+    if path is None:
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    report = payload.get("report")
+    if not isinstance(report, dict) or not report.get("sources"):
+        return None
+    if not _is_fresh(payload.get("timestamp"), cache_ttl_seconds(config)):
+        return None
+    return report
+
+
+def _write_cache(report: Dict[str, Any], config: Dict[str, Any]) -> bool:
+    """Best-effort cache write; refuses to persist any secret value."""
+    try:
+        path = cache_path()
+        if path is None:
+            return False
+        payload = {
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "report": report,
+        }
+        raw = json.dumps(payload, indent=2, sort_keys=True)
+        for var in _SECRET_CONFIG_VARS:
+            value = (config or {}).get(var)
+            if isinstance(value, str) and value and value in raw:
+                return False  # never write a cache containing a secret
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(raw, encoding="utf-8")
+        return True
+    except Exception:
+        return False
+
+
+def run(config: Dict[str, Any], *, emit_json: bool = False, cached: bool = False) -> int:
+    """Build (or serve the cached) doctor report and print it. Always exits 0
+    (reporting problems is a successful run).
+
+    ``cached=True`` serves the stored report within the TTL; stale, absent,
+    or corrupt caches fall through to a live run that rewrites the cache.
+    ``cached=False`` (explicit ``doctor``) always runs live and refreshes.
+    """
+    report = read_cached_report(config) if cached else None
+    if report is None:
+        report = build_report(config)
+        _write_cache(report, config)
     if emit_json:
         print(render_json(report))
     else:

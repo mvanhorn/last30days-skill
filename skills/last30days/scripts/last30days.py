@@ -910,10 +910,13 @@ SKILL_ONLY_FLAGS = {
     "--agent",
 }
 
-# Doctor passthrough: `doctor --json` mirrors the setup passthrough pattern
-# (`--json` is not a global parser flag; it only means something to doctor).
+# Doctor passthrough: `doctor --json` / `doctor --cached` mirror the setup
+# passthrough pattern (neither is a global parser flag; they only mean
+# something to doctor). `--cached` serves the stored doctor-cache.json report
+# within its TTL and falls through to a live run otherwise.
 DOCTOR_PASSTHROUGH_FLAGS = {
     "--json",
+    "--cached",
 }
 
 
@@ -1030,6 +1033,7 @@ def main() -> int:
         return doctor.run(
             config,
             emit_json=(args.emit == "json" or "--json" in extra_argv),
+            cached="--cached" in extra_argv,
         )
 
     # Handle setup subcommand

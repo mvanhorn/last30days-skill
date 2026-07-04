@@ -333,6 +333,30 @@ The engine treats public jobs/careers postings as evidence of focus or priority 
 
 ---
 
+## Health check (`doctor`)
+
+One command answers "what's broken, what's serving, and what do I run to fix it" — per source: a rollup tier (ok / warn / off / error), the specific probe state, the backend the next run will use (for chained sources), and an exact fix on any non-ok tier:
+
+```bash
+python3 skills/last30days/scripts/last30days.py doctor            # grouped text report
+python3 skills/last30days/scripts/last30days.py doctor --json     # machine contract
+python3 skills/last30days/scripts/last30days.py doctor --cached   # serve the cached report while fresh
+```
+
+Slash-command form: `/last30days doctor`. Reporting problems is a successful run — the exit code is always 0, no browser cookies are read, no network calls are made, and no secret values appear anywhere (key presence is booleans only).
+
+Every live run writes its JSON result to `~/.config/last30days/doctor-cache.json` (beside `last-run.json`; honors `LAST30DAYS_CONFIG_DIR`). `doctor --cached` returns that stored report when it is younger than the TTL, and falls through to a live run — rewriting the cache — when it is stale, absent, or corrupt. An explicit `doctor` without `--cached` always runs live and refreshes the cache; run it after fixing a credential so the cached view catches up immediately.
+
+| Var | Effect |
+| --- | --- |
+| `LAST30DAYS_DOCTOR_TTL` | Freshness window for `doctor --cached`, in **seconds**. Defaults to `900` (15 minutes). `0` makes every `--cached` call run live. |
+| `LAST30DAYS_X_BACKEND` | Pins the X backend (`xai` / `bird` / `xurl` / `xquik`); doctor renders the pin and predicts "will use" accordingly. |
+| `LAST30DAYS_REDDIT_BACKEND` | `scrapecreators` makes ScrapeCreators the primary Reddit backend; doctor renders Reddit's conditional routing with the pin applied. |
+
+Web search has **no** env pin — pin it per-run with `--web-backend=<name>` only (see [Web search backend priority](#web-search-backend-priority)).
+
+---
+
 ## Trend monitoring (`--store` + watchlist + briefings)
 
 The default behavior - one slug-named file per topic, overwritten on rerun - is the snapshot mode. For continuous monitoring, the repo ships three components most users miss:
