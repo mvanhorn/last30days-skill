@@ -813,7 +813,18 @@ def fetch_api_key(access_token: str) -> Optional[str]:
         logger.warning("Failed to fetch API key: %s", exc)
         return None
 
-    return data.get("api_key")
+    api_key = data.get("api_key")
+    if not api_key:
+        # The /profile response parsed but carried no api_key — the common case
+        # for a GitHub account already linked to a ScrapeCreators account. Log
+        # the response's FIELD NAMES only (never values — the body may contain a
+        # key under a different field) so the already-registered response shape
+        # can be handled in a follow-up (see plan OQ1).
+        logger.warning(
+            "Device auth /profile returned no api_key (fields: %s)", sorted(data.keys())
+        )
+        return None
+    return api_key
 
 
 def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:

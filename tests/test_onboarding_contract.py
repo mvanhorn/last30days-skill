@@ -126,8 +126,8 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertIn("Digg", self.modal)
         self.assertIn("Digg", self.prose)
         self.assertIn("Digg", self.manual)
-        # The Auto-setup modal option names both tools together.
-        self.assertIn("yt-dlp (YouTube) and the Digg CLI", self.modal)
+        # The Auto-setup modal option names every installed CLI, not just two.
+        self.assertIn("yt-dlp (YouTube), Digg, arXiv, and Techmeme CLIs", self.modal)
 
     # --- Credit count = 10,000, no conflicting numbers in onboarding ---
 
@@ -198,6 +198,39 @@ class TestOnboardingContract(unittest.TestCase):
     def test_already_registered_status_handled(self):
         self.assertIn("already_registered", self.modal)
         self.assertIn("already_registered", self.prose)
+
+    # --- Welcome must render before the modal (U1) ---
+
+    def test_welcome_is_required_before_modal(self):
+        """Step 1 mandates the welcome message before any modal; the old
+
+        'IMMEDIATELY call AskUserQuestion' wording (which induced skipping the
+        welcome) is gone.
+        """
+        self.assertIn("REQUIRED FIRST", self.modal)
+        self.assertIn("BEFORE calling any AskUserQuestion", self.modal)
+        self.assertNotIn("Then IMMEDIATELY call AskUserQuestion", self.modal)
+
+    # --- Device code surfaced with a clipboard-paste hint (U3) ---
+
+    def test_device_code_clipboard_paste_instruction(self):
+        """The GitHub flow tells the user the code is on their clipboard to paste,
+
+        and makes surfacing the code a required step (the bug the user hit).
+        """
+        self.assertIn("on your clipboard", self.modal)
+        self.assertIn("paste", self.modal.lower()[self.modal.find("device_code_ready"):])
+        self.assertIn("REQUIRED", self.modal)
+
+    # --- Honest 'authorized but no key' branch, distinct from auth-failed (U4) ---
+
+    def test_authorized_but_no_key_branch_present(self):
+        """A key-fetch failure after successful auth is handled honestly (likely
+
+        an already-linked account), not lumped into 'auth didn't complete'.
+        """
+        self.assertIn("Authorized but failed to fetch API key", self.modal)
+        self.assertIn("already linked", self.modal)
 
     # --- Legacy guarantees retained ---
 

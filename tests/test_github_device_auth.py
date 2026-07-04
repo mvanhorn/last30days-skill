@@ -10,7 +10,7 @@ All hermetic — the network, clipboard, and browser are patched.
 import io
 import json
 from contextlib import redirect_stdout
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from lib import setup_wizard
 
@@ -103,3 +103,26 @@ class TestAlreadyRegistered:
         masked = setup_wizard.mask_api_key("sc_live_realkey1234567890")
         assert "realkey" not in masked
         assert masked != "sc_live_realkey1234567890"
+
+
+class TestFetchApiKeyLogging:
+    """U4: the /profile no-key path logs field NAMES only, never values."""
+
+    @patch("lib.setup_wizard.logger")
+    @patch("lib.setup_wizard.urlopen")
+    def test_no_key_logs_field_names_not_values(self, mock_urlopen, mock_logger):
+        # An already-linked account: /profile parses but carries no api_key,
+        # and could carry a secret under another field (here, "token").
+        body = json.dumps({"linked": True, "token": "sc_secret_value_xyz"}).encode()
+        resp = MagicMock()
+        resp.read.return_value = body
+        resp.__enter__.return_value = resp
+        mock_urlopen.return_value = resp
+
+        result = setup_wizard.fetch_api_key("gh_access_token")
+
+        assert result is None
+        # The warning must include the field names but never the secret value.
+        logged = " ".join(str(c) for c in mock_logger.warning.call_args_list)
+        assert "linked" in logged and "token" in logged
+        assert "sc_secret_value_xyz" not in logged
