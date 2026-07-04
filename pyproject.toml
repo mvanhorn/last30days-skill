@@ -31,11 +31,11 @@ omit = [
 [tool.coverage.report]
 skip_empty = true
 show_missing = true
-# Coverage gate (issue #254). 60% floor — intended to rise over time, not a ceiling.
-# Baseline measured 2026-06-25 (source = scripts + tests): TOTAL 84%; core modules
-# pipeline.py 69%, render.py 76%, schema.py 94%. Gate kept at the 60% floor for headroom.
+# Coverage gate (issue #254). Floor intended to rise over time, not a ceiling.
+# Baseline measured 2026-07-03 on main before feat/hosted-api-mode
+# (source = scripts + tests): TOTAL 84.06%. Gate pinned at that baseline.
 # Do not lower without documenting why in the PR (see AGENTS.md Rules).
-fail_under = 60
+fail_under = 84
 omit = [
   "skills/last30days/scripts/lib/vendor/*",
   "dist/*",

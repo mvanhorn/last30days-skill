@@ -1026,6 +1026,28 @@ def main() -> int:
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")
         return 0
 
+    # Remote API path: when BOTH LAST30DAYS_API_KEY and LAST30DAYS_API_BASE are
+    # set (and --mock is not), the search runs through the configured remote API
+    # instead of local sources; no local provider keys are needed (see
+    # lib/hosted.py). With either env var unset, behavior below is byte-identical
+    # to local-only runs - there is no built-in endpoint.
+    if (
+        topic
+        and not args.diagnose
+        and not args.mock
+        and os.environ.get("LAST30DAYS_API_KEY")
+        and os.environ.get("LAST30DAYS_API_BASE")
+    ):
+        from lib import hosted
+        depth = "deep" if args.deep else "quick" if args.quick else "default"
+        return hosted.run_hosted(
+            topic,
+            depth,
+            emit=args.emit,
+            save_dir=args.save_dir,
+            save_suffix=args.save_suffix or "",
+        )
+
     requested_sources = resolve_requested_sources(args.search, config)
     diag = pipeline.diagnose(config, requested_sources, safe=args.diagnose)
 
