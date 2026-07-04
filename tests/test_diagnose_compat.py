@@ -127,7 +127,14 @@ def _run_cli(argv: list[str], config: dict) -> tuple[int, str]:
          mock.patch("lib.bird_x.get_bird_status", return_value=bird_status), \
          mock.patch("lib.bird_x.is_bird_installed", return_value=False), \
          mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None), \
-         mock.patch("lib.xurl_x.is_available", return_value=False), \
+         mock.patch(
+             "lib.xurl_x.is_available",
+             side_effect=AssertionError(
+                 "--diagnose/--preflight are safe paths and must not run the "
+                 "live `xurl whoami` network check"
+             ),
+         ), \
+         mock.patch("lib.xurl_x.has_stored_auth", return_value=False), \
          mock.patch.object(sys, "argv", ["last30days.py"] + argv):
         stdout = io.StringIO()
         stderr = io.StringIO()

@@ -79,7 +79,19 @@ class _Hermetic:
             mock.patch("lib.bird_x.is_bird_installed", return_value=False),
             mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None),
             mock.patch("lib.bird_x.get_bird_status", return_value=dict(BIRD_STATUS_OFF)),
-            mock.patch("lib.xurl_x.is_available", return_value=False),
+            # Doctor path is local-only for xurl: the live `xurl whoami`
+            # network check must never run (no-network guarantee).
+            mock.patch(
+                "lib.xurl_x.is_available",
+                side_effect=AssertionError(
+                    "doctor path ran the live `xurl whoami` network check"
+                ),
+            ),
+            mock.patch("lib.xurl_x.has_stored_auth", return_value=False),
+            mock.patch(
+                "lib.xurl_x.stored_auth_status",
+                return_value=("missing", "no token store at ~/.xurl"),
+            ),
             mock.patch("lib.backends.which", lambda name: None),
         ]
 
@@ -113,9 +125,10 @@ class _CacheDirCase(unittest.TestCase):
     def cache_file(self) -> Path:
         return self.config_dir / doctor.CACHE_FILENAME
 
-    def write_cache(self, *, seconds_ago=0.0, marker="cached-sentinel-report"):
-        """Seed a syntactically valid cached report carrying a marker."""
-        report = {
+    @staticmethod
+    def valid_report(marker="cached-sentinel-report"):
+        """A report satisfying the render contract, carrying a marker."""
+        return {
             "engine_version": marker,
             "config": {"global_env": None, "config_source": None},
             "setup": {"setup_complete": False, "keys_present": {}},
@@ -129,7 +142,30 @@ class _CacheDirCase(unittest.TestCase):
                 },
             },
         }
-        payload = {"timestamp": _iso_utc(seconds_ago), "report": report}
+
+    def write_cache(
+        self,
+        *,
+        seconds_ago=0.0,
+        marker="cached-sentinel-report",
+        config=None,
+        schema=None,
+        fingerprint=None,
+        report=None,
+    ):
+        """Seed a valid cached payload (schema + fingerprint stamped)."""
+        if report is None:
+            report = self.valid_report(marker)
+        payload = {
+            "schema": doctor.DOCTOR_CACHE_SCHEMA_VERSION if schema is None else schema,
+            "fingerprint": (
+                doctor._config_fingerprint(dict(config or {}))
+                if fingerprint is None
+                else fingerprint
+            ),
+            "timestamp": _iso_utc(seconds_ago),
+            "report": report,
+        }
         self.cache_file.write_text(json.dumps(payload), encoding="utf-8")
         return report
 
@@ -303,6 +339,208 @@ class TtlOverrideAndCorruptCache(_CacheDirCase):
         self.assertIn("LAST30DAYS_DOCTOR_TTL", inspect.getsource(env_mod.get_config))
 
 
+class DriftedCacheShapes(_CacheDirCase):
+    """F3: cached reports that drift from the render contract fall through
+    to a live run — never a KeyError crash — in text mode too."""
+
+    def _write_payload(self, report, *, with_envelope=True, seconds_ago=1.0):
+        payload = {"timestamp": _iso_utc(seconds_ago), "report": report}
+        if with_envelope:
+            payload["schema"] = doctor.DOCTOR_CACHE_SCHEMA_VERSION
+            payload["fingerprint"] = doctor._config_fingerprint({})
+        self.cache_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    def test_fresh_drifted_report_text_mode_no_crash(self):
+        # Exact F3 repro: fresh timestamp, report missing engine_version /
+        # config / setup / permissions, record missing tier.
+        self._write_payload({"sources": {"hackernews": {"status": "ok"}}})
+        rc, out, probe_spy = self.run_doctor(cached=True, emit_json=False)
+        self.assertEqual(0, rc, "drifted cache must never crash")
+        self.assertTrue(probe_spy.called, "drifted cache must fall through live")
+        self.assertIn("last30days doctor", out)
+
+    def test_fresh_drifted_report_pre_schema_envelope_no_crash(self):
+        # The original repro shape (no schema stamp at all).
+        self._write_payload(
+            {"sources": {"hackernews": {"status": "ok"}}}, with_envelope=False
+        )
+        rc, out, probe_spy = self.run_doctor(cached=True, emit_json=False)
+        self.assertEqual(0, rc)
+        self.assertTrue(probe_spy.called)
+
+    def test_shape_validator_rejects_each_drift(self):
+        good = self.valid_report()
+        drifted = []
+        for key in ("engine_version", "config", "setup", "permissions"):
+            broken = json.loads(json.dumps(good))
+            del broken[key]
+            drifted.append((f"missing {key}", broken))
+        for key in ("config", "setup", "permissions"):
+            broken = json.loads(json.dumps(good))
+            broken[key] = "not-a-dict"
+            drifted.append((f"{key} not a dict", broken))
+        broken = json.loads(json.dumps(good))
+        broken["sources"]["hackernews"] = "not-a-record"
+        drifted.append(("record not a dict", broken))
+        broken = json.loads(json.dumps(good))
+        broken["sources"]["hackernews"]["tier"] = "sideways"
+        drifted.append(("unknown tier", broken))
+        broken = json.loads(json.dumps(good))
+        del broken["sources"]["hackernews"]["tier"]
+        drifted.append(("missing tier", broken))
+        broken = json.loads(json.dumps(good))
+        broken["sources"]["hackernews"]["status"] = 7
+        drifted.append(("non-str status", broken))
+        for label, report in drifted:
+            with self.subTest(drift=label):
+                self._write_payload(report)
+                rc, out, probe_spy = self.run_doctor(cached=True, emit_json=False)
+                self.assertEqual(0, rc, f"{label}: must never crash")
+                self.assertTrue(probe_spy.called, f"{label}: must fall through")
+
+    def test_run_survives_shapes_the_validator_misses(self):
+        # Even if a bad shape slips past read_cached_report, run()'s
+        # try/except falls through to a live build (never-crash contract).
+        bad = self.valid_report()
+        with mock.patch(
+            "lib.doctor.read_cached_report",
+            return_value={"sources": bad["sources"]},  # renders would KeyError
+        ):
+            rc, out, probe_spy = self.run_doctor(cached=True, emit_json=False)
+        self.assertEqual(0, rc)
+        self.assertTrue(probe_spy.called)
+        self.assertIn("last30days doctor", out)
+
+
+class SchemaStamp(_CacheDirCase):
+    """F8: payloads without the current schema stamp are treated as absent."""
+
+    def test_schema_mismatch_runs_live(self):
+        self.write_cache(seconds_ago=1, schema="last30days-doctor-cache/v0")
+        rc, out, probe_spy = self.run_doctor(cached=True)
+        self.assertEqual(0, rc)
+        self.assertNotIn("cached-sentinel-report", out)
+        self.assertTrue(probe_spy.called)
+
+    def test_absent_schema_runs_live(self):
+        payload = {
+            "fingerprint": doctor._config_fingerprint({}),
+            "timestamp": _iso_utc(1),
+            "report": self.valid_report(),
+        }
+        self.cache_file.write_text(json.dumps(payload), encoding="utf-8")
+        rc, out, probe_spy = self.run_doctor(cached=True)
+        self.assertEqual(0, rc)
+        self.assertNotIn("cached-sentinel-report", out)
+        self.assertTrue(probe_spy.called)
+
+    def test_live_run_stamps_schema_and_fingerprint(self):
+        self.run_doctor(cached=False)
+        payload = json.loads(self.cache_file.read_text(encoding="utf-8"))
+        self.assertEqual(doctor.DOCTOR_CACHE_SCHEMA_VERSION, payload["schema"])
+        self.assertEqual(doctor._config_fingerprint({}), payload["fingerprint"])
+
+
+class FingerprintInvalidation(_CacheDirCase):
+    """F12a: credential/pin/opt-in changes invalidate the cache."""
+
+    def test_key_added_invalidates(self):
+        self.write_cache(seconds_ago=1)  # fingerprint for empty config
+        rc, out, probe_spy = self.run_doctor(
+            {"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"}, cached=True
+        )
+        self.assertEqual(0, rc)
+        self.assertNotIn("cached-sentinel-report", out)
+        self.assertTrue(probe_spy.called, "new credential must invalidate cache")
+
+    def test_key_removed_invalidates(self):
+        cfg = {"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"}
+        self.write_cache(seconds_ago=1, config=cfg)
+        rc, out, probe_spy = self.run_doctor({}, cached=True)
+        self.assertNotIn("cached-sentinel-report", out)
+        self.assertTrue(probe_spy.called, "removed credential must invalidate cache")
+
+    def test_pin_change_invalidates(self):
+        self.write_cache(seconds_ago=1)
+        rc, out, probe_spy = self.run_doctor(
+            {"LAST30DAYS_X_BACKEND": "bird"}, cached=True
+        )
+        self.assertNotIn("cached-sentinel-report", out)
+        self.assertTrue(probe_spy.called, "pin change must invalidate cache")
+
+    def test_include_sources_change_invalidates(self):
+        self.write_cache(seconds_ago=1)
+        rc, out, probe_spy = self.run_doctor({"INCLUDE_SOURCES": "linkedin"}, cached=True)
+        self.assertNotIn("cached-sentinel-report", out)
+        self.assertTrue(probe_spy.called)
+
+    def test_fingerprint_ignores_non_signal_config(self):
+        # TTL knob is not a fingerprint signal; same-fingerprint serve holds.
+        self.write_cache(seconds_ago=1)
+        rc, out, probe_spy = self.run_doctor(
+            {"LAST30DAYS_DOCTOR_TTL": str(doctor.DEFAULT_CACHE_TTL_SECONDS)},
+            cached=True,
+        )
+        self.assertIn("cached-sentinel-report", out)
+        self.assertFalse(probe_spy.called)
+
+
+class StalenessSignals(_CacheDirCase):
+    """F12b: from_cache + generated_at surfaced on every doctor report."""
+
+    def test_matching_fingerprint_serves_cache_with_signals(self):
+        self.write_cache(seconds_ago=120)
+        original_ts = json.loads(self.cache_file.read_text(encoding="utf-8"))["timestamp"]
+        rc, out, probe_spy = self.run_doctor(cached=True)
+        self.assertEqual(0, rc)
+        self.assertFalse(probe_spy.called)
+        data = json.loads(out)
+        self.assertTrue(data["from_cache"])
+        self.assertEqual(original_ts, data["generated_at"])
+
+    def test_live_run_marks_from_cache_false_with_fresh_generated_at(self):
+        rc, out, probe_spy = self.run_doctor(cached=False)
+        self.assertTrue(probe_spy.called)
+        data = json.loads(out)
+        self.assertFalse(data["from_cache"])
+        age = datetime.datetime.now(datetime.timezone.utc) - datetime.datetime.fromisoformat(
+            data["generated_at"]
+        )
+        self.assertLess(age.total_seconds(), 60)
+
+    def test_text_mode_prints_cache_status_line(self):
+        self.write_cache(seconds_ago=1)
+        rc, out, probe_spy = self.run_doctor(cached=True, emit_json=False)
+        self.assertFalse(probe_spy.called)
+        self.assertIn("generated:", out)
+        self.assertIn("(cached)", out)
+
+    def test_text_mode_live_status_line(self):
+        rc, out, _ = self.run_doctor(cached=False, emit_json=False)
+        self.assertIn("generated:", out)
+        self.assertIn("(live)", out)
+
+
+class CacheWriteFailureWarns(_CacheDirCase):
+    """F11: a failing cache write warns on stderr and stays non-fatal."""
+
+    def test_write_failure_warns_and_exits_zero(self):
+        with _Hermetic() as h:
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch.object(
+                Path, "write_text", side_effect=OSError("disk full")
+            ), redirect_stdout(stdout), redirect_stderr(stderr):
+                rc = doctor.run({}, emit_json=True, cached=False)
+        self.assertEqual(0, rc, "cache write failure must never be fatal")
+        self.assertTrue(h.probe_spy.called)
+        err = stderr.getvalue()
+        self.assertIn("WARNING", err)
+        self.assertIn("doctor cache", err)
+        self.assertIn("disk full", err)
+        # The report itself still rendered.
+        self.assertIn("sources", json.loads(stdout.getvalue()))
+
+
 class NoSecretsInCacheFile(_CacheDirCase):
     """Scenario 5: seeded fake credentials never land in the cache file."""
 
@@ -314,6 +552,16 @@ class NoSecretsInCacheFile(_CacheDirCase):
             if var == "BSKY_HANDLE":
                 continue  # a handle is an identifier, not a credential
             self.assertNotIn(secret, raw, var)
+
+    def test_fingerprint_field_carries_no_secret_values(self):
+        rc, out, _ = self.run_doctor(dict(FAKE_SECRETS), cached=False)
+        self.assertEqual(0, rc)
+        payload = json.loads(self.cache_file.read_text(encoding="utf-8"))
+        fingerprint = payload["fingerprint"]
+        # An opaque sha256 hex digest only — no raw values of any kind.
+        self.assertRegex(fingerprint, r"^[0-9a-f]{64}$")
+        for var, secret in FAKE_SECRETS.items():
+            self.assertNotIn(secret, fingerprint, var)
 
 
 class CliCachedPassthrough(_CacheDirCase):

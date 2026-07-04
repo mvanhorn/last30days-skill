@@ -43,9 +43,11 @@ from __future__ import annotations
 
 import concurrent.futures
 import datetime
+import hashlib
 import json
 import os
 import shutil
+import sys
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -609,9 +611,21 @@ def render_text(report: Dict[str, Any]) -> str:
 # falls through to a live run (rewriting the cache) when the file is stale,
 # absent, or corrupt — corruption is treated as absence, never a crash.
 # An explicit ``doctor`` (no ``--cached``) always runs live and refreshes.
+#
+# The payload carries a schema stamp (mirrors REPORT_CACHE_VERSION in
+# last30days.py) and a config fingerprint — a sha256 over the same
+# non-secret signals doctor already reports (key-presence booleans, backend
+# pin values, INCLUDE_SOURCES). A schema or fingerprint mismatch is treated
+# as stale, so a credential or pin change can never serve yesterday's
+# conclusions. Served reports carry ``from_cache`` + ``generated_at`` so
+# consumers can see staleness instead of inferring it.
 # ---------------------------------------------------------------------------
 
 CACHE_FILENAME = "doctor-cache.json"
+
+# Bump when the cached payload/report shape changes incompatibly; a
+# mismatched (or absent) stamp is treated as an absent cache.
+DOCTOR_CACHE_SCHEMA_VERSION = "last30days-doctor-cache/v1"
 
 # TTL in SECONDS (env-tunable via LAST30DAYS_DOCTOR_TTL; registered in
 # lib/env.py's get_config key list so a .env-set value is not swallowed).
@@ -623,6 +637,14 @@ DEFAULT_CACHE_TTL_SECONDS = 900
 _SECRET_CONFIG_VARS = KEY_PRESENCE_VARS + (
     "AUTH_TOKEN", "CT0", "APIFY_API_TOKEN", "GOOGLE_GENAI_API_KEY",
 )
+
+# Backend pin vars folded into the config fingerprint. Pin values are
+# backend names (e.g. "bird"), never secrets.
+_FINGERPRINT_PIN_VARS = (env.X_BACKEND_PIN_VAR, env.REDDIT_BACKEND_PIN_VAR)
+
+# Top-level report keys the renderers read unguarded; a cached report
+# missing any of them is treated as corrupt (absent), never rendered.
+_REQUIRED_REPORT_KEYS = ("engine_version", "config", "setup", "permissions", "sources")
 
 
 def cache_path() -> Optional[Path]:
@@ -649,11 +671,65 @@ def _is_fresh(timestamp: Any, ttl_seconds: int) -> bool:
     return env.is_timestamp_fresh(timestamp, ttl_seconds)
 
 
+def _config_fingerprint(config: Dict[str, Any]) -> str:
+    """sha256 over the non-secret config signals doctor already reports.
+
+    Inputs are key-presence BOOLEANS (never credential values — the same
+    ``keys_present`` set the setup block renders), backend pin values
+    (backend names, not secrets), and INCLUDE_SOURCES (not a secret).
+    Adding or removing a credential, changing a pin, or toggling an opt-in
+    source yields a new fingerprint, so ``read_cached_report`` treats the
+    old cache as stale instead of serving pre-change conclusions.
+    """
+    config = config or {}
+    signals = {
+        "keys_present": _setup_block(config)["keys_present"],
+        "pins": {var: str(config.get(var) or "") for var in _FINGERPRINT_PIN_VARS},
+        "include_sources": str(config.get("INCLUDE_SOURCES") or ""),
+    }
+    canonical = json.dumps(signals, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _report_shape_ok(report: Any) -> bool:
+    """True when a cached report satisfies the render contract.
+
+    Validates everything the renderers read unguarded: the required
+    top-level keys exist (dict-valued where render calls ``.get`` on them),
+    and every sources record is a dict carrying a known tier and a str
+    status. Anything else is corrupt — treated as absent, never rendered.
+    """
+    if not isinstance(report, dict):
+        return False
+    if any(key not in report for key in _REQUIRED_REPORT_KEYS):
+        return False
+    if any(
+        not isinstance(report[key], dict)
+        for key in ("config", "setup", "permissions", "sources")
+    ):
+        return False
+    sources = report["sources"]
+    if not sources:
+        return False
+    for record in sources.values():
+        if not isinstance(record, dict):
+            return False
+        if record.get("tier") not in GLYPHS:
+            return False
+        if not isinstance(record.get("status"), str):
+            return False
+    return True
+
+
 def read_cached_report(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     """Return the cached report when present, well-formed, and within TTL.
 
-    Any failure mode — unreadable file, invalid JSON, wrong shape, bad or
-    stale timestamp — returns None (cache treated as absent, never a crash).
+    Any failure mode — unreadable file, invalid JSON, schema mismatch,
+    config-fingerprint mismatch, wrong shape, bad or stale timestamp —
+    returns None (cache treated as absent, never a crash).
+
+    A served report is stamped with ``from_cache: True`` and
+    ``generated_at`` (the cache write time) so consumers see staleness.
     """
     path = cache_path()
     if path is None:
@@ -664,22 +740,35 @@ def read_cached_report(config: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(payload, dict):
         return None
+    if payload.get("schema") != DOCTOR_CACHE_SCHEMA_VERSION:
+        return None  # absent or mismatched schema stamp: treat as absent
+    if payload.get("fingerprint") != _config_fingerprint(config):
+        return None  # credentials/pins/opt-ins changed: cache is stale
     report = payload.get("report")
-    if not isinstance(report, dict) or not report.get("sources"):
+    if not _report_shape_ok(report):
         return None
     if not _is_fresh(payload.get("timestamp"), cache_ttl_seconds(config)):
         return None
+    report["generated_at"] = payload.get("timestamp")
+    report["from_cache"] = True
     return report
 
 
 def _write_cache(report: Dict[str, Any], config: Dict[str, Any]) -> bool:
-    """Best-effort cache write; refuses to persist any secret value."""
+    """Best-effort cache write; refuses to persist any secret value.
+
+    Never fatal: any failure returns False after a one-line stderr warning
+    (doctor's exit-0 contract is unaffected; only ``--cached`` reuse is).
+    """
     try:
         path = cache_path()
         if path is None:
             return False
         payload = {
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "schema": DOCTOR_CACHE_SCHEMA_VERSION,
+            "fingerprint": _config_fingerprint(config),
+            "timestamp": report.get("generated_at")
+            or datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "report": report,
         }
         raw = json.dumps(payload, indent=2, sort_keys=True)
@@ -690,7 +779,12 @@ def _write_cache(report: Dict[str, Any], config: Dict[str, Any]) -> bool:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(raw, encoding="utf-8")
         return True
-    except Exception:
+    except Exception as exc:
+        sys.stderr.write(
+            f"[last30days] WARNING: could not write doctor cache: "
+            f"{type(exc).__name__}: {exc}\n"
+        )
+        sys.stderr.flush()
         return False
 
 
@@ -699,15 +793,37 @@ def run(config: Dict[str, Any], *, emit_json: bool = False, cached: bool = False
     (reporting problems is a successful run).
 
     ``cached=True`` serves the stored report within the TTL; stale, absent,
-    or corrupt caches fall through to a live run that rewrites the cache.
+    corrupt, schema-mismatched, or fingerprint-mismatched caches fall
+    through to a live run that rewrites the cache — as does ANY exception
+    raised while serving the cache (never-crash contract, KTD 8).
     ``cached=False`` (explicit ``doctor``) always runs live and refreshes.
     """
-    report = read_cached_report(config) if cached else None
-    if report is None:
-        report = build_report(config)
-        _write_cache(report, config)
-    if emit_json:
-        print(render_json(report))
-    else:
-        print(render_text(report), end="")
+    def _emit(report: Dict[str, Any]) -> None:
+        if emit_json:
+            # generated_at/from_cache ride the report dict, so they appear
+            # at the JSON top level for free.
+            print(render_json(report))
+        else:
+            # The cache-status line is printed here (run() owns this print)
+            # because render_text's header belongs to the render layer, not
+            # the cache layer.
+            origin = "cached" if report.get("from_cache") else "live"
+            print(render_text(report), end="")
+            print(f"generated: {report.get('generated_at')} ({origin})")
+
+    if cached:
+        try:
+            cached_report = read_cached_report(config)
+            if cached_report is not None:
+                _emit(cached_report)
+                return 0
+        except Exception:
+            # Belt-and-suspenders for shapes the validator misses: any
+            # failure serving the cache falls through to a live run.
+            pass
+    report = build_report(config)
+    report["generated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    report["from_cache"] = False
+    _write_cache(report, config)
+    _emit(report)
     return 0

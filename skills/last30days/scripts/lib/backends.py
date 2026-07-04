@@ -196,10 +196,25 @@ def _key_probe(name: str, key_var: str, requires: str, note: str = "") -> Callab
 
 
 def _probe_bird(config: Dict[str, Any]) -> BackendFinding:
-    """Bird = vendored X GraphQL client (node script) + browser-cookie creds."""
+    """Bird = vendored X GraphQL client (node script) + browser-cookie creds.
+
+    Cookie presence is checked FIRST, mirroring ``env._x_backend_available``'s
+    gating (``has_bird_creds and is_bird_installed()``): without cookies bird
+    is unconfigured regardless of node/script state, and the fix is the
+    cookie-consent flow — a broken node runtime must not turn an unconfigured
+    backend into an error carrying a node prescription.
+    """
     from . import bird_x
 
     requires = "X browser cookies (AUTH_TOKEN/CT0) + node"
+    if not (config.get("AUTH_TOKEN") and config.get("CT0")):
+        return BackendFinding(
+            name="bird",
+            status=health.MISSING,
+            detail="X browser cookies (AUTH_TOKEN/CT0) not configured",
+            prescription=_X_COOKIES_PRESCRIPTION,
+            requires=requires,
+        )
     if not bird_x.is_bird_installed():
         # Distinguish a missing/broken node runtime from a missing script.
         node = health.probe_dependency("node")
@@ -228,14 +243,6 @@ def _probe_bird(config: Dict[str, Any]) -> BackendFinding:
             prescription=node.prescription,
             requires=requires,
         )
-    if not (config.get("AUTH_TOKEN") and config.get("CT0")):
-        return BackendFinding(
-            name="bird",
-            status=health.MISSING,
-            detail="X browser cookies (AUTH_TOKEN/CT0) not configured",
-            prescription=_X_COOKIES_PRESCRIPTION,
-            requires=requires,
-        )
     return BackendFinding(
         name="bird",
         status=health.OK,
@@ -245,7 +252,15 @@ def _probe_bird(config: Dict[str, Any]) -> BackendFinding:
 
 
 def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
-    """xurl = official X API v2 CLI (OAuth2). Free lane; local CLI probe."""
+    """xurl = official X API v2 CLI (OAuth2). Free lane; LOCAL-ONLY probe.
+
+    Doctor's no-network guarantee forbids the live ``xurl whoami`` check
+    (``xurl_x.is_available()`` — an authenticated X API call, reserved for
+    research time). This probe keys on local evidence instead: the binary
+    on PATH plus xurl's on-disk token store (~/.xurl). Stored credentials
+    read as OK with an explicit "not live-verified" caveat; an unreadable
+    token store is a typed ERROR (broken, not unconfigured).
+    """
     from . import xurl_x
 
     requires = "xurl CLI installed + OAuth2 login"
@@ -257,11 +272,23 @@ def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
             prescription="npm install -g xurl && xurl auth oauth2 login",
             requires=requires,
         )
-    if xurl_x.is_available():
+    store_status, store_detail = xurl_x.stored_auth_status()
+    if store_status == xurl_x.AUTH_OK:
         return BackendFinding(
             name="xurl",
             status=health.OK,
-            detail="xurl authenticated (OAuth2)",
+            detail=(
+                "installed; stored OAuth2 credentials present; "
+                "auth not live-verified (no network)"
+            ),
+            requires=requires,
+        )
+    if store_status == xurl_x.AUTH_ERROR:
+        return BackendFinding(
+            name="xurl",
+            status=health.ERROR,
+            detail=store_detail,
+            prescription="xurl auth oauth2 login",
             requires=requires,
         )
     return BackendFinding(
@@ -430,6 +457,14 @@ def resolve(
     ``pin`` is an explicit per-run pin (the ``--web-backend`` flag); it
     takes precedence over the descriptor's env pin var. ``"auto"``/None
     mean unpinned. Probing is side-effect-free and collect-then-pick.
+
+    Time budget: backends are probed sequentially, so a chain's budget is
+    ADDITIVE across its backends — each binary-backed probe is bounded by
+    ``health.PROBE_TIMEOUT`` and paid/key lanes are dict lookups that cost
+    nothing, giving a worst case of roughly (binary probes in the chain) x
+    ``health.PROBE_TIMEOUT``. Deliberately no intra-chain concurrency:
+    probes are memoized per process and the worst case only occurs when
+    multiple binaries are simultaneously hung.
     """
     descriptor = get_descriptor(source)
     findings = [

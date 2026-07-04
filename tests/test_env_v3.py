@@ -71,6 +71,76 @@ class EnvV3Tests(unittest.TestCase):
             self.assertEqual(value, config[key])
 
 
+class XurlSafePathGatingTests(unittest.TestCase):
+    """F1: the safe/diagnose path (probe=False — what doctor uses) never
+    runs xurl's live `whoami` network check; it keys on local evidence
+    (xurl_x.has_stored_auth) instead."""
+
+    BIRD_OFF = {
+        "installed": False,
+        "authenticated": False,
+        "username": None,
+        "can_install": True,
+    }
+
+    def _status(self, config, probe, stored_mock, live_mock):
+        with mock.patch("lib.bird_x.get_bird_status", return_value=dict(self.BIRD_OFF)), \
+             mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None), \
+             mock.patch("lib.xurl_x.has_stored_auth", **stored_mock), \
+             mock.patch("lib.xurl_x.is_available", **live_mock):
+            return env.get_x_source_status(config, probe=probe)
+
+    _LIVE_FORBIDDEN = {
+        "side_effect": AssertionError(
+            "probe=False must not run the live `xurl whoami` network check"
+        )
+    }
+    _STORED_FORBIDDEN = {
+        "side_effect": AssertionError("probe=True should use the live check")
+    }
+
+    def test_probe_false_uses_local_evidence_only(self):
+        status = self._status(
+            {}, probe=False,
+            stored_mock={"return_value": True}, live_mock=self._LIVE_FORBIDDEN,
+        )
+        self.assertEqual("xurl", status["source"])
+        self.assertTrue(status["xurl_available"])
+
+    def test_probe_false_without_stored_auth_reports_unavailable(self):
+        status = self._status(
+            {}, probe=False,
+            stored_mock={"return_value": False}, live_mock=self._LIVE_FORBIDDEN,
+        )
+        self.assertIsNone(status["source"])
+        self.assertFalse(status["xurl_available"])
+
+    def test_probe_true_keeps_the_live_check(self):
+        status = self._status(
+            {}, probe=True,
+            stored_mock=self._STORED_FORBIDDEN, live_mock={"return_value": True},
+        )
+        self.assertEqual("xurl", status["source"])
+        self.assertTrue(status["xurl_available"])
+
+    def test_x_backend_chain_local_only_never_calls_live_check(self):
+        with mock.patch(
+            "lib.xurl_x.is_available",
+            side_effect=AssertionError("local_only chain must not run `xurl whoami`"),
+        ), mock.patch("lib.xurl_x.has_stored_auth", return_value=True):
+            chain = env.x_backend_chain({}, local_only=True)
+        self.assertEqual(["xurl"], chain)
+
+    def test_x_backend_chain_default_stays_live(self):
+        with mock.patch("lib.xurl_x.is_available", return_value=True), \
+             mock.patch(
+                 "lib.xurl_x.has_stored_auth",
+                 side_effect=AssertionError("default chain should use the live check"),
+             ):
+            chain = env.x_backend_chain({})
+        self.assertEqual(["xurl"], chain)
+
+
 class ThreadsAvailabilityTests(unittest.TestCase):
     """Threads is in the SC default-on family: same key, same per-call cost
     shape as TikTok / Instagram, so the same default-on rule applies.

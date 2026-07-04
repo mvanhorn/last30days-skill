@@ -130,13 +130,21 @@ def available_sources(
     requested_sources: list[str] | None = None,
     *,
     x_pending: bool | None = None,
+    local_only: bool = False,
 ) -> list[str]:
+    """List the sources the next run can serve.
+
+    ``local_only=True`` is the safe/diagnose flavor (doctor's permission
+    block): availability is answered from local evidence only, so the X
+    check never spawns xurl's live ``whoami`` network call. Research-time
+    callers keep the default live semantics.
+    """
     available: list[str] = []
     # reddit_public needs no API key - always available
     available.append("reddit")
     if config.get("SCRAPECREATORS_API_KEY"):
         available.extend(["tiktok", "instagram"])
-    if env.get_x_source(config):
+    if env.get_x_source(config, local_only=local_only):
         available.append("x")
     else:
         # Safe inspection (--diagnose/--preflight) skips browser-cookie
@@ -298,7 +306,12 @@ def diagnose(
         "native_search": env.is_native_search(config),
         "has_scrapecreators": bool(config.get("SCRAPECREATORS_API_KEY")),
         "has_github": bool(config.get("GITHUB_TOKEN") or which("gh")),
-        "available_sources": available_sources(config, requested_sources, x_pending=x_pending),
+        # safe=True (doctor/--diagnose/--preflight) must stay network-free:
+        # answer X availability from local evidence only. x_pending is
+        # precomputed by diagnose() to avoid double evaluation.
+        "available_sources": available_sources(
+            config, requested_sources, x_pending=x_pending, local_only=safe
+        ),
         "safe": safe,
         "config_source": config.get("_CONFIG_SOURCE"),
         "ignored_project_config": config.get("_IGNORED_PROJECT_CONFIG"),

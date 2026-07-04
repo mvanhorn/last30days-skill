@@ -93,7 +93,19 @@ class _Hermetic:
             mock.patch("lib.bird_x.is_bird_installed", return_value=False),
             mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None),
             mock.patch("lib.bird_x.get_bird_status", return_value=dict(BIRD_STATUS_OFF)),
-            mock.patch("lib.xurl_x.is_available", return_value=False),
+            # The doctor path is local-only for xurl: the live `xurl whoami`
+            # network check must never run (no-network guarantee).
+            mock.patch(
+                "lib.xurl_x.is_available",
+                side_effect=AssertionError(
+                    "doctor path ran the live `xurl whoami` network check"
+                ),
+            ),
+            mock.patch("lib.xurl_x.has_stored_auth", return_value=False),
+            mock.patch(
+                "lib.xurl_x.stored_auth_status",
+                return_value=("missing", "no token store at ~/.xurl"),
+            ),
             mock.patch("lib.backends.which", lambda name: None),
         ]
 
@@ -158,6 +170,22 @@ class KeylessEnvironment(unittest.TestCase):
         rc, out = _run_cli_doctor(["doctor"], {})
         self.assertEqual(0, rc)
         self.assertIn("last30days doctor", out)
+
+
+class UnconfiguredXWithBrokenNode(unittest.TestCase):
+    """F9 repro: no X configuration + a broken node runtime must read as
+    off/unconfigured with the cookie fix on bird — never a configured-but-
+    broken error carrying a node prescription."""
+
+    def test_x_rolls_up_off_with_cookie_prescription(self):
+        report = _build({}, probe_map={"node": health.BROKEN})
+        record = report["sources"]["x"]
+        self.assertEqual("off", record["tier"])
+        self.assertEqual("unconfigured", record["status"])
+        bird = next(b for b in record["backends"] if b["name"] == "bird")
+        self.assertEqual("missing", bird["status"])
+        self.assertIn("cookie", (bird["detail"] + bird["fix"]).lower())
+        self.assertNotIn("node", bird["fix"].lower())
 
 
 class JsonShape(unittest.TestCase):
