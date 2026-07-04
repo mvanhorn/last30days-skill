@@ -788,6 +788,20 @@ def is_tiktok_comments_available(config: dict[str, Any]) -> bool:
     return 'tiktok_comments' in include
 
 
+def is_instagram_comments_available(config: dict[str, Any]) -> bool:
+    """Check if Instagram comment enrichment is available.
+
+    Requires SCRAPECREATORS_API_KEY AND instagram_comments in INCLUDE_SOURCES.
+    Mirrors the youtube_comments / tiktok_comments opt-in pattern. Comments are
+    fetched via ScrapeCreators (GET /v2/instagram/post/comments) with each
+    comment's ``comment_like_count`` used as its vote for ranking. Part of the
+    default onboarding tier (posts on -> comments on for TikTok/Instagram/YouTube).
+    """
+    if not config.get('SCRAPECREATORS_API_KEY'):
+        return False
+    return 'instagram_comments' in _parse_include_sources(config)
+
+
 def is_youtube_sc_available(config: dict[str, Any]) -> bool:
     """Check if ScrapeCreators YouTube search fallback is available.
 

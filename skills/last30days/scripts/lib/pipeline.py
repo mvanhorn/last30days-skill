@@ -1492,7 +1492,12 @@ def _retrieve_stream(
             token=env.get_instagram_token(config),
             ig_creators=ig_creators,
         )
-        return instagram.parse_instagram_response(result), {}
+        items = instagram.parse_instagram_response(result)
+        if items and env.is_instagram_comments_available(config):
+            instagram.enrich_with_comments(
+                items, token=config.get("SCRAPECREATORS_API_KEY", ""),
+            )
+        return items, {}
     if source == "linkedin":
         token = config.get("SCRAPECREATORS_API_KEY", "")
         result = linkedin.search_linkedin(
