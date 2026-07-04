@@ -237,6 +237,7 @@ def _chained_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
     status = health.ERROR
     fix = res.prescription
     detail = ""
+    failed: Optional[backends.BackendFinding] = None
     for wanted in _SPECIFIC_FAILURES:
         failed = next((f for f in res.findings if f.status == wanted), None)
         if failed is not None:
@@ -244,8 +245,12 @@ def _chained_record(source: str, config: Dict[str, Any]) -> Dict[str, Any]:
             fix = failed.prescription or res.prescription
             detail = failed.detail
             break
+    # Mirror the OK/WARN branches: the requirement named is the FAILED
+    # backend's, not chain[0]'s (which may be a different, merely-missing
+    # backend when the failure came from later in the chain).
     return _record(status=status, fix=fix, detail=detail,
-                   requires=res.findings[0].requires if res.findings else "",
+                   requires=failed.requires if failed
+                   else (res.findings[0].requires if res.findings else ""),
                    **common)
 
 
@@ -547,7 +552,10 @@ def _source_line(name: str, record: Dict[str, Any]) -> str:
         descriptors.append(record["detail"])
     if descriptors:
         parts.append(" — " + "; ".join(descriptors))
-    if record["tier"] != TIER_OK and record.get("fix"):
+    # fix is only ever populated when there is something actionable, so
+    # render it whenever present — an ok-tier record can carry one (the
+    # youtube transcription-key note) and must not lose it in text mode.
+    if record.get("fix"):
         parts.append(f"; fix: {record['fix']}")
     return "".join(parts)
 

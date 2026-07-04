@@ -1,7 +1,7 @@
 ---
 name: last30days
 version: "3.10.0"
-description: "Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web."
+description: "Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web. Includes a doctor health check to diagnose broken or missing sources."
 argument-hint: 'last30days nvidia earnings reaction | last30days AI video tools | last30days what users want in react'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
 homepage: https://github.com/mvanhorn/last30days-skill
@@ -625,7 +625,7 @@ SKILL_DIR="<absolute path of the directory containing the SKILL.md you just Read
 
 **Reddit backend pin:** Reddit defaults to the free public backend with ScrapeCreators as a backup when `SCRAPECREATORS_API_KEY` is available. If the user says public Reddit is shallow, bot-gated, or missing nested comments, tell them they can set `LAST30DAYS_REDDIT_BACKEND=scrapecreators` alongside `SCRAPECREATORS_API_KEY` to make ScrapeCreators primary and keep public Reddit as fallback. Do not set this automatically for normal runs.
 
-**Doctor health check:** When the user asks for a health check ("is X working?", "why is a source missing?", "what's broken?", "did setup work?"), run `"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" doctor` (append `--json` for the machine contract) and relay the per-source tiers and fix prescriptions. Standing rule: before research that depends on login-backed sources (X via cookies, Reddit's ScrapeCreators backfill), consult `doctor --cached --json` — it serves the report cached at `~/.config/last30days/doctor-cache.json` within its TTL (`LAST30DAYS_DOCTOR_TTL` seconds, default 900) for the cost of one file read. Re-run live `doctor` only when the cache is stale or the previous run reported a degraded login-backed source. When X is in ACTIVE_SOURCES_LIST, announce its predicted backend from the report's `sources.x.active_backend` (e.g. "X will use: bird") in the pre-research status line.
+**Doctor health check:** When the user asks for a health check ("is X working?", "why is a source missing?", "what's broken?", "did setup work?"), run `"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" doctor` (append `--json` for the machine contract) and relay the per-source tiers and fix prescriptions. **MANDATORY standing rule.** Before research that depends on login-backed sources (X via cookies, Reddit's ScrapeCreators backfill), consult `doctor --cached --json` — it serves the report cached at `~/.config/last30days/doctor-cache.json` within its TTL (`LAST30DAYS_DOCTOR_TTL` seconds, default 900) for the cost of one file read. Re-run live `doctor` only when the cache is stale or the previous run reported a degraded login-backed source. When X is in ACTIVE_SOURCES_LIST, announce its predicted backend from the report's `sources.x.active_backend` (e.g. "X will use: bird") in the pre-research status line.
 
 
 Then display (use "and more" if 5+ sources, otherwise list all with Oxford comma):

@@ -23,7 +23,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 import last30days as cli
-from lib import backends, doctor, health
+from lib import backends, doctor, health, prescriptions
 
 BIRD_STATUS_OFF = {
     "installed": False,
@@ -282,6 +282,27 @@ class ProbeFailureIsolation(unittest.TestCase):
         self.assertEqual("broken", record["status"])
         self.assertEqual("error", record["tier"])
 
+    def test_chained_failure_requires_names_the_failed_backend(self):
+        """F4: chain[0] merely MISSING while a later backend is BROKEN ->
+        the record's requires is the BROKEN backend's (mirroring how the
+        OK/WARN branches use the active finding), never chain[0]'s."""
+        config = {
+            "AUTH_TOKEN": "dummy-auth-token-secret-000",
+            "CT0": "dummy-ct0-secret-000",
+        }
+        with _Hermetic(probe_map={"node": health.BROKEN}), \
+             mock.patch("lib.bird_x.is_bird_installed", return_value=True):
+            report = doctor.build_report(dict(config))
+        record = report["sources"]["x"]
+        self.assertEqual("broken", record["status"])
+        self.assertEqual("error", record["tier"])
+        by_name = {b["name"]: b for b in record["backends"]}
+        # chain[0] (xai) is merely unconfigured; bird is the broken one.
+        self.assertEqual("missing", by_name["xai"]["status"])
+        self.assertEqual("broken", by_name["bird"]["status"])
+        self.assertEqual(by_name["bird"]["requires"], record["requires"])
+        self.assertNotEqual(by_name["xai"]["requires"], record["requires"])
+
     def test_source_exception_is_isolated(self):
         real_resolve = backends.resolve
 
@@ -397,6 +418,34 @@ class IncludeSourcesTokenParsing(unittest.TestCase):
         record = report["sources"]["linkedin"]
         self.assertEqual("ok", record["status"])
         self.assertEqual("ok", record["tier"])
+
+
+class YoutubeTranscriptionNote(unittest.TestCase):
+    """F7: yt-dlp probes OK but no GROQ_API_KEY/OPENAI_API_KEY -> the ok
+    youtube record carries the caption-free note plus the
+    transcription_key_missing fix, and (F14) the text renderer surfaces
+    that fix even though the record's tier is ok."""
+
+    def setUp(self):
+        self.report = _build({}, probe_map={"yt-dlp": health.OK})
+        self.entry = prescriptions.get("youtube", "transcription_key_missing")
+
+    def test_ok_record_carries_note_and_fix(self):
+        record = self.report["sources"]["youtube"]
+        self.assertEqual("ok", record["tier"])
+        self.assertEqual("ok", record["status"])
+        self.assertIn("no transcription key for caption-free videos", record["note"])
+        self.assertIn(self.entry.fix_nl, record["fix"])
+        self.assertIn(self.entry.fix_cli, record["fix"])
+
+    def test_text_line_includes_the_fix_on_the_ok_line(self):
+        text = doctor.render_text(self.report)
+        line = next(
+            l for l in text.splitlines() if l.strip().startswith("✓ youtube")
+        )
+        self.assertIn("no transcription key for caption-free videos", line)
+        self.assertIn(f"fix: {self.entry.fix_nl}", line)
+        self.assertIn(self.entry.fix_cli, line)
 
 
 class NativeSearchHost(unittest.TestCase):

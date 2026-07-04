@@ -36,6 +36,7 @@ SEED_INVENTORY = {
     ("youtube", "transcription_key_missing"),
     ("digg", "pp_cli_missing"),
     ("digg", "pp_cli_off_path"),
+    ("digg", "pp_cli_broken"),
     ("youtube", "ytdlp_missing"),
     ("youtube", "ytdlp_stale"),
     ("youtube", "ytdlp_broken"),
@@ -255,6 +256,41 @@ class TestDependencyProbeComposition:
         entry = prescriptions.for_dependency_probe(probe)
         assert entry is not None
         assert entry.failure == "pp_cli_off_path"
+
+    def test_digg_broken_probe_maps_to_the_reinstall_entry(self):
+        """An installed-but-broken digg binary must get reinstall-framed
+        text, never the never-installed "install it" entry (F6); the
+        probe's own prescription wins the CLI form, mirroring
+        test_probe_prescription_wins_the_cli_form."""
+        reinstall = f"re-run the Printing Press install: {health.pp_install_cmd('digg')}"
+        probe = health.DependencyProbe(
+            name="digg-pp-cli",
+            status=health.BROKEN,
+            detail=(
+                "digg-pp-cli resolves to /home/u/.local/bin/digg-pp-cli "
+                "but won't execute"
+            ),
+            prescription=reinstall,
+        )
+        entry = prescriptions.for_dependency_probe(probe)
+        assert entry is not None
+        assert entry.failure == "pp_cli_broken"
+        assert entry.fix_cli == reinstall
+        # Registry vocabulary (NL form) is retained and reinstall-framed.
+        assert entry.fix_nl == prescriptions.get("digg", "pp_cli_broken").fix_nl
+        assert "reinstall" in entry.fix_nl
+        assert entry.fix_nl != prescriptions.get("digg", "pp_cli_missing").fix_nl
+
+    def test_digg_timeout_probe_also_maps_to_the_reinstall_entry(self):
+        probe = health.DependencyProbe(
+            name="digg-pp-cli",
+            status=health.TIMEOUT,
+            detail="digg-pp-cli --version timed out",
+            prescription="reinstall digg-pp-cli",
+        )
+        entry = prescriptions.for_dependency_probe(probe)
+        assert entry is not None
+        assert entry.failure == "pp_cli_broken"
 
     def test_unregistered_dependency_wraps_the_probe(self):
         probe = health.DependencyProbe(

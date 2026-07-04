@@ -628,6 +628,26 @@ class DoctorSkillContract(unittest.TestCase):
         self.assertIn("stale", self.text)
         self.assertIn("degraded login-backed source", self.text)
 
+    def test_standing_rule_is_marked_mandatory(self):
+        # The pre-research cache consult is a must-fire rule; it uses the
+        # same bold MANDATORY marker style as Step 0.45 so it cannot read
+        # as soft advisory prose (F16b).
+        self.assertIn("**MANDATORY standing rule.**", self.text)
+
+    def test_frontmatter_description_carries_health_check_keywords(self):
+        # Cold-start prompts like "is my last30days X search broken?" can
+        # only load the skill if the machine-parsed frontmatter description
+        # mentions the health surface (F16a). It must stay ONE line.
+        lines = self.text.splitlines()
+        self.assertEqual("---", lines[0])
+        closing = lines[1:].index("---") + 1
+        frontmatter = lines[1:closing]
+        desc_lines = [l for l in frontmatter if l.startswith("description:")]
+        self.assertEqual(1, len(desc_lines), "description must be one line")
+        desc = desc_lines[0].lower()
+        for needle in ("doctor", "health check", "diagnose", "broken"):
+            self.assertIn(needle, desc, f"description missing keyword: {needle!r}")
+
     def test_predicted_backend_announcement(self):
         self.assertIn("active_backend", self.text)
 

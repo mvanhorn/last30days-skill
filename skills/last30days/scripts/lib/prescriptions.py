@@ -135,6 +135,19 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         anchor="first-run-onboarding",
     ),
     _entry(
+        "digg", "pp_cli_broken",
+        cause=(
+            "digg-pp-cli resolves on PATH but won't execute (broken or "
+            "hanging binary left behind by a bad install)"
+        ),
+        fix_nl=(
+            "reinstall the Digg CLI (re-run the Printing Press install) so "
+            "the binary actually executes; it is installed but not serving"
+        ),
+        fix_cli=_DIGG_PP_INSTALL_CLI,
+        anchor="first-run-onboarding",
+    ),
+    _entry(
         "digg", "pp_cli_off_path",
         cause=(
             "digg-pp-cli is installed but its directory is not on the "
@@ -244,9 +257,11 @@ def _dependency_failure(probe: health.DependencyProbe) -> Optional[Tuple[str, st
         # health reports off-PATH binaries as MISSING with ``off_path=True``;
         # the distinction only picks cause/NL wording — the probe's own
         # prescription wins the CLI form either way.
-        if probe.status == health.MISSING and probe.off_path:
-            return ("digg", "pp_cli_off_path")
-        return ("digg", "pp_cli_missing")
+        if probe.status == health.MISSING:
+            if probe.off_path:
+                return ("digg", "pp_cli_off_path")
+            return ("digg", "pp_cli_missing")
+        return ("digg", "pp_cli_broken")  # BROKEN and TIMEOUT: reinstall class
     return None
 
 
