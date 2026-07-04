@@ -1021,6 +1021,12 @@ def main() -> int:
         # silently skip the service that used the other one).
         found_browsers = set(results.get("cookies_found", {}).values())
         from_browser = found_browsers.pop() if len(found_browsers) == 1 else None
+        # Pin only a silent winner (firefox/safari). Pinning a Chromium browser
+        # would make every steady-state run re-read its Keychain-encrypted store
+        # and can re-trigger the "Always Allow" prompt, so Chrome is used for the
+        # first-run scan but never pinned.
+        if from_browser in {"chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"}:
+            from_browser = None
         setup_wizard.write_setup_config(env.CONFIG_FILE, from_browser=from_browser)
         results["env_written"] = True
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")

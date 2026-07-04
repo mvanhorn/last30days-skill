@@ -105,6 +105,33 @@ class TestRunAutoSetup:
         assert results["cookies_found"]["x"] == "firefox"
         assert results["cookies_found"]["truthsocial"] == "firefox"
 
+    @patch("lib.cookie_extract.extract_cookies_with_source")
+    @patch("shutil.which")
+    def test_default_scan_order_is_chromium_first(self, mock_which, mock_extract):
+        """U1: with FROM_BROWSER unset, the scan tries Chrome before Safari.
+
+        Safari is the only X-cookie source needing Full Disk Access; Chrome
+        reads via the Keychain with no FDA. The wizard must try the Chromium
+        family first so the common macOS user does not hit the FDA dead-end.
+        """
+        tried = []
+
+        def side_effect(browser, domain, cookie_names):
+            tried.append(browser)
+            return None  # never find cookies, so every browser is attempted
+
+        mock_extract.side_effect = side_effect
+        mock_which.return_value = None
+
+        setup_wizard.run_auto_setup({}, allow_browser_cookies=True)
+
+        # Order within the first domain's attempts must be chromium-first.
+        assert "chrome" in tried and "safari" in tried
+        assert tried.index("chrome") < tried.index("safari")
+        assert tried.index("chrome") < tried.index("firefox")
+        # And it must not route through the silent-first "auto" order.
+        assert tried[0] == "chrome"
+
 
 class TestYtdlpAutoInstall:
     """Tests for yt-dlp auto-install via Homebrew in run_auto_setup()."""
