@@ -673,6 +673,15 @@ def get_reddit_source(config: dict[str, Any]) -> str | None:
 #   xquik — key-based REST X search (XQUIK_API_KEY); keyless of browser cookies
 _X_BACKEND_ORDER = ("xai", "bird", "xurl", "xquik")
 
+# Public routing definitions for the doctor/backend-descriptor layer
+# (lib/backends.py). These are aliases for knowledge this module already
+# owns — the declared X chain order and the pin/floor env var names — so
+# descriptors import one source of truth instead of restating it.
+X_BACKEND_ORDER = _X_BACKEND_ORDER
+X_BACKEND_PIN_VAR = 'LAST30DAYS_X_BACKEND'
+REDDIT_BACKEND_PIN_VAR = 'LAST30DAYS_REDDIT_BACKEND'
+REDDIT_SC_MIN_ITEMS_VAR = 'LAST30DAYS_REDDIT_SC_MIN_ITEMS'
+
 
 def _x_backend_available(backend: str, config: dict[str, Any], has_bird_creds: bool) -> bool:
     if backend == 'xai':
@@ -705,7 +714,7 @@ def x_backend_chain(config: dict[str, Any]) -> list[str]:
     if has_bird_creds:
         bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
 
-    preferred = (config.get('LAST30DAYS_X_BACKEND') or '').lower()
+    preferred = (config.get(X_BACKEND_PIN_VAR) or '').lower()
     if preferred in _X_BACKEND_ORDER:
         return [preferred] if _x_backend_available(preferred, config, has_bird_creds) else []
 
