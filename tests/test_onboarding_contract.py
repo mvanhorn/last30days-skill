@@ -197,6 +197,7 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_already_registered_status_handled(self):
         self.assertIn("already_registered", self.modal)
+        self.assertIn("already_registered", self.prose)
 
     # --- Legacy guarantees retained ---
 

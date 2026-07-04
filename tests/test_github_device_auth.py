@@ -20,7 +20,9 @@ class TestUserCodeValidation:
 
     @patch("lib.setup_wizard.subprocess.run")
     @patch("lib.setup_wizard.run_device_auth")
-    def test_malformed_user_code_is_rejected(self, mock_run_device, mock_pbcopy):
+    def test_malformed_user_code_is_rejected(self, mock_run_device, mock_subprocess_run):
+        # mock_subprocess_run patches setup_wizard.subprocess.run; the only such
+        # call in run_full_device_auth is the pbcopy of the code.
         # A key-shaped value (no dash, 28 chars) must never be treated as a code.
         mock_run_device.return_value = (
             "dev-code-123",
@@ -33,8 +35,8 @@ class TestUserCodeValidation:
             result = setup_wizard.run_full_device_auth(timeout=1)
 
         assert result["status"] == "error"
-        # Not copied to the clipboard...
-        mock_pbcopy.assert_not_called()
+        # Not copied to the clipboard (no pbcopy subprocess call)...
+        mock_subprocess_run.assert_not_called()
         # ...and never emitted as a device_code_ready line.
         assert "device_code_ready" not in out.getvalue()
         assert "m08LboBUJpRz82AMyuCWP9sqwnk2" not in out.getvalue()
