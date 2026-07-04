@@ -147,6 +147,37 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertNotIn("Threads", self.prose)
         self.assertNotIn("Pinterest", self.prose)
 
+    # --- Chrome-first cookie scan (U2/U3) ---
+
+    def test_cookie_consent_leads_with_chrome(self):
+        """Both flows tell the user Chrome is checked first, with the Keychain cue."""
+        for slice_name, slice_text in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn("Chrome", slice_text, f"{slice_name} cookie copy omits Chrome")
+            self.assertIn("Always Allow", slice_text, f"{slice_name} omits the Keychain cue")
+
+    def test_fda_reframed_as_safari_fallback(self):
+        """Full Disk Access is framed as Safari-only, not the default path."""
+        self.assertNotIn("scan your browser (Firefox/Safari)", self.modal)
+
+    def test_stocktwits_surfaced_as_conditional(self):
+        """StockTwits is advertised as a gated (ticker/crypto) source."""
+        self.assertIn("StockTwits", self.modal)
+
+    # --- Honest GitHub device-code copy (U4/U7) ---
+
+    def test_no_false_instant_gh_promise(self):
+        """The '~2 seconds - no browser' claim (a nonexistent code path) is gone."""
+        self.assertNotIn("~2 seconds - no browser", self.step0)
+        self.assertNotIn("Registers via GitHub CLI in ~2 seconds", self.step0)
+
+    def test_device_code_surfacing_orchestration_present(self):
+        """Both flows must surface the device code, not block on a spinner."""
+        self.assertIn("device_code_ready", self.modal)
+        self.assertIn("device_code_ready", self.prose)
+
+    def test_already_registered_status_handled(self):
+        self.assertIn("already_registered", self.modal)
+
     # --- Legacy guarantees retained ---
 
     def test_old_silent_wizard_instruction_removed(self):
