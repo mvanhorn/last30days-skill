@@ -159,9 +159,14 @@ class TestOnboardingContract(unittest.TestCase):
         """Full Disk Access is framed as Safari-only, not the default path."""
         self.assertNotIn("scan your browser (Firefox/Safari)", self.modal)
 
-    def test_stocktwits_surfaced_as_conditional(self):
-        """StockTwits is advertised as a gated (ticker/crypto) source."""
-        self.assertIn("StockTwits", self.modal)
+    def test_niche_autogated_sources_not_in_welcome(self):
+        """Keyless, topic-gated sources (StockTwits) stay OUT of the setup welcome.
+
+        The welcome advertises what needs a setup action or is broadly always-on;
+        a source that needs zero setup and only fires on ticker/crypto topics is
+        noise for the typical first-run user, so it self-activates silently.
+        """
+        self.assertNotIn("StockTwits", self.modal)
 
     # --- Honest GitHub device-code copy (U4/U7) ---
 
