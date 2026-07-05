@@ -159,10 +159,10 @@ def save_output(
         with os.fdopen(fd, "wb") as f:
             f.write(encoded)
         return candidate
-    # Fallback: all 102 candidates existed (extremely unlikely).
-    candidate = path / f"{slug}-{raw_label}{suffix_part}-{date_str}.{extension}"
-    candidate.write_text(content, encoding="utf-8")
-    return candidate
+    # Fallback: all 101 candidates existed (extremely unlikely).
+    raise RuntimeError(
+        f"save_output: could not find a unique filename after 101 attempts in {path}"
+    )
 
 
 def save_rendered_output(rendered_content: str, output_file: str) -> Path:
