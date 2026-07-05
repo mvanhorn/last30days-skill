@@ -83,7 +83,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	defer cancel()
 
 	args := append([]string{scriptPath}, opts.Args...)
-	cmd := exec.CommandContext(subCtx, pythonPath, args...) // nosemgrep: go.lang.security.audit.dangerous-exec-command.dangerous-exec-command
+	cmd := exec.CommandContext(subCtx, pythonPath, args...)
 	cmd.Env = buildEnv(opts.CacheDir, opts.ExtraEnv)
 
 	var stdout, stderr bytes.Buffer
@@ -117,7 +117,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 // rely on this to inject a stub. Otherwise we look up python3 on PATH.
 func resolvePython(override string) (string, error) {
 	if override != "" {
-		return exec.LookPath(override)
+		return override, nil
 	}
 	path, err := exec.LookPath(DefaultPythonBinary)
 	if err == nil {
