@@ -111,5 +111,5 @@ If you symlinked your working tree (developer alternative above), just `git pull
 ## Support
 
 - Original repo: https://github.com/mvanhorn/last30days-skill
-- Hermes: https://github.com/mercurial-tf/hermes
+- Hermes: https://github.com/nousresearch/hermes-agent
 - Issues: Please report in the original repo
