@@ -191,6 +191,49 @@ class OutputEnvelopeTests(unittest.TestCase):
         # engagement summation also lands correctly.
         self.assertIn("9 citations", text)
 
+    def _linkedin_item(self, item_id: str, likes: int, comments: int) -> schema.SourceItem:
+        return schema.SourceItem(
+            item_id=item_id,
+            source="linkedin",
+            title=f"LinkedIn post about test topic ({item_id})",
+            body="LinkedIn post body.",
+            url="https://www.linkedin.com/posts/example",
+            container="LinkedIn",
+            published_at="2026-03-16",
+            date_confidence="high",
+            engagement={"likes": likes, "comments": comments},
+            metadata={},
+        )
+
+    def test_emoji_footer_includes_linkedin_when_present(self):
+        # Regression: LinkedIn items survived retrieval/normalize/dedup and
+        # were counted in ## Stats, but were dropped from the emoji-tree
+        # footer because _FOOTER_SOURCES omitted linkedin. The pass-through
+        # block users read then showed no LinkedIn line at all, so an 8-item
+        # LinkedIn run looked like the source never ran.
+        report = sample_report()
+        report.items_by_source["linkedin"] = [self._linkedin_item("li1", 140, 7)]
+        text = render.render_compact(report)
+        self.assertIn("👔 LinkedIn:", text)
+        self.assertIn("1 post", text)
+        self.assertIn("140 likes", text)
+        self.assertIn("7 comments", text)
+
+    def test_stats_linkedin_engagement_and_label(self):
+        # ENGAGEMENT_DISPLAY and SOURCE_LABELS also omitted linkedin, so the
+        # ## Stats line rendered as a bare title-cased "Linkedin: N items"
+        # with no engagement summary.
+        report = sample_report()
+        report.items_by_source["linkedin"] = [
+            self._linkedin_item("li1", 140, 7),
+            self._linkedin_item("li2", 57, 2),
+        ]
+        text = render.render_compact(report)
+        self.assertIn("- LinkedIn: 2 items", text)
+        self.assertIn("197likes", text)
+        self.assertIn("9cmt", text)
+        self.assertNotIn("- Linkedin:", text)
+
     def test_canonical_boundary_scopes_pass_through_to_footer(self):
         text = render.render_compact(sample_report())
         # New boundary text scopes verbatim to the PASS-THROUGH FOOTER block,
