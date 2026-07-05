@@ -205,8 +205,10 @@ def _digg_on_path() -> Optional[str]:
 def _digg_off_path_binary() -> Optional[str]:
     """Return digg-pp-cli path from known install dirs when not on PATH."""
     for candidate in _digg_bin_candidate_paths():
-        if candidate.is_file() and os.access(candidate, os.X_OK):
-            return str(candidate)
+        if candidate.is_file():
+            # On Windows, os.X_OK is unreliable for shell scripts
+            if os.name == "nt" or os.access(candidate, os.X_OK):
+                return str(candidate)
     return None
 
 
