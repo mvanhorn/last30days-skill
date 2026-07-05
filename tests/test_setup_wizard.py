@@ -3,6 +3,7 @@
 import subprocess
 import tempfile
 from pathlib import Path
+import sys
 from unittest.mock import patch, MagicMock
 
 import pytest
@@ -202,6 +203,7 @@ class TestYtdlpAutoInstall:
         assert "something broke" in results["ytdlp_stderr"]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PATH concepts not available on Windows")
 class TestDiggAutoInstall:
     """Tests for digg-pp-cli auto-install via npx in run_auto_setup()."""
 
@@ -448,6 +450,7 @@ class TestWriteSetupConfig:
             assert "SETUP_COMPLETE=true" in lines[1]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PATH concepts not available on Windows")
 class TestWriteApiKey:
     """Tests for write_api_key() — persisting the ScrapeCreators signup key."""
 
@@ -597,6 +600,7 @@ class TestWizardDoesNotProbeChromeByDefault:
         assert results["cookies_found"] == {}
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PATH concepts not available on Windows")
 class TestGetSetupStatusText:
     """Tests for get_setup_status_text()."""
 

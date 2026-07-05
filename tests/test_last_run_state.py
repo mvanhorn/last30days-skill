@@ -6,11 +6,12 @@ import shutil
 import stat
 import subprocess
 import sys
-import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
+
+import pytest
 
 import last30days as cli
 from lib import schema
@@ -77,6 +78,7 @@ def _diag() -> dict[str, object]:
     }
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash hook not available on Windows")
 class LastRunStateTests(unittest.TestCase):
     def test_empty_config_override_disables_last_run_write(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -468,6 +470,7 @@ class LastRunStateTests(unittest.TestCase):
             self.assertIn('Last run: "prior research"', result.stdout)
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash hook not available on Windows")
 class TestSkillMdFirstRunReference(unittest.TestCase):
     """Verifies SKILL.md references that exist in the CLI."""
 
@@ -500,6 +503,7 @@ class TestSkillMdFirstRunReference(unittest.TestCase):
         mock_write.assert_called_once()
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="bash hook not available on Windows")
 class TestCheckPermsAutoFix(unittest.TestCase):
     """check_perms should auto-fix loose .env permissions instead of warning only."""
 

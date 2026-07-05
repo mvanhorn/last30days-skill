@@ -17,10 +17,14 @@ import json
 import os
 import re
 import shutil
+import sys
+import os
 import subprocess
 from pathlib import Path
 
 import pytest
+
+pytestmark = pytest.mark.skipif(sys.platform == "win32", reason="bash hook not available on Windows")
 
 HOOK = Path(__file__).resolve().parents[1] / "hooks" / "scripts" / "check-config.sh"
 

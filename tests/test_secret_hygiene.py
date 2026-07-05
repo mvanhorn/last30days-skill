@@ -2,7 +2,10 @@
 
 import os
 import stat
+import sys
 from pathlib import Path
+
+import pytest
 
 from lib import env, setup_wizard
 
@@ -12,12 +15,14 @@ def _mode(path: Path) -> int:
 
 
 class TestSecureEnvWrite:
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod not available on Windows")
     def test_new_env_file_is_0600(self, tmp_path):
         env_path = tmp_path / "cfg" / ".env"
         assert setup_wizard.write_setup_config(env_path, from_browser="auto") is True
         assert env_path.exists()
         assert _mode(env_path) == 0o600
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="chmod not available on Windows")
     def test_existing_loose_file_tightened_to_0600(self, tmp_path):
         env_path = tmp_path / ".env"
         env_path.write_text("EXISTING_KEY=value\n", encoding="utf-8")
