@@ -334,6 +334,31 @@ If your Bash call to `last30days.py` does NOT include the FULL pre-flight checkl
 
 ---
 
+## 🔴 CHECKPOINT MAP — mandatory stop-and-verify gates
+
+| Gate | Trigger | Verify | Skip to |
+|------|---------|--------|---------|
+| 🔴 STEP 0 | First-run detected | Setup wizard complete? `SETUP_COMPLETE=true`? | Step 0.45 |
+| 🔴 PRE-FLIGHT | Named-entity topic | All handles/repos/communities resolved? | Engine invocation |
+| 🔴 ENGINE RUN | Before synthesis | `scripts/last30days.py` executed? Footer in output? | LAW 5/6 |
+| 🔴 SYNTHESIS | After engine completes | All LAWs checked? BADGE present? No `Sources:` block? | Invitation |
+
+## Reference Files — loaded on demand
+
+| File | When | Content |
+|------|------|---------|
+| [`INDEX.md`](references/INDEX.md) | Orientation | Navigation for all 8 reference files |
+| [`setup-wizard.md`](references/setup-wizard.md) | Step 0 first-run | 30-second auto-setup wizard |
+| [`laws-and-examples.md`](references/laws-and-examples.md) | Synthesis | LAW 1-8 details, violation history, worked examples |
+| [`query-quality-preflight.md`](references/query-quality-preflight.md) | Step 0.45 | Keyword-trap detection |
+| [`pre-flight-resolution.md`](references/pre-flight-resolution.md) | Step 0.5 | Handle/repo/community resolution |
+| [`pre-research-intelligence.md`](references/pre-research-intelligence.md) | Step 0.55 | Community mapping + entity grounding |
+| [`query-plan-generation.md`](references/query-plan-generation.md) | Step 0.75 | JSON query plan schema |
+| [`synthesis-template.md`](references/synthesis-template.md) | After engine run | Judge agent + narrative template |
+| [`save-html-brief.md`](references/save-html-brief.md) | HTML output | Self-contained HTML brief generation |
+
+---
+
 # last30days v3.18.3: Research Any Topic from the Last 30 Days
 
 > **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`). X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars). Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). On hosts with `uv` and no Python 3.12+, the preflight may install a uv-managed CPython 3.12 (one-time ~28MB download, announced on stderr). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
