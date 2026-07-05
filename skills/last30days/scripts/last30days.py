@@ -138,7 +138,13 @@ def save_output(
     suffix_part = f"-{suffix}" if suffix else ""
     out_path = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
     if out_path.exists():
-        out_path = path / f"{slug}-{raw_label}{suffix_part}-{datetime.now().strftime('%Y-%m-%d')}.{extension}"
+        date_str = datetime.now().strftime('%Y-%m-%d')
+        candidate = path / f"{slug}-{raw_label}{suffix_part}-{date_str}.{extension}"
+        counter = 1
+        while candidate.exists():
+            candidate = path / f"{slug}-{raw_label}{suffix_part}-{date_str}-{counter}.{extension}"
+            counter += 1
+        out_path = candidate
     # Markdown saves keep the complete debug artifact. JSON and HTML preserve
     # their requested wire format so file extensions match their content.
     if rendered_content is not None:
