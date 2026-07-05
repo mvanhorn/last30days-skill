@@ -4,6 +4,12 @@ version: "3.18.3"
 description: "Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web. Includes a doctor health check to diagnose broken or missing sources."
 argument-hint: 'last30days nvidia earnings reaction | last30days AI video tools | last30days what users want in react'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
+# ── Multi-runtime tool mapping ──
+# Hermes: terminal, read_file, write_file, clarify, web_search
+# Claude Code: Bash, Read, Write, AskUserQuestion, WebSearch
+# Codex: terminal, read_file, write_file, ask_user, web_search
+# The hosting agent runtime maps these to its own tool names at load time.
+# The canonical names here follow the Agent Skills specification.
 homepage: https://github.com/mvanhorn/last30days-skill
 repository: https://github.com/mvanhorn/last30days-skill
 author: mvanhorn
@@ -64,6 +70,38 @@ metadata:
       - hiring-signals
       - ai-skill
       - clawhub
+  hermes:
+    tags:
+      - research
+      - deep-research
+      - reddit
+      - twitter
+      - youtube
+      - tiktok
+      - instagram
+      - linkedin
+      - hackernews
+      - polymarket
+      - bluesky
+      - trends
+      - recency
+      - news
+      - citations
+      - multi-source
+      - social-media
+      - analysis
+      - web-search
+    related_skills: []
+    requires:
+      env: []
+      optionalEnv:
+        - SCRAPECREATORS_API_KEY
+        - AUTH_TOKEN
+        - CT0
+        - BSKY_HANDLE
+        - BSKY_APP_PASSWORD
+      bins:
+        - python3
 ---
 
 # STEP 0: STALE-CLONE SELF-CHECK — RUN BEFORE READING BELOW
@@ -92,6 +130,8 @@ If the SKILL.md path you just Read contains `/.claude/plugins/marketplaces/` AND
 **Why this specific check:** `~/.claude/plugins/marketplaces/last30days-skill/` is a git clone Claude Code auto-restores to `origin/main` on session start. It can lag the versioned cache by one or more releases. Three 2026-04-22 test runs (Linear, Coinbase) loaded SKILL.md from `marketplaces/`, ran `--help` from the same stale path, did not see the `--competitors` flag that existed in the cache, and fell back to a manual comparison plan. Result: 2 of 3 windows never invoked the feature they were asked to test. STEP 0 defends against that one Claude Code-specific bug.
 
 **Other install paths are fine:** `~/.codex/skills/`, `~/.agents/skills/`, an `npx skills add` install dir, or a repo checkout are all valid load points - the resolver in Step 1 picks them up. Do NOT abort or hop on those paths.
+
+**Hermes Agent note:** The stale-clone check above targets Claude Code's marketplace cache only. On Hermes, the skill loads from `AppData/Local/hermes/skills/research/last30days/SKILL.md` (or `~/.hermes/skills/research/last30days/SKILL.md`), which is always a single authoritative copy. **Skip this check on Hermes** — it does not apply and the `find ~/.claude/...` will fail harmlessly.
 
 ---
 
