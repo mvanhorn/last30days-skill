@@ -136,15 +136,12 @@ def save_output(
     extension = "json" if emit == "json" else "html" if emit == "html" else "md"
     raw_label = "raw-html" if emit == "html" else "raw"
     suffix_part = f"-{suffix}" if suffix else ""
-    out_path = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
-    if out_path.exists():
-        date_str = datetime.now().strftime('%Y-%m-%d')
-        candidate = path / f"{slug}-{raw_label}{suffix_part}-{date_str}.{extension}"
-        counter = 1
-        while candidate.exists():
-            candidate = path / f"{slug}-{raw_label}{suffix_part}-{date_str}-{counter}.{extension}"
-            counter += 1
-        out_path = candidate
+    base = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    candidates = [base]
+    candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}.{extension}")
+    for i in range(1, 100):
+        candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}-{i}.{extension}")
     # Markdown saves keep the complete debug artifact. JSON and HTML preserve
     # their requested wire format so file extensions match their content.
     if rendered_content is not None:
@@ -153,8 +150,19 @@ def save_output(
         content = emit_output(report, emit, synthesis_md=synthesis_md)
     else:
         content = render.render_full(report)
-    out_path.write_text(content, encoding="utf-8")
-    return out_path
+    encoded = content.encode("utf-8")
+    for candidate in candidates:
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as f:
+            f.write(encoded)
+        return candidate
+    # Fallback: all 102 candidates existed (extremely unlikely).
+    candidate = path / f"{slug}-{raw_label}{suffix_part}-{date_str}.{extension}"
+    candidate.write_text(content, encoding="utf-8")
+    return candidate
 
 
 def save_rendered_output(rendered_content: str, output_file: str) -> Path:

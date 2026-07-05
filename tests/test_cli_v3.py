@@ -287,10 +287,12 @@ class CliV3Tests(unittest.TestCase):
     def test_save_output_writes_utf8_encoded_markdown(self):
         report = self.make_report()
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch("pathlib.Path.write_text", autospec=True, return_value=1) as write_text:
-                cli.save_output(report, "md", tmp)
-        _, kwargs = write_text.call_args
-        self.assertEqual("utf-8", kwargs.get("encoding"))
+            path = cli.save_output(report, "md", tmp)
+            raw = path.read_bytes()
+            content = path.read_text(encoding="utf-8")
+        self.assertIn(report.topic, content)
+        # Verify the raw bytes decode cleanly as UTF-8.
+        self.assertEqual(content, raw.decode("utf-8"))
 
     def test_save_rendered_output_writes_exact_file_path(self):
         with tempfile.TemporaryDirectory() as tmp:
