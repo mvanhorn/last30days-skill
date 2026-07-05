@@ -11,13 +11,8 @@ The Claude Code hook runs `hooks/scripts/check-config.sh` on every session start
 3. Detects first-run and shows welcome message
 
 ## Hermes equivalent: cron job
-
-On Hermes, create a cron job that runs the check on a schedule:
-
-```
-# One-time: create the memory directory
-mkdir -p ~/Documents/Last30Days
-
+### Directory creation
+The engine creates `$LAST30DAYS_MEMORY_DIR` automatically when running — no manual setup needed.
 # One-time: check and report config status
 bash hooks/scripts/check-config.sh
 ```

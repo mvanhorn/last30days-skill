@@ -363,6 +363,8 @@ MIT license. No tracking. No analytics. Your research stays on your machine. 2,7
 
 Built with Python 3.12+, yt-dlp, Node.js (vendored Bird client for X search), and ScrapeCreators API. v3 engine architecture by [@j-sperling](https://github.com/j-sperling).
 
+The skill definition at `skills/last30days/SKILL.md` stays under Hermes's 100KB runtime limit; detailed guides live in [`references/`](skills/last30days/references/) and load on demand. See [`references/INDEX.md`](skills/last30days/references/INDEX.md) for navigation.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) to open a PR, [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list of community contributors, and [CHANGELOG.md](CHANGELOG.md) for version history.
 
 ## Star History

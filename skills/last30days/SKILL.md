@@ -990,6 +990,29 @@ Want another prompt? Just tell me what you're creating next.
 
 ---
 
+## Anti-Patterns (What NOT to Do)
+
+This skill has a documented history of failure modes discovered through regression testing.
+Violating these patterns produces known-bad output. Each pattern is traced to a specific
+production incident with a date and reproduction test.
+
+| # | Anti-Pattern | Symptom | First Seen | Fix |
+|---|-------------|---------|-----------|-----|
+| 1 | Treating `/last30days` as generic research keyword | Invented titles, `##` headers in body | 2026-04-18 (v3.0.6) | BADGE on line 1 + LAW 2/4 anchors |
+| 2 | Emitting `Sources:` block at end | Trailing URL dump after invitation | 2026-04-18 (Peter Steinberger #3) | LAW 1 override of WebSearch tool contract |
+| 3 | Stripping bold from synthesis output | Narrative-with-headers instead of bold-lead-in paragraphs | 2026-04-18 (Peter Steinberger #2) | Voice contract: skill template wins over global prefs |
+| 4 | Skipping `--plan` on named-entity topics | Bare engine call, deterministic fallback | 2026-04-19 (Hermes Use Cases #1) | LAW 7: YOU are the planner |
+| 5 | Dumping raw evidence clusters instead of synthesizing | `### 1. (score N, M items)` in output | 2026-04-19 (Hermes Use Cases #2) | LAW 6 scope: only footer is pass-through |
+| 6 | Using stale clone from `~/.claude/plugins/marketplaces/` | Missing `--competitors` flag | 2026-04-22 (Linear, Coinbase) | STEP 0 stale-clone self-check |
+| 7 | Windows: CRLF line endings in hook scripts | `pipefail: invalid option` on git-bash | 2026-07-05 | Convert hooks/scripts/check-config.sh to LF |
+| 8 | Windows: `os.X_OK` false for shell scripts | `_digg_off_path_binary()` never finds installed binary | 2026-07-05 | Skip X_OK check on `os.name == "nt"` |
+| 9 | SKILL.md exceeds 100KB Hermes limit | Silent truncation or rejection | 2026-07-04 | Split to references/ (192KB → 66KB) |
+| 10 | Skipping setup wizard on first run | Missing API keys, no source resolution | - | Step 0 MUST run before Step 1 |
+| 11 | Using `python3` in SKILL.md without Windows fallback | Command not found on Windows | - | Python resolution script with uv/managed fallback |
+| 12 | Agent improvising synthesis without reading LAWs | Blog-post output with section headers | 2026-04-18 (v3.0.6 0/8) | SKILL CONTRACT preface + OUTPUT CONTRACT anchors |
+
+See `references/laws-and-examples.md` for detailed LAW 1-8 explanations and worked examples.
+
 ## Security & Permissions
 
 **What this skill does:**
