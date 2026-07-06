@@ -28,6 +28,7 @@ metadata:
         - BSKY_HANDLE
         - BSKY_APP_PASSWORD
         - TRUTHSOCIAL_TOKEN
+        - XIAOHONGSHU_API_BASE
       bins:
         - node
         - python3
@@ -50,6 +51,8 @@ metadata:
       - digg
       - bluesky
       - truthsocial
+      - xiaohongshu
+      - rednote
       - trends
       - recency
       - news
@@ -588,6 +591,7 @@ The magic of /last30days is Reddit comments + X posts together - and both are fr
 
 **Other optional sources (add anytime):**
 - `PERPLEXITY_API_KEY=xxx` (or `OPENROUTER_API_KEY=xxx`) - AI-synthesized research with citations; set `INCLUDE_SOURCES=perplexity`.
+- `XIAOHONGSHU_API_BASE=http://localhost:18060` - Xiaohongshu/RED via a logged-in `xiaohongshu-mcp` service; request it per run with `--search xhs`.
 - `BSKY_HANDLE=you.bsky.social` + `BSKY_APP_PASSWORD=xxx` - Bluesky (free app password).
 - `BRAVE_API_KEY=xxx` or `EXA_API_KEY=xxx` - web search backends.
 

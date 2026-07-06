@@ -77,11 +77,12 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 | **StockTwits** | Trader sentiment. Auto-activates when your topic is a ticker or crypto. |
 | **Threads** | The post-Twitter text layer. Conversations from creators and brands. |
 | **Pinterest** | Visual discovery. Pins, saves, and comments on products and ideas. |
+| **Xiaohongshu (RED)** | Chinese lifestyle, product, and creator signals. Requested explicitly with `--search xhs` when a logged-in `xiaohongshu-mcp` service is running. |
 | **Bluesky** | The decentralized social layer. AT Protocol posts from the post-Twitter migration. |
 | **Perplexity** | Grounded Sonar synthesis, raw Search API rows, and Deep Research. |
 | **Web** | The editorial coverage, the blog comparisons. One signal of many, not the only one. |
 
-Community contributors keep adding more. Truth Social, Xiaohongshu (RED), and others are in the engine with more on the way.
+Community contributors keep adding more. Truth Social and other niche sources are in the engine with more on the way.
 
 A Reddit thread with 1,500 upvotes is a stronger signal than a blog post nobody read. A TikTok with 3.6M views tells you more about what's culturally relevant than a press release. Polymarket odds backed by $66K in volume are harder to argue with than a pundit's guess.
 
@@ -289,6 +290,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 | YouTube | `brew install yt-dlp` | Free |
 | Bluesky | App password from bsky.app | Free |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube comments | ScrapeCreators key | 10,000 free calls, then PAYG |
+| Xiaohongshu (RED) | Run a logged-in `xiaohongshu-mcp` service and request it with `--search xhs`; set `XIAOHONGSHU_API_BASE` if it is not reachable at the default host URL | No last30days API key; depends on your local service |
 | Perplexity Sonar / Search API / Deep Research | Perplexity key, or OpenRouter key as Sonar fallback | Pay as you go |
 | Web search | Brave Search key | 2,000 free queries/month |
 
