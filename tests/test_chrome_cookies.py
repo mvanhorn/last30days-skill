@@ -13,6 +13,7 @@ import pytest
 
 OPENSSL_AVAILABLE = shutil.which("openssl") is not None
 
+from lib import chrome_cookies
 from lib.chrome_cookies import (
     CHROME_COOKIES_DB,
     CHROME_IV_HEX,
@@ -275,6 +276,33 @@ class TestUnencryptedCookies:
             )
 
         assert result == {"auth_token": "plain_token_value"}
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission model does not apply on Windows")
+    def test_temp_cookie_copy_never_world_readable(self, tmp_path):
+        """The temp copy must stay private immediately after copying content."""
+        db_path = tmp_path / "Cookies"
+        _create_chrome_cookies_db(str(db_path), [
+            (".x.com", "auth_token", "plain_token_value", b""),
+        ])
+        os.chmod(db_path, 0o644)
+
+        observed = {}
+        real_lock = chrome_cookies._lock_temp_cookie_copy
+
+        def spy(path):
+            observed["mode_after_copy"] = os.stat(path).st_mode & 0o777
+            return real_lock(path)
+
+        with mock.patch.object(chrome_cookies, "_lock_temp_cookie_copy", side_effect=spy):
+            result = _extract_chromium_cookies_macos(
+                db_path,
+                "Chrome Safe Storage",
+                ".x.com",
+                ["auth_token"],
+            )
+
+        assert result == {"auth_token": "plain_token_value"}
+        assert observed["mode_after_copy"] == 0o600
 
     def test_plain_value_returned(self, tmp_path):
         """Unencrypted cookies (value column populated) returned without decryption."""

@@ -229,7 +229,10 @@ def _extract_chromium_cookies_macos(
     tmp_path = None
     try:
         tmp_fd, tmp_path = tempfile.mkstemp(suffix=".sqlite")
-        shutil.copy2(str(db_path), tmp_path)
+        # mkstemp creates the file 0600. copy2 would copy the source DB's
+        # permission bits onto the temp file before the chmod below runs,
+        # briefly exposing live cookies when the source DB is looser.
+        shutil.copyfile(str(db_path), tmp_path)
         _lock_temp_cookie_copy(tmp_path)
     except Exception as e:
         logger.info("Failed to copy %s cookies database: %s", keychain_service, e)
