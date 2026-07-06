@@ -405,7 +405,10 @@ def _pinterest_record(config):
 
 
 def _xiaohongshu_record(config):
-    requires = "xiaohongshu-mcp service (XIAOHONGSHU_API_BASE); requested-only"
+    requires = (
+        "logged-in Xiaohongshu browser-session service; requested-only "
+        "(--search xhs)"
+    )
     entry = prescriptions.get("xiaohongshu", "service_unreachable")
     if config.get("XIAOHONGSHU_API_BASE"):
         return _record(
@@ -415,7 +418,15 @@ def _xiaohongshu_record(config):
                 "probed (doctor makes no network calls)"
             ),
         )
-    return _record(status="opt-in", requires=requires, fix=_fix_text(entry))
+    return _record(
+        status="opt-in",
+        requires=requires,
+        fix=_fix_text(entry),
+        note=(
+            "auto-probes http://localhost:18060 first, then "
+            "http://host.docker.internal:18060"
+        ),
+    )
 
 
 def _jobs_record(config):

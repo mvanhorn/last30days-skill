@@ -81,6 +81,12 @@ AUTH_SOURCE_NONE: AuthSource = "none"
 AUTH_STATUS_OK: AuthStatus = "ok"
 AUTH_STATUS_MISSING: AuthStatus = "missing"
 
+XIAOHONGSHU_DEFAULT_API_BASES = (
+    "http://localhost:18060",
+    "http://host.docker.internal:18060",
+)
+XIAOHONGSHU_RESOLVED_API_BASE_KEY = "_XIAOHONGSHU_API_BASE_RESOLVED"
+
 
 @dataclass(frozen=True)
 class OpenAIAuth:
@@ -1058,9 +1064,52 @@ def get_instagram_token(config: dict[str, Any]) -> str:
 def get_xiaohongshu_api_base(config: dict[str, Any]) -> str:
     """Get Xiaohongshu HTTP API base URL.
 
-    Defaults to host.docker.internal so OpenClaw Docker can reach host service.
+    The availability probe caches the first logged-in local service it finds so
+    the later search request uses the same browser-backed session endpoint.
     """
-    return (config.get('XIAOHONGSHU_API_BASE') or "http://host.docker.internal:18060").rstrip("/")
+    cached = config.get(XIAOHONGSHU_RESOLVED_API_BASE_KEY)
+    if cached:
+        return str(cached).rstrip("/")
+
+    explicit = config.get("XIAOHONGSHU_API_BASE")
+    if explicit:
+        return str(explicit).rstrip("/")
+
+    return XIAOHONGSHU_DEFAULT_API_BASES[0]
+
+
+def _xiaohongshu_api_base_candidates(config: dict[str, Any]) -> list[str]:
+    explicit = config.get("XIAOHONGSHU_API_BASE")
+    if explicit:
+        return [str(explicit).rstrip("/")]
+
+    candidates: list[str] = []
+    cached = config.get(XIAOHONGSHU_RESOLVED_API_BASE_KEY)
+    if cached:
+        candidates.append(str(cached).rstrip("/"))
+
+    for base in XIAOHONGSHU_DEFAULT_API_BASES:
+        if base not in candidates:
+            candidates.append(base)
+    return candidates
+
+
+def _xiaohongshu_base_logged_in(base: str, http_module: Any) -> bool:
+    # Keep the health probe snappy, but allow one retry for transient hiccups.
+    health = http_module.get(f"{base}/health", timeout=3, retries=2)
+    if not isinstance(health, dict):
+        return False
+    if not health.get("success"):
+        return False
+
+    # Login checks can be slower because some services consult the browser
+    # profile/session, so use a slightly longer timeout than the health probe.
+    login = http_module.get(f"{base}/api/v1/login/status", timeout=8, retries=2)
+    is_logged_in = (
+        login.get("data", {}).get("is_logged_in")
+        if isinstance(login, dict) else False
+    )
+    return bool(is_logged_in)
 
 
 def is_xiaohongshu_available(config: dict[str, Any]) -> bool:
@@ -1068,32 +1117,20 @@ def is_xiaohongshu_available(config: dict[str, Any]) -> bool:
     # Import here to avoid heavy imports at module load.
     from . import http
 
-    base = get_xiaohongshu_api_base(config)
-    try:
-        # Keep health probe snappy, but allow one retry for transient hiccups.
-        health = http.get(f"{base}/health", timeout=3, retries=2)
-        if not isinstance(health, dict):
-            return False
-        if not health.get("success"):
-            return False
-
-        # Login probe can be slower on some deployments (browser/session checks),
-        # so use a slightly longer timeout to avoid false negatives.
-        login = http.get(f"{base}/api/v1/login/status", timeout=8, retries=2)
-        is_logged_in = (
-            login.get("data", {}).get("is_logged_in")
-            if isinstance(login, dict) else False
-        )
-        return bool(is_logged_in)
-    except (OSError, http.HTTPError):
-        return False
-    except Exception as exc:
-        sys.stderr.write(
-            f"[last30days] WARNING: unexpected error checking Xiaohongshu: "
-            f"{type(exc).__name__}: {exc}\n"
-        )
-        sys.stderr.flush()
-        return False
+    for base in _xiaohongshu_api_base_candidates(config):
+        try:
+            if _xiaohongshu_base_logged_in(base, http):
+                config[XIAOHONGSHU_RESOLVED_API_BASE_KEY] = base
+                return True
+        except (OSError, http.HTTPError):
+            continue
+        except Exception as exc:
+            sys.stderr.write(
+                f"[last30days] WARNING: unexpected error checking Xiaohongshu "
+                f"at {base}: {type(exc).__name__}: {exc}\n"
+            )
+            sys.stderr.flush()
+    return False
 
 
 # Backward compat alias

@@ -145,7 +145,7 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | Threads | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `threads` | Threads items | 10K free calls |
 | Pinterest | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `pinterest` | Pinterest items | 10K free calls |
 | LinkedIn | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `linkedin` | LinkedIn posts + articles (articles rank as high signal on person topics) | 10K free calls; power-user opt-in, not offered during first-run onboarding |
-| Xiaohongshu (RED) | logged-in `xiaohongshu-mcp` service; optional `XIAOHONGSHU_API_BASE` (defaults to `http://host.docker.internal:18060`) | requested-only via `--search xhs` or `--search xiaohongshu`; service must be reachable and logged in | no last30days API key; depends on your local service |
+| Xiaohongshu (RED) | logged-in x-mcp browser plugin or `xiaohongshu-mcp` service; optional `XIAOHONGSHU_API_BASE` for custom URLs | requested-only via `--search xhs` or `--search xiaohongshu`; auto-probes `http://localhost:18060` then `http://host.docker.internal:18060` | no last30days API key; depends on your local browser-session service |
 | Bluesky | `BSKY_HANDLE` + `BSKY_APP_PASSWORD` | Bluesky items | yes (app password at bsky.app) |
 | TruthSocial | `TRUTHSOCIAL_TOKEN` | TruthSocial items | yes |
 | Web search | one of: `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY` | `--auto-resolve` and Step 2 supplements | Brave has a free tier; native WebSearch on Claude Code / Codex / Gemini works as a fallback |
@@ -168,8 +168,9 @@ BRAVE_API_KEY=<your-brave-key>
 # Optional sources
 SCRAPECREATORS_API_KEY=<your-scrapecreators-key>
 INCLUDE_SOURCES=tiktok,instagram
-# Xiaohongshu is requested-only: run with --search xhs after starting xiaohongshu-mcp.
-# XIAOHONGSHU_API_BASE=http://host.docker.internal:18060
+# Xiaohongshu is requested-only: run with --search xhs after starting a local
+# browser-session service. Defaults probe localhost, then host.docker.internal.
+# XIAOHONGSHU_API_BASE=http://localhost:18060
 # Add perplexity to INCLUDE_SOURCES when you want the paid Perplexity source.
 # PERPLEXITY_API_KEY=<your-perplexity-key>
 # INCLUDE_SOURCES=tiktok,instagram,perplexity

@@ -205,13 +205,14 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
     _entry(
         "xiaohongshu", "service_unreachable",
         cause=(
-            "xiaohongshu-mcp service is unreachable at XIAOHONGSHU_API_BASE "
-            "(default http://host.docker.internal:18060)"
+            "Xiaohongshu browser-session service is unreachable or not logged "
+            "in; last30days auto-probes http://localhost:18060 and "
+            "http://host.docker.internal:18060 unless XIAOHONGSHU_API_BASE is set"
         ),
         fix_nl=(
-            "start the xpzouying/xiaohongshu-mcp service and log in from its "
-            "web UI, then point XIAOHONGSHU_API_BASE at the running instance "
-            "if it is not on the default host/port"
+            "start a local x-mcp browser plugin or xpzouying/xiaohongshu-mcp "
+            "service that can see your logged-in Xiaohongshu browser session; "
+            "set XIAOHONGSHU_API_BASE only when it runs on a custom host/port"
         ),
         fix_cli="XIAOHONGSHU_API_BASE=http://localhost:18060",
         anchor="api-keys-env",

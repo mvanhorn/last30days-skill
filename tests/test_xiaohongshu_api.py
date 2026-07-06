@@ -10,7 +10,7 @@ from unittest import mock
 import pytest
 
 import last30days as cli
-from lib import http, pipeline, xiaohongshu_api
+from lib import env, http, pipeline, xiaohongshu_api
 
 
 def test_search_flag_accepts_xhs_alias():
@@ -28,6 +28,76 @@ def test_xiaohongshu_requested_source_requires_live_logged_in_service():
         assert "xiaohongshu" in pipeline.available_sources(
             {}, requested_sources=["xiaohongshu"],
         )
+
+
+def test_xiaohongshu_default_api_base_is_localhost():
+    assert env.get_xiaohongshu_api_base({}) == "http://localhost:18060"
+
+
+def test_xiaohongshu_availability_prefers_localhost_and_caches_base():
+    config = {}
+
+    def fake_get(url, **kwargs):
+        # This mimics an x-mcp/browser-backed service running in the user's
+        # normal local browser context.
+        assert url.startswith("http://localhost:18060/")
+        if url.endswith("/health"):
+            return {"success": True}
+        if url.endswith("/api/v1/login/status"):
+            return {"data": {"is_logged_in": True}}
+        raise AssertionError(f"unexpected URL: {url}")
+
+    with mock.patch.object(http, "get", side_effect=fake_get) as get_mock:
+        assert env.is_xiaohongshu_available(config) is True
+
+    assert get_mock.call_count == 2
+    assert config[env.XIAOHONGSHU_RESOLVED_API_BASE_KEY] == "http://localhost:18060"
+    assert env.get_xiaohongshu_api_base(config) == "http://localhost:18060"
+
+
+def test_xiaohongshu_availability_falls_back_to_docker_host():
+    config = {}
+
+    def fake_get(url, **kwargs):
+        if url.startswith("http://localhost:18060/"):
+            raise http.HTTPError("not running")
+        if url == "http://host.docker.internal:18060/health":
+            return {"success": True}
+        if url == "http://host.docker.internal:18060/api/v1/login/status":
+            return {"data": {"is_logged_in": True}}
+        raise AssertionError(f"unexpected URL: {url}")
+
+    with mock.patch.object(http, "get", side_effect=fake_get):
+        assert env.is_xiaohongshu_available(config) is True
+
+    assert (
+        config[env.XIAOHONGSHU_RESOLVED_API_BASE_KEY]
+        == "http://host.docker.internal:18060"
+    )
+    assert env.get_xiaohongshu_api_base(config) == "http://host.docker.internal:18060"
+
+
+def test_xiaohongshu_explicit_api_base_skips_default_probe():
+    config = {"XIAOHONGSHU_API_BASE": "http://custom.local:18060/"}
+    seen_urls = []
+
+    def fake_get(url, **kwargs):
+        seen_urls.append(url)
+        assert url.startswith("http://custom.local:18060/")
+        if url.endswith("/health"):
+            return {"success": True}
+        if url.endswith("/api/v1/login/status"):
+            return {"data": {"is_logged_in": True}}
+        raise AssertionError(f"unexpected URL: {url}")
+
+    with mock.patch.object(http, "get", side_effect=fake_get):
+        assert env.is_xiaohongshu_available(config) is True
+
+    assert seen_urls == [
+        "http://custom.local:18060/health",
+        "http://custom.local:18060/api/v1/login/status",
+    ]
+    assert config[env.XIAOHONGSHU_RESOLVED_API_BASE_KEY] == "http://custom.local:18060"
 
 
 def test_to_int_accepts_chinese_count_suffixes():
