@@ -428,6 +428,9 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     }
 
     keys = [
+        # Debug flag; also exported to os.environ below so log.py's lazy
+        # os.environ.get() picks up .env values after get_config() runs.
+        ('LAST30DAYS_DEBUG', None),
         ('XAI_API_KEY', None),
         ('GOOGLE_API_KEY', None),
         ('GEMINI_API_KEY', None),
@@ -501,6 +504,12 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
 
     for key, default in keys:
         config[key] = os.environ.get(key) or merged_env.get(key, default)
+
+    # Export debug flag to os.environ so log.py's lazy os.environ.get()
+    # picks up .env values. setdefault ensures a shell-exported value is
+    # never overwritten by the (lower-priority) .env value.
+    if config.get('LAST30DAYS_DEBUG'):
+        os.environ.setdefault('LAST30DAYS_DEBUG', config['LAST30DAYS_DEBUG'])
 
     # Backward-compat: ScrapeCreators' own examples and tutorials use the
     # SCRAPE_CREATORS_API_KEY spelling (with underscore between SCRAPE and

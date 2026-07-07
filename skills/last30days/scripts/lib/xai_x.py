@@ -141,7 +141,7 @@ def parse_x_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
         error = response["error"]
         err_msg = error.get("message", str(error)) if isinstance(error, dict) else str(error)
         _log_error(f"xAI API error: {err_msg}")
-        if http.DEBUG:
+        if log.is_debug():
             _log_error(f"Full error response: {json.dumps(response, indent=2)[:1000]}")
         return items
 

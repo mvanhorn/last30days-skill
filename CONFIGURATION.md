@@ -357,6 +357,14 @@ Web search has **no** env pin — pin it per-run with `--web-backend=<name>` onl
 
 ---
 
+## Debug mode (`--debug`)
+
+Add `--debug` to any run to emit verbose `[DEBUG]` log lines to stderr from the source modules (X API, HTTP, etc.). Helpful for diagnosing API errors or unexpected behavior.
+
+**Always-on alternative:** set `LAST30DAYS_DEBUG=true` in your `.env` or export it from your shell. The flag still works as before; the env var is purely additive — works whether shell-exported or set in `.env`.
+
+---
+
 ## Trend monitoring (`--store` + watchlist + briefings)
 
 The default behavior - one slug-named file per topic, overwritten on rerun - is the snapshot mode. For continuous monitoring, the repo ships three components most users miss:
