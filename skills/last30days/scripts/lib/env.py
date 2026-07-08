@@ -510,6 +510,14 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # resolved above via openai_auth).
         ('GROQ_API_KEY', None),
         ('LAST30DAYS_YT_SUB_LANGS', 'en,es,pt'),
+        # GitHub auth token — used by lib/github.py for higher API rate
+        # limits. Must be in the keys list so .env values are loaded into
+        # config; otherwise config.get("GITHUB_TOKEN") silently returns None.
+        ('GITHUB_TOKEN', None),
+        # Report cache TTL in seconds (doctor cache + last-report.json reuse).
+        # Must be in the keys list so .env values are loaded into config;
+        # otherwise config.get(...) silently falls back to the default.
+        ('LAST30DAYS_REPORT_CACHE_TTL_SECONDS', None),
     ]
 
     for key, default in keys:

@@ -70,6 +70,28 @@ class EnvV3Tests(unittest.TestCase):
         for key, value in overrides.items():
             self.assertEqual(value, config[key])
 
+    def test_get_config_loads_github_token_from_env(self):
+        """GITHUB_TOKEN must be in the config keys list so .env values
+        are not silently ignored (issue #724)."""
+        with mock.patch.object(env, "CONFIG_FILE", None), \
+             mock.patch.object(env, "_find_project_env", return_value=None), \
+             mock.patch("lib.env._load_keychain", return_value={}), \
+             mock.patch("lib.env._load_pass", return_value={}), \
+             mock.patch.dict(os.environ, {"GITHUB_TOKEN": "ghp_test_token"}, clear=False):
+            config = env.get_config()
+        self.assertEqual("ghp_test_token", config["GITHUB_TOKEN"])
+
+    def test_get_config_loads_report_cache_ttl_from_env(self):
+        """LAST30DAYS_REPORT_CACHE_TTL_SECONDS must be in the config keys
+        list so .env values are not silently ignored (issue #732)."""
+        with mock.patch.object(env, "CONFIG_FILE", None), \
+             mock.patch.object(env, "_find_project_env", return_value=None), \
+             mock.patch("lib.env._load_keychain", return_value={}), \
+             mock.patch("lib.env._load_pass", return_value={}), \
+             mock.patch.dict(os.environ, {"LAST30DAYS_REPORT_CACHE_TTL_SECONDS": "7200"}, clear=False):
+            config = env.get_config()
+        self.assertEqual("7200", config["LAST30DAYS_REPORT_CACHE_TTL_SECONDS"])
+
 
 class XurlSafePathGatingTests(unittest.TestCase):
     """F1: the safe/diagnose path (probe=False — what doctor uses) never
