@@ -290,7 +290,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 | X / Twitter | Log into x.com in any browser, or set `XQUIK_API_KEY` / `XAI_API_KEY` | Browser cookies are free; keys are provider-specific |
 | YouTube | `brew install yt-dlp` | Free |
 | Bluesky | App password from bsky.app | Free |
-| TikTok + Instagram + Threads + Pinterest + YouTube comments | ScrapeCreators key | 10,000 free calls, then PAYG |
+| TikTok + Instagram + Threads + Pinterest + YouTube comments | ScrapeCreators key | 1,000 free calls, then PAYG |
 | Perplexity Sonar / Search API / Deep Research | Perplexity key, or OpenRouter key as Sonar fallback | Pay as you go |
 | Web search | Brave Search key | 2,000 free queries/month |
 
