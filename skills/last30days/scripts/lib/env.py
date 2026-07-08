@@ -454,6 +454,8 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_REDDIT_BACKEND', None),
         # Doctor cache freshness window in seconds (doctor --cached).
         ('LAST30DAYS_DOCTOR_TTL', None),
+        # Report cache freshness window in seconds (last30days --cached).
+        ('LAST30DAYS_REPORT_CACHE_TTL_SECONDS', None),
         ('LAST30DAYS_REDDIT_SC_MIN_ITEMS', None),
         ('LAST30DAYS_STORE', None),
         ('LAST30DAYS_MEMORY_DIR', None),
@@ -472,6 +474,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('BRAVE_API_KEY', None),
         ('EXA_API_KEY', None),
         ('SERPER_API_KEY', None),
+        ('GITHUB_TOKEN', None),
         ('OPENROUTER_API_KEY', None),
         ('PERPLEXITY_API_KEY', None),
         ('LAST30DAYS_PERPLEXITY_MODE', 'sonar'),
