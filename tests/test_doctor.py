@@ -172,6 +172,28 @@ class KeylessEnvironment(unittest.TestCase):
         self.assertIn("last30days doctor", out)
 
 
+class GitHubAuthDetection(unittest.TestCase):
+    """GitHub doctor auth must mirror the real fetcher token source."""
+
+    def test_github_env_token_without_gh_reports_authenticated_tier(self):
+        with mock.patch.dict("os.environ", {"GITHUB_TOKEN": "dummy-github-secret-000"}), \
+             mock.patch("lib.doctor.shutil.which", return_value=None):
+            record = _build({})["sources"]["github"]
+
+        self.assertEqual("ok", record["tier"])
+        self.assertEqual("ok", record["status"])
+        self.assertEqual("authenticated tier (GITHUB_TOKEN or gh CLI)", record["detail"])
+
+    def test_github_without_env_token_or_gh_reports_unauthenticated_tier(self):
+        with mock.patch.dict("os.environ", {"GITHUB_TOKEN": ""}), \
+             mock.patch("lib.doctor.shutil.which", return_value=None):
+            record = _build({})["sources"]["github"]
+
+        self.assertEqual("ok", record["tier"])
+        self.assertEqual("ok", record["status"])
+        self.assertIn("unauthenticated REST tier", record["detail"])
+
+
 class UnconfiguredXWithBrokenNode(unittest.TestCase):
     """F9 repro: no X configuration + a broken node runtime must read as
     off/unconfigured with the cookie fix on bird — never a configured-but-

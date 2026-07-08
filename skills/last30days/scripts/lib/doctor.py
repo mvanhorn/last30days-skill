@@ -303,7 +303,7 @@ def _polymarket_record(config):
 
 
 def _github_record(config):
-    authed = bool(config.get("GITHUB_TOKEN") or shutil.which("gh"))
+    authed = bool(env.read_secret_env("GITHUB_TOKEN") or shutil.which("gh"))
     detail = (
         "authenticated tier (GITHUB_TOKEN or gh CLI)"
         if authed
