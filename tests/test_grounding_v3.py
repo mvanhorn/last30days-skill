@@ -205,12 +205,35 @@ class WebSearchDispatchTests(unittest.TestCase):
         self.assertEqual([], items)
         self.assertEqual({}, artifact)
 
-    def test_auto_falls_to_keyless_when_no_keys_and_no_native_search(self):
-        # No paid key and no native search -> keyless floor is used.
-        with patch("lib.grounding.web_search_keyless.keyless_search",
+    def test_auto_selects_keenable_when_no_keys_and_no_native_search(self):
+        # No paid key and no native search -> keenable (a real keyless API) is
+        # the preferred keyless default over the degraded DDG/SearXNG floor.
+        with patch("lib.grounding.keenable_search",
+                   return_value=([], {"label": "keenable"})) as mock_keenable, \
+             patch("lib.grounding.web_search_keyless.keyless_search",
                    return_value=([], {"label": "keyless"})) as mock_keyless:
             grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="auto")
-        mock_keyless.assert_called_once()
+        mock_keenable.assert_called_once()
+        mock_keyless.assert_not_called()
+
+    def test_auto_selects_keenable_when_keenable_key_present(self):
+        config = {"KEENABLE_API_KEY": "test-key"}
+        with patch("lib.grounding.keenable_search", return_value=([], {})) as mock:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+            mock.assert_called_once()
+
+    def test_auto_prefers_parallel_over_keenable(self):
+        config = {"PARALLEL_API_KEY": "parallel-key", "KEENABLE_API_KEY": "keenable-key"}
+        with patch("lib.grounding.parallel_search", return_value=([], {})) as mock_parallel, \
+             patch("lib.grounding.keenable_search", return_value=([], {})) as mock_keenable:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+            mock_parallel.assert_called_once()
+            mock_keenable.assert_not_called()
+
+    def test_explicit_keenable_backend_invokes_keenable(self):
+        with patch("lib.grounding.keenable_search", return_value=([], {})) as mock_keenable:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="keenable")
+        mock_keenable.assert_called_once()
 
     def test_explicit_keyless_backend_invokes_keyless(self):
         with patch("lib.grounding.web_search_keyless.keyless_search",

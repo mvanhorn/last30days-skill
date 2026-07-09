@@ -61,7 +61,7 @@ TIER_ERROR = "error"
 # runtime behavior (brave -> exa -> serper -> parallel -> keyless floor);
 # there is no importable constant there, so this declaration is guarded by
 # the grounding-auto parity test rather than an import.
-WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keyless")
+WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keenable", "keyless")
 
 # YouTube backend order (pipeline: yt-dlp first, ScrapeCreators search
 # fallback when yt-dlp is absent or fails — see lib/pipeline.py).
@@ -408,6 +408,37 @@ def _probe_web_keyless(config: Dict[str, Any]) -> BackendFinding:
     )
 
 
+def _probe_keenable(config: Dict[str, Any]) -> BackendFinding:
+    """Keenable: a real keyless web-search API (above the DDG/SearXNG floor).
+
+    Works with no key against the public endpoint; an optional KEENABLE_API_KEY
+    only lifts the rate limit. Like the keyless floor, it is engine-side web
+    search and is suppressed on hosts that have native search.
+    """
+    requires = "no key (optional KEENABLE_API_KEY lifts rate limit); suppressed on native-search hosts"
+    if config.get("KEENABLE_API_KEY"):
+        return BackendFinding(
+            name="keenable",
+            status=health.OK,
+            detail="keenable (KEENABLE_API_KEY present; rate limit lifted)",
+            requires=requires,
+        )
+    if env.keyless_web_allowed(config):
+        return BackendFinding(
+            name="keenable",
+            status=health.OK,
+            detail="keenable keyless (no key; full-quality search API)",
+            requires=requires,
+        )
+    return BackendFinding(
+        name="keenable",
+        status=health.MISSING,
+        detail="keenable suppressed: host has native web search",
+        prescription="",
+        requires=requires,
+    )
+
+
 def _probe_reddit_public(config: Dict[str, Any]) -> BackendFinding:
     """Public keyless Reddit composite; internal lanes are sub-probe detail."""
     return BackendFinding(
@@ -438,6 +469,7 @@ _WEB_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "exa": _key_probe("exa", "EXA_API_KEY", "EXA_API_KEY"),
     "serper": _key_probe("serper", "SERPER_API_KEY", "SERPER_API_KEY"),
     "parallel": _key_probe("parallel", "PARALLEL_API_KEY", "PARALLEL_API_KEY"),
+    "keenable": _probe_keenable,
     "keyless": _probe_web_keyless,
 }
 _WEB_KEYED = {"brave", "exa", "serper", "parallel"}

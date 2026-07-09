@@ -190,11 +190,13 @@ class KeylessEnvironment(unittest.TestCase):
         self.assertEqual("unconfigured", record["status"])
         self.assertTrue(record["fix"])
 
-    def test_web_keyless_floor_is_degraded_not_error(self):
+    def test_web_keyless_default_is_keenable_ok(self):
+        # Keyless env: keenable (a real keyless search API) is the preferred
+        # web backend, so the source reads OK rather than the degraded floor.
         record = self.report["sources"]["web"]
-        self.assertEqual("warn", record["tier"])
-        self.assertEqual("degraded", record["status"])
-        self.assertEqual("keyless", record["active_backend"])
+        self.assertEqual("ok", record["tier"])
+        self.assertEqual("ok", record["status"])
+        self.assertEqual("keenable", record["active_backend"])
 
     def test_cli_exit_code_zero_even_with_problems(self):
         rc, out = _run_cli_doctor(["doctor"], {})
