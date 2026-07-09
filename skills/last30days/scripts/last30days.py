@@ -7,6 +7,7 @@ from __future__ import annotations
 import argparse
 import atexit
 import datetime
+import hashlib
 import json
 import os
 import re
@@ -115,8 +116,14 @@ def resolve_requested_sources(args_search: str | None, config: dict) -> list[str
     return None
 
 
-def slugify(value: str) -> str:
+def slugify(value: str, max_length: int = 180) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    if len(slug) > max_length:
+        # Filenames built from long topics can exceed the OS 255-byte limit
+        # (macOS errno 63). Truncate and append a hash of the full value so
+        # distinct long topics still get distinct, deterministic names.
+        digest = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:10]
+        slug = f"{slug[:max_length].rstrip('-')}-{digest}"
     return slug or "last30days"
 
 
