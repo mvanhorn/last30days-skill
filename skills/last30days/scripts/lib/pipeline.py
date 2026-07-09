@@ -42,6 +42,7 @@ from . import (
     schema,
     signals,
     snippet,
+    stocktwits,
     techmeme,
     threads,
     tiktok,
@@ -71,7 +72,10 @@ SEARCH_ALIAS = {
     "xquik": "x",  # xquik is a backend of the single "x" source, not its own source
 }
 
-MAX_SOURCE_FETCHES: dict[str, int] = {"x": 2, "jobs": 1, "linkedin": 1}
+# trustpilot is capped at 1: every subquery would use the identical company
+# identifier, so N streams are pure redundancy -- and each extra stream risks
+# its own WAF-cookie Chrome harvest.
+MAX_SOURCE_FETCHES: dict[str, int] = {"x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1}
 
 # Per-handle result caps for the X handle-search lanes. The FROM lane (the
 # subject's own timeline) is the single best source for a person topic, so it
@@ -126,13 +130,21 @@ def available_sources(
     requested_sources: list[str] | None = None,
     *,
     x_pending: bool | None = None,
+    local_only: bool = False,
 ) -> list[str]:
+    """List the sources the next run can serve.
+
+    ``local_only=True`` is the safe/diagnose flavor (doctor's permission
+    block): availability is answered from local evidence only, so the X
+    check never spawns xurl's live ``whoami`` network call. Research-time
+    callers keep the default live semantics.
+    """
     available: list[str] = []
     # reddit_public needs no API key - always available
     available.append("reddit")
     if config.get("SCRAPECREATORS_API_KEY"):
         available.extend(["tiktok", "instagram"])
-    if env.get_x_source(config):
+    if env.get_x_source(config, local_only=local_only):
         available.append("x")
     else:
         # Safe inspection (--diagnose/--preflight) skips browser-cookie
@@ -148,6 +160,9 @@ def available_sources(
     if which("yt-dlp") or env.is_youtube_sc_available(config):
         available.append("youtube")
     available.extend(["hackernews", "polymarket"])
+    # StockTwits is gated to ticker/crypto topics only (flag set in run()).
+    if config.get("_financial_topic"):
+        available.append("stocktwits")
     # GitHub is reachable via the unauthenticated REST tier too, so it is
     # available even without a token/gh CLI (a token only raises rate limits).
     available.append("github")
@@ -200,9 +215,19 @@ def available_sources(
         available.append("trustpilot")
     if requested_sources and "xiaohongshu" in requested_sources and env.is_xiaohongshu_available(config):
         available.append("xiaohongshu")
-    if env.is_threads_available(config):
+    # Threads: opt-in via INCLUDE_SOURCES (same pattern as perplexity/linkedin).
+    # Was auto-on with the key; gated so the onboarding "Everything" tier is a
+    # real choice vs the "Recommended" (TikTok/Instagram) tier.
+    if env.is_threads_available(config) and (
+        "threads" in include_sources or (requested_sources and "threads" in requested_sources)
+    ):
         available.append("threads")
-    if requested_sources and "pinterest" in requested_sources and env.is_pinterest_available(config):
+    # Pinterest: opt-in via INCLUDE_SOURCES. Previously read requested_sources
+    # only, so a persisted INCLUDE_SOURCES=pinterest never activated it; now it
+    # honors both the per-run --sources list and the saved config.
+    if env.is_pinterest_available(config) and (
+        "pinterest" in include_sources or (requested_sources and "pinterest" in requested_sources)
+    ):
         available.append("pinterest")
     # xquik is a backend of the single "x" source (see env.x_backend_chain),
     # not a separate parallel source — registered via the "x" entry above.
@@ -222,7 +247,8 @@ def diagnose(
     google_key = _google_key(config)
     x_status = env.get_x_source_status(config, probe=not safe)
     # Compute once and reuse for both the diag flag and available_sources below.
-    x_pending = env.x_pending_browser_auth(config)
+    # safe=True (doctor/--diagnose/--preflight) must stay network-free.
+    x_pending = env.x_pending_browser_auth(config, local_only=safe)
     native_web_backend = None
     if config.get("BRAVE_API_KEY"):
         native_web_backend = "brave"
@@ -281,7 +307,12 @@ def diagnose(
         "native_search": env.is_native_search(config),
         "has_scrapecreators": bool(config.get("SCRAPECREATORS_API_KEY")),
         "has_github": bool(config.get("GITHUB_TOKEN") or which("gh")),
-        "available_sources": available_sources(config, requested_sources, x_pending=x_pending),
+        # safe=True (doctor/--diagnose/--preflight) must stay network-free:
+        # answer X availability from local evidence only. x_pending is
+        # precomputed by diagnose() to avoid double evaluation.
+        "available_sources": available_sources(
+            config, requested_sources, x_pending=x_pending, local_only=safe
+        ),
         "safe": safe,
         "config_source": config.get("_CONFIG_SOURCE"),
         "ignored_project_config": config.get("_IGNORED_PROJECT_CONFIG"),
@@ -327,12 +358,19 @@ def run(
     as_of_date: str | None = None,
     github_user: str | None = None,
     github_repos: list[str] | None = None,
+    trustpilot_domain: str | None = None,
+    trustpilot_domain_is_hint: bool = False,
     hiring_signals_mode: bool = False,
     internal_subrun: bool = False,
 ) -> schema.Report:
     settings = DEPTH_SETTINGS[depth]
     requested_sources = normalize_requested_sources(requested_sources)
     from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
+
+    # Gate StockTwits to ticker/crypto topics. Single chokepoint: when False,
+    # available_sources() never registers stocktwits, so the planner can't
+    # assign it (eligible_sources = available ∩ capabilities).
+    config["_financial_topic"] = stocktwits.is_financial_topic(topic)
 
     if mock:
         runtime = providers.mock_runtime(config, depth)
@@ -474,6 +512,12 @@ def run(
         except Exception as exc:
             bundle.errors_by_source["github"] = f"Person-mode failed: {exc}"
 
+    # Trustpilot session warm-up happens inside search_trustpilot at the
+    # first (capped, single) fetch -- lazily, so it never delays the other
+    # sources' streams and never fires for runs whose plan fetches no
+    # Trustpilot. The module-level lock in lib/trustpilot.py serializes
+    # concurrent vs-mode sub-runs so they never race Chrome harvests.
+
     # Thread-safe set prevents redundant fetches after a source returns 429
     rate_limited_sources: set[str] = set()
     rate_limit_lock = threading.Lock()
@@ -522,6 +566,8 @@ def run(
                         tiktok_hashtags=tiktok_hashtags,
                         tiktok_creators=tiktok_creators,
                         ig_creators=ig_creators,
+                        trustpilot_domain=trustpilot_domain,
+                        trustpilot_domain_is_hint=trustpilot_domain_is_hint,
                     )
                 ] = (subquery, source)
 
@@ -1105,7 +1151,12 @@ def _retry_thin_sources(
         for source in subquery.sources:
             if source not in planned_sources:
                 planned_sources.append(source)
-    _skip = skip_sources or set()
+    # trustpilot returns at most ONE item by design, so the "<3 items" rule
+    # would re-fetch it after every successful lookup -- bypassing
+    # MAX_SOURCE_FETCHES and re-resolving WITHOUT the caller's
+    # --trustpilot-domain (a lookalike-misattribution path). Its thin result
+    # is its normal success state; never retry it here.
+    _skip = (skip_sources or set()) | {"trustpilot"}
     thin_sources = [
         source
         for source in planned_sources
@@ -1251,6 +1302,8 @@ def _retrieve_stream(
     tiktok_hashtags: list[str] | None = None,
     tiktok_creators: list[str] | None = None,
     ig_creators: list[str] | None = None,
+    trustpilot_domain: str | None = None,
+    trustpilot_domain_is_hint: bool = False,
 ) -> tuple[list[dict], dict]:
     # Early exit if source was rate-limited by a sibling future
     if rate_limited_sources is not None and source in rate_limited_sources:
@@ -1278,11 +1331,11 @@ def _retrieve_stream(
         has_sc_key = bool(config.get("SCRAPECREATORS_API_KEY"))
         sc_first = (
             has_sc_key
-            and (config.get("LAST30DAYS_REDDIT_BACKEND") or "").lower()
+            and (config.get(env.REDDIT_BACKEND_PIN_VAR) or "").lower()
             == "scrapecreators"
         )
         if sc_first:
-            # LAST30DAYS_REDDIT_BACKEND=scrapecreators: SC primary, public fallback
+            # env.REDDIT_BACKEND_PIN_VAR=scrapecreators: SC primary, public fallback
             try:
                 result = reddit.search_and_enrich(
                     reddit_query, from_date, to_date, depth=depth,
@@ -1321,10 +1374,10 @@ def _retrieve_stream(
 
         # Default: public Reddit first (free). ScrapeCreators backfills when the
         # free path is empty OR returns fewer than the configured thinness floor
-        # (LAST30DAYS_REDDIT_SC_MIN_ITEMS, default 0 = empty-only — today's
+        # (env.REDDIT_SC_MIN_ITEMS_VAR, default 0 = empty-only — today's
         # behavior, no extra credit spend unless the user opts in).
         try:
-            min_items = int(config.get("LAST30DAYS_REDDIT_SC_MIN_ITEMS") or 0)
+            min_items = int(config.get(env.REDDIT_SC_MIN_ITEMS_VAR) or 0)
         except (TypeError, ValueError):
             min_items = 0
         public_results: list[dict] = []
@@ -1453,7 +1506,12 @@ def _retrieve_stream(
             token=env.get_instagram_token(config),
             ig_creators=ig_creators,
         )
-        return instagram.parse_instagram_response(result), {}
+        items = instagram.parse_instagram_response(result)
+        if items and env.is_instagram_comments_available(config):
+            instagram.enrich_with_comments(
+                items, token=config.get("SCRAPECREATORS_API_KEY", ""),
+            )
+        return items, {}
     if source == "linkedin":
         token = config.get("SCRAPECREATORS_API_KEY", "")
         result = linkedin.search_linkedin(
@@ -1475,6 +1533,12 @@ def _retrieve_stream(
     if source == "hackernews":
         result = hackernews.search_hackernews(subquery.search_query, from_date, to_date, depth=depth)
         return hackernews.parse_hackernews_response(result, query=subquery.search_query), {}
+    if source == "stocktwits":
+        # Pass raw_topic so symbol detection sees the full topic, not the
+        # narrowed per-subquery search_query (same rationale as reddit).
+        result = stocktwits.search_stocktwits(
+            raw_topic or topic or subquery.search_query, from_date, to_date, depth=depth)
+        return stocktwits.parse_stocktwits_response(result, query=subquery.search_query), {}
     if source == "digg":
         result = digg.search_digg(subquery.search_query, from_date, to_date, depth=depth)
         items = digg.parse_digg_response(result, query=subquery.search_query)
@@ -1497,7 +1561,9 @@ def _retrieve_stream(
         # per-subquery search_query, so the company is detected consistently.
         relevance_topic = raw_topic or topic or subquery.search_query
         result = trustpilot.search_trustpilot(
-            relevance_topic, from_date, to_date, depth=depth, config=config
+            relevance_topic, from_date, to_date, depth=depth, config=config,
+            explicit_domain=trustpilot_domain,
+            domain_is_hint=trustpilot_domain_is_hint,
         )
         return trustpilot.parse_trustpilot_response(result, query=relevance_topic), {}
     if source == "bluesky":

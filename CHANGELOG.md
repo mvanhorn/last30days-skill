@@ -7,9 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.11.0] - 2026-07-05
+
+### Added
+
+- `last30days doctor`: a unified health command that aggregates every source's probe state into a single grouped report with copy-pasteable fix prescriptions. Layered design: dependency probes (missing/broken/timeout detection), backend-chain descriptors (predict-then-report, never a network call), a centralized prescription registry shared by doctor and quality nudges, and an aggregator with grouped rendering. Replaces the fragmented health knowledge previously spread across `--diagnose`, `--preflight`, `lib/health.py`, and post-run nudges. ([#753](https://github.com/mvanhorn/last30days-skill/pull/753))
+
 ### Fixed
 
+- Techmeme: `search` results are now windowed to each record's own ISO date instead of stamping every record with today's date, so years-old archive headlines can no longer surface as current news. Dated in-window records take result-cap slots first; undated records (old `techmeme-pp-cli` binary or upstream markup change) degrade gracefully with a logged upgrade hint. The sync machinery is removed because `search` never read the local cache. ([#752](https://github.com/mvanhorn/last30days-skill/pull/752))
+- LinkedIn now renders in the emoji-tree footer (👔 with likes/comments), the `## Stats` engagement summary, and with the correct "LinkedIn" label. Previously LinkedIn items were counted in `## Stats` but silently dropped from the footer because `_FOOTER_SOURCES`, `ENGAGEMENT_DISPLAY`, and `SOURCE_LABELS` all omitted the source - an 8-item LinkedIn run looked like the source never ran. ([#758](https://github.com/mvanhorn/last30days-skill/pull/758))
+
+## [3.10.0] - 2026-07-04
+
+### Added
+
+- Instagram comments as a first-class ScrapeCreators source: `instagram.enrich_with_comments` fetches top comments via `GET /v2/instagram/post/comments` (ranked by `comment_like_count`), gated by `SCRAPECREATORS_API_KEY` + `instagram_comments` in `INCLUDE_SOURCES`. Full vote-weighting parity with YouTube/TikTok - a dedicated `_instagram_engagement` gives IG posts the same top-comment ranking carve-out, and IG comments render with a "likes" label. ([#751](https://github.com/mvanhorn/last30days-skill/pull/751))
+- Comments are now on by default: the first-run Step 5 Recommended tier enables top comments for TikTok, Instagram, and YouTube (`INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments`); the Everything tier adds Threads + Pinterest. Comments were previously an opt-in "Everything" feature. ([#751](https://github.com/mvanhorn/last30days-skill/pull/751))
+
+### Changed
+
+- The cross-platform "Top Community Comments" list now selects **round-robin by within-platform rank** (every platform's #1, then #2, then #3) instead of a global vote-magnitude sort, so the top-3-of-each-platform outranks the 4th-of-any and each platform's #1 is guaranteed a slot - a viral platform can no longer sweep the list. The list also drops the per-platform absolute vote floor so a less-watched video's high-signal low-vote comment still surfaces (the per-candidate card keeps its floor). ([#751](https://github.com/mvanhorn/last30days-skill/pull/751))
+
+### Fixed
+
+- First-run wizard: the welcome pitch is embedded directly in the setup modal (the only always-visible surface) instead of a separate `--welcome` message that Claude Code folds behind "ctrl+o to expand"; the cookie-consent and ScrapeCreators-offer copy now name every installed CLI (yt-dlp, Digg, arXiv, Techmeme) and describe the key's real reach (auto Reddit enrichment + YouTube search backstop), with the GitHub device code auto-copied to the clipboard. ([#750](https://github.com/mvanhorn/last30days-skill/pull/750))
+
+## [3.9.4] - 2026-07-04
+
+### Fixed
+
+- First-run wizard: the welcome message and the ScrapeCreators GitHub device code are now engine-driven instead of model-authored, because a real cold run showed the model skipping the welcome and never surfacing the device code no matter how forceful the SKILL.md prose. The welcome is printed by a new `last30days.py --welcome` command that Step 1 relays verbatim (single source of truth; it can't be skipped or drift), and the GitHub device flow is split into `setup --github-start` (submits, copies the code to the clipboard, prints it to stdout, opens the browser, returns immediately) and `setup --github-poll` (waits for authorization and persists the key). The one-shot `setup --github` still chains both. The code now always appears in the command output, and the "on your clipboard" claim is only made when the copy actually succeeded. ([#748](https://github.com/mvanhorn/last30days-skill/pull/748))
+
+## [3.9.3] - 2026-07-04
+
+### Added
+
+- Optional remote research API backend (env-driven). When both `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` are set in the process environment (never read from `.env`), a search runs through the configured remote endpoint (submit -> poll with stderr progress -> render) instead of local sources; with either unset, behavior is byte-identical to local-only. Opt-in and inert by default (no built-in endpoint); the key is confined to the `Authorization` header and never logged or persisted. Handles the clarify gate and 401/402/429 paths. ([#747](https://github.com/mvanhorn/last30days-skill/pull/747))
+
+### Fixed
+
+- First-run wizard: the welcome message is now mandated before the setup modal (it was being skipped), the Auto-setup option lists every installed CLI (yt-dlp, Digg, arXiv, Techmeme, not just two), and the ScrapeCreators GitHub signup reliably surfaces the device code with an "it's on your clipboard, just paste" hint as a required step instead of leaving the user staring at a spinner. ([#746](https://github.com/mvanhorn/last30days-skill/pull/746))
+- ScrapeCreators GitHub signup: an already-linked account whose `.env` is cold no longer fails with the misleading "GitHub auth didn't complete." The `Authorized but failed to fetch API key` case now gets an honest branch (auth worked; the account is likely already linked -- get your key from scrapecreators.com and paste it), and `fetch_api_key` logs the `/profile` response field names (never values) so a full auto-fetch can follow. ([#746](https://github.com/mvanhorn/last30days-skill/pull/746))
+
+## [3.9.2] - 2026-07-03
+
+### Fixed
+
+- Trustpilot source returned 0 items on company topics: the engine passed raw topic names to a domain-keyed CLI (`info ThriftBooks` -> HTTP 404) and parallel subqueries raced concurrent Chrome WAF-cookie harvests. Company names now resolve to their Trustpilot review-page domain via the CLI's search (per-topic cache; name-match mandatory, ambiguous cases fall back rather than misattributing another company's reviews), a new `--trustpilot-domain` flag pins the domain explicitly (verbatim, bypasses the brand-shape gate, per-entity `trustpilot_domain` in `--competitors-plan`), the WAF session warms once per 240s window behind a lock at first fetch, Trustpilot is capped to one fetch per run and excluded from the thin-source retry, and headless `--auto-resolve` fills a verified domain hint. SKILL.md Step 0.5d documents the resolution flow. ([#745](https://github.com/mvanhorn/last30days-skill/pull/745))
+
+## [3.9.1] - 2026-07-03
+
+### Fixed
+
+- First-run setup wizard: the browser-cookie scan now tries Chrome/Chromium first (Keychain, no Full Disk Access) before Safari, so macOS users logged into X in Chrome authenticate in ~2s instead of hitting the Safari Full Disk Access dead-end. The winning browser is pinned for later runs only when it is Firefox/Safari, so Chrome never re-triggers the Keychain prompt. Consent copy leads with Chrome and the one-time "Always Allow" cue. ([#744](https://github.com/mvanhorn/last30days-skill/pull/744))
+- ScrapeCreators GitHub signup now surfaces the device code immediately (emitted to stdout so a backgrounded caller shows it at once, instead of a spinner until the process exits), validates the `XXXX-XXXX` code shape before copying/labeling it, short-circuits an already-registered account without a fresh device dance, and masks the API key on every status (not just success). Removed the false "GitHub CLI ~2 seconds, no browser" promise. ([#744](https://github.com/mvanhorn/last30days-skill/pull/744))
+- ScrapeCreators source opt-in is now two real tiers. The Step 5 choices were previously identical — a key auto-ran TikTok, Instagram, Threads, and YouTube comments regardless of `INCLUDE_SOURCES`, and Pinterest's opt-in silently ignored a persisted `INCLUDE_SOURCES`. Threads, YouTube comments, and Pinterest are now genuine `INCLUDE_SOURCES` opt-ins: **Recommended** = TikTok + Instagram + the rate-limit backups; **Everything** = also Threads, Pinterest, and YouTube/TikTok/Instagram comments. "ScrapeCreators backups" is now defined inline (keeps Reddit/YouTube working at rate limits). ([#744](https://github.com/mvanhorn/last30days-skill/pull/744))
+
+## [3.9.0] - 2026-07-03
+
+### Added
+
+- StockTwits as a source, gated to ticker/crypto topics only. Surfaces a retail sentiment ratio (self-reported Bullish/Bearish tags) and message volume on a resolved symbol. Inert on non-financial topics: an unambiguous finance-vocabulary gate (cashtags, "stock", "earnings", "dividend", "crypto", named coins) keeps it from injecting stock chatter into general runs, and it degrades to an empty lane if the public API fails without touching other sources. ([#658](https://github.com/mvanhorn/last30days-skill/pull/658), thanks @wtiwana)
+- LinkedIn as a source via ScrapeCreators, surfacing articles as high-signal results with date-range filtering, gated behind `INCLUDE_SOURCES`. ([#702](https://github.com/mvanhorn/last30days-skill/pull/702))
+- arXiv and Techmeme sources (default-on) plus Trustpilot (opt-in). ([#709](https://github.com/mvanhorn/last30days-skill/pull/709))
+
+### Fixed
+
+- Runtime preflight now auto-provisions a uv-managed CPython 3.12 on hosts that have `uv` but no system Python 3.12+ (most agent sandboxes), instead of hard-failing the version gate. The install is bounded by a 30s HTTP timeout, matches an existing managed `>=3.12` interpreter before downloading, and announces the one-time ~28MB download on stderr rather than installing silently; hosts without `uv` still get the original clear error. Setup invocations now honor `LAST30DAYS_PYTHON` so first-run setup works on the same hosts. ([#738](https://github.com/mvanhorn/last30days-skill/pull/738), thanks @buntysomroy; setup-interpreter fix adapted from #699 by @SeanGearin)
+- Setup wizard summary now displays the install status of the arXiv/Techmeme pp_sources CLIs, so users can see whether they landed on PATH. ([#741](https://github.com/mvanhorn/last30days-skill/pull/741), thanks @23241a6749)
 - `--diagnose` / `--preflight` no longer falsely reports X as unreachable when X auth comes from `FROM_BROWSER` browser cookies. These modes run in `plan_only` and skip cookie extraction for privacy (no Keychain access), so X was dropped from `available_sources` even though a real run authenticates fine. A new side-effect-free `env.x_pending_browser_auth` predicate now reports X as available-pending-browser-auth (and surfaces an `x_pending_browser_auth` flag in `--diagnose`) by keying only on the already-resolved browser list — no cookie is read. Covers every configured browser, including Chrome. ([#692](https://github.com/mvanhorn/last30days-skill/issues/692); first reported and fixed by @23241a6749 in #700)
+
+### Internal
+
+- Tightened Hermes `.skillignore` regression coverage: the test now fails if an ignored path is deleted without updating the ignore list, or if a runtime-contract file is accidentally ignored. ([#739](https://github.com/mvanhorn/last30days-skill/pull/739), thanks @SyntaxSawdust)
 
 ## [3.8.3] - 2026-06-25
 

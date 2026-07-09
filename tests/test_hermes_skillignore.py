@@ -28,11 +28,22 @@ def test_hermes_skillignore_excludes_non_runtime_scan_surface() -> None:
     }
 
     assert expected <= entries
+    for entry in sorted(expected):
+        assert (SKILL_ROOT / entry.rstrip("/")).exists()
 
 
 def test_hermes_skillignore_keeps_runtime_contract_scannable() -> None:
     entries = _skillignore_entries()
 
-    assert "SKILL.md" not in entries
-    assert "scripts/last30days.py" not in entries
-    assert "scripts/lib/" not in entries
+    expected_scannable = {
+        "SKILL.md",
+        "references",
+        "references/",
+        "references/save-html-brief.md",
+        "scripts/last30days.py",
+        "scripts/lib/",
+    }
+
+    for entry in sorted(expected_scannable):
+        assert entry not in entries
+        assert (SKILL_ROOT / entry.rstrip("/")).exists()

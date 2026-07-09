@@ -16,6 +16,8 @@ wizard in PR #659 and flattened it before this restoration).
 import unittest
 from pathlib import Path
 
+from lib import setup_wizard
+
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
 
@@ -53,11 +55,11 @@ class TestOnboardingContract(unittest.TestCase):
     def test_modal_flow_stage_order(self):
         """Welcome -> setup modal -> cookie consent -> SC offer -> opt-in -> picker."""
         anchors = [
-            "Welcome to /last30days!",
+            "Welcome to /last30days!",  # welcome pitch, embedded in the setup modal
             "How would you like to set up?",
-            "scan your browser",  # cookie-consent modal
-            "Want to add TikTok, Instagram, and the ScrapeCreators backups?",  # SC offer
-            "Which ScrapeCreators sources do you want on?",  # source opt-in
+            "your browser's x.com cookies",  # cookie-consent modal
+            "Want to add TikTok and Instagram?",  # SC offer
+            "Which ScrapeCreators sources?",  # source opt-in
             "What do you want to research first?",  # topic picker
         ]
         idxs = [self.modal.find(a) for a in anchors]
@@ -68,8 +70,24 @@ class TestOnboardingContract(unittest.TestCase):
     def test_modal_uses_askuserquestion(self):
         self.assertIn("AskUserQuestion", self.modal)
 
+    def test_cookie_consent_names_all_installed_clis(self):
+        """The cookie-consent modal must not frame X cookies as instead-of the CLIs,
+        and must name arXiv + Techmeme (not just 'YouTube + Digg') since auto-setup
+        installs all four regardless of the cookie choice."""
+        consent = self.modal[self.modal.find("your browser's x.com cookies"):]
+        consent = consent[: consent.find("Full Disk Access")]  # bound to the consent modal
+        for cli in ("yt-dlp", "Digg", "arXiv", "Techmeme"):
+            self.assertIn(cli, consent, cli)
+        # The "skip X" option still installs the CLIs (not framed as X-or-CLIs).
+        self.assertIn("Skip X - just the CLIs", consent)
+
+    def test_github_option_advertises_auto_clipboard(self):
+        """The recommended GitHub option tells the user the code is auto-copied to
+        their clipboard, so they just paste it."""
+        self.assertIn("clipboard automatically", self.modal)
+
     def test_modal_cookie_consent_before_setup(self):
-        consent = self.modal.find("scan your browser")
+        consent = self.modal.find("your browser's x.com cookies")
         setup = self.modal.find("last30days.py setup")
         self.assertGreater(consent, -1, "no cookie-consent modal in modal flow")
         self.assertGreater(setup, -1, "no setup invocation in modal flow")
@@ -126,8 +144,8 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertIn("Digg", self.modal)
         self.assertIn("Digg", self.prose)
         self.assertIn("Digg", self.manual)
-        # The Auto-setup modal option names both tools together.
-        self.assertIn("yt-dlp (YouTube) and the Digg CLI", self.modal)
+        # The Auto-setup modal option names every installed CLI, not just two.
+        self.assertIn("yt-dlp (YouTube), Digg, arXiv, Techmeme", self.modal)
 
     # --- Credit count = 10,000, no conflicting numbers in onboarding ---
 
@@ -138,14 +156,141 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertNotIn("1000 credits", self.step0)
         self.assertNotIn("100 free call", self.step0)
 
-    # --- Threads/Pinterest kept out of the onboarding offers ---
+    # --- Threads/Pinterest live ONLY in the Step 5 "Everything" opt-in ---
 
-    def test_threads_pinterest_absent_from_modal_and_prose(self):
-        """They stay a power-user INCLUDE_SOURCES note in the manual guide only."""
-        self.assertNotIn("Threads", self.modal)
-        self.assertNotIn("Pinterest", self.modal)
-        self.assertNotIn("Threads", self.prose)
-        self.assertNotIn("Pinterest", self.prose)
+    def _modal_step5(self):
+        start = self.modal.index("**Step 5:")
+        end = self.modal.index("**Step 6:", start)
+        return self.modal[start:end]
+
+    def _modal_before_step5(self):
+        # Welcome (Step 1) through the Step 4 ScrapeCreators offer.
+        return self.modal[: self.modal.index("**Step 5:")]
+
+    def test_threads_pinterest_only_in_step5_everything(self):
+        """Threads/Pinterest are offered in the Step 5 Everything tier, and
+
+        must NOT appear in the welcome or the Step 4 offer (where they would
+        read as default-on). They are opt-in via INCLUDE_SOURCES.
+        """
+        step5 = self._modal_step5()
+        self.assertIn("Threads", step5)
+        self.assertIn("Pinterest", step5)
+        before = self._modal_before_step5()
+        self.assertNotIn("Threads", before)
+        self.assertNotIn("Pinterest", before)
+
+    def test_offer_copy_names_comments_and_auto_enrichment(self):
+        """The Step 4 offer states comments are part of the default value and
+        describes the key's real auto-enrichment (Reddit merged + YouTube
+        backstop), not a vague 'backup'."""
+        before = self._modal_before_step5()
+        self.assertIn("comments", before.lower())
+        self.assertIn("Reddit", before)
+        self.assertIn("YouTube", before)
+        self.assertIn("10,000 free calls", before)
+
+    def test_recommended_tier_writes_comments_by_default(self):
+        """Comments are the DEFAULT: the recommended option enables YouTube +
+        TikTok + Instagram comments (posts on -> comments on)."""
+        step5 = self._modal_step5()
+        self.assertIn(
+            "INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments",
+            step5,
+        )
+        # There is no posts-only tier.
+        self.assertIn("recommended", step5.lower())
+        self.assertIn("comments", step5.lower())
+
+    def test_everything_tier_writes_full_include_sources(self):
+        """The Everything option persists the full list incl. Threads + Pinterest."""
+        step5 = self._modal_step5()
+        self.assertIn(
+            "INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments,threads,pinterest",
+            step5,
+        )
+
+    # --- Chrome-first cookie scan (U2/U3) ---
+
+    def test_cookie_consent_leads_with_chrome(self):
+        """Both flows tell the user Chrome is checked first, with the Keychain cue."""
+        for slice_name, slice_text in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn("Chrome", slice_text, f"{slice_name} cookie copy omits Chrome")
+            self.assertIn("Always Allow", slice_text, f"{slice_name} omits the Keychain cue")
+
+    def test_fda_reframed_as_safari_fallback(self):
+        """Full Disk Access is framed as Safari-only, not the default path."""
+        self.assertNotIn("scan your browser (Firefox/Safari)", self.modal)
+
+    def test_welcome_embedded_in_modal(self):
+        """The welcome pitch lives INSIDE the setup modal (the only always-visible
+        surface), not as a separate message/command that Claude Code folds away.
+        The engine --welcome command is kept for the non-modal prose flow."""
+        # Pitch is in the modal question.
+        self.assertIn("Welcome to /last30days!", self.modal)
+        self.assertIn("How would you like to set up?", self.modal)
+        # The modal flow explicitly does NOT run a separate --welcome command.
+        self.assertIn("Do NOT run a separate `--welcome`", self.modal)
+        # The non-modal flow still uses the engine welcome command.
+        self.assertIn("last30days.py --welcome", self.prose)
+
+    def test_stocktwits_surfaced_as_conditional(self):
+        """StockTwits is advertised in the engine welcome as a ticker/crypto-gated
+        source (welcome text moved out of SKILL.md into the engine)."""
+        self.assertIn("StockTwits", setup_wizard.render_welcome())
+
+    # --- Honest GitHub device-code copy (U4/U7) ---
+
+    def test_no_false_instant_gh_promise(self):
+        """The '~2 seconds - no browser' claim (a nonexistent code path) is gone."""
+        self.assertNotIn("~2 seconds - no browser", self.step0)
+        self.assertNotIn("Registers via GitHub CLI in ~2 seconds", self.step0)
+
+    def test_device_code_surfacing_orchestration_present(self):
+        """Both flows use the deterministic two-command split (start returns the
+        code fast, then poll) instead of a background-and-surface spinner."""
+        self.assertIn("setup --github-start", self.modal)
+        self.assertIn("setup --github-poll", self.modal)
+        self.assertIn("setup --github-start", self.prose)
+        self.assertIn("setup --github-poll", self.prose)
+
+    def test_already_registered_status_handled(self):
+        self.assertIn("already_registered", self.modal)
+        self.assertIn("already_registered", self.prose)
+
+    # --- Welcome must render before the modal (U1) ---
+
+    def test_welcome_pitch_is_in_the_modal_question(self):
+        """The welcome pitch names the core sources inside the modal question, so
+        the user sees it without expanding folded tool output. The old skip-prone
+        'IMMEDIATELY call AskUserQuestion' wording stays gone."""
+        # Pitch names the core sources right in the modal.
+        for source in ("Reddit", "X,", "YouTube", "TikTok"):
+            self.assertIn(source, self.modal, source)
+        self.assertNotIn("Then IMMEDIATELY call AskUserQuestion", self.modal)
+
+    # --- Device code surfaced with a clipboard-paste hint (U3) ---
+
+    def test_device_code_clipboard_paste_instruction(self):
+        """The GitHub flow tells the user the code is on their clipboard to paste,
+
+        and makes surfacing the code a required step (the bug the user hit).
+        """
+        self.assertIn("on your clipboard", self.modal)
+        # Surfacing the code is a required, explicit step in the new split flow.
+        self.assertIn("SHOW THE CODE", self.modal)
+        self.assertIn("just paste", self.modal)
+
+    # --- Honest 'authorized but no key' branch, distinct from auth-failed (U4) ---
+
+    def test_authorized_but_no_key_branch_present(self):
+        """A key-fetch failure after successful auth is handled honestly (likely
+
+        an already-linked account), not lumped into 'auth didn't complete'.
+        """
+        for slice_name, slice_text in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn("Authorized but failed to fetch API key", slice_text, slice_name)
+            self.assertIn("already linked", slice_text, slice_name)
 
     # --- Legacy guarantees retained ---
 

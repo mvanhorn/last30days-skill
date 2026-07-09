@@ -1042,20 +1042,21 @@ class TestScTranscriptParsing(unittest.TestCase):
 
 
 class TestYoutubeCommentsGating(unittest.TestCase):
-    """YouTube comments default-on gating (U5)."""
+    """YouTube comments are opt-in via INCLUDE_SOURCES (Everything tier)."""
 
-    def test_default_on_with_key_and_no_include_sources(self):
+    def test_off_with_key_and_no_include_sources(self):
+        """Recommended tier (key, no INCLUDE_SOURCES) does NOT fetch comments."""
         from lib import env
-        self.assertTrue(env.is_youtube_comments_available({"SCRAPECREATORS_API_KEY": "k"}))
+        self.assertFalse(env.is_youtube_comments_available({"SCRAPECREATORS_API_KEY": "k"}))
+
+    def test_on_with_include_sources(self):
+        from lib import env
+        cfg = {"SCRAPECREATORS_API_KEY": "k", "INCLUDE_SOURCES": "youtube_comments"}
+        self.assertTrue(env.is_youtube_comments_available(cfg))
 
     def test_unavailable_without_key(self):
         from lib import env
-        self.assertFalse(env.is_youtube_comments_available({}))
-
-    def test_exclude_sources_suppresses(self):
-        from lib import env
-        cfg = {"SCRAPECREATORS_API_KEY": "k", "EXCLUDE_SOURCES": "youtube_comments"}
-        self.assertFalse(env.is_youtube_comments_available(cfg))
+        self.assertFalse(env.is_youtube_comments_available({"INCLUDE_SOURCES": "youtube_comments"}))
 
     def test_tiktok_comments_still_opt_in(self):
         """Regression: TikTok comments must STILL require INCLUDE_SOURCES."""

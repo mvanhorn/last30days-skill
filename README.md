@@ -1,11 +1,13 @@
 # /last30days
 
 <p align="center">
+  <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days - an AI agent-led search engine that searches people, not editors" />
+</p>
+
+<p align="center">
   <a href="https://github.com/mvanhorn/last30days-skill">
     <img src="https://img.shields.io/badge/%231-Repository%20Of%20The%20Day-6f42c1?style=for-the-badge&logo=github&label=GITHUB%20TRENDING" alt="GitHub Trending #1 Repository Of The Day" />
   </a>
-  <br/>
-  <img src="https://img.shields.io/badge/coverage-%E2%89%A560%25-brightgreen" alt="Coverage ≥60%" />
   <br/>
   <a href="https://trendshift.io/repositories/21997" target="_blank">
     <img src="https://trendshift.io/api/badge/repositories/21997" alt="mvanhorn/last30days-skill | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
@@ -30,7 +32,7 @@ npx skills add mvanhorn/last30days-skill -g
 
 More install options (claude.ai web, OpenClaw, manual) in the [Install](#install) section below.
 
-Zero config. Reddit, HN, Polymarket, and GitHub work immediately. Run it once and the setup wizard unlocks X, YouTube, TikTok, and more in 30 seconds.
+Zero config. Reddit, HN, Polymarket, and GitHub work immediately. Run it once and the setup wizard unlocks X, YouTube, TikTok, arXiv, Techmeme, and more in 30 seconds.
 
 ---
 
@@ -60,7 +62,7 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 
 | Source | What the people tell you |
 |--------|--------------------------|
-| **Reddit** | The unfiltered take. Top comments with upvote counts, free via public JSON. The real opinions that Google buries. |
+| **Reddit** | The unfiltered take. Top comments with real upvote counts, free, no API key. The real opinions that Google buries. |
 | **X / Twitter** | The hot take, the expert thread, the breaking reaction. First to know, first to argue. |
 | **YouTube** | The 45-minute deep dive. Full transcripts searched for the 5 quotable sentences that matter. |
 | **TikTok** | The creator reaching 3.6M people with a take you'll never find on Google. |
@@ -69,6 +71,10 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 | **Polymarket** | Not opinions. Odds. Backed by real money. 96% confidence on album sales. 4% on an acquisition. |
 | **GitHub** | For people: PR velocity, top repos by stars, release notes. For topics: issues and discussions. |
 | **Digg** | Curated story clusters from Digg's AI 1000 leaderboard (~1000 high-signal AI accounts on X), with attributable inline quotes (no X auth required). Auto-enabled when `digg-pp-cli` is on PATH. |
+| **arXiv** | The papers behind the hype. New research in the window, free, no API key. Auto-enabled when `arxiv-pp-cli` is on PATH (first-run setup installs it). |
+| **Techmeme** | The tech-news editorial layer, date-windowed to your 30 days. Free, no API key. Auto-enabled when `techmeme-pp-cli` is on PATH (first-run setup installs it). |
+| **LinkedIn** | The professional signal. Posts and articles, with articles weighted as high signal. |
+| **StockTwits** | Trader sentiment. Auto-activates when your topic is a ticker or crypto. |
 | **Threads** | The post-Twitter text layer. Conversations from creators and brands. |
 | **Pinterest** | Visual discovery. Pins, saves, and comments on products and ideas. |
 | **Bluesky** | The decentralized social layer. AT Protocol posts from the post-Twitter migration. |
@@ -97,78 +103,49 @@ The synthesis ranks by what real people actually engaged with. Social relevancy,
 
 **To learn something fast.** `/last30days Nano Banana Pro prompting` - JSON-structured prompts are replacing tag soup. @pictsbyai's nested format prevents "concept bleeding." Edit-first workflow beats regeneration. Then it writes you a production prompt using exactly what the community said works.
 
-## What v3 Changed
+## What's new
 
-### Shareable HTML briefs
+Since the v3.3 announcement in May, as of v3.11.1 (July 2026): 175 merged PRs - 122 of them from 52 community contributors - across 15 releases. This is what landed.
 
-Ask for an HTML brief and the skill saves a self-contained, dark-mode, print-friendly file you can drop into Slack, email, or Notion. No raw markdown leaks. Inline CSS, system-font fallbacks behind Inter and JetBrains Mono. No JavaScript. Works offline.
+### First-class on OpenAI Codex
 
-```
-/last30days OpenClaw --emit=html
-```
+/last30days is now a native Codex plugin with guided setup - not a port, a first-class citizen. Renderer-aware citations mean Codex output reads like a brief instead of URL soup (#694), and the same engine runs on Claude Code, Cursor, Copilot, Gemini CLI, Claude Desktop, OpenClaw, and 50+ Agent Skills hosts. Codex plugin manifest by [@rfoust](https://github.com/rfoust) (#686), Codex auth fix by [@tmchow](https://github.com/tmchow) (#698).
 
-or just ask in plain language:
+### arXiv, Techmeme, and Digg - free, no API keys
 
-```
-/last30days OpenClaw, give me a shareable HTML brief
-/last30days Cursor IDE for slack
-/last30days Anthropic earnings export as html
-```
+arXiv brings the papers behind the hype and Techmeme brings the editorial tech-news layer - free, zero keys, and first-run setup installs their CLIs so they activate automatically (#709). Digg's AI 1000 story clusters arrive without X auth the same way - setup installs the free Digg CLI for you (#590). Trustpilot ships opt-in for consumer-brand research.
 
-The skill emits the synthesis in chat as usual AND saves a brief to `${LAST30DAYS_MEMORY_DIR}/{topic}-brief.html` (defaults to `~/Documents/Last30Days/`). The chat response ends with the file path so you can `open` it or drag it into a message.
+### Free Reddit grew real scores and top comments
 
-What's in the file: badge, inline metadata line, the model's synthesis verbatim with all citations, the engine footer (✅ All agents reported back! tree), and a colophon noting the topic + how to re-run. Data quality warnings (degraded run, thin evidence, etc.) stay in the engine's stderr logs; they never leak into the shareable artifact.
+Reddit's public .json API died; the free path came back stronger. Keyless RSS + shreddit scraping (#457), dedicated-subreddit discovery with real upvote counts via arctic-shift (#696), and a relevance floor so a viral off-topic post can't hijack your brief (#488, thanks [@rzachsmith](https://github.com/rzachsmith)). No API key. Real scores. Top comments included.
 
-For direct CLI use without the model in the loop, the engine also accepts `--synthesis-file PATH` to convert any markdown synthesis to HTML.
+### The best comments in every brief
 
-### Intelligent search: the killer feature
+Comments are now a default-on layer across sources: Instagram comments with rank-based diversity so five hot takes don't all come from one post (#751), YouTube comments plus a ScrapeCreators transcript backup for when yt-dlp strikes out (#637), and crowd-voted comments weighted into Best Takes so the community's funniest lines survive scoring (#592, #608).
 
-The v3 engine doesn't just search for your topic. It figures out *where* to search before the search begins. Type "OpenClaw" and the engine resolves @steipete (Peter Steinberger, the creator), r/openclaw, r/ClaudeCode, and the right YouTube channels and TikTok hashtags - all via a new Python pre-research brain built by [@j-sperling](https://github.com/j-sperling). The old engine searched keywords. The new engine understands your topic first, then searches the right people and communities.
+### One doctor command
 
-This is why v3 finds content v2 never could. "Paperclip" resolves @dotta. "Dave Morin" resolves @davemorin plus @OpenClaw plus the TWiST podcast. "Peter Steinberger" resolves @steipete on X and steipete on GitHub. Bidirectional: person to company, product to founder, name to GitHub profile. The right subreddits, the right handles, the right hashtags - resolved before a single API call fires.
+Ask for a health check and the doctor runs every source, then prescribes exact fixes - which key is missing, which CLI is off PATH, which cookie expired (#753). No more guessing why X came back thin.
 
-### Best Takes
+### X search, rebuilt
 
-Reddit and X people are funny. The old engine buried their best stuff because it scored for relevance, not cleverness. v3 has a second judge that scores every result for humor, wit, and virality alongside the relevance score. Tommy Lloyd's "My Michael Jordan is Steve Kerr" scores low on relevance to "Arizona Basketball" but off the charts on fun. Now every brief ends with a "Best Takes" section - the cleverest one-liners, the most viral quotes, the reactions that make you want to share the research. Built in, not a toggle.
+The X pipeline got a ground-up overhaul: FROM and ABOUT lanes so a person's own posts and the conversation about them both rank (#610), person-aware subquery disambiguation (#611), first-party authorship grounding with interaction-signal ranking (#613), and a single X source with automatic backend failover (#622). Plus an honest `--diagnose` that actually probes auth (#609).
 
-### Cross-source cluster merging
+### More sources joined
 
-When the same story appears on Reddit, X, and YouTube, v3 merges them into one cluster instead of showing three separate items. Entity-based overlap detection catches matches even when the titles use different words.
+LinkedIn via ScrapeCreators, with articles as high signal ([@ravstr](https://github.com/ravstr), #702). StockTwits auto-activates for ticker and crypto topics ([@wtiwana](https://github.com/wtiwana), #658). Perplexity grew direct API modes and async Deep Research ([@sk-holmes](https://github.com/sk-holmes), #629).
 
-### Single-pass comparisons
+### Hardened by the community
 
-"CLI vs MCP" used to run three serial passes (12+ minutes). v3 runs one pass with entity-aware subqueries for both sides simultaneously. Same depth, 3 minutes.
+The security wave was almost entirely community work: stored-XSS fixes in the HTML renderer ([@iliaal](https://github.com/iliaal), [@aaronjmars](https://github.com/aaronjmars)), locked-down cookie temp files, supply-chain-hardened CI with OpenSSF Scorecard and build provenance attestation ([@shaanmajid](https://github.com/shaanmajid), [@hammadxcm](https://github.com/hammadxcm), [@aniruddh909](https://github.com/aniruddh909)), Semgrep and OSV-Scanner scans plus a PR dependency-review gate ([@23241a6749](https://github.com/23241a6749)), a test-coverage floor introduced at 60% and since raised to 84% ([@gourab5139014](https://github.com/gourab5139014)), and a Hermes security scan cleared of every CRITICAL finding (#768).
 
-### Auto-discovered competitor comparisons
+### Reaches further
 
-`/last30days OpenAI --competitors` tells the hosting reasoning model to discover the top 2 peers via WebSearch (Anthropic, xAI), run Step 0.55 per entity, and invoke the engine with `"OpenAI vs Anthropic vs xAI"` and a per-entity `--competitors-plan` JSON. The engine fans out 3 full pipelines in parallel, saves a `*-raw.md` file per entity, and merges them into a 3-way comparison. Same mechanics power `/last30days "OpenAI vs Anthropic vs xAI"` directly.
+Hebrew and non-Latin languages ([@dudyme](https://github.com/dudyme)). CJK-aware tokenization for Chinese sources ([@An-idd](https://github.com/An-idd)). A Windows compatibility wave. Cookie extraction across the full Chromium family - Brave, Edge, Vivaldi, Opera, Arc ([@andrey-esipov](https://github.com/andrey-esipov)) - plus macOS Keychain and Linux pass(1) credential sources. `--as-of` historical lookback ([@chiyi-creator](https://github.com/chiyi-creator)). Auto-provisioned Python 3.12 via uv ([@buntysomroy](https://github.com/buntysomroy)). `--hiring-signals` for reading a company's job pages. Watchlist deltas between runs.
 
-### GitHub person-mode
+### Still in the box from v3
 
-When the topic is a person, the engine switches from keyword search to author-scoped queries. Instead of "who mentioned this name in an issue body," it answers: what are they shipping and where is it landing?
-
-`/last30days Peter Steinberger --github-user=steipete` shows 22 PRs merged across 3 repos at 85% merge rate. Own projects with README summaries, star counts, and top feature requests. Release notes for what shipped this month. The synthesizer weaves it into the narrative alongside X posts and Reddit threads.
-
-### ELI5 mode
-
-Say "eli5 on" after any research run. The synthesis rewrites in plain language. No jargon. Same data, same sources, same citations - just clearer. "Arizona wins by being physical" instead of "Arizona's identity is paint scoring (50%+ shooting, 9th nationally)." Say "eli5 off" to go back.
-
-### Everything else in v3
-
-- **Free Reddit comments.** Public JSON gives you threads + top comments with upvote counts. No API key, no ScrapeCreators. Just works.
-- **YouTube transcripts that actually work.** Widened candidate pool 3x past music videos to reach talk/review content with captions.
-- **TikTok, Instagram, Threads.** All three activate automatically once `SCRAPECREATORS_API_KEY` is set — same key, same per-call cost. Suppress any of them with `EXCLUDE_SOURCES=tiktok,instagram,threads` (any comma-separated subset).
-- **Pinterest.** Per-query opt-in (visual pins, narrow utility): the model passes `--search=pinterest` for the runs that need it. Requires `SCRAPECREATORS_API_KEY`.
-- **YouTube comments + transcript fallback.** Both activate automatically once `SCRAPECREATORS_API_KEY` is set, the same default-on backup tier. Transcripts only fall back to ScrapeCreators when yt-dlp fails (no credit spent on success); comments are bounded to the top few videos (~3 extra calls per run). Suppress comments with `EXCLUDE_SOURCES=youtube_comments`. **TikTok comments** stay opt-in via `INCLUDE_SOURCES=tiktok_comments`. Surface top comments with vote counts the same way Reddit does.
-- **Perplexity Sonar / Search API / Deep Research.** Grounded web search via direct Perplexity (`PERPLEXITY_API_KEY`) or OpenRouter Sonar fallback (`OPENROUTER_API_KEY`). Add one of those keys plus `INCLUDE_SOURCES=perplexity` (it's a separate paid API - opt-in keeps you from being surprise-billed). Direct Perplexity can return Sonar synthesis, raw ranked Search API rows, or both.
-- **Polymarket noise filtering.** Common-word disambiguation prevents "Apple" from matching "Will Apple release a car?"
-- **Resilient Reddit.** Timeout budgets and runtime fallback. One slow thread doesn't kill the whole run.
-- **Fun judge v2.** Humor scoring baked into the narrative. Reddit's cleverest one-liners mixed into the synthesis where they fit, not dumped in a separate section.
-- **Polymarket odds, not dollars.** The % odds are the magic. Dollar volumes removed from display.
-- **Per-author cap.** Max 3 items per author prevents any single voice from dominating your brief.
-- **Entity disambiguation.** When the engine resolves handles, the synthesis trusts them. No more Mallorca resorts winning over Washington athletic clubs.
-- **OpenClaw first-class citizen.** Auto-resolve for engine-side pre-research. Device auth for frictionless ScrapeCreators signup.
-- **1,012 tests passing.**
+The v3 foundations are all still here: the pre-research brain that resolves the right handles, subreddits, and hashtags before a single API call fires (built by [@j-sperling](https://github.com/j-sperling)); Best Takes scoring for humor and virality alongside relevance; cross-source cluster merging; single-pass comparisons ("CLI vs MCP" in 3 minutes, not 12); auto-discovered `--competitors` comparisons; GitHub person-mode (`--github-user=steipete`); ELI5 mode ("eli5 on" after any run); and shareable, self-contained HTML briefs (`--emit=html`). Configuration knobs live in [CONFIGURATION.md](CONFIGURATION.md).
 
 ## Install
 
@@ -278,7 +255,7 @@ ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.claude/skills/last30days
 
 The symlink keeps the install in sync with your working tree as you edit — no re-copy needed. For `claude.ai`, build the `.skill` file from source: `bash skills/last30days/scripts/build-skill.sh` produces `dist/last30days.skill`.
 
-Reddit (with comments), Hacker News, Polymarket, and GitHub work immediately. Zero configuration. Run `/last30days` once and the setup wizard unlocks more sources in 30 seconds.
+Reddit (with comments), Hacker News, Polymarket, and GitHub work immediately. Zero configuration. Run `/last30days` once and the setup wizard unlocks more sources in 30 seconds, including the free arXiv and Techmeme CLIs.
 
 ## Bring your own keys
 
@@ -286,11 +263,12 @@ These platforms don't have relationships with each other. X doesn't know what Re
 
 | Sources | What you need | Cost |
 |---------|---------------|------|
-| Reddit (with comments) + HN + Polymarket + GitHub | Nothing | Free |
+| Reddit (with comments) + HN + Polymarket + GitHub + StockTwits | Nothing | Free |
+| arXiv + Techmeme | Free CLIs, auto-installed by first-run setup | Free |
 | X / Twitter | Log into x.com in any browser, or set `XQUIK_API_KEY` / `XAI_API_KEY` | Browser cookies are free; keys are provider-specific |
 | YouTube | `brew install yt-dlp` | Free |
 | Bluesky | App password from bsky.app | Free |
-| TikTok + Instagram + Threads + Pinterest + YouTube comments | ScrapeCreators key | 10,000 free calls, then PAYG |
+| TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube comments | ScrapeCreators key | 10,000 free calls, then PAYG |
 | Perplexity Sonar / Search API / Deep Research | Perplexity key, or OpenRouter key as Sonar fallback | Pay as you go |
 | Web search | Brave Search key | 2,000 free queries/month |
 
@@ -346,7 +324,7 @@ Per-client wrapper scripts, custom category-peer subreddits, and the experimenta
 
 ## Open source
 
-MIT license. No tracking. No analytics. Your research stays on your machine. 1,012 tests.
+MIT license. No tracking. No analytics. Your research stays on your machine. 2,700+ tests.
 
 Built with Python 3.12+, yt-dlp, Node.js (vendored Bird client for X search), and ScrapeCreators API. v3 engine architecture by [@j-sperling](https://github.com/j-sperling).
 

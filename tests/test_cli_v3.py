@@ -552,5 +552,46 @@ class CliV3Tests(unittest.TestCase):
         )
         self.assertIn("[GitHub] Canonicalized repos:", stderr.getvalue())
 
+    def test_main_passes_trustpilot_domain_to_pipeline_run(self):
+        """The user-set flag must reach pipeline.run verbatim with
+        provenance user-set (is_hint False) on the single-topic path."""
+        report = self.make_report()
+        diag = {
+            "available_sources": ["grounding"],
+            "providers": {"google": True, "openai": False, "xai": False},
+            "x_backend": None,
+            "bird_installed": True,
+            "bird_authenticated": False,
+            "bird_username": None,
+            "native_web_backend": "brave",
+        }
+        with mock.patch.object(cli.env, "get_config", return_value={}), \
+             mock.patch.object(cli.pipeline, "diagnose", return_value=diag), \
+             mock.patch.object(cli.pipeline, "run", return_value=report) as run_mock, \
+             mock.patch.object(cli, "emit_output", return_value="# rendered"), \
+             mock.patch.object(sys, "argv", [
+                 "last30days.py",
+                 "ThriftBooks",
+                 "--trustpilot-domain",
+                 "www.thriftbooks.com",
+             ]):
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                rc = cli.main()
+        self.assertEqual(0, rc)
+        main_call = next(
+            (c for c in run_mock.call_args_list
+             if c.kwargs.get("trustpilot_domain") == "www.thriftbooks.com"),
+            None,
+        )
+        self.assertIsNotNone(
+            main_call,
+            f"No pipeline.run call carried trustpilot_domain; saw "
+            f"{[c.kwargs.get('trustpilot_domain') for c in run_mock.call_args_list]}",
+        )
+        self.assertFalse(main_call.kwargs.get("trustpilot_domain_is_hint"))
+
+
 if __name__ == "__main__":
     unittest.main()

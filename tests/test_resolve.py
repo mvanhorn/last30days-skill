@@ -359,5 +359,50 @@ class AutoResolveCategoryIntegration(unittest.TestCase):
         result = resolve.auto_resolve("test topic", {})
         self.assertIsNone(result["category"])
 
+
+class ExtractOfficialDomainTests(unittest.TestCase):
+    def test_extracts_matching_registrable_domain(self):
+        items = [{"url": "https://www.thriftbooks.com/about-thriftbooks/", "title": "", "snippet": ""}]
+        self.assertEqual(
+            resolve._extract_official_domain("ThriftBooks", items),
+            "thriftbooks.com",
+        )
+
+    def test_skips_platform_hosts(self):
+        items = [
+            {"url": "https://www.reddit.com/r/thriftbooks/", "title": "", "snippet": ""},
+            {"url": "https://x.com/thriftbooks", "title": "", "snippet": ""},
+        ]
+        self.assertEqual(resolve._extract_official_domain("ThriftBooks", items), "")
+
+    def test_non_matching_domain_returns_empty(self):
+        items = [{"url": "https://bookriot.com/thriftbooks-review/", "title": "", "snippet": ""}]
+        self.assertEqual(resolve._extract_official_domain("ThriftBooks", items), "")
+
+    def test_empty_items_returns_empty(self):
+        self.assertEqual(resolve._extract_official_domain("ThriftBooks", []), "")
+
+
+class AutoResolveTrustpilotDomainTests(unittest.TestCase):
+    def test_no_backend_includes_empty_trustpilot_domain(self):
+        result = resolve.auto_resolve("test topic", {})
+        self.assertEqual(result["trustpilot_domain"], "")
+
+    @patch("lib.resolve.grounding.web_search")
+    def test_auto_resolve_fills_trustpilot_domain_from_news(self, mock_search):
+        def side_effect(query, date_range, config):
+            if "news" in query:
+                return [
+                    {"title": "ThriftBooks launches challenge",
+                     "snippet": "",
+                     "url": "https://www.thriftbooks.com/blog/challenge/"},
+                ], {}
+            return [], {}
+
+        mock_search.side_effect = side_effect
+        result = resolve.auto_resolve("ThriftBooks", {"BRAVE_API_KEY": "fake"})
+        self.assertEqual(result["trustpilot_domain"], "thriftbooks.com")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8,3 +8,6 @@ scripts/evaluate_search_quality.py
 scripts/test_device_auth.py
 scripts/test-v1-vs-v2.sh
 scripts/verify_v3.py
+
+# Vendored third-party X-search client (node_modules analog); excluded from scan, still installed.
+scripts/lib/vendor/

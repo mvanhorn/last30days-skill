@@ -143,6 +143,27 @@ class SubrunKwargsForTests(unittest.TestCase):
         self.assertIsNone(kwargs["x_related"])
         self.assertEqual(kwargs["_context"], "")
 
+    def test_trustpilot_domain_plan_wins_and_is_not_hint(self):
+        kwargs = cli.subrun_kwargs_for(
+            "ThriftBooks",
+            {"trustpilot_domain": "www.thriftbooks.com"},
+            resolved={"trustpilot_domain": "wrong.com"},
+        )
+        self.assertEqual(kwargs["trustpilot_domain"], "www.thriftbooks.com")
+        self.assertFalse(kwargs["_trustpilot_domain_is_hint"])
+
+    def test_trustpilot_domain_from_auto_resolve_is_hint(self):
+        kwargs = cli.subrun_kwargs_for(
+            "ThriftBooks", {}, resolved={"trustpilot_domain": "thriftbooks.com"},
+        )
+        self.assertEqual(kwargs["trustpilot_domain"], "thriftbooks.com")
+        self.assertTrue(kwargs["_trustpilot_domain_is_hint"])
+
+    def test_trustpilot_domain_absent_is_none(self):
+        kwargs = cli.subrun_kwargs_for("ThriftBooks", {}, resolved={})
+        self.assertIsNone(kwargs["trustpilot_domain"])
+        self.assertFalse(kwargs["_trustpilot_domain_is_hint"])
+
     def test_x_handle_strips_at_sign(self):
         kwargs = cli.subrun_kwargs_for(
             "Drake", {"x_handle": "@Drake"}, resolved={},

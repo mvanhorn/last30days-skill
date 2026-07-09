@@ -1,7 +1,9 @@
 """Tests for xurl_x module."""
 
 import json
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
 from lib import xurl_x
@@ -26,6 +28,11 @@ def _make_api_response(tweets=None, users=None):
 
 
 class TestIsAvailable(unittest.TestCase):
+    def setUp(self):
+        # is_available() memoizes per process; isolate every test.
+        xurl_x.clear_availability_cache()
+        self.addCleanup(xurl_x.clear_availability_cache)
+
     def test_returns_true_when_xurl_authenticated(self):
         completed = mock.Mock(returncode=0, stdout='{"username": "testuser"}')
         with mock.patch("subprocess.run", return_value=completed):
@@ -57,6 +64,106 @@ class TestIsAvailable(unittest.TestCase):
         completed = mock.Mock(returncode=0, stdout='{"id": "123"}')
         with mock.patch("subprocess.run", return_value=completed):
             self.assertFalse(xurl_x.is_available())
+
+# ---------------------------------------------------------------------------
+# stored_auth_status / has_stored_auth (local-only doctor-path evidence)
+# ---------------------------------------------------------------------------
+
+
+class _UnreadableStore:
+    """Path stub: exists but every read raises (permission-denied store)."""
+
+    def is_file(self):
+        return True
+
+    def read_text(self, *args, **kwargs):
+        raise PermissionError(13, "Permission denied")
+
+    def __str__(self):
+        return "/home/user/.xurl"
+
+
+class TestStoredAuth(unittest.TestCase):
+    """F1/F10: the doctor path keys on xurl's on-disk token store (~/.xurl)
+    instead of the live `xurl whoami` network call. These tests forbid
+    subprocess entirely — local evidence must never spawn anything."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.store = Path(self._tmp.name) / ".xurl"
+        boom = mock.patch(
+            "subprocess.run",
+            side_effect=AssertionError("local auth evidence must not spawn a subprocess"),
+        )
+        boom.start()
+        self.addCleanup(boom.stop)
+
+    def _status(self, path=None):
+        with mock.patch("lib.xurl_x.token_store_path", return_value=path or self.store):
+            return xurl_x.stored_auth_status()
+
+    def test_yaml_store_with_access_token_is_ok(self):
+        self.store.write_text(
+            "apps:\n  app:\n    oauth2_tokens:\n      me:\n        oauth2:\n"
+            "          access_token: dummy-not-real\n",
+            encoding="utf-8",
+        )
+        status, detail = self._status()
+        self.assertEqual(xurl_x.AUTH_OK, status)
+        self.assertIn(str(self.store), detail)
+
+    def test_legacy_json_store_with_bearer_token_is_ok(self):
+        self.store.write_text(
+            json.dumps({"bearer_token": {"bearer": "dummy-not-real"}}),
+            encoding="utf-8",
+        )
+        status, _ = self._status()
+        self.assertEqual(xurl_x.AUTH_OK, status)
+
+    def test_absent_store_is_missing(self):
+        status, detail = self._status()
+        self.assertEqual(xurl_x.AUTH_MISSING, status)
+        self.assertIn("no token store", detail)
+
+    def test_empty_store_is_missing(self):
+        self.store.write_text("", encoding="utf-8")
+        status, _ = self._status()
+        self.assertEqual(xurl_x.AUTH_MISSING, status)
+
+    def test_store_without_credential_markers_is_missing(self):
+        self.store.write_text("apps: {}\ndefault_app: app\n", encoding="utf-8")
+        status, detail = self._status()
+        self.assertEqual(xurl_x.AUTH_MISSING, status)
+        self.assertIn("no stored credentials", detail)
+
+    def test_unreadable_store_is_error_not_missing(self):
+        status, detail = self._status(path=_UnreadableStore())
+        self.assertEqual(xurl_x.AUTH_ERROR, status)
+        self.assertIn("unreadable", detail)
+        self.assertIn("PermissionError", detail)
+
+    def test_has_stored_auth_true_with_binary_and_store(self):
+        self.store.write_text("access_token: dummy-not-real\n", encoding="utf-8")
+        with mock.patch("lib.xurl_x.token_store_path", return_value=self.store), \
+             mock.patch("lib.xurl_x.shutil.which", return_value="/usr/local/bin/xurl"):
+            self.assertTrue(xurl_x.has_stored_auth())
+
+    def test_has_stored_auth_false_without_binary(self):
+        self.store.write_text("access_token: dummy-not-real\n", encoding="utf-8")
+        with mock.patch("lib.xurl_x.token_store_path", return_value=self.store), \
+             mock.patch("lib.xurl_x.shutil.which", return_value=None):
+            self.assertFalse(xurl_x.has_stored_auth())
+
+    def test_has_stored_auth_false_on_broken_store(self):
+        # has_stored_auth answers availability only; the typed ERROR surface
+        # lives in backends._probe_xurl (see test_backend_descriptors).
+        with mock.patch("lib.xurl_x.token_store_path", return_value=_UnreadableStore()), \
+             mock.patch("lib.xurl_x.shutil.which", return_value="/usr/local/bin/xurl"):
+            self.assertFalse(xurl_x.has_stored_auth())
+
+    def test_default_store_path_is_home_dot_xurl(self):
+        self.assertEqual(Path.home() / ".xurl", xurl_x.token_store_path())
 
 # ---------------------------------------------------------------------------
 # search_x

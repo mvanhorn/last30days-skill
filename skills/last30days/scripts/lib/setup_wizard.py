@@ -8,6 +8,7 @@ presents it), but this module provides the detection and setup actions.
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -26,6 +27,36 @@ def is_first_run(config: Dict[str, Any]) -> bool:
     (None or empty string), the user hasn't gone through setup yet.
     """
     return not config.get("SETUP_COMPLETE")
+
+
+_WELCOME_TEXT = """Welcome to /last30days! I research any topic across Reddit, X, YouTube, TikTok, Digg, arXiv, Techmeme, HN, Polymarket & more - what people actually said in the last 30 days. Let's get you set up (~30s).
+
+I synthesize what people are actually saying right now across social, news, and market sources.
+
+Auto setup gives you the core sources free in about 30 seconds:
+- X/Twitter - reads your browser cookies to authenticate (read live each run, never saved to disk). I check Chrome first (fastest - a one-time macOS Keychain prompt may appear; click Always Allow), then Firefox and Safari.
+- Reddit with comments - public JSON, no API key needed.
+- YouTube search + transcripts - installs yt-dlp (open source, 190K+ GitHub stars).
+- Digg - trending news, GitHub stars, and pipeline feeds - installs the free, keyless Digg CLI.
+- arXiv (papers) + Techmeme (tech-news) - install free, keyless Printing Press CLIs and run on any topic (arXiv is relevance + recency gated to research topics).
+- StockTwits - retail trader sentiment - auto-on when your topic is a ticker or crypto (e.g. "$NVDA earnings", "bitcoin"), off for everything else.
+- Trustpilot - brand/company review sentiment - opt-in (add trustpilot to INCLUDE_SOURCES), off by default.
+- Hacker News + Polymarket + GitHub (auto-on if the gh CLI is installed) - always on, zero config.
+
+Want TikTok and Instagram too? ScrapeCreators adds those (10,000 free calls, scrapecreators.com). No kickbacks, no affiliation.
+
+Power users can turn on more sources in the Manual Setup guide (LinkedIn, Bluesky, Perplexity, and others) - each needs its own credential, so they are off by default."""
+
+
+def render_welcome() -> str:
+    """Return the first-run welcome text.
+
+    Owned by the engine (single source of truth) so the model relays it rather
+    than re-authoring it -- authored prose gets skipped, relayed command output
+    does not. Mirrors the SKILL.md welcome; keep in sync if the source set
+    changes.
+    """
+    return _WELCOME_TEXT
 
 
 def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = False) -> Dict[str, Any]:
@@ -58,7 +89,13 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
 
         cookie_config = dict(config)
         if not (cookie_config.get("FROM_BROWSER") or "").strip():
-            cookie_config["FROM_BROWSER"] = "firefox,safari"
+            # Chromium-first: Chrome/Brave/etc. read cookies via the Keychain
+            # with no Full Disk Access, so try them before Safari, whose
+            # binarycookies read requires FDA (the dead-end most users hit).
+            # firefox/safari stay as the silent fallbacks. Note: an explicit
+            # comma list preserves this order (cookie_extraction_browsers);
+            # "auto" would put the silent browsers first, so do not use it here.
+            cookie_config["FROM_BROWSER"] = "chrome,brave,edge,vivaldi,arc,chromium,firefox,safari"
         browsers = cookie_extraction_browsers(cookie_config)
 
         for source_name, spec in COOKIE_DOMAINS.items():
@@ -141,22 +178,22 @@ def _digg_bin_candidate_paths() -> list[Path]:
     """Known install locations for digg-pp-cli (Printing Press library defaults).
 
     Order: current installer default (~/.local/bin), legacy Go bins, Windows
-    managed dir. ``pipeline.available_sources()`` only activates Digg when
+    managed dir. The directory list is ``health.installer_bin_dirs()`` — the
+    shared single source — with the Digg filename variants appended (plain
+    name for Unix-style dirs, ``.exe`` in the Windows managed dir).
+    ``pipeline.available_sources()`` only activates Digg when
     ``shutil.which`` resolves on PATH — probing these dirs is for setup
     verification and honest off-PATH messaging, not engine activation.
     """
-    home = Path.home()
-    candidates: list[Path] = [home / ".local" / "bin" / DIGG_CLI_BIN]
-    gopath = os.environ.get("GOPATH")
-    if gopath:
-        candidates.append(Path(gopath) / "bin" / DIGG_CLI_BIN)
-    candidates.append(home / "go" / "bin" / DIGG_CLI_BIN)
-    if os.name == "nt":
-        local_app = os.environ.get("LOCALAPPDATA") or os.environ.get("LocalAppData")
-        if local_app:
-            candidates.append(
-                Path(local_app) / "Programs" / "PrintingPress" / "bin" / f"{DIGG_CLI_BIN}.exe"
-            )
+    from . import health
+
+    win_dir = health.windows_printing_press_bin_dir()
+    candidates: list[Path] = []
+    for directory in health.installer_bin_dirs():
+        if win_dir is not None and directory == win_dir:
+            candidates.append(directory / f"{DIGG_CLI_BIN}.exe")
+        else:
+            candidates.append(directory / DIGG_CLI_BIN)
     return candidates
 
 
@@ -553,6 +590,40 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
             f"{DIGG_INSTALL_CMD}"
         )
 
+    pp_sources = results.get("pp_sources", {})
+    pp_name: dict[str, str] = {"arxiv": "arXiv", "techmeme": "Techmeme"}
+    for source_key, entry in sorted(pp_sources.items()):
+        name = pp_name.get(source_key, source_key.title())
+        action = entry.get("action", "")
+        if action == "installed":
+            lines.append(f"  - Installed {name} CLI ({name} source now active)")
+        elif action == "already_installed":
+            lines.append(f"  - {name} CLI already installed ({name} active)")
+        elif action == "installed_off_path":
+            path = entry.get("path", "")
+            if path:
+                lines.append(
+                    f"  - {name} CLI at {path} but not on PATH — add "
+                    f"{os.path.dirname(os.path.expanduser(path))} to PATH and "
+                    f"restart your agent session/gateway for {name} to activate"
+                )
+            else:
+                lines.append(
+                    f"  - {name} CLI installed but not on PATH — add its install "
+                    "directory to PATH and restart your agent session/gateway for "
+                    f"{name} to activate"
+                )
+        elif action == "install_failed":
+            lines.append(
+                f"  - {name} CLI install failed — run "
+                f"`npx -y {PRINTING_PRESS_NPM} install {source_key} --cli-only` manually"
+            )
+        elif action == "no_npx":
+            lines.append(
+                f"  - {name} CLI not installed (free, optional). Install Node/npx, "
+                f"then: `npx -y {PRINTING_PRESS_NPM} install {source_key} --cli-only`"
+            )
+
     env_written = results.get("env_written", False)
     if env_written:
         lines.append("")
@@ -625,6 +696,24 @@ def run_openclaw_setup(config: Dict[str, Any]) -> Dict[str, Any]:
 
 _DEVICE_BASE = "https://api.scrapecreators.com/v1/github/device"
 
+# A GitHub device code is always XXXX-XXXX (uppercase alphanumerics). We validate
+# user_code against this before copying, labeling, or emitting it so a malformed
+# or key-shaped value (e.g. a returning-account server response) is never
+# mislabeled as a device code or leaked to stdout/clipboard.
+_DEVICE_CODE_RE = re.compile(r"^[0-9A-Z]{4}-[0-9A-Z]{4}$")
+
+
+def _existing_scrapecreators_key() -> Optional[str]:
+    """Return the SCRAPECREATORS_API_KEY already saved in the .env, if any."""
+    try:
+        from . import env as _env
+
+        if _env.CONFIG_FILE and _env.CONFIG_FILE.exists():
+            return _env.load_env_file(_env.CONFIG_FILE).get("SCRAPECREATORS_API_KEY") or None
+    except Exception as exc:  # never let a config-read failure block auth
+        logger.debug("Could not read existing ScrapeCreators key: %s", exc)
+    return None
+
 
 def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
     """Start the device authorization flow.
@@ -651,7 +740,11 @@ def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
     interval = data.get("interval", 5)
 
     if not device_code or not user_code:
-        logger.warning("Device auth returned incomplete response: %s", data)
+        # Log only the response's key names, never its values — a returning
+        # account's response could carry a raw API key we must not write to logs.
+        logger.warning(
+            "Device auth returned incomplete response (keys: %s)", sorted(data.keys())
+        )
         return None
 
     return (device_code, user_code, verification_uri or "", interval)
@@ -750,45 +843,118 @@ def fetch_api_key(access_token: str) -> Optional[str]:
         logger.warning("Failed to fetch API key: %s", exc)
         return None
 
-    return data.get("api_key")
+    api_key = data.get("api_key")
+    if not api_key:
+        # The /profile response parsed but carried no api_key — the common case
+        # for a GitHub account already linked to a ScrapeCreators account. Log
+        # the response's FIELD NAMES only (never values — the body may contain a
+        # key under a different field) so the already-registered response shape
+        # can be handled in a follow-up (see plan OQ1).
+        logger.warning(
+            "Device auth /profile returned no api_key (fields: %s)", sorted(data.keys())
+        )
+        return None
+    return api_key
 
 
-def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
-    """Run the complete GitHub device auth flow and return JSON-serializable result.
+def _device_handle_path() -> Path:
+    """Where run_github_start persists the device_code/interval for run_github_poll.
 
-    Chains: start device flow -> open browser -> poll -> fetch API key.
-    Designed to be called from the CLI and have its stdout parsed by the LLM.
-
-    Returns:
-        Dict with status and relevant fields:
-        - {"status": "success", "api_key": "sc_...", "user_code": "ABCD-1234"}
-        - {"status": "error", "message": "..."}
-        - {"status": "timeout", "user_code": "ABCD-1234"}
-        - {"status": "denied"}
+    Kept next to the .env in the config dir; falls back to the OS temp dir when
+    no config dir is resolvable (clean/no-config mode).
     """
+    try:
+        from . import env as _env
+
+        if _env.CONFIG_FILE:
+            return _env.CONFIG_FILE.parent / ".github-device-handle.json"
+    except Exception:
+        pass
+    import tempfile
+
+    return Path(tempfile.gettempdir()) / "last30days-github-device-handle.json"
+
+
+def _start_device_flow() -> "Tuple[Dict[str, Any], Optional[Dict[str, Any]]]":
+    """Submit the GitHub device flow and surface the code, without polling.
+
+    Returns ``(public_result, handle)``. ``handle`` is None for the
+    already-registered and error cases (nothing to poll); otherwise it carries
+    the private poll state (``device_code``/``interval``/``user_code``/
+    ``clipboard_ok``) that never belongs in the public, stdout-printed result.
+    Callers either persist the handle to a file (``run_github_start``, for a
+    separate poll process) or hand it straight to ``run_github_poll`` in-memory
+    (``run_full_device_auth``, so a failed file write can't strand the one-shot).
+    """
+    import sys
     import webbrowser
 
-    # Step 1: Start device flow
+    # Already-registered short-circuit: a saved key means no device dance. The
+    # key is returned raw here and masked at the CLI boundary before print.
+    existing = _existing_scrapecreators_key()
+    if existing:
+        return (
+            {
+                "status": "already_registered",
+                "method": "existing",
+                "api_key": existing,
+                "persisted": True,
+            },
+            None,
+        )
+
     result = run_device_auth()
     if result is None:
-        return {"status": "error", "message": "Failed to start device auth flow"}
+        return ({"status": "error", "message": "Failed to start device auth flow"}, None)
 
     device_code, user_code, verification_uri, interval = result
 
-    import sys
+    # Validate the code shape BEFORE copying, labeling, or emitting it. A
+    # non-conforming user_code (e.g. a key-shaped value) is never surfaced as a
+    # GitHub device code; we stop rather than instruct the user to paste garbage.
+    if not _DEVICE_CODE_RE.match(user_code):
+        logger.warning("Device auth returned a non-device-shaped user_code; aborting.")
+        return (
+            {
+                "status": "error",
+                "message": "ScrapeCreators returned an unexpected device-code format.",
+            },
+            None,
+        )
 
-    # Step 2: Copy code to clipboard BEFORE opening browser
+    # Structured stdout line for machine consumers.
+    print(
+        json.dumps(
+            {
+                "event": "device_code_ready",
+                "user_code": user_code,
+                "verification_uri": verification_uri,
+            }
+        ),
+        flush=True,
+    )
+
+    # Copy the code to the clipboard BEFORE opening the browser.
     clipboard_ok = False
     if sys.platform == "darwin":
         try:
-            subprocess.run(
-                ["pbcopy"], input=user_code.encode(), check=True, timeout=5,
-            )
+            subprocess.run(["pbcopy"], input=user_code.encode(), check=True, timeout=5)
             clipboard_ok = True
         except Exception:
             pass  # pbcopy unavailable or failed, fall through
 
-    # Step 3: Show code prominently, then open browser
+    # Print the code as a plain HUMAN line on stdout too, so a foreground caller
+    # sees it in the returned output even without reading the JSON. The clipboard
+    # claim is only made when pbcopy actually succeeded (else: type it).
+    if clipboard_ok:
+        print(
+            f"Your GitHub code: {user_code}  (already on your clipboard - just paste it, Cmd+V)",
+            flush=True,
+        )
+    else:
+        print(f"Your GitHub code: {user_code}  (type it on the GitHub page)", flush=True)
+
+    # Human box on stderr for direct-terminal users.
     clipboard_hint = "  (copied to clipboard)" if clipboard_ok else ""
     code_line = f"  Your code: {user_code}{clipboard_hint}"
     action_line = "  Paste it on the GitHub page that just opened"
@@ -805,26 +971,107 @@ def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
         except Exception:
             print(f"Open: {verification_uri}", file=sys.stderr)
 
+    public = {
+        "status": "awaiting_authorization",
+        "user_code": user_code,
+        "verification_uri": verification_uri,
+        "clipboard_ok": clipboard_ok,
+    }
+    handle = {
+        "device_code": device_code,
+        "interval": interval,
+        "user_code": user_code,
+        "clipboard_ok": clipboard_ok,
+    }
+    return (public, handle)
+
+
+def run_github_start() -> Dict[str, Any]:
+    """Start the device flow and persist the poll handle for a later
+    ``run_github_poll`` process. Returns the public result (never the private
+    device_code). See ``_start_device_flow`` for the returned statuses."""
+    public, handle = _start_device_flow()
+    if handle is not None:
+        # Persist the poll handle (0o600) so a separate --github-poll process can
+        # resume it. Best-effort: the in-memory one-shot path does not depend on
+        # this write succeeding.
+        path = _device_handle_path()
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(handle), encoding="utf-8")
+            os.chmod(path, 0o600)
+        except Exception as exc:
+            logger.warning("Could not persist device handle: %s", exc)
+    return public
+
+
+def run_github_poll(timeout: int = 300, *, _handle: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Poll for authorization using the handle from start.
+
+    ``_handle`` (in-memory, from the one-shot) takes precedence over the
+    persisted handle file. Returns success (with the fetched key), timeout, or
+    the honest "Authorized but failed to fetch API key" branch. Deletes the
+    persisted handle when the flow terminates.
+    """
+    import sys
+
+    if _handle is not None:
+        data = _handle
+    else:
+        try:
+            data = json.loads(_device_handle_path().read_text(encoding="utf-8"))
+        except Exception:
+            return {
+                "status": "error",
+                "message": "No pending GitHub device flow; run setup --github-start first.",
+            }
+
+    device_code = data["device_code"]
+    interval = int(data.get("interval", 5))
+    user_code = data.get("user_code", "")
+    # Read the real clipboard state so the polling reminder never falsely claims
+    # the code is on the clipboard (non-macOS, or a failed pbcopy). Missing key
+    # (older handle) defaults to False -- don't overstate.
+    clipboard_ok = bool(data.get("clipboard_ok", False))
+
     print("Waiting for authorization...", file=sys.stderr, flush=True)
-
-    # Step 4: Poll for token (with periodic code reminders)
     access_token = poll_device_auth(
-        device_code, interval, timeout=timeout,
-        user_code=user_code, clipboard_ok=clipboard_ok,
+        device_code, interval, timeout=timeout, user_code=user_code, clipboard_ok=clipboard_ok
     )
-    if access_token is None:
-        return {"status": "timeout", "user_code": user_code, "clipboard_ok": clipboard_ok}
 
-    # Step 4: Fetch API key
+    def _cleanup() -> None:
+        try:
+            _device_handle_path().unlink()
+        except Exception:
+            pass
+
+    if access_token is None:
+        _cleanup()
+        return {"status": "timeout", "user_code": user_code}
+
     api_key = fetch_api_key(access_token)
+    _cleanup()
     if api_key is None:
         return {
             "status": "error",
             "message": "Authorized but failed to fetch API key",
-            "clipboard_ok": clipboard_ok,
         }
 
-    return {"status": "success", "method": "device", "api_key": api_key, "user_code": user_code, "clipboard_ok": clipboard_ok}
+    return {"status": "success", "method": "device", "api_key": api_key, "user_code": user_code}
+
+
+def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
+    """Back-compat one-shot: start the device flow, then poll to completion.
+
+    Passes the poll handle to ``run_github_poll`` IN MEMORY, so a failed handle-
+    file write can't strand the one-shot. Kept so callers of ``setup --github`` /
+    ``--device-auth`` still work; the model-driven wizard uses the two-command
+    split (start then poll) instead.
+    """
+    public, handle = _start_device_flow()
+    if handle is None:
+        return public  # already_registered or error
+    return run_github_poll(timeout=timeout, _handle=handle)
 
 
 # ---------------------------------------------------------------------------
@@ -833,11 +1080,10 @@ def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:
 
 
 def run_github_auth(timeout: int = 300) -> Dict[str, Any]:
-    """Run the --github setup path via device auth only.
+    """Run the --github setup path via device auth (one-shot, back-compat).
 
-    Kept as the semantic entry point for GitHub-backed setup; this path must
-    not read or forward local GitHub CLI tokens.
-
-    Returns JSON-serializable dict with status, method, and api_key.
+    The existing-key short-circuit now lives in run_github_start; this delegates
+    to the start+poll chain. This path must not read or forward local GitHub CLI
+    tokens.
     """
     return run_full_device_auth(timeout=timeout)

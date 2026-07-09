@@ -357,6 +357,60 @@ class TestThinSourceRetryPlannedSource(unittest.TestCase):
         self.assertEqual("https://x.com/example/status/100", bundle.items_by_source["x"][0].url)
 
 
+
+class TestTrustpilotNeverRetriedAsThin(unittest.TestCase):
+    @patch("lib.pipeline._retrieve_stream")
+    def test_trustpilot_excluded_from_thin_source_retry(self, mock_retrieve):
+        """Trustpilot returns at most one item by design, so the '<3 items'
+        thinness rule must never re-fetch it: a retry would bypass
+        MAX_SOURCE_FETCHES and re-resolve without the caller's
+        --trustpilot-domain (a lookalike-misattribution path)."""
+        mock_retrieve.return_value = ([], {})
+
+        plan = schema.QueryPlan(
+            intent="product",
+            freshness_mode="balanced_recent",
+            cluster_mode="none",
+            raw_topic="ThriftBooks",
+            subqueries=[
+                schema.SubQuery(
+                    label="primary",
+                    search_query="thriftbooks",
+                    ranking_query="What matters for ThriftBooks?",
+                    sources=["trustpilot", "x"],
+                )
+            ],
+            source_weights={"trustpilot": 1.0, "x": 1.0},
+        )
+        bundle = schema.RetrievalBundle(
+            items_by_source={
+                # one successful trustpilot item -- its normal success state,
+                # yet still "<3" and thus retry-eligible without the exclusion
+                "trustpilot": [
+                    _make_source_item("trustpilot", "tp1", "https://www.trustpilot.com/review/x.com"),
+                ],
+            }
+        )
+
+        pipeline._retry_thin_sources(
+            topic="ThriftBooks",
+            bundle=bundle,
+            plan=plan,
+            config={},
+            depth="default",
+            date_range=("2026-06-04", "2026-07-04"),
+            runtime=_make_runtime("bird"),
+            mock=False,
+            rate_limited_sources=set(),
+            rate_limit_lock=threading.Lock(),
+            settings=pipeline.DEPTH_SETTINGS["default"],
+        )
+
+        retried = [call.kwargs["source"] for call in mock_retrieve.call_args_list]
+        self.assertNotIn("trustpilot", retried)
+        self.assertIn("x", retried)  # other thin sources still retry
+
+
 def _make_runtime(x_backend="bird"):
     return schema.ProviderRuntime(
         reasoning_provider="mock",
@@ -1389,6 +1443,51 @@ class TestInnerMaxWorkers(unittest.TestCase):
             uncapped // 2,
             f"capped {capped} should be at most half of uncapped {uncapped}",
         )
+
+
+class TestScrapeCreatorsTierGating(unittest.TestCase):
+    """The onboarding Recommended vs Everything tiers must be real.
+
+    Recommended (key, no INCLUDE_SOURCES) = TikTok + Instagram only.
+    Everything (INCLUDE_SOURCES lists them) = also Threads, Pinterest, ...
+    """
+
+    KEY = {"SCRAPECREATORS_API_KEY": "k"}
+
+    def test_recommended_tier_runs_tiktok_instagram(self):
+        avail = pipeline.available_sources(dict(self.KEY))
+        self.assertIn("tiktok", avail)
+        self.assertIn("instagram", avail)
+
+    def test_threads_off_without_include_sources(self):
+        self.assertNotIn("threads", pipeline.available_sources(dict(self.KEY)))
+
+    def test_threads_on_with_include_sources(self):
+        cfg = {**self.KEY, "INCLUDE_SOURCES": "threads"}
+        self.assertIn("threads", pipeline.available_sources(cfg))
+
+    def test_pinterest_off_without_include_sources(self):
+        self.assertNotIn("pinterest", pipeline.available_sources(dict(self.KEY)))
+
+    def test_pinterest_on_with_persisted_include_sources(self):
+        # Regression: this failed before U6 because the pinterest gate read
+        # requested_sources only and ignored a persisted INCLUDE_SOURCES.
+        cfg = {**self.KEY, "INCLUDE_SOURCES": "pinterest"}
+        self.assertIn("pinterest", pipeline.available_sources(cfg))
+
+    def test_pinterest_on_via_requested_sources(self):
+        # The per-run --sources path must still work.
+        avail = pipeline.available_sources(dict(self.KEY), requested_sources=["pinterest"])
+        self.assertIn("pinterest", avail)
+
+    def test_everything_tier_enables_all(self):
+        cfg = {
+            **self.KEY,
+            "INCLUDE_SOURCES": "tiktok,instagram,threads,pinterest,youtube_comments,tiktok_comments",
+        }
+        avail = pipeline.available_sources(cfg)
+        self.assertIn("threads", avail)
+        self.assertIn("pinterest", avail)
 
 
 if __name__ == "__main__":

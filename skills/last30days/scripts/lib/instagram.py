@@ -519,3 +519,114 @@ def parse_instagram_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
         List of item dicts ready for normalization.
     """
     return response.get("items", [])
+
+
+# ---------------------------------------------------------------------------
+# Comments (ScrapeCreators, opt-in via INCLUDE_SOURCES=instagram_comments)
+# ---------------------------------------------------------------------------
+
+
+def _ig_total_engagement(item: Dict[str, Any]) -> int:
+    """Sum an Instagram item's engagement for picking which posts to enrich."""
+    eng = item.get("engagement", {}) or {}
+    return (eng.get("views") or 0) + (eng.get("likes") or 0) + (eng.get("comments") or 0)
+
+
+def enrich_with_comments(
+    items: List[Dict[str, Any]],
+    token: str,
+    max_posts: int = 3,
+    max_comments: int = 5,
+) -> List[Dict[str, Any]]:
+    """Enrich top Instagram posts with comment data from ScrapeCreators.
+
+    Mirrors ``tiktok.enrich_with_comments`` / ``youtube_yt.enrich_with_comments``:
+    for the top N posts by engagement, fetch comments and attach them as a
+    ``top_comments`` field (highest-liked first). Failures never crash the run.
+    """
+    if not items or not token or max_posts <= 0:
+        return items
+
+    ranked = sorted(items, key=_ig_total_engagement, reverse=True)
+    top_items = ranked[:max_posts]
+    _log(f"Enriching comments for {len(top_items)} Instagram posts")
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _enrich_one(item: dict) -> bool:
+        post_url = item.get("url", "")
+        if not post_url:
+            return False
+        try:
+            comments = _fetch_post_comments(post_url, token, max_comments)
+            if comments:
+                item["top_comments"] = comments
+                return True
+        except Exception as exc:
+            _log(f"Comment enrichment failed for {post_url}: {exc}")
+        return False
+
+    enriched_count = 0
+    with ThreadPoolExecutor(max_workers=min(4, len(top_items))) as executor:
+        futures = {executor.submit(_enrich_one, item): item for item in top_items}
+        for future in as_completed(futures):
+            if future.result():
+                enriched_count += 1
+
+    _log(f"Enriched {enriched_count}/{len(top_items)} posts with comments")
+    return items
+
+
+def _fetch_post_comments(
+    post_url: str,
+    token: str,
+    max_comments: int = 5,
+) -> List[Dict[str, Any]]:
+    """Fetch comments for a single Instagram post/reel via ScrapeCreators.
+
+    SC endpoint: GET /v2/instagram/post/comments?url=<post_or_reel_url>
+    Response shape: { comments: [{text, comment_like_count, child_comment_count,
+    created_at, user{username, ...}}], cursor }
+
+    Returns:
+        List of comment dicts with author, text, comment_like_count (likes), date,
+        highest-liked first. Empty list on any error — never crashes the pipeline.
+    """
+    try:
+        data = http.get(
+            f"{SCRAPECREATORS_BASE}/v2/instagram/post/comments",
+            params={"url": post_url},
+            headers=http.scrapecreators_headers(token),
+            timeout=30,
+            retries=2,
+        )
+    except Exception as exc:
+        _log(f"Comment fetch error for {post_url}: {exc}")
+        return []
+
+    raw_comments = data.get("comments") or data.get("data") or []
+    # Sort by like count desc so normalize sees the highest-signal first.
+    raw_comments = sorted(
+        raw_comments,
+        key=lambda c: c.get("comment_like_count", 0) or 0,
+        reverse=True,
+    )
+    out: List[Dict[str, Any]] = []
+    for c in raw_comments[:max_comments]:
+        if not isinstance(c, dict):
+            continue
+        text = c.get("text") or ""
+        if not text:
+            continue
+        user = c.get("user") if isinstance(c.get("user"), dict) else {}
+        author = user.get("username") or ""
+        created_at = c.get("created_at") or ""
+        # created_at is ISO 8601 (e.g. "2026-07-04T14:27:58.000Z"); take the date.
+        date_str = created_at[:10] if isinstance(created_at, str) and len(created_at) >= 10 else ""
+        out.append({
+            "author": author,
+            "text": text[:400],
+            "comment_like_count": c.get("comment_like_count", 0) or 0,
+            "date": date_str,
+        })
+    return out

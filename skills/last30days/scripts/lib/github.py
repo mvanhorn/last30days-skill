@@ -17,7 +17,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
-from . import dates, log
+from . import dates, env, log
 from .query import extract_core_subject
 from .relevance import token_overlap_relevance
 
@@ -50,7 +50,7 @@ def _resolve_token(token: Optional[str] = None) -> Optional[str]:
     """Resolve GitHub auth token from argument, env, or gh CLI."""
     if token:
         return token
-    env_token = os.environ.get("GITHUB_TOKEN")
+    env_token = env.read_secret_env("GITHUB_TOKEN")
     if env_token:
         return env_token
     # Fallback: try gh CLI

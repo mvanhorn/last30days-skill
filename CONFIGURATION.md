@@ -48,6 +48,8 @@ The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path(
 - `--publish-html` - with `--emit=html`, publish the rendered HTML to `ht-ml.app` after local output/save-dir writes. This is explicit opt-in only; pages are public by default.
 - `--publish-password <password>` - optional shared password for `--publish-html`. Prefer `LAST30DAYS_PUBLISH_PASSWORD=<password>` instead so the password is not visible in the process list or shell history. Use a unique non-personal password; never reuse the user's own password. The provider's update key is treated as secret and is not written to stdout, HTML, raw output, or `.publish.json` metadata.
 - `--preflight` - print a human-readable permission preflight. It reports config source, project config trust/ignore state, browser-cookie plan, planned writes, optional commands, source availability, and endpoint overrides without reading browser cookies, writing setup/config/report files, or running research. Add `--emit=json` for machine-readable preflight JSON; use `--diagnose` when you need the full source diagnostic JSON.
+- `--welcome` - print the first-run welcome text (engine-owned; the skill relays it verbatim on first run). Safe: prints and exits, no reads or writes.
+- `setup --github-start` / `setup --github-poll` - the two-command ScrapeCreators GitHub device-auth split. `--github-start` submits the device flow, copies the code to the clipboard, opens the browser, and returns the code immediately (foreground); `--github-poll` waits for you to authorize and persists the key. `setup --github` still runs both in one shot for back-compat.
 
 The footer line `📎 Raw results saved to ${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}/<slug>-raw.md` is the canonical pointer; if it shows backslashes on Windows update past v3.1.1.
 
@@ -66,7 +68,7 @@ Both share the same consent points:
 
 1. **Browser cookies** - the model asks before reading anything. On yes it runs `setup --allow-browser-cookies`, which extracts Firefox/Safari cookies (never Chrome unless `FROM_BROWSER=auto` or a named Chromium browser is explicitly configured) to unlock X/Twitter and other logged-in sources, and installs yt-dlp + the keyless Digg CLI. On no it runs setup without `--allow-browser-cookies` (or with `FROM_BROWSER=off`), which skips all cookie reads and still installs the tools.
 2. **Full Disk Access (macOS)** - if a cookie read is permission-denied, the model surfaces the System Settings > Privacy & Security > Full Disk Access fix and offers one retry.
-3. **ScrapeCreators GitHub signup** - offered on every first run (10,000 free calls). On consent it runs `setup --github`, which opens a browser for GitHub device-auth (or registers instantly via the `gh` CLI when installed) and, on success, **persists `SCRAPECREATORS_API_KEY` automatically** (0o600, masked in output) so TikTok, Instagram, X, YouTube comments, and the SC Reddit/YouTube backups activate on the next run. Decline anytime; you can run it later by asking to set up ScrapeCreators. (Threads and Pinterest are not surfaced in onboarding but remain available via `INCLUDE_SOURCES`.)
+3. **ScrapeCreators GitHub signup** - offered on every first run (10,000 free calls). On consent it runs `setup --github`, which opens a browser for GitHub device-auth (or registers instantly via the `gh` CLI when installed) and, on success, **persists `SCRAPECREATORS_API_KEY` automatically** (0o600, masked in output) so TikTok, Instagram, and the SC Reddit/YouTube backups activate on the next run. Decline anytime; you can run it later by asking to set up ScrapeCreators. The Step 5 opt-in has two tiers, both comment-enabled: **Recommended** (TikTok + Instagram posts AND top comments, plus YouTube comments — `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments`) and **Everything**, which also adds Threads + Pinterest. Comments are on by default; Threads and Pinterest are the only opt-in extras.
 
 Re-run onboarding by deleting `~/.config/last30days/.env`. The mechanical work lives in `scripts/lib/setup_wizard.py`; the consent conversation and both host flows are specified in `skills/last30days/SKILL.md` Step 0. The original v3.0.0 wizard is captured at `docs/reference/old-nux-wizard-v3.0.0.md`.
 
@@ -83,6 +85,8 @@ Override the global location with `LAST30DAYS_CONFIG_DIR=/path` (or `LAST30DAYS_
 
 The project-scoped file is useful for **intentional per-client setups**: drop a `.claude/last30days.env` into each client folder (`SCRAPECREATORS_API_KEY`, `INCLUDE_SOURCES`, `LAST30DAYS_MEMORY_DIR`, `BSKY_HANDLE`, etc), then opt in with `LAST30DAYS_TRUST_PROJECT_CONFIG=1` from your shell or `~/.config/last30days/.env`. Folder-mode hosts such as Codex desktop do not trust hidden project config by default, and discovery stops at the git root so unrelated parent folders cannot silently influence runs.
 
+**`LAST30DAYS_API_KEY`** + **`LAST30DAYS_API_BASE`** - optional remote-API backend. Set BOTH to route research through a remote API endpoint instead of running the local sources: `LAST30DAYS_API_BASE` is the endpoint (there is no built-in default), and `LAST30DAYS_API_KEY` is the bearer key for it. When both are set (and `--mock` is not passed), the engine submits the topic to that endpoint, polls with progress on stderr, and prints the server's report; none of the per-source keys below are used for that run. Leave either unset to run local sources exactly as normal. Unlike the other keys here, these two are read only from the **process environment** (export them in your shell or host config) - they are deliberately not loaded from the `.env` files above, so a project-scoped `.env` can never silently redirect research to a remote endpoint.
+
 **Source-by-source** - what each key unlocks:
 
 | Source | Key(s) | Required for | Free tier |
@@ -90,13 +94,16 @@ The project-scoped file is useful for **intentional per-client setups**: drop a 
 | Reddit (public) | none (default); `SCRAPECREATORS_API_KEY` + `LAST30DAYS_REDDIT_BACKEND=scrapecreators` to pin SC primary with public fallback | always on; SC pin requires `SCRAPECREATORS_API_KEY` | yes |
 | Hacker News | none | always on | yes |
 | Polymarket | none | always on | yes |
+| StockTwits | none | auto-on for ticker/crypto topics only (gated by symbol detection); never registered for non-financial topics | yes (public API, ~200 req/hr per IP) |
 | GitHub | `gh` CLI installed (uses your GitHub auth) | always on if `gh` present | yes |
 | YouTube | `yt-dlp` CLI installed; `SCRAPECREATORS_API_KEY` adds a server-side transcript fallback used only when yt-dlp fails (429 / bot-gate) | always on if `yt-dlp` present; SC transcript fallback default-on when key set (no credit spent unless yt-dlp fails) | yes |
-| YouTube comments | `SCRAPECREATORS_API_KEY` (default-on; suppress via `EXCLUDE_SOURCES=youtube_comments`) | top comments on the top ~3 videos by engagement | ~3 calls/run; 10K free calls |
+| YouTube comments | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `youtube_comments` (**on by default** — written by the Step 5 Recommended tier) | top comments (by likes) on the top ~3 videos by engagement | ~3 calls/run; 10K free calls |
+| TikTok comments | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `tiktok_comments` (**on by default** — Step 5 Recommended tier) | top comments (by `digg_count`) on the top ~3 TikTok posts | ~3 calls/run; 10K free calls |
+| Instagram comments | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `instagram_comments` (**on by default** — Step 5 Recommended tier) | top comments (by `comment_like_count`) on the top ~3 Instagram posts, via `/v2/instagram/post/comments` | ~3 calls/run; 10K free calls |
 | Digg | `digg-pp-cli` on PATH (auto-installed during first-run setup via `npx -y @mvanhorn/printing-press-library@0.1.16 install digg --cli-only`; binary defaults to `$HOME/.local/bin` — Hermes/OpenClaw agent subprocesses must inherit that dir on PATH for Digg to activate; prior pp-digg installs use the same path) | always on if `digg-pp-cli` on PATH | yes (free, keyless, read-only) |
 | arXiv | `arxiv-pp-cli` on PATH (auto-installed during first-run setup via `npx -y @mvanhorn/printing-press-library@0.1.16 install arxiv --cli-only`) | always on if `arxiv-pp-cli` on PATH; fires on research/technical topics and stays quiet otherwise (relevance + 365-day recency gating) | yes (free, keyless) |
-| Techmeme | `techmeme-pp-cli` on PATH (auto-installed via `... install techmeme --cli-only`) | always on if `techmeme-pp-cli` on PATH; syncs a local headline cache once per run, then searches | yes (free, keyless) |
-| Trustpilot | `trustpilot-pp-cli` on PATH (NOT auto-installed; install on demand via `npx -y @mvanhorn/printing-press-library@0.1.16 install trustpilot --cli-only`) + `INCLUDE_SOURCES` contains `trustpilot` | **opt-in, off by default**; when enabled, activates only on company/brand topics. Does a one-time ~10s headless-Chrome WAF-cookie harvest on first company lookup (set `LAST30DAYS_TRUSTPILOT_NO_BROWSER=1` to disable in cron/CI) | yes (no API key; cookie-replay after the one-time harvest) |
+| Techmeme | `techmeme-pp-cli` on PATH (auto-installed via `... install techmeme --cli-only`) | always on if `techmeme-pp-cli` on PATH; searches Techmeme's live archive and keeps only headlines dated within the research window (undated headlines flow through as low-confidence) | yes (free, keyless) |
+| Trustpilot | `trustpilot-pp-cli` on PATH (NOT auto-installed; install on demand via `npx -y @mvanhorn/printing-press-library@0.1.16 install trustpilot --cli-only`) + `INCLUDE_SOURCES` contains `trustpilot` | **opt-in, off by default**; when enabled, activates only on company/brand topics — or on any topic when `--trustpilot-domain=<domain>` pins the review page explicitly (bypasses the brand-shape gate; also the per-entity `trustpilot_domain` key in `--competitors-plan`). Bare company names auto-resolve to the review-page domain via the CLI's search. The session warms once before the search fan-out; a stale session does a ~10s headless-Chrome WAF-cookie harvest (set `LAST30DAYS_TRUSTPILOT_NO_BROWSER=1` to disable in cron/CI) | yes (no API key; cookie-replay after the one-time harvest) |
 | X / Twitter | one of: `AUTH_TOKEN` + `CT0` (browser cookies, Bird CLI), `XAI_API_KEY`, `XQUIK_API_KEY`, `SCRAPECREATORS_API_KEY`, or `FROM_BROWSER` (cookie-jar auth) | X items in results | cookie-jar / Bird = free; Xquik / xAI / ScrapeCreators = key-based |
 | TikTok | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `tiktok` | TikTok items | 10K free calls |
 | Instagram | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `instagram` | Instagram Reels | 10K free calls; raise `LAST30DAYS_TRANSCRIPT_TIMEOUT` (default 30s) if SC is slow on your network |
@@ -323,6 +330,30 @@ python3 skills/last30days/scripts/last30days.py "Listen Labs" --hiring-signals
 ```
 
 The engine treats public jobs/careers postings as evidence of focus or priority shifts, not exact roadmap predictions. Standard company runs may include Hiring Signals automatically when multiple current roles support the same interpretation; weak or unavailable hiring evidence is omitted.
+
+---
+
+## Health check (`doctor`)
+
+One command answers "what's broken, what's serving, and what do I run to fix it" — per source: a rollup tier (ok / warn / off / error), the specific probe state, the backend the next run will use (for chained sources), and an exact fix on any non-ok tier:
+
+```bash
+python3 skills/last30days/scripts/last30days.py doctor            # grouped text report
+python3 skills/last30days/scripts/last30days.py doctor --json     # machine contract
+python3 skills/last30days/scripts/last30days.py doctor --cached   # serve the cached report while fresh
+```
+
+Slash-command form: `/last30days doctor`. Reporting problems is a successful run — the exit code is always 0, no browser cookies are read, no network calls are made, and no secret values appear anywhere (key presence is booleans only). Backends within a chained source are probed sequentially with a 5-second budget per binary probe, so a chained source's worst-case check time is additive across its backends (only reached when several binaries hang at once).
+
+Every live run writes its JSON result to `~/.config/last30days/doctor-cache.json` (beside `last-run.json`; honors `LAST30DAYS_CONFIG_DIR`). `doctor --cached` returns that stored report when it is younger than the TTL, and falls through to a live run — rewriting the cache — when it is stale, absent, or corrupt. The cache also self-invalidates on configuration change: the payload carries a schema stamp plus a fingerprint of non-secret config signals (which credentials are present as booleans, the `LAST30DAYS_X_BACKEND` / `LAST30DAYS_REDDIT_BACKEND` pin values, and `INCLUDE_SOURCES`), so adding or removing a key, changing a pin, or toggling an opt-in source makes the next `--cached` call run live — no raw secret ever enters the fingerprint or the file. Every report also carries `from_cache` (true/false) and `generated_at` (when the report was built), in the `--json` top level and as a final `generated: … (cached|live)` text line, so you can always tell how old a cached answer is. A failed cache write is never fatal — doctor prints a one-line stderr warning and continues. An explicit `doctor` without `--cached` always runs live and refreshes the cache.
+
+| Var | Effect |
+| --- | --- |
+| `LAST30DAYS_DOCTOR_TTL` | Freshness window for `doctor --cached`, in **seconds**. Defaults to `900` (15 minutes). `0` makes every `--cached` call run live. |
+| `LAST30DAYS_X_BACKEND` | Pins the X backend (`xai` / `bird` / `xurl` / `xquik`); doctor renders the pin and predicts "will use" accordingly. |
+| `LAST30DAYS_REDDIT_BACKEND` | `scrapecreators` makes ScrapeCreators the primary Reddit backend; doctor renders Reddit's conditional routing with the pin applied. |
+
+Web search has **no** env pin — pin it per-run with `--web-backend=<name>` only (see [Web search backend priority](#web-search-backend-priority)).
 
 ---
 
