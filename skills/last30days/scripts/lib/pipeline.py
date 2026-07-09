@@ -130,13 +130,21 @@ def available_sources(
     requested_sources: list[str] | None = None,
     *,
     x_pending: bool | None = None,
+    local_only: bool = False,
 ) -> list[str]:
+    """List the sources the next run can serve.
+
+    ``local_only=True`` is the safe/diagnose flavor (doctor's permission
+    block): availability is answered from local evidence only, so the X
+    check never spawns xurl's live ``whoami`` network call. Research-time
+    callers keep the default live semantics.
+    """
     available: list[str] = []
     # reddit_public needs no API key - always available
     available.append("reddit")
     if config.get("SCRAPECREATORS_API_KEY"):
         available.extend(["tiktok", "instagram"])
-    if env.get_x_source(config):
+    if env.get_x_source(config, local_only=local_only):
         available.append("x")
     else:
         # Safe inspection (--diagnose/--preflight) skips browser-cookie
@@ -239,7 +247,8 @@ def diagnose(
     google_key = _google_key(config)
     x_status = env.get_x_source_status(config, probe=not safe)
     # Compute once and reuse for both the diag flag and available_sources below.
-    x_pending = env.x_pending_browser_auth(config)
+    # safe=True (doctor/--diagnose/--preflight) must stay network-free.
+    x_pending = env.x_pending_browser_auth(config, local_only=safe)
     native_web_backend = None
     if config.get("BRAVE_API_KEY"):
         native_web_backend = "brave"
@@ -298,7 +307,12 @@ def diagnose(
         "native_search": env.is_native_search(config),
         "has_scrapecreators": bool(config.get("SCRAPECREATORS_API_KEY")),
         "has_github": bool(config.get("GITHUB_TOKEN") or which("gh")),
-        "available_sources": available_sources(config, requested_sources, x_pending=x_pending),
+        # safe=True (doctor/--diagnose/--preflight) must stay network-free:
+        # answer X availability from local evidence only. x_pending is
+        # precomputed by diagnose() to avoid double evaluation.
+        "available_sources": available_sources(
+            config, requested_sources, x_pending=x_pending, local_only=safe
+        ),
         "safe": safe,
         "config_source": config.get("_CONFIG_SOURCE"),
         "ignored_project_config": config.get("_IGNORED_PROJECT_CONFIG"),
@@ -1317,11 +1331,11 @@ def _retrieve_stream(
         has_sc_key = bool(config.get("SCRAPECREATORS_API_KEY"))
         sc_first = (
             has_sc_key
-            and (config.get("LAST30DAYS_REDDIT_BACKEND") or "").lower()
+            and (config.get(env.REDDIT_BACKEND_PIN_VAR) or "").lower()
             == "scrapecreators"
         )
         if sc_first:
-            # LAST30DAYS_REDDIT_BACKEND=scrapecreators: SC primary, public fallback
+            # env.REDDIT_BACKEND_PIN_VAR=scrapecreators: SC primary, public fallback
             try:
                 result = reddit.search_and_enrich(
                     reddit_query, from_date, to_date, depth=depth,
@@ -1360,10 +1374,10 @@ def _retrieve_stream(
 
         # Default: public Reddit first (free). ScrapeCreators backfills when the
         # free path is empty OR returns fewer than the configured thinness floor
-        # (LAST30DAYS_REDDIT_SC_MIN_ITEMS, default 0 = empty-only — today's
+        # (env.REDDIT_SC_MIN_ITEMS_VAR, default 0 = empty-only — today's
         # behavior, no extra credit spend unless the user opts in).
         try:
-            min_items = int(config.get("LAST30DAYS_REDDIT_SC_MIN_ITEMS") or 0)
+            min_items = int(config.get(env.REDDIT_SC_MIN_ITEMS_VAR) or 0)
         except (TypeError, ValueError):
             min_items = 0
         public_results: list[dict] = []

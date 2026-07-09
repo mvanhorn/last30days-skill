@@ -65,3 +65,6 @@ skills/last30days/scripts/verify_v3.py
 
 # Keep visible: optional runtime watchlist/store/briefing feature scripts
 # (`watchlist.py`, `store.py`, and `briefing.py`).
+
+# Vendored third-party X-search client (node_modules analog); excluded from scan, still installed.
+skills/last30days/scripts/lib/vendor/

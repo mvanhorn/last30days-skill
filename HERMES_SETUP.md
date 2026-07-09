@@ -4,17 +4,19 @@ This guide covers installing last30days on Hermes AI Agent.
 
 ## Prerequisites
 
-1. **Hermes installed** - See https://github.com/mercurial-tf/hermes
+1. **Hermes installed** - See https://github.com/NousResearch/hermes-agent
 2. **Python 3.12+** - `brew install python@3.12` or similar
 3. **yt-dlp** (optional, for YouTube) - `brew install yt-dlp`
 
 ## Installation
 
 ```bash
-hermes skills install mvanhorn/last30days-skill --force
+hermes skills install mvanhorn/last30days-skill/skills/last30days --force
 ```
 
-This pulls the latest release from GitHub and deploys to `~/.hermes/skills/research/last30days/`. `--force` reinstalls over any existing copy.
+The explicit `skills/last30days` path fetches the skill straight from this repo's current default branch and deploys it under `~/.hermes/skills/`. `--force` is required because Hermes's install-time security scanner returns a `caution` verdict for this skill — it flags benign patterns such as reading your own API keys from the environment and calling `subprocess` to run `yt-dlp`/`bird`. `--force` accepts the caution verdict and installs (it also reinstalls over any existing copy).
+
+**Why the explicit path?** The shorter `hermes skills install mvanhorn/last30days-skill` currently resolves through the skills.sh index, which is serving an older cached snapshot of this repo (from before the skill moved under `skills/last30days/`). Use the explicit `.../skills/last30days` path above until the index re-crawls — tracked in [vercel-labs/skills#1602](https://github.com/vercel-labs/skills/issues/1602).
 
 ### Developer / live-edit alternative
 

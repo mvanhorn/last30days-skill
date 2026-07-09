@@ -32,7 +32,7 @@ import re
 import sys
 import time
 
-from . import http
+from . import env, http
 from .log import source_log
 
 # Distinct exit code for the clarify gate so the invoking model can tell
@@ -74,7 +74,7 @@ def _billing_url() -> str:
 def _auth_headers() -> dict[str, str]:
     # Key is read at call time and placed only in the request header;
     # it must never be interpolated into any log or output line.
-    key = os.environ.get("LAST30DAYS_API_KEY") or ""
+    key = env.read_secret_env("LAST30DAYS_API_KEY") or ""
     return {"Authorization": f"Bearer {key}"}
 
 

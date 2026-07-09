@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import http, log, subproc
+from . import env, http, log, subproc
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -70,7 +70,7 @@ def _has_injected_credentials() -> bool:
 
 def _has_process_credentials() -> bool:
     """Return True when AUTH_TOKEN/CT0 are present in process env."""
-    return bool(os.environ.get("AUTH_TOKEN") and os.environ.get("CT0"))
+    return bool(env.read_secret_env("AUTH_TOKEN") and env.read_secret_env("CT0"))
 
 
 def _subprocess_env() -> Dict[str, str]:

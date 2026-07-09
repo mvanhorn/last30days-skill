@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.11.0] - 2026-07-05
+
+### Added
+
+- `last30days doctor`: a unified health command that aggregates every source's probe state into a single grouped report with copy-pasteable fix prescriptions. Layered design: dependency probes (missing/broken/timeout detection), backend-chain descriptors (predict-then-report, never a network call), a centralized prescription registry shared by doctor and quality nudges, and an aggregator with grouped rendering. Replaces the fragmented health knowledge previously spread across `--diagnose`, `--preflight`, `lib/health.py`, and post-run nudges. ([#753](https://github.com/mvanhorn/last30days-skill/pull/753))
+
+### Fixed
+
+- Techmeme: `search` results are now windowed to each record's own ISO date instead of stamping every record with today's date, so years-old archive headlines can no longer surface as current news. Dated in-window records take result-cap slots first; undated records (old `techmeme-pp-cli` binary or upstream markup change) degrade gracefully with a logged upgrade hint. The sync machinery is removed because `search` never read the local cache. ([#752](https://github.com/mvanhorn/last30days-skill/pull/752))
+- LinkedIn now renders in the emoji-tree footer (👔 with likes/comments), the `## Stats` engagement summary, and with the correct "LinkedIn" label. Previously LinkedIn items were counted in `## Stats` but silently dropped from the footer because `_FOOTER_SOURCES`, `ENGAGEMENT_DISPLAY`, and `SOURCE_LABELS` all omitted the source - an 8-item LinkedIn run looked like the source never ran. ([#758](https://github.com/mvanhorn/last30days-skill/pull/758))
+
 ## [3.10.0] - 2026-07-04
 
 ### Added
