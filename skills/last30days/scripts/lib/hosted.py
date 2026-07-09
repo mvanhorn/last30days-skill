@@ -209,11 +209,25 @@ def _save_output(topic: str, content: str, emit: str, save_dir: str, suffix: str
     slug = _slugify(topic)
     extension = "json" if emit == "json" else "md"
     suffix_part = f"-{suffix}" if suffix else ""
-    out_path = path / f"{slug}-raw{suffix_part}.{extension}"
-    if out_path.exists():
-        out_path = path / f"{slug}-raw{suffix_part}-{datetime.now().strftime('%Y-%m-%d')}.{extension}"
-    out_path.write_text(content, encoding="utf-8")
-    return out_path
+    base = path / f"{slug}-raw{suffix_part}.{extension}"
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    candidates = [base]
+    candidates.append(path / f"{slug}-raw{suffix_part}-{date_str}.{extension}")
+    for i in range(1, 100):
+        candidates.append(path / f"{slug}-raw{suffix_part}-{date_str}-{i}.{extension}")
+    encoded = content.encode("utf-8")
+    for candidate in candidates:
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as f:
+            f.write(encoded)
+        return candidate
+    # Fallback: all 101 candidates existed (extremely unlikely).
+    raise RuntimeError(
+        f"_save_output: could not find a unique filename after 101 attempts in {path}"
+    )
 
 
 def _render_complete(row: dict, topic: str, emit: str, save_dir, save_suffix: str) -> int:

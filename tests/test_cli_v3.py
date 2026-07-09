@@ -7,6 +7,7 @@ import sys
 import types
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
@@ -283,6 +284,23 @@ class CliV3Tests(unittest.TestCase):
             self.assertEqual(".json", path.suffix)
             payload = json.loads(path.read_text())
             self.assertEqual("OpenClaw vs NanoClaw", payload["topic"])
+
+    def test_save_output_uses_unique_dated_fallback(self):
+        report = self.make_report()
+        with tempfile.TemporaryDirectory() as tmp:
+            save_dir = Path(tmp)
+            today = datetime.now().strftime("%Y-%m-%d")
+            base = save_dir / "openclaw-vs-nanoclaw-raw.md"
+            dated = save_dir / f"openclaw-vs-nanoclaw-raw-{today}.md"
+            base.write_text("base content", encoding="utf-8")
+            dated.write_text("dated content", encoding="utf-8")
+
+            saved = cli.save_output(report, "md", tmp)
+
+            self.assertEqual((save_dir / f"openclaw-vs-nanoclaw-raw-{today}-1.md").resolve(), saved)
+            self.assertEqual("base content", base.read_text(encoding="utf-8"))
+            self.assertEqual("dated content", dated.read_text(encoding="utf-8"))
+            self.assertTrue(saved.exists())
 
     def test_save_output_writes_utf8_encoded_markdown(self):
         report = self.make_report()
