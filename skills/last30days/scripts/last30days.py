@@ -758,7 +758,8 @@ def _load_last_report_cache(
                 return None
             return entity_reports[0][1], entity_reports, cache_path
         return entity_reports[0][1], None, cache_path
-    except Exception:
+    except Exception as exc:
+        sys.stderr.write(f"[last30days] Cache read failed, regenerating: {exc}\n")
         return None
 
 
