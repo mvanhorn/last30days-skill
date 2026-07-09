@@ -437,7 +437,8 @@ def parse_competitors_plan(raw: str | None) -> dict[str, dict]:
     plan_str = raw
     if os.path.isfile(plan_str):
         try:
-            plan_str = open(plan_str, encoding="utf-8").read()
+            with open(plan_str, encoding="utf-8") as f:
+                plan_str = f.read()
         except (OSError, UnicodeDecodeError) as exc:
             sys.stderr.write(f"[CompetitorsPlan] Cannot read plan file: {exc}\n")
             raise SystemExit(2)
@@ -1171,7 +1172,8 @@ def main() -> int:
             plan_str = args.plan
             if os.path.isfile(plan_str):
                 try:
-                    plan_str = open(plan_str, encoding="utf-8").read()
+                    with open(plan_str, encoding="utf-8") as f:
+                        plan_str = f.read()
                 except (OSError, UnicodeDecodeError) as exc:
                     sys.stderr.write(f"[Planner] Cannot read --plan file: {exc}\n")
                     raise SystemExit(2)
