@@ -236,3 +236,48 @@ def test_json_profile_parser_defaults_to_agent_and_accepts_raw():
 
     assert parser.parse_args(["topic", "--emit=json"]).json_profile == "agent"
     assert parser.parse_args(["topic", "--emit=json", "--json-profile=raw"]).json_profile == "raw"
+
+
+def _reach_candidate(source, engagement):
+    item = schema.SourceItem(
+        item_id=f"{source}-reach-1",
+        source=source,
+        title="reach test",
+        body="reach test body",
+        url=f"https://example.com/{source}/reach",
+        published_at="2026-07-05",
+        snippet="reach test snippet",
+        engagement=engagement,
+    )
+    return schema.Candidate(
+        candidate_id=f"candidate-{source}-reach",
+        item_id=item.item_id,
+        source=source,
+        title=item.title,
+        url=item.url,
+        snippet=item.snippet,
+        subquery_labels=["primary"],
+        native_ranks={f"primary:{source}": 1},
+        local_relevance=0.5,
+        freshness=50,
+        engagement=10,
+        source_quality=0.5,
+        rrf_score=0.01,
+        final_score=50,
+        cluster_id="cluster-reach",
+        source_items=[item],
+    )
+
+
+def test_headline_engagement_excludes_author_reach_for_stocktwits():
+    candidate = _reach_candidate(
+        "stocktwits", {"likes": 12, "reshares": 3, "followers": 250000}
+    )
+    assert schema._headline_engagement(candidate) == 12.0
+
+
+def test_headline_engagement_excludes_followers_generically():
+    candidate = _reach_candidate(
+        "linkedin", {"reactions": 40, "followers": 90000}
+    )
+    assert schema._headline_engagement(candidate) == 40.0

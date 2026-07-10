@@ -464,14 +464,16 @@ def _agent_engagement(candidate: Candidate) -> dict[str, float | int]:
 _HEADLINE_ENGAGEMENT_FIELDS_BY_SOURCE = {
     "digg": ("postCount",),
     "reddit": ("score",),
+    "stocktwits": ("likes", "reshares"),
 }
 
 
 def _is_counter_field(field: str) -> bool:
     normalized = field.lower()
     return not (
-        normalized in {"rank", "rating", "score", "trustscore"}
-        or normalized.endswith(("_rank", "_score", "_ratio", "_rate"))
+        # Author-reach and position/score metadata, not per-item engagement.
+        normalized in {"rank", "rating", "score", "trustscore", "followers", "subscribers"}
+        or normalized.endswith(("_rank", "_score", "_ratio", "_rate", "_followers"))
     )
 
 
