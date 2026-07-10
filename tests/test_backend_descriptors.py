@@ -970,6 +970,16 @@ class TestWebChain:
             assert not finding.usable
         assert res.active_backend is None
 
+    def test_keenable_key_does_not_bypass_native_suppression(self):
+        # Keyless-tier: a KEENABLE_API_KEY must not promote keenable past the
+        # native-search suppression guard.
+        res = backends.resolve(
+            "web", {"KEENABLE_API_KEY": "dummy-key", "LAST30DAYS_NATIVE_SEARCH": "1"},
+        )
+        keenable = next(f for f in res.findings if f.name == "keenable")
+        assert not keenable.usable
+        assert res.active_backend is None
+
     def test_pin_via_web_backend_flag(self):
         res = backends.resolve(
             "web", {"BRAVE_API_KEY": "dummy-key", "EXA_API_KEY": "dummy-key"}, pin="exa",

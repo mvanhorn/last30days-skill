@@ -222,6 +222,16 @@ class WebSearchDispatchTests(unittest.TestCase):
             grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
             mock.assert_called_once()
 
+    def test_auto_suppresses_keenable_on_native_host_even_with_key(self):
+        # Keenable is keyless-tier: a KEENABLE_API_KEY only lifts the rate limit,
+        # it does not promote keenable past the native-search suppression guard.
+        config = {"KEENABLE_API_KEY": "test-key", "LAST30DAYS_NATIVE_SEARCH": "1"}
+        with patch("lib.grounding.keenable_search", return_value=([], {})) as mock_keenable:
+            items, artifact = grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+        mock_keenable.assert_not_called()
+        self.assertEqual([], items)
+        self.assertEqual({}, artifact)
+
     def test_auto_prefers_parallel_over_keenable(self):
         config = {"PARALLEL_API_KEY": "parallel-key", "KEENABLE_API_KEY": "keenable-key"}
         with patch("lib.grounding.parallel_search", return_value=([], {})) as mock_parallel, \

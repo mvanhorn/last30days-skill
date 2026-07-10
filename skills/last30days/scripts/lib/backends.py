@@ -416,20 +416,16 @@ def _probe_keenable(config: Dict[str, Any]) -> BackendFinding:
     search and is suppressed on hosts that have native search.
     """
     requires = "no key (optional KEENABLE_API_KEY lifts rate limit); suppressed on native-search hosts"
-    if config.get("KEENABLE_API_KEY"):
-        return BackendFinding(
-            name="keenable",
-            status=health.OK,
-            detail="keenable (KEENABLE_API_KEY present; rate limit lifted)",
-            requires=requires,
-        )
     if env.keyless_web_allowed(config):
+        keyed = " (KEENABLE_API_KEY present; rate limit lifted)" if config.get("KEENABLE_API_KEY") else ""
         return BackendFinding(
             name="keenable",
             status=health.OK,
-            detail="keenable keyless (no key; full-quality search API)",
+            detail=f"keenable keyless{keyed or ' (no key; full-quality search API)'}",
             requires=requires,
         )
+    # Keyless-tier: suppressed on native-search hosts even when a key is set
+    # (the key only lifts the rate limit, it does not promote to the paid tier).
     return BackendFinding(
         name="keenable",
         status=health.MISSING,

@@ -290,15 +290,14 @@ def web_search(
             backend = "serper"
         elif config.get("PARALLEL_API_KEY"):
             backend = "parallel"
-        elif config.get("KEENABLE_API_KEY"):
-            # Explicit Keenable key -> treat like a configured backend.
-            backend = "keenable"
         elif env.keyless_web_allowed(config):
             # No paid key and the host has no native search. Keenable is a real
             # keyless search API (better than the DDG/SearXNG floor), so it is
             # the preferred keyless default; the floor stays reachable via
-            # --web-backend keyless. On a native-search host this branch is
-            # skipped (the model supplies web results itself).
+            # --web-backend keyless. Keenable is keyless-tier: an optional
+            # KEENABLE_API_KEY only lifts the rate limit, it does not promote
+            # keenable to the paid tier, so this stays behind the native-search
+            # suppression guard (on a native-search host the model searches).
             backend = "keenable"
         else:
             return [], {}
