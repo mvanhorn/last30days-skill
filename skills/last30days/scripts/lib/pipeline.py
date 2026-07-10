@@ -1795,4 +1795,5 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
             "webSearchQueries": [subquery.search_query],
             "resultCount": 1,
         }
-    return payloads.get(source, []), {}
+    return payloads.get(source, []), {} 
+ 
