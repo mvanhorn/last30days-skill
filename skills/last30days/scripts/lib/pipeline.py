@@ -1026,9 +1026,76 @@ def _result_outcome_artifact(source: str, result: Any) -> dict[str, Any]:
     elif source == "x":
         state = bird_x.classify_run_failure(detail)
         attempted = True
+    elif source == "truthsocial" and detail == "Truth Social token expired":
+        state = schema.AUTH_FAILED
+        attempted = True
+    elif source == "bluesky" and "network-level block" in detail.lower():
+        state = schema.UNREACHABLE
+        attempted = True
     else:
         state, attempted = _classify_source_failure(SourceRunError(detail))
     return _outcome_artifact(state, detail, attempted=attempted)
+
+
+def _legacy_artifact_outcome(
+    source: str,
+    artifact: Any,
+) -> dict[str, Any] | None:
+    """Map known pre-outcome artifact contracts to a typed outcome note."""
+    if not isinstance(artifact, dict):
+        return None
+    explicit = artifact.get("_source_outcome")
+    if isinstance(explicit, dict):
+        return explicit
+    if source == "perplexity" and artifact.get("error"):
+        error = str(artifact["error"])
+        detail = str(
+            artifact.get("asyncErrorMessage")
+            or artifact.get("message")
+            or error
+        )
+        state = (
+            health.TIMEOUT
+            if error.lower() == "timeout"
+            else http.classify_failure(
+                status_code=artifact.get("statusCode"),
+                message=f"{error}: {detail}",
+            )
+        )
+        return _outcome_artifact(state, detail)["_source_outcome"]
+    if (
+        source == "grounding"
+        and artifact.get("reason") == "keyless-search-unavailable"
+    ):
+        return _outcome_artifact(
+            schema.UNREACHABLE,
+            "Keyless web search unavailable",
+        )["_source_outcome"]
+    return None
+
+
+def _resolve_stream_outcome(
+    source: str,
+    artifact: Any,
+    failures: list[http.HTTPError],
+) -> dict[str, Any] | None:
+    """Choose the most specific artifact or captured HTTP outcome."""
+    artifact_outcome = _legacy_artifact_outcome(source, artifact)
+    if not failures:
+        return artifact_outcome
+    failure = failures[-1]
+    captured_outcome = _outcome_artifact(
+        failure.outcome_state,
+        str(failure),
+    )["_source_outcome"]
+    if artifact_outcome is None:
+        return captured_outcome
+    if (
+        artifact_outcome.get("state") == health.ERROR
+        and failure.outcome_state != health.ERROR
+    ):
+        return captured_outcome
+    return artifact_outcome
 
 
 def _finalize_source_status(
@@ -1460,15 +1527,14 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
             failure = failures[-1]
             raise SourceRunError(str(exc), failure.outcome_state) from exc
         raise
-    if failures and not (isinstance(artifact, dict) and artifact.get("_source_outcome")):
-        failure = failures[-1]
+    outcome_note = _resolve_stream_outcome(
+        str(kwargs.get("source") or ""),
+        artifact,
+        failures,
+    )
+    if outcome_note:
         artifact = dict(artifact or {})
-        artifact.update(
-            _outcome_artifact(
-                failure.outcome_state,
-                str(failure),
-            )
-        )
+        artifact["_source_outcome"] = outcome_note
     return items, artifact
 
 

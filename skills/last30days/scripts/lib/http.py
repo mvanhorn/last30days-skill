@@ -9,7 +9,7 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from contextvars import ContextVar
+from contextvars import ContextVar, copy_context
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 
@@ -37,6 +37,10 @@ USER_AGENT = "last30days-skill/3.0 (Assistant Skill)"
 _failure_sink: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
     "last30days_http_failure_sink",
     default=None,
+)
+_expected_miss_statuses: ContextVar[frozenset[int]] = ContextVar(
+    "last30days_http_expected_miss_statuses",
+    default=frozenset(),
 )
 
 
@@ -79,7 +83,27 @@ def capture_failures():
         _failure_sink.reset(token)
 
 
+@contextmanager
+def expected_misses(*status_codes: int):
+    """Exclude adapter-declared probe misses from captured run failures."""
+    token = _expected_miss_statuses.set(
+        _expected_miss_statuses.get().union(status_codes)
+    )
+    try:
+        yield
+    finally:
+        _expected_miss_statuses.reset(token)
+
+
+def submit_with_context(executor, func, /, *args, **kwargs):
+    """Submit a worker with the caller's failure-capture context."""
+    context = copy_context()
+    return executor.submit(context.run, func, *args, **kwargs)
+
+
 def _record_failure(error: HTTPError) -> None:
+    if error.status_code in _expected_miss_statuses.get():
+        return
     sink = _failure_sink.get()
     if sink is not None:
         sink.append(error)

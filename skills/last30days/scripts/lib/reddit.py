@@ -497,7 +497,9 @@ def search_reddit(
         with ThreadPoolExecutor(max_workers=min(5, len(subreddits))) as executor:
             futures = {}
             for sub in subreddits:
-                futures[executor.submit(_subreddit_search, sub, core, token, "relevance", timeframe)] = sub
+                futures[http.submit_with_context(
+                    executor, _subreddit_search, sub, core, token, "relevance", timeframe,
+                )] = sub
             for future in as_completed(futures):
                 sub = futures[future]
                 sub_posts = future.result()
@@ -516,7 +518,9 @@ def search_reddit(
             # from relevant communities instead of keyword-matched noise.
             sort = "top" if intent in ("product", "comparison") else ("relevance" if i == 0 else "top")
             _log(f"Global search {i+1}/{max_global}: '{query}' (sort={sort})")
-            futures[executor.submit(_global_search, query, token, sort, timeframe)] = query
+            futures[http.submit_with_context(
+                executor, _global_search, query, token, sort, timeframe,
+            )] = query
         for future in as_completed(futures):
             query = futures[future]
             posts = future.result()
@@ -539,7 +543,9 @@ def search_reddit(
             futures = {}
             for sub in discovered_subs[:subreddit_limit]:
                 _log(f"Subreddit search: r/{sub} for '{core}'")
-                futures[executor.submit(_subreddit_search, sub, core, token, "relevance", timeframe)] = sub
+                futures[http.submit_with_context(
+                    executor, _subreddit_search, sub, core, token, "relevance", timeframe,
+                )] = sub
             for future in as_completed(futures):
                 sub = futures[future]
                 sub_posts = future.result()
@@ -632,7 +638,9 @@ def enrich_with_comments(
 
     with ThreadPoolExecutor(max_workers=min(4, len(top_items))) as executor:
         futures = {
-            executor.submit(fetch_post_comments, item.get("url", ""), token): item
+            http.submit_with_context(
+                executor, fetch_post_comments, item.get("url", ""), token,
+            ): item
             for item in top_items
             if item.get("url")
         }

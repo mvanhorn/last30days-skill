@@ -1,10 +1,10 @@
 import socket
 import urllib.error
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lib import bird_x, health, http, pipeline, reddit, render, schema, youtube_yt
+from lib import bird_x, health, http, jobs, pipeline, reddit, render, schema, youtube_yt
 
 
 def _report(*, source_status=None, items_by_source=None, errors_by_source=None):
@@ -111,6 +111,104 @@ def test_stream_adapter_recovers_http_failure_laundered_as_empty(mock_urlopen):
 
     assert items == []
     assert artifact["_source_outcome"]["state"] == schema.AUTH_FAILED
+
+
+@patch("lib.http.time.sleep")
+@patch("lib.http.urllib.request.urlopen")
+def test_reddit_nested_worker_propagates_failure_capture(mock_urlopen, _mock_sleep):
+    mock_urlopen.side_effect = urllib.error.HTTPError(
+        "https://api.scrapecreators.com/v1/reddit/search",
+        429,
+        "Too Many Requests",
+        {},
+        None,
+    )
+
+    with http.capture_failures() as failures:
+        result = reddit.search_reddit(
+            "test topic",
+            "2026-06-10",
+            "2026-07-10",
+            depth="quick",
+            token="dummy-token",
+        )
+
+    assert result["items"] == []
+    assert failures[-1].outcome_state == schema.RATE_LIMITED
+
+
+@patch("lib.http.urllib.request.urlopen")
+def test_jobs_expected_probe_misses_do_not_degrade_final_result(mock_urlopen):
+    miss = urllib.error.HTTPError(
+        "https://boards-api.greenhouse.io/v1/boards/example/jobs",
+        404,
+        "Not Found",
+        {},
+        None,
+    )
+    success = MagicMock()
+    success.status = 200
+    success.read.return_value = (
+        b'{"jobs":[{"id":"1","title":"Engineer",'
+        b'"jobUrl":"https://jobs.ashbyhq.com/example/1"}]}'
+    )
+    success.__enter__.return_value = success
+    success.__exit__.return_value = False
+    mock_urlopen.side_effect = [miss, success]
+
+    with patch("lib.jobs._candidate_slugs", return_value=["example"]):
+        with http.capture_failures() as failures:
+            provider, slug, _ = jobs._probe_ats("Example")
+
+    assert provider == jobs.ATS_PROVIDER_ASHBY
+    assert slug == "example"
+    assert failures == []
+
+
+@pytest.mark.parametrize(
+    ("source", "artifact", "expected"),
+    [
+        ("perplexity", {"error": "timeout"}, health.TIMEOUT),
+        (
+            "grounding",
+            {"reason": "keyless-search-unavailable"},
+            schema.UNREACHABLE,
+        ),
+    ],
+)
+def test_stream_adapter_converts_legacy_error_artifacts(source, artifact, expected):
+    with patch("lib.pipeline._retrieve_stream_impl", return_value=([], artifact)):
+        _, converted = pipeline._retrieve_stream(source=source)
+
+    assert converted["_source_outcome"]["state"] == expected
+
+
+@pytest.mark.parametrize(
+    ("source", "detail", "expected"),
+    [
+        ("truthsocial", "Truth Social token expired", schema.AUTH_FAILED),
+        (
+            "bluesky",
+            "Cloudflare blocked the request (403 Forbidden). This is a network-level block, not an auth issue.",
+            schema.UNREACHABLE,
+        ),
+    ],
+)
+def test_legacy_result_uses_source_specific_outcome(source, detail, expected):
+    artifact = pipeline._result_outcome_artifact(source, {"error": detail})
+
+    assert artifact["_source_outcome"]["state"] == expected
+
+
+def test_captured_http_failure_overrides_generic_artifact_error():
+    failure = http.HTTPError("HTTP 429: Too Many Requests", status_code=429)
+    outcome = pipeline._resolve_stream_outcome(
+        "tiktok",
+        pipeline._outcome_artifact(health.ERROR, "request failed"),
+        [failure],
+    )
+
+    assert outcome["state"] == schema.RATE_LIMITED
 
 
 def test_bundle_records_items_then_429_as_partial():

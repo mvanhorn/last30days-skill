@@ -141,7 +141,8 @@ def _resolve_careers_page(
             candidates.extend([f"https://{host}/careers", f"https://{host}/jobs"])
 
     for url in candidates:
-        html = http.get_text(url, accept="text/html", retries=1)
+        with http.expected_misses(403, 404):
+            html = http.get_text(url, accept="text/html", retries=1)
         if html and _looks_like_careers_html(html):
             return html, url
 
@@ -209,7 +210,8 @@ def _probe_ats(company: str) -> tuple[str | None, str | None, list[str]]:
         for provider in (ATS_PROVIDER_GREENHOUSE, ATS_PROVIDER_ASHBY, ATS_PROVIDER_LEVER):
             attempts.append(f"probe:{provider}:{slug}")
             try:
-                items = _fetch_ats(provider, slug)
+                with http.expected_misses(400, 401, 403, 404):
+                    items = _fetch_ats(provider, slug)
             except http.HTTPError as exc:
                 if exc.status_code in {400, 401, 403, 404}:
                     continue
