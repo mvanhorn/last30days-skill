@@ -1,0 +1,60 @@
+{
+  "schema_version": "1.0",
+  "query": "AI coding agents",
+  "generated_at": "2026-07-10T00:00:00Z",
+  "window_days": 30,
+  "source_status": {
+    "github": "auth-failed",
+    "grounding": "unreachable",
+    "hackernews": "no-results",
+    "reddit": "ok",
+    "x": "ok",
+    "youtube": "rate-limited"
+  },
+  "clusters": [
+    {
+      "title": "Agents move into daily coding workflows",
+      "summary": "Developers shared concrete agent workflows.",
+      "sources": [
+        "reddit"
+      ],
+      "engagement_total": 1543
+    },
+    {
+      "title": "Teams compare coding-agent review loops",
+      "summary": "Teams compared how agents fit into code review.",
+      "sources": [
+        "x"
+      ],
+      "engagement_total": 800
+    }
+  ],
+  "results": [
+    {
+      "title": "Agents move into daily coding workflows",
+      "source": "reddit",
+      "url": "https://www.reddit.com/r/programming/comments/agent-workflows",
+      "published_at": "2026-06-28",
+      "summary": "Developers shared concrete agent workflows.",
+      "engagement": {
+        "score": 1543,
+        "num_comments": 201
+      },
+      "relevance_score": 0.92,
+      "cluster": 0
+    },
+    {
+      "title": "Teams compare coding-agent review loops",
+      "source": "x",
+      "url": "https://x.com/example/status/123",
+      "published_at": "2026-07-02",
+      "summary": "Teams compared how agents fit into code review.",
+      "engagement": {
+        "likes": 800,
+        "reposts": 50
+      },
+      "relevance_score": 0.84,
+      "cluster": 1
+    }
+  ]
+}

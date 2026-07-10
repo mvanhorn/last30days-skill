@@ -51,6 +51,7 @@ class AsOfDateTests(unittest.TestCase):
         "OpenAI",
         "--mock",
         "--emit=json",
+        "--json-profile=raw",
         "--as-of",
         "2020-05-25",
         "--days",

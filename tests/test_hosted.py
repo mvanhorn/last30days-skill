@@ -169,6 +169,47 @@ def test_env_set_routes_to_remote_path(monkeypatch):
     }]
 
 
+def test_remote_json_requires_raw_profile(monkeypatch):
+    monkeypatch.setenv("LAST30DAYS_API_KEY", TEST_KEY)
+    monkeypatch.setenv("LAST30DAYS_API_BASE", TEST_BASE)
+    monkeypatch.setattr(
+        hosted,
+        "run_hosted",
+        lambda *args, **kwargs: pytest.fail("remote request should not start"),
+    )
+
+    with mock.patch.object(cli.env, "get_config", return_value={}):
+        rc, _out, err = run_main(["test", "topic", "--emit=json"])
+
+    assert rc == 2
+    assert "remote API backend only supports --json-profile=raw" in err
+
+
+def test_remote_raw_json_preserves_existing_server_contract(monkeypatch):
+    monkeypatch.setenv("LAST30DAYS_API_KEY", TEST_KEY)
+    monkeypatch.setenv("LAST30DAYS_API_BASE", TEST_BASE)
+    calls = []
+    monkeypatch.setattr(
+        hosted,
+        "run_hosted",
+        lambda topic, depth, **kwargs: calls.append((topic, depth, kwargs)) or 0,
+    )
+
+    with mock.patch.object(cli.env, "get_config", return_value={}):
+        rc, _out, _err = run_main(
+            ["test", "topic", "--emit=json", "--json-profile=raw"]
+        )
+
+    assert rc == 0
+    assert calls == [
+        (
+            "test topic",
+            "default",
+            {"emit": "json", "save_dir": None, "save_suffix": ""},
+        )
+    ]
+
+
 @pytest.mark.parametrize(
     ("flag", "expected_depth"),
     [(["--quick"], "quick"), ([], "default"), (["--deep"], "deep")],
