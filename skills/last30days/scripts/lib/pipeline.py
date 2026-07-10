@@ -653,6 +653,10 @@ def run(
         settings=settings,
         web_backend=web_backend,
         skip_sources=_github_skip_retry,
+        subreddits=subreddits,
+        tiktok_hashtags=tiktok_hashtags,
+        tiktok_creators=tiktok_creators,
+        ig_creators=ig_creators,
     )
 
     # Reclassify partial failures as DEGRADED instead of silently dropping them.
@@ -1141,6 +1145,10 @@ def _retry_thin_sources(
     settings: dict[str, Any],
     web_backend: str = "auto",
     skip_sources: set[str] | None = None,
+    subreddits: list[str] | None = None,
+    tiktok_hashtags: list[str] | None = None,
+    tiktok_creators: list[str] | None = None,
+    ig_creators: list[str] | None = None,
 ) -> None:
     """Retry sources with thin results using simplified core subject query."""
     if depth == "quick":
@@ -1201,6 +1209,10 @@ def _retry_thin_sources(
             rate_limit_lock=rate_limit_lock,
             web_backend=web_backend,
             raw_topic=topic,
+            subreddits=subreddits,
+            tiktok_hashtags=tiktok_hashtags,
+            tiktok_creators=tiktok_creators,
+            ig_creators=ig_creators,
         )
         normalized = _normalize_score_dedupe(
             source,
