@@ -29,6 +29,16 @@ def _report() -> schema.Report:
         snippet="Teams compared how agents fit into code review.",
         engagement={"likes": 800, "reposts": 50},
     )
+    digg_item = schema.SourceItem(
+        item_id="digg-1",
+        source="digg",
+        title="Agents climb the Digg AI leaderboard",
+        body="A Digg cluster collected five posts from four authors.",
+        url="https://di.gg/ai/agent-leaderboard",
+        published_at="2026-07-05",
+        snippet="A small Digg cluster appeared low on the leaderboard.",
+        engagement={"postCount": 5, "uniqueAuthors": 4, "rank": 500, "rank_score": 0.0},
+    )
     reddit_candidate = schema.Candidate(
         candidate_id="candidate-reddit",
         item_id=reddit_item.item_id,
@@ -63,6 +73,24 @@ def _report() -> schema.Report:
         rrf_score=0.018,
         final_score=84,
         source_items=[x_item],
+    )
+    digg_candidate = schema.Candidate(
+        candidate_id="candidate-digg",
+        item_id=digg_item.item_id,
+        source="digg",
+        title=digg_item.title,
+        url=digg_item.url,
+        snippet=digg_item.snippet,
+        subquery_labels=["leaderboard"],
+        native_ranks={"leaderboard:digg": 500},
+        local_relevance=0.78,
+        freshness=75,
+        engagement=5,
+        source_quality=0.6,
+        rrf_score=0.01,
+        final_score=70,
+        cluster_id="cluster-digg",
+        source_items=[digg_item],
     )
     return schema.Report(
         topic="AI coding agents",
@@ -106,9 +134,17 @@ def _report() -> schema.Report:
                 sources=["x"],
                 score=84,
             ),
+            schema.Cluster(
+                cluster_id="cluster-digg",
+                title="Agents climb the Digg AI leaderboard",
+                candidate_ids=[digg_candidate.candidate_id],
+                representative_ids=[digg_candidate.candidate_id],
+                sources=["digg"],
+                score=70,
+            ),
         ],
-        ranked_candidates=[reddit_candidate, x_candidate],
-        items_by_source={"reddit": [reddit_item], "x": [x_item]},
+        ranked_candidates=[reddit_candidate, x_candidate, digg_candidate],
+        items_by_source={"reddit": [reddit_item], "x": [x_item], "digg": [digg_item]},
         errors_by_source={
             "youtube": "HTTP 429",
             "github": "HTTP 401",
@@ -117,6 +153,7 @@ def _report() -> schema.Report:
         source_status={
             "reddit": schema.SourceOutcome(source="reddit", state=health.OK, items_returned=1),
             "x": schema.SourceOutcome(source="x", state=health.OK, items_returned=1),
+            "digg": schema.SourceOutcome(source="digg", state=health.OK, items_returned=1),
             "hackernews": schema.SourceOutcome(source="hackernews", state=schema.NO_RESULTS),
             "youtube": schema.SourceOutcome(source="youtube", state=schema.RATE_LIMITED),
             "grounding": schema.SourceOutcome(source="grounding", state=schema.UNREACHABLE),
@@ -135,6 +172,7 @@ def test_agent_export_maps_per_run_source_outcomes_to_states():
     exported = schema.to_agent_export(_report())
 
     assert exported["source_status"] == {
+        "digg": "ok",
         "github": "auth-failed",
         "grounding": "unreachable",
         "hackernews": "no-results",
@@ -142,6 +180,32 @@ def test_agent_export_maps_per_run_source_outcomes_to_states():
         "x": "ok",
         "youtube": "rate-limited",
     }
+
+
+def test_agent_export_uses_digg_post_count_not_rank_for_cluster_engagement():
+    exported = schema.to_agent_export(_report())
+
+    assert exported["clusters"][2]["engagement_total"] == 5
+
+
+def test_agent_export_excludes_non_counter_metadata_from_cluster_engagement():
+    report = _report()
+    report.ranked_candidates[0].source = "web"
+    report.ranked_candidates[0].source_items[0].source = "web"
+    report.ranked_candidates[0].source_items[0].engagement = {
+        "views": 5,
+        "rank": 500,
+        "rank_score": 400,
+        "ranking_score": 300,
+        "score": 200,
+        "upvote_ratio": 0.95,
+        "rating": 4.9,
+        "trustScore": 3.4,
+    }
+
+    exported = schema.to_agent_export(report)
+
+    assert exported["clusters"][0]["engagement_total"] == 5
 
 
 def test_raw_profile_is_byte_identical_to_legacy_report_dump():

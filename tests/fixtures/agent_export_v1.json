@@ -4,6 +4,7 @@
   "generated_at": "2026-07-10T00:00:00Z",
   "window_days": 30,
   "source_status": {
+    "digg": "ok",
     "github": "auth-failed",
     "grounding": "unreachable",
     "hackernews": "no-results",
@@ -27,6 +28,14 @@
         "x"
       ],
       "engagement_total": 800
+    },
+    {
+      "title": "Agents climb the Digg AI leaderboard",
+      "summary": "A small Digg cluster appeared low on the leaderboard.",
+      "sources": [
+        "digg"
+      ],
+      "engagement_total": 5
     }
   ],
   "results": [
@@ -55,6 +64,21 @@
       },
       "relevance_score": 0.84,
       "cluster": 1
+    },
+    {
+      "title": "Agents climb the Digg AI leaderboard",
+      "source": "digg",
+      "url": "https://di.gg/ai/agent-leaderboard",
+      "published_at": "2026-07-05",
+      "summary": "A small Digg cluster appeared low on the leaderboard.",
+      "engagement": {
+        "postCount": 5,
+        "uniqueAuthors": 4,
+        "rank": 500,
+        "rank_score": 0.0
+      },
+      "relevance_score": 0.7,
+      "cluster": 2
     }
   ]
 }

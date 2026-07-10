@@ -461,12 +461,39 @@ def _agent_engagement(candidate: Candidate) -> dict[str, float | int]:
     return dict(primary.engagement) if primary else {}
 
 
+_HEADLINE_ENGAGEMENT_FIELDS_BY_SOURCE = {
+    "digg": ("postCount",),
+    "reddit": ("score",),
+}
+
+
+def _is_counter_field(field: str) -> bool:
+    normalized = field.lower()
+    return not (
+        normalized in {"rank", "rating", "score", "trustscore"}
+        or normalized.endswith(("_rank", "_score", "_ratio", "_rate"))
+    )
+
+
 def _headline_engagement(candidate: Candidate) -> float:
     """Return the primary item's largest native engagement counter."""
+    engagement = _agent_engagement(candidate)
+    preferred_fields = _HEADLINE_ENGAGEMENT_FIELDS_BY_SOURCE.get(candidate.source, ())
+    preferred_values = [
+        float(engagement[field])
+        for field in preferred_fields
+        if isinstance(engagement.get(field), (int, float))
+        and not isinstance(engagement[field], bool)
+    ]
+    if preferred_values:
+        return max(preferred_values)
+
     values = [
         float(value)
-        for value in _agent_engagement(candidate).values()
-        if isinstance(value, (int, float)) and not isinstance(value, bool)
+        for field, value in engagement.items()
+        if _is_counter_field(field)
+        and isinstance(value, (int, float))
+        and not isinstance(value, bool)
     ]
     return max(values, default=0.0)
 
