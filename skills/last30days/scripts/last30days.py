@@ -128,6 +128,7 @@ def save_output(
     synthesis_md: str | None = None,
     topic_override: str | None = None,
     rendered_content: str | None = None,
+    json_profile: str = "agent",
 ) -> Path:
     from datetime import datetime
     path = Path(save_dir).expanduser().resolve()
@@ -147,7 +148,12 @@ def save_output(
     if rendered_content is not None:
         content = rendered_content
     elif emit in {"json", "html"}:
-        content = emit_output(report, emit, synthesis_md=synthesis_md)
+        content = emit_output(
+            report,
+            emit,
+            synthesis_md=synthesis_md,
+            json_profile=json_profile,
+        )
     else:
         content = render.render_full(report)
     encoded = content.encode("utf-8")
@@ -217,9 +223,15 @@ def emit_output(
     fun_level: str = "medium",
     save_path: str | None = None,
     synthesis_md: str | None = None,
+    json_profile: str = "agent",
 ) -> str:
     if emit == "json":
-        return json.dumps(schema.to_dict(report), indent=2, sort_keys=True)
+        payload = (
+            schema.to_dict(report)
+            if json_profile == "raw"
+            else schema.to_agent_export(report)
+        )
+        return json.dumps(payload, indent=2, sort_keys=True)
     if emit == "html":
         return html_render.render_html(
             report, fun_level=fun_level, save_path=save_path, synthesis_md=synthesis_md,
@@ -239,16 +251,26 @@ def emit_comparison_output(
     fun_level: str = "medium",
     save_path: str | None = None,
     synthesis_md: str | None = None,
+    json_profile: str = "agent",
 ) -> str:
     if emit == "json":
         payload = {
             "comparison": True,
             "entities": [label for label, _ in entity_reports],
             "reports": [
-                {"entity": label, "report": schema.to_dict(report)}
+                {
+                    "entity": label,
+                    "report": (
+                        schema.to_dict(report)
+                        if json_profile == "raw"
+                        else schema.to_agent_export(report)
+                    ),
+                }
                 for label, report in entity_reports
             ],
         }
+        if json_profile == "agent":
+            payload["schema_version"] = schema.AGENT_EXPORT_SCHEMA_VERSION
         return json.dumps(payload, indent=2, sort_keys=True)
     if emit == "html":
         return html_render.render_html_comparison(
@@ -340,6 +362,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("topic", nargs="*", help="Research topic")
     parser.add_argument("--emit", default="compact", choices=["compact", "json", "context", "md", "html", "brief"])
+    parser.add_argument(
+        "--json-profile",
+        default="agent",
+        choices=["agent", "raw"],
+        help="JSON export profile for --emit=json (default: agent)",
+    )
     parser.add_argument("--search", help="Comma-separated source list")
     parser.add_argument("--quick", action="store_true", help="Lower-latency retrieval profile")
     parser.add_argument("--deep", action="store_true", help="Higher-recall retrieval profile")
@@ -839,6 +867,7 @@ def _render_save_and_print(
             fun_level=fun_level,
             save_path=footer_save_path,
             synthesis_md=synthesis_md,
+            json_profile=args.json_profile,
         )
     else:
         rendered = emit_output(
@@ -847,6 +876,7 @@ def _render_save_and_print(
             fun_level=fun_level,
             save_path=footer_save_path,
             synthesis_md=synthesis_md,
+            json_profile=args.json_profile,
         )
     publish_companion_paths: list[Path] = []
     if args.output:
@@ -865,6 +895,7 @@ def _render_save_and_print(
             synthesis_md=synthesis_md,
             topic_override=comparison_topic(entity_reports) if is_comparison_html else None,
             rendered_content=rendered if is_comparison_html else None,
+            json_profile=args.json_profile,
         )
         if args.emit == "html":
             publish_companion_paths.append(save_path)
@@ -878,6 +909,7 @@ def _render_save_and_print(
                     entity_report, args.emit, args.save_dir,
                     suffix=args.save_suffix or "",
                     synthesis_md=synthesis_md,
+                    json_profile=args.json_profile,
                 )
                 comparison_peer_paths.append(peer_path)
                 sys.stderr.write(f"[last30days] Saved output to {peer_path}\n")
@@ -1144,6 +1176,12 @@ def main() -> int:
         and env.read_secret_env("LAST30DAYS_API_KEY")
         and os.environ.get("LAST30DAYS_API_BASE")
     ):
+        if args.emit == "json" and args.json_profile == "agent":
+            sys.stderr.write(
+                "[last30days] --json-profile=agent requires the local Report; "
+                "the remote API backend only supports --json-profile=raw.\n"
+            )
+            return 2
         from lib import hosted
         depth = "deep" if args.deep else "quick" if args.quick else "default"
         return hosted.run_hosted(

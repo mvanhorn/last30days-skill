@@ -441,3 +441,113 @@ def candidate_primary_item(candidate: Candidate) -> SourceItem | None:
         if item.source == candidate.source:
             return item
     return candidate.source_items[0]
+
+
+AGENT_EXPORT_SCHEMA_VERSION = "1.0"
+
+
+def _agent_summary(candidate: Candidate) -> str:
+    primary = candidate_primary_item(candidate)
+    return (
+        candidate.snippet
+        or (primary.snippet if primary else "")
+        or candidate.explanation
+        or (primary.body if primary else "")
+    )
+
+
+def _agent_engagement(candidate: Candidate) -> dict[str, float | int]:
+    primary = candidate_primary_item(candidate)
+    return dict(primary.engagement) if primary else {}
+
+
+def _headline_engagement(candidate: Candidate) -> float:
+    """Return the primary item's largest native engagement counter."""
+    values = [
+        float(value)
+        for value in _agent_engagement(candidate).values()
+        if isinstance(value, (int, float)) and not isinstance(value, bool)
+    ]
+    return max(values, default=0.0)
+
+
+def _window_days(report: Report) -> int:
+    start = datetime.fromisoformat(report.range_from).date()
+    end = datetime.fromisoformat(report.range_to).date()
+    return max(0, (end - start).days)
+
+
+def _agent_generated_at(value: str) -> str:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        return value
+    return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def to_agent_export(report: Report) -> dict[str, Any]:
+    """Serialize a report to the stable, versioned agent JSON contract."""
+    candidates = {candidate.candidate_id: candidate for candidate in report.ranked_candidates}
+    cluster_by_candidate: dict[str, int] = {}
+    cluster_by_id: dict[str, int] = {}
+    exported_clusters: list[dict[str, Any]] = []
+
+    for index, cluster in enumerate(report.clusters):
+        cluster_by_id[cluster.cluster_id] = index
+        for candidate_id in cluster.candidate_ids:
+            cluster_by_candidate.setdefault(candidate_id, index)
+        representative = next(
+            (candidates[candidate_id] for candidate_id in cluster.representative_ids if candidate_id in candidates),
+            None,
+        )
+        engagement_total = sum(
+            _headline_engagement(candidates[candidate_id])
+            for candidate_id in cluster.candidate_ids
+            if candidate_id in candidates
+        )
+        exported_clusters.append(
+            {
+                "title": cluster.title,
+                "summary": _agent_summary(representative) if representative else "",
+                "sources": list(cluster.sources),
+                "engagement_total": (
+                    int(engagement_total) if engagement_total.is_integer() else engagement_total
+                ),
+            }
+        )
+
+    results: list[dict[str, Any]] = []
+    for candidate in report.ranked_candidates:
+        primary = candidate_primary_item(candidate)
+        cluster_index = cluster_by_id.get(candidate.cluster_id or "")
+        if cluster_index is None:
+            cluster_index = cluster_by_candidate.get(candidate.candidate_id)
+        results.append(
+            _drop_none(
+                {
+                    "title": candidate.title,
+                    "source": candidate.source,
+                    "url": candidate.url,
+                    "published_at": primary.published_at if primary else None,
+                    "summary": _agent_summary(candidate),
+                    "engagement": _agent_engagement(candidate),
+                    "relevance_score": round(
+                        max(0.0, min(1.0, candidate.final_score / 100.0)),
+                        4,
+                    ),
+                    "cluster": cluster_index,
+                }
+            )
+        )
+
+    return {
+        "schema_version": AGENT_EXPORT_SCHEMA_VERSION,
+        "query": report.topic,
+        "generated_at": _agent_generated_at(report.generated_at),
+        "window_days": _window_days(report),
+        "source_status": {
+            source: outcome.state
+            for source, outcome in sorted(report.source_status.items())
+        },
+        "clusters": exported_clusters,
+        "results": results,
+    }

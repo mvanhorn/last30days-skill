@@ -274,7 +274,8 @@ class EmitComparisonOutputTests(unittest.TestCase):
         self.assertEqual(payload["entities"], ["OpenAI", "Anthropic"])
         self.assertEqual(len(payload["reports"]), 2)
         self.assertEqual(payload["reports"][0]["entity"], "OpenAI")
-        self.assertIn("topic", payload["reports"][0]["report"])
+        self.assertEqual(payload["schema_version"], "1.0")
+        self.assertIn("query", payload["reports"][0]["report"])
 
     def test_compact_and_md_both_route_to_multi(self):
         reports = [

@@ -1,0 +1,111 @@
+# Agent JSON export
+
+The agent JSON profile is the stable machine-readable research contract for downstream agents, scripts, dashboards, and workflow tools. Ask the slash command for machine-readable JSON:
+
+```text
+/last30days AI coding agents — return the versioned agent JSON export
+```
+
+For direct engine use in scripts, cron jobs, or development, use:
+
+```bash
+python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json
+python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json --output results.json
+```
+
+`--emit=json` defaults to `--json-profile=agent`. The full internal report remains available for debugging and power users:
+
+```bash
+python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json --json-profile=raw
+```
+
+The raw profile is intentionally unversioned and may change when pipeline internals change. It preserves the JSON serialization used before the agent profile was introduced.
+
+When `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` route a run through a configured remote API, the server does not return the local `Report` needed to build this profile. In that mode, `--json-profile=agent` exits with status 2 instead of emitting a misleading shape; use `--json-profile=raw` to retain the remote backend's existing server-response JSON contract.
+
+## Top-level fields
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `schema_version` | string | Agent export contract version. The current version is `1.0`. |
+| `query` | string | The research topic supplied to the engine. |
+| `generated_at` | string | UTC generation timestamp in RFC 3339 format. |
+| `window_days` | integer | Number of days between the report's start and end dates. |
+| `source_status` | object | Map of source name to the outcome observed during this run. |
+| `clusters` | array | Ranked groups of related results. |
+| `results` | array | Ranked, flat evidence results for downstream processing. |
+
+All top-level fields are always present. Empty runs contain empty `clusters` and `results` arrays. Sources appear in `source_status` when the run recorded an outcome for them.
+
+## `source_status`
+
+Each value distinguishes a clean empty result from incomplete coverage:
+
+| State | Meaning |
+| --- | --- |
+| `ok` | The source completed and returned one or more items. |
+| `no-results` | The source completed successfully but found no matching items. |
+| `partial` | The source returned some items before a later failure. |
+| `rate-limited` | Retrieval was stopped by a provider rate limit. |
+| `auth-failed` | Credentials were missing, rejected, or expired during retrieval. |
+| `unreachable` | The source or network endpoint could not be reached. |
+| `timeout` | Retrieval exceeded its time limit. |
+| `schema-drift` | The provider response no longer matched the expected shape. |
+| `skipped-unconfigured` | The source was intentionally skipped because required configuration was absent. |
+| `error` | Retrieval failed for another reason. |
+
+Consumers must not interpret failure states as evidence that a source had no discussion. Only `no-results` means the source completed cleanly with zero matches.
+
+## Cluster fields
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `title` | string | Cluster headline. |
+| `summary` | string | Summary from the cluster's representative ranked result. |
+| `sources` | array of strings | Sources represented by the cluster. |
+| `engagement_total` | number | Sum of the largest native engagement counter on each result in the cluster. This preserves a useful headline magnitude without combining every platform counter. |
+
+Cluster array order is ranking order. A result's `cluster` value is the zero-based index into this array.
+
+## Result fields
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `title` | string | Result title. |
+| `source` | string | Primary source name, such as `reddit`, `x`, `youtube`, or `grounding`. |
+| `url` | string | Canonical result URL. It may be empty when the provider supplies no link. |
+| `published_at` | string | Primary source item's publication date or timestamp. Omitted when unknown. |
+| `summary` | string | Normalized snippet, with the relevance explanation or body used as fallback. |
+| `engagement` | object | Native engagement counters from the primary source item, such as Reddit `score` and `num_comments` or X `likes` and `reposts`. |
+| `relevance_score` | number | Engine final score normalized to the inclusive `0.0`–`1.0` range. |
+| `cluster` | integer | Zero-based index into `clusters`. Omitted when the result is not assigned to a cluster. |
+
+Fields whose value is unknown are omitted rather than emitted as JSON `null`. Strings and collection fields otherwise remain present, including empty strings, objects, or arrays.
+
+## Comparison runs
+
+Comparison queries use an envelope so each entity keeps its own contract:
+
+```json
+{
+  "schema_version": "1.0",
+  "comparison": true,
+  "entities": ["OpenAI", "Anthropic"],
+  "reports": [
+    {"entity": "OpenAI", "report": {"schema_version": "1.0", "query": "OpenAI"}},
+    {"entity": "Anthropic", "report": {"schema_version": "1.0", "query": "Anthropic"}}
+  ]
+}
+```
+
+The abbreviated reports above only illustrate the envelope; real reports contain every documented top-level field.
+
+## Versioning policy
+
+- `schema_version` uses `major.minor` numbering.
+- Any breaking field removal, rename, type change, semantic change, or envelope change requires a major-version bump.
+- Backward-compatible field additions may use a minor-version bump. Consumers should ignore fields they do not recognize.
+- The checked-in golden snapshot test locks the complete `1.0` shape. Contract changes must update the version and snapshot deliberately.
+- `--json-profile=raw` is outside this compatibility policy because it mirrors internal pipeline dataclasses.
+
+`--preflight --emit=json` is a different machine contract for permission and configuration inspection. `--json-profile` does not alter preflight output.

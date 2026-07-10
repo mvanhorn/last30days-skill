@@ -61,9 +61,11 @@ class CliV3Tests(unittest.TestCase):
         )
         self.assertEqual(0, result.returncode, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertIn("query_plan", payload)
-        self.assertIn("ranked_candidates", payload)
+        self.assertEqual("1.0", payload["schema_version"])
+        self.assertEqual("test topic", payload["query"])
+        self.assertIn("results", payload)
         self.assertIn("clusters", payload)
+        self.assertIn("source_status", payload)
 
     def test_invalid_plan_json_exits_nonzero(self):
         """Malformed --plan JSON must fail fast, not silently fall back to the
@@ -270,7 +272,7 @@ class CliV3Tests(unittest.TestCase):
         brief = cli.emit_output(report, "brief")
 
         self.assertIn("# last30days v", compact)
-        self.assertIn('"topic": "OpenClaw vs NanoClaw"', json_output)
+        self.assertIn('"query": "OpenClaw vs NanoClaw"', json_output)
         self.assertIsInstance(context, str)
         self.assertIn("# Production Brief:", brief)
 
@@ -283,7 +285,7 @@ class CliV3Tests(unittest.TestCase):
             path = cli.save_output(report, "json", tmp)
             self.assertEqual(".json", path.suffix)
             payload = json.loads(path.read_text())
-            self.assertEqual("OpenClaw vs NanoClaw", payload["topic"])
+            self.assertEqual("OpenClaw vs NanoClaw", payload["query"])
 
     def test_save_output_uses_unique_dated_fallback(self):
         report = self.make_report()
