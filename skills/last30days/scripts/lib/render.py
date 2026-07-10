@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date
 from urllib.parse import urlparse
 
-from . import dates, schema, signals, skill_meta
+from . import dates, health, schema, signals, skill_meta
 
 
 def _skill_version() -> str:
@@ -62,6 +62,10 @@ def _render_badge() -> list[str]:
     ]
 
 SOURCE_LABELS = {
+    "reddit": "Reddit",
+    "youtube": "YouTube",
+    "tiktok": "TikTok",
+    "instagram": "Instagram",
     "grounding": "Web",
     "hackernews": "Hacker News",
     "truthsocial": "Truth Social",
@@ -185,6 +189,10 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
     top_comments = _render_top_comments(report)
     if top_comments:
         lines.extend([""] + top_comments)
+
+    outcome_note = _render_source_outcome_note(report)
+    if outcome_note:
+        lines.extend([""] + outcome_note)
 
     lines.extend(_render_source_coverage(report))
     # Close EVIDENCE FOR SYNTHESIS envelope before anything that passes through verbatim.
@@ -1350,8 +1358,14 @@ def _render_source_coverage(report: schema.Report) -> list[str]:
         "## Source Coverage",
         "",
     ]
-    for source, items in sorted(report.items_by_source.items()):
-        lines.append(f"- {_source_label(source)}: {len(items)} item{'s' if len(items) != 1 else ''}")
+    sources = sorted(set(report.items_by_source) | set(report.source_status))
+    for source in sources:
+        items = report.items_by_source.get(source, [])
+        line = f"- {_source_label(source)}: {len(items)} item{'s' if len(items) != 1 else ''}"
+        outcome = report.source_status.get(source)
+        if outcome and outcome.state != health.OK:
+            line += f" ({_format_outcome(outcome)})"
+        lines.append(line)
     if report.errors_by_source:
         lines.append("")
         lines.append("## Source Errors")
@@ -1359,6 +1373,47 @@ def _render_source_coverage(report: schema.Report) -> list[str]:
         for source, error in sorted(report.errors_by_source.items()):
             lines.append(f"- {_source_label(source)}: {error}")
     return lines
+
+
+def _render_source_outcome_note(report: schema.Report) -> list[str]:
+    """Tell the synthesizer that a failed source is not evidence of silence."""
+    affected = [
+        outcome
+        for outcome in report.source_status.values()
+        if outcome.state not in (health.OK, schema.NO_RESULTS)
+    ]
+    if not affected:
+        return []
+    summaries = "; ".join(
+        f"{_source_label(outcome.source)} {_format_outcome(outcome)}"
+        for outcome in sorted(affected, key=lambda item: item.source)
+    )
+    return [
+        "## Partial Coverage",
+        "",
+        f"> {summaries}.",
+        "> Do not interpret a failed source as no discussion on that source. "
+        "Synthesize only from available evidence; run `doctor` for fix prescriptions.",
+    ]
+
+
+def _format_outcome(outcome: schema.SourceOutcome) -> str:
+    detail = " ".join((outcome.detail or "").split())
+    if len(detail) > 140:
+        detail = detail[:137].rstrip() + "..."
+    state = outcome.state
+    if state == schema.PARTIAL:
+        noun = "item" if outcome.items_returned == 1 else "items"
+        summary = f"partial after {outcome.items_returned} {noun}"
+    elif state == schema.NO_RESULTS:
+        summary = "no results"
+    else:
+        summary = state
+    if detail:
+        summary += f": {detail}"
+    if outcome.fix_hint == "doctor":
+        summary += " (run doctor for fixes)"
+    return summary
 
 
 # Known publications for the Web line of the emoji-tree footer.
@@ -1525,7 +1580,7 @@ def _footer_line_for_source(emoji: str, label: str, count: int, item_word: str, 
 
 
 def _build_source_footer_lines(report: schema.Report) -> list[str]:
-    """Return emoji-tree body lines (without tree characters) for each populated source.
+    """Return emoji-tree lines for populated and outcome-bearing sources.
 
     The caller adds the tree characters (├─ / └─) after assembling all lines.
     """
@@ -1551,7 +1606,11 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
             )
             parts.append(f"{with_transcripts}/{len(items)} with transcripts")
         stats = " │ ".join(parts)
-        out.append(_footer_line_for_source(emoji, label, len(items), item_word, stats))
+        line = _footer_line_for_source(emoji, label, len(items), item_word, stats)
+        outcome = report.source_status.get(source_key)
+        if outcome and outcome.state != health.OK:
+            line += f" │ ⚠ {_format_outcome(outcome)}"
+        out.append(line)
 
     # Polymarket (special: count + odds string from existing helper)
     polymarket_items = report.items_by_source.get("polymarket") or []
@@ -1562,9 +1621,13 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
         count_str = f"{count:,}" if count >= 1000 else str(count)
         plural = "markets" if count != 1 else "market"
         if odds_str:
-            out.append(f"📊 Polymarket: {count_str} {plural} │ {odds_str}")
+            line = f"📊 Polymarket: {count_str} {plural} │ {odds_str}"
         else:
-            out.append(f"📊 Polymarket: {count_str} {plural}")
+            line = f"📊 Polymarket: {count_str} {plural}"
+        outcome = report.source_status.get("polymarket")
+        if outcome and outcome.state != health.OK:
+            line += f" │ ⚠ {_format_outcome(outcome)}"
+        out.append(line)
 
     # Web (sources from grounding)
     web_items = report.items_by_source.get("grounding") or []
@@ -1574,9 +1637,25 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
         count_str = f"{count:,}" if count >= 1000 else str(count)
         plural = "pages" if count != 1 else "page"
         if names:
-            out.append(f"🌐 Web: {count_str} {plural} - {names}")
+            line = f"🌐 Web: {count_str} {plural} - {names}"
         else:
-            out.append(f"🌐 Web: {count_str} {plural}")
+            line = f"🌐 Web: {count_str} {plural}"
+        outcome = report.source_status.get("grounding")
+        if outcome and outcome.state != health.OK:
+            line += f" │ ⚠ {_format_outcome(outcome)}"
+        out.append(line)
+
+    populated = {source for source, items in report.items_by_source.items() if items}
+    footer_meta = {
+        source: (emoji, label)
+        for source, emoji, label, _item_word, _engagement in _FOOTER_SOURCES
+    }
+    footer_meta.update({"polymarket": ("📊", "Polymarket"), "grounding": ("🌐", "Web")})
+    for source, outcome in sorted(report.source_status.items()):
+        if source in populated:
+            continue
+        emoji, label = footer_meta.get(source, ("⚪", _source_label(source)))
+        out.append(f"{emoji} {label}: {_format_outcome(outcome)}")
 
     return out
 
@@ -1619,7 +1698,7 @@ def _render_emoji_footer(report: schema.Report, save_path: str | None) -> list[s
     """Produce the deterministic magic footer block.
 
     Returns a list of markdown lines, including enclosing ``---`` separators.
-    Returns an empty list if no sources are populated.
+    Returns an empty list if the report has neither source items nor outcomes.
     """
     source_lines = _build_source_footer_lines(report)
     if not source_lines:

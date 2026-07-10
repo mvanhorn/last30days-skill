@@ -22,7 +22,7 @@ def _first_of(*values, default=None):
             return v
     return default
 
-from . import dates, http, log
+from . import dates, health, http, log
 
 SCRAPECREATORS_BASE = "https://api.scrapecreators.com/v1/reddit"
 
@@ -76,6 +76,16 @@ NOISE_WORDS = frozenset({
 
 def _log(msg: str):
     log.source_log("Reddit", msg, tty_only=False)
+
+
+def classify_run_failure(detail: str) -> str:
+    """Map Reddit auth and anti-bot responses that do not carry HTTP status."""
+    text = detail.lower()
+    if any(marker in text for marker in ("interstitial", "blocked by reddit", "too many requests")):
+        return health.RATE_LIMITED
+    if any(marker in text for marker in ("login required", "invalid token", "expired token")):
+        return health.AUTH_FAILED
+    return http.classify_failure(message=detail)
 
 
 def _extract_core_subject(topic: str) -> str:

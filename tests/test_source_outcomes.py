@@ -1,0 +1,233 @@
+import socket
+import urllib.error
+from unittest.mock import patch
+
+import pytest
+
+from lib import bird_x, health, http, pipeline, reddit, render, schema, youtube_yt
+
+
+def _report(*, source_status=None, items_by_source=None, errors_by_source=None):
+    return schema.Report(
+        topic="test topic",
+        range_from="2026-06-10",
+        range_to="2026-07-10",
+        generated_at="2026-07-10T18:22:03Z",
+        provider_runtime=schema.ProviderRuntime(
+            reasoning_provider="gemini",
+            planner_model="test-planner",
+            rerank_model="test-reranker",
+        ),
+        query_plan=schema.QueryPlan(
+            intent="general",
+            freshness_mode="balanced_recent",
+            cluster_mode="story",
+            raw_topic="test topic",
+            subqueries=[
+                schema.SubQuery(
+                    label="primary",
+                    search_query="test topic",
+                    ranking_query="test topic",
+                    sources=["x"],
+                )
+            ],
+            source_weights={"x": 1.0},
+        ),
+        clusters=[],
+        ranked_candidates=[],
+        items_by_source=items_by_source or {},
+        errors_by_source=errors_by_source or {},
+        source_status=source_status or {},
+    )
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (http.HTTPError("HTTP 429", status_code=429), schema.RATE_LIMITED),
+        (http.HTTPError("HTTP 401", status_code=401), schema.AUTH_FAILED),
+        (http.HTTPError("HTTP 402", status_code=402), schema.AUTH_FAILED),
+        (http.HTTPError("HTTP 403", status_code=403), schema.AUTH_FAILED),
+        (http.HTTPError("Invalid JSON response"), schema.SCHEMA_DRIFT),
+        (http.HTTPError("Connection error: reset"), schema.UNREACHABLE),
+        (http.HTTPError("Request timed out"), health.TIMEOUT),
+    ],
+)
+def test_http_error_exposes_run_outcome_state(error, expected):
+    assert error.outcome_state == expected
+
+
+@patch("lib.http.time.sleep")
+@patch("lib.http.urllib.request.urlopen")
+def test_http_wrapper_classifies_dns_failure(mock_urlopen, _mock_sleep):
+    mock_urlopen.side_effect = urllib.error.URLError(
+        socket.gaierror(-2, "Name or service not known")
+    )
+
+    with pytest.raises(http.HTTPError) as caught:
+        http.get("https://unreachable.example", retries=1)
+
+    assert caught.value.outcome_state == schema.UNREACHABLE
+
+
+def test_source_specific_text_failures_are_mapped():
+    assert bird_x.classify_run_failure("likely Twitter anti-bot interstitial") == schema.SCHEMA_DRIFT
+    assert reddit.classify_run_failure("blocked by Reddit interstitial") == schema.RATE_LIMITED
+    assert youtube_yt.classify_run_failure("Sign in to confirm you're not a bot") == schema.RATE_LIMITED
+
+
+def test_bundle_distinguishes_clean_no_results_from_failure():
+    clean = schema.RetrievalBundle()
+    clean.mark_attempted("x")
+
+    failed = schema.RetrievalBundle()
+    failed.mark_attempted("x")
+    failed.record_failure("x", schema.RATE_LIMITED, "HTTP 429")
+
+    assert clean.source_status["x"].state == schema.NO_RESULTS
+    assert failed.source_status["x"].state == schema.RATE_LIMITED
+    assert failed.source_status["x"].fix_hint == "doctor"
+
+
+@patch("lib.http.urllib.request.urlopen")
+def test_stream_adapter_recovers_http_failure_laundered_as_empty(mock_urlopen):
+    mock_urlopen.side_effect = urllib.error.HTTPError(
+        "https://api.example.com",
+        401,
+        "Unauthorized",
+        {},
+        None,
+    )
+
+    def source_that_launders_failure(*_args, **_kwargs):
+        try:
+            http.get("https://api.example.com", retries=1)
+        except http.HTTPError:
+            return [], {}
+        raise AssertionError("request should have failed")
+
+    with patch("lib.pipeline._retrieve_stream_impl", side_effect=source_that_launders_failure):
+        items, artifact = pipeline._retrieve_stream()
+
+    assert items == []
+    assert artifact["_source_outcome"]["state"] == schema.AUTH_FAILED
+
+
+def test_bundle_records_items_then_429_as_partial():
+    item = schema.SourceItem(
+        item_id="x1",
+        source="x",
+        title="A post",
+        body="body",
+        url="https://x.com/example/status/1",
+    )
+    bundle = schema.RetrievalBundle()
+    bundle.mark_attempted("x")
+    bundle.add_items("primary", "x", [item])
+    bundle.record_failure("x", schema.RATE_LIMITED, "429 after first page")
+
+    outcome = bundle.source_status["x"]
+    assert outcome.state == schema.PARTIAL
+    assert outcome.items_returned == 1
+    assert outcome.detail == "429 after first page"
+
+
+def test_pipeline_records_clean_empty_source_as_no_results():
+    plan = {
+        "intent": "general",
+        "freshness_mode": "balanced_recent",
+        "cluster_mode": "story",
+        "subqueries": [
+            {
+                "label": "primary",
+                "search_query": "test topic",
+                "ranking_query": "test topic",
+                "sources": ["x"],
+            }
+        ],
+        "source_weights": {"x": 1.0},
+    }
+    with patch("lib.pipeline._retrieve_stream", return_value=([], {})):
+        report = pipeline.run(
+            topic="test topic",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            requested_sources=["x"],
+            mock=True,
+            external_plan=plan,
+        )
+
+    assert report.source_status["x"].state == schema.NO_RESULTS
+    assert "x" not in report.errors_by_source
+
+
+def test_pipeline_preserves_typed_http_failure():
+    plan = {
+        "intent": "general",
+        "freshness_mode": "balanced_recent",
+        "cluster_mode": "story",
+        "subqueries": [
+            {
+                "label": "primary",
+                "search_query": "test topic",
+                "ranking_query": "test topic",
+                "sources": ["x"],
+            }
+        ],
+        "source_weights": {"x": 1.0},
+    }
+    failure = http.HTTPError("HTTP 429: Too Many Requests", status_code=429)
+    with patch("lib.pipeline._retrieve_stream", side_effect=failure):
+        report = pipeline.run(
+            topic="test topic",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            requested_sources=["x"],
+            mock=True,
+            external_plan=plan,
+        )
+
+    assert report.source_status["x"].state == schema.RATE_LIMITED
+    assert report.source_status["x"].items_returned == 0
+    assert "x" in report.errors_by_source
+
+
+def test_footer_and_synthesis_note_surface_failed_source():
+    report = _report(
+        source_status={
+            "x": schema.SourceOutcome(
+                source="x",
+                state=schema.RATE_LIMITED,
+                detail="HTTP 429 after retry budget",
+                fix_hint="doctor",
+            )
+        },
+        errors_by_source={"x": "HTTP 429 after retry budget"},
+    )
+
+    text = render.render_compact(report)
+
+    assert "## Partial Coverage" in text
+    assert "Do not interpret a failed source as no discussion" in text
+    assert "🔵 X: rate-limited: HTTP 429 after retry budget (run doctor for fixes)" in text
+
+
+def test_report_source_status_round_trips_through_schema_serialization():
+    report = _report(
+        source_status={
+            "x": schema.SourceOutcome(
+                source="x",
+                state=schema.PARTIAL,
+                items_returned=12,
+                detail="429 after 12 items",
+                at="2026-07-10T18:22:03Z",
+                fix_hint="doctor",
+            )
+        }
+    )
+
+    payload = schema.to_dict(report)
+    restored = schema.report_from_dict(payload)
+
+    assert payload["source_status"]["x"]["state"] == schema.PARTIAL
+    assert restored.source_status["x"] == report.source_status["x"]

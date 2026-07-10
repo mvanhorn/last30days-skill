@@ -8,9 +8,12 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlencode
 
+from . import health
 from . import log as _log
 
 DEFAULT_TIMEOUT = 30
@@ -31,6 +34,11 @@ RETRY_DELAY = 2.0
 MIN_DNS_RETRIES = 3
 USER_AGENT = "last30days-skill/3.0 (Assistant Skill)"
 
+_failure_sink: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
+    "last30days_http_failure_sink",
+    default=None,
+)
+
 
 def _is_dns_failure(err: urllib.error.URLError) -> bool:
     """Return True if a URLError was caused by DNS resolution (gaierror)."""
@@ -39,10 +47,101 @@ def _is_dns_failure(err: urllib.error.URLError) -> bool:
 
 class HTTPError(Exception):
     """HTTP request error with status code."""
-    def __init__(self, message: str, status_code: Optional[int] = None, body: Optional[str] = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        body: Optional[str] = None,
+        outcome_state: Optional[str] = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.body = body
+        self.outcome_state = outcome_state or classify_failure(
+            status_code=status_code,
+            message=message,
+        )
+
+
+@contextmanager
+def capture_failures():
+    """Capture terminal request failures in the current retrieval context.
+
+    Source modules historically catch ``HTTPError`` and return an empty result.
+    The context-local sink lets the pipeline retain that failure without shared
+    mutable state across its worker threads.
+    """
+    failures: list[HTTPError] = []
+    token = _failure_sink.set(failures)
+    try:
+        yield failures
+    finally:
+        _failure_sink.reset(token)
+
+
+def _record_failure(error: HTTPError) -> None:
+    sink = _failure_sink.get()
+    if sink is not None:
+        sink.append(error)
+
+
+def _raise(error: HTTPError) -> None:
+    _record_failure(error)
+    raise error
+
+
+def classify_failure(*, status_code: Optional[int] = None, message: str = "") -> str:
+    """Map a request failure to the doctor-aligned per-run vocabulary."""
+    text = message.lower()
+    if status_code == 429 or any(
+        marker in text for marker in ("http 429", "status 429", "rate limit", "too many requests")
+    ):
+        return health.RATE_LIMITED
+    if status_code in (401, 402, 403) or any(
+        marker in text
+        for marker in (
+            "http 401",
+            "http 402",
+            "http 403",
+            "status 401",
+            "status 402",
+            "status 403",
+            "unauthorized",
+            "forbidden",
+            "authentication failed",
+            "expired token",
+        )
+    ):
+        return health.AUTH_FAILED
+    if status_code == 408 or "timed out" in text or "timeout" in text:
+        return health.TIMEOUT
+    if any(
+        marker in text
+        for marker in (
+            "invalid json",
+            "json decode",
+            "schema",
+            "interstitial",
+            "non-json",
+        )
+    ):
+        return health.SCHEMA_DRIFT
+    if any(
+        marker in text
+        for marker in (
+            "url error",
+            "connection error",
+            "connection refused",
+            "connection reset",
+            "name or service not known",
+            "temporary failure in name resolution",
+            "nodename nor servname",
+            "dns",
+            "network is unreachable",
+        )
+    ):
+        return health.UNREACHABLE
+    return health.ERROR
 
 
 def request(
@@ -125,13 +224,13 @@ def request(
 
             # Don't retry client errors (4xx) except rate limits
             if 400 <= e.code < 500 and e.code != 429:
-                raise last_error
+                _raise(last_error)
 
             # Cap 429 retries separately to avoid wasting latency
             if e.code == 429:
                 rate_limit_count += 1
                 if rate_limit_count >= max_429_retries:
-                    raise last_error
+                    _raise(last_error)
 
             # HTTP errors respect the caller's original `retries`; only DNS
             # failures get the widened `effective_retries` budget.
@@ -157,7 +256,10 @@ def request(
                 break
         except urllib.error.URLError as e:
             log(f"URL Error: {e.reason}")
-            last_error = HTTPError(f"URL Error: {e.reason}")
+            last_error = HTTPError(
+                f"URL Error: {e.reason}",
+                outcome_state=health.UNREACHABLE,
+            )
             if _is_dns_failure(e):
                 # DNS resolution failures are transient; expand the retry budget
                 # to MIN_DNS_RETRIES if the caller passed fewer, and use
@@ -189,12 +291,19 @@ def request(
                 break
         except json.JSONDecodeError as e:
             log(f"JSON decode error: {e}")
-            last_error = HTTPError(f"Invalid JSON response: {e}")
-            raise last_error
+            last_error = HTTPError(
+                f"Invalid JSON response: {e}",
+                outcome_state=health.SCHEMA_DRIFT,
+            )
+            _raise(last_error)
         except (OSError, TimeoutError, ConnectionResetError) as e:
             # Handle socket-level errors (connection reset, timeout, etc.)
             log(f"Connection error: {type(e).__name__}: {e}")
-            last_error = HTTPError(f"Connection error: {type(e).__name__}: {e}")
+            state = health.TIMEOUT if isinstance(e, TimeoutError) else health.UNREACHABLE
+            last_error = HTTPError(
+                f"Connection error: {type(e).__name__}: {e}",
+                outcome_state=state,
+            )
             if attempt < retries - 1:
                 # Socket errors respect the caller's original retry budget.
                 time.sleep(RETRY_DELAY * (attempt + 1))
@@ -205,8 +314,9 @@ def request(
         attempt += 1
 
     if last_error:
-        raise last_error
-    raise HTTPError("Request failed with no error details")
+        _raise(last_error)
+    error = HTTPError("Request failed with no error details")
+    _raise(error)
 
 
 def get(url: str, headers: Optional[Dict[str, str]] = None, **kwargs) -> Dict[str, Any]:

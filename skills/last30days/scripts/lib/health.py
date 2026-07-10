@@ -28,6 +28,16 @@ BROKEN = "broken"            # present but won't execute (stale shim, bad perms)
 TIMEOUT = "timeout"          # exceeded the probe deadline
 ERROR = "error"              # ran and failed for another reason
 
+# Per-run outcomes. Doctor does not emit these: it predicts source readiness
+# before retrieval, while Report.source_status records what happened in one run.
+NO_RESULTS = "no-results"
+PARTIAL = "partial"
+RATE_LIMITED = "rate-limited"
+AUTH_FAILED = "auth-failed"
+UNREACHABLE = "unreachable"
+SCHEMA_DRIFT = "schema-drift"
+SKIPPED_UNCONFIGURED = "skipped-unconfigured"
+
 
 @dataclass
 class SourceHealth:

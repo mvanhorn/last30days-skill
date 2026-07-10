@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, is_dataclass
+from datetime import datetime, timezone
 from typing import Any, Literal
+
+from . import health
 
 
 def _drop_none(value: Any) -> Any:
@@ -139,6 +142,69 @@ class Cluster:
             raise ValueError("representative_ids must be a subset of candidate_ids")
 
 
+RunOutcomeState = Literal[
+    "ok",
+    "no-results",
+    "partial",
+    "rate-limited",
+    "auth-failed",
+    "unreachable",
+    "timeout",
+    "schema-drift",
+    "skipped-unconfigured",
+    "error",
+]
+
+NO_RESULTS = health.NO_RESULTS
+PARTIAL = health.PARTIAL
+RATE_LIMITED = health.RATE_LIMITED
+AUTH_FAILED = health.AUTH_FAILED
+UNREACHABLE = health.UNREACHABLE
+SCHEMA_DRIFT = health.SCHEMA_DRIFT
+SKIPPED_UNCONFIGURED = health.SKIPPED_UNCONFIGURED
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+@dataclass
+class SourceOutcome:
+    """What happened to one source during this run.
+
+    Doctor predicts whether a source is configured and healthy before a run;
+    this records the observed retrieval result. Shared states reuse
+    ``health.py`` values (``ok``, ``timeout``, ``error``), while the remaining
+    states describe run-only outcomes.
+    """
+
+    source: str
+    state: RunOutcomeState
+    items_returned: int = 0
+    attempted: bool = True
+    detail: str | None = None
+    at: str = field(default_factory=_utc_now)
+    fix_hint: str | None = None
+
+    def __post_init__(self) -> None:
+        valid_states = {
+            health.OK,
+            health.TIMEOUT,
+            health.ERROR,
+            NO_RESULTS,
+            PARTIAL,
+            RATE_LIMITED,
+            AUTH_FAILED,
+            UNREACHABLE,
+            SCHEMA_DRIFT,
+            SKIPPED_UNCONFIGURED,
+        }
+        if self.state not in valid_states:
+            raise ValueError(f"Unknown source outcome state: {self.state}")
+        if self.items_returned < 0:
+            raise ValueError("items_returned cannot be negative")
+
+
 @dataclass
 class Report:
     """Final pipeline output."""
@@ -153,6 +219,7 @@ class Report:
     ranked_candidates: list[Candidate]
     items_by_source: dict[str, list[SourceItem]]
     errors_by_source: dict[str, str]
+    source_status: dict[str, SourceOutcome] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     artifacts: dict[str, Any] = field(default_factory=dict)
 
@@ -164,12 +231,57 @@ class RetrievalBundle:
     items_by_source_and_query: dict[tuple[str, str], list[SourceItem]] = field(default_factory=dict)
     items_by_source: dict[str, list[SourceItem]] = field(default_factory=dict)
     errors_by_source: dict[str, str] = field(default_factory=dict)
+    source_status: dict[str, SourceOutcome] = field(default_factory=dict)
     artifacts: dict[str, Any] = field(default_factory=dict)
+
+    def mark_attempted(self, source: str) -> None:
+        """Register a planned source before its first retrieval starts."""
+        self.source_status.setdefault(
+            source,
+            SourceOutcome(source=source, state=NO_RESULTS),
+        )
+
+    def record_failure(
+        self,
+        source: str,
+        state: RunOutcomeState,
+        detail: str,
+        *,
+        attempted: bool = True,
+    ) -> None:
+        """Record a failure, preserving already-returned items as partial."""
+        count = len(self.items_by_source.get(source, []))
+        outcome_state: RunOutcomeState = PARTIAL if count else state
+        self.errors_by_source.setdefault(source, detail)
+        self.source_status[source] = SourceOutcome(
+            source=source,
+            state=outcome_state,
+            items_returned=count,
+            attempted=attempted,
+            detail=detail,
+            fix_hint="doctor",
+        )
 
     def add_items(self, label: str, source: str, items: list[SourceItem]) -> None:
         """Atomically append items to both items_by_source_and_query and items_by_source."""
         self.items_by_source_and_query.setdefault((label, source), []).extend(items)
         self.items_by_source.setdefault(source, []).extend(items)
+        previous = self.source_status.get(source)
+        state: RunOutcomeState = health.OK if items else NO_RESULTS
+        detail = None
+        fix_hint = None
+        if previous and previous.state not in (health.OK, NO_RESULTS):
+            state = PARTIAL if self.items_by_source[source] else previous.state
+            detail = previous.detail
+            fix_hint = previous.fix_hint
+        self.source_status[source] = SourceOutcome(
+            source=source,
+            state=state,
+            items_returned=len(self.items_by_source[source]),
+            attempted=True,
+            detail=detail,
+            fix_hint=fix_hint,
+        )
 
 
 def to_dict(value: Any) -> Any:
@@ -287,6 +399,18 @@ def report_from_dict(payload: dict[str, Any]) -> Report:
             for source, items in (payload.get("items_by_source") or {}).items()
         },
         errors_by_source=dict(payload.get("errors_by_source") or {}),
+        source_status={
+            source: SourceOutcome(
+                source=outcome.get("source") or source,
+                state=outcome["state"],
+                items_returned=int(outcome.get("items_returned") or 0),
+                attempted=bool(outcome.get("attempted", True)),
+                detail=outcome.get("detail"),
+                at=outcome.get("at") or _utc_now(),
+                fix_hint=outcome.get("fix_hint"),
+            )
+            for source, outcome in (payload.get("source_status") or {}).items()
+        },
         warnings=list(payload.get("warnings") or []),
         artifacts=dict(payload.get("artifacts") or {}),
     )

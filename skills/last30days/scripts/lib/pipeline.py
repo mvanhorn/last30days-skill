@@ -23,7 +23,9 @@ from . import (
     github,
     grounding,
     hackernews,
+    health,
     hiring_signals,
+    http,
     instagram,
     jobs,
     linkedin,
@@ -459,6 +461,14 @@ def run(
         print("[Planner]   (no subqueries in plan)", file=sys.stderr)
 
     bundle = schema.RetrievalBundle(artifacts={"grounding": []})
+    for source in (requested_sources or []):
+        if source not in available:
+            bundle.record_failure(
+                source,
+                schema.SKIPPED_UNCONFIGURED,
+                "Source was requested but is not configured for this run.",
+                attempted=False,
+            )
     # Expose plan_source to the renderer so render_compact can emit the
     # DEGRADED RUN banner when a named-entity topic was invoked bare
     # (source=deterministic AND no pre-research flags). LAW 7 backstop.
@@ -474,6 +484,7 @@ def run(
 
     # Project mode takes priority over person mode
     if github_repos and "github" in available:
+        bundle.mark_attempted("github")
         try:
             project_items = github.search_github_project(
                 github_repos, from_date, to_date,
@@ -491,9 +502,12 @@ def run(
                 _github_enriched_repos = {r.lower() for r in github_repos}
         except Exception as exc:
             bundle.errors_by_source["github"] = f"Project-mode failed: {exc}"
+            state, attempted = _classify_source_failure(exc)
+            bundle.record_failure("github", state, str(exc), attempted=attempted)
 
     _github_person_done = False
     if github_user and "github" in available and not _github_custom_done:
+        bundle.mark_attempted("github")
         try:
             person_items = github.search_github_person(
                 github_user, from_date, to_date,
@@ -511,6 +525,8 @@ def run(
                 _github_person_done = True
         except Exception as exc:
             bundle.errors_by_source["github"] = f"Person-mode failed: {exc}"
+            state, attempted = _classify_source_failure(exc)
+            bundle.record_failure("github", state, str(exc), attempted=attempted)
 
     # Trustpilot session warm-up happens inside search_trustpilot at the
     # first (capped, single) fetch -- lazily, so it never delays the other
@@ -547,6 +563,7 @@ def run(
                     if current >= cap:
                         continue
                     source_fetch_count[source] = current + 1
+                bundle.mark_attempted(source)
                 futures[
                     executor.submit(
                         _retrieve_stream,
@@ -581,6 +598,8 @@ def run(
                     with rate_limit_lock:
                         rate_limited_sources.add(source)
                     bundle.errors_by_source[source] = str(exc)
+                    state, attempted = _classify_source_failure(exc)
+                    bundle.record_failure(source, state, str(exc), attempted=attempted)
                     continue
                 # Retry once for transient 5xx errors
                 if _is_transient_error(exc):
@@ -602,11 +621,26 @@ def run(
                             trustpilot_domain_is_hint=trustpilot_domain_is_hint,
                         )
                     except Exception as retry_exc:
-                        bundle.errors_by_source[source] = f"{exc} (retried once, still failed: {retry_exc})"
+                        detail = f"{exc} (retried once, still failed: {retry_exc})"
+                        bundle.errors_by_source[source] = detail
+                        state, attempted = _classify_source_failure(retry_exc)
+                        bundle.record_failure(source, state, detail, attempted=attempted)
                         continue
                 else:
                     bundle.errors_by_source[source] = str(exc)
+                    state, attempted = _classify_source_failure(exc)
+                    bundle.record_failure(source, state, str(exc), attempted=attempted)
                     continue
+            outcome_note = None
+            if isinstance(artifact, dict) and artifact.get("_source_outcome"):
+                artifact = dict(artifact)
+                outcome_note = artifact.pop("_source_outcome")
+                bundle.record_failure(
+                    source,
+                    outcome_note["state"],
+                    outcome_note["detail"],
+                    attempted=outcome_note.get("attempted", True),
+                )
             normalized = _normalize_score_dedupe(
                 source, raw_items, from_date, to_date,
                 freshness_mode=plan.freshness_mode,
@@ -680,6 +714,7 @@ def run(
     items_by_source = _finalize_items_by_source(
         bundle.items_by_source, topic=topic, config=config, depth=depth, mock=mock,
     )
+    source_status = _finalize_source_status(bundle.source_status, items_by_source)
     candidates = weighted_rrf(bundle.items_by_source_and_query, plan, pool_limit=settings["pool_limit"])
     # Normalized set of handles this run resolved for the topic. A candidate
     # authored by one of these is first-party and is exempted from the
@@ -729,6 +764,7 @@ def run(
         ranked_candidates=ranked_candidates,
         items_by_source=items_by_source,
         errors_by_source=bundle.errors_by_source,
+        source_status=source_status,
         warnings=warnings,
         artifacts=bundle.artifacts,
     )
@@ -935,6 +971,97 @@ def _is_rate_limit_error(exc: Exception) -> bool:
     return "429" in str(exc)
 
 
+class SourceRunError(RuntimeError):
+    """Source-specific failure that survived a module's fallback logic."""
+
+    def __init__(self, message: str, state: schema.RunOutcomeState | None = None):
+        super().__init__(message)
+        self.outcome_state = state or http.classify_failure(message=message)
+
+
+def _classify_source_failure(exc: Exception) -> tuple[schema.RunOutcomeState, bool]:
+    """Classify HTTP, subprocess, and module-specific failures consistently."""
+    detail = str(exc)
+    lowered = detail.lower()
+    if any(marker in lowered for marker in ("not configured", "no api key", "not installed")):
+        return schema.SKIPPED_UNCONFIGURED, False
+    if any(
+        marker in lowered
+        for marker in ("cookie expired", "expired cookie", "login required", "not logged in")
+    ):
+        return schema.AUTH_FAILED, True
+    state = getattr(exc, "outcome_state", None) or http.classify_failure(
+        status_code=getattr(exc, "status_code", None),
+        message=detail,
+    )
+    return state, True
+
+
+def _outcome_artifact(
+    state: schema.RunOutcomeState,
+    detail: str,
+    *,
+    attempted: bool = True,
+) -> dict[str, Any]:
+    return {
+        "_source_outcome": {
+            "state": state,
+            "detail": detail,
+            "attempted": attempted,
+        }
+    }
+
+
+def _result_outcome_artifact(source: str, result: Any) -> dict[str, Any]:
+    """Convert a legacy ``{"error": ...}`` source result into typed status."""
+    if not isinstance(result, dict) or not result.get("error"):
+        return {}
+    detail = str(result["error"])
+    if source == "reddit":
+        state = reddit.classify_run_failure(detail)
+        attempted = True
+    elif source == "youtube":
+        state = youtube_yt.classify_run_failure(detail)
+        attempted = state != schema.SKIPPED_UNCONFIGURED
+    elif source == "x":
+        state = bird_x.classify_run_failure(detail)
+        attempted = True
+    else:
+        state, attempted = _classify_source_failure(SourceRunError(detail))
+    return _outcome_artifact(state, detail, attempted=attempted)
+
+
+def _finalize_source_status(
+    outcomes: dict[str, schema.SourceOutcome],
+    items_by_source: dict[str, list[schema.SourceItem]],
+) -> dict[str, schema.SourceOutcome]:
+    """Sync outcome counts to the final post-filter evidence set."""
+    finalized: dict[str, schema.SourceOutcome] = {}
+    for source, outcome in outcomes.items():
+        count = len(items_by_source.get(source, []))
+        state = outcome.state
+        detail = outcome.detail
+        fix_hint = outcome.fix_hint
+        if state == schema.NO_RESULTS and count:
+            state = health.OK
+            detail = None
+            fix_hint = None
+        elif state == health.OK and not count:
+            state = schema.NO_RESULTS
+        elif state == schema.PARTIAL and not count:
+            state = http.classify_failure(message=detail or "")
+        finalized[source] = schema.SourceOutcome(
+            source=source,
+            state=state,
+            items_returned=count,
+            attempted=outcome.attempted,
+            detail=detail,
+            at=outcome.at,
+            fix_hint=fix_hint,
+        )
+    return finalized
+
+
 def _is_transient_error(exc: Exception) -> bool:
     """Detect 5xx server errors that are worth retrying."""
     status = getattr(exc, "status_code", None)
@@ -1072,12 +1199,26 @@ def _run_supplemental_searches(
             from_items = _from_lane(handles, FROM_LANE_COUNT_PER)
         except Exception as exc:
             print(f"[Pipeline] Phase 2 FROM-lane search failed: {exc}", file=sys.stderr)
+            state, attempted = _classify_source_failure(exc)
+            bundle.record_failure(
+                x_slug,
+                state,
+                f"Phase 2 FROM-lane: {exc}",
+                attempted=attempted,
+            )
             if not bundle.items_by_source.get(x_slug):
                 bundle.errors_by_source[x_slug] = f"Phase 2 FROM-lane: {exc}"
         try:
             about_items = _about_lane(handles, MENTION_LANE_COUNT_PER)
         except Exception as exc:
             print(f"[Pipeline] Phase 2 ABOUT-lane search failed: {exc}", file=sys.stderr)
+            state, attempted = _classify_source_failure(exc)
+            bundle.record_failure(
+                x_slug,
+                state,
+                f"Phase 2 ABOUT-lane: {exc}",
+                attempted=attempted,
+            )
         raw_items = from_items + about_items
 
         if raw_items:
@@ -1101,6 +1242,13 @@ def _run_supplemental_searches(
             raw_items = _from_lane(related_handles, RELATED_HANDLE_COUNT_PER)
         except Exception as exc:
             print(f"[Pipeline] Phase 2 related handle search failed: {exc}", file=sys.stderr)
+            state, attempted = _classify_source_failure(exc)
+            bundle.record_failure(
+                x_slug,
+                state,
+                f"Phase 2 related handle search: {exc}",
+                attempted=attempted,
+            )
             raw_items = []
 
         if raw_items:
@@ -1189,8 +1337,10 @@ def _retry_thin_sources(
         weight=0.3,
     )
 
-    def _retry_one_source(source: str) -> tuple[str, list[schema.SourceItem]]:
-        raw_items, _artifact = _retrieve_stream(
+    def _retry_one_source(
+        source: str,
+    ) -> tuple[str, list[schema.SourceItem], dict[str, Any] | None]:
+        raw_items, artifact = _retrieve_stream(
             topic=topic,
             subquery=retry_subquery,
             source=source,
@@ -1204,6 +1354,7 @@ def _retry_thin_sources(
             web_backend=web_backend,
             raw_topic=topic,
         )
+        outcome_note = artifact.get("_source_outcome") if isinstance(artifact, dict) else None
         normalized = _normalize_score_dedupe(
             source,
             raw_items,
@@ -1213,8 +1364,8 @@ def _retry_thin_sources(
             ranking_query=retry_subquery.ranking_query,
         )
         if source == "jobs":
-            return source, normalized
-        return source, normalized[:settings["per_stream_limit"]]
+            return source, normalized, outcome_note
+        return source, normalized[:settings["per_stream_limit"]], outcome_note
 
     retryable = [s for s in thin_sources if s not in rate_limited_sources]
 
@@ -1224,16 +1375,29 @@ def _retry_thin_sources(
         for future in as_completed(futures):
             source = futures[future]
             try:
-                source, normalized = future.result()
+                source, normalized, outcome_note = future.result()
+                if outcome_note:
+                    bundle.record_failure(
+                        source,
+                        outcome_note["state"],
+                        outcome_note["detail"],
+                        attempted=outcome_note.get("attempted", True),
+                    )
                 existing_urls = {item.url for item in bundle.items_by_source.get(source, []) if item.url}
                 new_items = [item for item in normalized if item.url not in existing_urls]
 
                 if new_items:
-                    bundle.items_by_source.setdefault(source, []).extend(new_items)
                     primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
-                    bundle.items_by_source_and_query.setdefault((primary_label, source), []).extend(new_items)
+                    bundle.add_items(primary_label, source, new_items)
             except Exception as exc:
                 print(f"[Pipeline] Retry failed for {source}: {type(exc).__name__}: {exc}", file=sys.stderr)
+                state, attempted = _classify_source_failure(exc)
+                bundle.record_failure(
+                    source,
+                    state,
+                    f"Simplified-query retry failed: {exc}",
+                    attempted=attempted,
+                )
 
 
 def _fetch_x_backend(backend, subquery, from_date, to_date, depth, config):
@@ -1286,7 +1450,29 @@ def _merge_reddit_items(free: list[dict], sc: list[dict]) -> list[dict]:
     return merged
 
 
-def _retrieve_stream(
+def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
+    """Run one stream and retain HTTP failures swallowed by source adapters."""
+    try:
+        with http.capture_failures() as failures:
+            items, artifact = _retrieve_stream_impl(*args, **kwargs)
+    except Exception as exc:
+        if failures and not getattr(exc, "outcome_state", None):
+            failure = failures[-1]
+            raise SourceRunError(str(exc), failure.outcome_state) from exc
+        raise
+    if failures and not (isinstance(artifact, dict) and artifact.get("_source_outcome")):
+        failure = failures[-1]
+        artifact = dict(artifact or {})
+        artifact.update(
+            _outcome_artifact(
+                failure.outcome_state,
+                str(failure),
+            )
+        )
+    return items, artifact
+
+
+def _retrieve_stream_impl(
     *,
     topic: str,
     subquery: schema.SubQuery,
@@ -1338,6 +1524,7 @@ def _retrieve_stream(
         )
         if sc_first:
             # env.REDDIT_BACKEND_PIN_VAR=scrapecreators: SC primary, public fallback
+            primary_failure: Exception | None = None
             try:
                 result = reddit.search_and_enrich(
                     reddit_query, from_date, to_date, depth=depth,
@@ -1352,25 +1539,42 @@ def _retrieve_stream(
                     "using public fallback\n"
                 )
             except Exception as exc:
+                primary_failure = exc
                 sys.stderr.write(
                     f"[Reddit] ScrapeCreators primary failed "
                     f"({type(exc).__name__}: {exc}), using public fallback\n"
                 )
+            public_failure: Exception | None = None
             try:
                 public_results = reddit_public.search_reddit_public(
                     reddit_query, from_date, to_date, depth=depth,
                     subreddits=subreddits,
                 )
                 if public_results:
+                    if primary_failure is not None:
+                        state = reddit.classify_run_failure(str(primary_failure))
+                        return public_results, _outcome_artifact(
+                            state,
+                            f"Reddit primary failed; public fallback returned "
+                            f"{len(public_results)} items: {primary_failure}",
+                        )
                     return public_results, {}
                 sys.stderr.write(
                     "[Reddit] Public fallback returned no items after "
                     "ScrapeCreators primary miss\n"
                 )
             except Exception as exc:
+                public_failure = exc
                 sys.stderr.write(
                     f"[Reddit] Public fallback also failed "
                     f"({type(exc).__name__}: {exc})\n"
+                )
+            failure = public_failure or primary_failure
+            if failure is not None:
+                state = reddit.classify_run_failure(str(failure))
+                raise SourceRunError(
+                    f"Reddit primary and fallback produced no results after failure: {failure}",
+                    state,
                 )
             return [], {}
 
@@ -1383,18 +1587,21 @@ def _retrieve_stream(
         except (TypeError, ValueError):
             min_items = 0
         public_results: list[dict] = []
+        public_failure: Exception | None = None
         try:
             public_results = reddit_public.search_reddit_public(
                 reddit_query, from_date, to_date, depth=depth,
                 subreddits=subreddits, dedicated_subreddits=dedicated_subreddits,
             ) or []
         except Exception as exc:
+            public_failure = exc
             sys.stderr.write(
                 f"[Reddit] Public search failed ({type(exc).__name__}: {exc})"
             )
             if not has_sc_key:
                 sys.stderr.write("\n")
-                return [], {}
+                state = reddit.classify_run_failure(str(exc))
+                raise SourceRunError(f"Reddit public search failed: {exc}", state) from exc
             sys.stderr.write(", using ScrapeCreators backup\n")
         # Enough free results, or no key to backfill with -> done. max(min_items,
         # 1) keeps the default (min_items=0) as empty-only AND treats exactly
@@ -1418,8 +1625,20 @@ def _retrieve_stream(
                 f"[Reddit] ScrapeCreators backup also failed "
                 f"({type(exc).__name__}: {exc})\n"
             )
-            return public_results, {}
-        return _merge_reddit_items(public_results, sc_items), {}
+            state = reddit.classify_run_failure(str(exc))
+            return public_results, _outcome_artifact(
+                state,
+                f"Reddit backup failed after {len(public_results)} public items: {exc}",
+            )
+        merged = _merge_reddit_items(public_results, sc_items)
+        if public_failure is not None:
+            state = reddit.classify_run_failure(str(public_failure))
+            return merged, _outcome_artifact(
+                state,
+                f"Reddit public search failed; backup returned {len(sc_items)} items: "
+                f"{public_failure}",
+            )
+        return merged, {}
     if source == "x":
         # One X source, an ordered chain of interchangeable backends. Try the
         # primary; fall through to the next only if it returns nothing or errors.
@@ -1437,18 +1656,34 @@ def _retrieve_stream(
             if items:
                 if i > 0:
                     print(f"[X] primary backend(s) returned nothing; used fallback '{backend}'", file=sys.stderr)
+                if last_error:
+                    state = (
+                        bird_x.classify_run_failure(last_error)
+                        if last_error.startswith("bird:")
+                        else http.classify_failure(message=last_error)
+                    )
+                    return items, _outcome_artifact(
+                        state,
+                        f"X fallback '{backend}' returned {len(items)} items after {last_error}",
+                    )
                 return items, {}
             if err:
                 last_error = f"{backend}: {err}"
                 print(f"[X] backend '{backend}' failed ({err}); trying next", file=sys.stderr)
         if last_error:
-            raise RuntimeError(f"All X backends failed — {last_error}")
+            state = (
+                bird_x.classify_run_failure(last_error)
+                if last_error.startswith("bird:")
+                else http.classify_failure(message=last_error)
+            )
+            raise SourceRunError(f"All X backends failed — {last_error}", state)
         return [], {}
     if source == "youtube":
         # Use raw_topic so expand_youtube_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         yt_query = raw_topic or subquery.search_query
         result = None
+        youtube_failure: str | None = None
         # ScrapeCreators key (when present) is the default-on backup tier: it
         # powers the per-video transcript fallback, the SC search fallback, and
         # comment enrichment. None when no key, which keeps everything keyless.
@@ -1462,13 +1697,22 @@ def _retrieve_stream(
                 result = youtube_yt.search_and_transcribe(
                     yt_query, from_date, to_date, depth=depth, token=sc_token,
                 )
-            except Exception:
+                if result.get("error"):
+                    youtube_failure = str(result["error"])
+            except Exception as exc:
+                youtube_failure = str(exc)
                 result = None
         # Fall back to SC YouTube search if yt-dlp failed or isn't installed.
         if (result is None or not result.get("items")) and sc_token:
-            result = youtube_yt.search_youtube_sc(
-                yt_query, from_date, to_date, depth=depth, token=sc_token,
-            )
+            try:
+                result = youtube_yt.search_youtube_sc(
+                    yt_query, from_date, to_date, depth=depth, token=sc_token,
+                )
+                if result.get("error"):
+                    youtube_failure = str(result["error"])
+            except Exception as exc:
+                youtube_failure = str(exc)
+                result = None
         if result is None:
             result = {"items": []}
         # Enrich top videos with comments (default-on when a key is present).
@@ -1477,6 +1721,10 @@ def _retrieve_stream(
             youtube_yt.enrich_with_comments(
                 items, token=config.get("SCRAPECREATORS_API_KEY", ""),
             )
+        if youtube_failure:
+            state = youtube_yt.classify_run_failure(youtube_failure)
+            attempted = state != schema.SKIPPED_UNCONFIGURED
+            return items, _outcome_artifact(state, youtube_failure, attempted=attempted)
         return items, {}
     if source == "tiktok":
         # Use raw_topic so expand_tiktok_queries() generates diverse variants
@@ -1495,7 +1743,7 @@ def _retrieve_stream(
         if items and env.is_tiktok_comments_available(config):
             sc_token = config.get("SCRAPECREATORS_API_KEY", "")
             tiktok.enrich_with_comments(items, token=sc_token)
-        return items, {}
+        return items, _result_outcome_artifact(source, result)
     if source == "instagram":
         # Use raw_topic so expand_instagram_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
@@ -1513,7 +1761,7 @@ def _retrieve_stream(
             instagram.enrich_with_comments(
                 items, token=config.get("SCRAPECREATORS_API_KEY", ""),
             )
-        return items, {}
+        return items, _result_outcome_artifact(source, result)
     if source == "linkedin":
         token = config.get("SCRAPECREATORS_API_KEY", "")
         result = linkedin.search_linkedin(
@@ -1531,33 +1779,45 @@ def _retrieve_stream(
         items += linkedin.enrich_articles(
             items, raw_topic or topic, token, from_date=from_date, to_date=to_date
         )
-        return items, {}
+        return items, _result_outcome_artifact(source, result)
     if source == "hackernews":
         result = hackernews.search_hackernews(subquery.search_query, from_date, to_date, depth=depth)
-        return hackernews.parse_hackernews_response(result, query=subquery.search_query), {}
+        return (
+            hackernews.parse_hackernews_response(result, query=subquery.search_query),
+            _result_outcome_artifact(source, result),
+        )
     if source == "stocktwits":
         # Pass raw_topic so symbol detection sees the full topic, not the
         # narrowed per-subquery search_query (same rationale as reddit).
         result = stocktwits.search_stocktwits(
             raw_topic or topic or subquery.search_query, from_date, to_date, depth=depth)
-        return stocktwits.parse_stocktwits_response(result, query=subquery.search_query), {}
+        return (
+            stocktwits.parse_stocktwits_response(result, query=subquery.search_query),
+            _result_outcome_artifact(source, result),
+        )
     if source == "digg":
         result = digg.search_digg(subquery.search_query, from_date, to_date, depth=depth)
         items = digg.parse_digg_response(result, query=subquery.search_query)
         # Enrichment with attached X posts is deferred to
         # _finalize_items_by_source so it runs on the items that actually
         # survive dedupe rather than on top-K of the raw fanout.
-        return items, {}
+        return items, _result_outcome_artifact(source, result)
     if source == "arxiv":
         result = arxiv.search_arxiv(subquery.search_query, from_date, to_date, depth=depth)
         # Relevance keys off the stable research topic, not the per-subquery
         # search_query, so off-topic narrowing does not let weak matches through.
         relevance_topic = raw_topic or topic or subquery.search_query
-        return arxiv.parse_arxiv_response(result, query=relevance_topic), {}
+        return (
+            arxiv.parse_arxiv_response(result, query=relevance_topic),
+            _result_outcome_artifact(source, result),
+        )
     if source == "techmeme":
         result = techmeme.search_techmeme(subquery.search_query, from_date, to_date, depth=depth)
         relevance_topic = raw_topic or topic or subquery.search_query
-        return techmeme.parse_techmeme_response(result, query=relevance_topic), {}
+        return (
+            techmeme.parse_techmeme_response(result, query=relevance_topic),
+            _result_outcome_artifact(source, result),
+        )
     if source == "trustpilot":
         # Brand-shape gate keys off the stable research topic, not the narrowed
         # per-subquery search_query, so the company is detected consistently.
@@ -1567,20 +1827,23 @@ def _retrieve_stream(
             explicit_domain=trustpilot_domain,
             domain_is_hint=trustpilot_domain_is_hint,
         )
-        return trustpilot.parse_trustpilot_response(result, query=relevance_topic), {}
+        return (
+            trustpilot.parse_trustpilot_response(result, query=relevance_topic),
+            _result_outcome_artifact(source, result),
+        )
     if source == "bluesky":
         result = bluesky.search_bluesky(subquery.search_query, from_date, to_date, depth=depth, config=config)
-        return bluesky.parse_bluesky_response(result), {}
+        return bluesky.parse_bluesky_response(result), _result_outcome_artifact(source, result)
     if source == "threads":
         result = threads.search_threads(
             subquery.search_query, from_date, to_date,
             depth=depth,
             token=config.get("SCRAPECREATORS_API_KEY"),
         )
-        return threads.parse_threads_response(result), {}
+        return threads.parse_threads_response(result), _result_outcome_artifact(source, result)
     if source == "truthsocial":
         result = truthsocial.search_truthsocial(subquery.search_query, from_date, to_date, depth=depth, config=config)
-        return truthsocial.parse_truthsocial_response(result), {}
+        return truthsocial.parse_truthsocial_response(result), _result_outcome_artifact(source, result)
     if source == "polymarket":
         result = polymarket.search_polymarket(subquery.search_query, from_date, to_date, depth=depth)
         # Relevance filtering keys off the stable original research topic, not the
@@ -1588,7 +1851,10 @@ def _retrieve_stream(
         # and would let off-topic markets through on broad subqueries while dropping
         # everything on narrow ones).
         relevance_topic = raw_topic or topic or subquery.search_query
-        return polymarket.parse_polymarket_response(result, topic=relevance_topic), {}
+        return (
+            polymarket.parse_polymarket_response(result, topic=relevance_topic),
+            _result_outcome_artifact(source, result),
+        )
     if source == "github":
         # Resolve once at the pipeline boundary so search and enrich
         # share the result; otherwise each call would re-run the env
@@ -1601,14 +1867,14 @@ def _retrieve_stream(
         # is now always eligible, so raising would spam "github failed" on every
         # tokenless run. The condition is logged in github.search_github.
         items = github.enrich_with_comments(items, depth=depth, token=token)
-        return items, {}
+        return items, _result_outcome_artifact(source, response)
     if source == "pinterest":
         result = pinterest.search_pinterest(
             subquery.search_query, from_date, to_date,
             depth=depth,
             token=env.get_pinterest_token(config),
         )
-        return pinterest.parse_pinterest_response(result), {}
+        return pinterest.parse_pinterest_response(result), _result_outcome_artifact(source, result)
     if source == "xiaohongshu":
         return xiaohongshu_api.search_feeds(
             subquery.search_query,

@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import env, http, log, subproc
+from . import env, health, http, log, subproc
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -85,6 +85,19 @@ def _subprocess_env() -> Dict[str, str]:
 
 def _log(msg: str):
     log.source_log("Bird", msg, tty_only=False)
+
+
+def classify_run_failure(detail: str) -> str:
+    """Map Bird's subprocess-only failure shapes to run outcome states."""
+    text = detail.lower()
+    if any(marker in text for marker in ("interstitial", "non-json", "invalid json")):
+        return health.SCHEMA_DRIFT
+    if any(
+        marker in text
+        for marker in ("cookie expired", "expired cookie", "unauthorized", "forbidden", "login required")
+    ):
+        return health.AUTH_FAILED
+    return http.classify_failure(message=detail)
 
 
 def _extract_core_subject(topic: str) -> str:
