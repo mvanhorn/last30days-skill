@@ -584,6 +584,8 @@ def run(
                             tiktok_hashtags=tiktok_hashtags,
                             tiktok_creators=tiktok_creators,
                             ig_creators=ig_creators,
+                            trustpilot_domain=trustpilot_domain,
+                            trustpilot_domain_is_hint=trustpilot_domain_is_hint,
                         )
                     except Exception as retry_exc:
                         bundle.errors_by_source[source] = f"{exc} (retried once, still failed: {retry_exc})"
