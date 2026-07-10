@@ -742,13 +742,30 @@ def run(
         model=None if mock else runtime.rerank_model,
     )
 
-    # Phase 3: post-rerank GitHub star enrichment
+    # Phase 3: post-rerank GitHub star enrichment. Record/replay-aware so the
+    # eval harness stays fully offline: this path calls the GitHub API (and the
+    # gh-credential fallback) outside the _retrieve_stream seam, so it gets its
+    # own fixture exchange keyed by phase.
     if "github" in available and not mock:
-        github.enrich_candidates_with_stars(
-            ranked_candidates,
-            token=config.get("GITHUB_TOKEN"),
-            already_enriched=_github_enriched_repos,
-        )
+        star_request = {
+            "source": "github",
+            "phase": "post_rerank_star_enrichment",
+            "topic": topic,
+            "depth": depth,
+        }
+        star_matched, star_replayed = http.fixture_source_replay(star_request)
+        if star_matched:
+            star_map = star_replayed if isinstance(star_replayed, dict) else {}
+            github.apply_star_map(ranked_candidates, star_map)
+        else:
+            collected_star_map: dict[str, int] = {}
+            github.enrich_candidates_with_stars(
+                ranked_candidates,
+                token=config.get("GITHUB_TOKEN"),
+                already_enriched=_github_enriched_repos,
+                collect_map=collected_star_map,
+            )
+            http.fixture_source_record(star_request, collected_star_map)
 
     clusters = cluster_candidates(ranked_candidates, plan)
     warnings = _warnings(items_by_source, ranked_candidates, bundle.errors_by_source, degraded_by_source)
@@ -829,7 +846,7 @@ def _finalize_items_by_source(
             # (#542).
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
-                items = [schema.source_item_from_dict(item) for item in replayed]
+                items = _merge_replayed_enrichment(items, replayed)
             else:
                 sc_token = (
                     config.get("SCRAPECREATORS_API_KEY")
@@ -858,12 +875,33 @@ def _finalize_items_by_source(
             # paired with the clusters dedupe actually kept.
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
-                items = [schema.source_item_from_dict(item) for item in replayed]
+                items = _merge_replayed_enrichment(items, replayed)
             else:
                 digg.enrich_source_items(items, top_k=3)
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         finalized[source] = items
     return finalized
+
+
+def _merge_replayed_enrichment(
+    items: list[schema.SourceItem],
+    replayed: list[dict],
+) -> list[schema.SourceItem]:
+    """Apply recorded post-ranking enrichment onto freshly computed items.
+
+    Enrichment (transcripts, Digg posts) only mutates ``metadata``. Merging by
+    item_id instead of replacing the list keeps normalization, scoring, and
+    dedupe regressions visible to the eval - fixture state must not overwrite
+    what the current pipeline computed.
+    """
+    replayed_by_id = {
+        entry.get("item_id"): entry for entry in replayed if isinstance(entry, dict)
+    }
+    for item in items:
+        record = replayed_by_id.get(item.item_id)
+        if record and record.get("metadata"):
+            item.metadata.update(record["metadata"])
+    return items
 
 
 def _apply_hiring_signal_gate(

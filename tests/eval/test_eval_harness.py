@@ -77,3 +77,82 @@ def test_intentional_out_of_window_regression_fails_recency_floor():
 
     assert scores["recency_compliance"] < 1.0
     assert any(failure.startswith("recency_compliance:") for failure in failures)
+
+
+def test_coherence_fails_when_expected_clusters_vanish():
+    fixtures = {f.name: f for f in harness.load_fixtures()}
+    clustered = fixtures["breaking-event"]
+    assert clustered.manifest["expects_clusters"] is True
+    report = harness._run_once(clustered)
+    # Simulate cluster formation regressing to singletons.
+    report.clusters = []
+    assert harness._cluster_coherence(report, clustered) == 0.0
+
+
+def test_coherence_allows_singletons_for_sparse_fixtures():
+    fixtures = {f.name: f for f in harness.load_fixtures()}
+    sparse = fixtures["niche"]
+    assert sparse.manifest.get("expects_clusters") is False
+    report = harness._run_once(sparse)
+    report.clusters = []
+    assert harness._cluster_coherence(report, sparse) == 1.0
+
+
+def test_enrichment_replay_merges_metadata_without_replacing_items():
+    import sys
+    sys.path.insert(0, "skills/last30days/scripts")
+    from lib import pipeline, schema
+
+    fresh = schema.SourceItem(
+        item_id="yt-1",
+        source="youtube",
+        title="Fresh title from current normalization",
+        body="fresh body",
+        url="https://youtube.com/watch?v=1",
+        published_at="2026-07-01",
+        snippet="fresh snippet",
+        engagement={"views": 10},
+        metadata={"channel": "fresh-channel"},
+    )
+    replayed = [{
+        "item_id": "yt-1",
+        "title": "STALE fixture title",
+        "snippet": "STALE snippet",
+        "metadata": {"transcript_snippet": "recorded transcript"},
+    }]
+    merged = pipeline._merge_replayed_enrichment([fresh], replayed)
+    assert merged[0].title == "Fresh title from current normalization"
+    assert merged[0].snippet == "fresh snippet"
+    assert merged[0].metadata["transcript_snippet"] == "recorded transcript"
+    assert merged[0].metadata["channel"] == "fresh-channel"
+
+
+def test_star_enrichment_apply_map_offline():
+    import sys
+    sys.path.insert(0, "skills/last30days/scripts")
+    from lib import github, schema
+
+    candidate = schema.Candidate(
+        candidate_id="c-gh",
+        item_id="gh-1",
+        source="github",
+        title="repo mvanhorn/last30days-skill discussion",
+        url="https://github.com/mvanhorn/last30days-skill",
+        snippet="s",
+        subquery_labels=["primary"],
+        native_ranks={"primary:github": 1},
+        local_relevance=0.9,
+        freshness=90,
+        engagement=10,
+        source_quality=0.5,
+        rrf_score=0.1,
+        final_score=90,
+        cluster_id="cl",
+        source_items=[],
+        metadata={},
+    )
+    enriched = github.apply_star_map(
+        [candidate], {"mvanhorn/last30days-skill": 51436}
+    )
+    assert enriched == 1
+    assert candidate.metadata["github_stars"]["mvanhorn/last30days-skill"] == 51436

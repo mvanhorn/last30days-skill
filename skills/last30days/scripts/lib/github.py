@@ -951,6 +951,7 @@ def enrich_candidates_with_stars(
     token: Optional[str] = None,
     already_enriched: Optional[set] = None,
     max_repos: int = 10,
+    collect_map: Optional[Dict[str, int]] = None,
 ) -> int:
     """Annotate candidates with live GitHub star counts.
 
@@ -984,9 +985,22 @@ def enrich_candidates_with_stars(
             except Exception:
                 pass
 
+    if collect_map is not None:
+        collect_map.update(star_map)
     if not star_map:
         return 0
 
+    return apply_star_map(candidates, star_map)
+
+
+def apply_star_map(candidates: List[Any], star_map: Dict[str, int]) -> int:
+    """Annotate candidates from a repo->stars map (fetch/apply split).
+
+    Split out so offline replay (the eval harness) can apply a recorded map
+    without any network or gh-credential access.
+    """
+    if not star_map:
+        return 0
     # Annotate candidates
     enriched_count = 0
     for c in candidates:

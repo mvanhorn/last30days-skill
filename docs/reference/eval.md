@@ -62,6 +62,12 @@ Before committing a recording:
 
 The replay is fail-closed: an unrecorded request or an unused recorded exchange fails the run.
 
+## Fixture flags
+
+- `expects_clusters` (bool): fixtures whose topic historically forms multi-member clusters set this true; if cluster formation regresses to singletons on such a fixture, coherence scores 0.0 instead of a vacuous 1.0. Sparse topics (niche, non-english-cjk, tech-product) set it false because singletons are their legitimate shape.
+- Post-ranking enrichment (YouTube transcripts, Digg posts) is recorded and replayed by merging recorded `metadata` onto freshly computed items by item_id, so normalization/scoring/dedupe regressions stay visible to the eval rather than being overwritten by fixture state.
+- Post-rerank GitHub star enrichment records its repo->stars map and replays via `github.apply_star_map`, keeping runs offline even when `GITHUB_TOKEN` is set in CI. GitHub project-mode (`--github-repo`) and person-mode (`--github-user`) runs are not yet fixture-recordable; the network guard fails loudly if a fixture attempts them.
+
 ## Move a baseline
 
 Baseline edits are explicit quality-policy changes, not snapshot refreshes. Move a floor only when an intentional product change makes the old threshold invalid or when a new fixture legitimately changes the measured distribution.

@@ -136,7 +136,7 @@ def _recency_compliance(report: schema.Report) -> float:
     return compliant / len(ranked_items)
 
 
-def _cluster_coherence(report: schema.Report) -> float:
+def _cluster_coherence(report: schema.Report, fixture: EvalFixture) -> float:
     candidates = {candidate.candidate_id: candidate for candidate in report.ranked_candidates}
     pair_scores: list[float] = []
     for report_cluster in report.clusters:
@@ -146,7 +146,13 @@ def _cluster_coherence(report: schema.Report) -> float:
             right_entities = entity_extract.extract_text_entities(f"{right.title} {right.snippet}")
             overlap = entity_extract.entity_overlap(left_entities, right_entities)
             pair_scores.append(1.0 if overlap >= ENTITY_OVERLAP_FLOOR else 0.0)
-    return sum(pair_scores) / len(pair_scores) if pair_scores else 1.0
+    if pair_scores:
+        return sum(pair_scores) / len(pair_scores)
+    # No multi-member clusters formed. For fixtures that historically cluster
+    # (expects_clusters: true in the manifest), that means cluster formation
+    # regressed and must fail rather than score a vacuous 1.0. Sparse topics
+    # that legitimately produce singletons declare expects_clusters: false.
+    return 0.0 if fixture.manifest.get("expects_clusters") else 1.0
 
 
 def _coverage(report: schema.Report, fixture: EvalFixture) -> float:
@@ -169,7 +175,7 @@ def score_report(
     return {
         "citation_grounding": _citation_grounding(report, fixture),
         "recency_compliance": _recency_compliance(report),
-        "cluster_coherence": _cluster_coherence(report),
+        "cluster_coherence": _cluster_coherence(report, fixture),
         "coverage": _coverage(report, fixture),
         "determinism": 1.0 if deterministic else 0.0,
     }
