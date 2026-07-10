@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
+from unittest import mock
 
 from . import harness
 
@@ -26,6 +28,41 @@ def test_research_quality_scores_meet_committed_baselines():
 
     failures = harness.baseline_failures(harness.aggregate_scores(results))
     assert not failures, "\n".join(failures)
+
+
+def test_replay_uses_manifest_source_availability(tmp_path):
+    fixture_path = tmp_path / "cli-sources"
+    fixture_path.mkdir()
+    (fixture_path / "http.json").write_text(
+        json.dumps(
+            {
+                "format": "last30days-http-fixture/v1",
+                "exchanges": [],
+                "source_exchanges": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    fixture = harness.EvalFixture(
+        name="cli-sources",
+        path=fixture_path,
+        manifest={
+            "topic": "fixture topic",
+            "as_of_date": "2026-07-10",
+            "fixture_sources": ["digg", "arxiv", "techmeme", "trustpilot"],
+            "plan": {},
+        },
+        input_urls=frozenset(),
+    )
+
+    def observe_availability(**_kwargs):
+        return harness.pipeline.available_sources({}, fixture.manifest["fixture_sources"])
+
+    with mock.patch.object(harness.pipeline, "run", side_effect=observe_availability), \
+         mock.patch.object(harness.pipeline, "which", return_value=None):
+        available = harness._run_once(fixture)
+
+    assert available == fixture.manifest["fixture_sources"]
 
 
 def test_intentional_out_of_window_regression_fails_recency_floor():

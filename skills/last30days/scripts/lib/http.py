@@ -231,7 +231,7 @@ def replaying_requests(path: str | Path):
         queues.setdefault(_fixture_key(exchange["request"]), []).append(exchange["response"])
     source_queues: dict[str, list[Any]] = {}
     for exchange in payload.get("source_exchanges") or []:
-        source_queues.setdefault(_fixture_key(exchange["request"]), []).append(exchange["value"])
+        source_queues.setdefault(_fixture_key(exchange["request"]), []).append(exchange)
     with _fixture_lock:
         if _fixture_state is not None:
             raise RuntimeError("An HTTP fixture session is already active")
@@ -322,7 +322,15 @@ def fixture_source_replay(request_data: dict[str, Any]) -> tuple[bool, Any]:
                 "Unrecorded CLI-backed source request during fixture replay: "
                 f"{request_data.get('source', 'unknown')}"
             )
-        return True, queue.pop(0)
+        exchange = queue.pop(0)
+    if exchange.get("type") == "error":
+        error = exchange.get("error") or {}
+        raise RecordedSourceError(
+            str(error.get("message") or "Recorded source error"),
+            exception_type=str(error.get("exception_type") or "Exception"),
+            outcome_state=error.get("outcome_state"),
+        )
+    return True, exchange.get("value")
 
 
 def fixture_source_record(request_data: dict[str, Any], value: Any) -> None:
@@ -337,6 +345,42 @@ def fixture_source_record(request_data: dict[str, Any], value: Any) -> None:
                 "value": _scrub_fixture_value(value),
             }
         )
+
+
+def fixture_source_record_error(request_data: dict[str, Any], error: Exception) -> None:
+    """Record a replayable failure from a source adapter that bypasses http.py."""
+    with _fixture_lock:
+        state = _fixture_state
+        if state is None or state["mode"] != "record":
+            return
+        state["source_exchanges"].append(
+            {
+                "request": _scrub_fixture_value(request_data),
+                "type": "error",
+                "error": _scrub_fixture_value(
+                    {
+                        "exception_type": type(error).__name__,
+                        "message": str(error),
+                        "outcome_state": getattr(error, "outcome_state", None),
+                    }
+                ),
+            }
+        )
+
+
+class RecordedSourceError(RuntimeError):
+    """Failure restored from a recorded module-backed source exchange."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        exception_type: str,
+        outcome_state: Optional[str] = None,
+    ):
+        super().__init__(message)
+        self.exception_type = exception_type
+        self.outcome_state = outcome_state
 
 
 def _is_dns_failure(err: urllib.error.URLError) -> bool:

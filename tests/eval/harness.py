@@ -92,6 +92,11 @@ def _run_once(fixture: EvalFixture) -> schema.Report:
     network_error = AssertionError(f"Network attempted while replaying {fixture.name}")
     with mock.patch.object(pipeline, "datetime", _FrozenDateTime), \
          mock.patch.object(schema, "datetime", _FrozenDateTime), \
+         mock.patch.object(
+             pipeline,
+             "available_sources",
+             return_value=list(manifest["fixture_sources"]),
+         ), \
          mock.patch.object(http.urllib.request, "urlopen", side_effect=network_error), \
          http.replaying_requests(fixture.path):
         return pipeline.run(

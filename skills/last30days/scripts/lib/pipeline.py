@@ -814,6 +814,12 @@ def _finalize_items_by_source(
     for source, items in items_by_source_raw.items():
         items = sorted(items, key=lambda item: item.local_rank_score or 0.0, reverse=True)
         items = dedupe.dedupe_items(items)
+        enrichment_request = {
+            "source": source,
+            "phase": "post_ranking_enrichment",
+            "topic": topic,
+            "depth": depth,
+        }
         if source == "youtube" and items and not mock:
             # Same budget-at-the-survivors principle as the digg branch
             # below: retrieval-time transcripts go to each search's
@@ -821,13 +827,18 @@ def _finalize_items_by_source(
             # relevance. Backfill survivors that arrived without one so the
             # transcript budget lands on videos the brief actually shows
             # (#542).
-            sc_token = (
-                config.get("SCRAPECREATORS_API_KEY")
-                if config and env.is_youtube_sc_available(config) else None
-            )
-            youtube_yt.backfill_transcripts(
-                items, topic=topic, depth=depth, token=sc_token,
-            )
+            matched, replayed = http.fixture_source_replay(enrichment_request)
+            if matched:
+                items = [schema.source_item_from_dict(item) for item in replayed]
+            else:
+                sc_token = (
+                    config.get("SCRAPECREATORS_API_KEY")
+                    if config and env.is_youtube_sc_available(config) else None
+                )
+                youtube_yt.backfill_transcripts(
+                    items, topic=topic, depth=depth, token=sc_token,
+                )
+                http.fixture_source_record(enrichment_request, schema.to_dict(items))
         # Post-merge topic-relevance filter for Polymarket: comparison queries
         # fan out into per-entity subqueries ("Hermes", "OpenClaw") whose topic
         # is too narrow for Gamma API to filter meaningfully. Re-validating the
@@ -845,7 +856,12 @@ def _finalize_items_by_source(
             # in the brief. Spending the enrichment budget here (rather than
             # at retrieval time) keeps the inline 'via Digg' quotes
             # paired with the clusters dedupe actually kept.
-            digg.enrich_source_items(items, top_k=3)
+            matched, replayed = http.fixture_source_replay(enrichment_request)
+            if matched:
+                items = [schema.source_item_from_dict(item) for item in replayed]
+            else:
+                digg.enrich_source_items(items, top_k=3)
+                http.fixture_source_record(enrichment_request, schema.to_dict(items))
         finalized[source] = items
     return finalized
 
@@ -1561,9 +1577,14 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
              http.fixture_module_capture(module_backed):
             items, artifact = _retrieve_stream_impl(*args, **kwargs)
     except Exception as exc:
+        recorded_exc = exc
         if failures and not getattr(exc, "outcome_state", None):
             failure = failures[-1]
-            raise SourceRunError(str(exc), failure.outcome_state) from exc
+            recorded_exc = SourceRunError(str(exc), failure.outcome_state)
+        if module_backed:
+            http.fixture_source_record_error(fixture_request, recorded_exc)
+        if recorded_exc is not exc:
+            raise recorded_exc from exc
         raise
     outcome_note = _resolve_stream_outcome(
         str(kwargs.get("source") or ""),
