@@ -181,6 +181,7 @@ def _run_topic(topic: dict) -> dict:
                 str(SCRIPT_DIR / "last30days.py"),
                 search_term,
                 "--emit=json",
+                "--json-profile=raw",
                 "--quick",
                 "--lookback-days",
                 "90",

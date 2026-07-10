@@ -374,6 +374,9 @@ def test_run_topic_success(mock_subprocess, temp_db):
     assert result["status"] == "completed"
     assert result["new"] == 1
     assert result["topic"] == "Test Topic"
+    argv = mock_subprocess.call_args.args[0]
+    assert "--emit=json" in argv
+    assert "--json-profile=raw" in argv
 
 @patch('watchlist.subprocess.run')
 

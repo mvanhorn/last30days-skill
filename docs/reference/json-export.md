@@ -63,7 +63,7 @@ Consumers must not interpret failure states as evidence that a source had no dis
 | `title` | string | Cluster headline. |
 | `summary` | string | Summary from the cluster's representative ranked result. |
 | `sources` | array of strings | Sources represented by the cluster. |
-| `engagement_total` | number | Sum of the largest native engagement counter on each result in the cluster. This preserves a useful headline magnitude without combining every platform counter. |
+| `engagement_total` | number | Sum of one headline native engagement counter per result. Known sources use their primary count (for example, Digg uses `postCount`); otherwise the largest counter-like field is used. Ranking, ratio, rating, and computed-score metadata are excluded. |
 
 Cluster array order is ranking order. A result's `cluster` value is the zero-based index into this array.
 

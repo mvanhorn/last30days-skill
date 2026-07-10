@@ -332,6 +332,12 @@ def run_last30days(repo_dir: Path, topic: str, *, search: str, timeout_seconds: 
     if not engine.exists():
         engine = repo_dir / "scripts" / "last30days.py"
     cmd = [sys.executable, str(engine), topic, "--emit=json"]
+    # Current engines default to the stable agent export, while older revisions
+    # used by the evaluator implicitly emit the raw report and do not recognize
+    # --json-profile. Request raw explicitly whenever the checked-out engine
+    # supports the selector.
+    if not engine.exists() or "--json-profile" in engine.read_text(encoding="utf-8"):
+        cmd.append("--json-profile=raw")
     if search:
         cmd.extend(["--search", search])
     if quick:

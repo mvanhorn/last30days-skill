@@ -194,17 +194,24 @@ class EvaluatorV3Tests(unittest.TestCase):
         self.assertEqual("config-openai", created["OPENAI_API_KEY"])
         self.assertEqual("", created["LAST30DAYS_CONFIG_DIR"])
 
-        with mock.patch.object(evaluator.subprocess, "run", return_value=mock.Mock(returncode=0, stdout='{"topic":"x"}', stderr="")):
-            payload = evaluator.run_last30days(
-                Path("/tmp/repo"),
-                "topic",
-                search="reddit",
-                timeout_seconds=30,
-                quick=True,
-                mock=True,
-                env={"PATH": "/bin"},
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp)
+            engine = repo_dir / "skills" / "last30days" / "scripts" / "last30days.py"
+            engine.parent.mkdir(parents=True)
+            engine.write_text('parser.add_argument("--json-profile")')
+            completed = mock.Mock(returncode=0, stdout='{"topic":"x"}', stderr="")
+            with mock.patch.object(evaluator.subprocess, "run", return_value=completed) as run:
+                payload = evaluator.run_last30days(
+                    repo_dir,
+                    "topic",
+                    search="reddit",
+                    timeout_seconds=30,
+                    quick=True,
+                    mock=True,
+                    env={"PATH": "/bin"},
+                )
         self.assertEqual("x", payload["topic"])
+        self.assertIn("--json-profile=raw", run.call_args.args[0])
 
         with mock.patch.object(evaluator.subprocess, "run", return_value=mock.Mock(returncode=2, stdout="", stderr="bad run")):
             with self.assertRaises(RuntimeError):
@@ -217,6 +224,26 @@ class EvaluatorV3Tests(unittest.TestCase):
                     mock=False,
                     env={"PATH": "/bin"},
                 )
+
+    def test_run_last30days_keeps_legacy_engine_implicit_raw_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp)
+            engine = repo_dir / "skills" / "last30days" / "scripts" / "last30days.py"
+            engine.parent.mkdir(parents=True)
+            engine.write_text('parser.add_argument("--emit")')
+            completed = mock.Mock(returncode=0, stdout='{"topic":"x"}', stderr="")
+            with mock.patch.object(evaluator.subprocess, "run", return_value=completed) as run:
+                evaluator.run_last30days(
+                    repo_dir,
+                    "topic",
+                    search="reddit",
+                    timeout_seconds=30,
+                    quick=False,
+                    mock=False,
+                    env={"PATH": "/bin"},
+                )
+
+        self.assertNotIn("--json-profile=raw", run.call_args.args[0])
 
     def test_parse_topics_file_and_summary_writer(self):
         with tempfile.TemporaryDirectory() as tmp:
