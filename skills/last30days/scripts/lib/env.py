@@ -60,7 +60,7 @@ KEYCHAIN_KEYS = (
     "AUTH_TOKEN", "CT0", "BSKY_HANDLE", "BSKY_APP_PASSWORD",
     "TRUTHSOCIAL_TOKEN", "BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY",
     "OPENROUTER_API_KEY", "PERPLEXITY_API_KEY", "PARALLEL_API_KEY", "XQUIK_API_KEY",
-    "XIAOHONGSHU_API_BASE",
+    "XIAOHONGSHU_API_BASE", "GITHUB_TOKEN",
 )
 
 # pass(1) integration: Linux/Unix analog of the Keychain source. Each key in
@@ -522,6 +522,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # resolved above via openai_auth).
         ('GROQ_API_KEY', None),
         ('LAST30DAYS_YT_SUB_LANGS', 'en,es,pt'),
+        ('GITHUB_TOKEN', None),
     ]
 
     for key, default in keys:
