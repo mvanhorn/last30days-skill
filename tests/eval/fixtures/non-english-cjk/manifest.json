@@ -1,0 +1,41 @@
+{
+  "name": "non-english-cjk",
+  "archetype": "non-english-cjk",
+  "topic": "日本語 AI エージェント?",
+  "as_of_date": "2026-07-10",
+  "lookback_days": 30,
+  "depth": "quick",
+  "fixture_sources": [
+    "grounding",
+    "hackernews"
+  ],
+  "web_backend": "brave",
+  "config": {
+    "BRAVE_API_KEY": "fixture-key"
+  },
+  "plan": {
+    "intent": "concept",
+    "freshness_mode": "balanced_recent",
+    "cluster_mode": "none",
+    "raw_topic": "日本語 AI エージェント",
+    "subqueries": [
+      {
+        "label": "primary",
+        "search_query": "日本語",
+        "ranking_query": "What recent evidence matters for 日本語 AI エージェント?",
+        "sources": [
+          "grounding",
+          "hackernews"
+        ],
+        "weight": 1
+      }
+    ],
+    "source_weights": {
+      "grounding": 1,
+      "hackernews": 1
+    },
+    "notes": [
+      "eval-fixture-plan"
+    ]
+  }
+}

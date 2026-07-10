@@ -1,6 +1,7 @@
 """HTTP utilities for last30days skill (stdlib only)."""
 
 import json
+import os
 import re
 import socket
 import sys
@@ -10,8 +11,9 @@ import urllib.error
 import urllib.request
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
+from pathlib import Path
 from typing import Any, Dict, Optional, Union
-from urllib.parse import urlencode
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from . import health
 from . import log as _log
@@ -42,6 +44,299 @@ _expected_miss_statuses: ContextVar[frozenset[int]] = ContextVar(
     "last30days_http_expected_miss_statuses",
     default=frozenset(),
 )
+
+_FIXTURE_FORMAT = "last30days-http-fixture/v1"
+_FIXTURE_SECRET_KEYS = frozenset(
+    {"api_key", "apikey", "authorization", "cookie", "key", "secret", "token"}
+)
+_fixture_lock = threading.Lock()
+_fixture_state: Optional[dict[str, Any]] = None
+_NO_FIXTURE = object()
+_fixture_module_capture: ContextVar[bool] = ContextVar(
+    "last30days_fixture_module_capture",
+    default=False,
+)
+
+
+def _is_secret_key(value: object) -> bool:
+    key = re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
+    return (
+        key in _FIXTURE_SECRET_KEYS
+        or key.endswith(("_api_key", "_authorization", "_cookie", "_secret", "_token"))
+    )
+
+
+def _scrub_fixture_value(
+    value: Any,
+    *,
+    key: str = "",
+    redactions: frozenset[str] = frozenset(),
+) -> Any:
+    """Remove credentials before a recorded exchange reaches disk."""
+    if key and _is_secret_key(key):
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {
+            str(child_key): _scrub_fixture_value(
+                child_value,
+                key=str(child_key),
+                redactions=redactions,
+            )
+            for child_key, child_value in value.items()
+        }
+    if isinstance(value, list):
+        return [_scrub_fixture_value(item, redactions=redactions) for item in value]
+    if isinstance(value, str):
+        scrubbed = value
+        for secret in sorted(redactions, key=len, reverse=True):
+            if len(secret) >= 4:
+                scrubbed = scrubbed.replace(secret, "<redacted>")
+        return scrubbed
+    return value
+
+
+def _collect_secret_values(value: Any, *, key: str = "") -> set[str]:
+    values: set[str] = set()
+    if key and _is_secret_key(key) and value not in (None, ""):
+        values.add(str(value))
+        return values
+    if isinstance(value, dict):
+        for child_key, child_value in value.items():
+            values.update(_collect_secret_values(child_value, key=str(child_key)))
+    elif isinstance(value, list):
+        for child in value:
+            values.update(_collect_secret_values(child))
+    return values
+
+
+def _fixture_redactions(
+    url: str,
+    headers: dict[str, str],
+    json_data: Optional[Dict[str, Any]],
+) -> frozenset[str]:
+    values: set[str] = set()
+    try:
+        for key, value in parse_qsl(urlsplit(url).query, keep_blank_values=True):
+            if _is_secret_key(key) and value:
+                values.add(value)
+    except ValueError:
+        pass
+    values.update(_collect_secret_values(headers))
+    values.update(_collect_secret_values(json_data))
+    return frozenset(values)
+
+
+def _scrub_fixture_url(url: str) -> str:
+    try:
+        parts = urlsplit(url)
+        query = urlencode(
+            [
+                (key, "<redacted>" if _is_secret_key(key) else value)
+                for key, value in parse_qsl(parts.query, keep_blank_values=True)
+            ]
+        )
+        return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
+    except ValueError:
+        return url
+
+
+def _fixture_request(
+    method: str,
+    url: str,
+    json_data: Optional[Dict[str, Any]],
+    raw: bool,
+) -> dict[str, Any]:
+    request_data: dict[str, Any] = {
+        "method": method.upper(),
+        "url": _scrub_fixture_url(url),
+        "raw": bool(raw),
+    }
+    if json_data is not None:
+        request_data["json"] = _scrub_fixture_value(json_data)
+    return request_data
+
+
+def _fixture_key(request_data: dict[str, Any]) -> str:
+    return json.dumps(request_data, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+@contextmanager
+def recording_requests(path: str | Path):
+    """Record scrubbed HTTP exchanges to ``path`` for offline eval replay.
+
+    This process-global session is deliberate: source requests run in worker
+    threads, so a ContextVar would not observe the complete pipeline fan-out.
+    Nested or concurrent recording/replay sessions are rejected.
+    """
+    global _fixture_state
+    target = Path(path).expanduser()
+    if target.suffix.lower() != ".json":
+        target = target / "http.json"
+    with _fixture_lock:
+        if _fixture_state is not None:
+            raise RuntimeError("An HTTP fixture session is already active")
+        _fixture_state = {
+            "mode": "record",
+            "path": target,
+            "exchanges": [],
+            "source_exchanges": [],
+        }
+    completed = False
+    try:
+        yield target
+        completed = True
+    finally:
+        with _fixture_lock:
+            state = _fixture_state
+            _fixture_state = None
+        if state is not None and completed:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "format": _FIXTURE_FORMAT,
+                "exchanges": state["exchanges"],
+                "source_exchanges": state["source_exchanges"],
+            }
+            temporary = target.with_name(f".{target.name}.tmp")
+            temporary.write_text(
+                json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
+                encoding="utf-8",
+            )
+            if os.name != "nt":
+                temporary.chmod(0o644)
+            temporary.replace(target)
+
+
+@contextmanager
+def fixture_module_capture(enabled: bool):
+    """Suppress nested HTTP recording when a whole adapter result is captured."""
+    token = _fixture_module_capture.set(enabled)
+    try:
+        yield
+    finally:
+        _fixture_module_capture.reset(token)
+
+
+@contextmanager
+def replaying_requests(path: str | Path):
+    """Replay recorded exchanges and fail closed on any unrecorded request."""
+    global _fixture_state
+    target = Path(path).expanduser()
+    if target.is_dir():
+        target = target / "http.json"
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    if payload.get("format") != _FIXTURE_FORMAT:
+        raise ValueError(f"Unsupported HTTP fixture format in {target}")
+    queues: dict[str, list[dict[str, Any]]] = {}
+    for exchange in payload.get("exchanges") or []:
+        queues.setdefault(_fixture_key(exchange["request"]), []).append(exchange["response"])
+    source_queues: dict[str, list[Any]] = {}
+    for exchange in payload.get("source_exchanges") or []:
+        source_queues.setdefault(_fixture_key(exchange["request"]), []).append(exchange["value"])
+    with _fixture_lock:
+        if _fixture_state is not None:
+            raise RuntimeError("An HTTP fixture session is already active")
+        _fixture_state = {
+            "mode": "replay",
+            "path": target,
+            "queues": queues,
+            "source_queues": source_queues,
+        }
+    try:
+        yield target
+        with _fixture_lock:
+            unused = sum(len(values) for values in queues.values()) + sum(
+                len(values) for values in source_queues.values()
+            )
+        if unused:
+            raise AssertionError(f"HTTP fixture replay left {unused} unused exchange(s): {target}")
+    finally:
+        with _fixture_lock:
+            _fixture_state = None
+
+
+def _fixture_replay(request_data: dict[str, Any]) -> Any:
+    with _fixture_lock:
+        state = _fixture_state
+        if state is None or state["mode"] != "replay":
+            return _NO_FIXTURE
+        queue = state["queues"].get(_fixture_key(request_data))
+        if not queue:
+            raise AssertionError(
+                "Unrecorded HTTP request during fixture replay: "
+                f"{request_data['method']} {request_data['url']}"
+            )
+        response = queue.pop(0)
+    if response.get("error"):
+        error = response["error"]
+        recorded_error = HTTPError(
+            str(error.get("message") or "Recorded HTTP error"),
+            status_code=error.get("status_code"),
+            body=error.get("body"),
+            outcome_state=error.get("outcome_state"),
+        )
+        _raise(recorded_error)
+    return response.get("value")
+
+
+def _fixture_record(
+    request_data: dict[str, Any],
+    *,
+    value: Any = None,
+    error: Optional["HTTPError"] = None,
+    redactions: frozenset[str] = frozenset(),
+) -> None:
+    if _fixture_module_capture.get():
+        return
+    with _fixture_lock:
+        state = _fixture_state
+        if state is None or state["mode"] != "record":
+            return
+        response: dict[str, Any]
+        if error is None:
+            response = {"value": _scrub_fixture_value(value, redactions=redactions)}
+        else:
+            response = {
+                "error": _scrub_fixture_value(
+                    {
+                        "message": str(error),
+                        "status_code": error.status_code,
+                        "body": error.body,
+                        "outcome_state": error.outcome_state,
+                    },
+                    redactions=redactions,
+                )
+            }
+        state["exchanges"].append({"request": request_data, "response": response})
+
+
+def fixture_source_replay(request_data: dict[str, Any]) -> tuple[bool, Any]:
+    """Return a recorded CLI-backed source result when replay is active."""
+    scrubbed = _scrub_fixture_value(request_data)
+    with _fixture_lock:
+        state = _fixture_state
+        if state is None or state["mode"] != "replay":
+            return False, None
+        queue = state["source_queues"].get(_fixture_key(scrubbed))
+        if not queue:
+            raise AssertionError(
+                "Unrecorded CLI-backed source request during fixture replay: "
+                f"{request_data.get('source', 'unknown')}"
+            )
+        return True, queue.pop(0)
+
+
+def fixture_source_record(request_data: dict[str, Any], value: Any) -> None:
+    """Record the parsed output of a source adapter that bypasses http.py."""
+    with _fixture_lock:
+        state = _fixture_state
+        if state is None or state["mode"] != "record":
+            return
+        state["source_exchanges"].append(
+            {
+                "request": _scrub_fixture_value(request_data),
+                "value": _scrub_fixture_value(value),
+            }
+        )
 
 
 def _is_dns_failure(err: urllib.error.URLError) -> bool:
@@ -208,6 +503,12 @@ def request(
             separator = "&" if ("?" in url) else "?"
             url = f"{url}{separator}{urlencode(filtered)}"
 
+    fixture_request = _fixture_request(method, url, json_data, raw)
+    fixture_redactions = _fixture_redactions(url, headers, json_data)
+    replayed = _fixture_replay(fixture_request)
+    if replayed is not _NO_FIXTURE:
+        return replayed
+
     data = None
     if json_data is not None:
         data = json.dumps(json_data).encode('utf-8')
@@ -226,14 +527,22 @@ def request(
     effective_retries = retries
     dns_attempts = 0
     attempt = 0
+
+    def raise_recorded(error: HTTPError) -> None:
+        _fixture_record(fixture_request, error=error, redactions=fixture_redactions)
+        _raise(error)
+
     while attempt < effective_retries:
         try:
             with urllib.request.urlopen(req, timeout=timeout) as response:
                 body = response.read().decode('utf-8')
                 log(f"Response: {response.status} ({len(body)} bytes)")
                 if raw:
+                    _fixture_record(fixture_request, value=body, redactions=fixture_redactions)
                     return body
-                return json.loads(body) if body else {}
+                parsed = json.loads(body) if body else {}
+                _fixture_record(fixture_request, value=parsed, redactions=fixture_redactions)
+                return parsed
         except urllib.error.HTTPError as e:
             body = None
             try:
@@ -248,13 +557,13 @@ def request(
 
             # Don't retry client errors (4xx) except rate limits
             if 400 <= e.code < 500 and e.code != 429:
-                _raise(last_error)
+                raise_recorded(last_error)
 
             # Cap 429 retries separately to avoid wasting latency
             if e.code == 429:
                 rate_limit_count += 1
                 if rate_limit_count >= max_429_retries:
-                    _raise(last_error)
+                    raise_recorded(last_error)
 
             # HTTP errors respect the caller's original `retries`; only DNS
             # failures get the widened `effective_retries` budget.
@@ -324,7 +633,7 @@ def request(
                 f"Invalid JSON response: {e}",
                 outcome_state=health.SCHEMA_DRIFT,
             )
-            _raise(last_error)
+            raise_recorded(last_error)
         except (OSError, TimeoutError, ConnectionResetError) as e:
             # Handle socket-level errors (connection reset, timeout, etc.)
             log(f"Connection error: {type(e).__name__}: {e}")
@@ -343,9 +652,9 @@ def request(
         attempt += 1
 
     if last_error:
-        _raise(last_error)
+        raise_recorded(last_error)
     error = HTTPError("Request failed with no error details")
-    _raise(error)
+    raise_recorded(error)
 
 
 def get(url: str, headers: Optional[Dict[str, str]] = None, **kwargs) -> Dict[str, Any]:

@@ -47,7 +47,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import dates, env, html_render, permission_preflight, pipeline, render, schema, ui
+from lib import dates, env, html_render, http, permission_preflight, pipeline, render, schema, ui
 
 _child_pids: set[int] = set()
 _child_pids_lock = threading.Lock()
@@ -373,6 +373,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--deep", action="store_true", help="Higher-recall retrieval profile")
     parser.add_argument("--debug", action="store_true", help="Enable HTTP debug logging")
     parser.add_argument("--mock", action="store_true", help="Use mock retrieval fixtures")
+    parser.add_argument(
+        "--record-fixtures",
+        metavar="DIR",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--diagnose", action="store_true", help="Print provider and source availability")
     parser.add_argument("--preflight", action="store_true",
                         help="Print a safe human-readable permission preflight")
@@ -1044,6 +1049,17 @@ def main() -> int:
     # Use parse_known_args so setup sub-flags (--device-auth, --github,
     # --openclaw) pass through without argparse hard-exiting.
     args, extra_argv = parser.parse_known_args()
+    if args.record_fixtures:
+        with http.recording_requests(Path(args.record_fixtures)):
+            return _main(parser, args, extra_argv)
+    return _main(parser, args, extra_argv)
+
+
+def _main(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    extra_argv: list[str],
+) -> int:
     if args.debug:
         os.environ["LAST30DAYS_DEBUG"] = "1"
 
@@ -1173,6 +1189,7 @@ def main() -> int:
         topic
         and not args.diagnose
         and not args.mock
+        and not args.record_fixtures
         and env.read_secret_env("LAST30DAYS_API_KEY")
         and os.environ.get("LAST30DAYS_API_BASE")
     ):

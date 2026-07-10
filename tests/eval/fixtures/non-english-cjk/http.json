@@ -1,0 +1,83 @@
+{
+  "format": "last30days-http-fixture/v1",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.search.brave.com/res/v1/web/search?q=%E6%97%A5%E6%9C%AC%E8%AA%9E&count=5&freshness=2026-06-10to2026-07-10",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "web": {
+            "results": [
+              {
+                "title": "日本語 AI エージェントの新しい評価手法",
+                "url": "https://web.example.test/non-english-cjk/result-1",
+                "description": "日本語 AI エージェントの新しい評価手法. Recorded public fixture content.",
+                "page_age": "2026-07-02T00:00:00Z"
+              },
+              {
+                "title": "日本語対応 AI エージェントの実運用報告",
+                "url": "https://web.example.test/non-english-cjk/result-2",
+                "description": "日本語対応 AI エージェントの実運用報告. Recorded public fixture content.",
+                "page_age": "2026-07-03T00:00:00Z"
+              },
+              {
+                "title": "日本語 AI エージェントの安全設計ガイド",
+                "url": "https://web.example.test/non-english-cjk/result-3",
+                "description": "日本語 AI エージェントの安全設計ガイド. Recorded public fixture content.",
+                "page_age": "2026-07-04T00:00:00Z"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hn.algolia.com/api/v1/search?query=%E6%97%A5%E6%9C%AC%E8%AA%9E&tags=story&numericFilters=created_at_i%3E1781049600%2Ccreated_at_i%3C1783728000&hitsPerPage=30",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "hits": [
+            {
+              "objectID": "non-english-cjk-hn-1",
+              "title": "日本語 AI エージェントの評価手法",
+              "url": "https://news.example.test/non-english-cjk/hn-1",
+              "author": "fixture_author_1",
+              "points": 120,
+              "num_comments": 35,
+              "created_at_i": 1782864000,
+              "created_at": "2026-07-01T00:00:00Z"
+            },
+            {
+              "objectID": "non-english-cjk-hn-2",
+              "title": "日本語対応エージェントの実運用",
+              "url": "https://news.example.test/non-english-cjk/hn-2",
+              "author": "fixture_author_2",
+              "points": 100,
+              "num_comments": 30,
+              "created_at_i": 1782950400,
+              "created_at": "2026-07-02T00:00:00Z"
+            },
+            {
+              "objectID": "non-english-cjk-hn-3",
+              "title": "日本語 AI エージェントの安全設計",
+              "url": "https://news.example.test/non-english-cjk/hn-3",
+              "author": "fixture_author_3",
+              "points": 80,
+              "num_comments": 25,
+              "created_at_i": 1783036800,
+              "created_at": "2026-07-03T00:00:00Z"
+            }
+          ],
+          "page": 0,
+          "nbHits": 3
+        }
+      }
+    }
+  ]
+}

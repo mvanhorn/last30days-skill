@@ -20,7 +20,10 @@ class TestUserCodeValidation:
 
     @patch("lib.setup_wizard.subprocess.run")
     @patch("lib.setup_wizard.run_device_auth")
-    def test_malformed_user_code_is_rejected(self, mock_run_device, mock_subprocess_run):
+    @patch("lib.setup_wizard._existing_scrapecreators_key", return_value=None)
+    def test_malformed_user_code_is_rejected(
+        self, _mock_existing, mock_run_device, mock_subprocess_run
+    ):
         # mock_subprocess_run patches setup_wizard.subprocess.run; the only such
         # call in run_full_device_auth is the pbcopy of the code.
         # A key-shaped value (no dash, 28 chars) must never be treated as a code.
@@ -49,8 +52,9 @@ class TestDeviceCodeReadyEmission:
     @patch("lib.setup_wizard.subprocess.run")
     @patch("lib.setup_wizard.poll_device_auth")
     @patch("lib.setup_wizard.run_device_auth")
+    @patch("lib.setup_wizard._existing_scrapecreators_key", return_value=None)
     def test_valid_code_emitted_to_stdout(
-        self, mock_run_device, mock_poll, mock_pbcopy, mock_browser
+        self, _mock_existing, mock_run_device, mock_poll, mock_pbcopy, mock_browser
     ):
         mock_run_device.return_value = (
             "dev-code-123",

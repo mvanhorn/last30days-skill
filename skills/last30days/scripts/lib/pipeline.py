@@ -1533,8 +1533,32 @@ def _merge_reddit_items(free: list[dict], sc: list[dict]) -> list[dict]:
 
 def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
     """Run one stream and retain HTTP failures swallowed by source adapters."""
+    source = str(kwargs.get("source") or "")
+    fixture_request = {
+        "source": source,
+        "topic": kwargs.get("topic") or "",
+        "search_query": getattr(kwargs.get("subquery"), "search_query", ""),
+        "date_range": list(kwargs.get("date_range") or ()),
+        "depth": kwargs.get("depth") or "",
+    }
+    module_backed = source in {
+        "reddit",
+        "x",
+        "youtube",
+        "stocktwits",
+        "digg",
+        "arxiv",
+        "techmeme",
+        "trustpilot",
+        "github",
+    }
+    if module_backed:
+        matched, replayed = http.fixture_source_replay(fixture_request)
+        if matched:
+            return replayed[0], replayed[1]
     try:
-        with http.capture_failures() as failures:
+        with http.capture_failures() as failures, \
+             http.fixture_module_capture(module_backed):
             items, artifact = _retrieve_stream_impl(*args, **kwargs)
     except Exception as exc:
         if failures and not getattr(exc, "outcome_state", None):
@@ -1549,6 +1573,8 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
     if outcome_note:
         artifact = dict(artifact or {})
         artifact["_source_outcome"] = outcome_note
+    if module_backed:
+        http.fixture_source_record(fixture_request, [items, artifact])
     return items, artifact
 
 

@@ -1,0 +1,83 @@
+{
+  "format": "last30days-http-fixture/v1",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.search.brave.com/res/v1/web/search?q=novadb&count=5&freshness=2026-06-10to2026-07-10",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "web": {
+            "results": [
+              {
+                "title": "NovaDB versus OrbitDB replication benchmark results",
+                "url": "https://web.example.test/comparison/result-1",
+                "description": "NovaDB versus OrbitDB replication benchmark results. Recorded public fixture content.",
+                "page_age": "2026-07-02T00:00:00Z"
+              },
+              {
+                "title": "NovaDB and OrbitDB users compare migration costs",
+                "url": "https://web.example.test/comparison/result-2",
+                "description": "NovaDB and OrbitDB users compare migration costs. Recorded public fixture content.",
+                "page_age": "2026-07-03T00:00:00Z"
+              },
+              {
+                "title": "NovaDB versus OrbitDB edge deployment review",
+                "url": "https://web.example.test/comparison/result-3",
+                "description": "NovaDB versus OrbitDB edge deployment review. Recorded public fixture content.",
+                "page_age": "2026-07-04T00:00:00Z"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hn.algolia.com/api/v1/search?query=novadb&tags=story&numericFilters=created_at_i%3E1781049600%2Ccreated_at_i%3C1783728000&hitsPerPage=30",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "hits": [
+            {
+              "objectID": "comparison-hn-1",
+              "title": "NovaDB and OrbitDB trade replication benchmarks",
+              "url": "https://news.example.test/comparison/hn-1",
+              "author": "fixture_author_1",
+              "points": 120,
+              "num_comments": 35,
+              "created_at_i": 1782864000,
+              "created_at": "2026-07-01T00:00:00Z"
+            },
+            {
+              "objectID": "comparison-hn-2",
+              "title": "NovaDB users compare OrbitDB migration costs",
+              "url": "https://news.example.test/comparison/hn-2",
+              "author": "fixture_author_2",
+              "points": 100,
+              "num_comments": 30,
+              "created_at_i": 1782950400,
+              "created_at": "2026-07-02T00:00:00Z"
+            },
+            {
+              "objectID": "comparison-hn-3",
+              "title": "NovaDB versus OrbitDB at the edge",
+              "url": "https://news.example.test/comparison/hn-3",
+              "author": "fixture_author_3",
+              "points": 80,
+              "num_comments": 25,
+              "created_at_i": 1783036800,
+              "created_at": "2026-07-03T00:00:00Z"
+            }
+          ],
+          "page": 0,
+          "nbHits": 3
+        }
+      }
+    }
+  ]
+}

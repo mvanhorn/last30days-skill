@@ -1,0 +1,83 @@
+{
+  "format": "last30days-http-fixture/v1",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.search.brave.com/res/v1/web/search?q=crdt&count=5&freshness=2026-06-10to2026-07-10",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "web": {
+            "results": [
+              {
+                "title": "CRDT design handles edge cache invalidation",
+                "url": "https://web.example.test/niche/result-1",
+                "description": "CRDT design handles edge cache invalidation. Recorded public fixture content.",
+                "page_age": "2026-07-02T00:00:00Z"
+              },
+              {
+                "title": "CRDT tombstones reduce stale reads in edge caches",
+                "url": "https://web.example.test/niche/result-2",
+                "description": "CRDT tombstones reduce stale reads in edge caches. Recorded public fixture content.",
+                "page_age": "2026-07-03T00:00:00Z"
+              },
+              {
+                "title": "CRDT cache research compares invalidation strategies",
+                "url": "https://web.example.test/niche/result-3",
+                "description": "CRDT cache research compares invalidation strategies. Recorded public fixture content.",
+                "page_age": "2026-07-04T00:00:00Z"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hn.algolia.com/api/v1/search?query=crdt&tags=story&numericFilters=created_at_i%3E1781049600%2Ccreated_at_i%3C1783728000&hitsPerPage=30",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "hits": [
+            {
+              "objectID": "niche-hn-1",
+              "title": "CRDT design improves edge cache invalidation",
+              "url": "https://news.example.test/niche/hn-1",
+              "author": "fixture_author_1",
+              "points": 120,
+              "num_comments": 35,
+              "created_at_i": 1782864000,
+              "created_at": "2026-07-01T00:00:00Z"
+            },
+            {
+              "objectID": "niche-hn-2",
+              "title": "CRDT tombstones reduce stale edge reads",
+              "url": "https://news.example.test/niche/hn-2",
+              "author": "fixture_author_2",
+              "points": 100,
+              "num_comments": 30,
+              "created_at_i": 1782950400,
+              "created_at": "2026-07-02T00:00:00Z"
+            },
+            {
+              "objectID": "niche-hn-3",
+              "title": "CRDT cache paper compares invalidation strategies",
+              "url": "https://news.example.test/niche/hn-3",
+              "author": "fixture_author_3",
+              "points": 80,
+              "num_comments": 25,
+              "created_at_i": 1783036800,
+              "created_at": "2026-07-03T00:00:00Z"
+            }
+          ],
+          "page": 0,
+          "nbHits": 3
+        }
+      }
+    }
+  ]
+}
