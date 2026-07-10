@@ -777,6 +777,40 @@ def _load_last_report_cache(
         return None
 
 
+_STRICT_EXIT_OK_STATES = {"ok", "no-results", "skipped-unconfigured"}
+
+
+def _strict_exit_code(
+    report: schema.Report,
+    entity_reports: list[tuple[str, schema.Report]] | None,
+    config: dict[str, object],
+) -> int:
+    """Opt-in machine-detectable degraded-run signal (issue #384).
+
+    When LAST30DAYS_STRICT_EXIT is truthy, a run whose report carries any
+    source outcome that is neither clean nor a plain no-results exits 3 so
+    cron/CI wrappers can distinguish degraded coverage from success. Default
+    behavior (exit 0, warning rendered in the report footer) is unchanged.
+    """
+    raw = str(config.get("LAST30DAYS_STRICT_EXIT") or "").strip().lower()
+    if raw not in {"1", "true", "yes", "on"}:
+        return 0
+    reports = [report] + [rep for _, rep in (entity_reports or [])]
+    degraded = sorted({
+        name
+        for rep in reports
+        for name, outcome in (rep.source_status or {}).items()
+        if outcome.state not in _STRICT_EXIT_OK_STATES
+    })
+    if not degraded:
+        return 0
+    sys.stderr.write(
+        f"[last30days] strict-exit: degraded sources: {', '.join(degraded)}\n"
+    )
+    sys.stderr.flush()
+    return 3
+
+
 def _render_save_and_print(
     args: argparse.Namespace,
     report: schema.Report,
@@ -873,7 +907,7 @@ def _render_save_and_print(
             sys.stderr.write(f"[last30days] HTML publish failed: {exc}\n")
             sys.stderr.flush()
     print(rendered)
-    return 0
+    return _strict_exit_code(report, entity_reports, config)
 
 
 def _propagate_config_to_environ(config: dict[str, object]) -> None:

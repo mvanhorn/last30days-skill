@@ -568,7 +568,7 @@ def enrich_with_comments(
 
     enriched_count = 0
     with ThreadPoolExecutor(max_workers=min(4, len(top_items))) as executor:
-        futures = {executor.submit(_enrich_one, item): item for item in top_items}
+        futures = {http.submit_with_context(executor, _enrich_one, item): item for item in top_items}
         for future in as_completed(futures):
             if future.result():
                 enriched_count += 1

@@ -329,3 +329,56 @@ def test_report_source_status_round_trips_through_schema_serialization():
 
     assert payload["source_status"]["x"]["state"] == schema.PARTIAL
     assert restored.source_status["x"] == report.source_status["x"]
+
+
+# --- strict exit (LAST30DAYS_STRICT_EXIT, issue #384) ---
+
+import last30days as cli
+
+
+def _outcome(source, state, **kwargs):
+    return schema.SourceOutcome(source=source, state=state, **kwargs)
+
+
+def test_strict_exit_disabled_by_default_even_when_degraded():
+    report = _report(
+        source_status={"x": _outcome("x", schema.RATE_LIMITED, detail="429")}
+    )
+    assert cli._strict_exit_code(report, None, {}) == 0
+
+
+def test_strict_exit_returns_3_for_degraded_run(capsys):
+    report = _report(
+        source_status={"x": _outcome("x", schema.AUTH_FAILED, detail="401")}
+    )
+    rc = cli._strict_exit_code(report, None, {"LAST30DAYS_STRICT_EXIT": "1"})
+    assert rc == 3
+    assert "strict-exit: degraded sources: x" in capsys.readouterr().err
+
+
+def test_strict_exit_clean_states_return_0():
+    report = _report(
+        source_status={
+            "reddit": _outcome("reddit", health.OK, items_returned=12),
+            "hn": _outcome("hn", schema.NO_RESULTS),
+            "tiktok": _outcome("tiktok", schema.SKIPPED_UNCONFIGURED, attempted=False),
+        }
+    )
+    assert cli._strict_exit_code(report, None, {"LAST30DAYS_STRICT_EXIT": "true"}) == 0
+
+
+def test_strict_exit_checks_entity_reports_in_comparison_runs():
+    lead = _report(source_status={"reddit": _outcome("reddit", health.OK)})
+    entity = _report(
+        source_status={"x": _outcome("x", schema.UNREACHABLE, detail="dns")}
+    )
+    rc = cli._strict_exit_code(lead, [("other", entity)], {"LAST30DAYS_STRICT_EXIT": "on"})
+    assert rc == 3
+
+
+def test_strict_exit_env_key_is_registered():
+    # Unregistered keys are silently dropped by env config loading (#707 class).
+    from lib import env as env_module
+    import inspect
+
+    assert "LAST30DAYS_STRICT_EXIT" in inspect.getsource(env_module)

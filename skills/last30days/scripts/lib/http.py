@@ -280,9 +280,14 @@ def request(
                 break
         except urllib.error.URLError as e:
             log(f"URL Error: {e.reason}")
+            reason = getattr(e, "reason", None)
+            # urllib commonly wraps socket.timeout (an alias of TimeoutError
+            # since 3.10) in URLError; classify those as timeouts, not
+            # unreachable hosts, so the recovery guidance is right.
+            wrapped_timeout = isinstance(reason, TimeoutError) or "timed out" in str(reason).lower()
             last_error = HTTPError(
                 f"URL Error: {e.reason}",
-                outcome_state=health.UNREACHABLE,
+                outcome_state=health.TIMEOUT if wrapped_timeout else health.UNREACHABLE,
             )
             if _is_dns_failure(e):
                 # DNS resolution failures are transient; expand the retry budget

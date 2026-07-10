@@ -466,6 +466,9 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_DOCTOR_TTL', None),
         ('LAST30DAYS_REDDIT_SC_MIN_ITEMS', None),
         ('LAST30DAYS_STORE', None),
+        # Opt-in strict exit: truthy -> CLI exits 3 when any source outcome is
+        # degraded (neither ok, no-results, nor skipped-unconfigured). #384.
+        ('LAST30DAYS_STRICT_EXIT', None),
         ('LAST30DAYS_MEMORY_DIR', None),
         ('OPENAI_MODEL_PIN', None),
         ('XAI_MODEL_PIN', None),

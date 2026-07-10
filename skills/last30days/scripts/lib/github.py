@@ -81,8 +81,18 @@ def _fetch_json(
     url: str,
     token: Optional[str] = None,
     timeout: int = 15,
+    failure_out: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Fetch JSON from GitHub API. Returns None on failure."""
+    """Fetch JSON from GitHub API. Returns None on failure.
+
+    When ``failure_out`` is provided, a short human-readable reason is
+    appended for every failure branch so callers can distinguish transport
+    failures from genuinely empty results (issue #384).
+    """
+
+    def _note(msg: str) -> None:
+        if failure_out is not None:
+            failure_out.append(msg)
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "application/vnd.github+json",
@@ -98,17 +108,22 @@ def _fetch_json(
     except urllib.error.HTTPError as e:
         if e.code == 403:
             _log(f"403 rate limited or forbidden: {url}")
+            _note("HTTP 403: rate limited or forbidden")
             return None
         if e.code == 422:
             _log(f"422 unprocessable: {url}")
+            _note("HTTP 422: unprocessable query")
             return None
         _log(f"HTTP {e.code}: {e.reason}")
+        _note(f"HTTP {e.code}: {e.reason}")
         return None
     except (urllib.error.URLError, OSError, TimeoutError) as e:
         _log(f"Network error: {e}")
+        _note(f"network error: {e}")
         return None
     except json.JSONDecodeError as e:
         _log(f"JSON decode error: {e}")
+        _note(f"invalid JSON: {e}")
         return None
 
 
@@ -197,11 +212,16 @@ def search_github(
     }
     url = f"{SEARCH_URL}?{urllib.parse.urlencode(params)}"
 
-    data = _fetch_json(url, token=resolved_token, timeout=30)
+    fetch_failures: List[str] = []
+    data = _fetch_json(url, token=resolved_token, timeout=30, failure_out=fetch_failures)
     if not data:
         envelope = {"items": [], "context": {"core": core, "from_date": from_date,
                                              "to_date": to_date, "count": count}}
-        if not authed:
+        if authed and fetch_failures:
+            # Authenticated transport failures must not be laundered into a
+            # clean no-results outcome (issue #384).
+            envelope["error"] = f"GitHub API request failed: {fetch_failures[-1]}"
+        elif not authed:
             # Could be the anon rate limit (403) or an unprocessable query (422)
             # -- _fetch_json maps both to None. Don't over-claim which; suggest a
             # token since that fixes the common (rate-limit) case.

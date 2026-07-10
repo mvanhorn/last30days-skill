@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from collections import Counter
 
+from . import http
 from . import reddit_rss, reddit_shreddit, reddit_listing, reddit_arctic
 # Scores are backfilled from popular derived subreddits, so an engagement-first
 # final sort buries on-topic RSS hits under viral off-topic posts. A relevance
@@ -189,7 +190,7 @@ def _enrich(posts: List[Dict[str, Any]], depth: str) -> List[Dict[str, Any]]:
     try:
         with ThreadPoolExecutor(max_workers=min(limit, MAX_ENRICH_WORKERS)) as executor:
             futures = {
-                executor.submit(_enrich_one, post): i
+                http.submit_with_context(executor, _enrich_one, post): i
                 for i, post in enumerate(to_enrich)
             }
             done, not_done = concurrent.futures.wait(futures, timeout=ENRICH_BUDGET)

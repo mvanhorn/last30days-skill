@@ -848,8 +848,8 @@ def fetch_transcripts_parallel(
     with tempfile.TemporaryDirectory() as temp_dir:
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
-                executor.submit(
-                    fetch_transcript, vid, temp_dir, statuses[vid], token,
+                http.submit_with_context(
+                    executor, fetch_transcript, vid, temp_dir, statuses[vid], token,
                 ): vid
                 for vid in video_ids
             }
@@ -1097,7 +1097,7 @@ def enrich_with_comments(
 
     enriched_count = 0
     with ThreadPoolExecutor(max_workers=min(4, len(top_items))) as executor:
-        futures = {executor.submit(_enrich_one, item): item for item in top_items}
+        futures = {http.submit_with_context(executor, _enrich_one, item): item for item in top_items}
         for future in as_completed(futures):
             if future.result():
                 enriched_count += 1

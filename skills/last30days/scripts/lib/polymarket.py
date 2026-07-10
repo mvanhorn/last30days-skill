@@ -343,7 +343,7 @@ def _run_queries_parallel(
         futures = {}
         for i, q in enumerate(queries, start=start_idx):
             for p in range(1, pages + 1):
-                future = executor.submit(_search_single_query, q, p)
+                future = http.submit_with_context(executor, _search_single_query, q, p)
                 futures[future] = i
 
         for future in as_completed(futures):

@@ -355,6 +355,16 @@ Every live run writes its JSON result to `~/.config/last30days/doctor-cache.json
 
 Web search has **no** env pin — pin it per-run with `--web-backend=<name>` only (see [Web search backend priority](#web-search-backend-priority)).
 
+### Strict exit for degraded runs
+
+By default a research run exits `0` even when a source failed mid-run (rate-limited, auth-failed, unreachable, timeout, schema-drift) — the report still renders, with the failure annotated in the per-source footer and a partial-coverage warning. Wrappers that need to distinguish degraded coverage from success (cron briefs, CI, downstream agents) can opt in:
+
+| Var | Effect |
+| --- | --- |
+| `LAST30DAYS_STRICT_EXIT` | Truthy (`1`/`true`/`yes`/`on`): the engine exits `3` when any source outcome is neither `ok`, `no-results`, nor `skipped-unconfigured`. A one-line `strict-exit: degraded sources: ...` note goes to stderr. Default (unset): exit `0`, unchanged behavior. |
+
+Exit codes with the flag on: `0` clean run, `3` completed-but-degraded (report was produced), non-zero others unchanged (hard failures). Same hybrid pattern as `LAST30DAYS_DEBUG` — works shell-exported or in `.env`.
+
 ---
 
 ## Trend monitoring (`--store` + watchlist + briefings)
