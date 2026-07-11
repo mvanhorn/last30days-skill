@@ -746,10 +746,10 @@ def _write_last_run(
     topic: str,
     report: "schema.Report",
     entity_reports: list[tuple[str, schema.Report]] | None = None,
-) -> None:
+) -> bool:
     try:
         if env.CONFIG_DIR is None:
-            return
+            return False
         target = env.CONFIG_DIR
         target.mkdir(parents=True, exist_ok=True)
         counts = {source: len(items) for source, items in report.items_by_source.items()}
@@ -774,8 +774,12 @@ def _write_last_run(
             ],
         }
         (target / "last-report.json").write_text(json.dumps(cache_payload, indent=2))
-    except Exception:
-        pass
+        return True
+    except Exception as exc:
+        # Never fatal, but never silent either (#787's lesson): callers that
+        # promise cache state (drill chaining) branch on the return value.
+        sys.stderr.write(f"[last30days] warning: could not write run cache: {exc}\n")
+        return False
 
 
 def _load_last_report_cache(
@@ -901,10 +905,13 @@ def _run_drill(
             depth="deep",
             requested_sources=sources,
             mock=args.mock,
-            x_handle=(args.x_handle or resolved.get("x_handle") or None),
+            x_handle=(
+                (args.x_handle or resolved.get("x_handle") or None)
+                if "x" in sources else None
+            ),
             x_related=(
                 [value.strip() for value in args.x_related.split(",") if value.strip()]
-                if args.x_related else None
+                if (args.x_related and "x" in sources) else None
             ),
             web_backend=args.web_backend,
             external_plan=schema.to_dict(drill_plan),
@@ -926,13 +933,18 @@ def _run_drill(
             ),
             lookback_days=lookback_days,
             as_of_date=as_of_date,
-            github_user=(args.github_user or resolved.get("github_user") or None),
+            github_user=(
+                (args.github_user or resolved.get("github_user") or None)
+                if "github" in sources else None
+            ),
             github_repos=(
-                [value.strip() for value in args.github_repo.split(",") if value.strip()]
-                if args.github_repo else list(resolved.get("github_repos") or []) or None
+                ([value.strip() for value in args.github_repo.split(",") if value.strip()]
+                 if args.github_repo else list(resolved.get("github_repos") or []) or None)
+                if "github" in sources else None
             ),
             trustpilot_domain=(
-                args.trustpilot_domain or resolved.get("trustpilot_domain") or None
+                (args.trustpilot_domain or resolved.get("trustpilot_domain") or None)
+                if "trustpilot" in sources else None
             ),
             internal_subrun=True,
         )
@@ -947,8 +959,13 @@ def _run_drill(
         matched_clusters,
         target=args.drill,
     )
-    _write_last_run(report.topic, merged)
-    sys.stderr.write(f"[last30days] Updated drill cache in {cache_path}\n")
+    if _write_last_run(report.topic, merged):
+        sys.stderr.write(f"[last30days] Updated drill cache in {cache_path}\n")
+    else:
+        sys.stderr.write(
+            "[last30days] warning: drill cache update failed; the next drill "
+            "will see the pre-drill report\n"
+        )
 
     store_default = str(
         os.environ.get("LAST30DAYS_STORE")

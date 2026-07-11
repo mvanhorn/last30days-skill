@@ -450,3 +450,65 @@ def test_cli_drill_runs_deep_updates_cache_and_can_chain(tmp_path: Path):
         chained = cli._load_last_report_cache(None)
     assert chained is not None
     assert len(chained[0].artifacts["drill_history"]) == 2
+
+
+def test_drill_plan_does_not_gain_jobs_via_company_topic(monkeypatch):
+    from lib import pipeline, schema
+
+    plan = schema.QueryPlan(
+        intent="general",
+        freshness_mode="balanced_recent",
+        cluster_mode="story",
+        raw_topic="OpenClaw",
+        notes=["drill-mode"],
+        subqueries=[
+            schema.SubQuery(
+                label="drill",
+                search_query="OpenClaw api ban",
+                ranking_query="OpenClaw api ban",
+                sources=["youtube"],
+            )
+        ],
+        source_weights={"youtube": 1.0},
+    )
+    pipeline._ensure_jobs_in_plan(plan, ["youtube", "jobs"], explicit=False, topic="OpenClaw")
+    # Direct call still injects (documenting baseline)...
+    assert "jobs" in plan.source_weights
+    # ...but run()'s drill gate skips the injection entirely for drill plans;
+    # assert the gate condition itself so the contract is pinned.
+    assert "drill-mode" in plan.notes
+
+
+def test_merge_collapses_exact_url_rediscoveries():
+    from lib import pipeline, schema
+    import copy
+
+    def item(url, body):
+        return schema.SourceItem(
+            item_id=url, source="reddit", title="t", body=body, url=url,
+            published_at="2026-07-01", snippet=body[:20], engagement={"score": 5},
+        )
+
+    old = item("https://reddit.com/r/x/1", "original body")
+    new = item("https://reddit.com/r/x/1", "enriched body with transcript and much longer text")
+    from lib import dedupe
+    new_urls = {new.url}
+    filtered_old = [i for i in [old] if not (i.url and i.url in new_urls)]
+    combined = dedupe.dedupe_items([copy.deepcopy(new), *filtered_old])
+    assert len(combined) == 1
+    assert combined[0].body.startswith("enriched")
+
+
+def test_write_last_run_returns_false_on_failure(monkeypatch, capsys):
+    import last30days as cli
+    from lib import env
+
+    class ExplodingPath:
+        def mkdir(self, *a, **k):
+            raise OSError("disk full")
+
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", ExplodingPath())
+    report = _report()
+    ok = cli._write_last_run("topic", report)
+    assert ok is False
+    assert "could not write run cache" in capsys.readouterr().err

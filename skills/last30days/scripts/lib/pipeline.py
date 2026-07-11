@@ -442,7 +442,10 @@ def run(
         for sq in plan.subqueries:
             if "grounding" not in sq.sources:
                 sq.sources.append("grounding")
-    _ensure_jobs_in_plan(plan, available, explicit=hiring_signals_mode, topic=topic)
+    if "drill-mode" not in plan.notes:
+        # Drill plans re-fetch only the sources that contributed to the matched
+        # cluster; the company-topic jobs injection must not widen that set.
+        _ensure_jobs_in_plan(plan, available, explicit=hiring_signals_mode, topic=topic)
 
     # Always-on planner trace. Emits one summary line plus one per subquery
     # so retrieval-breadth failures like the 2026-04-19 Hermes Agent Use Cases
@@ -903,7 +906,12 @@ def merge_drill_report(
     for source in sorted(all_sources):
         old_items = merged.items_by_source.get(source, [])
         new_items = drill_report.items_by_source.get(source, [])
-        combined = dedupe.dedupe_items([*copy.deepcopy(new_items), *old_items])
+        # Collapse exact URL matches first, preferring the drill's copy (it
+        # carries fresh transcripts/comments); fuzzy dedupe alone keeps both
+        # when enrichment changed the text substantially.
+        new_urls = {item.url for item in new_items if item.url}
+        kept_old = [item for item in old_items if not (item.url and item.url in new_urls)]
+        combined = dedupe.dedupe_items([*copy.deepcopy(new_items), *kept_old])
         old_unique = dedupe.dedupe_items(old_items)
         new_item_count += max(0, len(combined) - len(old_unique))
         merged_items[source] = combined
@@ -911,10 +919,14 @@ def merge_drill_report(
 
     merged.generated_at = drill_report.generated_at
     merged.query_plan = drill_report.query_plan
+    # The drill's retrieval window is the report's window now (a --days/--as-of
+    # override on the drill must not be mislabeled with the cached range).
+    merged.range_from = drill_report.range_from
+    merged.range_to = drill_report.range_to
     attempted_sources = {
         source
         for source, outcome in drill_report.source_status.items()
-        if outcome.attempted
+        if outcome.attempted or outcome.state == schema.SKIPPED_UNCONFIGURED
     }
     for source in attempted_sources:
         if source in drill_report.errors_by_source:
