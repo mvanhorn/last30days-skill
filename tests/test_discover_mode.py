@@ -491,3 +491,29 @@ def test_discovery_filters_incompatible_default_sources_but_rejects_explicit_onl
     )
     assert explicit_result.returncode == 2
     assert "unsupported: youtube" in explicit_result.stderr
+
+
+def test_detect_category_rejects_suffix_false_positives():
+    from lib import categories
+
+    assert categories.detect_category("Dubai agents") is None
+    assert categories.detect_category("Thai agents real estate") is None
+    assert categories.detect_category("AI agents") == "ai_agent_framework"
+    assert categories.detect_category("what's new in ai agent frameworks") == "ai_agent_framework"
+
+
+def test_discovery_engagement_excludes_rank_metadata():
+    from lib import pipeline, schema
+
+    items = [
+        schema.SourceItem(
+            item_id=f"digg-{i}", source="digg", title="t", body="b",
+            url=f"https://di.gg/{i}", published_at="2026-07-05", snippet="s",
+            engagement={"postCount": 5, "rank": 100 * (i + 1), "rank_score": 0.5},
+        )
+        for i in range(3)
+    ]
+    totals = pipeline._discovery_engagement(items)
+    assert totals["digg"]["postCount"] == 15
+    assert "rank" not in totals["digg"]
+    assert "rank_score" not in totals["digg"]

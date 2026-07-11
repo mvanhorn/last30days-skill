@@ -436,6 +436,11 @@ def _discovery_engagement(
         for field, value in item.engagement.items():
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 continue
+            # Rank/score/reach metadata is not additive engagement: summing
+            # Digg ranks across items fabricates a metric (agent-export uses
+            # the same counter-field rule).
+            if not schema._is_counter_field(field):
+                continue
             bucket[field] = bucket.get(field, 0) + value
     return {
         source: dict(sorted(metrics.items()))
