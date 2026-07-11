@@ -125,6 +125,24 @@ class HtmlPublishModuleTests(unittest.TestCase):
         with self.assertRaisesRegex(html_publish.HtmlPublishError, "unexpected JSON response"):
             html_publish.publish_html("<html></html>", opener=opener)
 
+    def test_publish_html_documents_publishes_each_named_document(self):
+        with mock.patch.object(
+            html_publish,
+            "publish_html",
+            side_effect=[{"url": "https://one.ht-ml.app"}, {"url": "https://two.ht-ml.app"}],
+        ) as publish:
+            results = html_publish.publish_html_documents(
+                {"one": "<html>one</html>", "two": "<html>two</html>"},
+                password="shared",
+            )
+
+        self.assertEqual(
+            {"one": {"url": "https://one.ht-ml.app"}, "two": {"url": "https://two.ht-ml.app"}},
+            results,
+        )
+        self.assertEqual(2, publish.call_count)
+        self.assertEqual("shared", publish.call_args_list[0].kwargs["password"])
+
 
 class HtmlPublishCliTests(unittest.TestCase):
     def test_publish_requires_html_emit(self):

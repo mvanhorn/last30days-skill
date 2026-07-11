@@ -213,8 +213,16 @@ def publish_rendered_html(
     return result
 
 
-def _publish_password_for_args(args: argparse.Namespace) -> str | None:
-    return (args.publish_password or env.read_secret_env("LAST30DAYS_PUBLISH_PASSWORD") or None)
+def _publish_password_for_args(
+    args: argparse.Namespace,
+    config: dict[str, object] | None = None,
+) -> str | None:
+    return (
+        args.publish_password
+        or env.read_secret_env("LAST30DAYS_PUBLISH_PASSWORD")
+        or (config or {}).get("LAST30DAYS_PUBLISH_PASSWORD")
+        or None
+    )
 
 
 def emit_output(
@@ -401,8 +409,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--synthesis-file", help="Markdown synthesis to embed in --emit=html output")
     parser.add_argument("--publish-html", action="store_true",
                         help="Publish --emit=html output to ht-ml.app (explicit opt-in; public by default)")
+    parser.add_argument("--publish", action="store_true",
+                        help="With 'library feed', publish the index, Atom feed, and briefs (explicit opt-in; public by default)")
     parser.add_argument("--publish-password",
-                        help="Optional shared password for --publish-html; prefer LAST30DAYS_PUBLISH_PASSWORD to avoid exposing secrets in process lists")
+                        help="Optional shared password for --publish-html or 'library feed --publish'; prefer LAST30DAYS_PUBLISH_PASSWORD to avoid exposing secrets in process lists")
     parser.add_argument("--store", action="store_true", help="Persist ranked findings to the SQLite research store")
     parser.add_argument("--x-handle", help="X handle for targeted supplemental search")
     parser.add_argument("--x-related", help="Comma-separated related X handles (searched with lower weight)")
@@ -1235,7 +1245,7 @@ def _render_save_and_print(
         try:
             publish_result = publish_rendered_html(
                 rendered,
-                password=_publish_password_for_args(args),
+                password=_publish_password_for_args(args, config),
                 companion_paths=publish_companion_paths,
             )
             sys.stderr.write(f"[last30days] Published HTML to {publish_result['url']}\n")
@@ -1338,7 +1348,7 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
 def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: list[str]) -> env.ConfigLoadPolicy:
     if args.no_browser_cookies:
         browser_mode = "off"
-    elif args.diagnose or args.preflight or topic.lower() == "doctor":
+    elif args.diagnose or args.preflight or topic.lower() in {"doctor", "library feed"}:
         # doctor is plan-only like --diagnose: it must never read cookies.
         browser_mode = "plan_only"
     elif topic.lower() == "setup":
@@ -1349,6 +1359,103 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
         browser_cookies=browser_mode,
         inspect_ignored_project_config=args.diagnose or args.preflight or topic.lower() == "doctor",
     )
+
+
+def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> int:
+    """Generate the local research index/feed and optionally publish it."""
+    from lib import feed, html_publish, library
+
+    if args.publish_html:
+        sys.stderr.write(
+            "[last30days] library feed uses --publish, not --publish-html.\n"
+        )
+        return 2
+    if args.output:
+        sys.stderr.write(
+            "[last30days] library feed writes index.html and feed.xml to --save-dir; "
+            "--output is not supported.\n"
+        )
+        return 2
+
+    memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
+    output_dir = memory_dir.resolve()
+    briefs_dir = library.DEFAULT_BRIEFS_DIR
+    entries, notes = library.scan_library(memory_dir, briefs_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    rendered_briefs_dir = output_dir / "briefs"
+    rendered_briefs_dir.mkdir(parents=True, exist_ok=True)
+
+    brief_documents: dict[str, str] = {}
+    for entry in entries:
+        rendered = html_render.render_library_brief(entry)
+        (rendered_briefs_dir / entry.output_name).write_text(rendered, encoding="utf-8")
+        brief_documents[entry.entry_id] = rendered
+
+    feed_xml = feed.render_atom(entries)
+    index_html = html_render.render_library_index(entries)
+    feed_path = output_dir / "feed.xml"
+    index_path = output_dir / "index.html"
+    feed_path.write_text(feed_xml, encoding="utf-8")
+    index_path.write_text(index_html, encoding="utf-8")
+
+    for note in notes:
+        sys.stderr.write(f"[last30days] Library note: {note}\n")
+    sys.stderr.write(
+        f"[last30days] Library feed generated {len(entries)} brief(s): "
+        f"{index_path} and {feed_path}\n"
+    )
+
+    if args.publish:
+        password = _publish_password_for_args(args, config)
+        entry_urls: dict[str, str] = {}
+        subscribe_url: str | None = None
+        try:
+            brief_results = html_publish.publish_html_documents(
+                brief_documents,
+                password=password,
+            )
+            entry_urls = {
+                entry_id: str(result["url"])
+                for entry_id, result in brief_results.items()
+            }
+            published_feed = html_render.scrub_publishable_digit_runs(
+                feed.render_atom(entries, entry_urls=entry_urls)
+            )
+            feed_result = html_publish.publish_html(published_feed, password=password)
+            subscribe_url = str(feed_result["url"])
+            published_index = html_render.render_library_index(
+                entries,
+                entry_urls=entry_urls,
+                feed_url=subscribe_url,
+            )
+            index_result = html_publish.publish_html(published_index, password=password)
+            index_url = str(index_result["url"])
+        except (html_publish.HtmlPublishError, KeyError, OSError) as exc:
+            sys.stderr.write(f"[last30days] Library publish failed: {exc}\n")
+            if entry_urls:
+                sys.stderr.write(
+                    f"[last30days] Partial publish: {len(entry_urls)} public brief "
+                    "page(s) were created before the failure.\n"
+                )
+            if subscribe_url:
+                sys.stderr.write(
+                    f"[last30days] Partial publish Atom URL: {subscribe_url}\n"
+                )
+            return 1
+
+        # Keep the local artifacts useful as a record of the live publication.
+        feed_path.write_text(
+            feed.render_atom(entries, entry_urls=entry_urls, feed_url=subscribe_url),
+            encoding="utf-8",
+        )
+        index_path.write_text(published_index, encoding="utf-8")
+        sys.stderr.write(f"[last30days] Published library to {index_url}\n")
+        sys.stderr.write(f"[last30days] Subscribe via Atom: {subscribe_url}\n")
+        print(f"Library: {index_url}\nSubscribe: {subscribe_url}")
+        return 0
+
+    print(f"Library: {index_path}\nSubscribe: {feed_path}")
+    return 0
 
 
 def main() -> int:
@@ -1378,6 +1485,11 @@ def _main(
     topic = " ".join(args.topic).strip()
     original_topic = topic
     _validate_extra_argv(parser, topic, extra_argv)
+    if args.publish and topic.lower() != "library feed":
+        sys.stderr.write(
+            "[last30days] --publish is only supported by the 'library feed' command.\n"
+        )
+        return 2
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
     _propagate_config_to_environ(config)
 
@@ -1426,6 +1538,9 @@ def _main(
             emit_json=(args.emit == "json" or "--json" in extra_argv),
             cached="--cached" in extra_argv,
         )
+
+    if topic.lower() == "library feed":
+        return _run_library_feed(args, config)
 
     # Handle setup subcommand
     if topic.lower() == "setup":

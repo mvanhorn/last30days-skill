@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any, Callable
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -60,6 +61,27 @@ def publish_html(
     if not isinstance(url, str) or not url.startswith("https://"):
         raise HtmlPublishError("publish endpoint response did not include a valid url")
     return result
+
+
+def publish_html_documents(
+    documents: Mapping[str, str],
+    *,
+    password: str | None = None,
+    endpoint: str = DEFAULT_ENDPOINT,
+    opener: Callable[..., Any] | None = None,
+    timeout: int = 30,
+) -> dict[str, dict[str, Any]]:
+    """Publish a named set of documents, preserving caller order in results."""
+    results: dict[str, dict[str, Any]] = {}
+    for name, content in documents.items():
+        results[name] = publish_html(
+            content,
+            password=password,
+            endpoint=endpoint,
+            opener=opener,
+            timeout=timeout,
+        )
+    return results
 
 
 def _error_message(status: int, detail: str) -> str:

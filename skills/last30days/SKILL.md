@@ -233,6 +233,15 @@ End of OUTPUT CONTRACT. The laws above are the contract; everything below is imp
 
 # HOW TO INVOKE THIS SKILL (READ FIRST, FOLLOW EVERY TIME)
 
+**LIBRARY FEED FAST PATH — this overrides every research/setup step below.** If the user asks to build, view, refresh, or subscribe to their saved research library/feed, do not run host WebSearch resolution, the first-run setup gate, topic preflight, or source research. Run:
+
+```bash
+LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+"${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" library feed --save-dir="${LAST30DAYS_MEMORY_DIR}"
+```
+
+Relay the generated local `index.html` and `feed.xml` paths. If the user explicitly asks to publish/share the whole library, explain that `ht-ml.app` pages are public by default and may be crawled or indexed, then follow the existing public-vs-password publishing choice. After consent, add `--publish`; for password protection, supply their unique shared password through `LAST30DAYS_PUBLISH_PASSWORD`, never as a visible command-line flag. Relay both the printed library URL and Atom subscribe URL. Never add `--publish` merely because the user asked to generate or open a local feed.
+
 **STEP 0 - RESOLVE HOST WEB SEARCH FIRST.** Your first action on every `/last30days` invocation is to determine whether this agent session has a usable web-search tool. Most agent harnesses do: it may be built in, exposed as a deferred tool, or provided by an installed connector such as Brave, Firecrawl, Exa, Serper, or another search provider.
 
 Use this capability rule:
@@ -2083,6 +2092,8 @@ Want another prompt? Just tell me what you're creating next.
 - Fetches public Reddit thread data from `reddit.com` for engagement metrics
 - Stores research findings in local SQLite database (watchlist mode only)
 - Saves research briefings as .md files to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`)
+- Generates a local `index.html`, Atom `feed.xml`, and rendered brief pages from saved research when the user asks for the library feed
+- Publishes the library, feed, and referenced briefs to `ht-ml.app` only after explicit opt-in; hosted pages are public by default unless the user chooses password protection
 - Provides `--preflight` for a safe human-readable permission summary before research; it does not read browser-cookie values, write files, or run live research
 
 **What this skill does NOT do:**

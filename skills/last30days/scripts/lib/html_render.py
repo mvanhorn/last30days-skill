@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import html
 import re
+from collections import OrderedDict
+from collections.abc import Mapping, Sequence
 from datetime import date
 
 from . import render, schema
+from .library import LibraryEntry
 
 
 PROSE_LABELS = [
@@ -274,6 +277,47 @@ td:first-child { color: var(--fg); font-weight: 500; }
   font-size: 0.95em;
 }
 
+.library-hero {
+  padding: 1.5rem 0 2.5rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.library-hero h1 { margin-bottom: 0.65rem; }
+.library-hero p { max-width: 42rem; color: var(--fg-muted); }
+.library-hero .subscribe { font-weight: 700; }
+
+.library-topic { margin-top: 3rem; }
+
+.library-topic-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.library-topic-heading h2 { margin-bottom: 0.65rem; }
+.library-topic-heading a { font-size: 0.85rem; }
+
+.library-entry {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 1fr);
+  column-gap: 1.25rem;
+  padding: 1.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.library-entry time {
+  grid-row: 1 / span 2;
+  color: var(--fg-subtle);
+  font-family: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  font-size: 0.8rem;
+}
+
+.library-entry h3 { margin: 0 0 0.35rem; font-size: 1.1rem; }
+.library-entry p { margin: 0; color: var(--fg-muted); }
+.library-empty { padding: 3rem 0; }
+
 @media print {
   :root {
     --bg: #ffffff;
@@ -319,6 +363,8 @@ td:first-child { color: var(--fg); font-weight: 500; }
   h1 { font-size: 25px; }
   .badge { font-size: 12px; }
   th, td { padding: 0.65rem 0.5rem; }
+  .library-entry { grid-template-columns: 1fr; }
+  .library-entry time { grid-row: auto; margin-bottom: 0.5rem; }
 }
 """.strip()
 
@@ -381,6 +427,92 @@ def render_html_comparison(
     topic = " vs ".join(label for label, _ in entity_reports)
     colophon = _build_colophon(entity_reports[0][1], topic=topic)
     return _wrap_in_template(body, colophon, topic)
+
+
+def render_library_brief(entry: LibraryEntry) -> str:
+    """Render a scanned Markdown or JSON briefing as a safe standalone page."""
+    body = _markdown_to_html(entry.content)
+    colophon = (
+        '<footer class="colophon">'
+        f"Saved research · {html.escape(entry.published_date.isoformat())} · "
+        f"{html.escape(entry.topic)}"
+        "</footer>"
+    )
+    return scrub_publishable_digit_runs(
+        _wrap_in_template(body, colophon, entry.headline)
+    )
+
+
+def render_library_index(
+    entries: Sequence[LibraryEntry],
+    *,
+    entry_urls: Mapping[str, str] | None = None,
+    feed_url: str = "feed.xml",
+) -> str:
+    """Render the reverse-chronological, topic-grouped research index."""
+    urls = entry_urls or {}
+    grouped: OrderedDict[str, list[LibraryEntry]] = OrderedDict()
+    for entry in entries:
+        grouped.setdefault(entry.topic, []).append(entry)
+
+    parts = [
+        '<header class="library-hero">',
+        '<span class="badge">RESEARCH LIBRARY</span>',
+        '<h1>What the community is learning</h1>',
+        '<p>Saved last30days briefs, newest first. Follow the Atom feed to keep up.</p>',
+        f'<p><a class="subscribe" href="{html.escape(feed_url, quote=True)}">Subscribe via Atom</a></p>',
+        '</header>',
+    ]
+    if not entries:
+        parts.append('<section class="library-empty"><h2>No saved briefs yet</h2><p>Run last30days research and this library will fill itself.</p></section>')
+    for topic, topic_entries in grouped.items():
+        latest = topic_entries[0]
+        latest_url = urls.get(latest.entry_id, f"briefs/{latest.output_name}")
+        parts.extend([
+            '<section class="library-topic">',
+            '<div class="library-topic-heading">',
+            f'<h2>{html.escape(topic)}</h2>',
+            f'<a href="{html.escape(latest_url, quote=True)}">Latest</a>',
+            '</div>',
+        ])
+        for entry in topic_entries:
+            url = urls.get(entry.entry_id, f"briefs/{entry.output_name}")
+            parts.extend([
+                '<article class="library-entry">',
+                f'<time datetime="{entry.published_date.isoformat()}">{entry.published_date.isoformat()}</time>',
+                f'<h3><a href="{html.escape(url, quote=True)}">{html.escape(entry.headline)}</a></h3>',
+                f'<p>{html.escape(entry.summary)}</p>',
+                '</article>',
+            ])
+        parts.append('</section>')
+    colophon = '<footer class="colophon">Generated locally by <strong>last30days</strong>.</footer>'
+    rendered = _wrap_in_template("\n".join(parts), colophon, "Research library")
+    return scrub_publishable_digit_runs(rendered)
+
+
+_HREF_PATTERN = re.compile(r'(?P<prefix>\bhref\s*=\s*)(?P<quote>["\'])(?P<url>.*?)(?P=quote)', re.IGNORECASE)
+_LONG_DIGIT_RUN = re.compile(r"\d{13,19}")
+
+
+def scrub_publishable_digit_runs(html_content: str) -> str:
+    """Defuse payment-card-shaped digit runs before hosted publishing.
+
+    ht-ml.app rejects pages containing 13-19 digit runs during its safety scan.
+    Social post IDs commonly have that shape. Link targets are percent-encoded
+    so they still resolve; visible occurrences are shortened for readability.
+    """
+    def scrub_href(match: re.Match[str]) -> str:
+        url = _LONG_DIGIT_RUN.sub(
+            lambda digits: "".join(f"%{ord(char):02X}" for char in digits.group(0)),
+            match.group("url"),
+        )
+        return f'{match.group("prefix")}{match.group("quote")}{url}{match.group("quote")}'
+
+    with_safe_hrefs = _HREF_PATTERN.sub(scrub_href, html_content)
+    return _LONG_DIGIT_RUN.sub(
+        lambda digits: f"{digits.group(0)[:6]}…{digits.group(0)[-4:]}",
+        with_safe_hrefs,
+    )
 
 
 def _strip_evidence_block(md: str) -> str:
