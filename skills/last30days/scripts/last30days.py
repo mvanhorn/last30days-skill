@@ -1051,6 +1051,11 @@ def _run_discover(args: argparse.Namespace, config: dict[str, object]) -> int:
             if source in pipeline.DISCOVERY_SOURCES
         ]
         if args.search is None or discovery_sources:
+            if args.search is None and requested_sources and not discovery_sources:
+                sys.stderr.write(
+                    "[last30days] LAST30DAYS_DEFAULT_SEARCH has no discovery-capable "
+                    "sources; using all discovery feeds for this sweep.\n"
+                )
             requested_sources = discovery_sources or None
     subreddits = (
         [value.strip().removeprefix("r/") for value in args.subreddits.split(",") if value.strip()]

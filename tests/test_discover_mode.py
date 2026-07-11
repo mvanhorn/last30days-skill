@@ -517,3 +517,38 @@ def test_discovery_engagement_excludes_rank_metadata():
     assert totals["digg"]["postCount"] == 15
     assert "rank" not in totals["digg"]
     assert "rank_score" not in totals["digg"]
+
+
+def test_domain_matching_preserves_non_plural_anchors():
+    from lib import pipeline
+
+    assert pipeline._matches_discovery_domain("AI bias", "Addressing AI bias in models")
+    assert pipeline._matches_discovery_domain("supply chain crisis", "The crisis deepens for chip supply")
+    # Plural matching still works both directions.
+    assert pipeline._matches_discovery_domain("AI agents", "The best AI agent stacks")
+
+
+def test_x_fallback_success_is_clean(monkeypatch):
+    from lib import pipeline, env
+
+    calls = []
+
+    def fake_fetch(backend, subquery, from_date, to_date, depth, config):
+        calls.append(backend)
+        if backend == "bird":
+            return [], "cookie expired"
+        return [object()], None
+
+    monkeypatch.setattr(pipeline, "_fetch_x_backend", fake_fetch)
+    monkeypatch.setattr(env, "x_backend_chain", lambda config: ["bird", "xquik"])
+    plan = pipeline.schema.DiscoveryPlan(
+        domain="ai agents", category=None, subreddits=[], sources=["x"],
+    )
+    items, error = pipeline._fetch_discovery_source(
+        "x", plan,
+        from_date="2026-06-11", to_date="2026-07-11", depth="quick",
+        mock=False, config={},
+    )
+    assert error is None
+    assert len(items) == 1
+    assert calls == ["bird", "xquik"]

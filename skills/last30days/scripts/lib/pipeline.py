@@ -318,10 +318,15 @@ def _mock_discovery_items(
 def _matches_discovery_domain(domain: str, text: str) -> bool:
     """Require a distinctive domain term, not a generic token such as ``AI``."""
     def terms(value: str) -> set[str]:
-        words = {
-            word[:-1] if len(word) > 4 and word.endswith("s") else word
-            for word in relevance.tokenize(value)
-        }
+        # Keep BOTH the surface form and the naive stem: replacing the token
+        # broke non-plurals ("bias" -> "bia", "crisis" -> "crisi") so in-domain
+        # listings stopped intersecting. The union preserves plural matching
+        # without corrupting the anchor.
+        words: set[str] = set()
+        for word in relevance.tokenize(value):
+            words.add(word)
+            if len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
+                words.add(word[:-1])
         return words
 
     domain_terms = terms(domain)
@@ -385,7 +390,11 @@ def _fetch_discovery_source(
                 backend, subquery, from_date, to_date, depth, config,
             )
             if items:
-                return items, last_error or error or None
+                # A successful fallback is a clean outcome; earlier backend
+                # errors are observability, not degradation.
+                if last_error:
+                    print(f"[x] earlier backend failed: {last_error}", file=sys.stderr)
+                return items, None
             if error:
                 last_error = f"{backend}: {error}"
         return [], last_error or None
