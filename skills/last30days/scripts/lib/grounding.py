@@ -4,10 +4,42 @@ from __future__ import annotations
 
 import sys
 import urllib.parse
+from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse
 
-from . import dates, env, http, web_search_keyless
+from . import dates, env, http, schema, web_search_keyless
+
+
+@dataclass(frozen=True)
+class GroundedClaimText:
+    """Candidate text with its exact primary evidence item."""
+
+    candidate_id: str
+    title: str
+    summary: str
+    item: schema.SourceItem
+
+
+def claim_source_map(report: schema.Report) -> dict[str, GroundedClaimText]:
+    """Expose only candidate claims that have a clean primary-item trace.
+
+    Freshness verification deliberately starts here instead of scanning all
+    report prose. A candidate without a primary ``SourceItem`` cannot produce
+    an auditable per-claim verdict.
+    """
+    grounded: dict[str, GroundedClaimText] = {}
+    for candidate in report.ranked_candidates:
+        item = schema.candidate_primary_item(candidate)
+        if item is None:
+            continue
+        grounded[candidate.candidate_id] = GroundedClaimText(
+            candidate_id=candidate.candidate_id,
+            title=candidate.title,
+            summary=candidate.snippet or item.snippet or item.body,
+            item=item,
+        )
+    return grounded
 
 
 # ---------------------------------------------------------------------------

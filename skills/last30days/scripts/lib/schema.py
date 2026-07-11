@@ -155,6 +155,13 @@ RunOutcomeState = Literal[
     "error",
 ]
 
+FreshnessVerdictState = Literal[
+    "current",
+    "stale",
+    "contradicted",
+    "unsupported",
+]
+
 NO_RESULTS = health.NO_RESULTS
 PARTIAL = health.PARTIAL
 RATE_LIMITED = health.RATE_LIMITED
@@ -206,6 +213,26 @@ class SourceOutcome:
 
 
 @dataclass(frozen=True)
+class FreshnessVerdict:
+    """Act-time verification result for one source-grounded claim."""
+
+    claim_id: str
+    candidate_id: str
+    claim: str
+    source: str
+    source_item_id: str
+    verdict: FreshnessVerdictState
+    checked_at: str
+    source_url: str = ""
+    source_timestamp: str | None = None
+    evidence_url: str = ""
+    evidence_timestamp: str | None = None
+    original_value: Any = None
+    current_value: Any = None
+    detail: str | None = None
+
+
+@dataclass(frozen=True)
 class LibraryContext:
     """One prior research run relevant to the current report."""
 
@@ -231,6 +258,7 @@ class Report:
     items_by_source: dict[str, list[SourceItem]]
     errors_by_source: dict[str, str]
     source_status: dict[str, SourceOutcome] = field(default_factory=dict)
+    freshness_verdicts: list[FreshnessVerdict] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     artifacts: dict[str, Any] = field(default_factory=dict)
     library_context: list[LibraryContext] = field(default_factory=list)
@@ -463,6 +491,26 @@ def report_from_dict(payload: dict[str, Any]) -> Report:
             )
             for source, outcome in (payload.get("source_status") or {}).items()
         },
+        freshness_verdicts=[
+            FreshnessVerdict(
+                claim_id=item["claim_id"],
+                candidate_id=item["candidate_id"],
+                claim=item["claim"],
+                source=item["source"],
+                source_item_id=item["source_item_id"],
+                verdict=item["verdict"],
+                checked_at=item["checked_at"],
+                source_url=item.get("source_url") or "",
+                source_timestamp=item.get("source_timestamp"),
+                evidence_url=item.get("evidence_url") or "",
+                evidence_timestamp=item.get("evidence_timestamp"),
+                original_value=item.get("original_value"),
+                current_value=item.get("current_value"),
+                detail=item.get("detail"),
+            )
+            for item in (payload.get("freshness_verdicts") or [])
+            if isinstance(item, dict)
+        ],
         warnings=list(payload.get("warnings") or []),
         artifacts=dict(payload.get("artifacts") or {}),
         library_context=[
@@ -509,7 +557,7 @@ def candidate_primary_item(candidate: Candidate) -> SourceItem | None:
     return candidate.source_items[0]
 
 
-AGENT_EXPORT_SCHEMA_VERSION = "1.0"
+AGENT_EXPORT_SCHEMA_VERSION = "1.1"
 DISCOVERY_EXPORT_SCHEMA_VERSION = "1.0"
 
 
@@ -644,6 +692,9 @@ def to_agent_export(report: Report) -> dict[str, Any]:
             source: outcome.state
             for source, outcome in sorted(report.source_status.items())
         },
+        "freshness_verdicts": [
+            _drop_none(asdict(verdict)) for verdict in report.freshness_verdicts
+        ],
         "clusters": exported_clusters,
         "results": results,
     }

@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "query": "AI coding agents",
   "generated_at": "2026-07-10T00:00:00Z",
   "window_days": 30,
@@ -12,6 +12,7 @@
     "x": "ok",
     "youtube": "rate-limited"
   },
+  "freshness_verdicts": [],
   "clusters": [
     {
       "title": "Agents move into daily coding workflows",

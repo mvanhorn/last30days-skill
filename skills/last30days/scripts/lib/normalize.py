@@ -663,7 +663,7 @@ def _normalize_polymarket(
         "liquidity": item.get("liquidity") or 0,
     }
     return _source_item(
-        item_id=str(item.get("id") or f"PM{index + 1}"),
+        item_id=str(item.get("event_id") or item.get("id") or f"PM{index + 1}"),
         source=source,
         title=title or question or f"Polymarket event {index + 1}",
         body="\n".join(part for part in [title, question, str(item.get("price_movement") or "")] if part),
@@ -677,6 +677,7 @@ def _normalize_polymarket(
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=str(item.get("price_movement") or ""),
         metadata={
+            "event_id": item.get("event_id"),
             "question": question,
             "end_date": item.get("end_date"),
             "outcome_prices": item.get("outcome_prices") or [],

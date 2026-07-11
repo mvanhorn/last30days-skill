@@ -48,7 +48,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import dates, env, html_render, http, permission_preflight, pipeline, registers, render, schema, ui
+from lib import dates, env, freshness, html_render, http, permission_preflight, pipeline, registers, render, schema, ui
 
 _child_pids: set[int] = set()
 _child_pids_lock = threading.Lock()
@@ -427,6 +427,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search", help="Comma-separated source list")
     parser.add_argument("--quick", action="store_true", help="Lower-latency retrieval profile")
     parser.add_argument("--deep", action="store_true", help="Higher-recall retrieval profile")
+    parser.add_argument(
+        "--verify-freshness",
+        action="store_true",
+        help="Re-check source-grounded claims after research, or verify the cached report when no topic is supplied",
+    )
     parser.add_argument(
         "--drill",
         metavar="TARGET",
@@ -888,6 +893,78 @@ def _load_last_report_cache(
         return None
 
 
+def _config_truthy(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _freshness_enabled(args: argparse.Namespace, config: dict[str, object]) -> bool:
+    return bool(args.verify_freshness or _config_truthy(config.get("LAST30DAYS_VERIFY_FRESHNESS")))
+
+
+def _update_cached_freshness(
+    cache_path: Path,
+    report: schema.Report,
+    entity_reports: list[tuple[str, schema.Report]] | None,
+) -> bool:
+    """Rewrite cached report bodies without extending the research-cache TTL."""
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("schema") != REPORT_CACHE_VERSION:
+            return False
+        existing = payload.get("reports") or []
+        if entity_reports:
+            cached_reports = entity_reports
+        else:
+            label = (
+                str(existing[0].get("entity") or report.topic)
+                if existing and isinstance(existing[0], dict)
+                else report.topic
+            )
+            cached_reports = [(label, report)]
+        payload["reports"] = [
+            {"entity": label, "report": schema.to_dict(cached_report)}
+            for label, cached_report in cached_reports
+        ]
+        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return True
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        sys.stderr.write(
+            f"[last30days] warning: could not update freshness cache: {exc}\n"
+        )
+        return False
+
+
+def _verify_report_set(
+    report: schema.Report,
+    entity_reports: list[tuple[str, schema.Report]] | None,
+    *,
+    allow_network: bool,
+) -> None:
+    reports = [item for _, item in entity_reports] if entity_reports else [report]
+    for current_report in reports:
+        freshness.verify_report(current_report, allow_network=allow_network)
+
+
+def _run_cached_freshness(
+    args: argparse.Namespace,
+    config: dict[str, object],
+) -> int:
+    cached = _load_last_report_cache(
+        None,
+        ttl_seconds=_report_cache_ttl_seconds(config),
+    )
+    if cached is None:
+        sys.stderr.write("[last30days] No fresh cached report; run a research pass first.\n")
+        return 2
+    report, entity_reports, cache_path = cached
+    _verify_report_set(report, entity_reports, allow_network=not args.mock)
+    if _update_cached_freshness(cache_path, report, entity_reports):
+        sys.stderr.write(f"[last30days] Updated freshness verdicts in {cache_path}\n")
+    else:
+        sys.stderr.write("[last30days] warning: freshness cache update failed\n")
+    return _render_save_and_print(args, report, entity_reports, None, config)
+
+
 def _drill_config(config: dict[str, object], sources: list[str]) -> dict[str, object]:
     """Enable configured comment enrichments for a deep follow-up."""
     drill_config = dict(config)
@@ -1023,6 +1100,8 @@ def _run_drill(
         matched_clusters,
         target=args.drill,
     )
+    if _freshness_enabled(args, config):
+        freshness.verify_report(merged, allow_network=not args.mock)
     if _write_last_run(report.topic, merged):
         sys.stderr.write(f"[last30days] Updated drill cache in {cache_path}\n")
     else:
@@ -1855,6 +1934,9 @@ def _main(
             ]
         return _run_drill(args, config)
 
+    if args.verify_freshness and not topic:
+        return _run_cached_freshness(args, config)
+
     if args.lookback_days is None:
         args.lookback_days = 30
 
@@ -2273,6 +2355,9 @@ def _main(
         progress.end_processing()
         progress.show_error(str(exc))
         raise
+    if _freshness_enabled(args, config):
+        _verify_report_set(report, entity_reports, allow_network=not args.mock)
+
     _show_runtime_ui(
         report, progress, diag,
         suppress_web_promo=bool(external_plan or comp_plan),

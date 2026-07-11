@@ -62,7 +62,7 @@ class CliV3Tests(unittest.TestCase):
         )
         self.assertEqual(0, result.returncode, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual("1.0", payload["schema_version"])
+        self.assertEqual("1.1", payload["schema_version"])
         self.assertEqual("test topic", payload["query"])
         self.assertIn("results", payload)
         self.assertIn("clusters", payload)

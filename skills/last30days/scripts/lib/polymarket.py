@@ -10,12 +10,13 @@ import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote_plus, urlencode
+from urllib.parse import quote, quote_plus, urlencode
 
 from . import http, log
 from .relevance import LOW_SIGNAL_QUERY_TOKENS, token_overlap_relevance
 
 GAMMA_SEARCH_URL = "https://gamma-api.polymarket.com/public-search"
+GAMMA_EVENTS_URL = "https://gamma-api.polymarket.com/events"
 
 # Pages to fetch per query (API returns 5 events per page, limit param is a no-op)
 DEPTH_CONFIG = {
@@ -792,3 +793,54 @@ def parse_polymarket_response(response: Dict[str, Any], topic: str = "") -> List
 
     cap = response.get("_cap", len(items))
     return items[:cap]
+
+
+def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
+    """Re-fetch one event datum through the replay-aware HTTP wrapper."""
+    event_id = str(getattr(item, "metadata", {}).get("event_id") or "").strip()
+    slug_match = re.search(r"/event/([^/?#]+)", str(getattr(item, "url", "")))
+    if event_id:
+        payload = http.request(
+            "GET", f"{GAMMA_EVENTS_URL}/{quote(event_id)}", timeout=10, retries=2,
+        )
+    elif slug_match:
+        payload = http.request(
+            "GET", GAMMA_EVENTS_URL, params={"slug": slug_match.group(1)},
+            timeout=10, retries=2,
+        )
+    else:
+        raise ValueError("Polymarket item has no event id or slug")
+
+    if isinstance(payload, list):
+        event = payload[0] if payload else None
+    elif isinstance(payload, dict) and isinstance(payload.get("events"), list):
+        event = (payload.get("events") or [None])[0]
+    else:
+        event = payload
+    if not isinstance(event, dict):
+        raise KeyError("Polymarket event was not found")
+    parsed = parse_polymarket_response({"events": [event]})
+    if not parsed:
+        raise KeyError("Polymarket event is closed, unavailable, or malformed")
+    refreshed = parsed[0]
+    if datum_key == "end_date":
+        value = refreshed.get("end_date")
+    else:
+        if "\x1f" in datum_key:
+            outcome_name, raw_occurrence = datum_key.rsplit("\x1f", 1)
+            occurrence = int(raw_occurrence)
+        else:
+            outcome_name, occurrence = datum_key, 0
+        matches = [
+            price
+            for name, price in refreshed.get("outcome_prices") or []
+            if str(name).casefold() == outcome_name.casefold()
+        ]
+        value = matches[occurrence] if occurrence < len(matches) else None
+    if value is None:
+        raise KeyError(f"Polymarket datum {datum_key!r} was not found")
+    return {
+        "value": value,
+        "url": str(getattr(item, "url", "")),
+        "timestamp": event.get("updatedAt"),
+    }

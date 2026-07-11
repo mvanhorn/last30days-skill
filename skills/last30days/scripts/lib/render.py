@@ -272,8 +272,55 @@ def _render_ranked_clusters(
             candidate = candidate_by_id.get(candidate_id)
             if not candidate:
                 continue
-            lines.extend(_render_candidate(candidate, prefix=f"{rep_index}."))
+            lines.extend(_render_candidate(candidate, prefix=f"{rep_index}.", report=report))
         lines.append("")
+    return lines
+
+
+_FRESHNESS_PRIORITY = {
+    "contradicted": 0,
+    "stale": 1,
+    "unsupported": 2,
+    "current": 3,
+}
+
+
+def _candidate_freshness_flag(report: schema.Report, candidate_id: str) -> str:
+    states = {
+        verdict.verdict
+        for verdict in report.freshness_verdicts
+        if verdict.candidate_id == candidate_id
+    }
+    if not states:
+        return ""
+    ordered = sorted(states, key=lambda state: _FRESHNESS_PRIORITY[state])
+    return " [freshness:" + ",".join(ordered) + "]"
+
+
+def _render_freshness_verdicts(report: schema.Report) -> list[str]:
+    if not report.freshness_verdicts:
+        return []
+    lines = [
+        "## Freshness Verification",
+        "",
+        "| Verdict | Claim | Evidence | Checked |",
+        "| --- | --- | --- | --- |",
+    ]
+    for verdict in report.freshness_verdicts:
+        claim = verdict.claim.replace("|", "\\|")
+        if verdict.verdict == "stale":
+            claim += (
+                f" (was {verdict.original_value}, now {verdict.current_value})"
+            )
+        evidence_label = verdict.evidence_timestamp or verdict.source_timestamp or "source"
+        evidence = (
+            f"[{evidence_label}]({verdict.evidence_url})"
+            if verdict.evidence_url
+            else evidence_label
+        )
+        lines.append(
+            f"| **{verdict.verdict}** | {claim} | {evidence} | {verdict.checked_at} |"
+        )
     return lines
 
 
@@ -449,6 +496,11 @@ def render_compact(
     lines.append("")
     lines.append("<!-- END EVIDENCE FOR SYNTHESIS -->")
 
+    freshness_verdicts = _render_freshness_verdicts(report)
+    if freshness_verdicts:
+        lines.append("")
+        lines.extend(freshness_verdicts)
+
     pre_research_warning = _render_pre_research_warning(report)
     if pre_research_warning:
         lines.append("")
@@ -519,6 +571,9 @@ def render_for_html(
                 include_source_diagnostics=False,
             ),
         ])
+    freshness_verdicts = _render_freshness_verdicts(report)
+    if freshness_verdicts:
+        lines.extend(["", *freshness_verdicts])
     # Data quality warnings are NOT rendered into the HTML artifact. The HTML
     # is meant to be shared (Slack, email, Notion); recipients haven't asked
     # for technical commentary about how the run was produced. Generators see
@@ -554,6 +609,10 @@ def render_for_html_comparison(
     ]
     if synthesis_md:
         lines.extend(["", synthesis_md.strip()])
+    for label, report in entity_reports:
+        freshness_verdicts = _render_freshness_verdicts(report)
+        if freshness_verdicts:
+            lines.extend(["", f"## {label}", "", *freshness_verdicts])
     # Comparison data quality notes also go to stderr, not into the artifact.
     _append_html_footer(lines, main_report, save_path)
     return "\n".join(lines).strip() + "\n"
@@ -964,6 +1023,11 @@ def render_comparison_multi(
     lines.append("<!-- END EVIDENCE FOR SYNTHESIS -->")
     lines.append("")
 
+    for label, report in entity_reports:
+        freshness_verdicts = _render_freshness_verdicts(report)
+        if freshness_verdicts:
+            lines.extend([f"## {label}", "", *freshness_verdicts, ""])
+
     # Reuse the existing comparison scaffold by feeding it the synthesized
     # topic. _parse_comparison_entities splits on " vs " so the scaffold
     # picks up all N entities automatically.
@@ -1059,7 +1123,7 @@ def _render_entity_evidence_block(
             candidate = candidate_by_id.get(candidate_id)
             if not candidate:
                 continue
-            out.extend(_render_candidate(candidate, prefix=f"{rep_index}."))
+            out.extend(_render_candidate(candidate, prefix=f"{rep_index}.", report=report))
         out.append("")
 
     best_takes = _render_best_takes(
@@ -1158,7 +1222,7 @@ def render_full(report: schema.Report) -> str:
             candidate = candidate_by_id.get(cid)
             if not candidate:
                 continue
-            lines.extend(_render_candidate(candidate, prefix=f"{rep_index}."))
+            lines.extend(_render_candidate(candidate, prefix=f"{rep_index}.", report=report))
         lines.append("")
 
     fun_params = _FUN_LEVELS["medium"]
@@ -1244,6 +1308,10 @@ def render_full(report: schema.Report) -> str:
                     lines.append(f"  Closes: {end_date}")
             lines.append("")
 
+    freshness_verdicts = _render_freshness_verdicts(report)
+    if freshness_verdicts:
+        lines.extend(freshness_verdicts)
+        lines.append("")
     lines.extend(_render_stats(report))
     lines.extend(_render_source_coverage(report))
     return "\n".join(lines).strip() + "\n"
@@ -1301,6 +1369,12 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
     if report.warnings:
         lines.append("Warnings:")
         lines.extend(f"- {warning}" for warning in report.warnings)
+    if report.freshness_verdicts:
+        lines.append("Freshness verdicts:")
+        lines.extend(
+            f"- {verdict.verdict}: {verdict.claim} ({verdict.evidence_url or verdict.source_url})"
+            for verdict in report.freshness_verdicts
+        )
     return "\n".join(lines).strip() + "\n"
 
 
@@ -1400,6 +1474,11 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
         lines.append(f"- **{cluster.title}**: {source_tags}")
     lines.append("")
 
+    freshness_verdicts = _render_freshness_verdicts(report)
+    if freshness_verdicts:
+        lines.extend(freshness_verdicts)
+        lines.append("")
+
     return "\n".join(lines).strip() + "\n"
 
 
@@ -1484,7 +1563,11 @@ def _render_hiring_signals(report: schema.Report) -> list[str]:
     return out
 
 
-def _render_candidate(candidate: schema.Candidate, prefix: str) -> list[str]:
+def _render_candidate(
+    candidate: schema.Candidate,
+    prefix: str,
+    report: schema.Report | None = None,
+) -> list[str]:
     primary = schema.candidate_primary_item(candidate)
     detail_parts = [
         _format_date(primary),
@@ -1502,7 +1585,8 @@ def _render_candidate(candidate: schema.Candidate, prefix: str) -> list[str]:
         detail_parts.append("interaction:→@" + ",@".join(interaction_targets[:2]))
     details = " | ".join(part for part in detail_parts if part)
     lines = [
-        f"{prefix} [{schema.candidate_source_label(candidate)}] {candidate.title}",
+        f"{prefix} [{schema.candidate_source_label(candidate)}] {candidate.title}"
+        + (_candidate_freshness_flag(report, candidate.candidate_id) if report else ""),
         f"   - {details}",
         f"   - URL: {candidate.url}",
     ]

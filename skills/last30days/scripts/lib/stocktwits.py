@@ -279,6 +279,30 @@ def aggregate_sentiment(messages: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
+    """Re-fetch the current symbol-stream sentiment ratio without pagination."""
+    from . import http
+
+    if datum_key != "pct_bullish":
+        raise KeyError(f"Unsupported StockTwits datum: {datum_key}")
+    symbol = str(item.metadata.get("symbol") or item.container or "").strip().upper()
+    if not symbol:
+        raise ValueError("StockTwits item has no symbol")
+    url = _STREAM_URL.format(symbol=urllib.parse.quote(symbol))
+    data = http.request("GET", url, timeout=10, retries=2)
+    if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
+        raise KeyError("StockTwits symbol stream was not returned")
+    aggregate = aggregate_sentiment(data["messages"])
+    value = aggregate.get("pct_bullish")
+    if value is None:
+        raise KeyError("StockTwits stream has no tagged sentiment")
+    newest = max(
+        (str(message.get("created_at") or "") for message in data["messages"]),
+        default="",
+    )
+    return {"value": value, "url": item.url, "timestamp": newest or None}
+
+
 # --------------------------------------------------------------------------- #
 # Standalone CLI (ad-hoc use today, before any engine wiring)                  #
 #   python3 stocktwits.py "ServiceNow stock"                                   #

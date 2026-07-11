@@ -37,15 +37,20 @@ When `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` route a run through a config
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | string | Agent export contract version. The current version is `1.0`. |
+| `schema_version` | string | Agent export contract version. The current version is `1.1`. |
 | `query` | string | The research topic supplied to the engine. |
 | `generated_at` | string | UTC generation timestamp in RFC 3339 format. |
 | `window_days` | integer | Number of days between the report's start and end dates. |
 | `source_status` | object | Map of source name to the outcome observed during this run. |
+| `freshness_verdicts` | array | Per-claim act-time verdicts produced by `--verify-freshness`; empty when verification was not requested or no conservative claims were extractable. |
 | `clusters` | array | Ranked groups of related results. |
 | `results` | array | Ranked, flat evidence results for downstream processing. |
 
 All top-level fields are always present. Empty runs contain empty `clusters` and `results` arrays. Sources appear in `source_status` when the run recorded an outcome for them.
+
+## `freshness_verdicts`
+
+Each entry identifies the grounded claim and candidate, its primary source item, the typed `verdict` (`current`, `stale`, `contradicted`, or `unsupported`), the original and re-derived values when applicable, and source/evidence URLs and timestamps. `stale` means a successful point re-fetch returned a moved value; `contradicted` means a newer item in the report window explicitly disagrees; `unsupported` means the datum could not be re-checked, including degraded `source_status` outcomes. Consumers can gate actions on `verdict == "current"` without treating an unreachable source as evidence that a claim moved.
 
 ## `source_status`
 
@@ -98,12 +103,12 @@ Comparison queries use an envelope so each entity keeps its own contract:
 
 ```json
 {
-  "schema_version": "1.0",
+  "schema_version": "1.1",
   "comparison": true,
   "entities": ["OpenAI", "Anthropic"],
   "reports": [
-    {"entity": "OpenAI", "report": {"schema_version": "1.0", "query": "OpenAI"}},
-    {"entity": "Anthropic", "report": {"schema_version": "1.0", "query": "Anthropic"}}
+    {"entity": "OpenAI", "report": {"schema_version": "1.1", "query": "OpenAI"}},
+    {"entity": "Anthropic", "report": {"schema_version": "1.1", "query": "Anthropic"}}
   ]
 }
 ```
