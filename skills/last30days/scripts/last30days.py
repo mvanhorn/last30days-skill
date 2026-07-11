@@ -122,11 +122,15 @@ def slugify(value: str) -> str:
 
 
 def _report_has_private_corpus(report: schema.Report) -> bool:
+    items_by_source = getattr(report, "items_by_source", {})
+    if isinstance(items_by_source, dict) and items_by_source.get("corpus"):
+        return True
     candidates = getattr(report, "ranked_candidates", ())
     if not isinstance(candidates, (list, tuple)):
         return False
     return any(
         candidate.source == "corpus"
+        or any(item.source == "corpus" for item in candidate.source_items)
         for candidate in candidates
     )
 
@@ -183,9 +187,7 @@ def save_output(
         )
     else:
         content = render.render_full(report)
-    private_corpus = (
-        _report_has_private_corpus(report) if private is None else private
-    ) and emit in {"md", "html"}
+    private_corpus = _report_has_private_corpus(report) or bool(private)
     _ensure_output_directory(path, private=private_corpus)
     encoded = content.encode("utf-8")
     for candidate in candidates:
@@ -431,14 +433,21 @@ def _scoped_store_db(args: argparse.Namespace) -> Path | None:
 def persist_report(report: schema.Report, store_db: Path | None = None) -> dict[str, int]:
     import store
 
+    private_corpus = _report_has_private_corpus(report)
     with store.scoped_db(store_db):
+        if private_corpus:
+            store.ensure_private_db_files()
         store.init_db()
+        if private_corpus:
+            store.ensure_private_db_files()
         topic_row = store.add_topic(report.topic)
         topic_id = topic_row["id"]
         source_mode = ",".join(sorted(report.items_by_source)) or "v3"
         run_id = store.record_run(topic_id, source_mode=source_mode, status="running")
         try:
             findings = store.findings_from_report(report)
+            if private_corpus:
+                store.ensure_private_db_files()
             counts = store.store_findings(run_id, topic_id, findings)
             store.update_run(
                 run_id,
@@ -450,6 +459,9 @@ def persist_report(report: schema.Report, store_db: Path | None = None) -> dict[
         except Exception as exc:
             store.update_run(run_id, status="failed", error_message=str(exc)[:500])
             raise
+        finally:
+            if private_corpus:
+                store.ensure_private_db_files()
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1460,7 +1472,7 @@ def _render_save_and_print(
         entity_reports
         and any(_report_has_private_corpus(entity) for _label, entity in entity_reports)
     )
-    private_saved_format = has_private_corpus and args.emit in {"md", "html"}
+    private_saved_format = has_private_corpus
     publish_companion_paths: list[Path] = []
     if args.output:
         output_path = save_rendered_output(
@@ -1499,10 +1511,7 @@ def _render_save_and_print(
                     suffix=args.save_suffix or "",
                     synthesis_md=synthesis_md,
                     json_profile=args.json_profile,
-                    private=(
-                        _report_has_private_corpus(entity_report)
-                        and args.emit in {"md", "html"}
-                    ),
+                    private=_report_has_private_corpus(entity_report),
                 )
                 comparison_peer_paths.append(peer_path)
                 sys.stderr.write(f"[last30days] Saved output to {peer_path}\n")

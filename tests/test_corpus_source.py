@@ -158,6 +158,33 @@ def test_result_budget_caps_one_corpus_stream(tmp_path):
     assert len(_scan(tmp_path, limit=3).items) == 3
 
 
+def test_file_cap_is_shared_fairly_across_corpus_roots(tmp_path, monkeypatch):
+    archive = tmp_path / "archive"
+    relevant = tmp_path / "relevant"
+    archive.mkdir()
+    relevant.mkdir()
+    for index in range(4):
+        (archive / f"mcp-archive-{index}.md").write_text(
+            f"MCP servers archived note {index}", encoding="utf-8"
+        )
+    later = relevant / "mcp-current.md"
+    later.write_text("MCP servers relevant current note", encoding="utf-8")
+    monkeypatch.setattr(corpus, "MAX_FILES", 4)
+
+    result = corpus.search(
+        "MCP servers",
+        [archive, relevant],
+        from_date="2026-06-10",
+        to_date="2026-07-10",
+        all_time=True,
+        cache_dir=tmp_path / "cache",
+    )
+
+    assert result.files_scanned <= corpus.MAX_FILES
+    assert any(item.metadata["path"].startswith(str(archive)) for item in result.items)
+    assert any(item.metadata["path"] == str(later) for item in result.items)
+
+
 def test_pipeline_runs_corpus_outside_network_executor(tmp_path, monkeypatch):
     note = tmp_path / "mcp-private.md"
     note.write_text("MCP servers use a secret local transport", encoding="utf-8")
@@ -358,6 +385,45 @@ def test_corpus_findings_persist_with_stable_opaque_keys(tmp_path, monkeypatch):
         db_path=tmp_path / "missing-library.db",
         store_db_path=db_path,
     ) == []
+
+
+def test_persist_report_hardens_corpus_store_and_sidecars(tmp_path, monkeypatch):
+    db_path = tmp_path / "store" / "research.db"
+    monkeypatch.setattr(store, "_db_override", db_path)
+    original_findings_from_report = store.findings_from_report
+    original_store_findings = store.store_findings
+    original_update_run = store.update_run
+
+    def make_permissive():
+        db_path.chmod(0o644)
+        for suffix in ("-wal", "-shm"):
+            sidecar = Path(f"{db_path}{suffix}")
+            sidecar.touch(mode=0o644)
+            sidecar.chmod(0o644)
+
+    def findings_from_report_with_permissive_store(*args, **kwargs):
+        findings = original_findings_from_report(*args, **kwargs)
+        make_permissive()
+        return findings
+
+    def store_findings_after_private_check(*args, **kwargs):
+        for artifact in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+            assert artifact.stat().st_mode & 0o777 == 0o600
+        return original_store_findings(*args, **kwargs)
+
+    def update_run_with_permissive_sidecars(*args, **kwargs):
+        result = original_update_run(*args, **kwargs)
+        make_permissive()
+        return result
+
+    monkeypatch.setattr(store, "findings_from_report", findings_from_report_with_permissive_store)
+    monkeypatch.setattr(store, "store_findings", store_findings_after_private_check)
+    monkeypatch.setattr(store, "update_run", update_run_with_permissive_sidecars)
+
+    cli.persist_report(_privacy_report())
+
+    for artifact in (db_path, Path(f"{db_path}-wal"), Path(f"{db_path}-shm")):
+        assert artifact.stat().st_mode & 0o777 == 0o600
 
 
 def test_agent_export_excludes_corpus_by_default_and_allows_explicit_opt_in():
@@ -630,6 +696,12 @@ def test_every_corpus_bearing_saved_artifact_is_owner_only(tmp_path):
     with mock.patch.object(library_index, "sync_library"):
         markdown = cli.save_output(report, "md", str(markdown_dir))
         html = cli.save_output(report, "html", str(html_dir))
+        inferred_private = cli.save_output(
+            report, "compact", str(tmp_path / "private" / "inferred")
+        )
+        forced_public = cli.save_output(
+            report, "json", str(tmp_path / "private" / "forced-public"), private=False
+        )
     explicit = cli.save_rendered_output(
         cli.emit_output(report, "html"),
         str(tmp_path / "private" / "explicit" / "report.html"),
@@ -643,13 +715,58 @@ def test_every_corpus_bearing_saved_artifact_is_owner_only(tmp_path):
         db_path=db_path,
     )
 
-    for artifact in (markdown, html, explicit, db_path):
+    for artifact in (markdown, html, inferred_private, forced_public, explicit, db_path):
         assert artifact.stat().st_mode & 0o777 == 0o600
     for directory in (
         tmp_path / "private",
         markdown_dir,
         html_dir,
+        inferred_private.parent,
+        forced_public.parent,
         explicit.parent,
         db_path.parent,
     ):
         assert directory.stat().st_mode & 0o777 == 0o700
+
+
+def test_cli_saves_every_corpus_bearing_format_owner_only(tmp_path, monkeypatch):
+    report = _privacy_report()
+    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        cli.pipeline,
+        "diagnose",
+        lambda *_args, **_kwargs: {"available_sources": ["corpus"]},
+    )
+    monkeypatch.setattr(cli.pipeline, "run", lambda **_kwargs: report)
+    monkeypatch.setattr(cli, "_write_last_run", lambda *_args, **_kwargs: True)
+    monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
+    monkeypatch.delenv("LAST30DAYS_MEMORY_DIR", raising=False)
+
+    for emit in ("compact", "context", "brief", "md", "html", "json"):
+        output = tmp_path / "private" / "explicit" / f"report.{emit}"
+        save_dir = tmp_path / "private" / emit
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "last30days.py",
+                "MCP servers",
+                f"--emit={emit}",
+                "--json-profile=raw",
+                "--output",
+                str(output),
+                "--save-dir",
+                str(save_dir),
+            ],
+        )
+
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            assert cli.main() == 0
+
+        saved = next(
+            path for path in save_dir.iterdir() if path.name.startswith("mcp-servers-raw")
+        )
+        assert output.stat().st_mode & 0o777 == 0o600
+        assert saved.stat().st_mode & 0o777 == 0o600
+        assert output.parent.stat().st_mode & 0o777 == 0o700
+        assert save_dir.stat().st_mode & 0o777 == 0o700

@@ -97,18 +97,27 @@ def search(
     pdf_available = which("pdftotext")
     pdf_unavailable_noted = False
 
+    readable_roots: list[Path] = []
     for root in roots:
         if not root.is_dir():
             notes.append(f"Skipped {root}: not a readable directory")
             continue
+        readable_roots.append(root)
+
+    per_root_limit, extra_slots = divmod(MAX_FILES, len(readable_roots) or 1)
+    scan_limit_reached = False
+    for root_index, root in enumerate(readable_roots):
+        root_limit = per_root_limit + (1 if root_index < extra_slots else 0)
+        root_files_scanned = 0
         for path in _iter_files(root):
-            if files_scanned >= MAX_FILES:
-                notes.append(f"Stopped after the {MAX_FILES}-file corpus scan limit")
+            if root_files_scanned >= root_limit:
+                scan_limit_reached = True
                 break
             key = os.path.normcase(str(path))
             if key in seen_files:
                 continue
             seen_files.add(key)
+            root_files_scanned += 1
             files_scanned += 1
 
             try:
@@ -174,8 +183,8 @@ def search(
                 },
             )
             candidates.append((score, stat.st_mtime_ns, item))
-        if files_scanned >= MAX_FILES:
-            break
+    if scan_limit_reached:
+        notes.append(f"Stopped after the {MAX_FILES}-file corpus scan limit")
 
     cache["schema_version"] = CACHE_SCHEMA_VERSION
     cache["entries"] = _bounded_entries(cache_entries)

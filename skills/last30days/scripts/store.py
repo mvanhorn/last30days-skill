@@ -12,6 +12,7 @@ Database location: ~/.local/share/last30days/research.db
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from contextlib import contextmanager
@@ -53,6 +54,25 @@ def scoped_db(db_path: Optional[Path]) -> Iterator[None]:
         yield
     finally:
         _db_override = previous
+
+
+def ensure_private_db_files(db_path: Optional[Path] = None) -> Path:
+    """Create/harden the research database and SQLite sidecars owner-only."""
+    path = db_path or _get_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        try:
+            candidate.chmod(0o600)
+        except FileNotFoundError:
+            pass
+    return path
 
 
 SCHEMA_V1 = """
