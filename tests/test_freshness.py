@@ -781,3 +781,108 @@ def test_slug_refetch_requires_identity_match(monkeypatch):
     monkeypatch.setattr(polymarket.http, "request", lambda *a, **k: [wrong, right])
     values = polymarket.refetch_datum(item, "Yes")
     assert values is not None
+
+
+def _stale_fixture_report() -> schema.Report:
+    market = _item(
+        "polymarket",
+        title="Will the bill pass?",
+        metadata={"outcome_prices": [["Yes", 0.42]]},
+    )
+    gh = _item(
+        "github",
+        title="owner/repo (1K stars)",
+        url="https://github.com/owner/repo",
+        container="owner/repo",
+        engagement={"stars": 1000},
+    )
+    stock = _item(
+        "stocktwits",
+        title="$ACME traders debate earnings",
+        container="ACME",
+        metadata={"symbol": "ACME", "sentiment_aggregate": {"pct_bullish": 60}},
+    )
+    return _report(market, gh, stock)
+
+
+def test_stale_detail_carries_original_and_current_values():
+    report = _stale_fixture_report()
+    verdicts = freshness.verify_report(
+        report,
+        checked_at="2026-07-10T13:00:00Z",
+        refetchers={
+            "polymarket": lambda _item, _key: {"value": 0.47, "url": _item.url},
+            "github": lambda _item, _key: {"value": 1200, "url": _item.url},
+            "stocktwits": lambda _item, _key: {"value": 55, "url": _item.url},
+        },
+    )
+
+    details = {verdict.source: verdict.detail for verdict in verdicts}
+    assert details["polymarket"] == "moved: 42% -> 47%"
+    assert details["github"] == "moved: 1,000 -> 1,200"
+    assert details["stocktwits"] == "moved: 60% -> 55%"
+
+
+def test_current_verdicts_keep_detail_none():
+    report = _stale_fixture_report()
+    verdicts = freshness.verify_report(
+        report,
+        checked_at="2026-07-10T13:00:00Z",
+        refetchers={
+            "polymarket": lambda _item, _key: {"value": 0.42, "url": _item.url},
+            "github": lambda _item, _key: {"value": 1000, "url": _item.url},
+            "stocktwits": lambda _item, _key: {"value": 60, "url": _item.url},
+        },
+    )
+
+    assert all(verdict.verdict == "current" for verdict in verdicts)
+    assert all(verdict.detail is None for verdict in verdicts)
+
+
+def test_agent_export_carries_enriched_stale_detail():
+    report = _stale_fixture_report()
+    freshness.verify_report(
+        report,
+        checked_at="2026-07-10T13:00:00Z",
+        refetchers={
+            "polymarket": lambda _item, _key: {"value": 0.47, "url": _item.url},
+            "github": lambda _item, _key: {"value": 1200, "url": _item.url},
+            "stocktwits": lambda _item, _key: {"value": 55, "url": _item.url},
+        },
+    )
+
+    exported = schema.to_agent_export(report)
+    stale = [v for v in exported["freshness_verdicts"] if v["verdict"] == "stale"]
+    assert stale and all(v["detail"].startswith("moved: ") for v in stale)
+
+
+def test_zero_claim_verification_notes_outcome_on_stderr(capsys):
+    prose_only = _report(_item("reddit", title="10 ways teams discussed a launch"))
+
+    cli._verify_report_set(prose_only, None, allow_network=False)
+
+    err = capsys.readouterr().err
+    assert "no re-checkable claims" in err
+    assert prose_only.freshness_verdicts == []
+
+
+def test_zero_claim_note_prints_once_across_entity_reports(capsys):
+    first = _report(_item("reddit", title="Thread one", item_id="reddit-a"))
+    second = _report(_item("reddit", title="Thread two", item_id="reddit-b"))
+
+    cli._verify_report_set(first, [("one", first), ("two", second)], allow_network=False)
+
+    err = capsys.readouterr().err
+    assert err.count("no re-checkable claims") == 1
+
+
+def test_zero_claim_note_absent_when_any_report_has_verdicts(capsys):
+    market = _report(
+        _item("polymarket", title="Will it?", metadata={"outcome_prices": [["Yes", 0.42]]})
+    )
+
+    cli._verify_report_set(market, None, allow_network=False)
+
+    err = capsys.readouterr().err
+    assert "no re-checkable claims" not in err
+    assert market.freshness_verdicts  # unsupported verdicts still count as outcomes

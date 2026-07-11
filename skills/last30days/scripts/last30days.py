@@ -953,6 +953,13 @@ def _verify_report_set(
     reports = [item for _, item in entity_reports] if entity_reports else [report]
     for current_report in reports:
         freshness.verify_report(current_report, allow_network=allow_network)
+    if not any(current_report.freshness_verdicts for current_report in reports):
+        # An empty verdict list is a legitimate outcome, but a silent one has
+        # already misled operators once; say why there is nothing to show.
+        sys.stderr.write(
+            "[last30days] Freshness verification found no re-checkable claims"
+            " in this report; the verdict list is empty.\n"
+        )
 
 
 def _run_cached_freshness(
@@ -1111,7 +1118,7 @@ def _run_drill(
         target=args.drill,
     )
     if _freshness_enabled(args, config):
-        freshness.verify_report(merged, allow_network=not args.mock)
+        _verify_report_set(merged, None, allow_network=not args.mock)
     else:
         merged.freshness_verdicts = []
     if _write_last_run(report.topic, merged):

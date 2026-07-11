@@ -218,6 +218,27 @@ def _coerce_refetched(value: RefetchedDatum | dict[str, Any] | Any, fallback_url
     return RefetchedDatum(value=value, url=fallback_url)
 
 
+def _format_verdict_value(kind: str, value: Any) -> str:
+    """Format a verdict value the way the matching claim text renders it."""
+    if kind == "polymarket_probability":
+        try:
+            return f"{float(value) * 100:g}%"
+        except (TypeError, ValueError):
+            return str(value)
+    if kind == "stocktwits_bullish_pct":
+        try:
+            return f"{float(value):g}%"
+        except (TypeError, ValueError):
+            return str(value)
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return f"{value:,}"
+    if isinstance(value, float):
+        return f"{value:g}"
+    return str(value)
+
+
 def _values_match(claim: Claim, current: Any) -> bool:
     if claim.datum_kind == "polymarket_probability":
         try:
@@ -428,7 +449,12 @@ def verify_report(
                     evidence_timestamp=refreshed.timestamp or checked,
                     original_value=claim.original_value,
                     current_value=refreshed.value,
-                    detail=None if matches else "Re-fetched value moved",
+                    detail=None if matches else (
+                        "moved: "
+                        f"{_format_verdict_value(claim.datum_kind, claim.original_value)}"
+                        " -> "
+                        f"{_format_verdict_value(claim.datum_kind, refreshed.value)}"
+                    ),
                 )
             )
         except Exception as exc:  # verifier failures degrade to a typed verdict
