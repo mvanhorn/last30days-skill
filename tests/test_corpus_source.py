@@ -830,3 +830,39 @@ def test_corpus_notes_never_contain_absolute_paths(tmp_path):
             assert str(tmp_path) not in note, f"absolute path leaked in note: {note}"
     finally:
         os.chmod(blocked, stat.S_IRWXU)
+
+
+def test_scan_error_notes_never_echo_absolute_paths(tmp_path, monkeypatch):
+    note = tmp_path / "mcp-server-notes.md"
+    note.write_text("MCP servers expose tools to local coding agents.", encoding="utf-8")
+    _set_mtime(note, "2026-07-05T12:00:00")
+
+    def raising_extract(path, *, pdftotext):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(corpus, "_extract_text", raising_extract)
+
+    result = _scan(tmp_path)
+
+    assert result.items == []
+    assert result.notes, "expected a skip note"
+    joined = " ".join(result.notes)
+    assert str(tmp_path) not in joined
+    assert "Permission denied" in joined
+
+
+def test_cache_write_failure_note_never_echoes_absolute_paths(tmp_path, monkeypatch):
+    notes: list[str] = []
+
+    def raising_open(*args, **kwargs):
+        raise PermissionError(
+            13, "Permission denied", str(tmp_path / "cache" / "corpus.json")
+        )
+
+    monkeypatch.setattr(corpus.os, "open", raising_open)
+    corpus._write_cache(tmp_path / "cache" / "corpus.json", {"entries": {}}, notes)
+
+    joined = " ".join(notes)
+    assert notes, "expected a cache note"
+    assert str(tmp_path) not in joined
+    assert "Permission denied" in joined

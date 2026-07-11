@@ -68,6 +68,16 @@ def resolve_directories(
     return resolved
 
 
+def _safe_error(exc: BaseException) -> str:
+    """Describe an error without str(exc), which embeds absolute paths.
+
+    These notes travel into source_status detail and render in coverage
+    diagnostics outside the private corpus block.
+    """
+    reason = getattr(exc, "strerror", None)
+    return str(reason) if reason else exc.__class__.__name__
+
+
 def search(
     topic: str,
     directories: Iterable[Path | str],
@@ -123,7 +133,7 @@ def search(
             try:
                 stat = path.stat()
             except OSError as exc:
-                notes.append(f"Skipped {_display_path(path, root)}: {exc}")
+                notes.append(f"Skipped {_display_path(path, root)}: {_safe_error(exc)}")
                 continue
             published_at = datetime.fromtimestamp(
                 stat.st_mtime, tz=timezone.utc
@@ -149,7 +159,7 @@ def search(
                 try:
                     text = _extract_text(path, pdftotext=pdf_available)
                 except (OSError, subprocess.SubprocessError) as exc:
-                    notes.append(f"Skipped {_display_path(path, root)}: {exc}")
+                    notes.append(f"Skipped {_display_path(path, root)}: {_safe_error(exc)}")
                     continue
                 _cache_entry_put(cache_entries, cache_entry_sizes, str(path), {
                     "mtime_ns": stat.st_mtime_ns,
@@ -415,7 +425,7 @@ def _write_cache(path: Path | None, payload: dict[str, Any], notes: list[str]) -
         temporary.replace(path)
         path.chmod(0o600)
     except OSError as exc:
-        notes.append(f"Corpus cache unavailable: {exc}")
+        notes.append(f"Corpus cache unavailable: {_safe_error(exc)}")
 
 
 def _ensure_private_directory(path: Path) -> None:
