@@ -14,9 +14,10 @@ import argparse
 import json
 import sqlite3
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -32,6 +33,26 @@ _db_override = None
 
 def _get_db_path() -> Path:
     return _db_override or DB_PATH
+
+
+@contextmanager
+def scoped_db(db_path: Optional[Path]) -> Iterator[None]:
+    """Route all store access inside the block to ``db_path``.
+
+    ``None`` keeps the shared store. Scoped runs (``--save-dir``) use this so
+    their findings land next to their briefs instead of leaking into the
+    shared research.db that unscoped searches read.
+    """
+    global _db_override
+    if db_path is None:
+        yield
+        return
+    previous = _db_override
+    _db_override = Path(db_path)
+    try:
+        yield
+    finally:
+        _db_override = previous
 
 
 SCHEMA_V1 = """

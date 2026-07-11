@@ -850,3 +850,46 @@ def test_get_new_findings_filters_by_date(temp_db, sample_report):
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+def test_scoped_db_routes_all_store_access_and_restores(tmp_path):
+    scoped = tmp_path / "client" / "research.db"
+    scoped.parent.mkdir()
+    before = store._db_override
+
+    with store.scoped_db(scoped):
+        assert store._get_db_path() == scoped
+        store.init_db()
+
+    assert store._db_override == before
+    assert scoped.is_file()
+
+
+def test_scoped_db_with_none_is_a_no_op(tmp_path):
+    before = store._db_override
+    with store.scoped_db(None):
+        assert store._get_db_path() == (before or store.DB_PATH)
+    assert store._db_override == before
+
+
+def test_persist_report_with_scoped_store_writes_inside_save_dir(tmp_path, sample_report):
+    import last30days as cli
+
+    shared = tmp_path / "shared.db"
+    scoped = tmp_path / "client" / "research.db"
+    scoped.parent.mkdir()
+    original_override = store._db_override
+    store._db_override = shared
+    try:
+        store.init_db()
+        counts = cli.persist_report(sample_report, store_db=scoped)
+    finally:
+        store._db_override = original_override
+
+    assert counts["new"] > 0
+    assert scoped.is_file()
+    with sqlite3.connect(scoped) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] > 0
+    # The shared store saw no findings from the scoped run.
+    with sqlite3.connect(shared) as conn:
+        assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 0

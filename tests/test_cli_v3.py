@@ -1,3 +1,4 @@
+import contextlib
 import json
 import io
 import shutil
@@ -361,6 +362,7 @@ class CliV3Tests(unittest.TestCase):
         report = self.make_report()
 
         success_store = types.SimpleNamespace(
+            scoped_db=lambda _path: contextlib.nullcontext(),
             init_db=mock.Mock(),
             add_topic=mock.Mock(return_value={"id": 7}),
             record_run=mock.Mock(return_value=11),
@@ -379,6 +381,7 @@ class CliV3Tests(unittest.TestCase):
         )
 
         failure_store = types.SimpleNamespace(
+            scoped_db=lambda _path: contextlib.nullcontext(),
             init_db=mock.Mock(),
             add_topic=mock.Mock(return_value={"id": 7}),
             record_run=mock.Mock(return_value=12),
