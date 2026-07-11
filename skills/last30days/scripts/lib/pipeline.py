@@ -19,6 +19,7 @@ from . import (
     arxiv,
     bird_x,
     bluesky,
+    corpus,
     dates,
     dedupe,
     digg,
@@ -125,6 +126,7 @@ MOCK_AVAILABLE_SOURCES = [
     "trustpilot",
     "jobs",
     "linkedin",
+    "corpus",
 ]
 
 
@@ -156,6 +158,10 @@ def available_sources(
     available: list[str] = []
     # reddit_public needs no API key - always available
     available.append("reddit")
+    if corpus.resolve_directories(
+        config.get("_CORPUS_DIRS"), config.get("LAST30DAYS_CORPUS_DIRS")
+    ):
+        available.append("corpus")
     if config.get("SCRAPECREATORS_API_KEY"):
         available.extend(["tiktok", "instagram"])
     if env.get_x_source(config, local_only=local_only):
@@ -889,10 +895,25 @@ def run(
     hiring_signals_mode: bool = False,
     internal_subrun: bool = False,
     save_dir: Path | str | None = None,
+    corpus_dirs: list[str] | None = None,
+    corpus_all_time: bool = False,
 ) -> schema.Report:
     settings = DEPTH_SETTINGS[depth]
     requested_sources = normalize_requested_sources(requested_sources)
     from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
+    resolved_corpus_dirs = corpus.resolve_directories(
+        corpus_dirs or config.get("_CORPUS_DIRS"),
+        config.get("LAST30DAYS_CORPUS_DIRS"),
+    )
+    excluded_sources = {
+        source.strip().lower()
+        for source in str(config.get("EXCLUDE_SOURCES") or "").split(",")
+        if source.strip()
+    }
+    corpus_enabled = bool(resolved_corpus_dirs) and "corpus" not in excluded_sources
+    corpus_requested = bool(requested_sources and "corpus" in requested_sources)
+    if corpus_enabled and requested_sources and "corpus" not in requested_sources:
+        requested_sources = [*requested_sources, "corpus"]
 
     # Gate StockTwits to ticker/crypto topics. Single chokepoint: when False,
     # available_sources() never registers stocktwits, so the planner can't
@@ -903,6 +924,10 @@ def run(
         runtime = providers.mock_runtime(config, depth)
         reasoning_provider = None
         available = list(requested_sources or MOCK_AVAILABLE_SOURCES)
+        if corpus_enabled and "corpus" not in available:
+            available.append("corpus")
+        if not corpus_enabled and not corpus_requested:
+            available = [source for source in available if source != "corpus"]
         if not requested_sources and not hiring_signals_mode and not _company_topic_likely(topic):
             available = [source for source in available if source != "jobs"]
     else:
@@ -910,6 +935,11 @@ def run(
         available = available_sources(config, requested_sources)
         if requested_sources:
             available = [source for source in available if source in requested_sources]
+    # Keep an explicitly requested but unconfigured corpus in the plan long
+    # enough to record its skipped-unconfigured source outcome. It is never
+    # submitted to the network executor below.
+    if corpus_requested and "corpus" not in excluded_sources and "corpus" not in available:
+        available.append("corpus")
     if web_backend == "none":
         available = [s for s in available if s != "grounding"]
     elif web_backend in ("brave", "exa", "serper", "parallel", "keyless") and "grounding" not in available:
@@ -970,6 +1000,15 @@ def run(
         # Drill plans re-fetch only the sources that contributed to the matched
         # cluster; the company-topic jobs injection must not widen that set.
         _ensure_jobs_in_plan(plan, available, explicit=hiring_signals_mode, topic=topic)
+    if "corpus" in available and plan.subqueries:
+        # Corpus is deterministic and user-registered, so it always gets one
+        # bounded stream even when a quick/LLM plan omits it. Reuse the primary
+        # subquery instead of multiplying local scans across every subquery.
+        if "corpus" not in plan.subqueries[0].sources:
+            plan.subqueries[0].sources.append("corpus")
+        if "corpus" not in plan.source_weights:
+            plan.source_weights["corpus"] = 1.0
+            plan.source_weights = planner._normalize_weights(plan.source_weights)
 
     # Always-on planner trace. Emits one summary line plus one per subquery
     # so retrieval-breadth failures like the 2026-04-19 Hermes Agent Use Cases
@@ -1001,10 +1040,18 @@ def run(
                 "Source was requested but is not configured for this run.",
                 attempted=False,
             )
+    if corpus_requested and not corpus_enabled:
+        bundle.record_failure(
+            "corpus",
+            schema.SKIPPED_UNCONFIGURED,
+            "Corpus was requested but no readable directory was configured.",
+            attempted=False,
+        )
     # Expose plan_source to the renderer so render_compact can emit the
     # DEGRADED RUN banner when a named-entity topic was invoked bare
     # (source=deterministic AND no pre-research flags). LAW 7 backstop.
     bundle.artifacts["plan_source"] = plan_source
+    bundle.artifacts["corpus_in_export"] = bool(config.get("_CORPUS_IN_EXPORT"))
     # Hiring-signals is deliberately jobs-only with no multi-source --plan, so
     # the LAW 7 degraded-run and Step 0.55 pre-research banners do not apply -
     # they would contradict the documented jobs-scoped flow. Suppress them.
@@ -1070,6 +1117,53 @@ def run(
     rate_limited_sources: set[str] = set()
     rate_limit_lock = threading.Lock()
 
+    # Local corpus retrieval is intentionally outside the network executor and
+    # retry budget. One bounded stream participates in the same signal scoring,
+    # fusion, reranking, and per-source result cap as remote sources.
+    if corpus_enabled and plan.subqueries:
+        primary = plan.subqueries[0]
+        bundle.mark_attempted("corpus")
+        result = corpus.search(
+            topic,
+            resolved_corpus_dirs,
+            from_date=from_date,
+            to_date=to_date,
+            all_time=corpus_all_time,
+            limit=settings["per_stream_limit"],
+            cache_dir=env.CONFIG_DIR,
+        )
+        prepared_query = relevance.PreparedQuery(primary.ranking_query)
+        lookback_window_days = (
+            datetime.strptime(to_date, "%Y-%m-%d").date()
+            - datetime.strptime(from_date, "%Y-%m-%d").date()
+        ).days
+        corpus_items = signals.annotate_stream(
+            result.items,
+            prepared_query,
+            plan.freshness_mode,
+            reference_date=to_date,
+            max_days=lookback_window_days,
+        )
+        corpus_items = signals.prune_low_relevance(corpus_items)
+        corpus_items = dedupe.dedupe_items(corpus_items)
+        for item in corpus_items:
+            item.snippet = snippet.extract_best_snippet(item, prepared_query)
+        bundle.add_items(primary.label, "corpus", corpus_items)
+        if result.notes:
+            outcome = bundle.source_status["corpus"]
+            bundle.source_status["corpus"] = schema.SourceOutcome(
+                source="corpus",
+                state=outcome.state,
+                items_returned=outcome.items_returned,
+                attempted=True,
+                detail="; ".join(result.notes),
+            )
+        bundle.artifacts["corpus"] = {
+            "files_scanned": result.files_scanned,
+            "cache_hits": result.cache_hits,
+            "all_time": corpus_all_time,
+        }
+
     futures = {}
     # Per-source fetch budget prevents redundant API calls
     source_fetch_count: dict[str, int] = {}
@@ -1077,13 +1171,15 @@ def run(
         1
         for subquery in plan.subqueries
         for source in subquery.sources
-        if source in available
+        if source in available and source != "corpus"
     )
     max_workers = _inner_max_workers(stream_count, internal_subrun=internal_subrun)
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         for subquery in plan.subqueries:
             for source in subquery.sources:
                 if source not in available:
+                    continue
+                if source == "corpus":
                     continue
                 # Skip GitHub keyword search if person-mode already ran
                 if source == "github" and (_github_person_done or _github_custom_done):
@@ -1206,7 +1302,9 @@ def run(
     # Phase 2b: retry thin sources with simplified query
     # Note: _github_skip_sources tells the retry to not re-run GitHub keyword search
     # when project-mode or person-mode already provided authoritative data.
-    _github_skip_retry = {"github"} if (_github_person_done or _github_custom_done) else set()
+    _github_skip_retry = {"corpus"}
+    if _github_person_done or _github_custom_done:
+        _github_skip_retry.add("github")
     _retry_thin_sources(
         topic=topic,
         bundle=bundle,
@@ -1258,20 +1356,57 @@ def run(
         for h in ([x_handle, github_user, *(x_related or [])])
         if h and h.strip()
     }
-    ranked_candidates = rerank.rerank_candidates(
+    private_candidates = [
+        candidate
+        for candidate in candidates
+        if candidate.source == "corpus"
+        or any(item.source == "corpus" for item in candidate.source_items)
+    ]
+    private_candidate_ids = {id(candidate) for candidate in private_candidates}
+    public_candidates = [
+        candidate for candidate in candidates if id(candidate) not in private_candidate_ids
+    ]
+    ranked_public = rerank.rerank_candidates(
         topic=topic,
         plan=plan,
-        candidates=candidates,
+        candidates=public_candidates,
         provider=None if mock else reasoning_provider,
         model=None if mock else runtime.rerank_model,
         shortlist_size=settings["rerank_limit"],
         resolved_handles=resolved_handles,
     )
+    # Corpus titles/snippets must never enter a hosted reasoning prompt. Score
+    # every candidate carrying corpus evidence with the deterministic fallback,
+    # even when the rest of the run uses a remote reranker.
+    ranked_private = rerank.rerank_candidates(
+        topic=topic,
+        plan=plan,
+        candidates=private_candidates,
+        provider=None,
+        model=None,
+        shortlist_size=settings["rerank_limit"],
+        resolved_handles=resolved_handles,
+    )
+    ranked_candidates = sorted(
+        [*ranked_public, *ranked_private],
+        key=lambda candidate: (
+            -candidate.final_score,
+            -(candidate.engagement or -1),
+            min(candidate.native_ranks.values(), default=999),
+            candidate.title,
+        ),
+    )
     rerank.score_fun(
         topic=topic,
-        candidates=ranked_candidates,
+        candidates=ranked_public,
         provider=None if mock else reasoning_provider,
         model=None if mock else runtime.rerank_model,
+    )
+    rerank.score_fun(
+        topic=topic,
+        candidates=ranked_private,
+        provider=None,
+        model=None,
     )
 
     # Phase 3: post-rerank GitHub star enrichment. Record/replay-aware so the

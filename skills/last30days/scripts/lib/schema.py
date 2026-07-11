@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
@@ -558,6 +559,103 @@ def candidate_primary_item(candidate: Candidate) -> SourceItem | None:
 
 
 AGENT_EXPORT_SCHEMA_VERSION = "1.2"
+
+
+def without_sources(report: Report, excluded_sources: set[str]) -> Report:
+    """Return a deep-copied report with private source evidence removed.
+
+    This is the publication boundary used by agent JSON, hosted HTML, and
+    future outbound surfaces. Cluster titles are rebuilt when a removed item
+    participated so text derived from a private representative cannot survive
+    after its candidate is gone.
+    """
+    excluded = {source.lower() for source in excluded_sources}
+    if not excluded:
+        return copy.deepcopy(report)
+    clean = copy.deepcopy(report)
+    clean.items_by_source = {
+        source: items
+        for source, items in clean.items_by_source.items()
+        if source.lower() not in excluded
+    }
+    clean.errors_by_source = {
+        source: detail
+        for source, detail in clean.errors_by_source.items()
+        if source.lower() not in excluded
+    }
+    clean.source_status = {
+        source: outcome
+        for source, outcome in clean.source_status.items()
+        if source.lower() not in excluded
+    }
+    clean.query_plan.source_weights = {
+        source: weight
+        for source, weight in clean.query_plan.source_weights.items()
+        if source.lower() not in excluded
+    }
+    for subquery in clean.query_plan.subqueries:
+        subquery.sources[:] = [
+            source for source in subquery.sources if source.lower() not in excluded
+        ]
+
+    kept_candidates: list[Candidate] = []
+    removed_candidate_ids: set[str] = set()
+    for candidate in clean.ranked_candidates:
+        if candidate.source.lower() in excluded:
+            removed_candidate_ids.add(candidate.candidate_id)
+            continue
+        candidate.source_items = [
+            item for item in candidate.source_items if item.source.lower() not in excluded
+        ]
+        candidate.sources = [
+            source for source in candidate.sources if source.lower() not in excluded
+        ]
+        candidate.native_ranks = {
+            key: rank
+            for key, rank in candidate.native_ranks.items()
+            if key.rsplit(":", 1)[-1].lower() not in excluded
+        }
+        kept_candidates.append(candidate)
+    clean.ranked_candidates = kept_candidates
+    candidate_by_id = {
+        candidate.candidate_id: candidate for candidate in clean.ranked_candidates
+    }
+
+    kept_clusters: list[Cluster] = []
+    for cluster in clean.clusters:
+        original_ids = list(cluster.candidate_ids)
+        cluster.candidate_ids = [
+            candidate_id for candidate_id in original_ids if candidate_id in candidate_by_id
+        ]
+        if not cluster.candidate_ids:
+            continue
+        cluster.representative_ids = [
+            candidate_id
+            for candidate_id in cluster.representative_ids
+            if candidate_id in candidate_by_id
+        ] or [cluster.candidate_ids[0]]
+        cluster.sources = sorted({
+            source
+            for candidate_id in cluster.candidate_ids
+            for source in candidate_sources(candidate_by_id[candidate_id])
+            if source.lower() not in excluded
+        })
+        if any(candidate_id in removed_candidate_ids for candidate_id in original_ids):
+            cluster.title = candidate_by_id[cluster.representative_ids[0]].title
+        kept_clusters.append(cluster)
+    clean.clusters = kept_clusters
+    clean.freshness_verdicts = [
+        verdict
+        for verdict in clean.freshness_verdicts
+        if verdict.source.lower() not in excluded
+        and verdict.candidate_id in candidate_by_id
+    ]
+    for key in list(clean.artifacts):
+        if any(source in key.lower() for source in excluded):
+            del clean.artifacts[key]
+    return clean
+
+
 DISCOVERY_EXPORT_SCHEMA_VERSION = "1.0"
 
 
@@ -628,8 +726,20 @@ def _agent_generated_at(value: str) -> str:
     return parsed.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def to_agent_export(report: Report) -> dict[str, Any]:
-    """Serialize a report to the stable, versioned agent JSON contract."""
+def to_agent_export(
+    report: Report,
+    *,
+    corpus_in_export: bool | None = None,
+) -> dict[str, Any]:
+    """Serialize a report to the stable, versioned agent JSON contract.
+
+    Local corpus evidence is private by default. Callers must opt in explicitly
+    either with ``corpus_in_export=True`` or the CLI-populated report artifact.
+    """
+    if corpus_in_export is None:
+        corpus_in_export = bool(report.artifacts.get("corpus_in_export"))
+    if not corpus_in_export:
+        report = without_sources(report, {"corpus"})
     candidates = {candidate.candidate_id: candidate for candidate in report.ranked_candidates}
     cluster_by_candidate: dict[str, int] = {}
     cluster_by_id: dict[str, int] = {}

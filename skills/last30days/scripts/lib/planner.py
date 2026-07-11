@@ -131,6 +131,7 @@ SOURCE_CAPABILITIES = {
     "grounding": {"web", "reference", "link"},
     "perplexity": {"web", "reference", "analysis"},
     "jobs": {"jobs", "company_signal", "link"},
+    "corpus": {"reference", "analysis"},
 }
 DEFAULT_INTENT_CAPABILITIES = {
     "comparison": {"discussion", "video", "web", "reference", "social", "link", "market"},

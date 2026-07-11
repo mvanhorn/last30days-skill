@@ -46,6 +46,8 @@ The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path(
 - `--save-dir <path>` - one-off output location. **Flag wins over env var.** If neither flag nor env var is set, the engine does not write a file (DB persistence is independent — see `LAST30DAYS_STORE` below).
 - `--output <file>` - write the rendered output to an exact file path, using the format selected by `--emit`.
 - `--json-profile {agent,raw}` - select the research JSON shape used with `--emit=json`. `agent` is the default, versioned workflow contract; `raw` preserves the full internal `Report` dump for debugging and power users. See the [JSON export reference](docs/reference/json-export.md).
+- `--corpus <dir>` - add a local `.md`/`.txt` directory as a private ranked source; repeat the flag for multiple directories. PDFs are extracted only when `pdftotext` is on PATH and otherwise skip with a note. File modification time supplies recency, so the normal research window applies.
+- `--corpus-all-time` - include relevant registered files whose modification time is older than the current research window. Without this flag, a 30-day run includes only files modified in those 30 days.
 - `--register {default,exec,dev,creator,eli5}` - shape a standard single-topic Markdown or HTML research brief for its audience. `exec` is decisions-first with five core findings and numbers up top; `dev` gives GitHub, code, and technical signals more room; `creator` leads with hooks, Best Takes, community reactions, and virality metrics; `eli5` keeps the established evidence layout and asks the synthesizing agent for accessible language. Registers do not change retrieval, JSON exports, discovery, drill, library feed/search, or comparison output.
 - `--discover <domain>` - topic-less trending discovery. Sweeps rising/top-week Reddit listings (category-mapped communities, with r/all as the uncategorized fallback), Hacker News front/best stories, Digg AI 1000 clusters when `digg-pp-cli` is on PATH, and broad X activity when an X backend is authenticated, then returns 5-10 engagement-velocity-ranked topics. Run without a positional topic; it is mutually exclusive with `--drill`. `--emit=json` uses the separate versioned discovery contract documented in the [JSON export reference](docs/reference/json-export.md).
 - `--drill <target>` - deep follow-up over the fresh `~/.config/last30days/last-report.json` cache. Accepts a 1-based index (`--drill "cluster 3"` or `--drill "3"`) or a fuzzy cluster title/entity description. It re-fetches only sources that contributed to the matched cluster, enables their deep comment/transcript enrichment paths, merges/dedupes the evidence, and replaces the cache so drills can chain. Run it without a positional topic; if the cache is absent or expired, run a normal research pass first.
@@ -98,12 +100,32 @@ Override the global location with `LAST30DAYS_CONFIG_DIR=/path` (or `LAST30DAYS_
 
 The project-scoped file is useful for **intentional per-client setups**: drop a `.claude/last30days.env` into each client folder (`SCRAPECREATORS_API_KEY`, `INCLUDE_SOURCES`, `LAST30DAYS_MEMORY_DIR`, `BSKY_HANDLE`, etc), then opt in with `LAST30DAYS_TRUST_PROJECT_CONFIG=1` from your shell or `~/.config/last30days/.env`. Folder-mode hosts such as Codex desktop do not trust hidden project config by default, and discovery stops at the git root so unrelated parent folders cannot silently influence runs.
 
-**`LAST30DAYS_API_KEY`** + **`LAST30DAYS_API_BASE`** - optional remote-API backend. Set BOTH to route research through a remote API endpoint instead of running the local sources: `LAST30DAYS_API_BASE` is the endpoint (there is no built-in default), and `LAST30DAYS_API_KEY` is the bearer key for it. When both are set (and `--mock` is not passed), the engine submits the topic to that endpoint, polls with progress on stderr, and prints the server's report; none of the per-source keys below are used for that run. Non-default `--register` selections are forwarded with the request so server-side synthesis uses the same audience preset. Leave either unset to run local sources exactly as normal. Unlike the other keys here, these two are read only from the **process environment** (export them in your shell or host config) - they are deliberately not loaded from the `.env` files above, so a project-scoped `.env` can never silently redirect research to a remote endpoint. The remote endpoint does not return the local `Report` needed for the versioned agent JSON profile; use `--emit=json --json-profile=raw` for its existing server-response JSON contract.
+**`LAST30DAYS_API_KEY`** + **`LAST30DAYS_API_BASE`** - optional remote-API backend. Set BOTH to route research through a remote API endpoint instead of running the local sources: `LAST30DAYS_API_BASE` is the endpoint (there is no built-in default), and `LAST30DAYS_API_KEY` is the bearer key for it. When both are set (and `--mock` is not passed), the engine submits the topic to that endpoint, polls with progress on stderr, and prints the server's report; none of the per-source keys below are used for that run. A configured local corpus is the privacy exception: the engine bypasses the hosted backend and runs locally rather than forwarding file-derived input. Non-default `--register` selections are forwarded with the request so server-side synthesis uses the same audience preset. Leave either unset to run local sources exactly as normal. Unlike the other keys here, these two are read only from the **process environment** (export them in your shell or host config) - they are deliberately not loaded from the `.env` files above, so a project-scoped `.env` can never silently redirect research to a remote endpoint. The remote endpoint does not return the local `Report` needed for the versioned agent JSON profile; use `--emit=json --json-profile=raw` for its existing server-response JSON contract.
+
+### Local corpus (your files)
+
+Register persistent directories with `LAST30DAYS_CORPUS_DIRS`. Separate paths with `:` on macOS/Linux (the platform path separator is `;` on Windows):
+
+```bash
+# ~/.config/last30days/.env
+LAST30DAYS_CORPUS_DIRS=~/notes:~/meeting-transcripts
+# LAST30DAYS_CORPUS_IN_EXPORT=1  # explicit agent-JSON opt-in; off by default
+```
+
+The slash-command experience remains primary: ask `/last30days` to include your registered notes. For direct engine scripting or development, the equivalent one-off invocation is:
+
+```bash
+python3 skills/last30days/scripts/last30days.py "MCP servers" \
+  --corpus ~/notes --corpus ~/meeting-transcripts
+```
+
+**Privacy:** corpus files are read locally, never sent through a source HTTP client, never forwarded to `LAST30DAYS_API_BASE`, never included in remote reranker/fun-scoring prompts, and do not consume network-source concurrency or retry budget. Matches appear in a badged **From your files** section. Corpus candidates are removed from `--publish-html`, `library feed --publish`, and the versioned agent JSON export by default, including corpus-derived cluster titles and source outcomes. Set `LAST30DAYS_CORPUS_IN_EXPORT=1` only when you intentionally want corpus results in the agent JSON written to local stdout/files. The unversioned `--json-profile=raw` debug dump remains a full local report and can contain corpus text; do not redirect it to an external system unless that is intentional. Extracted text is cached by file mtime in `~/.config/last30days/corpus-cache.json` with mode `0600`; a corpus-bearing `last-report.json` cache is also tightened to `0600`. Delete either cache at any time to clear it.
 
 **Source-by-source** - what each key unlocks:
 
 | Source | Key(s) | Required for | Free tier |
 |---|---|---|---|
+| Local corpus | `--corpus <dir>` or `LAST30DAYS_CORPUS_DIRS` | private `.md`/`.txt`; `.pdf` when `pdftotext` is on PATH | yes (offline) |
 | Reddit (public) | none (default); `SCRAPECREATORS_API_KEY` + `LAST30DAYS_REDDIT_BACKEND=scrapecreators` to pin SC primary with public fallback | always on; SC pin requires `SCRAPECREATORS_API_KEY` | yes |
 | Hacker News | none | always on | yes |
 | Polymarket | none | always on | yes |

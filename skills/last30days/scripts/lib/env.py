@@ -470,6 +470,12 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # degraded (neither ok, no-results, nor skipped-unconfigured). #384.
         ('LAST30DAYS_STRICT_EXIT', None),
         ('LAST30DAYS_MEMORY_DIR', None),
+        # Optional local-only evidence source. Paths are separated with the
+        # platform path separator (":" on macOS/Linux, ";" on Windows).
+        ('LAST30DAYS_CORPUS_DIRS', None),
+        # Corpus evidence is omitted from the stable agent JSON export unless
+        # this explicit privacy opt-in is truthy.
+        ('LAST30DAYS_CORPUS_IN_EXPORT', None),
         ('LAST30DAYS_LIBRARY_OWNER', None),
         ('LAST30DAYS_LIBRARY_CONTEXT', 'on'),
         ('LAST30DAYS_PUBLISH_PASSWORD', None),

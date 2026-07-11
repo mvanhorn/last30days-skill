@@ -24,6 +24,7 @@ SOURCE_QUALITY = {
     "instagram": 0.58,
     "tiktok": 0.58,
     "jobs": 0.72,
+    "corpus": 0.75,
 }
 
 

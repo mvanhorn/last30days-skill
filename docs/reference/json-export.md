@@ -21,6 +21,10 @@ python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json -
 
 The raw profile is intentionally unversioned and may change when pipeline internals change. It preserves the JSON serialization used before the agent profile was introduced.
 
+### Local corpus privacy
+
+Evidence from `--corpus` / `LAST30DAYS_CORPUS_DIRS` is excluded from the versioned agent profile by default. The exclusion removes corpus results, corpus-only clusters, corpus source outcomes, freshness verdicts, and titles derived from a corpus representative. Set `LAST30DAYS_CORPUS_IN_EXPORT=1` only for a run whose JSON is intentionally allowed to contain local file contents. This opt-in does not change the schema shape or version; it permits `source: "corpus"` entries in the existing result fields. The unversioned `raw` profile is a complete local debug dump and may contain corpus paths and text.
+
 ## Discovery export
 
 Discovery mode has a separate versioned contract so its topic results do not change the normal research export:
