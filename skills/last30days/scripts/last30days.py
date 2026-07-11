@@ -1944,6 +1944,16 @@ def _main(
     resolved_corpus_dirs = corpus.resolve_directories(
         args.corpus, config.get("LAST30DAYS_CORPUS_DIRS")
     )
+    # EXCLUDE_SOURCES=corpus disables corpus retrieval entirely; the hosted
+    # privacy bypass below must use the same predicate, or hosted users with
+    # configured-but-excluded dirs silently lose the remote backend.
+    excluded_sources = {
+        value.strip().lower()
+        for value in str(config.get("EXCLUDE_SOURCES") or "").split(",")
+        if value.strip()
+    }
+    if "corpus" in excluded_sources:
+        resolved_corpus_dirs = []
     if resolved_corpus_dirs:
         config["_CORPUS_DIRS"] = [str(path) for path in resolved_corpus_dirs]
     if _config_truthy(config.get("LAST30DAYS_CORPUS_IN_EXPORT")):

@@ -302,13 +302,25 @@ def _render_corpus_section(report: schema.Report, limit: int = 8) -> list[str]:
         path = str((primary.metadata if primary else {}).get("relative_path") or "")
         published = primary.published_at if primary else None
         detail = f"modified {published}" if published else "modification date unknown"
-        lines.append(f"- **{candidate.title}** ({detail}, relevance {candidate.final_score:.0f})")
+        lines.append(
+            f"- **{_defang_corpus_sentinels(candidate.title)}** "
+            f"({detail}, relevance {candidate.final_score:.0f})"
+        )
         if path:
-            lines.append(f"  - File: `{path}`")
+            lines.append(f"  - File: `{_defang_corpus_sentinels(path)}`")
         if candidate.snippet:
-            lines.append(f"  - {_truncate(candidate.snippet, 300)}")
+            lines.append(f"  - {_defang_corpus_sentinels(_truncate(candidate.snippet, 300))}")
     lines.append(PRIVATE_CORPUS_END)
     return lines
+
+
+def _defang_corpus_sentinels(value: str) -> str:
+    """Source content must not be able to terminate the private-block markers.
+
+    A note containing the literal end marker would otherwise close the block
+    early, leaving later corpus snippets in publishable output.
+    """
+    return value.replace("LAST30DAYS_PRIVATE_CORPUS", "LAST30DAYS_PRIVATE-CORPUS")
 
 
 _FRESHNESS_PRIORITY = {

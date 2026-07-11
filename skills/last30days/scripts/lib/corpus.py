@@ -109,7 +109,7 @@ def search(
     for root_index, root in enumerate(readable_roots):
         root_limit = per_root_limit + (1 if root_index < extra_slots else 0)
         root_files_scanned = 0
-        for path in _iter_files(root):
+        for path in _iter_files(root, notes=notes):
             if root_files_scanned >= root_limit:
                 scan_limit_reached = True
                 break
@@ -174,7 +174,10 @@ def search(
                 date_confidence="high",
                 relevance_hint=score,
                 why_relevant=f"Matched local file {relative_path}",
-                snippet=text[:400].strip(),
+                # Leave empty so extract_best_snippet derives the matching
+                # window; a file-prefix snippet is preserved verbatim and can
+                # show unrelated intro text (and draw entity-miss demotion).
+                snippet="",
                 metadata={
                     "path": str(path),
                     "relative_path": relative_path,
@@ -206,9 +209,24 @@ def search(
     )
 
 
-def _iter_files(root: Path) -> Iterable[Path]:
-    candidates: list[Path] = []
-    for current, directory_names, file_names in os.walk(root, followlinks=False):
+def _iter_files(root: Path, notes: list[str] | None = None) -> Iterable[Path]:
+    # Bounded newest-first selection: keep only the newest MAX_FILES paths in a
+    # heap while walking, so registering a huge tree does not materialize every
+    # path before the caller's extraction cap applies.
+    import heapq
+
+    heap: list[tuple[int, str]] = []
+    walk_errors = 0
+
+    def _on_walk_error(error: OSError) -> None:
+        nonlocal walk_errors
+        walk_errors += 1
+        if notes is not None and walk_errors <= 3:
+            notes.append(f"corpus: could not read {error.filename or root}: {error.strerror}")
+
+    for current, directory_names, file_names in os.walk(
+        root, followlinks=False, onerror=_on_walk_error
+    ):
         directory_names[:] = sorted(
             name
             for name in directory_names
@@ -220,11 +238,16 @@ def _iter_files(root: Path) -> Iterable[Path]:
                 continue
             path = current_path / name
             if path.suffix.lower() in SUPPORTED_SUFFIXES and not path.is_symlink():
-                candidates.append(path)
-    # The extraction budget should land on the files most likely to survive the
-    # normal recency window, not whichever 500 filenames sort first.
-    candidates.sort(key=lambda path: (-_safe_mtime_ns(path), str(path).casefold()))
-    yield from candidates
+                entry = (_safe_mtime_ns(path), str(path))
+                if len(heap) < MAX_FILES:
+                    heapq.heappush(heap, entry)
+                else:
+                    heapq.heappushpop(heap, entry)
+    if notes is not None and walk_errors > 3:
+        notes.append(f"corpus: {walk_errors - 3} more unreadable directories suppressed")
+    ordered = sorted(heap, key=lambda item: (-item[0], item[1].casefold()))
+    for _mtime, raw_path in ordered:
+        yield Path(raw_path)
 
 
 def _safe_mtime_ns(path: Path) -> int:
