@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import io
+import json
 import os
+import sqlite3
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
@@ -9,7 +12,8 @@ from pathlib import Path
 from unittest import mock
 
 import last30days as cli
-from lib import corpus, env, health, html_render, library, pipeline, render, schema
+import store
+from lib import corpus, env, health, html_render, library, library_index, pipeline, render, schema
 
 
 def _set_mtime(path: Path, value: str) -> None:
@@ -43,7 +47,8 @@ def test_scans_matching_text_and_markdown_with_path_titles(tmp_path):
     assert result.items[0].source == "corpus"
     assert result.items[0].published_at == "2026-07-05"
     assert result.items[0].metadata["local_only"] is True
-    assert result.items[0].url == ""
+    assert result.items[0].url.startswith("corpus://")
+    assert str(note) not in result.items[0].url
 
 
 def test_multilingual_matching_reuses_shared_cjk_tokenizer(tmp_path):
@@ -111,6 +116,37 @@ def test_mtime_cache_reuses_text_and_is_private(tmp_path, monkeypatch):
     assert second.cache_hits == 1
     cache_path = tmp_path / "cache" / corpus.CACHE_FILENAME
     assert cache_path.stat().st_mode & 0o777 == 0o600
+    assert cache_path.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_cache_for_500_large_documents_is_bounded_by_total_bytes(tmp_path, monkeypatch):
+    for index in range(500):
+        (tmp_path / f"document-{index:03d}.txt").touch()
+
+    monkeypatch.setattr(corpus, "MAX_CACHE_BYTES", 1_000_000)
+    monkeypatch.setattr(corpus, "MAX_CACHE_TEXT_CHARS", 100_000)
+    monkeypatch.setattr(corpus, "_extract_text", lambda *_args, **_kwargs: "x" * 1_000_000)
+    monkeypatch.setattr(corpus, "_match_score", lambda *_args, **_kwargs: 0.0)
+
+    result = corpus.search(
+        "anything",
+        [tmp_path],
+        from_date="2026-06-10",
+        to_date="2026-07-10",
+        all_time=True,
+        limit=0,
+        cache_dir=tmp_path / "cache",
+    )
+
+    cache_path = tmp_path / "cache" / corpus.CACHE_FILENAME
+    payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert result.files_scanned == 500
+    assert cache_path.stat().st_size <= corpus.MAX_CACHE_BYTES
+    assert len(payload["entries"]) < 500
+    assert all(
+        len(entry["text"]) <= corpus.MAX_CACHE_TEXT_CHARS
+        for entry in payload["entries"].values()
+    )
 
 
 def test_result_budget_caps_one_corpus_stream(tmp_path):
@@ -277,6 +313,53 @@ def _privacy_report(secret: str = "PRIVATE-CORPUS-SENTINEL") -> schema.Report:
     )
 
 
+def test_corpus_findings_persist_with_stable_opaque_keys(tmp_path, monkeypatch):
+    note = tmp_path / "private-customer-notes.md"
+    note.write_text("MCP servers persist this private finding", encoding="utf-8")
+    first = corpus.search(
+        "MCP servers",
+        [tmp_path],
+        from_date="2026-06-10",
+        to_date="2026-07-10",
+        all_time=True,
+        cache_dir=tmp_path / "cache",
+    ).items[0]
+    second = corpus.search(
+        "MCP servers",
+        [tmp_path],
+        from_date="2026-06-10",
+        to_date="2026-07-10",
+        all_time=True,
+        cache_dir=tmp_path / "cache",
+    ).items[0]
+    report = _privacy_report()
+    report.items_by_source["corpus"][0].url = first.url
+    report.ranked_candidates[0].url = first.url
+
+    db_path = tmp_path / "research.db"
+    monkeypatch.setattr(store, "_db_override", db_path)
+    store.init_db()
+    topic = store.add_topic(report.topic)
+    run_id = store.record_run(topic["id"], status="completed")
+    findings = store.findings_from_report(report)
+    counts = store.store_findings(run_id, topic["id"], findings)
+
+    assert first.url == second.url
+    assert first.url.startswith("corpus://")
+    assert str(note) not in first.url
+    assert counts == {"new": 1, "updated": 0}
+    with sqlite3.connect(db_path) as conn:
+        persisted = conn.execute(
+            "SELECT source, source_url FROM findings"
+        ).fetchone()
+    assert persisted == ("corpus", first.url)
+    assert library_index.search(
+        "private finding",
+        db_path=tmp_path / "missing-library.db",
+        store_db_path=db_path,
+    ) == []
+
+
 def test_agent_export_excludes_corpus_by_default_and_allows_explicit_opt_in():
     report = _privacy_report()
 
@@ -415,6 +498,87 @@ def test_library_publish_strips_marked_corpus_but_local_page_keeps_it(tmp_path, 
     local_pages = list((tmp_path / "briefs").glob("*.html"))
     assert local_pages
     assert "PRIVATE-CORPUS-SENTINEL" in local_pages[0].read_text(encoding="utf-8")
+    assert local_pages[0].stat().st_mode & 0o777 == 0o600
+    assert local_pages[0].parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_private_corpus_cannot_escape_via_library_search_and_feed_publish(tmp_path, monkeypatch):
+    secret = "PRIVATE-CORPUS-ESCAPE-SENTINEL"
+    memory = tmp_path / "memory"
+    report = _privacy_report(secret)
+    with mock.patch.object(library_index, "sync_library"):
+        saved = cli.save_output(report, "md", str(memory))
+
+    db_path = tmp_path / "index" / "library.db"
+    library_index.sync_library(memory, tmp_path / "no-briefings", db_path=db_path)
+    entry = library._parse_markdown(saved)
+    legacy_hash = hashlib.sha256(entry.content.encode("utf-8")).hexdigest()
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE library_documents SET content_hash = ? WHERE entry_id = ?",
+            (legacy_hash, entry.entry_id),
+        )
+        conn.execute("DELETE FROM library_fts WHERE entry_id = ?", (entry.entry_id,))
+        conn.execute(
+            "INSERT INTO library_fts(entry_id, topic, headline, summary, content) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (entry.entry_id, entry.topic, entry.headline, entry.summary, entry.content),
+        )
+        conn.commit()
+
+    rebuilt = library_index.sync_library(
+        memory,
+        tmp_path / "no-briefings",
+        db_path=db_path,
+    )
+    assert rebuilt.indexed == 1
+    assert library_index.search(
+        secret,
+        db_path=db_path,
+        store_db_path=tmp_path / "missing-store.db",
+    ) == []
+    matches = library_index.search(
+        "MCP servers",
+        db_path=db_path,
+        store_db_path=tmp_path / "missing-store.db",
+    )
+    assert matches
+    assert all(secret not in match.snippet for match in matches)
+
+    followup = schema.without_sources(report, {"corpus"})
+    followup.library_context = [
+        schema.LibraryContext(
+            topic=match.topic,
+            published_date=match.published_date.isoformat(),
+            headline=match.headline,
+            summary=match.snippet,
+            source_kind=match.source_kind,
+        )
+        for match in matches[:1]
+    ]
+    with mock.patch.object(library_index, "sync_library"):
+        cli.save_output(followup, "md", str(memory), suffix="followup")
+
+    monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", tmp_path / "no-briefings")
+    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    publish_many = mock.Mock(return_value={})
+    monkeypatch.setattr("lib.html_publish.publish_html_documents", publish_many)
+    monkeypatch.setattr(
+        "lib.html_publish.publish_html",
+        mock.Mock(return_value={"url": "https://library.ht-ml.app"}),
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["last30days.py", "library", "feed", "--save-dir", str(memory), "--publish"],
+    )
+
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+
+    published = publish_many.call_args.args[0]
+    assert published
+    assert all(secret not in document for document in published.values())
 
 
 def test_configured_paths_use_platform_separator_and_dedupe(tmp_path):
@@ -450,8 +614,42 @@ def test_library_renderer_private_switch_is_load_bearing(tmp_path):
 
 
 def test_report_cache_with_corpus_is_written_private(tmp_path, monkeypatch):
-    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path)
+    config_dir = tmp_path / "private" / "config"
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", config_dir)
 
     assert cli._write_last_run("MCP servers", _privacy_report()) is True
 
-    assert (tmp_path / "last-report.json").stat().st_mode & 0o777 == 0o600
+    assert (config_dir / "last-report.json").stat().st_mode & 0o777 == 0o600
+    assert config_dir.stat().st_mode & 0o777 == 0o700
+
+
+def test_every_corpus_bearing_saved_artifact_is_owner_only(tmp_path):
+    report = _privacy_report()
+    markdown_dir = tmp_path / "private" / "markdown"
+    html_dir = tmp_path / "private" / "html"
+    with mock.patch.object(library_index, "sync_library"):
+        markdown = cli.save_output(report, "md", str(markdown_dir))
+        html = cli.save_output(report, "html", str(html_dir))
+    explicit = cli.save_rendered_output(
+        cli.emit_output(report, "html"),
+        str(tmp_path / "private" / "explicit" / "report.html"),
+        private=True,
+    )
+
+    db_path = tmp_path / "private" / "index" / "library.db"
+    library_index.sync_library(
+        markdown_dir,
+        tmp_path / "no-briefings",
+        db_path=db_path,
+    )
+
+    for artifact in (markdown, html, explicit, db_path):
+        assert artifact.stat().st_mode & 0o777 == 0o600
+    for directory in (
+        tmp_path / "private",
+        markdown_dir,
+        html_dir,
+        explicit.parent,
+        db_path.parent,
+    ):
+        assert directory.stat().st_mode & 0o777 == 0o700

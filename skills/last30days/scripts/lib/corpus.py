@@ -26,9 +26,11 @@ SUPPORTED_SUFFIXES = {".md", ".txt", ".pdf"}
 IGNORED_DIRECTORIES = {".git", "node_modules"}
 MAX_FILES = 500
 MAX_TEXT_CHARS = 1_000_000
+MAX_CACHE_TEXT_CHARS = MAX_TEXT_CHARS
+MAX_CACHE_BYTES = 50 * 1024 * 1024
 MAX_CACHE_ENTRIES = 2_000
 CACHE_FILENAME = "corpus-cache.json"
-CACHE_SCHEMA_VERSION = "last30days-corpus-cache/v1"
+CACHE_SCHEMA_VERSION = "last30days-corpus-cache/v2"
 
 _CACHE_LOCK = threading.Lock()
 
@@ -82,6 +84,11 @@ def search(
     cache_path = cache_dir / CACHE_FILENAME if cache_dir is not None else None
     with _CACHE_LOCK:
         cache = _load_cache(cache_path)
+    cache_entries = cache.setdefault("entries", {})
+    cache_entry_sizes = {
+        path: _cache_entry_fragment_size(path, value)
+        for path, value in cache_entries.items()
+    }
 
     candidates: list[tuple[float, int, schema.SourceItem]] = []
     seen_files: set[str] = set()
@@ -115,7 +122,7 @@ def search(
             if not all_time and not (from_date <= published_at <= to_date):
                 continue
 
-            cached = cache.get("entries", {}).get(str(path))
+            cached = cache_entries.get(str(path))
             if (
                 isinstance(cached, dict)
                 and cached.get("mtime_ns") == stat.st_mtime_ns
@@ -135,23 +142,24 @@ def search(
                 except (OSError, subprocess.SubprocessError) as exc:
                     notes.append(f"Skipped {path}: {exc}")
                     continue
-                cache.setdefault("entries", {})[str(path)] = {
+                _cache_entry_put(cache_entries, cache_entry_sizes, str(path), {
                     "mtime_ns": stat.st_mtime_ns,
                     "size": stat.st_size,
-                    "text": text,
-                }
+                    "text": text[:MAX_CACHE_TEXT_CHARS],
+                })
 
             title = _path_title(path)
             score = _match_score(topic, f"{title}\n{text}")
             if score < 0.15:
                 continue
             relative_path = str(path.relative_to(root))
+            path_digest = hashlib.sha256(str(path).encode("utf-8")).hexdigest()
             item = schema.SourceItem(
-                item_id=f"C{hashlib.sha256(str(path).encode('utf-8')).hexdigest()[:12]}",
+                item_id=f"C{path_digest[:12]}",
                 source=SOURCE,
                 title=title,
                 body=text,
-                url="",
+                url=f"corpus://{path_digest}",
                 container=str(path.parent),
                 published_at=published_at,
                 date_confidence="high",
@@ -170,7 +178,7 @@ def search(
             break
 
     cache["schema_version"] = CACHE_SCHEMA_VERSION
-    cache["entries"] = _bounded_entries(cache.get("entries", {}))
+    cache["entries"] = _bounded_entries(cache_entries)
     with _CACHE_LOCK:
         _write_cache(cache_path, cache, notes)
 
@@ -250,6 +258,8 @@ def _load_cache(path: Path | None) -> dict[str, Any]:
     if path is None:
         return {"schema_version": CACHE_SCHEMA_VERSION, "entries": {}}
     try:
+        if path.stat().st_size > MAX_CACHE_BYTES:
+            return {"schema_version": CACHE_SCHEMA_VERSION, "entries": {}}
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return {"schema_version": CACHE_SCHEMA_VERSION, "entries": {}}
@@ -257,6 +267,7 @@ def _load_cache(path: Path | None) -> dict[str, Any]:
         return {"schema_version": CACHE_SCHEMA_VERSION, "entries": {}}
     if not isinstance(payload.get("entries"), dict):
         payload["entries"] = {}
+    payload["entries"] = _bounded_entries(payload["entries"])
     return payload
 
 
@@ -267,23 +278,103 @@ def _bounded_entries(entries: Any) -> dict[str, Any]:
         (
             (path, value)
             for path, value in entries.items()
-            if isinstance(path, str) and isinstance(value, dict)
+            if (
+                isinstance(path, str)
+                and isinstance(value, dict)
+                and isinstance(value.get("text"), str)
+            )
         ),
         key=lambda row: int(row[1].get("mtime_ns") or 0),
         reverse=True,
     )
-    return dict(ordered[:MAX_CACHE_ENTRIES])
+    base_bytes = len(
+        json.dumps(
+            {"schema_version": CACHE_SCHEMA_VERSION, "entries": {}},
+            ensure_ascii=False,
+        ).encode("utf-8")
+    )
+    used_bytes = base_bytes
+    bounded: dict[str, Any] = {}
+    for path, value in ordered[:MAX_CACHE_ENTRIES]:
+        normalized = {
+            "mtime_ns": value.get("mtime_ns"),
+            "size": value.get("size"),
+            "text": value["text"][:MAX_CACHE_TEXT_CHARS],
+        }
+        fragment = json.dumps({path: normalized}, ensure_ascii=False).encode("utf-8")
+        fragment_bytes = len(fragment) - 2 + (2 if bounded else 0)
+        if used_bytes + fragment_bytes > MAX_CACHE_BYTES:
+            continue
+        bounded[path] = normalized
+        used_bytes += fragment_bytes
+    return bounded
+
+
+def _cache_entry_fragment_size(path: str, value: dict[str, Any]) -> int:
+    return len(json.dumps({path: value}, ensure_ascii=False).encode("utf-8")) - 2
+
+
+def _cache_entry_put(
+    entries: dict[str, Any],
+    sizes: dict[str, int],
+    path: str,
+    value: dict[str, Any],
+) -> None:
+    entries[path] = value
+    sizes[path] = _cache_entry_fragment_size(path, value)
+    while (
+        len(entries) > MAX_CACHE_ENTRIES
+        or _cache_payload_size(sizes) > MAX_CACHE_BYTES
+    ):
+        oldest = min(
+            entries,
+            key=lambda candidate: (
+                int(entries[candidate].get("mtime_ns") or 0),
+                candidate,
+            ),
+        )
+        del entries[oldest]
+        del sizes[oldest]
+
+
+def _cache_payload_size(sizes: dict[str, int]) -> int:
+    base_bytes = len(
+        json.dumps(
+            {"schema_version": CACHE_SCHEMA_VERSION, "entries": {}},
+            ensure_ascii=False,
+        ).encode("utf-8")
+    )
+    separators = max(0, len(sizes) - 1) * 2
+    return base_bytes + sum(sizes.values()) + separators
 
 
 def _write_cache(path: Path | None, payload: dict[str, Any], notes: list[str]) -> None:
     if path is None:
         return
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_private_directory(path.parent)
+        payload["entries"] = _bounded_entries(payload.get("entries", {}))
+        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-        temporary.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-        temporary.chmod(0o600)
+        try:
+            fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            temporary.unlink()
+            fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(encoded)
         temporary.replace(path)
         path.chmod(0o600)
     except OSError as exc:
         notes.append(f"Corpus cache unavailable: {exc}")
+
+
+def _ensure_private_directory(path: Path) -> None:
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for directory in missing:
+        directory.chmod(0o700)

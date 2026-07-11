@@ -121,6 +121,30 @@ def slugify(value: str) -> str:
     return slug or "last30days"
 
 
+def _report_has_private_corpus(report: schema.Report) -> bool:
+    candidates = getattr(report, "ranked_candidates", ())
+    if not isinstance(candidates, (list, tuple)):
+        return False
+    return any(
+        candidate.source == "corpus"
+        for candidate in candidates
+    )
+
+
+def _ensure_output_directory(path: Path, *, private: bool) -> None:
+    if not private:
+        path.mkdir(parents=True, exist_ok=True)
+        return
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for directory in missing:
+        directory.chmod(0o700)
+
+
 def save_output(
     report: schema.Report,
     emit: str,
@@ -131,10 +155,10 @@ def save_output(
     rendered_content: str | None = None,
     json_profile: str = "agent",
     register: str = "default",
+    private: bool | None = None,
 ) -> Path:
     from datetime import datetime
     path = Path(save_dir).expanduser().resolve()
-    path.mkdir(parents=True, exist_ok=True)
     slug = slugify(topic_override or report.topic)
     extension = "json" if emit == "json" else "html" if emit == "html" else "md"
     raw_label = "raw-html" if emit == "html" else "raw"
@@ -159,10 +183,18 @@ def save_output(
         )
     else:
         content = render.render_full(report)
+    private_corpus = (
+        _report_has_private_corpus(report) if private is None else private
+    ) and emit in {"md", "html"}
+    _ensure_output_directory(path, private=private_corpus)
     encoded = content.encode("utf-8")
     for candidate in candidates:
         try:
-            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+            fd = os.open(
+                candidate,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600 if private_corpus else 0o644,
+            )
         except FileExistsError:
             continue
         with os.fdopen(fd, "wb") as f:
@@ -194,10 +226,25 @@ def save_output(
     )
 
 
-def save_rendered_output(rendered_content: str, output_file: str) -> Path:
+def save_rendered_output(
+    rendered_content: str,
+    output_file: str,
+    *,
+    private: bool = False,
+) -> Path:
     out_path = Path(output_file).expanduser().resolve()
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(rendered_content, encoding="utf-8")
+    _ensure_output_directory(out_path.parent, private=private)
+    if private and out_path.exists():
+        out_path.chmod(0o600)
+    fd = os.open(
+        out_path,
+        os.O_CREAT | os.O_TRUNC | os.O_WRONLY,
+        0o600 if private else 0o644,
+    )
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(rendered_content)
+    if private:
+        out_path.chmod(0o600)
     return out_path
 
 
@@ -839,7 +886,12 @@ def _write_last_run(
         if env.CONFIG_DIR is None:
             return False
         target = env.CONFIG_DIR
-        target.mkdir(parents=True, exist_ok=True)
+        cached_reports = entity_reports or [(report.topic, report)]
+        has_private_corpus = any(
+            cached_report.items_by_source.get("corpus")
+            for _, cached_report in cached_reports
+        )
+        _ensure_output_directory(target, private=has_private_corpus)
         counts = {source: len(items) for source, items in report.items_by_source.items()}
         payload = {
             "topic": topic,
@@ -850,7 +902,6 @@ def _write_last_run(
             "comparison": bool(entity_reports),
         }
         (target / "last-run.json").write_text(json.dumps(payload, indent=2))
-        cached_reports = entity_reports or [(report.topic, report)]
         cache_payload = {
             "schema": REPORT_CACHE_VERSION,
             "topic": topic,
@@ -863,7 +914,7 @@ def _write_last_run(
         }
         report_cache_path = target / "last-report.json"
         report_cache_path.write_text(json.dumps(cache_payload, indent=2))
-        if any(cached_report.items_by_source.get("corpus") for _, cached_report in cached_reports):
+        if has_private_corpus:
             report_cache_path.chmod(0o600)
         return True
     except Exception as exc:
@@ -1405,9 +1456,18 @@ def _render_save_and_print(
             json_profile=args.json_profile,
             register=audience.name,
         )
+    has_private_corpus = _report_has_private_corpus(report) or bool(
+        entity_reports
+        and any(_report_has_private_corpus(entity) for _label, entity in entity_reports)
+    )
+    private_saved_format = has_private_corpus and args.emit in {"md", "html"}
     publish_companion_paths: list[Path] = []
     if args.output:
-        output_path = save_rendered_output(rendered, args.output)
+        output_path = save_rendered_output(
+            rendered,
+            args.output,
+            private=private_saved_format,
+        )
         if args.emit == "html":
             publish_companion_paths.append(output_path)
         sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
@@ -1424,6 +1484,7 @@ def _render_save_and_print(
             rendered_content=rendered if is_comparison_html else None,
             json_profile=args.json_profile,
             register=audience.name,
+            private=private_saved_format,
         )
         if args.emit == "html":
             publish_companion_paths.append(save_path)
@@ -1438,6 +1499,10 @@ def _render_save_and_print(
                     suffix=args.save_suffix or "",
                     synthesis_md=synthesis_md,
                     json_profile=args.json_profile,
+                    private=(
+                        _report_has_private_corpus(entity_report)
+                        and args.emit in {"md", "html"}
+                    ),
                 )
                 comparison_peer_paths.append(peer_path)
                 sys.stderr.write(f"[last30days] Saved output to {peer_path}\n")
@@ -1642,7 +1707,10 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
     output_dir.mkdir(parents=True, exist_ok=True)
     library_id = library.get_or_create_library_id(output_dir)
     rendered_briefs_dir = output_dir / "briefs"
-    rendered_briefs_dir.mkdir(parents=True, exist_ok=True)
+    has_private_entries = any(
+        render.PRIVATE_CORPUS_START in entry.content for entry in entries
+    )
+    _ensure_output_directory(rendered_briefs_dir, private=has_private_entries)
 
     def _preserve_hand_written_page(existing_path: Path, generated_marker: str) -> None:
         """Back up any page library feed did not generate before overwriting it."""
@@ -1670,7 +1738,11 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
         rendered = html_render.render_library_brief(entry)
         target = rendered_briefs_dir / entry.output_name
         _preserve_hand_written_page(target, html_render.LIBRARY_BRIEF_MARKER)
-        target.write_text(rendered, encoding="utf-8")
+        save_rendered_output(
+            rendered,
+            str(target),
+            private=render.PRIVATE_CORPUS_START in entry.content,
+        )
         publishable_brief_documents[entry.entry_id] = html_render.render_library_brief(
             entry, include_private=False
         )

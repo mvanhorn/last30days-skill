@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import sqlite3
 from dataclasses import dataclass, replace
@@ -14,6 +15,7 @@ from . import library
 
 DEFAULT_LIBRARY_DB = library.DEFAULT_BRIEFS_DIR.parent / "library.db"
 DEFAULT_STORE_DB = library.DEFAULT_BRIEFS_DIR.parent / "research.db"
+INDEX_FINGERPRINT_VERSION = "last30days-library-index/v2"
 LIBRARY_CONTEXT_START = "<!-- last30days:library-context:start -->"
 LIBRARY_CONTEXT_END = "<!-- last30days:library-context:end -->"
 _TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
@@ -25,6 +27,11 @@ _MARKED_LIBRARY_CONTEXT = re.compile(
 _LEGACY_LIBRARY_CONTEXT = re.compile(
     r"^## From your library\s*$.*?(?=^##\s|\Z)",
     re.MULTILINE | re.DOTALL,
+)
+_PRIVATE_CORPUS_BLOCK = re.compile(
+    r"<!-- LAST30DAYS_PRIVATE_CORPUS_START -->.*?"
+    r"<!-- LAST30DAYS_PRIVATE_CORPUS_END -->\s*",
+    re.DOTALL,
 )
 
 
@@ -131,7 +138,7 @@ def index_brief(
     if entry is None:
         return False
     target = Path(db_path).expanduser()
-    target.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_private_directory(target.parent)
     with _connect(target) as conn:
         _upsert_entry(conn, entry)
         conn.commit()
@@ -209,7 +216,7 @@ def _sync_library(
     db_path: Path,
 ) -> SyncResult:
     entries, notes = library.scan_library(memory_dir, briefs_dir)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_private_directory(db_path.parent)
     indexed = unchanged = 0
     with _connect(db_path) as conn:
         existing = {
@@ -250,6 +257,15 @@ def _sync_library(
 
 
 def _connect(path: Path) -> sqlite3.Connection:
+    _ensure_private_directory(path.parent)
+    if not path.exists():
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+    path.chmod(0o600)
     conn = sqlite3.connect(str(path))
     try:
         conn.row_factory = sqlite3.Row
@@ -268,7 +284,13 @@ def _upsert_entry(
     fingerprint: str | None = None,
 ) -> None:
     stat = entry.source_path.stat()
-    indexed_content = _indexable_content(entry.content)
+    private_free_content = _PRIVATE_CORPUS_BLOCK.sub("", entry.content)
+    indexed_content = _indexable_content(private_free_content)
+    headline = entry.headline
+    summary = entry.summary
+    if private_free_content != entry.content and entry.source_format == "markdown":
+        headline = library._markdown_headline(private_free_content) or entry.topic
+        summary = library._markdown_summary(private_free_content) or headline
     content_hash = fingerprint or _fingerprint(indexed_content)
     source_path = str(entry.source_path.resolve())
     replaced = conn.execute(
@@ -302,14 +324,14 @@ def _upsert_entry(
             content_hash,
             entry.topic,
             entry.published_date.isoformat(),
-            entry.headline,
-            entry.summary,
+            headline,
+            summary,
             entry.source_format,
         ),
     )
     conn.execute(
         "INSERT INTO library_fts(entry_id, topic, headline, summary, content) VALUES (?, ?, ?, ?, ?)",
-        (entry.entry_id, entry.topic, entry.headline, entry.summary, indexed_content),
+        (entry.entry_id, entry.topic, headline, summary, indexed_content),
     )
 
 
@@ -334,6 +356,7 @@ def _search_store_sightings(
                    JOIN research_runs rr ON rr.id = fs.run_id
                    JOIN topics t ON t.id = fs.topic_id
                    WHERE findings_fts MATCH ? AND rr.status = 'completed'
+                         AND fs.source != 'corpus'
                    ORDER BY rank, rr.run_date DESC
                    LIMIT ?""",
                 (expression, limit),
@@ -371,7 +394,8 @@ def _fts_expression(query: str) -> str:
 
 
 def _fingerprint(content: str) -> str:
-    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+    payload = f"{INDEX_FINGERPRINT_VERSION}\0{content}"
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def _clean_snippet(value: object) -> str:
@@ -379,8 +403,20 @@ def _clean_snippet(value: object) -> str:
 
 
 def _indexable_content(content: str) -> str:
-    without_marked = _MARKED_LIBRARY_CONTEXT.sub("", content)
+    without_private = _PRIVATE_CORPUS_BLOCK.sub("", content)
+    without_marked = _MARKED_LIBRARY_CONTEXT.sub("", without_private)
     return _LEGACY_LIBRARY_CONTEXT.sub("", without_marked)
+
+
+def _ensure_private_directory(path: Path) -> None:
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for directory in missing:
+        directory.chmod(0o700)
 
 
 def _is_confirmed_corruption(exc: sqlite3.DatabaseError) -> bool:

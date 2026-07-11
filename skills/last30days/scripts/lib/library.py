@@ -29,6 +29,11 @@ _LIBRARY_ID = re.compile(r"[0-9a-f]{32}")
 _GENERATED_BRIEF_NAME = re.compile(
     r"[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{8}-\d{4}-\d{2}-\d{2}\.html"
 )
+_PRIVATE_CORPUS_BLOCK = re.compile(
+    r"<!-- LAST30DAYS_PRIVATE_CORPUS_START -->.*?"
+    r"<!-- LAST30DAYS_PRIVATE_CORPUS_END -->\s*",
+    re.DOTALL,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,15 +145,16 @@ def _keep_preferred(entries: dict[str, LibraryEntry], entry: LibraryEntry) -> No
 
 def _parse_markdown(path: Path) -> LibraryEntry:
     content = path.read_text(encoding="utf-8")
-    title_match = _REPORT_TITLE.search(content) or _FIRST_TITLE.search(content)
+    public_content = _PRIVATE_CORPUS_BLOCK.sub("", content)
+    title_match = _REPORT_TITLE.search(public_content) or _FIRST_TITLE.search(public_content)
     if not title_match:
         raise ValueError("no Markdown title found")
     topic = _clean_inline(title_match.group(1))
     if not topic:
         raise ValueError("empty Markdown title")
-    published_date = _markdown_date(content, path)
-    headline = _markdown_headline(content) or topic
-    summary = _markdown_summary(content) or headline
+    published_date = _markdown_date(public_content, path)
+    headline = _markdown_headline(public_content) or topic
+    summary = _markdown_summary(public_content) or headline
     return LibraryEntry(
         slug=slugify(topic),
         topic=topic,
