@@ -547,3 +547,33 @@ def test_index_backup_never_clobbers_an_earlier_backup(tmp_path, monkeypatch):
     assert (tmp_path / "index.html.bak").read_text(encoding="utf-8") == "first hand-written page"
     backups = sorted(p.name for p in tmp_path.glob("index.html.bak*"))
     assert len(backups) == 2
+
+
+def test_brief_write_preserves_hand_edited_page_for_current_entry(tmp_path, monkeypatch):
+    report = _write_report(tmp_path)
+    monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", tmp_path / "no-briefings")
+    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["last30days.py", "library", "feed", "--save-dir", str(tmp_path)],
+    )
+
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+
+    brief = tmp_path / "briefs" / "ai-agents-c7760ea1-2026-07-10.html"
+    assert brief.is_file()
+    brief.write_text("<html><body>my hand-edited copy</body></html>", encoding="utf-8")
+
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+
+    backup = tmp_path / "briefs" / "ai-agents-c7760ea1-2026-07-10.html.bak"
+    assert backup.read_text(encoding="utf-8") == "<html><body>my hand-edited copy</body></html>"
+    assert "my hand-edited copy" not in brief.read_text(encoding="utf-8")
+
+    # A regenerated (marker-bearing) page is replaced in place, no backup churn.
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+    assert not (tmp_path / "briefs" / "ai-agents-c7760ea1-2026-07-10.html.bak1").exists()
