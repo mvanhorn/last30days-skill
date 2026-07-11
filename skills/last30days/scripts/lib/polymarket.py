@@ -808,20 +808,6 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     """Re-fetch one event datum through the replay-aware HTTP wrapper."""
     event_id = str(getattr(item, "metadata", {}).get("event_id") or "").strip()
     slug_match = re.search(r"/event/([^/?#]+)", str(getattr(item, "url", "")))
-    if event_id:
-        payload = http.request(
-            "GET", f"{GAMMA_EVENTS_URL}/{quote(event_id)}", timeout=10, retries=2,
-        )
-    elif slug_match:
-        requested_slug = slug_match.group(1)
-        payload = http.request(
-            "GET", GAMMA_EVENTS_URL, params={"slug": requested_slug},
-            timeout=10, retries=2,
-        )
-    else:
-        raise ValueError("Polymarket item has no event id or slug")
-
-    requested_slug = slug_match.group(1) if slug_match else None
     cached_item_id = str(getattr(item, "item_id", "") or "").strip()
     # On the slug fallback, a slug can be re-used by a re-created event. When
     # the cached item still carries the original Gamma event id (numeric; the
@@ -832,6 +818,28 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         if not event_id and re.fullmatch(r"\d+", cached_item_id)
         else ""
     )
+    if event_id:
+        payload = http.request(
+            "GET", f"{GAMMA_EVENTS_URL}/{quote(event_id)}", timeout=10, retries=2,
+        )
+    elif slug_match:
+        if not expected_id:
+            # No event id anywhere: slug equality alone cannot verify event
+            # identity, so fail closed (unsupported) instead of re-deriving a
+            # verdict from whatever event currently owns the slug.
+            raise ValueError(
+                "Polymarket item carries no event id; slug equality alone "
+                "cannot verify event identity"
+            )
+        requested_slug = slug_match.group(1)
+        payload = http.request(
+            "GET", GAMMA_EVENTS_URL, params={"slug": requested_slug},
+            timeout=10, retries=2,
+        )
+    else:
+        raise ValueError("Polymarket item has no event id or slug")
+
+    requested_slug = slug_match.group(1) if slug_match else None
 
     def _matches_identity(entry: dict) -> bool:
         if str(entry.get("slug") or "").strip() != requested_slug:

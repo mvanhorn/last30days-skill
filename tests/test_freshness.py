@@ -766,18 +766,22 @@ def test_slug_refetch_requires_identity_match(monkeypatch):
     import pytest
     from lib import polymarket
 
-    wrong = {"id": "other", "slug": "different-market", "title": "Other",
+    wrong = {"id": "222", "slug": "different-market", "title": "Other",
              "markets": [{"id": "m1", "active": True, "closed": False,
                           "question": "q", "volume": "10",
                           "outcomePrices": '["0.5","0.5"]', "outcomes": '["Yes","No"]',
                           "liquidity": "10"}]}
     monkeypatch.setattr(polymarket.http, "request", lambda *a, **k: [wrong])
-    item = SimpleNamespace(metadata={}, url="https://polymarket.com/event/fed-rate-cut-2026")
+    item = SimpleNamespace(
+        metadata={}, item_id="777",
+        url="https://polymarket.com/event/fed-rate-cut-2026",
+    )
     with pytest.raises(KeyError):
         polymarket.refetch_datum(item, "probability")
 
     right = dict(wrong)
     right["slug"] = "fed-rate-cut-2026"
+    right["id"] = "777"
     monkeypatch.setattr(polymarket.http, "request", lambda *a, **k: [wrong, right])
     values = polymarket.refetch_datum(item, "Yes")
     assert values is not None
@@ -1106,18 +1110,21 @@ def test_slug_refetch_rejects_same_slug_different_event_id(monkeypatch):
     assert polymarket.refetch_datum(cached, "Yes") is not None
 
 
-def test_slug_refetch_skips_id_check_for_synthetic_item_ids(monkeypatch):
+def test_slug_refetch_fails_closed_without_any_event_identity(monkeypatch):
+    """A synthetic PM<N> parse id carries no identity, so slug equality alone
+    must not verify a claim; the refetch fails closed to unsupported."""
     from types import SimpleNamespace
+    import pytest
     from lib import polymarket
 
-    event = {"id": "999", "slug": "fed-rate-cut-2026", "title": "T",
-             "markets": [{"id": "m1", "active": True, "closed": False,
-                          "question": "q", "volume": "10",
-                          "outcomePrices": '["0.5","0.5"]', "outcomes": '["Yes","No"]',
-                          "liquidity": "10"}]}
-    monkeypatch.setattr(polymarket.http, "request", lambda *a, **k: [event])
+    calls: list[object] = []
+    monkeypatch.setattr(
+        polymarket.http, "request", lambda *a, **k: calls.append(a) or []
+    )
     cached = SimpleNamespace(
         metadata={}, item_id="PM3",
         url="https://polymarket.com/event/fed-rate-cut-2026",
     )
-    assert polymarket.refetch_datum(cached, "Yes") is not None
+    with pytest.raises(ValueError):
+        polymarket.refetch_datum(cached, "Yes")
+    assert calls == []  # fails closed before any network request
