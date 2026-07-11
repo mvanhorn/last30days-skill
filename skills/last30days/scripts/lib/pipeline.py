@@ -376,7 +376,13 @@ def _fetch_discovery_source(
         return items, "; ".join(errors) or None
     if source == "digg":
         result = digg.search_digg(plan.domain, from_date, to_date, depth=depth)
-        return digg.parse_digg_response(result, query=plan.domain), result.get("error")
+        items = digg.parse_digg_response(result, query=plan.domain)
+        # Digg is an AI-focused broad listing, so keep only domain-bearing clusters.
+        items = [
+            item for item in items
+            if _matches_discovery_domain(plan.domain, str(item.get("title") or ""))
+        ]
+        return items, result.get("error")
     if source == "x":
         subquery = schema.SubQuery(
             label="discovery-listings",

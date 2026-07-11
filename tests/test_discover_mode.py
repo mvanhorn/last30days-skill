@@ -552,3 +552,75 @@ def test_x_fallback_success_is_clean(monkeypatch):
     assert error is None
     assert len(items) == 1
     assert calls == ["bird", "xquik"]
+
+
+def _digg_envelope(*clusters: dict) -> dict:
+    return {"results": list(clusters)}
+
+
+def _digg_cluster(cluster_id: str, title: str, tldr: str = "") -> dict:
+    return {
+        "clusterUrlId": cluster_id,
+        "title": title,
+        "tldr": tldr,
+        "rank": 5,
+        "postCount": 12,
+        "uniqueAuthors": 8,
+    }
+
+
+def test_digg_discovery_drops_off_domain_clusters(monkeypatch):
+    """Regression: a crypto sweep surfaced AI stories because the Digg
+    branch (an AI-only leaderboard feed) applied no domain filter."""
+    envelope = _digg_envelope(
+        _digg_cluster("c1", "Bitcoin crypto rally accelerates"),
+        _digg_cluster("c2", "OpenAI ships a new frontier model"),
+    )
+    monkeypatch.setattr(pipeline.digg, "search_digg", lambda *a, **k: envelope)
+    plan = schema.DiscoveryPlan(
+        domain="crypto", category=None, subreddits=[], sources=["digg"],
+    )
+    items, error = pipeline._fetch_discovery_source(
+        "digg", plan,
+        from_date="2026-06-11", to_date="2026-07-11", depth="quick",
+        mock=False, config={},
+    )
+    assert error is None
+    titles = [item["title"] for item in items]
+    assert titles == ["Bitcoin crypto rally accelerates"]
+
+
+def test_digg_discovery_keeps_domain_matching_clusters(monkeypatch):
+    envelope = _digg_envelope(
+        _digg_cluster("c1", "AI agents reshape support desks"),
+        _digg_cluster("c2", "The best AI agent stacks compared"),
+    )
+    monkeypatch.setattr(pipeline.digg, "search_digg", lambda *a, **k: envelope)
+    plan = schema.DiscoveryPlan(
+        domain="AI agents", category=None, subreddits=[], sources=["digg"],
+    )
+    items, error = pipeline._fetch_discovery_source(
+        "digg", plan,
+        from_date="2026-06-11", to_date="2026-07-11", depth="quick",
+        mock=False, config={},
+    )
+    assert error is None
+    assert len(items) == 2
+
+
+def test_digg_discovery_all_filtered_is_clean_no_results(monkeypatch):
+    envelope = _digg_envelope(
+        _digg_cluster("c1", "OpenAI ships a new frontier model"),
+        _digg_cluster("c2", "Anthropic updates its agent SDK"),
+    )
+    monkeypatch.setattr(pipeline.digg, "search_digg", lambda *a, **k: envelope)
+    plan = schema.DiscoveryPlan(
+        domain="crypto", category=None, subreddits=[], sources=["digg"],
+    )
+    items, error = pipeline._fetch_discovery_source(
+        "digg", plan,
+        from_date="2026-06-11", to_date="2026-07-11", depth="quick",
+        mock=False, config={},
+    )
+    assert error is None
+    assert items == []
