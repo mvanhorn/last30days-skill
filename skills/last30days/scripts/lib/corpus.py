@@ -100,7 +100,7 @@ def search(
     readable_roots: list[Path] = []
     for root in roots:
         if not root.is_dir():
-            notes.append(f"Skipped {root}: not a readable directory")
+            notes.append(f"Skipped corpus root '{Path(root).name}': not a readable directory")
             continue
         readable_roots.append(root)
 
@@ -123,7 +123,7 @@ def search(
             try:
                 stat = path.stat()
             except OSError as exc:
-                notes.append(f"Skipped {path}: {exc}")
+                notes.append(f"Skipped {_display_path(path, root)}: {exc}")
                 continue
             published_at = datetime.fromtimestamp(
                 stat.st_mtime, tz=timezone.utc
@@ -149,7 +149,7 @@ def search(
                 try:
                     text = _extract_text(path, pdftotext=pdf_available)
                 except (OSError, subprocess.SubprocessError) as exc:
-                    notes.append(f"Skipped {path}: {exc}")
+                    notes.append(f"Skipped {_display_path(path, root)}: {exc}")
                     continue
                 _cache_entry_put(cache_entries, cache_entry_sizes, str(path), {
                     "mtime_ns": stat.st_mtime_ns,
@@ -209,6 +209,22 @@ def search(
     )
 
 
+def _display_path(path: Path | str, root: Path | None = None) -> str:
+    """Render a note-safe path: never the absolute local path.
+
+    Corpus notes flow into source_status detail and the Partial Coverage
+    block, which render OUTSIDE the private corpus markers - an absolute
+    path like /home/user/private/notes/foo.md must not escape there.
+    """
+    candidate = Path(path)
+    if root is not None:
+        try:
+            return str(Path(root).name / candidate.relative_to(root))
+        except ValueError:
+            pass
+    return candidate.name
+
+
 def _iter_files(root: Path, notes: list[str] | None = None) -> Iterable[Path]:
     # Bounded newest-first selection: keep only the newest MAX_FILES paths in a
     # heap while walking, so registering a huge tree does not materialize every
@@ -222,7 +238,8 @@ def _iter_files(root: Path, notes: list[str] | None = None) -> Iterable[Path]:
         nonlocal walk_errors
         walk_errors += 1
         if notes is not None and walk_errors <= 3:
-            notes.append(f"corpus: could not read {error.filename or root}: {error.strerror}")
+            unreadable = _display_path(error.filename, root) if error.filename else Path(root).name
+            notes.append(f"corpus: could not read {unreadable}: {error.strerror}")
 
     for current, directory_names, file_names in os.walk(
         root, followlinks=False, onerror=_on_walk_error

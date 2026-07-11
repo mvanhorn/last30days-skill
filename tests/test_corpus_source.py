@@ -809,3 +809,24 @@ def test_exclude_sources_reenables_hosted_backend(monkeypatch):
         v.strip().lower() for v in str(config.get("EXCLUDE_SOURCES") or "").split(",") if v.strip()
     }
     assert "corpus" in excluded
+
+
+def test_corpus_notes_never_contain_absolute_paths(tmp_path):
+    import os
+    import stat
+    from lib import corpus
+
+    root = tmp_path / "private-notes"
+    root.mkdir()
+    good = root / "readable.md"
+    good.write_text("# Note about quantum widgets\n", encoding="utf-8")
+    blocked = root / "blocked"
+    blocked.mkdir()
+    (blocked / "secret.md").write_text("# hidden\n", encoding="utf-8")
+    os.chmod(blocked, 0)
+    try:
+        result = corpus.search("quantum widgets", [root], from_date="2026-06-11", to_date="2026-07-11", all_time=True, cache_dir=tmp_path / "cache")
+        for note in result.notes:
+            assert str(tmp_path) not in note, f"absolute path leaked in note: {note}"
+    finally:
+        os.chmod(blocked, stat.S_IRWXU)
