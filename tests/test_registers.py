@@ -331,3 +331,37 @@ def test_creator_best_takes_honor_source_emphasis():
     assert audience.emphasis_weights, "creator preset must define emphasis weights"
     # TikTok emphasis must exceed baseline sources like hackernews.
     assert audience.emphasis_for("tiktok") > audience.emphasis_for("hackernews")
+
+
+def test_best_takes_ranking_applies_source_weights():
+    from lib import render, schema
+
+    def candidate(cid, source, fun):
+        item = schema.SourceItem(
+            item_id=cid, source=source, title=f"take {cid}", body="b",
+            url=f"https://{source}/{cid}", published_at="2026-07-01",
+            snippet="s", engagement={"likes": 10},
+        )
+        return schema.Candidate(
+            candidate_id=cid, item_id=cid, source=source, title=f"take {cid}",
+            url=item.url, snippet="s", subquery_labels=["primary"],
+            native_ranks={f"primary:{source}": 1}, local_relevance=0.9,
+            freshness=90, engagement=10, source_quality=0.5, rrf_score=0.1,
+            final_score=90, cluster_id="cl", source_items=[item],
+            fun_score=80.0,
+        )
+
+    hn = candidate("hn1", "hackernews", 80.0)
+    tt = candidate("tt1", "tiktok", 80.0)
+    weights = {"tiktok": 1.5, "hackernews": 1.0}
+    lines = render._render_best_takes(
+        [hn, tt], limit=2, threshold=70.0,
+        source_weight=lambda source: weights.get(source, 1.0),
+    )
+    body = "\n".join(lines)
+    assert body.index("TikTok") < body.index("Hacker News") or body.index("tiktok") < body.index("hackernews") if "tiktok" in body.lower() else True
+    # Structural assertion: the tiktok take renders before the HN take.
+    tt_pos = body.lower().find("tiktok")
+    hn_pos = body.lower().find("hacker")
+    assert tt_pos != -1 and hn_pos != -1
+    assert tt_pos < hn_pos

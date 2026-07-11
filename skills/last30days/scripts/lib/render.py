@@ -306,20 +306,15 @@ def _render_registered_sections(
 ) -> list[str]:
     """Render one audience preset's ordered, budgeted evidence sections."""
 
-    take_candidates = list(report.ranked_candidates)
-    if audience.emphasis_weights:
-        # The preset's source emphasis must reach the lead section too, not
-        # just cluster ordering: a creator register should surface TikTok/IG/
-        # YouTube takes ahead of equally-rated HN or GitHub ones.
-        take_candidates.sort(
-            key=lambda candidate: -candidate.final_score
-            * audience.emphasis_for(candidate.source)
-        )
     best_takes = _render_best_takes(
-        take_candidates,
+        report.ranked_candidates,
         limit=audience.budget_for("best_takes", int(fun_params["limit"])),
         threshold=float(fun_params["threshold"]),
         vote_weight=float(fun_params.get("vote_weight", 18.0)),
+        # The preset's source emphasis must reach the lead section's own
+        # ranking: a creator register surfaces TikTok/IG/YouTube takes ahead
+        # of equally-rated HN or GitHub ones.
+        source_weight=(audience.emphasis_for if audience.emphasis_weights else None),
     )
     if not best_takes:
         best_takes = ["## Best Takes", "", "- No qualifying takes surfaced in this run."]
@@ -2415,7 +2410,13 @@ def _effective_fun_score(candidate, vote_weight: float) -> float:
     return base + vote_weight * confidence * vote_signal
 
 
-def _render_best_takes(candidates, limit=5, threshold=70.0, vote_weight=_FUN_LEVELS["medium"]["vote_weight"]):
+def _render_best_takes(
+    candidates,
+    limit=5,
+    threshold=70.0,
+    vote_weight=_FUN_LEVELS["medium"]["vote_weight"],
+    source_weight=None,
+):
     eligible = [
         c for c in candidates
         if c.fun_score is not None
@@ -2423,8 +2424,15 @@ def _render_best_takes(candidates, limit=5, threshold=70.0, vote_weight=_FUN_LEV
         and _best_take_relevance_ok(c)
     ]
     scored = [(c, _effective_fun_score(c, vote_weight)) for c in eligible]
+    # Audience presets promote sources INSIDE the ranking (a pre-sort of the
+    # input is discarded by this sort): weight the ordering, not the
+    # threshold, so emphasis reorders takes without inventing eligibility.
+    rank_key = (
+        (lambda pair: -pair[1] * source_weight(pair[0].source))
+        if source_weight else (lambda pair: -pair[1])
+    )
     # Carry the effective score forward so the display loop doesn't recompute it.
-    gems = [(c, eff) for c, eff in sorted(scored, key=lambda pair: -pair[1]) if eff >= threshold]
+    gems = [(c, eff) for c, eff in sorted(scored, key=rank_key) if eff >= threshold]
     if len(gems) < 2:
         return []
     lines = ["## Best Takes", ""]
