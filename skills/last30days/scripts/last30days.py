@@ -916,8 +916,9 @@ def _run_drill(
             web_backend=args.web_backend,
             external_plan=schema.to_dict(drill_plan),
             subreddits=(
-                [value.strip().removeprefix("r/") for value in args.subreddits.split(",") if value.strip()]
-                if args.subreddits else list(resolved.get("subreddits") or []) or None
+                ([value.strip().removeprefix("r/") for value in args.subreddits.split(",") if value.strip()]
+                 if args.subreddits else list(resolved.get("subreddits") or []) or None)
+                if "reddit" in sources else None
             ),
             tiktok_hashtags=(
                 [value.strip().lstrip("#") for value in args.tiktok_hashtags.split(",") if value.strip()]

@@ -512,3 +512,40 @@ def test_write_last_run_returns_false_on_failure(monkeypatch, capsys):
     ok = cli._write_last_run("topic", report)
     assert ok is False
     assert "could not write run cache" in capsys.readouterr().err
+
+
+def test_drill_gates_subreddit_context_on_source_allowlist(monkeypatch):
+    import io
+    from contextlib import redirect_stdout, redirect_stderr
+    from unittest import mock
+    import last30days as cli
+    from lib import schema
+
+    report = _report()
+    # Force a non-Reddit single-source cluster and cached subreddit context.
+    report.artifacts["resolved"] = {"subreddits": ["LocalLLaMA", "MachineLearning"]}
+    for cluster in report.clusters:
+        cluster.sources = ["youtube"]
+    for candidate in report.ranked_candidates:
+        candidate.source = "youtube"
+        for item in candidate.source_items:
+            item.source = "youtube"
+
+    captured = {}
+
+    def fake_run(**kwargs):
+        captured.update(kwargs)
+        return _report(drill=True)
+
+    args = cli.build_parser().parse_args(["--drill", "cluster 1"])
+    with mock.patch.object(cli, "_load_last_report_cache", return_value=([report], report.topic)), \
+         mock.patch.object(cli.pipeline, "diagnose", return_value={}), \
+         mock.patch.object(cli.pipeline, "run", side_effect=lambda **k: fake_run(**k)), \
+         mock.patch.object(cli.pipeline, "merge_drill_report", side_effect=lambda r, d, c, target: r), \
+         mock.patch.object(cli, "_write_last_run", return_value=True), \
+         mock.patch.object(cli, "_show_runtime_ui"), \
+         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        cli._run_drill(args, {})
+
+    assert "reddit" not in (captured.get("requested_sources") or [])
+    assert captured.get("subreddits") is None
