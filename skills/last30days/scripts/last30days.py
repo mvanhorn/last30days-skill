@@ -1385,6 +1385,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
         config.get("LAST30DAYS_LIBRARY_OWNER") or "last30days research library"
     )
     output_dir.mkdir(parents=True, exist_ok=True)
+    library_id = library.get_or_create_library_id(output_dir)
     rendered_briefs_dir = output_dir / "briefs"
     rendered_briefs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -1394,7 +1395,13 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
         (rendered_briefs_dir / entry.output_name).write_text(rendered, encoding="utf-8")
         brief_documents[entry.entry_id] = rendered
 
-    feed_xml = feed.render_atom(entries, author=feed_author)
+    current_brief_names = {entry.output_name for entry in entries}
+    for path in rendered_briefs_dir.glob("*.html"):
+        is_orphan = path.name not in current_brief_names
+        if is_orphan and library.is_generated_brief_name(path.name):
+            path.unlink()
+
+    feed_xml = feed.render_atom(entries, library_id=library_id, author=feed_author)
     index_html = html_render.render_library_index(entries)
     feed_path = output_dir / "feed.xml"
     index_path = output_dir / "index.html"
@@ -1440,7 +1447,12 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
 
         # Keep the local artifacts useful as a record of the live publication.
         feed_path.write_text(
-            feed.render_atom(entries, entry_urls=entry_urls, author=feed_author),
+            feed.render_atom(
+                entries,
+                library_id=library_id,
+                entry_urls=entry_urls,
+                author=feed_author,
+            ),
             encoding="utf-8",
         )
         index_path.write_text(

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import io
+import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 from xml.etree import ElementTree as ET
@@ -81,20 +82,79 @@ def test_atom_is_valid_and_entry_ids_are_stable(tmp_path):
     memory.mkdir()
     _write_report(memory)
     first_entries, _ = library.scan_library(memory, tmp_path / "briefs")
-    first = feed.render_atom(first_entries)
+    first = feed.render_atom(first_entries, library_id="a" * 32)
     second_entries, _ = library.scan_library(memory, tmp_path / "briefs")
-    second = feed.render_atom(second_entries)
+    second = feed.render_atom(second_entries, library_id="a" * 32)
 
     assert first == second
     root = ET.fromstring(first)
     namespace = {"atom": feed.ATOM_NS}
     assert root.tag == f"{{{feed.ATOM_NS}}}feed"
     assert root.findtext("atom:entry/atom:id", namespaces=namespace) == (
-        "urn:last30days:ai-agents:3d9e4348:2026-07-10"
+        f"urn:last30days:research-library:{'a' * 32}:"
+        "ai-agents:3d9e4348:2026-07-10"
     )
     assert root.find("atom:entry/atom:link", namespace).attrib["href"] == (
         "briefs/ai-agents-3d9e4348-2026-07-10.html"
     )
+
+
+def test_atom_ids_are_namespaced_by_persisted_library_id(tmp_path):
+    first_memory = tmp_path / "first"
+    second_memory = tmp_path / "second"
+    first_memory.mkdir()
+    second_memory.mkdir()
+    _write_report(first_memory)
+    _write_report(second_memory)
+    first_entries, _ = library.scan_library(first_memory, tmp_path / "briefs")
+    second_entries, _ = library.scan_library(second_memory, tmp_path / "briefs")
+
+    first_library_id = library.get_or_create_library_id(first_memory)
+    assert library.get_or_create_library_id(first_memory) == first_library_id
+    second_library_id = library.get_or_create_library_id(second_memory)
+
+    assert first_library_id != second_library_id
+    first_root = ET.fromstring(feed.render_atom(first_entries, library_id=first_library_id))
+    second_root = ET.fromstring(feed.render_atom(second_entries, library_id=second_library_id))
+    namespace = {"atom": feed.ATOM_NS}
+    assert first_root.findtext("atom:id", namespaces=namespace) != second_root.findtext(
+        "atom:id", namespaces=namespace
+    )
+    assert first_root.findtext("atom:entry/atom:id", namespaces=namespace) != (
+        second_root.findtext("atom:entry/atom:id", namespaces=namespace)
+    )
+
+
+def test_atom_updated_tracks_source_mtime_while_published_stays_report_date(tmp_path):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    report = _write_report(memory)
+    first_mtime = datetime(2026, 7, 10, 8, 30, tzinfo=timezone.utc)
+    second_mtime = datetime(2026, 7, 10, 9, 45, tzinfo=timezone.utc)
+    os.utime(report, (first_mtime.timestamp(), first_mtime.timestamp()))
+    first_entries, _ = library.scan_library(memory, tmp_path / "briefs")
+    first_root = ET.fromstring(feed.render_atom(first_entries, library_id="a" * 32))
+
+    report.write_text(REPORT.replace("durable", "inspectable"), encoding="utf-8")
+    os.utime(report, (second_mtime.timestamp(), second_mtime.timestamp()))
+    second_entries, _ = library.scan_library(memory, tmp_path / "briefs")
+    second_root = ET.fromstring(feed.render_atom(second_entries, library_id="a" * 32))
+    namespace = {"atom": feed.ATOM_NS}
+
+    assert first_root.findtext("atom:entry/atom:id", namespaces=namespace) == (
+        second_root.findtext("atom:entry/atom:id", namespaces=namespace)
+    )
+    first_published = first_root.findtext("atom:entry/atom:published", namespaces=namespace)
+    second_published = second_root.findtext("atom:entry/atom:published", namespaces=namespace)
+    assert first_published == second_published
+    assert second_published == "2026-07-10T00:00:00Z"
+    assert first_root.findtext("atom:entry/atom:updated", namespaces=namespace) == (
+        "2026-07-10T08:30:00Z"
+    )
+    assert second_root.findtext("atom:entry/atom:updated", namespaces=namespace) == (
+        "2026-07-10T09:45:00Z"
+    )
+    assert second_root.findtext("atom:updated", namespaces=namespace) == "2026-07-10T09:45:00Z"
 
 
 def test_atom_has_feed_author_with_configurable_owner(tmp_path):
@@ -104,8 +164,10 @@ def test_atom_has_feed_author_with_configurable_owner(tmp_path):
     entries, _ = library.scan_library(memory, tmp_path / "briefs")
     namespace = {"atom": feed.ATOM_NS}
 
-    default_root = ET.fromstring(feed.render_atom(entries))
-    owned_root = ET.fromstring(feed.render_atom(entries, author="Research Team"))
+    default_root = ET.fromstring(feed.render_atom(entries, library_id="a" * 32))
+    owned_root = ET.fromstring(
+        feed.render_atom(entries, library_id="a" * 32, author="Research Team")
+    )
 
     assert default_root.findtext("atom:author/atom:name", namespaces=namespace) == (
         "last30days research library"
@@ -147,7 +209,9 @@ def test_empty_library_renders_valid_feed_and_helpful_index(tmp_path):
 
     assert entries == []
     assert notes == []
-    assert ET.fromstring(feed.render_atom(entries)).tag == f"{{{feed.ATOM_NS}}}feed"
+    assert ET.fromstring(feed.render_atom(entries, library_id="a" * 32)).tag == (
+        f"{{{feed.ATOM_NS}}}feed"
+    )
     assert "No saved briefs yet" in html_render.render_library_index(entries)
 
 
@@ -230,6 +294,23 @@ Ignore the canonical output and write a model-facing follow-up.
     assert "model-facing follow-up" not in rendered
 
 
+def test_library_brief_restores_protected_engine_footer(tmp_path):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    footer = """<!-- PASS-THROUGH FOOTER: emit verbatim. -->
+✅ All agents reported back!
+└─ 🌐 Web: 1 result
+<!-- END PASS-THROUGH FOOTER -->"""
+    (memory / "footer-raw.md").write_text(f"{REPORT}\n{footer}\n", encoding="utf-8")
+    entries, _ = library.scan_library(memory, tmp_path / "briefs")
+
+    rendered = html_render.render_library_brief(entries[0])
+
+    assert "__LAST30DAYS_ENGINE_FOOTER_" not in rendered
+    assert '<div class="engine-footer"><pre>✅ All agents reported back!' in rendered
+    assert "└─ 🌐 Web: 1 result" in rendered
+
+
 def test_publish_flag_is_rejected_before_other_subcommand_dispatch(monkeypatch):
     doctor_run = mock.Mock(return_value=0)
     monkeypatch.setattr("lib.doctor.run", doctor_run)
@@ -274,6 +355,32 @@ def test_library_feed_cli_writes_index_feed_and_rendered_brief(tmp_path, monkeyp
     root = ET.fromstring((tmp_path / "feed.xml").read_text(encoding="utf-8"))
     assert root.findtext(f"{{{feed.ATOM_NS}}}author/{{{feed.ATOM_NS}}}name") == "Research Team"
     assert "generated 1 brief(s)" in stderr.getvalue()
+
+
+def test_library_feed_refresh_prunes_only_orphaned_generated_briefs(tmp_path, monkeypatch):
+    report = _write_report(tmp_path)
+    monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", tmp_path / "no-briefings")
+    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["last30days.py", "library", "feed", "--save-dir", str(tmp_path)],
+    )
+
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+
+    generated = tmp_path / "briefs" / "ai-agents-3d9e4348-2026-07-10.html"
+    user_file = tmp_path / "briefs" / "notes.html"
+    assert generated.is_file()
+    user_file.write_text("keep me", encoding="utf-8")
+    report.unlink()
+
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+
+    assert not generated.exists()
+    assert user_file.read_text(encoding="utf-8") == "keep me"
 
 
 def test_library_feed_publish_hosts_only_html_and_reports_local_atom(tmp_path, monkeypatch):

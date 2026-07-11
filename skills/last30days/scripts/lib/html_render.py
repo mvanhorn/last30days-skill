@@ -434,6 +434,7 @@ def render_library_brief(entry: LibraryEntry) -> str:
     md = _strip_invitation(entry.content)
     md = _strip_canonical_boundary(md)
     body = _markdown_to_html(md)
+    body = _wrap_engine_footer(body)
     colophon = (
         '<footer class="colophon">'
         f"Saved research · {html.escape(entry.published_date.isoformat())} · "

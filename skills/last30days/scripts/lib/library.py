@@ -5,13 +5,15 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import uuid
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 
 DEFAULT_MEMORY_DIR = Path.home() / "Documents" / "Last30Days"
 DEFAULT_BRIEFS_DIR = Path.home() / ".local" / "share" / "last30days" / "briefs"
+LIBRARY_ID_FILENAME = ".last30days-library-id"
 
 _REPORT_TITLE = re.compile(r"^#\s+last30days(?:\s+v[^:]+)?:\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
 _FIRST_TITLE = re.compile(r"^#\s+(.+?)\s*$", re.MULTILINE)
@@ -23,6 +25,10 @@ _DATED_FILENAME = re.compile(r"-(\d{4}-\d{2}-\d{2})(?:-\d+)?$")
 _RANKED_HEADLINE = re.compile(r"^###\s+1[.)]\s+(.+?)\s*$", re.MULTILINE)
 _SCORE_SUFFIX = re.compile(r"\s+\(score\s+[^)]*\)\s*$", re.IGNORECASE)
 _MARKDOWN_LINK = re.compile(r"\[([^]]+)]\([^)]+\)")
+_LIBRARY_ID = re.compile(r"[0-9a-f]{32}")
+_GENERATED_BRIEF_NAME = re.compile(
+    r"[a-z0-9]+(?:-[a-z0-9]+)*-[0-9a-f]{8}-\d{4}-\d{2}-\d{2}\.html"
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,6 +42,7 @@ class LibraryEntry:
     summary: str
     source_path: Path
     content: str
+    source_updated_at: datetime
     source_format: str = "markdown"
 
     @property
@@ -54,6 +61,30 @@ class LibraryEntry:
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return slug or "last30days"
+
+
+def get_or_create_library_id(memory_dir: Path | str) -> str:
+    """Return the persisted random namespace for one research library."""
+    memory_path = Path(memory_dir).expanduser()
+    memory_path.mkdir(parents=True, exist_ok=True)
+    id_path = memory_path / LIBRARY_ID_FILENAME
+    try:
+        library_id = id_path.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        library_id = uuid.uuid4().hex
+        try:
+            with id_path.open("x", encoding="utf-8") as handle:
+                handle.write(f"{library_id}\n")
+        except FileExistsError:
+            library_id = id_path.read_text(encoding="utf-8").strip()
+    if not _LIBRARY_ID.fullmatch(library_id):
+        raise ValueError(f"invalid library ID in {id_path}")
+    return library_id
+
+
+def is_generated_brief_name(name: str) -> bool:
+    """Return whether a filename has the exact library-renderer output shape."""
+    return _GENERATED_BRIEF_NAME.fullmatch(name) is not None
 
 
 def scan_library(
@@ -99,7 +130,7 @@ def scan_library(
 
 def _keep_preferred(entries: dict[str, LibraryEntry], entry: LibraryEntry) -> None:
     existing = entries.get(entry.entry_id)
-    if existing is None or entry.source_path.stat().st_mtime_ns > existing.source_path.stat().st_mtime_ns:
+    if existing is None or entry.source_updated_at > existing.source_updated_at:
         entries[entry.entry_id] = entry
 
 
@@ -122,6 +153,7 @@ def _parse_markdown(path: Path) -> LibraryEntry:
         summary=summary,
         source_path=path,
         content=content,
+        source_updated_at=_source_updated_at(path),
     )
 
 
@@ -179,7 +211,15 @@ def _parse_briefing(path: Path) -> LibraryEntry:
         summary=summary,
         source_path=path,
         content=markdown,
+        source_updated_at=_source_updated_at(path),
         source_format="json",
+    )
+
+
+def _source_updated_at(path: Path) -> datetime:
+    seconds, nanoseconds = divmod(path.stat().st_mtime_ns, 1_000_000_000)
+    return datetime.fromtimestamp(seconds, tz=timezone.utc).replace(
+        microsecond=nanoseconds // 1_000
     )
 
 
