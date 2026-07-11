@@ -518,7 +518,14 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('INCLUDE_SOURCES', ''),
         ('EXCLUDE_SOURCES', ''),
         ('LAST30DAYS_DEFAULT_SEARCH', ''),
+        # Resolve the user-facing default in last30days.py so an absent value
+        # stays distinguishable from an explicit `default`. That distinction
+        # lets the new key override legacy ELI5_MODE=true configurations.
+        ('LAST30DAYS_REGISTER', None),
         ('FUN_LEVEL', 'medium'),
+        # Backward compatibility for configs written by the original `eli5 on`
+        # follow-up command. New writes use LAST30DAYS_REGISTER=eli5.
+        ('ELI5_MODE', None),
         ('LAST30DAYS_YOUTUBE_SSH_HOST', None),
         ('LAST30DAYS_REPORT_CACHE_TTL_SECONDS', None),
         ('LAST30DAYS_TRANSCRIPT_TIMEOUT', None),

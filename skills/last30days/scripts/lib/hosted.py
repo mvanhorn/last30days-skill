@@ -8,7 +8,8 @@ endpoint comes only from LAST30DAYS_API_BASE - there is no built-in default.
 
 Contract (API v1):
   POST {base}/search   Authorization: Bearer <key>
-                       {"query": ..., "depth": "quick"|"default"|"deep"}
+                       {"query": ..., "depth": "quick"|"default"|"deep",
+                        "register"?: "exec"|"dev"|"creator"|"eli5"}
                        -> 200 {"search_id": "<uuid>", "status": "running"}
                        -> 200 clarify payload {"needs_clarification": true, ...}
                        -> 401 {"error"} / 402 {"error","requires_credits",
@@ -78,11 +79,14 @@ def _auth_headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {key}"}
 
 
-def submit(query: str, depth: str) -> dict:
+def submit(query: str, depth: str, register: str = "default") -> dict:
     """POST the search. retries=1: a blind POST retry could double-submit."""
+    payload = {"query": query, "depth": depth}
+    if register != "default":
+        payload["register"] = register
     return http.post(
         f"{_api_base()}/search",
-        json_data={"query": query, "depth": depth},
+        json_data=payload,
         headers=_auth_headers(),
         retries=1,
     )
@@ -254,12 +258,19 @@ def _render_complete(row: dict, topic: str, emit: str, save_dir, save_suffix: st
     return 0
 
 
-def run_hosted(topic: str, depth: str, *, emit: str = "compact",
-               save_dir=None, save_suffix: str = "") -> int:
+def run_hosted(
+    topic: str,
+    depth: str,
+    *,
+    emit: str = "compact",
+    save_dir=None,
+    save_suffix: str = "",
+    register: str = "default",
+) -> int:
     """Submit topic to the remote API, poll to terminal status, render report."""
     _err(f"Running via last30days API ({_api_base()}), depth={depth}")
     try:
-        resp = submit(topic, depth)
+        resp = submit(topic, depth, register=register)
     except http.HTTPError as exc:
         return _handle_http_error(exc)
 

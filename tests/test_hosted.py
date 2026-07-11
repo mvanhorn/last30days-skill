@@ -169,6 +169,53 @@ def test_env_set_routes_to_remote_path(monkeypatch):
     }]
 
 
+def test_register_is_forwarded_to_remote_backend(monkeypatch):
+    monkeypatch.setenv("LAST30DAYS_API_KEY", TEST_KEY)
+    monkeypatch.setenv("LAST30DAYS_API_BASE", TEST_BASE)
+    calls = []
+
+    monkeypatch.setattr(
+        hosted,
+        "run_hosted",
+        lambda topic, depth, **kwargs: calls.append((topic, depth, kwargs)) or 0,
+    )
+    with mock.patch.object(cli.env, "get_config", return_value={}):
+        rc, _out, _err = run_main(
+            ["test", "topic", "--register=creator"]
+        )
+
+    assert rc == 0
+    assert calls == [
+        (
+            "test topic",
+            "default",
+            {
+                "emit": "compact",
+                "save_dir": None,
+                "save_suffix": "",
+                "register": "creator",
+            },
+        )
+    ]
+
+
+def test_hosted_submit_adds_only_nondefault_register(remote_env, monkeypatch):
+    payloads = []
+    monkeypatch.setattr(
+        hosted.http,
+        "post",
+        lambda _url, *, json_data, **_kwargs: payloads.append(json_data) or SUBMIT_OK,
+    )
+
+    hosted.submit("test topic", "quick")
+    hosted.submit("test topic", "quick", register="dev")
+
+    assert payloads == [
+        {"query": "test topic", "depth": "quick"},
+        {"query": "test topic", "depth": "quick", "register": "dev"},
+    ]
+
+
 def test_remote_json_requires_raw_profile(monkeypatch):
     monkeypatch.setenv("LAST30DAYS_API_KEY", TEST_KEY)
     monkeypatch.setenv("LAST30DAYS_API_BASE", TEST_BASE)

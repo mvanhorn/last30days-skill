@@ -48,7 +48,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import dates, env, html_render, http, permission_preflight, pipeline, render, schema, ui
+from lib import dates, env, html_render, http, permission_preflight, pipeline, registers, render, schema, ui
 
 _child_pids: set[int] = set()
 _child_pids_lock = threading.Lock()
@@ -130,6 +130,7 @@ def save_output(
     topic_override: str | None = None,
     rendered_content: str | None = None,
     json_profile: str = "agent",
+    register: str = "default",
 ) -> Path:
     from datetime import datetime
     path = Path(save_dir).expanduser().resolve()
@@ -154,6 +155,7 @@ def save_output(
             emit,
             synthesis_md=synthesis_md,
             json_profile=json_profile,
+            register=register,
         )
     else:
         content = render.render_full(report)
@@ -253,6 +255,7 @@ def emit_output(
     save_path: str | None = None,
     synthesis_md: str | None = None,
     json_profile: str = "agent",
+    register: str = "default",
 ) -> str:
     if emit == "json":
         payload = (
@@ -263,10 +266,19 @@ def emit_output(
         return json.dumps(payload, indent=2, sort_keys=True)
     if emit == "html":
         return html_render.render_html(
-            report, fun_level=fun_level, save_path=save_path, synthesis_md=synthesis_md,
+            report,
+            fun_level=fun_level,
+            save_path=save_path,
+            synthesis_md=synthesis_md,
+            register=register,
         )
     if emit in {"compact", "md"}:
-        return render.render_compact(report, fun_level=fun_level, save_path=save_path)
+        return render.render_compact(
+            report,
+            fun_level=fun_level,
+            save_path=save_path,
+            register=register,
+        )
     if emit == "context":
         return render.render_context(report)
     if emit == "brief":
@@ -400,6 +412,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("topic", nargs="*", help="Research topic")
     parser.add_argument("--emit", default="compact", choices=["compact", "json", "context", "md", "html", "brief"])
+    parser.add_argument(
+        "--register",
+        choices=registers.REGISTER_NAMES,
+        default=None,
+        help="Audience synthesis preset for the standard brief (default, exec, dev, creator, eli5)",
+    )
     parser.add_argument(
         "--json-profile",
         default="agent",
@@ -1191,6 +1209,37 @@ def _strict_exit_code(
     return 3
 
 
+def _audience_register_for_run(
+    args: argparse.Namespace,
+    config: dict[str, object],
+    entity_reports: list[tuple[str, schema.Report]] | None,
+) -> registers.AudienceRegister:
+    """Resolve CLI > config for single-topic standard brief renderers."""
+
+    topic = " ".join(getattr(args, "topic", [])).strip()
+    comparison_topic_requested = bool(
+        len(re.split(r"\s+(?:vs\.?|versus)\s+", topic, flags=re.IGNORECASE)) > 1
+        or args.competitors is not None
+        or args.competitors_list
+        or args.competitors_plan
+    )
+    if (
+        entity_reports
+        or comparison_topic_requested
+        or args.drill
+        or args.emit not in {"compact", "md", "html"}
+    ):
+        return registers.get_register()
+    explicit = getattr(args, "register", None)
+    configured = config.get("LAST30DAYS_REGISTER")
+    name = explicit or (str(configured) if configured else "default")
+    # Preserve configs written by the pre-register ELI5 follow-up command.
+    legacy_eli5 = str(config.get("ELI5_MODE") or "").strip().lower()
+    if not explicit and not configured and legacy_eli5 in {"1", "true", "yes", "on"}:
+        name = "eli5"
+    return registers.get_register(name)
+
+
 def _render_save_and_print(
     args: argparse.Namespace,
     report: schema.Report,
@@ -1199,6 +1248,14 @@ def _render_save_and_print(
     config: dict[str, object],
 ) -> int:
     fun_level = str(config.get("FUN_LEVEL", "medium")).lower()
+    try:
+        audience = _audience_register_for_run(args, config, entity_reports)
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+    if audience.name != "default":
+        sys.stderr.write(f"[last30days] Audience register: {audience.name}\n")
+        sys.stderr.flush()
     # Comparison HTML is the one case where the saved file's title and content
     # have to be overridden away from the leading entity's report. Compute the
     # gate once so the footer-display and save-output paths can't disagree.
@@ -1229,6 +1286,7 @@ def _render_save_and_print(
             save_path=footer_save_path,
             synthesis_md=synthesis_md,
             json_profile=args.json_profile,
+            register=audience.name,
         )
     publish_companion_paths: list[Path] = []
     if args.output:
@@ -1248,6 +1306,7 @@ def _render_save_and_print(
             topic_override=comparison_topic(entity_reports) if is_comparison_html else None,
             rendered_content=rendered if is_comparison_html else None,
             json_profile=args.json_profile,
+            register=audience.name,
         )
         if args.emit == "html":
             publish_companion_paths.append(save_path)
@@ -1797,6 +1856,15 @@ def _main(
     if args.lookback_days is None:
         args.lookback_days = 30
 
+    # Reject a misspelled configured register before remote submission or any
+    # local source retrieval. Excluded modes resolve to default and remain
+    # unaffected by the register setting.
+    try:
+        _audience_register_for_run(args, config, None)
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+
     # Remote API path: when BOTH LAST30DAYS_API_KEY and LAST30DAYS_API_BASE are
     # set (and --mock is not), the search runs through the configured remote API
     # instead of local sources; no local provider keys are needed (see
@@ -1818,13 +1886,19 @@ def _main(
             return 2
         from lib import hosted
         depth = "deep" if args.deep else "quick" if args.quick else "default"
-        return hosted.run_hosted(
-            topic,
-            depth,
-            emit=args.emit,
-            save_dir=args.save_dir,
-            save_suffix=args.save_suffix or "",
-        )
+        try:
+            audience = _audience_register_for_run(args, config, None)
+        except ValueError as exc:
+            sys.stderr.write(f"[last30days] {exc}\n")
+            return 2
+        hosted_kwargs = {
+            "emit": args.emit,
+            "save_dir": args.save_dir,
+            "save_suffix": args.save_suffix or "",
+        }
+        if audience.name != "default":
+            hosted_kwargs["register"] = audience.name
+        return hosted.run_hosted(topic, depth, **hosted_kwargs)
 
     requested_sources = resolve_requested_sources(args.search, config)
     diag = pipeline.diagnose(config, requested_sources, safe=args.diagnose)

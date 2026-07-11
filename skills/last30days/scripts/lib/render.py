@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date
 from urllib.parse import urlparse
 
-from . import dates, health, library_index, schema, signals, skill_meta
+from . import dates, health, library_index, registers, schema, signals, skill_meta
 
 
 def _skill_version() -> str:
@@ -251,7 +251,110 @@ def _format_library_engagement(value: float) -> str:
     return f"{value:g}"
 
 
-def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str = "medium", save_path: str | None = None) -> str:
+def _render_ranked_clusters(
+    report: schema.Report,
+    clusters: list[schema.Cluster],
+) -> list[str]:
+    lines = ["## Ranked Evidence Clusters", ""]
+    candidate_by_id = {
+        candidate.candidate_id: candidate for candidate in report.ranked_candidates
+    }
+    for index, cluster in enumerate(clusters, start=1):
+        lines.append(
+            f"### {index}. {cluster.title} "
+            f"(score {cluster.score:.0f}, {len(cluster.candidate_ids)} "
+            f"item{'s' if len(cluster.candidate_ids) != 1 else ''}, "
+            f"sources: {', '.join(_source_label(source) for source in cluster.sources)})"
+        )
+        if cluster.uncertainty:
+            lines.append(f"- Uncertainty: {cluster.uncertainty}")
+        for rep_index, candidate_id in enumerate(cluster.representative_ids, start=1):
+            candidate = candidate_by_id.get(candidate_id)
+            if not candidate:
+                continue
+            lines.extend(_render_candidate(candidate, prefix=f"{rep_index}."))
+        lines.append("")
+    return lines
+
+
+def _clusters_for_register(
+    report: schema.Report,
+    audience: registers.AudienceRegister,
+    fallback_limit: int,
+) -> list[schema.Cluster]:
+    """Apply a preset's source emphasis without mutating pipeline rankings."""
+
+    clusters = list(report.clusters)
+    if audience.emphasis_weights:
+        clusters.sort(
+            key=lambda cluster: -cluster.score
+            * max(
+                (audience.emphasis_for(source) for source in cluster.sources),
+                default=1.0,
+            )
+        )
+    return clusters[: audience.budget_for("clusters", fallback_limit)]
+
+
+def _render_registered_sections(
+    report: schema.Report,
+    audience: registers.AudienceRegister,
+    fun_params: dict[str, float | int],
+    cluster_limit: int,
+) -> list[str]:
+    """Render one audience preset's ordered, budgeted evidence sections."""
+
+    best_takes = _render_best_takes(
+        report.ranked_candidates,
+        limit=audience.budget_for("best_takes", int(fun_params["limit"])),
+        threshold=float(fun_params["threshold"]),
+        vote_weight=float(fun_params.get("vote_weight", 18.0)),
+    )
+    if not best_takes:
+        best_takes = ["## Best Takes", "", "- No qualifying takes surfaced in this run."]
+
+    top_comments = _render_top_comments(
+        report,
+        limit=audience.budget_for("top_comments", 8),
+    )
+    if not top_comments:
+        top_comments = [
+            "## Top Community Comments",
+            "",
+            "- No qualifying community comments surfaced in this run.",
+        ]
+
+    sections = {
+        "hiring_signals": _render_hiring_signals(report),
+        "clusters": _render_ranked_clusters(
+            report,
+            _clusters_for_register(report, audience, cluster_limit),
+        ),
+        "stats": _render_stats(report),
+        "best_takes": best_takes,
+        "top_comments": top_comments,
+        "source_outcomes": _render_source_outcome_note(report),
+        "source_coverage": _render_source_coverage(report),
+    }
+    lines: list[str] = []
+    for section_name in audience.section_order:
+        block = sections[section_name]
+        if not block:
+            continue
+        if lines and lines[-1] != "":
+            lines.append("")
+        lines.extend(block)
+    return lines
+
+
+def render_compact(
+    report: schema.Report,
+    cluster_limit: int = 8,
+    fun_level: str = "medium",
+    save_path: str | None = None,
+    register: str = "default",
+) -> str:
+    audience = registers.get_register(register)
     non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
     lines = [
         *_render_badge(),
@@ -301,43 +404,36 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
     lines.append("<!-- EVIDENCE FOR SYNTHESIS: read this, do not emit verbatim. Transform into `What I learned:` prose per LAW 2. -->")
     lines.append("")
     hiring_block = _render_hiring_signals(report)
-    if hiring_block:
+    if hiring_block and audience.name in {"default", "eli5"}:
         lines.extend(hiring_block)
         lines.append("")
-    lines.append("## Ranked Evidence Clusters")
-    lines.append("")
-    candidate_by_id = {candidate.candidate_id: candidate for candidate in report.ranked_candidates}
-    for index, cluster in enumerate(report.clusters[:cluster_limit], start=1):
-        lines.append(
-            f"### {index}. {cluster.title} "
-            f"(score {cluster.score:.0f}, {len(cluster.candidate_ids)} item{'s' if len(cluster.candidate_ids) != 1 else ''}, "
-            f"sources: {', '.join(_source_label(source) for source in cluster.sources)})"
-        )
-        if cluster.uncertainty:
-            lines.append(f"- Uncertainty: {cluster.uncertainty}")
-        for rep_index, candidate_id in enumerate(cluster.representative_ids, start=1):
-            candidate = candidate_by_id.get(candidate_id)
-            if not candidate:
-                continue
-            lines.extend(_render_candidate(candidate, prefix=f"{rep_index}."))
-        lines.append("")
-
-    lines.extend(_render_stats(report))
-
     fun_params = _FUN_LEVELS.get(fun_level, _FUN_LEVELS["medium"])
-    best_takes = _render_best_takes(report.ranked_candidates, limit=fun_params["limit"], threshold=fun_params["threshold"], vote_weight=fun_params.get("vote_weight", 18.0))
-    if best_takes:
-        lines.extend([""] + best_takes)
+    if audience.name in {"default", "eli5"}:
+        # Keep this legacy assembly byte-for-byte stable. ELI5 has always been
+        # a synthesis-only voice change, so it intentionally takes this path.
+        lines.extend(_render_ranked_clusters(report, report.clusters[:cluster_limit]))
+        lines.extend(_render_stats(report))
 
-    top_comments = _render_top_comments(report)
-    if top_comments:
-        lines.extend([""] + top_comments)
+        best_takes = _render_best_takes(
+            report.ranked_candidates,
+            limit=fun_params["limit"],
+            threshold=fun_params["threshold"],
+            vote_weight=fun_params.get("vote_weight", 18.0),
+        )
+        if best_takes:
+            lines.extend([""] + best_takes)
 
-    outcome_note = _render_source_outcome_note(report)
-    if outcome_note:
-        lines.extend([""] + outcome_note)
+        top_comments = _render_top_comments(report)
+        if top_comments:
+            lines.extend([""] + top_comments)
 
-    lines.extend(_render_source_coverage(report))
+        outcome_note = _render_source_outcome_note(report)
+        if outcome_note:
+            lines.extend([""] + outcome_note)
+
+        lines.extend(_render_source_coverage(report))
+    else:
+        lines.extend(_render_registered_sections(report, audience, fun_params, cluster_limit))
     # Close EVIDENCE FOR SYNTHESIS envelope before anything that passes through verbatim.
     lines.append("")
     lines.append("<!-- END EVIDENCE FOR SYNTHESIS -->")
@@ -369,6 +465,8 @@ def render_for_html(
     synthesis_md: str | None = None,
     *,
     save_path: str | None = None,
+    fun_level: str = "medium",
+    register: str = "default",
 ) -> str:
     """Render markdown intended for shareable HTML conversion.
 
@@ -378,9 +476,12 @@ def render_for_html(
     model-facing safety note, and evidence scratchpad emitted by
     render_compact().
 
-    When synthesis_md is None, the body is intentionally sparse: badge,
-    metadata, optional data quality note, and engine footer only.
+    With the default/eli5 register and no synthesis_md, the body is
+    intentionally sparse: badge, metadata, optional data quality note, and
+    engine footer only. Other named registers render their ordered evidence
+    sections so direct HTML output reflects the selected audience preset.
     """
+    audience = registers.get_register(register)
     lines = [
         *_render_badge(),
         *_render_html_metadata(report),
@@ -393,8 +494,14 @@ def render_for_html(
         lines.extend(["", synthesis_md.strip()])
         if hiring_block and "## Hiring Signals" not in synthesis_md:
             lines.extend(["", *hiring_block])
-    elif hiring_block:
+    elif hiring_block and audience.name in {"default", "eli5"}:
         lines.extend(["", *hiring_block])
+    if not synthesis_md and audience.name not in {"default", "eli5"}:
+        fun_params = _FUN_LEVELS.get(fun_level, _FUN_LEVELS["medium"])
+        lines.extend([
+            "",
+            *_render_registered_sections(report, audience, fun_params, 8),
+        ])
     # Data quality warnings are NOT rendered into the HTML artifact. The HTML
     # is meant to be shared (Slack, email, Notion); recipients haven't asked
     # for technical commentary about how the run was produced. Generators see

@@ -8,7 +8,7 @@ from collections import OrderedDict
 from collections.abc import Mapping, Sequence
 from datetime import date
 
-from . import render, schema
+from . import registers, render, schema
 from .library import LibraryEntry
 
 
@@ -392,9 +392,15 @@ def render_html(
     fun_level: str = "medium",
     save_path: str | None = None,
     synthesis_md: str | None = None,
+    register: str = "default",
 ) -> str:
-    _ = fun_level
-    md = render.render_for_html(report, synthesis_md=synthesis_md, save_path=save_path)
+    md = render.render_for_html(
+        report,
+        synthesis_md=synthesis_md,
+        save_path=save_path,
+        fun_level=fun_level,
+        register=register,
+    )
     md = _strip_evidence_block(md)
     md = _strip_invitation(md)
     md = _strip_canonical_boundary(md)
