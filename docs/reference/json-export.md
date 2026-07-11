@@ -21,6 +21,16 @@ python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json -
 
 The raw profile is intentionally unversioned and may change when pipeline internals change. It preserves the JSON serialization used before the agent profile was introduced.
 
+## Discovery export
+
+Discovery mode has a separate versioned contract so its topic results do not change the normal research export:
+
+```bash
+python3 skills/last30days/scripts/last30days.py --discover "AI agents" --emit=json
+```
+
+Its top level contains `schema_version` (`1.0`), `kind` (`"discovery"`), `domain`, `generated_at`, `window_days`, `source_status`, `feeds`, `results`, and `warnings`. Each ranked result contains `rank`, `topic`, `why_spiking`, `momentum` (`new-this-week` or `building`), `velocity_score`, `sources`, per-source native `engagement`, a ready-to-run `command`, and `evidence_urls`. The discovery contract follows the same versioning policy below but evolves independently of the normal agent export. `--json-profile=raw` returns the unversioned internal `DiscoveryReport` dataclass instead.
+
 When `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` route a run through a configured remote API, the server does not return the local `Report` needed to build this profile. In that mode, `--json-profile=agent` exits with status 2 instead of emitting a misleading shape; use `--json-profile=raw` to retain the remote backend's existing server-response JSON contract.
 
 ## Top-level fields

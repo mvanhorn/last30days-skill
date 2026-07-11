@@ -124,6 +124,7 @@ Replace `{VERSION}` with the installed plugin version (`jq -r '.version' "$SKILL
 **Placement by query type:**
 - GENERAL / NEWS / PROMPTING / RECOMMENDATIONS: badge on line 1, blank line 2, `What I learned:` on line 3, then bold-lead-in paragraphs
 - COMPARISON: badge on line 1, blank line 2, `# {TOPIC_A} vs {TOPIC_B} [vs {TOPIC_C}]: What the Community Says (/Last30Days)` on line 3, then Quick Verdict section
+- DISCOVERY: pass through the engine's topic-per-section discovery brief verbatim. Its ranked headings, momentum labels, evidence counters, and `/last30days "<topic>"` handoffs are engine-owned and are an explicit exception to the GENERAL synthesis template.
 
 ---
 
@@ -265,6 +266,7 @@ The single most common failure mode of this skill is the model reading this file
 
 Branching rule:
 
+- **If the user asks what is trending, exploding, or worth covering in a domain** (for example, `/last30days what's exploding in AI agents?`): set `DISCOVERY_DOMAIN` to the domain phrase, complete the first-run wizard if needed, then run `"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --discover "${DISCOVERY_DOMAIN}" --emit=compact --save-dir="${LAST30DAYS_MEMORY_DIR}"`. Do not run Step 0.5, Step 0.55, Step 0.75, WebSearch supplements, or the normal synthesis pass; the listing sweep and topic-per-section brief are the complete discovery flow. Relay stdout verbatim. If no domain was supplied, ask one short question for the domain and wait.
 - **If the user provided a topic** (e.g. `/last30days Kanye West`, `/last30days nvidia earnings`): confirm the first-run gate above passed (output `1`), then proceed to `## Step 0: First-Run Setup Wizard` (or skip it if already confirmed complete), then continue to Step 0.45 / Step 0.5 / Step 0.55 / Step 0.75 / Research Execution below. Do not skip straight to WebSearch. WebSearch is a **supplement after** the Python engine runs (see Step 2). It is **not a substitute**.
 - **If the user provided no topic**: ask the user for a topic with a single short question. Do not run research. Do not run WebSearch. Wait.
 

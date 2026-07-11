@@ -225,6 +225,45 @@ class Report:
     drill_of: str | None = None
 
 
+@dataclass(frozen=True)
+class DiscoveryPlan:
+    """Topic-less listing feeds selected for a domain sweep."""
+
+    domain: str
+    category: str | None
+    subreddits: list[str]
+    sources: list[str]
+
+
+@dataclass(frozen=True)
+class DiscoveryTopic:
+    """One engagement-ranked topic produced by a discovery sweep."""
+
+    rank: int
+    name: str
+    why_spiking: str
+    momentum: Literal["new-this-week", "building"]
+    velocity_score: float
+    sources: list[str]
+    engagement_by_source: dict[str, dict[str, float | int]]
+    command: str
+    evidence_urls: list[str] = field(default_factory=list)
+
+
+@dataclass
+class DiscoveryReport:
+    """Versioned result of a domain-level listing sweep."""
+
+    domain: str
+    range_from: str
+    range_to: str
+    generated_at: str
+    plan: DiscoveryPlan
+    topics: list[DiscoveryTopic]
+    source_status: dict[str, SourceOutcome] = field(default_factory=dict)
+    warnings: list[str] = field(default_factory=list)
+
+
 @dataclass
 class RetrievalBundle:
     """Structured retrieval output before global ranking."""
@@ -446,6 +485,7 @@ def candidate_primary_item(candidate: Candidate) -> SourceItem | None:
 
 
 AGENT_EXPORT_SCHEMA_VERSION = "1.0"
+DISCOVERY_EXPORT_SCHEMA_VERSION = "1.0"
 
 
 def _agent_summary(candidate: Candidate) -> str:
@@ -581,4 +621,41 @@ def to_agent_export(report: Report) -> dict[str, Any]:
         },
         "clusters": exported_clusters,
         "results": results,
+    }
+
+
+def to_discovery_export(report: DiscoveryReport) -> dict[str, Any]:
+    """Serialize discovery output without changing the normal agent contract."""
+    start = datetime.fromisoformat(report.range_from).date()
+    end = datetime.fromisoformat(report.range_to).date()
+    return {
+        "schema_version": DISCOVERY_EXPORT_SCHEMA_VERSION,
+        "kind": "discovery",
+        "domain": report.domain,
+        "generated_at": _agent_generated_at(report.generated_at),
+        "window_days": max(0, (end - start).days),
+        "source_status": {
+            source: outcome.state
+            for source, outcome in sorted(report.source_status.items())
+        },
+        "feeds": {
+            "category": report.plan.category,
+            "subreddits": list(report.plan.subreddits),
+            "sources": list(report.plan.sources),
+        },
+        "results": [
+            {
+                "rank": topic.rank,
+                "topic": topic.name,
+                "why_spiking": topic.why_spiking,
+                "momentum": topic.momentum,
+                "velocity_score": topic.velocity_score,
+                "sources": list(topic.sources),
+                "engagement": topic.engagement_by_source,
+                "command": topic.command,
+                "evidence_urls": list(topic.evidence_urls),
+            }
+            for topic in report.topics
+        ],
+        "warnings": list(report.warnings),
     }

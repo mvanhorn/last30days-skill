@@ -126,6 +126,8 @@ CATEGORY_PEERS: dict[str, _CategoryEntry] = {
     },
     "ai_agent_framework": {
         "patterns": [
+            "ai agent",
+            "ai agents",
             "agent framework",
             "agentic framework",
             "langchain",

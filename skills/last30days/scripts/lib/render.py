@@ -61,6 +61,58 @@ def _render_badge() -> list[str]:
         "",
     ]
 
+
+def _format_discovery_engagement(
+    engagement: dict[str, dict[str, float | int]],
+) -> str:
+    parts: list[str] = []
+    for source, metrics in engagement.items():
+        metric_parts = [
+            f"{field.replace('_', ' ')} {value:,.0f}"
+            for field, value in metrics.items()
+            if value
+        ]
+        if metric_parts:
+            parts.append(f"{SOURCE_LABELS.get(source, source.title())}: {', '.join(metric_parts)}")
+    return " · ".join(parts) or "No native engagement counters reported"
+
+
+def render_discovery(report: schema.DiscoveryReport) -> str:
+    """Render a compact topic-per-section discovery brief."""
+    lines = [
+        *_render_badge(),
+        f"# Trending discovery: {report.domain}",
+        "",
+        f"Window: {report.range_from} to {report.range_to}",
+        f"Feeds: {', '.join(report.plan.sources)}",
+    ]
+    if report.plan.subreddits:
+        lines.append("Communities: " + ", ".join(f"r/{sub}" for sub in report.plan.subreddits))
+    lines.append("")
+
+    if not report.topics:
+        lines.extend(["No trending topic clusters survived this sweep.", ""])
+    for topic in report.topics:
+        momentum = "New this week" if topic.momentum == "new-this-week" else "Building"
+        lines.extend([
+            f"## {topic.rank}. {topic.name}",
+            "",
+            f"**Momentum:** {momentum} · velocity {topic.velocity_score:,.2f}",
+            "",
+            topic.why_spiking,
+            "",
+            f"**Evidence:** {_format_discovery_engagement(topic.engagement_by_source)}",
+            "",
+            f"**Research next:** `{topic.command}`",
+            "",
+        ])
+
+    if report.warnings:
+        lines.extend(["### Coverage notes", ""])
+        lines.extend(f"- {warning}" for warning in report.warnings)
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
 SOURCE_LABELS = {
     "reddit": "Reddit",
     "youtube": "YouTube",

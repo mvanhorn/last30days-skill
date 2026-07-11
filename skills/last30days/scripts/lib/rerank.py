@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import json
+import math
 import re
+from datetime import datetime
 
 from . import http, providers, query, schema, signals
 
@@ -24,6 +26,62 @@ ENTITY_MISS_PENALTY = 25.0
 # still outranks a thin first-party one; this only lifts first-party off the
 # neutral floor so it survives into the visible band.
 FIRST_PARTY_AUTHOR_CREDIT = 5.0
+
+_DISCOVERY_ENGAGEMENT_FIELDS = {
+    "reddit": ("score", "num_comments"),
+    "hackernews": ("points", "comments"),
+    "digg": ("postCount", "uniqueAuthors"),
+}
+
+
+def discovery_engagement_total(item: schema.SourceItem) -> float:
+    """Return comparable native interaction counts for discovery evidence."""
+    fields = _DISCOVERY_ENGAGEMENT_FIELDS.get(item.source)
+    if fields is None:
+        fields = tuple(
+            field
+            for field in item.engagement
+            if field.lower() not in {"rank", "rank_score", "upvote_ratio", "rating"}
+        )
+    return sum(
+        float(item.engagement.get(field) or 0)
+        for field in fields
+        if isinstance(item.engagement.get(field), (int, float))
+        and not isinstance(item.engagement.get(field), bool)
+    )
+
+
+def engagement_velocity_score(
+    item: schema.SourceItem,
+    *,
+    as_of_date: str,
+) -> float:
+    """Weight native engagement by age, with an explicit first-week boost."""
+    engagement = discovery_engagement_total(item)
+    if engagement <= 0:
+        return 0.0
+    try:
+        published = datetime.fromisoformat((item.published_at or "").replace("Z", "+00:00")).date()
+        as_of = datetime.fromisoformat(as_of_date.replace("Z", "+00:00")).date()
+        age_days = max(0, (as_of - published).days)
+    except (TypeError, ValueError):
+        age_days = 30
+    recency_weight = 1.0 / math.sqrt(age_days + 1)
+    if age_days < 7:
+        recency_weight *= 1.5
+    return round(engagement * recency_weight, 4)
+
+
+def discovery_velocity_score(
+    items: list[schema.SourceItem],
+    *,
+    as_of_date: str,
+) -> float:
+    """Score a topic cluster and reward independent cross-source confirmation."""
+    raw = sum(engagement_velocity_score(item, as_of_date=as_of_date) for item in items)
+    source_count = len({item.source for item in items})
+    corroboration = 1.0 + (0.15 * max(0, source_count - 1))
+    return round(raw * corroboration, 4)
 
 # Engagement rescue: a high-engagement X post that is on-topic (entity-grounded
 # or first-party) cannot be fully zeroed by the other penalties. The floor is a

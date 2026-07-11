@@ -118,22 +118,37 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
     return posts
 
 
-def _listing_url(subreddit: str, sort: str) -> str:
+def _listing_url(subreddit: str, sort: str, timeframe: str = TIMEFRAME) -> str:
     sub = subreddit.removeprefix("r/").strip()
     url = f"https://www.reddit.com/svc/shreddit/community-more-posts/{sort}/?name={sub}"
     if sort == "top":
-        url += f"&t={TIMEFRAME}"
+        url += f"&t={timeframe}"
     return url
 
 
-def _fetch_one(subreddit: str, sort: str, query: str) -> List[Dict[str, Any]]:
+def _fetch_one(
+    subreddit: str,
+    sort: str,
+    query: str,
+    timeframe: str = TIMEFRAME,
+) -> List[Dict[str, Any]]:
+    items, _ = _fetch_one_with_status(subreddit, sort, query, timeframe)
+    return items
+
+
+def _fetch_one_with_status(
+    subreddit: str,
+    sort: str,
+    query: str,
+    timeframe: str = TIMEFRAME,
+) -> tuple[List[Dict[str, Any]], Optional[str]]:
     try:
-        text = http.reddit_keyless_get_text(_listing_url(subreddit, sort), timeout=LISTING_TIMEOUT,
+        text = http.reddit_keyless_get_text(_listing_url(subreddit, sort, timeframe), timeout=LISTING_TIMEOUT,
                                             accept="text/html")
-        return parse_cards(text, query) if text else []
+        return (parse_cards(text, query) if text else []), None
     except Exception as e:
         _log(f"listing fetch failed r/{subreddit} {sort}: {e}")
-        return []
+        return [], str(e)
 
 
 def fetch_listings(
@@ -141,6 +156,7 @@ def fetch_listings(
     depth: str = "default",
     query: str = "",
     sorts: Optional[List[str]] = None,
+    timeframe: str = TIMEFRAME,
 ) -> List[Dict[str, Any]]:
     """Fetch scored post cards across subreddits × sorts.
 
@@ -157,7 +173,7 @@ def fetch_listings(
     jobs = [(sub, sort) for sub in subreddits for sort in sorts]
     all_posts: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)) or 1) as executor:
-        futures = {executor.submit(_fetch_one, sub, sort, query): (sub, sort)
+        futures = {executor.submit(_fetch_one, sub, sort, query, timeframe): (sub, sort)
                    for sub, sort in jobs}
         for future in futures:
             try:
@@ -172,6 +188,43 @@ def fetch_listings(
             seen.add(p["url"])
             unique.append(p)
     return unique
+
+
+def fetch_discovery_listings(
+    subreddits: List[str],
+    *,
+    query: str,
+    depth: str = "default",
+) -> Dict[str, Any]:
+    """Fetch rising/top-week listings while preserving per-feed failures."""
+    if not subreddits:
+        return {"items": [], "errors": []}
+    jobs = [(subreddit, sort) for subreddit in subreddits for sort in ("rising", "top")]
+    items: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)) or 1) as executor:
+        futures = {
+            executor.submit(_fetch_one_with_status, subreddit, sort, query, "week"): (subreddit, sort)
+            for subreddit, sort in jobs
+        }
+        for future, (subreddit, sort) in futures.items():
+            try:
+                fetched, error = future.result(timeout=LISTING_TIMEOUT + 5)
+            except (Exception, FuturesTimeoutError) as exc:
+                errors.append(f"r/{subreddit} {sort}: {exc}")
+                continue
+            items.extend(fetched)
+            if error:
+                errors.append(f"r/{subreddit} {sort}: {error}")
+
+    seen: set[str] = set()
+    unique = []
+    for item in items:
+        if item["url"] in seen:
+            continue
+        seen.add(item["url"])
+        unique.append(item)
+    return {"items": unique, "errors": errors}
 
 
 def score_index(subreddits: List[str], depth: str = "default") -> Dict[str, Dict[str, int]]:

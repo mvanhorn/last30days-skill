@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import copy
+import math
 import re
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from shutil import which
 from typing import Any
 
@@ -39,6 +40,7 @@ from . import (
     providers,
     query,
     reddit,
+    reddit_listing,
     reddit_public,
     relevance,
     rerank,
@@ -59,6 +61,11 @@ from . import (
 )
 from .cluster import cluster_candidates
 from .fusion import weighted_rrf
+
+DISCOVERY_SOURCES = ("reddit", "hackernews", "digg", "x")
+_DISCOVERY_GENERIC_DOMAIN_TERMS = {
+    "ai", "artificial", "intelligence", "tech", "technology", "trending", "trend",
+}
 
 DEPTH_SETTINGS = {
     "quick": {"per_stream_limit": 6, "pool_limit": 15, "rerank_limit": 12},
@@ -238,6 +245,411 @@ def available_sources(
     if exclude:
         available = [s for s in available if s not in exclude]
     return available
+
+
+def _mock_discovery_items(
+    source: str,
+    domain: str,
+    to_date: str,
+) -> list[dict[str, Any]]:
+    """Deterministic listing fixtures for the public --mock CLI contract."""
+    labels = [
+        "Agent memory protocols",
+        "Browser-using agents",
+        "Local agent runtimes",
+        "Multi-agent orchestration",
+        "Agent security sandboxes",
+        "Voice agent latency",
+    ]
+    end = datetime.fromisoformat(to_date).date()
+    items: list[dict[str, Any]] = []
+    for index, label in enumerate(labels, start=1):
+        published = (end - timedelta(days=index)).isoformat()
+        slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+        if source == "reddit":
+            items.append({
+                "id": f"discovery-r-{index}",
+                "title": label,
+                "url": f"https://reddit.com/r/example/comments/{slug}",
+                "subreddit": "example",
+                "date": published,
+                "engagement": {"score": 180 - index * 10, "num_comments": 30 + index},
+                "selftext": label,
+                "relevance": 0.9,
+                "why_relevant": "Mock discovery listing",
+            })
+        elif source == "hackernews":
+            items.append({
+                "id": f"discovery-hn-{index}",
+                "title": label,
+                "url": f"https://example.com/{slug}",
+                "hn_url": f"https://news.ycombinator.com/item?id={index}",
+                "author": f"example{index}",
+                "date": published,
+                "engagement": {"points": 120 - index * 8, "comments": 20 + index},
+                "relevance": 0.88,
+                "why_relevant": "Mock HN discovery listing",
+            })
+        elif source == "digg":
+            items.append({
+                "id": f"discovery-d-{index}",
+                "title": label,
+                "url": f"https://di.gg/ai/{slug}",
+                "tldr": label,
+                "date": published,
+                "engagement": {"postCount": 30 - index, "uniqueAuthors": 12 - index},
+                "relevance": 0.9,
+                "why_relevant": "Mock Digg discovery cluster",
+            })
+        elif source == "x":
+            items.append({
+                "id": f"discovery-x-{index}",
+                "text": label,
+                "url": f"https://x.com/example{index}/status/{index}",
+                "author_handle": f"example{index}",
+                "date": published,
+                "engagement": {"likes": 140 - index * 9, "reposts": 18 + index},
+                "relevance": 0.9,
+                "why_relevant": "Mock X discovery activity",
+            })
+    return items
+
+
+def _matches_discovery_domain(domain: str, text: str) -> bool:
+    """Require a distinctive domain term, not a generic token such as ``AI``."""
+    def terms(value: str) -> set[str]:
+        words = {
+            word[:-1] if len(word) > 4 and word.endswith("s") else word
+            for word in re.findall(r"[a-z0-9]+", value.lower())
+            if len(word) > 2
+        }
+        return words
+
+    domain_terms = terms(domain)
+    anchors = domain_terms - _DISCOVERY_GENERIC_DOMAIN_TERMS
+    return bool((anchors or domain_terms) & terms(text))
+
+
+def _fetch_discovery_source(
+    source: str,
+    plan: schema.DiscoveryPlan,
+    *,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    mock: bool,
+    config: dict[str, Any],
+) -> tuple[list[dict[str, Any]], str | None]:
+    if mock:
+        return _mock_discovery_items(source, plan.domain, to_date), None
+    if source == "reddit":
+        result = reddit_listing.fetch_discovery_listings(
+            plan.subreddits, depth=depth, query=plan.domain,
+        )
+        items = result.get("items") or []
+        items = [
+            item for item in items
+            if _matches_discovery_domain(
+                plan.domain,
+                f"{item.get('title') or ''} {item.get('selftext') or ''}",
+            )
+        ]
+        return items, "; ".join(result.get("errors") or []) or None
+    if source == "hackernews":
+        result = hackernews.fetch_discovery_listings(from_date, to_date, depth=depth)
+        items = result.get("items") or []
+        for item in items:
+            item["relevance"] = relevance.token_overlap_relevance(
+                plan.domain,
+                str(item.get("title") or ""),
+            )
+        # HN is a broad technology listing, so keep only domain-bearing stories.
+        items = [
+            item for item in items
+            if _matches_discovery_domain(plan.domain, str(item.get("title") or ""))
+        ]
+        errors = result.get("errors") or []
+        return items, "; ".join(errors) or None
+    if source == "digg":
+        result = digg.search_digg(plan.domain, from_date, to_date, depth=depth)
+        return digg.parse_digg_response(result, query=plan.domain), result.get("error")
+    if source == "x":
+        subquery = schema.SubQuery(
+            label="discovery-listings",
+            search_query=plan.domain,
+            ranking_query=f"What is accelerating in {plan.domain}?",
+            sources=["x"],
+        )
+        last_error = ""
+        for backend in env.x_backend_chain(config):
+            items, error = _fetch_x_backend(
+                backend, subquery, from_date, to_date, depth, config,
+            )
+            if items:
+                return items, last_error or error or None
+            if error:
+                last_error = f"{backend}: {error}"
+        return [], last_error or None
+    raise ValueError(f"Unsupported discovery source: {source}")
+
+
+def discovery_topic_name(
+    cluster: schema.Cluster,
+    candidates: dict[str, schema.Candidate],
+    domain: str,
+) -> str:
+    """Turn a story cluster into a concise, reusable research topic."""
+    members = [candidates[cid] for cid in cluster.candidate_ids if cid in candidates]
+    leader = candidates.get(cluster.representative_ids[0]) if cluster.representative_ids else None
+    leader = leader or (members[0] if members else None)
+    if leader is None:
+        return domain
+    title = re.sub(r"^(?:show|ask|tell|launch) hn:\s*", "", leader.title, flags=re.I)
+    title = re.sub(r"^digg cluster (?:about|on)\s+", "", title, flags=re.I)
+    title = re.sub(r"\s*(?::|-)?\s*(?:discussion thread|gains momentum)$", "", title, flags=re.I)
+
+    if len(members) > 1:
+        entity_sets = [
+            entity_extract.extract_text_entities(f"{member.title} {member.snippet}")
+            for member in members
+        ]
+        shared = set.intersection(*entity_sets) if entity_sets else set()
+        shared_words = [
+            word.strip(".,:;!?()[]{}\"'")
+            for word in title.split()
+            if word.strip(".,:;!?()[]{}\"'").lower() in shared
+        ]
+        if 2 <= len(shared_words) <= 7:
+            title = " ".join(shared_words)
+
+    title = " ".join(title.split()).strip(" -:;,.\"'")
+    if len(title) > 96:
+        title = title[:93].rsplit(" ", 1)[0] + "..."
+    return title or domain
+
+
+def _discovery_engagement(
+    items: list[schema.SourceItem],
+) -> dict[str, dict[str, float | int]]:
+    totals: dict[str, dict[str, float | int]] = {}
+    for item in items:
+        bucket = totals.setdefault(item.source, {})
+        for field, value in item.engagement.items():
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            bucket[field] = bucket.get(field, 0) + value
+    return {
+        source: dict(sorted(metrics.items()))
+        for source, metrics in sorted(totals.items())
+    }
+
+
+def _discovery_momentum(items: list[schema.SourceItem], to_date: str) -> str:
+    as_of = datetime.fromisoformat(to_date).date()
+    ages: list[int] = []
+    for item in items:
+        try:
+            published = datetime.fromisoformat((item.published_at or "").replace("Z", "+00:00")).date()
+        except (TypeError, ValueError):
+            continue
+        ages.append(max(0, (as_of - published).days))
+    return "new-this-week" if ages and max(ages) < 7 else "building"
+
+
+def run_discover(
+    *,
+    domain: str,
+    config: dict[str, Any],
+    depth: str = "default",
+    requested_sources: list[str] | None = None,
+    mock: bool = False,
+    subreddits: list[str] | None = None,
+    lookback_days: int = 30,
+    as_of_date: str | None = None,
+    limit: int = 10,
+) -> schema.DiscoveryReport:
+    """Sweep category listings and rank the topics gaining velocity."""
+    from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
+    requested = normalize_requested_sources(requested_sources)
+    unsupported = sorted(set(requested or []) - set(DISCOVERY_SOURCES))
+    if unsupported:
+        raise ValueError(
+            "Discovery supports listing sources only: reddit, hackernews, digg "
+            f"(unsupported: {', '.join(unsupported)})"
+        )
+    available = list(DISCOVERY_SOURCES) if mock else [
+        source for source in available_sources(config, requested) if source in DISCOVERY_SOURCES
+    ]
+    if requested:
+        available = [source for source in available if source in requested]
+    plan = planner.build_discovery_plan(
+        domain,
+        available_sources=available,
+        subreddits=subreddits,
+    )
+
+    source_status: dict[str, schema.SourceOutcome] = {}
+    bundle = schema.RetrievalBundle()
+    query_plan = schema.QueryPlan(
+        intent="breaking_news",
+        freshness_mode="breaking",
+        cluster_mode="story",
+        raw_topic=plan.domain,
+        subqueries=[schema.SubQuery(
+            label="discovery-listings",
+            search_query=plan.domain,
+            ranking_query=f"What is accelerating in {plan.domain}?",
+            sources=list(plan.sources),
+        )],
+        source_weights={source: 1.0 for source in plan.sources},
+        notes=["discover-mode", "listing-sweep"],
+    )
+
+    with ThreadPoolExecutor(max_workers=len(plan.sources)) as executor:
+        futures = {
+            executor.submit(
+                _fetch_discovery_source,
+                source,
+                plan,
+                from_date=from_date,
+                to_date=to_date,
+                depth=depth,
+                mock=mock,
+                config=config,
+            ): source
+            for source in plan.sources
+        }
+        for future in as_completed(futures):
+            source = futures[future]
+            bundle.mark_attempted(source)
+            try:
+                raw_items, partial_error = future.result()
+                normalized = normalize.normalize_source_items(
+                    source,
+                    raw_items,
+                    from_date,
+                    to_date,
+                    freshness_mode="breaking",
+                )
+                prepared = relevance.PreparedQuery(plan.domain)
+                normalized = signals.annotate_stream(
+                    normalized,
+                    prepared,
+                    "breaking",
+                    reference_date=to_date,
+                    max_days=lookback_days,
+                )
+                normalized = dedupe.dedupe_items(normalized)
+                for item in normalized:
+                    item.snippet = snippet.extract_best_snippet(item, prepared)
+                bundle.add_items("discovery-listings", source, normalized)
+                if partial_error:
+                    failure_state = (
+                        bird_x.classify_run_failure(partial_error)
+                        if source == "x" and partial_error.startswith("bird:")
+                        else http.classify_failure(message=partial_error)
+                    )
+                    bundle.record_failure(
+                        source,
+                        failure_state,
+                        partial_error,
+                    )
+            except Exception as exc:
+                state, attempted = _classify_source_failure(exc)
+                bundle.record_failure(source, state, str(exc), attempted=attempted)
+
+    for source in DISCOVERY_SOURCES:
+        if source in bundle.source_status:
+            continue
+        detail = (
+            "Source is not configured for discovery."
+        )
+        source_status[source] = schema.SourceOutcome(
+            source=source,
+            state=schema.SKIPPED_UNCONFIGURED,
+            attempted=False,
+            detail=detail,
+            fix_hint="doctor",
+        )
+    source_status.update(_finalize_source_status(bundle.source_status, bundle.items_by_source))
+
+    candidates = weighted_rrf(bundle.items_by_source_and_query, query_plan, pool_limit=80)
+    for candidate in candidates:
+        velocity = rerank.discovery_velocity_score(candidate.source_items, as_of_date=to_date)
+        candidate.final_score = min(100.0, 12.0 * math.log1p(velocity)) if velocity else 0.0
+    candidates.sort(key=lambda candidate: (-candidate.final_score, candidate.title.lower()))
+    clusters = cluster_candidates(candidates, query_plan)
+    candidate_map = {candidate.candidate_id: candidate for candidate in candidates}
+
+    ranked_clusters: list[tuple[float, schema.Cluster, list[schema.SourceItem]]] = []
+    for cluster in clusters:
+        cluster_items: list[schema.SourceItem] = []
+        for candidate_id in cluster.candidate_ids:
+            candidate = candidate_map.get(candidate_id)
+            if candidate:
+                cluster_items.extend(candidate.source_items)
+        score = rerank.discovery_velocity_score(cluster_items, as_of_date=to_date)
+        ranked_clusters.append((score, cluster, cluster_items))
+    ranked_clusters.sort(key=lambda entry: (-entry[0], entry[1].title.lower()))
+
+    topic_limit = max(5, min(10, limit))
+    topics: list[schema.DiscoveryTopic] = []
+    seen_topic_names: set[str] = set()
+    for score, cluster, cluster_items in ranked_clusters:
+        name = discovery_topic_name(cluster, candidate_map, plan.domain)
+        name_key = name.casefold()
+        if name_key in seen_topic_names:
+            continue
+        seen_topic_names.add(name_key)
+        rank = len(topics) + 1
+        sources = sorted({item.source for item in cluster_items})
+        native_total = sum(rerank.discovery_engagement_total(item) for item in cluster_items)
+        source_phrase = ", ".join(sources[:-1]) + (
+            f" and {sources[-1]}" if len(sources) > 1 else (sources[0] if sources else "the listings")
+        )
+        leader = candidate_map.get(cluster.representative_ids[0]) if cluster.representative_ids else None
+        summary = (leader.snippet if leader else "") or (leader.title if leader else name)
+        why = (
+            f"{len(cluster_items)} listing item{'s' if len(cluster_items) != 1 else ''} on "
+            f"{source_phrase} generated {native_total:,.0f} native interactions. "
+            f"{summary[:220]}"
+        )
+        topics.append(schema.DiscoveryTopic(
+            rank=rank,
+            name=name,
+            why_spiking=why,
+            momentum=_discovery_momentum(cluster_items, to_date),
+            velocity_score=round(score, 2),
+            sources=sources,
+            engagement_by_source=_discovery_engagement(cluster_items),
+            command=f'/last30days "{name.replace(chr(34), chr(39))}"',
+            evidence_urls=list(dict.fromkeys(item.url for item in cluster_items if item.url))[:5],
+        ))
+        if len(topics) >= topic_limit:
+            break
+
+    warnings: list[str] = []
+    if len(topics) < 5:
+        warnings.append("Fewer than five topic clusters survived this domain sweep.")
+    if topics and all(len(topic.sources) == 1 for topic in topics):
+        warnings.append("Discovery evidence is single-source; configure Digg for broader confirmation.")
+    failed = [
+        source for source, outcome in source_status.items()
+        if outcome.state not in {health.OK, schema.NO_RESULTS, schema.SKIPPED_UNCONFIGURED}
+    ]
+    if failed:
+        warnings.append(f"Some discovery sources degraded: {', '.join(sorted(failed))}.")
+
+    return schema.DiscoveryReport(
+        domain=plan.domain,
+        range_from=from_date,
+        range_to=to_date,
+        generated_at=datetime.now(timezone.utc).isoformat(),
+        plan=plan,
+        topics=topics,
+        source_status=source_status,
+        warnings=warnings,
+    )
 
 
 def diagnose(

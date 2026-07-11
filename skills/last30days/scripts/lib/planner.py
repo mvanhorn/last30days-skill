@@ -7,15 +7,58 @@ import re
 import unicodedata
 from collections import Counter
 
-from . import entity_extract, http, providers, query, relevance, schema
+from . import categories, entity_extract, http, providers, query, relevance, schema
 
 # Hebrew Unicode block: U+0590–U+05FF
 _HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
+
+DISCOVERY_SOURCE_ORDER = ("reddit", "hackernews", "digg", "x")
 
 
 def detect_language(text: str) -> str | None:
     """Return 'he' if the text contains Hebrew characters, else None."""
     return 'he' if _HEBREW_RE.search(text) else None
+
+
+def build_discovery_plan(
+    domain: str,
+    *,
+    available_sources: list[str] | None = None,
+    subreddits: list[str] | None = None,
+) -> schema.DiscoveryPlan:
+    """Resolve a domain to the existing category-peer community feeds."""
+    normalized_domain = " ".join(domain.split())
+    if not normalized_domain:
+        raise ValueError("Discovery domain cannot be empty")
+
+    category = categories.detect_category(normalized_domain)
+    candidate_subreddits = list(subreddits or categories.peer_subs_for(category))
+    seen_subreddits: set[str] = set()
+    resolved_subreddits: list[str] = []
+    for subreddit in candidate_subreddits:
+        normalized_subreddit = subreddit.removeprefix("r/").strip()
+        key = normalized_subreddit.lower()
+        if not normalized_subreddit or key in seen_subreddits:
+            continue
+        seen_subreddits.add(key)
+        resolved_subreddits.append(normalized_subreddit)
+    # The curated map intentionally stays small. Keep discovery's keyless floor
+    # for uncategorized domains by sweeping r/all and applying domain relevance
+    # during normalization instead of inventing a second category resolver.
+    if not resolved_subreddits:
+        resolved_subreddits = ["all"]
+
+    allowed = set(available_sources or DISCOVERY_SOURCE_ORDER)
+    sources = [source for source in DISCOVERY_SOURCE_ORDER if source in allowed]
+    if not sources:
+        raise ValueError(f"No listing sources are available for {normalized_domain!r}")
+
+    return schema.DiscoveryPlan(
+        domain=normalized_domain,
+        category=category,
+        subreddits=resolved_subreddits,
+        sources=sources,
+    )
 
 ALLOWED_INTENTS = {
     "factual",

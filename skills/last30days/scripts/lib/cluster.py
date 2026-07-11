@@ -107,7 +107,11 @@ def cluster_candidates(
         )
 
     # Second pass: merge small clusters that share entities across sources.
-    clusters = _merge_entity_clusters(clusters, candidates)
+    clusters = _merge_entity_clusters(
+        clusters,
+        candidates,
+        min_shared_entities=2 if "discover-mode" in plan.notes else 1,
+    )
 
     return sorted(clusters, key=lambda cluster: cluster.score, reverse=True)
 
@@ -115,6 +119,8 @@ def cluster_candidates(
 def _merge_entity_clusters(
     clusters: list[schema.Cluster],
     all_candidates: list[schema.Candidate],
+    *,
+    min_shared_entities: int = 1,
 ) -> list[schema.Cluster]:
     """Merge small clusters that cover the same story across different sources.
 
@@ -161,8 +167,9 @@ def _merge_entity_clusters(
             if poly_i != poly_j:
                 continue
 
+            shared_entities = cluster_entities[i] & cluster_entities[j]
             overlap = entity_extract.entity_overlap(cluster_entities[i], cluster_entities[j])
-            if overlap >= 0.45:
+            if len(shared_entities) >= min_shared_entities and overlap >= 0.45:
                 merged_into[j] = i
 
     if not merged_into:

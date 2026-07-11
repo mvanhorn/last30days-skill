@@ -40,6 +40,8 @@ ENRICH_LIMITS = {
     "deep": 10,
 }
 
+DISCOVERY_LIMITS = {"quick": 20, "default": 40, "deep": 60}
+
 
 def _log(msg: str):
     log.source_log("HN", msg, tty_only=False)
@@ -143,6 +145,47 @@ def search_hackernews(
         response = {**response, "hits": hits}
     _log(f"Found {len(hits)} stories")
     return response
+
+
+def fetch_discovery_listings(
+    from_date: str,
+    to_date: str,
+    depth: str = "default",
+) -> Dict[str, Any]:
+    """Fetch topic-less HN front-page and best-in-window story listings."""
+    limit = DISCOVERY_LIMITS.get(depth, DISCOVERY_LIMITS["default"])
+    from_ts = _date_to_unix(from_date)
+    to_ts = _date_to_unix(to_date) + 86400
+    from urllib.parse import urlencode
+
+    urls = [
+        f"{ALGOLIA_SEARCH_URL}?{urlencode({'tags': 'front_page', 'hitsPerPage': str(limit)})}",
+        f"{ALGOLIA_SEARCH_URL}?{urlencode({
+            'tags': 'story',
+            'numericFilters': f'created_at_i>{from_ts},created_at_i<{to_ts}',
+            'hitsPerPage': str(limit),
+        })}",
+    ]
+    hits: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for url in urls:
+        try:
+            response = http.request("GET", url, timeout=30)
+            hits.extend(response.get("hits") or [])
+        except Exception as exc:
+            errors.append(str(exc))
+
+    seen: set[str] = set()
+    unique_hits: list[dict[str, Any]] = []
+    for hit in hits:
+        object_id = str(hit.get("objectID") or "")
+        if not object_id or object_id in seen:
+            continue
+        seen.add(object_id)
+        unique_hits.append(hit)
+
+    items = parse_hackernews_response({"hits": unique_hits}, query="")
+    return {"items": items, "errors": errors}
 
 
 _WORD_BOUNDARY_RE_CACHE: Dict[str, "re.Pattern[str]"] = {}
