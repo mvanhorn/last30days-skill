@@ -1563,8 +1563,13 @@ def _run_library_search(
         matches, synced = library_index.sync_and_search(
             query,
             memory_dir=memory_dir,
-            briefs_dir=library.DEFAULT_BRIEFS_DIR,
-            db_path=library_index.DEFAULT_LIBRARY_DB,
+            briefs_dir=(
+                memory_dir / "briefings" if args.save_dir else library.DEFAULT_BRIEFS_DIR
+            ),
+            db_path=(
+                memory_dir.resolve() / ".last30days-library.db"
+                if args.save_dir else library_index.DEFAULT_LIBRARY_DB
+            ),
             store_db_path=library_index.DEFAULT_STORE_DB,
         )
     except library_index.LibrarySearchUnavailable as exc:

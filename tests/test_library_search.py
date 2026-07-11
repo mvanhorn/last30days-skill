@@ -612,3 +612,34 @@ def test_sync_repopulates_after_fts_table_loss(tmp_path):
         db_path=db, store_db_path=tmp_path / "absent-store.db",
     )
     assert matches, "FTS loss must trigger repopulation, not empty results"
+
+
+def test_scoped_search_uses_per_library_db(tmp_path, monkeypatch):
+    import io
+    from contextlib import redirect_stdout, redirect_stderr
+    from unittest import mock
+    import last30days as cli
+    from lib import library_index
+
+    scoped = tmp_path / "client-a"
+    scoped.mkdir()
+    (scoped / "topic-raw.md").write_text(
+        "# last30days v3: Topic\n\n- Date range: 2026-06-10 to 2026-07-10\n\nquantum widgets finding.\n",
+        encoding="utf-8",
+    )
+    captured = {}
+    real = library_index.sync_and_search
+
+    def spy(query, **kwargs):
+        captured.update(kwargs)
+        return real(query, **kwargs)
+
+    with mock.patch.object(cli.library_index if hasattr(cli, "library_index") else library_index,
+                           "sync_and_search", side_effect=spy), \
+         mock.patch.object(cli.sys, "argv",
+        ["last30days.py", "library", "search", "quantum", "--save-dir", str(scoped)]), \
+         mock.patch.object(cli.env, "get_config", lambda **_k: {}), \
+         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        cli.main()
+    assert str(captured.get("db_path", "")).startswith(str(scoped.resolve()))
+    assert str(captured.get("db_path", "")) != str(library_index.DEFAULT_LIBRARY_DB)

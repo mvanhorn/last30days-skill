@@ -804,7 +804,11 @@ def _load_library_context(
         if save_dir is not None
         else config.get("LAST30DAYS_MEMORY_DIR") or library.DEFAULT_MEMORY_DIR
     )
-    briefs_dir = config.get("_LAST30DAYS_LIBRARY_BRIEFS_DIR") or library.DEFAULT_BRIEFS_DIR
+    briefs_dir = config.get("_LAST30DAYS_LIBRARY_BRIEFS_DIR") or (
+        Path(memory_dir).expanduser() / "briefings"
+        if save_dir is not None
+        else library.DEFAULT_BRIEFS_DIR
+    )
     db_path = config.get("_LAST30DAYS_LIBRARY_DB")
     if not db_path:
         db_path = (
