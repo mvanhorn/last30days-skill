@@ -55,7 +55,11 @@ class LibraryEntry:
 
     @property
     def identity_hash(self) -> str:
-        return hashlib.sha256(self.topic.encode("utf-8")).hexdigest()[:8]
+        # Include the source filename stem so per-suffix runs of the same
+        # topic on the same date (--save-suffix per-client workflow) stay
+        # distinct entries instead of collapsing to one.
+        seed = f"{self.topic}\n{self.source_path.stem}"
+        return hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8]
 
 
 def slugify(value: str) -> str:

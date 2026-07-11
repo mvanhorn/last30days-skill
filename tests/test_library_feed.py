@@ -92,10 +92,10 @@ def test_atom_is_valid_and_entry_ids_are_stable(tmp_path):
     assert root.tag == f"{{{feed.ATOM_NS}}}feed"
     assert root.findtext("atom:entry/atom:id", namespaces=namespace) == (
         f"urn:last30days:research-library:{'a' * 32}:"
-        "ai-agents:3d9e4348:2026-07-10"
+        "ai-agents:c7760ea1:2026-07-10"
     )
     assert root.find("atom:entry/atom:link", namespace).attrib["href"] == (
-        "briefs/ai-agents-3d9e4348-2026-07-10.html"
+        "briefs/ai-agents-c7760ea1-2026-07-10.html"
     )
 
 
@@ -193,11 +193,11 @@ def test_library_index_snapshot_groups_topic_and_links_latest(tmp_path):
 <section class="library-topic">
 <div class="library-topic-heading">
 <h2>AI agents</h2>
-<a href="briefs/ai-agents-3d9e4348-2026-07-10.html">Latest</a>
+<a href="briefs/ai-agents-c7760ea1-2026-07-10.html">Latest</a>
 </div>
 <article class="library-entry">
 <time datetime="2026-07-10">2026-07-10</time>
-<h3><a href="briefs/ai-agents-3d9e4348-2026-07-10.html">Agent loops are becoming durable</a></h3>
+<h3><a href="briefs/ai-agents-c7760ea1-2026-07-10.html">Agent loops are becoming durable</a></h3>
 <p>Teams prefer inspectable loops over one-shot prompts.</p>
 </article>
 </section>
@@ -347,7 +347,7 @@ def test_library_feed_cli_writes_index_feed_and_rendered_brief(tmp_path, monkeyp
     assert result == 0
     assert (tmp_path / "index.html").is_file()
     assert (tmp_path / "feed.xml").is_file()
-    brief = tmp_path / "briefs" / "ai-agents-3d9e4348-2026-07-10.html"
+    brief = tmp_path / "briefs" / "ai-agents-c7760ea1-2026-07-10.html"
     assert brief.is_file()
     assert "7652149412294053140" not in brief.read_text(encoding="utf-8")
     assert f"Feed: {tmp_path.resolve() / 'feed.xml'}" in stdout.getvalue()
@@ -370,7 +370,7 @@ def test_library_feed_refresh_prunes_only_orphaned_generated_briefs(tmp_path, mo
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
         assert cli.main() == 0
 
-    generated = tmp_path / "briefs" / "ai-agents-3d9e4348-2026-07-10.html"
+    generated = tmp_path / "briefs" / "ai-agents-c7760ea1-2026-07-10.html"
     user_file = tmp_path / "briefs" / "notes.html"
     assert generated.is_file()
     user_file.write_text("keep me", encoding="utf-8")
@@ -385,7 +385,7 @@ def test_library_feed_refresh_prunes_only_orphaned_generated_briefs(tmp_path, mo
 
 def test_library_feed_publish_hosts_only_html_and_reports_local_atom(tmp_path, monkeypatch):
     _write_report(tmp_path)
-    entry_id = "urn:last30days:ai-agents:3d9e4348:2026-07-10"
+    entry_id = "urn:last30days:ai-agents:c7760ea1:2026-07-10"
     monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", tmp_path / "no-briefings")
     monkeypatch.setattr(
         cli.env,
@@ -446,3 +446,16 @@ def test_library_feed_warns_when_later_brief_publish_fails(tmp_path, monkeypatch
     assert result == 1
     assert "Library publish failed: second publish failed" in stderr.getvalue()
     assert "Partial publish: 1 public brief page(s)" in stderr.getvalue()
+
+
+def test_per_suffix_reports_stay_distinct(tmp_path):
+    memory = tmp_path / "library"
+    memory.mkdir()
+    _write_report(memory, name="ai-agents-raw.md")
+    _write_report(memory, name="ai-agents-raw-clienta.md")
+
+    entries, _notes = library.scan_library(memory, tmp_path / "no-briefings")
+    same_topic = [e for e in entries if e.topic == "AI agents"]
+    assert len(same_topic) == 2
+    assert len({e.entry_id for e in same_topic}) == 2
+    assert len({e.output_name for e in same_topic}) == 2
