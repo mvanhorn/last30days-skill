@@ -238,7 +238,8 @@ def test_library_named_research_topic_keeps_browser_cookie_access():
     ).browser_cookies == "plan_only"
 
 
-def test_markdown_save_incrementally_syncs_the_shared_library_index(tmp_path):
+def test_markdown_save_incrementally_syncs_the_shared_library_index(tmp_path, monkeypatch):
+    monkeypatch.setattr(library, "DEFAULT_MEMORY_DIR", tmp_path)
     report = mock.Mock(topic="MCP servers")
     with mock.patch.object(render, "render_full", return_value="# saved\n"), mock.patch.object(
         library_index, "sync_library"
@@ -643,3 +644,69 @@ def test_scoped_search_uses_per_library_db(tmp_path, monkeypatch):
         cli.main()
     assert str(captured.get("db_path", "")).startswith(str(scoped.resolve()))
     assert str(captured.get("db_path", "")) != str(library_index.DEFAULT_LIBRARY_DB)
+
+
+def test_scoped_library_search_does_not_read_the_global_store(tmp_path, monkeypatch, capsys):
+    memory = tmp_path / "client-a"
+    memory.mkdir()
+    captured: dict[str, Path] = {}
+
+    def fake_sync_and_search(query, *, memory_dir, briefs_dir, db_path, store_db_path):
+        captured["store_db_path"] = Path(store_db_path)
+        return [], mock.Mock(notes=[], rebuilt=False)
+
+    monkeypatch.setattr(library_index, "sync_and_search", fake_sync_and_search)
+    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["last30days.py", "library", "search", "MCP", "--save-dir", str(memory)],
+    )
+
+    assert cli.main() == 0
+    assert captured["store_db_path"] != library_index.DEFAULT_STORE_DB
+    assert captured["store_db_path"].is_relative_to(memory.resolve())
+
+
+def test_scoped_run_library_context_uses_scoped_store(tmp_path, monkeypatch):
+    seen: list[Path] = []
+    monkeypatch.setattr(pipeline.library_index, "sync_library", lambda *a, **k: None)
+
+    def fake_search(query_text, *, limit, db_path, store_db_path):
+        seen.append(Path(store_db_path))
+        return []
+
+    monkeypatch.setattr(pipeline.library_index, "search", fake_search)
+
+    contexts, error = pipeline._load_library_context(
+        topic="MCP servers",
+        config={"LAST30DAYS_LIBRARY_CONTEXT": "on"},
+        mock=False,
+        internal_subrun=False,
+        x_handle=None,
+        github_user=None,
+        github_repos=None,
+        save_dir=str(tmp_path),
+    )
+
+    assert error is None
+    assert contexts == []
+    assert seen, "expected at least one scoped store lookup"
+    assert all(path != library_index.DEFAULT_STORE_DB for path in seen)
+    assert all(path.is_relative_to(tmp_path.resolve()) for path in seen)
+
+
+def test_markdown_save_to_scoped_dir_syncs_a_scoped_index(tmp_path):
+    report = mock.Mock(topic="MCP servers")
+    with mock.patch.object(render, "render_full", return_value="# saved\n"), mock.patch.object(
+        library_index, "sync_library"
+    ) as sync:
+        saved = cli.save_output(report, "md", str(tmp_path))
+
+    assert saved.is_file()
+    scoped_root = tmp_path.resolve()
+    sync.assert_called_once_with(
+        scoped_root,
+        scoped_root / "briefings",
+        db_path=scoped_root / ".last30days-library.db",
+    )

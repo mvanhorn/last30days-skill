@@ -816,7 +816,15 @@ def _load_library_context(
             if save_dir is not None
             else library_index.DEFAULT_LIBRARY_DB
         )
-    store_db = config.get("_LAST30DAYS_STORE_DB") or library_index.DEFAULT_STORE_DB
+    store_db = config.get("_LAST30DAYS_STORE_DB")
+    if not store_db:
+        # Scoped runs read only a store inside the save dir (usually absent);
+        # the shared store would leak other scopes' sightings into this one.
+        store_db = (
+            Path(memory_dir).expanduser().resolve() / "research.db"
+            if save_dir is not None
+            else library_index.DEFAULT_STORE_DB
+        )
     queries = [topic, x_handle or "", github_user or "", *(github_repos or [])]
     queries = list(dict.fromkeys(value.strip() for value in queries if value and value.strip()))
     try:

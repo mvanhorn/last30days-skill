@@ -167,9 +167,20 @@ def save_output(
             f.write(encoded)
         if candidate.suffix.lower() == ".md":
             try:
-                from lib import library_index
+                from lib import library, library_index
 
-                library_index.sync_library(candidate.parent)
+                save_root = candidate.parent.resolve()
+                if save_root == Path(library.DEFAULT_MEMORY_DIR).expanduser().resolve():
+                    library_index.sync_library(save_root)
+                else:
+                    # A scoped save must sync a per-directory index with the
+                    # same paths scoped search uses; syncing the shared DB
+                    # from one scope's scan would prune other scopes' rows.
+                    library_index.sync_library(
+                        save_root,
+                        save_root / "briefings",
+                        db_path=save_root / ".last30days-library.db",
+                    )
             except (library_index.LibrarySearchUnavailable, OSError, sqlite3.DatabaseError):
                 # Saving research must not depend on the optional local index;
                 # `library search` reports a clear capability error on demand.
@@ -1570,7 +1581,13 @@ def _run_library_search(
                 memory_dir.resolve() / ".last30days-library.db"
                 if args.save_dir else library_index.DEFAULT_LIBRARY_DB
             ),
-            store_db_path=library_index.DEFAULT_STORE_DB,
+            # A scoped search must never merge in the shared store: one
+            # client's sightings would leak into another client's scope. A
+            # scoped store is read only if it exists inside the save dir.
+            store_db_path=(
+                memory_dir.resolve() / "research.db"
+                if args.save_dir else library_index.DEFAULT_STORE_DB
+            ),
         )
     except library_index.LibrarySearchUnavailable as exc:
         sys.stderr.write(f"[last30days] Library search unavailable: {exc}.\n")
