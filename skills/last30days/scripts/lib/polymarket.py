@@ -813,19 +813,40 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
             "GET", f"{GAMMA_EVENTS_URL}/{quote(event_id)}", timeout=10, retries=2,
         )
     elif slug_match:
+        requested_slug = slug_match.group(1)
         payload = http.request(
-            "GET", GAMMA_EVENTS_URL, params={"slug": slug_match.group(1)},
+            "GET", GAMMA_EVENTS_URL, params={"slug": requested_slug},
             timeout=10, retries=2,
         )
     else:
         raise ValueError("Polymarket item has no event id or slug")
 
+    requested_slug = slug_match.group(1) if slug_match else None
+
+    def _pick_event(events: list) -> Any:
+        candidates = [entry for entry in events if isinstance(entry, dict)]
+        if requested_slug is None:
+            return candidates[0] if candidates else None
+        # Verify identity: Gamma slug queries can return multiple or loosely
+        # matched events, and verifying a claim against another market's
+        # prices would fabricate current/stale verdicts.
+        for entry in candidates:
+            if str(entry.get("slug") or "").strip() == requested_slug:
+                return entry
+        return None
+
     if isinstance(payload, list):
-        event = payload[0] if payload else None
+        event = _pick_event(payload)
     elif isinstance(payload, dict) and isinstance(payload.get("events"), list):
-        event = (payload.get("events") or [None])[0]
+        event = _pick_event(payload.get("events") or [])
     else:
         event = payload
+        if (
+            requested_slug is not None
+            and isinstance(event, dict)
+            and str(event.get("slug") or "").strip() not in ("", requested_slug)
+        ):
+            event = None
     if not isinstance(event, dict):
         raise KeyError("Polymarket event was not found")
     # Mixed events: an active event can carry resolved child markets whose

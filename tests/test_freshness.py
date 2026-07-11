@@ -759,3 +759,25 @@ def test_mixed_event_prefers_active_markets(monkeypatch):
     except Exception:
         pass
     assert captured.get("include_closed") is True
+
+
+def test_slug_refetch_requires_identity_match(monkeypatch):
+    from types import SimpleNamespace
+    import pytest
+    from lib import polymarket
+
+    wrong = {"id": "other", "slug": "different-market", "title": "Other",
+             "markets": [{"id": "m1", "active": True, "closed": False,
+                          "question": "q", "volume": "10",
+                          "outcomePrices": '["0.5","0.5"]', "outcomes": '["Yes","No"]',
+                          "liquidity": "10"}]}
+    monkeypatch.setattr(polymarket.http, "request", lambda *a, **k: [wrong])
+    item = SimpleNamespace(metadata={}, url="https://polymarket.com/event/fed-rate-cut-2026")
+    with pytest.raises(KeyError):
+        polymarket.refetch_datum(item, "probability")
+
+    right = dict(wrong)
+    right["slug"] = "fed-rate-cut-2026"
+    monkeypatch.setattr(polymarket.http, "request", lambda *a, **k: [wrong, right])
+    values = polymarket.refetch_datum(item, "probability")
+    assert values is not None
