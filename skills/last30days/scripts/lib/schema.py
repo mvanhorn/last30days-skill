@@ -222,6 +222,7 @@ class Report:
     source_status: dict[str, SourceOutcome] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     artifacts: dict[str, Any] = field(default_factory=dict)
+    drill_of: str | None = None
 
 
 @dataclass
@@ -413,6 +414,7 @@ def report_from_dict(payload: dict[str, Any]) -> Report:
         },
         warnings=list(payload.get("warnings") or []),
         artifacts=dict(payload.get("artifacts") or {}),
+        drill_of=payload.get("drill_of"),
     )
 
 

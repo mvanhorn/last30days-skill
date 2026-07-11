@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from collections import Counter
 
-from . import http, providers, query, schema
+from . import entity_extract, http, providers, query, relevance, schema
 
 # Hebrew Unicode block: U+0590–U+05FF
 _HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
@@ -92,6 +93,134 @@ DEFAULT_INTENT_CAPABILITIES = {
     "comparison": {"discussion", "video", "web", "reference", "social", "link", "market"},
     "how_to": {"discussion", "video", "web", "reference", "link"},
 }
+
+
+class DrillTargetError(ValueError):
+    """Raised when a follow-up target cannot be resolved to a report cluster."""
+
+    def __init__(self, target: str, clusters: list[schema.Cluster]) -> None:
+        candidates = ", ".join(
+            f"{index}. {cluster.title}"
+            for index, cluster in enumerate(clusters, start=1)
+        ) or "(no clusters in the cached report)"
+        super().__init__(f"No cluster matched {target!r}. Available clusters: {candidates}")
+
+
+def _drill_cluster_text(report: schema.Report, cluster: schema.Cluster) -> str:
+    candidates = {candidate.candidate_id: candidate for candidate in report.ranked_candidates}
+    parts = [cluster.title]
+    for candidate_id in cluster.candidate_ids:
+        candidate = candidates.get(candidate_id)
+        if candidate:
+            parts.extend((candidate.title, candidate.snippet))
+    return " ".join(part for part in parts if part)
+
+
+def resolve_drill_clusters(report: schema.Report, target: str) -> list[schema.Cluster]:
+    """Resolve a 1-based cluster index or fuzzy title/entity description."""
+    cleaned = target.strip()
+    numeric = re.fullmatch(r"(?:cluster\s*)?#?(\d+)", cleaned, flags=re.IGNORECASE)
+    if numeric:
+        index = int(numeric.group(1))
+        if 1 <= index <= len(report.clusters):
+            return [report.clusters[index - 1]]
+        raise DrillTargetError(target, report.clusters)
+
+    target_entities = entity_extract.extract_text_entities(cleaned)
+    scored: list[tuple[float, schema.Cluster]] = []
+    for cluster in report.clusters:
+        cluster_text = _drill_cluster_text(report, cluster)
+        title_score = relevance.token_overlap_relevance(cleaned, cluster.title)
+        body_score = relevance.token_overlap_relevance(cleaned, cluster_text)
+        entity_score = entity_extract.entity_overlap(
+            target_entities,
+            entity_extract.extract_text_entities(cluster_text),
+        )
+        score = max(title_score, (0.75 * body_score) + (0.25 * entity_score))
+        scored.append((score, cluster))
+
+    scored.sort(key=lambda entry: entry[0], reverse=True)
+    if not scored or scored[0][0] < 0.35:
+        raise DrillTargetError(target, report.clusters)
+    return [scored[0][1]]
+
+
+def build_drill_plan(
+    report: schema.Report,
+    target: str,
+    *,
+    clusters: list[schema.Cluster] | None = None,
+) -> schema.QueryPlan:
+    """Build a deep follow-up plan limited to the matched clusters' sources."""
+    matched = clusters or resolve_drill_clusters(report, target)
+    candidates = {candidate.candidate_id: candidate for candidate in report.ranked_candidates}
+
+    sources: list[str] = []
+    for cluster in matched:
+        for source in cluster.sources:
+            if source and source not in sources:
+                sources.append(source)
+        for candidate_id in cluster.candidate_ids:
+            candidate = candidates.get(candidate_id)
+            if not candidate:
+                continue
+            for source in schema.candidate_sources(candidate):
+                if source and source not in sources:
+                    sources.append(source)
+    if not sources:
+        raise DrillTargetError(target, report.clusters)
+
+    titles: list[str] = []
+    entity_counts: Counter[str] = Counter()
+    for cluster in matched:
+        titles.append(cluster.title)
+        entity_counts.update(entity_extract.extract_text_entities(cluster.title))
+        for candidate_id in cluster.representative_ids:
+            candidate = candidates.get(candidate_id)
+            if candidate:
+                titles.append(candidate.title)
+                entity_counts.update(entity_extract.extract_text_entities(candidate.title))
+
+    queries: list[str] = []
+    for query_text in [
+        " ".join(titles[: len(matched)]),
+        " ".join(entity for entity, _ in entity_counts.most_common(8)),
+        *titles[len(matched):],
+    ]:
+        query_text = " ".join(query_text.split()).strip()
+        if query_text and query_text.lower() not in {item.lower() for item in queries}:
+            queries.append(query_text)
+        if len(queries) == 3:
+            break
+
+    subqueries = [
+        schema.SubQuery(
+            label=f"drill-{index}",
+            search_query=search_query,
+            ranking_query=(
+                "What deeper evidence, firsthand discussion, comments, and transcripts "
+                f"explain {search_query}?"
+            ),
+            sources=list(sources),
+            weight=1.0 if index == 1 else 0.85,
+        )
+        for index, search_query in enumerate(queries, start=1)
+    ]
+    return schema.QueryPlan(
+        intent=report.query_plan.intent,
+        freshness_mode=report.query_plan.freshness_mode,
+        cluster_mode=report.query_plan.cluster_mode,
+        raw_topic=report.topic,
+        subqueries=subqueries,
+        source_weights={
+            source: report.query_plan.source_weights.get(source, 1.0)
+            for source in sources
+        },
+        notes=[
+            "drill-mode",
+            "drill-targets:" + ",".join(cluster.cluster_id for cluster in matched),
+        ],
+    )
 
 def plan_query(
     *,

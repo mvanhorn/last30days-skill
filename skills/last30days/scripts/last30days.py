@@ -371,6 +371,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search", help="Comma-separated source list")
     parser.add_argument("--quick", action="store_true", help="Lower-latency retrieval profile")
     parser.add_argument("--deep", action="store_true", help="Higher-recall retrieval profile")
+    parser.add_argument(
+        "--drill",
+        metavar="TARGET",
+        help="Deep follow-up on a cluster from the fresh last-report.json cache",
+    )
     parser.add_argument("--debug", action="store_true", help="Enable HTTP debug logging")
     parser.add_argument("--mock", action="store_true", help="Use mock retrieval fixtures")
     parser.add_argument(
@@ -774,7 +779,7 @@ def _write_last_run(
 
 
 def _load_last_report_cache(
-    topic: str,
+    topic: str | None,
     ttl_seconds: int = DEFAULT_REPORT_CACHE_TTL_SECONDS,
 ) -> tuple[schema.Report, list[tuple[str, schema.Report]] | None, Path] | None:
     cache_path = _last_report_cache_path()
@@ -787,7 +792,7 @@ def _load_last_report_cache(
         if not _is_report_cache_fresh(payload.get("timestamp"), ttl_seconds):
             return None
         cached_topic = str(payload.get("topic") or "").strip().lower()
-        if cached_topic != topic.strip().lower():
+        if topic is not None and cached_topic != topic.strip().lower():
             return None
         reports_payload = payload.get("reports") or []
         if not reports_payload:
@@ -806,8 +811,156 @@ def _load_last_report_cache(
                 return None
             return entity_reports[0][1], entity_reports, cache_path
         return entity_reports[0][1], None, cache_path
-    except Exception:
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        sys.stderr.write(
+            f"[last30days] Could not read report cache {cache_path}: "
+            f"{type(exc).__name__}: {exc}\n"
+        )
         return None
+
+
+def _drill_config(config: dict[str, object], sources: list[str]) -> dict[str, object]:
+    """Enable configured comment enrichments for a deep follow-up."""
+    drill_config = dict(config)
+    include = {
+        value.strip().lower()
+        for value in str(config.get("INCLUDE_SOURCES") or "").split(",")
+        if value.strip()
+    }
+    comment_flags = {
+        "youtube": "youtube_comments",
+        "tiktok": "tiktok_comments",
+        "instagram": "instagram_comments",
+    }
+    include.update(comment_flags[source] for source in sources if source in comment_flags)
+    if include:
+        drill_config["INCLUDE_SOURCES"] = ",".join(sorted(include))
+    drill_config["_drill_mode"] = True
+    return drill_config
+
+
+def _run_drill(
+    args: argparse.Namespace,
+    config: dict[str, object],
+) -> int:
+    from lib import planner
+
+    cached = _load_last_report_cache(
+        None,
+        ttl_seconds=_report_cache_ttl_seconds(config),
+    )
+    if cached is None:
+        sys.stderr.write(
+            "[last30days] No fresh cached report; run a research pass first.\n"
+        )
+        return 2
+    report, entity_reports, cache_path = cached
+    if entity_reports:
+        sys.stderr.write(
+            "[last30days] Drill mode needs a single-topic cached report; "
+            "run a research pass for one entity first.\n"
+        )
+        return 2
+
+    try:
+        matched_clusters = planner.resolve_drill_clusters(report, args.drill)
+        drill_plan = planner.build_drill_plan(
+            report,
+            args.drill,
+            clusters=matched_clusters,
+        )
+    except planner.DrillTargetError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+
+    sources = list(drill_plan.source_weights)
+    drill_config = _drill_config(config, sources)
+    diag = pipeline.diagnose(drill_config, sources, safe=False)
+    progress = ui.ProgressDisplay(
+        f"{report.topic} — drill: {args.drill}",
+        show_banner=True,
+    )
+    progress.start_processing()
+    resolved = report.artifacts.get("resolved") or {}
+    drill_topic = " ".join(cluster.title for cluster in matched_clusters)
+    try:
+        drill_report = pipeline.run(
+            topic=drill_topic,
+            config=drill_config,
+            depth="deep",
+            requested_sources=sources,
+            mock=args.mock,
+            x_handle=(args.x_handle or resolved.get("x_handle") or None),
+            x_related=(
+                [value.strip() for value in args.x_related.split(",") if value.strip()]
+                if args.x_related else None
+            ),
+            web_backend=args.web_backend,
+            external_plan=schema.to_dict(drill_plan),
+            subreddits=(
+                [value.strip().removeprefix("r/") for value in args.subreddits.split(",") if value.strip()]
+                if args.subreddits else list(resolved.get("subreddits") or []) or None
+            ),
+            tiktok_hashtags=(
+                [value.strip().lstrip("#") for value in args.tiktok_hashtags.split(",") if value.strip()]
+                if args.tiktok_hashtags else None
+            ),
+            tiktok_creators=(
+                [value.strip().lstrip("@") for value in args.tiktok_creators.split(",") if value.strip()]
+                if args.tiktok_creators else None
+            ),
+            ig_creators=(
+                [value.strip().lstrip("@") for value in args.ig_creators.split(",") if value.strip()]
+                if args.ig_creators else None
+            ),
+            lookback_days=args.lookback_days,
+            as_of_date=args.as_of_date,
+            github_user=(args.github_user or resolved.get("github_user") or None),
+            github_repos=(
+                [value.strip() for value in args.github_repo.split(",") if value.strip()]
+                if args.github_repo else list(resolved.get("github_repos") or []) or None
+            ),
+            trustpilot_domain=(
+                args.trustpilot_domain or resolved.get("trustpilot_domain") or None
+            ),
+            internal_subrun=True,
+        )
+    except Exception:
+        progress.end_processing()
+        raise
+
+    _show_runtime_ui(drill_report, progress, diag, suppress_web_promo=True)
+    merged = pipeline.merge_drill_report(
+        report,
+        drill_report,
+        matched_clusters,
+        target=args.drill,
+    )
+    _write_last_run(report.topic, merged)
+    sys.stderr.write(f"[last30days] Updated drill cache in {cache_path}\n")
+
+    store_default = str(
+        os.environ.get("LAST30DAYS_STORE")
+        or config.get("LAST30DAYS_STORE")
+        or ""
+    ).lower()
+    if args.store or store_default in {"1", "true", "yes"}:
+        counts = persist_report(merged)
+        sys.stderr.write(
+            f"[last30days] Stored {counts['new']} new, "
+            f"{counts['updated']} updated findings\n"
+        )
+
+    synthesis_md = None
+    if args.synthesis_file:
+        if args.emit == "html":
+            synthesis_md = read_synthesis_file(args.synthesis_file)
+        else:
+            sys.stderr.write(
+                "[last30days] Warning: --synthesis-file is only used with "
+                "--emit=html; ignoring.\n"
+            )
+    return _render_save_and_print(args, merged, None, synthesis_md, config)
 
 
 _STRICT_EXIT_OK_STATES = {"ok", "no-results", "skipped-unconfigured"}
@@ -1179,6 +1332,15 @@ def _main(
         results["env_written"] = True
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")
         return 0
+
+    if args.drill:
+        if topic:
+            sys.stderr.write(
+                "[last30days] --drill uses the cached topic and cannot be "
+                "combined with a new topic.\n"
+            )
+            return 2
+        return _run_drill(args, config)
 
     # Remote API path: when BOTH LAST30DAYS_API_KEY and LAST30DAYS_API_BASE are
     # set (and --mock is not), the search runs through the configured remote API

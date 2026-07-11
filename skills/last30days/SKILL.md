@@ -1980,6 +1980,9 @@ Close with `I have all the links to the {N} {source list} I pulled from. Just as
 - If they say **"less fun"**, **"too many jokes"**, or similar → Write `FUN_LEVEL=low` to `~/.config/last30days/.env`. Confirm: "Fun level set to low. Next run will focus on the news."
 - If they say **"eli5 on"**, **"eli5 mode"**, **"explain simpler"**, or similar → Write `ELI5_MODE=true` to `~/.config/last30days/.env`. Confirm: "ELI5 mode on. All future runs will explain things like you're 5."
 - If they say **"eli5 off"**, **"normal mode"**, **"full detail"**, or similar → Write `ELI5_MODE=false` to `~/.config/last30days/.env`. Confirm: "ELI5 mode off. Back to full detail."
+- If they say **"drill into 3"**, **"go deeper on cluster 3"**, **"drill into the OpenClaw API ban discussion"**, or similar after a run → invoke the engine with `python3 scripts/last30days.py --drill "<their target>"`. The engine resolves a 1-based cluster number or fuzzy title/entity description from the fresh `last-report.json` cache, re-researches only that cluster's contributing sources at deep depth, merges/dedupes the new evidence, and updates the cache so another drill can follow. Relay the rendered **Original / Deeper** brief. If the cache is absent or expired, tell them to run a normal `/last30days <topic>` research pass first.
+
+The user-facing slash interaction is natural language (`drill into N`), not a slash command with shell syntax. `--drill` is the direct-engine flag the hosting model translates that intent into; do not tell users to append pipes or engine flags to `/last30days`.
 
 **Only write a prompt when the user wants one.** Don't force a prompt on someone who asked "what could happen next with Iran."
 

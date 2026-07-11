@@ -114,6 +114,31 @@ def _assistant_safety_lines() -> list[str]:
     ]
 
 
+def _render_drill_context(report: schema.Report) -> list[str]:
+    context = report.artifacts.get("drill_context") or {}
+    if not report.drill_of or not context:
+        return []
+    titles = context.get("cluster_titles") or [report.drill_of]
+    sources = context.get("sources") or []
+    source_text = ", ".join(_source_label(source) for source in sources) or "none"
+    original = context.get("original_summary") or "No cached summary was available."
+    return [
+        "## Drill Follow-up",
+        "",
+        f"- Target: {context.get('target') or report.drill_of}",
+        f"- Matched: {', '.join(titles)}",
+        "",
+        "### Original",
+        "",
+        str(original),
+        "",
+        "### Deeper",
+        "",
+        f"- {int(context.get('new_items') or 0)} new items after dedupe",
+        f"- Re-researched sources: {source_text}",
+    ]
+
+
 def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str = "medium", save_path: str | None = None) -> str:
     non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
     lines = [
@@ -125,6 +150,9 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
         f"- Sources: {len(non_empty)} active ({', '.join(_source_label(s) for s in non_empty)})" if non_empty else "- Sources: none",
         "",
     ]
+    drill_context = _render_drill_context(report)
+    if drill_context:
+        lines.extend([*drill_context, ""])
 
     freshness_warning = _assess_data_freshness(report)
     if freshness_warning:
@@ -242,6 +270,9 @@ def render_for_html(
         *_render_badge(),
         *_render_html_metadata(report),
     ]
+    drill_context = _render_drill_context(report)
+    if drill_context:
+        lines.extend(["", *drill_context])
     hiring_block = _render_hiring_signals(report)
     if synthesis_md:
         lines.extend(["", synthesis_md.strip()])
@@ -996,6 +1027,9 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
         f"Intent: {report.query_plan.intent}",
         _AI_SAFETY_NOTE,
     ]
+    drill_context = _render_drill_context(report)
+    if drill_context:
+        lines.extend(["", *drill_context])
     freshness_warning = _assess_data_freshness(report)
     if freshness_warning:
         lines.append(f"Freshness warning: {freshness_warning}")
@@ -1041,6 +1075,9 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
         f"- Sources: {len(non_empty)} active ({', '.join(_source_label(s) for s in non_empty)})" if non_empty else "- Sources: none",
         "",
     ]
+    drill_context = _render_drill_context(report)
+    if drill_context:
+        lines.extend([*drill_context, ""])
 
     lines.append("## Ranked Storylines")
     lines.append("")

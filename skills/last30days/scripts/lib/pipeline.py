@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import re
 import sys
 import threading
@@ -433,7 +434,11 @@ def run(
     # Safety net: ensure grounding appears in all subqueries even if the planner
     # omits it. This is redundant when the planner includes grounding via
     # SOURCE_CAPABILITIES, but kept as a fallback.
-    if web_backend != "none" and "grounding" in available:
+    if (
+        web_backend != "none"
+        and "grounding" in available
+        and "drill-mode" not in plan.notes
+    ):
         for sq in plan.subqueries:
             if "grounding" not in sq.sources:
                 sq.sources.append("grounding")
@@ -785,6 +790,138 @@ def run(
         warnings=warnings,
         artifacts=bundle.artifacts,
     )
+
+
+def _candidate_is_duplicate(
+    candidate: schema.Candidate,
+    kept: list[schema.Candidate],
+) -> bool:
+    if candidate.url and any(existing.url == candidate.url for existing in kept):
+        return True
+    candidate_text = " ".join((candidate.title, candidate.snippet)).strip()
+    return bool(candidate_text) and any(
+        dedupe.hybrid_similarity(
+            candidate_text,
+            " ".join((existing.title, existing.snippet)).strip(),
+        ) >= 0.7
+        for existing in kept
+    )
+
+
+def merge_drill_report(
+    report: schema.Report,
+    drill_report: schema.Report,
+    matched_clusters: list[schema.Cluster],
+    *,
+    target: str,
+) -> schema.Report:
+    """Merge a narrow follow-up into its cached report while preserving other clusters."""
+    merged = copy.deepcopy(report)
+    selected_cluster_ids = {cluster.cluster_id for cluster in matched_clusters}
+    selected_candidate_ids = {
+        candidate_id
+        for cluster in matched_clusters
+        for candidate_id in cluster.candidate_ids
+    }
+    original_candidates = {
+        candidate.candidate_id: candidate for candidate in merged.ranked_candidates
+    }
+
+    original_summary = ""
+    for cluster in matched_clusters:
+        for candidate_id in cluster.representative_ids:
+            candidate = original_candidates.get(candidate_id)
+            if candidate:
+                original_summary = candidate.snippet or candidate.explanation or candidate.title
+                if original_summary:
+                    break
+        if original_summary:
+            break
+
+    focused_candidates: list[schema.Candidate] = []
+    for candidate in [
+        *copy.deepcopy(drill_report.ranked_candidates),
+        *[
+            copy.deepcopy(candidate)
+            for candidate in merged.ranked_candidates
+            if candidate.candidate_id in selected_candidate_ids
+        ],
+    ]:
+        if not _candidate_is_duplicate(candidate, focused_candidates):
+            focused_candidates.append(candidate)
+
+    primary_cluster = matched_clusters[0]
+    for candidate in focused_candidates:
+        candidate.cluster_id = primary_cluster.cluster_id
+    focused_ids = [candidate.candidate_id for candidate in focused_candidates]
+    focused_sources = sorted({
+        source
+        for candidate in focused_candidates
+        for source in schema.candidate_sources(candidate)
+    })
+    replacement_cluster = schema.Cluster(
+        cluster_id=primary_cluster.cluster_id,
+        title=primary_cluster.title,
+        candidate_ids=focused_ids,
+        representative_ids=focused_ids[:3],
+        sources=focused_sources,
+        score=max((candidate.final_score for candidate in focused_candidates), default=0.0),
+        uncertainty="single-source" if len(focused_sources) == 1 else None,
+    )
+
+    first_selected_index = min(
+        index
+        for index, cluster in enumerate(merged.clusters)
+        if cluster.cluster_id in selected_cluster_ids
+    )
+    remaining_clusters = [
+        cluster for cluster in merged.clusters
+        if cluster.cluster_id not in selected_cluster_ids
+    ]
+    remaining_clusters.insert(first_selected_index, replacement_cluster)
+    merged.clusters = remaining_clusters
+
+    unrelated_candidates = [
+        candidate for candidate in merged.ranked_candidates
+        if candidate.candidate_id not in selected_candidate_ids
+    ]
+    merged.ranked_candidates = focused_candidates + unrelated_candidates
+
+    all_sources = set(merged.items_by_source) | set(drill_report.items_by_source)
+    new_item_count = 0
+    merged_items: dict[str, list[schema.SourceItem]] = {}
+    for source in sorted(all_sources):
+        old_items = merged.items_by_source.get(source, [])
+        new_items = drill_report.items_by_source.get(source, [])
+        combined = dedupe.dedupe_items([*copy.deepcopy(new_items), *old_items])
+        old_unique = dedupe.dedupe_items(old_items)
+        new_item_count += max(0, len(combined) - len(old_unique))
+        merged_items[source] = combined
+    merged.items_by_source = merged_items
+
+    merged.generated_at = drill_report.generated_at
+    merged.query_plan = drill_report.query_plan
+    merged.errors_by_source.update(drill_report.errors_by_source)
+    merged.source_status.update(drill_report.source_status)
+    merged.warnings = list(dict.fromkeys([*merged.warnings, *drill_report.warnings]))
+    merged.artifacts.update(copy.deepcopy(drill_report.artifacts))
+    history = list(merged.artifacts.get("drill_history") or [])
+    history.append({
+        "target": target,
+        "clusters": [cluster.title for cluster in matched_clusters],
+        "new_items": new_item_count,
+        "generated_at": drill_report.generated_at,
+    })
+    merged.artifacts["drill_history"] = history
+    merged.artifacts["drill_context"] = {
+        "target": target,
+        "cluster_titles": [cluster.title for cluster in matched_clusters],
+        "original_summary": original_summary,
+        "new_items": new_item_count,
+        "sources": focused_sources,
+    }
+    merged.drill_of = primary_cluster.title
+    return merged
 
 
 def _normalize_score_dedupe(
