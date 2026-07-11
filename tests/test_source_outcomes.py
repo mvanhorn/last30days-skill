@@ -382,3 +382,12 @@ def test_strict_exit_env_key_is_registered():
     import inspect
 
     assert "LAST30DAYS_STRICT_EXIT" in inspect.getsource(env_module)
+
+
+def test_captured_failure_selection_prefers_most_specific():
+    auth = http.HTTPError("HTTP 401: Unauthorized", status_code=401)
+    rate = http.HTTPError("HTTP 429: Too Many Requests", status_code=429)
+    # Order must not matter: auth-failed wins over rate-limited either way.
+    for failures in ([auth, rate], [rate, auth]):
+        outcome = pipeline._resolve_stream_outcome("x", None, failures)
+        assert outcome["state"] == schema.AUTH_FAILED

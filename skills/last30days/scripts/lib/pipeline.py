@@ -1083,7 +1083,21 @@ def _resolve_stream_outcome(
     artifact_outcome = _legacy_artifact_outcome(source, artifact)
     if not failures:
         return artifact_outcome
-    failure = failures[-1]
+    # Pick the most specific failure rather than the last-appended one:
+    # parallel workers append in nondeterministic order, and an auth failure
+    # must not be masked by a later 429 (wrong doctor prescription).
+    _FAILURE_SPECIFICITY = {
+        health.AUTH_FAILED: 0,
+        health.RATE_LIMITED: 1,
+        health.SCHEMA_DRIFT: 2,
+        health.TIMEOUT: 3,
+        health.UNREACHABLE: 4,
+        health.ERROR: 5,
+    }
+    failure = min(
+        failures,
+        key=lambda f: _FAILURE_SPECIFICITY.get(f.outcome_state, 9),
+    )
     captured_outcome = _outcome_artifact(
         failure.outcome_state,
         str(failure),
