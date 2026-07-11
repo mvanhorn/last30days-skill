@@ -14,7 +14,18 @@ from . import library
 
 DEFAULT_LIBRARY_DB = library.DEFAULT_BRIEFS_DIR.parent / "library.db"
 DEFAULT_STORE_DB = library.DEFAULT_BRIEFS_DIR.parent / "research.db"
+LIBRARY_CONTEXT_START = "<!-- last30days:library-context:start -->"
+LIBRARY_CONTEXT_END = "<!-- last30days:library-context:end -->"
 _TOKEN = re.compile(r"[^\W_]+", re.UNICODE)
+_MARKED_LIBRARY_CONTEXT = re.compile(
+    rf"^{re.escape(LIBRARY_CONTEXT_START)}\s*$.*?"
+    rf"^{re.escape(LIBRARY_CONTEXT_END)}\s*$\n?",
+    re.MULTILINE | re.DOTALL,
+)
+_LEGACY_LIBRARY_CONTEXT = re.compile(
+    r"^## From your library\s*$.*?(?=^##\s|\Z)",
+    re.MULTILINE | re.DOTALL,
+)
 
 
 class LibrarySearchUnavailable(RuntimeError):
@@ -99,6 +110,8 @@ def sync_library(
             raise LibrarySearchUnavailable(
                 "library search requires a Python SQLite build with FTS5 support"
             ) from exc
+        if not _is_confirmed_corruption(exc):
+            raise
         _remove_database(target)
         return replace(_sync_library(memory_dir, briefs_dir, target), rebuilt=True)
 
@@ -169,16 +182,7 @@ def search(
     store_matches = _search_store_sightings(
         expression, Path(store_db_path).expanduser(), limit
     )
-    combined = _dedupe_matches([*brief_matches, *store_matches])
-    return sorted(
-        combined,
-        key=lambda match: (
-            match.rank,
-            -match.published_date.toordinal(),
-            match.topic.casefold(),
-            match.headline.casefold(),
-        ),
-    )[:limit]
+    return _merge_ranked_matches([brief_matches, store_matches], limit=limit)
 
 
 def sync_and_search(
@@ -218,7 +222,7 @@ def _sync_library(
         for entry in entries:
             current_ids.add(entry.entry_id)
             stat = entry.source_path.stat()
-            fingerprint = _fingerprint(entry.content)
+            fingerprint = _fingerprint(_indexable_content(entry.content))
             if existing.get(entry.entry_id) == (stat.st_mtime_ns, stat.st_size, fingerprint):
                 unchanged += 1
                 continue
@@ -256,7 +260,8 @@ def _upsert_entry(
     fingerprint: str | None = None,
 ) -> None:
     stat = entry.source_path.stat()
-    content_hash = fingerprint or _fingerprint(entry.content)
+    indexed_content = _indexable_content(entry.content)
+    content_hash = fingerprint or _fingerprint(indexed_content)
     source_path = str(entry.source_path.resolve())
     replaced = conn.execute(
         "SELECT entry_id FROM library_documents WHERE source_path = ? AND entry_id != ?",
@@ -296,7 +301,7 @@ def _upsert_entry(
     )
     conn.execute(
         "INSERT INTO library_fts(entry_id, topic, headline, summary, content) VALUES (?, ?, ?, ?, ?)",
-        (entry.entry_id, entry.topic, entry.headline, entry.summary, entry.content),
+        (entry.entry_id, entry.topic, entry.headline, entry.summary, indexed_content),
     )
 
 
@@ -363,6 +368,45 @@ def _fingerprint(content: str) -> str:
 
 def _clean_snippet(value: object) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:500]
+
+
+def _indexable_content(content: str) -> str:
+    without_marked = _MARKED_LIBRARY_CONTEXT.sub("", content)
+    return _LEGACY_LIBRARY_CONTEXT.sub("", without_marked)
+
+
+def _is_confirmed_corruption(exc: sqlite3.DatabaseError) -> bool:
+    message = str(exc).casefold()
+    return any(
+        marker in message
+        for marker in (
+            "file is not a database",
+            "database disk image is malformed",
+            "database schema is corrupt",
+            "malformed database schema",
+        )
+    )
+
+
+def _merge_ranked_matches(
+    corpora: list[list[LibrarySearchMatch]],
+    *,
+    limit: int,
+) -> list[LibrarySearchMatch]:
+    normalized: list[LibrarySearchMatch] = []
+    for matches in corpora:
+        for position, match in enumerate(matches, start=1):
+            normalized.append(replace(match, rank=-(1.0 / (60 + position))))
+    combined = _dedupe_matches(normalized)
+    return sorted(
+        combined,
+        key=lambda match: (
+            match.rank,
+            -match.published_date.toordinal(),
+            match.topic.casefold(),
+            match.headline.casefold(),
+        ),
+    )[:limit]
 
 
 def _dedupe_matches(matches: list[LibrarySearchMatch]) -> list[LibrarySearchMatch]:

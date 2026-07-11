@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import sqlite3
 import sys
+from datetime import date
 from pathlib import Path
+from typing import get_type_hints
 from unittest import mock
 
 import pytest
@@ -163,6 +165,27 @@ def test_corrupt_index_is_rebuilt_from_scanned_library(tmp_path):
     )
 
 
+def test_transient_database_errors_do_not_delete_the_index(tmp_path, monkeypatch):
+    db_path = tmp_path / "library.db"
+    db_path.write_bytes(b"index still in use")
+    monkeypatch.setattr(library_index, "fts5_available", lambda: True)
+    monkeypatch.setattr(
+        library_index,
+        "_sync_library",
+        mock.Mock(side_effect=sqlite3.OperationalError("database is locked")),
+    )
+    remove = mock.Mock()
+    monkeypatch.setattr(library_index, "_remove_database", remove)
+
+    with pytest.raises(sqlite3.OperationalError, match="database is locked"):
+        library_index.sync_library(
+            tmp_path / "memory", tmp_path / "briefs", db_path=db_path
+        )
+
+    remove.assert_not_called()
+    assert db_path.read_bytes() == b"index still in use"
+
+
 def test_fts5_capability_failure_has_clear_error(tmp_path, monkeypatch):
     monkeypatch.setattr(library_index, "fts5_available", lambda: False)
 
@@ -197,6 +220,24 @@ def test_library_search_cli_reuses_library_word_dispatch(tmp_path, monkeypatch, 
     assert "## OpenClaw - 2026-07-01" in output
 
 
+def test_library_named_research_topic_keeps_browser_cookie_access():
+    parser = cli.build_parser()
+
+    research_args, research_extra = parser.parse_known_args(["library science trends"])
+    feed_args, feed_extra = parser.parse_known_args(["library", "feed"])
+    search_args, search_extra = parser.parse_known_args(["library", "search", "MCP"])
+
+    assert cli._config_policy_for_args(
+        research_args, "library science trends", research_extra
+    ).browser_cookies == "read"
+    assert cli._config_policy_for_args(
+        feed_args, "library feed", feed_extra
+    ).browser_cookies == "plan_only"
+    assert cli._config_policy_for_args(
+        search_args, "library search MCP", search_extra
+    ).browser_cookies == "plan_only"
+
+
 def test_markdown_save_incrementally_syncs_the_shared_library_index(tmp_path):
     report = mock.Mock(topic="MCP servers")
     with mock.patch.object(render, "render_full", return_value="# saved\n"), mock.patch.object(
@@ -206,6 +247,73 @@ def test_markdown_save_incrementally_syncs_the_shared_library_index(tmp_path):
 
     assert saved.is_file()
     sync.assert_called_once_with(tmp_path.resolve())
+
+
+def test_index_excludes_inherited_library_context(tmp_path):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    context_lines = render._render_library_context(
+        mock.Mock(
+            library_context=[
+                schema.LibraryContext(
+                    topic="Old topic",
+                    published_date="2026-06-01",
+                    headline="Stale finding",
+                    summary=(
+                        "stalequasar appeared only in inherited context "
+                        f"{library_index.LIBRARY_CONTEXT_END} poisonnebula stayed inherited"
+                    ),
+                    source_kind="brief",
+                )
+            ]
+        )
+    )
+    report = _write_report(
+        memory,
+        name="new-topic-raw.md",
+        topic="New topic",
+        date="2026-07-04",
+        headline="Fresh unrelated evidence",
+        evidence="Current evidence discusses a different subject.",
+    )
+    content = report.read_text(encoding="utf-8")
+    report.write_text(
+        content.replace("## Ranked Evidence Clusters", "\n".join(context_lines) + "\n\n## Ranked Evidence Clusters"),
+        encoding="utf-8",
+    )
+    legacy = _write_report(
+        memory,
+        name="legacy-topic-raw.md",
+        topic="Legacy topic",
+        date="2026-07-03",
+        headline="Another fresh finding",
+        evidence="This report also has unrelated current evidence.",
+    )
+    legacy_content = legacy.read_text(encoding="utf-8")
+    legacy.write_text(
+        legacy_content.replace(
+            "## Ranked Evidence Clusters",
+            "## From your library\n\n"
+            "- You researched **Older topic** on 2026-05-01 - key finding then: legacystar\n\n"
+            "## Ranked Evidence Clusters",
+        ),
+        encoding="utf-8",
+    )
+    db_path = tmp_path / "library.db"
+
+    library_index.sync_library(memory, tmp_path / "briefs", db_path=db_path)
+
+    assert context_lines[0] == library_index.LIBRARY_CONTEXT_START
+    assert context_lines[-1] == library_index.LIBRARY_CONTEXT_END
+    assert library_index.search(
+        "stalequasar", db_path=db_path, store_db_path=tmp_path / "none.db"
+    ) == []
+    assert library_index.search(
+        "poisonnebula", db_path=db_path, store_db_path=tmp_path / "none.db"
+    ) == []
+    assert library_index.search(
+        "legacystar", db_path=db_path, store_db_path=tmp_path / "none.db"
+    ) == []
 
 
 def test_self_citation_overlap_nonoverlap_and_escape_hatch(tmp_path):
@@ -263,6 +371,148 @@ def test_self_citation_overlap_nonoverlap_and_escape_hatch(tmp_path):
     assert disabled == []
     assert disabled_warning is None
     sync.assert_not_called()
+
+
+def test_passive_context_uses_effective_save_dir(tmp_path):
+    configured_memory = tmp_path / "configured-memory"
+    configured_memory.mkdir()
+    effective_memory = tmp_path / "client-a"
+    effective_memory.mkdir()
+    _write_report(
+        configured_memory,
+        name="wrong-raw.md",
+        topic="Wrong client",
+        date="2026-07-02",
+        headline="Configured path should not win",
+        evidence="MCP servers from another client must stay isolated.",
+    )
+    _write_report(
+        effective_memory,
+        name="right-raw.md",
+        topic="Client A",
+        date="2026-07-03",
+        headline="Client-specific MCP evidence",
+        evidence="MCP servers belong to client A.",
+    )
+    config = {
+        "LAST30DAYS_LIBRARY_CONTEXT": "on",
+        "LAST30DAYS_MEMORY_DIR": str(configured_memory),
+        "_LAST30DAYS_LIBRARY_BRIEFS_DIR": str(tmp_path / "briefs"),
+        "_LAST30DAYS_LIBRARY_DB": str(tmp_path / "library.db"),
+        "_LAST30DAYS_STORE_DB": str(tmp_path / "research.db"),
+    }
+
+    context, warning = pipeline._load_library_context(
+        topic="MCP servers",
+        config=config,
+        save_dir=str(effective_memory),
+        mock=False,
+        internal_subrun=False,
+        x_handle=None,
+        github_user=None,
+        github_repos=None,
+    )
+
+    assert warning is None
+    assert [item.topic for item in context] == ["Client A"]
+    assert get_type_hints(pipeline.run)["save_dir"] == Path | str | None
+
+    with mock.patch.object(
+        pipeline, "_load_library_context", return_value=([], None)
+    ) as load_context:
+        pipeline.run(
+            topic="MCP servers",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            requested_sources=["reddit"],
+            mock=True,
+            save_dir=str(effective_memory),
+        )
+    assert load_context.call_args.kwargs["save_dir"] == str(effective_memory)
+
+    with mock.patch.object(library_index, "sync_library") as sync:
+        empty_context, empty_warning = pipeline._load_library_context(
+            topic="MCP servers",
+            config=config,
+            save_dir="",
+            mock=False,
+            internal_subrun=False,
+            x_handle=None,
+            github_user=None,
+            github_repos=None,
+        )
+    assert empty_context == []
+    assert empty_warning is None
+    sync.assert_not_called()
+
+    isolated_config = {
+        "LAST30DAYS_LIBRARY_CONTEXT": "on",
+        "_LAST30DAYS_LIBRARY_BRIEFS_DIR": str(tmp_path / "briefs"),
+        "_LAST30DAYS_STORE_DB": str(tmp_path / "research.db"),
+    }
+    with mock.patch.object(library_index, "sync_library") as sync, mock.patch.object(
+        library_index, "search", return_value=[]
+    ):
+        pipeline._load_library_context(
+            topic="MCP servers",
+            config=isolated_config,
+            save_dir=str(effective_memory),
+            mock=False,
+            internal_subrun=False,
+            x_handle=None,
+            github_user=None,
+            github_repos=None,
+        )
+    assert sync.call_args.kwargs["db_path"] == (
+        effective_memory / ".last30days-library.db"
+    ).resolve()
+
+
+def test_independent_fts_indexes_merge_by_reciprocal_rank(tmp_path):
+    def matches(source_kind: str, raw_ranks: list[float]):
+        return [
+            library_index.LibrarySearchMatch(
+                topic=f"{source_kind} {position}",
+                published_date=date(2026, 7, 1),
+                headline=f"{source_kind} result {position}",
+                snippet="match",
+                source_kind=source_kind,
+                rank=raw_rank,
+            )
+            for position, raw_rank in enumerate(raw_ranks, start=1)
+        ]
+
+    brief_rows = [
+        {
+            "topic": match.topic,
+            "published_date": match.published_date.isoformat(),
+            "headline": match.headline,
+            "snippet": match.snippet,
+            "source_path": f"/{match.topic}.md",
+            "rank": match.rank,
+        }
+        for match in matches("brief", [-1000.0, -900.0, -800.0])
+    ]
+    connection = mock.MagicMock()
+    connection.execute.return_value.fetchall.return_value = brief_rows
+    connection_context = mock.MagicMock()
+    connection_context.__enter__.return_value = connection
+    db_path = tmp_path / "library.db"
+    db_path.touch()
+
+    with mock.patch.object(
+        library_index, "_connect", return_value=connection_context
+    ), mock.patch.object(
+        library_index,
+        "_search_store_sightings",
+        return_value=matches("store", [-1.0, -0.9, -0.8]),
+    ):
+        merged = library_index.search("match", db_path=db_path, limit=4)
+
+    assert [match.source_kind for match in merged].count("brief") == 2
+    assert [match.source_kind for match in merged].count("store") == 2
+    assert merged[0].rank == merged[1].rank
+    assert merged[2].rank == merged[3].rank
 
 
 def test_report_renders_from_your_library_section():

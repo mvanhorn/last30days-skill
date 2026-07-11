@@ -1356,18 +1356,24 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
 
 
 def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: list[str]) -> env.ConfigLoadPolicy:
+    normalized_topic = topic.lower()
+    is_library_command = (
+        normalized_topic == "library feed"
+        or normalized_topic == "library search"
+        or normalized_topic.startswith("library search ")
+    )
     if args.no_browser_cookies:
         browser_mode = "off"
-    elif args.diagnose or args.preflight or topic.lower() == "doctor" or topic.lower().startswith("library "):
+    elif args.diagnose or args.preflight or normalized_topic == "doctor" or is_library_command:
         # doctor is plan-only like --diagnose: it must never read cookies.
         browser_mode = "plan_only"
-    elif topic.lower() == "setup":
+    elif normalized_topic == "setup":
         browser_mode = "read" if _setup_allows_browser_cookies(args, extra_argv) else "off"
     else:
         browser_mode = "read"
     return env.ConfigLoadPolicy(
         browser_cookies=browser_mode,
-        inspect_ignored_project_config=args.diagnose or args.preflight or topic.lower() == "doctor",
+        inspect_ignored_project_config=args.diagnose or args.preflight or normalized_topic == "doctor",
     )
 
 
@@ -1991,6 +1997,7 @@ def _main(
                 trustpilot_domain_is_hint=trustpilot_domain_is_hint,
                 internal_subrun=comp_enabled,
                 hiring_signals_mode=args.hiring_signals,
+                save_dir=args.save_dir,
             )
             r.artifacts["resolved"] = {
                 "entity": topic,
@@ -2127,6 +2134,7 @@ def _main(
                     as_of_date=args.as_of_date,
                     hiring_signals_mode=args.hiring_signals,
                     internal_subrun=True,
+                    save_dir=args.save_dir,
                 )
                 report.artifacts["resolved"] = resolved_effective
                 return report

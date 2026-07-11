@@ -194,13 +194,14 @@ def _render_drill_context(report: schema.Report) -> list[str]:
 def _render_library_context(report: schema.Report) -> list[str]:
     if not report.library_context:
         return []
-    lines = ["## From your library", ""]
+    lines = [library_index.LIBRARY_CONTEXT_START, "## From your library", ""]
     for item in report.library_context:
         detail = _truncate(item.summary or item.headline, 220)
         lines.append(
             f"- You researched **{item.topic}** on {item.published_date} - "
             f"key finding then: {detail}"
         )
+    lines.append(library_index.LIBRARY_CONTEXT_END)
     return lines
 
 

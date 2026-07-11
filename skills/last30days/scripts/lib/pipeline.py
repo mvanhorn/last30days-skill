@@ -11,6 +11,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from shutil import which
 from typing import Any
 
@@ -789,15 +790,28 @@ def _load_library_context(
     x_handle: str | None,
     github_user: str | None,
     github_repos: list[str] | None,
+    save_dir: Path | str | None = None,
 ) -> tuple[list[schema.LibraryContext], str | None]:
     """Resolve compact prior-run context without making a research run depend on it."""
     setting = str(config.get("LAST30DAYS_LIBRARY_CONTEXT") or "off").strip().lower()
     if mock or internal_subrun or setting in {"0", "false", "no", "off"}:
         return [], None
+    if save_dir == "":
+        return [], None
 
-    memory_dir = config.get("LAST30DAYS_MEMORY_DIR") or library.DEFAULT_MEMORY_DIR
+    memory_dir = (
+        save_dir
+        if save_dir is not None
+        else config.get("LAST30DAYS_MEMORY_DIR") or library.DEFAULT_MEMORY_DIR
+    )
     briefs_dir = config.get("_LAST30DAYS_LIBRARY_BRIEFS_DIR") or library.DEFAULT_BRIEFS_DIR
-    db_path = config.get("_LAST30DAYS_LIBRARY_DB") or library_index.DEFAULT_LIBRARY_DB
+    db_path = config.get("_LAST30DAYS_LIBRARY_DB")
+    if not db_path:
+        db_path = (
+            Path(memory_dir).expanduser().resolve() / ".last30days-library.db"
+            if save_dir is not None
+            else library_index.DEFAULT_LIBRARY_DB
+        )
     store_db = config.get("_LAST30DAYS_STORE_DB") or library_index.DEFAULT_STORE_DB
     queries = [topic, x_handle or "", github_user or "", *(github_repos or [])]
     queries = list(dict.fromkeys(value.strip() for value in queries if value and value.strip()))
@@ -862,6 +876,7 @@ def run(
     trustpilot_domain_is_hint: bool = False,
     hiring_signals_mode: bool = False,
     internal_subrun: bool = False,
+    save_dir: Path | str | None = None,
 ) -> schema.Report:
     settings = DEPTH_SETTINGS[depth]
     requested_sources = normalize_requested_sources(requested_sources)
@@ -1282,6 +1297,7 @@ def run(
         x_handle=x_handle,
         github_user=github_user,
         github_repos=github_repos,
+        save_dir=save_dir,
     )
     if library_warning:
         warnings.append(library_warning)
