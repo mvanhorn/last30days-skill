@@ -1,7 +1,7 @@
 import json
 
 import last30days as cli
-from lib import freshness, github, health, http, planner, polymarket, render, schema, stocktwits
+from lib import freshness, github, health, hosted, http, planner, polymarket, render, schema, stocktwits
 
 
 def _report(*items: schema.SourceItem) -> schema.Report:
@@ -376,6 +376,51 @@ def test_verify_report_caches_one_point_refetch_per_source_key():
     assert len(calls) == 1
 
 
+def test_stocktwits_refetch_cache_separates_depth_and_date_populations():
+    default = _item(
+        "stocktwits",
+        item_id="stock-default",
+        title="$ACME default population",
+        metadata={
+            "symbol": "ACME",
+            "sentiment_aggregate": {"pct_bullish": 60},
+            "freshness_window": {
+                "depth": "default",
+                "from_date": "2026-07-01",
+                "to_date": "2026-07-10",
+            },
+        },
+    )
+    deep = _item(
+        "stocktwits",
+        item_id="stock-deep",
+        title="$ACME deep population",
+        metadata={
+            "symbol": "ACME",
+            "sentiment_aggregate": {"pct_bullish": 75},
+            "freshness_window": {
+                "depth": "deep",
+                "from_date": "2026-06-10",
+                "to_date": "2026-07-10",
+            },
+        },
+    )
+    calls = []
+
+    verdicts = freshness.verify_report(
+        _report(default, deep),
+        refetchers={
+            "stocktwits": lambda item, _key: calls.append(item.item_id) or {
+                "value": item.metadata["sentiment_aggregate"]["pct_bullish"],
+                "url": item.url,
+            }
+        },
+    )
+
+    assert [verdict.verdict for verdict in verdicts] == ["current", "current"]
+    assert calls == ["stock-default", "stock-deep"]
+
+
 def test_stocktwits_refetch_reuses_retrieval_depth_and_date_window(monkeypatch):
     item = _item(
         "stocktwits",
@@ -476,6 +521,42 @@ def test_polymarket_refetch_uses_complete_outcomes_and_one_event_snapshot(monkey
     assert len(calls) == 1
 
 
+def test_polymarket_refetch_marks_resolved_market_movement_stale(monkeypatch):
+    item = _item(
+        "polymarket",
+        title="Will the bill pass?",
+        url="https://polymarket.com/event/bill",
+        metadata={
+            "event_id": "42",
+            "outcome_prices": [["Yes", 0.42]],
+        },
+    )
+    monkeypatch.setattr(
+        polymarket.http,
+        "request",
+        lambda *_args, **_kwargs: {
+            "id": "42",
+            "slug": "bill",
+            "title": "Will the bill pass?",
+            "active": False,
+            "closed": True,
+            "markets": [{
+                "active": False,
+                "closed": True,
+                "question": "Will the bill pass?",
+                "liquidity": "0",
+                "outcomes": '["Yes", "No"]',
+                "outcomePrices": '["1", "0"]',
+            }],
+        },
+    )
+
+    verdict = freshness.verify_report(_report(item))[0]
+
+    assert verdict.verdict == "stale"
+    assert verdict.current_value == 1.0
+
+
 def test_github_refetch_reuses_resolved_gh_cli_token(monkeypatch):
     item = _item(
         "github",
@@ -529,6 +610,34 @@ def test_early_return_paths_do_not_ignore_freshness_verification(tmp_path, monke
 
     assert cli._main(parser, cached_args, []) == 0
     assert calls == ["verified", "rendered"]
+
+
+def test_hosted_configured_freshness_skips_unless_cli_explicitly_enables(monkeypatch, capsys):
+    monkeypatch.setenv("LAST30DAYS_API_KEY", "dummy-hosted-key")
+    monkeypatch.setenv("LAST30DAYS_API_BASE", "https://api.example.test")
+    monkeypatch.setattr(
+        cli.env,
+        "get_config",
+        lambda **_kwargs: {"LAST30DAYS_VERIFY_FRESHNESS": "on"},
+    )
+    calls = []
+    monkeypatch.setattr(
+        hosted,
+        "run_hosted",
+        lambda topic, depth, **_kwargs: calls.append((topic, depth)) or 0,
+    )
+    parser = cli.build_parser()
+
+    assert cli._main(parser, parser.parse_args(["topic"]), []) == 0
+    assert calls == [("topic", "default")]
+    assert capsys.readouterr().err == (
+        "hosted backend does not support freshness verification; skipping\n"
+    )
+    no_verify_args = parser.parse_args(["topic", "--no-verify-freshness"])
+    assert cli._freshness_enabled(
+        no_verify_args,
+        {"LAST30DAYS_VERIFY_FRESHNESS": "on"},
+    ) is False
 
 
 def test_agent_export_includes_typed_claim_metadata():

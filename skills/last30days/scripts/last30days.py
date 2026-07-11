@@ -427,10 +427,18 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--search", help="Comma-separated source list")
     parser.add_argument("--quick", action="store_true", help="Lower-latency retrieval profile")
     parser.add_argument("--deep", action="store_true", help="Higher-recall retrieval profile")
-    parser.add_argument(
+    freshness_group = parser.add_mutually_exclusive_group()
+    freshness_group.add_argument(
         "--verify-freshness",
         action="store_true",
+        default=None,
         help="Re-check source-grounded claims after research, or verify the cached report when no topic is supplied",
+    )
+    freshness_group.add_argument(
+        "--no-verify-freshness",
+        dest="verify_freshness",
+        action="store_false",
+        help="Disable freshness verification configured by LAST30DAYS_VERIFY_FRESHNESS",
     )
     parser.add_argument(
         "--drill",
@@ -898,7 +906,9 @@ def _config_truthy(value: object) -> bool:
 
 
 def _freshness_enabled(args: argparse.Namespace, config: dict[str, object]) -> bool:
-    return bool(args.verify_freshness or _config_truthy(config.get("LAST30DAYS_VERIFY_FRESHNESS")))
+    if args.verify_freshness is not None:
+        return bool(args.verify_freshness)
+    return _config_truthy(config.get("LAST30DAYS_VERIFY_FRESHNESS"))
 
 
 def _update_cached_freshness(
@@ -1965,11 +1975,15 @@ def _main(
         and os.environ.get("LAST30DAYS_API_BASE")
     ):
         if _freshness_enabled(args, config):
+            if args.verify_freshness is True:
+                sys.stderr.write(
+                    "[last30days] Freshness verification is not supported by the hosted backend; "
+                    "run locally or omit --verify-freshness.\n"
+                )
+                return 2
             sys.stderr.write(
-                "[last30days] Freshness verification is not supported by the hosted backend; "
-                "run locally or omit --verify-freshness.\n"
+                "hosted backend does not support freshness verification; skipping\n"
             )
-            return 2
         if args.emit == "json" and args.json_profile == "agent":
             sys.stderr.write(
                 "[last30days] --json-profile=agent requires the local Report; "

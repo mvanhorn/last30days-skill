@@ -568,6 +568,7 @@ def parse_polymarket_response(
     topic: str = "",
     *,
     include_all_outcomes: bool = False,
+    include_closed: bool = False,
 ) -> List[Dict[str, Any]]:
     """Parse Gamma API response into normalized item dicts.
 
@@ -590,10 +591,11 @@ def parse_polymarket_response(
         slug = event.get("slug", "")
 
         # Filter: skip closed/resolved events
-        if event.get("closed", False):
-            continue
-        if not event.get("active", True):
-            continue
+        if not include_closed:
+            if event.get("closed", False):
+                continue
+            if not event.get("active", True):
+                continue
 
         # Filter: skip events that don't match the topic's core subject
         # This prevents "NFC West" from matching a "Kanye West" search
@@ -609,16 +611,17 @@ def parse_polymarket_response(
         # Filter to active, open markets with liquidity (excludes resolved markets)
         active_markets = []
         for m in markets:
-            if m.get("closed", False):
-                continue
-            if not m.get("active", True):
-                continue
+            if not include_closed:
+                if m.get("closed", False):
+                    continue
+                if not m.get("active", True):
+                    continue
             # Must have liquidity (resolved markets have 0 or None)
             try:
                 liq = float(m.get("liquidity", 0) or 0)
             except (ValueError, TypeError):
                 liq = 0
-            if liq > 0:
+            if include_closed or liq > 0:
                 active_markets.append(m)
 
         if not active_markets:
@@ -828,6 +831,7 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     parsed = parse_polymarket_response(
         {"events": [event]},
         include_all_outcomes=True,
+        include_closed=True,
     )
     if not parsed:
         raise KeyError("Polymarket event is closed, unavailable, or malformed")

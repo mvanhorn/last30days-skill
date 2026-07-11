@@ -265,12 +265,22 @@ def _newer_status_contradiction(
     return None
 
 
-def _point_refetch_key(item: schema.SourceItem, claim: Claim) -> tuple[str, str]:
+def _point_refetch_key(item: schema.SourceItem, claim: Claim) -> tuple[str, ...]:
     """Identify the source snapshot shared by claims in one verification pass."""
     if claim.source == "polymarket":
         key = item.metadata.get("event_id") or item.url
     elif claim.source == "stocktwits":
-        key = item.metadata.get("symbol") or item.container or item.url
+        window = item.metadata.get("freshness_window") or {}
+        return tuple(
+            str(value or "").strip().casefold()
+            for value in (
+                claim.source,
+                item.metadata.get("symbol") or item.container or item.url,
+                window.get("depth"),
+                window.get("from_date"),
+                window.get("to_date"),
+            )
+        )
     elif claim.source == "github":
         key = _github_repo(item) or item.url
     else:
@@ -320,8 +330,8 @@ def verify_report(
             items.setdefault((item.source, item.item_id), item)
 
     verdicts: list[schema.FreshnessVerdict] = []
-    point_cache: dict[tuple[str, str], tuple[str, RefetchedDatum]] = {}
-    point_errors: dict[tuple[str, str], str] = {}
+    point_cache: dict[tuple[str, ...], tuple[str, RefetchedDatum]] = {}
+    point_errors: dict[tuple[str, ...], str] = {}
     for claim in extract_claims(report):
         if claim.datum_kind == "status_assertion":
             contradiction = _newer_status_contradiction(report, claim)
