@@ -306,8 +306,17 @@ def _render_registered_sections(
 ) -> list[str]:
     """Render one audience preset's ordered, budgeted evidence sections."""
 
+    take_candidates = list(report.ranked_candidates)
+    if audience.emphasis_weights:
+        # The preset's source emphasis must reach the lead section too, not
+        # just cluster ordering: a creator register should surface TikTok/IG/
+        # YouTube takes ahead of equally-rated HN or GitHub ones.
+        take_candidates.sort(
+            key=lambda candidate: -candidate.final_score
+            * audience.emphasis_for(candidate.source)
+        )
     best_takes = _render_best_takes(
-        report.ranked_candidates,
+        take_candidates,
         limit=audience.budget_for("best_takes", int(fun_params["limit"])),
         threshold=float(fun_params["threshold"]),
         vote_weight=float(fun_params.get("vote_weight", 18.0)),

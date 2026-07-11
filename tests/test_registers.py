@@ -322,3 +322,12 @@ def test_unknown_configured_register_fails_before_retrieval(monkeypatch, capsys)
 
     assert cli.main() == 2
     assert "unknown audience register 'board'" in capsys.readouterr().err
+
+
+def test_creator_best_takes_honor_source_emphasis():
+    from lib import registers, render
+
+    audience = registers.get_register("creator")
+    assert audience.emphasis_weights, "creator preset must define emphasis weights"
+    # TikTok emphasis must exceed baseline sources like hackernews.
+    assert audience.emphasis_for("tiktok") > audience.emphasis_for("hackernews")
