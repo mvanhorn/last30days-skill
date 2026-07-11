@@ -644,3 +644,19 @@ def test_x_discovery_preserves_producing_backends_own_error(monkeypatch):
     )
     assert len(items) == 1
     assert error == "rate limited after page 1"
+
+
+def test_discovery_exits_when_configured_sources_have_no_discovery_feed(monkeypatch, capsys):
+    """A configured source boundary must hold: never silently widen a sweep
+    to feeds the user filtered out."""
+    monkeypatch.setattr(
+        cli.env, "get_config", lambda **_kwargs: {"LAST30DAYS_DEFAULT_SEARCH": "youtube"}
+    )
+    monkeypatch.setattr(sys, "argv", ["last30days.py", "--discover", "AI agents", "--mock"])
+    with mock.patch.object(pipeline, "run_discover") as run:
+        assert cli.main() == 2
+
+    run.assert_not_called()
+    err = capsys.readouterr().err
+    assert "no discovery-capable sources" in err
+    assert "reddit" in err

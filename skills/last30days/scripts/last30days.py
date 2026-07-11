@@ -1050,13 +1050,20 @@ def _run_discover(args: argparse.Namespace, config: dict[str, object]) -> int:
             source for source in requested_sources
             if source in pipeline.DISCOVERY_SOURCES
         ]
-        if args.search is None or discovery_sources:
-            if args.search is None and requested_sources and not discovery_sources:
-                sys.stderr.write(
-                    "[last30days] LAST30DAYS_DEFAULT_SEARCH has no discovery-capable "
-                    "sources; using all discovery feeds for this sweep.\n"
-                )
-            requested_sources = discovery_sources or None
+        if not discovery_sources:
+            # A configured source boundary holds even when it leaves nothing
+            # to sweep: silently widening to all feeds would query sources
+            # the user filtered out.
+            origin = "--search" if args.search is not None else "LAST30DAYS_DEFAULT_SEARCH"
+            sys.stderr.write(
+                f"[last30days] {origin} has no discovery-capable sources "
+                f"(unsupported: {', '.join(requested_sources)}); discovery "
+                f"sweeps use: {', '.join(pipeline.DISCOVERY_SOURCES)}. Pass "
+                "--search with one of those (or clear the source filter) to "
+                "run a sweep.\n"
+            )
+            return 2
+        requested_sources = discovery_sources
     subreddits = (
         [value.strip().removeprefix("r/") for value in args.subreddits.split(",") if value.strip()]
         if args.subreddits else None
