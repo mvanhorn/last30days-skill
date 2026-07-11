@@ -396,11 +396,12 @@ def _fetch_discovery_source(
                 backend, subquery, from_date, to_date, depth, config,
             )
             if items:
-                # A successful fallback is a clean outcome; earlier backend
-                # errors are observability, not degradation.
+                # Earlier failed-over backends' errors are observability, not
+                # degradation - but the producing backend's own error means
+                # these items are partial and must surface as such.
                 if last_error:
                     print(f"[x] earlier backend failed: {last_error}", file=sys.stderr)
-                return items, None
+                return items, error or None
             if error:
                 last_error = f"{backend}: {error}"
         return [], last_error or None

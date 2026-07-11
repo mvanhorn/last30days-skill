@@ -624,3 +624,23 @@ def test_digg_discovery_all_filtered_is_clean_no_results(monkeypatch):
     )
     assert error is None
     assert items == []
+
+
+def test_x_discovery_preserves_producing_backends_own_error(monkeypatch):
+    """A backend that returns items plus its own error is a partial outcome;
+    only earlier failed-over backends' errors are observability-only."""
+    monkeypatch.setattr(
+        pipeline, "_fetch_x_backend",
+        lambda *a, **k: ([{"id": "x-1", "title": "t"}], "rate limited after page 1"),
+    )
+    monkeypatch.setattr(pipeline.env, "x_backend_chain", lambda config: ["bird"])
+    plan = schema.DiscoveryPlan(
+        domain="ai agents", category=None, subreddits=[], sources=["x"],
+    )
+    items, error = pipeline._fetch_discovery_source(
+        "x", plan,
+        from_date="2026-06-11", to_date="2026-07-11", depth="quick",
+        mock=False, config={},
+    )
+    assert len(items) == 1
+    assert error == "rate limited after page 1"
