@@ -779,5 +779,5 @@ def test_slug_refetch_requires_identity_match(monkeypatch):
     right = dict(wrong)
     right["slug"] = "fed-rate-cut-2026"
     monkeypatch.setattr(polymarket.http, "request", lambda *a, **k: [wrong, right])
-    values = polymarket.refetch_datum(item, "probability")
+    values = polymarket.refetch_datum(item, "Yes")
     assert values is not None
