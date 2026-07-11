@@ -36,7 +36,7 @@ class RefetchedDatum:
     values: dict[str, Any] | None = None
 
 
-Refetcher = Callable[[schema.SourceItem, str], RefetchedDatum | dict[str, Any] | Any]
+Refetcher = Callable[[schema.SourceItem | None, str], RefetchedDatum | dict[str, Any] | Any]
 
 _STATUS_PATTERN = re.compile(
     r"\b(?P<subject>[A-Z][A-Za-z0-9&.'’/+_-]*(?:\s+[A-Z0-9][A-Za-z0-9&.'’/+_-]*){0,5})"
@@ -96,6 +96,7 @@ def _claim(
 def extract_claims(report: schema.Report) -> list[Claim]:
     """Extract only structured numerics/dates and tightly shaped status claims."""
     claims: list[Claim] = []
+    item_level_repos: set[str] = set()
     for grounded in grounding.claim_source_map(report).values():
         item = grounded.item
         if item.source == "polymarket":
@@ -147,6 +148,7 @@ def extract_claims(report: schema.Report) -> list[Claim]:
             stars = item.engagement.get("stars")
             repo = _github_repo(item)
             if repo and isinstance(stars, (int, float)) and not isinstance(stars, bool):
+                item_level_repos.add(repo.casefold())
                 claims.append(
                     _claim(
                         grounded,
@@ -185,6 +187,55 @@ def extract_claims(report: schema.Report) -> list[Claim]:
                     subject.lower(),
                     status,
                     match.group(0),
+                )
+            )
+
+    claims.extend(_candidate_star_claims(report, item_level_repos))
+    return claims
+
+
+def _candidate_star_claims(
+    report: schema.Report,
+    item_level_repos: set[str],
+) -> list[Claim]:
+    """Emit star claims from candidate enrichment metadata.
+
+    Star enrichment attaches ``metadata["github_stars"]`` (repo -> stars)
+    after reranking, so these facts never appear on item-level engagement -
+    typically the candidate's primary item is a non-GitHub source. Each repo
+    becomes one repo-keyed claim unless an item-level claim already covers it.
+    """
+    claims: list[Claim] = []
+    candidates_by_id = {
+        candidate.candidate_id: candidate for candidate in report.ranked_candidates
+    }
+    for grounded in grounding.claim_source_map(report).values():
+        candidate = candidates_by_id.get(grounded.candidate_id)
+        if candidate is None:
+            continue
+        stars_map = candidate.metadata.get("github_stars")
+        if not isinstance(stars_map, dict):
+            continue
+        for repo, stars in sorted(stars_map.items()):
+            if not isinstance(repo, str) or not re.fullmatch(r"[^/\s]+/[^/\s]+", repo):
+                continue
+            if isinstance(stars, bool) or not isinstance(stars, (int, float)):
+                continue
+            if repo.casefold() in item_level_repos:
+                continue
+            item = grounded.item
+            claims.append(
+                Claim(
+                    claim_id=_claim_id(grounded.candidate_id, "github_stars", repo),
+                    candidate_id=grounded.candidate_id,
+                    text=f"{repo} has {int(stars):,} GitHub stars",
+                    source="github",
+                    source_item_id=item.item_id,
+                    source_url=f"https://github.com/{repo}",
+                    source_timestamp=item.published_at,
+                    datum_kind="github_stars",
+                    datum_key=repo,
+                    original_value=int(stars),
                 )
             )
     return claims
@@ -309,6 +360,36 @@ def _point_refetch_key(item: schema.SourceItem, claim: Claim) -> tuple[str, ...]
     return claim.source, str(key).strip().casefold()
 
 
+def _point_verdict(
+    claim: Claim,
+    checked_at: str,
+    refreshed: RefetchedDatum,
+) -> schema.FreshnessVerdict:
+    """Build the current/stale verdict for a successfully re-fetched datum."""
+    matches = _values_match(claim, refreshed.value)
+    return schema.FreshnessVerdict(
+        claim_id=claim.claim_id,
+        candidate_id=claim.candidate_id,
+        claim=claim.text,
+        source=claim.source,
+        source_item_id=claim.source_item_id,
+        verdict="current" if matches else "stale",
+        checked_at=checked_at,
+        source_url=claim.source_url,
+        source_timestamp=claim.source_timestamp,
+        evidence_url=refreshed.url,
+        evidence_timestamp=refreshed.timestamp or checked_at,
+        original_value=claim.original_value,
+        current_value=refreshed.value,
+        detail=None if matches else (
+            "moved: "
+            f"{_format_verdict_value(claim.datum_kind, claim.original_value)}"
+            " -> "
+            f"{_format_verdict_value(claim.datum_kind, refreshed.value)}"
+        ),
+    )
+
+
 def _unsupported(
     claim: Claim,
     checked_at: str,
@@ -385,6 +466,42 @@ def verify_report(
                 )
             continue
 
+        if claim.datum_kind == "github_stars" and claim.datum_key != "stars":
+            # Candidate-enrichment star claim: the repo slug in datum_key is
+            # the refetch subject. The datum came from post-rerank enrichment,
+            # not the github search source, so it bypasses the grounding-item
+            # lookup and the per-source outcome gate.
+            refetcher = dispatch.get("github")
+            if refetcher is None:
+                verdicts.append(
+                    _unsupported(claim, checked, "No point-refetch verifier is registered")
+                )
+                continue
+            if not allow_network:
+                verdicts.append(
+                    _unsupported(claim, checked, "Network verification is disabled for this run")
+                )
+                continue
+            cache_key = ("github", claim.datum_key.strip().casefold())
+            if cache_key in point_errors:
+                verdicts.append(_unsupported(claim, checked, point_errors[cache_key]))
+                continue
+            try:
+                cached = point_cache.get(cache_key)
+                if cached and cached[0] == claim.datum_key:
+                    refreshed = cached[1]
+                else:
+                    refreshed = _coerce_refetched(
+                        refetcher(None, claim.datum_key), claim.source_url
+                    )
+                    point_cache[cache_key] = (claim.datum_key, refreshed)
+                verdicts.append(_point_verdict(claim, checked, refreshed))
+            except Exception as exc:  # verifier failures degrade to a typed verdict
+                detail = f"Re-check failed: {exc}"
+                point_errors[cache_key] = detail
+                verdicts.append(_unsupported(claim, checked, detail))
+            continue
+
         item = items.get((claim.source, claim.source_item_id))
         outcome = report.source_status.get(claim.source)
         if item is None:
@@ -433,30 +550,7 @@ def verify_report(
             else:
                 refreshed = _coerce_refetched(refetcher(item, claim.datum_key), claim.source_url)
                 point_cache[cache_key] = (claim.datum_key, refreshed)
-            matches = _values_match(claim, refreshed.value)
-            verdicts.append(
-                schema.FreshnessVerdict(
-                    claim_id=claim.claim_id,
-                    candidate_id=claim.candidate_id,
-                    claim=claim.text,
-                    source=claim.source,
-                    source_item_id=claim.source_item_id,
-                    verdict="current" if matches else "stale",
-                    checked_at=checked,
-                    source_url=claim.source_url,
-                    source_timestamp=claim.source_timestamp,
-                    evidence_url=refreshed.url,
-                    evidence_timestamp=refreshed.timestamp or checked,
-                    original_value=claim.original_value,
-                    current_value=refreshed.value,
-                    detail=None if matches else (
-                        "moved: "
-                        f"{_format_verdict_value(claim.datum_kind, claim.original_value)}"
-                        " -> "
-                        f"{_format_verdict_value(claim.datum_kind, refreshed.value)}"
-                    ),
-                )
-            )
+            verdicts.append(_point_verdict(claim, checked, refreshed))
         except Exception as exc:  # verifier failures degrade to a typed verdict
             detail = f"Re-check failed: {exc}"
             point_errors[cache_key] = detail

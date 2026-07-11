@@ -886,3 +886,132 @@ def test_zero_claim_note_absent_when_any_report_has_verdicts(capsys):
     err = capsys.readouterr().err
     assert "no re-checkable claims" not in err
     assert market.freshness_verdicts  # unsupported verdicts still count as outcomes
+
+
+def _candidate_star_report(*, repos: dict[str, int], item_source: str = "reddit") -> schema.Report:
+    """A report whose only star facts live in candidate enrichment metadata."""
+    primary = _item(item_source, title="Agent tooling thread")
+    report = _report(primary)
+    report.ranked_candidates[0].metadata["github_stars"] = dict(repos)
+    return report
+
+
+def test_candidate_star_claims_dispatch_despite_non_github_primary_item():
+    """Regression: star facts attached during post-rerank enrichment carried
+    no claims because extraction read only item-level engagement, so a
+    GitHub-flavored run produced zero verdicts."""
+    report = _candidate_star_report(repos={"a/b": 100})
+
+    calls: list[tuple[object, str]] = []
+
+    def fake_refetch(item, key):
+        calls.append((item, key))
+        return {"value": 100, "url": f"https://github.com/{key}"}
+
+    verdicts = freshness.verify_report(
+        report,
+        checked_at="2026-07-11T13:00:00Z",
+        refetchers={"github": fake_refetch},
+    )
+
+    assert [verdict.verdict for verdict in verdicts] == ["current"]
+    assert calls == [(None, "a/b")]
+    assert verdicts[0].source == "github"
+    assert verdicts[0].source_url == "https://github.com/a/b"
+
+
+def test_candidate_star_claim_moved_value_is_stale_with_detail():
+    report = _candidate_star_report(repos={"a/b": 100})
+
+    verdicts = freshness.verify_report(
+        report,
+        checked_at="2026-07-11T13:00:00Z",
+        refetchers={"github": lambda _item, key: {"value": 250, "url": f"https://github.com/{key}"}},
+    )
+
+    assert [verdict.verdict for verdict in verdicts] == ["stale"]
+    assert verdicts[0].detail == "moved: 100 -> 250"
+    assert verdicts[0].original_value == 100
+    assert verdicts[0].current_value == 250
+
+
+def test_repo_claimed_at_item_level_is_not_claimed_again_from_metadata():
+    gh_item = _item(
+        "github",
+        title="a/b (100 stars)",
+        url="https://github.com/a/b",
+        container="a/b",
+        engagement={"stars": 100},
+    )
+    report = _report(gh_item)
+    report.ranked_candidates[0].metadata["github_stars"] = {"a/b": 100}
+
+    claims = [
+        claim for claim in freshness.extract_claims(report)
+        if claim.datum_kind == "github_stars"
+    ]
+
+    assert len(claims) == 1
+    assert claims[0].datum_key == "stars"
+
+
+def test_multiple_candidates_citing_same_repo_share_one_refetch():
+    first = _item("reddit", title="Thread one", item_id="reddit-a")
+    second = _item("reddit", title="Thread two", item_id="reddit-b")
+    report = _report(first, second)
+    for candidate in report.ranked_candidates:
+        candidate.metadata["github_stars"] = {"a/b": 100}
+
+    calls: list[str] = []
+
+    def fake_refetch(_item, key):
+        calls.append(key)
+        return {"value": 100, "url": f"https://github.com/{key}"}
+
+    verdicts = freshness.verify_report(
+        report,
+        checked_at="2026-07-11T13:00:00Z",
+        refetchers={"github": fake_refetch},
+    )
+
+    assert [verdict.verdict for verdict in verdicts] == ["current", "current"]
+    assert calls == ["a/b"]
+
+
+def test_candidate_star_claims_bypass_github_source_outcome_gate():
+    report = _candidate_star_report(repos={"a/b": 100})
+    report.source_status["github"] = schema.SourceOutcome(
+        source="github", state="timeout", items_returned=0,
+    )
+
+    verdicts = freshness.verify_report(
+        report,
+        checked_at="2026-07-11T13:00:00Z",
+        refetchers={"github": lambda _item, key: {"value": 100, "url": f"https://github.com/{key}"}},
+    )
+
+    assert [verdict.verdict for verdict in verdicts] == ["current"]
+
+
+def test_candidates_without_star_metadata_emit_no_claims():
+    report = _report(_item("reddit", title="Agent tooling thread"))
+
+    assert freshness.extract_claims(report) == []
+
+
+def test_refetch_datum_accepts_repo_slug_datum_key(monkeypatch):
+    seen_urls: list[str] = []
+    monkeypatch.setattr(github, "_resolve_token", lambda: "")
+    monkeypatch.setattr(
+        github.http,
+        "request",
+        lambda _method, url, **_kwargs: seen_urls.append(url) or {
+            "stargazers_count": 42,
+            "html_url": "https://github.com/a/b",
+        },
+    )
+
+    refreshed = github.refetch_datum(None, "a/b")
+
+    assert seen_urls == ["https://api.github.com/repos/a/b"]
+    assert refreshed["value"] == 42
