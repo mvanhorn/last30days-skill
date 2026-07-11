@@ -33,6 +33,7 @@ class RefetchedDatum:
     value: Any
     url: str
     timestamp: str | None = None
+    values: dict[str, Any] | None = None
 
 
 Refetcher = Callable[[schema.SourceItem, str], RefetchedDatum | dict[str, Any] | Any]
@@ -212,6 +213,7 @@ def _coerce_refetched(value: RefetchedDatum | dict[str, Any] | Any, fallback_url
             value=value["value"],
             url=str(value.get("url") or fallback_url),
             timestamp=value.get("timestamp"),
+            values=value.get("values") if isinstance(value.get("values"), dict) else None,
         )
     return RefetchedDatum(value=value, url=fallback_url)
 
@@ -234,11 +236,11 @@ def _newer_status_contradiction(
     opposite = _OPPOSITE_STATUS.get(str(claim.original_value))
     if not opposite:
         return None
-    subject_tokens = {
+    subject_tokens = [
         token.lower()
         for token in re.findall(r"[A-Za-z0-9]+", claim.datum_key)
         if len(token) >= 3
-    }
+    ]
     if not subject_tokens:
         return None
     candidates = [
@@ -251,13 +253,29 @@ def _newer_status_contradiction(
     ]
     candidates.sort(key=lambda item: item.published_at or "", reverse=True)
     for item in candidates:
-        text = f"{item.title} {item.snippet} {item.body}".lower()
-        if re.search(rf"\b{re.escape(opposite)}\b", text) and all(
-            re.search(rf"\b{re.escape(token)}\b", text)
-            for token in subject_tokens
-        ):
-            return item
+        text = f"{item.title} {item.snippet} {item.body}"
+        for match in _STATUS_PATTERN.finditer(text):
+            asserted_subject = [
+                token.lower()
+                for token in re.findall(r"[A-Za-z0-9]+", match.group("subject"))
+                if len(token) >= 3
+            ]
+            if asserted_subject == subject_tokens and match.group("status").lower() == opposite:
+                return item
     return None
+
+
+def _point_refetch_key(item: schema.SourceItem, claim: Claim) -> tuple[str, str]:
+    """Identify the source snapshot shared by claims in one verification pass."""
+    if claim.source == "polymarket":
+        key = item.metadata.get("event_id") or item.url
+    elif claim.source == "stocktwits":
+        key = item.metadata.get("symbol") or item.container or item.url
+    elif claim.source == "github":
+        key = _github_repo(item) or item.url
+    else:
+        key = item.item_id
+    return claim.source, str(key).strip().casefold()
 
 
 def _unsupported(
@@ -302,6 +320,8 @@ def verify_report(
             items.setdefault((item.source, item.item_id), item)
 
     verdicts: list[schema.FreshnessVerdict] = []
+    point_cache: dict[tuple[str, str], tuple[str, RefetchedDatum]] = {}
+    point_errors: dict[tuple[str, str], str] = {}
     for claim in extract_claims(report):
         if claim.datum_kind == "status_assertion":
             contradiction = _newer_status_contradiction(report, claim)
@@ -326,21 +346,10 @@ def verify_report(
                 )
             else:
                 verdicts.append(
-                    schema.FreshnessVerdict(
-                        claim_id=claim.claim_id,
-                        candidate_id=claim.candidate_id,
-                        claim=claim.text,
-                        source=claim.source,
-                        source_item_id=claim.source_item_id,
-                        verdict="current",
-                        checked_at=checked,
-                        source_url=claim.source_url,
-                        source_timestamp=claim.source_timestamp,
-                        evidence_url=claim.source_url,
-                        evidence_timestamp=claim.source_timestamp,
-                        original_value=claim.original_value,
-                        current_value=claim.original_value,
-                        detail="No newer contradictory item in the report window",
+                    _unsupported(
+                        claim,
+                        checked,
+                        "Status could not be positively re-derived from a current source",
                     )
                 )
             continue
@@ -366,8 +375,33 @@ def verify_report(
         if not allow_network:
             verdicts.append(_unsupported(claim, checked, "Network verification is disabled for this run"))
             continue
+        cache_key = _point_refetch_key(item, claim)
+        if cache_key in point_errors:
+            verdicts.append(_unsupported(claim, checked, point_errors[cache_key]))
+            continue
         try:
-            refreshed = _coerce_refetched(refetcher(item, claim.datum_key), claim.source_url)
+            cached = point_cache.get(cache_key)
+            if cached and cached[0] == claim.datum_key:
+                refreshed = cached[1]
+            elif cached and cached[1].values and claim.datum_key in cached[1].values:
+                refreshed = RefetchedDatum(
+                    value=cached[1].values[claim.datum_key],
+                    url=cached[1].url,
+                    timestamp=cached[1].timestamp,
+                    values=cached[1].values,
+                )
+            elif cached:
+                verdicts.append(
+                    _unsupported(
+                        claim,
+                        checked,
+                        "Re-fetched snapshot did not include this datum",
+                    )
+                )
+                continue
+            else:
+                refreshed = _coerce_refetched(refetcher(item, claim.datum_key), claim.source_url)
+                point_cache[cache_key] = (claim.datum_key, refreshed)
             matches = _values_match(claim, refreshed.value)
             verdicts.append(
                 schema.FreshnessVerdict(
@@ -388,7 +422,9 @@ def verify_report(
                 )
             )
         except Exception as exc:  # verifier failures degrade to a typed verdict
-            verdicts.append(_unsupported(claim, checked, f"Re-check failed: {exc}"))
+            detail = f"Re-check failed: {exc}"
+            point_errors[cache_key] = detail
+            verdicts.append(_unsupported(claim, checked, detail))
 
     report.freshness_verdicts = verdicts
     return verdicts

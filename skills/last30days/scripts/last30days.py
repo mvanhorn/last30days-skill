@@ -1102,6 +1102,8 @@ def _run_drill(
     )
     if _freshness_enabled(args, config):
         freshness.verify_report(merged, allow_network=not args.mock)
+    else:
+        merged.freshness_verdicts = []
     if _write_last_run(report.topic, merged):
         sys.stderr.write(f"[last30days] Updated drill cache in {cache_path}\n")
     else:
@@ -1962,6 +1964,12 @@ def _main(
         and env.read_secret_env("LAST30DAYS_API_KEY")
         and os.environ.get("LAST30DAYS_API_BASE")
     ):
+        if _freshness_enabled(args, config):
+            sys.stderr.write(
+                "[last30days] Freshness verification is not supported by the hosted backend; "
+                "run locally or omit --verify-freshness.\n"
+            )
+            return 2
         if args.emit == "json" and args.json_profile == "agent":
             sys.stderr.write(
                 "[last30days] --json-profile=agent requires the local Report; "
@@ -2023,6 +2031,17 @@ def _main(
                 f"[last30days] Reusing cached report data from {cache_path}\n"
             )
             sys.stderr.flush()
+            if _freshness_enabled(args, config):
+                _verify_report_set(
+                    cached_report,
+                    cached_entity_reports,
+                    allow_network=not args.mock,
+                )
+                _update_cached_freshness(
+                    cache_path,
+                    cached_report,
+                    cached_entity_reports,
+                )
             return _render_save_and_print(
                 args, cached_report, cached_entity_reports, synthesis_md, config
             )

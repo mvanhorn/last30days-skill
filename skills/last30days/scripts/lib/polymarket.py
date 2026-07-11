@@ -563,7 +563,12 @@ def _safe_float(val, default=0.0) -> float:
         return default
 
 
-def parse_polymarket_response(response: Dict[str, Any], topic: str = "") -> List[Dict[str, Any]]:
+def parse_polymarket_response(
+    response: Dict[str, Any],
+    topic: str = "",
+    *,
+    include_all_outcomes: bool = False,
+) -> List[Dict[str, Any]]:
     """Parse Gamma API response into normalized item dicts.
 
     Each event becomes one item showing its title and top markets.
@@ -744,8 +749,9 @@ def parse_polymarket_response(response: Dict[str, Any], topic: str = "") -> List
             if reordered:
                 outcome_prices = reordered + rest
 
-        # Top 3 outcomes for multi-outcome markets
-        top_outcomes = outcome_prices[:3]
+        # Normal display payloads stay compact. Verification requests the
+        # complete snapshot so topic-promoted outcomes remain re-checkable.
+        top_outcomes = outcome_prices if include_all_outcomes else outcome_prices[:3]
         remaining = len(outcome_prices) - 3
         if remaining < 0:
             remaining = 0
@@ -819,12 +825,31 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         event = payload
     if not isinstance(event, dict):
         raise KeyError("Polymarket event was not found")
-    parsed = parse_polymarket_response({"events": [event]})
+    parsed = parse_polymarket_response(
+        {"events": [event]},
+        include_all_outcomes=True,
+    )
     if not parsed:
         raise KeyError("Polymarket event is closed, unavailable, or malformed")
     refreshed = parsed[0]
+    values: dict[str, Any] = {}
+    outcome_pairs = refreshed.get("outcome_prices") or []
+    outcome_totals: dict[str, int] = {}
+    for name, _price in outcome_pairs:
+        normalized = str(name).casefold()
+        outcome_totals[normalized] = outcome_totals.get(normalized, 0) + 1
+    outcome_counts: dict[str, int] = {}
+    for name, price in outcome_pairs:
+        normalized = str(name).casefold()
+        occurrence = outcome_counts.get(normalized, 0)
+        outcome_counts[normalized] = occurrence + 1
+        key = f"{name}\x1f{occurrence}" if outcome_totals[normalized] > 1 else str(name)
+        values[key] = price
+    if refreshed.get("end_date") is not None:
+        values["end_date"] = refreshed["end_date"]
+
     if datum_key == "end_date":
-        value = refreshed.get("end_date")
+        value = values.get("end_date")
     else:
         if "\x1f" in datum_key:
             outcome_name, raw_occurrence = datum_key.rsplit("\x1f", 1)
@@ -841,6 +866,7 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         raise KeyError(f"Polymarket datum {datum_key!r} was not found")
     return {
         "value": value,
+        "values": values,
         "url": str(getattr(item, "url", "")),
         "timestamp": event.get("updatedAt"),
     }

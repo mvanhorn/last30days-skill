@@ -556,7 +556,7 @@ def refetch_datum(item: schema.SourceItem, datum_key: str) -> dict[str, Any]:
     if not repo:
         raise ValueError("GitHub item has no owner/repository reference")
     headers = {"Accept": "application/vnd.github+json"}
-    token = env.read_secret_env("GITHUB_TOKEN")
+    token = _resolve_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     data = http.request(

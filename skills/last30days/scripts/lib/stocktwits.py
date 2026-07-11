@@ -196,11 +196,30 @@ def search_stocktwits(
             time.sleep(0.8)  # be polite to the unauth quota
     except Exception as e:  # noqa: BLE001
         _log(f"stream fetch failed for {symbol}: {e}")
-        return {"messages": messages, "symbols": symbols, "error": str(e)}
+        messages = _filter_by_date(messages, from_date, to_date)
+        return {
+            "messages": messages,
+            "symbols": symbols,
+            "error": str(e),
+            "freshness_window": {
+                "depth": depth,
+                "from_date": from_date,
+                "to_date": to_date,
+            },
+        }
 
     messages = _filter_by_date(messages, from_date, to_date)
     _log(f"{symbol}: {len(messages)} messages (watchlist {watchlist})")
-    return {"messages": messages, "symbols": symbols, "watchlist": watchlist}
+    return {
+        "messages": messages,
+        "symbols": symbols,
+        "watchlist": watchlist,
+        "freshness_window": {
+            "depth": depth,
+            "from_date": from_date,
+            "to_date": to_date,
+        },
+    }
 
 
 def _filter_by_date(messages: list[dict], from_date: str | None, to_date: str | None) -> list[dict]:
@@ -255,6 +274,7 @@ def parse_stocktwits_response(response: dict[str, Any], query: str = "") -> list
                 "symbol": symbols[0] if symbols else None,
                 "sentiment_aggregate": agg,   # same dict on every item; cheap, lets synthesis cite it
                 "watchlist": response.get("watchlist"),
+                "freshness_window": response.get("freshness_window"),
             },
         })
     return items
@@ -280,7 +300,7 @@ def aggregate_sentiment(messages: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
-    """Re-fetch the current symbol-stream sentiment ratio without pagination."""
+    """Re-fetch the same paginated, date-filtered symbol-stream population."""
     from . import http
 
     if datum_key != "pct_bullish":
@@ -289,18 +309,45 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
     if not symbol:
         raise ValueError("StockTwits item has no symbol")
     url = _STREAM_URL.format(symbol=urllib.parse.quote(symbol))
-    data = http.request("GET", url, timeout=10, retries=2)
-    if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
-        raise KeyError("StockTwits symbol stream was not returned")
-    aggregate = aggregate_sentiment(data["messages"])
+    window = item.metadata.get("freshness_window") or {}
+    depth = str(window.get("depth") or "default")
+    target = _DEPTH.get(depth, _DEPTH["default"])
+    messages: list[dict[str, Any]] = []
+    cursor_max = None
+    while len(messages) < target:
+        request_kwargs: dict[str, Any] = {"timeout": 10, "retries": 2}
+        if cursor_max:
+            request_kwargs["params"] = {"max": cursor_max}
+        data = http.request("GET", url, **request_kwargs)
+        if not isinstance(data, dict) or not isinstance(data.get("messages"), list):
+            raise KeyError("StockTwits symbol stream was not returned")
+        batch = data["messages"]
+        if not batch:
+            break
+        messages.extend(batch)
+        cursor = data.get("cursor") or {}
+        if not cursor.get("more") or not cursor.get("max"):
+            break
+        cursor_max = cursor["max"]
+    messages = _filter_by_date(
+        messages,
+        window.get("from_date"),
+        window.get("to_date"),
+    )
+    aggregate = aggregate_sentiment(messages)
     value = aggregate.get("pct_bullish")
     if value is None:
         raise KeyError("StockTwits stream has no tagged sentiment")
     newest = max(
-        (str(message.get("created_at") or "") for message in data["messages"]),
+        (str(message.get("created_at") or "") for message in messages),
         default="",
     )
-    return {"value": value, "url": item.url, "timestamp": newest or None}
+    return {
+        "value": value,
+        "values": {"pct_bullish": value},
+        "url": item.url,
+        "timestamp": newest or None,
+    }
 
 
 # --------------------------------------------------------------------------- #

@@ -1,7 +1,7 @@
 import json
 
 import last30days as cli
-from lib import freshness, github, health, http, polymarket, render, schema, stocktwits
+from lib import freshness, github, health, http, planner, polymarket, render, schema, stocktwits
 
 
 def _report(*items: schema.SourceItem) -> schema.Report:
@@ -134,6 +134,7 @@ def test_verify_report_assigns_current_and_stale_for_each_point_source():
         refetchers={
             "polymarket": lambda _item, key: {
                 "value": 0.47 if key == "Yes" else "2026-11-03",
+                "values": {"Yes": 0.47, "end_date": "2026-11-03"},
                 "url": "https://polymarket.com/event/bill",
                 "timestamp": "2026-07-10T12:59:00Z",
             },
@@ -168,6 +169,7 @@ def test_duplicate_polymarket_labels_keep_distinct_refetch_identity():
         refetchers={
             "polymarket": lambda _item, key: {
                 "value": [0.86, 0.75][int(key.rsplit("\x1f", 1)[1])],
+                "values": {"Bitcoin\x1f0": 0.86, "Bitcoin\x1f1": 0.75},
                 "url": _item.url,
             }
         },
@@ -210,7 +212,7 @@ def test_source_refetch_helpers_use_shared_http_wrapper(monkeypatch):
     monkeypatch.setattr(
         polymarket,
         "parse_polymarket_response",
-        lambda _payload: [{"outcome_prices": [["Yes", 0.51]], "end_date": "2026-12-01"}],
+        lambda _payload, **_kwargs: [{"outcome_prices": [["Yes", 0.51]], "end_date": "2026-12-01"}],
     )
     assert polymarket.refetch_datum(market_item, "Yes")["value"] == 0.51
 
@@ -315,6 +317,220 @@ def test_newer_in_report_status_disagreement_is_contradicted():
     assert verdict.evidence_timestamp == contradiction.published_at
 
 
+def test_status_assertion_without_positive_rederivation_is_unsupported():
+    report = _report(_item("reddit", title="Widget API is open"))
+
+    verdict = freshness.verify_report(report)[0]
+
+    assert verdict.verdict == "unsupported"
+    assert "re-derived" in (verdict.detail or "")
+
+
+def test_status_contradiction_requires_subject_bound_to_opposite_status():
+    original = _item(
+        "reddit",
+        title="Widget API is open",
+        published_at="2026-07-08T10:00:00Z",
+    )
+    report = _report(original)
+    report.items_by_source["grounding"] = [
+        _item(
+            "grounding",
+            item_id="web-2",
+            title="Widget API remains open while legacy access is closed",
+            published_at="2026-07-09T10:00:00Z",
+        )
+    ]
+
+    verdict = freshness.verify_report(report)[0]
+
+    assert verdict.verdict == "unsupported"
+
+
+def test_verify_report_caches_one_point_refetch_per_source_key():
+    first = _item(
+        "stocktwits",
+        item_id="stock-1",
+        title="$ACME first post",
+        metadata={"symbol": "ACME", "sentiment_aggregate": {"pct_bullish": 60}},
+    )
+    second = _item(
+        "stocktwits",
+        item_id="stock-2",
+        title="$ACME second post",
+        metadata={"symbol": "ACME", "sentiment_aggregate": {"pct_bullish": 60}},
+    )
+    calls = []
+
+    verdicts = freshness.verify_report(
+        _report(first, second),
+        refetchers={
+            "stocktwits": lambda item, key: calls.append((item, key)) or {
+                "value": 60,
+                "url": item.url,
+            }
+        },
+    )
+
+    assert [verdict.verdict for verdict in verdicts] == ["current", "current"]
+    assert len(calls) == 1
+
+
+def test_stocktwits_refetch_reuses_retrieval_depth_and_date_window(monkeypatch):
+    item = _item(
+        "stocktwits",
+        title="$ACME",
+        metadata={
+            "symbol": "ACME",
+            "freshness_window": {
+                "depth": "deep",
+                "from_date": "2026-07-01",
+                "to_date": "2026-07-10",
+            },
+        },
+    )
+    calls = []
+
+    def fake_request(_method, _url, **kwargs):
+        calls.append(kwargs.get("params"))
+        if len(calls) == 1:
+            return {
+                "messages": [
+                    {"id": 3, "created_at": "2026-07-10T12:00:00Z", "entities": {"sentiment": {"basic": "Bullish"}}},
+                    {"id": 2, "created_at": "2026-06-30T12:00:00Z", "entities": {"sentiment": {"basic": "Bearish"}}},
+                ],
+                "cursor": {"more": True, "max": 2},
+            }
+        return {
+            "messages": [
+                {"id": 1, "created_at": "2026-07-09T12:00:00Z", "entities": {"sentiment": {"basic": "Bullish"}}},
+            ],
+            "cursor": {"more": False},
+        }
+
+    monkeypatch.setattr(http, "request", fake_request)
+
+    refreshed = stocktwits.refetch_datum(item, "pct_bullish")
+
+    assert refreshed["value"] == 100
+    assert calls == [None, {"max": 2}]
+
+
+def test_unverified_drill_clears_inherited_freshness_verdicts(tmp_path, monkeypatch):
+    cached = _report(_item("reddit", title="Widget API is open"))
+    freshness.verify_report(cached)
+    merged = _report(_item("reddit", title="Widget API is open"))
+    merged.freshness_verdicts = list(cached.freshness_verdicts)
+    drill_report = _report(_item("reddit", title="Widget API is closed"))
+    monkeypatch.setattr(cli, "_load_last_report_cache", lambda *_args, **_kwargs: (cached, None, tmp_path / "last-report.json"))
+    monkeypatch.setattr(planner, "resolve_drill_clusters", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(planner, "build_drill_plan", lambda *_args, **_kwargs: cached.query_plan)
+    monkeypatch.setattr(cli.pipeline, "diagnose", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(cli.pipeline, "run", lambda **_kwargs: drill_report)
+    monkeypatch.setattr(cli.pipeline, "merge_drill_report", lambda *_args, **_kwargs: merged)
+    monkeypatch.setattr(cli, "_show_runtime_ui", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(cli, "_write_last_run", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(cli, "_render_save_and_print", lambda *_args, **_kwargs: 0)
+    args = cli.build_parser().parse_args(["--drill", "cluster 1", "--mock"])
+
+    assert cli._run_drill(args, {}) == 0
+    assert merged.freshness_verdicts == []
+
+
+def test_polymarket_refetch_uses_complete_outcomes_and_one_event_snapshot(monkeypatch):
+    item = _item(
+        "polymarket",
+        title="Who will win?",
+        url="https://polymarket.com/event/winner",
+        metadata={
+            "event_id": "42",
+            "outcome_prices": [["Delta", 0.05]],
+            "end_date": "2026-12-01",
+        },
+    )
+    event = {
+        "id": "42",
+        "slug": "winner",
+        "title": "Who will win?",
+        "updatedAt": "2026-07-10T12:00:00Z",
+        "markets": [{
+            "active": True,
+            "closed": False,
+            "question": "Who will win?",
+            "liquidity": "100",
+            "outcomes": '["Alpha", "Beta", "Gamma", "Delta"]',
+            "outcomePrices": '["0.4", "0.3", "0.25", "0.05"]',
+            "endDate": "2026-12-01T00:00:00Z",
+        }],
+    }
+    calls = []
+    monkeypatch.setattr(
+        polymarket.http,
+        "request",
+        lambda *_args, **_kwargs: calls.append(1) or event,
+    )
+
+    verdicts = freshness.verify_report(_report(item))
+
+    assert [verdict.verdict for verdict in verdicts] == ["current", "current"]
+    assert len(calls) == 1
+
+
+def test_github_refetch_reuses_resolved_gh_cli_token(monkeypatch):
+    item = _item(
+        "github",
+        title="owner/private",
+        url="https://github.com/owner/private",
+        container="owner/private",
+    )
+    seen_headers = []
+    monkeypatch.setattr(github, "_resolve_token", lambda: "gh-cli-token")
+    monkeypatch.setattr(
+        github.http,
+        "request",
+        lambda *_args, **kwargs: seen_headers.append(kwargs["headers"]) or {
+            "stargazers_count": 7,
+            "html_url": item.url,
+        },
+    )
+
+    github.refetch_datum(item, "stars")
+
+    assert seen_headers == [{
+        "Accept": "application/vnd.github+json",
+        "Authorization": "Bearer gh-cli-token",
+    }]
+
+
+def test_early_return_paths_do_not_ignore_freshness_verification(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("LAST30DAYS_API_KEY", "dummy-hosted-key")
+    monkeypatch.setenv("LAST30DAYS_API_BASE", "https://api.example.test")
+    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    parser = cli.build_parser()
+    hosted_args = parser.parse_args(["topic", "--verify-freshness"])
+
+    assert cli._main(parser, hosted_args, []) == 2
+    assert "not supported by the hosted backend" in capsys.readouterr().err
+
+    monkeypatch.delenv("LAST30DAYS_API_KEY")
+    monkeypatch.delenv("LAST30DAYS_API_BASE")
+    monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
+    synthesis = tmp_path / "synthesis.md"
+    synthesis.write_text("# Synthesis", encoding="utf-8")
+    report = _report(_item("reddit", title="Widget API is open"))
+    calls = []
+    monkeypatch.setattr(cli.pipeline, "diagnose", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(cli, "_load_last_report_cache", lambda *_args, **_kwargs: (report, None, tmp_path / "last-report.json"))
+    monkeypatch.setattr(cli, "_verify_report_set", lambda *_args, **_kwargs: calls.append("verified"))
+    monkeypatch.setattr(cli, "_render_save_and_print", lambda *_args, **_kwargs: calls.append("rendered") or 0)
+    cached_args = parser.parse_args([
+        "topic", "--emit=html", f"--synthesis-file={synthesis}", "--verify-freshness",
+    ])
+
+    assert cli._main(parser, cached_args, []) == 0
+    assert calls == ["verified", "rendered"]
+
+
 def test_agent_export_includes_typed_claim_metadata():
     item = _item("reddit", title="Widget API is open")
     report = _report(item)
@@ -323,7 +539,7 @@ def test_agent_export_includes_typed_claim_metadata():
     exported = schema.to_agent_export(report)
 
     assert exported["schema_version"] == "1.1"
-    assert exported["freshness_verdicts"][0]["verdict"] == "current"
+    assert exported["freshness_verdicts"][0]["verdict"] == "unsupported"
     assert exported["freshness_verdicts"][0]["source_item_id"] == item.item_id
 
 
@@ -375,7 +591,7 @@ def test_post_hoc_path_loads_updates_and_rewrites_cache(tmp_path, monkeypatch, c
     assert rc == 0
     payload = json.loads((tmp_path / "last-report.json").read_text(encoding="utf-8"))
     cached_verdicts = payload["reports"][0]["report"]["freshness_verdicts"]
-    assert cached_verdicts[0]["verdict"] == "current"
+    assert cached_verdicts[0]["verdict"] == "unsupported"
     assert payload["timestamp"] == before["timestamp"]
     assert "Updated freshness verdicts" in capsys.readouterr().err
 
