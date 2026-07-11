@@ -259,6 +259,39 @@ def test_registers_do_not_shape_comparison_output():
     assert cli._audience_register_for_run(args, {}, None).name == "default"
 
 
+@pytest.mark.parametrize(
+    "topic",
+    [
+        "alpha/beta",
+        "alpha compared to beta",
+        "difference between alpha and beta",
+    ],
+)
+def test_registers_use_canonical_comparison_detection(topic):
+    args = cli.build_parser().parse_args([topic])
+
+    assert cli._audience_register_for_run(
+        args, {"LAST30DAYS_REGISTER": "board"}, None
+    ).name == "default"
+
+
+def test_registered_html_excludes_source_failure_diagnostics():
+    report = fixture_report()
+    report.source_status["x"] = schema.SourceOutcome(
+        source="x",
+        state=schema.RATE_LIMITED,
+        detail="HTTP 429 after retry budget",
+        fix_hint="doctor",
+    )
+    report.errors_by_source["x"] = "private source error diagnostic"
+
+    html = html_render.render_html(report, register="creator")
+
+    assert "Partial Coverage" not in html
+    assert "Source Errors" not in html
+    assert "private source error diagnostic" not in html
+
+
 def test_unknown_register_errors_cleanly():
     with pytest.raises(ValueError, match="unknown audience register"):
         registers.get_register("board")

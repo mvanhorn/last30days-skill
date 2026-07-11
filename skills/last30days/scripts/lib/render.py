@@ -301,6 +301,8 @@ def _render_registered_sections(
     audience: registers.AudienceRegister,
     fun_params: dict[str, float | int],
     cluster_limit: int,
+    *,
+    include_source_diagnostics: bool = True,
 ) -> list[str]:
     """Render one audience preset's ordered, budgeted evidence sections."""
 
@@ -338,6 +340,11 @@ def _render_registered_sections(
     }
     lines: list[str] = []
     for section_name in audience.section_order:
+        if not include_source_diagnostics and section_name in {
+            "source_outcomes",
+            "source_coverage",
+        }:
+            continue
         block = sections[section_name]
         if not block:
             continue
@@ -500,7 +507,13 @@ def render_for_html(
         fun_params = _FUN_LEVELS.get(fun_level, _FUN_LEVELS["medium"])
         lines.extend([
             "",
-            *_render_registered_sections(report, audience, fun_params, 8),
+            *_render_registered_sections(
+                report,
+                audience,
+                fun_params,
+                8,
+                include_source_diagnostics=False,
+            ),
         ])
     # Data quality warnings are NOT rendered into the HTML artifact. The HTML
     # is meant to be shared (Slack, email, Notion); recipients haven't asked

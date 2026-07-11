@@ -1216,9 +1216,11 @@ def _audience_register_for_run(
 ) -> registers.AudienceRegister:
     """Resolve CLI > config for single-topic standard brief renderers."""
 
+    from lib import planner
+
     topic = " ".join(getattr(args, "topic", [])).strip()
     comparison_topic_requested = bool(
-        len(re.split(r"\s+(?:vs\.?|versus)\s+", topic, flags=re.IGNORECASE)) > 1
+        len(planner._comparison_entities(topic)) >= 2
         or args.competitors is not None
         or args.competitors_list
         or args.competitors_plan
