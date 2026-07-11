@@ -822,6 +822,23 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         raise ValueError("Polymarket item has no event id or slug")
 
     requested_slug = slug_match.group(1) if slug_match else None
+    cached_item_id = str(getattr(item, "item_id", "") or "").strip()
+    # On the slug fallback, a slug can be re-used by a re-created event. When
+    # the cached item still carries the original Gamma event id (numeric; the
+    # synthetic PM<N> parse fallback carries no identity), the response id
+    # must match it too, or the verdict would come from another market.
+    expected_id = (
+        cached_item_id
+        if not event_id and re.fullmatch(r"\d+", cached_item_id)
+        else ""
+    )
+
+    def _matches_identity(entry: dict) -> bool:
+        if str(entry.get("slug") or "").strip() != requested_slug:
+            return False
+        if expected_id and str(entry.get("id") or "").strip() != expected_id:
+            return False
+        return True
 
     def _pick_event(events: list) -> Any:
         candidates = [entry for entry in events if isinstance(entry, dict)]
@@ -831,7 +848,7 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         # matched events, and verifying a claim against another market's
         # prices would fabricate current/stale verdicts.
         for entry in candidates:
-            if str(entry.get("slug") or "").strip() == requested_slug:
+            if _matches_identity(entry):
                 return entry
         return None
 
@@ -844,7 +861,13 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         if (
             requested_slug is not None
             and isinstance(event, dict)
-            and str(event.get("slug") or "").strip() not in ("", requested_slug)
+            and (
+                str(event.get("slug") or "").strip() not in ("", requested_slug)
+                or (
+                    expected_id
+                    and str(event.get("id") or "").strip() not in ("", expected_id)
+                )
+            )
         ):
             event = None
     if not isinstance(event, dict):

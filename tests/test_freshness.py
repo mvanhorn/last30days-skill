@@ -1080,3 +1080,44 @@ def test_other_candidates_item_level_claim_does_not_suppress_enriched_claim():
     assert [verdict.verdict for verdict in verdicts] == ["current", "current"]
     assert {verdict.candidate_id for verdict in verdicts} == {"candidate-1", "candidate-2"}
     assert calls == ["stars"]
+
+
+def test_slug_refetch_rejects_same_slug_different_event_id(monkeypatch):
+    from types import SimpleNamespace
+    import pytest
+    from lib import polymarket
+
+    recreated = {"id": "999", "slug": "fed-rate-cut-2026", "title": "Recreated",
+                 "markets": [{"id": "m1", "active": True, "closed": False,
+                              "question": "q", "volume": "10",
+                              "outcomePrices": '["0.5","0.5"]', "outcomes": '["Yes","No"]',
+                              "liquidity": "10"}]}
+    monkeypatch.setattr(polymarket.http, "request", lambda *a, **k: [recreated])
+    cached = SimpleNamespace(
+        metadata={}, item_id="123",
+        url="https://polymarket.com/event/fed-rate-cut-2026",
+    )
+    with pytest.raises(KeyError):
+        polymarket.refetch_datum(cached, "Yes")
+
+    original = dict(recreated)
+    original["id"] = "123"
+    monkeypatch.setattr(polymarket.http, "request", lambda *a, **k: [recreated, original])
+    assert polymarket.refetch_datum(cached, "Yes") is not None
+
+
+def test_slug_refetch_skips_id_check_for_synthetic_item_ids(monkeypatch):
+    from types import SimpleNamespace
+    from lib import polymarket
+
+    event = {"id": "999", "slug": "fed-rate-cut-2026", "title": "T",
+             "markets": [{"id": "m1", "active": True, "closed": False,
+                          "question": "q", "volume": "10",
+                          "outcomePrices": '["0.5","0.5"]', "outcomes": '["Yes","No"]',
+                          "liquidity": "10"}]}
+    monkeypatch.setattr(polymarket.http, "request", lambda *a, **k: [event])
+    cached = SimpleNamespace(
+        metadata={}, item_id="PM3",
+        url="https://polymarket.com/event/fed-rate-cut-2026",
+    )
+    assert polymarket.refetch_datum(cached, "Yes") is not None
