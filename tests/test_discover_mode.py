@@ -1,9 +1,13 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
+import last30days as cli
 from lib import pipeline, planner, reddit_listing, render, rerank, schema
 
 
@@ -183,6 +187,52 @@ def test_keyless_discovery_degrades_without_digg():
     assert all(topic.command.startswith('/last30days "') for topic in report.topics)
 
 
+def test_explicit_unavailable_discovery_source_does_not_widen_to_other_sources():
+    with mock.patch.object(pipeline, "available_sources", return_value=[]), \
+         mock.patch.object(pipeline, "_fetch_discovery_source") as fetch:
+        with pytest.raises(ValueError, match="No listing sources are available"):
+            pipeline.run_discover(
+                domain="AI agents",
+                config={},
+                requested_sources=["digg"],
+                as_of_date="2026-07-10",
+            )
+
+    fetch.assert_not_called()
+
+
+def test_discovery_reads_browser_credentials_and_does_not_schedule_pending_x():
+    parser = cli.build_parser()
+    args, extra = parser.parse_known_args(["--discover", "AI agents"])
+    assert cli._config_policy_for_args(args, "", extra).browser_cookies == "read"
+
+    no_cookies_args, extra = parser.parse_known_args(
+        ["--no-browser-cookies", "--discover", "AI agents"]
+    )
+    assert cli._config_policy_for_args(no_cookies_args, "", extra).browser_cookies == "off"
+
+    fetched_sources: list[str] = []
+
+    def fake_available_sources(config, requested_sources, *, x_pending=None, local_only=False):
+        assert x_pending is False
+        return ["reddit", "hackernews"] + (["x"] if x_pending is not False else [])
+
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config):
+        fetched_sources.append(source)
+        return pipeline._mock_discovery_items(source, plan.domain, to_date), None
+
+    with mock.patch.object(pipeline, "available_sources", side_effect=fake_available_sources), \
+         mock.patch.object(pipeline, "_fetch_discovery_source", side_effect=fake_fetch):
+        report = pipeline.run_discover(
+            domain="AI agents",
+            config={"FROM_BROWSER": "firefox", "_BROWSER_COOKIE_MODE": "plan_only"},
+            as_of_date="2026-07-10",
+        )
+
+    assert "x" not in fetched_sources
+    assert report.source_status["x"].state == "skipped-unconfigured"
+
+
 def test_authenticated_x_discovery_uses_available_backend():
     plan = planner.build_discovery_plan(
         "AI agents",
@@ -300,3 +350,41 @@ def test_discovery_cli_json_contract_and_mutual_exclusion():
     )
     assert drill_conflict.returncode == 2
     assert "mutually exclusive" in drill_conflict.stderr
+
+
+def test_discovery_filters_incompatible_default_sources_but_rejects_explicit_only():
+    default_result = subprocess.run(
+        [
+            sys.executable,
+            "skills/last30days/scripts/last30days.py",
+            "--discover",
+            "AI agents",
+            "--mock",
+            "--as-of",
+            "2026-07-10",
+            "--emit=json",
+        ],
+        cwd=REPO_ROOT,
+        env={**os.environ, "LAST30DAYS_DEFAULT_SEARCH": "reddit,x,youtube,hn"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert default_result.returncode == 0, default_result.stderr
+
+    explicit_result = subprocess.run(
+        [
+            sys.executable,
+            "skills/last30days/scripts/last30days.py",
+            "--discover",
+            "AI agents",
+            "--search=youtube",
+            "--mock",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert explicit_result.returncode == 2
+    assert "unsupported: youtube" in explicit_result.stderr

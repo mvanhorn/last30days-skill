@@ -478,7 +478,8 @@ def run_discover(
             f"(unsupported: {', '.join(unsupported)})"
         )
     available = list(DISCOVERY_SOURCES) if mock else [
-        source for source in available_sources(config, requested) if source in DISCOVERY_SOURCES
+        source for source in available_sources(config, requested, x_pending=False)
+        if source in DISCOVERY_SOURCES
     ]
     if requested:
         available = [source for source in available if source in requested]

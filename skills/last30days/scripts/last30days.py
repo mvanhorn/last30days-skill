@@ -1039,6 +1039,13 @@ def _run_discover(args: argparse.Namespace, config: dict[str, object]) -> int:
         sys.stderr.write("[last30days] Warning: --synthesis-file is not used by discovery mode.\n")
 
     requested_sources = resolve_requested_sources(args.search, config)
+    if requested_sources:
+        discovery_sources = [
+            source for source in requested_sources
+            if source in pipeline.DISCOVERY_SOURCES
+        ]
+        if args.search is None or discovery_sources:
+            requested_sources = discovery_sources or None
     subreddits = (
         [value.strip().removeprefix("r/") for value in args.subreddits.split(",") if value.strip()]
         if args.subreddits else None
@@ -1313,7 +1320,7 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
 def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: list[str]) -> env.ConfigLoadPolicy:
     if args.no_browser_cookies:
         browser_mode = "off"
-    elif args.diagnose or args.preflight or args.discover or topic.lower() == "doctor":
+    elif args.diagnose or args.preflight or topic.lower() == "doctor":
         # doctor is plan-only like --diagnose: it must never read cookies.
         browser_mode = "plan_only"
     elif topic.lower() == "setup":

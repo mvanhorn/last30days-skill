@@ -48,7 +48,7 @@ def build_discovery_plan(
     if not resolved_subreddits:
         resolved_subreddits = ["all"]
 
-    allowed = set(available_sources or DISCOVERY_SOURCE_ORDER)
+    allowed = set(DISCOVERY_SOURCE_ORDER if available_sources is None else available_sources)
     sources = [source for source in DISCOVERY_SOURCE_ORDER if source in allowed]
     if not sources:
         raise ValueError(f"No listing sources are available for {normalized_domain!r}")
