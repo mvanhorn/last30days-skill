@@ -420,7 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--lookback-days",
         dest="lookback_days",
         type=int,
-        default=30,
+        default=None,
         help="Number of days to look back for research (default: 30, watchlist uses 90)",
     )
     parser.add_argument(
@@ -787,6 +787,8 @@ def _load_last_report_cache(
         return None
     try:
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise TypeError("report cache payload must be a JSON object")
         if payload.get("schema") != REPORT_CACHE_VERSION:
             return None
         if not _is_report_cache_fresh(payload.get("timestamp"), ttl_seconds):
@@ -862,6 +864,13 @@ def _run_drill(
         )
         return 2
 
+    lookback_days = args.lookback_days
+    if lookback_days is None:
+        range_from = datetime.date.fromisoformat(report.range_from)
+        range_to = datetime.date.fromisoformat(report.range_to)
+        lookback_days = (range_to - range_from).days
+    as_of_date = args.as_of_date or report.range_to
+
     try:
         matched_clusters = planner.resolve_drill_clusters(report, args.drill)
         drill_plan = planner.build_drill_plan(
@@ -913,8 +922,8 @@ def _run_drill(
                 [value.strip().lstrip("@") for value in args.ig_creators.split(",") if value.strip()]
                 if args.ig_creators else None
             ),
-            lookback_days=args.lookback_days,
-            as_of_date=args.as_of_date,
+            lookback_days=lookback_days,
+            as_of_date=as_of_date,
             github_user=(args.github_user or resolved.get("github_user") or None),
             github_repos=(
                 [value.strip() for value in args.github_repo.split(",") if value.strip()]
@@ -1340,7 +1349,13 @@ def _main(
                 "combined with a new topic.\n"
             )
             return 2
+        if args.publish_html and args.emit != "html":
+            sys.stderr.write("[last30days] --publish-html requires --emit=html\n")
+            return 2
         return _run_drill(args, config)
+
+    if args.lookback_days is None:
+        args.lookback_days = 30
 
     # Remote API path: when BOTH LAST30DAYS_API_KEY and LAST30DAYS_API_BASE are
     # set (and --mock is not), the search runs through the configured remote API

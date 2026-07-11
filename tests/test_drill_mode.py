@@ -1,3 +1,4 @@
+import copy
 import io
 import json
 from contextlib import redirect_stderr, redirect_stdout
@@ -200,6 +201,26 @@ def test_merge_dedupes_new_results_preserves_other_clusters_and_renders_context(
     assert "### Deeper" in output
 
 
+def test_merge_dedupes_drill_candidates_against_untouched_clusters():
+    base = _report()
+    drill_report = _report(drill=True)
+    rediscovered = copy.deepcopy(base.ranked_candidates[2])
+    drill_report.ranked_candidates.append(rediscovered)
+    drill_report.clusters[0].candidate_ids.append(rediscovered.candidate_id)
+
+    merged = pipeline.merge_drill_report(
+        base,
+        drill_report,
+        [base.clusters[0]],
+        target="cluster 1",
+    )
+
+    candidate_ids = [candidate.candidate_id for candidate in merged.ranked_candidates]
+    assert candidate_ids.count(rediscovered.candidate_id) == 1
+    assert rediscovered.candidate_id not in merged.clusters[0].candidate_ids
+    assert rediscovered.candidate_id in merged.clusters[1].candidate_ids
+
+
 def test_expired_cache_exits_cleanly_with_research_guidance(tmp_path: Path):
     config_dir = tmp_path / "config"
     with mock.patch.object(cli.env, "CONFIG_DIR", config_dir):
@@ -219,6 +240,55 @@ def test_expired_cache_exits_cleanly_with_research_guidance(tmp_path: Path):
 
     assert rc == 2
     assert "run a research pass first" in stderr.getvalue()
+
+
+def test_non_object_cache_is_unavailable_with_warning(tmp_path: Path):
+    config_dir = tmp_path / "config"
+    config_dir.mkdir()
+    (config_dir / "last-report.json").write_text("[]", encoding="utf-8")
+
+    with mock.patch.object(cli.env, "CONFIG_DIR", config_dir):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            cached = cli._load_last_report_cache(None)
+
+    assert cached is None
+    assert "Could not read report cache" in stderr.getvalue()
+
+
+def test_drill_publish_html_requires_html_emit_before_dispatch():
+    parser = cli.build_parser()
+    args = parser.parse_args(["--drill", "cluster 1", "--publish-html"])
+
+    with mock.patch.object(cli.env, "get_config", return_value={}), \
+         mock.patch.object(cli, "_run_drill") as run_drill:
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            rc = cli._main(parser, args, [])
+
+    assert rc == 2
+    assert "--publish-html requires --emit=html" in stderr.getvalue()
+    run_drill.assert_not_called()
+
+
+def test_drill_inherits_cached_historical_window(tmp_path: Path):
+    config_dir = tmp_path / "config"
+    cached_report = _report()
+    cached_report.range_from = "2026-05-01"
+    cached_report.range_to = "2026-05-08"
+    with mock.patch.object(cli.env, "CONFIG_DIR", config_dir):
+        cli._write_last_run("OpenClaw", cached_report)
+
+    args = cli.build_parser().parse_args(["--drill", "cluster 1", "--mock"])
+    with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
+         mock.patch.object(cli.pipeline, "diagnose", return_value={}), \
+         mock.patch.object(cli.pipeline, "run", return_value=_report(drill=True)) as run_mock, \
+         mock.patch.object(cli, "_show_runtime_ui"), \
+         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli._run_drill(args, {}) == 0
+
+    assert run_mock.call_args.kwargs["lookback_days"] == 7
+    assert run_mock.call_args.kwargs["as_of_date"] == "2026-05-08"
 
 
 def test_cli_drill_runs_deep_updates_cache_and_can_chain(tmp_path: Path):

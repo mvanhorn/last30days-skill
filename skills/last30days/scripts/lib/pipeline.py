@@ -796,6 +796,8 @@ def _candidate_is_duplicate(
     candidate: schema.Candidate,
     kept: list[schema.Candidate],
 ) -> bool:
+    if any(existing.candidate_id == candidate.candidate_id for existing in kept):
+        return True
     if candidate.url and any(existing.url == candidate.url for existing in kept):
         return True
     candidate_text = " ".join((candidate.title, candidate.snippet)).strip()
@@ -826,6 +828,13 @@ def merge_drill_report(
     original_candidates = {
         candidate.candidate_id: candidate for candidate in merged.ranked_candidates
     }
+    unrelated_candidates = [
+        candidate for candidate in merged.ranked_candidates
+        if candidate.candidate_id not in selected_candidate_ids
+    ]
+    unrelated_candidate_ids = {
+        candidate.candidate_id for candidate in unrelated_candidates
+    }
 
     original_summary = ""
     for cluster in matched_clusters:
@@ -847,6 +856,8 @@ def merge_drill_report(
             if candidate.candidate_id in selected_candidate_ids
         ],
     ]:
+        if candidate.candidate_id in unrelated_candidate_ids:
+            continue
         if not _candidate_is_duplicate(candidate, focused_candidates):
             focused_candidates.append(candidate)
 
@@ -881,10 +892,6 @@ def merge_drill_report(
     remaining_clusters.insert(first_selected_index, replacement_cluster)
     merged.clusters = remaining_clusters
 
-    unrelated_candidates = [
-        candidate for candidate in merged.ranked_candidates
-        if candidate.candidate_id not in selected_candidate_ids
-    ]
     merged.ranked_candidates = focused_candidates + unrelated_candidates
 
     all_sources = set(merged.items_by_source) | set(drill_report.items_by_source)
