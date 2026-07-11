@@ -1552,6 +1552,11 @@ def _run_library_search(
     if args.emit != "compact":
         sys.stderr.write("[last30days] library search currently supports text output only.\n")
         return 2
+    if args.output:
+        sys.stderr.write(
+            "[last30days] library search prints to stdout; --output is not supported.\n"
+        )
+        return 2
 
     memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
     try:

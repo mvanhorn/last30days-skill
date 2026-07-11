@@ -221,6 +221,8 @@ def render_library_search(
     lines = [
         f"# Library search: {query}",
         "",
+        _AI_SAFETY_NOTE,
+        "",
         f"Found {len(matches)} match(es) across {len(groups)} topic run(s).",
         "",
     ]

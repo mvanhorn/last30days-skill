@@ -219,11 +219,19 @@ def _sync_library(
             )
         }
         current_ids: set[str] = set()
+        # If the FTS table was lost or recreated empty while library_documents
+        # survived, the fingerprint check alone would mark everything unchanged
+        # and searches would silently return nothing. Verify row counts agree
+        # before trusting fingerprints.
+        fts_rows = conn.execute("SELECT count(*) FROM library_fts").fetchone()[0]
+        fts_trustworthy = fts_rows >= len(existing) if existing else True
         for entry in entries:
             current_ids.add(entry.entry_id)
             stat = entry.source_path.stat()
             fingerprint = _fingerprint(_indexable_content(entry.content))
-            if existing.get(entry.entry_id) == (stat.st_mtime_ns, stat.st_size, fingerprint):
+            if fts_trustworthy and existing.get(entry.entry_id) == (
+                stat.st_mtime_ns, stat.st_size, fingerprint
+            ):
                 unchanged += 1
                 continue
             _upsert_entry(conn, entry, fingerprint=fingerprint)
