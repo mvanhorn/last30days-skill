@@ -223,6 +223,23 @@ def baseline_failures(
     ]
 
 
+def per_fixture_failures(results: list["EvalResult"]) -> list[str]:
+    """Enforce per-fixture floors so one broken archetype cannot hide in the
+    cross-fixture average (a total clustering failure on breaking-event scores
+    0.0 but averages to 0.857 across seven fixtures)."""
+    raw = json.loads(BASELINE_PATH.read_text())
+    floors = raw.get("per_fixture_floors") or {}
+    failures: list[str] = []
+    for result in results:
+        for metric, floor in floors.items():
+            value = result.scores.get(metric)
+            if value is not None and value + 1e-12 < float(floor):
+                failures.append(
+                    f"{result.fixture.name}/{metric}: {value:.3f} < {float(floor):.3f}"
+                )
+    return failures
+
+
 def format_score_table(results: list[EvalResult]) -> str:
     aggregate = aggregate_scores(results)
     headers = ["fixture", *METRIC_NAMES]

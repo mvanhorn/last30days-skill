@@ -27,7 +27,49 @@ def test_research_quality_scores_meet_committed_baselines():
     print(harness.format_score_table(results))
 
     failures = harness.baseline_failures(harness.aggregate_scores(results))
+    failures += harness.per_fixture_failures(results)
     assert not failures, "\n".join(failures)
+
+
+def test_per_fixture_floor_catches_single_broken_archetype():
+    results = harness.evaluate_all()
+    # Simulate a total clustering failure on one clustered fixture: the
+    # average stays above the aggregate floor but the per-fixture floor fires.
+    broken = None
+    for result in results:
+        if result.fixture.manifest.get("expects_clusters"):
+            result.scores["cluster_coherence"] = 0.0
+            broken = result.fixture.name
+            break
+    assert broken is not None
+    aggregate_ok = not harness.baseline_failures(harness.aggregate_scores(results))
+    per_fixture = harness.per_fixture_failures(results)
+    assert any(f.startswith(f"{broken}/cluster_coherence") for f in per_fixture)
+    # Document why the per-fixture layer exists: with 7 fixtures the aggregate
+    # can absorb one zero.
+    if aggregate_ok:
+        assert per_fixture
+
+
+def test_entity_overlap_predicate_pinned():
+    # The coherence metric shares extract_text_entities/entity_overlap with
+    # production clustering. Pin the predicate on fixed inputs so a
+    # too-permissive drift is caught independently of the (circular) metric.
+    from lib import entity_extract
+
+    same = entity_extract.entity_overlap(
+        entity_extract.extract_text_entities("OpenAI ships GPT-6 to enterprise customers"),
+        entity_extract.extract_text_entities("Enterprise customers get GPT-6 from OpenAI"),
+    )
+    unrelated = entity_extract.entity_overlap(
+        entity_extract.extract_text_entities("OpenAI ships GPT-6 to enterprise customers"),
+        entity_extract.extract_text_entities("Best sourdough starter recipes for beginners"),
+    )
+    assert same >= harness.ENTITY_OVERLAP_FLOOR, f"related pair fell below floor: {same}"
+    assert unrelated < harness.ENTITY_OVERLAP_FLOOR, (
+        f"unrelated pair passed the overlap floor ({unrelated}); the shared "
+        "predicate got too permissive and the coherence metric is now blind"
+    )
 
 
 def test_replay_uses_manifest_source_availability(tmp_path):

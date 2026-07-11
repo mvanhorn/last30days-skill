@@ -180,6 +180,14 @@ def recording_requests(path: str | Path):
             "path": target,
             "exchanges": [],
             "source_exchanges": [],
+            # Secret VALUES from the environment, so module-seam recordings
+            # scrub tokens echoed inside normal string fields (adapter error
+            # messages, parsed item text), not just secret-named keys.
+            "redactions": frozenset(
+                value
+                for key, value in os.environ.items()
+                if _is_secret_key(key) and isinstance(value, str) and len(value) >= 4
+            ),
         }
     completed = False
     try:
@@ -339,10 +347,11 @@ def fixture_source_record(request_data: dict[str, Any], value: Any) -> None:
         state = _fixture_state
         if state is None or state["mode"] != "record":
             return
+        session_redactions = state.get("redactions") or frozenset()
         state["source_exchanges"].append(
             {
-                "request": _scrub_fixture_value(request_data),
-                "value": _scrub_fixture_value(value),
+                "request": _scrub_fixture_value(request_data, redactions=session_redactions),
+                "value": _scrub_fixture_value(value, redactions=session_redactions),
             }
         )
 
@@ -353,9 +362,10 @@ def fixture_source_record_error(request_data: dict[str, Any], error: Exception) 
         state = _fixture_state
         if state is None or state["mode"] != "record":
             return
+        session_redactions = state.get("redactions") or frozenset()
         state["source_exchanges"].append(
             {
-                "request": _scrub_fixture_value(request_data),
+                "request": _scrub_fixture_value(request_data, redactions=session_redactions),
                 "type": "error",
                 "error": _scrub_fixture_value(
                     {
@@ -363,7 +373,7 @@ def fixture_source_record_error(request_data: dict[str, Any], error: Exception) 
                         "message": str(error),
                         "outcome_state": getattr(error, "outcome_state", None),
                     }
-                ),
+                , redactions=session_redactions),
             }
         )
 

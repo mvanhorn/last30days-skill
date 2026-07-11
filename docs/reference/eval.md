@@ -68,6 +68,11 @@ The replay is fail-closed: an unrecorded request or an unused recorded exchange 
 - Post-ranking enrichment (YouTube transcripts, Digg posts) is recorded and replayed by merging recorded `metadata` onto freshly computed items by item_id, so normalization/scoring/dedupe regressions stay visible to the eval rather than being overwritten by fixture state.
 - Post-rerank GitHub star enrichment records its repo->stars map and replays via `github.apply_star_map`, keeping runs offline even when `GITHUB_TOKEN` is set in CI. GitHub project-mode (`--github-repo`) and person-mode (`--github-user`) runs are not yet fixture-recordable; the network guard fails loudly if a fixture attempts them.
 
+## Known seams
+
+- Module-backed sources (yt-dlp, digg-pp-cli and other CLI adapters) record post-parse items at the module boundary, so replay does not re-exercise their parsing/normalization code the way HTTP-backed sources do (those replay raw responses through the real pipeline). A normalization regression in a module adapter is covered by that adapter's unit tests, not the eval. Recording raw CLI stdout is a possible future upgrade.
+- Cluster coherence shares `entity_extract` with production clustering. The pinned-predicate test (`test_entity_overlap_predicate_pinned`) guards against the shared predicate drifting permissive, and per-fixture floors in baseline.json catch a single archetype collapsing even when the cross-fixture average stays green.
+
 ## Move a baseline
 
 Baseline edits are explicit quality-policy changes, not snapshot refreshes. Move a floor only when an intentional product change makes the old threshold invalid or when a new fixture legitimately changes the measured distribution.
