@@ -459,3 +459,43 @@ def test_per_suffix_reports_stay_distinct(tmp_path):
     assert len(same_topic) == 2
     assert len({e.entry_id for e in same_topic}) == 2
     assert len({e.output_name for e in same_topic}) == 2
+
+
+def test_scoped_library_ignores_global_briefing_archive(tmp_path, monkeypatch):
+    import io
+    from contextlib import redirect_stdout, redirect_stderr
+    from unittest import mock
+
+    _write_report(tmp_path)
+    global_briefs = tmp_path / "global-briefings"
+    global_briefs.mkdir()
+    (global_briefs / "2026-07-11.json").write_text(
+        '{"status":"ok","date":"2026-07-11","total_new":3,"total_topics":1,'
+        '"top_finding":{"title":"OTHER CLIENT SECRET"},"topics":[{"name":"X","new_count":1}]}',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", global_briefs)
+    with mock.patch.object(cli.sys, "argv",
+        ["last30days.py", "library", "feed", "--save-dir", str(tmp_path)]), \
+         mock.patch.object(cli.env, "get_config", lambda **_k: {}), \
+         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+    blob = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert "OTHER CLIENT SECRET" not in blob
+
+
+def test_hand_written_index_is_backed_up_not_clobbered(tmp_path, monkeypatch):
+    import io
+    from contextlib import redirect_stdout, redirect_stderr
+    from unittest import mock
+
+    _write_report(tmp_path)
+    (tmp_path / "index.html").write_text("my hand-written landing page", encoding="utf-8")
+    monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", tmp_path / "none")
+    with mock.patch.object(cli.sys, "argv",
+        ["last30days.py", "library", "feed", "--save-dir", str(tmp_path)]), \
+         mock.patch.object(cli.env, "get_config", lambda **_k: {}), \
+         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+    assert (tmp_path / "index.html.bak").read_text(encoding="utf-8") == "my hand-written landing page"
+    assert "Generated locally by <strong>last30days</strong>" in (tmp_path / "index.html").read_text(encoding="utf-8")
