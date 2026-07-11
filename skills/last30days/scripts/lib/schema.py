@@ -557,7 +557,7 @@ def candidate_primary_item(candidate: Candidate) -> SourceItem | None:
     return candidate.source_items[0]
 
 
-AGENT_EXPORT_SCHEMA_VERSION = "1.1"
+AGENT_EXPORT_SCHEMA_VERSION = "1.2"
 DISCOVERY_EXPORT_SCHEMA_VERSION = "1.0"
 
 
@@ -668,6 +668,7 @@ def to_agent_export(report: Report) -> dict[str, Any]:
         results.append(
             _drop_none(
                 {
+                    "candidate_id": candidate.candidate_id,
                     "title": candidate.title,
                     "source": candidate.source,
                     "url": candidate.url,

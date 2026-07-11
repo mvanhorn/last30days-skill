@@ -647,7 +647,7 @@ def test_agent_export_includes_typed_claim_metadata():
 
     exported = schema.to_agent_export(report)
 
-    assert exported["schema_version"] == "1.1"
+    assert exported["schema_version"] == "1.2"
     assert exported["freshness_verdicts"][0]["verdict"] == "unsupported"
     assert exported["freshness_verdicts"][0]["source_item_id"] == item.item_id
 
@@ -682,7 +682,7 @@ def test_render_surfaces_inline_flag_and_freshness_footer_table():
 
     assert "[freshness:stale]" in rendered
     assert "## Freshness Verification" in rendered
-    assert "(was 1000, now 1010)" in rendered
+    assert "(moved: 1,000 -> 1,010)" in rendered
     assert "## Freshness Verification" in render.render_for_html(report)
     assert "## Freshness Verification" in render.render_brief(report)
 
@@ -1015,3 +1015,68 @@ def test_refetch_datum_accepts_repo_slug_datum_key(monkeypatch):
 
     assert seen_urls == ["https://api.github.com/repos/a/b"]
     assert refreshed["value"] == 42
+
+
+def test_unsupported_verdicts_carry_no_fabricated_evidence():
+    report = _report(_item("reddit", title="Widget API is open"))
+
+    verdicts = freshness.verify_report(report, checked_at="2026-07-11T13:00:00Z")
+
+    assert [verdict.verdict for verdict in verdicts] == ["unsupported"]
+    assert verdicts[0].evidence_url == ""
+    assert verdicts[0].evidence_timestamp is None
+    assert verdicts[0].source_url  # provenance stays on the source fields
+
+
+def test_rendered_table_shows_unsupported_reason_from_detail():
+    report = _report(_item("reddit", title="Widget API is open"))
+    freshness.verify_report(report, checked_at="2026-07-11T13:00:00Z")
+
+    rendered = render.render_compact(report)
+
+    assert "(Status could not be positively re-derived from a current source)" in rendered
+
+
+def test_agent_export_results_expose_candidate_id_join_key():
+    report = _candidate_star_report(repos={"a/b": 100})
+    freshness.verify_report(
+        report,
+        checked_at="2026-07-11T13:00:00Z",
+        refetchers={"github": lambda _item, key: {"value": 100, "url": f"https://github.com/{key}"}},
+    )
+
+    exported = schema.to_agent_export(report)
+
+    result_ids = {result["candidate_id"] for result in exported["results"]}
+    verdict_ids = {verdict["candidate_id"] for verdict in exported["freshness_verdicts"]}
+    assert verdict_ids and verdict_ids <= result_ids
+
+
+def test_other_candidates_item_level_claim_does_not_suppress_enriched_claim():
+    gh_item = _item(
+        "github",
+        title="a/b (100 stars)",
+        url="https://github.com/a/b",
+        container="a/b",
+        engagement={"stars": 100},
+    )
+    reddit_item = _item("reddit", title="Thread about a/b", item_id="reddit-a")
+    report = _report(gh_item, reddit_item)
+    report.ranked_candidates[1].metadata["github_stars"] = {"a/b": 100}
+
+    calls: list[str] = []
+
+    def fake_refetch(_item, key):
+        calls.append(key)
+        return {"value": 100, "url": "https://github.com/a/b"}
+
+    verdicts = freshness.verify_report(
+        report,
+        checked_at="2026-07-11T13:00:00Z",
+        refetchers={"github": fake_refetch},
+    )
+
+    # Both candidates get their own verdict, sharing one repo snapshot.
+    assert [verdict.verdict for verdict in verdicts] == ["current", "current"]
+    assert {verdict.candidate_id for verdict in verdicts} == {"candidate-1", "candidate-2"}
+    assert calls == ["stars"]

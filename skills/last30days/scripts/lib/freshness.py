@@ -148,7 +148,7 @@ def extract_claims(report: schema.Report) -> list[Claim]:
             stars = item.engagement.get("stars")
             repo = _github_repo(item)
             if repo and isinstance(stars, (int, float)) and not isinstance(stars, bool):
-                item_level_repos.add(repo.casefold())
+                item_level_repos.add((grounded.candidate_id, repo.casefold()))
                 claims.append(
                     _claim(
                         grounded,
@@ -196,14 +196,16 @@ def extract_claims(report: schema.Report) -> list[Claim]:
 
 def _candidate_star_claims(
     report: schema.Report,
-    item_level_repos: set[str],
+    item_level_repos: set[tuple[str, str]],
 ) -> list[Claim]:
     """Emit star claims from candidate enrichment metadata.
 
     Star enrichment attaches ``metadata["github_stars"]`` (repo -> stars)
     after reranking, so these facts never appear on item-level engagement -
     typically the candidate's primary item is a non-GitHub source. Each repo
-    becomes one repo-keyed claim unless an item-level claim already covers it.
+    becomes one repo-keyed claim unless the same candidate already claimed it
+    at item level; a different candidate's item-level claim never suppresses
+    this candidate's own verdict (and its inline freshness flag).
     """
     claims: list[Claim] = []
     candidates_by_id = {
@@ -221,7 +223,7 @@ def _candidate_star_claims(
                 continue
             if isinstance(stars, bool) or not isinstance(stars, (int, float)):
                 continue
-            if repo.casefold() in item_level_repos:
+            if (grounded.candidate_id, repo.casefold()) in item_level_repos:
                 continue
             item = grounded.item
             claims.append(
@@ -405,8 +407,10 @@ def _unsupported(
         checked_at=checked_at,
         source_url=claim.source_url,
         source_timestamp=claim.source_timestamp,
-        evidence_url=claim.source_url,
-        evidence_timestamp=checked_at,
+        # No fresh evidence was obtained; the original source stays on
+        # source_url/source_timestamp and the evidence fields stay empty.
+        evidence_url="",
+        evidence_timestamp=None,
         original_value=claim.original_value,
         detail=detail,
     )
@@ -488,7 +492,9 @@ def verify_report(
                 continue
             try:
                 cached = point_cache.get(cache_key)
-                if cached and cached[0] == claim.datum_key:
+                if cached:
+                    # Any snapshot for this repo is the star count, whether an
+                    # item-level claim ("stars") or a repo-keyed one fetched it.
                     refreshed = cached[1]
                 else:
                     refreshed = _coerce_refetched(

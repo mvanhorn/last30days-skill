@@ -308,10 +308,10 @@ def _render_freshness_verdicts(report: schema.Report) -> list[str]:
     ]
     for verdict in report.freshness_verdicts:
         claim = verdict.claim.replace("|", "\\|")
-        if verdict.verdict == "stale":
-            claim += (
-                f" (was {verdict.original_value}, now {verdict.current_value})"
-            )
+        if verdict.detail:
+            # The verifier's detail carries the formatted movement for stale
+            # rows and the reason a claim could not be re-checked otherwise.
+            claim += f" ({verdict.detail.replace('|', chr(92) + '|')})"
         evidence_label = verdict.evidence_timestamp or verdict.source_timestamp or "source"
         evidence = (
             f"[{evidence_label}]({verdict.evidence_url})"

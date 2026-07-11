@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.1",
+  "schema_version": "1.2",
   "query": "AI coding agents",
   "generated_at": "2026-07-10T00:00:00Z",
   "window_days": 30,
@@ -41,6 +41,7 @@
   ],
   "results": [
     {
+      "candidate_id": "candidate-reddit",
       "title": "Agents move into daily coding workflows",
       "source": "reddit",
       "url": "https://www.reddit.com/r/programming/comments/agent-workflows",
@@ -54,6 +55,7 @@
       "cluster": 0
     },
     {
+      "candidate_id": "candidate-x",
       "title": "Teams compare coding-agent review loops",
       "source": "x",
       "url": "https://x.com/example/status/123",
@@ -67,6 +69,7 @@
       "cluster": 1
     },
     {
+      "candidate_id": "candidate-digg",
       "title": "Agents climb the Digg AI leaderboard",
       "source": "digg",
       "url": "https://di.gg/ai/agent-leaderboard",
