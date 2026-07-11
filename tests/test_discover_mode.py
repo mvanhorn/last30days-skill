@@ -77,6 +77,30 @@ def test_discovery_plan_keeps_keyless_reddit_for_unknown_domains():
     assert plan.sources == ["reddit", "hackernews"]
 
 
+def test_uncategorized_discovery_uses_parseable_r_all_listing_paths():
+    card = (
+        '<shreddit-post permalink="/r/gardening/comments/abc123/urban_garden/" '
+        'post-title="Urban gardening is taking off" score="42" comment-count="7" '
+        'author="gardener" subreddit-name="gardening" '
+        'created-timestamp="2026-07-09T12:00:00+00:00">'
+    )
+    requested_urls: list[str] = []
+
+    def fake_get(url, **_kwargs):
+        requested_urls.append(url)
+        return card
+
+    with mock.patch.object(reddit_listing.http, "reddit_keyless_get_text", side_effect=fake_get):
+        result = reddit_listing.fetch_discovery_listings(
+            ["all"], query="urban gardening",
+        )
+
+    assert len(result["items"]) == 1
+    assert any("/r/all/rising/" in url for url in requested_urls)
+    assert any("/r/all/top/?t=week" in url for url in requested_urls)
+    assert all("name=all" not in url for url in requested_urls)
+
+
 def test_velocity_scoring_favors_a_recent_spike_over_static_bigness():
     recent = _item(
         "recent",
@@ -105,6 +129,44 @@ def test_domain_filter_ignores_generic_ai_only_matches():
     assert not pipeline._matches_discovery_domain(
         "AI agents", "Global dialogue on AI governance"
     )
+
+
+@pytest.mark.parametrize(
+    ("domain", "listing_title"),
+    [
+        ("城市园艺", "城市园艺技巧与社区花园"),
+        ("גינון עירוני", "מדריך חדש לגינון עירוני"),
+    ],
+)
+def test_domain_filter_tokenizes_non_latin_domains(domain, listing_title):
+    assert pipeline._matches_discovery_domain(domain, listing_title)
+
+
+def test_x_velocity_excludes_views_and_bookmarks():
+    xquik_item = _item(
+        "xquik",
+        "x",
+        "X backend reach",
+        engagement={
+            "likes": 10,
+            "reposts": 3,
+            "replies": 2,
+            "quotes": 1,
+            "views": 100_000,
+            "bookmarks": 5_000,
+        },
+    )
+    standard_item = _item(
+        "standard",
+        "x",
+        "X backend interactions",
+        engagement={"likes": 10, "reposts": 3, "replies": 2, "quotes": 1},
+    )
+
+    assert rerank.discovery_engagement_total(xquik_item) == 16
+    assert rerank.engagement_velocity_score(
+        xquik_item, as_of_date="2026-07-10"
+    ) == rerank.engagement_velocity_score(standard_item, as_of_date="2026-07-10")
 
 
 def test_discovery_topic_name_uses_entities_shared_across_sources():
@@ -185,6 +247,29 @@ def test_keyless_discovery_degrades_without_digg():
     assert report.source_status["digg"].state == "skipped-unconfigured"
     assert report.source_status["x"].state == "skipped-unconfigured"
     assert all(topic.command.startswith('/last30days "') for topic in report.topics)
+
+
+def test_discovery_drops_zero_velocity_clusters():
+    raw_item = {
+        "id": "zero-engagement",
+        "text": "AI agent launch with no interactions",
+        "url": "https://x.com/example/status/1",
+        "author_handle": "example",
+        "date": "2026-07-09",
+        "engagement": {"likes": 0, "reposts": 0, "replies": 0, "quotes": 0},
+        "relevance": 0.9,
+    }
+
+    with mock.patch.object(pipeline, "available_sources", return_value=["x"]), \
+         mock.patch.object(pipeline, "_fetch_discovery_source", return_value=([raw_item], None)):
+        report = pipeline.run_discover(
+            domain="AI agents",
+            config={},
+            as_of_date="2026-07-10",
+        )
+
+    assert report.topics == []
+    assert "Fewer than five topic clusters survived this domain sweep." in report.warnings
 
 
 def test_explicit_unavailable_discovery_source_does_not_widen_to_other_sources():
@@ -300,8 +385,6 @@ def test_discovery_cli_json_contract_and_mutual_exclusion():
             "--discover",
             "AI agents",
             "--mock",
-            "--as-of",
-            "2026-07-10",
             "--emit=json",
         ],
         cwd=REPO_ROOT,
@@ -352,6 +435,28 @@ def test_discovery_cli_json_contract_and_mutual_exclusion():
     assert "mutually exclusive" in drill_conflict.stderr
 
 
+def test_discovery_cli_rejects_historical_as_of():
+    result = subprocess.run(
+        [
+            sys.executable,
+            "skills/last30days/scripts/last30days.py",
+            "--discover",
+            "AI agents",
+            "--as-of",
+            "2026-06-01",
+            "--mock",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 2
+    assert "--as-of cannot be used with --discover" in result.stderr
+    assert "current live listings" in result.stderr
+
+
 def test_discovery_filters_incompatible_default_sources_but_rejects_explicit_only():
     default_result = subprocess.run(
         [
@@ -360,8 +465,6 @@ def test_discovery_filters_incompatible_default_sources_but_rejects_explicit_onl
             "--discover",
             "AI agents",
             "--mock",
-            "--as-of",
-            "2026-07-10",
             "--emit=json",
         ],
         cwd=REPO_ROOT,

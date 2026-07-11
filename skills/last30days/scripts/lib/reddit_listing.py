@@ -120,6 +120,11 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
 
 def _listing_url(subreddit: str, sort: str, timeframe: str = TIMEFRAME) -> str:
     sub = subreddit.removeprefix("r/").strip()
+    if sub.lower() == "all":
+        url = f"https://www.reddit.com/r/all/{sort}/"
+        if sort == "top":
+            url += f"?t={timeframe}"
+        return url
     url = f"https://www.reddit.com/svc/shreddit/community-more-posts/{sort}/?name={sub}"
     if sort == "top":
         url += f"&t={timeframe}"

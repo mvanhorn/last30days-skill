@@ -1030,6 +1030,12 @@ def _run_discover(args: argparse.Namespace, config: dict[str, object]) -> int:
     if not domain:
         sys.stderr.write("[last30days] --discover requires a non-empty domain.\n")
         return 2
+    if args.as_of_date:
+        sys.stderr.write(
+            "[last30days] --as-of cannot be used with --discover because discovery "
+            "sweeps current live listings.\n"
+        )
+        return 2
     if args.emit == "html" or args.publish_html:
         sys.stderr.write("[last30days] discovery mode does not support HTML publishing yet.\n")
         return 2

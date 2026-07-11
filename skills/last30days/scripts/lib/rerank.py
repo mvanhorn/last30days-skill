@@ -31,6 +31,7 @@ _DISCOVERY_ENGAGEMENT_FIELDS = {
     "reddit": ("score", "num_comments"),
     "hackernews": ("points", "comments"),
     "digg": ("postCount", "uniqueAuthors"),
+    "x": ("likes", "reposts", "replies", "quotes"),
 }
 
 

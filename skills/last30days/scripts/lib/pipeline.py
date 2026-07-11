@@ -320,8 +320,7 @@ def _matches_discovery_domain(domain: str, text: str) -> bool:
     def terms(value: str) -> set[str]:
         words = {
             word[:-1] if len(word) > 4 and word.endswith("s") else word
-            for word in re.findall(r"[a-z0-9]+", value.lower())
-            if len(word) > 2
+            for word in relevance.tokenize(value)
         }
         return words
 
@@ -590,6 +589,8 @@ def run_discover(
             if candidate:
                 cluster_items.extend(candidate.source_items)
         score = rerank.discovery_velocity_score(cluster_items, as_of_date=to_date)
+        if score <= 0:
+            continue
         ranked_clusters.append((score, cluster, cluster_items))
     ranked_clusters.sort(key=lambda entry: (-entry[0], entry[1].title.lower()))
 
