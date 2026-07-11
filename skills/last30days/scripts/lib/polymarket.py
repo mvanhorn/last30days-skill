@@ -828,10 +828,19 @@ def refetch_datum(item: Any, datum_key: str) -> dict[str, Any]:
         event = payload
     if not isinstance(event, dict):
         raise KeyError("Polymarket event was not found")
+    # Mixed events: an active event can carry resolved child markets whose
+    # high volume would win the parse and swap the outcome labels. Only fall
+    # back to closed markets when nothing is active (fully resolved event -
+    # the stale-odds transition verification exists to catch).
+    markets = event.get("markets") or []
+    has_active = any(
+        isinstance(m, dict) and m.get("active", True) and not m.get("closed", False)
+        for m in markets
+    )
     parsed = parse_polymarket_response(
         {"events": [event]},
         include_all_outcomes=True,
-        include_closed=True,
+        include_closed=not has_active,
     )
     if not parsed:
         raise KeyError("Polymarket event is closed, unavailable, or malformed")

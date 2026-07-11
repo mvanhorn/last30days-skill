@@ -713,3 +713,49 @@ def test_opt_in_gating_accepts_flag_or_truthy_config():
     assert cli._freshness_enabled(default_args, {}) is False
     assert cli._freshness_enabled(default_args, {"LAST30DAYS_VERIFY_FRESHNESS": "on"}) is True
     assert cli._freshness_enabled(flag_args, {}) is True
+
+
+def test_mixed_event_prefers_active_markets(monkeypatch):
+    from types import SimpleNamespace
+    from lib import polymarket
+
+    event = {
+        "id": "ev1",
+        "title": "Mixed event",
+        "active": True,
+        "markets": [
+            {"id": "m-closed", "active": False, "closed": True,
+             "question": "Old market", "volume": "900000",
+             "outcomePrices": '["0.99","0.01"]', "outcomes": '["Yes","No"]'},
+            {"id": "m-active", "active": True, "closed": False,
+             "question": "Live market", "volume": "1000",
+             "outcomePrices": '["0.60","0.40"]', "outcomes": '["Yes","No"]',
+             "liquidity": "5000"},
+        ],
+    }
+    captured = {}
+    real_parse = polymarket.parse_polymarket_response
+
+    def spy(payload, **kwargs):
+        captured.update(kwargs)
+        return real_parse(payload, **kwargs)
+
+    monkeypatch.setattr(polymarket, "parse_polymarket_response", spy)
+    monkeypatch.setattr(polymarket.http, "request", lambda *a, **k: [event])
+    item = SimpleNamespace(metadata={"event_id": "ev1"}, url="")
+    try:
+        polymarket.refetch_datum(item, "probability")
+    except Exception:
+        pass
+    assert captured.get("include_closed") is False
+
+    # Fully resolved event falls back to closed markets.
+    captured.clear()
+    resolved = dict(event)
+    resolved["markets"] = [dict(event["markets"][0])]
+    monkeypatch.setattr(polymarket.http, "request", lambda *a, **k: [resolved])
+    try:
+        polymarket.refetch_datum(item, "probability")
+    except Exception:
+        pass
+    assert captured.get("include_closed") is True

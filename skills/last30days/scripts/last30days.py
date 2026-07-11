@@ -1534,10 +1534,16 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
         or normalized_topic == "library search"
         or normalized_topic.startswith("library search ")
     )
+    is_cached_verification = bool(getattr(args, "verify_freshness", None)) and not normalized_topic
     if args.no_browser_cookies:
         browser_mode = "off"
-    elif args.diagnose or args.preflight or normalized_topic == "doctor" or is_library_command:
+    elif (
+        args.diagnose or args.preflight or normalized_topic == "doctor"
+        or is_library_command or is_cached_verification
+    ):
         # doctor is plan-only like --diagnose: it must never read cookies.
+        # Cache-only freshness verification hits only point APIs (Polymarket,
+        # GitHub, StockTwits) - no cookie-backed source, so no Keychain prompt.
         browser_mode = "plan_only"
     elif normalized_topic == "setup":
         browser_mode = "read" if _setup_allows_browser_cookies(args, extra_argv) else "off"
