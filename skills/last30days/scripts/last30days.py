@@ -891,10 +891,12 @@ def _run_drill(
     )
     progress.start_processing()
     resolved = report.artifacts.get("resolved") or {}
-    drill_topic = " ".join(cluster.title for cluster in matched_clusters)
     try:
         drill_report = pipeline.run(
-            topic=drill_topic,
+            # Keep source gating anchored to the cached entity (for example,
+            # StockTwits needs the original cashtag/finance context). The
+            # external drill plan below remains cluster-focused.
+            topic=report.topic,
             config=drill_config,
             depth="deep",
             requested_sources=sources,
@@ -1352,6 +1354,18 @@ def _main(
         if args.publish_html and args.emit != "html":
             sys.stderr.write("[last30days] --publish-html requires --emit=html\n")
             return 2
+        if args.dedicated_subreddits:
+            config["_dedicated_subreddits"] = [
+                value.strip().removeprefix("r/")
+                for value in args.dedicated_subreddits.split(",")
+                if value.strip()
+            ]
+        if args.polymarket_keywords:
+            config["_polymarket_keywords"] = [
+                value.strip().lower()
+                for value in args.polymarket_keywords.split(",")
+                if value.strip()
+            ]
         return _run_drill(args, config)
 
     if args.lookback_days is None:

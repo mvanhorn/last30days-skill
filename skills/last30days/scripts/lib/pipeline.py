@@ -832,10 +832,6 @@ def merge_drill_report(
         candidate for candidate in merged.ranked_candidates
         if candidate.candidate_id not in selected_candidate_ids
     ]
-    unrelated_candidate_ids = {
-        candidate.candidate_id for candidate in unrelated_candidates
-    }
-
     original_summary = ""
     for cluster in matched_clusters:
         for candidate_id in cluster.representative_ids:
@@ -847,6 +843,10 @@ def merge_drill_report(
         if original_summary:
             break
 
+    unrelated_candidate_indexes = {
+        candidate.candidate_id: index
+        for index, candidate in enumerate(unrelated_candidates)
+    }
     focused_candidates: list[schema.Candidate] = []
     for candidate in [
         *copy.deepcopy(drill_report.ranked_candidates),
@@ -856,7 +856,10 @@ def merge_drill_report(
             if candidate.candidate_id in selected_candidate_ids
         ],
     ]:
-        if candidate.candidate_id in unrelated_candidate_ids:
+        unrelated_index = unrelated_candidate_indexes.get(candidate.candidate_id)
+        if unrelated_index is not None:
+            candidate.cluster_id = unrelated_candidates[unrelated_index].cluster_id
+            unrelated_candidates[unrelated_index] = candidate
             continue
         if not _candidate_is_duplicate(candidate, focused_candidates):
             focused_candidates.append(candidate)
@@ -908,9 +911,32 @@ def merge_drill_report(
 
     merged.generated_at = drill_report.generated_at
     merged.query_plan = drill_report.query_plan
-    merged.errors_by_source.update(drill_report.errors_by_source)
-    merged.source_status.update(drill_report.source_status)
-    merged.warnings = list(dict.fromkeys([*merged.warnings, *drill_report.warnings]))
+    attempted_sources = {
+        source
+        for source, outcome in drill_report.source_status.items()
+        if outcome.attempted
+    }
+    for source in attempted_sources:
+        if source in drill_report.errors_by_source:
+            merged.errors_by_source[source] = drill_report.errors_by_source[source]
+        else:
+            merged.errors_by_source.pop(source, None)
+        merged.source_status[source] = drill_report.source_status[source]
+    merged.source_status = _finalize_source_status(
+        merged.source_status,
+        merged.items_by_source,
+    )
+    degraded_by_source = {
+        source: outcome.detail or "partial results"
+        for source, outcome in merged.source_status.items()
+        if outcome.state == schema.PARTIAL
+    }
+    merged.warnings = _warnings(
+        merged.items_by_source,
+        merged.ranked_candidates,
+        merged.errors_by_source,
+        degraded_by_source,
+    )
     merged.artifacts.update(copy.deepcopy(drill_report.artifacts))
     history = list(merged.artifacts.get("drill_history") or [])
     history.append({

@@ -221,6 +221,74 @@ def test_merge_dedupes_drill_candidates_against_untouched_clusters():
     assert rediscovered.candidate_id in merged.clusters[1].candidate_ids
 
 
+def test_merge_retains_enriched_rediscovery_in_untouched_cluster():
+    base = _report()
+    base.ranked_candidates[2].cluster_id = "cluster-2"
+    drill_report = _report(drill=True)
+    rediscovered = copy.deepcopy(base.ranked_candidates[2])
+    rediscovered.snippet = "Enriched release evidence from the drill"
+    rediscovered.engagement = 321
+    rediscovered.source_items[0].snippet = "Transcript-backed release evidence"
+    rediscovered.source_items[0].engagement = {"comments": 42}
+    rediscovered.source_items[0].metadata = {
+        "transcript": "Detailed release transcript",
+        "comments": ["Useful community context"],
+    }
+    drill_report.ranked_candidates.append(rediscovered)
+
+    merged = pipeline.merge_drill_report(
+        base,
+        drill_report,
+        [base.clusters[0]],
+        target="cluster 1",
+    )
+
+    retained = next(
+        candidate
+        for candidate in merged.ranked_candidates
+        if candidate.candidate_id == rediscovered.candidate_id
+    )
+    assert retained.cluster_id == base.ranked_candidates[2].cluster_id
+    assert retained.snippet == "Enriched release evidence from the drill"
+    assert retained.engagement == 321
+    assert retained.source_items[0].metadata["transcript"] == "Detailed release transcript"
+    assert retained.source_items[0].engagement == {"comments": 42}
+
+
+def test_merge_recomputes_attempted_source_health_from_retained_evidence():
+    base = _report()
+    base.errors_by_source["reddit"] = "cached timeout"
+    base.source_status["reddit"] = schema.SourceOutcome(
+        source="reddit",
+        state=schema.RATE_LIMITED,
+        detail="cached timeout",
+    )
+    base.warnings = [
+        "Some sources failed: reddit",
+        "No candidates survived retrieval and ranking.",
+    ]
+    drill_report = _report(drill=True)
+    drill_report.source_status["youtube"] = schema.SourceOutcome(
+        source="youtube",
+        state=schema.NO_RESULTS,
+        items_returned=0,
+    )
+
+    merged = pipeline.merge_drill_report(
+        base,
+        drill_report,
+        [base.clusters[0]],
+        target="cluster 1",
+    )
+
+    assert "reddit" not in merged.errors_by_source
+    assert merged.source_status["reddit"].state == "ok"
+    assert merged.source_status["youtube"].state == "ok"
+    assert merged.source_status["youtube"].items_returned == 1
+    assert not any("Some sources failed" in warning for warning in merged.warnings)
+    assert "No candidates survived retrieval and ranking." not in merged.warnings
+
+
 def test_expired_cache_exits_cleanly_with_research_guidance(tmp_path: Path):
     config_dir = tmp_path / "config"
     with mock.patch.object(cli.env, "CONFIG_DIR", config_dir):
@@ -271,6 +339,23 @@ def test_drill_publish_html_requires_html_emit_before_dispatch():
     run_drill.assert_not_called()
 
 
+def test_drill_applies_config_backed_source_filters_before_dispatch():
+    parser = cli.build_parser()
+    args = parser.parse_args([
+        "--drill", "cluster 1",
+        "--dedicated-subreddits", "r/OpenClaw, OpenClawDev",
+        "--polymarket-keywords", "API, Policy",
+    ])
+
+    with mock.patch.object(cli.env, "get_config", return_value={}), \
+         mock.patch.object(cli, "_run_drill", return_value=0) as run_drill:
+        assert cli._main(parser, args, []) == 0
+
+    drill_config = run_drill.call_args.args[1]
+    assert drill_config["_dedicated_subreddits"] == ["OpenClaw", "OpenClawDev"]
+    assert drill_config["_polymarket_keywords"] == ["api", "policy"]
+
+
 def test_drill_inherits_cached_historical_window(tmp_path: Path):
     config_dir = tmp_path / "config"
     cached_report = _report()
@@ -289,6 +374,45 @@ def test_drill_inherits_cached_historical_window(tmp_path: Path):
 
     assert run_mock.call_args.kwargs["lookback_days"] == 7
     assert run_mock.call_args.kwargs["as_of_date"] == "2026-05-08"
+
+
+def test_drill_uses_cached_financial_topic_while_plan_stays_cluster_focused(tmp_path: Path):
+    config_dir = tmp_path / "config"
+    cached_report = _report()
+    stock_item = _item(
+        "now",
+        "stocktwits",
+        "AI agent rollout",
+        "https://stocktwits.example/now",
+    )
+    stock_candidate = _candidate(stock_item, 95)
+    cached_report.topic = "ServiceNow $NOW stock"
+    cached_report.ranked_candidates = [stock_candidate]
+    cached_report.clusters = [schema.Cluster(
+        cluster_id="cluster-1",
+        title="AI agent rollout",
+        candidate_ids=[stock_candidate.candidate_id],
+        representative_ids=[stock_candidate.candidate_id],
+        sources=["stocktwits"],
+        score=95,
+    )]
+    cached_report.items_by_source = {"stocktwits": [stock_item]}
+    cached_report.query_plan.source_weights = {"stocktwits": 1.0}
+    with mock.patch.object(cli.env, "CONFIG_DIR", config_dir):
+        cli._write_last_run(cached_report.topic, cached_report)
+
+    args = cli.build_parser().parse_args(["--drill", "cluster 1", "--mock"])
+    with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
+         mock.patch.object(cli.pipeline, "diagnose", return_value={}), \
+         mock.patch.object(cli.pipeline, "run", return_value=_report(drill=True)) as run_mock, \
+         mock.patch.object(cli, "_show_runtime_ui"), \
+         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli._run_drill(args, {}) == 0
+
+    call = run_mock.call_args.kwargs
+    assert call["topic"] == "ServiceNow $NOW stock"
+    assert call["external_plan"]["subqueries"][0]["search_query"] == "AI agent rollout"
+    assert call["requested_sources"] == ["stocktwits"]
 
 
 def test_cli_drill_runs_deep_updates_cache_and_can_chain(tmp_path: Path):
