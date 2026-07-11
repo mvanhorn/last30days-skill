@@ -11,6 +11,7 @@ import json
 import os
 import re
 import signal
+import sqlite3
 import sys
 import threading
 from pathlib import Path
@@ -164,6 +165,15 @@ def save_output(
             continue
         with os.fdopen(fd, "wb") as f:
             f.write(encoded)
+        if candidate.suffix.lower() == ".md":
+            try:
+                from lib import library_index
+
+                library_index.sync_library(candidate.parent)
+            except (library_index.LibrarySearchUnavailable, OSError, sqlite3.DatabaseError):
+                # Saving research must not depend on the optional local index;
+                # `library search` reports a clear capability error on demand.
+                pass
         return candidate
     # Fallback: all 101 candidates existed (extremely unlikely).
     raise RuntimeError(
@@ -1348,7 +1358,7 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
 def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: list[str]) -> env.ConfigLoadPolicy:
     if args.no_browser_cookies:
         browser_mode = "off"
-    elif args.diagnose or args.preflight or topic.lower() in {"doctor", "library feed"}:
+    elif args.diagnose or args.preflight or topic.lower() == "doctor" or topic.lower().startswith("library "):
         # doctor is plan-only like --diagnose: it must never read cookies.
         browser_mode = "plan_only"
     elif topic.lower() == "setup":
@@ -1519,6 +1529,47 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
     return 0
 
 
+def _run_library_search(
+    args: argparse.Namespace,
+    config: dict[str, object],
+    query: str,
+) -> int:
+    """Search saved briefs and store sightings without network access."""
+    from lib import library, library_index
+
+    if not query.strip():
+        sys.stderr.write("[last30days] library search requires a non-empty query.\n")
+        return 2
+    if args.publish or args.publish_html:
+        sys.stderr.write("[last30days] library search does not publish output.\n")
+        return 2
+    if args.emit != "compact":
+        sys.stderr.write("[last30days] library search currently supports text output only.\n")
+        return 2
+
+    memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
+    try:
+        matches, synced = library_index.sync_and_search(
+            query,
+            memory_dir=memory_dir,
+            briefs_dir=library.DEFAULT_BRIEFS_DIR,
+            db_path=library_index.DEFAULT_LIBRARY_DB,
+            store_db_path=library_index.DEFAULT_STORE_DB,
+        )
+    except library_index.LibrarySearchUnavailable as exc:
+        sys.stderr.write(f"[last30days] Library search unavailable: {exc}.\n")
+        return 2
+    except (OSError, sqlite3.DatabaseError) as exc:
+        sys.stderr.write(f"[last30days] Library search failed: {exc}.\n")
+        return 1
+    for note in synced.notes:
+        sys.stderr.write(f"[last30days] Library note: {note}\n")
+    if synced.rebuilt:
+        sys.stderr.write("[last30days] Rebuilt a corrupt library search index.\n")
+    print(render.render_library_search(query, matches), end="")
+    return 0
+
+
 def main() -> int:
     parser = build_parser()
     # Use parse_known_args so setup sub-flags (--device-auth, --github,
@@ -1602,6 +1653,8 @@ def _main(
 
     if topic.lower() == "library feed":
         return _run_library_feed(args, config)
+    if topic.lower() == "library search" or topic.lower().startswith("library search "):
+        return _run_library_search(args, config, topic[len("library search") :].strip())
 
     # Handle setup subcommand
     if topic.lower() == "setup":

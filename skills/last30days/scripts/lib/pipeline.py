@@ -5,11 +5,12 @@ from __future__ import annotations
 import copy
 import math
 import re
+import sqlite3
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from shutil import which
 from typing import Any
 
@@ -31,6 +32,8 @@ from . import (
     instagram,
     jobs,
     linkedin,
+    library,
+    library_index,
     normalize,
     permission_preflight,
     perplexity,
@@ -777,6 +780,65 @@ def _inner_max_workers(stream_count: int, *, internal_subrun: bool) -> int:
     return max(4, min(16, stream_count or 1))
 
 
+def _load_library_context(
+    *,
+    topic: str,
+    config: dict[str, Any],
+    mock: bool,
+    internal_subrun: bool,
+    x_handle: str | None,
+    github_user: str | None,
+    github_repos: list[str] | None,
+) -> tuple[list[schema.LibraryContext], str | None]:
+    """Resolve compact prior-run context without making a research run depend on it."""
+    setting = str(config.get("LAST30DAYS_LIBRARY_CONTEXT") or "off").strip().lower()
+    if mock or internal_subrun or setting in {"0", "false", "no", "off"}:
+        return [], None
+
+    memory_dir = config.get("LAST30DAYS_MEMORY_DIR") or library.DEFAULT_MEMORY_DIR
+    briefs_dir = config.get("_LAST30DAYS_LIBRARY_BRIEFS_DIR") or library.DEFAULT_BRIEFS_DIR
+    db_path = config.get("_LAST30DAYS_LIBRARY_DB") or library_index.DEFAULT_LIBRARY_DB
+    store_db = config.get("_LAST30DAYS_STORE_DB") or library_index.DEFAULT_STORE_DB
+    queries = [topic, x_handle or "", github_user or "", *(github_repos or [])]
+    queries = list(dict.fromkeys(value.strip() for value in queries if value and value.strip()))
+    try:
+        library_index.sync_library(memory_dir, briefs_dir, db_path=db_path)
+        matches: list[library_index.LibrarySearchMatch] = []
+        for query_text in queries:
+            matches.extend(
+                library_index.search(
+                    query_text,
+                    limit=6,
+                    db_path=db_path,
+                    store_db_path=store_db,
+                )
+            )
+    except (library_index.LibrarySearchUnavailable, OSError, sqlite3.DatabaseError) as exc:
+        return [], f"Library context unavailable: {exc}"
+
+    contexts: list[schema.LibraryContext] = []
+    seen_runs: set[tuple[str, date]] = set()
+    for match in sorted(
+        matches,
+        key=lambda item: (-item.published_date.toordinal(), item.rank, item.topic.casefold()),
+    ):
+        if match.run_key in seen_runs:
+            continue
+        seen_runs.add(match.run_key)
+        contexts.append(
+            schema.LibraryContext(
+                topic=match.topic,
+                published_date=match.published_date.isoformat(),
+                headline=match.headline,
+                summary=match.snippet or match.headline,
+                source_kind=match.source_kind,
+            )
+        )
+        if len(contexts) == 3:
+            break
+    return contexts, None
+
+
 def run(
     *,
     topic: str,
@@ -1212,6 +1274,17 @@ def run(
 
     clusters = cluster_candidates(ranked_candidates, plan)
     warnings = _warnings(items_by_source, ranked_candidates, bundle.errors_by_source, degraded_by_source)
+    library_context, library_warning = _load_library_context(
+        topic=topic,
+        config=config,
+        mock=mock,
+        internal_subrun=internal_subrun,
+        x_handle=x_handle,
+        github_user=github_user,
+        github_repos=github_repos,
+    )
+    if library_warning:
+        warnings.append(library_warning)
 
     return schema.Report(
         topic=topic,
@@ -1227,6 +1300,7 @@ def run(
         source_status=source_status,
         warnings=warnings,
         artifacts=bundle.artifacts,
+        library_context=library_context,
     )
 
 

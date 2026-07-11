@@ -233,6 +233,15 @@ End of OUTPUT CONTRACT. The laws above are the contract; everything below is imp
 
 # HOW TO INVOKE THIS SKILL (READ FIRST, FOLLOW EVERY TIME)
 
+**LIBRARY SEARCH FAST PATH — this overrides every research/setup step below.** If the user says “search my library for X”, “have I researched X before?”, or otherwise asks to query prior saved research, do not run WebSearch, setup, preflight, or fresh source research. Run:
+
+```bash
+LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+"${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" library search "${LIBRARY_QUERY}" --save-dir="${LAST30DAYS_MEMORY_DIR}"
+```
+
+Relay the dated, topic-grouped matches. This is deterministic offline FTS over the existing saved-brief scanner plus per-run SQLite store sightings; it does not call a model or the network. If SQLite lacks FTS5, relay the engine's capability error rather than falling through to fresh research.
+
 **LIBRARY FEED FAST PATH — this overrides every research/setup step below.** If the user asks to build, view, refresh, or subscribe to their saved research library/feed, do not run host WebSearch resolution, the first-run setup gate, topic preflight, or source research. Run:
 
 ```bash
@@ -241,6 +250,8 @@ LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
 ```
 
 Relay the generated local `index.html` and `feed.xml` paths. If the user explicitly asks to publish/share the whole library, explain that `ht-ml.app` pages are public by default and may be crawled or indexed, then follow the existing public-vs-password publishing choice. After consent, add `--publish`; for password protection, supply their unique shared password through `LAST30DAYS_PUBLISH_PASSWORD`, never as a visible command-line flag. Relay the printed library URL and local Atom path, and explain that `feed.xml` becomes subscribable when the output directory is hosted on a static host such as GitHub Pages. Never describe the `ht-ml.app` library URL as an Atom subscription URL, and never add `--publish` merely because the user asked to generate or open a local feed.
+
+Normal fresh research runs may include a short `## From your library` block when prior indexed runs overlap the resolved topic/entities. Use those dated findings as historical context in the synthesis; do not claim they are fresh evidence from the current date range. Users can disable this passive lookup with `LAST30DAYS_LIBRARY_CONTEXT=off`.
 
 **STEP 0 - RESOLVE HOST WEB SEARCH FIRST.** Your first action on every `/last30days` invocation is to determine whether this agent session has a usable web-search tool. Most agent harnesses do: it may be built in, exposed as a deferred tool, or provided by an installed connector such as Brave, Firecrawl, Exa, Serper, or another search provider.
 

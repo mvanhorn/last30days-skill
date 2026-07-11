@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import date
 from urllib.parse import urlparse
 
-from . import dates, health, schema, signals, skill_meta
+from . import dates, health, library_index, schema, signals, skill_meta
 
 
 def _skill_version() -> str:
@@ -191,6 +191,63 @@ def _render_drill_context(report: schema.Report) -> list[str]:
     ]
 
 
+def _render_library_context(report: schema.Report) -> list[str]:
+    if not report.library_context:
+        return []
+    lines = ["## From your library", ""]
+    for item in report.library_context:
+        detail = _truncate(item.summary or item.headline, 220)
+        lines.append(
+            f"- You researched **{item.topic}** on {item.published_date} - "
+            f"key finding then: {detail}"
+        )
+    return lines
+
+
+def render_library_search(
+    query: str,
+    matches: list[library_index.LibrarySearchMatch],
+) -> str:
+    """Render dated FTS matches grouped by the topic run that produced them."""
+    if not matches:
+        return (
+            f"# Library search: {query}\n\n"
+            "No saved briefs or store sightings matched this query.\n"
+        )
+    groups: dict[tuple[str, date], list[library_index.LibrarySearchMatch]] = {}
+    for match in matches:
+        groups.setdefault(match.run_key, []).append(match)
+    lines = [
+        f"# Library search: {query}",
+        "",
+        f"Found {len(matches)} match(es) across {len(groups)} topic run(s).",
+        "",
+    ]
+    for (topic, published), run_matches in groups.items():
+        lines.extend([f"## {topic} - {published.isoformat()}", ""])
+        for match in run_matches:
+            label = "Saved brief" if match.source_kind == "brief" else "Store sighting"
+            engagement = ""
+            if match.engagement is not None:
+                engagement = f"; {_format_library_engagement(match.engagement)} engagement"
+            lines.append(f"- **{label}:** {match.headline}{engagement}")
+            if match.snippet and match.snippet != match.headline:
+                lines.append(f"  {match.snippet}")
+            location = match.url or match.source_path
+            if location:
+                lines.append(f"  Source: {location}")
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def _format_library_engagement(value: float) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}M"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}K"
+    return f"{value:g}"
+
+
 def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str = "medium", save_path: str | None = None) -> str:
     non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
     lines = [
@@ -205,6 +262,9 @@ def render_compact(report: schema.Report, cluster_limit: int = 8, fun_level: str
     drill_context = _render_drill_context(report)
     if drill_context:
         lines.extend([*drill_context, ""])
+    library_context = _render_library_context(report)
+    if library_context:
+        lines.extend([*library_context, ""])
 
     freshness_warning = _assess_data_freshness(report)
     if freshness_warning:
@@ -940,6 +1000,10 @@ def render_full(report: schema.Report) -> str:
         lines.extend(f"- {warning}" for warning in report.warnings)
         lines.append("")
 
+    library_context = _render_library_context(report)
+    if library_context:
+        lines.extend([*library_context, ""])
+
     # When this Report is a per-entity sub-run from vs-mode / --competitors,
     # include the single-row Resolved Entities block so the saved file is
     # self-describing. The artifact is populated by last30days.py's
@@ -1082,6 +1146,9 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
     drill_context = _render_drill_context(report)
     if drill_context:
         lines.extend(["", *drill_context])
+    library_context = _render_library_context(report)
+    if library_context:
+        lines.extend(["", *library_context])
     freshness_warning = _assess_data_freshness(report)
     if freshness_warning:
         lines.append(f"Freshness warning: {freshness_warning}")
@@ -1130,6 +1197,9 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
     drill_context = _render_drill_context(report)
     if drill_context:
         lines.extend([*drill_context, ""])
+    library_context = _render_library_context(report)
+    if library_context:
+        lines.extend([*library_context, ""])
 
     lines.append("## Ranked Storylines")
     lines.append("")

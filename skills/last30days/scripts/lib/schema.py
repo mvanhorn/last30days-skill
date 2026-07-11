@@ -205,6 +205,17 @@ class SourceOutcome:
             raise ValueError("items_returned cannot be negative")
 
 
+@dataclass(frozen=True)
+class LibraryContext:
+    """One prior research run relevant to the current report."""
+
+    topic: str
+    published_date: str
+    headline: str
+    summary: str
+    source_kind: Literal["brief", "store"]
+
+
 @dataclass
 class Report:
     """Final pipeline output."""
@@ -222,6 +233,7 @@ class Report:
     source_status: dict[str, SourceOutcome] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     artifacts: dict[str, Any] = field(default_factory=dict)
+    library_context: list[LibraryContext] = field(default_factory=list)
     drill_of: str | None = None
 
 
@@ -453,6 +465,19 @@ def report_from_dict(payload: dict[str, Any]) -> Report:
         },
         warnings=list(payload.get("warnings") or []),
         artifacts=dict(payload.get("artifacts") or {}),
+        library_context=[
+            LibraryContext(
+                topic=str(item.get("topic") or ""),
+                published_date=str(item.get("published_date") or ""),
+                headline=str(item.get("headline") or ""),
+                summary=str(item.get("summary") or ""),
+                source_kind=(
+                    "store" if item.get("source_kind") == "store" else "brief"
+                ),
+            )
+            for item in (payload.get("library_context") or [])
+            if isinstance(item, dict)
+        ],
         drill_of=payload.get("drill_of"),
     )
 
