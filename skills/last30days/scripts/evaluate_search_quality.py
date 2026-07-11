@@ -355,7 +355,16 @@ def run_last30days(repo_dir: Path, topic: str, *, search: str, timeout_seconds: 
     )
     if result.returncode != 0:
         raise RuntimeError(f"{repo_dir.name} failed for '{topic}' with exit {result.returncode}\n{result.stderr.strip()}")
-    return json.loads(result.stdout)
+    payload = json.loads(result.stdout)
+    # Shape guard: the evaluator compares raw Report fields. If the engine
+    # emitted the agent profile anyway (flag detection missed a future
+    # spelling), fail loudly instead of scoring empty ranked_candidates.
+    if "schema_version" in payload and "ranked_candidates" not in payload:
+        raise RuntimeError(
+            f"{repo_dir.name} emitted the agent JSON profile; the evaluator "
+            "requires the raw Report (--json-profile=raw)."
+        )
+    return payload
 
 
 def create_worktree(rev: str) -> Path:
