@@ -499,3 +499,51 @@ def test_hand_written_index_is_backed_up_not_clobbered(tmp_path, monkeypatch):
         assert cli.main() == 0
     assert (tmp_path / "index.html.bak").read_text(encoding="utf-8") == "my hand-written landing page"
     assert "Generated locally by <strong>last30days</strong>" in (tmp_path / "index.html").read_text(encoding="utf-8")
+
+
+def test_prune_spares_hand_written_page_with_generated_looking_name(tmp_path, monkeypatch):
+    report = _write_report(tmp_path)
+    monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", tmp_path / "no-briefings")
+    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["last30days.py", "library", "feed", "--save-dir", str(tmp_path)],
+    )
+
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+
+    hand_written = tmp_path / "briefs" / "client-report-a1b2c3d4-2026-07-10.html"
+    hand_written.write_text("<html><body>my page</body></html>", encoding="utf-8")
+    report.unlink()
+
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+
+    assert hand_written.read_text(encoding="utf-8") == "<html><body>my page</body></html>"
+
+
+def test_index_backup_never_clobbers_an_earlier_backup(tmp_path, monkeypatch):
+    _write_report(tmp_path)
+    monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", tmp_path / "no-briefings")
+    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["last30days.py", "library", "feed", "--save-dir", str(tmp_path)],
+    )
+
+    index = tmp_path / "index.html"
+    index.write_text("first hand-written page", encoding="utf-8")
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+    assert (tmp_path / "index.html.bak").read_text(encoding="utf-8") == "first hand-written page"
+
+    index.write_text("second hand-written page", encoding="utf-8")
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+
+    assert (tmp_path / "index.html.bak").read_text(encoding="utf-8") == "first hand-written page"
+    backups = sorted(p.name for p in tmp_path.glob("index.html.bak*"))
+    assert len(backups) == 2
