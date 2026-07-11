@@ -143,8 +143,11 @@ else
   LAST_RUN_FILE="$HOME/.config/last30days/last-run.json"
 fi
 LAST_RUN_LINE=""
+# python3 -c, NOT a heredoc: bash 5.3 feeds heredocs to the child through a
+# pipe and can deadlock in heredoc_write inside command substitution, hanging
+# this hook forever at session start (observed on Homebrew bash 5.3.15).
 if [[ -n "$LAST_RUN_FILE" && -f "$LAST_RUN_FILE" ]] && command -v python3 &>/dev/null; then
-  LAST_RUN_LINE=$(LAST_RUN_FILE="$LAST_RUN_FILE" python3 - <<'PY' 2>/dev/null || true
+  LAST_RUN_LINE=$(LAST_RUN_FILE="$LAST_RUN_FILE" python3 -c '
 import datetime
 import json
 import os
@@ -165,8 +168,7 @@ try:
     print(f"  Last run: \"{topic}\" · {ago} · {total} results")
 except Exception:
     pass
-PY
-)
+' 2>/dev/null || true)
 fi
 
 # Detect capability that doesn't need a config file: yt-dlp on PATH.
@@ -179,25 +181,24 @@ fi
 
 # If setup has never been run, show welcome message for new users
 if [[ -z "$SETUP_COMPLETE" && -z "$CONFIG_FILE" && -z "${ENV_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}" && -z "${ENV_SCRAPECREATORS_API_KEY:-${SCRAPECREATORS_API_KEY:-}}" && -z "${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}" && -z "${ENV_XAI_API_KEY:-${XAI_API_KEY:-}}" ]]; then
+  # printf, NOT cat-with-heredoc: see the bash 5.3 heredoc deadlock note above.
   if [[ -n "$HAS_YTDLP" ]]; then
     # YouTube is already working via the on-system yt-dlp binary — don't list
     # it as something the wizard needs to unlock. See #394.
-    cat <<'EOF'
-/last30days: Ready to use. Run /last30days to get started — setup takes 30 seconds.
-  Research any topic across Reddit, HN, X, YouTube, Polymarket (last 30 days).
-
-Reddit, Hacker News, Polymarket, and YouTube (yt-dlp detected) work out of the box.
-The setup wizard can unlock X/Twitter and more.
-  Detected: yt-dlp is installed (YouTube transcripts ready, no setup needed).
-EOF
+    printf '%s\n' \
+      '/last30days: Ready to use. Run /last30days to get started — setup takes 30 seconds.' \
+      '  Research any topic across Reddit, HN, X, YouTube, Polymarket (last 30 days).' \
+      '' \
+      'Reddit, Hacker News, Polymarket, and YouTube (yt-dlp detected) work out of the box.' \
+      'The setup wizard can unlock X/Twitter and more.' \
+      '  Detected: yt-dlp is installed (YouTube transcripts ready, no setup needed).'
   else
-    cat <<'EOF'
-/last30days: Ready to use. Run /last30days to get started — setup takes 30 seconds.
-  Research any topic across Reddit, HN, X, YouTube, Polymarket (last 30 days).
-
-Reddit, Hacker News, and Polymarket work out of the box.
-The setup wizard can unlock X/Twitter, YouTube, and more.
-EOF
+    printf '%s\n' \
+      '/last30days: Ready to use. Run /last30days to get started — setup takes 30 seconds.' \
+      '  Research any topic across Reddit, HN, X, YouTube, Polymarket (last 30 days).' \
+      '' \
+      'Reddit, Hacker News, and Polymarket work out of the box.' \
+      'The setup wizard can unlock X/Twitter, YouTube, and more.'
   fi
   if [[ -n "$LAST_RUN_LINE" ]]; then
     echo "$LAST_RUN_LINE"
