@@ -16,6 +16,14 @@ class HtmlPublishError(RuntimeError):
     """Raised when the hosted HTML publish endpoint rejects the artifact."""
 
 
+class HtmlPublishBatchResult(dict[str, dict[str, Any]]):
+    """Successful document publishes plus an optional later failure."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.error: HtmlPublishError | None = None
+
+
 def publish_html(
     html_content: str,
     *,
@@ -70,17 +78,21 @@ def publish_html_documents(
     endpoint: str = DEFAULT_ENDPOINT,
     opener: Callable[..., Any] | None = None,
     timeout: int = 30,
-) -> dict[str, dict[str, Any]]:
+) -> HtmlPublishBatchResult:
     """Publish a named set of documents, preserving caller order in results."""
-    results: dict[str, dict[str, Any]] = {}
+    results = HtmlPublishBatchResult()
     for name, content in documents.items():
-        results[name] = publish_html(
-            content,
-            password=password,
-            endpoint=endpoint,
-            opener=opener,
-            timeout=timeout,
-        )
+        try:
+            results[name] = publish_html(
+                content,
+                password=password,
+                endpoint=endpoint,
+                opener=opener,
+                timeout=timeout,
+            )
+        except HtmlPublishError as exc:
+            results.error = exc
+            break
     return results
 
 

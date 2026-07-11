@@ -35,6 +35,7 @@ Each run produces one file per topic, slug-named:
 # ~/.config/last30days/.env  (pick ONE — uncomment the line that matches your OS)
 LAST30DAYS_MEMORY_DIR=~/Documents/Last30Days                      # POSIX — defaults to this path when unset
 # LAST30DAYS_MEMORY_DIR=C:\Users\<user>\Documents\Last30Days      # Windows
+# LAST30DAYS_LIBRARY_OWNER=Your Name                              # Optional Atom feed author
 ```
 
 The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path().expanduser()` downstream. Use `~/...` or an absolute path; **don't** write the literal string `$HOME/...` into your `.env` (it gets stored verbatim and breaks path resolution).
@@ -50,7 +51,8 @@ The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path(
 - `--no-browser-cookies` - hard-disable browser-cookie extraction for this run, even when `FROM_BROWSER` is configured. MCP and folder-mode hosts use this for safe defaults.
 - `--publish-html` - with `--emit=html`, publish the rendered HTML to `ht-ml.app` after local output/save-dir writes. This is explicit opt-in only; pages are public by default.
 - `library feed` - scan `LAST30DAYS_MEMORY_DIR` plus `~/.local/share/last30days/briefs/`, then write a self-contained `index.html`, valid Atom `feed.xml`, and browser-ready pages under `briefs/`. The index is reverse-chronological and grouped by topic. For direct engine use: `python3 skills/last30days/scripts/last30days.py library feed`; use `--save-dir <path>` to scan and write another library directory.
-- `library feed --publish` - publish each rendered brief, the Atom document, and the linked index through `ht-ml.app`, then print both the library URL and subscribe URL. Publishing is explicit opt-in and pages are public by default; public pages may be crawled or indexed.
+- `library feed --publish` - publish each rendered brief and the HTML index through `ht-ml.app`. The generated `feed.xml` remains a first-class local artifact because this HTML host does not serve Atom with an XML content type. Host the output directory on any static host (for example, GitHub Pages) to make `feed.xml` subscribable. Publishing is explicit opt-in and pages are public by default; public pages may be crawled or indexed.
+- `LAST30DAYS_LIBRARY_OWNER=<name>` - optional feed-level Atom author. Defaults to `last30days research library`.
 - `--publish-password <password>` - optional shared password for `--publish-html` or `library feed --publish`. Prefer `LAST30DAYS_PUBLISH_PASSWORD=<password>` instead so the password is not visible in the process list or shell history. Use a unique non-personal password; never reuse the user's own password. The provider's update key is treated as secret and is not written to stdout, HTML, raw output, or `.publish.json` metadata.
 - `--preflight` - print a human-readable permission preflight. It reports config source, project config trust/ignore state, browser-cookie plan, planned writes, optional commands, source availability, and endpoint overrides without reading browser cookies, writing setup/config/report files, or running research. Add `--emit=json` for the separate machine-readable preflight contract (`--json-profile` does not change it); use `--diagnose` when you need the full source diagnostic JSON.
 - `--welcome` - print the first-run welcome text (engine-owned; the skill relays it verbatim on first run). Safe: prints and exits, no reads or writes.

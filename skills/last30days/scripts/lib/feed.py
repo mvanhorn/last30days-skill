@@ -18,12 +18,15 @@ def render_atom(
     entry_urls: Mapping[str, str] | None = None,
     feed_url: str | None = None,
     title: str = "last30days research library",
+    author: str = "last30days research library",
 ) -> str:
     """Render an Atom feed whose IDs and timestamps are stable across runs."""
     urls = entry_urls or {}
     root = ET.Element(_tag("feed"))
     ET.SubElement(root, _tag("id")).text = "urn:last30days:research-library"
     ET.SubElement(root, _tag("title")).text = title
+    author_node = ET.SubElement(root, _tag("author"))
+    ET.SubElement(author_node, _tag("name")).text = author
     updated = entries[0].published_date.isoformat() if entries else "1970-01-01"
     ET.SubElement(root, _tag("updated")).text = f"{updated}T00:00:00Z"
     if feed_url:

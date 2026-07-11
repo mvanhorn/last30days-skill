@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -39,11 +40,15 @@ class LibraryEntry:
 
     @property
     def entry_id(self) -> str:
-        return f"urn:last30days:{self.slug}:{self.published_date.isoformat()}"
+        return f"urn:last30days:{self.slug}:{self.identity_hash}:{self.published_date.isoformat()}"
 
     @property
     def output_name(self) -> str:
-        return f"{self.slug}-{self.published_date.isoformat()}.html"
+        return f"{self.slug}-{self.identity_hash}-{self.published_date.isoformat()}.html"
+
+    @property
+    def identity_hash(self) -> str:
+        return hashlib.sha256(self.topic.encode("utf-8")).hexdigest()[:8]
 
 
 def slugify(value: str) -> str:
@@ -156,7 +161,7 @@ def _parse_briefing(path: Path) -> LibraryEntry:
     if not isinstance(data, dict):
         raise ValueError("briefing JSON is not an object")
     is_weekly = data.get("type") == "weekly" or path.stem.endswith("-weekly")
-    raw_date = data.get("date") or data.get("week_of") or path.stem[:10]
+    raw_date = path.stem[:10] if is_weekly else data.get("date") or path.stem[:10]
     try:
         published_date = date.fromisoformat(str(raw_date))
     except ValueError as exc:
@@ -191,6 +196,8 @@ def _briefing_summary(data: dict[str, object], fallback: str) -> str:
 
 def _briefing_markdown(data: dict[str, object], topic: str, published_date: date, summary: str) -> str:
     lines = [f"# {topic}", "", f"- Date: {published_date.isoformat()}", "", summary]
+    if data.get("type") == "weekly" and data.get("week_of"):
+        lines[3:3] = [f"- Week of: {data['week_of']}"]
     topics = data.get("topics")
     if isinstance(topics, list):
         lines.extend(["", "## Topics", ""])
@@ -205,5 +212,8 @@ def _briefing_markdown(data: dict[str, object], topic: str, published_date: date
 
 def _clean_inline(value: str) -> str:
     value = _MARKDOWN_LINK.sub(r"\1", value)
-    value = re.sub(r"[`*_>#]", "", value)
+    value = re.sub(r"^\s*>\s?", "", value)
+    value = re.sub(r"(?<!\w)(\*\*|__)(?=\S)(.+?)(?<=\S)\1(?!\w)", r"\2", value)
+    value = re.sub(r"(?<!\w)([*_])(?=\S)(.+?)(?<=\S)\1(?!\w)", r"\2", value)
+    value = re.sub(r"(?<!\w)`(?=\S)(.+?)(?<=\S)`(?!\w)", r"\1", value)
     return re.sub(r"\s+", " ", value).strip()

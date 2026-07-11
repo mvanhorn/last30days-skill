@@ -410,7 +410,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--publish-html", action="store_true",
                         help="Publish --emit=html output to ht-ml.app (explicit opt-in; public by default)")
     parser.add_argument("--publish", action="store_true",
-                        help="With 'library feed', publish the index, Atom feed, and briefs (explicit opt-in; public by default)")
+                        help="With 'library feed', publish the HTML index and briefs (explicit opt-in; public by default); feed.xml remains local")
     parser.add_argument("--publish-password",
                         help="Optional shared password for --publish-html or 'library feed --publish'; prefer LAST30DAYS_PUBLISH_PASSWORD to avoid exposing secrets in process lists")
     parser.add_argument("--store", action="store_true", help="Persist ranked findings to the SQLite research store")
@@ -1381,6 +1381,9 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
     output_dir = memory_dir.resolve()
     briefs_dir = library.DEFAULT_BRIEFS_DIR
     entries, notes = library.scan_library(memory_dir, briefs_dir)
+    feed_author = str(
+        config.get("LAST30DAYS_LIBRARY_OWNER") or "last30days research library"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     rendered_briefs_dir = output_dir / "briefs"
     rendered_briefs_dir.mkdir(parents=True, exist_ok=True)
@@ -1391,7 +1394,7 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
         (rendered_briefs_dir / entry.output_name).write_text(rendered, encoding="utf-8")
         brief_documents[entry.entry_id] = rendered
 
-    feed_xml = feed.render_atom(entries)
+    feed_xml = feed.render_atom(entries, author=feed_author)
     index_html = html_render.render_library_index(entries)
     feed_path = output_dir / "feed.xml"
     index_path = output_dir / "index.html"
@@ -1408,7 +1411,6 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
     if args.publish:
         password = _publish_password_for_args(args, config)
         entry_urls: dict[str, str] = {}
-        subscribe_url: str | None = None
         try:
             brief_results = html_publish.publish_html_documents(
                 brief_documents,
@@ -1418,15 +1420,12 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
                 entry_id: str(result["url"])
                 for entry_id, result in brief_results.items()
             }
-            published_feed = html_render.scrub_publishable_digit_runs(
-                feed.render_atom(entries, entry_urls=entry_urls)
-            )
-            feed_result = html_publish.publish_html(published_feed, password=password)
-            subscribe_url = str(feed_result["url"])
+            if batch_error := getattr(brief_results, "error", None):
+                raise batch_error
             published_index = html_render.render_library_index(
                 entries,
                 entry_urls=entry_urls,
-                feed_url=subscribe_url,
+                feed_url=None,
             )
             index_result = html_publish.publish_html(published_index, password=password)
             index_url = str(index_result["url"])
@@ -1437,24 +1436,31 @@ def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> in
                     f"[last30days] Partial publish: {len(entry_urls)} public brief "
                     "page(s) were created before the failure.\n"
                 )
-            if subscribe_url:
-                sys.stderr.write(
-                    f"[last30days] Partial publish Atom URL: {subscribe_url}\n"
-                )
             return 1
 
         # Keep the local artifacts useful as a record of the live publication.
         feed_path.write_text(
-            feed.render_atom(entries, entry_urls=entry_urls, feed_url=subscribe_url),
+            feed.render_atom(entries, entry_urls=entry_urls, author=feed_author),
             encoding="utf-8",
         )
-        index_path.write_text(published_index, encoding="utf-8")
+        index_path.write_text(
+            html_render.render_library_index(entries, entry_urls=entry_urls),
+            encoding="utf-8",
+        )
         sys.stderr.write(f"[last30days] Published library to {index_url}\n")
-        sys.stderr.write(f"[last30days] Subscribe via Atom: {subscribe_url}\n")
-        print(f"Library: {index_url}\nSubscribe: {subscribe_url}")
+        sys.stderr.write(f"[last30days] Local Atom feed: {feed_path}\n")
+        print(
+            f"Library: {index_url}\nFeed: {feed_path}\n"
+            "Atom feed is local; host feed.xml on any static host (for example, GitHub Pages) "
+            "to make it subscribable."
+        )
         return 0
 
-    print(f"Library: {index_path}\nSubscribe: {feed_path}")
+    print(
+        f"Library: {index_path}\nFeed: {feed_path}\n"
+        "Atom feed is local; host feed.xml on any static host (for example, GitHub Pages) "
+        "to make it subscribable."
+    )
     return 0
 
 

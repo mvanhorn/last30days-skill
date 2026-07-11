@@ -431,7 +431,9 @@ def render_html_comparison(
 
 def render_library_brief(entry: LibraryEntry) -> str:
     """Render a scanned Markdown or JSON briefing as a safe standalone page."""
-    body = _markdown_to_html(entry.content)
+    md = _strip_invitation(entry.content)
+    md = _strip_canonical_boundary(md)
+    body = _markdown_to_html(md)
     colophon = (
         '<footer class="colophon">'
         f"Saved research · {html.escape(entry.published_date.isoformat())} · "
@@ -447,7 +449,7 @@ def render_library_index(
     entries: Sequence[LibraryEntry],
     *,
     entry_urls: Mapping[str, str] | None = None,
-    feed_url: str = "feed.xml",
+    feed_url: str | None = "feed.xml",
 ) -> str:
     """Render the reverse-chronological, topic-grouped research index."""
     urls = entry_urls or {}
@@ -459,10 +461,15 @@ def render_library_index(
         '<header class="library-hero">',
         '<span class="badge">RESEARCH LIBRARY</span>',
         '<h1>What the community is learning</h1>',
-        '<p>Saved last30days briefs, newest first. Follow the Atom feed to keep up.</p>',
-        f'<p><a class="subscribe" href="{html.escape(feed_url, quote=True)}">Subscribe via Atom</a></p>',
-        '</header>',
     ]
+    if feed_url is None:
+        parts.append('<p>Saved last30days briefs, newest first.</p>')
+    else:
+        parts.extend([
+            '<p>Saved last30days briefs, newest first. Follow the Atom feed to keep up.</p>',
+            f'<p><a class="subscribe" href="{html.escape(feed_url, quote=True)}">Subscribe via Atom</a></p>',
+        ])
+    parts.append('</header>')
     if not entries:
         parts.append('<section class="library-empty"><h2>No saved briefs yet</h2><p>Run last30days research and this library will fill itself.</p></section>')
     for topic, topic_entries in grouped.items():

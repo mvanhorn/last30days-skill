@@ -470,6 +470,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # degraded (neither ok, no-results, nor skipped-unconfigured). #384.
         ('LAST30DAYS_STRICT_EXIT', None),
         ('LAST30DAYS_MEMORY_DIR', None),
+        ('LAST30DAYS_LIBRARY_OWNER', None),
         ('LAST30DAYS_PUBLISH_PASSWORD', None),
         ('OPENAI_MODEL_PIN', None),
         ('XAI_MODEL_PIN', None),

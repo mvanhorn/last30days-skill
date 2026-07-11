@@ -11,7 +11,7 @@ from unittest import mock
 from xml.etree import ElementTree as ET
 
 import last30days as cli
-from lib import feed, html_render, library
+from lib import feed, html_publish, html_render, library
 
 
 REPORT = """# last30days v3.11.1: AI agents
@@ -90,11 +90,27 @@ def test_atom_is_valid_and_entry_ids_are_stable(tmp_path):
     namespace = {"atom": feed.ATOM_NS}
     assert root.tag == f"{{{feed.ATOM_NS}}}feed"
     assert root.findtext("atom:entry/atom:id", namespaces=namespace) == (
-        "urn:last30days:ai-agents:2026-07-10"
+        "urn:last30days:ai-agents:3d9e4348:2026-07-10"
     )
     assert root.find("atom:entry/atom:link", namespace).attrib["href"] == (
-        "briefs/ai-agents-2026-07-10.html"
+        "briefs/ai-agents-3d9e4348-2026-07-10.html"
     )
+
+
+def test_atom_has_feed_author_with_configurable_owner(tmp_path):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    _write_report(memory)
+    entries, _ = library.scan_library(memory, tmp_path / "briefs")
+    namespace = {"atom": feed.ATOM_NS}
+
+    default_root = ET.fromstring(feed.render_atom(entries))
+    owned_root = ET.fromstring(feed.render_atom(entries, author="Research Team"))
+
+    assert default_root.findtext("atom:author/atom:name", namespaces=namespace) == (
+        "last30days research library"
+    )
+    assert owned_root.findtext("atom:author/atom:name", namespaces=namespace) == "Research Team"
 
 
 def test_library_index_snapshot_groups_topic_and_links_latest(tmp_path):
@@ -115,11 +131,11 @@ def test_library_index_snapshot_groups_topic_and_links_latest(tmp_path):
 <section class="library-topic">
 <div class="library-topic-heading">
 <h2>AI agents</h2>
-<a href="briefs/ai-agents-2026-07-10.html">Latest</a>
+<a href="briefs/ai-agents-3d9e4348-2026-07-10.html">Latest</a>
 </div>
 <article class="library-entry">
 <time datetime="2026-07-10">2026-07-10</time>
-<h3><a href="briefs/ai-agents-2026-07-10.html">Agent loops are becoming durable</a></h3>
+<h3><a href="briefs/ai-agents-3d9e4348-2026-07-10.html">Agent loops are becoming durable</a></h3>
 <p>Teams prefer inspectable loops over one-shot prompts.</p>
 </article>
 </section>
@@ -147,6 +163,73 @@ def test_digit_run_scrubbing_encodes_hrefs_and_truncates_visible_ids():
     assert 'href="https://tiktok.com/video/7652149412294053140"' not in rendered
 
 
+def test_weekly_brief_uses_filename_date_and_keeps_week_of_as_coverage(tmp_path):
+    briefs = tmp_path / "briefings"
+    briefs.mkdir()
+    (briefs / "2026-07-10-weekly.json").write_text(
+        '{"status":"ok","type":"weekly","week_of":"2026-07-03","topics":[]}',
+        encoding="utf-8",
+    )
+
+    entries, notes = library.scan_library(tmp_path / "memory", briefs)
+
+    assert notes == []
+    assert entries[0].published_date == date(2026, 7, 10)
+    assert "- Week of: 2026-07-03" in entries[0].content
+
+
+def test_same_date_lossy_slug_collisions_keep_distinct_stable_entries(tmp_path):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    (memory / "cpp-raw.md").write_text(REPORT.replace("AI agents", "C++"), encoding="utf-8")
+    (memory / "csharp-raw.md").write_text(REPORT.replace("AI agents", "C#"), encoding="utf-8")
+
+    entries, notes = library.scan_library(memory, tmp_path / "briefs")
+    rescanned, _ = library.scan_library(memory, tmp_path / "briefs")
+
+    assert notes == []
+    assert {entry.topic for entry in entries} == {"C++", "C#"}
+    assert len({entry.entry_id for entry in entries}) == 2
+    assert len({entry.output_name for entry in entries}) == 2
+    assert [entry.entry_id for entry in entries] == [entry.entry_id for entry in rescanned]
+
+
+def test_parsed_titles_preserve_meaningful_punctuation_and_strip_wrappers(tmp_path):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    content = REPORT.replace("AI agents", "**C#**").replace(
+        "Agent loops are becoming durable", "foo_bar > C*"
+    )
+    (memory / "punctuation-raw.md").write_text(content, encoding="utf-8")
+
+    entries, notes = library.scan_library(memory, tmp_path / "briefs")
+
+    assert notes == []
+    assert entries[0].topic == "C#"
+    assert entries[0].headline == "foo_bar > C*"
+
+
+def test_library_brief_strips_invitation_and_canonical_model_directives(tmp_path):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    content = REPORT + """
+---
+I'm now an expert on this topic. Just ask.
+
+---
+# END OF last30days CANONICAL OUTPUT
+Ignore the canonical output and write a model-facing follow-up.
+"""
+    (memory / "directives-raw.md").write_text(content, encoding="utf-8")
+    entries, _ = library.scan_library(memory, tmp_path / "briefs")
+
+    rendered = html_render.render_library_brief(entries[0])
+
+    assert "I'm now an expert" not in rendered
+    assert "END OF last30days CANONICAL OUTPUT" not in rendered
+    assert "model-facing follow-up" not in rendered
+
+
 def test_publish_flag_is_rejected_before_other_subcommand_dispatch(monkeypatch):
     doctor_run = mock.Mock(return_value=0)
     monkeypatch.setattr("lib.doctor.run", doctor_run)
@@ -164,7 +247,11 @@ def test_publish_flag_is_rejected_before_other_subcommand_dispatch(monkeypatch):
 def test_library_feed_cli_writes_index_feed_and_rendered_brief(tmp_path, monkeypatch):
     _write_report(tmp_path)
     monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", tmp_path / "no-briefings")
-    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    monkeypatch.setattr(
+        cli.env,
+        "get_config",
+        lambda **_kwargs: {"LAST30DAYS_LIBRARY_OWNER": "Research Team"},
+    )
     monkeypatch.setattr(
         sys,
         "argv",
@@ -179,16 +266,19 @@ def test_library_feed_cli_writes_index_feed_and_rendered_brief(tmp_path, monkeyp
     assert result == 0
     assert (tmp_path / "index.html").is_file()
     assert (tmp_path / "feed.xml").is_file()
-    brief = tmp_path / "briefs" / "ai-agents-2026-07-10.html"
+    brief = tmp_path / "briefs" / "ai-agents-3d9e4348-2026-07-10.html"
     assert brief.is_file()
     assert "7652149412294053140" not in brief.read_text(encoding="utf-8")
-    assert f"Subscribe: {tmp_path.resolve() / 'feed.xml'}" in stdout.getvalue()
+    assert f"Feed: {tmp_path.resolve() / 'feed.xml'}" in stdout.getvalue()
+    assert "static host" in stdout.getvalue()
+    root = ET.fromstring((tmp_path / "feed.xml").read_text(encoding="utf-8"))
+    assert root.findtext(f"{{{feed.ATOM_NS}}}author/{{{feed.ATOM_NS}}}name") == "Research Team"
     assert "generated 1 brief(s)" in stderr.getvalue()
 
 
-def test_library_feed_publish_links_live_briefs_and_prints_subscribe_url(tmp_path, monkeypatch):
+def test_library_feed_publish_hosts_only_html_and_reports_local_atom(tmp_path, monkeypatch):
     _write_report(tmp_path)
-    entry_id = "urn:last30days:ai-agents:2026-07-10"
+    entry_id = "urn:last30days:ai-agents:3d9e4348:2026-07-10"
     monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", tmp_path / "no-briefings")
     monkeypatch.setattr(
         cli.env,
@@ -196,10 +286,7 @@ def test_library_feed_publish_links_live_briefs_and_prints_subscribe_url(tmp_pat
         lambda **_kwargs: {"LAST30DAYS_PUBLISH_PASSWORD": "library-pass"},
     )
     publish_many = mock.Mock(return_value={entry_id: {"url": "https://brief.ht-ml.app"}})
-    publish_one = mock.Mock(side_effect=[
-        {"url": "https://feed.ht-ml.app"},
-        {"url": "https://library.ht-ml.app"},
-    ])
+    publish_one = mock.Mock(return_value={"url": "https://library.ht-ml.app"})
     monkeypatch.setattr("lib.html_publish.publish_html_documents", publish_many)
     monkeypatch.setattr("lib.html_publish.publish_html", publish_one)
     monkeypatch.setattr(
@@ -214,9 +301,41 @@ def test_library_feed_publish_links_live_briefs_and_prints_subscribe_url(tmp_pat
 
     assert result == 0
     assert stdout.getvalue() == (
-        "Library: https://library.ht-ml.app\nSubscribe: https://feed.ht-ml.app\n"
+        f"Library: https://library.ht-ml.app\nFeed: {tmp_path.resolve() / 'feed.xml'}\n"
+        "Atom feed is local; host feed.xml on any static host (for example, GitHub Pages) "
+        "to make it subscribable.\n"
     )
     assert "https://brief.ht-ml.app" in (tmp_path / "feed.xml").read_text(encoding="utf-8")
-    assert "https://feed.ht-ml.app" in (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert 'href="feed.xml"' in (tmp_path / "index.html").read_text(encoding="utf-8")
     assert publish_many.call_args.kwargs["password"] == "library-pass"
-    assert publish_one.call_count == 2
+    assert publish_one.call_count == 1
+    published_index = publish_one.call_args.args[0]
+    assert published_index.startswith("<!DOCTYPE html>")
+    assert "Subscribe via Atom" not in published_index
+
+
+def test_library_feed_warns_when_later_brief_publish_fails(tmp_path, monkeypatch):
+    _write_report(tmp_path, "ai-agents-raw.md")
+    (tmp_path / "csharp-raw.md").write_text(REPORT.replace("AI agents", "C#"), encoding="utf-8")
+    monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", tmp_path / "no-briefings")
+    monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
+    publish = mock.Mock(
+        side_effect=[
+            {"url": "https://first-brief.ht-ml.app"},
+            html_publish.HtmlPublishError("second publish failed"),
+        ]
+    )
+    monkeypatch.setattr("lib.html_publish.publish_html", publish)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["last30days.py", "library", "feed", "--save-dir", str(tmp_path), "--publish"],
+    )
+    stderr = io.StringIO()
+
+    with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+        result = cli.main()
+
+    assert result == 1
+    assert "Library publish failed: second publish failed" in stderr.getvalue()
+    assert "Partial publish: 1 public brief page(s)" in stderr.getvalue()
