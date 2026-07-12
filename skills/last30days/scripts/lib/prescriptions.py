@@ -214,7 +214,7 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
             "service that can see your logged-in Xiaohongshu browser session; "
             "set XIAOHONGSHU_API_BASE only when it runs on a custom host/port"
         ),
-        fix_cli="XIAOHONGSHU_API_BASE=http://localhost:18060",
+        fix_cli="XIAOHONGSHU_API_BASE=http://your-host:18060  # only for a custom host; leave unset to auto-probe localhost and host.docker.internal",
         anchor="api-keys-env",
     ),
 ))

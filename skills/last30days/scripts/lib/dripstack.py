@@ -170,6 +170,7 @@ def parse_dripstack_response(
             "engagement": {},
             "relevance": relevance,
             "why_relevant": why_relevant,
+            "body": body,
             "snippet": snippet_text[:400],
             "metadata": {
                 "publication_slug": pub_slug,

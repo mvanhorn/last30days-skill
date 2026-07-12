@@ -234,7 +234,7 @@ def _normalize_dripstack(
         item_id=str(item.get("id") or f"DS{index + 1}"),
         source=source,
         title=str(item.get("title") or ""),
-        body=str(item.get("snippet") or "") or str(item.get("title") or ""),
+        body=str(item.get("body") or "") or str(item.get("snippet") or "") or str(item.get("title") or ""),
         url=str(item.get("url") or ""),
         author=str(item.get("author") or "") or None,
         container=str(meta.get("publication_slug") or "") or None,

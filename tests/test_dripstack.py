@@ -94,3 +94,15 @@ def test_parse_handles_missing_fields_conservatively():
     assert item["title"] == "DripStack result 1"
     assert item["url"] == ""
     assert item["relevance"] == 0.5
+
+
+def test_parse_emits_body_and_normalizer_prefers_it():
+    parsed = dripstack.parse_dripstack_response([_api_item()], query="nvidia")
+
+    assert parsed[0]["body"] == "Capital, offtake and datacenters."
+
+    from lib import normalize
+    normalized = normalize._normalize_dripstack(
+        "dripstack", parsed[0], 0, "2026-06-12", "2026-07-12"
+    )
+    assert normalized.body == "Capital, offtake and datacenters."
