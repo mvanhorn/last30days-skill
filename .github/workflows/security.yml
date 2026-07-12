@@ -59,7 +59,7 @@ jobs:
       # verified secrets. Keep output limited to verified findings to avoid noisy
       # unverified annotations.
       - name: Run TruffleHog OSS secret scan
-        uses: trufflesecurity/trufflehog@30d5bb91af1a771378349dbbb0c82129392acf70 # v3.95.6
+        uses: trufflesecurity/trufflehog@00155c9dc586f34d189adc83d3ac2698c2ec551f # v3.95.8
         with:
           version: 3.95.5
           extra_args: --results=verified
