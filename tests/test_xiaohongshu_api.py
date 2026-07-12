@@ -170,3 +170,31 @@ def test_search_feeds_requires_logged_in_xiaohongshu_session():
                 "matcha latte", "2026-06-01", "2026-07-01",
                 "http://localhost:18060",
             )
+
+
+def test_xiaohongshu_activates_via_persisted_include_sources(monkeypatch):
+    from unittest import mock as _mock
+    from lib import env as _env, pipeline as _pipeline
+
+    probe = _mock.Mock(return_value=True)
+    monkeypatch.setattr(_env, "is_xiaohongshu_available", probe)
+
+    available = _pipeline.available_sources(
+        {"INCLUDE_SOURCES": "xiaohongshu"}, None, x_pending=False
+    )
+
+    assert "xiaohongshu" in available
+    probe.assert_called_once()
+
+
+def test_xiaohongshu_probe_never_fires_without_any_opt_in(monkeypatch):
+    from unittest import mock as _mock
+    from lib import env as _env, pipeline as _pipeline
+
+    probe = _mock.Mock(return_value=True)
+    monkeypatch.setattr(_env, "is_xiaohongshu_available", probe)
+
+    available = _pipeline.available_sources({}, None, x_pending=False)
+
+    assert "xiaohongshu" not in available
+    probe.assert_not_called()

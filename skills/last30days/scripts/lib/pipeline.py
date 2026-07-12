@@ -188,11 +188,15 @@ def available_sources(
     # GitHub is reachable via the unauthenticated REST tier too, so it is
     # available even without a token/gh CLI (a token only raises rate limits).
     available.append("github")
-    # DripStack is requested-only (owner decision, #791): a commercial
-    # third-party API must never receive default-run traffic. Request it per
-    # run (--search dripstack) or via LAST30DAYS_DEFAULT_SEARCH; the search
-    # API is free and public (no key), so the request itself is the gate.
-    if requested_sources and "dripstack" in requested_sources:
+    # DripStack is opt-in only (owner decision, #791): a commercial
+    # third-party API must never receive default-run traffic. Opt in per run
+    # (--search dripstack) or persistently (INCLUDE_SOURCES=dripstack in
+    # .env, the LinkedIn/Perplexity pattern); the search API is free and
+    # public (no key), so the opt-in itself is the gate.
+    include_sources = (config.get("INCLUDE_SOURCES") or "").lower().split(",")
+    if "dripstack" in include_sources or (
+        requested_sources and "dripstack" in requested_sources
+    ):
         available.append("dripstack")
     if which("digg-pp-cli"):
         available.append("digg")
@@ -219,7 +223,6 @@ def available_sources(
     if requested_sources and "jobs" in requested_sources:
         available.append("jobs")
     # Perplexity Sonar: opt-in additive source via INCLUDE_SOURCES=perplexity
-    include_sources = (config.get("INCLUDE_SOURCES") or "").lower().split(",")
     if _has_perplexity_provider(config) and (
         "perplexity" in include_sources or (requested_sources and "perplexity" in requested_sources)
     ):
@@ -241,7 +244,10 @@ def available_sources(
         "trustpilot" in include_sources or (requested_sources and "trustpilot" in requested_sources)
     ):
         available.append("trustpilot")
-    if requested_sources and "xiaohongshu" in requested_sources and env.is_xiaohongshu_available(config):
+    if (
+        "xiaohongshu" in include_sources
+        or (requested_sources and "xiaohongshu" in requested_sources)
+    ) and env.is_xiaohongshu_available(config):
         available.append("xiaohongshu")
     # Threads: opt-in via INCLUDE_SOURCES (same pattern as perplexity/linkedin).
     # Was auto-on with the key; gated so the onboarding "Everything" tier is a

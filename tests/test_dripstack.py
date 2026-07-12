@@ -106,3 +106,19 @@ def test_parse_emits_body_and_normalizer_prefers_it():
         "dripstack", parsed[0], 0, "2026-06-12", "2026-07-12"
     )
     assert normalized.body == "Capital, offtake and datacenters."
+
+
+def test_dripstack_activates_via_persisted_include_sources():
+    """INCLUDE_SOURCES is the .env checkbox for persistent opt-ins (the
+    LinkedIn/Perplexity pattern); dripstack must honor it, not only --search."""
+    available = pipeline.available_sources(
+        {"INCLUDE_SOURCES": "dripstack"}, None, x_pending=False
+    )
+    assert "dripstack" in available
+
+
+def test_unrelated_include_sources_keeps_dripstack_off():
+    available = pipeline.available_sources(
+        {"INCLUDE_SOURCES": "linkedin,tiktok"}, None, x_pending=False
+    )
+    assert "dripstack" not in available

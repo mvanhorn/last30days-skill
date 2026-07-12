@@ -130,7 +130,7 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | Hacker News | none | always on | yes |
 | Polymarket | none | always on | yes |
 | StockTwits | none | auto-on for ticker/crypto topics only (gated by symbol detection); never registered for non-financial topics | yes (public API, ~200 req/hr per IP) |
-| DripStack | none | requested-only: include it with `--search dripstack` (or LAST30DAYS_DEFAULT_SEARCH). Searches premium financial newsletters and analyst writeups via a free, public search API — no key needed. Never active on default runs. | yes when requested (public API, no auth) |
+| DripStack | none | opt-in only: per run with `--search dripstack`, or persistently with `INCLUDE_SOURCES=dripstack` in `.env`. Searches premium financial newsletters and analyst writeups via a free, public search API — no key needed. Never active without the opt-in. | yes when opted in (public API, no auth) |
 | GitHub | `gh` CLI installed (uses your GitHub auth) | always on if `gh` present | yes |
 | YouTube | `yt-dlp` CLI installed; `SCRAPECREATORS_API_KEY` adds a server-side transcript fallback used only when yt-dlp fails (429 / bot-gate) | always on if `yt-dlp` present; SC transcript fallback default-on when key set (no credit spent unless yt-dlp fails) | yes |
 | YouTube comments | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `youtube_comments` (**on by default** — written by the Step 5 Recommended tier) | top comments (by likes) on the top ~3 videos by engagement | ~3 calls/run; 10K free calls |
