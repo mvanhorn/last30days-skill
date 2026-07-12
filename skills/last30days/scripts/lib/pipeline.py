@@ -193,7 +193,11 @@ def available_sources(
     # (--search dripstack) or persistently (INCLUDE_SOURCES=dripstack in
     # .env, the LinkedIn/Perplexity pattern); the search API is free and
     # public (no key), so the opt-in itself is the gate.
-    include_sources = (config.get("INCLUDE_SOURCES") or "").lower().split(",")
+    include_sources = {
+        token.strip()
+        for token in (config.get("INCLUDE_SOURCES") or "").lower().split(",")
+        if token.strip()
+    }
     if "dripstack" in include_sources or (
         requested_sources and "dripstack" in requested_sources
     ):

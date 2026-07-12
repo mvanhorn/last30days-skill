@@ -122,3 +122,10 @@ def test_unrelated_include_sources_keeps_dripstack_off():
         {"INCLUDE_SOURCES": "linkedin,tiktok"}, None, x_pending=False
     )
     assert "dripstack" not in available
+
+
+def test_include_sources_tolerates_whitespace_around_commas():
+    available = pipeline.available_sources(
+        {"INCLUDE_SOURCES": "linkedin, dripstack"}, None, x_pending=False
+    )
+    assert "dripstack" in available
