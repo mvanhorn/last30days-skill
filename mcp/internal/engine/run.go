@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -136,6 +137,10 @@ func resolveTimeout(explicit time.Duration) time.Duration {
 	if raw := os.Getenv(TimeoutEnvOverride); raw != "" {
 		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
 			return d
+		}
+		// Accept bare integer seconds (e.g. "300") as documented.
+		if secs, err := strconv.Atoi(raw); err == nil && secs > 0 {
+			return time.Duration(secs) * time.Second
 		}
 	}
 	return DefaultTimeout

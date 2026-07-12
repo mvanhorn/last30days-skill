@@ -279,3 +279,22 @@ func TestResolveTimeoutHonorsEnv(t *testing.T) {
 		t.Fatalf("explicit value not honored: got %v", got)
 	}
 }
+
+func TestResolveTimeoutBareIntegerSeconds(t *testing.T) {
+	t.Setenv(TimeoutEnvOverride, "300")
+	if got := resolveTimeout(0); got != 300*time.Second {
+		t.Fatalf("bare integer 300: got %v, want 5m0s", got)
+	}
+	t.Setenv(TimeoutEnvOverride, "1")
+	if got := resolveTimeout(0); got != 1*time.Second {
+		t.Fatalf("bare integer 1: got %v, want 1s", got)
+	}
+	t.Setenv(TimeoutEnvOverride, "0")
+	if got := resolveTimeout(0); got != DefaultTimeout {
+		t.Fatalf("bare integer 0: got %v, want default %v", got, DefaultTimeout)
+	}
+	t.Setenv(TimeoutEnvOverride, "-1")
+	if got := resolveTimeout(0); got != DefaultTimeout {
+		t.Fatalf("bare integer -1: got %v, want default %v", got, DefaultTimeout)
+	}
+}
