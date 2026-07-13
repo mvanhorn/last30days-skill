@@ -8,7 +8,7 @@ import time
 import urllib.error
 import urllib.request
 from typing import Any, Dict, Optional, Union
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 
 from . import log as _log
 
@@ -83,6 +83,9 @@ def request(
         if filtered:
             separator = "&" if ("?" in url) else "?"
             url = f"{url}{separator}{urlencode(filtered)}"
+    # Encode any non-ASCII characters to prevent UnicodeEncodeError from
+    # http.client.HTTPConnection.putrequest (which uses latin-1 internally).
+    url = quote(url, safe='/:@!$&\'()*+,;=-._~%?#[]=+')
 
     data = None
     if json_data is not None:
