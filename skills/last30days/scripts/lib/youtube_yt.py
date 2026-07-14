@@ -975,7 +975,7 @@ def search_and_transcribe(
                 items.append(item)
 
     # Sort merged results by views descending
-    items.sort(key=lambda x: x.get("engagement", {}).get("views", 0), reverse=True)
+    items.sort(key=lambda x: x.get("engagement", {}).get("views") or 0, reverse=True)
 
     if not items:
         return search_result

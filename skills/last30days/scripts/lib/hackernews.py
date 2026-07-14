@@ -370,7 +370,7 @@ def enrich_top_stories(
     # Sort by points to enrich the most popular stories
     by_points = sorted(
         range(len(items)),
-        key=lambda i: items[i].get("engagement", {}).get("points", 0),
+        key=lambda i: items[i].get("engagement", {}).get("points") or 0,
         reverse=True,
     )
     to_enrich = by_points[:limit]

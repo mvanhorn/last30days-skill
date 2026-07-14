@@ -48,7 +48,7 @@ def local_relevance(
     # often have titles that don't keyword-match the query (e.g., "YE - FATHER
     # (feat. TRAVIS SCOTT)" doesn't match "kanye west"). The engagement signals
     # say "this is important" even when text overlap is weak.
-    if item.source == "youtube" and item.engagement.get("views", 0) > 100_000:
+    if item.source == "youtube" and (item.engagement.get("views") or 0) > 100_000:
         score = max(score, 0.3)
 
     # Project-mode GitHub floor: items fetched via --github-repo are explicitly
@@ -311,7 +311,7 @@ def _passes_engagement_floor(item: schema.SourceItem, sole_source: bool) -> bool
         return True
     if sole_source:
         return True
-    views = item.engagement.get("views", 0) if item.engagement else 0
+    views = item.engagement.get("views") or 0 if item.engagement else 0
     return views >= _VIDEO_ENGAGEMENT_FLOOR_VIEWS
 
 

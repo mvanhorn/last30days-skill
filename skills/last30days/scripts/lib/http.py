@@ -558,7 +558,17 @@ def request(
             url = f"{url}{separator}{urlencode(filtered)}"
     # Encode any non-ASCII characters to prevent UnicodeEncodeError from
     # http.client.HTTPConnection.putrequest (which uses latin-1 internally).
-    url = quote(url, safe='/:@!$&\'()*+,;=-._~%?#[]=+')
+    # Only encode path, query, and fragment — not the hostname (netloc), which
+    # needs IDNA encoding instead of percent-encoding for non-ASCII domains.
+    parts = urlsplit(url)
+    safe = '/:@!$&\'()*+,;=-._~%?#[]=+'
+    url = urlunsplit((
+        parts.scheme,
+        parts.netloc,
+        quote(parts.path, safe=safe),
+        quote(parts.query, safe=safe),
+        quote(parts.fragment, safe=safe),
+    ))
 
     fixture_request = _fixture_request(method, url, json_data, raw)
     fixture_redactions = _fixture_redactions(url, headers, json_data)

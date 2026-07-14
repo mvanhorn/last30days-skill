@@ -269,7 +269,7 @@ def parse_github_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
         title = item.get("title", "")
         body_text = item.get("body") or ""
         reactions_total = item.get("reactions", {}).get("total_count", 0) if isinstance(item.get("reactions"), dict) else 0
-        comment_count = item.get("comments", 0)
+        comment_count = item.get("comments") or 0
         labels = [
             lbl.get("name", "") for lbl in (item.get("labels") or [])
             if isinstance(lbl, dict)
@@ -488,7 +488,7 @@ def _fetch_top_issues(repo: str, token: str) -> Dict[str, Any]:
         result["top_feature_request"] = {
             "title": item.get("title", ""),
             "reactions": item.get("reactions", {}).get("total_count", 0) if isinstance(item.get("reactions"), dict) else 0,
-            "comments": item.get("comments", 0),
+            "comments": item.get("comments") or 0,
             "url": item.get("html_url", ""),
         }
     elif feat_data and feat_data.get("total_count", 0) == 0:
@@ -501,7 +501,7 @@ def _fetch_top_issues(repo: str, token: str) -> Dict[str, Any]:
             result["top_feature_request"] = {
                 "title": item.get("title", ""),
                 "reactions": item.get("reactions", {}).get("total_count", 0) if isinstance(item.get("reactions"), dict) else 0,
-                "comments": item.get("comments", 0),
+                "comments": item.get("comments") or 0,
                 "url": item.get("html_url", ""),
             }
 
@@ -514,7 +514,7 @@ def _fetch_top_issues(repo: str, token: str) -> Dict[str, Any]:
         result["top_complaint"] = {
             "title": item.get("title", ""),
             "reactions": item.get("reactions", {}).get("total_count", 0) if isinstance(item.get("reactions"), dict) else 0,
-            "comments": item.get("comments", 0),
+            "comments": item.get("comments") or 0,
             "url": item.get("html_url", ""),
         }
 

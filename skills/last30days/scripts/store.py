@@ -584,8 +584,8 @@ def _record_sightings(
             finding.get("source", "unknown"),
             url,
             finding.get("source_title") or finding.get("title", ""),
-            finding.get("engagement_score", 0),
-            finding.get("relevance_score", 0),
+            finding.get("engagement_score") if finding.get("engagement_score") is not None else 0,
+            finding.get("relevance_score") if finding.get("relevance_score") is not None else 0,
         ))
 
     if not sighting_rows:

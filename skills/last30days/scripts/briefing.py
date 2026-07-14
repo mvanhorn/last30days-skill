@@ -85,7 +85,7 @@ def generate_daily(since: str = None) -> dict:
 
         # Extract top finding by engagement
         if findings:
-            top = max(findings, key=lambda f: f.get("engagement_score", 0))
+            top = max(findings, key=lambda f: f.get("engagement_score") or 0)
             topic_data["top_finding"] = {
                 "title": top.get("source_title", ""),
                 "source": top.get("source", ""),
@@ -110,7 +110,7 @@ def generate_daily(since: str = None) -> dict:
 
     top_overall = None
     if all_findings:
-        top_overall = max(all_findings, key=lambda f: f.get("engagement_score", 0))
+        top_overall = max(all_findings, key=lambda f: f.get("engagement_score") or 0)
 
     result = {
         "status": "ok",
@@ -172,8 +172,8 @@ def generate_weekly() -> dict:
         finally:
             conn.close()
 
-        this_engagement = sum(f.get("engagement_score", 0) for f in this_week)
-        last_engagement = sum(f.get("engagement_score", 0) for f in last_week)
+        this_engagement = sum(f.get("engagement_score") or 0 for f in this_week)
+        last_engagement = sum(f.get("engagement_score") or 0 for f in last_week)
 
         # Trend calculation
         if last_engagement > 0:
@@ -194,7 +194,7 @@ def generate_weekly() -> dict:
             # engagement too).
             "top_findings": sorted(
                 this_week,
-                key=lambda f: f.get("engagement_score", 0),
+                key=lambda f: f.get("engagement_score") or 0,
                 reverse=True,
             )[:5],
         })
