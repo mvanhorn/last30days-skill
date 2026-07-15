@@ -15,12 +15,15 @@ Covers the plan's U4 scenarios:
      note, never a false-alarm error.
 """
 
+import datetime
 import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 import last30days as cli
@@ -111,6 +114,12 @@ class _Hermetic:
             # Hermetic library: never glob the user's real saved-research dir.
             # Tests that assert a specific brief count override this.
             mock.patch("lib.doctor._count_saved_briefs", return_value=0),
+            # Hermetic run-evidence: never read the user's real last-report.json.
+            # Tests that inject run evidence override this with a temp file.
+            mock.patch("lib.doctor._last_report_path", return_value=None),
+            # Hermetic live probe: never make a real network call. Tests that
+            # exercise probing override this with canned results.
+            mock.patch("lib.doctor._probe_sources", return_value={}),
             # FTS5 is present on CI/dev SQLite; pin it so the library record's
             # branch is deterministic regardless of the host's SQLite build.
             mock.patch("lib.library_index.fts5_available", return_value=True),
@@ -559,8 +568,13 @@ class YoutubeTranscriptionNote(unittest.TestCase):
 
     def test_text_line_includes_the_fix_on_the_ok_line(self):
         text = doctor.render_text(self.report)
+        # Located by source name, not glyph: the four-state audit sorts a
+        # no-run-evidence ok source to UNVERIFIED, but the transcription fix
+        # must still ride the youtube line.
         line = next(
-            l for l in text.splitlines() if l.strip().startswith("✓ youtube")
+            l
+            for l in text.splitlines()
+            if " youtube" in l and "search + transcripts work" in l
         )
         self.assertIn("search + transcripts work", line)
         self.assertIn(f"fix: {self.entry.fix_nl}", line)
@@ -670,13 +684,18 @@ class NativeSearchHost(unittest.TestCase):
 
 
 class TextReport(unittest.TestCase):
-    """Grouped text rendering: ready / degraded / off / error."""
+    """Grouped text rendering: four-state audit."""
 
     def test_groups_and_lines(self):
         report = _build({}, probe_map={"yt-dlp": health.BROKEN})
         text = doctor.render_text(report)
         self.assertIn("last30days doctor", text)
-        for header in ("Ready", "Degraded", "Off", "Errors"):
+        for header in (
+            "WORKING",
+            "TURNED ON - UNVERIFIED",
+            "NOT WORKING",
+            "COULD BE ON",
+        ):
             self.assertIn(header, text)
         # One line per source: glyph + source name; fix on non-ok lines.
         self.assertIn("reddit", text)
@@ -691,6 +710,488 @@ class TextReport(unittest.TestCase):
         report = _build({"BRAVE_API_KEY": "dummy-brave-secret-000"})
         text = doctor.render_text(report)
         self.assertIn("will use: brave", text)
+
+
+def _write_last_report(dir_path, *, source_status, topic="wordpress", fresh=True):
+    """Write a minimal last-report.json the run-evidence loader can read."""
+    ts = datetime.datetime.now(datetime.timezone.utc)
+    if not fresh:
+        ts = ts - datetime.timedelta(
+            seconds=doctor.DEFAULT_REPORT_CACHE_TTL_SECONDS + 600
+        )
+    iso = ts.isoformat()
+    payload = {
+        "schema": doctor.REPORT_CACHE_SCHEMA_VERSION,
+        "timestamp": iso,
+        "topic": topic,
+        "reports": [
+            {
+                "entity": "",
+                "report": {
+                    "generated_at": iso,
+                    "source_status": {
+                        src: {
+                            "source": src,
+                            "state": st.get("state"),
+                            "items_returned": st.get("items_returned", 0),
+                            "detail": st.get("detail"),
+                            "at": iso,
+                            "fix_hint": st.get("fix_hint"),
+                        }
+                        for src, st in source_status.items()
+                    },
+                },
+            }
+        ],
+    }
+    path = Path(dir_path) / doctor.REPORT_CACHE_FILENAME
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    return path
+
+
+class RunEvidenceOverlay(unittest.TestCase):
+    """U1: build_report overlays last-report.json per-source outcomes."""
+
+    def _build_with_evidence(self, source_status, fresh=True):
+        tmp = tempfile.mkdtemp()
+        path = _write_last_report(tmp, source_status=source_status, fresh=fresh)
+        with _Hermetic(), mock.patch(
+            "lib.doctor._last_report_path", return_value=path
+        ):
+            return doctor.build_report({})
+
+    def test_failed_source_outcome_overlaid(self):
+        report = self._build_with_evidence(
+            {
+                "youtube": {"state": "error", "items_returned": 0, "detail": "HTTP 500"},
+                "reddit": {"state": "ok", "items_returned": 13},
+            }
+        )
+        yt = report["sources"]["youtube"]["run_outcome"]
+        self.assertIsNotNone(yt)
+        self.assertEqual("error", yt["state"])
+        self.assertIn("HTTP 500", yt["detail"])
+        self.assertEqual(
+            13, report["sources"]["reddit"]["run_outcome"]["items_returned"]
+        )
+        self.assertTrue(report["run_evidence"]["fresh"])
+        self.assertTrue(report["run_evidence"]["present"])
+
+    def test_no_cache_yields_no_outcomes(self):
+        with _Hermetic():  # _last_report_path -> None
+            report = doctor.build_report({})
+        self.assertIsNone(report["sources"]["reddit"]["run_outcome"])
+        self.assertFalse(report["run_evidence"]["present"])
+
+    def test_corrupt_cache_treated_as_absent(self):
+        tmp = tempfile.mkdtemp()
+        path = Path(tmp) / doctor.REPORT_CACHE_FILENAME
+        path.write_text("{not valid json", encoding="utf-8")
+        with _Hermetic(), mock.patch(
+            "lib.doctor._last_report_path", return_value=path
+        ):
+            report = doctor.build_report({})
+        self.assertIsNone(report["sources"]["reddit"]["run_outcome"])
+        self.assertFalse(report["run_evidence"]["present"])
+
+    def test_stale_cache_present_but_not_overlaid(self):
+        report = self._build_with_evidence(
+            {"youtube": {"state": "error", "items_returned": 0}}, fresh=False
+        )
+        # Present but not fresh: overlay withheld from plain doctor (R4),
+        # while --postmortem (U4) can still read it by age.
+        self.assertIsNone(report["sources"]["youtube"]["run_outcome"])
+        self.assertTrue(report["run_evidence"]["present"])
+        self.assertFalse(report["run_evidence"]["fresh"])
+
+
+class FourStateAudit(unittest.TestCase):
+    """U2: audit_state derivation + grouped render."""
+
+    def test_keyless_ok_no_evidence_is_working(self):
+        rec = {"tier": "ok", "status": "ok"}
+        self.assertEqual(doctor.AUDIT_WORKING, doctor.audit_state("reddit", rec))
+
+    def test_configured_ok_no_evidence_is_unverified(self):
+        rec = {"tier": "ok", "status": "ok"}
+        self.assertEqual(doctor.AUDIT_UNVERIFIED, doctor.audit_state("tiktok", rec))
+
+    def test_fresh_run_items_is_working(self):
+        rec = {"tier": "ok", "status": "ok"}
+        ro = {"state": "ok", "items_returned": 13}
+        self.assertEqual(doctor.AUDIT_WORKING, doctor.audit_state("tiktok", rec, ro))
+
+    def test_fresh_run_error_is_not_working(self):
+        rec = {"tier": "ok", "status": "ok"}
+        ro = {"state": "error", "items_returned": 0, "detail": "HTTP 500"}
+        self.assertEqual(
+            doctor.AUDIT_NOT_WORKING, doctor.audit_state("youtube", rec, ro)
+        )
+
+    def test_fresh_run_partial_is_unverified(self):
+        rec = {"tier": "ok", "status": "ok"}
+        ro = {"state": "partial", "items_returned": 8, "detail": "HTTP 400"}
+        self.assertEqual(
+            doctor.AUDIT_UNVERIFIED, doctor.audit_state("instagram", rec, ro)
+        )
+
+    def test_off_tier_is_could_be_on(self):
+        rec = {"tier": "off", "status": "opt-in"}
+        self.assertEqual(
+            doctor.AUDIT_COULD_BE_ON, doctor.audit_state("threads", rec)
+        )
+
+    def test_probe_result_decides_when_no_run(self):
+        rec = {"tier": "ok", "status": "ok"}
+        self.assertEqual(
+            doctor.AUDIT_WORKING, doctor.audit_state("tiktok", rec, None, {"ok": True})
+        )
+        self.assertEqual(
+            doctor.AUDIT_NOT_WORKING,
+            doctor.audit_state("tiktok", rec, None, {"ok": False}),
+        )
+
+    def test_render_json_keeps_legacy_keys_and_adds_audit(self):
+        report = _build({})
+        for name, rec in report["sources"].items():
+            self.assertIn("tier", rec, name)
+            self.assertIn("status", rec, name)
+            self.assertIn("audit_state", rec, name)
+        self.assertEqual("config", report["mode"])
+        blob = json.loads(doctor.render_json(report))
+        self.assertIn("mode", blob)
+        self.assertIn("audit_state", blob["sources"]["github"])
+
+    def test_every_source_its_own_line(self):
+        text = doctor.render_text(_build({}))
+        self.assertRegex(text, r"[●◐✕○] github")
+
+    def test_working_line_shows_item_count(self):
+        tmp = tempfile.mkdtemp()
+        path = _write_last_report(
+            tmp, source_status={"reddit": {"state": "ok", "items_returned": 13}}
+        )
+        with _Hermetic(), mock.patch(
+            "lib.doctor._last_report_path", return_value=path
+        ):
+            text = doctor.render_text(doctor.build_report({}))
+        self.assertIn("13 items last run", text)
+
+
+class JsonContract(unittest.TestCase):
+    """U9: doctor --json is additive; --cached serves the new audit shape."""
+
+    LEGACY_RECORD_KEYS = {
+        "tier", "status", "mode", "backends", "active_backend", "fix",
+        "requires", "note", "detail", "pin_var", "pin_flag", "pinned",
+    }
+
+    def test_legacy_record_keys_preserved(self):
+        blob = json.loads(doctor.render_json(_build({})))
+        rec = blob["sources"]["reddit"]
+        for key in self.LEGACY_RECORD_KEYS:
+            self.assertIn(key, rec, key)
+        self.assertIn("audit_state", rec)  # additive
+        self.assertIn("mode", blob)  # top-level additive
+
+    def test_new_keys_additive(self):
+        blob = json.loads(
+            doctor.render_json(
+                _build(
+                    {"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"},
+                    probe_map={"yt-dlp": health.OK},
+                )
+            )
+        )
+        yt = blob["sources"]["youtube"]
+        self.assertIn("cli", yt)
+        self.assertIn("backups", yt)
+        self.assertIn("comments", yt)
+
+    def test_cached_roundtrip_serves_audit_shape(self):
+        tmp = Path(tempfile.mkdtemp()) / "doctor-cache.json"
+        with _Hermetic(), mock.patch("lib.doctor.cache_path", return_value=tmp):
+            report = doctor.build_report({})
+            report["generated_at"] = datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat()
+            report["from_cache"] = False
+            self.assertTrue(doctor._write_cache(report, {}))
+            served = doctor.read_cached_report({})
+        self.assertIsNotNone(served)
+        self.assertIn("audit_state", served["sources"]["reddit"])
+        self.assertIn("WORKING", doctor.render_text(served))
+
+
+class LiveProbe(unittest.TestCase):
+    """U5: bounded live probe (--probe / no-fresh-run auto-fallback)."""
+
+    def test_probeable_excludes_credit_gated(self):
+        probeable = set(doctor._probeable_sources())
+        for gated in ("x", "tiktok", "instagram", "threads", "linkedin"):
+            self.assertNotIn(gated, probeable, gated)
+        # free HTTP + keyless CLI sources ARE probeable
+        for free in ("reddit", "hackernews", "polymarket", "github", "youtube"):
+            self.assertIn(free, probeable, free)
+
+    def test_probe_source_http_reachable(self):
+        with mock.patch("lib.doctor._http_ok", return_value=(True, "HTTP 200")):
+            res = doctor._probe_source("hackernews", {}, 5)
+        self.assertTrue(res["ok"])
+        self.assertTrue(res["probed"])
+
+    def test_probe_source_credit_gated_returns_none(self):
+        self.assertIsNone(doctor._probe_source("tiktok", {}, 5))
+
+    def test_probe_failure_is_isolated(self):
+        def flaky(name, config, timeout):
+            if name == "reddit":
+                raise RuntimeError("boom")
+            return {"ok": True, "probed": True}
+
+        with mock.patch("lib.doctor._probe_source", flaky):
+            results = doctor._probe_sources({}, timeout=5)
+        self.assertFalse(results["reddit"]["ok"])  # isolated failure
+        self.assertIn("boom", results["reddit"]["detail"])
+        self.assertTrue(results["hackernews"]["ok"])  # others unaffected
+
+    def test_probe_deadline_never_hangs(self):
+        import time
+
+        def too_slow(name, config, timeout):
+            time.sleep(1.3)  # exceeds the timeout(0)+1s result deadline
+            return {"ok": True, "probed": True}
+
+        with mock.patch("lib.doctor._probe_source", too_slow):
+            results = doctor._probe_sources({}, timeout=0)
+        self.assertTrue(results)
+        self.assertTrue(
+            any("deadline" in r.get("detail", "") for r in results.values())
+        )
+
+    def test_probe_result_flips_unverified_to_working(self):
+        rec = {"tier": "ok", "status": "ok", "audit_state": doctor.AUDIT_UNVERIFIED}
+        report = {"sources": {"hackernews": rec}}
+        doctor._apply_probe(report, {"hackernews": {"ok": True, "probed": True}})
+        self.assertEqual(doctor.AUDIT_WORKING, rec["audit_state"])
+        self.assertTrue(rec["probe"]["ok"])
+
+    def test_auto_probe_fires_when_no_fresh_run(self):
+        canned = {"hackernews": {"ok": True, "detail": "HTTP 200", "probed": True}}
+        with _Hermetic(), mock.patch(
+            "lib.doctor._probe_sources", return_value=canned
+        ) as probed:
+            out = io.StringIO()
+            err = io.StringIO()
+            with redirect_stdout(out), redirect_stderr(err):
+                rc = doctor.run({})
+        self.assertEqual(0, rc)
+        probed.assert_called()  # auto-fired: no fresh run
+        self.assertIn("live probe", err.getvalue())
+
+    def test_no_auto_probe_when_fresh_run(self):
+        tmp = tempfile.mkdtemp()
+        path = _write_last_report(
+            tmp, source_status={"reddit": {"state": "ok", "items_returned": 5}}
+        )
+        with _Hermetic(), mock.patch(
+            "lib.doctor._last_report_path", return_value=path
+        ), mock.patch("lib.doctor._probe_sources") as probed:
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                doctor.run({})
+        probed.assert_not_called()  # fresh run -> overlay, no probe
+
+
+class Postmortem(unittest.TestCase):
+    """U4: --postmortem reads the last run's per-source outcomes."""
+
+    def _pm(self, source_status, fresh=True):
+        tmp = tempfile.mkdtemp()
+        path = _write_last_report(tmp, source_status=source_status, fresh=fresh)
+        with _Hermetic(), mock.patch(
+            "lib.doctor._last_report_path", return_value=path
+        ):
+            return doctor.build_postmortem({})
+
+    def test_failed_partial_succeeded_grouping(self):
+        pm = self._pm(
+            {
+                "youtube": {
+                    "state": "error",
+                    "items_returned": 0,
+                    "detail": "HTTP 500",
+                    "fix_hint": "retry later",
+                },
+                "instagram": {
+                    "state": "partial",
+                    "items_returned": 8,
+                    "detail": "HTTP 400",
+                },
+                "reddit": {"state": "ok", "items_returned": 13},
+            }
+        )
+        text = doctor.render_postmortem_text(pm)
+        self.assertIn("Failed:", text)
+        self.assertIn("HTTP 500", text)
+        self.assertIn("retry later", text)
+        self.assertIn("Partial:", text)
+        self.assertIn("instagram", text)
+        self.assertIn("Succeeded:", text)
+        self.assertIn("reddit (13)", text)
+
+    def test_empty_state(self):
+        with _Hermetic():  # _last_report_path -> None
+            pm = doctor.build_postmortem({})
+        self.assertFalse(pm["present"])
+        self.assertIn("No saved run found", doctor.render_postmortem_text(pm))
+
+    def test_json_mode_shape(self):
+        pm = self._pm({"youtube": {"state": "error", "items_returned": 0}})
+        self.assertEqual("postmortem", pm["mode"])
+        self.assertIn("youtube", pm["outcomes"])
+
+    def test_reads_stale_run_by_age(self):
+        pm = self._pm(
+            {"youtube": {"state": "timeout", "items_returned": 0}}, fresh=False
+        )
+        self.assertTrue(pm["present"])
+        self.assertIn("youtube", pm["outcomes"])
+
+    def test_cli_dispatch_exits_zero(self):
+        rc, out = _run_cli_doctor(["doctor", "--postmortem"], {})
+        self.assertEqual(0, rc)
+        self.assertIn("post-mortem", out)
+
+
+class BackupAndCommentLanes(unittest.TestCase):
+    """U7: backup + comment sub-lanes render on their parent source."""
+
+    def test_backups_armed_with_sc_key(self):
+        report = _build({"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"})
+        self.assertTrue(report["sources"]["reddit"]["backups"][0]["armed"])
+        yt_backup = report["sources"]["youtube"]["backups"][0]
+        self.assertTrue(yt_backup["armed"])
+        self.assertIn("rate-limited", yt_backup["note"])
+        text = doctor.render_text(report)
+        self.assertIn("backup: ScrapeCreators transcript/search backstop — armed", text)
+
+    def test_backups_off_without_sc_key(self):
+        report = _build({})
+        self.assertFalse(report["sources"]["reddit"]["backups"][0]["armed"])
+        self.assertFalse(report["sources"]["youtube"]["backups"][0]["armed"])
+
+    def test_youtube_comments_reflect_include_sources(self):
+        on = _build(
+            {
+                "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
+                "INCLUDE_SOURCES": "tiktok,instagram,youtube_comments",
+            }
+        )
+        self.assertTrue(on["sources"]["youtube"]["comments"]["enabled"])
+        off = _build({"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"})
+        self.assertFalse(off["sources"]["youtube"]["comments"]["enabled"])
+
+    def test_x_dual_path_note(self):
+        keyed = _build({"XAI_API_KEY": "dummy-xai-secret-000"})
+        note = keyed["sources"]["x"]["backups"][0]["note"]
+        self.assertIn("XAI_API_KEY", note)
+        self.assertTrue(keyed["sources"]["x"]["backups"][0]["armed"])
+
+    def test_sub_lanes_in_json(self):
+        report = _build({"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"})
+        blob = json.loads(doctor.render_json(report))
+        self.assertIn("backups", blob["sources"]["youtube"])
+        self.assertIn("comments", blob["sources"]["youtube"])
+
+
+class ThreadsOptIn(unittest.TestCase):
+    """U6: Threads reports opt-in state honestly against INCLUDE_SOURCES."""
+
+    def test_key_without_optin_is_could_be_on(self):
+        report = _build({"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"})
+        rec = report["sources"]["threads"]
+        self.assertEqual("opt-in", rec["status"])
+        self.assertEqual(doctor.AUDIT_COULD_BE_ON, rec["audit_state"])
+        self.assertIn("INCLUDE_SOURCES", rec["fix"])
+
+    def test_key_with_optin_is_working(self):
+        report = _build(
+            {
+                "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
+                "INCLUDE_SOURCES": "tiktok,instagram,threads",
+            }
+        )
+        rec = report["sources"]["threads"]
+        self.assertEqual("ok", rec["status"])
+
+    def test_no_key_is_could_be_on_with_sc_fix(self):
+        rec = _build({})["sources"]["threads"]
+        self.assertEqual("unconfigured", rec["status"])
+        self.assertEqual(doctor.AUDIT_COULD_BE_ON, rec["audit_state"])
+
+    def test_tiktok_on_by_default_with_key_unchanged(self):
+        # Regression: TikTok/Instagram stay on-by-default with a key (WORKING),
+        # they are NOT opt-in-gated like Threads.
+        report = _build({"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"})
+        self.assertEqual("ok", report["sources"]["tiktok"]["status"])
+        self.assertEqual("ok", report["sources"]["instagram"]["status"])
+
+
+class CliHealth(unittest.TestCase):
+    """U3: CLI-dependency health + techmeme/arxiv/trustpilot sources."""
+
+    def test_new_cli_sources_present(self):
+        report = _build(
+            {},
+            probe_map={
+                "techmeme-pp-cli": health.OK,
+                "arxiv-pp-cli": health.OK,
+                "trustpilot-pp-cli": health.OK,
+            },
+        )
+        for src in ("techmeme", "arxiv", "trustpilot"):
+            self.assertIn(src, report["sources"], src)
+            self.assertEqual("ok", report["sources"][src]["cli"]["status"], src)
+
+    def test_cli_marker_and_block_for_ytdlp(self):
+        report = _build({}, probe_map={"yt-dlp": health.OK})
+        self.assertEqual("ok", report["sources"]["youtube"]["cli"]["status"])
+        text = doctor.render_text(report)
+        self.assertIn("CLI health", text)
+        self.assertIn("[CLI: yt-dlp ✓]", text)
+
+    def test_keyless_source_has_no_cli(self):
+        report = _build({})
+        self.assertNotIn("cli", report["sources"]["polymarket"])
+        self.assertIn("need no CLI", doctor.render_text(report))
+
+    def test_digg_off_path_is_not_working(self):
+        def fake(name, timeout=health.PROBE_TIMEOUT):
+            if name == "digg-pp-cli":
+                return health.DependencyProbe(
+                    name=name,
+                    status=health.BROKEN,
+                    detail="installed off PATH",
+                    off_path=True,
+                    prescription="add ~/.local/bin to PATH",
+                )
+            return health.DependencyProbe(
+                name=name, status=health.MISSING, detail="missing",
+                prescription="install",
+            )
+
+        with _Hermetic(), mock.patch("lib.health.probe_dependency", fake):
+            report = doctor.build_report({})
+        self.assertTrue(report["sources"]["digg"]["cli"]["off_path"])
+        self.assertEqual(
+            doctor.AUDIT_NOT_WORKING, report["sources"]["digg"]["audit_state"]
+        )
+
+    def test_gh_absent_github_still_working(self):
+        report = _build({})  # gh missing by default in _Hermetic
+        gh = report["sources"]["github"]
+        self.assertEqual(doctor.AUDIT_WORKING, gh["audit_state"])
+        self.assertTrue(gh["cli"]["optional"])
 
 
 if __name__ == "__main__":

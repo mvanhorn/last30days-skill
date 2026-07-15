@@ -386,21 +386,28 @@ The engine treats public jobs/careers postings as evidence of focus or priority 
 
 ## Health check (`doctor`)
 
-One command answers "what's broken, what's serving, and what do I run to fix it" — per source: a rollup tier (ok / warn / off / error), the specific probe state, the backend the next run will use (for chained sources), and an exact fix on any non-ok tier:
+One command answers "what could be on, what's turned on, what's working, and what isn't" — a four-state audit (WORKING / TURNED ON - UNVERIFIED / NOT WORKING / COULD BE ON), one line per source, with a CLI-health block for sources that need a downloaded binary, indented backup/comment sub-lanes, the backend the next run will use (for chained sources), and an exact fix on anything that isn't working:
 
 ```bash
-python3 skills/last30days/scripts/last30days.py doctor            # grouped text report
-python3 skills/last30days/scripts/last30days.py doctor --json     # machine contract
-python3 skills/last30days/scripts/last30days.py doctor --cached   # serve the cached report while fresh
+python3 skills/last30days/scripts/last30days.py doctor              # four-state audit (text)
+python3 skills/last30days/scripts/last30days.py doctor --json       # machine contract
+python3 skills/last30days/scripts/last30days.py doctor --cached     # serve the cached report while fresh
+python3 skills/last30days/scripts/last30days.py doctor --postmortem # what actually broke on the last run
+python3 skills/last30days/scripts/last30days.py doctor --probe      # bounded live test (free/CLI sources)
 ```
 
-Slash-command form: `/last30days doctor`. Reporting problems is a successful run — the exit code is always 0, no browser cookies are read, no network calls are made, and no secret values appear anywhere (key presence is booleans only). Backends within a chained source are probed sequentially with a 5-second budget per binary probe, so a chained source's worst-case check time is additive across its backends (only reached when several binaries hang at once).
+Slash-command form: `/last30days doctor`. Reporting problems is a successful run — the exit code is always 0, no browser cookies are read, and no secret values appear anywhere (key presence is booleans only). Backends within a chained source are probed sequentially with a 5-second budget per binary probe, so a chained source's worst-case check time is additive across its backends (only reached when several binaries hang at once).
+
+`doctor --postmortem` reads the last run's `last-report.json` (any age, labeled) and reports what actually happened per source — Failed / Partial / Succeeded / Skipped, with details and fix hints — so a run that returned less than expected can be diagnosed after the fact. It makes no network calls.
+
+**Network note:** plain `doctor` with a fresh run, `--cached`, and `--json` make **no** network calls. `doctor --probe` — and a plain `doctor` when there is **no** fresh run to learn from — run a **bounded** live test to verify WORKING instead of guessing. The probe is scoped to free HTTP endpoints (Reddit, Hacker News, Polymarket, GitHub) plus keyless CLIs; credit-gated sources (X, TikTok, Instagram, Threads, …) are never probed, so no ScrapeCreators credits are spent and no auth rate limits are tripped. Each source is probed concurrently under a per-source deadline so a slow source can never hang the command.
 
 Every live run writes its JSON result to `~/.config/last30days/doctor-cache.json` (beside `last-run.json`; honors `LAST30DAYS_CONFIG_DIR`). `doctor --cached` returns that stored report when it is younger than the TTL, and falls through to a live run — rewriting the cache — when it is stale, absent, or corrupt. The cache also self-invalidates on configuration change: the payload carries a schema stamp plus a fingerprint of non-secret config signals (which credentials are present as booleans, the `LAST30DAYS_X_BACKEND` / `LAST30DAYS_REDDIT_BACKEND` pin values, and `INCLUDE_SOURCES`), so adding or removing a key, changing a pin, or toggling an opt-in source makes the next `--cached` call run live — no raw secret ever enters the fingerprint or the file. Every report also carries `from_cache` (true/false) and `generated_at` (when the report was built), in the `--json` top level and as a final `generated: … (cached|live)` text line, so you can always tell how old a cached answer is. A failed cache write is never fatal — doctor prints a one-line stderr warning and continues. An explicit `doctor` without `--cached` always runs live and refreshes the cache.
 
 | Var | Effect |
 | --- | --- |
 | `LAST30DAYS_DOCTOR_TTL` | Freshness window for `doctor --cached`, in **seconds**. Defaults to `900` (15 minutes). `0` makes every `--cached` call run live. |
+| `LAST30DAYS_DOCTOR_PROBE_TIMEOUT` | Per-source deadline (**seconds**) for `doctor --probe` live checks. Defaults to `10`. Caps each concurrent probe so a slow source cannot hang the command. |
 | `LAST30DAYS_X_BACKEND` | Pins the X backend (`xai` / `bird` / `xurl` / `xquik`); doctor renders the pin and predicts "will use" accordingly. |
 | `LAST30DAYS_REDDIT_BACKEND` | `scrapecreators` makes ScrapeCreators the primary Reddit backend; doctor renders Reddit's conditional routing with the pin applied. |
 

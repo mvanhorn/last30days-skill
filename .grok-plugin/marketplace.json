@@ -9,7 +9,7 @@
     {
       "name": "last30days",
       "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and 5+ more sources. AI agent scores by upvotes, likes, and real money - not editors.",
-      "version": "3.14.0",
+      "version": "3.15.0",
       "category": "productivity",
       "source": {
         "source": "url",

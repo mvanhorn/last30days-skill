@@ -470,6 +470,8 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_REDDIT_BACKEND', None),
         # Doctor cache freshness window in seconds (doctor --cached).
         ('LAST30DAYS_DOCTOR_TTL', None),
+        # Per-source deadline (seconds) for doctor --probe live checks.
+        ('LAST30DAYS_DOCTOR_PROBE_TIMEOUT', None),
         ('LAST30DAYS_REDDIT_SC_MIN_ITEMS', None),
         ('LAST30DAYS_STORE', None),
         # Opt-in strict exit: truthy -> CLI exits 3 when any source outcome is

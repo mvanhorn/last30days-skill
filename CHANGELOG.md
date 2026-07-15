@@ -10,6 +10,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - Long natural-language topics (e.g. a full pasted question) no longer crash `save_output` with `OSError: [Errno 36] File name too long`. The topic-derived filename slug is now capped under the filesystem's `NAME_MAX` (255 bytes); the save directory already disambiguates runs, so the slug is only a human label. A successful research run is no longer discarded on the way to disk.
+## [3.15.0] - 2026-07-14
+
+### Added
+
+- `doctor` is now a four-state audit instead of a flat config prediction: every source is grouped into **WORKING** (verified this run, last run, or keyless-always-on), **TURNED ON - UNVERIFIED** (configured/opted-in but no run evidence), **NOT WORKING** (configured but failing, or the last run errored), or **COULD BE ON** (an available capability not yet configured). Each source renders on its own labeled line, so GitHub (and every other source) is no longer buried in a cluster.
+- `doctor --postmortem`: reads the last run's `last-report.json` (any age, labeled) and reports, per source, what actually happened - Failed / Partial / Succeeded / Skipped with details and fix hints - so "what broke on that run?" is answerable after the fact.
+- `doctor --probe`: a bounded live test that verifies WORKING instead of guessing. It also auto-fires when there is no fresh run. Each source is probed concurrently under a per-source deadline (`LAST30DAYS_DOCTOR_PROBE_TIMEOUT`, default 10s) so a slow source can never hang the command. Scope is free HTTP endpoints + keyless CLIs only; credit-gated sources (X, TikTok, Instagram, Threads, …) are never live-probed and stay UNVERIFIED.
+- `doctor` now surfaces **CLI health**: sources needing a downloaded binary (`yt-dlp`, `digg-pp-cli`, `techmeme-pp-cli`, `arxiv-pp-cli`, `trustpilot-pp-cli`, optional `gh`) carry an inline `[CLI: name ✓]` marker and a dedicated CLI-health block, visibly distinct from keyless sources.
+- `doctor` now audits **techmeme, arXiv, and trustpilot** (they run in research but were previously absent from the health surface), and surfaces **backup lanes** (Reddit ScrapeCreators backfill, YouTube SC transcript/search backstop used when yt-dlp is rate-limited, X cookie-vs-`XAI_API_KEY` dual path) and **comment lanes** (youtube/tiktok/instagram) as indented sub-lines.
+- `doctor --json` gains `audit_state`, `cli`, `backups`, `comments`, and `run_outcome` per source plus a top-level `mode`, all additive - every existing key is preserved.
+
+### Fixed
+
+- `doctor` no longer reports Threads as Ready when it will not run: SC-gated opt-in sources now honor `INCLUDE_SOURCES` (mirrors the correct LinkedIn gating), so Threads shows COULD BE ON until opted in. TikTok/Instagram stay on-by-default.
 
 ## [3.14.0] - 2026-07-12
 
