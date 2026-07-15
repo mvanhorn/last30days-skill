@@ -275,7 +275,13 @@ def web_search(
     else:
         return [], {}
     if items and not _reddit_excluded(config):
-        items = _enrich_reddit_items(items)
+        # Reddit enrichment is a best-effort secondary fetch on already-retrieved
+        # web results. Isolate its HTTP failures in a throwaway capture sink so a
+        # reddit.com fetch failure (e.g. a 403 on a datacenter IP) is not
+        # attributed to the web/grounding source itself — which would otherwise
+        # discard the successfully retrieved results and report the source failed.
+        with http.capture_failures():
+            items = _enrich_reddit_items(items)
     return items, artifact
 
 

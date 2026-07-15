@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Keyless web search now works on hosts where DuckDuckGo anomaly-blocks the egress IP (a 202 challenge page with no results — common on datacenter/VPS IPs). Added Startpage as a second keyless rung (DuckDuckGo → Startpage → configured SearXNG), so the web floor still returns results there. Also hardened `_strip_html` to drop `<style>`/`<script>` contents so inline CSS can't leak into a title or snippet.
+- Web/grounding results are no longer discarded when one of them is a reddit.com URL whose enrichment fetch fails. Reddit enrichment is a best-effort secondary fetch; its HTTP failures (e.g. a 403 on a datacenter IP) were being attributed to the whole web source, which then reported "0 items — HTTP 403" despite having retrieved good results. Its failures are now isolated from the source's outcome.
+
 ## [3.14.0] - 2026-07-12
 
 ### Added

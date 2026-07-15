@@ -350,5 +350,34 @@ class RedditEnrichItemsTests(unittest.TestCase):
             msg=f"Expected a rate-limit stderr message, got: {captured_stderr!r}",
         )
 
+class RedditEnrichmentIsolationTests(unittest.TestCase):
+    def test_enrichment_http_failure_does_not_poison_web_source(self):
+        """A reddit.com enrichment fetch failure (e.g. a 403 on a datacenter IP)
+        is a secondary operation on already-retrieved web results; it must not be
+        attributed to the web/grounding source and discard those results."""
+        from lib import http
+
+        retrieved = [
+            {"url": "https://www.reddit.com/r/x/comments/1/abc/", "title": "T", "snippet": "s"},
+        ]
+
+        def fake_enrich(items):
+            # The enricher swallows the error, but the http layer records the
+            # terminal failure into whatever capture sink is currently active.
+            http._record_failure(http.HTTPError("Blocked", status_code=403))
+            return items
+
+        with http.capture_failures() as source_sink:
+            with patch.object(grounding, "web_search_keyless") as wsk, \
+                 patch.object(grounding, "_enrich_reddit_items", side_effect=fake_enrich):
+                wsk.keyless_search.return_value = (list(retrieved), {"keyless_backend": "startpage"})
+                items, _ = grounding.web_search(
+                    "q", ("2026-02-25", "2026-03-27"), {}, backend="keyless")
+
+        self.assertEqual(len(items), 1)
+        # The enrichment 403 is isolated in its own sink; the source's sink is clean.
+        self.assertEqual(source_sink, [])
+
+
 if __name__ == "__main__":
     unittest.main()

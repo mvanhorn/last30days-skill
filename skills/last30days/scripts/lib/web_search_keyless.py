@@ -9,10 +9,12 @@ It must never run on a host that has native search (the model does it better
 there) or preempt a configured paid backend. The pipeline/grounding layer owns
 that gating; this module just performs the search when asked.
 
-Two vendor-neutral rungs, both stdlib-only via :mod:`http`:
+Three vendor-neutral rungs, all stdlib-only via :mod:`http`:
   1. DuckDuckGo HTML endpoint (no key, no instance to maintain).
-  2. A configurable SearXNG instance returning JSON (``LAST30DAYS_SEARXNG_URL``),
-     tried when the primary yields nothing.
+  2. Startpage HTML results, tried when DuckDuckGo yields nothing — notably
+     when DuckDuckGo anomaly-blocks a datacenter IP with a 202 challenge page.
+  3. A configurable SearXNG instance returning JSON (``LAST30DAYS_SEARXNG_URL``),
+     tried when the HTML rungs yield nothing.
 
 Never raises. Returns results in the same dict shape as the paid backends in
 :mod:`grounding` so they flow through normalize/score/dedupe unchanged. On total
@@ -37,12 +39,31 @@ _DDG_HTML_URL = "https://html.duckduckgo.com/html/"
 _KEYLESS_RELEVANCE = 0.6
 
 _TAG_RE = re.compile(r"<[^>]+>")
+# Strip <style>/<script> blocks *including their contents* before dropping tags,
+# so inline CSS/JS text (e.g. Startpage's emotion styles) never leaks into a
+# title or snippet.
+_STYLE_SCRIPT_RE = re.compile(r"<(style|script)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 _RESULT_A_RE = re.compile(
     r'class="result__a"[^>]*href="(?P<href>[^"]+)"[^>]*>(?P<title>.*?)</a>',
     re.IGNORECASE | re.DOTALL,
 )
 _SNIPPET_RE = re.compile(
     r'class="result__snippet"[^>]*>(?P<snippet>.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+
+_STARTPAGE_HTML_URL = "https://www.startpage.com/sp/search"
+# Startpage marks each organic hit with an <a class="result-title result-link …"
+# href="<target>">…<h2 …>title</h2></a>, and the description in a following
+# <p class="…description…">. Class names carry hashed emotion suffixes, so match
+# on the stable "result-title" / "description" substrings.
+_SP_RESULT_RE = re.compile(
+    r'<a\b[^>]*class="[^"]*result-title[^"]*"[^>]*href="(?P<href>https?://[^"]+)"[^>]*>(?P<inner>.*?)</a>',
+    re.IGNORECASE | re.DOTALL,
+)
+_SP_H2_RE = re.compile(r"<h2\b[^>]*>(?P<title>.*?)</h2>", re.IGNORECASE | re.DOTALL)
+_SP_DESC_RE = re.compile(
+    r'<p\b[^>]*class="[^"]*description[^"]*"[^>]*>(?P<snippet>.*?)</p>',
     re.IGNORECASE | re.DOTALL,
 )
 
@@ -57,7 +78,8 @@ def _domain(url: str) -> str:
 
 
 def _strip_html(fragment: str) -> str:
-    return html.unescape(_TAG_RE.sub("", fragment or "")).strip()
+    without_blocks = _STYLE_SCRIPT_RE.sub("", fragment or "")
+    return html.unescape(_TAG_RE.sub("", without_blocks)).strip()
 
 
 def _unwrap_ddg_redirect(href: str) -> str:
@@ -81,6 +103,11 @@ def keyless_search(
     """Run keyless web search; returns (items, artifact). Never raises."""
     items = _search_ddg(query, count)
     used = "ddg"
+    if not items:
+        # DuckDuckGo anomaly-blocks datacenter IPs (202 challenge page); fall
+        # back to Startpage, which still serves organic results there.
+        items = _search_startpage(query, count)
+        used = "startpage"
     if not items:
         searxng_url = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
         if searxng_url:
@@ -119,6 +146,38 @@ def _search_ddg(query: str, count: int) -> list[dict]:
         snippet_match = _SNIPPET_RE.search(window)
         snippet = _strip_html(snippet_match.group("snippet")) if snippet_match else ""
         title = _strip_html(match.group("title"))
+        items.append(_to_item(len(items), title, target, snippet))
+    return items
+
+
+def _search_startpage(query: str, count: int) -> list[dict]:
+    """Keyless rung 2: Startpage's HTML results page. Unlike DuckDuckGo's HTML
+    endpoint (which anomaly-blocks datacenter IPs with a 202 challenge page),
+    Startpage returns organic results to a plain browser-UA GET, making it the
+    working floor on hosts DuckDuckGo refuses. Never raises."""
+    url = f"{_STARTPAGE_HTML_URL}?{urlencode({'query': query})}"
+    text = http.get_text(url, accept="text/html", retries=2)
+    if not text:
+        return []
+    items: list[dict] = []
+    result_matches = list(_SP_RESULT_RE.finditer(text))
+    desc_matches = list(_SP_DESC_RE.finditer(text))
+    for match in result_matches:
+        if len(items) >= count:
+            break
+        target = html.unescape(match.group("href"))
+        if not target.startswith("http"):
+            continue
+        h2 = _SP_H2_RE.search(match.group("inner"))
+        title = _strip_html(h2.group("title") if h2 else match.group("inner"))
+        if not title:
+            continue
+        # First description block that appears after this result's title anchor.
+        snippet = ""
+        for desc in desc_matches:
+            if desc.start() > match.end():
+                snippet = _strip_html(desc.group("snippet"))
+                break
         items.append(_to_item(len(items), title, target, snippet))
     return items
 
