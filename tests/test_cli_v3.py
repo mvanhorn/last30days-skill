@@ -315,6 +315,26 @@ class CliV3Tests(unittest.TestCase):
         # Verify the raw bytes decode cleanly as UTF-8.
         self.assertEqual(content, raw.decode("utf-8"))
 
+    def test_save_output_caps_long_topic_filename(self):
+        # A long natural-language topic (e.g. a full pasted question) must not
+        # produce a filename that overflows the filesystem's NAME_MAX (255
+        # bytes) and raise OSError [Errno 36]. Regression for a research run
+        # that succeeded but was discarded when save_output crashed.
+        long_topic = (
+            "i'm making a video in davinci resolve and i need some transitions "
+            "but don't have the skills to animate them myself so can you tell me "
+            "what i need to set up to get high quality images using AI given i "
+            "have both a claude subscription and a codex subscription"
+        )
+        report = self.make_report(topic=long_topic)
+        with tempfile.TemporaryDirectory() as tmp:
+            saved = cli.save_output(report, "md", tmp)
+            # The full slug would be >255 chars; the saved name must fit NAME_MAX.
+            self.assertLessEqual(len(saved.name.encode("utf-8")), 255)
+            self.assertTrue(saved.exists())
+            self.assertTrue(saved.name.endswith("-raw.md"))
+            self.assertNotIn("--", saved.name)  # no trailing-dash artifact from the cut
+
     def test_save_rendered_output_writes_exact_file_path(self):
         with tempfile.TemporaryDirectory() as tmp:
             out_path = Path(tmp) / "nested" / "results.json"

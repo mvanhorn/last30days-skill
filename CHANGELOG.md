@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Long natural-language topics (e.g. a full pasted question) no longer crash `save_output` with `OSError: [Errno 36] File name too long`. The topic-derived filename slug is now capped under the filesystem's `NAME_MAX` (255 bytes); the save directory already disambiguates runs, so the slug is only a human label. A successful research run is no longer discarded on the way to disk.
+
 ## [3.14.0] - 2026-07-12
 
 ### Added

@@ -121,6 +121,22 @@ def slugify(value: str) -> str:
     return slug or "last30days"
 
 
+# Leave headroom under the filesystem's per-component limit (NAME_MAX, 255
+# bytes on Linux/macOS) for the "-raw"/"-raw-html" label, any suffix, the date,
+# a "-NN" dedupe counter, and the extension that get appended to the slug.
+_MAX_SLUG_LEN = 80
+
+
+def _cap_filename_slug(slug: str) -> str:
+    """Bound a topic slug so long natural-language topics can't produce a
+    filename that overflows NAME_MAX. The slug is ASCII ([a-z0-9-]) so the
+    character cap is also a byte cap. The save directory (per-run for the
+    research pipeline) already disambiguates; the slug is just a human label."""
+    if len(slug) <= _MAX_SLUG_LEN:
+        return slug
+    return slug[:_MAX_SLUG_LEN].rstrip("-") or "last30days"
+
+
 def _report_has_private_corpus(report: schema.Report) -> bool:
     items_by_source = getattr(report, "items_by_source", {})
     if isinstance(items_by_source, dict) and items_by_source.get("corpus"):
@@ -163,7 +179,7 @@ def save_output(
 ) -> Path:
     from datetime import datetime
     path = Path(save_dir).expanduser().resolve()
-    slug = slugify(topic_override or report.topic)
+    slug = _cap_filename_slug(slugify(topic_override or report.topic))
     extension = "json" if emit == "json" else "html" if emit == "html" else "md"
     raw_label = "raw-html" if emit == "html" else "raw"
     suffix_part = f"-{suffix}" if suffix else ""
