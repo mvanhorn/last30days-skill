@@ -377,13 +377,17 @@ def fetch_captions(
         if not url:
             continue
         try:
-            data = http.get(
-                f"{SCRAPECREATORS_BASE}/video/transcript",
-                params={"url": url},
-                headers=http.scrapecreators_headers(token),
-                timeout=15,
-                retries=1,
-            )
+            # Isolate transcript fetch errors from the pipeline-level
+            # capture_failures() context so an individual video's 400
+            # doesn't poison the entire source outcome.
+            with http.capture_failures() as _tf:
+                data = http.get(
+                    f"{SCRAPECREATORS_BASE}/video/transcript",
+                    params={"url": url},
+                    headers=http.scrapecreators_headers(token),
+                    timeout=15,
+                    retries=1,
+                )
             transcript = data.get("transcript")
             if transcript:
                 if isinstance(transcript, list):
