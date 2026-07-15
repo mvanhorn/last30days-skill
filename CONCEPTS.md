@@ -36,6 +36,10 @@ An item that fails grounding receives a decisive entity-miss demotion, designed 
 
 The research flow available with no API keys: source data is gathered by scraping and RSS rather than authenticated APIs, and ranking falls back to local scoring instead of LLM-based reranking. This is the free tier of the Skill; lexical quality safeguards like Entity grounding matter most here, because no LLM is available to judge relevance semantically.
 
+### Independent event counting
+
+The synthesis-time deduplication rule that prevents inflating cluster confidence by counting multiple coverage items that trace to the same underlying event. Two YouTube recaps of the same keynote, a Reddit post linking a Bloomberg article, and a tweet quoting that same article are all one event with multiple citations - not independent corroboration. The rule applies during synthesis, not in the engine's scoring: the engine's cluster item count and source attribution are inputs; the model judges whether items represent genuinely independent observations or redistribution of a single primary source. Practitioner testimony from different people IS independent even when they describe the same tool, because each person's decision to adopt is a separate data point.
+
 ### Comment-enrichment slots
 
 The small, depth-dependent budget of Reddit posts whose comments get fetched in the Keyless path. Slot selection is relevance-aware: posts that pass Entity grounding claim slots first, so the budget is not spent on high-engagement posts that final ranking will demote anyway.
