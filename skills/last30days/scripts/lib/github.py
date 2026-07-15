@@ -17,7 +17,7 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Dict, List, Optional
 
-from . import dates, log
+from . import dates, env, http, log, schema
 from .query import extract_core_subject
 from .relevance import token_overlap_relevance
 
@@ -35,6 +35,10 @@ ENRICH_LIMITS = {
     "deep": 8,
 }
 
+# Unauthenticated GitHub search allows ~10 requests/min, so cap result volume
+# conservatively when running without a token to stay within the anon tier.
+UNAUTH_COUNT_CAP = 10
+
 USER_AGENT = "last30days/3.0 (research tool)"
 
 
@@ -46,7 +50,7 @@ def _resolve_token(token: Optional[str] = None) -> Optional[str]:
     """Resolve GitHub auth token from argument, env, or gh CLI."""
     if token:
         return token
-    env_token = os.environ.get("GITHUB_TOKEN")
+    env_token = env.read_secret_env("GITHUB_TOKEN")
     if env_token:
         return env_token
     # Fallback: try gh CLI
@@ -77,8 +81,18 @@ def _fetch_json(
     url: str,
     token: Optional[str] = None,
     timeout: int = 15,
+    failure_out: Optional[List[str]] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Fetch JSON from GitHub API. Returns None on failure."""
+    """Fetch JSON from GitHub API. Returns None on failure.
+
+    When ``failure_out`` is provided, a short human-readable reason is
+    appended for every failure branch so callers can distinguish transport
+    failures from genuinely empty results (issue #384).
+    """
+
+    def _note(msg: str) -> None:
+        if failure_out is not None:
+            failure_out.append(msg)
     headers = {
         "User-Agent": USER_AGENT,
         "Accept": "application/vnd.github+json",
@@ -94,17 +108,22 @@ def _fetch_json(
     except urllib.error.HTTPError as e:
         if e.code == 403:
             _log(f"403 rate limited or forbidden: {url}")
+            _note("HTTP 403: rate limited or forbidden")
             return None
         if e.code == 422:
             _log(f"422 unprocessable: {url}")
+            _note("HTTP 422: unprocessable query")
             return None
         _log(f"HTTP {e.code}: {e.reason}")
+        _note(f"HTTP {e.code}: {e.reason}")
         return None
     except (urllib.error.URLError, OSError, TimeoutError) as e:
         _log(f"Network error: {e}")
+        _note(f"network error: {e}")
         return None
     except json.JSONDecodeError as e:
         _log(f"JSON decode error: {e}")
+        _note(f"invalid JSON: {e}")
         return None
 
 
@@ -175,18 +194,12 @@ def search_github(
     count = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
     core = extract_core_subject(topic)
     resolved_token = _resolve_token(token)
-    if not resolved_token:
-        _log("No GitHub token available (set GITHUB_TOKEN or install gh CLI)")
-        return {
-            "items": [],
-            "error": "no token",
-            "context": {
-                "core": core,
-                "from_date": from_date,
-                "to_date": to_date,
-                "count": count,
-            },
-        }
+    authed = bool(resolved_token)
+    if not authed:
+        # Fall back to the unauthenticated REST tier instead of returning nothing.
+        # It is rate-limited, so cap the request volume.
+        count = min(count, UNAUTH_COUNT_CAP)
+        _log("No GitHub token; using the unauthenticated REST tier (low rate limit)")
     _log(f"Searching for '{core}' (raw: '{topic}', since {from_date}, count={count})")
 
     # Build search query with date filter
@@ -199,10 +212,24 @@ def search_github(
     }
     url = f"{SEARCH_URL}?{urllib.parse.urlencode(params)}"
 
-    data = _fetch_json(url, token=resolved_token, timeout=30)
+    fetch_failures: List[str] = []
+    data = _fetch_json(url, token=resolved_token, timeout=30, failure_out=fetch_failures)
     if not data:
-        return {"items": [], "context": {"core": core, "from_date": from_date,
-                                          "to_date": to_date, "count": count}}
+        envelope = {"items": [], "context": {"core": core, "from_date": from_date,
+                                             "to_date": to_date, "count": count}}
+        if authed and fetch_failures:
+            # Authenticated transport failures must not be laundered into a
+            # clean no-results outcome (issue #384).
+            envelope["error"] = f"GitHub API request failed: {fetch_failures[-1]}"
+        elif not authed:
+            # Could be the anon rate limit (403) or an unprocessable query (422)
+            # -- _fetch_json maps both to None. Don't over-claim which; suggest a
+            # token since that fixes the common (rate-limit) case.
+            envelope["error"] = (
+                "GitHub unauthenticated request returned no data (anon rate limit "
+                "or unprocessable query; set GITHUB_TOKEN or run gh auth login)"
+            )
+        return envelope
 
     raw_items = data.get("items", [])
     _log(f"Found {len(raw_items)} issues/PRs")
@@ -518,6 +545,45 @@ def _format_stars(n: int) -> str:
     return str(n)
 
 
+def refetch_datum(item: schema.SourceItem | None, datum_key: str) -> dict[str, Any]:
+    """Re-fetch one repository counter through the shared HTTP wrapper.
+
+    ``datum_key`` is either the literal ``"stars"`` (item-level claim; the
+    repo derives from the grounding item) or an ``owner/repo`` slug
+    (candidate-enrichment claim; the repo itself is the refetch subject and
+    the item is not consulted, so it may be ``None``).
+    """
+    if re.fullmatch(r"[^/\s]+/[^/\s]+", datum_key):
+        repo = datum_key
+    elif datum_key != "stars":
+        raise KeyError(f"Unsupported GitHub datum: {datum_key}")
+    else:
+        if item is None:
+            raise ValueError("Item-level star refetch requires the grounding item")
+        repo = item.container or ""
+        if not re.fullmatch(r"[^/\s]+/[^/\s]+", repo):
+            match = re.match(r"https?://github\.com/([^/]+/[^/#?]+)", item.url)
+            repo = match.group(1).removesuffix(".git") if match else ""
+        if not repo:
+            raise ValueError("GitHub item has no owner/repository reference")
+    headers = {"Accept": "application/vnd.github+json"}
+    token = _resolve_token()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = http.request(
+        "GET", f"https://api.github.com/repos/{repo}",
+        headers=headers, timeout=10, retries=2,
+    )
+    if not isinstance(data, dict) or not isinstance(data.get("stargazers_count"), int):
+        raise KeyError("GitHub star count was not returned")
+    fallback_url = item.url if item is not None else f"https://github.com/{repo}"
+    return {
+        "value": data["stargazers_count"],
+        "url": str(data.get("html_url") or fallback_url),
+        "timestamp": data.get("updated_at"),
+    }
+
+
 def search_github_person(
     username: str,
     from_date: str,
@@ -621,7 +687,7 @@ def search_github_person(
         "snippet": velocity_text,
         "relevance": 0.95,
         "why_relevant": f"GitHub profile: @{username} - {merged_count} PRs merged across {num_repos} repos",
-        "engagement": {"reactions": merged_count, "comments": total_prs},
+        "engagement": {"merged_prs": merged_count, "comments": total_prs},
         "metadata": {
             "labels": ["person-profile", "velocity"],
             "state": "open",
@@ -682,7 +748,7 @@ def search_github_person(
                 "snippet": "\n".join(snippet_parts),
                 "relevance": min(0.9, 0.6 + math.log1p(stars) / 30 + min(0.15, pr_count / 20)),
                 "why_relevant": f"GitHub contribution: {pr_count} PRs merged to {repo} ({stars_str} stars)",
-                "engagement": {"reactions": stars, "comments": pr_count},
+                "engagement": {"stars": stars, "comments": pr_count},
                 "metadata": {
                     "labels": ["person-profile", "external-repo"],
                     "state": "open",
@@ -740,7 +806,7 @@ def search_github_person(
                 "snippet": "\n".join(snippet_parts),
                 "relevance": min(0.95, 0.7 + math.log1p(stars) / 25),
                 "why_relevant": f"GitHub own project: {repo_name} ({stars_str} stars)",
-                "engagement": {"reactions": stars, "comments": open_issues},
+                "engagement": {"stars": stars, "comments": open_issues},
                 "metadata": {
                     "labels": ["person-profile", "own-repo"],
                     "state": "open",
@@ -860,7 +926,7 @@ def search_github_project(
                 "snippet": "\n".join(snippet_parts),
                 "relevance": min(0.95, 0.7 + math.log1p(stars) / 25),
                 "why_relevant": f"GitHub project: {repo} ({stars_str} stars, live)",
-                "engagement": {"reactions": stars, "comments": open_issues},
+                "engagement": {"stars": stars, "comments": open_issues},
                 "metadata": {
                     "labels": ["project-mode"],
                     "state": "open",
@@ -924,6 +990,7 @@ def enrich_candidates_with_stars(
     token: Optional[str] = None,
     already_enriched: Optional[set] = None,
     max_repos: int = 10,
+    collect_map: Optional[Dict[str, int]] = None,
 ) -> int:
     """Annotate candidates with live GitHub star counts.
 
@@ -957,9 +1024,22 @@ def enrich_candidates_with_stars(
             except Exception:
                 pass
 
+    if collect_map is not None:
+        collect_map.update(star_map)
     if not star_map:
         return 0
 
+    return apply_star_map(candidates, star_map)
+
+
+def apply_star_map(candidates: List[Any], star_map: Dict[str, int]) -> int:
+    """Annotate candidates from a repo->stars map (fetch/apply split).
+
+    Split out so offline replay (the eval harness) can apply a recorded map
+    without any network or gh-credential access.
+    """
+    if not star_map:
+        return 0
     # Annotate candidates
     enriched_count = 0
     for c in candidates:

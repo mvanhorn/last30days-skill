@@ -1,14 +1,14 @@
 {
   "name": "last30days-skill",
   "interface": {
-    "displayName": "Last 30 Days"
+    "displayName": "last30days"
   },
   "plugins": [
     {
       "name": "last30days",
       "source": {
-        "source": "local",
-        "path": "./"
+        "source": "url",
+        "url": "https://github.com/mvanhorn/last30days-skill.git"
       },
       "policy": {
         "installation": "AVAILABLE",

@@ -96,7 +96,7 @@ _TOKEN_MAX_AGE_SECONDS = 5400  # 90 minutes (conservative, tokens last ~2 hours)
 
 
 def _log(msg: str):
-    log.source_log("Bluesky", msg)
+    log.source_log("Bluesky", msg, tty_only=False)
 
 
 def _create_session(handle: str, app_password: str) -> Optional[str]:
@@ -158,14 +158,8 @@ def _reset_session_cache() -> None:
 
 def _extract_core_subject(topic: str) -> str:
     """Extract core subject from verbose query for Bluesky search."""
-    from .query import extract_core_subject
-    _BSKY_NOISE = frozenset({
-        'best', 'top', 'good', 'great', 'awesome',
-        'latest', 'new', 'news', 'update', 'updates',
-        'trending', 'hottest', 'popular', 'viral',
-        'practices', 'features', 'recommendations', 'advice',
-    })
-    return extract_core_subject(topic, noise=_BSKY_NOISE)
+    from .query import SOCIAL_NOISE, extract_core_subject
+    return extract_core_subject(topic, noise=SOCIAL_NOISE)
 
 
 def _parse_date(item: Dict[str, Any]) -> Optional[str]:

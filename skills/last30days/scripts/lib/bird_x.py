@@ -12,7 +12,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import http, log, subproc
+from . import env, health, http, log, subproc
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -22,6 +22,16 @@ from .relevance import token_overlap_relevance as _compute_relevance
 # (typically an HTML anti-bot interstitial from Twitter's edge).
 MAX_JSON_DECODE_RETRIES = 2
 JSON_DECODE_RETRY_DELAY = 5.0  # seconds between retry attempts
+
+
+def _leading_mentions(text: str) -> list:
+    """Leading-run @mention parse, shared with other X-shaped sources (xquik).
+
+    Thin wrapper over ``query.leading_mentions`` so bird and xquik share one
+    implementation; kept here for existing call sites and tests.
+    """
+    from .query import leading_mentions
+    return leading_mentions(text)
 
 
 def _first_of(*values):
@@ -60,7 +70,7 @@ def _has_injected_credentials() -> bool:
 
 def _has_process_credentials() -> bool:
     """Return True when AUTH_TOKEN/CT0 are present in process env."""
-    return bool(os.environ.get("AUTH_TOKEN") and os.environ.get("CT0"))
+    return bool(env.read_secret_env("AUTH_TOKEN") and env.read_secret_env("CT0"))
 
 
 def _subprocess_env() -> Dict[str, str]:
@@ -75,6 +85,19 @@ def _subprocess_env() -> Dict[str, str]:
 
 def _log(msg: str):
     log.source_log("Bird", msg, tty_only=False)
+
+
+def classify_run_failure(detail: str) -> str:
+    """Map Bird's subprocess-only failure shapes to run outcome states."""
+    text = detail.lower()
+    if any(marker in text for marker in ("interstitial", "non-json", "invalid json")):
+        return health.SCHEMA_DRIFT
+    if any(
+        marker in text
+        for marker in ("cookie expired", "expired cookie", "unauthorized", "forbidden", "login required")
+    ):
+        return health.AUTH_FAILED
+    return http.classify_failure(message=detail)
 
 
 def _extract_core_subject(topic: str) -> str:
@@ -113,6 +136,40 @@ def is_bird_authenticated() -> Optional[str]:
     if _has_process_credentials():
         return "env AUTH_TOKEN"
     return None
+
+
+_probe_cache: Optional[Optional[bool]] = "unset"  # "unset" | True | False | None
+
+
+def probe_works(timeout: int = 8) -> Optional[bool]:
+    """Cheap runtime check that X auth actually returns data.
+
+    Returns True when a 1-result probe comes back without an error, False on a
+    clear failure (auth error / generic search failure), and None when the
+    result is inconclusive (network timeout) so callers can fail open and keep
+    the static credential-presence status rather than reporting a false-down.
+    Cached per process so repeated diagnose calls don't re-probe.
+    """
+    global _probe_cache
+    if _probe_cache != "unset":
+        return _probe_cache  # type: ignore[return-value]
+    if not (_has_injected_credentials() or _has_process_credentials()):
+        _probe_cache = False
+        return False
+    from datetime import datetime, timedelta, timezone
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+    # @x (the platform's own account) posts frequently, so a no-error response
+    # means auth works even if this particular window is quiet.
+    resp = _run_bird_search(f"from:x since:{since}", count=1, timeout=timeout)
+    if isinstance(resp, dict) and resp.get("error"):
+        err = str(resp.get("error")).lower()
+        if "timed out" in err or "timeout" in err:
+            _probe_cache = None  # inconclusive — don't downgrade on a transient timeout
+            return None
+        _probe_cache = False
+        return False
+    _probe_cache = True
+    return True
 
 
 def check_npm_available() -> bool:
@@ -252,10 +309,11 @@ def _run_bird_search(query: str, count: int, timeout: int) -> Dict[str, Any]:
                 log.source_log(
                     "X/bird",
                     f"{log_msg}; retrying in {JSON_DECODE_RETRY_DELAY:.0f}s",
+                    tty_only=False,
                 )
                 time.sleep(JSON_DECODE_RETRY_DELAY)
                 continue
-            log.source_log("X/bird", log_msg)
+            log.source_log("X/bird", log_msg, tty_only=False)
             return {
                 "error": (
                     f"Invalid JSON response after {MAX_JSON_DECODE_RETRIES} attempts "
@@ -335,9 +393,17 @@ def search_x(
         }
         candidates = [w for w in core_words if w not in low_signal]
         if candidates:
+            # Keep an entity anchor (the first distinctive topic token) in the
+            # retry so it can't collapse to a bare generic token like "compound"
+            # and flood the X pool with off-topic noise. Add the strongest
+            # (longest) distinctive token when it differs from the anchor;
+            # otherwise query the anchor alone. Better to return 0 than to
+            # over-broaden to an unanchored generic term.
+            anchor = candidates[0]
             strongest = max(candidates, key=len)
-            _log(f"0 results for '{core_topic}', retrying with strongest token '{strongest}'")
-            query = f"{strongest} since:{from_date}"
+            retry_terms = anchor if strongest == anchor else f"{anchor} {strongest}"
+            _log(f"0 results for '{core_topic}', retrying anchored on '{retry_terms}'")
+            query = f"{retry_terms} since:{from_date}"
             response = _run_bird_search(query, count, timeout)
 
     return response
@@ -351,12 +417,15 @@ def search_handles(
 ) -> List[Dict[str, Any]]:
     """Search specific X handles for topic-related content.
 
-    Runs targeted Bird searches using `from:handle topic` syntax.
-    Used in Phase 2 supplemental search after entity extraction.
+    Pulls each handle's actual timeline via `from:handle since:` — the FROM
+    lane (tweets BY the person), engagement-weighted downstream. The topic is
+    used for relevance RANKING, never AND'd into the query: X search is literal,
+    so `from:handle <their name>` only matched tweets where they wrote their own
+    name and returned ~0. Used in Phase 2 after entity extraction.
 
     Args:
         handles: List of X handles to search (without @)
-        topic: Search topic (core subject), or None for unfiltered search
+        topic: Search topic — used for relevance ranking only, not the query
         from_date: Start date (YYYY-MM-DD)
         count_per: Results to request per handle
 
@@ -367,10 +436,8 @@ def search_handles(
 
     def _search_one_handle(handle: str) -> List[Dict[str, Any]]:
         handle = handle.lstrip("@")
-        if core_topic:
-            query = f"from:{handle} {core_topic} since:{from_date}"
-        else:
-            query = f"from:{handle} since:{from_date}"
+        # Always unfiltered: pull the timeline, rank by topic relevance below.
+        query = f"from:{handle} since:{from_date}"
 
         cmd = [
             "node", str(_BIRD_SEARCH_MJS),
@@ -401,7 +468,11 @@ def search_handles(
         except json.JSONDecodeError:
             _log(f"Invalid JSON from handle search for @{handle}")
             return []
-        return parse_bird_response(response, query=core_topic)
+        items = parse_bird_response(response, query=core_topic)
+        # Log on success/empty too (not only on failure): a silent handle search
+        # made the from: query look like it never ran and caused wrong diagnoses.
+        _log(f"Searching: {query} -> {len(items)} results")
+        return items
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -411,6 +482,77 @@ def search_handles(
         for future in as_completed(futures):
             all_items.extend(future.result())
 
+    return all_items
+
+
+def search_mentions(
+    handles: List[str],
+    from_date: str,
+    count_per: int = 5,
+) -> List[Dict[str, Any]]:
+    """Search for tweets ABOUT/TO each handle — the mention lane.
+
+    Queries `@handle since:` (tweets that mention the account) and excludes the
+    handle's OWN tweets (those belong to the FROM lane via search_handles), so
+    this surfaces what OTHERS are saying about the person. Engagement-weighted
+    downstream; deduped against the FROM lane by URL at normalize time.
+
+    Args:
+        handles: List of X handles (without @)
+        from_date: Start date (YYYY-MM-DD)
+        count_per: Results to request per handle
+
+    Returns:
+        List of raw item dicts (same format as parse_bird_response output).
+    """
+    def _search_one(handle: str) -> List[Dict[str, Any]]:
+        handle = handle.lstrip("@")
+        query = f"@{handle} since:{from_date}"
+        cmd = [
+            "node", str(_BIRD_SEARCH_MJS),
+            query,
+            "--count", str(count_per),
+            "--json",
+        ]
+        try:
+            result = subproc.run_with_timeout(cmd, timeout=15, env=_subprocess_env())
+        except subproc.SubprocTimeout:
+            _log(f"Mention search timed out for @{handle}")
+            return []
+        except OSError as e:
+            _log(f"Mention search error for @{handle}: {e}")
+            return []
+        if result.returncode != 0:
+            _log(f"Mention search failed for @{handle}: {result.stderr.strip()}")
+            return []
+        output = result.stdout.strip()
+        if not output:
+            return []
+        try:
+            response = json.loads(output)
+        except json.JSONDecodeError:
+            _log(f"Invalid JSON from mention search for @{handle}")
+            return []
+        items = parse_bird_response(response, query=None)
+        # ABOUT lane = OTHERS mentioning the handle. Drop the handle's own tweets
+        # (the FROM lane already covers those); identify by the status URL author.
+        hl = handle.lower()
+        # The Bird API may return either x.com or twitter.com permalinks, so
+        # match both when excluding the handle's own tweets.
+        def _is_own(url):
+            u = (url or "").lower()
+            return f"x.com/{hl}/status" in u or f"twitter.com/{hl}/status" in u
+        about = [it for it in items if not _is_own(it.get("url"))]
+        _log(f"Searching: {query} -> {len(about)} mentions")
+        return about
+
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    all_items: List[Dict[str, Any]] = []
+    with ThreadPoolExecutor(max_workers=min(5, len(handles))) as executor:
+        futures = {executor.submit(_search_one, h): h for h in handles}
+        for future in as_completed(futures):
+            all_items.extend(future.result())
     return all_items
 
 
@@ -489,11 +631,16 @@ def parse_bird_response(response: Dict[str, Any], query: str = "") -> List[Dict[
                     engagement[key] = None
 
         # Build normalized item
+        text = str(tweet.get("text", tweet.get("full_text", ""))).strip()[:500]
         item = {
             "id": f"X{i+1}",
-            "text": str(tweet.get("text", tweet.get("full_text", ""))).strip()[:500],
+            "text": text,
             "url": url,
             "author_handle": author_handle.lstrip("@"),
+            # Leading @mentions parsed from the post text identify who a reply is
+            # directed at (X replies open with the target handle(s)). Used by the
+            # interaction-signal classifier in rerank.
+            "mentioned_handles": _leading_mentions(text),
             "date": date,
             "engagement": engagement if any(v is not None for v in engagement.values()) else None,
             "why_relevant": "",  # Bird doesn't provide relevance explanations

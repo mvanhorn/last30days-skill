@@ -4,8 +4,83 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
+from collections import Counter
 
-from . import http, providers, query, schema
+from . import categories, entity_extract, http, providers, query, relevance, schema
+
+# Hebrew Unicode block: U+0590–U+05FF
+_HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
+
+DISCOVERY_SOURCE_ORDER = ("reddit", "hackernews", "digg", "x")
+
+
+def detect_language(text: str) -> str | None:
+    """Return 'he' if the text contains Hebrew characters, else None."""
+    return 'he' if _HEBREW_RE.search(text) else None
+
+
+def build_discovery_plan(
+    domain: str,
+    *,
+    available_sources: list[str] | None = None,
+    subreddits: list[str] | None = None,
+) -> schema.DiscoveryPlan:
+    """Resolve a domain to the existing category-peer community feeds.
+
+    An empty domain is global trending: sweep every river feed's own hot list
+    (r/all, HN front page, Digg) with no category scoping. Keyword-driven
+    sources (X, Techmeme, arXiv - none of which expose a river/front-page
+    lane) sit out of the global nominate stage and join per-topic at the
+    enrichment pass, where every nomination gets a full research run.
+    """
+    normalized_domain = " ".join(domain.split())
+    if not normalized_domain:
+        resolved = [
+            subreddit.removeprefix("r/").strip()
+            for subreddit in (subreddits or ["all"])
+            if subreddit.strip()
+        ]
+        allowed = set(DISCOVERY_SOURCE_ORDER if available_sources is None else available_sources)
+        allowed.discard("x")
+        sources = [source for source in DISCOVERY_SOURCE_ORDER if source in allowed]
+        if not sources:
+            raise ValueError("No listing sources are available for global trending")
+        return schema.DiscoveryPlan(
+            domain="",
+            category=None,
+            subreddits=resolved or ["all"],
+            sources=sources,
+        )
+
+    category = categories.detect_category(normalized_domain)
+    candidate_subreddits = list(subreddits or categories.peer_subs_for(category))
+    seen_subreddits: set[str] = set()
+    resolved_subreddits: list[str] = []
+    for subreddit in candidate_subreddits:
+        normalized_subreddit = subreddit.removeprefix("r/").strip()
+        key = normalized_subreddit.lower()
+        if not normalized_subreddit or key in seen_subreddits:
+            continue
+        seen_subreddits.add(key)
+        resolved_subreddits.append(normalized_subreddit)
+    # The curated map intentionally stays small. Keep discovery's keyless floor
+    # for uncategorized domains by sweeping r/all and applying domain relevance
+    # during normalization instead of inventing a second category resolver.
+    if not resolved_subreddits:
+        resolved_subreddits = ["all"]
+
+    allowed = set(DISCOVERY_SOURCE_ORDER if available_sources is None else available_sources)
+    sources = [source for source in DISCOVERY_SOURCE_ORDER if source in allowed]
+    if not sources:
+        raise ValueError(f"No listing sources are available for {normalized_domain!r}")
+
+    return schema.DiscoveryPlan(
+        domain=normalized_domain,
+        category=category,
+        subreddits=resolved_subreddits,
+        sources=sources,
+    )
 
 ALLOWED_INTENTS = {
     "factual",
@@ -20,7 +95,7 @@ ALLOWED_INTENTS = {
 ALLOWED_CLUSTER_MODES = {"none", "story", "workflow", "market", "debate"}
 QUICK_SOURCE_PRIORITY = {
     "factual": ["hackernews", "reddit", "x", "xquik", "youtube"],
-    "product": ["youtube", "reddit", "x", "xquik", "tiktok"],
+    "product": ["jobs", "youtube", "reddit", "x", "xquik", "tiktok"],
     "concept": ["hackernews", "reddit", "x", "xquik", "youtube"],
     "opinion": ["reddit", "x", "xquik", "youtube", "hackernews"],
     "how_to": ["youtube", "reddit", "x", "xquik", "hackernews"],
@@ -30,13 +105,13 @@ QUICK_SOURCE_PRIORITY = {
 }
 SOURCE_PRIORITY = {
     "factual": ["hackernews", "reddit", "x", "youtube"],
-    "product": ["youtube", "reddit", "x", "tiktok", "hackernews"],
+    "product": ["jobs", "youtube", "reddit", "x", "tiktok", "hackernews"],
     "concept": ["hackernews", "reddit", "x", "youtube"],
-    "opinion": ["reddit", "x", "youtube", "hackernews"],
+    "opinion": ["reddit", "x", "stocktwits", "dripstack", "youtube", "hackernews"],
     "how_to": ["youtube", "reddit", "x", "hackernews"],
     "comparison": ["reddit", "x", "hackernews", "youtube"],
-    "breaking_news": ["x", "reddit", "hackernews", "youtube", "polymarket"],
-    "prediction": ["polymarket", "x", "hackernews", "reddit", "youtube"],
+    "breaking_news": ["x", "stocktwits", "reddit", "hackernews", "youtube", "polymarket"],
+    "prediction": ["polymarket", "stocktwits", "dripstack", "x", "hackernews", "reddit", "youtube"],
 }
 SOURCE_LIMITS = {
     "quick": {
@@ -68,16 +143,151 @@ SOURCE_CAPABILITIES = {
     "bluesky": {"discussion", "social"},
     "truthsocial": {"discussion", "social"},
     "polymarket": {"market"},
+    "stocktwits": {"social", "market", "finance_social"},
+    "dripstack": {"reference", "analysis", "link"},
     "digg": {"discussion", "social", "link"},
+    "arxiv": {"reference", "analysis", "link"},
+    "techmeme": {"discussion", "link", "reference"},
+    "trustpilot": {"reference", "company_signal", "social"},
     "xiaohongshu": {"video", "video_shortform", "social"},
     "github": {"discussion", "link"},
     "grounding": {"web", "reference", "link"},
     "perplexity": {"web", "reference", "analysis"},
+    "jobs": {"jobs", "company_signal", "link"},
+    "corpus": {"reference", "analysis"},
 }
 DEFAULT_INTENT_CAPABILITIES = {
     "comparison": {"discussion", "video", "web", "reference", "social", "link", "market"},
     "how_to": {"discussion", "video", "web", "reference", "link"},
 }
+
+
+class DrillTargetError(ValueError):
+    """Raised when a follow-up target cannot be resolved to a report cluster."""
+
+    def __init__(self, target: str, clusters: list[schema.Cluster]) -> None:
+        candidates = ", ".join(
+            f"{index}. {cluster.title}"
+            for index, cluster in enumerate(clusters, start=1)
+        ) or "(no clusters in the cached report)"
+        super().__init__(f"No cluster matched {target!r}. Available clusters: {candidates}")
+
+
+def _drill_cluster_text(report: schema.Report, cluster: schema.Cluster) -> str:
+    candidates = {candidate.candidate_id: candidate for candidate in report.ranked_candidates}
+    parts = [cluster.title]
+    for candidate_id in cluster.candidate_ids:
+        candidate = candidates.get(candidate_id)
+        if candidate:
+            parts.extend((candidate.title, candidate.snippet))
+    return " ".join(part for part in parts if part)
+
+
+def resolve_drill_clusters(report: schema.Report, target: str) -> list[schema.Cluster]:
+    """Resolve a 1-based cluster index or fuzzy title/entity description."""
+    cleaned = target.strip()
+    numeric = re.fullmatch(r"(?:cluster\s*)?#?(\d+)", cleaned, flags=re.IGNORECASE)
+    if numeric:
+        index = int(numeric.group(1))
+        if 1 <= index <= len(report.clusters):
+            return [report.clusters[index - 1]]
+        raise DrillTargetError(target, report.clusters)
+
+    target_entities = entity_extract.extract_text_entities(cleaned)
+    scored: list[tuple[float, schema.Cluster]] = []
+    for cluster in report.clusters:
+        cluster_text = _drill_cluster_text(report, cluster)
+        title_score = relevance.token_overlap_relevance(cleaned, cluster.title)
+        body_score = relevance.token_overlap_relevance(cleaned, cluster_text)
+        entity_score = entity_extract.entity_overlap(
+            target_entities,
+            entity_extract.extract_text_entities(cluster_text),
+        )
+        score = max(title_score, (0.75 * body_score) + (0.25 * entity_score))
+        scored.append((score, cluster))
+
+    scored.sort(key=lambda entry: entry[0], reverse=True)
+    if not scored or scored[0][0] < 0.35:
+        raise DrillTargetError(target, report.clusters)
+    return [scored[0][1]]
+
+
+def build_drill_plan(
+    report: schema.Report,
+    target: str,
+    *,
+    clusters: list[schema.Cluster] | None = None,
+) -> schema.QueryPlan:
+    """Build a deep follow-up plan limited to the matched clusters' sources."""
+    matched = clusters or resolve_drill_clusters(report, target)
+    candidates = {candidate.candidate_id: candidate for candidate in report.ranked_candidates}
+
+    sources: list[str] = []
+    for cluster in matched:
+        for source in cluster.sources:
+            if source and source not in sources:
+                sources.append(source)
+        for candidate_id in cluster.candidate_ids:
+            candidate = candidates.get(candidate_id)
+            if not candidate:
+                continue
+            for source in schema.candidate_sources(candidate):
+                if source and source not in sources:
+                    sources.append(source)
+    if not sources:
+        raise DrillTargetError(target, report.clusters)
+
+    titles: list[str] = []
+    entity_counts: Counter[str] = Counter()
+    for cluster in matched:
+        titles.append(cluster.title)
+        entity_counts.update(entity_extract.extract_text_entities(cluster.title))
+        for candidate_id in cluster.representative_ids:
+            candidate = candidates.get(candidate_id)
+            if candidate:
+                titles.append(candidate.title)
+                entity_counts.update(entity_extract.extract_text_entities(candidate.title))
+
+    queries: list[str] = []
+    for query_text in [
+        " ".join(titles[: len(matched)]),
+        " ".join(entity for entity, _ in entity_counts.most_common(8)),
+        *titles[len(matched):],
+    ]:
+        query_text = " ".join(query_text.split()).strip()
+        if query_text and query_text.lower() not in {item.lower() for item in queries}:
+            queries.append(query_text)
+        if len(queries) == 3:
+            break
+
+    subqueries = [
+        schema.SubQuery(
+            label=f"drill-{index}",
+            search_query=search_query,
+            ranking_query=(
+                "What deeper evidence, firsthand discussion, comments, and transcripts "
+                f"explain {search_query}?"
+            ),
+            sources=list(sources),
+            weight=1.0 if index == 1 else 0.85,
+        )
+        for index, search_query in enumerate(queries, start=1)
+    ]
+    return schema.QueryPlan(
+        intent=report.query_plan.intent,
+        freshness_mode=report.query_plan.freshness_mode,
+        cluster_mode=report.query_plan.cluster_mode,
+        raw_topic=report.topic,
+        subqueries=subqueries,
+        source_weights={
+            source: report.query_plan.source_weights.get(source, 1.0)
+            for source in sources
+        },
+        notes=[
+            "drill-mode",
+            "drill-targets:" + ",".join(cluster.cluster_id for cluster in matched),
+        ],
+    )
 
 def plan_query(
     *,
@@ -383,6 +593,14 @@ def _fallback_plan(
     note: str = "fallback-plan",
 ) -> schema.QueryPlan:
     intent = _infer_intent(topic)
+    # Hebrew-language topics: elevate web search (grounding) to the front of
+    # the source list since Reddit/HN/GitHub are English-dominant platforms.
+    # Grounding covers Ynet, Walla, Mako, N12 etc. if a web search key is set.
+    if detect_language(topic) == 'he' and 'grounding' in available_sources:
+        ordered = ['grounding'] + [s for s in available_sources if s != 'grounding']
+        available_sources = ordered
+        if requested_sources:
+            requested_sources = ['grounding'] + [s for s in requested_sources if s != 'grounding']
     allowed_sources = requested_sources or available_sources
     source_weights = _default_source_weights(intent, allowed_sources)
     core = query.extract_core_subject(topic, max_words=6, strip_suffixes=True)
@@ -530,6 +748,10 @@ def _default_source_weights(intent: str, sources: list[str]) -> dict[str, float]
                 base[source] += bonus
     elif intent == "factual":
         for source, bonus in {"reddit": 0.8, "x": 0.5}.items():
+            if source in base:
+                base[source] += bonus
+    elif intent == "product":
+        for source, bonus in {"jobs": 0.8, "youtube": 0.5}.items():
             if source in base:
                 base[source] += bonus
     return base

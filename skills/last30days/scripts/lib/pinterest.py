@@ -27,21 +27,12 @@ from .relevance import token_overlap_relevance as _compute_relevance
 
 def _extract_core_subject(topic: str) -> str:
     """Extract core subject from verbose query for Pinterest search."""
-    from .query import extract_core_subject
-    _PINTEREST_NOISE = frozenset({
-        'best', 'top', 'good', 'great', 'awesome', 'killer',
-        'latest', 'new', 'news', 'update', 'updates',
-        'trending', 'hottest', 'popular', 'viral',
-        'practices', 'features',
-        'recommendations', 'advice',
-        'prompt', 'prompts', 'prompting',
-        'methods', 'strategies', 'approaches',
-    })
-    return extract_core_subject(topic, noise=_PINTEREST_NOISE)
+    from .query import VIRAL_NOISE, extract_core_subject
+    return extract_core_subject(topic, noise=VIRAL_NOISE)
 
 
 def _log(msg: str):
-    log.source_log("Pinterest", msg)
+    log.source_log("Pinterest", msg, tty_only=False)
 
 
 def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[str, Any]]:
@@ -138,7 +129,7 @@ def search_pinterest(
     try:
         data = http.get(
             f"{SCRAPECREATORS_BASE}/search",
-            params={"keyword": core_topic},
+            params={"query": core_topic},
             headers=http.scrapecreators_headers(token),
             timeout=30,
             retries=2,

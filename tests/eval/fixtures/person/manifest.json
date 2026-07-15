@@ -1,0 +1,42 @@
+{
+  "name": "person",
+  "archetype": "person",
+  "topic": "Maya Chen AI safety?",
+  "as_of_date": "2026-07-10",
+  "lookback_days": 30,
+  "depth": "quick",
+  "fixture_sources": [
+    "grounding",
+    "hackernews"
+  ],
+  "web_backend": "brave",
+  "config": {
+    "BRAVE_API_KEY": "fixture-key"
+  },
+  "plan": {
+    "intent": "opinion",
+    "freshness_mode": "balanced_recent",
+    "cluster_mode": "debate",
+    "raw_topic": "Maya Chen AI safety",
+    "subqueries": [
+      {
+        "label": "primary",
+        "search_query": "maya",
+        "ranking_query": "What recent evidence matters for Maya Chen AI safety?",
+        "sources": [
+          "grounding",
+          "hackernews"
+        ],
+        "weight": 1
+      }
+    ],
+    "source_weights": {
+      "grounding": 1,
+      "hackernews": 1
+    },
+    "notes": [
+      "eval-fixture-plan"
+    ]
+  },
+  "expects_clusters": true
+}

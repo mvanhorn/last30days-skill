@@ -4,15 +4,55 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Tuple
 
 
-def get_date_range(days: int = 30) -> Tuple[str, str]:
-    """Get the date range for the last N days.
+def parse_as_of_date(as_of_date: Optional[str]) -> Optional[str]:
+    """Validate and normalize an --as-of date.
+
+    Args:
+        as_of_date: Date string in YYYY-MM-DD format.
 
     Returns:
-        Tuple of (from_date, to_date) as YYYY-MM-DD strings
+        Normalized YYYY-MM-DD string, or None when no date was provided.
+
+    Raises:
+        ValueError: If the date is not in YYYY-MM-DD format.
     """
-    today = datetime.now(timezone.utc).date()
-    from_date = today - timedelta(days=days)
-    return from_date.isoformat(), today.isoformat()
+    if as_of_date is None:
+        return None
+
+    if not as_of_date.strip():
+        raise ValueError("--as-of must be in YYYY-MM-DD format.")
+
+    try:
+        parsed = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+    except ValueError as exc:
+        raise ValueError(
+            f"Invalid --as-of date: {as_of_date}. Expected YYYY-MM-DD."
+        ) from exc
+
+    return parsed.isoformat()
+
+
+def get_date_range(days: int = 30, as_of_date: Optional[str] = None) -> Tuple[str, str]:
+    """Get the date range for the last N days.
+
+    When as_of_date is provided, the range ends at that date instead of today.
+
+    Args:
+        days: Number of days to look back.
+        as_of_date: Optional end date in YYYY-MM-DD format.
+
+    Returns:
+        Tuple of (from_date, to_date) as YYYY-MM-DD strings.
+    """
+    normalized_as_of = parse_as_of_date(as_of_date)
+
+    if normalized_as_of:
+        to_date = datetime.strptime(normalized_as_of, "%Y-%m-%d").date()
+    else:
+        to_date = datetime.now(timezone.utc).date()
+
+    from_date = to_date - timedelta(days=days)
+    return from_date.isoformat(), to_date.isoformat()
 
 
 def parse_date(date_str: Optional[str]) -> Optional[datetime]:
@@ -86,9 +126,10 @@ def get_date_confidence(date_str: Optional[str], from_date: str, to_date: str) -
         return 'low'
 
 
-def days_ago(date_str: Optional[str]) -> Optional[int]:
-    """Calculate how many days ago a date is.
+def days_ago(date_str: Optional[str], reference_date: Optional[str] = None) -> Optional[int]:
+    """Calculate how many days before the reference date a date is.
 
+    If reference_date is None, use real today for backward compatibility.
     Returns None if date is invalid or missing.
     """
     if not date_str:
@@ -96,24 +137,32 @@ def days_ago(date_str: Optional[str]) -> Optional[int]:
 
     try:
         dt = datetime.strptime(date_str, "%Y-%m-%d").date()
-        today = datetime.now(timezone.utc).date()
+        if reference_date:
+            today = datetime.strptime(reference_date, "%Y-%m-%d").date()
+        else:
+            today = datetime.now(timezone.utc).date()
         delta = today - dt
         return delta.days
     except ValueError:
         return None
 
 
-def recency_score(date_str: Optional[str], max_days: int = 30) -> int:
+def recency_score(
+    date_str: Optional[str],
+    max_days: int = 30,
+    reference_date: Optional[str] = None,
+) -> int:
     """Calculate recency score (0-100).
 
-    0 days ago = 100, max_days ago = 0, clamped.
+    0 days before reference_date = 100, max_days before reference_date = 0.
+    If reference_date is None, use real today for backward compatibility.
     """
-    age = days_ago(date_str)
+    age = days_ago(date_str, reference_date=reference_date)
     if age is None:
-        return 0  # Unknown date gets worst score
+        return 0
 
     if age < 0:
-        return 100  # Future date (treat as today)
+        return 100
     if age >= max_days:
         return 0
 

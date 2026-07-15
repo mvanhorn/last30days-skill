@@ -191,10 +191,26 @@ class WebSearchDispatchTests(unittest.TestCase):
             grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
             mock.assert_called_once()
 
-    def test_auto_returns_empty_when_no_keys(self):
-        items, artifact = grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="auto")
+    def test_auto_returns_empty_when_no_keys_and_native_search(self):
+        # On a native-search host (signal set) with no paid key, the engine
+        # leaves general web to the model's own search and returns nothing.
+        config = {"LAST30DAYS_NATIVE_SEARCH": "1"}
+        items, artifact = grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
         self.assertEqual([], items)
         self.assertEqual({}, artifact)
+
+    def test_auto_falls_to_keyless_when_no_keys_and_no_native_search(self):
+        # No paid key and no native search -> keyless floor is used.
+        with patch("lib.grounding.web_search_keyless.keyless_search",
+                   return_value=([], {"label": "keyless"})) as mock_keyless:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="auto")
+        mock_keyless.assert_called_once()
+
+    def test_explicit_keyless_backend_invokes_keyless(self):
+        with patch("lib.grounding.web_search_keyless.keyless_search",
+                   return_value=([], {"label": "keyless"})) as mock_keyless:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="keyless")
+        mock_keyless.assert_called_once()
 
     def test_none_returns_empty(self):
         config = {"BRAVE_API_KEY": "test-key"}

@@ -73,16 +73,29 @@ class TestParseDate(unittest.TestCase):
 class TestSearchGithub(unittest.TestCase):
     @patch.dict("os.environ", {}, clear=True)
     @patch("subprocess.run", side_effect=FileNotFoundError)
-    def test_no_token_returns_empty_envelope(self, mock_run):
+    @patch("lib.github._fetch_json", return_value=None)
+    def test_no_token_unauth_rate_limited_sets_error(self, mock_fetch, mock_run):
+        # No token -> unauthenticated request; on failure (likely anon rate
+        # limit) the envelope carries a clear error instead of being silent.
         result = github.search_github("react", "2026-03-01", "2026-03-31", token=None)
         self.assertEqual(result.get("items", []), [])
         self.assertIn("error", result)
-        # Envelope shape must match the fetch-failure path: context is
-        # always present so callers (and parse_github_response) can read
-        # diagnostic fields without branching on which failure mode hit.
+        self.assertIn("unauthenticated", result["error"].lower())
         self.assertIn("context", result)
         self.assertEqual(result["context"]["from_date"], "2026-03-01")
-        self.assertEqual(result["context"]["to_date"], "2026-03-31")
+        # Unauth requests are capped to the low-rate tier.
+        self.assertLessEqual(result["context"]["count"], github.UNAUTH_COUNT_CAP)
+        # The request was actually attempted without a token (no early return).
+        mock_fetch.assert_called_once()
+        self.assertIsNone(mock_fetch.call_args.kwargs.get("token"))
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch("subprocess.run", side_effect=FileNotFoundError)
+    @patch("lib.github._fetch_json", return_value={"items": [{"id": 1, "title": "x"}]})
+    def test_no_token_unauth_success_returns_items(self, mock_fetch, mock_run):
+        result = github.search_github("react", "2026-03-01", "2026-03-31", token=None)
+        self.assertEqual(len(result["items"]), 1)
+        self.assertNotIn("error", result)
 
     def test_resolve_token_public_alias(self):
         """resolve_token is the public entry point pipeline uses; _resolve_token stays

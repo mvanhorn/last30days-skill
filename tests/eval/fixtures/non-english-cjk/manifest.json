@@ -1,0 +1,42 @@
+{
+  "name": "non-english-cjk",
+  "archetype": "non-english-cjk",
+  "topic": "\u65e5\u672c\u8a9e AI \u30a8\u30fc\u30b8\u30a7\u30f3\u30c8?",
+  "as_of_date": "2026-07-10",
+  "lookback_days": 30,
+  "depth": "quick",
+  "fixture_sources": [
+    "grounding",
+    "hackernews"
+  ],
+  "web_backend": "brave",
+  "config": {
+    "BRAVE_API_KEY": "fixture-key"
+  },
+  "plan": {
+    "intent": "concept",
+    "freshness_mode": "balanced_recent",
+    "cluster_mode": "none",
+    "raw_topic": "\u65e5\u672c\u8a9e AI \u30a8\u30fc\u30b8\u30a7\u30f3\u30c8",
+    "subqueries": [
+      {
+        "label": "primary",
+        "search_query": "\u65e5\u672c\u8a9e",
+        "ranking_query": "What recent evidence matters for \u65e5\u672c\u8a9e AI \u30a8\u30fc\u30b8\u30a7\u30f3\u30c8?",
+        "sources": [
+          "grounding",
+          "hackernews"
+        ],
+        "weight": 1
+      }
+    ],
+    "source_weights": {
+      "grounding": 1,
+      "hackernews": 1
+    },
+    "notes": [
+      "eval-fixture-plan"
+    ]
+  },
+  "expects_clusters": false
+}

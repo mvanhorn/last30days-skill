@@ -1,0 +1,42 @@
+{
+  "name": "niche",
+  "archetype": "niche",
+  "topic": "CRDT edge cache invalidation?",
+  "as_of_date": "2026-07-10",
+  "lookback_days": 30,
+  "depth": "quick",
+  "fixture_sources": [
+    "grounding",
+    "hackernews"
+  ],
+  "web_backend": "brave",
+  "config": {
+    "BRAVE_API_KEY": "fixture-key"
+  },
+  "plan": {
+    "intent": "concept",
+    "freshness_mode": "balanced_recent",
+    "cluster_mode": "none",
+    "raw_topic": "CRDT edge cache invalidation",
+    "subqueries": [
+      {
+        "label": "primary",
+        "search_query": "crdt",
+        "ranking_query": "What recent evidence matters for CRDT edge cache invalidation?",
+        "sources": [
+          "grounding",
+          "hackernews"
+        ],
+        "weight": 1
+      }
+    ],
+    "source_weights": {
+      "grounding": 1,
+      "hackernews": 1
+    },
+    "notes": [
+      "eval-fixture-plan"
+    ]
+  },
+  "expects_clusters": false
+}

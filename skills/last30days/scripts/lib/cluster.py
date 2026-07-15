@@ -2,58 +2,12 @@
 
 from __future__ import annotations
 
-import re
-
-from . import dedupe, schema
+from . import dedupe, entity_extract, schema
 
 CLUSTERABLE_INTENTS = {"breaking_news", "opinion", "comparison", "prediction"}
 
-# Words too common to signal shared topic between clusters.
-_ENTITY_STOPWORDS = frozenset({
-    "the", "a", "an", "to", "for", "how", "is", "in", "of", "on", "and",
-    "with", "from", "by", "at", "this", "that", "it", "what", "are", "do",
-    "can", "his", "her", "he", "she", "its", "was", "has", "new", "just",
-    "says", "said", "will", "about", "after", "now", "all", "been", "here",
-    "not", "out", "up", "more", "also", "but", "who", "year", "first",
-    "make", "being", "making", "over", "into", "than", "they", "their",
-    "would", "could", "get", "got", "some", "like", "back", "going",
-    "breaking", "https", "http", "www", "com",
-})
-
-
 def _candidate_text(candidate: schema.Candidate) -> str:
     return " ".join(part for part in [candidate.title, candidate.snippet] if part).strip()
-
-
-def _extract_entities(text: str) -> set[str]:
-    """Extract significant words (proper nouns, numbers, capitalized words) from text.
-
-    Used for cross-source cluster merging where phrasing differs but entities overlap.
-    """
-    # Normalize but preserve word boundaries
-    words = re.sub(r"[^\w\s]", " ", text).split()
-    entities = set()
-    for word in words:
-        lower = word.lower()
-        if lower in _ENTITY_STOPWORDS or len(word) <= 2:
-            continue
-        # Keep words that are: capitalized, ALL CAPS, contain digits, or 4+ chars
-        if word[0].isupper() or word.isupper() or any(c.isdigit() for c in word) or len(word) >= 4:
-            entities.add(lower)
-    return entities
-
-
-def _entity_overlap(entities_a: set[str], entities_b: set[str]) -> float:
-    """Jaccard-style overlap on extracted entities."""
-    if not entities_a or not entities_b:
-        return 0.0
-    intersection = entities_a & entities_b
-    smaller = min(len(entities_a), len(entities_b))
-    # Use overlap coefficient (intersection / min) instead of Jaccard,
-    # because a short tweet about the same event as a long Reddit post
-    # will have fewer total entities but high overlap with the larger set.
-    return len(intersection) / smaller if smaller > 0 else 0.0
-
 
 def _mmr_representatives(
     candidates: list[schema.Candidate],
@@ -153,7 +107,11 @@ def cluster_candidates(
         )
 
     # Second pass: merge small clusters that share entities across sources.
-    clusters = _merge_entity_clusters(clusters, candidates)
+    clusters = _merge_entity_clusters(
+        clusters,
+        candidates,
+        min_shared_entities=2 if "discover-mode" in plan.notes else 1,
+    )
 
     return sorted(clusters, key=lambda cluster: cluster.score, reverse=True)
 
@@ -161,6 +119,8 @@ def cluster_candidates(
 def _merge_entity_clusters(
     clusters: list[schema.Cluster],
     all_candidates: list[schema.Candidate],
+    *,
+    min_shared_entities: int = 1,
 ) -> list[schema.Cluster]:
     """Merge small clusters that cover the same story across different sources.
 
@@ -182,7 +142,7 @@ def _merge_entity_clusters(
         for cid in cl.candidate_ids:
             cand = candidate_map.get(cid)
             if cand:
-                entities |= _extract_entities(_candidate_text(cand))
+                entities |= entity_extract.extract_text_entities(_candidate_text(cand))
         cluster_entities.append(entities)
 
     # Only merge clusters with <= 3 items (don't merge already-large clusters)
@@ -207,8 +167,9 @@ def _merge_entity_clusters(
             if poly_i != poly_j:
                 continue
 
-            overlap = _entity_overlap(cluster_entities[i], cluster_entities[j])
-            if overlap >= 0.45:
+            shared_entities = cluster_entities[i] & cluster_entities[j]
+            overlap = entity_extract.entity_overlap(cluster_entities[i], cluster_entities[j])
+            if len(shared_entities) >= min_shared_entities and overlap >= 0.45:
                 merged_into[j] = i
 
     if not merged_into:

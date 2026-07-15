@@ -79,6 +79,33 @@ class NormalizeV3Tests(unittest.TestCase):
         self.assertEqual(45, top[1]["score"])
         self.assertEqual(7, top[2]["score"])
 
+    def test_instagram_comment_like_count_maps_to_score(self):
+        """U2: IG comments use comment_like_count as the vote; normalize must
+        carry it into the shared `score` field so it participates in ranking."""
+        items = [
+            {
+                "video_id": "ig-1",
+                "text": "reel caption",
+                "url": "https://www.instagram.com/reel/ABC/",
+                "author_name": "example",
+                "date": "2026-03-01",
+                "engagement": {"views": 10000, "likes": 500, "comments": 30},
+                "top_comments": [
+                    {"author": "alice", "text": "gold take", "comment_like_count": 120, "date": "2026-03-02"},
+                    {"author": "bob", "text": "mid", "comment_like_count": 5, "date": "2026-03-03"},
+                ],
+            }
+        ]
+        normalized = normalize.normalize_source_items(
+            "instagram", items, "2026-02-15", "2026-03-17",
+        )
+        self.assertEqual(1, len(normalized))
+        top = normalized[0].metadata.get("top_comments")
+        self.assertIsNotNone(top)
+        self.assertEqual(120, top[0]["score"])
+        self.assertEqual("gold take", top[0]["excerpt"])
+        self.assertEqual("alice", top[0]["author"])
+
     def test_youtube_top_comments_empty_list_passes_through_cleanly(self):
         items = [
             {

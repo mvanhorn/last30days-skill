@@ -5,27 +5,164 @@ on:
     tags:
       - "v*"
 
-permissions:
-  contents: write
+permissions: {}
+
 
 jobs:
-  build-and-release:
+  # Build the existing .skill artifact (Claude Code / Codex / Cursor install
+  # surface). Unchanged from prior versions; just isolated into its own job
+  # so the .mcpb matrix can run in parallel.
+  build-skill:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Build .skill artifact
         run: |
           bash skills/last30days/scripts/build-skill.sh
           test -f dist/last30days.skill
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+      - name: Attest .skill artifact provenance
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
         with:
-          files: dist/last30days.skill
-          generate_release_notes: true
-          draft: false
-          prerelease: false
+          subject-path: dist/last30days.skill
+
+      - name: Upload skill artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: last30days-skill
+          path: dist/last30days.skill
+
+  # Cross-compile the Go MCP server for each Claude Desktop platform and
+  # package each as a .mcpb. printing-press bundle handles the manifest +
+  # zip layout; we only supply the pre-built binary via --skip-build.
+  build-mcpb:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    env:
+      MCPB_OUTPUT: mcp/build/last30days-pp-mcp-${{ matrix.goos }}-${{ matrix.goarch }}.mcpb
+      MCPB_PLATFORM: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+            platform: darwin/arm64
+          - goos: darwin
+            goarch: amd64
+            platform: darwin/amd64
+          - goos: linux
+            goarch: amd64
+            platform: linux/amd64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          # printing-press v4.8.0 declares `go >= 1.26.3`, newer than the
+          # engine's own floor in mcp/go.mod. Install a 1.26.x toolchain so the
+          # PP `go install` below is satisfied without a runtime toolchain
+          # download (which GOSUMDB=off would block). Building the MCP binary
+          # with a newer toolchain than mcp/go.mod declares is backward-safe.
+          go-version: "1.26"
+          cache: false
+
+      - name: Install printing-press
+        # Pin to a known-good PP release so the bundle command's behavior
+        # is deterministic across our tags. Bump deliberately when adopting
+        # a newer PP version. GOSUMDB=off skips the sumdb 404 some
+        # private-namespaced go install calls hit even when the repo is
+        # public; harmless here because the module path is fully qualified.
+        env:
+          GOPRIVATE: github.com/mvanhorn/*
+          GOSUMDB: "off"
+        run: go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@v4.8.0
+
+      - name: Sync engine into vendored/
+        run: bash mcp/scripts/sync-engine.sh
+
+      - name: Build MCP binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          mkdir -p mcp/build
+          go -C mcp build \
+            -ldflags "-X main.Version=${RELEASE_VERSION}" \
+            -o build/last30days-pp-mcp \
+            ./cmd/last30days-pp-mcp
+
+      - name: Bundle .mcpb
+        # printing-press bundle reads manifest.json from the cli dir and
+        # rewrites the binary into bin/<entry_point> inside the zip. The
+        # --platform tag drives the output filename suffix; the binary
+        # itself is whatever we just cross-compiled.
+        run: |
+          printing-press bundle mcp \
+            --skip-build \
+            --binary mcp/build/last30days-pp-mcp \
+            --platform "${MCPB_PLATFORM}" \
+            --output "${MCPB_OUTPUT}"
+
+      - name: Attest .mcpb artifact provenance
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          subject-path: ${{ env.MCPB_OUTPUT }}
+
+      - name: Upload .mcpb artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: mcpb-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: ${{ env.MCPB_OUTPUT }}
+
+  # Gather every platform artifact and attach to one GitHub release.
+  release:
+    needs: [build-skill, build-mcpb]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      # gh release create --verify-tag shells out to git, so the job needs a
+      # checkout with the tag present; without it the step fails with
+      # "fatal: not a git repository".
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release create "${RELEASE_TAG}" \
+            dist/last30days.skill \
+            dist/last30days-pp-mcp-*.mcpb \
+            --generate-notes \
+            --verify-tag

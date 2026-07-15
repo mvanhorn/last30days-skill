@@ -1,5 +1,6 @@
 # Private benchmark / evaluation artifacts — never push to upstream
 docs/comparison-results/
+test-run.log
 scripts/evaluate-synthesis.py
 scripts/generate-synthesis-inputs.py
 fixtures/polymarket_sample.json
@@ -7,6 +8,7 @@ docs/v2.1-tweets.md
 docs/30-day-anniversary-thread.md
 docs/30-day-anniversary-tweets.md
 variants/open/references/research.md
+docs/investigations/
 
 # OS / tool files
 .DS_Store
@@ -20,14 +22,29 @@ mise.toml
 .coverage
 htmlcov/
 
+# Local secrets/config. Keep tracked examples if added later.
+.env
+.env.*
+!.env.example
+
 # Root vendor/ is accidental - real vendored client lives at scripts/lib/vendor/bird-search/
 /vendor/
 
 # build artifact from scripts/build-skill.sh
 /dist/
 
+# Go MCP bundle build outputs - source of truth for vendored/ stays under
+# skills/last30days/scripts/; build/ holds cross-compiled binaries + .mcpb files.
+# vendored/ lives inside the engine package because //go:embed cannot reach
+# outside its own package directory; the .gitkeep anchor stays tracked so
+# the embed pattern always finds a match even before sync-engine runs.
+/mcp/internal/engine/vendored/*
+!/mcp/internal/engine/vendored/.gitkeep
+/mcp/build/
+
 # Internal planning docs (ce:plan output) — keep local, don't publish
 docs/plans/
+docs/brainstorms/
 .context/
 
 /work

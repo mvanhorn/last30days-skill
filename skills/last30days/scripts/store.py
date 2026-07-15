@@ -12,11 +12,13 @@ Database location: ~/.local/share/last30days/research.db
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -32,6 +34,45 @@ _db_override = None
 
 def _get_db_path() -> Path:
     return _db_override or DB_PATH
+
+
+@contextmanager
+def scoped_db(db_path: Optional[Path]) -> Iterator[None]:
+    """Route all store access inside the block to ``db_path``.
+
+    ``None`` keeps the shared store. Scoped runs (``--save-dir``) use this so
+    their findings land next to their briefs instead of leaking into the
+    shared research.db that unscoped searches read.
+    """
+    global _db_override
+    if db_path is None:
+        yield
+        return
+    previous = _db_override
+    _db_override = Path(db_path)
+    try:
+        yield
+    finally:
+        _db_override = previous
+
+
+def ensure_private_db_files(db_path: Optional[Path] = None) -> Path:
+    """Create/harden the research database and SQLite sidecars owner-only."""
+    path = db_path or _get_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        try:
+            candidate.chmod(0o600)
+        except FileNotFoundError:
+            pass
+    return path
 
 
 SCHEMA_V1 = """
@@ -193,6 +234,10 @@ def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # WAL lets readers coexist with one writer, but two writers (cron + user)
+    # still contend for the write lock. Default busy_timeout is 0, so the loser
+    # raises "database is locked" instantly; wait instead.
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -452,16 +497,41 @@ def store_findings(
                 update_rows,
             )
         if insert_rows:
+            # source_url is UNIQUE. The SELECT above is not atomic with this
+            # write, so a concurrent run (cron + user) can insert the same URL
+            # between our read and write. Upsert on conflict instead of letting
+            # IntegrityError abort the whole batch and lose every finding.
             conn.executemany(
                 """INSERT INTO findings
                    (run_id, topic_id, source, source_url, source_title,
                     author, content, summary, engagement_score, relevance_score)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(source_url) DO UPDATE SET
+                       last_seen = datetime('now'),
+                       sighting_count = sighting_count + 1,
+                       engagement_score = max(
+                           engagement_score, excluded.engagement_score),
+                       run_id = excluded.run_id""",
                 insert_rows,
             )
 
         new_count = len(insert_rows)
         updated_count = len(update_rows)
+        if insert_rows:
+            # A row whose URL was inserted by a concurrent run between our SELECT
+            # and the upsert resolves via ON CONFLICT (an update, not a new row),
+            # bumping its sighting_count above 1. Re-derive the split so
+            # research_runs.findings_new isn't inflated by conflict-resolved rows
+            # (source_url is field index 3 in each insert tuple).
+            inserted_urls = [row[3] for row in insert_rows]
+            placeholders = ",".join("?" for _ in inserted_urls)
+            conflicted = conn.execute(
+                f"SELECT COUNT(*) FROM findings "
+                f"WHERE source_url IN ({placeholders}) AND sighting_count > 1",
+                inserted_urls,
+            ).fetchone()[0]
+            new_count -= conflicted
+            updated_count += conflicted
         _record_sightings(conn, run_id, topic_id, with_urls, existing_by_url)
         conn.execute(
             "UPDATE research_runs SET findings_new = ?, findings_updated = ? WHERE id = ?",

@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from lib.env import extract_browser_credentials, COOKIE_DOMAINS
+from lib.env import ConfigLoadPolicy, extract_browser_credentials, COOKIE_DOMAINS
 
 
 def _base_config(**overrides):
@@ -55,17 +55,13 @@ class TestExtractBrowserCredentials:
         mock_extract.assert_not_called()
 
     @patch("lib.cookie_extract.extract_cookies")
-    def test_no_from_browser_defaults_to_silent(self, mock_extract):
-        """Default (no FROM_BROWSER): tries Firefox and Safari only, skips Chrome."""
+    def test_no_from_browser_skips_all(self, mock_extract):
+        """Default (no FROM_BROWSER): reads no browser cookies."""
         mock_extract.return_value = None
         config = _base_config()
         result = extract_browser_credentials(config)
         assert result == {}
-        # Should try firefox and safari but NOT chrome
-        browser_args = [call[0][0] for call in mock_extract.call_args_list]
-        assert "firefox" in browser_args
-        assert "safari" in browser_args
-        assert "chrome" not in browser_args
+        mock_extract.assert_not_called()
 
     @patch("lib.cookie_extract.extract_cookies")
     def test_from_browser_firefox_only(self, mock_extract):
@@ -105,20 +101,19 @@ class TestExtractBrowserCredentials:
 
 
 class TestGetConfigCookieIntegration:
-    """Integration test: get_config() calls extract_browser_credentials."""
+    """Integration tests for policy-gated cookie extraction in get_config()."""
 
     @patch("lib.cookie_extract.extract_cookies")
     @patch("lib.env._find_project_env", return_value=None)
     @patch("lib.env.load_env_file", return_value={})
     @patch("lib.env._load_keychain", return_value={})
     @patch("lib.env.get_openai_auth")
-    def test_get_config_injects_cookies(
+    def test_get_config_default_does_not_extract_cookies(
         self, mock_openai, mock_keychain, mock_load, mock_proj, mock_extract
     ):
         from lib.env import get_config, OpenAIAuth
         mock_openai.return_value = OpenAIAuth(
             token=None, source="none", status="missing",
-            account_id=None, codex_auth_file="/fake",
         )
         mock_extract.return_value = {"auth_token": "browser_tok", "ct0": "browser_ct0"}
         env_patch = {
@@ -128,5 +123,29 @@ class TestGetConfigCookieIntegration:
         }
         with patch.dict(os.environ, env_patch, clear=False):
             config = get_config()
+        assert config["AUTH_TOKEN"] is None
+        assert config["CT0"] is None
+        mock_extract.assert_not_called()
+
+    @patch("lib.cookie_extract.extract_cookies")
+    @patch("lib.env._find_project_env", return_value=None)
+    @patch("lib.env.load_env_file", return_value={})
+    @patch("lib.env._load_keychain", return_value={})
+    @patch("lib.env.get_openai_auth")
+    def test_get_config_with_cookie_policy_injects_cookies(
+        self, mock_openai, mock_keychain, mock_load, mock_proj, mock_extract
+    ):
+        from lib.env import get_config, OpenAIAuth
+        mock_openai.return_value = OpenAIAuth(
+            token=None, source="none", status="missing",
+        )
+        mock_extract.return_value = {"auth_token": "browser_tok", "ct0": "browser_ct0"}
+        env_patch = {
+            "SETUP_COMPLETE": "true",
+            "FROM_BROWSER": "auto",
+            "LAST30DAYS_CONFIG_DIR": "",
+        }
+        with patch.dict(os.environ, env_patch, clear=False):
+            config = get_config(policy=ConfigLoadPolicy(browser_cookies="read"))
         assert config["AUTH_TOKEN"] == "browser_tok"
         assert config["CT0"] == "browser_ct0"

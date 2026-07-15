@@ -240,6 +240,16 @@ class TestSearchXquik(unittest.TestCase):
         self.assertIn("auth failed", result.get("error", ""))
 
     @patch("lib.xquik.http.get")
+    def test_unpaid_402_surfaces_error_on_real_path(self, mock_get):
+        # An unpaid key (402) must surface an error on the normal search path,
+        # not settle silently empty — diagnose is opt-in.
+        from lib import http as http_mod
+        mock_get.side_effect = http_mod.HTTPError("Payment Required", status_code=402)
+        result = search_xquik("test", "2026-01-01", "2026-03-01", token="unpaid-key")
+        self.assertEqual(result["items"], [])
+        self.assertIn("unpaid", result.get("error", "").lower())
+
+    @patch("lib.xquik.http.get")
     def test_empty_tweets_list(self, mock_get):
         mock_get.return_value = {"tweets": []}
         result = search_xquik("obscure topic", "2026-01-01", "2026-03-01", token="key")
@@ -265,6 +275,213 @@ class TestDepthConfig(unittest.TestCase):
 
     def test_deep_has_most_queries(self):
         self.assertGreater(DEPTH_CONFIG["deep"]["queries"], DEPTH_CONFIG["quick"]["queries"])
+
+class TestIsOwn(unittest.TestCase):
+    def test_own_tweet_detected(self):
+        from lib.xquik import _is_own
+        self.assertTrue(_is_own("https://x.com/elonmusk/status/123", "elonmusk"))
+        self.assertTrue(_is_own("https://twitter.com/elonmusk/status/123", "@elonmusk"))
+
+    def test_other_author_not_own(self):
+        from lib.xquik import _is_own
+        self.assertFalse(_is_own("https://x.com/someoneelse/status/123", "elonmusk"))
+
+    def test_empty_handle_or_url(self):
+        from lib.xquik import _is_own
+        self.assertFalse(_is_own("", "elonmusk"))
+        self.assertFalse(_is_own("https://x.com/a/status/1", ""))
+
+
+class TestFromLane(unittest.TestCase):
+    def _resp(self, username, tid="1"):
+        return {"tweets": [{
+            "id": tid, "text": "anything", "createdAt": "2026-06-15T12:00:00Z",
+            "likeCount": 10, "author": {"username": username},
+        }]}
+
+    def test_from_query_shape_and_no_topic_anded(self):
+        from lib import xquik
+        with patch("lib.xquik.http.get", return_value=self._resp("elonmusk")) as m:
+            items = xquik.search_handles(["@elonmusk"], "Grok 4", "2026-05-19", "2026-06-18",
+                                         count_per=8, token="k")
+        url = m.call_args[0][0]
+        self.assertIn("from%3Aelonmusk", url)        # from:elonmusk url-encoded
+        self.assertIn("since%3A2026-05-19", url)
+        self.assertNotIn("Grok", url)                 # topic must NOT be AND'd into query
+        self.assertEqual(1, len(items))
+        self.assertEqual("XF1", items[0]["id"])       # FROM-lane id prefix
+
+    def test_no_token_or_no_handles_returns_empty(self):
+        from lib import xquik
+        self.assertEqual([], xquik.search_handles(["@x"], "t", "a", "b", token=""))
+        self.assertEqual([], xquik.search_handles([], "t", "a", "b", token="k"))
+
+    def test_item_ids_unique_across_handles(self):
+        # Different tweets across two handles must not collide on item id.
+        from lib import xquik
+        responses = [
+            {"tweets": [{"id": "1", "text": "a", "createdAt": "2026-06-15T12:00:00Z",
+                         "author": {"username": "h1"}}]},
+            {"tweets": [{"id": "2", "text": "b", "createdAt": "2026-06-15T12:00:00Z",
+                         "author": {"username": "h2"}}]},
+        ]
+        with patch("lib.xquik.http.get", side_effect=responses):
+            items = xquik.search_handles(["h1", "h2"], "topic", "2026-05-19", "2026-06-18", token="k")
+        ids = [it["id"] for it in items]
+        self.assertEqual(len(ids), len(set(ids)))
+
+
+class TestAboutLane(unittest.TestCase):
+    def test_mentions_drop_own_tweets(self):
+        from lib import xquik
+        resp = {"tweets": [
+            {"id": "1", "text": "@elonmusk nice", "createdAt": "2026-06-15T12:00:00Z",
+             "author": {"username": "fan"}},
+            {"id": "2", "text": "my own post", "createdAt": "2026-06-15T12:00:00Z",
+             "author": {"username": "elonmusk"}},
+        ]}
+        with patch("lib.xquik.http.get", return_value=resp) as m:
+            items = xquik.search_mentions(["elonmusk"], "2026-05-19", "2026-06-18",
+                                          topic="Grok 4", count_per=5, token="k")
+        url = m.call_args[0][0]
+        self.assertIn("%40elonmusk", url)             # @elonmusk url-encoded
+        authors = {it["author_handle"] for it in items}
+        self.assertIn("fan", authors)
+        self.assertNotIn("elonmusk", authors)         # own tweet dropped
+
+
+class TestExpandGuard(unittest.TestCase):
+    @patch("lib.xquik._extract_core_subject", return_value="news")
+    def test_bare_generic_core_falls_back_to_topic(self, _m):
+        # #607: a single bare generic core must not be the query for a
+        # multi-word topic — fall back to the full topic.
+        qs = expand_xquik_queries("Grok 4 news", "quick")
+        self.assertEqual(["Grok 4 news"], qs)
+
+    @patch("lib.xquik._extract_core_subject", return_value="Grok 4")
+    def test_multiword_core_kept(self, _m):
+        qs = expand_xquik_queries("Grok 4 latest", "quick")
+        self.assertEqual(["Grok 4"], qs)
+
+
+class TestProbeWorks(unittest.TestCase):
+    """U5: honest diagnose probe — tri-state, surfaces the unpaid (402) case."""
+
+    def setUp(self):
+        import lib.xquik as xq
+        xq._probe_cache = ("unset", "")
+
+    @patch("lib.xquik.http.get")
+    def test_funded_key_works(self, mock_get):
+        from lib import xquik
+        mock_get.return_value = {"tweets": [{"id": "1"}]}
+        self.assertIs(True, xquik.probe_works("k"))
+        self.assertEqual("ok", xquik.probe_reason())
+
+    @patch("lib.xquik.http.get")
+    def test_unpaid_402_is_false_with_reason(self, mock_get):
+        from lib import xquik, http as http_mod
+        mock_get.side_effect = http_mod.HTTPError("Payment Required", status_code=402)
+        self.assertIs(False, xquik.probe_works("k"))
+        self.assertIn("unpaid", xquik.probe_reason())
+
+    @patch("lib.xquik.http.get")
+    def test_auth_401_is_false(self, mock_get):
+        from lib import xquik, http as http_mod
+        mock_get.side_effect = http_mod.HTTPError("Unauthorized", status_code=401)
+        self.assertIs(False, xquik.probe_works("k"))
+        self.assertIn("auth failed", xquik.probe_reason())
+
+    @patch("lib.xquik.http.get")
+    def test_timeout_is_inconclusive_fail_open(self, mock_get):
+        from lib import xquik
+        mock_get.side_effect = TimeoutError("timed out")
+        self.assertIsNone(xquik.probe_works("k"))
+
+    def test_no_token_is_false(self):
+        from lib import xquik
+        self.assertIs(False, xquik.probe_works(""))
+        self.assertIn("no XQUIK_API_KEY", xquik.probe_reason())
+
+    @patch("lib.xquik.http.get")
+    def test_result_is_cached(self, mock_get):
+        from lib import xquik
+        mock_get.return_value = {"tweets": [{"id": "1"}]}
+        xquik.probe_works("k")
+        xquik.probe_works("k")
+        self.assertEqual(1, mock_get.call_count)
+
+
+class TestDiagnoseSurfacesXquik(unittest.TestCase):
+    """U5: get_x_source_status reports xquik as the active X source when bird/
+    xAI/xurl are absent, and surfaces the probe reason."""
+
+    def setUp(self):
+        import lib.xquik as xq
+        xq._probe_cache = ("unset", "")
+
+    @patch("lib.xquik.http.get")
+    @patch("lib.xurl_x.is_available", return_value=False)
+    @patch("lib.bird_x.get_bird_status")
+    def test_xquik_is_active_x_source_when_only_key(self, mock_bird, _xurl, mock_get):
+        from lib import env
+        mock_bird.return_value = {"installed": False, "authenticated": False,
+                                  "username": "", "can_install": False}
+        mock_get.return_value = {"tweets": [{"id": "1"}]}
+        status = env.get_x_source_status({"XQUIK_API_KEY": "k"}, probe=True)
+        self.assertEqual("xquik", status["source"])
+        self.assertTrue(status["xquik_available"])
+        self.assertIs(True, status["xquik_working"])
+
+    @patch("lib.xurl_x.is_available", return_value=False)
+    @patch("lib.bird_x.get_bird_status")
+    def test_unpaid_xquik_not_active_source(self, mock_bird, _xurl):
+        from lib import env, http as http_mod
+        import lib.xquik as xq
+        mock_bird.return_value = {"installed": False, "authenticated": False,
+                                  "username": "", "can_install": False}
+        with patch("lib.xquik.http.get", side_effect=http_mod.HTTPError("pay", status_code=402)):
+            status = env.get_x_source_status({"XQUIK_API_KEY": "k"}, probe=True)
+        self.assertIsNone(status["source"])  # unpaid key is not a usable X source
+        self.assertIs(False, status["xquik_working"])
+        self.assertIn("unpaid", status["xquik_status"])
+
+
+class TestMentionedHandles(unittest.TestCase):
+    """U3: xquik items carry leading-run @mentions so the first-party
+    interaction signal fires (shared parser with bird)."""
+
+    def _tweet(self, text):
+        return {
+            "id": "1", "text": text, "createdAt": "2026-06-15T12:00:00Z",
+            "author": {"username": "subject"},
+        }
+
+    def test_leading_mentions_captured(self):
+        item = _parse_tweet(self._tweet("@jack @pmarca thoughts on this"), 0, "topic")
+        self.assertEqual(["jack", "pmarca"], item["mentioned_handles"])
+
+    def test_midbody_mention_ignored(self):
+        item = _parse_tweet(self._tweet("I think @jack is right"), 0, "topic")
+        self.assertEqual([], item["mentioned_handles"])
+
+    def test_no_mentions(self):
+        item = _parse_tweet(self._tweet("Grok 4 just shipped"), 0, "topic")
+        self.assertEqual([], item["mentioned_handles"])
+
+
+class TestNormalizePropagatesMentions(unittest.TestCase):
+    """U3: _normalize_x carries xquik mentioned_handles into metadata so rerank
+    can read them."""
+
+    def test_mentioned_handles_reach_metadata(self):
+        from lib import normalize
+        item = _parse_tweet(
+            {"id": "1", "text": "@jack hi", "createdAt": "2026-06-15T12:00:00Z",
+             "author": {"username": "subject"}}, 0, "topic")
+        normalized = normalize.normalize_source_items("xquik", [item], "2026-05-19", "2026-06-18")
+        self.assertEqual(["jack"], normalized[0].metadata.get("mentioned_handles"))
+
 
 if __name__ == "__main__":
     unittest.main()

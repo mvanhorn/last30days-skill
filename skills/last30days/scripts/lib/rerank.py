@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 import re
+from datetime import datetime
 
-from . import http, providers, query, schema
+from . import http, providers, query, schema, signals
 
 
 # Penalty applied when a candidate does not mention the primary entity
@@ -16,6 +18,130 @@ from . import http, providers, query, schema
 # Nate Herk "Managed Agents" video scored 51 / ranked #2 with zero
 # Hermes content.
 ENTITY_MISS_PENALTY = 25.0
+
+# Small additive credit for a post authored by one of the run's resolved
+# handles (see rerank_candidates / _fallback_tuple). Deliberately small: the
+# goal is to stop *burying* first-party posts, not to auto-win the ranking on
+# authorship alone. A strong on-topic third-party item (high LLM relevance)
+# still outranks a thin first-party one; this only lifts first-party off the
+# neutral floor so it survives into the visible band.
+FIRST_PARTY_AUTHOR_CREDIT = 5.0
+
+_DISCOVERY_ENGAGEMENT_FIELDS = {
+    "reddit": ("score", "num_comments"),
+    "hackernews": ("points", "comments"),
+    "digg": ("postCount", "uniqueAuthors"),
+    "x": ("likes", "reposts", "replies", "quotes"),
+}
+
+
+def discovery_engagement_total(item: schema.SourceItem) -> float:
+    """Return comparable native interaction counts for discovery evidence."""
+    fields = _DISCOVERY_ENGAGEMENT_FIELDS.get(item.source)
+    if fields is None:
+        fields = tuple(
+            field
+            for field in item.engagement
+            if field.lower() not in {"rank", "rank_score", "upvote_ratio", "rating"}
+        )
+    return sum(
+        float(item.engagement.get(field) or 0)
+        for field in fields
+        if isinstance(item.engagement.get(field), (int, float))
+        and not isinstance(item.engagement.get(field), bool)
+    )
+
+
+def engagement_velocity_score(
+    item: schema.SourceItem,
+    *,
+    as_of_date: str,
+) -> float:
+    """Weight native engagement by age, with an explicit first-week boost."""
+    engagement = discovery_engagement_total(item)
+    if engagement <= 0:
+        return 0.0
+    try:
+        published = datetime.fromisoformat((item.published_at or "").replace("Z", "+00:00")).date()
+        as_of = datetime.fromisoformat(as_of_date.replace("Z", "+00:00")).date()
+        age_days = max(0, (as_of - published).days)
+    except (TypeError, ValueError):
+        age_days = 30
+    recency_weight = 1.0 / math.sqrt(age_days + 1)
+    if age_days < 7:
+        recency_weight *= 1.5
+    return round(engagement * recency_weight, 4)
+
+
+def discovery_velocity_score(
+    items: list[schema.SourceItem],
+    *,
+    as_of_date: str,
+) -> float:
+    """Score a topic cluster and reward independent cross-source confirmation."""
+    raw = sum(engagement_velocity_score(item, as_of_date=as_of_date) for item in items)
+    source_count = len({item.source for item in items})
+    corroboration = 1.0 + (0.15 * max(0, source_count - 1))
+    return round(raw * corroboration, 4)
+
+
+# Discovery confidence floor. The named 2026-07-12 failure mode: quiet feeds
+# left the sweep ranking noise against noise, and it dutifully emitted five
+# 1-like tweets as a "trend list". The floor makes "nothing solid this window"
+# a first-class outcome instead. Constants are deliberately tunable:
+# - FLOOR_MIN_ENGAGEMENT kills absolute junk (a 1-like tweet can never rank).
+# - A topic then clears via EITHER independent cross-source confirmation
+#   (>= FLOOR_MIN_SOURCES) OR a genuinely strong single-source spike
+#   (>= FLOOR_SINGLE_SOURCE_ENGAGEMENT) - a 1,600-point single-source HN
+#   thread is a real story, a 30-upvote single-source meme is not.
+FLOOR_MIN_ENGAGEMENT = 25.0
+FLOOR_MIN_SOURCES = 2
+FLOOR_SINGLE_SOURCE_ENGAGEMENT = 200.0
+
+
+def passes_discovery_floor(
+    *,
+    source_count: int,
+    engagement_total: float,
+    item_count: int,
+) -> bool:
+    """Whether a discovery topic's evidence is strong enough to show a user.
+
+    Below this floor the honest output is "nothing solid this window", not a
+    ranked list of whatever survived the sweep.
+    """
+    if item_count <= 0 or engagement_total < FLOOR_MIN_ENGAGEMENT:
+        return False
+    if source_count >= FLOOR_MIN_SOURCES:
+        return True
+    return engagement_total >= FLOOR_SINGLE_SOURCE_ENGAGEMENT
+
+# Engagement rescue: a high-engagement X post that is on-topic (entity-grounded
+# or first-party) cannot be fully zeroed by the other penalties. The floor is a
+# function of the post's engagement percentile *within the run's X pool* (so it
+# adapts to each topic's engagement scale) and is bounded by RESCUE_FLOOR_MAX.
+# Critically it is NEVER applied to entity-miss-demoted (off-topic collision)
+# posts, so viral name-collision noise (Lanzhou clips, namesakes) stays buried.
+RESCUE_FLOOR_MAX = 40.0
+
+# Interaction signal: a first-party post directed AT another account (a reply /
+# leading @mention) carries relational signal — who the subject is personally
+# engaging — that no keyword or like-count surfaces. It is floated to a minimum
+# final_score so it survives into the visible band regardless of engagement,
+# and tagged (candidate.metadata["interaction_targets"]) so the synthesizing
+# model reads it as relational, not noise. Floor (not additive) so it composes
+# with the engagement rescue without unbounded stacking.
+INTERACTION_FLOOR = 35.0
+
+# First-party survival floor. A post authored by a resolved handle must clear
+# the zero band regardless of which scoring path ran. The fallback path already
+# exempts it from the entity-miss penalty, but on the LLM rerank path the model
+# is instructed to cap any candidate that doesn't name the entity at <=30 (and a
+# post never names its own author), which would re-bury plain low-engagement
+# first-party posts. This floor is the deterministic backstop; it is modest
+# (well below strong on-topic evidence at 50+) so authorship buys visibility,
+# not a win.
+FIRST_PARTY_FLOOR = 25.0
 
 # Intent modifiers to strip before extracting the primary entity so that,
 # for example, "Hermes Agent use cases" yields primary_entity="hermes agent"
@@ -83,24 +209,40 @@ def rerank_candidates(
     provider: providers.ReasoningClient | None,
     model: str | None,
     shortlist_size: int,
+    resolved_handles: set[str] | None = None,
 ) -> list[schema.Candidate]:
-    """Rerank the fused shortlist, demoting candidates the reranker scored as irrelevant."""
+    """Rerank the fused shortlist, demoting candidates the reranker scored as irrelevant.
+
+    ``resolved_handles`` is the normalized (``@``-stripped, lowercased) set of
+    handles the run resolved for the topic (``--x-handle``, ``--x-related``, and
+    the GitHub user). A candidate authored by one of these is first-party: it is
+    exempted from the entity-miss demotion in ``_fallback_tuple`` (a post almost
+    never repeats its own author's name, so the body-text grounding check would
+    otherwise bury the subject's own highest-signal posts).
+    """
+    handles = resolved_handles or set()
     shortlisted = candidates[:shortlist_size]
     primary_entity = _primary_entity(topic)
     if provider and model and shortlisted:
         try:
-            response = provider.generate_json(model, _build_prompt(topic, plan, shortlisted, primary_entity))
-            _apply_llm_scores(shortlisted, response)
+            response = provider.generate_json(
+                model, _build_prompt(topic, plan, shortlisted, primary_entity, resolved_handles=handles)
+            )
+            _apply_llm_scores(shortlisted, response, resolved_handles=handles)
         except (ValueError, KeyError, json.JSONDecodeError, OSError, http.HTTPError) as exc:
             import sys
             print(f"[Rerank] LLM reranking failed, using local fallback: {type(exc).__name__}: {exc}", file=sys.stderr)
-            _apply_fallback_scores(shortlisted, primary_entity=primary_entity)
+            _apply_fallback_scores(shortlisted, primary_entity=primary_entity, resolved_handles=handles)
     else:
-        _apply_fallback_scores(shortlisted, primary_entity=primary_entity)
+        _apply_fallback_scores(shortlisted, primary_entity=primary_entity, resolved_handles=handles)
 
     if len(candidates) > shortlist_size:
         tail = candidates[shortlist_size:]
-        _apply_fallback_scores(tail, primary_entity=primary_entity)
+        _apply_fallback_scores(tail, primary_entity=primary_entity, resolved_handles=handles)
+
+    _apply_first_party_floor(candidates, resolved_handles=handles)
+    _apply_engagement_rescue(candidates, primary_entity=primary_entity, resolved_handles=handles)
+    _apply_interaction_signal(candidates, resolved_handles=handles)
 
     return sorted(
         candidates,
@@ -130,23 +272,39 @@ def _fenced_untrusted_content(candidate_block: str) -> str:
     )
 
 
-def _build_prompt(topic: str, plan: schema.QueryPlan, candidates: list[schema.Candidate], primary_entity: str = "") -> str:
+def _build_prompt(
+    topic: str,
+    plan: schema.QueryPlan,
+    candidates: list[schema.Candidate],
+    primary_entity: str = "",
+    resolved_handles: set[str] | None = None,
+) -> str:
+    handles = resolved_handles or set()
     ranking_queries = "\n".join(
         f"- {subquery.label}: {subquery.ranking_query}"
         for subquery in plan.subqueries
     )
+
+    def _candidate_lines(candidate: schema.Candidate) -> list[str]:
+        author = _candidate_author_handle(candidate)
+        lines = [
+            f"- candidate_id: {candidate.candidate_id}",
+            f"  sources: {schema.candidate_source_label(candidate)}",
+            f"  title: {candidate.title[:220]}",
+            f"  snippet: {candidate.snippet[:420]}",
+            f"  date: {schema.candidate_best_published_at(candidate) or 'unknown'}",
+            f"  matched_subqueries: {', '.join(candidate.subquery_labels)}",
+        ]
+        if author:
+            lines.append(f"  author: @{author}")
+        # Flag first-party posts so the model does not apply the entity-grounding
+        # cap to the subject's own posts (which never name their own author).
+        if author and author in handles:
+            lines.append("  first_party: true (authored by the subject)")
+        return lines
+
     candidate_block = "\n".join(
-        "\n".join(
-            [
-                f"- candidate_id: {candidate.candidate_id}",
-                f"  sources: {schema.candidate_source_label(candidate)}",
-                f"  title: {candidate.title[:220]}",
-                f"  snippet: {candidate.snippet[:420]}",
-                f"  date: {schema.candidate_best_published_at(candidate) or 'unknown'}",
-                f"  matched_subqueries: {', '.join(candidate.subquery_labels)}",
-            ]
-        )
-        for candidate in candidates
+        "\n".join(_candidate_lines(candidate)) for candidate in candidates
     )
     grounding_hint = ""
     if primary_entity:
@@ -156,7 +314,10 @@ def _build_prompt(topic: str, plan: schema.QueryPlan, candidates: list[schema.Ca
             "in its title or snippet should score no higher than 30, regardless of other "
             "signals. Do not let a candidate match the topic vicinity without matching the "
             "entity itself. 2026-04-19 Hermes Agent Use Cases failure: a Nate Herk video "
-            "about Claude's Managed Agents scored 51 with zero Hermes content.\n"
+            "about Claude's Managed Agents scored 51 with zero Hermes content. "
+            "EXCEPTION: a candidate marked `first_party: true` is the subject's own post - "
+            "it is first-class evidence about the subject and is EXEMPT from this cap. Score "
+            "it on its own merits (a person rarely names themselves in their own post).\n"
         )
     return f"""
 Judge search-result relevance for a last-30-days research pipeline.
@@ -187,7 +348,10 @@ Scoring guidance:
 """.strip()
 
 
-def _apply_llm_scores(candidates: list[schema.Candidate], payload: dict) -> None:
+def _apply_llm_scores(
+    candidates: list[schema.Candidate], payload: dict, *, resolved_handles: set[str] | None = None
+) -> None:
+    handles = resolved_handles or set()
     scores = {}
     for row in payload.get("scores") or []:
         if not isinstance(row, dict):
@@ -200,18 +364,156 @@ def _apply_llm_scores(candidates: list[schema.Candidate], payload: dict) -> None
             str(row.get("reason") or "").strip() or None,
         )
     for candidate in candidates:
-        rerank_score, reason = scores.get(candidate.candidate_id, _fallback_tuple(candidate))
+        rerank_score, reason = scores.get(
+            candidate.candidate_id, _fallback_tuple(candidate, resolved_handles=handles)
+        )
         candidate.rerank_score = rerank_score
         candidate.explanation = reason
         candidate.final_score = _final_score(candidate)
 
 
-def _apply_fallback_scores(candidates: list[schema.Candidate], *, primary_entity: str = "") -> None:
+def _apply_fallback_scores(
+    candidates: list[schema.Candidate], *, primary_entity: str = "", resolved_handles: set[str] | None = None
+) -> None:
+    handles = resolved_handles or set()
     for candidate in candidates:
-        rerank_score, reason = _fallback_tuple(candidate, primary_entity=primary_entity)
+        rerank_score, reason = _fallback_tuple(candidate, primary_entity=primary_entity, resolved_handles=handles)
         candidate.rerank_score = rerank_score
         candidate.explanation = reason
         candidate.final_score = _final_score(candidate)
+
+
+def _candidate_author_handle(candidate: schema.Candidate) -> str:
+    """Representative normalized author handle for a candidate, or '' if none.
+
+    Reads ``SourceItem.author`` (set from the X ``author_handle`` in
+    normalize._normalize_x, already ``@``-stripped) on the first authored
+    source item, falling back to that item's ``metadata.author_handle``.
+    Normalized ``@``-stripped + lowercased to match the resolved-handle set.
+    """
+    for item in candidate.source_items:
+        raw = item.author or (item.metadata or {}).get("author_handle") or ""
+        handle = str(raw).lstrip("@").strip().lower()
+        if handle:
+            return handle
+    return ""
+
+
+def _is_first_party(candidate: schema.Candidate, resolved_handles: set[str]) -> bool:
+    """True when the candidate is authored by one of the run's resolved handles."""
+    if not resolved_handles:
+        return False
+    return _candidate_author_handle(candidate) in resolved_handles
+
+
+def _is_x_candidate(candidate: schema.Candidate) -> bool:
+    """True when the candidate originates from X (top-level or any source item)."""
+    if candidate.source == "x":
+        return True
+    return any(getattr(item, "source", None) == "x" for item in candidate.source_items)
+
+
+def _candidate_engagement(candidate: schema.Candidate) -> float:
+    return candidate.engagement if candidate.engagement is not None else 0.0
+
+
+def _is_entity_grounded(candidate: schema.Candidate, primary_entity: str) -> bool:
+    """Whether the candidate plausibly mentions the primary entity in its text.
+
+    Mirrors the grounding gate used for the entity-miss demotion: no
+    primary_entity means everything is grounded; otherwise the candidate must
+    have text that contains the entity's head token.
+    """
+    if not primary_entity:
+        return True
+    haystack = _candidate_haystack(candidate)
+    return bool(haystack.strip()) and _entity_grounded(haystack, primary_entity)
+
+
+def _rescue_floor(percentile: float) -> float:
+    """Engagement rescue floor: 0 at/below the median, scaling linearly to
+    RESCUE_FLOOR_MAX at the top of the X pool."""
+    if percentile <= 0.5:
+        return 0.0
+    return ((percentile - 0.5) / 0.5) * RESCUE_FLOOR_MAX
+
+
+def _candidate_mentioned_handles(candidate: schema.Candidate) -> set[str]:
+    """Normalized handles the candidate's post is directed at (leading @mentions
+    parsed at ingest into source-item metadata)."""
+    handles: set[str] = set()
+    for item in candidate.source_items:
+        for h in (item.metadata or {}).get("mentioned_handles") or []:
+            norm = str(h).lstrip("@").strip().lower()
+            if norm:
+                handles.add(norm)
+    return handles
+
+
+def _interaction_targets(candidate: schema.Candidate, resolved_handles: set[str]) -> set[str]:
+    """Accounts a first-party post is directed at, excluding the subject's own
+    handles. Empty unless the candidate is first-party AND addresses someone
+    other than the subject."""
+    if not _is_first_party(candidate, resolved_handles):
+        return set()
+    return _candidate_mentioned_handles(candidate) - resolved_handles
+
+
+def _apply_interaction_signal(
+    candidates: list[schema.Candidate], *, resolved_handles: set[str]
+) -> None:
+    """Float and tag first-party posts directed at another account. The relational
+    tell (the subject personally engaging someone) is invisible to keyword and
+    engagement scoring, so these are floored into the visible band and tagged so
+    synthesis reads them as signal."""
+    if not resolved_handles:
+        return
+    for c in candidates:
+        targets = _interaction_targets(c, resolved_handles)
+        if not targets:
+            continue
+        c.metadata = {**(c.metadata or {}), "interaction_targets": sorted(targets)}
+        if c.final_score < INTERACTION_FLOOR:
+            c.final_score = INTERACTION_FLOOR
+
+
+def _apply_first_party_floor(
+    candidates: list[schema.Candidate], *, resolved_handles: set[str]
+) -> None:
+    """Floor every first-party post above the zero band, on any scoring path.
+
+    Backstops the LLM rerank path, where the grounding hint would otherwise cap
+    a first-party post (which never names its own author) at <=30 and re-bury
+    it. Floor only lifts; it never lowers a post the scorer rated higher.
+    """
+    if not resolved_handles:
+        return
+    for c in candidates:
+        if _is_first_party(c, resolved_handles) and c.final_score < FIRST_PARTY_FLOOR:
+            c.final_score = FIRST_PARTY_FLOOR
+
+
+def _apply_engagement_rescue(
+    candidates: list[schema.Candidate], *, primary_entity: str, resolved_handles: set[str]
+) -> None:
+    """Floor final_score for high-engagement X posts that are first-party or
+    entity-grounded, so a viral on-topic post can't sit at ~0. Off-topic
+    (entity-miss) collision posts are excluded, preserving noise suppression.
+    """
+    x_cands = [c for c in candidates if _is_x_candidate(c)]
+    if len(x_cands) < 2:
+        return
+    engagements = sorted(_candidate_engagement(c) for c in x_cands)
+    n = len(engagements)
+    for c in x_cands:
+        if not (_is_first_party(c, resolved_handles) or _is_entity_grounded(c, primary_entity)):
+            continue
+        e = _candidate_engagement(c)
+        # Percentile rank in [0, 1]: fraction of the X pool strictly below e.
+        percentile = sum(1 for v in engagements if v < e) / (n - 1)
+        floor = _rescue_floor(percentile)
+        if floor > c.final_score:
+            c.final_score = floor
 
 
 def _candidate_haystack(candidate: schema.Candidate) -> str:
@@ -247,24 +549,60 @@ def _candidate_haystack(candidate: schema.Candidate) -> str:
     return " ".join(parts).lower()
 
 
-def _fallback_tuple(candidate: schema.Candidate, *, primary_entity: str = "") -> tuple[float, str]:
+def _entity_grounded(haystack: str, primary_entity: str) -> bool:
+    """True if the candidate text plausibly mentions the primary entity.
+
+    Grounds on the HEAD token of the primary entity (the brand / proper-noun
+    core), not the full multi-word phrase. Trailing tokens are usually category
+    descriptors the user/planner appended for search ("Stripe payments"), not
+    part of the entity, so requiring the whole phrase over-demotes on-entity
+    items that omit the descriptor. Items that never name the brand at all still
+    miss the head token and stay demoted.
+
+    Trade-off: a proper noun with a generic head ("New York Times" -> "new")
+    under-demotes rather than over-demotes - the safe direction, since the
+    observed harm was burying real high-engagement signal. Substring (not
+    word-boundary) matching is likewise deliberate: it catches plurals and
+    compounds ("stripes"), and vacuous matches from very short heads ("X",
+    "Go") merely disable the penalty rather than burying good items.
+    """
+    haystack = haystack.lower()
+    tokens = primary_entity.lower().split()
+    if not tokens:
+        return True
+    return tokens[0] in haystack
+
+
+def _fallback_tuple(
+    candidate: schema.Candidate, *, primary_entity: str = "", resolved_handles: set[str] | None = None
+) -> tuple[float, str]:
     score = (
         (candidate.local_relevance * 100.0 * 0.7)
         + (candidate.freshness * 0.2)
         + (candidate.source_quality * 100.0 * 0.1)
     )
     reason = "fallback-local-score"
-    # Entity-grounding demotion: if the primary entity (topic minus intent
-    # modifier) is not present anywhere in the candidate's text surfaces
+    # First-party authorship grounding: a post authored by one of the run's
+    # resolved handles is first-class evidence about the subject and is exempt
+    # from the entity-miss demotion below. Nobody repeats their own name in
+    # their own post, so the body-text grounding check would otherwise bury the
+    # subject's own highest-signal posts (the single richest vein on X for a
+    # person topic). Because the reason string carries no "entity-miss" marker,
+    # _final_score's secondary penalty (which greps for it) is also skipped.
+    # A small bounded credit lifts a first-party post just off neutral without
+    # letting authorship alone outrank a genuinely strong on-topic third party.
+    if resolved_handles and _is_first_party(candidate, resolved_handles):
+        score += FIRST_PARTY_AUTHOR_CREDIT
+        return max(0.0, min(100.0, score)), "fallback-local-score (first-party authorship)"
+    # Entity-grounding demotion: subtract ENTITY_MISS_PENALTY when the candidate
+    # never mentions the primary entity's head token, across all text surfaces
     # (title, snippet, transcript, transcript highlights, top comments,
-    # insights), subtract ENTITY_MISS_PENALTY. Skip for candidates with
-    # NO text anywhere (e.g., image-only TikToks) to avoid penalizing
-    # thin-text sources unfairly. 2026-04-19 Nate Herk "Managed Agents"
-    # video ranked #2 on a Hermes query despite zero Hermes mentions
-    # because the old haystack only checked title + snippet.
+    # insights). Skip for candidates with NO text anywhere (e.g. image-only
+    # TikToks) so thin-text sources aren't penalized unfairly. See
+    # _entity_grounded for why grounding keys on the head token, not the phrase.
     if primary_entity:
         haystack = _candidate_haystack(candidate)
-        if haystack.strip() and primary_entity.lower() not in haystack:
+        if haystack.strip() and not _entity_grounded(haystack, primary_entity):
             score -= ENTITY_MISS_PENALTY
             reason = "fallback-local-score (entity-miss demotion)"
     return max(0.0, min(100.0, score)), reason
@@ -352,7 +690,7 @@ def _build_fun_prompt(topic: str, candidates: list[schema.Candidate]) -> str:
             f"  source: {schema.candidate_source_label(c)}",
             f"  title: {c.title[:220]}",
             f"  snippet: {c.snippet[:420]}",
-            f"  comments: {_extract_comment_text(c)[:300]}",
+            f"  comments: {_extract_comment_text_scored(c)[:340]}",
         ])
         for c in candidates
     )
@@ -364,7 +702,12 @@ def _build_fun_prompt(topic: str, candidates: list[schema.Candidate]) -> str:
         '{\n  \"scores\": [{\"candidate_id\": \"id\", \"fun\": 0-100, \"reason\": \"short reason\"}]\n}\n\n'
         "Scoring: 90-100=genuinely hilarious, 70-89=witty/clever, "
         "40-69=has personality, 20-39=straight news, 0-19=dry/official.\n"
-        "Prefer SHORT PUNCHY content. A 15-word tweet > a 500-word analysis.\n\n"
+        "Prefer SHORT PUNCHY content. A 15-word tweet > a 500-word analysis.\n"
+        "Comments are prefixed with their crowd score, e.g. [+14200]. A high score "
+        "means the line resonated -- prefer a high-scored witty line over an "
+        "equally-witty unscored one. But scores measure TRACTION, not funniness: "
+        "an earnest, angry, or wholesome comment is NOT funny no matter how high "
+        "its score. Judge funniness from the text; let the score break ties.\n\n"
         f"{_fenced_untrusted_content(candidate_block)}"
     )
 
@@ -376,6 +719,35 @@ def _extract_comment_text(candidate: schema.Candidate) -> str:
             body = comment.get("body", "") if isinstance(comment, dict) else str(comment)
             if body:
                 parts.append(body[:150])
+        for insight in item.metadata.get("comment_insights", [])[:2]:
+            if insight:
+                parts.append(str(insight)[:150])
+    return " | ".join(parts) if parts else ""
+
+
+def _extract_comment_text_scored(candidate: schema.Candidate) -> str:
+    """Like ``_extract_comment_text`` but prefixes each top comment with its
+    crowd score, e.g. ``[+14200] body``, so the fun judge can weigh traction.
+
+    Comment insights carry no score and are appended unprefixed.
+    """
+    parts = []
+    for item in candidate.source_items:
+        for comment in item.metadata.get("top_comments", [])[:3]:
+            if isinstance(comment, dict):
+                body = comment.get("body", "")
+                if not body:
+                    continue
+                score = comment.get("score")
+                # Only prefix POSITIVE scores: `and score` is truthy for
+                # negatives too, which would emit a misleading `[+-3]` and
+                # invert the traction signal to the judge.
+                prefix = f"[+{int(score)}] " if isinstance(score, (int, float)) and score > 0 else ""
+                parts.append(f"{prefix}{body[:150]}")
+            else:
+                body = str(comment)
+                if body:
+                    parts.append(body[:150])
         for insight in item.metadata.get("comment_insights", [])[:2]:
             if insight:
                 parts.append(str(insight)[:150])
@@ -409,12 +781,14 @@ def _apply_fun_fallback(candidates: list[schema.Candidate]) -> None:
 def _apply_single_fun_fallback(candidate: schema.Candidate) -> None:
     text = candidate.title + " " + (candidate.snippet or "") + " " + _extract_comment_text(candidate)
     text_len = len(text.strip())
-    eng = candidate.engagement if candidate.engagement is not None else 0.0
     shortness = max(0, (200 - text_len) / 200) * 30
-    eng_bonus = min(eng * 2.0, 40)
+    # Reward a highly-upvoted TOP COMMENT (the crowd-certified line), normalized
+    # per platform, rather than the post's overall engagement. Mirrors the LLM
+    # path's new emphasis so behavior is consistent when the LLM is unavailable.
+    vote_bonus = signals.top_comment_vote_signal(candidate) * 40.0
     markers = ["lol", "lmao", "dead", "hilarious", "funny", "bruh", "ratio", "nah", "bro", "ain't no way", "i'm crying", "rent free"]
     marker_bonus = 10 if any(m in text.lower() for m in markers) else 0
-    candidate.fun_score = max(0.0, min(100.0, shortness + eng_bonus + marker_bonus))
+    candidate.fun_score = max(0.0, min(100.0, shortness + vote_bonus + marker_bonus))
     candidate.fun_explanation = "heuristic-fallback"
 
 

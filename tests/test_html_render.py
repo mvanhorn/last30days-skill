@@ -186,11 +186,106 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
     def test_self_containedness(self):
         rendered = html_render.render_html(_report("self contained", []))
         self.assertNotIn("<script", rendered.lower())
-        self.assertEqual(1, rendered.count('rel="stylesheet"'))
+        self.assertEqual(0, rendered.count('rel="stylesheet"'))
+        self.assertNotIn("fonts.googleapis.com", rendered)
+        self.assertNotIn("fonts.gstatic.com", rendered)
+        self.assertNotIn('rel="preconnect"', rendered)
 
     def test_markdown_links_convert(self):
         rendered = html_render._markdown_to_html("[name](https://example.test/path)")
-        self.assertIn('<a href="https://example.test/path">name</a>', rendered)
+        self.assertIn(
+            '<a href="https://example.test/path" rel="noopener noreferrer">name</a>',
+            rendered,
+        )
+
+    def test_markdown_links_reject_javascript_scheme(self):
+        """A `[label](javascript:...)` link must NOT render as a clickable href.
+
+        The HTML artifact is opened in a browser, so allowing arbitrary URL
+        schemes turns synthesized markdown into a stored-XSS surface. External
+        sources (Reddit, X, HN, etc.) can plant such links and the LLM may
+        carry them through synthesis; the renderer is the last gate.
+        """
+        for payload in (
+            "[click](javascript:alert(1))",
+            "[click](JAVASCRIPT:alert(1))",
+            "[click](vbscript:alert(1))",
+            "[click](file:///etc/passwd)",
+        ):
+            rendered = html_render._markdown_to_html(payload)
+            self.assertNotIn("<a ", rendered, msg=f"payload accepted: {payload}")
+            self.assertNotIn("href=", rendered, msg=f"payload accepted: {payload}")
+            # The label still surfaces as plain text so context isn't lost.
+            self.assertIn("click", rendered, msg=f"label dropped: {payload}")
+
+    def test_markdown_links_reject_data_uri(self):
+        rendered = html_render._markdown_to_html(
+            "[click](data:text/html,<svg/onload=alert(1)>)"
+        )
+        self.assertNotIn("<a ", rendered)
+        self.assertNotIn("href=", rendered)
+        # The label still surfaces as plain text so context isn't lost.
+        self.assertIn("click", rendered)
+
+    def test_markdown_links_strip_leading_whitespace_javascript(self):
+        """Leading whitespace in the URL must not let a `javascript:` payload
+        bypass the scheme check (browsers strip leading whitespace before
+        parsing the scheme)."""
+        rendered = html_render._markdown_to_html("[click](\tjavascript:alert(1))")
+        # `[^)\\s]+` already rejects whitespace inside the URL, so the regex
+        # doesn't match and the label is left as plain text. The point of the
+        # assertion is to pin that behavior: NO `<a href>` is produced.
+        self.assertNotIn("<a ", rendered)
+        self.assertNotIn("href=", rendered)
+
+    def test_meta_marker_escapes_payload_through_pipeline(self):
+        """A META marker carrying markup must not render as live HTML.
+
+        The marker is exempted from the comment-strip pass and promoted into a
+        <div class="meta">. Its text can come from LLM-synthesized content
+        derived from untrusted source bodies, so a crafted
+        `<!-- META: <img src=x onerror=...> -->` must be escaped, not rendered.
+        """
+        md = "intro\n\n<!-- META: <img src=x onerror=alert(1)> -->\n\nmore"
+        body = html_render._markdown_to_html(md)
+        body = html_render._wrap_engine_footer(body)
+        body = html_render._promote_meta_marker(body)
+        self.assertNotIn("<img", body)
+        self.assertIn("&lt;img src=x onerror=alert(1)&gt;", body)
+
+    def test_meta_marker_escapes_raw_fallback(self):
+        """The raw (unescaped) META fallback path must also escape its payload."""
+        body = html_render._promote_meta_marker(
+            "<!-- META: <img src=x onerror=alert(1)> -->"
+        )
+        self.assertNotIn("<img", body)
+        self.assertEqual(
+            body, '<div class="meta">&lt;img src=x onerror=alert(1)&gt;</div>'
+        )
+
+    def test_meta_marker_preserves_plain_text(self):
+        """Legitimate date/source-name markers render unchanged (no double-escape)."""
+        body = html_render._promote_meta_marker(
+            "<!-- META: 2026-01-01 to 2026-01-31 · reddit, x -->"
+        )
+        self.assertEqual(
+            body,
+            '<div class="meta">2026-01-01 to 2026-01-31 · reddit, x</div>',
+        )
+
+    def test_markdown_links_allow_relative_url(self):
+        rendered = html_render._markdown_to_html("[home](/path?x=1#section)")
+        self.assertIn(
+            '<a href="/path?x=1#section" rel="noopener noreferrer">home</a>',
+            rendered,
+        )
+
+    def test_markdown_links_allow_mailto(self):
+        rendered = html_render._markdown_to_html("[mail](mailto:a@example.com)")
+        self.assertIn(
+            '<a href="mailto:a@example.com" rel="noopener noreferrer">mail</a>',
+            rendered,
+        )
 
     def test_no_file_header_h1(self):
         rendered = html_render.render_html(_report("AI agent frameworks", ["One"]))
@@ -207,7 +302,10 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
             synthesis_md=synthesis,
         )
         self.assertIn("<strong>Test brief</strong> - body content per", rendered)
-        self.assertIn('<a href="https://example.com">@example</a>', rendered)
+        self.assertIn(
+            '<a href="https://example.com" rel="noopener noreferrer">@example</a>',
+            rendered,
+        )
         metadata_index = rendered.index('<div class="meta">')
         synthesis_index = rendered.index("<strong>Test brief</strong>")
         footer_index = rendered.index('<div class="engine-footer">')

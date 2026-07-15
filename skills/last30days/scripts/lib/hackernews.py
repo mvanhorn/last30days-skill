@@ -31,15 +31,20 @@ DEPTH_CONFIG = {
     "deep": 60,
 }
 
+MIN_STORY_POINTS = 2
+HN_OVERFETCH_MULTIPLIER = 2
+
 ENRICH_LIMITS = {
     "quick": 3,
     "default": 5,
     "deep": 10,
 }
 
+DISCOVERY_LIMITS = {"quick": 20, "default": 40, "deep": 60}
+
 
 def _log(msg: str):
-    log.source_log("HN", msg)
+    log.source_log("HN", msg, tty_only=False)
 
 
 def _date_to_unix(date_str: str) -> int:
@@ -83,6 +88,7 @@ def search_hackernews(
         Dict with Algolia response (contains 'hits' list).
     """
     count = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
+    fetch_count = count * HN_OVERFETCH_MULTIPLIER
     from_ts = _date_to_unix(from_date)
     to_ts = _date_to_unix(to_date) + 86400  # Include the end date
 
@@ -93,14 +99,19 @@ def search_hackernews(
     core_flat = _flatten_query_for_algolia(core)
     _log(f"Searching for '{core_flat}' (raw: '{topic}', since {from_date}, count={count})")
 
-    # Use relevance-sorted search with minimum engagement filter.
+    # Use relevance-sorted search. The HN Algolia index only allows
+    # `created_at_i` in numericFilters; `points` is NOT in its
+    # `numericAttributesForFiltering`, so a `points>N` clause makes the API
+    # return HTTP 400 ("invalid numeric attribute(points)") and zero stories.
+    # Low-engagement stories are filtered client-side after overfetching so the
+    # invalid numeric filter is not reintroduced.
     # NOTE: restrictSearchableAttributes=title omitted intentionally — it would
     # miss Ask HN/Show HN threads where the topic appears in the body.
     params = {
         "query": core_flat,
         "tags": "story",
-        "numericFilters": f"created_at_i>{from_ts},created_at_i<{to_ts},points>2",
-        "hitsPerPage": str(count),
+        "numericFilters": f"created_at_i>{from_ts},created_at_i<{to_ts}",
+        "hitsPerPage": str(fetch_count),
     }
     # Algolia defaults to AND across query tokens, so a 4-5 word theme query
     # matches no stories. Mark all-but-the-first token as optional so Algolia
@@ -121,9 +132,60 @@ def search_hackernews(
         _log(f"Search failed: {e}")
         return {"hits": [], "error": str(e)}
 
-    hits = response.get("hits", [])
+    raw_hits = response.get("hits", [])
+    qualifying_hits = [
+        hit for hit in raw_hits
+        if (hit.get("points") or 0) > MIN_STORY_POINTS
+    ]
+    hits = qualifying_hits[:count]
+    dropped_low_engagement = len(raw_hits) - len(qualifying_hits)
+    if dropped_low_engagement:
+        _log(f"Filtered {dropped_low_engagement}/{len(raw_hits)} low-engagement stories")
+    if len(hits) != len(raw_hits):
+        response = {**response, "hits": hits}
     _log(f"Found {len(hits)} stories")
     return response
+
+
+def fetch_discovery_listings(
+    from_date: str,
+    to_date: str,
+    depth: str = "default",
+) -> Dict[str, Any]:
+    """Fetch topic-less HN front-page and best-in-window story listings."""
+    limit = DISCOVERY_LIMITS.get(depth, DISCOVERY_LIMITS["default"])
+    from_ts = _date_to_unix(from_date)
+    to_ts = _date_to_unix(to_date) + 86400
+    from urllib.parse import urlencode
+
+    urls = [
+        f"{ALGOLIA_SEARCH_URL}?{urlencode({'tags': 'front_page', 'hitsPerPage': str(limit)})}",
+        f"{ALGOLIA_SEARCH_URL}?{urlencode({
+            'tags': 'story',
+            'numericFilters': f'created_at_i>{from_ts},created_at_i<{to_ts}',
+            'hitsPerPage': str(limit),
+        })}",
+    ]
+    hits: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for url in urls:
+        try:
+            response = http.request("GET", url, timeout=30)
+            hits.extend(response.get("hits") or [])
+        except Exception as exc:
+            errors.append(str(exc))
+
+    seen: set[str] = set()
+    unique_hits: list[dict[str, Any]] = []
+    for hit in hits:
+        object_id = str(hit.get("objectID") or "")
+        if not object_id or object_id in seen:
+            continue
+        seen.add(object_id)
+        unique_hits.append(hit)
+
+    items = parse_hackernews_response({"hits": unique_hits}, query="")
+    return {"items": items, "errors": errors}
 
 
 _WORD_BOUNDARY_RE_CACHE: Dict[str, "re.Pattern[str]"] = {}

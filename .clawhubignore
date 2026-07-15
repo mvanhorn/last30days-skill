@@ -1,18 +1,71 @@
-# Exclude binary assets and dev/test artifacts from ClawHub bundle
-assets/
-docs/
-fixtures/
-tests/
-plans/
-agents/
-variants/
-release-notes.md
-SPEC.md
-TASKS.md
-SKILL-original.md
+# ClawHub/Hermes packaging exclusions for repository-root scans.
+# Mirrors .skillignore so non-runtime docs/dev artifacts stay out of the
+# public bundle and install-time skill security scan.
+
+# VCS, local envs, caches, and generated outputs
+.git/
+.venv/
+__pycache__/
+*.pyc
+*.log
 *.jsonl
 *.mp3
 *.jpeg
 *.jpg
 *.png
 *.gif
+assets/
+skills/last30days/assets/
+.DS_Store
+.coverage
+htmlcov/
+dist/
+work/
+print/
+
+# Repo/dev automation and host-specific package metadata
+.github/
+.agents/
+.claude-plugin/
+hooks/
+mcp/
+gemini-extension.json
+greptile.json
+pyproject.toml
+
+# Non-runtime docs, plans, release notes, fixtures, and tests
+docs/
+fixtures/
+tests/
+plans/
+agents/
+variants/
+media/
+README.md
+CHANGELOG.md
+AGENTS.md
+CLAUDE.md
+CONCEPTS.md
+CONFIGURATION.md
+CONTRIBUTORS.md
+HERMES_SETUP.md
+release-notes.md
+SKILL-original.md
+SPEC.md
+TASKS.md
+
+# Dev/eval scripts shipped inside the skill tree but not needed at runtime
+skills/last30days/scripts/build-skill.sh
+skills/last30days/scripts/compare.sh
+skills/last30days/scripts/evaluate_search_quality.py
+skills/last30days/scripts/setup-keychain.sh
+skills/last30days/scripts/setup-pass.sh
+skills/last30days/scripts/test_device_auth.py
+skills/last30days/scripts/test-v1-vs-v2.sh
+skills/last30days/scripts/verify_v3.py
+
+# Keep visible: optional runtime watchlist/store/briefing feature scripts
+# (`watchlist.py`, `store.py`, and `briefing.py`).
+
+# Vendored third-party X-search client (node_modules analog); excluded from scan, still installed.
+skills/last30days/scripts/lib/vendor/

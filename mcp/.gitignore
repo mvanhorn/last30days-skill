@@ -1,0 +1,12 @@
+# Mirror of skills/last30days/scripts/, populated by scripts/sync-engine.sh.
+# Source of truth lives in the Python skill; never commit the mirror.
+# Lives inside internal/engine/ because //go:embed cannot reach outside
+# its own package directory.
+internal/engine/vendored/*
+!internal/engine/vendored/.gitkeep
+
+# Local build output: cross-compiled binaries and packaged .mcpb files.
+build/
+# Anchor to the mcp/ root so the cmd/last30days-pp-mcp/ package directory
+# is not also excluded (subdirs with the same name would otherwise match).
+/last30days-pp-mcp

@@ -173,7 +173,7 @@ def _build_urls(query: str, depth: str, subreddits: Optional[List[str]]) -> List
 def _fetch_feed(url: str, query: str) -> List[Dict[str, Any]]:
     """Fetch and parse one feed. Never raises."""
     try:
-        text = http.get_text(url, timeout=FEED_TIMEOUT, accept="application/atom+xml")
+        text = http.reddit_keyless_get_text(url, timeout=FEED_TIMEOUT, accept="application/atom+xml")
         return _parse_feed(text, query) if text else []
     except Exception as e:  # defensive: a single bad feed must not sink the run
         _log(f"feed fetch failed for {url}: {e}")

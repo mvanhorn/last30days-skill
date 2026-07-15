@@ -10,10 +10,18 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 def run_mock_json(topic: str) -> dict:
     result = subprocess.run(
-        [sys.executable, "skills/last30days/scripts/last30days.py", topic, "--mock", "--emit=json"],
+        [
+            sys.executable,
+            "skills/last30days/scripts/last30days.py",
+            topic,
+            "--mock",
+            "--emit=json",
+            "--json-profile=raw",
+        ],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
+        encoding="utf-8",
         check=False,
     )
     if result.returncode != 0:

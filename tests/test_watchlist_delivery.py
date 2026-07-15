@@ -225,6 +225,42 @@ def test_deliver_findings_handles_failure_gracefully(mock_post, mock_get_setting
 @patch('watchlist.http.post')
 
 
+def test_deliver_findings_rejects_non_https_slack_substring(mock_post, mock_get_setting, capsys):
+    """A non-https channel that merely contains 'hooks.slack.com' must not be
+    sent. The old substring match POSTed it in cleartext to whatever host the
+    URL actually named."""
+    mock_get_setting.side_effect = lambda key, default="": {
+        "delivery_channel": "http://evil.example/hooks.slack.com",
+        "delivery_mode": "announce",
+    }.get(key, default)
+
+    watchlist._deliver_findings("Test Topic", {"new": 5, "updated": 2})
+
+    assert not mock_post.called
+    assert "https://" in capsys.readouterr().err
+
+@patch('watchlist.store.get_setting')
+@patch('watchlist.http.post')
+
+
+def test_deliver_findings_slack_match_is_exact_host(mock_post, mock_get_setting):
+    """An https URL with 'hooks.slack.com' only in the path routes as generic,
+    not Slack — the match is on the exact hostname, not a substring."""
+    mock_get_setting.side_effect = lambda key, default="": {
+        "delivery_channel": "https://webhook.example.com/hooks.slack.com/x",
+        "delivery_mode": "announce",
+    }.get(key, default)
+
+    watchlist._deliver_findings("Test Topic", {"new": 5, "updated": 2})
+
+    json_data = mock_post.call_args[1]["json_data"]
+    assert "message" in json_data  # generic payload shape
+    assert "text" not in json_data  # not the Slack {"text": ...} shape
+
+@patch('watchlist.store.get_setting')
+@patch('watchlist.http.post')
+
+
 def test_deliver_findings_respects_delivery_mode(mock_post, mock_get_setting):
     """Test that different delivery modes produce different messages."""
     mock_get_setting.side_effect = lambda key, default="": {

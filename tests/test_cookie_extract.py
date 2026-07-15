@@ -1,16 +1,20 @@
 """Tests for browser cookie extraction module."""
 
 import configparser
+import os
 import sqlite3
 import textwrap
+from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from unittest.mock import patch
 
 import pytest
 
+from lib import cookie_extract
 from lib.cookie_extract import (
     extract_cookies,
     extract_firefox_cookies,
+    _query_cookies_db,
     _find_default_profile,
     _get_firefox_profiles_dir,
 )
@@ -91,6 +95,66 @@ def mock_firefox_env(tmp_path):
 
 class TestExtractFirefoxCookies:
     """Tests for extract_firefox_cookies."""
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not reliable on Windows")
+    def test_temp_cookie_db_copy_is_owner_only(self, tmp_path):
+        """Copied cookie DB temp files are chmodded owner-only before read."""
+        db_path = tmp_path / "cookies.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE moz_cookies (name TEXT NOT NULL, value TEXT NOT NULL, host TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO moz_cookies (name, value, host) VALUES (?, ?, ?)",
+            ("auth_token", "tok_abc123", ".x.com"),
+        )
+        conn.commit()
+        conn.close()
+        os.chmod(db_path, 0o644)
+
+        real_connect = sqlite3.connect
+
+        def assert_temp_copy_locked(path, *args, **kwargs):
+            if Path(str(path)) != db_path:
+                assert Path(str(path)).stat().st_mode & 0o777 == 0o600
+            return real_connect(path, *args, **kwargs)
+
+        with patch("lib.cookie_extract.sqlite3.connect", side_effect=assert_temp_copy_locked):
+            result = _query_cookies_db(db_path, ".x.com", ["auth_token"])
+
+        assert result == {"auth_token": "tok_abc123"}
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission model does not apply on Windows; mkstemp is 0o666 there")
+    def test_temp_cookie_copy_never_world_readable(self, tmp_path):
+        """The temp copy must be private the instant it exists, not only after
+        the lock chmod. Regression for the TOCTOU window where copy2 widened the
+        0600 mkstemp file to the source's 0644 before _lock_temp_cookie_copy ran.
+        """
+        db_path = tmp_path / "cookies.sqlite"
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            "CREATE TABLE moz_cookies (name TEXT NOT NULL, value TEXT NOT NULL, host TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO moz_cookies (name, value, host) VALUES (?, ?, ?)",
+            ("auth_token", "tok_abc123", ".x.com"),
+        )
+        conn.commit()
+        conn.close()
+        os.chmod(db_path, 0o644)  # loose source perms, as Firefox ships them
+
+        observed = {}
+        real_lock = cookie_extract._lock_temp_cookie_copy
+
+        def spy(path):
+            # Mode of the copy as it exists right after copyfile, before chmod.
+            observed["mode_after_copy"] = os.stat(path).st_mode & 0o777
+            return real_lock(path)
+
+        with patch.object(cookie_extract, "_lock_temp_cookie_copy", side_effect=spy):
+            _query_cookies_db(db_path, ".x.com", ["auth_token"])
+
+        assert observed["mode_after_copy"] == 0o600
 
     def test_valid_cookies_extracted(self, mock_firefox_env):
         """Cookies for the target domain are returned correctly."""
@@ -217,24 +281,105 @@ class TestExtractFirefoxCookies:
         assert result is not None
         assert result["auth_token"] == "fallback_token"
 
+    def test_non_default_profile_with_cookies(self, mock_firefox_env):
+        """Falls back to non-default profile when default has no X cookies."""
+        profiles_dir = mock_firefox_env(
+            profiles={
+                "aaa111.default": [
+                    (".example.com", "session", "sess_other"),
+                ],
+                "bbb222.release": [
+                    (".x.com", "auth_token", "tok_nondefault"),
+                    (".x.com", "ct0", "ct0_nondefault"),
+                ],
+            },
+            profiles_ini=textwrap.dedent("""\
+                [General]
+                StartWithLastProfile=1
+
+                [Profile0]
+                Name=default
+                IsRelative=1
+                Path=aaa111.default
+                Default=1
+
+                [Profile1]
+                Name=release
+                IsRelative=1
+                Path=bbb222.release
+            """),
+        )
+
+        with patch(
+            "lib.cookie_extract._get_firefox_profiles_dir",
+            return_value=profiles_dir,
+        ):
+            result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
+
+        assert result is not None
+        assert result["auth_token"] == "tok_nondefault"
+        assert result["ct0"] == "ct0_nondefault"
+
+    def test_multiple_profiles_none_have_cookies(self, mock_firefox_env):
+        """Returns None when no profile has matching cookies."""
+        profiles_dir = mock_firefox_env(
+            profiles={
+                "aaa111.default": [
+                    (".example.com", "session", "sess_a"),
+                ],
+                "bbb222.release": [
+                    (".other.com", "other", "val_b"),
+                ],
+            },
+            profiles_ini=textwrap.dedent("""\
+                [General]
+                StartWithLastProfile=1
+
+                [Profile0]
+                Name=default
+                IsRelative=1
+                Path=aaa111.default
+                Default=1
+
+                [Profile1]
+                Name=release
+                IsRelative=1
+                Path=bbb222.release
+            """),
+        )
+
+        with patch(
+            "lib.cookie_extract._get_firefox_profiles_dir",
+            return_value=profiles_dir,
+        ), patch(
+            "lib.cookie_extract._is_wsl",
+            return_value=False,
+        ):
+            result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
+
+        assert result is None
+
 
 class TestExtractCookiesAuto:
     """Tests for extract_cookies with browser='auto'."""
 
     def test_auto_macos_tries_chrome_then_firefox(self, mock_firefox_env):
-        """On macOS, auto tries Chrome first, falls back to Firefox if Chrome fails."""
+        """On macOS, auto tries the Chromium family first, falls back to Firefox."""
         profiles_dir = mock_firefox_env()
 
+        # Mock every Chromium-family extractor to None so the test is hermetic
+        # regardless of which browsers are actually installed/logged-in on the
+        # machine running it (auto tries these before Firefox).
         with (
             patch("lib.cookie_extract.platform.system", return_value="Darwin"),
-            patch(
-                "lib.cookie_extract.extract_chrome_cookies",
-                return_value=None,
-            ),
-            patch(
-                "lib.cookie_extract.extract_safari_cookies",
-                return_value=None,
-            ),
+            patch("lib.cookie_extract.extract_chrome_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_brave_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_edge_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_vivaldi_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_opera_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_arc_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_chromium_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_safari_cookies", return_value=None),
             patch(
                 "lib.cookie_extract._get_firefox_profiles_dir",
                 return_value=profiles_dir,
@@ -242,7 +387,7 @@ class TestExtractCookiesAuto:
         ):
             result = extract_cookies("auto", ".x.com", ["auth_token", "ct0"])
 
-        # Chrome and Safari return None, Firefox succeeds
+        # All Chromium browsers and Safari return None, Firefox succeeds
         assert result is not None
         assert result["auth_token"] == "tok_abc123"
         assert result["ct0"] == "ct0_xyz789"

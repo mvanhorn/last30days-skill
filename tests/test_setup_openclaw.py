@@ -1,20 +1,33 @@
 """Tests for OpenClaw setup and device auth functions."""
 
+import io
 import json
+import sys
 import time
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch, MagicMock, call
 
 import pytest
 
+import last30days as cli
 from lib import setup_wizard
 
 
 class TestRunOpenclawSetup:
     """Tests for run_openclaw_setup()."""
 
+    @staticmethod
+    def _patch_digg_noop(func):
+        """Keep OpenClaw setup tests free of real digg-pp-cli / npx side effects."""
+        return patch(
+            "lib.setup_wizard._install_digg_cli",
+            return_value=(False, "no_npx", "", ""),
+        )(func)
+
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_all_tools_present_no_keys(self, mock_which):
+    def test_all_tools_present_no_keys(self, mock_which, _mock_digg):
         """All CLI tools found, no API keys configured."""
         mock_which.side_effect = lambda cmd: f"/usr/bin/{cmd}"
         config = {}
@@ -26,9 +39,12 @@ class TestRunOpenclawSetup:
         assert result["python3"] is True
         assert all(v is False for v in result["keys"].values())
         assert result["x_method"] is None
+        assert result["digg_cli"] is False
+        assert result["digg_action"] == "no_npx"
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_missing_tools(self, mock_which):
+    def test_missing_tools(self, mock_which, _mock_digg):
         """Some CLI tools missing."""
         def which_side(cmd):
             if cmd == "node":
@@ -43,8 +59,9 @@ class TestRunOpenclawSetup:
         assert result["node"] is False
         assert result["python3"] is True
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_keys_detected(self, mock_which):
+    def test_keys_detected(self, mock_which, _mock_digg):
         """API keys in config are reported as present."""
         mock_which.return_value = None
         config = {
@@ -62,7 +79,7 @@ class TestRunOpenclawSetup:
     def test_openclaw_metadata_keeps_scrapecreators_optional(self):
         """OpenClaw metadata should not hard-require the ScrapeCreators key."""
         skill_md = Path(__file__).parent.parent / "skills" / "last30days" / "SKILL.md"
-        text = skill_md.read_text()
+        text = skill_md.read_text(encoding="utf-8")
         assert "SCRAPECREATORS_API_KEY" in text
         expected = (
             "requires:\n"
@@ -72,8 +89,9 @@ class TestRunOpenclawSetup:
         )
         assert expected in text
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_x_method_xai(self, mock_which):
+    def test_x_method_xai(self, mock_which, _mock_digg):
         """x_method is 'xai' when XAI_API_KEY is set."""
         mock_which.return_value = None
         config = {"XAI_API_KEY": "xai-key"}
@@ -82,8 +100,9 @@ class TestRunOpenclawSetup:
 
         assert result["x_method"] == "xai"
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_x_method_cookies(self, mock_which):
+    def test_x_method_cookies(self, mock_which, _mock_digg):
         """x_method is 'cookies' when AUTH_TOKEN + CT0 are set."""
         mock_which.return_value = None
         config = {"AUTH_TOKEN": "tok", "CT0": "ct0val"}
@@ -92,8 +111,9 @@ class TestRunOpenclawSetup:
 
         assert result["x_method"] == "cookies"
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_x_method_xai_over_cookies(self, mock_which):
+    def test_x_method_xai_over_cookies(self, mock_which, _mock_digg):
         """XAI takes priority over cookies for x_method."""
         mock_which.return_value = None
         config = {"XAI_API_KEY": "xai-key", "AUTH_TOKEN": "tok", "CT0": "ct0val"}
@@ -102,8 +122,9 @@ class TestRunOpenclawSetup:
 
         assert result["x_method"] == "xai"
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_x_method_null_when_nothing(self, mock_which):
+    def test_x_method_null_when_nothing(self, mock_which, _mock_digg):
         """x_method is None when no X access configured."""
         mock_which.return_value = None
         config = {}
@@ -112,8 +133,9 @@ class TestRunOpenclawSetup:
 
         assert result["x_method"] is None
 
+    @_patch_digg_noop
     @patch("shutil.which")
-    def test_output_is_json_serializable(self, mock_which):
+    def test_output_is_json_serializable(self, mock_which, _mock_digg):
         """Result can be serialized to JSON without errors."""
         mock_which.return_value = "/usr/bin/something"
         config = {"XAI_API_KEY": "k", "OPENAI_API_KEY": "ok"}
@@ -124,6 +146,37 @@ class TestRunOpenclawSetup:
 
         assert parsed["yt_dlp"] is True
         assert parsed["keys"]["xai"] is True
+
+    @patch("lib.setup_wizard._install_digg_cli")
+    @patch("shutil.which")
+    def test_digg_cli_on_path(self, mock_which, mock_digg_install):
+        """OpenClaw JSON reports digg_cli when PATH resolves digg-pp-cli."""
+        mock_which.side_effect = lambda cmd: f"/usr/bin/{cmd}"
+        mock_digg_install.return_value = (True, "already_installed", "", "")
+
+        result = setup_wizard.run_openclaw_setup({})
+
+        assert result["digg_cli"] is True
+        assert result["digg_action"] == "already_installed"
+        assert "digg_path" not in result
+
+    @patch("lib.setup_wizard._install_digg_cli")
+    @patch("shutil.which")
+    def test_digg_cli_off_path(self, mock_which, mock_digg_install):
+        """OpenClaw JSON surfaces off-PATH installs from prior pp-digg setup."""
+        mock_which.return_value = None
+        mock_digg_install.return_value = (
+            False,
+            "installed_off_path",
+            "",
+            "/Users/me/.local/bin/digg-pp-cli",
+        )
+
+        result = setup_wizard.run_openclaw_setup({})
+
+        assert result["digg_cli"] is False
+        assert result["digg_action"] == "installed_off_path"
+        assert result["digg_path"] == "/Users/me/.local/bin/digg-pp-cli"
 
 
 class TestRunDeviceAuth:
@@ -383,74 +436,6 @@ class TestRunFullDeviceAuth:
         mock_browser.assert_not_called()
 
 
-class TestAuthWithPat:
-    """Tests for auth_with_pat()."""
-
-    @patch("lib.setup_wizard.urlopen")
-    def test_success(self, mock_urlopen):
-        """Valid PAT -> returns dict with api_key."""
-        resp = MagicMock()
-        resp.read.return_value = json.dumps({
-            "api_key": "sc_live_test123",
-            "github_username": "testuser",
-            "credits_remaining": 100,
-        }).encode()
-        resp.__enter__ = lambda s: s
-        resp.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = resp
-
-        result = setup_wizard.auth_with_pat("gho_validtoken")
-
-        assert result is not None
-        assert result["api_key"] == "sc_live_test123"
-        assert result["github_username"] == "testuser"
-
-    @patch("lib.setup_wizard.urlopen")
-    def test_invalid_token_returns_none(self, mock_urlopen):
-        """HTTP 401 (invalid token) -> returns None."""
-        from urllib.error import HTTPError
-        mock_urlopen.side_effect = HTTPError(
-            url="https://api.scrapecreators.com/v1/github/pat/auth",
-            code=401, msg="Unauthorized", hdrs={}, fp=None,
-        )
-
-        result = setup_wizard.auth_with_pat("gho_badtoken")
-        assert result is None
-
-    @patch("lib.setup_wizard.urlopen")
-    def test_insufficient_scope_returns_none(self, mock_urlopen):
-        """HTTP 422 (insufficient scope) -> returns None."""
-        from urllib.error import HTTPError
-        mock_urlopen.side_effect = HTTPError(
-            url="https://api.scrapecreators.com/v1/github/pat/auth",
-            code=422, msg="Unprocessable", hdrs={}, fp=None,
-        )
-
-        result = setup_wizard.auth_with_pat("gho_noscope")
-        assert result is None
-
-    @patch("lib.setup_wizard.urlopen")
-    def test_network_error_returns_none(self, mock_urlopen):
-        """URLError -> returns None."""
-        from urllib.error import URLError
-        mock_urlopen.side_effect = URLError("Connection refused")
-
-        result = setup_wizard.auth_with_pat("gho_anytoken")
-        assert result is None
-
-    @patch("lib.setup_wizard.urlopen")
-    def test_no_api_key_in_response(self, mock_urlopen):
-        """Response without api_key -> returns None."""
-        resp = MagicMock()
-        resp.read.return_value = json.dumps({"error": "something"}).encode()
-        resp.__enter__ = lambda s: s
-        resp.__exit__ = MagicMock(return_value=False)
-        mock_urlopen.return_value = resp
-
-        result = setup_wizard.auth_with_pat("gho_validtoken")
-        assert result is None
-
-
 class TestClipboardDeviceAuth:
     """Tests for clipboard-first behavior in run_full_device_auth()."""
 
@@ -500,51 +485,11 @@ class TestClipboardDeviceAuth:
 
 
 class TestRunGithubAuth:
-    """Tests for run_github_auth() — PAT-first with device fallback."""
-
-    @patch("lib.setup_wizard.auth_with_pat")
-    @patch("subprocess.run")
-    @patch("shutil.which", return_value="/usr/local/bin/gh")
-    def test_pat_success(self, mock_which, mock_subproc, mock_pat):
-        """gh found + valid token + PAT endpoint success -> pat method."""
-        mock_subproc.return_value = MagicMock(
-            returncode=0, stdout="gho_testtoken123\n",
-        )
-        mock_pat.return_value = {
-            "api_key": "sc_live_fromPAT",
-            "github_username": "testuser",
-        }
-
-        result = setup_wizard.run_github_auth(timeout=10)
-
-        assert result["status"] == "success"
-        assert result["method"] == "pat"
-        assert result["api_key"] == "sc_live_fromPAT"
+    """Tests for run_github_auth() — device flow only."""
 
     @patch("lib.setup_wizard.run_full_device_auth")
-    @patch("lib.setup_wizard.auth_with_pat", return_value=None)
-    @patch("subprocess.run")
-    @patch("shutil.which", return_value="/usr/local/bin/gh")
-    def test_pat_fails_falls_to_device(self, mock_which, mock_subproc, mock_pat, mock_device):
-        """gh found + PAT endpoint fails -> falls through to device flow."""
-        mock_subproc.return_value = MagicMock(
-            returncode=0, stdout="gho_badtoken\n",
-        )
-        mock_device.return_value = {
-            "status": "success", "method": "device",
-            "api_key": "sc_live_fromDevice",
-        }
-
-        result = setup_wizard.run_github_auth(timeout=10)
-
-        assert result["status"] == "success"
-        assert result["method"] == "device"
-        mock_device.assert_called_once()
-
-    @patch("lib.setup_wizard.run_full_device_auth")
-    @patch("shutil.which", return_value=None)
-    def test_no_gh_goes_to_device(self, mock_which, mock_device):
-        """gh not installed -> straight to device flow."""
+    def test_goes_to_device_flow(self, mock_device):
+        """Setup never forwards a local gh PAT to ScrapeCreators."""
         mock_device.return_value = {
             "status": "success", "method": "device",
             "api_key": "sc_live_deviceOnly",
@@ -554,21 +499,58 @@ class TestRunGithubAuth:
 
         assert result["status"] == "success"
         assert result["method"] == "device"
+        mock_device.assert_called_once_with(timeout=10)
 
     @patch("lib.setup_wizard.run_full_device_auth")
-    @patch("subprocess.run")
-    @patch("shutil.which", return_value="/usr/local/bin/gh")
-    def test_gh_not_logged_in_falls_to_device(self, mock_which, mock_subproc, mock_device):
-        """gh exists but not logged in (exit code 1) -> device flow."""
-        mock_subproc.return_value = MagicMock(
-            returncode=1, stdout="", stderr="not logged in",
-        )
-        mock_device.return_value = {
+    @patch("subprocess.run", side_effect=AssertionError("must not read gh auth token"))
+    def test_does_not_shell_out_for_gh_token(self, mock_subproc, mock_device):
+        mock_device.return_value = {"status": "timeout", "user_code": "ABCD-1234"}
+        result = setup_wizard.run_github_auth(timeout=1)
+        assert result["status"] == "timeout"
+        mock_subproc.assert_not_called()
+
+
+class TestSetupGithubCliWiring:
+    """Tests for the `setup --github` CLI branch: persist + mask the key."""
+
+    def _run_setup_github(self, tmp_path, monkeypatch):
+        """Invoke `setup --github` in-process, return (parsed_json, env_path)."""
+        env_path = tmp_path / ".env"
+        monkeypatch.setattr(cli.env, "CONFIG_FILE", env_path)
+        monkeypatch.setattr(sys, "argv", ["last30days", "setup", "--github"])
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            rc = cli.main()
+        assert rc == 0
+        return json.loads(buf.getvalue()), env_path
+
+    @patch("lib.setup_wizard.run_github_auth")
+    def test_success_persists_and_masks(self, mock_auth, tmp_path, monkeypatch):
+        """Success -> key written to .env, stdout JSON masked, persisted true."""
+        mock_auth.return_value = {
             "status": "success", "method": "device",
-            "api_key": "sc_live_fallback",
+            "api_key": "sc_live_supersecret9999", "user_code": "ABCD-1234",
         }
 
-        result = setup_wizard.run_github_auth(timeout=10)
+        payload, env_path = self._run_setup_github(tmp_path, monkeypatch)
 
-        assert result["status"] == "success"
-        assert result["method"] == "device"
+        # Key persisted to disk with the real value
+        assert "SCRAPECREATORS_API_KEY=sc_live_supersecret9999" in env_path.read_text()
+        # JSON reports persistence and the raw secret never appears in stdout
+        assert payload["persisted"] is True
+        assert payload["status"] == "success"
+        assert payload["api_key"] != "sc_live_supersecret9999"
+        assert "supersecret9999" not in json.dumps(payload)
+        # Useful non-secret fields survive
+        assert payload["user_code"] == "ABCD-1234"
+
+    @patch("lib.setup_wizard.run_github_auth")
+    def test_timeout_persists_nothing(self, mock_auth, tmp_path, monkeypatch):
+        """Timeout -> no key on disk, persisted false."""
+        mock_auth.return_value = {"status": "timeout", "user_code": "WXYZ-5678"}
+
+        payload, env_path = self._run_setup_github(tmp_path, monkeypatch)
+
+        assert payload["persisted"] is False
+        assert not env_path.exists()
+        assert payload["status"] == "timeout"
