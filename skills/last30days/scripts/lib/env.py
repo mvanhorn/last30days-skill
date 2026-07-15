@@ -874,14 +874,20 @@ def is_ytdlp_available() -> bool:
 def is_youtube_comments_available(config: dict[str, Any]) -> bool:
     """Check if YouTube comment enrichment is available.
 
-    Requires SCRAPECREATORS_API_KEY AND ``youtube_comments`` in
-    ``INCLUDE_SOURCES`` (mirrors ``is_tiktok_comments_available``). Cost is
-    bounded by ``enrich_with_comments(max_videos=3)`` (~3 credits per run).
+    yt-dlp fetches YouTube comments free and keyless, so when it is installed
+    comments need no credential and no ``INCLUDE_SOURCES`` opt-in — the opt-in
+    only ever existed to gate ScrapeCreators credit spend, and there is none to
+    gate. ``EXCLUDE_SOURCES=youtube_comments`` remains the off-switch.
 
-    In the default onboarding tier: the Recommended tier now enables comments
-    (posts on -> comments on for TikTok/Instagram/YouTube), writing
-    ``youtube_comments`` into INCLUDE_SOURCES.
+    Without yt-dlp, the legacy ScrapeCreators path still applies: it requires
+    SCRAPECREATORS_API_KEY AND ``youtube_comments`` in ``INCLUDE_SOURCES``
+    (mirroring ``is_tiktok_comments_available``), bounded by
+    ``enrich_with_comments(max_videos=3)`` at ~3 credits per run.
     """
+    if 'youtube_comments' in _parse_exclude_sources(config):
+        return False
+    if is_ytdlp_available():
+        return True
     if not config.get('SCRAPECREATORS_API_KEY'):
         return False
     return 'youtube_comments' in _parse_include_sources(config)

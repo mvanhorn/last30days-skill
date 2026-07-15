@@ -1042,21 +1042,27 @@ class TestScTranscriptParsing(unittest.TestCase):
 
 
 class TestYoutubeCommentsGating(unittest.TestCase):
-    """YouTube comments are opt-in via INCLUDE_SOURCES (Everything tier)."""
+    """The legacy ScrapeCreators comment path, which applies only when yt-dlp
+    is absent. With yt-dlp installed, comments are free and need no opt-in —
+    see tests/test_youtube_comments_ytdlp.py."""
 
     def test_off_with_key_and_no_include_sources(self):
-        """Recommended tier (key, no INCLUDE_SOURCES) does NOT fetch comments."""
+        """SC path: key without INCLUDE_SOURCES does NOT fetch comments."""
         from lib import env
-        self.assertFalse(env.is_youtube_comments_available({"SCRAPECREATORS_API_KEY": "k"}))
+        with mock.patch.object(env, "is_ytdlp_available", return_value=False):
+            self.assertFalse(env.is_youtube_comments_available({"SCRAPECREATORS_API_KEY": "k"}))
 
     def test_on_with_include_sources(self):
         from lib import env
         cfg = {"SCRAPECREATORS_API_KEY": "k", "INCLUDE_SOURCES": "youtube_comments"}
-        self.assertTrue(env.is_youtube_comments_available(cfg))
+        with mock.patch.object(env, "is_ytdlp_available", return_value=False):
+            self.assertTrue(env.is_youtube_comments_available(cfg))
 
     def test_unavailable_without_key(self):
+        """SC path: no key and no yt-dlp means no comments at all."""
         from lib import env
-        self.assertFalse(env.is_youtube_comments_available({"INCLUDE_SOURCES": "youtube_comments"}))
+        with mock.patch.object(env, "is_ytdlp_available", return_value=False):
+            self.assertFalse(env.is_youtube_comments_available({"INCLUDE_SOURCES": "youtube_comments"}))
 
     def test_tiktok_comments_still_opt_in(self):
         """Regression: TikTok comments must STILL require INCLUDE_SOURCES."""

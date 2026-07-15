@@ -89,8 +89,14 @@ class _Hermetic:
     """Context manager stack making doctor runs machine-independent."""
 
     def __init__(self, probe_map=None, default_status=health.MISSING):
+        # yt-dlp now backs YouTube comments (free, keyless), so the comment
+        # gate reads env.is_ytdlp_available() -> shutil.which on the real host.
+        # Pin it to the same yt-dlp the probe_map declares, or doctor's comment
+        # branch would silently depend on whether the dev box has yt-dlp.
+        ytdlp_ok = (probe_map or {}).get("yt-dlp", default_status) == health.OK
         self._patches = [
             mock.patch("lib.health.probe_dependency", _probe_dep(probe_map, default_status)),
+            mock.patch("lib.env.is_ytdlp_available", return_value=ytdlp_ok),
             mock.patch("lib.bird_x.is_bird_installed", return_value=False),
             mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None),
             mock.patch("lib.bird_x.get_bird_status", return_value=dict(BIRD_STATUS_OFF)),
@@ -551,11 +557,13 @@ class YoutubeTranscriptionNote(unittest.TestCase):
         self.assertIn(self.entry.fix_nl, record["fix"])
         self.assertIn(self.entry.fix_cli, record["fix"])
 
-    def test_comment_text_attributed_to_scrapecreators_not_ytdlp(self):
-        # config has no ScrapeCreators key -> comment note names ScrapeCreators,
-        # never claims comment text comes from yt-dlp.
+    def test_no_paid_comment_prescription_when_ytdlp_is_installed(self):
+        # yt-dlp fetches comment text free. With it installed, doctor must NOT
+        # tell the user to buy a ScrapeCreators key for comments — that would
+        # be selling a fix for a problem they do not have.
         note = self.report["sources"]["youtube"]["note"].lower()
-        self.assertIn("comment text needs a scrapecreators key", note)
+        self.assertNotIn("comment text needs", note)
+        self.assertNotIn("scrapecreators", note)
 
     def test_text_line_includes_the_fix_on_the_ok_line(self):
         text = doctor.render_text(self.report)
@@ -571,28 +579,36 @@ class YoutubeCommentsFixLine(unittest.TestCase):
     """Greptile P2: when only the comment-text caveat fires (transcription key
     present), the record still carries an actionable fix line."""
 
-    def test_comments_fix_names_scrapecreators_when_no_key(self):
+    def test_no_comment_caveat_when_ytdlp_present(self):
+        """yt-dlp installed -> comments are free -> nothing to prescribe."""
         record = _build(
             {"GROQ_API_KEY": "dummy-groq-secret-000"},
             probe_map={"yt-dlp": health.OK},
         )["sources"]["youtube"]
         self.assertEqual("ok", record["status"])
         note = record["note"].lower()
-        self.assertIn("comment text needs", note)
-        self.assertNotIn("caption-free", note)  # transcription caveat absent
-        self.assertTrue(record["fix"], "comment-text caveat must carry a fix")
+        self.assertNotIn("comment text needs", note)
 
-    def test_comments_fix_names_optin_when_key_present(self):
+    def test_comment_caveat_fires_when_ytdlp_absent_but_sc_backs_youtube(self):
+        """No yt-dlp, but an SC key keeps YouTube itself alive. Comments then
+        still need the youtube_comments opt-in, so the caveat must surface —
+        and must name yt-dlp as the free way out, not only the paid one.
+
+        (With neither yt-dlp nor a key, YouTube has no backend at all and the
+        record short-circuits to 'no backend configured' — no video, no
+        comments to caveat.)
+        """
         record = _build(
             {
                 "GROQ_API_KEY": "dummy-groq-secret-000",
                 "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
             },
-            probe_map={"yt-dlp": health.OK},
+            probe_map={"yt-dlp": health.MISSING},
         )["sources"]["youtube"]
-        self.assertEqual("ok", record["status"])
-        self.assertIn("youtube_comments", record["fix"])
-        self.assertIn("INCLUDE_SOURCES", record["fix"])
+        note = record["note"].lower()
+        self.assertIn("comment text needs", note)
+        self.assertIn("yt-dlp (free)", note)
+        self.assertTrue(record["fix"], "comment-text caveat must carry a fix")
 
     def test_transcription_fix_takes_precedence_when_both_fire(self):
         record = _build({}, probe_map={"yt-dlp": health.OK})["sources"]["youtube"]
