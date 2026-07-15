@@ -256,13 +256,13 @@ Some agent hosts support spawning subagents at different model tiers (Claude Cod
 - Synthesis and LAW enforcement (requires reading evidence, applying the voice contract, weaving community voice)
 - All engine invocations (`scripts/last30days.py` runs in Python, not in a model)
 
-**This is an optimization, not a requirement.** If your host does not support subagents, run every step on the session model as before. If it does, the tier mapping below shows equivalent tiers across the two most common host providers:
+**This is an optimization, not a requirement.** If your host does not support subagents, run every step on the session model as before. If it does, the tier mapping below shows equivalent tiers across the two most common host providers. OpenAI's GPT-5.6 family (July 2026) uses a generation + tier-name convention: Sol (frontier), Terra (balanced), Luna (fast/cheap) - all three share a 1M context window and 128K max output.
 
-| Tier | Use for | Claude | OpenAI |
-|------|---------|--------|--------|
-| Session (frontier) | Planning, synthesis, LAW enforcement | `claude-opus-4-8` or session default | `gpt-5.5` or session default |
-| Mid | Complex resolution, deep reads | `claude-sonnet-5` | `gpt-5.6-terra` or `gpt-5.4` |
-| Budget | Pre-resolution WebSearches, supplements | `claude-haiku-4-5` | `gpt-5.4-mini` or `gpt-4.1-nano` |
+| Tier | Use for | Claude | OpenAI (GPT-5.6 family) |
+|------|---------|--------|-------------------------|
+| Session (frontier) | Planning, synthesis, LAW enforcement | `claude-opus-4-8` or session default | `gpt-5.6-sol` or session default |
+| Mid | Complex resolution, deep reads | `claude-sonnet-5` | `gpt-5.6-terra` |
+| Budget | Pre-resolution WebSearches, supplements | `claude-haiku-4-5` | `gpt-5.6-luna` |
 
 **Do NOT route synthesis to a cheaper model.** The named failure modes in this file (0/8 v3.0.6 regression, Peter Steinberger disasters #2 and #3, Hermes evidence dump) were all synthesis failures on the session model itself. A cheaper model would amplify every one of them.
 
