@@ -135,7 +135,7 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | Hacker News | none | always on | yes |
 | Polymarket | none | always on | yes |
 | StockTwits | none | auto-on for ticker/crypto topics only (gated by symbol detection); never registered for non-financial topics | yes (public API, ~200 req/hr per IP) |
-| DripStack | none | opt-in only: per run with `--search dripstack`, or persistently with `INCLUDE_SOURCES=dripstack` in `.env`. Searches premium financial newsletters and analyst writeups via a free, public search API — no key needed. Never active without the opt-in. | yes when opted in (public API, no auth) |
+| DripStack | `DRIPSTACK_API_KEY` (optional, for full article summaries) | opt-in only: per run with `--search dripstack`, or persistently with `INCLUDE_SOURCES=dripstack` in `.env`. Free endpoints: topic search, publication listing/search, and post metadata (titles, dates, prices) — no key needed. With `DRIPSTACK_API_KEY`: full synthesized article summaries and stock picks. Never active without the opt-in. | yes when opted in (free: search + publication browsing; paid: full summaries with `DRIPSTACK_API_KEY` + preloaded credits at [dripstack.xyz](https://dripstack.xyz) - My Profile > Dashboard > API Keys > + Create Api Key) |
 | GitHub | `gh` CLI installed (uses your GitHub auth) | always on if `gh` present | yes |
 | YouTube | `yt-dlp` CLI installed; `SCRAPECREATORS_API_KEY` adds a server-side transcript fallback used only when yt-dlp fails (429 / bot-gate) | always on if `yt-dlp` present; SC transcript fallback default-on when key set (no credit spent unless yt-dlp fails) | yes |
 | YouTube comments | `yt-dlp` CLI installed — **free and keyless, no API key and no opt-in needed**. Falls back to `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` containing `youtube_comments` only when yt-dlp is absent. Suppress with `EXCLUDE_SOURCES=youtube_comments`. | top comments (by likes) on the top ~3 videos by engagement | yes — free via yt-dlp (no credits spent) |
@@ -184,6 +184,11 @@ INCLUDE_SOURCES=tiktok,instagram
 # INCLUDE_SOURCES=tiktok,instagram,perplexity
 # LAST30DAYS_PERPLEXITY_MODE=sonar  # sonar | search | both
 # LAST30DAYS_PERPLEXITY_MODEL=sonar-pro  # sonar | sonar-pro | sonar-reasoning-pro
+# DripStack — free search + publication browsing with no key; add
+# DRIPSTACK_API_KEY for full synthesized article summaries (requires preloaded
+# credits at dripstack.xyz — My Profile > Dashboard > API Keys > + Create Api Key)
+# DRIPSTACK_API_KEY=<your-dripstack-key>
+# INCLUDE_SOURCES=tiktok,instagram,dripstack
 
 # X authentication (one option only)
 AUTH_TOKEN=<your-auth-token>
