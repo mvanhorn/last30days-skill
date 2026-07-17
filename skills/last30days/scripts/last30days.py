@@ -156,6 +156,38 @@ def _ensure_output_directory(path: Path, *, private: bool) -> None:
         directory.chmod(0o700)
 
 
+def _resolve_output_path(
+    save_dir: str,
+    topic: str,
+    emit: str,
+    suffix: str = "",
+) -> tuple[Path, list[Path]]:
+    """Return (preferred_path, all_candidates) for the save path.
+
+    ``preferred_path`` is the first non-existent candidate (base → date →
+    date-1 … date-99).  ``all_candidates`` is the full ordered list for
+    O_EXCL fallback if a concurrent write races ahead.
+    """
+    from datetime import datetime
+    path = Path(save_dir).expanduser().resolve()
+    slug = slugify(topic)
+    extension = "json" if emit == "json" else "html" if emit == "html" else "md"
+    raw_label = "raw-html" if emit == "html" else "raw"
+    suffix_part = f"-{suffix}" if suffix else ""
+    base = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    dated = path / f"{slug}-{raw_label}{suffix_part}-{date_str}.{extension}"
+    candidates: list[Path] = [base, dated]
+    for i in range(1, 100):
+        candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}-{i}.{extension}")
+    for candidate in candidates:
+        if not candidate.exists():
+            sys.stderr.write(f"[DEBUG] _resolve_output_path({save_dir!r}, {topic!r}, {emit!r}, {suffix!r}) -> {candidate.name}, candidates[0]={candidates[0].name}\n")
+            return candidate, candidates
+    sys.stderr.write(f"[DEBUG] _resolve_output_path({save_dir!r}, {topic!r}, {emit!r}, {suffix!r}) -> fallback to {dated.name}\n")
+    return dated, candidates
+
+
 def save_output(
     report: schema.Report,
     emit: str,
@@ -167,19 +199,14 @@ def save_output(
     json_profile: str = "agent",
     register: str = "default",
     private: bool | None = None,
+    *,
+    resolved_candidates: list[Path] | None = None,
 ) -> Path:
-    from datetime import datetime
     path = Path(save_dir).expanduser().resolve()
-    slug = slugify(topic_override or report.topic)
-    extension = "json" if emit == "json" else "html" if emit == "html" else "md"
-    raw_label = "raw-html" if emit == "html" else "raw"
-    suffix_part = f"-{suffix}" if suffix else ""
-    base = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
-    date_str = datetime.now().strftime('%Y-%m-%d')
-    candidates = [base]
-    candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}.{extension}")
-    for i in range(1, 100):
-        candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}-{i}.{extension}")
+    if resolved_candidates is not None:
+        candidates = resolved_candidates
+    else:
+        _, candidates = _resolve_output_path(save_dir, topic_override or report.topic, emit, suffix)
     # Markdown saves keep the complete debug artifact. JSON and HTML preserve
     # their requested wire format so file extensions match their content.
     if rendered_content is not None:
@@ -197,6 +224,7 @@ def save_output(
     private_corpus = _report_has_private_corpus(report) or bool(private)
     _ensure_output_directory(path, private=private_corpus)
     encoded = content.encode("utf-8")
+    sys.stderr.write(f"[DEBUG] save_output: candidates[0]={candidates[0].name}, n={len(candidates)}\n")
     for candidate in candidates:
         try:
             fd = os.open(
@@ -395,15 +423,14 @@ def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str)
     Uses ~ when the saved file is under the user's home directory; otherwise
     returns the absolute path.
     """
-    from pathlib import Path as _Path
-    path = _Path(save_dir).expanduser().resolve()
-    slug = slugify(topic)
-    extension = "json" if emit == "json" else "html" if emit == "html" else "md"
-    raw_label = "raw-html" if emit == "html" else "raw"
-    suffix_part = f"-{suffix}" if suffix else ""
-    raw = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
+    raw, _ = _resolve_output_path(save_dir, topic, emit, suffix)
+    return _format_save_path_display(raw)
+
+
+def _format_save_path_display(raw: Path) -> str:
+    """Render *raw* as a user-friendly path (tildified if under $HOME)."""
     try:
-        home = _Path.home().resolve()
+        home = Path.home().resolve()
         relative = raw.relative_to(home)
         return f"~/{relative.as_posix()}"
     except ValueError:
@@ -1479,13 +1506,15 @@ def _render_save_and_print(
     # gate once so the footer-display and save-output paths can't disagree.
     is_comparison_html = bool(entity_reports) and args.emit == "html"
     footer_save_path = None
+    resolved_candidates: list[Path] | None = None
     if args.output:
         footer_save_path = compute_output_path_display(args.output)
     elif args.save_dir:
-        save_topic_for_display = comparison_topic(entity_reports) if is_comparison_html else report.topic
-        footer_save_path = compute_save_path_display(
-            args.save_dir, save_topic_for_display, args.save_suffix or "", args.emit
+        save_topic = comparison_topic(entity_reports) if is_comparison_html else report.topic
+        preferred, resolved_candidates = _resolve_output_path(
+            args.save_dir, save_topic, args.save_suffix or "", args.emit
         )
+        footer_save_path = _format_save_path_display(preferred)
 
     if entity_reports:
         rendered = emit_comparison_output(
@@ -1535,6 +1564,7 @@ def _render_save_and_print(
             json_profile=args.json_profile,
             register=audience.name,
             private=private_saved_format,
+            resolved_candidates=resolved_candidates,
         )
         if args.emit == "html":
             publish_companion_paths.append(save_path)
