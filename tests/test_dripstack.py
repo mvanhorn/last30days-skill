@@ -129,3 +129,181 @@ def test_include_sources_tolerates_whitespace_around_commas():
         {"INCLUDE_SOURCES": "linkedin, dripstack"}, None, x_pending=False
     )
     assert "dripstack" in available
+
+
+# --------------------------------------------------------------------------- #
+# Publication browsing (free)                                                  #
+# --------------------------------------------------------------------------- #
+
+
+def _publication(**overrides):
+    pub = {
+        "slug": "newsletter.semianalysis.com",
+        "title": "SemiAnalysis",
+        "description": "Analysis of semiconductors, AI, and cloud.",
+        "siteUrl": "https://newsletter.semianalysis.com",
+        "lastSyncedAt": "2026-07-06T08:30:00Z",
+    }
+    pub.update(overrides)
+    return pub
+
+
+def _post_summary(**overrides):
+    post = {
+        "slug": "nvidia-gpu-debt-backstop",
+        "title": "Nvidia GPU Debt Backstop",
+        "subtitle": "Capital, offtake and datacenters.",
+        "publishedAt": "2026-07-06T21:53:44.000Z",
+        "priceCents": 500,
+    }
+    post.update(overrides)
+    return post
+
+
+def test_get_publications_returns_list(monkeypatch):
+    pubs = [_publication(), _publication(slug="stratechery", title="Stratechery")]
+    monkeypatch.setattr(
+        dripstack.http, "get",
+        lambda *a, **k: {"publications": pubs},
+    )
+    result = dripstack.get_publications()
+    assert len(result) == 2
+    assert result[0]["slug"] == "newsletter.semianalysis.com"
+
+
+def test_get_publications_returns_empty_on_failure(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(dripstack.http, "get", boom)
+    assert dripstack.get_publications() == []
+
+
+def test_search_publications_returns_matches(monkeypatch):
+    items = [_publication(), _publication(slug="stratechery")]
+    monkeypatch.setattr(
+        dripstack.http, "get",
+        lambda *a, **k: {"items": items},
+    )
+    result = dripstack.search_publications("semianalysis")
+    assert len(result) == 2
+
+
+def test_search_publications_rejects_short_query():
+    assert dripstack.search_publications("a") == []
+    assert dripstack.search_publications("") == []
+
+
+def test_search_publications_returns_empty_on_failure(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(dripstack.http, "get", boom)
+    assert dripstack.search_publications("semianalysis") == []
+
+
+def test_get_publication_posts_returns_detail(monkeypatch):
+    detail = {
+        "slug": "newsletter.semianalysis.com",
+        "title": "SemiAnalysis",
+        "posts": [_post_summary(), _post_summary(slug="other-post")],
+    }
+    seen = {}
+
+    def fake_get(url, headers=None, **kwargs):
+        seen["url"] = url
+        return detail
+
+    monkeypatch.setattr(dripstack.http, "get", fake_get)
+    result = dripstack.get_publication_posts("newsletter.semianalysis.com", limit=5)
+    assert len(result["posts"]) == 2
+    assert "newsletter.semianalysis.com" in seen["url"]
+    assert "limit=5" in seen["url"]
+
+
+def test_get_publication_posts_returns_empty_on_failure(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(dripstack.http, "get", boom)
+    assert dripstack.get_publication_posts("newsletter.semianalysis.com") == {}
+
+
+# --------------------------------------------------------------------------- #
+# Paid post fetch                                                              #
+# --------------------------------------------------------------------------- #
+
+
+def test_get_publication_post_skips_without_key():
+    assert dripstack.get_publication_post("pub", "post", api_key=None) == {}
+    assert dripstack.get_publication_post("pub", "post", api_key="") == {}
+
+
+def test_get_publication_post_sends_bearer_auth(monkeypatch):
+    seen = {}
+    post_data = {"synthesizedSummary": "Nvidia backstop explained...", "title": "Nvidia GPU Debt Backstop"}
+
+    def fake_get(url, headers=None, **kwargs):
+        seen["url"] = url
+        seen["headers"] = headers
+        return post_data
+
+    monkeypatch.setattr(dripstack.http, "get", fake_get)
+    result = dripstack.get_publication_post(
+        "newsletter.semianalysis.com",
+        "nvidia-gpu-debt-backstop",
+        api_key="pk_drip_test123",
+    )
+    assert result == post_data
+    assert seen["headers"]["Authorization"] == "Bearer pk_drip_test123"
+    assert "nvidia-gpu-debt-backstop" in seen["url"]
+
+
+def test_get_publication_post_returns_empty_on_402(monkeypatch):
+    from lib import http
+
+    def fake_get(url, headers=None, **kwargs):
+        raise http.HTTPError("HTTP 402: Payment Required", status_code=402)
+
+    monkeypatch.setattr(dripstack.http, "get", fake_get)
+    result = dripstack.get_publication_post(
+        "pub", "post", api_key="pk_drip_test123"
+    )
+    assert result == {}
+
+
+def test_get_publication_post_returns_empty_on_404(monkeypatch):
+    from lib import http
+
+    def fake_get(url, headers=None, **kwargs):
+        raise http.HTTPError("HTTP 404: Not Found", status_code=404)
+
+    monkeypatch.setattr(dripstack.http, "get", fake_get)
+    result = dripstack.get_publication_post(
+        "pub", "post", api_key="pk_drip_test123"
+    )
+    assert result == {}
+
+
+def test_get_publication_post_returns_empty_on_503(monkeypatch):
+    from lib import http
+
+    def fake_get(url, headers=None, **kwargs):
+        raise http.HTTPError("HTTP 503: Service Unavailable", status_code=503)
+
+    monkeypatch.setattr(dripstack.http, "get", fake_get)
+    result = dripstack.get_publication_post(
+        "pub", "post", api_key="pk_drip_test123"
+    )
+    assert result == {}
+
+
+def test_get_publication_post_returns_empty_on_network_error(monkeypatch):
+    def boom(*a, **k):
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(dripstack.http, "get", boom)
+    result = dripstack.get_publication_post(
+        "pub", "post", api_key="pk_drip_test123"
+    )
+    assert result == {}
