@@ -156,6 +156,28 @@ def _ensure_output_directory(path: Path, *, private: bool) -> None:
         directory.chmod(0o700)
 
 
+def _resolve_output_path(
+    save_dir: str,
+    topic: str,
+    emit: str,
+    suffix: str = "",
+) -> list[Path]:
+    """Return candidate save paths in priority order (base → date → date-N)."""
+    from datetime import datetime
+    path = Path(save_dir).expanduser().resolve()
+    slug = slugify(topic)
+    extension = "json" if emit == "json" else "html" if emit == "html" else "md"
+    raw_label = "raw-html" if emit == "html" else "raw"
+    suffix_part = f"-{suffix}" if suffix else ""
+    base = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    candidates = [base]
+    candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}.{extension}")
+    for i in range(1, 100):
+        candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}-{i}.{extension}")
+    return candidates
+
+
 def save_output(
     report: schema.Report,
     emit: str,
@@ -168,18 +190,8 @@ def save_output(
     register: str = "default",
     private: bool | None = None,
 ) -> Path:
-    from datetime import datetime
     path = Path(save_dir).expanduser().resolve()
-    slug = slugify(topic_override or report.topic)
-    extension = "json" if emit == "json" else "html" if emit == "html" else "md"
-    raw_label = "raw-html" if emit == "html" else "raw"
-    suffix_part = f"-{suffix}" if suffix else ""
-    base = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
-    date_str = datetime.now().strftime('%Y-%m-%d')
-    candidates = [base]
-    candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}.{extension}")
-    for i in range(1, 100):
-        candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}-{i}.{extension}")
+    candidates = _resolve_output_path(save_dir, topic_override or report.topic, emit, suffix)
     # Markdown saves keep the complete debug artifact. JSON and HTML preserve
     # their requested wire format so file extensions match their content.
     if rendered_content is not None:
@@ -395,15 +407,9 @@ def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str)
     Uses ~ when the saved file is under the user's home directory; otherwise
     returns the absolute path.
     """
-    from pathlib import Path as _Path
-    path = _Path(save_dir).expanduser().resolve()
-    slug = slugify(topic)
-    extension = "json" if emit == "json" else "html" if emit == "html" else "md"
-    raw_label = "raw-html" if emit == "html" else "raw"
-    suffix_part = f"-{suffix}" if suffix else ""
-    raw = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
+    raw = _resolve_output_path(save_dir, topic, emit, suffix)[0]
     try:
-        home = _Path.home().resolve()
+        home = Path.home().resolve()
         relative = raw.relative_to(home)
         return f"~/{relative.as_posix()}"
     except ValueError:
