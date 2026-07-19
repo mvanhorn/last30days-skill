@@ -156,6 +156,37 @@ def _ensure_output_directory(path: Path, *, private: bool) -> None:
         directory.chmod(0o700)
 
 
+def _save_path_candidates(
+    save_dir: str, topic: str, suffix: str, emit: str
+) -> list[Path]:
+    """Ordered collision candidates for raw save files (base → dated → dated-N)."""
+    from datetime import datetime
+
+    path = Path(save_dir).expanduser().resolve()
+    slug = slugify(topic)
+    extension = "json" if emit == "json" else "html" if emit == "html" else "md"
+    raw_label = "raw-html" if emit == "html" else "raw"
+    suffix_part = f"-{suffix}" if suffix else ""
+    date_str = datetime.now().strftime("%Y-%m-%d")
+    candidates = [path / f"{slug}-{raw_label}{suffix_part}.{extension}"]
+    candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}.{extension}")
+    for i in range(1, 100):
+        candidates.append(
+            path / f"{slug}-{raw_label}{suffix_part}-{date_str}-{i}.{extension}"
+        )
+    return candidates
+
+
+def _format_path_display(raw: Path) -> str:
+    """User-facing path: ~/... with POSIX slashes when under home."""
+    try:
+        home = Path.home().resolve()
+        relative = raw.resolve().relative_to(home)
+        return f"~/{relative.as_posix()}"
+    except ValueError:
+        return raw.resolve().as_posix()
+
+
 def save_output(
     report: schema.Report,
     emit: str,
@@ -168,18 +199,10 @@ def save_output(
     register: str = "default",
     private: bool | None = None,
 ) -> Path:
-    from datetime import datetime
     path = Path(save_dir).expanduser().resolve()
-    slug = slugify(topic_override or report.topic)
-    extension = "json" if emit == "json" else "html" if emit == "html" else "md"
-    raw_label = "raw-html" if emit == "html" else "raw"
-    suffix_part = f"-{suffix}" if suffix else ""
-    base = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
-    date_str = datetime.now().strftime('%Y-%m-%d')
-    candidates = [base]
-    candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}.{extension}")
-    for i in range(1, 100):
-        candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}-{i}.{extension}")
+    candidates = _save_path_candidates(
+        save_dir, topic_override or report.topic, suffix, emit
+    )
     # Markdown saves keep the complete debug artifact. JSON and HTML preserve
     # their requested wire format so file extensions match their content.
     if rendered_content is not None:
@@ -392,33 +415,21 @@ def comparison_topic(entity_reports: list[tuple[str, schema.Report]]) -> str:
 def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str) -> str:
     """Compute the user-friendly save path string that will be shown in the footer.
 
-    Uses ~ when the saved file is under the user's home directory; otherwise
-    returns the absolute path.
+    Walks the same collision candidate chain as ``save_output`` and returns the
+    first path that does not already exist, so the footer matches the file that
+    will be written when the base name is taken (#833). Uses ~ when the saved
+    file is under the user's home directory; otherwise returns the absolute path.
     """
-    from pathlib import Path as _Path
-    path = _Path(save_dir).expanduser().resolve()
-    slug = slugify(topic)
-    extension = "json" if emit == "json" else "html" if emit == "html" else "md"
-    raw_label = "raw-html" if emit == "html" else "raw"
-    suffix_part = f"-{suffix}" if suffix else ""
-    raw = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
-    try:
-        home = _Path.home().resolve()
-        relative = raw.relative_to(home)
-        return f"~/{relative.as_posix()}"
-    except ValueError:
-        return raw.as_posix()
+    for candidate in _save_path_candidates(save_dir, topic, suffix, emit):
+        if not candidate.exists():
+            return _format_path_display(candidate)
+    # Extremely unlikely: all 101 candidates exist; still show the base name.
+    return _format_path_display(_save_path_candidates(save_dir, topic, suffix, emit)[0])
 
 
 def compute_output_path_display(output_file: str) -> str:
     """Compute the user-friendly explicit output path shown in render footers."""
-    raw = Path(output_file).expanduser().resolve()
-    try:
-        home = Path.home().resolve()
-        relative = raw.relative_to(home)
-        return f"~/{relative.as_posix()}"
-    except ValueError:
-        return raw.as_posix()
+    return _format_path_display(Path(output_file).expanduser())
 
 
 def read_synthesis_file(path: str) -> str:

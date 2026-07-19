@@ -365,6 +365,27 @@ class CliV3Tests(unittest.TestCase):
         finally:
             shutil.rmtree(tmp_under_home, ignore_errors=True)
 
+    def test_compute_save_path_display_follows_collision_fallback(self):
+        # Regression #833: when the base raw file already exists, the footer
+        # must advertise the date-suffixed candidate that save_output will write.
+        report = self.make_report()
+        with tempfile.TemporaryDirectory() as tmp:
+            save_dir = Path(tmp)
+            today = datetime.now().strftime("%Y-%m-%d")
+            base = save_dir / "openclaw-vs-nanoclaw-raw.md"
+            base.write_text("stale", encoding="utf-8")
+
+            display = cli.compute_save_path_display(str(save_dir), report.topic, "", "md")
+            saved = cli.save_output(report, "md", str(save_dir))
+
+            expected = save_dir / f"openclaw-vs-nanoclaw-raw-{today}.md"
+            self.assertEqual(expected.resolve(), saved)
+            self.assertTrue(
+                display.endswith(f"openclaw-vs-nanoclaw-raw-{today}.md"),
+                f"Footer display should point at dated fallback, got: {display}",
+            )
+            self.assertEqual("stale", base.read_text(encoding="utf-8"))
+
     def test_compute_output_path_display_uses_posix_slashes_under_home(self):
         real_home = Path.home()
         tmp_under_home = Path(tempfile.mkdtemp(prefix="l30d_output_path_", dir=str(real_home)))
