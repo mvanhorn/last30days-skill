@@ -66,7 +66,7 @@ HTML_PATH="${LAST30DAYS_MEMORY_DIR}/${SLUG}-brief.html"
 if [ -f "$HTML_PATH" ]; then
   HTML_PATH="${LAST30DAYS_MEMORY_DIR}/${SLUG}-brief-$(date +%F).html"
 fi
-"${LAST30DAYS_PYTHON}" "${SKILL_ROOT}/scripts/last30days.py" "${TOPIC}" \
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "${TOPIC}" \
   --emit=html \
   --synthesis-file "$SYNTHESIS_FILE" \
   "${SCOPE_FLAGS[@]}" \
@@ -110,7 +110,7 @@ When the user chooses the built-in `ht-ml.app` path, add `--publish-html` to the
 
 ```bash
 LAST30DAYS_PUBLISH_PASSWORD="${PUBLISH_PASSWORD:-}" \
-"${LAST30DAYS_PYTHON}" "${SKILL_ROOT}/scripts/last30days.py" "${TOPIC}" \
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "${TOPIC}" \
   --emit=html \
   --synthesis-file "$SYNTHESIS_FILE" \
   --output "$HTML_PATH" \
