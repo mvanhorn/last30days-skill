@@ -480,8 +480,10 @@ class TestSkillMdFirstRunReference(unittest.TestCase):
 
     def test_skill_md_references_setup_command(self):
         content = SKILL_MD.read_text(encoding="utf-8")
-        self.assertIn(
-            "last30days.py setup", content,
+        # Tolerate the trailing quote from `"${SKILL_DIR}/scripts/last30days.py" setup`
+        # as well as the older unquoted `last30days.py setup` form.
+        self.assertRegex(
+            content, r'last30days\.py"?\s+setup',
             "SKILL.md should reference the Python setup subcommand",
         )
 
