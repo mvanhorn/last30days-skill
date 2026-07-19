@@ -1,6 +1,7 @@
 import contextlib
 import json
 import io
+import os
 import shutil
 import tempfile
 import subprocess
@@ -385,6 +386,68 @@ class CliV3Tests(unittest.TestCase):
                 f"Footer display should point at dated fallback, got: {display}",
             )
             self.assertEqual("stale", base.read_text(encoding="utf-8"))
+
+    def test_claim_save_path_reserves_the_slot_it_returns(self):
+        # Regression #838 review (Greptile P1 "Independent Selection Produces
+        # Stale Footer"): compute_save_path_display() only *predicts* a free
+        # candidate via .exists() checks, so two independent predictions can
+        # agree on the same "free" candidate before either writer claims it.
+        # claim_save_path() must instead reserve the file immediately (O_EXCL)
+        # so a second caller racing right behind the first is forced onto the
+        # next candidate rather than being told the same path is free.
+        with tempfile.TemporaryDirectory() as tmp:
+            save_dir = Path(tmp)
+            first_path, first_fd = cli.claim_save_path(str(save_dir), "OpenClaw", "", "md")
+            try:
+                second_path, second_fd = cli.claim_save_path(str(save_dir), "OpenClaw", "", "md")
+                try:
+                    self.assertNotEqual(
+                        first_path, second_path,
+                        "a second claim before the first write must not reuse the same path",
+                    )
+                    self.assertTrue(first_path.exists(), "claiming must create the file immediately")
+                finally:
+                    os.close(second_fd)
+            finally:
+                os.close(first_fd)
+
+    def test_save_output_writes_to_the_exact_claimed_path(self):
+        # Regression #838 review (Greptile P1): a path reserved via
+        # claim_save_path() and shown to the user (e.g. in a footer) must be
+        # the exact file save_output() writes to when handed that claim -
+        # not a freshly re-predicted candidate that could have drifted.
+        report = self.make_report()
+        with tempfile.TemporaryDirectory() as tmp:
+            save_dir = Path(tmp)
+            claimed_path, claimed_fd = cli.claim_save_path(str(save_dir), report.topic, "", "md")
+
+            saved = cli.save_output(
+                report, "md", str(save_dir), claimed=(claimed_path, claimed_fd),
+            )
+
+            self.assertEqual(claimed_path, saved)
+            self.assertTrue(saved.exists())
+            self.assertIn(report.topic, saved.read_text(encoding="utf-8"))
+
+    def test_claim_save_path_exhaustion_raises_without_touching_occupied_file(self):
+        # Regression #838 review (Greptile P2 "Exhaustion Advertises Occupied
+        # Base Path"): when every candidate in the collision chain is taken,
+        # claim_save_path must raise instead of returning the occupied base
+        # path as if it were free - the old compute_save_path_display fallback
+        # returned candidates[0] even when it was occupied, so a caller using
+        # that as truth would advertise (and, via save_output, write into) a
+        # file that already belonged to someone else.
+        report = self.make_report()
+        with tempfile.TemporaryDirectory() as tmp:
+            save_dir = Path(tmp)
+            for candidate in cli._save_path_candidates(str(save_dir), report.topic, "", "md"):
+                candidate.write_text("occupied", encoding="utf-8")
+
+            with self.assertRaises(RuntimeError):
+                cli.claim_save_path(str(save_dir), report.topic, "", "md")
+
+            base = cli._save_path_candidates(str(save_dir), report.topic, "", "md")[0]
+            self.assertEqual("occupied", base.read_text(encoding="utf-8"))
 
     def test_compute_output_path_display_uses_posix_slashes_under_home(self):
         real_home = Path.home()

@@ -187,6 +187,41 @@ def _format_path_display(raw: Path) -> str:
         return raw.resolve().as_posix()
 
 
+def claim_save_path(
+    save_dir: str, topic: str, suffix: str, emit: str, *, private: bool = False
+) -> tuple[Path, int]:
+    """Atomically claim the first free candidate in the collision chain.
+
+    Walks the same ordered candidates as ``_save_path_candidates`` and
+    exclusively creates (``O_EXCL``) the first one that doesn't already
+    exist, so the returned path is the *actual* file that will be written -
+    not a prediction that a second process could invalidate between the
+    check and the write. The caller owns the returned file descriptor and
+    must write to it (e.g. via ``os.fdopen``) and close it; pass the pair
+    straight into ``save_output(..., claimed=...)`` to do both.
+
+    Raises ``RuntimeError`` if all 101 candidates are taken (extremely
+    unlikely) - the caller should treat this as a hard failure rather than
+    falling back to an occupied path, since nothing was reserved to write.
+    """
+    path = Path(save_dir).expanduser().resolve()
+    candidates = _save_path_candidates(save_dir, topic, suffix, emit)
+    _ensure_output_directory(path, private=private)
+    for candidate in candidates:
+        try:
+            fd = os.open(
+                candidate,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600 if private else 0o644,
+            )
+        except FileExistsError:
+            continue
+        return candidate, fd
+    raise RuntimeError(
+        f"save_output: could not find a unique filename after 101 attempts in {path}"
+    )
+
+
 def save_output(
     report: schema.Report,
     emit: str,
@@ -198,11 +233,19 @@ def save_output(
     json_profile: str = "agent",
     register: str = "default",
     private: bool | None = None,
+    claimed: tuple[Path, int] | None = None,
 ) -> Path:
-    path = Path(save_dir).expanduser().resolve()
-    candidates = _save_path_candidates(
-        save_dir, topic_override or report.topic, suffix, emit
-    )
+    """Render (if needed) and write the raw save file.
+
+    ``claimed`` lets a caller reserve the destination path up front (via
+    ``claim_save_path``) and hand off the already-open file descriptor here,
+    so a path shown to the user before this call (e.g. a footer computed
+    ahead of rendering) is guaranteed to be the path actually written -
+    closing the race where two processes independently pick the same "free"
+    candidate. When omitted, this claims a candidate itself exactly as
+    before, which is safe for callers that never showed the path to anyone
+    beforehand (e.g. vs-mode peer saves).
+    """
     # Markdown saves keep the complete debug artifact. JSON and HTML preserve
     # their requested wire format so file extensions match their content.
     if rendered_content is not None:
@@ -217,45 +260,41 @@ def save_output(
         )
     else:
         content = render.render_full(report)
-    private_corpus = _report_has_private_corpus(report) or bool(private)
-    _ensure_output_directory(path, private=private_corpus)
     encoded = content.encode("utf-8")
-    for candidate in candidates:
+    if claimed is not None:
+        candidate, fd = claimed
+    else:
+        private_corpus = _report_has_private_corpus(report) or bool(private)
+        candidate, fd = claim_save_path(
+            save_dir,
+            topic_override or report.topic,
+            suffix,
+            emit,
+            private=private_corpus,
+        )
+    with os.fdopen(fd, "wb") as f:
+        f.write(encoded)
+    if candidate.suffix.lower() == ".md":
         try:
-            fd = os.open(
-                candidate,
-                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-                0o600 if private_corpus else 0o644,
-            )
-        except FileExistsError:
-            continue
-        with os.fdopen(fd, "wb") as f:
-            f.write(encoded)
-        if candidate.suffix.lower() == ".md":
-            try:
-                from lib import library, library_index
+            from lib import library, library_index
 
-                save_root = candidate.parent.resolve()
-                if save_root == Path(library.DEFAULT_MEMORY_DIR).expanduser().resolve():
-                    library_index.sync_library(save_root)
-                else:
-                    # A scoped save must sync a per-directory index with the
-                    # same paths scoped search uses; syncing the shared DB
-                    # from one scope's scan would prune other scopes' rows.
-                    library_index.sync_library(
-                        save_root,
-                        save_root / "briefings",
-                        db_path=save_root / ".last30days-library.db",
-                    )
-            except (library_index.LibrarySearchUnavailable, OSError, sqlite3.DatabaseError):
-                # Saving research must not depend on the optional local index;
-                # `library search` reports a clear capability error on demand.
-                pass
-        return candidate
-    # Fallback: all 101 candidates existed (extremely unlikely).
-    raise RuntimeError(
-        f"save_output: could not find a unique filename after 101 attempts in {path}"
-    )
+            save_root = candidate.parent.resolve()
+            if save_root == Path(library.DEFAULT_MEMORY_DIR).expanduser().resolve():
+                library_index.sync_library(save_root)
+            else:
+                # A scoped save must sync a per-directory index with the
+                # same paths scoped search uses; syncing the shared DB
+                # from one scope's scan would prune other scopes' rows.
+                library_index.sync_library(
+                    save_root,
+                    save_root / "briefings",
+                    db_path=save_root / ".last30days-library.db",
+                )
+        except (library_index.LibrarySearchUnavailable, OSError, sqlite3.DatabaseError):
+            # Saving research must not depend on the optional local index;
+            # `library search` reports a clear capability error on demand.
+            pass
+    return candidate
 
 
 def save_rendered_output(
@@ -413,12 +452,20 @@ def comparison_topic(entity_reports: list[tuple[str, schema.Report]]) -> str:
 
 
 def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str) -> str:
-    """Compute the user-friendly save path string that will be shown in the footer.
+    """Predict the user-friendly save path string that would be shown in the footer.
 
     Walks the same collision candidate chain as ``save_output`` and returns the
     first path that does not already exist, so the footer matches the file that
     will be written when the base name is taken (#833). Uses ~ when the saved
     file is under the user's home directory; otherwise returns the absolute path.
+
+    This is a prediction, not a reservation: a concurrent process could claim
+    the same candidate between this call and the actual write. The CLI's own
+    save path (``_render_save_and_print``) does not rely on this function for
+    that reason - it uses ``claim_save_path`` to atomically reserve the real
+    file before rendering the footer, so the footer text and the written file
+    can never disagree. This function remains useful for read-only prediction
+    (e.g. showing a user what *would* be saved) where that guarantee isn't needed.
     """
     for candidate in _save_path_candidates(save_dir, topic, suffix, emit):
         if not candidate.exists():
@@ -1489,14 +1536,35 @@ def _render_save_and_print(
     # have to be overridden away from the leading entity's report. Compute the
     # gate once so the footer-display and save-output paths can't disagree.
     is_comparison_html = bool(entity_reports) and args.emit == "html"
+    has_private_corpus = _report_has_private_corpus(report) or bool(
+        entity_reports
+        and any(_report_has_private_corpus(entity) for _label, entity in entity_reports)
+    )
+    private_saved_format = has_private_corpus
     footer_save_path = None
+    claimed_save_slot: tuple[Path, int] | None = None
     if args.output:
         footer_save_path = compute_output_path_display(args.output)
     elif args.save_dir:
+        # Claim the actual destination file *before* rendering, instead of
+        # separately predicting a "free" candidate for the footer and letting
+        # save_output() independently claim one afterwards (#838 review: two
+        # concurrent runs choosing the same topic/save-dir could predict the
+        # same candidate while only one of them actually writes it, leaving
+        # the other's footer pointing at a file it didn't create). Claiming
+        # first means the footer text and the written file are always the
+        # same path, and exhaustion (all 101 candidates taken) fails loudly
+        # here instead of advertising an occupied path in a rendered footer.
         save_topic_for_display = comparison_topic(entity_reports) if is_comparison_html else report.topic
-        footer_save_path = compute_save_path_display(
-            args.save_dir, save_topic_for_display, args.save_suffix or "", args.emit
+        claimed_path, claimed_fd = claim_save_path(
+            args.save_dir,
+            save_topic_for_display,
+            args.save_suffix or "",
+            args.emit,
+            private=private_saved_format,
         )
+        claimed_save_slot = (claimed_path, claimed_fd)
+        footer_save_path = _format_path_display(claimed_path)
 
     if entity_reports:
         rendered = emit_comparison_output(
@@ -1517,11 +1585,6 @@ def _render_save_and_print(
             json_profile=args.json_profile,
             register=audience.name,
         )
-    has_private_corpus = _report_has_private_corpus(report) or bool(
-        entity_reports
-        and any(_report_has_private_corpus(entity) for _label, entity in entity_reports)
-    )
-    private_saved_format = has_private_corpus
     publish_companion_paths: list[Path] = []
     if args.output:
         output_path = save_rendered_output(
@@ -1534,7 +1597,9 @@ def _render_save_and_print(
         sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
         sys.stderr.flush()
     if args.save_dir:
-        # Save the main topic's raw file (single-entity or comparison main).
+        # Save the main topic's raw file (single-entity or comparison main),
+        # writing into the slot claimed above so this is guaranteed to be the
+        # same file footer_save_path already told the user about.
         save_path = save_output(
             report,
             args.emit,
@@ -1546,6 +1611,7 @@ def _render_save_and_print(
             json_profile=args.json_profile,
             register=audience.name,
             private=private_saved_format,
+            claimed=claimed_save_slot,
         )
         if args.emit == "html":
             publish_companion_paths.append(save_path)
