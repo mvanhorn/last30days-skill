@@ -189,9 +189,7 @@ def serpapi_search(
         link = r.get("link", "")
         raw_date = r.get("date") or ""
         pub_date = _parse_serpapi_date(raw_date)
-        # SerpApi's Google results are already scoped by tbs=cdr, but often
-        # omit per-result dates. Keep those as undated instead of dropping them.
-        if pub_date and not _in_date_range(pub_date, date_range):
+        if not _in_date_range(pub_date, date_range):
             continue
         items.append({
             "id": f"WG{i + 1}",

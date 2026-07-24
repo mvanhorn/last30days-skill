@@ -72,7 +72,7 @@ class SerperSearchTests(unittest.TestCase):
             self.assertEqual("serper", artifact["label"])
 
 class SerpApiSearchTests(unittest.TestCase):
-    def test_serpapi_search_filters_dated_items_and_keeps_tbs_scoped_undated_items(self):
+    def test_serpapi_search_filters_out_of_range_and_undated_items(self):
         mock_response = {
             "organic_results": [
                 {
@@ -90,21 +90,19 @@ class SerpApiSearchTests(unittest.TestCase):
                 {
                     "title": "Undated Result",
                     "link": "https://example.com/undated",
-                    "snippet": "SerpApi often omits dates on Google results.",
+                    "snippet": "Undated results are dropped like the other keyed backends.",
                 },
             ]
         }
         with patch("lib.grounding.http.request", return_value=mock_response) as mock_req:
             items, artifact = grounding.serpapi_search("test", ("2026-02-25", "2026-03-27"), "fake-key")
-            self.assertEqual(2, len(items))
+            self.assertEqual(1, len(items))
             self.assertEqual("SerpApi Result", items[0]["title"])
             self.assertEqual("https://example.com/serpapi", items[0]["url"])
             self.assertEqual("2026-03-15", items[0]["date"])
-            self.assertEqual("Undated Result", items[1]["title"])
-            self.assertIsNone(items[1]["date"])
             self.assertTrue(items[0]["id"].startswith("WG"))
             self.assertEqual("serpapi", artifact["label"])
-            self.assertEqual(2, artifact["resultCount"])
+            self.assertEqual(1, artifact["resultCount"])
             self.assertEqual("GET", mock_req.call_args.args[0])
             self.assertEqual("https://serpapi.com/search.json", mock_req.call_args.args[1])
             params = mock_req.call_args.kwargs["params"]
