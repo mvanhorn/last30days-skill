@@ -127,7 +127,7 @@ class TestDescriptorRegistry:
         assert tuple(s.name for s in yt.backends) == ("yt-dlp", "scrapecreators")
         web = backends.get_descriptor("web")
         assert tuple(s.name for s in web.backends) == (
-            "brave", "exa", "serper", "parallel", "keyless",
+            "brave", "exa", "serper", "serpapi", "parallel", "keyless",
         )
         assert web.pin_flag == "--web-backend"
 
@@ -268,6 +268,7 @@ class TestPaidLaneProbes:
         ("x", "xai", "XAI_API_KEY"),
         ("x", "xquik", "XQUIK_API_KEY"),
         ("web", "serper", "SERPER_API_KEY"),
+        ("web", "serpapi", "SERPAPI_API_KEY"),
         ("youtube", "scrapecreators", "SCRAPECREATORS_API_KEY"),
         ("reddit", "scrapecreators", "SCRAPECREATORS_API_KEY"),
     ]
@@ -528,7 +529,7 @@ class TestYouTubeChain:
 
 
 # ---------------------------------------------------------------------------
-# Web search chain: brave -> exa -> serper -> parallel -> keyless floor
+# Web search chain: brave -> exa -> serper -> serpapi -> parallel -> keyless floor
 # ---------------------------------------------------------------------------
 
 class TestWebChain:
@@ -575,6 +576,7 @@ class TestWebChain:
             with mock.patch.object(grounding, "brave_search", rec("brave")), \
                  mock.patch.object(grounding, "exa_search", rec("exa")), \
                  mock.patch.object(grounding, "serper_search", rec("serper")), \
+                 mock.patch.object(grounding, "serpapi_search", rec("serpapi")), \
                  mock.patch.object(grounding, "parallel_search", rec("parallel")), \
                  mock.patch(
                      "lib.web_search_keyless.keyless_search",
@@ -586,6 +588,7 @@ class TestWebChain:
         for config in (
             {"BRAVE_API_KEY": "dummy-key"},
             {"SERPER_API_KEY": "dummy-key"},
+            {"SERPAPI_API_KEY": "dummy-key"},
             {},
         ):
             assert backends.resolve("web", config).active_backend == _auto_pick(config)

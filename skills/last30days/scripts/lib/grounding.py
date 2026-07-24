@@ -1,11 +1,12 @@
-"""Web search retrieval via Brave Search, Exa, Serper, Parallel, or a keyless floor."""
+"""Web search retrieval via Brave Search, Exa, Serper, SerpApi, Parallel, or a keyless floor."""
 
 from __future__ import annotations
 
+import re
 import sys
 import urllib.parse
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
 from . import dates, env, http, schema, web_search_keyless
@@ -163,6 +164,50 @@ def serper_search(
 
 
 # ---------------------------------------------------------------------------
+# SerpApi Google Search
+# ---------------------------------------------------------------------------
+
+def serpapi_search(
+    query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
+) -> tuple[list[dict], dict]:
+    data = http.request(
+        "GET",
+        "https://serpapi.com/search.json",
+        params={
+            "engine": "google",
+            "q": query,
+            "api_key": api_key,
+            "num": count,
+            "tbs": f"cdr:1,cd_min:{_serpapi_date_param(date_range[0])},cd_max:{_serpapi_date_param(date_range[1])}",
+        },
+        timeout=15,
+    )
+    items = []
+    for i, r in enumerate((data.get("organic_results", []))[:count]):
+        if not isinstance(r, dict):
+            continue
+        link = r.get("link", "")
+        raw_date = r.get("date") or ""
+        pub_date = _parse_serpapi_date(raw_date)
+        # SerpApi's Google results are already scoped by tbs=cdr, but often
+        # omit per-result dates. Keep those as undated instead of dropping them.
+        if pub_date and not _in_date_range(pub_date, date_range):
+            continue
+        items.append({
+            "id": f"WG{i + 1}",
+            "title": r.get("title", ""),
+            "url": link,
+            "source_domain": _domain(link),
+            "snippet": r.get("snippet", ""),
+            "date": pub_date,
+            "relevance": 0.8,
+            "why_relevant": "SerpApi Google Search",
+        })
+    artifact = {"label": "serpapi", "webSearchQueries": [query], "resultCount": len(items)}
+    return items, artifact
+
+
+# ---------------------------------------------------------------------------
 # Parallel AI Search
 # ---------------------------------------------------------------------------
 
@@ -217,6 +262,31 @@ def _parse_serper_date(raw: str) -> str | None:
     return None
 
 
+def _parse_serpapi_date(raw: str) -> str | None:
+    parsed = _parse_serper_date(raw)
+    if parsed:
+        return parsed
+    text = raw.strip()
+    lower = text.lower()
+    today = datetime.now(timezone.utc).date()
+    if lower == "today":
+        return today.isoformat()
+    if lower == "yesterday":
+        return (today - timedelta(days=1)).isoformat()
+    match = re.match(r"^(\d+)\s+(minute|hour|day|week|month|year)s?\s+ago$", lower)
+    if match:
+        value = int(match.group(1))
+        unit = match.group(2)
+        days_by_unit = {
+            "minute": 0,
+            "hour": 0,
+            "day": value,
+            "week": value * 7,
+            "month": value * 30,
+            "year": value * 365,
+        }
+        return (today - timedelta(days=days_by_unit[unit])).isoformat()
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +307,8 @@ def web_search(
             backend = "exa"
         elif config.get("SERPER_API_KEY"):
             backend = "serper"
+        elif config.get("SERPAPI_API_KEY"):
+            backend = "serpapi"
         elif config.get("PARALLEL_API_KEY"):
             backend = "parallel"
         elif env.keyless_web_allowed(config):
@@ -263,6 +335,11 @@ def web_search(
         if not key:
             raise RuntimeError("SERPER_API_KEY is required when web_backend='serper'")
         items, artifact = serper_search(query, date_range, key)
+    elif backend == "serpapi":
+        key = config.get("SERPAPI_API_KEY")
+        if not key:
+            raise RuntimeError("SERPAPI_API_KEY is required when web_backend='serpapi'")
+        items, artifact = serpapi_search(query, date_range, key)
     elif backend == "parallel":
         key = config.get("PARALLEL_API_KEY")
         if not key:
@@ -355,6 +432,12 @@ def _normalize_date(value: object) -> str | None:
 
 def _serper_date_param(iso_date: str) -> str:
     """Convert YYYY-MM-DD to MM/DD/YYYY for Serper tbs parameter."""
+    parts = iso_date.split("-")
+    return f"{parts[1]}/{parts[2]}/{parts[0]}"
+
+
+def _serpapi_date_param(iso_date: str) -> str:
+    """Convert YYYY-MM-DD to MM/DD/YYYY for SerpApi tbs parameter."""
     parts = iso_date.split("-")
     return f"{parts[1]}/{parts[2]}/{parts[0]}"
 

@@ -29,7 +29,7 @@ say the next run will try" — rendered as "will use". It is not an
 observation of what served a past run, and runtime failover can still
 diverge mid-run (a present-but-expired paid key passes a presence probe).
 
-Paid lanes (xai, xquik, serper, and every other API-key backend, including
+Paid lanes (xai, xquik, serper, serpapi, and every other API-key backend, including
 ScrapeCreators) probe KEY PRESENCE ONLY: a dict lookup, never a network
 call or credential spend. Binary-backed lanes reuse the U1 dependency
 probe layer (``health.probe_dependency``) so a stale shim reads as BROKEN,
@@ -58,10 +58,10 @@ TIER_WARN = "warn"
 TIER_ERROR = "error"
 
 # Web search backend order. grounding.web_search's auto branch owns the
-# runtime behavior (brave -> exa -> serper -> parallel -> keyless floor);
+# runtime behavior (brave -> exa -> serper -> serpapi -> parallel -> keyless floor);
 # there is no importable constant there, so this declaration is guarded by
 # the grounding-auto parity test rather than an import.
-WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keyless")
+WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "serpapi", "parallel", "keyless")
 
 # YouTube backend order (pipeline: yt-dlp first, ScrapeCreators search
 # fallback when yt-dlp is absent or fails — see lib/pipeline.py).
@@ -357,10 +357,11 @@ _WEB_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "brave": _key_probe("brave", "BRAVE_API_KEY", "BRAVE_API_KEY"),
     "exa": _key_probe("exa", "EXA_API_KEY", "EXA_API_KEY"),
     "serper": _key_probe("serper", "SERPER_API_KEY", "SERPER_API_KEY"),
+    "serpapi": _key_probe("serpapi", "SERPAPI_API_KEY", "SERPAPI_API_KEY"),
     "parallel": _key_probe("parallel", "PARALLEL_API_KEY", "PARALLEL_API_KEY"),
     "keyless": _probe_web_keyless,
 }
-_WEB_KEYED = {"brave", "exa", "serper", "parallel"}
+_WEB_KEYED = {"brave", "exa", "serper", "serpapi", "parallel"}
 
 _SC_SPEC = BackendSpec(
     name="scrapecreators",
@@ -412,8 +413,10 @@ DESCRIPTORS: Dict[str, ChainDescriptor] = {
         backends=tuple(
             BackendSpec(
                 name=name,
-                requires=(f"{name.upper()}_API_KEY" if name in _WEB_KEYED
-                          else "no key; suppressed on native-search hosts"),
+                requires=(
+                    f"{name.upper()}_API_KEY" if name in _WEB_KEYED
+                    else "no key; suppressed on native-search hosts"
+                ),
                 probe=_WEB_PROBES[name],
                 paid=name in _WEB_KEYED,
             )

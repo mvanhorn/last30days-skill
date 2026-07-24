@@ -212,7 +212,7 @@ PROMO_SINGLE_KEY = {
          "Chrome, Brave, Edge, Arc, Vivaldi, Opera, or Chromium on macOS require "
          "FROM_BROWSER=auto in .env (Keychain dialog). On Windows only Firefox is supported. "
          "Or add AUTH_TOKEN/CT0 or XAI_API_KEY.\n",
-    "web": "\n💡 You can unlock native grounded web search with BRAVE_API_KEY or SERPER_API_KEY.\n",
+    "web": "\n💡 You can unlock native grounded web search with BRAVE_API_KEY, SERPER_API_KEY, or SERPAPI_API_KEY.\n",
 }
 
 # Bird auth help (for local users with vendored Bird CLI)
@@ -561,7 +561,7 @@ def show_diagnostic_banner(diag: dict):
             backend = native_web_backend or "native"
             lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Web{Colors.RESET}       — {backend} API                       {Colors.DIM}│{Colors.RESET}")
         else:
-            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.YELLOW}⚡ Web{Colors.RESET}       — Add BRAVE_API_KEY or SERPER_API_KEY {Colors.DIM}│{Colors.RESET}")
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.YELLOW}⚡ Web{Colors.RESET}       — Add a web search API key            {Colors.DIM}│{Colors.RESET}")
 
         lines.append(f"{Colors.DIM}│{Colors.RESET}                                                     {Colors.DIM}│{Colors.RESET}")
         lines.append(f"{Colors.DIM}│{Colors.RESET}  Config: {Colors.BOLD}~/.config/last30days/.env{Colors.RESET}                  {Colors.DIM}│{Colors.RESET}")
@@ -602,7 +602,7 @@ def show_diagnostic_banner(diag: dict):
             backend = native_web_backend or "native"
             lines.append(f"│  ✅ Web       — {backend} API available{' ' * max(0, 13 - len(backend))}│")
         else:
-            lines.append("│  ⚡ Web       — Add BRAVE_API_KEY or SERPER_API_KEY │")
+            lines.append("│  ⚡ Web       — Add a web search API key            │")
 
         lines.append("│                                                     │")
         lines.append("│  Config: ~/.config/last30days/.env                  │")

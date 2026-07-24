@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- SerpApi can now serve as a paid web-search backend with `SERPAPI_API_KEY`; `--web-backend=serpapi` pins it, and auto-detect tries it between Serper and Parallel.
+
 ## [3.18.0] - 2026-07-21
 
 ### Changed

@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from lib import grounding
@@ -69,6 +70,67 @@ class SerperSearchTests(unittest.TestCase):
             self.assertEqual("Serper Result", items[0]["title"])
             self.assertEqual("2026-03-15", items[0]["date"])
             self.assertEqual("serper", artifact["label"])
+
+class SerpApiSearchTests(unittest.TestCase):
+    def test_serpapi_search_filters_dated_items_and_keeps_tbs_scoped_undated_items(self):
+        mock_response = {
+            "organic_results": [
+                {
+                    "title": "SerpApi Result",
+                    "link": "https://example.com/serpapi",
+                    "snippet": "A SerpApi snippet",
+                    "date": "Mar 15, 2026",
+                },
+                {
+                    "title": "Old Result",
+                    "link": "https://example.com/old",
+                    "snippet": "Should be filtered",
+                    "date": "Jan 15, 2026",
+                },
+                {
+                    "title": "Undated Result",
+                    "link": "https://example.com/undated",
+                    "snippet": "SerpApi often omits dates on Google results.",
+                },
+            ]
+        }
+        with patch("lib.grounding.http.request", return_value=mock_response) as mock_req:
+            items, artifact = grounding.serpapi_search("test", ("2026-02-25", "2026-03-27"), "fake-key")
+            self.assertEqual(2, len(items))
+            self.assertEqual("SerpApi Result", items[0]["title"])
+            self.assertEqual("https://example.com/serpapi", items[0]["url"])
+            self.assertEqual("2026-03-15", items[0]["date"])
+            self.assertEqual("Undated Result", items[1]["title"])
+            self.assertIsNone(items[1]["date"])
+            self.assertTrue(items[0]["id"].startswith("WG"))
+            self.assertEqual("serpapi", artifact["label"])
+            self.assertEqual(2, artifact["resultCount"])
+            self.assertEqual("GET", mock_req.call_args.args[0])
+            self.assertEqual("https://serpapi.com/search.json", mock_req.call_args.args[1])
+            params = mock_req.call_args.kwargs["params"]
+            self.assertEqual("google", params["engine"])
+            self.assertEqual("test", params["q"])
+            self.assertEqual("fake-key", params["api_key"])
+            self.assertEqual(5, params["num"])
+            self.assertEqual("cdr:1,cd_min:02/25/2026,cd_max:03/27/2026", params["tbs"])
+
+    def test_serpapi_search_parses_relative_result_dates(self):
+        today = datetime.now(timezone.utc).date()
+        date_range = ((today - timedelta(days=5)).isoformat(), today.isoformat())
+        mock_response = {
+            "organic_results": [
+                {
+                    "title": "Recent SerpApi Result",
+                    "link": "https://example.com/recent",
+                    "snippet": "A recent snippet",
+                    "date": "2 days ago",
+                }
+            ]
+        }
+        with patch("lib.grounding.http.request", return_value=mock_response):
+            items, _artifact = grounding.serpapi_search("test", date_range, "fake-key")
+            self.assertEqual(1, len(items))
+            self.assertEqual((today - timedelta(days=2)).isoformat(), items[0]["date"])
 
 
 class ExaSearchTests(unittest.TestCase):
@@ -185,6 +247,12 @@ class WebSearchDispatchTests(unittest.TestCase):
             grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
             mock.assert_called_once()
 
+    def test_auto_selects_serpapi_when_only_serpapi_api_key(self):
+        config = {"SERPAPI_API_KEY": "test-key"}
+        with patch("lib.grounding.serpapi_search", return_value=([], {})) as mock:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+            mock.assert_called_once()
+
     def test_auto_selects_parallel_when_only_parallel_key(self):
         config = {"PARALLEL_API_KEY": "test-key"}
         with patch("lib.grounding.parallel_search", return_value=([], {})) as mock:
@@ -241,6 +309,14 @@ class WebSearchDispatchTests(unittest.TestCase):
             mock_serper.assert_called_once()
             mock_parallel.assert_not_called()
 
+    def test_auto_prefers_serpapi_over_parallel(self):
+        config = {"SERPAPI_API_KEY": "serpapi-key", "PARALLEL_API_KEY": "parallel-key"}
+        with patch("lib.grounding.serpapi_search", return_value=([], {})) as mock_serpapi, \
+             patch("lib.grounding.parallel_search", return_value=([], {})) as mock_parallel:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+            mock_serpapi.assert_called_once()
+            mock_parallel.assert_not_called()
+
     def test_auto_prefers_brave_when_all_keys_present(self):
         config = {"BRAVE_API_KEY": "brave-key", "EXA_API_KEY": "exa-key", "SERPER_API_KEY": "serper-key"}
         with patch("lib.grounding.brave_search", return_value=([], {})) as mock_brave, \
@@ -262,6 +338,10 @@ class WebSearchDispatchTests(unittest.TestCase):
     def test_explicit_parallel_without_key_raises(self):
         with self.assertRaises(RuntimeError):
             grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="parallel")
+
+    def test_explicit_serpapi_without_key_raises(self):
+        with self.assertRaises(RuntimeError):
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="serpapi")
 
     def test_unsupported_backend_raises(self):
         with self.assertRaises(ValueError):
