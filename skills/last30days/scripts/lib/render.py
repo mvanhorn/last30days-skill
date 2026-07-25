@@ -2553,12 +2553,21 @@ def _render_emoji_footer(report: schema.Report, save_path: str | None) -> list[s
     """
     source_lines = _build_source_footer_lines(report)
     voices_line = _top_voices_footer_line(report)
+    # The freshness verdict is computed for the report body, but a reader who
+    # only scans this footer never sees it — and it is the one line that says
+    # how much of the evidence is actually recent.
+    freshness_warning = _assess_data_freshness(report)
+    freshness_line = f"🕒 {freshness_warning}" if freshness_warning else None
     raw_line = f"📎 Raw results saved to {save_path}" if save_path else None
 
     body: list[str] = []
     body.extend(source_lines)
     if voices_line:
         body.append(voices_line)
+    # Only annotate a footer that has something to annotate: an otherwise
+    # empty run stays silent here rather than announcing its own emptiness.
+    if freshness_line and body:
+        body.append(freshness_line)
     if raw_line:
         body.append(raw_line)
 

@@ -11,7 +11,18 @@ RRF_K = 60
 
 
 def _candidate_sort_key(c: schema.Candidate) -> tuple:
-    return (-c.rrf_score, -c.local_relevance, -c.freshness, schema.candidate_source_label(c), c.title)
+    # Out-of-window evidence sorts strictly below anything in the window. A
+    # "last 30 days" brief that ranks a nine-month-old video at #1 breaks its
+    # own contract, however relevant that video is; it still appears, just
+    # never above in-window evidence.
+    return (
+        1 if schema.candidate_out_of_window(c) else 0,
+        -c.rrf_score,
+        -c.local_relevance,
+        -c.freshness,
+        schema.candidate_source_label(c),
+        c.title,
+    )
 
 
 def _normalize_url(url: str) -> str:
