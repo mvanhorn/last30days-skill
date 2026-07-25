@@ -756,6 +756,15 @@ def prune_fallback_entity_misses(
 #: the dilute penalty. This backstop makes the demotion actually decisive.
 ENTITY_MISS_FINAL_PENALTY = 20.0
 
+#: Multiplier applied to a candidate whose every dated item falls outside the
+#: run's window. The tool's whole promise is the window, so a stale item must
+#: not lead the ranked clusters however relevant it reads — a 2025-10 video
+#: ranked #1 in a 2026-07 brief, and a 2025-12 one ranked #5, both correctly
+#: flagged [date:low] and both ranked anyway. Scaling rather than subtracting
+#: keeps the ordering *among* older items intact, so the "still worth reading"
+#: signal survives underneath the in-window evidence.
+OUT_OF_WINDOW_FINAL_MULTIPLIER = 0.35
+
 
 def _final_score(candidate: schema.Candidate) -> float:
     normalized_rrf = _normalized_rrf(candidate.rrf_score)
@@ -780,6 +789,9 @@ def _final_score(candidate: schema.Candidate) -> float:
     # at final_score level so engagement signal can't mask the demotion.
     if candidate.explanation and "entity-miss" in candidate.explanation:
         base = max(0.0, base - ENTITY_MISS_FINAL_PENALTY)
+    # Recency contract: out-of-window evidence never leads the ranked output.
+    if schema.candidate_out_of_window(candidate):
+        base *= OUT_OF_WINDOW_FINAL_MULTIPLIER
     return base
 
 

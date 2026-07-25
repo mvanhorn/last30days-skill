@@ -576,6 +576,20 @@ def candidate_source_label(candidate: Candidate) -> str:
     return ", ".join(sources) if sources else "unknown"
 
 
+def candidate_out_of_window(candidate: Candidate) -> bool:
+    """True when every dated item behind this candidate falls outside the window.
+
+    ``date_confidence`` is computed against the run's date range in
+    ``normalize``: an item carrying a date scores ``high`` only when that date
+    is inside the range. Candidates with no dated item at all are not treated
+    as out of window — an unknown date is a coverage gap, not a stale item.
+    """
+    dated = [item for item in candidate.source_items if item.published_at]
+    if not dated:
+        return False
+    return all(item.date_confidence != "high" for item in dated)
+
+
 def candidate_best_published_at(candidate: Candidate) -> str | None:
     return max(
         (item.published_at for item in candidate.source_items if item.published_at),
