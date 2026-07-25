@@ -884,6 +884,24 @@ class TestScTranscriptFallback(unittest.TestCase):
         direct_mock.assert_not_called()  # hard error skips the (also-blocked) direct path
         self.assertEqual(result, "scrapecreators transcript text")
 
+    def test_sc_rescue_logged_and_flagged_in_status(self):
+        """A yt-dlp hard failure rescued by ScrapeCreators must be logged and
+        flagged via status['sc_rescued'] — not just returned silently — so
+        fetch_transcripts_parallel() can report the rescue instead of letting
+        the batch summary read as a clean success (#831)."""
+        status = {}
+        logs = []
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp",
+                               side_effect=self._ytdlp_hard_fail()), \
+             mock.patch.object(youtube_yt, "_sc_fetch_transcript",
+                               return_value="rescued transcript text"), \
+             mock.patch.object(youtube_yt, "_log", side_effect=lambda m: logs.append(m)):
+            result = youtube_yt.fetch_transcript("vidR", "/tmp/x", status=status, token="key123")
+        self.assertEqual(result, "rescued transcript text")
+        self.assertTrue(status.get("sc_rescued"))
+        self.assertTrue(any("ScrapeCreators" in m and "vidR" in m for m in logs))
+
     def test_sc_not_called_when_ytdlp_succeeds(self):
         """No credit is spent when yt-dlp returns a transcript."""
         with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
@@ -941,6 +959,46 @@ class TestScTranscriptFallback(unittest.TestCase):
         with mock.patch.object(youtube_yt, "fetch_transcript", side_effect=_fake_fetch_transcript):
             youtube_yt.fetch_transcripts_parallel(["v1", "v2"], token="tok")
         self.assertEqual(captured, {"v1": "tok", "v2": "tok"})
+
+    def test_summary_reports_sc_rescue_not_bare_success(self):
+        """Regression for #831: when every video's yt-dlp fetch fails and the
+        ScrapeCreators fallback rescues all of them, the batch summary must
+        not read as a bare "0 failed" success — it has to say the videos
+        were rescued via the fallback, so a fully rate-limited yt-dlp run
+        doesn't look like nothing went wrong."""
+        logs = []
+
+        def _rescued_fetch_transcript(video_id, temp_dir, status=None, token=None):
+            if status is not None:
+                status["sc_rescued"] = True
+            return "rescued transcript"
+
+        with mock.patch.object(youtube_yt, "fetch_transcript",
+                                side_effect=_rescued_fetch_transcript), \
+             mock.patch.object(youtube_yt, "_log", side_effect=lambda m: logs.append(m)):
+            results = youtube_yt.fetch_transcripts_parallel(["v1", "v2"], token="tok")
+
+        self.assertEqual(results, {"v1": "rescued transcript", "v2": "rescued transcript"})
+        summary = next(m for m in logs if m.startswith("Got transcripts for"))
+        self.assertIn("2/2", summary)
+        self.assertIn("0 failed", summary)
+        self.assertIn("2 rescued via ScrapeCreators fallback", summary)
+
+    def test_summary_omits_rescue_note_when_no_fallback_used(self):
+        """The plain 'N/N (M failed)' format must be unchanged when no video
+        needed the ScrapeCreators fallback — no rescue tag should appear."""
+        logs = []
+
+        def _plain_fetch_transcript(video_id, temp_dir, status=None, token=None):
+            return "a normal transcript"
+
+        with mock.patch.object(youtube_yt, "fetch_transcript",
+                                side_effect=_plain_fetch_transcript), \
+             mock.patch.object(youtube_yt, "_log", side_effect=lambda m: logs.append(m)):
+            youtube_yt.fetch_transcripts_parallel(["v1", "v2", "v3"], token="tok")
+
+        summary = next(m for m in logs if m.startswith("Got transcripts for"))
+        self.assertEqual(summary, "Got transcripts for 3/3 videos (0 failed)")
 
 
 class TestYtdlpFastFail(unittest.TestCase):
