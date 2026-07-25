@@ -289,5 +289,66 @@ class TestComputeRelevance(unittest.TestCase):
         low = github._compute_relevance("react", "React", 20, 0, 0)
         self.assertGreater(high, low)
 
+class TestPersonReposLane(unittest.TestCase):
+    """Person mode must not go dark when PR search returns nothing."""
+
+    _REPOS = [
+        {
+            "full_name": "kurt/power-bi-agentic-development",
+            "pushed_at": "2026-07-22T20:28:18Z",
+            "stargazers_count": 811,
+            "forks_count": 119,
+            "description": "Claude Code plugin marketplace for Power BI",
+            "language": "Python",
+            "open_issues_count": 4,
+            "topics": ["tmdl", "pbip", "dax"],
+            "fork": False,
+        },
+        {
+            "full_name": "kurt/ancient",
+            "pushed_at": "2024-01-02T00:00:00Z",
+            "stargazers_count": 900,
+            "forks_count": 1,
+            "description": "Out of window",
+            "language": "R",
+            "open_issues_count": 0,
+            "topics": [],
+            "fork": False,
+        },
+    ]
+
+    def _run(self):
+        with patch.object(github, "_resolve_token", return_value="t"), \
+                patch.object(github, "_enrich_own_repo", return_value={}):
+            return github.search_github_person(
+                "kurt", "2026-06-25", "2026-07-25", token="t",
+            )
+
+    def test_unsearchable_account_falls_back_to_repos(self):
+        # GitHub answers `author:<login>` with 422 for accounts absent from the
+        # search index; _fetch_json reports that as None.
+        def fetch(url, **kwargs):
+            return None if "search/issues" in url else self._REPOS
+
+        with patch.object(github, "_fetch_json", side_effect=fetch):
+            items = self._run()
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["container"], "kurt/power-bi-agentic-development")
+        self.assertEqual(items[0]["date"], "2026-07-22")
+        self.assertIn("recent-push", items[0]["metadata"]["labels"])
+
+    def test_out_of_window_pushes_are_dropped(self):
+        def fetch(url, **kwargs):
+            if "search/issues" in url:
+                return {"total_count": 0, "items": []}
+            return [self._REPOS[1]]
+
+        with patch.object(github, "_fetch_json", side_effect=fetch):
+            items = self._run()
+
+        self.assertEqual(items, [])
+
+
 if __name__ == "__main__":
     unittest.main()

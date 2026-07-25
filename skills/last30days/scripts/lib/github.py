@@ -623,6 +623,22 @@ def search_github_person(
     _log(f"Found {total_prs} total PRs, {merged_count} merged")
 
     if total_prs == 0 and merged_count == 0:
+        # An empty PR search has two very different causes: the person shipped
+        # no PRs in the window, or the account cannot be searched at all
+        # (GitHub answers `author:<login>` with 422 for accounts missing from
+        # the search index, which _fetch_json reports as None). Both cases hid
+        # real activity, because the caller then backfilled the topic from
+        # generic keyword search. Someone who pushes straight to their own
+        # repos still has evidence worth returning, so try the repos lane
+        # before giving up on person mode.
+        search_unavailable = total_data is None or merged_data is None
+        recent = _person_recent_repos(
+            username, from_date, to_date, limits, resolved_token,
+        )
+        if recent:
+            reason = "account not searchable" if search_unavailable else "no PRs in window"
+            _log(f"PR search empty ({reason}); repos lane returned {len(recent)} items")
+            return recent
         _log("No PRs found, falling back to keyword search")
         return []
 
@@ -819,6 +835,122 @@ def search_github_person(
     # Sort by relevance
     items.sort(key=lambda x: x.get("relevance", 0), reverse=True)
     _log(f"Person-mode returned {len(items)} items")
+    return items
+
+
+def _person_recent_repos(
+    username: str,
+    from_date: str,
+    to_date: str,
+    limits: Dict[str, int],
+    token: str,
+) -> List[Dict[str, Any]]:
+    """Repos lane for person mode: own repos pushed inside the window.
+
+    Used when the PR search returns nothing. Reads
+    ``/users/{username}/repos?sort=pushed`` and keeps the repos whose
+    ``pushed_at`` falls in [from_date, to_date], newest push first.
+    """
+    url = (
+        f"https://api.github.com/users/{username}/repos"
+        f"?sort=pushed&direction=desc&per_page=100"
+    )
+    data = _fetch_json(url, token=token, timeout=15)
+    if not data or not isinstance(data, list):
+        return []
+
+    in_window: List[Dict[str, Any]] = []
+    for repo in data:
+        full_name = repo.get("full_name", "")
+        pushed = _parse_date(repo.get("pushed_at"))
+        if not full_name or not pushed:
+            continue
+        if pushed < from_date or pushed > to_date:
+            continue
+        in_window.append({
+            "full_name": full_name,
+            "pushed": pushed,
+            "stars": repo.get("stargazers_count", 0),
+            "forks": repo.get("forks_count", 0),
+            "description": (repo.get("description") or "")[:200],
+            "language": repo.get("language") or "",
+            "open_issues": repo.get("open_issues_count", 0),
+            "topics": repo.get("topics") or [],
+            "fork": bool(repo.get("fork")),
+        })
+
+    if not in_window:
+        return []
+
+    # Rank by stars so the person's most consequential recent work leads, then
+    # cap at the depth's own-repo budget to keep enrichment cost unchanged.
+    in_window.sort(key=lambda r: (r["stars"], r["pushed"]), reverse=True)
+    selected = in_window[:limits["own_repos"]]
+    _log(f"Repos lane: {len(in_window)} repos pushed in window, enriching {len(selected)}")
+
+    enrichments: Dict[str, Dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        futures = {
+            executor.submit(_enrich_own_repo, r["full_name"], token): r["full_name"]
+            for r in selected
+        }
+        for future in as_completed(futures):
+            name = futures[future]
+            try:
+                enrichments[name] = future.result(timeout=25)
+            except Exception as exc:
+                _log(f"Repos-lane enrichment failed for {name}: {exc}")
+                enrichments[name] = {}
+
+    items: List[Dict[str, Any]] = []
+    for idx, repo in enumerate(selected, start=1):
+        name = repo["full_name"]
+        stars = repo["stars"]
+        stars_str = _format_stars(stars)
+        enrichment = enrichments.get(name, {})
+        readme = enrichment.get("readme")
+        releases = enrichment.get("releases", [])
+
+        snippet_parts = [
+            f"{'Fork' if repo['fork'] else 'Own project'}: {name} "
+            f"({stars_str} stars, {repo['open_issues']} open issues), "
+            f"last pushed {repo['pushed']}"
+        ]
+        if repo["description"]:
+            snippet_parts.append(f"  {repo['description']}")
+        if repo["topics"]:
+            snippet_parts.append(f"  topics: {', '.join(repo['topics'][:10])}")
+        if readme:
+            snippet_parts.append(f"  README: {readme[:300]}")
+        for rel in releases[:2]:
+            body_preview = f" - {rel['body'][:150]}" if rel.get("body") else ""
+            snippet_parts.append(f"  Release: {rel['name']} ({rel['date']}){body_preview}")
+
+        items.append({
+            "id": f"GH{idx}",
+            "title": f"{name} ({stars_str} stars) - pushed {repo['pushed']}",
+            "url": f"https://github.com/{name}",
+            "date": repo["pushed"],
+            "author": username,
+            "source": "github",
+            "score": stars,
+            "container": name,
+            "snippet": "\n".join(snippet_parts),
+            "relevance": min(0.9, 0.6 + math.log1p(stars) / 30),
+            "why_relevant": (
+                f"GitHub activity: @{username} pushed {name} on {repo['pushed']} "
+                f"({stars_str} stars)"
+            ),
+            "engagement": {"stars": stars, "comments": repo["open_issues"]},
+            "metadata": {
+                "labels": ["person-profile", "recent-push"],
+                "state": "open",
+                "comment_count": repo["open_issues"],
+                "reactions": stars,
+                "is_pr": False,
+            },
+        })
+
     return items
 
 
