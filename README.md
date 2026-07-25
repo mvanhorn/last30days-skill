@@ -1,5 +1,7 @@
 # /last30days
 
+English | [简体中文](README.zh-CN.md)
+
 <p align="center">
   <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days - an AI agent-led search engine that searches people, not editors" />
 </p>
