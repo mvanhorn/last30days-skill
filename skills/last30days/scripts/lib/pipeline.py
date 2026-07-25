@@ -2913,6 +2913,7 @@ def _normalize_score_dedupe(
     ranking_query: str,
     first_party_handles: Iterable[str] | None = None,
     defer_relevance_prune: bool = False,
+    pinned: bool = False,
 ) -> list[schema.SourceItem]:
     """Normalize, annotate, prune, dedupe, and extract snippets for a batch of raw items.
 
@@ -2924,6 +2925,10 @@ def _normalize_score_dedupe(
 
     ``first_party_handles`` names accounts this run is explicitly searching, so
     their own posts survive the relevance floor (see signals.prune_low_relevance).
+
+    ``pinned`` marks batches the user explicitly asked for (a named handle,
+    hashtag, or creator). Those keep the all-weak rescue in pruning: their
+    posts are wanted whether or not they match the topic lexically.
     """
     normalized = normalize.normalize_source_items(
         source, raw_items, from_date, to_date,
@@ -2957,7 +2962,9 @@ def _normalize_score_dedupe(
             # ("Peter Steinberger" -> @steipete).
             floor_handles |= _batch_subject_handles(raw_items)
         normalized = signals.prune_low_relevance(
-            normalized, first_party_handles=floor_handles
+            normalized,
+            first_party_handles=floor_handles,
+            rescue_ungated_social=pinned,
         )
     normalized = dedupe.dedupe_items(normalized)
     for item in normalized:
@@ -3828,6 +3835,7 @@ def _run_supplemental_searches(
                 freshness_mode=plan.freshness_mode,
                 ranking_query=ranking_query,
                 first_party_handles=first_party_for_normalize,
+                pinned=True,
             )
             # Deduplicate against Phase 1 URLs
             normalized = [item for item in normalized if item.url not in existing_urls]
@@ -3867,6 +3875,7 @@ def _run_supplemental_searches(
                 freshness_mode=plan.freshness_mode,
                 ranking_query=ranking_query,
                 first_party_handles=related_handles,
+                pinned=True,
             )
             # Deduplicate against all existing URLs (Phase 1 + primary handles)
             normalized = [item for item in normalized if item.url not in existing_urls]
