@@ -832,6 +832,17 @@ def fetch_transcript(
     if token and _should_try_sc_transcript(status):
         sc_transcript = _sc_fetch_transcript(video_id, token)
         if sc_transcript:
+            # The keyless cascade (yt-dlp / direct HTTP) already logged its
+            # failure above. Without this line that failure is the last thing
+            # printed for this video, and the batch summary in
+            # fetch_transcripts_parallel() counts it as a plain success —
+            # making a rate-limited/bot-gated run look like nothing went
+            # wrong. Log the rescue and flag it in `status` so the summary
+            # can report it explicitly instead of masking it (#831).
+            _log(f"ScrapeCreators transcript fallback rescued {video_id} "
+                 f"after the keyless fetch cascade failed")
+            if status is not None:
+                status["sc_rescued"] = True
             return sc_transcript
 
     _log(f"No transcript available for {video_id}")
@@ -892,7 +903,20 @@ def fetch_transcripts_parallel(
 
     got = sum(1 for v in results.values() if v)
     errors = sum(1 for v in results.values() if v is None)
-    _log(f"Got transcripts for {got}/{len(video_ids)} videos ({errors} failed)")
+    # `got` includes videos that only succeeded because the ScrapeCreators
+    # fallback rescued a failed keyless fetch — yt-dlp when available, or the
+    # direct HTTP path alone (see fetch_transcript()). Folding
+    # those into a bare "M failed" count previously made a fully rate-limited
+    # yt-dlp run — every fetch failing, silently saved by the fallback — read
+    # as "0 failed", with no trace of the fallback ever having fired (#831).
+    # Surface the split so the summary can't misrepresent a masked failure
+    # as a clean success.
+    sc_rescued = sum(1 for st in statuses.values() if st.get("sc_rescued"))
+    if sc_rescued:
+        _log(f"Got transcripts for {got}/{len(video_ids)} videos "
+             f"({errors} failed, {sc_rescued} rescued via ScrapeCreators fallback)")
+    else:
+        _log(f"Got transcripts for {got}/{len(video_ids)} videos ({errors} failed)")
     return results
 
 
