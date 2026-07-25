@@ -72,7 +72,11 @@ class TestVersionConsistency(unittest.TestCase):
                     continue
                 allowed_default = (
                     "LAST30DAYS_MEMORY_DIR" in line
-                    and ("defaults to" in line or "${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}" in line)
+                    and (
+                        "defaults to" in line
+                        or "默认" in line
+                        or "${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}" in line
+                    )
                 )
                 if not allowed_default:
                     offenders.append(f"{path.relative_to(ROOT)}:{line_number}: {line.strip()}")
