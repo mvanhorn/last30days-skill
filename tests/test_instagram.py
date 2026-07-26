@@ -86,6 +86,29 @@ class TestInstagramNestedMediaParsing(unittest.TestCase):
         self.assertIn("AbCdEfGhIj1", item["url"])
         self.assertEqual(["demo"], item["hashtags"])
 
+    def test_top_level_wins_over_nested_media(self):
+        """If a field is present at both the top level and inside "media"
+        with different values, the top-level value must win (merge, not
+        wholesale replacement by the nested object)."""
+        raw = {
+            "id": "top-id",
+            "taken_at": "2026-01-01T00:00:00.000Z",
+            "caption": "top-level caption",
+            "media": {
+                "id": "nested-id",
+                "taken_at": 1700000000,  # would resolve to a different date
+                "caption": {"text": "nested caption"},
+                "like_count": 999,
+            },
+        }
+        items = _parse_items([raw], "test")
+        item = items[0]
+        self.assertEqual("top-id", item["video_id"])
+        self.assertEqual("2026-01-01", item["date"])
+        self.assertEqual("top-level caption", item["text"])
+        # like_count only exists in "media" -> fallback still fills it in
+        self.assertEqual(999, item["engagement"]["likes"])
+
     def test_flat_shape_still_parses(self):
         """/v2/instagram/reels/search returns fields flat (no "media" wrapper);
         must keep working after the nested-media fallback."""

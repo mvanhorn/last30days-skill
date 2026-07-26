@@ -182,11 +182,17 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         # taken_at, caption, owner, engagement counts, etc. -- inside a
         # nested "media" object (top-level item is just {"media": {...}}).
         # /v2/instagram/reels/search returns those same fields flat on the
-        # item itself. Prefer top-level values when present (flat shape)
-        # and fall back to the nested "media" object otherwise, so both
-        # endpoint shapes parse through the same field lookups below.
+        # item itself. Merge so top-level keys win (flat shape, or any
+        # future endpoint that duplicates a field at both levels) and
+        # nested "media" keys fill in anything missing at the top level,
+        # so both endpoint shapes parse through the same field lookups
+        # below. Exclude "media" itself from the top-level overlay so it
+        # doesn't reappear as a stray key inside the merged dict.
         media_obj = raw.get("media")
-        src = media_obj if isinstance(media_obj, dict) else raw
+        if isinstance(media_obj, dict):
+            src = {**media_obj, **{k: v for k, v in raw.items() if k != "media"}}
+        else:
+            src = raw
 
         # Extract reel ID and shortcode
         reel_pk = str(src.get("id", src.get("pk", "")))
