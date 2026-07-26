@@ -202,8 +202,12 @@ def test_default_register_is_byte_identical_when_omitted(monkeypatch):
     explicit = render.render_compact(report, register="default")
 
     assert implicit == explicit
+    # Hash updated: Instagram's footer item word changed from "reel" to
+    # "post" since --ig-creators now surfaces photo/carousel posts
+    # alongside reels under the same aggregate count (see render.py
+    # _FOOTER_SOURCES).
     assert hashlib.sha256(implicit.encode()).hexdigest() == (
-        "8ca92207d49f09bc08ac4aba60c573cc832a23b1c78ad7cf90a5ca24bfbafe50"
+        "109334bb05f2878881f8c0ed8d1a5cc80749646442c87587d574aa466c76a4af"
     )
 
 

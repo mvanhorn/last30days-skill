@@ -301,6 +301,32 @@ class TestInstagramReelsPostsMergeDedup(unittest.TestCase):
         self.assertEqual(1, len(result["items"]))
         self.assertEqual("reel-only", result["items"][0]["video_id"])
 
+    def test_malformed_posts_response_does_not_crash_search_and_enrich(self):
+        """Skeptic regression: /v2/instagram/user/posts returning a bare list
+        (or any non-dict) must not raise AttributeError out of _user_posts()
+        and take down the whole search_and_enrich() call -- the same
+        creator's reels, and every other creator's results, must survive."""
+
+        def fake_http_get(url, **kwargs):
+            if "user/posts" in url:
+                # Malformed/unexpected shape: a bare list instead of a dict.
+                return ["not", "a", "dict"]
+            if "user/reels" in url:
+                handle = kwargs.get("params", {}).get("handle")
+                return {"items": [self._reel_item(f"reel-{handle}")]}
+            return {"items": []}
+
+        with patch.object(instagram_module.http, "get", side_effect=fake_http_get), \
+             patch.object(instagram_module, "search_instagram", return_value={"items": []}), \
+             patch.object(instagram_module, "fetch_captions", return_value={}):
+            result = search_and_enrich(
+                "test topic", "2026-01-01", "2026-12-31",
+                token="fake-token", ig_creators=["broken_creator", "healthy_creator"],
+            )
+
+        ids = {i["video_id"] for i in result["items"]}
+        self.assertEqual({"reel-broken_creator", "reel-healthy_creator"}, ids)
+
 
 class TestInstagramComments(unittest.TestCase):
     """U1: Instagram comment fetching via ScrapeCreators."""

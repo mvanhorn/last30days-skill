@@ -181,5 +181,54 @@ def test_footer_keeps_partial_populated_source_with_warning():
 
     text = render.render_compact(report)
 
-    assert "📸 Instagram: 1 reel" in text
+    # Item word is "post" (not "reel") since --ig-creators surfaces
+    # photo/carousel posts alongside reels under one aggregate count.
+    assert "📸 Instagram: 1 post" in text
     assert "⚠" in text  # partial suffix preserved on the populated line
+
+
+def _ig_item(post_type, *, image_count=None, engagement=None):
+    return schema.SourceItem(
+        item_id=f"ig-{post_type}",
+        source="instagram",
+        title=f"An {post_type}",
+        body="caption",
+        url=f"https://instagram.com/{post_type}/1",
+        engagement=engagement or {"views": 1000, "likes": 50, "comments": 5},
+        metadata={"post_type": post_type, "image_count": image_count},
+    )
+
+
+def test_instagram_evidence_label_carousel_with_image_count():
+    """Skeptic regression: carousel/photo posts must not be mislabeled
+    "reel", and must show a per-post image count when known."""
+    item = _ig_item("carousel", image_count=4)
+    assert render._instagram_post_type_label(item) == "carousel (4 張)"
+
+
+def test_instagram_evidence_label_photo_and_reel():
+    assert render._instagram_post_type_label(_ig_item("photo")) == "photo"
+    assert render._instagram_post_type_label(_ig_item("reel")) == "reel"
+
+
+def test_instagram_evidence_label_none_for_legacy_keyword_search_items():
+    # Items from the keyword-search path (no post_type set) get no label,
+    # same as before this change.
+    legacy = schema.SourceItem(
+        item_id="ig-legacy", source="instagram", title="t", body="b",
+        url="https://instagram.com/reel/legacy",
+    )
+    assert render._instagram_post_type_label(legacy) is None
+
+
+def test_instagram_carousel_and_photo_suppress_views_but_keep_likes():
+    """Non-video Instagram items must not show the video-only "views"
+    metric; likes/comments still display."""
+    carousel_text = render._format_engagement(_ig_item("carousel"))
+    photo_text = render._format_engagement(_ig_item("photo"))
+    reel_text = render._format_engagement(_ig_item("reel"))
+
+    assert carousel_text is not None and "views" not in carousel_text
+    assert "50likes" in carousel_text and "5cmt" in carousel_text
+    assert photo_text is not None and "views" not in photo_text
+    assert reel_text is not None and "views" in reel_text

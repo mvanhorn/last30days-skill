@@ -431,6 +431,14 @@ def _normalize_shortform_video(
                 score_keys=("score", "comment_like_count", "digg_count", "likes"),
                 excerpt_keys=("excerpt", "text"),
             ),
+            # Instagram-only (via --ig-creators' /v2/instagram/user/posts path):
+            # "reel" | "photo" | "carousel", plus carousel image_count. render.py
+            # uses these to label evidence lines and to suppress the video-only
+            # "views" metric for photo/carousel posts. None for TikTok and for
+            # Instagram items from the keyword-search path (reels only, no
+            # post_type set by lib/instagram.py there).
+            "post_type": item.get("post_type"),
+            "image_count": item.get("image_count"),
         },
     )
 

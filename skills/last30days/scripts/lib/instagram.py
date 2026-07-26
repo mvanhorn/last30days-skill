@@ -229,6 +229,10 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         # response, distinguished by media_type (2=video/reel, 8=carousel,
         # else photo) and/or product_type ("clips"/"carousel_container").
         media_type = src.get("media_type")
+        try:
+            media_type = int(media_type) if media_type is not None else None
+        except (TypeError, ValueError):
+            pass  # keep original value; falls through to product_type/duration checks below
         product_type = src.get("product_type") or ""
         if media_type == 8 or product_type == "carousel_container":
             post_type = "carousel"
@@ -302,11 +306,14 @@ def _user_reels(
             timeout=30,
             retries=2,
         )
+        if not isinstance(data, dict):
+            _log(f"User reels error for @{handle}: unexpected response type {type(data).__name__}")
+            return []
+        raw_items = data.get("items") or data.get("reels") or data.get("data") or []
     except Exception as e:
         _log(f"User reels error for @{handle}: {e}")
         return []
 
-    raw_items = data.get("items") or data.get("reels") or data.get("data") or []
     _log(f"  -> {len(raw_items)} reels from @{handle}")
     return raw_items
 
@@ -345,11 +352,14 @@ def _user_posts(
             timeout=30,
             retries=2,
         )
+        if not isinstance(data, dict):
+            _log(f"User posts error for @{handle}: unexpected response type {type(data).__name__}")
+            return []
+        raw_items = data.get("items") or data.get("posts") or data.get("data") or []
     except Exception as e:
         _log(f"User posts error for @{handle}: {e}")
         return []
 
-    raw_items = data.get("items") or data.get("posts") or data.get("data") or []
     _log(f"  -> {len(raw_items)} posts from @{handle}")
     return raw_items
 
