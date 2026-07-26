@@ -1,6 +1,8 @@
 import unittest
+from unittest.mock import patch
 
-from lib.instagram import _parse_items
+from lib import instagram as instagram_module
+from lib.instagram import _parse_items, search_and_enrich
 
 
 class TestInstagramOwnerTypeSafety(unittest.TestCase):
@@ -124,6 +126,180 @@ class TestInstagramNestedMediaParsing(unittest.TestCase):
         self.assertEqual("2026-02-26", items[0]["date"])
         self.assertEqual("flatuser", items[0]["author_name"])
         self.assertEqual(10, items[0]["engagement"]["likes"])
+
+
+class TestInstagramUserPostsParsing(unittest.TestCase):
+    """--ig-creators used to only fetch reels via /v1/instagram/user/reels.
+    Creators who only publish photo/carousel posts (e.g. shimmer_sinnie)
+    got 0 results. /v2/instagram/user/posts returns the full feed --
+    photos, carousels, and reels mixed, flat (no "media" wrapper, unlike
+    /v1/instagram/user/reels). Fixtures below are de-identified, trimmed
+    shapes of real /v2/instagram/user/posts response items.
+    """
+
+    def _make_carousel_raw(self, **overrides):
+        base = {
+            "id": "3600000000000000000_50000000000",
+            "code": "DJtrMoOBlDO",
+            "media_type": 8,
+            "product_type": "carousel_container",
+            "taken_at": 1784267398,
+            "caption": {"text": "demo carousel caption #umacodes"},
+            "like_count": 56,
+            "comment_count": 5,
+            "carousel_media_count": 7,
+            "display_uri": "https://scontent.cdninstagram.com/cover.jpg",
+            "owner": {"username": "demo_creator"},
+            "url": "https://www.instagram.com/p/DJtrMoOBlDO/",
+        }
+        base.update(overrides)
+        return base
+
+    def _make_photo_raw(self, **overrides):
+        base = {
+            "id": "3700000000000000000_50000000000",
+            "code": "DXphoto1234",
+            "media_type": 1,
+            "product_type": "feed",
+            "taken_at": 1784000000,
+            "caption": {"text": "single photo post"},
+            "like_count": 20,
+            "comment_count": 1,
+            "owner": {"username": "demo_creator"},
+        }
+        base.update(overrides)
+        return base
+
+    def _make_reel_raw(self, **overrides):
+        base = {
+            "id": "3111111111111111111_11111111111",
+            "code": "AbCdEfGhIj1",
+            "media_type": 2,
+            "product_type": "clips",
+            "taken_at": 1777024898,
+            "caption": {"text": "reel from posts feed"},
+            "like_count": 100,
+            "comment_count": 10,
+            "play_count": 5000,
+            "video_duration": 12.5,
+            "owner": {"username": "demo_creator"},
+        }
+        base.update(overrides)
+        return base
+
+    def test_carousel_post_type_and_image_count(self):
+        items = _parse_items([self._make_carousel_raw()], "test")
+        item = items[0]
+        self.assertEqual("carousel", item["post_type"])
+        self.assertEqual(7, item["image_count"])
+        self.assertEqual("https://scontent.cdninstagram.com/cover.jpg", item["cover_image_url"])
+        self.assertEqual("https://www.instagram.com/p/DJtrMoOBlDO/", item["url"])
+        self.assertEqual("demo_creator", item["author_name"])
+        self.assertEqual("2026-07-17", item["date"])
+        self.assertEqual(56, item["engagement"]["likes"])
+
+    def test_photo_post_type_no_image_count(self):
+        items = _parse_items([self._make_photo_raw()], "test")
+        item = items[0]
+        self.assertEqual("photo", item["post_type"])
+        self.assertIsNone(item["image_count"])
+
+    def test_photo_post_url_fallback_uses_p_path(self):
+        """No API-provided url -> fallback must use /p/ (not /reel/) for
+        non-reel post types."""
+        raw = self._make_photo_raw()
+        raw.pop("url", None)
+        items = _parse_items([raw], "test")
+        self.assertIn("/p/DXphoto1234", items[0]["url"])
+        self.assertNotIn("/reel/", items[0]["url"])
+
+    def test_reel_from_posts_feed_still_tagged_as_reel(self):
+        items = _parse_items([self._make_reel_raw()], "test")
+        item = items[0]
+        self.assertEqual("reel", item["post_type"])
+        self.assertIsNone(item["image_count"])
+        self.assertEqual(12.5, item["duration"])
+
+
+class TestInstagramReelsPostsMergeDedup(unittest.TestCase):
+    """search_and_enrich()'s --ig-creators path fetches _user_reels() and
+    _user_posts() independently per creator (isolated failures) then merges
+    into the same seen_ids dedup set, keyed by the post's "video_id" (the
+    ScrapeCreators id, stable across both endpoints for the same post)."""
+
+    def _reel_item(self, item_id, **overrides):
+        base = {
+            "id": item_id,
+            "code": f"code-{item_id}",
+            "media_type": 2,
+            "taken_at": 1777024898,
+            "caption": {"text": "shared reel"},
+            "like_count": 1,
+            "owner": {"username": "demo_creator"},
+        }
+        base.update(overrides)
+        return base
+
+    def test_same_reel_from_both_endpoints_deduped(self):
+        with patch.object(instagram_module, "_user_reels") as mock_reels, \
+             patch.object(instagram_module, "_user_posts") as mock_posts, \
+             patch.object(instagram_module, "search_instagram", return_value={"items": []}), \
+             patch.object(instagram_module, "fetch_captions", return_value={}):
+            mock_reels.return_value = [self._reel_item("dup-1")]
+            mock_posts.return_value = [self._reel_item("dup-1")]
+
+            result = search_and_enrich(
+                "test topic", "2026-01-01", "2026-12-31",
+                token="fake-token", ig_creators=["demo_creator"],
+            )
+
+        ids = [i["video_id"] for i in result["items"]]
+        self.assertEqual(["dup-1"], ids)
+
+    def test_posts_only_creator_surfaces_photo_when_reels_endpoint_empty(self):
+        """Regression case for shimmer_sinnie: reels endpoint returns nothing,
+        but posts endpoint has a carousel -- must still surface it."""
+        carousel = {
+            "id": "carousel-1",
+            "code": "carousel-code",
+            "media_type": 8,
+            "product_type": "carousel_container",
+            "taken_at": 1784267398,
+            "caption": {"text": "carousel only creator"},
+            "like_count": 5,
+            "carousel_media_count": 3,
+            "owner": {"username": "demo_creator"},
+        }
+        with patch.object(instagram_module, "_user_reels") as mock_reels, \
+             patch.object(instagram_module, "_user_posts") as mock_posts, \
+             patch.object(instagram_module, "search_instagram", return_value={"items": []}), \
+             patch.object(instagram_module, "fetch_captions", return_value={}):
+            mock_reels.return_value = []
+            mock_posts.return_value = [carousel]
+
+            result = search_and_enrich(
+                "test topic", "2026-01-01", "2026-12-31",
+                token="fake-token", ig_creators=["demo_creator"],
+            )
+
+        self.assertEqual(1, len(result["items"]))
+        self.assertEqual("carousel", result["items"][0]["post_type"])
+
+    def test_user_posts_failure_does_not_block_user_reels(self):
+        with patch.object(instagram_module, "_user_reels") as mock_reels, \
+             patch.object(instagram_module, "_user_posts") as mock_posts, \
+             patch.object(instagram_module, "search_instagram", return_value={"items": []}), \
+             patch.object(instagram_module, "fetch_captions", return_value={}):
+            mock_reels.return_value = [self._reel_item("reel-only")]
+            mock_posts.return_value = []  # simulates _user_posts's own try/except swallowing an error
+
+            result = search_and_enrich(
+                "test topic", "2026-01-01", "2026-12-31",
+                token="fake-token", ig_creators=["demo_creator"],
+            )
+
+        self.assertEqual(1, len(result["items"]))
+        self.assertEqual("reel-only", result["items"][0]["video_id"])
 
 
 class TestInstagramComments(unittest.TestCase):
