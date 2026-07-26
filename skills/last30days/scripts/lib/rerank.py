@@ -9,7 +9,6 @@ from datetime import datetime
 
 from . import http, providers, relevance, schema, signals
 
-
 # Penalty applied when a candidate does not mention the primary entity
 # from the topic in its title or snippet. Picked empirically: a typical
 # score spread in the shortlist is 30-70, so 25 points reliably pushes
@@ -70,7 +69,9 @@ def engagement_velocity_score(
     if engagement <= 0:
         return 0.0
     try:
-        published = datetime.fromisoformat((item.published_at or "").replace("Z", "+00:00")).date()
+        published = datetime.fromisoformat(
+            (item.published_at or "").replace("Z", "+00:00")
+        ).date()
         as_of = datetime.fromisoformat(as_of_date.replace("Z", "+00:00")).date()
         age_days = max(0, (as_of - published).days)
     except (TypeError, ValueError):
@@ -137,7 +138,9 @@ def passes_discovery_floor(
     if item_count <= 0 or engagement_total < FLOOR_MIN_ENGAGEMENT:
         return False
     if junk_shape:
-        corroboration = seed_source_count if seed_source_count is not None else source_count
+        corroboration = (
+            seed_source_count if seed_source_count is not None else source_count
+        )
         return corroboration >= FLOOR_MIN_SOURCES
     if source_count >= FLOOR_MIN_SOURCES:
         return True
@@ -204,6 +207,86 @@ _INTENT_MODIFIER_RE = re.compile(
     r"how i use"
     r")\b",
     re.IGNORECASE,
+)
+
+# Same alternation, but anchored to the end of the topic so only a trailing
+# modifier is stripped. `_primary_entity` documents itself as stripping intent
+# modifier *suffixes*; matching anywhere deletes the word even when it is the
+# topic's subject, which is how "AI code review bottleneck..." became
+# "AI code bottleneck..." and lost its most specific noun. A trailing connector
+# and further modifiers are consumed by applying this repeatedly, so
+# "Hermes Agent use cases and workflows" still reduces to "Hermes Agent".
+_TRAILING_INTENT_MODIFIER_RE = re.compile(
+    r"(?:\s+(?:and|or|&|,)\s*)?"
+    r"\b("
+    r"use cases|use case|workflows|workflow|"
+    r"examples|example|tutorial|tutorials|"
+    r"review|reviews|comparison|applications|"
+    r"in practice|production use|production|"
+    r"how i use"
+    r")\b"
+    r"[\s\?.,:;!]*$",
+    re.IGNORECASE,
+)
+
+# Tokens too short or too common to be evidence that a candidate mentions the
+# entity. Length is the discriminator rather than a domain word list: a two- or
+# three-character token like "ai" appears in every item of an AI-adjacent corpus,
+# so matching it says nothing. This is the same worry the `_entity_grounded`
+# docstring already raises about very short heads such as "X" or "Go".
+_MIN_DISCRIMINATING_TOKEN_LEN = 4
+_GROUNDING_STOPWORDS = frozenset(
+    {
+        "still",
+        "with",
+        "from",
+        "that",
+        "this",
+        "these",
+        "those",
+        "what",
+        "when",
+        "where",
+        "which",
+        "your",
+        "their",
+        "about",
+        "into",
+        "over",
+        "under",
+        "than",
+        "then",
+        "they",
+        "them",
+        "have",
+        "has",
+        "been",
+        "being",
+        "does",
+        "will",
+        "would",
+        "could",
+        "should",
+        "just",
+        "make",
+        "made",
+        "using",
+        "used",
+        "like",
+        "some",
+        "more",
+        "most",
+        "best",
+        "good",
+        "great",
+        "very",
+        "really",
+        "actually",
+        "even",
+        "also",
+        "here",
+        "there",
+    }
 )
 
 INTENT_SCORING_HINTS: dict[str, str] = {
@@ -274,22 +357,43 @@ def rerank_candidates(
     if provider and model and shortlisted:
         try:
             response = provider.generate_json(
-                model, _build_prompt(topic, plan, shortlisted, primary_entity, resolved_handles=handles)
+                model,
+                _build_prompt(
+                    topic, plan, shortlisted, primary_entity, resolved_handles=handles
+                ),
             )
             _apply_llm_scores(shortlisted, response, resolved_handles=handles)
-        except (ValueError, KeyError, json.JSONDecodeError, OSError, http.HTTPError) as exc:
+        except (
+            ValueError,
+            KeyError,
+            json.JSONDecodeError,
+            OSError,
+            http.HTTPError,
+        ) as exc:
             import sys
-            print(f"[Rerank] LLM reranking failed, using local fallback: {type(exc).__name__}: {exc}", file=sys.stderr)
-            _apply_fallback_scores(shortlisted, primary_entity=primary_entity, resolved_handles=handles)
+
+            print(
+                f"[Rerank] LLM reranking failed, using local fallback: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            _apply_fallback_scores(
+                shortlisted, primary_entity=primary_entity, resolved_handles=handles
+            )
     else:
-        _apply_fallback_scores(shortlisted, primary_entity=primary_entity, resolved_handles=handles)
+        _apply_fallback_scores(
+            shortlisted, primary_entity=primary_entity, resolved_handles=handles
+        )
 
     if len(candidates) > shortlist_size:
         tail = candidates[shortlist_size:]
-        _apply_fallback_scores(tail, primary_entity=primary_entity, resolved_handles=handles)
+        _apply_fallback_scores(
+            tail, primary_entity=primary_entity, resolved_handles=handles
+        )
 
     _apply_first_party_floor(candidates, resolved_handles=handles)
-    _apply_engagement_rescue(candidates, primary_entity=primary_entity, resolved_handles=handles)
+    _apply_engagement_rescue(
+        candidates, primary_entity=primary_entity, resolved_handles=handles
+    )
     _apply_interaction_signal(candidates, resolved_handles=handles)
 
     return sorted(
@@ -329,8 +433,7 @@ def _build_prompt(
 ) -> str:
     handles = resolved_handles or set()
     ranking_queries = "\n".join(
-        f"- {subquery.label}: {subquery.ranking_query}"
-        for subquery in plan.subqueries
+        f"- {subquery.label}: {subquery.ranking_query}" for subquery in plan.subqueries
     )
 
     def _candidate_lines(candidate: schema.Candidate) -> list[str]:
@@ -357,7 +460,7 @@ def _build_prompt(
     grounding_hint = ""
     if primary_entity:
         grounding_hint = (
-            f"\nPrimary entity grounding: the user's primary entity is \"{primary_entity}\". "
+            f'\nPrimary entity grounding: the user\'s primary entity is "{primary_entity}". '
             "A candidate that does NOT mention this entity (or a clear synonym/abbreviation) "
             "in its title or snippet should score no higher than 30, regardless of other "
             "signals. Do not let a candidate match the topic vicinity without matching the "
@@ -397,7 +500,10 @@ Scoring guidance:
 
 
 def _apply_llm_scores(
-    candidates: list[schema.Candidate], payload: dict, *, resolved_handles: set[str] | None = None
+    candidates: list[schema.Candidate],
+    payload: dict,
+    *,
+    resolved_handles: set[str] | None = None,
 ) -> None:
     handles = resolved_handles or set()
     scores = {}
@@ -421,11 +527,16 @@ def _apply_llm_scores(
 
 
 def _apply_fallback_scores(
-    candidates: list[schema.Candidate], *, primary_entity: str = "", resolved_handles: set[str] | None = None
+    candidates: list[schema.Candidate],
+    *,
+    primary_entity: str = "",
+    resolved_handles: set[str] | None = None,
 ) -> None:
     handles = resolved_handles or set()
     for candidate in candidates:
-        rerank_score, reason = _fallback_tuple(candidate, primary_entity=primary_entity, resolved_handles=handles)
+        rerank_score, reason = _fallback_tuple(
+            candidate, primary_entity=primary_entity, resolved_handles=handles
+        )
         candidate.rerank_score = rerank_score
         candidate.explanation = reason
         candidate.final_score = _final_score(candidate)
@@ -498,7 +609,9 @@ def _candidate_mentioned_handles(candidate: schema.Candidate) -> set[str]:
     return handles
 
 
-def _interaction_targets(candidate: schema.Candidate, resolved_handles: set[str]) -> set[str]:
+def _interaction_targets(
+    candidate: schema.Candidate, resolved_handles: set[str]
+) -> set[str]:
     """Accounts a first-party post is directed at, excluding the subject's own
     handles. Empty unless the candidate is first-party AND addresses someone
     other than the subject."""
@@ -521,8 +634,7 @@ def _apply_interaction_signal(
         if not targets:
             continue
         c.metadata = {**(c.metadata or {}), "interaction_targets": sorted(targets)}
-        if c.final_score < INTERACTION_FLOOR:
-            c.final_score = INTERACTION_FLOOR
+        c.final_score = max(c.final_score, INTERACTION_FLOOR)
 
 
 def _apply_first_party_floor(
@@ -542,7 +654,10 @@ def _apply_first_party_floor(
 
 
 def _apply_engagement_rescue(
-    candidates: list[schema.Candidate], *, primary_entity: str, resolved_handles: set[str]
+    candidates: list[schema.Candidate],
+    *,
+    primary_entity: str,
+    resolved_handles: set[str],
 ) -> None:
     """Floor final_score for high-engagement X posts that are first-party or
     entity-grounded, so a viral on-topic post can't sit at ~0. Off-topic
@@ -554,14 +669,16 @@ def _apply_engagement_rescue(
     engagements = sorted(_candidate_engagement(c) for c in x_cands)
     n = len(engagements)
     for c in x_cands:
-        if not (_is_first_party(c, resolved_handles) or _is_entity_grounded(c, primary_entity)):
+        if not (
+            _is_first_party(c, resolved_handles)
+            or _is_entity_grounded(c, primary_entity)
+        ):
             continue
         e = _candidate_engagement(c)
         # Percentile rank in [0, 1]: fraction of the X pool strictly below e.
         percentile = sum(1 for v in engagements if v < e) / (n - 1)
         floor = _rescue_floor(percentile)
-        if floor > c.final_score:
-            c.final_score = floor
+        c.final_score = max(c.final_score, floor)
 
 
 def _candidate_haystack(candidate: schema.Candidate) -> str:
@@ -618,11 +735,42 @@ def _entity_grounded(haystack: str, primary_entity: str) -> bool:
     tokens = primary_entity.lower().split()
     if not tokens:
         return True
-    return tokens[0] in haystack
+    # The head token alone is not evidence when it is too short or common to
+    # discriminate. On a topic led by a word like "AI", every item in an
+    # AI-adjacent corpus grounds on it, so nothing is ever marked entity-miss and
+    # every entity-miss mechanism downstream goes inert. When the head token IS
+    # discriminating, keep requiring it exactly as before: relaxing that to "any
+    # token" would ground an item mentioning only the trailing category
+    # descriptor ("payments" without "Stripe"), which is the over-grounding this
+    # function already exists to prevent.
+    head = _strip_token(tokens[0])
+    if _is_discriminating(head):
+        return head in haystack
+    rest = [t for t in (_strip_token(tok) for tok in tokens[1:]) if _is_discriminating(t)]
+    if not rest:
+        # Nothing specific to test against, so keep the historical safe
+        # direction: under-demote rather than bury real signal.
+        return tokens[0] in haystack
+    return any(token in haystack for token in rest)
+
+
+def _strip_token(token: str) -> str:
+    return token.strip(".,:;!?-\"'()[]")
+
+
+def _is_discriminating(token: str) -> bool:
+    """A token long enough and common enough to be evidence of a mention."""
+    return (
+        len(token) >= _MIN_DISCRIMINATING_TOKEN_LEN
+        and token not in _GROUNDING_STOPWORDS
+    )
 
 
 def _fallback_tuple(
-    candidate: schema.Candidate, *, primary_entity: str = "", resolved_handles: set[str] | None = None
+    candidate: schema.Candidate,
+    *,
+    primary_entity: str = "",
+    resolved_handles: set[str] | None = None,
 ) -> tuple[float, str]:
     score = (
         (candidate.local_relevance * 100.0 * 0.7)
@@ -641,7 +789,9 @@ def _fallback_tuple(
     # letting authorship alone outrank a genuinely strong on-topic third party.
     if resolved_handles and _is_first_party(candidate, resolved_handles):
         score += FIRST_PARTY_AUTHOR_CREDIT
-        return max(0.0, min(100.0, score)), "fallback-local-score (first-party authorship)"
+        return max(
+            0.0, min(100.0, score)
+        ), "fallback-local-score (first-party authorship)"
     # Entity-grounding demotion: subtract ENTITY_MISS_PENALTY when the candidate
     # never mentions the primary entity's head token, across all text surfaces
     # (title, snippet, transcript, transcript highlights, top comments,
@@ -664,9 +814,20 @@ def _primary_entity(topic: str) -> str:
     string for topics that are all intent modifier with no entity, so
     callers can skip the grounding check.
     """
-    stripped = _INTENT_MODIFIER_RE.sub(" ", topic)
-    # Also collapse multiple spaces and strip punctuation.
+    # Strip only TRAILING modifiers, repeatedly, so a chain like
+    # "use cases and workflows" is consumed while a modifier that is the topic's
+    # own subject is left alone. Stripping every occurrence deleted "review" from
+    # "AI code review bottleneck...", removing the noun that made the topic
+    # specific and leaving a head token so generic that everything grounded.
+    stripped = topic
+    while True:
+        shortened = _TRAILING_INTENT_MODIFIER_RE.sub("", stripped, count=1)
+        if shortened == stripped:
+            break
+        stripped = shortened
     stripped = re.sub(r"\s+", " ", stripped).strip(" \t\r\n?.,:;!")
+    # A topic that is nothing but modifiers reduces to empty, as before, and
+    # callers skip the grounding check.
     return stripped
 
 
@@ -769,9 +930,19 @@ def score_fun(
         try:
             response = provider.generate_json(model, _build_fun_prompt(topic, pool))
             _apply_fun_scores(pool, response)
-        except (ValueError, KeyError, json.JSONDecodeError, OSError, http.HTTPError) as exc:
+        except (
+            ValueError,
+            KeyError,
+            json.JSONDecodeError,
+            OSError,
+            http.HTTPError,
+        ) as exc:
             import sys
-            print(f"[FunJudge] LLM scoring failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+            print(
+                f"[FunJudge] LLM scoring failed: {type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
             _apply_fun_fallback(pool)
     else:
         _apply_fun_fallback(pool)
@@ -779,13 +950,15 @@ def score_fun(
 
 def _build_fun_prompt(topic: str, candidates: list[schema.Candidate]) -> str:
     candidate_block = "\n".join(
-        "\n".join([
-            f"- candidate_id: {c.candidate_id}",
-            f"  source: {schema.candidate_source_label(c)}",
-            f"  title: {c.title[:220]}",
-            f"  snippet: {c.snippet[:420]}",
-            f"  comments: {_extract_comment_text_scored(c)[:340]}",
-        ])
+        "\n".join(
+            [
+                f"- candidate_id: {c.candidate_id}",
+                f"  source: {schema.candidate_source_label(c)}",
+                f"  title: {c.title[:220]}",
+                f"  snippet: {c.snippet[:420]}",
+                f"  comments: {_extract_comment_text_scored(c)[:340]}",
+            ]
+        )
         for c in candidates
     )
     return (
@@ -793,7 +966,7 @@ def _build_fun_prompt(topic: str, candidates: list[schema.Candidate]) -> str:
         "You are the fun judge. A press conference is 0. A one-liner that makes you laugh is 95.\n\n"
         f"Topic: {topic}\n\n"
         "Return JSON only:\n"
-        '{\n  \"scores\": [{\"candidate_id\": \"id\", \"fun\": 0-100, \"reason\": \"short reason\"}]\n}\n\n'
+        '{\n  "scores": [{"candidate_id": "id", "fun": 0-100, "reason": "short reason"}]\n}\n\n'
         "Scoring: 90-100=genuinely hilarious, 70-89=witty/clever, "
         "40-69=has personality, 20-39=straight news, 0-19=dry/official.\n"
         "Prefer SHORT PUNCHY content. A 15-word tweet > a 500-word analysis.\n"
@@ -810,7 +983,9 @@ def _extract_comment_text(candidate: schema.Candidate) -> str:
     parts = []
     for item in candidate.source_items:
         for comment in item.metadata.get("top_comments", [])[:3]:
-            body = comment.get("body", "") if isinstance(comment, dict) else str(comment)
+            body = (
+                comment.get("body", "") if isinstance(comment, dict) else str(comment)
+            )
             if body:
                 parts.append(body[:150])
         for insight in item.metadata.get("comment_insights", [])[:2]:
@@ -836,7 +1011,11 @@ def _extract_comment_text_scored(candidate: schema.Candidate) -> str:
                 # Only prefix POSITIVE scores: `and score` is truthy for
                 # negatives too, which would emit a misleading `[+-3]` and
                 # invert the traction signal to the judge.
-                prefix = f"[+{int(score)}] " if isinstance(score, (int, float)) and score > 0 else ""
+                prefix = (
+                    f"[+{int(score)}] "
+                    if isinstance(score, (int, float)) and score > 0
+                    else ""
+                )
                 parts.append(f"{prefix}{body[:150]}")
             else:
                 body = str(comment)
@@ -873,14 +1052,33 @@ def _apply_fun_fallback(candidates: list[schema.Candidate]) -> None:
 
 
 def _apply_single_fun_fallback(candidate: schema.Candidate) -> None:
-    text = candidate.title + " " + (candidate.snippet or "") + " " + _extract_comment_text(candidate)
+    text = (
+        candidate.title
+        + " "
+        + (candidate.snippet or "")
+        + " "
+        + _extract_comment_text(candidate)
+    )
     text_len = len(text.strip())
     shortness = max(0, (200 - text_len) / 200) * 30
     # Reward a highly-upvoted TOP COMMENT (the crowd-certified line), normalized
     # per platform, rather than the post's overall engagement. Mirrors the LLM
     # path's new emphasis so behavior is consistent when the LLM is unavailable.
     vote_bonus = signals.top_comment_vote_signal(candidate) * 40.0
-    markers = ["lol", "lmao", "dead", "hilarious", "funny", "bruh", "ratio", "nah", "bro", "ain't no way", "i'm crying", "rent free"]
+    markers = [
+        "lol",
+        "lmao",
+        "dead",
+        "hilarious",
+        "funny",
+        "bruh",
+        "ratio",
+        "nah",
+        "bro",
+        "ain't no way",
+        "i'm crying",
+        "rent free",
+    ]
     marker_bonus = 10 if any(m in text.lower() for m in markers) else 0
     candidate.fun_score = max(0.0, min(100.0, shortness + vote_bonus + marker_bonus))
     candidate.fun_explanation = "heuristic-fallback"
