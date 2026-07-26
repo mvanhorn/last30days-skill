@@ -178,26 +178,36 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         if not isinstance(raw, dict):
             continue
 
+        # ScrapeCreators' /v1/instagram/user/reels wraps every field --
+        # taken_at, caption, owner, engagement counts, etc. -- inside a
+        # nested "media" object (top-level item is just {"media": {...}}).
+        # /v2/instagram/reels/search returns those same fields flat on the
+        # item itself. Prefer top-level values when present (flat shape)
+        # and fall back to the nested "media" object otherwise, so both
+        # endpoint shapes parse through the same field lookups below.
+        media_obj = raw.get("media")
+        src = media_obj if isinstance(media_obj, dict) else raw
+
         # Extract reel ID and shortcode
-        reel_pk = str(raw.get("id", raw.get("pk", "")))
-        shortcode = raw.get("shortcode", raw.get("code", ""))
+        reel_pk = str(src.get("id", src.get("pk", "")))
+        shortcode = src.get("shortcode", src.get("code", ""))
 
         # Caption text -- can be a string or dict depending on endpoint
-        caption_obj = raw.get("caption", "")
+        caption_obj = src.get("caption", "")
         if isinstance(caption_obj, dict):
             text = caption_obj.get("text", "")
         elif isinstance(caption_obj, str):
             text = caption_obj
         else:
-            text = raw.get("desc", raw.get("text", ""))
+            text = src.get("desc", src.get("text", ""))
 
         # Engagement metrics
-        play_count = raw.get("video_play_count") or raw.get("video_view_count") or raw.get("play_count") or 0
-        like_count = raw.get("like_count") or 0
-        comment_count = raw.get("comment_count") or 0
+        play_count = src.get("video_play_count") or src.get("video_view_count") or src.get("play_count") or 0
+        like_count = src.get("like_count") or 0
+        comment_count = src.get("comment_count") or 0
 
         # Author info -- 'owner' in reels/search, 'user' in user/reels
-        owner_raw = raw.get("owner") or raw.get("user")
+        owner_raw = src.get("owner") or src.get("user")
         if isinstance(owner_raw, dict):
             author_name = owner_raw.get("username", "")
         elif isinstance(owner_raw, str):
@@ -206,10 +216,10 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
             author_name = ""
 
         # Duration
-        duration = raw.get("video_duration")
+        duration = src.get("video_duration")
 
         # Date
-        date_str = _parse_date(raw)
+        date_str = _parse_date(src)
 
         # Hashtags from caption text
         hashtags = _extract_hashtags(text)
@@ -218,7 +228,7 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         relevance = _compute_relevance(core_topic, text, hashtags)
 
         # Build URL -- prefer API-provided url, fallback to shortcode
-        url = raw.get("url", "")
+        url = src.get("url", "")
         if not url and shortcode:
             url = f"https://www.instagram.com/reel/{shortcode}"
 

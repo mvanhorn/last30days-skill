@@ -40,6 +40,69 @@ class TestInstagramOwnerTypeSafety(unittest.TestCase):
         self.assertEqual("fallbackuser", items[0]["author_name"])
 
 
+class TestInstagramNestedMediaParsing(unittest.TestCase):
+    """ScrapeCreators' /v1/instagram/user/reels (used for --ig-creators) wraps
+    every field -- taken_at, caption, owner, engagement counts -- inside a
+    nested "media" object instead of returning them flat on the item, unlike
+    /v2/instagram/reels/search. Before the fallback, _parse_items() only read
+    top-level keys, so every creator-reels item parsed with date=None and got
+    dropped by the hard date-range filter in search_instagram()/fetch_reels().
+
+    Fixture below is a de-identified, trimmed shape of a real
+    /v1/instagram/user/reels response item (fake handle/pk/ids).
+    """
+
+    def _make_nested_raw(self, **media_overrides):
+        media = {
+            "id": "3111111111111111111_11111111111",
+            "pk": "3111111111111111111",
+            "code": "AbCdEfGhIj1",
+            "taken_at": 1777024898,  # unix timestamp, nested under media
+            "caption": {"text": "test caption #demo"},
+            "like_count": 7470,
+            "comment_count": 9475,
+            "play_count": 333195,
+            "video_duration": 47.2,
+            "owner": {"username": "demo_creator"},
+        }
+        media.update(media_overrides)
+        return {"media": media}
+
+    def test_nested_media_date_parsed(self):
+        items = _parse_items([self._make_nested_raw()], "test")
+        self.assertEqual(1, len(items))
+        self.assertIsNotNone(items[0]["date"])
+        self.assertEqual("2026-04-24", items[0]["date"])
+
+    def test_nested_media_all_fields_extracted(self):
+        items = _parse_items([self._make_nested_raw()], "test")
+        item = items[0]
+        self.assertEqual("demo_creator", item["author_name"])
+        self.assertIn("test caption", item["text"])
+        self.assertEqual(7470, item["engagement"]["likes"])
+        self.assertEqual(9475, item["engagement"]["comments"])
+        self.assertEqual(333195, item["engagement"]["views"])
+        self.assertEqual(47.2, item["duration"])
+        self.assertIn("AbCdEfGhIj1", item["url"])
+        self.assertEqual(["demo"], item["hashtags"])
+
+    def test_flat_shape_still_parses(self):
+        """/v2/instagram/reels/search returns fields flat (no "media" wrapper);
+        must keep working after the nested-media fallback."""
+        raw = {
+            "id": "1",
+            "code": "ABC123",
+            "taken_at": "2026-02-26T16:00:00.000Z",
+            "caption": "flat caption",
+            "owner": {"username": "flatuser"},
+            "like_count": 10,
+        }
+        items = _parse_items([raw], "test")
+        self.assertEqual("2026-02-26", items[0]["date"])
+        self.assertEqual("flatuser", items[0]["author_name"])
+        self.assertEqual(10, items[0]["engagement"]["likes"])
+
+
 class TestInstagramComments(unittest.TestCase):
     """U1: Instagram comment fetching via ScrapeCreators."""
 
