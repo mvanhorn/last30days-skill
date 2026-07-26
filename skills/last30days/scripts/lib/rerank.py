@@ -746,12 +746,32 @@ def _entity_grounded(haystack: str, primary_entity: str) -> bool:
     head = _strip_token(tokens[0])
     if _is_discriminating(head):
         return head in haystack
-    rest = [t for t in (_strip_token(tok) for tok in tokens[1:]) if _is_discriminating(t)]
+    rest = [
+        t for t in (_strip_token(tok) for tok in tokens[1:]) if _is_discriminating(t)
+    ]
     if not rest:
         # Nothing specific to test against, so keep the historical safe
         # direction: under-demote rather than bury real signal.
         return tokens[0] in haystack
-    return any(token in haystack for token in rest)
+    # Any ONE trailing token grounds, but it must begin a word. Requiring all of
+    # them (or even two) over-demotes: on "AI code review bottleneck ..." a
+    # genuinely on-topic item may legitimately name only "bottleneck". Bare
+    # substring matching is what the head branch uses, but it is too loose here -
+    # these are ordinary words, not brands, so "code" would ground "barcode
+    # scanner" on a topic about code review. Anchoring to a word start keeps the
+    # suffix tolerance that matters ("review" still grounds "reviewers") while
+    # dropping matches buried inside an unrelated word.
+    return any(_mentions_at_word_start(haystack, token) for token in rest)
+
+
+def _mentions_at_word_start(haystack: str, token: str) -> bool:
+    """True if ``token`` occurs in ``haystack`` starting at a word boundary.
+
+    Prefix-anchored rather than fully word-bounded, so inflections and compounds
+    that merely append ("review" -> "reviewers", "reviewed") still count, while
+    an occurrence swallowed inside another word ("code" in "barcode") does not.
+    """
+    return re.search(rf"\b{re.escape(token)}", haystack) is not None
 
 
 def _strip_token(token: str) -> str:

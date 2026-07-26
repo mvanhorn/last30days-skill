@@ -40,6 +40,28 @@ def test_ubiquitous_head_token_does_not_ground_off_topic_items():
     )
 
 
+def test_broad_token_buried_inside_another_word_does_not_ground():
+    """A trailing token must begin a word to count as a mention.
+
+    Raised in review of the fix: once the ubiquitous head token stops grounding,
+    the fallback tests the remaining tokens, and a broad one like "code" matches
+    as a bare substring inside unrelated words. This item is off-topic and the
+    pre-fix head check demoted it correctly, so the fix must not newly ground it.
+    """
+    entity = rerank._primary_entity(GENERIC_TOPIC)
+    unrelated = "my weekend project: a barcode scanner written in rust"
+    assert not rerank._entity_grounded(unrelated, entity), (
+        "'code' inside 'barcode' should not ground an unrelated candidate"
+    )
+
+
+def test_inflected_trailing_token_still_grounds():
+    """Word-start anchoring must keep the suffix tolerance it replaces."""
+    entity = rerank._primary_entity(GENERIC_TOPIC)
+    on_topic = "our reviewers cannot keep up with generated diffs"
+    assert rerank._entity_grounded(on_topic, entity)
+
+
 def test_on_topic_item_is_grounded_control():
     """Control: the same machinery must still ground a genuinely on-topic item.
 
