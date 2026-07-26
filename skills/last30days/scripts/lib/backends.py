@@ -409,28 +409,41 @@ def _probe_web_keyless(config: Dict[str, Any]) -> BackendFinding:
 
 
 def _probe_keenable(config: Dict[str, Any]) -> BackendFinding:
-    """Keenable: a real keyless web-search API (above the DDG/SearXNG floor).
+    """Keenable: a real web-search API that supports both keyless and keyed use.
 
-    Works with no key against the public endpoint; an optional KEENABLE_API_KEY
-    only lifts the rate limit. Like the keyless floor, it is engine-side web
-    search and is suppressed on hosts that have native search.
+    It is engine-side web search, so it is suppressed on native-search hosts
+    (the model's own search serves the run). Off a native host it is key-aware:
+
+    - ``KEENABLE_API_KEY`` set  -> keyed tier (ok): a configured key with lifted
+      rate limits, mirroring the other keyed backends (brave/exa/serper).
+    - no key                    -> keyless floor (degraded/warn): works with no
+      key against the public endpoint, but on the rate-limited free tier; set
+      ``KEENABLE_API_KEY`` (free) to lift the limit and promote it to ok.
     """
-    requires = "no key (optional KEENABLE_API_KEY lifts rate limit); suppressed on native-search hosts"
-    if env.keyless_web_allowed(config):
-        keyed = " (KEENABLE_API_KEY present; rate limit lifted)" if config.get("KEENABLE_API_KEY") else ""
+    requires = "no key against the public endpoint; optional KEENABLE_API_KEY lifts the rate limit; suppressed on native-search hosts"
+    if not env.keyless_web_allowed(config):
+        # Native-search host: engine-side web (keenable included) is off.
+        return BackendFinding(
+            name="keenable",
+            status=health.MISSING,
+            detail="keenable suppressed: host has native web search",
+            prescription="",
+            requires=requires,
+        )
+    if config.get("KEENABLE_API_KEY"):
+        # Keyed tier: a configured key, rate limit lifted -> ok (green).
         return BackendFinding(
             name="keenable",
             status=health.OK,
-            detail=f"keenable keyless{keyed or ' (no key; full-quality search API)'}",
+            detail="keenable keyed (KEENABLE_API_KEY present; rate limit lifted)",
             requires=requires,
         )
-    # Keyless-tier: suppressed on native-search hosts even when a key is set
-    # (the key only lifts the rate limit, it does not promote to the paid tier).
+    # Keyless floor: works with no key, but on the rate-limited free tier.
     return BackendFinding(
         name="keenable",
-        status=health.MISSING,
-        detail="keenable suppressed: host has native web search",
-        prescription="",
+        status=health.DEGRADED,
+        detail="keenable keyless (no key; free rate-limited tier)",
+        prescription="set KEENABLE_API_KEY (free) to lift the rate limit",
         requires=requires,
     )
 
@@ -664,6 +677,7 @@ def _resolve_alternative(
         if finding.status == health.DEGRADED:
             res.active_backend = finding.name
             res.tier = TIER_WARN
+            res.prescription = finding.prescription
             return res
     res.tier = TIER_ERROR
     # Prescription comes from the first auto-chain backend, not opt-in.

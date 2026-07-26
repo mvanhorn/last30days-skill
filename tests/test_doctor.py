@@ -190,13 +190,16 @@ class KeylessEnvironment(unittest.TestCase):
         self.assertEqual("unconfigured", record["status"])
         self.assertTrue(record["fix"])
 
-    def test_web_keyless_default_is_keenable_ok(self):
-        # Keyless env: keenable (a real keyless search API) is the preferred
-        # web backend, so the source reads OK rather than the degraded floor.
+    def test_web_keyless_default_is_keenable_degraded(self):
+        # Keyless env: keenable is the preferred keyless floor (above the
+        # DDG/SearXNG floor) but stays on the rate-limited free tier, so it
+        # reads degraded/warn - not the paid-key "ok". The fix points at the
+        # free KEENABLE_API_KEY that lifts the limit and promotes it to ok.
         record = self.report["sources"]["web"]
-        self.assertEqual("ok", record["tier"])
-        self.assertEqual("ok", record["status"])
+        self.assertEqual("warn", record["tier"])
+        self.assertEqual("degraded", record["status"])
         self.assertEqual("keenable", record["active_backend"])
+        self.assertIn("KEENABLE_API_KEY", record["fix"])
 
     def test_cli_exit_code_zero_even_with_problems(self):
         rc, out = _run_cli_doctor(["doctor"], {})
@@ -711,10 +714,12 @@ class NativeSearchHost(unittest.TestCase):
 
     def test_web_stays_degraded_keyless_without_native_signal(self):
         # No CLAUDECODE, no LAST30DAYS_NATIVE_SEARCH -> genuine keyless floor.
+        # Keenable is the keyless-floor backend now (above the DDG/SearXNG
+        # floor), but stays degraded/warn until a key lifts the rate limit.
         record = _build({})["sources"]["web"]
         self.assertEqual("warn", record["tier"])
         self.assertEqual("degraded", record["status"])
-        self.assertEqual("keyless", record["active_backend"])
+        self.assertEqual("keenable", record["active_backend"])
 
     def test_web_with_key_stays_ok_on_native_host(self):
         report = _build({
@@ -724,6 +729,15 @@ class NativeSearchHost(unittest.TestCase):
         record = report["sources"]["web"]
         self.assertEqual("ok", record["tier"])
         self.assertEqual("exa", record["active_backend"])
+
+    def test_web_keenable_key_promotes_keyless_floor_to_ok(self):
+        # Keenable supports both keyless and keyed use: with KEENABLE_API_KEY set
+        # (rate limit lifted) the keyless floor is promoted to the keyed tier and
+        # reads ok, mirroring the other keyed backends.
+        record = _build({"KEENABLE_API_KEY": "dummy-keenable-secret-000"})["sources"]["web"]
+        self.assertEqual("ok", record["tier"])
+        self.assertEqual("ok", record["status"])
+        self.assertEqual("keenable", record["active_backend"])
 
 
 class TextReport(unittest.TestCase):

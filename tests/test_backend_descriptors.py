@@ -952,8 +952,16 @@ class TestWebChain:
 
     def test_keenable_is_preferred_keyless_default(self):
         # No paid key, non-native host: keenable (a real keyless API) is picked
-        # over the degraded DDG/SearXNG floor, and reports OK (not degraded).
+        # over the DDG/SearXNG floor, but as the keyless tier it reports WARN
+        # (degraded) - a free KEENABLE_API_KEY lifts it to the keyed OK tier.
         res = backends.resolve("web", {})
+        assert res.active_backend == "keenable"
+        assert res.tier == backends.TIER_WARN
+
+    def test_keenable_key_promotes_to_ok_tier(self):
+        # KEENABLE_API_KEY set (rate limit lifted): keenable joins the keyed
+        # tier and reports OK, mirroring the other keyed backends.
+        res = backends.resolve("web", {"KEENABLE_API_KEY": "dummy-key"})
         assert res.active_backend == "keenable"
         assert res.tier == backends.TIER_OK
 
