@@ -7,8 +7,11 @@ PID callback wiring, and environment inheritance.
 import builtins
 import os as real_os
 import platform
+import sys
 import unittest
 from unittest.mock import patch
+
+import pytest
 
 from lib import subproc
 
@@ -155,6 +158,7 @@ class TestRunWithTimeout(unittest.TestCase):
                 timeout=1,
             )
 
+    @pytest.mark.skipif(not hasattr(real_os, "killpg"), reason="os.killpg not available on this platform")
     def test_escalation_path_guards_killpg_attributeerror(self):
         """The SIGKILL escalation must not crash if killpg is unavailable (Windows).
 

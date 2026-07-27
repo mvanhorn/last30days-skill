@@ -108,8 +108,29 @@ hermes skills install mvanhorn/last30days-skill --force
 
 If you symlinked your working tree (developer alternative above), just `git pull` in the repo — edits propagate live, no re-install step.
 
+## Auto-Start (SessionStart hook alternative)
+
+The Claude Code SessionStart hook (`hooks/hooks.json`) does not fire on Hermes. Instead:
+
+### Directory creation
+The engine creates `$LAST30DAYS_MEMORY_DIR` automatically when running — no manual setup needed.
+
+### Config health check
+Run manually after installing/updating API keys:
+```bash
+bash hooks/scripts/check-config.sh
+```
+
+### Optional: daily cron
+```bash
+hermes cron create --schedule "0 9 * * *" \
+  --prompt "Run 'bash skills/research/last30days/hooks/scripts/check-config.sh' and report status."
+```
+
+See `HERMES_CRON_SETUP.md` for full details.
+
 ## Support
 
 - Original repo: https://github.com/mvanhorn/last30days-skill
-- Hermes: https://github.com/mercurial-tf/hermes
+- Hermes: https://github.com/nousresearch/hermes-agent
 - Issues: Please report in the original repo

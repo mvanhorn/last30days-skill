@@ -11,3 +11,4 @@ scripts/verify_v3.py
 
 # Vendored third-party X-search client (node_modules analog); excluded from scan, still installed.
 scripts/lib/vendor/
+__pycache__/
