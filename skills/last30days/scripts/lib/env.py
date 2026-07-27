@@ -559,9 +559,15 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_TRANSCRIPT_TIMEOUT', None),
         ('DEGRADED_TRANSCRIPT_THRESHOLD', None),
         (KEYCHAIN_ALIASES_ENV, None),
-        # Whisper transcription provider for caption-free audio/video. Groq's
-        # free tier is preferred; OPENAI_API_KEY is the paid backstop (already
-        # resolved above via openai_auth).
+        # Whisper transcription provider for caption-free audio/video. A local
+        # OpenAI-compatible endpoint (LAST30DAYS_WHISPER_URL, e.g. whisper.cpp's
+        # whisper-server) is preferred when set: no key, no per-minute cost, and
+        # the audio never leaves the machine. Groq's free tier is next;
+        # OPENAI_API_KEY is the paid backstop (already resolved above via
+        # openai_auth).
+        ('LAST30DAYS_WHISPER_URL', None),
+        ('LAST30DAYS_WHISPER_MODEL', None),
+        ('LAST30DAYS_WHISPER_KEY', None),
         ('GROQ_API_KEY', None),
         ('LAST30DAYS_YT_SUB_LANGS', 'en,es,pt'),
         ('LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT', None),
@@ -1001,10 +1007,18 @@ def keyless_web_allowed(config: dict[str, Any]) -> bool:
 def transcription_providers(config: dict[str, Any]) -> list[tuple[str, str]]:
     """Ordered (name, api_key) Whisper providers for caption-free transcription.
 
-    Groq (free tier) first, OpenAI (paid) as the backstop. Empty when neither
-    key is set, in which case transcription degrades rather than runs.
+    A local OpenAI-compatible endpoint (LAST30DAYS_WHISPER_URL) comes first when
+    configured - it needs no key, costs nothing per minute, and keeps the audio
+    on the machine - then Groq (free tier), then OpenAI (paid) as the backstop.
+    Empty when none is configured, in which case transcription degrades rather
+    than runs. The local entry carries an empty key on purpose: self-hosted
+    servers (whisper.cpp's whisper-server, LocalAI, vLLM) accept unauthenticated
+    requests, and transcribe.py omits the Authorization header when the key is
+    empty. Set LAST30DAYS_WHISPER_KEY when a local gateway does want a token.
     """
     providers: list[tuple[str, str]] = []
+    if config.get('LAST30DAYS_WHISPER_URL'):
+        providers.append(('local', config.get('LAST30DAYS_WHISPER_KEY') or ''))
     if config.get('GROQ_API_KEY'):
         providers.append(('groq', config['GROQ_API_KEY']))
     if config.get('OPENAI_API_KEY'):
