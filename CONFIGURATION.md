@@ -156,9 +156,24 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | TruthSocial | `TRUTHSOCIAL_TOKEN` | TruthSocial items | yes |
 | Web search | one of: `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY` | `--auto-resolve` and Step 2 supplements | Brave has a free tier; native WebSearch on Claude Code / Codex / Gemini works as a fallback |
 | Perplexity Sonar / Search API / Deep Research | `PERPLEXITY_API_KEY` (preferred) or `OPENROUTER_API_KEY` (Sonar fallback) | `INCLUDE_SOURCES=perplexity`; `--deep-research` flag (~$0.90/query) | no |
-| Caption-free transcription | `GROQ_API_KEY` (free tier, preferred) or `OPENAI_API_KEY` (paid backstop); requires `ffmpeg` | Whisper transcription for audio/video without captions (groundwork: module shipped, not yet auto-invoked by the engine) | Groq free tier is generous; needs ffmpeg installed |
+| Caption-free transcription | `LAST30DAYS_WHISPER_URL` (self-hosted, preferred), `GROQ_API_KEY` (free tier) or `OPENAI_API_KEY` (paid backstop); requires `ffmpeg` | Whisper transcription for audio/video without captions (groundwork: module shipped, not yet auto-invoked by the engine) | Groq free tier is generous; needs ffmpeg installed |
 | Jobs / careers pages | none for public ATS pages; web backend improves fallback discovery | `--hiring-signals` and strong Hiring Signals in standard company reports | yes |
 | Apify (alternate scraper) | `APIFY_API_TOKEN` | fallback for Reddit/TikTok/Instagram when ScrapeCreators is exhausted | yes (limited) |
+
+**Self-hosted transcription.** `LAST30DAYS_WHISPER_URL` points at any OpenAI-compatible transcription endpoint and is tried before the hosted providers, so caption-free audio never leaves the machine and costs nothing per minute. Give it the full path, the same shape as the hosted entries:
+
+```bash
+# whisper.cpp (brew install whisper-cpp), model from its own download script:
+whisper-server -m ~/.whisper-models/ggml-base.en.bin \
+  --host 127.0.0.1 --port 8910 --inference-path /v1/audio/transcriptions
+
+# .env
+LAST30DAYS_WHISPER_URL=http://127.0.0.1:8910/v1/audio/transcriptions
+LAST30DAYS_WHISPER_MODEL=whisper-1   # optional; server-defined name
+LAST30DAYS_WHISPER_KEY=...           # optional; only if your gateway wants a token
+```
+
+LocalAI, vLLM, and any other OpenAI-compatible server work the same way. No key is sent when `LAST30DAYS_WHISPER_KEY` is unset, because self-hosted servers commonly reject an empty bearer rather than ignoring it. If the local endpoint is down or errors, the provider chain falls through to Groq/OpenAI exactly as before.
 
 **YouTube transcript tuning.** `LAST30DAYS_YT_SUB_LANGS` controls the comma-separated caption-language priority passed to yt-dlp and defaults to `en,es,pt`. When `SCRAPECREATORS_API_KEY` is available, yt-dlp uses one fast attempt before the paid fallback; set `LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT` to the number of seconds allowed for that attempt when a throttled host needs longer than the 12-second default. A VTT completed before the timeout is reused rather than discarded.
 

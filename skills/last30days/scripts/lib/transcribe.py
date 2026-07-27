@@ -8,8 +8,10 @@ is transcript text. The pipeline:
   2. Re-encode to a low-bitrate mono stream so most clips fit under the provider
      upload limit.
   3. If still over the limit, split into bounded-duration chunks.
-  4. Transcribe each chunk through an ordered provider list (Groq free tier
-     first, OpenAI paid backstop), with per-chunk fallback, then join.
+  4. Transcribe each chunk through an ordered provider list (a self-hosted
+     OpenAI-compatible endpoint first when LAST30DAYS_WHISPER_URL is set, then
+     Groq's free tier, then OpenAI as the paid backstop), with per-chunk
+     fallback, then join.
 
 Never raises. Returns a typed :class:`TranscriptResult`; missing prerequisites
 (no ffmpeg, no provider key) yield a degraded result with a reason, consumed by
@@ -39,6 +41,25 @@ _PROVIDER_MODELS = {
     "groq": "whisper-large-v3",
     "openai": "whisper-1",
 }
+
+# The "local" provider is resolved from config rather than this table so any
+# self-hosted OpenAI-compatible transcription server works without a code change
+# (whisper.cpp's whisper-server, LocalAI, vLLM, an on-box gateway). Its URL is
+# the full endpoint path, matching how the hosted entries above are written.
+_LOCAL_PROVIDER = "local"
+_LOCAL_DEFAULT_MODEL = "whisper-1"
+
+
+def _endpoint_for(provider: str, config: dict) -> str:
+    if provider == _LOCAL_PROVIDER:
+        return (config.get("LAST30DAYS_WHISPER_URL") or "").strip()
+    return _PROVIDER_ENDPOINTS[provider]
+
+
+def _model_for(provider: str, config: dict) -> str:
+    if provider == _LOCAL_PROVIDER:
+        return (config.get("LAST30DAYS_WHISPER_MODEL") or "").strip() or _LOCAL_DEFAULT_MODEL
+    return _PROVIDER_MODELS[provider]
 
 
 @dataclass
@@ -88,7 +109,9 @@ def transcribe_media(
         texts: list[str] = []
         used_provider = ""
         for chunk in chunk_paths:
-            chunk_text, provider = _transcribe_chunk(chunk, providers, timeout=timeout)
+            chunk_text, provider = _transcribe_chunk(
+                chunk, providers, timeout=timeout, config=config
+            )
             if chunk_text is None:
                 return _degraded(
                     f"all providers failed on a chunk ({len(texts)}/{len(chunk_paths)} done)",
@@ -172,11 +195,12 @@ def _transcribe_chunk(
     path: str,
     providers: list[tuple[str, str]],
     timeout: float,
+    config: Optional[dict] = None,
 ) -> tuple[Optional[str], str]:
     """Try each provider in order; return (text, provider) or (None, '')."""
     for name, key in providers:
         try:
-            text = _post_audio(name, path, key, timeout=timeout)
+            text = _post_audio(name, path, key, timeout=timeout, config=config)
         except Exception:  # noqa: BLE001 - any provider failure -> try the next
             text = None
         if text is not None:
@@ -184,13 +208,21 @@ def _transcribe_chunk(
     return None, ""
 
 
-def _post_audio(provider: str, path: str, api_key: str, timeout: float) -> Optional[str]:
+def _post_audio(
+    provider: str,
+    path: str,
+    api_key: str,
+    timeout: float,
+    config: Optional[dict] = None,
+) -> Optional[str]:
     """POST one audio file to a Whisper-compatible endpoint; return text or None."""
     import json
     import urllib.request
 
-    endpoint = _PROVIDER_ENDPOINTS[provider]
-    model = _PROVIDER_MODELS[provider]
+    endpoint = _endpoint_for(provider, config or {})
+    model = _model_for(provider, config or {})
+    if not endpoint:
+        return None
     boundary = "----l30dTranscribeBoundary"
     with open(path, "rb") as fh:
         audio = fh.read()
@@ -208,15 +240,14 @@ def _post_audio(provider: str, path: str, api_key: str, timeout: float) -> Optio
     parts.append(f"\r\n--{boundary}--\r\n".encode())
     body = b"".join(parts)
 
-    req = urllib.request.Request(
-        endpoint,
-        data=body,
-        headers={
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-        },
-        method="POST",
-    )
+    headers = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+    # Self-hosted servers are typically unauthenticated; sending an empty bearer
+    # makes some of them 401 outright, so only attach the header when a key
+    # exists. Hosted providers always carry one.
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(endpoint, data=body, headers=headers, method="POST")
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return data.get("text")
