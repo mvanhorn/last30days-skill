@@ -161,7 +161,12 @@ def _log(msg: str):
 
 
 def reset_search_cache() -> None:
-    """Clear the in-run ytsearch cache (tests / process reuse)."""
+    """Clear the in-run ytsearch cache.
+
+    Call at the start of each top-level research run so a long-lived process
+    (agent host, REPL, test suite) does not reuse results across runs. Within
+    one comparison fan-out the cache stays hot so identical queries coalesce.
+    """
     with _search_cache_lock:
         _search_cache.clear()
         _search_inflight.clear()
@@ -239,20 +244,19 @@ def _finish_search_slot(
 def _await_search_slot(
     event: threading.Event,
     slot: list,
-    timeout: float,
 ) -> Dict[str, Any]:
-    """Wait for a leader search; fall back to a timeout error if it never lands.
+    """Wait for a leader search to publish.
 
-    The leader may sit in the process-wide yt-dlp semaphore queue before its
-    own search timeout starts, so waiters allow for a couple of gated peers
-    ahead of the leader plus padding.
+    Waiters block until the leader finishes (success or failure). The leader
+    path always publishes via ``_finish_search_slot``, including on unexpected
+    exceptions, so a timed wait would only invent a false timeout while the
+    leader was still queued behind other yt-dlp work.
     """
-    wait_budget = timeout * (_YTDLP_MAX_CONCURRENT + 1) + 60.0
-    event.wait(timeout=max(1.0, wait_budget))
+    event.wait()
     shared = slot[0]
     if isinstance(shared, dict):
         return copy.deepcopy(shared)
-    return {"items": [], "error": f"Search timed out after {timeout:g}s"}
+    return {"items": [], "error": "YouTube search failed"}
 
 
 def classify_run_failure(detail: str) -> str:
@@ -438,7 +442,7 @@ def search_youtube(
     assert event is not None and slot is not None
     if not is_leader:
         _log(f"YouTube search awaiting in-flight query for '{core_topic}'")
-        return _await_search_slot(event, slot, timeout)
+        return _await_search_slot(event, slot)
 
     def _publish(payload: Dict[str, Any]) -> Dict[str, Any]:
         return _finish_search_slot(cache_key, payload, event=event, slot=slot)

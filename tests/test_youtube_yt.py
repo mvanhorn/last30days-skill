@@ -1209,6 +1209,59 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
             youtube_yt.search_youtube("lululemon", "2026-06-01", "2026-07-01")
         self.assertEqual(run_mock.call_count, 2)
 
+    def test_waiter_receives_leader_result_without_synthetic_timeout(self):
+        """A coalesced waiter must not invent a timeout while the leader runs."""
+        import threading
+        from lib.subproc import SubprocResult
+
+        video = {
+            "id": "waiter1",
+            "title": "Vuori review",
+            "view_count": 10,
+            "like_count": 1,
+            "comment_count": 0,
+            "upload_date": "20260615",
+            "description": "desc",
+            "channel": "Tester",
+        }
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_run(cmd, timeout=None):
+            started.set()
+            release.wait(timeout=5)
+            return SubprocResult(
+                returncode=0, stdout=json.dumps(video) + "\n", stderr="",
+            )
+
+        results = []
+
+        def leader():
+            results.append(
+                youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+            )
+
+        def waiter():
+            started.wait(timeout=5)
+            results.append(
+                youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+            )
+
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", side_effect=slow_run):
+            t_leader = threading.Thread(target=leader)
+            t_waiter = threading.Thread(target=waiter)
+            t_leader.start()
+            self.assertTrue(started.wait(timeout=5))
+            t_waiter.start()
+            release.set()
+            t_leader.join(timeout=5)
+            t_waiter.join(timeout=5)
+
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(r.get("items") for r in results))
+        self.assertTrue(all(not r.get("error") for r in results))
+
     def test_multi_query_preserves_timeout_over_later_empty(self):
         responses = [
             {"items": [], "error": "Search timed out after 1s"},
