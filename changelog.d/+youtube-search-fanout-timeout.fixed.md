@@ -1,0 +1,1 @@
+YouTube yt-dlp search under comparison-mode fan-out no longer self-throttles into 120s timeouts: concurrent yt-dlp invocations are process-wide capped, identical searches are deduped within a run, and a search timeout is recorded as `timeout` rather than `no-results`. `LAST30DAYS_YT_SEARCH_TIMEOUT` configures the search deadline.
