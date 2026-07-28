@@ -1262,6 +1262,40 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
         self.assertTrue(all(r.get("items") for r in results))
         self.assertTrue(all(not r.get("error") for r in results))
 
+    def test_stale_leader_after_reset_does_not_pop_newer_inflight(self):
+        """A leader that outlives reset_search_cache must not drop the new slot."""
+        import threading
+
+        key = ("ownership", 8, "2026-06-01")
+        old_event = threading.Event()
+        old_slot: list = [None]
+        new_event = threading.Event()
+        new_slot: list = [None]
+
+        with youtube_yt._search_cache_lock:
+            youtube_yt._search_inflight[key] = (old_event, old_slot)
+
+        youtube_yt.reset_search_cache()
+        with youtube_yt._search_cache_lock:
+            youtube_yt._search_inflight[key] = (new_event, new_slot)
+
+        youtube_yt._finish_search_slot(
+            key,
+            {"items": [{"video_id": "old"}]},
+            event=old_event,
+            slot=old_slot,
+        )
+
+        with youtube_yt._search_cache_lock:
+            current = youtube_yt._search_inflight.get(key)
+            cached = youtube_yt._search_cache.get(key)
+
+        self.assertIsNotNone(current)
+        self.assertIs(current[1], new_slot)
+        self.assertIsNone(cached)
+        self.assertTrue(old_event.is_set())
+        self.assertEqual(old_slot[0]["items"][0]["video_id"], "old")
+
     def test_multi_query_preserves_timeout_over_later_empty(self):
         responses = [
             {"items": [], "error": "Search timed out after 1s"},

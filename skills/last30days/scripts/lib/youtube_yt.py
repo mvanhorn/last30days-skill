@@ -226,17 +226,23 @@ def _finish_search_slot(
 ) -> Dict[str, Any]:
     """Publish a search result to waiters; cache only clean (non-error) payloads.
 
-    Idempotent: a second finish after the slot is already closed is a no-op so
-    ``finally`` safety nets cannot overwrite a successful publish.
+    Ownership is by slot identity: after ``reset_search_cache()`` clears the
+    registry, a stale leader must still wake its own waiters but must not pop
+    or overwrite a newer run's registration for the same key.
     """
     shared = copy.deepcopy(payload)
     with _search_cache_lock:
-        if cache_key not in _search_inflight and slot[0] is not None:
+        if slot[0] is not None:
+            # Idempotent re-finish of this slot (e.g. finally after return).
+            event.set()
             return payload
         slot[0] = shared
-        if not payload.get("error"):
-            _search_cache[cache_key] = shared
-        _search_inflight.pop(cache_key, None)
+        current = _search_inflight.get(cache_key)
+        if current is not None and current[1] is slot:
+            if not payload.get("error"):
+                _search_cache[cache_key] = shared
+            _search_inflight.pop(cache_key, None)
+        # else: stale leader after a reset — wake local waiters only.
         event.set()
     return payload
 
