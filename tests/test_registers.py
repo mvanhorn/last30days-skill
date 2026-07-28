@@ -203,7 +203,7 @@ def test_default_register_is_byte_identical_when_omitted(monkeypatch):
 
     assert implicit == explicit
     assert hashlib.sha256(implicit.encode()).hexdigest() == (
-        "8ca92207d49f09bc08ac4aba60c573cc832a23b1c78ad7cf90a5ca24bfbafe50"
+        "fe85fb29fb787ed71f7cc1b6fcce48e07e4dfba4e2d4d16a0eceb9d9152bce1c"
     )
 
 

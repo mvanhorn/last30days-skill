@@ -1750,8 +1750,9 @@ def render_full(report: schema.Report) -> str:
                     excerpt = tc.get("excerpt", tc.get("text", ""))
                     tc_score = tc.get("score", "")
                     attribution = _comment_attribution(item.source, tc.get("author"))
+                    vote_part = f" ({tc_score} {vote_label})" if tc_score else ""
                     lines.append(
-                        f"  Top comment {attribution} ({tc_score} {vote_label}): "
+                        f"  Top comment {attribution}{vote_part}: "
                         f"{_format_untrusted_evidence(excerpt, 200, continuation_indent='  ')}"
                     )
             # Digg: inline X-post quotes attached to the cluster.
@@ -2221,8 +2222,9 @@ def _render_candidate(
         vote_label = _vote_label_for(primary.source) if primary else "upvotes"
         source = primary.source if primary else None
         attribution = _comment_attribution(source, tc.get("author"))
+        vote_part = f" ({score} {vote_label})" if score else ""
         lines.append(
-            f"   - {attribution} ({score} {vote_label}): "
+            f"   - {attribution}{vote_part}: "
             f"{_format_untrusted_evidence(excerpt.strip(), 240)}"
         )
     for post in _digg_posts_for(primary):
@@ -3249,7 +3251,16 @@ def _render_best_takes(
         for item in candidate.source_items:
             for comment in item.metadata.get("top_comments", [])[:3]:
                 body = (
-                    (comment.get("body") or comment.get("text") or "")
+                    (
+                        comment.get("body")
+                        or comment.get("text")
+                        or (
+                            comment.get("excerpt")
+                            if candidate.source == "hackernews"
+                            else ""
+                        )
+                        or ""
+                    )
                     if isinstance(comment, dict)
                     else str(comment)
                 )

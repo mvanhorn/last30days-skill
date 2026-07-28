@@ -32,7 +32,7 @@ def _hn_item():
             {
                 "author": "bob",
                 "text": "Counterpoint: the benchmark skips the hard cases.",
-                "points": 0,
+                "points": None,
             },
         ],
     }
@@ -134,3 +134,48 @@ def test_absent_vote_signal_renders_no_zero_points_parenthetical():
     rendered = "\n".join(lines)
     assert "0 points" not in rendered, rendered
     assert "93 points" in rendered, "a real vote count must still be shown"
+
+
+def test_ranked_candidate_omits_absent_vote_signal():
+    """Ranked Evidence Clusters must not turn a missing HN score into zero."""
+    hn = normalize._normalize_hackernews(
+        "hackernews", _hn_item(), 0, FROM_DATE, TO_DATE
+    )
+    rendered = "\n".join(
+        render._render_candidate(_candidate("hackernews", hn), prefix="1.")
+    )
+    assert "0 points" not in rendered, rendered
+    assert "93 points" in rendered, "a real vote count must still be shown"
+
+
+def test_best_takes_uses_normalized_hn_comment_excerpt():
+    """Best Takes should display HN comment text, not only the story title."""
+    first_raw = _hn_item()
+    first_raw["title"] = "Show HN: a deliberately long story title for testing"
+    first_raw["top_comments"] = [
+        {"author": "alice", "text": "A sharp HN take.", "points": None}
+    ]
+    second_raw = _hn_item()
+    second_raw["id"] = "43"
+    second_raw["title"] = "Ask HN: another deliberately long story title for testing"
+    second_raw["top_comments"] = [
+        {"author": "bob", "text": "Another good take.", "points": None}
+    ]
+    first = _candidate(
+        "hackernews",
+        normalize._normalize_hackernews("hackernews", first_raw, 0, FROM_DATE, TO_DATE),
+    )
+    second = _candidate(
+        "hackernews",
+        normalize._normalize_hackernews(
+            "hackernews", second_raw, 1, FROM_DATE, TO_DATE
+        ),
+    )
+    first.fun_score = 80.0
+    second.fun_score = 80.0
+
+    rendered = "\n".join(
+        render._render_best_takes([first, second], threshold=70.0, vote_weight=0.0)
+    )
+    assert "A sharp HN take." in rendered
+    assert "Another good take." in rendered
