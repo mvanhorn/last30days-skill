@@ -148,9 +148,17 @@ def _fetch_one_with_status(
     timeframe: str = TIMEFRAME,
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     try:
-        text = http.reddit_keyless_get_text(_listing_url(subreddit, sort, timeframe), timeout=LISTING_TIMEOUT,
-                                            accept="text/html")
-        return (parse_cards(text, query) if text else []), None
+        # tee_failures, not capture_failures: the latter would replace the
+        # pipeline's sink and hide this failure from it. get_text launders a
+        # terminal HTTP failure into None, so the tee is how this lane recovers
+        # the status code it needs to report (issue #899).
+        with http.tee_failures() as swallowed:
+            text = http.reddit_keyless_get_text(_listing_url(subreddit, sort, timeframe), timeout=LISTING_TIMEOUT,
+                                                accept="text/html")
+        if text is None:
+            # An empty body ("") is a real empty listing; None never is.
+            return [], (str(swallowed[-1]) if swallowed else "no response")
+        return parse_cards(text, query), None
     except Exception as e:
         _log(f"listing fetch failed r/{subreddit} {sort}: {e}")
         return [], str(e)
@@ -178,7 +186,9 @@ def fetch_listings(
     jobs = [(sub, sort) for sub in subreddits for sort in sorts]
     all_posts: List[Dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)) or 1) as executor:
-        futures = {executor.submit(_fetch_one, sub, sort, query, timeframe): (sub, sort)
+        # submit_with_context, not executor.submit — see the note in
+        # fetch_discovery_listings below (issue #899).
+        futures = {http.submit_with_context(executor, _fetch_one, sub, sort, query, timeframe): (sub, sort)
                    for sub, sort in jobs}
         for future in futures:
             try:
@@ -208,8 +218,14 @@ def fetch_discovery_listings(
     items: List[Dict[str, Any]] = []
     errors: List[str] = []
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)) or 1) as executor:
+        # submit_with_context, not executor.submit: a plain submit starts the
+        # worker with an empty context, dropping the pipeline's
+        # capture_failures() sink so a listing's 429/403 is silently discarded
+        # and the source reports a clean no-results (issue #899).
         futures = {
-            executor.submit(_fetch_one_with_status, subreddit, sort, query, "week"): (subreddit, sort)
+            http.submit_with_context(
+                executor, _fetch_one_with_status, subreddit, sort, query, "week"
+            ): (subreddit, sort)
             for subreddit, sort in jobs
         }
         for future, (subreddit, sort) in futures.items():

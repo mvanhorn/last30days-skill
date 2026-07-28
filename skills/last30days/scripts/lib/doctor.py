@@ -53,7 +53,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, env, health, prescriptions
+from . import backends, env, health, http, prescriptions
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -1469,10 +1469,28 @@ def _write_cache(report: Dict[str, Any], config: Dict[str, Any]) -> bool:
 
 # Free, keyless liveness endpoints (reachability check, tiny payload).
 _HTTP_PROBE_URLS = {
-    "reddit": "https://www.reddit.com/r/all/hot.json?limit=1",
+    # The keyless engine's real discovery endpoint (reddit_rss._build_urls).
+    # /r/all/hot.json is permanently 403 keyless (see the reddit_keyless module
+    # docstring) and no lane requests it any more, so probing it measured an
+    # endpoint the engine had already abandoned.
+    "reddit": "https://www.reddit.com/search.rss?q=test&sort=relevance&t=month",
     "hackernews": "https://hn.algolia.com/api/v1/search?query=test&hitsPerPage=1",
     "polymarket": "https://gamma-api.polymarket.com/events?limit=1",
     "github": "https://api.github.com/rate_limit",
+}
+
+# Per-source exception to "a 4xx still means the endpoint responded". The
+# keyless Reddit lanes send no credentials, so a 403/429 there is the host
+# refusing this client — the exact failure the engine hits — not reachability.
+_PROBE_BLOCKED_STATUSES = {"reddit": frozenset({403, 429})}
+
+# Probe with the identity the lane sends, or the probe measures the User-Agent
+# rather than the endpoint (get_text sends http.BROWSER_USER_AGENT).
+_PROBE_HEADERS = {
+    "reddit": {
+        "User-Agent": http.BROWSER_USER_AGENT,
+        "Accept": "application/atom+xml",
+    },
 }
 
 DEFAULT_PROBE_TIMEOUT_SECONDS = 10
@@ -1501,18 +1519,32 @@ def _probeable_sources() -> tuple:
     return tuple(dict.fromkeys(list(_HTTP_PROBE_URLS) + cli_only))
 
 
-def _http_ok(url: str, timeout: float) -> tuple:
+def _http_ok(
+    url: str,
+    timeout: float,
+    *,
+    blocked_statuses: frozenset = frozenset(),
+    headers: Optional[Dict[str, str]] = None,
+) -> tuple:
     """Reachability check: a 4xx still means the endpoint responded; 5xx or a
-    connection/timeout error means it did not."""
+    connection/timeout error means it did not.
+
+    ``blocked_statuses`` names the per-source codes that mean "responded, but
+    refused us" (Reddit's keyless 403/429) — those are a failure, not
+    reachability. ``headers`` overrides the probe identity so a source can be
+    probed with the same User-Agent its lane sends.
+    """
+    def _verdict(code: int) -> tuple:
+        return code < 500 and code not in blocked_statuses, f"HTTP {code}"
+
     try:
         req = urllib.request.Request(
-            url, headers={"User-Agent": "last30days-doctor"}
+            url, headers=headers or {"User-Agent": "last30days-doctor"}
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            code = getattr(resp, "status", 200) or 200
-        return code < 500, f"HTTP {code}"
+            return _verdict(getattr(resp, "status", 200) or 200)
     except urllib.error.HTTPError as exc:
-        return exc.code < 500, f"HTTP {exc.code}"
+        return _verdict(exc.code)
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
 
@@ -1520,7 +1552,12 @@ def _http_ok(url: str, timeout: float) -> tuple:
 def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
     url = _HTTP_PROBE_URLS.get(name)
     if url:
-        ok, detail = _http_ok(url, timeout)
+        ok, detail = _http_ok(
+            url,
+            timeout,
+            blocked_statuses=_PROBE_BLOCKED_STATUSES.get(name, frozenset()),
+            headers=_PROBE_HEADERS.get(name),
+        )
         return {"ok": ok, "detail": detail, "probed": True}
     cli = CLI_DEPENDENCIES.get(name)
     if cli:

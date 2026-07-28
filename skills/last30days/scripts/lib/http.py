@@ -9,6 +9,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
+from concurrent.futures import Future
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from pathlib import Path
@@ -433,6 +434,27 @@ def capture_failures():
 
 
 @contextmanager
+def tee_failures():
+    """Observe failures locally WITHOUT hiding them from the enclosing sink.
+
+    ``capture_failures()`` *replaces* the context-local sink, so nesting it
+    inside a retrieval context swallows the very failure the pipeline needs.
+    This yields a local list and forwards its contents to the parent sink on
+    exit, so a swallow site (``get_text`` returns None and drops the status)
+    can recover what it lost while the pipeline still sees the failure.
+    """
+    parent = _failure_sink.get()
+    local: list[HTTPError] = []
+    token = _failure_sink.set(local)
+    try:
+        yield local
+    finally:
+        _failure_sink.reset(token)
+        if parent is not None:
+            parent.extend(local)
+
+
+@contextmanager
 def expected_misses(*status_codes: int):
     """Exclude adapter-declared probe misses from captured run failures."""
     token = _expected_miss_statuses.set(
@@ -444,7 +466,7 @@ def expected_misses(*status_codes: int):
         _expected_miss_statuses.reset(token)
 
 
-def submit_with_context(executor, func, /, *args, **kwargs):
+def submit_with_context(executor, func, /, *args, **kwargs) -> Future:
     """Submit a worker with the caller's failure-capture context."""
     context = copy_context()
     return executor.submit(context.run, func, *args, **kwargs)

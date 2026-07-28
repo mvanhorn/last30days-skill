@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -377,6 +378,33 @@ def test_listing_failure_is_not_reported_as_clean_no_results():
 
     assert report.source_status["reddit"].state == "timeout"
     assert report.source_status["reddit"].detail == "connection timed out"
+
+
+def test_discovery_listing_block_is_reported_as_rate_limited():
+    # get_text swallows the 429 and hands back None; without the tee the lane
+    # could not tell that apart from an empty listing and the sweep reported a
+    # clean no-results (issue #899).
+    blocked = urllib.error.HTTPError(
+        "https://www.reddit.com/svc/shreddit/community-more-posts/rising/",
+        429,
+        "Too Many Requests",
+        {},
+        None,
+    )
+
+    with mock.patch.object(pipeline, "available_sources", return_value=["reddit"]), \
+         mock.patch("lib.http.time.sleep"), \
+         mock.patch("lib.http.urllib.request.urlopen", side_effect=blocked):
+        report = pipeline.run_discover(
+            domain="AI agents",
+            config={},
+            as_of_date="2026-07-10",
+            subreddits=["AI_Agents"],
+        )
+
+    outcome = report.source_status["reddit"]
+    assert outcome.state == "rate-limited"
+    assert "429" in (outcome.detail or "")
 
 
 def test_reddit_discovery_adapter_preserves_partial_feed_errors():
