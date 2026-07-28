@@ -62,6 +62,9 @@ class TestYouTubeEngagementZero(unittest.TestCase):
 
 
 class TestYtDlpFlags(unittest.TestCase):
+    def setUp(self):
+        youtube_yt.reset_search_cache()
+
     def _fake_result(self, stdout: str = "", returncode: int = 0):
         from lib.subproc import SubprocResult
         return SubprocResult(returncode=returncode, stdout=stdout, stderr="")
@@ -683,6 +686,7 @@ class TestYtdlpSSHRouting(unittest.TestCase):
     def setUp(self):
         # Ensure clean env for each test
         self._saved_env = os.environ.pop("LAST30DAYS_YOUTUBE_SSH_HOST", None)
+        youtube_yt.reset_search_cache()
 
     def tearDown(self):
         os.environ.pop("LAST30DAYS_YOUTUBE_SSH_HOST", None)
@@ -1132,6 +1136,197 @@ class TestYoutubeCommentsGating(unittest.TestCase):
         self.assertTrue(env.is_tiktok_comments_available(
             {"SCRAPECREATORS_API_KEY": "k", "INCLUDE_SOURCES": "tiktok_comments"}
         ))
+
+
+class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
+    """Comparison-mode load: timeouts, status honesty, and in-run dedup."""
+
+    def setUp(self):
+        youtube_yt.reset_search_cache()
+
+    def _fake_result(self, stdout: str = "", returncode: int = 0):
+        from lib.subproc import SubprocResult
+        return SubprocResult(returncode=returncode, stdout=stdout, stderr="")
+
+    def test_search_timeout_reports_timeout_error_not_empty(self):
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.dict(os.environ, {"LAST30DAYS_YT_SEARCH_TIMEOUT": "1"}), \
+             mock.patch.object(
+                 youtube_yt.subproc, "run_with_timeout",
+                 side_effect=youtube_yt.subproc.SubprocTimeout("boom"),
+             ):
+            out = youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+        self.assertEqual(out.get("items"), [])
+        self.assertIn("timed out", (out.get("error") or "").lower())
+        self.assertEqual(
+            youtube_yt.classify_run_failure(out["error"]),
+            youtube_yt.health.TIMEOUT,
+        )
+
+    def test_search_timeout_env_is_passed_to_subprocess(self):
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.dict(os.environ, {"LAST30DAYS_YT_SEARCH_TIMEOUT": "7"}), \
+             mock.patch.object(
+                 youtube_yt.subproc, "run_with_timeout",
+                 return_value=self._fake_result(),
+             ) as run_mock:
+            youtube_yt.search_youtube("Alo Yoga", "2026-06-01", "2026-07-01")
+        self.assertEqual(run_mock.call_args.kwargs.get("timeout"), 7.0)
+
+    def test_identical_searches_are_cached_within_run(self):
+        video = {
+            "id": "abc123",
+            "title": "Vuori review",
+            "view_count": 100,
+            "like_count": 1,
+            "comment_count": 0,
+            "upload_date": "20260615",
+            "description": "desc",
+            "channel": "Tester",
+        }
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(
+                 youtube_yt.subproc, "run_with_timeout",
+                 return_value=self._fake_result(stdout=json.dumps(video) + "\n"),
+             ) as run_mock:
+            first = youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+            second = youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+        self.assertEqual(run_mock.call_count, 1)
+        self.assertEqual(len(first["items"]), 1)
+        self.assertEqual(len(second["items"]), 1)
+        self.assertEqual(first["items"][0]["video_id"], second["items"][0]["video_id"])
+        # Callers get independent copies so mutations cannot poison the cache.
+        second["items"][0]["title"] = "mutated"
+        self.assertNotEqual(first["items"][0]["title"], "mutated")
+
+    def test_timeout_errors_are_not_cached(self):
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(
+                 youtube_yt.subproc, "run_with_timeout",
+                 side_effect=youtube_yt.subproc.SubprocTimeout("boom"),
+             ) as run_mock:
+            youtube_yt.search_youtube("lululemon", "2026-06-01", "2026-07-01")
+            youtube_yt.search_youtube("lululemon", "2026-06-01", "2026-07-01")
+        self.assertEqual(run_mock.call_count, 2)
+
+    def test_waiter_receives_leader_result_without_synthetic_timeout(self):
+        """A coalesced waiter must not invent a timeout while the leader runs."""
+        import threading
+        from lib.subproc import SubprocResult
+
+        video = {
+            "id": "waiter1",
+            "title": "Vuori review",
+            "view_count": 10,
+            "like_count": 1,
+            "comment_count": 0,
+            "upload_date": "20260615",
+            "description": "desc",
+            "channel": "Tester",
+        }
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_run(cmd, timeout=None):
+            started.set()
+            release.wait(timeout=5)
+            return SubprocResult(
+                returncode=0, stdout=json.dumps(video) + "\n", stderr="",
+            )
+
+        results = []
+
+        def leader():
+            results.append(
+                youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+            )
+
+        def waiter():
+            started.wait(timeout=5)
+            results.append(
+                youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+            )
+
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", side_effect=slow_run):
+            t_leader = threading.Thread(target=leader)
+            t_waiter = threading.Thread(target=waiter)
+            t_leader.start()
+            self.assertTrue(started.wait(timeout=5))
+            t_waiter.start()
+            release.set()
+            t_leader.join(timeout=5)
+            t_waiter.join(timeout=5)
+
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(r.get("items") for r in results))
+        self.assertTrue(all(not r.get("error") for r in results))
+
+    def test_stale_leader_after_reset_does_not_pop_newer_inflight(self):
+        """A leader that outlives reset_search_cache must not drop the new slot."""
+        import threading
+
+        key = ("ownership", 8, "2026-06-01")
+        old_event = threading.Event()
+        old_slot: list = [None]
+        new_event = threading.Event()
+        new_slot: list = [None]
+
+        with youtube_yt._search_cache_lock:
+            youtube_yt._search_inflight[key] = (old_event, old_slot)
+
+        youtube_yt.reset_search_cache()
+        with youtube_yt._search_cache_lock:
+            youtube_yt._search_inflight[key] = (new_event, new_slot)
+
+        youtube_yt._finish_search_slot(
+            key,
+            {"items": [{"video_id": "old"}]},
+            event=old_event,
+            slot=old_slot,
+        )
+
+        with youtube_yt._search_cache_lock:
+            current = youtube_yt._search_inflight.get(key)
+            cached = youtube_yt._search_cache.get(key)
+
+        self.assertIsNotNone(current)
+        self.assertIs(current[1], new_slot)
+        self.assertIsNone(cached)
+        self.assertTrue(old_event.is_set())
+        self.assertEqual(old_slot[0]["items"][0]["video_id"], "old")
+
+    def test_multi_query_preserves_timeout_over_later_empty(self):
+        responses = [
+            {"items": [], "error": "Search timed out after 1s"},
+            {"items": []},
+        ]
+
+        def fake_search(*_args, **_kwargs):
+            return responses.pop(0)
+
+        with mock.patch.object(youtube_yt, "expand_youtube_queries", return_value=["a", "b"]), \
+             mock.patch.object(youtube_yt, "search_youtube", side_effect=fake_search):
+            out = youtube_yt.search_and_transcribe(
+                "topic", "2026-06-01", "2026-07-01", depth="default",
+            )
+        self.assertEqual(out.get("items"), [])
+        self.assertIn("timed out", (out.get("error") or "").lower())
+        self.assertEqual(
+            youtube_yt.classify_run_failure(out["error"]),
+            youtube_yt.health.TIMEOUT,
+        )
+
+    def test_bundle_records_timeout_not_no_results(self):
+        from lib import health, schema
+
+        bundle = schema.RetrievalBundle()
+        bundle.mark_attempted("youtube")
+        state = youtube_yt.classify_run_failure("Search timed out after 1s")
+        bundle.record_failure("youtube", state, "Search timed out after 1s")
+        bundle.add_items("main", "youtube", [])
+        self.assertEqual(bundle.source_status["youtube"].state, health.TIMEOUT)
+        self.assertNotEqual(bundle.source_status["youtube"].state, schema.NO_RESULTS)
 
 
 if __name__ == "__main__":

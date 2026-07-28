@@ -54,8 +54,8 @@ jobs:
           path: dist/last30days.skill
 
   # Cross-compile the Go MCP server for each Claude Desktop platform and
-  # package each as a .mcpb. printing-press bundle handles the manifest +
-  # zip layout; we only supply the pre-built binary via --skip-build.
+  # package each as a .mcpb. MCPB v0.3 is a ZIP containing the checked-in
+  # manifest and the pre-built binary at the manifest's entry point.
   build-mcpb:
     runs-on: ubuntu-latest
     permissions:
@@ -64,20 +64,16 @@ jobs:
       attestations: write
     env:
       MCPB_OUTPUT: mcp/build/last30days-pp-mcp-${{ matrix.goos }}-${{ matrix.goarch }}.mcpb
-      MCPB_PLATFORM: ${{ matrix.platform }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - goos: darwin
             goarch: arm64
-            platform: darwin/arm64
           - goos: darwin
             goarch: amd64
-            platform: darwin/amd64
           - goos: linux
             goarch: amd64
-            platform: linux/amd64
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -88,24 +84,11 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # printing-press v4.8.0 declares `go >= 1.26.3`, newer than the
-          # engine's own floor in mcp/go.mod. Install a 1.26.x toolchain so the
-          # PP `go install` below is satisfied without a runtime toolchain
-          # download (which GOSUMDB=off would block). Building the MCP binary
-          # with a newer toolchain than mcp/go.mod declares is backward-safe.
+          # Build the MCP binary with a toolchain newer than the floor in
+          # mcp/go.mod. Keeping this explicit also avoids a runtime toolchain
+          # download during the cross-compile.
           go-version: "1.26"
           cache: false
-
-      - name: Install printing-press
-        # Pin to a known-good PP release so the bundle command's behavior
-        # is deterministic across our tags. Bump deliberately when adopting
-        # a newer PP version. GOSUMDB=off skips the sumdb 404 some
-        # private-namespaced go install calls hit even when the repo is
-        # public; harmless here because the module path is fully qualified.
-        env:
-          GOPRIVATE: github.com/mvanhorn/*
-          GOSUMDB: "off"
-        run: go install github.com/mvanhorn/cli-printing-press/v4/cmd/printing-press@v4.8.0
 
       - name: Sync engine into vendored/
         run: bash mcp/scripts/sync-engine.sh
@@ -124,16 +107,27 @@ jobs:
             ./cmd/last30days-pp-mcp
 
       - name: Bundle .mcpb
-        # printing-press bundle reads manifest.json from the cli dir and
-        # rewrites the binary into bin/<entry_point> inside the zip. The
-        # --platform tag drives the output filename suffix; the binary
-        # itself is whatever we just cross-compiled.
+        # Keep this equivalent to printing-press's bundle layout without
+        # downloading a separate packager: manifest.json at the ZIP root and
+        # the executable at its declared server.entry_point.
         run: |
-          printing-press bundle mcp \
-            --skip-build \
-            --binary mcp/build/last30days-pp-mcp \
-            --platform "${MCPB_PLATFORM}" \
-            --output "${MCPB_OUTPUT}"
+          set -euo pipefail
+          entry_point="$(jq -er '.server.entry_point' mcp/manifest.json)"
+          test "${entry_point}" = "bin/last30days-pp-mcp"
+
+          staging="${RUNNER_TEMP}/last30days-mcpb"
+          output="${GITHUB_WORKSPACE}/${MCPB_OUTPUT}"
+          mkdir -p "${staging}/bin" "$(dirname "${output}")"
+          cp mcp/manifest.json "${staging}/manifest.json"
+          cp mcp/build/last30days-pp-mcp "${staging}/${entry_point}"
+          chmod 0755 "${staging}/${entry_point}"
+
+          (
+            cd "${staging}"
+            zip -q -X "${output}" manifest.json "${entry_point}"
+          )
+          unzip -Z1 "${output}" | grep -Fxq "manifest.json"
+          unzip -Z1 "${output}" | grep -Fxq "${entry_point}"
 
       - name: Attest .mcpb artifact provenance
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4.2.0

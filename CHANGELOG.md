@@ -9,6 +9,14 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.18.4] - 2026-07-28
+
+### Fixed
+
+- Tag release workflow YAML now parses on every main push; merge commits can mint `vX.Y.Z` tags again. ([#880](https://github.com/mvanhorn/last30days-skill/issues/880))
+- YouTube yt-dlp search under comparison-mode fan-out no longer self-throttles into 120s timeouts: concurrent yt-dlp invocations are process-wide capped, identical searches are deduped within a run, and a search timeout is recorded as `timeout` rather than `no-results`. `LAST30DAYS_YT_SEARCH_TIMEOUT` configures the search deadline.
+
+
 ## [3.18.3] - 2026-07-25
 
 ### Fixed
