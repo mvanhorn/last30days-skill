@@ -1,0 +1,1 @@
+Keyless Reddit comment scraping now drops bot authors (RemindMeBot, AutoModerator, and `-bot`/`_bot` suffixed accounts), so a "I will be messaging you in 3 days" reply can no longer occupy a Top Community Comments slot. Matches the AutoModerator filter the API path already applied.

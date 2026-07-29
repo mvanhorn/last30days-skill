@@ -35,6 +35,37 @@ MAX_COMMENTS = 10
 
 SVC_TIMEOUT = 12
 
+# Bot authors whose comments carry no community signal. Reddit's own bots reply
+# to high-traffic threads by design, so they reliably occupy a top-comment slot
+# without saying anything about the topic ("I will be messaging you in 3 days
+# ..." surfaced as a Top Community Comment on a 2026-07-29 run). Matched
+# case-insensitively; `reddit.py` already drops AutoModerator on the API path.
+BOT_AUTHORS = frozenset({
+    "automoderator",
+    "remindmebot",
+    "repostsleuthbot",
+    "sneakpeekbot",
+    "savevideo",
+    "videodownloadbot",
+    "wikipedia-reader-bot",
+    "totesmessenger",
+    "b0trank",
+    "converter-bot",
+    "amputatorbot",
+    "stabbot",
+    "gifreversingbot",
+    "haikubotinaction",
+    "imagesofnetwork",
+    "botdefense",
+    "pi-bot",
+    "good_bot_bad_bot",
+})
+
+# Separator-delimited bot naming conventions, to catch the long tail of
+# subreddit-specific bots without enumerating every one. Deliberately excludes a
+# bare "bot" suffix: that would swallow ordinary usernames ("Talbot", "abbot").
+_BOT_SUFFIXES = ("-bot", "_bot")
+
 # Match the exact <shreddit-comment> element start tag, not <shreddit-comment-tree>
 # or <shreddit-comment-tree-stats> (lookahead requires whitespace or '>').
 _COMMENT_START = re.compile(r"<shreddit-comment(?=[\s>])[^>]*>")
@@ -106,13 +137,25 @@ def _body_for(html_text: str, thing_id: str) -> str:
     return _WS.sub(" ", _html.unescape(text)).strip()
 
 
+def _is_bot_author(author: str) -> bool:
+    """Whether an author is a bot whose comments carry no community signal."""
+    name = (author or "").strip().lower()
+    if not name:
+        return False
+    return name in BOT_AUTHORS or name.endswith(_BOT_SUFFIXES)
+
+
 def parse_comments(html_text: str, limit: int = MAX_COMMENTS) -> List[Dict[str, Any]]:
-    """Parse <shreddit-comment> elements into scored comment dicts (sorted desc)."""
+    """Parse <shreddit-comment> elements into scored comment dicts (sorted desc).
+
+    Deleted, removed, and bot authors are dropped: they occupy top-comment slots
+    on high-traffic threads without saying anything about the topic.
+    """
     comments: List[Dict[str, Any]] = []
     for m in _COMMENT_START.finditer(html_text or ""):
         tag = m.group(0)
         author = _attr(tag, "author") or "[deleted]"
-        if author in ("[deleted]", "[removed]"):
+        if author in ("[deleted]", "[removed]") or _is_bot_author(author):
             continue
         thing_id = _attr(tag, "thingId")
         body = _body_for(html_text, thing_id)
