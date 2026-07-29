@@ -178,26 +178,42 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         if not isinstance(raw, dict):
             continue
 
+        # ScrapeCreators' /v1/instagram/user/reels wraps every field --
+        # taken_at, caption, owner, engagement counts, etc. -- inside a
+        # nested "media" object (top-level item is just {"media": {...}}).
+        # /v2/instagram/reels/search returns those same fields flat on the
+        # item itself. Merge so top-level keys win (flat shape, or any
+        # future endpoint that duplicates a field at both levels) and
+        # nested "media" keys fill in anything missing at the top level,
+        # so both endpoint shapes parse through the same field lookups
+        # below. Exclude "media" itself from the top-level overlay so it
+        # doesn't reappear as a stray key inside the merged dict.
+        media_obj = raw.get("media")
+        if isinstance(media_obj, dict):
+            src = {**media_obj, **{k: v for k, v in raw.items() if k != "media"}}
+        else:
+            src = raw
+
         # Extract reel ID and shortcode
-        reel_pk = str(raw.get("id", raw.get("pk", "")))
-        shortcode = raw.get("shortcode", raw.get("code", ""))
+        reel_pk = str(src.get("id", src.get("pk", "")))
+        shortcode = src.get("shortcode", src.get("code", ""))
 
         # Caption text -- can be a string or dict depending on endpoint
-        caption_obj = raw.get("caption", "")
+        caption_obj = src.get("caption", "")
         if isinstance(caption_obj, dict):
             text = caption_obj.get("text", "")
         elif isinstance(caption_obj, str):
             text = caption_obj
         else:
-            text = raw.get("desc", raw.get("text", ""))
+            text = src.get("desc", src.get("text", ""))
 
         # Engagement metrics
-        play_count = raw.get("video_play_count") or raw.get("video_view_count") or raw.get("play_count") or 0
-        like_count = raw.get("like_count") or 0
-        comment_count = raw.get("comment_count") or 0
+        play_count = src.get("video_play_count") or src.get("video_view_count") or src.get("play_count") or 0
+        like_count = src.get("like_count") or 0
+        comment_count = src.get("comment_count") or 0
 
         # Author info -- 'owner' in reels/search, 'user' in user/reels
-        owner_raw = raw.get("owner") or raw.get("user")
+        owner_raw = src.get("owner") or src.get("user")
         if isinstance(owner_raw, dict):
             author_name = owner_raw.get("username", "")
         elif isinstance(owner_raw, str):
@@ -206,10 +222,30 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
             author_name = ""
 
         # Duration
-        duration = raw.get("video_duration")
+        duration = src.get("video_duration")
+
+        # Post type -- reels/search and user/reels are always "reel"; the
+        # user/posts feed endpoint mixes photos, carousels, and reels in one
+        # response, distinguished by media_type (2=video/reel, 8=carousel,
+        # else photo) and/or product_type ("clips"/"carousel_container").
+        media_type = src.get("media_type")
+        try:
+            media_type = int(media_type) if media_type is not None else None
+        except (TypeError, ValueError):
+            pass  # keep original value; falls through to product_type/duration checks below
+        product_type = src.get("product_type") or ""
+        if media_type == 8 or product_type == "carousel_container":
+            post_type = "carousel"
+        elif media_type == 2 or product_type == "clips" or duration is not None:
+            post_type = "reel"
+        else:
+            post_type = "photo"
+
+        # Carousel image count (None for reels/single-photo posts)
+        image_count = src.get("carousel_media_count") if post_type == "carousel" else None
 
         # Date
-        date_str = _parse_date(raw)
+        date_str = _parse_date(src)
 
         # Hashtags from caption text
         hashtags = _extract_hashtags(text)
@@ -217,10 +253,12 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         # Compute relevance with hashtag boost
         relevance = _compute_relevance(core_topic, text, hashtags)
 
-        # Build URL -- prefer API-provided url, fallback to shortcode
-        url = raw.get("url", "")
+        # Build URL -- prefer API-provided url, fallback to shortcode.
+        # Photo/carousel posts live under /p/, reels under /reel/.
+        url = src.get("url", "")
         if not url and shortcode:
-            url = f"https://www.instagram.com/reel/{shortcode}"
+            path = "reel" if post_type == "reel" else "p"
+            url = f"https://www.instagram.com/{path}/{shortcode}"
 
         items.append({
             "video_id": reel_pk,
@@ -235,6 +273,9 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
             },
             "hashtags": hashtags,
             "duration": duration,
+            "post_type": post_type,
+            "image_count": image_count,
+            "cover_image_url": src.get("display_uri") if isinstance(src.get("display_uri"), str) else "",
             "relevance": relevance,
             "why_relevant": f"Instagram: {text[:60]}" if text else f"Instagram: {core_topic}",
             "caption_snippet": "",  # populated by fetch_captions
@@ -265,12 +306,61 @@ def _user_reels(
             timeout=30,
             retries=2,
         )
+        if not isinstance(data, dict):
+            _log(f"User reels error for @{handle}: unexpected response type {type(data).__name__}")
+            return []
+        raw_items = data.get("items") or data.get("reels") or data.get("data") or []
     except Exception as e:
         _log(f"User reels error for @{handle}: {e}")
         return []
 
-    raw_items = data.get("items") or data.get("reels") or data.get("data") or []
     _log(f"  -> {len(raw_items)} reels from @{handle}")
+    return raw_items
+
+
+def _user_posts(
+    handle: str,
+    token: str,
+) -> List[Dict[str, Any]]:
+    """Fetch an Instagram user's recent feed posts via ScrapeCreators.
+
+    Unlike ``_user_reels`` (reels/clips only), ScrapeCreators'
+    ``/v2/instagram/user/posts`` returns the full feed timeline -- photo
+    posts, carousels, and reels all mixed together, flat (no nested
+    "media" wrapper unlike /v1/instagram/user/reels). Carousel items are
+    identified by ``media_type == 8`` / ``product_type ==
+    "carousel_container"`` and carry a ``carousel_media_count`` int and a
+    ``display_uri`` cover-image URL.
+
+    Failures here are isolated from the reels fetch: a broken/rate-limited
+    posts call must not affect creator reels results, and vice versa.
+
+    Args:
+        handle: Instagram username (without @)
+        token: ScrapeCreators API key
+
+    Returns:
+        List of raw Instagram post dicts (photos, carousels, and reels).
+    """
+    _log(f"User posts: @{handle}")
+    posts_url = f"{SCRAPECREATORS_BASE}/v2/instagram/user/posts"
+    try:
+        data = http.get(
+            posts_url,
+            params={"handle": handle},
+            headers=http.scrapecreators_headers(token),
+            timeout=30,
+            retries=2,
+        )
+        if not isinstance(data, dict):
+            _log(f"User posts error for @{handle}: unexpected response type {type(data).__name__}")
+            return []
+        raw_items = data.get("items") or data.get("posts") or data.get("data") or []
+    except Exception as e:
+        _log(f"User posts error for @{handle}: {e}")
+        return []
+
+    _log(f"  -> {len(raw_items)} posts from @{handle}")
     return raw_items
 
 
@@ -477,8 +567,16 @@ def search_and_enrich(
     # Step 0: Creator reels (high-signal, runs first)
     if ig_creators and token:
         for creator in ig_creators:
-            raw_items = _user_reels(creator, token)
-            parsed = _parse_items(raw_items, core_topic)
+            # Reels-only endpoint and full feed-posts endpoint (which also
+            # includes photos/carousels, and re-includes reels) are fetched
+            # independently -- each has its own try/except inside its
+            # helper, so one endpoint failing (rate limit, 4xx, etc.) never
+            # blocks the other. Both are merged into the same seen_ids
+            # dedup set below (keyed by "video_id" == the post's ScrapeCreators
+            # id, which is stable across both endpoints for the same post).
+            raw_reels = _user_reels(creator, token)
+            raw_posts = _user_posts(creator, token)
+            parsed = _parse_items(raw_reels, core_topic) + _parse_items(raw_posts, core_topic)
             for item in parsed:
                 vid = item.get("video_id", "")
                 if vid and vid not in seen_ids:

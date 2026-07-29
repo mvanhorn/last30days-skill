@@ -1,0 +1,1 @@
+`--ig-creators` now also fetches each creator's photo and carousel posts via ScrapeCreators' `/v2/instagram/user/posts` (in addition to `/v1/instagram/user/reels`), merged and deduplicated by post id. Creators who only publish carousels/photos (no reels) previously surfaced 0 results.

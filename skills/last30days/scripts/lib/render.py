@@ -2038,6 +2038,23 @@ def _render_hiring_signals(
     return out
 
 
+def _instagram_post_type_label(item: schema.SourceItem | None) -> str | None:
+    """Distinguish reel/photo/carousel in evidence lines instead of the old
+    hardcoded "reel" assumption -- --ig-creators now also surfaces photo and
+    carousel posts (see lib/instagram.py's post_type/image_count fields)."""
+    if not item or item.source != "instagram":
+        return None
+    post_type = (item.metadata or {}).get("post_type")
+    if post_type == "carousel":
+        image_count = (item.metadata or {}).get("image_count")
+        return f"carousel ({image_count} 張)" if image_count else "carousel"
+    if post_type == "photo":
+        return "photo"
+    if post_type == "reel":
+        return "reel"
+    return None  # unknown/legacy items (e.g. keyword search path): no label, same as before
+
+
 def _render_candidate(
     candidate: schema.Candidate,
     prefix: str,
@@ -2047,6 +2064,7 @@ def _render_candidate(
     detail_parts = [
         _format_date(primary),
         _format_actor(primary),
+        _instagram_post_type_label(primary),
         _format_engagement(primary),
         f"score:{candidate.final_score:.0f}",
     ]
@@ -2389,7 +2407,9 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
     ("x",           "🔵", "X",            "post",     [("likes", "likes"), ("reposts", "reposts")]),
     ("youtube",     "🔴", "YouTube",      "video",    [("views", "views")]),  # transcripts appended below in _build_source_footer_lines
     ("tiktok",      "🎵", "TikTok",       "video",    [("views", "views"), ("likes", "likes")]),
-    ("instagram",   "📸", "Instagram",    "reel",     [("views", "views"), ("likes", "likes")]),
+    # item_word is "post" (not "reel") since --ig-creators now surfaces
+    # photo/carousel posts alongside reels in the same aggregate count.
+    ("instagram",   "📸", "Instagram",    "post",     [("views", "views"), ("likes", "likes")]),
     ("threads",     "🧵", "Threads",      "post",     [("likes", "likes"), ("replies", "replies")]),
     ("pinterest",   "📌", "Pinterest",    "pin",      [("saves", "saves"), ("comments", "comments")]),
     ("hackernews",  "🟡", "HN",           "story",    [("points", "points"), ("comments", "comments")]),
@@ -2705,6 +2725,12 @@ def _format_engagement(item: schema.SourceItem | None) -> str | None:
     engagement = item.engagement
     fields = ENGAGEMENT_DISPLAY.get(item.source)
     if fields:
+        # Instagram photo/carousel posts have no "views" (that's a video-only
+        # metric from play_count) -- drop it explicitly instead of relying on
+        # it happening to be 0 (defensive: some future API response could put
+        # a stray non-zero value there for a non-video post).
+        if item.source == "instagram" and (item.metadata or {}).get("post_type") not in (None, "reel"):
+            fields = [(field, label) for field, label in fields if field != "views"]
         text = _fmt_pairs([(engagement.get(field), label) for field, label in fields])
     else:
         # Generic fallback: engagement.items() yields (key, value) but
