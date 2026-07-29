@@ -110,6 +110,10 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
                 "score": score,
                 "num_comments": num_comments,
                 "upvote_ratio": None,
+                # Listing cards carry real counts. RSS has no counts and seeds
+                # 0, so consumers need this to tell "empty" from "not looked
+                # up yet" — see reddit_keyless._payoff_tier.
+                "counts_verified": True,
             },
             "relevance": round(token_overlap_relevance(query, title), 3) if query else 0.0,
             "why_relevant": "Reddit listing",

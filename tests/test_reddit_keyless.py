@@ -304,8 +304,10 @@ class TestSlotPriority:
         # A comment slot spent on a thread with no comments yields nothing, so it
         # sorts last however high its score or relevance.
         no_comments = self._titled(1, "openclaw deluxe leak", score=900, ncmt=0)
+        no_comments["engagement"]["counts_verified"] = True
         has_comments = self._titled(2, "openclaw first reactions", score=400, ncmt=220)
-        out = reddit_keyless._slot_priority("openclaw", [no_comments, has_comments])
+        out = reddit_keyless._slot_priority(
+            "openclaw", self._as_discovered("openclaw", [no_comments, has_comments]))
         assert out[0] is has_comments
         assert out[1] is no_comments
 
@@ -315,9 +317,23 @@ class TestSlotPriority:
         # exactly the posts nothing is known about yet.
         unknown = self._titled(1, "openclaw thread", score=0, ncmt=0)
         known_empty = self._titled(2, "openclaw thread", score=900, ncmt=0)
-        out = reddit_keyless._slot_priority("openclaw", [known_empty, unknown])
+        known_empty["engagement"]["counts_verified"] = True
+        out = reddit_keyless._slot_priority(
+            "openclaw", self._as_discovered("openclaw", [known_empty, unknown]))
         assert out[0] is unknown
         assert out[1] is known_empty
+
+    def test_verified_zero_outranked_by_unknown_count(self):
+        # A listing post downvoted to 0 with 0 comments is confirmed empty, so
+        # its slot can never pay off — even though its score reads like the RSS
+        # placeholder. Only the producer's own verification tells them apart.
+        verified_empty = self._titled(1, "openclaw thread", score=0, ncmt=0)
+        verified_empty["engagement"]["counts_verified"] = True
+        unknown = self._titled(2, "openclaw thread", score=0, ncmt=0)
+        out = reddit_keyless._slot_priority(
+            "openclaw", self._as_discovered("openclaw", [verified_empty, unknown]))
+        assert out[0] is unknown
+        assert out[1] is verified_empty
 
     def test_unknown_comment_count_still_yields_to_known_comments(self):
         # Unknown must not outrank a thread already known to carry discussion:

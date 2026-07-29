@@ -70,6 +70,8 @@ def _apply_scores(post: Dict[str, Any], scored: Dict[str, int]) -> None:
     post["num_comments"] = scored["num_comments"]
     post.setdefault("engagement", {})["score"] = scored["score"]
     post["engagement"]["num_comments"] = scored["num_comments"]
+    # A backfilled count is a real one, including a real 0.
+    post["engagement"]["counts_verified"] = True
 
 
 def _discover(
@@ -173,6 +175,7 @@ def _enrich_one(post: Dict[str, Any]) -> Dict[str, Any]:
         if num is not None:
             post["num_comments"] = num
             post.setdefault("engagement", {})["num_comments"] = num
+            post["engagement"]["counts_verified"] = True
     except Exception:
         pass  # keep the post with whatever discovery gave us
     return post
@@ -241,9 +244,10 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
     Ahead of that, posts are tiered by whether a slot can pay off at all:
     known-nonempty threads first, then threads whose comment count is merely
     unknown, then known-empty ones. RSS-discovered posts carry a placeholder
-    count of 0 until shreddit backfills them, so treating every 0 as "empty"
-    would bury exactly the posts nothing is known about yet. `_apply_scores`
-    writes score and count together, so a set score marks the count as real.
+    count of 0 until something backfills them, so treating every 0 as "empty"
+    would bury exactly the posts nothing is known about yet. Producers that
+    have a real count say so with `engagement["counts_verified"]`, which is
+    what separates a thread downvoted to zero from one never looked up.
 
     Never raises; on any failure the incoming order is returned unchanged.
     """
@@ -267,7 +271,7 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
             engagement = post.get("engagement") or {}
             if (engagement.get("num_comments") or 0) > 0:
                 return 2
-            return 0 if engagement.get("score") else 1
+            return 0 if engagement.get("counts_verified") else 1
 
         def _slot_key(post: Dict[str, Any]) -> Tuple[int, float]:
             return (_payoff_tier(post), _relevance_rank_key(post))
