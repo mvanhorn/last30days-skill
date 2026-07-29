@@ -20,7 +20,7 @@ import concurrent.futures
 import math
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from collections import Counter
 
@@ -49,7 +49,7 @@ def _relevance_rank_key(post: Dict[str, Any]) -> float:
     similarly-relevant posts by discussion volume but is too small to lift an
     off-topic post (relevance ~0) above an on-topic one.
     """
-    eng = post.get("engagement", {})
+    eng = post.get("engagement") or {}
     total = (eng.get("score", 0) or 0) + (eng.get("num_comments", 0) or 0)
     return (post.get("relevance") or 0.0) + min(0.25, math.log10(total + 1) / 20.0)
 
@@ -232,11 +232,11 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
     1.8k-3.1k upvote r/LocalLLaMA open-source-AI-policy threads claimed every
     slot and were then demoted below the fold by final ranking, leaving the
     run with no surfaced comments at all). So within each tier posts are
-    ordered by `_relevance_rank_key`'s own formula — relevance plus a capped
-    log-scaled engagement bonus — so a post that wins a slot is a post final
-    ranking will still display. Recomputing relevance rather than reading
-    `post["relevance"]` is deliberate: discovery does not set it reliably on
-    every path.
+    ordered by `_relevance_rank_key` itself — the very key the final display
+    sort uses. Calling it rather than reproducing its formula is the point: a
+    slot is a bet that the post will still be on screen once the comments are
+    attached, and a second implementation of that judgement is a second thing
+    to drift.
 
     Ahead of that, posts are tiered by whether a slot can pay off at all:
     known-nonempty threads first, then threads whose comment count is merely
@@ -263,19 +263,14 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
             def _matches(post: Dict[str, Any]) -> bool:
                 return relevance.token_overlap_relevance(prepared, _post_text(post)) > 0.24
 
-        def _payoff_tier(engagement: Dict[str, Any]) -> int:
+        def _payoff_tier(post: Dict[str, Any]) -> int:
+            engagement = post.get("engagement") or {}
             if (engagement.get("num_comments") or 0) > 0:
                 return 2
             return 0 if engagement.get("score") else 1
 
-        def _slot_key(post: Dict[str, Any]) -> tuple:
-            engagement = post.get("engagement") or {}
-            total = (engagement.get("score") or 0) + (engagement.get("num_comments") or 0)
-            return (
-                _payoff_tier(engagement),
-                relevance.token_overlap_relevance(prepared, _post_text(post))
-                + min(0.25, math.log10(total + 1) / 20.0),
-            )
+        def _slot_key(post: Dict[str, Any]) -> Tuple[int, float]:
+            return (_payoff_tier(post), _relevance_rank_key(post))
 
         matches: List[Dict[str, Any]] = []
         misses: List[Dict[str, Any]] = []
@@ -284,7 +279,10 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
         matches.sort(key=_slot_key, reverse=True)
         misses.sort(key=_slot_key, reverse=True)
         return matches + misses
-    except Exception:
+    except Exception as exc:
+        # The fallback is the score-first order this function exists to
+        # replace, so a silent failure looks exactly like the bug it fixes.
+        _log(f"slot ordering failed, falling back to score order: {exc}")
         return posts
 
 
@@ -339,8 +337,9 @@ def search_and_enrich(
     if len(posts) < before:
         _log(f"Relevance floor dropped {before - len(posts)} off-topic posts")
 
-    # Provisional score-first order so enrichment-slot selection has a stable
-    # within-tier order to preserve.
+    # Provisional score-first order. Slot selection sorts within its own tiers,
+    # so this only settles exact key ties there; it is the order the run falls
+    # back to if slot ordering fails.
     posts.sort(
         key=lambda p: (
             p.get("engagement", {}).get("score", 0) or 0,
@@ -350,9 +349,9 @@ def search_and_enrich(
         reverse=True,
     )
 
-    # Enrichment slot selection is relevance-aware: entity-matching posts
-    # claim the scarce comment slots first (score order preserved within
-    # each tier).
+    # Enrichment slot selection is relevance-aware: entity-matching posts claim
+    # the scarce comment slots first, ordered within each tier by the same key
+    # the final display sort below uses.
     posts = _enrich(_slot_priority(topic, posts), depth)
 
     # Final display order ranks relevance-first with a bounded engagement bonus,

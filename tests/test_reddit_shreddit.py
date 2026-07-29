@@ -93,12 +93,27 @@ class TestBotFilter:
         for bot in ("some-random-bot", "subreddit_bot"):
             assert rs.parse_comments(self._comment_html(bot)) == [], bot
 
+    def test_camelcase_bots_dropped(self):
+        # The separator-free convention is the common one on Reddit.
+        for bot in ("WikiTextBot", "RepostSleuthBot", "RemindMeBot2"):
+            assert rs.parse_comments(self._comment_html(bot)) == [], bot
+
     def test_human_authors_kept(self):
-        # Names merely ending in "bot" are people, not bots.
-        for human in ("Talbot", "abbot", "u_bothell_local", "MSRS-"):
+        # Names merely ending in "bot" are people, not bots. The capital B in
+        # the camelCase rule is what separates "WikiTextBot" from "Talbot".
+        for human in ("Talbot", "abbot", "u_bothell_local", "MSRS-",
+                      "TheBotanist", "Botany101", "Robotics_fan"):
             out = rs.parse_comments(self._comment_html(human))
             assert len(out) == 1, human
             assert out[0]["author"] == human
+
+    def test_bot_does_not_displace_human_from_slot(self):
+        # The reported failure was a bot *taking a slot*, not merely appearing:
+        # it outscores the humans, so it wins the ranking before truncation.
+        html = (self._comment_html("RemindMeBot", thing_id="t1_bot", score=999)
+                + self._comment_html("real_person", thing_id="t1_human", score=5))
+        out = rs.parse_comments(html, limit=1)
+        assert [c["author"] for c in out] == ["real_person"]
 
     def test_is_bot_author_handles_blank(self):
         assert rs._is_bot_author("") is False

@@ -40,6 +40,8 @@ SVC_TIMEOUT = 12
 # without saying anything about the topic ("I will be messaging you in 3 days
 # ..." surfaced as a Top Community Comment on a 2026-07-29 run). Matched
 # case-insensitively; `reddit.py` already drops AutoModerator on the API path.
+# Names the conventions below cannot infer, plus the all-lowercase spellings
+# of bots whose actual account name carries no capital B (`sneakpeekbot`).
 BOT_AUTHORS = frozenset({
     "automoderator",
     "remindmebot",
@@ -47,24 +49,27 @@ BOT_AUTHORS = frozenset({
     "sneakpeekbot",
     "savevideo",
     "videodownloadbot",
-    "wikipedia-reader-bot",
     "totesmessenger",
     "b0trank",
-    "converter-bot",
     "amputatorbot",
     "stabbot",
     "gifreversingbot",
     "haikubotinaction",
     "imagesofnetwork",
     "botdefense",
-    "pi-bot",
-    "good_bot_bad_bot",
 })
 
 # Separator-delimited bot naming conventions, to catch the long tail of
 # subreddit-specific bots without enumerating every one. Deliberately excludes a
 # bare "bot" suffix: that would swallow ordinary usernames ("Talbot", "abbot").
 _BOT_SUFFIXES = ("-bot", "_bot")
+
+# The dominant Reddit bot convention carries no separator at all
+# (RemindMeBot, WikiTextBot, SneakPeekBot). A capital B after a lowercase
+# letter or digit distinguishes those from the human names a bare "bot" suffix
+# would swallow: "Talbot" and "abbot" end in a lowercase b. Matched on the
+# original spelling, so this runs before case folding.
+_CAMEL_BOT = re.compile(r"[a-z0-9]Bot\d*$")
 
 # Match the exact <shreddit-comment> element start tag, not <shreddit-comment-tree>
 # or <shreddit-comment-tree-stats> (lookahead requires whitespace or '>').
@@ -139,10 +144,13 @@ def _body_for(html_text: str, thing_id: str) -> str:
 
 def _is_bot_author(author: str) -> bool:
     """Whether an author is a bot whose comments carry no community signal."""
-    name = (author or "").strip().lower()
-    if not name:
+    raw = (author or "").strip()
+    if not raw:
         return False
-    return name in BOT_AUTHORS or name.endswith(_BOT_SUFFIXES)
+    name = raw.lower()
+    return (name in BOT_AUTHORS
+            or name.endswith(_BOT_SUFFIXES)
+            or bool(_CAMEL_BOT.search(raw)))
 
 
 def parse_comments(html_text: str, limit: int = MAX_COMMENTS) -> List[Dict[str, Any]]:

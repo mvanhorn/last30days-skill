@@ -167,6 +167,20 @@ class TestSlotPriority:
         p["engagement"]["num_comments"] = ncmt
         return p
 
+    @staticmethod
+    def _as_discovered(topic, posts):
+        """Fill post["relevance"] the way discovery does — from the title alone.
+
+        reddit_rss and reddit_listing both score the title only, and slot
+        ordering reads that stored value. A fixture that leaves it at 0.0 tests
+        a state the pipeline never produces.
+        """
+        prepared = relevance.PreparedQuery(topic)
+        for post in posts:
+            post["relevance"] = round(
+                relevance.token_overlap_relevance(prepared, post["title"]), 3)
+        return posts
+
     def test_on_topic_low_score_beats_off_topic_high_score(self):
         # 3 off-topic monsters + 2 on-topic small threads; quick depth = 3 slots.
         posts = [
@@ -276,8 +290,9 @@ class TestSlotPriority:
             self._titled(5, "I built an always-on personal AI OS that maintains its own "
                             "knowledge base", score=23, ncmt=17),
         ]
+        topic = "AI second brain personal knowledge base"
         out = reddit_keyless._slot_priority(
-            "AI second brain personal knowledge base", viral_off_topic + on_topic)
+            topic, self._as_discovered(topic, viral_off_topic + on_topic))
         # Both on-topic threads claim slots ahead of every viral off-topic one.
         # Order within each group is not part of the contract: the viral three
         # differ only in third-decimal relevance, and which of them trails is
@@ -315,10 +330,10 @@ class TestSlotPriority:
 
     def test_slot_order_matches_display_order(self):
         # A slot handed to a post that final ranking then drops below the fold
-        # is the exact failure this ordering exists to prevent, so the two keys
-        # must not diverge. These two straddle a 0.1 bucket boundary (0.31 vs
-        # 0.29) while the lower-relevance one carries the bigger thread, so a
-        # bucketed key ties them and hands the slot to the wrong one.
+        # is the exact failure this ordering exists to prevent, so within a tier
+        # the two orders must agree. Here the more relevant post (0.31) carries
+        # the smaller thread, so any key that leans on engagement over stored
+        # relevance hands the slot to the one displayed second.
         topic = "AI second brain personal knowledge base"
         higher_relevance = self._titled(
             1, "It appears that the anti opensource AI lobby is far outgunned",
@@ -326,24 +341,40 @@ class TestSlotPriority:
         bigger_thread = self._titled(
             2, "Linus Torvalds tells people to stop attacking others for using AI",
             score=3156, ncmt=389)
-        posts = [bigger_thread, higher_relevance]
-
-        # Display ranking reads post["relevance"]; mirror what discovery would
-        # have set so both paths rank the same inputs.
-        prepared = relevance.PreparedQuery(topic)
-        for post in posts:
-            post["relevance"] = relevance.token_overlap_relevance(
-                prepared, f"{post['title']} {post['selftext']}")
+        posts = self._as_discovered(topic, [bigger_thread, higher_relevance])
 
         display_order = sorted(
             posts, key=reddit_keyless._relevance_rank_key, reverse=True)
-        assert reddit_keyless._slot_priority(topic, posts) == display_order
+        slot_order = reddit_keyless._slot_priority(topic, posts)
+        assert [id(p) for p in slot_order] == [id(p) for p in display_order]
         assert display_order[0] is higher_relevance
 
+    def test_slot_ranking_scores_the_same_text_as_display_ranking(self):
+        # Discovery scores the title alone (reddit_rss, reddit_listing) and the
+        # display sort reads that stored value, so a slot key that scores title
+        # plus selftext ranks a different quantity under the same name. The
+        # body-heavy post then wins a slot and is displayed last anyway.
+        topic = "AI second brain personal knowledge base"
+        body_heavy = self._titled(
+            1, "My personal setup after two years", score=40, ncmt=12,
+            selftext="I finally got my second brain working as a personal "
+                     "knowledge base, fully AI maintained.")
+        titled_on_topic = self._titled(
+            2, "AI knowledge base tips", score=40, ncmt=12)
+        posts = self._as_discovered(topic, [body_heavy, titled_on_topic])
+        assert body_heavy["relevance"] < titled_on_topic["relevance"]
+
+        out = reddit_keyless._slot_priority(topic, posts)
+        display_order = sorted(
+            posts, key=reddit_keyless._relevance_rank_key, reverse=True)
+        assert out[0] is titled_on_topic
+        assert [id(p) for p in out] == [id(p) for p in display_order]
+
     def test_equal_relevance_keeps_score_order(self):
-        # Relevance is bucketed to 0.1, so equally-matching posts are not
-        # reshuffled by third-decimal noise; engagement stays the tiebreak.
+        # Identical titles score identical relevance, so the engagement bonus
+        # is left to decide and the bigger thread keeps the slot.
         high = self._titled(1, "openclaw thread", score=500, ncmt=10)
         low = self._titled(2, "openclaw thread", score=5, ncmt=10)
-        out = reddit_keyless._slot_priority("openclaw", [low, high])
+        out = reddit_keyless._slot_priority(
+            "openclaw", self._as_discovered("openclaw", [low, high]))
         assert out[0] is high
