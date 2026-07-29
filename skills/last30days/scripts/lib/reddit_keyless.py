@@ -232,13 +232,20 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
     1.8k-3.1k upvote r/LocalLLaMA open-source-AI-policy threads claimed every
     slot and were then demoted below the fold by final ranking, leaving the
     run with no surfaced comments at all). So within each tier posts are
-    ordered by the same token-overlap relevance the final display ranking
-    uses, bucketed to 0.1 so near-equal matches are not separated by
-    third-decimal noise, with engagement as the in-bucket tiebreak. Threads
-    with no comments sort last: a scarce comment slot spent on them yields
-    nothing. Equal-relevance posts therefore keep their incoming (score-first)
-    order. Never raises; on any failure the incoming order is returned
-    unchanged.
+    ordered by `_relevance_rank_key`'s own formula — relevance plus a capped
+    log-scaled engagement bonus — so a post that wins a slot is a post final
+    ranking will still display. Recomputing relevance rather than reading
+    `post["relevance"]` is deliberate: discovery does not set it reliably on
+    every path.
+
+    Ahead of that, posts are tiered by whether a slot can pay off at all:
+    known-nonempty threads first, then threads whose comment count is merely
+    unknown, then known-empty ones. RSS-discovered posts carry a placeholder
+    count of 0 until shreddit backfills them, so treating every 0 as "empty"
+    would bury exactly the posts nothing is known about yet. `_apply_scores`
+    writes score and count together, so a set score marks the count as real.
+
+    Never raises; on any failure the incoming order is returned unchanged.
     """
     try:
         from . import relevance, rerank
@@ -256,12 +263,18 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
             def _matches(post: Dict[str, Any]) -> bool:
                 return relevance.token_overlap_relevance(prepared, _post_text(post)) > 0.24
 
+        def _payoff_tier(engagement: Dict[str, Any]) -> int:
+            if (engagement.get("num_comments") or 0) > 0:
+                return 2
+            return 0 if engagement.get("score") else 1
+
         def _slot_key(post: Dict[str, Any]) -> tuple:
             engagement = post.get("engagement") or {}
+            total = (engagement.get("score") or 0) + (engagement.get("num_comments") or 0)
             return (
-                1 if (engagement.get("num_comments") or 0) > 0 else 0,
-                round(relevance.token_overlap_relevance(prepared, _post_text(post)), 1),
-                engagement.get("score") or 0,
+                _payoff_tier(engagement),
+                relevance.token_overlap_relevance(prepared, _post_text(post))
+                + min(0.25, math.log10(total + 1) / 20.0),
             )
 
         matches: List[Dict[str, Any]] = []

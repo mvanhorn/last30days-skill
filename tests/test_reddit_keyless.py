@@ -2,7 +2,7 @@
 
 from unittest import mock
 
-from lib import reddit_keyless
+from lib import reddit_keyless, relevance
 
 
 def _post(i, date="2026-05-20", rel=0.0):
@@ -279,9 +279,11 @@ class TestSlotPriority:
         out = reddit_keyless._slot_priority(
             "AI second brain personal knowledge base", viral_off_topic + on_topic)
         # Both on-topic threads claim slots ahead of every viral off-topic one.
-        # Their order relative to each other is not part of the contract.
+        # Order within each group is not part of the contract: the viral three
+        # differ only in third-decimal relevance, and which of them trails is
+        # irrelevant once none of them holds a slot.
         assert {id(p) for p in out[:2]} == {id(p) for p in on_topic}
-        assert out[2:] == viral_off_topic
+        assert {id(p) for p in out[2:]} == {id(p) for p in viral_off_topic}
 
     def test_zero_comment_thread_never_takes_a_slot(self):
         # A comment slot spent on a thread with no comments yields nothing, so it
@@ -291,6 +293,52 @@ class TestSlotPriority:
         out = reddit_keyless._slot_priority("openclaw", [no_comments, has_comments])
         assert out[0] is has_comments
         assert out[1] is no_comments
+
+    def test_unknown_comment_count_is_not_treated_as_empty(self):
+        # RSS-discovered posts carry a placeholder count of 0 until shreddit
+        # backfills them. Sorting those behind a thread known to be empty buries
+        # exactly the posts nothing is known about yet.
+        unknown = self._titled(1, "openclaw thread", score=0, ncmt=0)
+        known_empty = self._titled(2, "openclaw thread", score=900, ncmt=0)
+        out = reddit_keyless._slot_priority("openclaw", [known_empty, unknown])
+        assert out[0] is unknown
+        assert out[1] is known_empty
+
+    def test_unknown_comment_count_still_yields_to_known_comments(self):
+        # Unknown must not outrank a thread already known to carry discussion:
+        # that slot has a certain payoff, the unknown one only a possible.
+        unknown = self._titled(1, "openclaw thread", score=0, ncmt=0)
+        known_busy = self._titled(2, "openclaw thread", score=5, ncmt=40)
+        out = reddit_keyless._slot_priority("openclaw", [unknown, known_busy])
+        assert out[0] is known_busy
+        assert out[1] is unknown
+
+    def test_slot_order_matches_display_order(self):
+        # A slot handed to a post that final ranking then drops below the fold
+        # is the exact failure this ordering exists to prevent, so the two keys
+        # must not diverge. These two straddle a 0.1 bucket boundary (0.31 vs
+        # 0.29) while the lower-relevance one carries the bigger thread, so a
+        # bucketed key ties them and hands the slot to the wrong one.
+        topic = "AI second brain personal knowledge base"
+        higher_relevance = self._titled(
+            1, "It appears that the anti opensource AI lobby is far outgunned",
+            score=1824, ncmt=496)
+        bigger_thread = self._titled(
+            2, "Linus Torvalds tells people to stop attacking others for using AI",
+            score=3156, ncmt=389)
+        posts = [bigger_thread, higher_relevance]
+
+        # Display ranking reads post["relevance"]; mirror what discovery would
+        # have set so both paths rank the same inputs.
+        prepared = relevance.PreparedQuery(topic)
+        for post in posts:
+            post["relevance"] = relevance.token_overlap_relevance(
+                prepared, f"{post['title']} {post['selftext']}")
+
+        display_order = sorted(
+            posts, key=reddit_keyless._relevance_rank_key, reverse=True)
+        assert reddit_keyless._slot_priority(topic, posts) == display_order
+        assert display_order[0] is higher_relevance
 
     def test_equal_relevance_keeps_score_order(self):
         # Relevance is bucketed to 0.1, so equally-matching posts are not
