@@ -157,12 +157,14 @@ class TestSlotPriority:
     """Enrichment slot selection prefers entity-matching posts (R1-R3)."""
 
     @staticmethod
-    def _titled(i, title, score=0, selftext=""):
+    def _titled(i, title, score=0, selftext="", ncmt=0):
         p = _post(i)
         p["title"] = title
         p["selftext"] = selftext
         p["score"] = score
         p["engagement"]["score"] = score
+        p["num_comments"] = ncmt
+        p["engagement"]["num_comments"] = ncmt
         return p
 
     def test_on_topic_low_score_beats_off_topic_high_score(self):
@@ -253,3 +255,47 @@ class TestSlotPriority:
         with mock.patch("lib.rerank._primary_entity", side_effect=Exception("boom")):
             out = reddit_keyless._slot_priority("openclaw", posts)
         assert out == posts
+
+    def test_generic_head_token_orders_tier_by_relevance(self):
+        # "AI second brain personal knowledge base" heads on "ai", so every post
+        # mentioning AI is entity-grounded and the tier stops discriminating.
+        # Within the tier, relevance must decide, or the viral off-topic threads
+        # take every slot and are then demoted below the fold by final ranking,
+        # leaving the run with no surfaced comments (2026-07-29 regression).
+        viral_off_topic = [
+            self._titled(1, "Linus Torvalds tells people to stop attacking others "
+                            "for using AI", score=3156, ncmt=389),
+            self._titled(2, "CEO of Hugging Face: banning open-source AI would hurt "
+                            "defenders", score=3048, ncmt=204),
+            self._titled(3, "It appears that the anti opensource AI lobby is far "
+                            "outgunned", score=1824, ncmt=496),
+        ]
+        on_topic = [
+            self._titled(4, "Claude Code and Obsidian as an AI-maintained second brain",
+                         score=361, ncmt=49),
+            self._titled(5, "I built an always-on personal AI OS that maintains its own "
+                            "knowledge base", score=23, ncmt=17),
+        ]
+        out = reddit_keyless._slot_priority(
+            "AI second brain personal knowledge base", viral_off_topic + on_topic)
+        # Both on-topic threads claim slots ahead of every viral off-topic one.
+        # Their order relative to each other is not part of the contract.
+        assert {id(p) for p in out[:2]} == {id(p) for p in on_topic}
+        assert out[2:] == viral_off_topic
+
+    def test_zero_comment_thread_never_takes_a_slot(self):
+        # A comment slot spent on a thread with no comments yields nothing, so it
+        # sorts last however high its score or relevance.
+        no_comments = self._titled(1, "openclaw deluxe leak", score=900, ncmt=0)
+        has_comments = self._titled(2, "openclaw first reactions", score=400, ncmt=220)
+        out = reddit_keyless._slot_priority("openclaw", [no_comments, has_comments])
+        assert out[0] is has_comments
+        assert out[1] is no_comments
+
+    def test_equal_relevance_keeps_score_order(self):
+        # Relevance is bucketed to 0.1, so equally-matching posts are not
+        # reshuffled by third-decimal noise; engagement stays the tiebreak.
+        high = self._titled(1, "openclaw thread", score=500, ncmt=10)
+        low = self._titled(2, "openclaw thread", score=5, ncmt=10)
+        out = reddit_keyless._slot_priority("openclaw", [low, high])
+        assert out[0] is high

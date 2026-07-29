@@ -223,9 +223,22 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
     post text) so slots go to posts likely to survive final ranking — keying
     on the same head token keeps the two paths from diverging. Falls back to
     token-overlap relevance when the topic yields no usable primary entity.
-    Within each tier the incoming
-    (score-first) order is preserved. Never raises; on any failure the
-    incoming order is returned unchanged.
+
+    The tier alone is not sufficient. When the primary entity's head token is
+    generic, every post carrying that word is grounded, the partition stops
+    discriminating, and a preserved score-first order hands every slot to the
+    biggest thread that merely mentions the word (2026-07-29 "AI second brain
+    personal knowledge base" run: the entity heads on "ai", so three
+    1.8k-3.1k upvote r/LocalLLaMA open-source-AI-policy threads claimed every
+    slot and were then demoted below the fold by final ranking, leaving the
+    run with no surfaced comments at all). So within each tier posts are
+    ordered by the same token-overlap relevance the final display ranking
+    uses, bucketed to 0.1 so near-equal matches are not separated by
+    third-decimal noise, with engagement as the in-bucket tiebreak. Threads
+    with no comments sort last: a scarce comment slot spent on them yields
+    nothing. Equal-relevance posts therefore keep their incoming (score-first)
+    order. Never raises; on any failure the incoming order is returned
+    unchanged.
     """
     try:
         from . import relevance, rerank
@@ -233,20 +246,30 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
         def _post_text(post: Dict[str, Any]) -> str:
             return f"{post.get('title') or ''} {post.get('selftext') or ''}"
 
+        prepared = relevance.PreparedQuery(topic)
         entity = rerank._primary_entity(topic).lower()
+
         if entity:
             def _matches(post: Dict[str, Any]) -> bool:
                 return rerank._entity_grounded(_post_text(post), entity)
         else:
-            prepared = relevance.PreparedQuery(topic)
-
             def _matches(post: Dict[str, Any]) -> bool:
                 return relevance.token_overlap_relevance(prepared, _post_text(post)) > 0.24
+
+        def _slot_key(post: Dict[str, Any]) -> tuple:
+            engagement = post.get("engagement") or {}
+            return (
+                1 if (engagement.get("num_comments") or 0) > 0 else 0,
+                round(relevance.token_overlap_relevance(prepared, _post_text(post)), 1),
+                engagement.get("score") or 0,
+            )
 
         matches: List[Dict[str, Any]] = []
         misses: List[Dict[str, Any]] = []
         for post in posts:
             (matches if _matches(post) else misses).append(post)
+        matches.sort(key=_slot_key, reverse=True)
+        misses.sort(key=_slot_key, reverse=True)
         return matches + misses
     except Exception:
         return posts
