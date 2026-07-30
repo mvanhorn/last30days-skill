@@ -74,7 +74,11 @@ class TestVersionConsistency(unittest.TestCase):
                     "LAST30DAYS_MEMORY_DIR" in line
                     and (
                         "defaults to" in line
-                        or "默认" in line
+                        or (
+                            path.parent == ROOT
+                            and path.name.startswith("README.")
+                            and path.name.endswith(".md")
+                        )
                         or "${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}" in line
                     )
                 )
