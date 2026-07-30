@@ -8,9 +8,6 @@ set -euo pipefail
 # truthy in the process environment or the global config file — never from the
 # project file itself (it cannot self-grant trust).
 
-# Resolve against $PWD explicitly so the path is not an accidental relative
-# lookup against an unexpected cwd in diagnostics.
-PROJECT_ENV="${PWD}/.claude/last30days.env"
 GLOBAL_ENV="$HOME/.config/last30days/.env"
 if [[ "${LAST30DAYS_CONFIG_DIR+x}" == "x" ]]; then
   if [[ -n "$LAST30DAYS_CONFIG_DIR" ]]; then
@@ -113,6 +110,33 @@ project_config_trusted() {
   is_truthy "${ENV_LAST30DAYS_TRUST_PROJECT_CONFIG:-}"
 }
 
+# Mirror lib/env.py::_find_project_env: walk up from $PWD for
+# .claude/last30days.env, stopping at the git root, $HOME, or filesystem root.
+# Prints the absolute path on stdout when found; returns 1 when none.
+find_project_env() {
+  local dir candidate parent
+  dir="$PWD"
+  while :; do
+    candidate="${dir}/.claude/last30days.env"
+    if [[ -f "$candidate" ]]; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+    # Stop at git root even if no project env was found there (matches env.py).
+    if [[ -e "${dir}/.git" ]]; then
+      return 1
+    fi
+    if [[ "$dir" == "$HOME" ]]; then
+      return 1
+    fi
+    parent="$(dirname "$dir")"
+    if [[ "$parent" == "$dir" ]]; then
+      return 1
+    fi
+    dir="$parent"
+  done
+}
+
 # Determine which config file(s) are active. Always load global first (when
 # present) so a trust signal there can unlock the project file — matching
 # lib/env.py, where the project file is never parsed before the trust check.
@@ -123,7 +147,12 @@ if [[ -n "$GLOBAL_ENV" && -f "$GLOBAL_ENV" ]]; then
   load_env_vars "$GLOBAL_ENV"
 fi
 
-if [[ -f "$PROJECT_ENV" ]] && project_config_trusted; then
+PROJECT_ENV=""
+if project_config_trusted; then
+  # `|| true` keeps set -e from aborting when no project env is in the walk.
+  PROJECT_ENV="$(find_project_env)" || true
+fi
+if [[ -n "$PROJECT_ENV" && -f "$PROJECT_ENV" ]]; then
   CONFIG_FILE="$PROJECT_ENV"
   check_perms "$PROJECT_ENV"
   load_env_vars "$PROJECT_ENV"
