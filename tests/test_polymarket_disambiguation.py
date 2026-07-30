@@ -115,3 +115,21 @@ def test_similarity_scores_acronym_title_as_full_match():
         polymarket._compute_text_similarity("Kanye West", "Kanye West announces new album")
         == 1.0
     )
+
+
+def test_modifier_separated_acronym_matches_filter_and_similarity():
+    """A leading modifier must not change the initialism used by the scorer."""
+    topic = "impact of artificial general intelligence"
+    title = "AGI by 2030?"
+
+    assert polymarket._passes_topic_filter(topic, title)
+    assert polymarket._compute_text_similarity(topic, title) == 1.0
+
+
+def test_two_letter_initialism_does_not_expand_topic():
+    """Ambiguous two-letter tokens must not receive full expanded-phrase relevance."""
+    topic = "machine learning"
+    title = "ML market cap above $1 billion?"
+
+    assert not polymarket._passes_topic_filter(topic, title)
+    assert polymarket._compute_text_similarity(topic, title) < 1.0
