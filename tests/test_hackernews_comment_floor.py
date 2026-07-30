@@ -289,3 +289,9 @@ def test_best_takes_uses_hn_excerpt_retained_by_fused_candidate():
         render._render_best_takes([fused, control], threshold=70.0, vote_weight=0.0)
     )
     assert "The retained HN take." in rendered
+    fused_line = next(
+        line for line in rendered.splitlines() if "The retained HN take." in line
+    )
+    assert "-- Hacker News " in fused_line
+    assert "Reddit" not in fused_line
+    assert "r/" not in fused_line

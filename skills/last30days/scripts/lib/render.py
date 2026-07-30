@@ -3256,7 +3256,8 @@ def _render_best_takes(
     lines = ["## Best Takes", ""]
     for candidate, effective in gems[:limit]:
         text = candidate.title.strip()
-        hackernews_text = None
+        selected_comment_item = None
+        hackernews_take = None
         for item in candidate.source_items:
             for comment in item.metadata.get("top_comments", [])[:3]:
                 body = (
@@ -3277,24 +3278,32 @@ def _render_best_takes(
                 if not body or len(body) <= 10:
                     continue
                 if item.source == "hackernews" and (
-                    hackernews_text is None or len(body) < len(hackernews_text)
+                    hackernews_take is None or len(body) < len(hackernews_take[0])
                 ):
-                    hackernews_text = body
-                elif hackernews_text is None and len(body) < len(text):
+                    hackernews_take = (body, item)
+                elif hackernews_take is None and len(body) < len(text):
                     text = body
-        if hackernews_text is not None:
-            text = hackernews_text
-        source_label = _source_label(candidate.source)
-        author = candidate.source_items[0].author if candidate.source_items else None
+                    selected_comment_item = item
+        if hackernews_take is not None:
+            text, selected_comment_item = hackernews_take
+        attribution_item = (
+            selected_comment_item
+            or (candidate.source_items[0] if candidate.source_items else None)
+        )
+        attribution_source = (
+            selected_comment_item.source
+            if selected_comment_item is not None
+            else candidate.source
+        )
+        source_label = _source_label(attribution_source)
+        author = attribution_item.author if attribution_item else None
         attribution = (
             f"@{author} on {source_label}"
-            if author and candidate.source in ("x", "tiktok", "instagram", "threads")
+            if author and attribution_source in ("x", "tiktok", "instagram", "threads")
             else f"{source_label}"
         )
-        if author and candidate.source == "reddit":
-            container = (
-                candidate.source_items[0].container if candidate.source_items else None
-            )
+        if author and attribution_source == "reddit":
+            container = attribution_item.container if attribution_item else None
             attribution = f"r/{container} comment" if container else "Reddit"
         # fun: is the LLM humor score; flag when crowd votes materially lifted
         # this item's ranking, so a lower-fun item ranking above a higher-fun one
