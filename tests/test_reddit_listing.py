@@ -26,6 +26,17 @@ class TestParseCards:
         assert top["engagement"]["score"] == 52692
         assert top["num_comments"] == 1743
         assert top["engagement"]["num_comments"] == 1743
+        assert top["engagement"]["counts_verified"] is True
+
+    def test_missing_or_malformed_count_remains_unverified(self):
+        for attribute in ("", 'comment-count="oops"'):
+            card = (
+                '<shreddit-post permalink="/r/test/comments/abc/title/" '
+                f'score="10" {attribute} post-title="Title"></shreddit-post>'
+            )
+            post = rl.parse_cards(card)[0]
+            assert post["num_comments"] == 0
+            assert post["engagement"]["counts_verified"] is False
 
     def test_normalized_shape(self):
         post = rl.parse_cards(_html())[0]
@@ -81,5 +92,5 @@ class TestScoreIndex:
             idx = rl.score_index(["technology"], depth="quick")
         assert idx  # non-empty
         first = next(iter(idx.values()))
-        assert set(first.keys()) == {"score", "num_comments"}
+        assert set(first.keys()) == {"score", "num_comments", "counts_verified"}
         assert any(v["score"] == 52692 for v in idx.values())

@@ -2,7 +2,7 @@
 
 from unittest import mock
 
-from lib import reddit_keyless, relevance
+from lib import reddit_keyless, relevance, rerank
 
 
 def _post(i, date="2026-05-20", rel=0.0):
@@ -270,33 +270,24 @@ class TestSlotPriority:
             out = reddit_keyless._slot_priority("openclaw", posts)
         assert out == posts
 
-    def test_generic_head_token_orders_tier_by_relevance(self):
-        # "AI second brain personal knowledge base" heads on "ai", so every post
-        # mentioning AI is entity-grounded and the tier stops discriminating.
-        # Within the tier, relevance must decide, or the viral off-topic threads
-        # take every slot and are then demoted below the fold by final ranking,
-        # leaving the run with no surfaced comments (2026-07-29 regression).
+    def test_entity_match_tier_orders_by_relevance(self):
         viral_off_topic = [
-            self._titled(1, "Linus Torvalds tells people to stop attacking others "
-                            "for using AI", score=3156, ncmt=389),
-            self._titled(2, "CEO of Hugging Face: banning open-source AI would hurt "
-                            "defenders", score=3048, ncmt=204),
-            self._titled(3, "It appears that the anti opensource AI lobby is far "
-                            "outgunned", score=1824, ncmt=496),
+            self._titled(1, "OpenClaw licensing debate", score=3156, ncmt=389),
+            self._titled(2, "OpenClaw trademark policy dispute", score=3048, ncmt=204),
+            self._titled(3, "OpenClaw release packaging", score=1824, ncmt=496),
         ]
         on_topic = [
-            self._titled(4, "Claude Code and Obsidian as an AI-maintained second brain",
+            self._titled(4, "OpenClaw and Obsidian as a maintained second brain",
                          score=361, ncmt=49),
-            self._titled(5, "I built an always-on personal AI OS that maintains its own "
-                            "knowledge base", score=23, ncmt=17),
+            self._titled(5, "OpenClaw personal knowledge base setup",
+                         score=23, ncmt=17),
         ]
-        topic = "AI second brain personal knowledge base"
+        topic = "OpenClaw second brain personal knowledge base"
+        posts = self._as_discovered(topic, viral_off_topic + on_topic)
+        assert all(rerank._entity_grounded(post["title"], topic) for post in posts)
+
         out = reddit_keyless._slot_priority(
-            topic, self._as_discovered(topic, viral_off_topic + on_topic))
-        # Both on-topic threads claim slots ahead of every viral off-topic one.
-        # Order within each group is not part of the contract: the viral three
-        # differ only in third-decimal relevance, and which of them trails is
-        # irrelevant once none of them holds a slot.
+            topic, posts)
         assert {id(p) for p in out[:2]} == {id(p) for p in on_topic}
         assert {id(p) for p in out[2:]} == {id(p) for p in viral_off_topic}
 
@@ -335,14 +326,23 @@ class TestSlotPriority:
         assert out[0] is unknown
         assert out[1] is verified_empty
 
-    def test_unknown_comment_count_still_yields_to_known_comments(self):
-        # Unknown must not outrank a thread already known to carry discussion:
-        # that slot has a certain payoff, the unknown one only a possible.
+    def test_relevant_unknown_count_beats_weaker_known_thread(self):
+        topic = "openclaw second brain knowledge base"
+        unknown = self._titled(
+            1, "openclaw second brain knowledge base", score=0, ncmt=0)
+        known_busy = self._titled(
+            2, "openclaw release notes", score=500, ncmt=400)
+        posts = self._as_discovered(topic, [known_busy, unknown])
+
+        out = reddit_keyless._slot_priority(topic, posts)
+        assert out[0] is unknown
+        assert out[1] is known_busy
+
+    def test_known_comments_break_equal_relevance_tie(self):
         unknown = self._titled(1, "openclaw thread", score=0, ncmt=0)
-        known_busy = self._titled(2, "openclaw thread", score=5, ncmt=40)
+        known_busy = self._titled(2, "openclaw thread", score=0, ncmt=40)
         out = reddit_keyless._slot_priority("openclaw", [unknown, known_busy])
         assert out[0] is known_busy
-        assert out[1] is unknown
 
     def test_slot_order_matches_display_order(self):
         # A slot handed to a post that final ranking then drops below the fold

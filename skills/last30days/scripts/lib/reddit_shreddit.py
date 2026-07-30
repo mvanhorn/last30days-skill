@@ -35,13 +35,7 @@ MAX_COMMENTS = 10
 
 SVC_TIMEOUT = 12
 
-# Bot authors whose comments carry no community signal. Reddit's own bots reply
-# to high-traffic threads by design, so they reliably occupy a top-comment slot
-# without saying anything about the topic ("I will be messaging you in 3 days
-# ..." surfaced as a Top Community Comment on a 2026-07-29 run). Matched
-# case-insensitively; `reddit.py` already drops AutoModerator on the API path.
-# Names the conventions below cannot infer, plus the all-lowercase spellings
-# of bots whose actual account name carries no capital B (`sneakpeekbot`).
+# Known bots whose comments carry no community signal.
 BOT_AUTHORS = frozenset({
     "automoderator",
     "remindmebot",
@@ -59,16 +53,9 @@ BOT_AUTHORS = frozenset({
     "botdefense",
 })
 
-# Separator-delimited bot naming conventions, to catch the long tail of
-# subreddit-specific bots without enumerating every one. Deliberately excludes a
-# bare "bot" suffix: that would swallow ordinary usernames ("Talbot", "abbot").
 _BOT_SUFFIXES = ("-bot", "_bot")
 
-# The dominant Reddit bot convention carries no separator at all
-# (RemindMeBot, WikiTextBot, SneakPeekBot). A capital B after a lowercase
-# letter or digit distinguishes those from the human names a bare "bot" suffix
-# would swallow: "Talbot" and "abbot" end in a lowercase b. Matched on the
-# original spelling, so this runs before case folding.
+# CamelCase catches WikiTextBot without swallowing names such as Talbot.
 _CAMEL_BOT = re.compile(r"[a-z0-9]Bot\d*$")
 
 # Match the exact <shreddit-comment> element start tag, not <shreddit-comment-tree>

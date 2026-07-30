@@ -25,7 +25,13 @@ class TestFetchScores:
         with mock.patch.object(reddit_arctic.http, "get",
                                return_value=_resp([{"id": "abc", "score": 1531, "num_comments": 336}])):
             out = reddit_arctic.fetch_scores(["abc"])
-        assert out == {"abc": {"score": 1531, "num_comments": 336}}
+        assert out == {
+            "abc": {
+                "score": 1531,
+                "num_comments": 336,
+                "counts_verified": True,
+            }
+        }
 
     def test_strips_t3_prefix(self):
         with mock.patch.object(reddit_arctic.http, "get",
@@ -84,4 +90,16 @@ class TestFetchScores:
                 {"id": "bad", "score": "x"}]      # unparseable score
         with mock.patch.object(reddit_arctic.http, "get", return_value=_resp(rows)):
             out = reddit_arctic.fetch_scores(["ok", "bad"])
-        assert out == {"ok": {"score": 7, "num_comments": 3}}
+        assert out == {
+            "ok": {"score": 7, "num_comments": 3, "counts_verified": True}
+        }
+
+    def test_missing_or_malformed_comment_count_remains_unverified(self):
+        rows = [
+            {"id": "missing", "score": 7},
+            {"id": "malformed", "score": 8, "num_comments": "many"},
+        ]
+        with mock.patch.object(reddit_arctic.http, "get", return_value=_resp(rows)):
+            out = reddit_arctic.fetch_scores(["missing", "malformed"])
+        assert out["missing"]["counts_verified"] is False
+        assert out["malformed"]["counts_verified"] is False

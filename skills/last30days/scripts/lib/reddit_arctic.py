@@ -16,7 +16,7 @@ count rather than failing the Reddit source.
 
 import sys
 import time
-from typing import Dict, List
+from typing import Any, Dict, List
 
 from . import http
 
@@ -30,7 +30,7 @@ CACHE_MAX = 4096    # hard size bound so the in-run memo can never grow unbounde
 # fetch_scores calls within one `/last30days` run (e.g. across subqueries) reuse
 # results, but capped at CACHE_MAX entries (never reached in a normal CLI run).
 # Tests clear it via reddit_arctic._cache.clear().
-_cache: Dict[str, Dict[str, int]] = {}
+_cache: Dict[str, Dict[str, Any]] = {}
 
 
 def _log(msg: str) -> None:
@@ -38,14 +38,14 @@ def _log(msg: str) -> None:
     sys.stderr.flush()
 
 
-def fetch_scores(post_ids: List[str]) -> Dict[str, Dict[str, int]]:
+def fetch_scores(post_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     """Return ``{base36_post_id: {"score", "num_comments"}}`` for the given ids.
 
     Batched, paced, in-run cached, and never raises. Ids that fail or are absent
     from the archive are simply missing from the result (caller degrades to no
     point count for those threads).
     """
-    out: Dict[str, Dict[str, int]] = {}
+    out: Dict[str, Dict[str, Any]] = {}
     todo: List[str] = []
     for pid in post_ids:
         if not pid:
@@ -80,12 +80,25 @@ def fetch_scores(post_ids: List[str]) -> Dict[str, Dict[str, int]]:
             if not rid:
                 continue
             try:
-                entry = {
-                    "score": int(row.get("score") or 0),
-                    "num_comments": int(row.get("num_comments") or 0),
-                }
+                score = int(row.get("score") or 0)
             except (TypeError, ValueError):
                 continue
+            raw_num_comments = row.get("num_comments")
+            try:
+                num_comments = (
+                    int(raw_num_comments) if raw_num_comments is not None else 0
+                )
+                counts_verified = raw_num_comments is not None and num_comments >= 0
+                if not counts_verified:
+                    num_comments = 0
+            except (TypeError, ValueError):
+                num_comments = 0
+                counts_verified = False
+            entry = {
+                "score": score,
+                "num_comments": num_comments,
+                "counts_verified": counts_verified,
+            }
             if len(_cache) < CACHE_MAX:
                 _cache[rid] = entry
             out[rid] = entry

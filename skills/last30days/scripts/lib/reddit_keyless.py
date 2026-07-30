@@ -65,13 +65,12 @@ def _top_subreddits(posts: List[Dict[str, Any]], limit: int = MAX_DERIVED_SUBS) 
     return [sub for sub, _ in counts.most_common(limit)]
 
 
-def _apply_scores(post: Dict[str, Any], scored: Dict[str, int]) -> None:
+def _apply_scores(post: Dict[str, Any], scored: Dict[str, Any]) -> None:
     post["score"] = scored["score"]
     post["num_comments"] = scored["num_comments"]
     post.setdefault("engagement", {})["score"] = scored["score"]
     post["engagement"]["num_comments"] = scored["num_comments"]
-    # A backfilled count is a real one, including a real 0.
-    post["engagement"]["counts_verified"] = True
+    post["engagement"]["counts_verified"] = bool(scored.get("counts_verified"))
 
 
 def _discover(
@@ -117,11 +116,15 @@ def _discover(
     )
 
     # Score lookup by post id, from the scored listing cards.
-    score_map: Dict[str, Dict[str, int]] = {}
+    score_map: Dict[str, Dict[str, Any]] = {}
     for p in score_source:
         pid = p.get("metadata", {}).get("post_id", "")
         if pid:
-            score_map[pid] = {"score": p["score"], "num_comments": p["num_comments"]}
+            score_map[pid] = {
+                "score": p["score"],
+                "num_comments": p["num_comments"],
+                "counts_verified": p["engagement"].get("counts_verified", False),
+            }
 
     # Merge: dedicated-sub posts first (floor-exempt), then scored broad listing
     # posts (targeted only), then RSS breadth backfilled with real scores where
@@ -217,39 +220,8 @@ def _enrich(posts: List[Dict[str, Any]], depth: str) -> List[Dict[str, Any]]:
 def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Order posts for enrichment slots: entity-matching posts first.
 
-    Comment slots (ENRICH_LIMITS) are scarce; spending them on high-upvote
-    posts that rerank later demotes as entity misses starves the on-topic
-    posts the user actually sees (2026-06-06 "OpenClaw vs Hermes" run:
-    2,000+ upvote Gemma/GPU threads took every slot, then were demoted to
-    zero). Mirror rerank's demotion signal via the shared `_entity_grounded`
-    check (head token of the topic's stripped primary entity present in the
-    post text) so slots go to posts likely to survive final ranking — keying
-    on the same head token keeps the two paths from diverging. Falls back to
-    token-overlap relevance when the topic yields no usable primary entity.
-
-    The tier alone is not sufficient. When the primary entity's head token is
-    generic, every post carrying that word is grounded, the partition stops
-    discriminating, and a preserved score-first order hands every slot to the
-    biggest thread that merely mentions the word (2026-07-29 "AI second brain
-    personal knowledge base" run: the entity heads on "ai", so three
-    1.8k-3.1k upvote r/LocalLLaMA open-source-AI-policy threads claimed every
-    slot and were then demoted below the fold by final ranking, leaving the
-    run with no surfaced comments at all). So within each tier posts are
-    ordered by `_relevance_rank_key` itself — the very key the final display
-    sort uses. Calling it rather than reproducing its formula is the point: a
-    slot is a bet that the post will still be on screen once the comments are
-    attached, and a second implementation of that judgement is a second thing
-    to drift.
-
-    Ahead of that, posts are tiered by whether a slot can pay off at all:
-    known-nonempty threads first, then threads whose comment count is merely
-    unknown, then known-empty ones. RSS-discovered posts carry a placeholder
-    count of 0 until something backfills them, so treating every 0 as "empty"
-    would bury exactly the posts nothing is known about yet. Producers that
-    have a real count say so with `engagement["counts_verified"]`, which is
-    what separates a thread downvoted to zero from one never looked up.
-
-    Never raises; on any failure the incoming order is returned unchanged.
+    Within each grounding tier, display relevance decides which posts receive
+    scarce slots. Known discussion breaks ties; verified-empty threads go last.
     """
     try:
         from . import relevance, rerank
@@ -267,22 +239,29 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
             def _matches(post: Dict[str, Any]) -> bool:
                 return relevance.token_overlap_relevance(prepared, _post_text(post)) > 0.24
 
-        def _payoff_tier(post: Dict[str, Any]) -> int:
+        def _has_comments(post: Dict[str, Any]) -> bool:
             engagement = post.get("engagement") or {}
-            if (engagement.get("num_comments") or 0) > 0:
-                return 2
-            return 0 if engagement.get("counts_verified") else 1
+            return (engagement.get("num_comments") or 0) > 0
 
-        def _slot_key(post: Dict[str, Any]) -> Tuple[int, float]:
-            return (_payoff_tier(post), _relevance_rank_key(post))
+        def _is_verified_empty(post: Dict[str, Any]) -> bool:
+            engagement = post.get("engagement") or {}
+            return bool(engagement.get("counts_verified")) and not _has_comments(post)
+
+        def _slot_key(post: Dict[str, Any]) -> Tuple[float, bool]:
+            return (_relevance_rank_key(post), _has_comments(post))
 
         matches: List[Dict[str, Any]] = []
         misses: List[Dict[str, Any]] = []
+        empty: List[Dict[str, Any]] = []
         for post in posts:
+            if _is_verified_empty(post):
+                empty.append(post)
+                continue
             (matches if _matches(post) else misses).append(post)
         matches.sort(key=_slot_key, reverse=True)
         misses.sort(key=_slot_key, reverse=True)
-        return matches + misses
+        empty.sort(key=_relevance_rank_key, reverse=True)
+        return matches + misses + empty
     except Exception as exc:
         # The fallback is the score-first order this function exists to
         # replace, so a silent failure looks exactly like the bug it fixes.
