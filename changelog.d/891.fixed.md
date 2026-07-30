@@ -1,0 +1,1 @@
+Polymarket topics spelled out in full ("artificial general intelligence") now match markets titled in shorthand ("AGI by 2030?"). Previously the topic filter and the relevance floor both compared full words against an acronym, so every on-topic market was dropped and the run reported zero results — indistinguishable from the source genuinely having none.

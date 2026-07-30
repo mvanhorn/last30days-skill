@@ -1,5 +1,6 @@
 """Tests for the first-run setup wizard module."""
 
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -8,6 +9,27 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from lib import setup_wizard
+
+
+class _NtOs:
+    """Delegates to the real os module but reports name == 'nt'.
+
+    Patched only in setup_wizard's own namespace (mirrors
+    tests/test_health_probe_taxonomy.py's ``_NtOs``) so pathlib and the rest
+    of the test process are unaffected.
+    """
+    name = "nt"
+
+    def __getattr__(self, attr):
+        return getattr(os, attr)
+
+
+class _PosixOs:
+    """Delegates to the real os module but reports name == 'posix'."""
+    name = "posix"
+
+    def __getattr__(self, attr):
+        return getattr(os, attr)
 
 
 class TestIsFirstRun:
@@ -60,8 +82,9 @@ class TestRunAutoSetup:
 
     @patch("lib.cookie_extract.extract_cookies_with_source")
     @patch("shutil.which")
-    def test_no_cookies_found(self, mock_which, mock_extract):
+    def test_no_cookies_found(self, mock_which, mock_extract, monkeypatch):
         """When no cookies found, results dict has empty cookies_found."""
+        monkeypatch.setattr(setup_wizard, "os", _PosixOs())
         mock_extract.return_value = None
         mock_which.return_value = None
 
@@ -139,8 +162,9 @@ class TestYtdlpAutoInstall:
     @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_ytdlp_missing_brew_available_installs(self, mock_which, mock_subproc, mock_extract):
-        """yt-dlp missing + brew available -> installs via brew."""
+    def test_ytdlp_missing_brew_available_installs(self, mock_which, mock_subproc, mock_extract, monkeypatch):
+        """yt-dlp missing + brew available (non-Windows) -> installs via brew."""
+        monkeypatch.setattr(setup_wizard, "os", _PosixOs())
         def which_side_effect(cmd):
             if cmd == "yt-dlp":
                 return None
@@ -161,14 +185,35 @@ class TestYtdlpAutoInstall:
 
     @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
     @patch("shutil.which")
-    def test_ytdlp_missing_brew_missing(self, mock_which, mock_extract):
-        """yt-dlp missing + brew missing -> no_homebrew."""
+    def test_ytdlp_missing_brew_missing(self, mock_which, mock_extract, monkeypatch):
+        """yt-dlp missing + brew missing (non-Windows) -> no_homebrew."""
+        monkeypatch.setattr(setup_wizard, "os", _PosixOs())
         mock_which.return_value = None
 
         results = setup_wizard.run_auto_setup({})
 
         assert results["ytdlp_installed"] is False
         assert results["ytdlp_action"] == "no_homebrew"
+
+    @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
+    @patch("shutil.which")
+    def test_ytdlp_missing_on_windows(self, mock_which, mock_extract, monkeypatch):
+        """Regression for #904: yt-dlp missing on Windows -> pip guidance, no
+        Homebrew attempt (Windows has no Homebrew and pip is the working path)."""
+        monkeypatch.setattr(setup_wizard, "os", _NtOs())
+        mock_which.return_value = None
+
+        with patch("subprocess.run") as mock_subproc:
+            results = setup_wizard.run_auto_setup({})
+            mock_subproc.assert_not_called()
+
+        assert results["ytdlp_installed"] is False
+        assert results["ytdlp_action"] == "no_pip_windows"
+
+        text = setup_wizard.get_setup_status_text(results)
+        assert "pip install yt-dlp" in text
+        assert "Homebrew" not in text
+        assert "Scripts" in text
 
     @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
     @patch("shutil.which")
@@ -184,8 +229,9 @@ class TestYtdlpAutoInstall:
     @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
     @patch("subprocess.run")
     @patch("shutil.which")
-    def test_brew_install_fails(self, mock_which, mock_subproc, mock_extract):
-        """brew install yt-dlp fails -> install_failed with stderr."""
+    def test_brew_install_fails(self, mock_which, mock_subproc, mock_extract, monkeypatch):
+        """brew install yt-dlp fails (non-Windows) -> install_failed with stderr."""
+        monkeypatch.setattr(setup_wizard, "os", _PosixOs())
         def which_side_effect(cmd):
             if cmd == "yt-dlp":
                 return None
@@ -267,9 +313,46 @@ class TestDiggAutoInstall:
 
         # The wizard now also best-effort-installs the additional default-on
         # Printing Press sources (arxiv/techmeme/trustpilot), so digg is one of
-        # several install calls rather than the only one.
+        # several install calls rather than the only one. Argv[0] must be the
+        # *resolved* npx path (mirroring shutil.which's return value), not the
+        # bare "npx" string -- passing the bare name breaks Windows, where
+        # shutil.which resolves PATHEXT (npx.CMD) but subprocess.run does not.
         mock_subproc.assert_any_call(
-            ["npx", "-y", setup_wizard.PRINTING_PRESS_NPM, "install", "digg", "--cli-only"],
+            ["/opt/homebrew/bin/npx", "-y", setup_wizard.PRINTING_PRESS_NPM, "install", "digg", "--cli-only"],
+            capture_output=True, text=True, timeout=setup_wizard.DIGG_INSTALL_TIMEOUT,
+        )
+        assert results["digg_installed"] is True
+        assert results["digg_action"] == "installed"
+
+    @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
+    @patch("subprocess.run")
+    @patch("shutil.which")
+    def test_digg_install_uses_resolved_windows_npx_path(
+        self, mock_which, mock_subproc, mock_extract, tmp_path, monkeypatch
+    ):
+        """Regression for #904: a Windows-style resolved npx path (PATHEXT
+        resolution, e.g. npx.CMD) must be passed to subprocess.run verbatim --
+        not the bare string "npx", which fails with WinError 2 on Windows
+        because CreateProcess does not do PATHEXT resolution the way
+        shutil.which does."""
+        self._empty_home(tmp_path, monkeypatch)
+        calls = {"digg": 0}
+        windows_npx = r"C:\Program Files\nodejs\npx.CMD"
+
+        def which_side_effect(cmd):
+            if cmd == "digg-pp-cli":
+                calls["digg"] += 1
+                return None if calls["digg"] == 1 else r"C:\Users\me\.local\bin\digg-pp-cli"
+            if cmd == "npx":
+                return windows_npx
+            return None
+        mock_which.side_effect = which_side_effect
+        mock_subproc.return_value = MagicMock(returncode=0, stderr="")
+
+        results = setup_wizard.run_auto_setup({})
+
+        mock_subproc.assert_any_call(
+            [windows_npx, "-y", setup_wizard.PRINTING_PRESS_NPM, "install", "digg", "--cli-only"],
             capture_output=True, text=True, timeout=setup_wizard.DIGG_INSTALL_TIMEOUT,
         )
         assert results["digg_installed"] is True
