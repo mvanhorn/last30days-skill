@@ -112,11 +112,17 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
                     cookies_found[source_name] = result[1]
                     break  # Found cookies for this service, stop trying browsers
 
-    # Check yt-dlp availability and install via Homebrew if missing
+    # Check yt-dlp availability and install via Homebrew if missing. Windows
+    # has no Homebrew, and its working install path is `pip install yt-dlp`
+    # (see #904), so it gets its own no-op-install guidance branch instead of
+    # falling into the Homebrew-oriented no_homebrew outcome.
     ytdlp_action: str
     if shutil.which("yt-dlp") is not None:
         ytdlp_installed = True
         ytdlp_action = "already_installed"
+    elif os.name == "nt":
+        ytdlp_installed = False
+        ytdlp_action = "no_pip_windows"
     elif shutil.which("brew") is not None:
         brew_stderr = ""
         try:
@@ -226,6 +232,46 @@ def _digg_bin_dir_hint(digg_path: str) -> str:
     return parent
 
 
+def _run_npx_install(slug: str) -> Tuple[str, str]:
+    """Resolve ``npx`` and run the Printing Press catalog install for ``slug``.
+
+    Shared by ``_install_digg_cli`` and ``_install_pp_cli`` -- this is only the
+    "resolve npx, run the install, interpret no_npx/exception/nonzero-rc"
+    slice; each caller keeps its own on-path/off-path re-verification
+    (``_digg_bin_candidate_paths`` vs ``_pp_bin_candidate_paths`` already use
+    different candidate-directory sources, so merging them here would change
+    off-path detection behavior beyond this fix's scope).
+
+    Fixes the Windows PATHEXT mismatch: ``shutil.which("npx")`` resolves
+    ``npx.CMD`` via PATHEXT, but ``subprocess.run`` given the bare string
+    ``"npx"`` as argv[0] does not do that resolution and fails with
+    ``WinError 2``. Passing the resolved path is a no-op on macOS/Linux, where
+    ``shutil.which`` already returns the exact path ``CreateProcess``/``execve``
+    would resolve.
+
+    Returns ``(action, stderr)``: ``action`` is ``"no_npx"``,
+    ``"install_failed"``, or ``""`` when the subprocess ran and returned
+    ``rc=0`` (in which case ``stderr`` carries any non-fatal stderr output for
+    the caller's own off-path logging).
+    """
+    npx = shutil.which("npx")
+    if npx is None:
+        return "no_npx", ""
+    try:
+        proc = subprocess.run(
+            [npx, "-y", PRINTING_PRESS_NPM, "install", slug, "--cli-only"],
+            capture_output=True, text=True, timeout=DIGG_INSTALL_TIMEOUT,
+        )
+    except Exception as exc:
+        logger.warning("npx install %s exception: %s", slug, exc)
+        return "install_failed", str(exc)
+    if proc.returncode != 0:
+        stderr = proc.stderr or f"npx install {slug} exited {proc.returncode}"
+        logger.warning("npx install %s failed (rc=%s): %s", slug, proc.returncode, stderr)
+        return "install_failed", stderr
+    return "", (proc.stderr or "")
+
+
 def _install_digg_cli() -> Tuple[bool, str, str, str]:
     """Best-effort install of the digg-pp-cli binary.
 
@@ -247,32 +293,21 @@ def _install_digg_cli() -> Tuple[bool, str, str, str]:
     off_path = _digg_off_path_binary()
     if off_path:
         return False, "installed_off_path", "", off_path
-    if shutil.which("npx") is None:
-        return False, "no_npx", "", ""
-    try:
-        proc = subprocess.run(
-            ["npx", "-y", PRINTING_PRESS_NPM, "install", "digg", "--cli-only"],
-            capture_output=True, text=True, timeout=DIGG_INSTALL_TIMEOUT,
-        )
-    except Exception as exc:
-        logger.warning("npx install digg exception: %s", exc)
-        return False, "install_failed", str(exc), ""
-    if proc.returncode != 0:
-        stderr = proc.stderr or f"npx install digg exited {proc.returncode}"
-        logger.warning("npx install digg failed (rc=%s): %s", proc.returncode, stderr)
-        return False, "install_failed", stderr, ""
+    action, stderr = _run_npx_install("digg")
+    if action:
+        return False, action, stderr, ""
     on_path = _digg_on_path()
     if on_path:
         return True, "installed", "", ""
     off_path = _digg_off_path_binary()
     if off_path:
-        combined = (proc.stderr or "").strip()
+        combined = stderr.strip()
         if combined:
             logger.warning("digg-pp-cli installed off PATH: %s", combined)
         return False, "installed_off_path", combined, off_path
-    stderr = proc.stderr or "install completed but digg-pp-cli was not found"
-    logger.warning("npx install digg failed verification: %s", stderr)
-    return False, "install_failed", stderr, ""
+    stderr_msg = stderr or "install completed but digg-pp-cli was not found"
+    logger.warning("npx install digg failed verification: %s", stderr_msg)
+    return False, "install_failed", stderr_msg, ""
 
 
 # Additional default-on Printing Press sources installed the same way as Digg:
@@ -328,32 +363,21 @@ def _install_pp_cli(slug: str, bin_name: str) -> Tuple[bool, str, str, str]:
     off_path = _pp_off_path_binary(bin_name)
     if off_path:
         return False, "installed_off_path", "", off_path
-    if shutil.which("npx") is None:
-        return False, "no_npx", "", ""
-    try:
-        proc = subprocess.run(
-            ["npx", "-y", PRINTING_PRESS_NPM, "install", slug, "--cli-only"],
-            capture_output=True, text=True, timeout=DIGG_INSTALL_TIMEOUT,
-        )
-    except Exception as exc:
-        logger.warning("npx install %s exception: %s", slug, exc)
-        return False, "install_failed", str(exc), ""
-    if proc.returncode != 0:
-        stderr = proc.stderr or f"npx install {slug} exited {proc.returncode}"
-        logger.warning("npx install %s failed (rc=%s): %s", slug, proc.returncode, stderr)
-        return False, "install_failed", stderr, ""
+    action, stderr = _run_npx_install(slug)
+    if action:
+        return False, action, stderr, ""
     on_path = shutil.which(bin_name)
     if on_path:
         return True, "installed", "", ""
     off_path = _pp_off_path_binary(bin_name)
     if off_path:
-        combined = (proc.stderr or "").strip()
+        combined = stderr.strip()
         if combined:
             logger.warning("%s installed off PATH: %s", bin_name, combined)
         return False, "installed_off_path", combined, off_path
-    stderr = proc.stderr or f"install completed but {bin_name} was not found"
-    logger.warning("npx install %s failed verification: %s", slug, stderr)
-    return False, "install_failed", stderr, ""
+    stderr_msg = stderr or f"install completed but {bin_name} was not found"
+    logger.warning("npx install %s failed verification: %s", slug, stderr_msg)
+    return False, "install_failed", stderr_msg, ""
 
 
 def install_default_pp_sources() -> Dict[str, Dict[str, Any]]:
@@ -555,6 +579,11 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
         lines.append("  - yt-dlp install failed \u2014 run `brew install yt-dlp` manually")
     elif ytdlp_action == "no_homebrew":
         lines.append("  - yt-dlp not found. Install Homebrew first, then: brew install yt-dlp")
+    elif ytdlp_action == "no_pip_windows":
+        lines.append(
+            "  - yt-dlp not found. Install with: pip install yt-dlp "
+            "(it may install to a Scripts directory not on PATH -- add it to PATH if YouTube search stays inactive)"
+        )
     elif ytdlp_action == "already_installed":
         lines.append("  - yt-dlp already installed")
     elif results.get("ytdlp_installed", False):

@@ -74,6 +74,7 @@ def test_source_specific_text_failures_are_mapped():
     assert bird_x.classify_run_failure("likely Twitter anti-bot interstitial") == schema.SCHEMA_DRIFT
     assert reddit.classify_run_failure("blocked by Reddit interstitial") == schema.RATE_LIMITED
     assert youtube_yt.classify_run_failure("Sign in to confirm you're not a bot") == schema.RATE_LIMITED
+    assert youtube_yt.classify_run_failure("Search timed out after 1s") == health.TIMEOUT
 
 
 def test_bundle_distinguishes_clean_no_results_from_failure():

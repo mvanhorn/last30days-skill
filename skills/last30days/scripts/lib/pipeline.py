@@ -888,6 +888,7 @@ def enrich_nominations(
     # real - stragglers cannot delay process exit. Abandonment is safe because
     # internal_subrun passes write nothing to disk (no save, no library sync,
     # no store), and every fetch layer inside run() carries its own timeout.
+    youtube_yt.reset_search_cache()
     enriched: dict[str, EnrichedTopic] = {}
     results_queue: queue.Queue[tuple[Nomination, schema.Report | None, Exception | None]] = queue.Queue()
     slots = threading.Semaphore(max(1, max_workers))
@@ -1910,6 +1911,11 @@ def run(
     corpus_dirs: list[str] | None = None,
     corpus_all_time: bool = False,
 ) -> schema.Report:
+    # Standalone runs (not competitor/discover sub-runs) own the YouTube
+    # search-cache lifecycle. Comparison fan-out clears once before submit so
+    # parallel entity sub-runs can still share in-run hits.
+    if not internal_subrun:
+        youtube_yt.reset_search_cache()
     settings = _resolve_depth_settings(depth, config)
     requested_sources = normalize_requested_sources(requested_sources)
     from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)

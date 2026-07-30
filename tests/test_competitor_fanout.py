@@ -101,6 +101,29 @@ class FanoutOrchestratorTests(unittest.TestCase):
             )
         self.assertEqual([label for label, _ in results], ["OpenAI"])
 
+    def test_fanout_clears_youtube_search_cache_before_parallel_work(self):
+        """Comparison mode must not inherit a prior run's ytsearch cache."""
+        from lib import youtube_yt
+
+        youtube_yt._search_cache[("prior", 8, "2026-01-01")] = {"items": []}
+        cleared = []
+
+        def main_runner():
+            cleared.append("main" in youtube_yt._search_cache or len(youtube_yt._search_cache) == 0)
+            return _fake_report("OpenAI")
+
+        with mock.patch.object(
+            youtube_yt, "reset_search_cache", wraps=youtube_yt.reset_search_cache
+        ) as reset_mock, redirect_stderr(io.StringIO()):
+            fanout.run_competitor_fanout(
+                main_topic="OpenAI",
+                main_runner=main_runner,
+                competitors=["Anthropic"],
+                competitor_runner=lambda e: _fake_report(e),
+            )
+        reset_mock.assert_called()
+        self.assertNotIn(("prior", 8, "2026-01-01"), youtube_yt._search_cache)
+
     def test_sub_runs_execute_in_parallel(self):
         """Wall clock should be closer to max(latency) than sum(latency)."""
         delay = 0.2
