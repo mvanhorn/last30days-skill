@@ -428,7 +428,6 @@ PERSON_DEPTH_LIMITS = {
 }
 
 PERSON_EVENTS_PER_PAGE = 100
-PERSON_EVENTS_MAX_PAGES = 3
 
 
 def _fetch_readme_snippet(repo: str, token: str, max_chars: int = 500) -> Optional[str]:
@@ -847,7 +846,8 @@ def _person_recent_pushes(
     latest_by_repo: Dict[str, Dict[str, str]] = {}
     encoded_username = urllib.parse.quote(username, safe="")
 
-    for page in range(1, PERSON_EVENTS_MAX_PAGES + 1):
+    page = 1
+    while True:
         url = (
             f"https://api.github.com/users/{encoded_username}/events/public"
             f"?per_page={PERSON_EVENTS_PER_PAGE}&page={page}"
@@ -890,6 +890,7 @@ def _person_recent_pushes(
 
         if reached_before_window or len(data) < PERSON_EVENTS_PER_PAGE:
             break
+        page += 1
 
     if not latest_by_repo:
         return []

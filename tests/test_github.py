@@ -389,6 +389,30 @@ class TestPersonPushEventsLane(unittest.TestCase):
         self.assertEqual([item["container"] for item in items], ["kurt/page-two"])
         self.assertTrue(any("&page=2" in url for url in requested_urls))
 
+    def test_requests_page_after_three_full_event_pages(self):
+        full_page = [
+            self._event(
+                i,
+                event_type="WatchEvent",
+                created_at="2026-07-24T12:00:00Z",
+            )
+            for i in range(github.PERSON_EVENTS_PER_PAGE)
+        ]
+        requested_pages = []
+
+        def fetch(url, **kwargs):
+            if "search/issues" in url:
+                return {"total_count": 0, "items": []}
+            page = int(url.rsplit("&page=", 1)[1])
+            requested_pages.append(page)
+            return full_page if page <= 3 else []
+
+        with patch.object(github, "_fetch_json", side_effect=fetch):
+            items = self._run()
+
+        self.assertEqual(items, [])
+        self.assertEqual(requested_pages, [1, 2, 3, 4])
+
     def test_stops_paging_at_event_older_than_window(self):
         requested_urls = []
 
