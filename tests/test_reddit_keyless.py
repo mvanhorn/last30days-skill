@@ -65,6 +65,36 @@ class TestDiscovery:
         backfilled = [p for p in out if p["url"] == rss_post["url"]][0]
         assert backfilled["engagement"]["score"] == 999
 
+    def test_arctic_cannot_erase_verified_listing_count(self):
+        rss_post = _post(7)
+        listing_post = _scored(7, score=0, ncmt=0)
+        listing_post["engagement"]["counts_verified"] = True
+        listing_post["url"] = "https://www.reddit.com/r/test/comments/zzzzzz/other/"
+
+        with mock.patch.object(
+            reddit_keyless.reddit_rss, "search_rss", return_value=[rss_post]
+        ), mock.patch.object(
+            reddit_keyless.reddit_listing,
+            "fetch_listings",
+            return_value=[listing_post],
+        ), mock.patch.object(
+            reddit_keyless.reddit_arctic,
+            "fetch_scores",
+            return_value={
+                "000007": {
+                    "score": 12,
+                    "num_comments": 0,
+                    "counts_verified": False,
+                }
+            },
+        ):
+            out = reddit_keyless._discover("topic", "default", ["test"])
+
+        backfilled = [p for p in out if p["url"] == rss_post["url"]][0]
+        assert backfilled["engagement"]["score"] == 12
+        assert backfilled["engagement"]["counts_verified"] is True
+        assert backfilled["engagement"]["num_comments"] == 0
+
     def test_bare_query_does_not_merge_listing_discovery(self):
         # No subreddits provided: derived-subreddit listings must NOT be added as
         # results (avoids flooding with off-topic high-upvote posts) — only used

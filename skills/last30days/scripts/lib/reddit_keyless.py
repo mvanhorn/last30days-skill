@@ -66,11 +66,14 @@ def _top_subreddits(posts: List[Dict[str, Any]], limit: int = MAX_DERIVED_SUBS) 
 
 
 def _apply_scores(post: Dict[str, Any], scored: Dict[str, Any]) -> None:
+    engagement = post.setdefault("engagement", {})
+    count_was_verified = bool(engagement.get("counts_verified"))
     post["score"] = scored["score"]
-    post["num_comments"] = scored["num_comments"]
-    post.setdefault("engagement", {})["score"] = scored["score"]
-    post["engagement"]["num_comments"] = scored["num_comments"]
-    post["engagement"]["counts_verified"] = bool(scored.get("counts_verified"))
+    engagement["score"] = scored["score"]
+    if not count_was_verified:
+        post["num_comments"] = scored["num_comments"]
+        engagement["num_comments"] = scored["num_comments"]
+        engagement["counts_verified"] = bool(scored.get("counts_verified"))
 
 
 def _discover(
