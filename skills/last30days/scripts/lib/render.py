@@ -3383,7 +3383,7 @@ def _render_top_comments(
                 # Blend vote strength (60%) with thread relevance (40%) so comments
                 # from on-topic threads rank above off-topic viral comments.
                 vote_strength = signals.normalized_comment_vote(
-                    cand.source, tc.get("score")
+                    item.source, tc.get("score")
                 )
                 strength = 0.6 * vote_strength + 0.4 * (cand.local_relevance or 0.0)
                 scored.append((strength, cand, item, tc, body))
@@ -3400,7 +3400,7 @@ def _render_top_comments(
     # among same-rank picks. The model still makes the final quotable pick.
     by_source: dict[str, list] = {}
     for row in scored:
-        by_source.setdefault(row[1].source, []).append(row)
+        by_source.setdefault(row[2].source, []).append(row)
     for src_rows in by_source.values():
         src_rows.sort(key=lambda row: -row[0])
     ordered: list = []
@@ -3410,10 +3410,10 @@ def _render_top_comments(
         tier.sort(key=lambda row: -row[0])  # among same-rank picks, strongest first
         ordered.extend(tier)
     lines = ["## Top Community Comments", ""]
-    for _strength, cand, _item, tc, body in ordered[:limit]:
+    for _strength, cand, item, tc, body in ordered[:limit]:
         score = tc.get("score", "")
-        vote_label = _vote_label_for(cand.source)
-        attribution = _comment_attribution(cand.source, tc.get("author"))
+        vote_label = _vote_label_for(item.source)
+        attribution = _comment_attribution(item.source, tc.get("author"))
         url = tc.get("url") or cand.url or ""
         url_part = f" — {url}" if url else ""
         vote_part = (

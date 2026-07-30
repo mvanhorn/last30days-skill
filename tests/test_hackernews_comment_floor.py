@@ -6,7 +6,9 @@ them raw, so ``render._top_comments_list`` evaluated ``(c.get("score") or 0) >= 
 against a key that was never present and rejected the entire source.
 """
 
-from lib import normalize, render, schema
+from unittest.mock import patch
+
+from lib import hackernews, normalize, render, schema
 
 FROM_DATE = "2026-06-26"
 TO_DATE = "2026-07-26"
@@ -155,7 +157,22 @@ def _report(item, candidate):
 
 def _render_vote_paths(points):
     raw = _hn_item()
-    raw["top_comments"][1]["points"] = points
+    with patch("lib.hackernews.http.request") as request:
+        request.return_value = {
+            "children": [
+                {
+                    "author": "alice",
+                    "text": raw["top_comments"][0]["text"],
+                    "points": 93,
+                },
+                {
+                    "author": "bob",
+                    "text": raw["top_comments"][1]["text"],
+                    "points": points,
+                },
+            ]
+        }
+        raw["top_comments"] = hackernews._fetch_item_comments("42")["comments"]
     hn = normalize._normalize_hackernews(
         "hackernews", raw, 0, FROM_DATE, TO_DATE
     )
@@ -265,7 +282,7 @@ def test_best_takes_uses_hn_excerpt_retained_by_fused_candidate():
     )
     hn_raw = _hn_item()
     hn_raw["top_comments"] = [
-        {"author": "alice", "text": "The retained HN take.", "points": None}
+        {"author": "alice", "text": "The retained HN take.", "points": 93}
     ]
     hn = normalize._normalize_hackernews(
         "hackernews", hn_raw, 0, FROM_DATE, TO_DATE
@@ -285,6 +302,16 @@ def test_best_takes_uses_hn_excerpt_retained_by_fused_candidate():
     fused.fun_score = 80.0
     control.fun_score = 80.0
 
+    with patch(
+        "lib.render.signals.normalized_comment_vote",
+        wraps=render.signals.normalized_comment_vote,
+    ) as normalized_vote:
+        top_comments = "\n".join(
+            render._render_top_comments(
+                _report(reddit, fused),
+                candidates=[fused, control],
+            )
+        )
     rendered = "\n".join(
         render._render_best_takes([fused, control], threshold=70.0, vote_weight=0.0)
     )
@@ -295,3 +322,12 @@ def test_best_takes_uses_hn_excerpt_retained_by_fused_candidate():
     assert "-- Hacker News " in fused_line
     assert "Reddit" not in fused_line
     assert "r/" not in fused_line
+    retained_line = next(
+        line for line in top_comments.splitlines() if "The retained HN take." in line
+    )
+    assert "— alice (93 points)" in retained_line
+    assert "upvotes" not in retained_line
+    assert "u/alice" not in retained_line
+    assert any(
+        call.args == ("hackernews", 93) for call in normalized_vote.call_args_list
+    )

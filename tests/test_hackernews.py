@@ -484,5 +484,25 @@ def test_engagement_score_zero_values():
     assert engagement["points"] == 0
     assert engagement["comments"] == 0
 
+
+@pytest.mark.parametrize("points", [None, 0])
+@patch("lib.hackernews.http.request")
+def test_fetch_item_comments_preserves_absent_and_zero_points(mock_request, points):
+    """The adapter must distinguish an unmeasured score from a measured zero."""
+    mock_request.return_value = {
+        "children": [
+            {
+                "author": "alice",
+                "text": "A useful comment.",
+                "points": points,
+            }
+        ]
+    }
+
+    result = hackernews._fetch_item_comments("123")
+
+    assert result["comments"][0]["points"] is points
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

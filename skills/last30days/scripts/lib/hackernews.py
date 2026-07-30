@@ -339,7 +339,7 @@ def _fetch_item_comments(object_id: str, max_comments: int = 5) -> Dict[str, Any
         comments.append({
             "author": c.get("author", ""),
             "text": excerpt,
-            "points": c.get("points") or 0,
+            "points": c.get("points"),
         })
         # First sentence as insight
         first_sentence = text.split(". ")[0].split("\n")[0][:200]
