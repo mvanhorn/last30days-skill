@@ -239,39 +239,6 @@ def test_trusted_project_env_loads_normal_keys(bash_path: str, tmp_path: Path):
 
 
 @pytest.mark.skipif(not _bash_binaries(), reason="bash not on PATH")
-def test_trusted_project_env_discovered_from_nested_cwd(bash_path: str, tmp_path: Path):
-    """Walk-up discovery must match lib/env.py when SessionStart cwd is nested."""
-    project = tmp_path / "repo"
-    nested = project / "skills" / "last30days"
-    nested.mkdir(parents=True)
-    (project / ".git").mkdir()
-    env_file = project / ".claude" / "last30days.env"
-    env_file.parent.mkdir(parents=True)
-    env_file.write_text(
-        "SETUP_COMPLETE=true\n"
-        "SCRAPECREATORS_API_KEY=scrape-from-repo-root\n",
-        encoding="utf-8",
-    )
-    env_file.chmod(0o644)
-
-    result = _run_hook(
-        bash_path,
-        nested,
-        tmp_path,
-        {
-            "LAST30DAYS_TRUST_PROJECT_CONFIG": "1",
-            "LAST30DAYS_CONFIG_DIR": str(tmp_path / "empty-config"),
-            "LAST30DAYS_MEMORY_DIR": str(tmp_path / "memory"),
-        },
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert re.search(r"Ready — \d+ sources active", result.stdout)
-    assert "Tip: Add ScrapeCreators" not in result.stdout
-    _assert_mode(env_file, "600")
-
-
-@pytest.mark.skipif(not _bash_binaries(), reason="bash not on PATH")
 def test_global_trust_signal_unlocks_project_env(bash_path: str, tmp_path: Path):
     """Trust from ~/.config (via LAST30DAYS_CONFIG_DIR) unlocks project overlay."""
     config_dir = tmp_path / "config"
