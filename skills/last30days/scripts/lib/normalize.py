@@ -103,6 +103,8 @@ def _remap_comments(
     raw: list[Any],
     score_keys: tuple[str, ...],
     excerpt_keys: tuple[str, ...],
+    *,
+    preserve_absent_score: bool = False,
 ) -> list[dict[str, Any]]:
     """Normalize comments from any source into the shared Reddit-compatible shape.
 
@@ -110,19 +112,29 @@ def _remap_comments(
     entity_extract, rerank) all expect `score` and `excerpt`. This helper maps
     per-source field names (YT: likes/text, TikTok: digg_count/text) onto that
     shape while preserving author/date/url passthrough.
+
+    Sources that distinguish an absent vote from a measured zero can opt into
+    preserving the absent value as ``None``.
     """
     out: list[dict[str, Any]] = []
     for raw_c in raw:
         if not isinstance(raw_c, dict):
             continue
-        score = _first_present(raw_c, score_keys, default=0)
+        score = _first_present(
+            raw_c,
+            score_keys,
+            default=None if preserve_absent_score else 0,
+        )
         excerpt = _first_present(raw_c, excerpt_keys, default="")
-        try:
-            score_int = int(score or 0)
-        except (TypeError, ValueError):
-            score_int = 0
+        if score is None and preserve_absent_score:
+            normalized_score = None
+        else:
+            try:
+                normalized_score = int(score or 0)
+            except (TypeError, ValueError):
+                normalized_score = 0
         entry: dict[str, Any] = {
-            "score": score_int,
+            "score": normalized_score,
             "excerpt": str(excerpt or "")[:400],
             "author": str(raw_c.get("author") or ""),
             "date": str(raw_c.get("date") or ""),
@@ -503,6 +515,7 @@ def _normalize_hackernews(
         item.get("top_comments") or [],
         score_keys=("points", "score"),
         excerpt_keys=("text", "excerpt"),
+        preserve_absent_score=True,
     )
     comment_text = _join_comment_excerpts(top_comments, "excerpt")
     title = str(item.get("title") or "").strip()

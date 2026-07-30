@@ -6,8 +6,6 @@ them raw, so ``render._top_comments_list`` evaluated ``(c.get("score") or 0) >= 
 against a key that was never present and rejected the entire source.
 """
 
-from types import SimpleNamespace
-
 from lib import normalize, render, schema
 
 FROM_DATE = "2026-06-26"
@@ -122,30 +120,69 @@ def _candidate(source, item):
     )
 
 
-def test_absent_vote_signal_renders_no_zero_points_parenthetical():
-    """A scoreless comment must not display a fabricated "(0 points)"."""
-    hn = normalize._normalize_hackernews(
-        "hackernews", _hn_item(), 0, FROM_DATE, TO_DATE
+def _report(item, candidate):
+    return schema.Report(
+        topic="HN comments",
+        range_from=FROM_DATE,
+        range_to=TO_DATE,
+        generated_at=f"{TO_DATE}T00:00:00+00:00",
+        provider_runtime=schema.ProviderRuntime(
+            reasoning_provider="local",
+            planner_model="local",
+            rerank_model="local",
+        ),
+        query_plan=schema.QueryPlan(
+            intent="general",
+            freshness_mode="balanced_recent",
+            cluster_mode="story",
+            raw_topic="HN comments",
+            subqueries=[
+                schema.SubQuery(
+                    label="primary",
+                    search_query="HN comments",
+                    ranking_query="What are the top HN comments?",
+                    sources=["hackernews"],
+                )
+            ],
+            source_weights={"hackernews": 1.0},
+        ),
+        clusters=[],
+        ranked_candidates=[candidate],
+        items_by_source={"hackernews": [item]},
+        errors_by_source={},
     )
-    # _render_top_comments reads only ranked_candidates, so a stand-in avoids
-    # constructing a full Report with its unrelated required fields.
-    report = SimpleNamespace(ranked_candidates=[_candidate("hackernews", hn)])
-    lines = render._render_top_comments(report)
-    rendered = "\n".join(lines)
-    assert "0 points" not in rendered, rendered
-    assert "93 points" in rendered, "a real vote count must still be shown"
 
 
-def test_ranked_candidate_omits_absent_vote_signal():
-    """Ranked Evidence Clusters must not turn a missing HN score into zero."""
+def _render_vote_paths(points):
+    raw = _hn_item()
+    raw["top_comments"][1]["points"] = points
     hn = normalize._normalize_hackernews(
-        "hackernews", _hn_item(), 0, FROM_DATE, TO_DATE
+        "hackernews", raw, 0, FROM_DATE, TO_DATE
     )
-    rendered = "\n".join(
-        render._render_candidate(_candidate("hackernews", hn), prefix="1.")
-    )
-    assert "0 points" not in rendered, rendered
-    assert "93 points" in rendered, "a real vote count must still be shown"
+    candidate = _candidate("hackernews", hn)
+    report = _report(hn, candidate)
+    return hn.metadata["top_comments"][1]["score"], {
+        "full": render.render_full(report),
+        "candidate": "\n".join(render._render_candidate(candidate, prefix="1.")),
+        "top_comments": "\n".join(render._render_top_comments(report)),
+    }
+
+
+def test_absent_hn_vote_is_omitted_across_comment_renderers():
+    """A missing vote must not display a fabricated numeric measurement."""
+    normalized_score, rendered_paths = _render_vote_paths(None)
+    assert normalized_score is None
+    for path, rendered in rendered_paths.items():
+        assert "(0 points)" not in rendered, f"{path}:\n{rendered}"
+        assert "(93 points)" in rendered, f"{path} dropped a real vote count"
+
+
+def test_explicit_zero_hn_vote_is_rendered_across_comment_renderers():
+    """A measured zero remains visible in every zero-admitting comment path."""
+    normalized_score, rendered_paths = _render_vote_paths(0)
+    assert normalized_score == 0
+    for path, rendered in rendered_paths.items():
+        assert "(0 points)" in rendered, f"{path} hid an explicit numeric zero"
 
 
 def test_best_takes_uses_normalized_hn_comment_excerpt():
@@ -163,7 +200,9 @@ def test_best_takes_uses_normalized_hn_comment_excerpt():
     ]
     first = _candidate(
         "hackernews",
-        normalize._normalize_hackernews("hackernews", first_raw, 0, FROM_DATE, TO_DATE),
+        normalize._normalize_hackernews(
+            "hackernews", first_raw, 0, FROM_DATE, TO_DATE
+        ),
     )
     second = _candidate(
         "hackernews",
@@ -179,3 +218,74 @@ def test_best_takes_uses_normalized_hn_comment_excerpt():
     )
     assert "A sharp HN take." in rendered
     assert "Another good take." in rendered
+
+
+def test_best_takes_uses_hn_comment_longer_than_story_title():
+    """HN comment excerpts remain the take even when longer than the title."""
+    first_raw = _hn_item()
+    first_raw["title"] = "Short story"
+    first_raw["top_comments"] = [
+        {
+            "author": "alice",
+            "text": "This longer Hacker News comment is the actual sharp take.",
+            "points": None,
+        }
+    ]
+    second_raw = _hn_item()
+    second_raw["id"] = "43"
+    second_raw["top_comments"] = [
+        {"author": "bob", "text": "Another good take.", "points": None}
+    ]
+    first = _candidate(
+        "hackernews",
+        normalize._normalize_hackernews(
+            "hackernews", first_raw, 0, FROM_DATE, TO_DATE
+        ),
+    )
+    second = _candidate(
+        "hackernews",
+        normalize._normalize_hackernews(
+            "hackernews", second_raw, 1, FROM_DATE, TO_DATE
+        ),
+    )
+    first.fun_score = 80.0
+    second.fun_score = 80.0
+
+    rendered = "\n".join(
+        render._render_best_takes([first, second], threshold=70.0, vote_weight=0.0)
+    )
+    assert "This longer Hacker News comment is the actual sharp take." in rendered
+    assert '"Short story"' not in rendered
+
+
+def test_best_takes_uses_hn_excerpt_retained_by_fused_candidate():
+    """A non-HN representative must not hide its retained HN comment."""
+    reddit = normalize._normalize_reddit(
+        "reddit", _reddit_item(), 0, FROM_DATE, TO_DATE
+    )
+    hn_raw = _hn_item()
+    hn_raw["top_comments"] = [
+        {"author": "alice", "text": "The retained HN take.", "points": None}
+    ]
+    hn = normalize._normalize_hackernews(
+        "hackernews", hn_raw, 0, FROM_DATE, TO_DATE
+    )
+    fused = _candidate("reddit", reddit)
+    fused.source_items = [reddit, hn]
+    assert fused.source != "hackernews"
+    control_raw = _reddit_item()
+    control_raw["id"] = "r2"
+    control_raw["title"] = "a separate reddit thread"
+    control = _candidate(
+        "reddit",
+        normalize._normalize_reddit(
+            "reddit", control_raw, 1, FROM_DATE, TO_DATE
+        ),
+    )
+    fused.fun_score = 80.0
+    control.fun_score = 80.0
+
+    rendered = "\n".join(
+        render._render_best_takes([fused, control], threshold=70.0, vote_weight=0.0)
+    )
+    assert "The retained HN take." in rendered

@@ -1750,7 +1750,11 @@ def render_full(report: schema.Report) -> str:
                     excerpt = tc.get("excerpt", tc.get("text", ""))
                     tc_score = tc.get("score", "")
                     attribution = _comment_attribution(item.source, tc.get("author"))
-                    vote_part = f" ({tc_score} {vote_label})" if tc_score else ""
+                    vote_part = (
+                        f" ({tc_score} {vote_label})"
+                        if tc_score is not None and tc_score != ""
+                        else ""
+                    )
                     lines.append(
                         f"  Top comment {attribution}{vote_part}: "
                         f"{_format_untrusted_evidence(excerpt, 200, continuation_indent='  ')}"
@@ -2222,7 +2226,11 @@ def _render_candidate(
         vote_label = _vote_label_for(primary.source) if primary else "upvotes"
         source = primary.source if primary else None
         attribution = _comment_attribution(source, tc.get("author"))
-        vote_part = f" ({score} {vote_label})" if score else ""
+        vote_part = (
+            f" ({score} {vote_label})"
+            if score is not None and score != ""
+            else ""
+        )
         lines.append(
             f"   - {attribution}{vote_part}: "
             f"{_format_untrusted_evidence(excerpt.strip(), 240)}"
@@ -3248,6 +3256,7 @@ def _render_best_takes(
     lines = ["## Best Takes", ""]
     for candidate, effective in gems[:limit]:
         text = candidate.title.strip()
+        hackernews_text = None
         for item in candidate.source_items:
             for comment in item.metadata.get("top_comments", [])[:3]:
                 body = (
@@ -3256,7 +3265,7 @@ def _render_best_takes(
                         or comment.get("text")
                         or (
                             comment.get("excerpt")
-                            if candidate.source == "hackernews"
+                            if item.source == "hackernews"
                             else ""
                         )
                         or ""
@@ -3265,8 +3274,16 @@ def _render_best_takes(
                     else str(comment)
                 )
                 body = body.strip()
-                if body and len(body) < len(text) and len(body) > 10:
+                if not body or len(body) <= 10:
+                    continue
+                if item.source == "hackernews" and (
+                    hackernews_text is None or len(body) < len(hackernews_text)
+                ):
+                    hackernews_text = body
+                elif hackernews_text is None and len(body) < len(text):
                     text = body
+        if hackernews_text is not None:
+            text = hackernews_text
         source_label = _source_label(candidate.source)
         author = candidate.source_items[0].author if candidate.source_items else None
         attribution = (
@@ -3390,11 +3407,11 @@ def _render_top_comments(
         attribution = _comment_attribution(cand.source, tc.get("author"))
         url = tc.get("url") or cand.url or ""
         url_part = f" — {url}" if url else ""
-        # Sources without a per-comment vote signal (Hacker News reports
-        # points=null for every comment) would otherwise render a literal
-        # "(0 points)", which reads as a measured score rather than an absent
-        # one. Drop the parenthetical instead of publishing a fake number.
-        vote_part = f" ({score} {vote_label})" if score else ""
+        vote_part = (
+            f" ({score} {vote_label})"
+            if score is not None and score != ""
+            else ""
+        )
         lines.append(
             f'- "{_format_untrusted_evidence(body, 240, continuation_indent="  ")}" '
             f"— {attribution}{vote_part}{url_part}"
