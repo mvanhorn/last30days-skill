@@ -248,7 +248,8 @@ def available_sources(
     # native-search host with no paid key, keyless_web_allowed is False and the
     # engine leaves general web to the model's own search.
     if (config.get("BRAVE_API_KEY") or config.get("EXA_API_KEY")
-            or config.get("SERPER_API_KEY") or config.get("PARALLEL_API_KEY")
+            or config.get("SERPER_API_KEY") or config.get("SERPAPI_API_KEY")
+            or config.get("PARALLEL_API_KEY")
             or env.keyless_web_allowed(config)):
         available.append("grounding")
     if requested_sources and "jobs" in requested_sources:
@@ -1717,6 +1718,8 @@ def diagnose(
         native_web_backend = "exa"
     elif config.get("SERPER_API_KEY"):
         native_web_backend = "serper"
+    elif config.get("SERPAPI_API_KEY"):
+        native_web_backend = "serpapi"
     elif config.get("PARALLEL_API_KEY"):
         native_web_backend = "parallel"
     providers_status = {
@@ -1960,7 +1963,7 @@ def run(
         available.append("corpus")
     if web_backend == "none":
         available = [s for s in available if s != "grounding"]
-    elif web_backend in ("brave", "exa", "serper", "parallel", "keyless") and "grounding" not in available:
+    elif web_backend in ("brave", "exa", "serper", "serpapi", "parallel", "keyless") and "grounding" not in available:
         available.append("grounding")
     if (
         hiring_signals_mode
@@ -4148,4 +4151,3 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
             "resultCount": 1,
         }
     return payloads.get(source, []), {}
-

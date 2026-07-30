@@ -59,7 +59,7 @@ On first run, the skill will guide you through setup:
 
 3. **Optional: API Keys**
    - XAI_API_KEY for X/Twitter (alternative to browser cookies)
-   - BRAVE_API_KEY for web search
+   - BRAVE_API_KEY, EXA_API_KEY, SERPER_API_KEY, SERPAPI_API_KEY, or PARALLEL_API_KEY for web search
 
 ## Available Sources
 

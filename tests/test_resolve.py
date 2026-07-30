@@ -20,6 +20,9 @@ class TestHasBackend(unittest.TestCase):
     def test_serper_key_returns_true(self):
         self.assertTrue(resolve._has_backend({"SERPER_API_KEY": "key"}))
 
+    def test_serpapi_api_key_returns_true(self):
+        self.assertTrue(resolve._has_backend({"SERPAPI_API_KEY": "key"}))
+
 
 class TestExtractSubreddits(unittest.TestCase):
     def test_extracts_from_title_and_snippet(self):

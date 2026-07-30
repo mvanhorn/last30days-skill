@@ -41,6 +41,7 @@ FAKE_SECRETS = {
     "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
     "XAI_API_KEY": "dummy-xai-secret-000",
     "BRAVE_API_KEY": "dummy-brave-secret-000",
+    "SERPAPI_API_KEY": "dummy-serpapi-secret-000",
     "GROQ_API_KEY": "dummy-groq-secret-000",
     "AUTH_TOKEN": "dummy-auth-token-secret-000",
     "CT0": "dummy-ct0-secret-000",

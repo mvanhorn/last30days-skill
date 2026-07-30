@@ -1,6 +1,6 @@
 """Auto-resolve subreddits, X handles, and current events context for a topic.
 
-Uses web search (Brave/Exa/Serper) to discover relevant communities and context
+Uses web search (Brave/Exa/Serper/SerpApi) to discover relevant communities and context
 before the planner runs. This is the engine-side equivalent of SKILL.md Steps
 0.55/0.75 which use Claude Code's WebSearch tool.
 """
@@ -74,6 +74,7 @@ def _has_backend(config: dict) -> bool:
         config.get("BRAVE_API_KEY")
         or config.get("EXA_API_KEY")
         or config.get("SERPER_API_KEY")
+        or config.get("SERPAPI_API_KEY")
         or config.get("PARALLEL_API_KEY")
         or config.get("OPENROUTER_API_KEY")
         or config.get("PERPLEXITY_API_KEY")
@@ -309,7 +310,8 @@ def auto_resolve(topic: str, config: dict) -> dict:
 
     Args:
         topic: The research topic.
-        config: Dict with API keys (BRAVE_API_KEY, EXA_API_KEY, SERPER_API_KEY).
+        config: Dict with API keys (BRAVE_API_KEY, EXA_API_KEY, SERPER_API_KEY,
+            SERPAPI_API_KEY, etc.).
 
     Returns:
         Dict with keys: subreddits, x_handle, github_user, github_repos,

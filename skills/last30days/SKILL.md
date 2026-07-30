@@ -22,6 +22,7 @@ metadata:
         - PERPLEXITY_API_KEY
         - PARALLEL_API_KEY
         - BRAVE_API_KEY
+        - SERPAPI_API_KEY
         - APIFY_API_TOKEN
         - AUTH_TOKEN
         - CT0
@@ -286,7 +287,7 @@ Use this capability rule:
 
 - **If a web-search tool is available:** use it for Step 0.5 / 0.55 pre-research and Step 2 supplements. If your host requires loading, selecting, or enabling the web-search tool before use, do that using the host's mechanism. Do not fail the skill just because one particular schema lookup or tool name is unavailable; use the web-search capability you actually have.
 
-- **If no web-search tool is available in the agent session:** skip Step 0.55 and Step 0.75, and add `--auto-resolve` to the engine command. The engine will use configured web backends (`BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY`) or the keyless floor when available.
+- **If no web-search tool is available in the agent session:** skip Step 0.55 and Step 0.75, and add `--auto-resolve` to the engine command. The engine will use configured web backends (`BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `SERPAPI_API_KEY`, `PARALLEL_API_KEY`) or the keyless floor when available.
 
 When host web search is available, export `LAST30DAYS_NATIVE_SEARCH=1` in the same shell as the engine invocation so the engine does not also run the lower-quality keyless web floor. Leave it unset when the agent session has no web-search tool.
 
@@ -703,7 +704,7 @@ The magic of /last30days is Reddit comments + X posts together - and both are fr
 - `XIAOHONGSHU_API_BASE=http://localhost:18060` - Xiaohongshu/RED via a logged-in x-mcp browser plugin or `xiaohongshu-mcp` service; optional unless the local service runs on a custom URL. Opt in per run with `--search xhs`, or persistently via `INCLUDE_SOURCES=xiaohongshu`.
 - DripStack (premium financial newsletter search) is opt-in only: per run with `--search dripstack`, or persistently via `INCLUDE_SOURCES=dripstack`. Free public search API, no key; never active without the opt-in.
 - `BSKY_HANDLE=you.bsky.social` + `BSKY_APP_PASSWORD=xxx` - Bluesky (free app password).
-- `BRAVE_API_KEY=xxx` or `EXA_API_KEY=xxx` - web search backends.
+- `BRAVE_API_KEY=xxx`, `EXA_API_KEY=xxx`, `SERPER_API_KEY=xxx`, `SERPAPI_API_KEY=xxx`, or `PARALLEL_API_KEY=xxx` - web search backends.
 
 **CRITICAL: NEVER overwrite an existing `.env`.** Before writing ANY key:
 1. Check if the file exists: `test -f ~/.config/last30days/.env`
@@ -1141,7 +1142,7 @@ Topic A (the main topic, first in the vs-string) uses outer `--x-handle`, `--x-r
 
 **Why --competitors-plan over --competitors-list:** without per-entity handles/subs, peer sub-runs run with deterministic single-word planner queries and produce visibly thinner evidence than the main topic. The Resolved Entities block in stdout makes the gap visible — dashes for a peer = you skipped its Step 0.55.
 
-**Engine-internal auto-resolve (headless fallback):** if the engine detects BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY / PERPLEXITY_API_KEY / OPENROUTER_API_KEY, it runs its own per-entity `resolve.auto_resolve()` before each sub-run. The hosting-model path does NOT need those keys — you are the WebSearch. The engine's auto-resolve is the cron/CI fallback for when no reasoning model is driving.
+**Engine-internal auto-resolve (headless fallback):** if the engine detects BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / SERPAPI_API_KEY / PARALLEL_API_KEY / PERPLEXITY_API_KEY / OPENROUTER_API_KEY, it runs its own per-entity `resolve.auto_resolve()` before each sub-run. The hosting-model path does NOT need those keys — you are the WebSearch. The engine's auto-resolve is the cron/CI fallback for when no reasoning model is driving.
 
 **Output:** for Markdown/compact runs, one `{slug}-raw.md` per entity in `--save-dir` plus the merged comparison on stdout. For HTML runs, the main saved artifact is merged comparison HTML and peer artifacts remain per-entity. Always use the `[last30days] Comparison artifact set: main=...; peers=...` log line as the source of truth. Synthesis contract identical to the vs-mode protocol above.
 
@@ -1163,7 +1164,7 @@ The output must distinguish evidence from interpretation. Good: "3 current roles
 
 ## Step 0.55: Pre-Research Intelligence (resolve communities + handles)
 
-> **PLATFORM GATE:** If your platform does NOT support WebSearch (e.g., OpenClaw, raw CLI), **skip Steps 0.55 and 0.75** but add `--auto-resolve` to the Python command in the Research Execution section. The engine will do its own pre-research using configured web search backends (Brave, Exa, or Serper) to discover subreddits, X handles, and current events context before planning.
+> **PLATFORM GATE:** If your platform does NOT support WebSearch (e.g., OpenClaw, raw CLI), **skip Steps 0.55 and 0.75** but add `--auto-resolve` to the Python command in the Research Execution section. The engine will do its own pre-research using configured web search backends (Brave, Exa, Serper, SerpApi, or Parallel) to discover subreddits, X handles, and current events context before planning.
 
 **MANDATORY on Claude Code (and any platform with WebSearch).** You MUST perform Step 0.55 before calling the Python engine. Skipping this step is the second-most-common failure mode of this skill, right after skipping the engine entirely. If your Bash call to `last30days.py` does NOT include a `--plan` flag with resolved handles and subreddits, that is a Step 0.55 skip and a failure. The engine's `[Resolve] No web search backend available, skipping resolve` log line means you, the model, did not do your job - it does NOT mean "the engine will handle it." Treat this step as non-skippable. Repeat invocations on the same topic still re-run Step 0.55 because Reddit/X/TikTok handles for breaking-news topics change week to week.
 
@@ -1367,7 +1368,7 @@ Only show lines for platforms where something was resolved. Skip empty lines. On
 - For how_to: prioritize YouTube (tutorials) and Reddit (guides)
 - Primary subquery weight = 1.0, secondary = 0.6-0.8, peripheral = 0.3-0.5
 
-**Available sources (include ALL in primary subquery):** reddit, x, youtube, tiktok, instagram, hackernews, polymarket. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg clusters - only if `digg-pp-cli` is on PATH)
+**Available sources (include ALL in primary subquery):** reddit, x, youtube, tiktok, instagram, hackernews, polymarket. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has a configured web backend key), digg (Digg clusters - only if `digg-pp-cli` is on PATH)
 
 **Intent → freshness_mode mapping:**
 - breaking_news, prediction → `strict_recent`
@@ -1465,7 +1466,7 @@ Then add to the engine command:
 - Omit any flag where the value was not resolved (empty).
 
 **If you skipped Steps 0.55 and 0.75 (no WebSearch -- OpenClaw, Codex, etc.), add:**
-- `--auto-resolve` (the engine will use Brave/Exa/Serper to discover subreddits and context before planning)
+- `--auto-resolve` (the engine will use configured web backends to discover subreddits and context before planning)
 
 **If you skipped Steps 0.55 and 0.75 (no WebSearch), run the command as-is.** The Python engine will plan internally.
 

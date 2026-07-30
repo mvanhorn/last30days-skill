@@ -677,8 +677,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--x-handle", help="X handle for targeted supplemental search")
     parser.add_argument("--x-related", help="Comma-separated related X handles (searched with lower weight)")
     parser.add_argument("--web-backend", default="auto",
-                        choices=["auto", "brave", "exa", "serper", "parallel", "none"],
-                        help="Web search backend (default: auto, tries Brave then Exa then Serper then Parallel)")
+                        choices=["auto", "brave", "exa", "serper", "serpapi", "parallel", "none"],
+                        help="Web search backend (default: auto, tries Brave then Exa then Serper then SerpApi then Parallel)")
     parser.add_argument("--deep-research", action="store_true",
                         help="Use Perplexity Deep Research (~$0.90/query) for in-depth analysis. Requires PERPLEXITY_API_KEY or OPENROUTER_API_KEY.")
     parser.add_argument("--hiring-signals", action="store_true",
@@ -1075,7 +1075,7 @@ def _show_runtime_ui(
         display_sources=display_sources,
     )
     promo = _missing_sources_for_promo(diag)
-    # The `web` promo nudges users to set BRAVE_API_KEY / SERPER_API_KEY, which
+    # The `web` promo nudges users to set BRAVE_API_KEY / SERPER_API_KEY / SERPAPI_API_KEY, which
     # is wrong advice when a hosting reasoning model (Claude Code, Codex,
     # Hermes, Gemini) is driving — those already have WebSearch and can
     # pre-resolve Step 0.55 themselves. Suppress the web promo when a hosting
@@ -3391,7 +3391,7 @@ def _main(
                         "See SKILL.md 'Competitor mode' for the full protocol.\n"
                         "\n"
                         "HEADLESS / CRON PATH (no hosting model available): set "
-                        "BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY / "
+                        "BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / SERPAPI_API_KEY / PARALLEL_API_KEY / "
                         "PERPLEXITY_API_KEY / OPENROUTER_API_KEY and re-run.\n"
                         "\n"
                         "MINIMUM ESCAPE HATCH: pass --competitors-list 'A,B,C' to skip "

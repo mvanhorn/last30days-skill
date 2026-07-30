@@ -154,7 +154,7 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | Xiaohongshu (RED) | logged-in x-mcp browser plugin or `xiaohongshu-mcp` service; optional `XIAOHONGSHU_API_BASE` for custom URLs | requested-only via `--search xhs` or `--search xiaohongshu`; auto-probes `http://localhost:18060` then `http://host.docker.internal:18060` | no last30days API key; depends on your local browser-session service |
 | Bluesky | `BSKY_HANDLE` + `BSKY_APP_PASSWORD` | Bluesky items | yes (app password at bsky.app) |
 | TruthSocial | `TRUTHSOCIAL_TOKEN` | TruthSocial items | yes |
-| Web search | one of: `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY` | `--auto-resolve` and Step 2 supplements | Brave has a free tier; native WebSearch on Claude Code / Codex / Gemini works as a fallback |
+| Web search | one of: `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `SERPAPI_API_KEY`, `PARALLEL_API_KEY` | `--auto-resolve` and Step 2 supplements | Brave has a free tier; native WebSearch on Claude Code / Codex / Gemini works as a fallback |
 | Perplexity Sonar / Search API / Deep Research | `PERPLEXITY_API_KEY` (preferred) or `OPENROUTER_API_KEY` (Sonar fallback) | `INCLUDE_SOURCES=perplexity`; `--deep-research` flag (~$0.90/query) | no |
 | Caption-free transcription | `GROQ_API_KEY` (free tier, preferred) or `OPENAI_API_KEY` (paid backstop); requires `ffmpeg` | Whisper transcription for audio/video without captions (groundwork: module shipped, not yet auto-invoked by the engine) | Groq free tier is generous; needs ffmpeg installed |
 | Jobs / careers pages | none for public ATS pages; web backend improves fallback discovery | `--hiring-signals` and strong Hiring Signals in standard company reports | yes |
@@ -361,7 +361,7 @@ When you invoke `/last30days` from Claude Code, Codex, or Gemini, the host model
 The search-source preference ladder, strict best-to-floor:
 
 1. **Host web search** - whatever web-search capability the agent session already has: built-in search, a deferred web-search tool that must be loaded first, or an installed connector such as Brave, Firecrawl, Exa, Serper, or another provider. Best results; used automatically on hosts that have it. A failed lookup for one specific tool name is not fatal when another web-search capability is available. Signalled to the engine via `LAST30DAYS_NATIVE_SEARCH=1` (the skill sets this for you when your agent session has web search) so the engine does not run a worse search underneath it.
-2. **Paid engine backend** - one of `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY`, auto-detected in that order. Override per-run with `--web-backend=<name>`.
+2. **Paid engine backend** - one of `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `SERPAPI_API_KEY`, `PARALLEL_API_KEY`, auto-detected in that order. Override per-run with `--web-backend=<name>`.
 3. **Keyless engine floor** - zero-key web search (DuckDuckGo, plus an optional SearXNG instance) and zero-key page fetch (Jina Reader). Runs only when the agent session has **no** host web search **and** no paid key is set, so headless/cron and hosts without a search tool still get general-web coverage. Force it explicitly with `--web-backend=keyless`.
 
 Relevant env vars:

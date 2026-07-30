@@ -37,6 +37,7 @@
         "BRAVE_API_KEY": "${user_config.brave_api_key}",
         "EXA_API_KEY": "${user_config.exa_api_key}",
         "SERPER_API_KEY": "${user_config.serper_api_key}",
+        "SERPAPI_API_KEY": "${user_config.serpapi_api_key}",
         "GOOGLE_API_KEY": "${user_config.google_api_key}",
         "GEMINI_API_KEY": "${user_config.gemini_api_key}",
         "GOOGLE_GENAI_API_KEY": "${user_config.google_genai_api_key}",
@@ -81,6 +82,13 @@
       "type": "string",
       "title": "SERPER_API_KEY",
       "description": "Serper API key. Google search via API. Get one at https://serper.dev/.",
+      "sensitive": true,
+      "required": false
+    },
+    "serpapi_api_key": {
+      "type": "string",
+      "title": "SERPAPI_API_KEY",
+      "description": "SerpApi API key. Google search via API. Get one at https://serpapi.com/.",
       "sensitive": true,
       "required": false
     },
