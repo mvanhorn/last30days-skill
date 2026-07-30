@@ -1,8 +1,13 @@
-"""Perplexity Sonar, Search API, and Deep Research.
+"""Perplexity Agent API, Search API, and Deep Research.
 
 Direct Perplexity keys are preferred so the source can use first-party Search
 API results and async Deep Research. OpenRouter remains a Sonar compatibility
 fallback when no direct Perplexity key is configured.
+
+Direct Perplexity synthesis calls use the Agent API (/v1/agent): presets instead
+of Sonar model names, `input` instead of `messages`, search filters on the
+`web_search` tool, and a typed `output` array instead of `choices`. OpenRouter
+still speaks Sonar chat completions, so both request/response shapes are kept.
 """
 
 from __future__ import annotations
@@ -19,9 +24,8 @@ from . import http, log
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-PERPLEXITY_URL = "https://api.perplexity.ai/v1/sonar"
+PERPLEXITY_URL = "https://api.perplexity.ai/v1/agent"
 PERPLEXITY_SEARCH_URL = "https://api.perplexity.ai/search"
-PERPLEXITY_ASYNC_URL = "https://api.perplexity.ai/v1/async/sonar"
 
 OPENROUTER_MODEL_SONAR_PRO = "perplexity/sonar-pro"
 OPENROUTER_MODEL_DEEP_RESEARCH = "perplexity/sonar-deep-research"
@@ -32,6 +36,20 @@ PERPLEXITY_MODEL_DEEP_RESEARCH = "sonar-deep-research"
 PERPLEXITY_MODE_SONAR = "sonar"
 PERPLEXITY_MODE_SEARCH = "search"
 PERPLEXITY_MODE_BOTH = "both"
+
+# Agent API presets. Sonar model names stay as the config surface and map here.
+PERPLEXITY_PRESETS = ("fast", "low", "medium", "high", "xhigh")
+PERPLEXITY_DEFAULT_PRESET = "low"
+PERPLEXITY_DEEP_PRESET = "high"
+MODEL_TO_PRESET = {
+    PERPLEXITY_MODEL_SONAR: "fast",
+    PERPLEXITY_MODEL_SONAR_PRO: "low",
+    PERPLEXITY_MODEL_REASONING_PRO: "medium",
+    PERPLEXITY_MODEL_DEEP_RESEARCH: PERPLEXITY_DEEP_PRESET,
+}
+# Background-run statuses (Agent API). Non-terminal ones are polled.
+AGENT_PENDING_STATUSES = {"queued", "in_progress"}
+AGENT_FAILED_STATUSES = {"failed", "cancelled", "incomplete"}
 PERPLEXITY_DEFAULT_DEEP_TIMEOUT_SECONDS = 600
 PERPLEXITY_DEEP_INITIAL_POLL_DELAY_SECONDS = 5.0
 PERPLEXITY_DEEP_MAX_POLL_DELAY_SECONDS = 60.0
@@ -86,8 +104,8 @@ def _provider(config: dict, deep: bool) -> tuple[str, str, str, str] | None:
     """Return (provider, api_key, url, model), preferring direct Perplexity."""
     if config.get("PERPLEXITY_API_KEY"):
         model = _direct_model(config, deep)
-        url = PERPLEXITY_ASYNC_URL if deep else PERPLEXITY_URL
-        return "perplexity", config["PERPLEXITY_API_KEY"], url, model
+        # Agent API uses one endpoint for both sync and background runs.
+        return "perplexity", config["PERPLEXITY_API_KEY"], PERPLEXITY_URL, model
     if config.get("OPENROUTER_API_KEY"):
         model = OPENROUTER_MODEL_DEEP_RESEARCH if deep else OPENROUTER_MODEL_SONAR_PRO
         return "openrouter", config["OPENROUTER_API_KEY"], OPENROUTER_URL, model
@@ -114,6 +132,18 @@ def _direct_model(config: dict, deep: bool) -> str:
     if model == PERPLEXITY_MODEL_DEEP_RESEARCH:
         return PERPLEXITY_MODEL_SONAR_PRO
     return model
+
+
+def _preset(config: dict, model: str, deep: bool) -> str:
+    """Resolve the Agent API preset, honoring an explicit override."""
+    override = _config_text(config, "LAST30DAYS_PERPLEXITY_PRESET").lower()
+    if override:
+        if override in PERPLEXITY_PRESETS:
+            return override
+        _log(f"Unsupported LAST30DAYS_PERPLEXITY_PRESET={override!r}; falling back to model mapping")
+    if deep:
+        return PERPLEXITY_DEEP_PRESET
+    return MODEL_TO_PRESET.get(model, PERPLEXITY_DEFAULT_PRESET)
 
 
 def _mode(config: dict, provider: str, deep: bool) -> str:
@@ -211,7 +241,8 @@ def _empty_async_sonar_artifact(
         "label": "perplexity",
         "provider": provider,
         "mode": PERPLEXITY_MODE_SONAR,
-        "endpoint": "async-sonar",
+        # Background runs only happen on the direct Perplexity (Agent API) path.
+        "endpoint": "agent-background",
         "model": model,
         "deep": deep,
         "query": query,
@@ -263,6 +294,60 @@ def _build_sonar_payload(prompt: str, model: str, date_range: tuple[str, str], c
     effort = _config_text(config, "LAST30DAYS_PERPLEXITY_REASONING_EFFORT").lower()
     if effort in REASONING_EFFORTS:
         payload["reasoning_effort"] = effort
+
+    return payload
+
+
+def _build_agent_payload(prompt: str, preset: str, date_range: tuple[str, str], config: dict) -> dict:
+    """Agent API request. Search controls live on the web_search tool, not top level.
+
+    Passing an explicit filtered web_search tool alongside a preset is supported;
+    the preset's own tools stay enabled and the filters are honored (verified
+    against a live date-windowed run).
+    """
+    from_date, to_date = date_range
+    filters: dict[str, object] = {}
+
+    domains = _csv_values(_config_text(config, "LAST30DAYS_PERPLEXITY_DOMAIN_FILTER"), limit=20)
+    if domains:
+        filters["search_domain_filter"] = domains
+
+    recency = _config_text(config, "LAST30DAYS_PERPLEXITY_RECENCY_FILTER").lower()
+    if recency in SEARCH_RECENCY_FILTERS:
+        filters["search_recency_filter"] = recency
+
+    after = _mmddyyyy(from_date)
+    before = _mmddyyyy(to_date)
+    if after:
+        filters["search_after_date_filter"] = after
+    if before:
+        filters["search_before_date_filter"] = before
+
+    web_search: dict[str, object] = {"type": "web_search"}
+    if filters:
+        web_search["filters"] = filters
+
+    context_size = _config_text(config, "LAST30DAYS_PERPLEXITY_SEARCH_CONTEXT_SIZE").lower()
+    if context_size in SEARCH_CONTEXT_SIZES:
+        # search_context_size sits on the tool itself, not inside filters.
+        web_search["search_context_size"] = context_size
+
+    payload: dict[str, object] = {
+        "preset": preset,
+        "input": prompt,
+        "tools": [web_search],
+    }
+
+    effort = _config_text(config, "LAST30DAYS_PERPLEXITY_REASONING_EFFORT").lower()
+    if effort in REASONING_EFFORTS:
+        payload["reasoning"] = {"effort": effort}
+
+    # LAST30DAYS_PERPLEXITY_SEARCH_MODE and _LANGUAGE_FILTER have no Agent API
+    # equivalent; warn once rather than silently dropping a configured value.
+    if _config_text(config, "LAST30DAYS_PERPLEXITY_SEARCH_MODE"):
+        _log("LAST30DAYS_PERPLEXITY_SEARCH_MODE is not supported by the Agent API; ignoring")
+    if _config_text(config, "LAST30DAYS_PERPLEXITY_LANGUAGE_FILTER"):
+        _log("LAST30DAYS_PERPLEXITY_LANGUAGE_FILTER is not supported by the Agent API; ignoring")
 
     return payload
 
@@ -361,33 +446,71 @@ def _extract_citations(data: dict, choice: dict) -> list[dict]:
     return citations
 
 
-def _poll_async_sonar(json_data: dict, headers: dict, config: dict) -> tuple[dict, dict]:
+def _agent_output_text(data: dict) -> str:
+    """Concatenate output_text from every assistant message item."""
+    parts: list[str] = []
+    for item in data.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "message":
+            continue
+        for content in item.get("content") or []:
+            if isinstance(content, dict) and content.get("type") == "output_text":
+                text = content.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+    return "\n".join(parts).strip()
+
+
+def _extract_agent_citations(data: dict) -> list[dict]:
+    """Walk every search_results item in the Agent API output array.
+
+    The agentic loop emits one search_results item per web_search invocation, so
+    results must be merged across all of them and deduped by URL.
+    """
+    citations: list[dict] = []
+    seen_urls: set[str] = set()
+    for item in data.get("output") or []:
+        if not isinstance(item, dict) or item.get("type") != "search_results":
+            continue
+        for result in item.get("results") or []:
+            if isinstance(result, dict):
+                _append_citation(citations, seen_urls, result)
+    return citations
+
+
+def _poll_agent_background(
+    json_data: dict,
+    url: str,
+    headers: dict,
+    config: dict,
+) -> tuple[dict, dict]:
+    """Submit an Agent API background run and poll it to a terminal status."""
     timeout_seconds = _positive_int(
         config.get("LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS"),
         PERPLEXITY_DEFAULT_DEEP_TIMEOUT_SECONDS,
         1,
         None,
     )
+    request = {**json_data, "background": True}
     idempotency_key = _idempotency_key(json_data)
-    created = http.post(
-        PERPLEXITY_ASYNC_URL,
-        {"request": json_data, "idempotency_key": idempotency_key},
-        headers=headers,
-        timeout=30,
-        retries=2,
-    )
+    created = http.post(url, request, headers=headers, timeout=30, retries=2)
     request_id = created.get("id")
     if not request_id:
-        raise http.HTTPError("Async Deep Research response missing id")
+        raise http.HTTPError("Agent background run response missing id")
 
     deadline = time.monotonic() + timeout_seconds
-    poll_url = f"{PERPLEXITY_ASYNC_URL}/{request_id}"
+    poll_url = f"{url}/{request_id}"
     delay = PERPLEXITY_DEEP_INITIAL_POLL_DELAY_SECONDS
     last_status = created.get("status")
     poll_count = 0
     last_data = created
     if last_status:
-        _log(f"Deep Research async status: {last_status}")
+        _log(f"Deep Research background status: {last_status}")
+
+    # A background submit can already be terminal on the first response.
+    if last_status == "completed":
+        return created, _async_metadata(
+            created, request_id, timeout_seconds, idempotency_key, 0, "COMPLETED_REMOTE",
+        )
 
     while time.monotonic() < deadline:
         try:
@@ -405,26 +528,24 @@ def _poll_async_sonar(json_data: dict, headers: dict, config: dict) -> tuple[dic
         last_data = data
         status = data.get("status")
         if status and status != last_status:
-            _log(f"Deep Research async status: {status}")
+            _log(f"Deep Research background status: {status}")
             last_status = status
-        if status == "COMPLETED":
-            response = data.get("response")
-            if not isinstance(response, dict):
-                metadata = _async_metadata(
-                    data, request_id, timeout_seconds, idempotency_key, poll_count,
-                    "FAILED_REMOTE",
-                )
-                metadata["asyncErrorMessage"] = "Async Deep Research completed without response"
-                raise AsyncDeepResearchFailed(metadata)
-            return response, _async_metadata(
+        if status == "completed":
+            return data, _async_metadata(
                 data, request_id, timeout_seconds, idempotency_key, poll_count,
                 "COMPLETED_REMOTE",
             )
-        if status == "FAILED":
-            raise AsyncDeepResearchFailed(_async_metadata(
+        if status in AGENT_FAILED_STATUSES:
+            metadata = _async_metadata(
                 data, request_id, timeout_seconds, idempotency_key, poll_count,
                 "FAILED_REMOTE",
-            ))
+            )
+            error = data.get("error")
+            if error:
+                metadata["asyncErrorMessage"] = str(error)[:200]
+            raise AsyncDeepResearchFailed(metadata)
+        if status and status not in AGENT_PENDING_STATUSES:
+            _log(f"Unrecognized background status {status!r}; continuing to poll")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             break
@@ -512,8 +633,12 @@ def _sonar_search(
     from_date, to_date = date_range
     timeout = 120 if deep else 30
 
+    agent = provider == "perplexity"
+    preset = _preset(config, model, deep) if agent else ""
+
     if deep:
-        print("[Perplexity] Using Deep Research (~$0.90/query)", file=sys.stderr)
+        cost_note = "~$0.05-0.20/query" if agent else "~$0.90/query"
+        print(f"[Perplexity] Using Deep Research ({cost_note})", file=sys.stderr)
 
     prompt = (
         f"What has been happening with {query} between {from_date} and {to_date}? "
@@ -525,35 +650,42 @@ def _sonar_search(
         "Content-Type": "application/json",
     }
 
-    json_data = _build_sonar_payload(prompt, model, date_range, config)
-    if provider != "perplexity":
+    if agent:
+        json_data = _build_agent_payload(prompt, preset, date_range, config)
+        _log(f"Querying perplexity agent preset={preset} for '{query}' ({from_date} to {to_date})")
+    else:
+        json_data = _build_sonar_payload(prompt, model, date_range, config)
         json_data.pop("web_search_options", None)
         json_data.pop("reasoning_effort", None)
-
-    _log(f"Querying {provider} {model} for '{query}' ({from_date} to {to_date})")
+        _log(f"Querying {provider} {model} for '{query}' ({from_date} to {to_date})")
 
     async_artifact = {}
-    if provider == "perplexity" and deep:
-        data, async_artifact = _poll_async_sonar(json_data, headers, config)
+    if agent and deep:
+        data, async_artifact = _poll_agent_background(json_data, url, headers, config)
     else:
         data = http.post(url, json_data, headers=headers, timeout=timeout)
 
     # Parse response
-    choices = data.get("choices", [])
-    if not choices:
-        _log("No choices in response")
-        return [], _empty_async_sonar_artifact(
-            provider, model, deep, query, data, async_artifact,
-            "empty_choices",
-            "Async Deep Research completed without choices",
-        )
+    if agent:
+        synthesis = _agent_output_text(data)
+        citations = _extract_agent_citations(data)
+    else:
+        choices = data.get("choices", [])
+        if not choices:
+            _log("No choices in response")
+            return [], _empty_async_sonar_artifact(
+                provider, model, deep, query, data, async_artifact,
+                "empty_choices",
+                "Async Deep Research completed without choices",
+            )
+        choice = choices[0] if isinstance(choices[0], dict) else {}
+        message = choice.get("message")
+        message = message if isinstance(message, dict) else {}
+        synthesis = message.get("content") or ""
+        if not isinstance(synthesis, str):
+            synthesis = ""
+        citations = _extract_citations(data, choice)
 
-    choice = choices[0] if isinstance(choices[0], dict) else {}
-    message = choice.get("message")
-    message = message if isinstance(message, dict) else {}
-    synthesis = message.get("content") or ""
-    if not isinstance(synthesis, str):
-        synthesis = ""
     if not synthesis:
         _log("Empty synthesis content")
         return [], _empty_async_sonar_artifact(
@@ -561,8 +693,6 @@ def _sonar_search(
             "empty_synthesis",
             "Async Deep Research completed with empty synthesis",
         )
-
-    citations = _extract_citations(data, choice)
 
     _log(f"Got synthesis ({len(synthesis)} chars) with {len(citations)} citations")
 
@@ -573,7 +703,7 @@ def _sonar_search(
     snippet = synthesis[:2000]
     items.append({
         "id": "PX1",
-        "title": f"Perplexity {'Deep Research' if deep else 'Sonar'}: {query}",
+        "title": f"Perplexity {'Deep Research' if deep else 'Agent' if agent else 'Sonar'}: {query}",
         "url": "",
         "source_domain": "perplexity.ai",
         "snippet": snippet,
@@ -603,12 +733,17 @@ def _sonar_search(
             "metadata": {"citations": [cit]},
         })
 
+    if agent:
+        endpoint = "agent-background" if async_artifact else "agent"
+    else:
+        endpoint = "sonar"
+
     artifact = {
         "label": "perplexity",
         "provider": provider,
         "mode": PERPLEXITY_MODE_SONAR,
-        "endpoint": "async-sonar" if async_artifact else "sonar",
-        "model": model,
+        "endpoint": endpoint,
+        "model": data.get("model") if agent else model,
         "deep": deep,
         "query": query,
         "synthesisLength": len(synthesis),
@@ -616,6 +751,13 @@ def _sonar_search(
         "usage": _usage(data),
         **async_artifact,
     }
+    if agent:
+        # Presets re-tune over time, so record the preset asked for alongside the
+        # model the API actually picked, plus the API's own cost accounting.
+        artifact["preset"] = preset
+        cost = _usage(data).get("cost")
+        if isinstance(cost, dict) and cost.get("total_cost") is not None:
+            artifact["totalCostUsd"] = cost["total_cost"]
 
     return items, artifact
 
@@ -704,7 +846,7 @@ def search(
             "label": "perplexity",
             "provider": provider,
             "mode": PERPLEXITY_MODE_SONAR,
-            "endpoint": "async-sonar",
+            "endpoint": "agent-background",
             "model": model,
             "deep": deep,
             "query": query,
@@ -717,7 +859,7 @@ def search(
             "label": "perplexity",
             "provider": provider,
             "mode": PERPLEXITY_MODE_SONAR,
-            "endpoint": "async-sonar",
+            "endpoint": "agent-background",
             "model": model,
             "deep": deep,
             "query": query,
@@ -730,7 +872,7 @@ def search(
             "label": "perplexity",
             "provider": provider,
             "mode": PERPLEXITY_MODE_SONAR,
-            "endpoint": "async-sonar",
+            "endpoint": "agent-background",
             "model": model,
             "deep": deep,
             "query": query,

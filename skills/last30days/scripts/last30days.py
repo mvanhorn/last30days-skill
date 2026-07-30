@@ -680,7 +680,7 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=["auto", "brave", "exa", "serper", "parallel", "none"],
                         help="Web search backend (default: auto, tries Brave then Exa then Serper then Parallel)")
     parser.add_argument("--deep-research", action="store_true",
-                        help="Use Perplexity Deep Research (~$0.90/query) for in-depth analysis. Requires PERPLEXITY_API_KEY or OPENROUTER_API_KEY.")
+                        help="Use Perplexity Deep Research (Agent API 'high' preset, ~$0.30/query; ~$0.90/query on the OpenRouter fallback) for in-depth analysis. Requires PERPLEXITY_API_KEY or OPENROUTER_API_KEY.")
     parser.add_argument("--hiring-signals", action="store_true",
                         help="Analyze public jobs/careers postings as evidence-backed company focus signals.")
     parser.add_argument("--plan", help="JSON query plan (skips internal LLM planner). Can be a JSON string or a file path.")
