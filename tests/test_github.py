@@ -289,46 +289,45 @@ class TestComputeRelevance(unittest.TestCase):
         low = github._compute_relevance("react", "React", 20, 0, 0)
         self.assertGreater(high, low)
 
-class TestPersonReposLane(unittest.TestCase):
+class TestPersonPushEventsLane(unittest.TestCase):
     """Person mode must not go dark when PR search returns nothing."""
 
-    _REPOS = [
-        {
-            "full_name": "kurt/power-bi-agentic-development",
-            "pushed_at": "2026-07-22T20:28:18Z",
-            "stargazers_count": 811,
-            "forks_count": 119,
-            "description": "Claude Code plugin marketplace for Power BI",
-            "language": "Python",
-            "open_issues_count": 4,
-            "topics": ["tmdl", "pbip", "dax"],
-            "fork": False,
-        },
-        {
-            "full_name": "kurt/ancient",
-            "pushed_at": "2024-01-02T00:00:00Z",
-            "stargazers_count": 900,
-            "forks_count": 1,
-            "description": "Out of window",
-            "language": "R",
-            "open_issues_count": 0,
-            "topics": [],
-            "fork": False,
-        },
-    ]
+    @staticmethod
+    def _event(
+        event_id,
+        *,
+        actor="kurt",
+        repo="kurt/power-bi-agentic-development",
+        created_at="2026-07-22T20:28:18Z",
+        event_type="PushEvent",
+    ):
+        return {
+            "id": str(event_id),
+            "type": event_type,
+            "actor": {"login": actor},
+            "repo": {"name": repo},
+            "created_at": created_at,
+        }
 
     def _run(self):
         with patch.object(github, "_resolve_token", return_value="t"), \
-                patch.object(github, "_enrich_own_repo", return_value={}):
+                patch.object(github, "_enrich_own_repo", return_value={}), \
+                patch.object(github, "_fetch_repo_info", return_value={
+                    "stars": 811,
+                    "forks": 119,
+                    "description": "Claude Code plugin marketplace for Power BI",
+                    "language": "Python",
+                    "open_issues": 4,
+                }):
             return github.search_github_person(
                 "kurt", "2026-06-25", "2026-07-25", token="t",
             )
 
-    def test_unsearchable_account_falls_back_to_repos(self):
-        # GitHub answers `author:<login>` with 422 for accounts absent from the
-        # search index; _fetch_json reports that as None.
+    def test_unsearchable_account_falls_back_to_actor_push_events(self):
         def fetch(url, **kwargs):
-            return None if "search/issues" in url else self._REPOS
+            if "search/issues" in url:
+                return None
+            return [self._event(1)]
 
         with patch.object(github, "_fetch_json", side_effect=fetch):
             items = self._run()
@@ -336,18 +335,140 @@ class TestPersonReposLane(unittest.TestCase):
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["container"], "kurt/power-bi-agentic-development")
         self.assertEqual(items[0]["date"], "2026-07-22")
+        self.assertIn("@kurt pushed", items[0]["title"])
         self.assertIn("recent-push", items[0]["metadata"]["labels"])
+        self.assertEqual(items[0]["metadata"]["event_type"], "PushEvent")
 
-    def test_out_of_window_pushes_are_dropped(self):
+    def test_empty_pr_search_falls_back_to_actor_push_events(self):
         def fetch(url, **kwargs):
             if "search/issues" in url:
                 return {"total_count": 0, "items": []}
-            return [self._REPOS[1]]
+            return [self._event(1, actor="KURT")]
+
+        with patch.object(github, "_fetch_json", side_effect=fetch):
+            items = self._run()
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["author"], "KURT")
+
+    def test_other_actor_push_is_rejected(self):
+        def fetch(url, **kwargs):
+            if "search/issues" in url:
+                return {"total_count": 0, "items": []}
+            return [self._event(1, actor="collaborator")]
 
         with patch.object(github, "_fetch_json", side_effect=fetch):
             items = self._run()
 
         self.assertEqual(items, [])
+
+    def test_discovers_push_on_second_events_page(self):
+        first_page = [
+            self._event(
+                i,
+                event_type="WatchEvent",
+                created_at=f"2026-07-{24 - (i // 25):02d}T12:00:00Z",
+            )
+            for i in range(github.PERSON_EVENTS_PER_PAGE)
+        ]
+        requested_urls = []
+
+        def fetch(url, **kwargs):
+            requested_urls.append(url)
+            if "search/issues" in url:
+                return {"total_count": 0, "items": []}
+            if "&page=1" in url:
+                return first_page
+            if "&page=2" in url:
+                return [self._event(101, repo="kurt/page-two")]
+            self.fail(f"Unexpected URL: {url}")
+
+        with patch.object(github, "_fetch_json", side_effect=fetch):
+            items = self._run()
+
+        self.assertEqual([item["container"] for item in items], ["kurt/page-two"])
+        self.assertTrue(any("&page=2" in url for url in requested_urls))
+
+    def test_stops_paging_at_event_older_than_window(self):
+        requested_urls = []
+
+        def fetch(url, **kwargs):
+            requested_urls.append(url)
+            if "search/issues" in url:
+                return {"total_count": 0, "items": []}
+            if "&page=1" in url:
+                return [
+                    self._event(1, event_type="WatchEvent"),
+                    self._event(2, created_at="2026-06-24T23:59:59Z"),
+                ]
+            self.fail("Events paging continued after reaching an old event")
+
+        with patch.object(github, "_fetch_json", side_effect=fetch):
+            items = self._run()
+
+        self.assertEqual(items, [])
+        event_urls = [url for url in requested_urls if "/events/public" in url]
+        self.assertEqual(len(event_urls), 1)
+
+    def test_ranks_all_event_repos_before_applying_depth_cap(self):
+        events = [
+            self._event(1, repo="kurt/newest", created_at="2026-07-24T12:00:00Z"),
+            self._event(2, repo="kurt/recent", created_at="2026-07-23T12:00:00Z"),
+            self._event(3, repo="kurt/third", created_at="2026-07-22T12:00:00Z"),
+            self._event(4, repo="kurt/high-star", created_at="2026-07-21T12:00:00Z"),
+        ]
+        stars = {
+            "kurt/newest": 3,
+            "kurt/recent": 2,
+            "kurt/third": 1,
+            "kurt/high-star": 10_000,
+        }
+
+        def repo_info(repo, token):
+            return {
+                "stars": stars[repo],
+                "forks": 0,
+                "description": "",
+                "language": "Python",
+                "open_issues": 0,
+            }
+
+        with patch.object(github, "_fetch_json", return_value=events), \
+                patch.object(github, "_fetch_repo_info", side_effect=repo_info), \
+                patch.object(github, "_enrich_own_repo", return_value={}) as enrich:
+            items = github._person_recent_pushes(
+                "kurt",
+                "2026-06-25",
+                "2026-07-25",
+                {"own_repos": 3},
+                "t",
+            )
+
+        containers = [item["container"] for item in items]
+        self.assertIn("kurt/high-star", containers)
+        self.assertNotIn("kurt/third", containers)
+        self.assertEqual(enrich.call_count, 3)
+
+    def test_aggregates_each_repo_at_its_latest_matching_push(self):
+        events = [
+            self._event(2, created_at="2026-07-24T12:00:00Z"),
+            self._event(1, created_at="2026-07-20T12:00:00Z"),
+        ]
+
+        with patch.object(github, "_fetch_json", return_value=events), \
+                patch.object(github, "_fetch_repo_info", return_value={}), \
+                patch.object(github, "_enrich_own_repo", return_value={}):
+            items = github._person_recent_pushes(
+                "kurt",
+                "2026-06-25",
+                "2026-07-25",
+                {"own_repos": 5},
+                "t",
+            )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["date"], "2026-07-24")
+        self.assertEqual(items[0]["metadata"]["event_id"], "2")
 
 
 if __name__ == "__main__":

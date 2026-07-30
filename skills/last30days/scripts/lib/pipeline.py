@@ -2108,6 +2108,7 @@ def run(
                 github_user, from_date, to_date,
                 depth=depth, token=config.get("GITHUB_TOKEN"),
             )
+            _github_person_done = True
             if person_items:
                 normalized = _normalize_score_dedupe(
                     "github", person_items, from_date, to_date,
@@ -2117,7 +2118,6 @@ def run(
                 # Use the first subquery's label so RRF can look up the weight
                 primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
                 bundle.add_items(primary_label, "github", normalized)
-                _github_person_done = True
             else:
                 # A pinned --github-user that yields nothing must not be
                 # silently backfilled by generic keyword search: the report
