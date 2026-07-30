@@ -12,6 +12,8 @@ READMES = {
     "日本語": ROOT / "README.ja.md",
     "简体中文": ROOT / "README.zh-CN.md",
 }
+
+
 def _navigation(current: str) -> str:
     return " | ".join(
         label if label == current else f"[{label}]({path.name})"
@@ -42,11 +44,22 @@ def _relative_link_targets(text: str) -> set[str]:
     }
 
 
+def _external_link_targets(text: str) -> set[str]:
+    return {
+        destination
+        for destination in re.findall(r"\]\(([^)]+)\)", text)
+        if destination.startswith(("http://", "https://"))
+    }
+
+
 def test_readme_translations_preserve_structure_and_commands() -> None:
     english = READMES["English"].read_text(encoding="utf-8")
     expected_code_commands = _code_commands(english)
     expected_code_fences = english.count("```")
-    expected_table_rows = sum(line.startswith("|") for line in english.splitlines())
+    expected_external_links = _external_link_targets(english)
+    expected_table_structure = [
+        line.count("|") for line in english.splitlines() if line.startswith("|")
+    ]
     expected_ordered_items = len(re.findall(r"^\d+\. ", english, flags=re.MULTILINE))
 
     for label, path in READMES.items():
@@ -56,7 +69,10 @@ def test_readme_translations_preserve_structure_and_commands() -> None:
         assert lines[2] == _navigation(label)
         assert text.count("```") == expected_code_fences
         assert _code_commands(text) == expected_code_commands
-        assert sum(line.startswith("|") for line in lines) == expected_table_rows
+        assert _external_link_targets(text) == expected_external_links
+        assert [line.count("|") for line in lines if line.startswith("|")] == (
+            expected_table_structure
+        )
         assert len(re.findall(r"^\d+\. ", text, flags=re.MULTILINE)) == expected_ordered_items
         assert not re.search(r"(?:ZXQ|XXQ|ZZQ|ZZZ)\d", text)
         assert not re.search(r"^＃", text, flags=re.MULTILINE)

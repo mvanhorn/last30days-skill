@@ -16,151 +16,151 @@
   </a>
 </p>
 
-**Un moteur de recherche dirigé par un agent IA et évalué par les votes positifs, les likes et l'argent réel - et non par les éditeurs.**
+**Un moteur de recherche dirigé par un agent IA, noté par des votes positifs, des likes et de l’argent réel - pas par des éditeurs.**
 
-Ce README suit le pipeline v3 actuel. La spécification de compétence d'exécution se trouve dans [skills/last30days/SKILL.md](skills/last30days/SKILL.md), qui est la source de vérité pour le dernier comportement de commande et de configuration.
+Ce README suit le pipeline v3 actuel. La spécification de compétence à l’exécution se trouve dans [skills/last30days/SKILL.md](skills/last30days/SKILL.md), qui est la source de vérité pour le comportement de commande et de configuration les plus récents.
 
-**Claude Code (recommandé — mises à jour automatiques via la place de marché) :**
+**Claude Code (recommandé — mises à jour automatiques via le marketplace):**
 ```
 /plugin marketplace add mvanhorn/last30days-skill
 /plugin install last30days
 ```
 
-**Codex, Cursor, Copilot, Gemini CLI ou l'un des 50+ [Hôtes Agent Skills](https://agentskills.io) :**
+**Codex, Cursor, Copilot, Gemini CLI, ou n’importe lequel des 50+ [Agent Skills](https://agentskills.io) hôtes :**
 ```
 npx skills add mvanhorn/last30days-skill -g
 ```
-(`-g` s'installe globalement pour votre utilisateur, disponible dans tous les projets. Déposez-le dans la portée de chaque projet.)
+(`-g` s’installe globalement pour votre utilisateur, disponible sur tous les projets. Réduisez-le à la portée par projet.)
 
-Plus d'options d'installation (claude.ai web, OpenClaw, manuel) dans la section [Install](#installation) ci-dessous.
+Plus d’options d’installation (claude.ai web, OpenClaw, manuel) dans la section [Install](#installation) ci-dessous.
 
-Zéro configuration. Reddit, HN, Polymarket et GitHub fonctionnent immédiatement. Exécutez-le une fois et l'assistant de configuration déverrouille X, YouTube, TikTok, arXiv, Techmeme et plus encore en 30 secondes.
+Zéro configuration. Reddit, HN, Polymarketet GitHub fonctionnent immédiatement. Lancez-le une fois et l’assistant de configuration débloque X, YouTube, TikTok, arXiv, Techmemeet plus encore en 30 secondes.
 
 ---
 
-Votes positifs sur Reddit. X aime. Transcriptions YouTube. Engagement sur TikTok. Cotes Polymarket soutenues par de l'argent réel et des informations privilégiées. Cela représente des millions de personnes qui votent chaque jour avec leur attention et leur portefeuille. /last30days recherche tout cela en parallèle, le note en fonction de ce avec quoi de vraies personnes interagissent réellement, et un juge d'agent IA le synthétise en un seul dossier.
+Reddit votes positifs. X likes. YouTube transcriptions. TikTok engagement. Polymarket probabilités soutenues par de l’argent réel et des informations privilégiées. Cela fait des millions de personnes votant chaque jour avec leur attention et leur portefeuille. /last30days recherche tout cela en parallèle, évalue selon ce avec quoi les vraies personnes interagissent réellement, et un juge IA synthétise tout en un seul mémoire.
 
-Google regroupe les éditeurs. /last30days recherche des personnes.
+Google agréga des éditeurs. /last30days recherche des gens.
 
-Vous ne pouvez obtenir cette recherche nulle part ailleurs car aucune IA n’a accès à tout cela. La recherche Google ne touche pas les commentaires Reddit ou les publications X. ChatGPT a un accord avec Reddit mais ne peut pas rechercher X ou TikTok. Gemini a YouTube mais pas Reddit. Claude n'en possède aucun nativement. Chaque plateforme est un jardin clos avec sa propre API, ses propres tokens, sa propre authentification. Mais vous pouvez apporter vos propres clés et sessions de navigateur, et tout à coup, un agent IA peut toutes les rechercher en même temps, les comparer les unes aux autres et vous dire ce qui compte réellement.
+Vous ne pouvez pas trouver cette recherche ailleurs car aucune IA unique n’a accès à tout. Google recherche ne touche ni Reddit commentaires ni X publications. ChatGPT a un accord avec Reddit mais ne peut pas rechercher X ni TikTok. Gemini a YouTube mais pas Reddit. Claude n’en a aucun d’eux nativement. Chaque plateforme est un jardin clos avec ses propres API, ses propres jetons, sa propre authentification. Mais vous pouvez apporter vos propres clés et sessions de navigateur, et soudain un agent IA peut toutes les rechercher en même temps, les évaluer entre elles et vous dire ce qui compte réellement.
 
-C'est le déverrouillage. Il n'y a pas de meilleur moteur de recherche. Une douzaine de plateformes déconnectées, pontées par un agent.
+C’est ça le déblocage. Pas un meilleur moteur de recherche. Une douzaine de plateformes déconnectées, pontées par un agent.
 
 ```
 /last30days Peter Steinberger
 ```
 
-Vous avez une réunion demain. Vous les recherchez sur Google. Vous obtenez leur LinkedIn à partir de 2023. /last30days vous montre ce qu'ils font réellement ce mois-ci : ils ont rejoint OpenAI pour travailler sur le Codex, luttent contre l'interdiction d'Anthropic sur les agents tiers, expédient 23 PR à un taux de fusion de 85 %, créent "LobsterOS" pour le contrôle des agents multi-appareils, et r/ClaudeCode a obtenu 569 votes positifs en débattant s'il est un héros ou "insupportable". Dispersé dans les publications X, les fils de discussion Reddit, les transcriptions YouTube et les commits GitHub. Rien de tout cela n'était sur Google.
+Vous avez une réunion demain. Vous les Google . Vous obtenez leur LinkedIn de 2023. /last30days vous donne ce qu’ils font réellement ce mois-ci : rejoindre OpenAI pour travailler sur Codex, combattre l’interdiction d’Anthropic sur les agents tiers, expédier 23 PRs à un taux de fusion de 85 %, construire des «LobsterOS» pour le contrôle multi-appareils des agents, et r/ClaudeCode a obtenu 569 votes positifs pour débattre de savoir s’il est un héros ou « insupportable ». Dispersé dans X posts, Reddit fils, YouTube transcriptions et GitHub commits. Rien de tout cela n’était sur Google.
 
-## Pourquoi cela existe
+## Pourquoi cela existe-t-il
 
-Je l'ai construit pour suivre le rythme de l'IA. Tout change chaque jour et les nerds de Reddit et X sont toujours au top en premier. J'avais besoin de meilleures invites, et les données de formation étaient toujours en retard de plusieurs mois par rapport à ce que la communauté avait déjà compris.
+Je l’ai construit pour suivre le rythme de l’IA. Tout change chaque jour et les Reddit et X nerds sont toujours à l’affût en premier. J’avais besoin de meilleurs indices, et les données d’entraînement avaient toujours des mois de retard sur ce que la communauté avait déjà compris.
 
-Mais cela s’est transformé en quelque chose de plus grand. Maintenant, je l'exécute avant un appel commercial pour connaître la vérité des 30 derniers jours sur une entreprise. Avant une réunion, pour lire les tweets récents et les transcriptions de podcasts de quelqu'un. Avant un voyage à Disney World pour savoir quels manèges sont fermés et ce que dit la communauté de Genie+. Avant de construire quoi que ce soit, je dois savoir quels problèmes les gens rencontrent réellement.
+Mais cela s’est transformé en quelque chose de plus important. Maintenant, je le passe avant un appel commercial pour connaître la vérité des 30 derniers jours sur une entreprise. Avant une réunion pour lire les tweets récents et les transcriptions de podcasts de quelqu’un. Avant un Disney World voyage pour savoir quelles attractions sont fermées et ce que la communauté dit à propos de Genie+. Avant de construire quoi que ce soit pour savoir quels problèmes les gens rencontrent réellement.
 
-Si vous rencontrez un PDG, avez-vous lu tous ses tweets et transcriptions YouTube des 30 derniers jours ? J'ai.
+Si vous rencontrez un PDG, avez-vous lu tous ses tweets et YouTube transcriptions des 30 derniers jours ? Oui.
 
 ## Sources, notées par le peuple
 
-| Source | Ce que les gens vous disent |
+| Source | Ce que les gens te disent |
 |--------|--------------------------|
-| **Reddit** | La prise non filtrée. Meilleurs commentaires avec un nombre réel de votes positifs, gratuits, sans clé API. Les vraies opinions que Google enterre. |
-| **X / Twitter** | La prise chaude, le fil expert, la réaction cassante. Premier à savoir, premier à argumenter. |
-| **YouTube** | La plongée profonde de 45 minutes. Les transcriptions complètes ont recherché les 5 phrases citables qui comptent. |
-| **TikTok** | Le créateur touche 3,6 millions de personnes avec une prise que vous ne trouverez jamais sur Google. |
-| **Instagram Reels** | Le point de vue de l'influenceur avec des transcriptions de créations orales. Le signal de la culture visuelle. |
-| **Hacker News** | Le consensus des développeurs. 825 points, 899 commentaires. Là où les techniciens discutent réellement. |
-| **Polymarket** | Pas des avis. Chances. Soutenu par de l'argent réel. 96% de confiance sur les ventes d'albums. 4% sur une acquisition. |
-| **GitHub** | Pour les personnes : vitesse des relations publiques, meilleurs dépôts par stars, notes de version. Pour les sujets : problèmes et discussions. |
-| **Digg** | Groupes d'histoires sélectionnés à partir du classement AI 1000 de Digg (~ 1 000 comptes IA à signal élevé sur X), avec des citations en ligne attribuables (aucune authentification X requise). Activé automatiquement lorsque `digg-pp-cli` est sur PATH. |
-| **arXiv** | Les journaux derrière le battage médiatique. Nouvelle recherche dans la fenêtre, gratuite, sans clé API. Activé automatiquement lorsque `arxiv-pp-cli` est sur PATH (l'installation de première exécution l'installe). |
-| **Techmème** | La couche éditoriale d'actualités technologiques, fenêtrée sur vos 30 jours. Gratuit, sans clé API. Activé automatiquement lorsque `techmeme-pp-cli` est sur PATH (l'installation de première exécution l'installe). |
-| **LinkedIn** | Le signal professionnel. Publications et articles, avec des articles considérés comme un signal élevé. |
-| **StockTwits** | Sentiment des commerçants. S'active automatiquement lorsque votre sujet est un ticker ou une crypto. |
-| **Fils** | La couche de texte post-Twitter. Conversations de créateurs et de marques. |
-| **Pinterest** | Découverte visuelle. Épinglez, enregistrez et commentez les produits et les idées. |
-| **Xiaohongshu (ROUGE)** | Signaux de style de vie, de produit et de créateur chinois. Demandé explicitement avec `--search xhs` lorsqu'un plug-in de navigateur x-mcp connecté ou un service `xiaohongshu-mcp` s'exécute localement. |
-| **Ciel bleu** | La couche sociale décentralisée. Publications du protocole AT issues de la migration post-Twitter. |
-| **Perplexité** | Synthèse Sonar mise à la terre, lignes brutes de l'API de recherche et recherche approfondie. |
-| **Internet** | La couverture éditoriale, les comparaisons de blogs. Un signal parmi tant d’autres, mais pas le seul. |
+| **Reddit** | L’avis non filtré. Meilleurs commentaires avec de vrais votes positifs, gratuits, sans API clé. Les vraies opinions que Google enterre. |
+| **X / Twitter** | L’opinion controversée, le fil narratif de l’expert, la réaction qui s’est brisée. Premier à savoir, premier à argumenter. |
+| **YouTube** | L’analyse approfondie de 45 minutes. Les transcriptions complètes ont été recherchées pour les 5 phrases citables qui comptent. |
+| **TikTok** | Le créateur atteint 3,6 millions de personnes avec une vision que vous ne trouverez jamais sur Google. |
+| **Instagram Reels** | La perspective de l’influenceur avec des transcriptions de spoken word. Le signal visuel de la culture. |
+| **Hacker News** | Le consensus des développeurs. 825 points, 899 commentaires. Là où les techniciens argumentent réellement. |
+| **Polymarket** | Pas des opinions. Des cotes. Soutenu par de l’argent réel. 96 % de confiance sur les ventes d’album. 4 % sur une acquisition. |
+| **GitHub** | Pour les gens : PR Velocity, Top Repos par étoiles, notes de release. Pour les sujets : problèmes et discussions. |
+| **Digg** | Clusters d’histoires sélectionnés à partir du classement AI 1000 de Digg(~1000 comptes IA high-signal sur X), avec des citations en ligne attribuables (sans authentification X requise). Autoactivé lorsque `digg-pp-cli` est activé PATH. |
+| **arXiv** | Les papiers derrière tout ce battage médiatique. Nouvelle recherche dans la fenêtre, gratuite, sans API de touche. Auto-activé quand `arxiv-pp-cli` est en PATH (la première configuration l’installe). |
+| **Techmeme** | La couche éditoriale tech-news, avec une fenêtre de date à 30 jours. Gratuit, sans clé API . Activé automatiquement quand `techmeme-pp-cli` est en PATH (la première configuration l’installe). |
+| **LinkedIn** | Le signal professionnel. Publications et articles, avec des éléments pondérés en haut du signal. |
+| **StockTwits** | Le sentiment du trader. S’active automatiquement lorsque votre sujet est un ticker ou une crypto. |
+| **Threads** | La couche texte post-Twitter. Conversations de créateurs et de marques. |
+| **Pinterest** | Découverte visuelle. Épinglez, sauvegardez et commente des produits et des idées. |
+| **Xiaohongshu (RED)** | Signaux de mode de vie, produit et créateur chinois. Demandé explicitement avec `--search xhs` lorsqu’un plugin ou un service `xiaohongshu-mcp` navigateur x-mcp connecté fonctionne localement. |
+| **Bluesky** | La couche sociale décentralisée. Les publications du protocole AT issues de la migration post-Twitter. |
+| **Perplexity** | Synthèse sonar au sol, lignes de API de recherche brute, et recherche profonde. |
+| **Web** | La couverture éditoriale, les comparaisons sur les blogs. Un signal parmi tant d’autres, pas le seul. |
 
-Les contributeurs de la communauté continuent d’en ajouter. Truth Social et d’autres sources de niche sont dans le moteur et d’autres sont en route.
+Les contributeurs de la communauté n’arrêtent pas d’en ajouter. Truth Social et d’autres sources de niche sont en cours avec d’autres en préparation.
 
-Un fil de discussion Reddit avec 1 500 votes positifs est un signal plus fort qu’un article de blog que personne n’a lu. Un TikTok avec 3,6 millions de vues vous en dit plus sur ce qui est culturellement pertinent qu'un communiqué de presse. Les cotes du polymarché soutenues par un volume de 66 000 $ sont plus difficiles à contester que la supposition d'un expert.
+Un fil de discussion Reddit avec 1 500 upvotes est un signal plus fort qu’un article de blog que personne n’a lu. Un TikTok avec 3,6 millions de vues en dit plus sur ce qui est culturellement pertinent qu’un communiqué de presse. Polymarket cotes soutenues par 66 000 $ de volume sont plus difficiles à contester qu’une supposition d’un commentateur.
 
-La synthèse est classée en fonction de ce avec quoi de vraies personnes se sont réellement engagées. Pertinence sociale, pas pertinence SEO.
+La synthèse se classe selon ce avec quoi les vraies personnes interagissent réellement. La pertinence sociale, pas SEO pertinence.
 
-## Pourquoi les gens l'utilisent réellement
+## À quoi servent réellement les gens
 
-**Avant une réunion.** `/last30days Peter Steinberger` - a rejoint l'équipe Codex d'OpenAI, luttant contre l'interdiction d'Anthropic sur les agents tiers, 23 PR ont fusionné à un taux de fusion de 85 % sur GitHub, créant LobsterOS pour le contrôle des agents multi-appareils. r/ClaudeCode : "Depuis la sortie d'OpenClaw, il était largement connu que si vous l'exécutiez via autre chose que l'API, vous finiriez par être banni" (227 votes positifs). Ce n'est pas sur LinkedIn.
+**Avant une réunion.** `/last30days Peter Steinberger` - a rejoint l’équipe Codex de OpenAI, luttant contre l’interdiction d’Anthropic sur les agents tiers, 23 PRs fusionnés avec un taux de fusion de 85 % sur GitHub, construisant LobsterOS pour le contrôle inter-appareils des agents. r/ClaudeCode : « Depuis la sortie de OpenClaw, il était largement connu que si vous le passiez par autre chose que le API, vous finiriez par être banni » (227 votes positifs). Ce n’est pas la faute de LinkedIn.
 
-**Pour lire les signaux d'embauche.** `/last30days Listen Labs --hiring-signals` : les pages d'emplois et de carrières actuelles deviennent des preuves citées de changements d'orientation : embauche dans la sécurité de l'entreprise, la réussite des clients, l'infrastructure ou l'expansion des produits. Le rapport indique ce que l’embauche semble signaler, et non ce que la feuille de route prévoit.
+**Pour lire les signaux d’embauche.** `/last30days Listen Labs --hiring-signals` - les pages actuelles d’emplois et de carrières deviennent des preuves citées de changements de focus : recrutement vers la sécurité d’entreprise, la réussite client, l’infrastructure ou l’expansion produit. Le rapport indique ce que le recrutement semble signifier, pas ce que la feuille de route présentera.
 
-**Pour trouver le sujet avant qu'il n'atteigne son apogée.** Demandez à `/last30days what's exploding in AI agents?` et la compétence passe en mode découverte : le moteur balaie les listes de catégories Reddit, les fronts/meilleures histoires de Hacker News, le flux AI 1000 de Digg et X une fois authentifié ; votre agent juge les nominations (noms, filtrage des courriers indésirables, valeur du contenu) et rédige les angles des podcasts/articles X ; Ensuite, vous obtenez 5 à 10 sujets classés en fonction de la vitesse. Chaque résultat comprend des numéros multi-sources, une étiquette Momentum et un suivi `/last30days "<topic>"` prêt à l'emploi.
+**Pour trouver le sujet avant qu’il ne soit au sommet.** Demandez `/last30days what's exploding in AI agents?` et la compétence passe en mode découverte : le moteur balaie Reddit listes de catégories, Hacker News les articles de première ligne/les meilleures histoires, le fil AI 1000 de Digg, et X lorsqu’authentifié ; votre agent juge les nominations (noms, filtrage des indésirables, qualité du contenu) et écrit des angles d’article pour podcast / X; puis vous obtenez 5 à 10 sujets classés en vélocité. Chaque résultat inclut des chiffres cross-source, une étiquette de momentum, et un `/last30days "<topic>"` suivi prêt à être publié.
 
-**Quand quelque chose tombe.** `/last30days Kanye West` - Le Royaume-Uni a bloqué son visa, le Wireless Festival a été annulé, les sponsors ont fui. Mais BULLY a fait ses débuts au numéro 2 du Billboard. Fantano est revenu de son "Yay sabbatique" pour le revoir (653K vues). SoFi Homecoming a fait sortir Lauryn Hill et Travis Scott pour 44 chansons. Polymarket : "Est-ce que Kanye tweetera encore ?" 86% Oui. 23 fils de discussion Reddit, 17 vidéos YouTube, 86 000 votes positifs.
+**Quand quelque chose tombe.** `/last30days Kanye West` - Le Royaume-Uni a bloqué son visa, le Wireless Festival annulé, les sponsors ont fui. Mais BULLY a débuté #2 sur Billboard. Fantano est revenu de son « Yay sabbatique » pour le critiquer (653 000 vues). SoFi Homecoming a fait venir Lauryn Hill et Travis Scott pour 44 chansons. Polymarket: « Kanye tweetera-t-il encore ? » 86 % Oui. 23 fils Reddit , 17 vidéos YouTube , 86 000 votes positifs.
 
-**Pour comparer les outils.** `/last30days OpenClaw vs Hermes vs Paperclip` - "Ce ne sont pas des concurrents, ce sont des couches." OpenClaw est l'exécuteur (351 000 étoiles GitHub, en direct), Hermes est le cerveau qui s'améliore automatiquement (31 000 étoiles), Paperclip est l'organigramme (49 000 étoiles). Le nombre d'étoiles est extrait en direct de l'API GitHub, et non d'articles de blog obsolètes. Table côte à côte avec architecture, mémoire, sécurité, le meilleur pour. Selon @IMJustinBrooke : "OpenClaw = Charmander, Hermes = Charizard."
+**Pour comparer les outils.** `/last30days OpenClaw vs Hermes vs Paperclip` - « Ce ne sont pas des concurrents, ce sont des couches. » OpenClaw est l’exécuteur (351K GitHub étoiles, en direct), Hermès est le cerveau qui s’améliore lui-même (31K étoiles), Paperclip est l’organigramme (49K étoiles). Comptage d’étoiles extrait en direct depuis le GitHub API, pas des articles de blog obsolètes. Table côte à côte avec architecture, mémoire, sécurité, meilleur pour. Par @IMJustinBrooke: «OpenClaw = Salamèche, Hermès = Dracaufeu. »
 
-**Pour comprendre le monde.** `/last30days Iran vs USA` - Jour 38 de la guerre. La date limite fixée mardi par Trump pour que l'Iran rouvre le détroit d'Ormuz. Deux avions de guerre américains abattus. Pétrole à 126$/baril. L'AIE l'a qualifié de "plus grande rupture d'approvisionnement dans l'histoire du marché pétrolier mondial". Polymarket : cessez-le-feu d'ici le 31 décembre à 74 %. 27 publications X, 10 vidéos YouTube, 20 marchés de prédiction.
+**Pour comprendre le monde.** `/last30days Iran vs USA` - 38e jour de la guerre. La date limite de Trump mardi pour la réouverture du détroit d’Ormuz par l’Iran. Deux avions de guerre américains abattus. Le pétrole à 126 $ le baril. L’AIE a qualifié cela de « plus grande perturbation de l’approvisionnement de l’histoire du marché mondial du pétrole ». Polymarket: cessez-le-feu d’ici le 31 décembre à 74 %. 27 X posts, 10 vidéos YouTube , 20 marchés de prévision.
 
-**Avant un voyage.** `/last30days Universal Epic Universe` - Agrandissement déjà en construction. Permis « Projet 680 » déposé. Feu d'artifice confirmé par les infrastructures mais inopiné. Temps d'attente : Mine-Cart Madness en moyenne 148 minutes. Pas encore de laissez-passer annuel et les habitants sont frustrés. Les Stardust Racers seront rénovés jusqu'au 5 avril.
+**Avant un voyage.** `/last30days Universal Epic Universe` - Extension déjà en construction. Permis « Projet 680 » déposé. Feu d’artifice confirmé par l’infrastructure mais sans prévenir. Temps d’attente : Mine Wagon Madness en moyenne 148 minutes. Pas encore de pass annuel, et les habitants sont frustrés. Stardust Racers en rénovation jusqu’au 5 avril.
 
-**Pour apprendre quelque chose rapidement.** `/last30days Nano Banana Pro prompting` - Les invites structurées en JSON remplacent la soupe de balises. Le format imbriqué du @pictsbyai évite le « saignement des concepts ». Le flux de travail de modification en premier surpasse la régénération. Ensuite, il vous écrit une invite de production utilisant exactement ce que la communauté a dit fonctionner.
+**Pour apprendre quelque chose rapidement.** `/last30days Nano Banana Pro prompting` - JSONles prompts structurés remplacent la soupe de tags. Le format imbriqué de @pictsbyaiempêche le « concept saccade ». Le workflow d’édition d’abord vaut la régénération. Ensuite, il vous écrit une invite de production en utilisant exactement ce que la communauté a dit fonctionner.
 
 ## Quoi de neuf
 
-Depuis l'annonce de la v3.3 en mai, à partir de la v3.11.1 (juillet 2026) : 175 PR fusionnés - dont 122 provenant de 52 contributeurs de la communauté - dans 15 versions. C'est ce qui a atterri.
+Depuis l’annonce de la v3.3 en mai, à partir de la v3.11.1 (juillet 2026), 175 ont fusionné PRs - 122 d’entre eux issus de 52 contributeurs de la communauté - répartis sur 15 versions. C’est ce qui a été adopté.
 
 ### Première classe sur OpenAI Codex
 
-/last30days est désormais un plugin Codex natif avec une configuration guidée - pas un port, un citoyen de première classe. Les citations compatibles avec le moteur de rendu signifient que la sortie du Codex se lit comme un bref au lieu d'une soupe d'URL (#694), et que le même moteur fonctionne sur les hôtes Claude Code, Cursor, Copilot, Gemini CLI, Claude Desktop, OpenClaw et plus de 50 Agent Skills. Manifeste du plugin Codex par [@rfoust](https://github.com/rfoust) (#686), correctif d'authentification Codex par [@tmchow](https://github.com/tmchow) (#698).
+/last30days est désormais un plugin Codex natif avec configuration guidée – pas un port, un citoyen de première classe. Les citations conscientes du rendu signifient que Codex sortie se lit comme un brief plutôt qu’un soup URL (#694), et le même moteur fonctionne sur Claude Code, Cursor, Copilot, Gemini CLI, Claude Desktop, OpenClawet 50+ hôtes Agent Skills . Codex manifeste du plugin par [@rfoust](https://github.com/rfoust) (#686), Codex correction d’authentification par [@tmchow](https://github.com/tmchow) (#698).
 
-### arXiv, Techmeme et Digg - gratuits, pas de clés API
+### arXiv, Techmemeet Digg - gratuit, sans API clés
 
-arXiv apporte les journaux derrière le battage médiatique et Techmeme apporte la couche d'actualités technologiques éditoriales - gratuite, sans clé, et la première configuration installe leurs CLI afin qu'elles s'activent automatiquement (#709). Les clusters d'histoires AI 1000 de Digg arrivent sans authentification X de la même manière : le programme d'installation installe la CLI Digg gratuite pour vous (#590). Trustpilot propose une option d'adhésion pour les recherches sur les marques grand public.
+arXiv apporte les journaux derrière le battage médiatique et Techmeme apporte la couche éditoriale-actualité technique - gratuit, zéro clé, et la configuration en première exécution installe leurs CLIpour qu’ils s’activent automatiquement (#709). Les clusters d’histoires IA 1000 de Diggarrivent sans authentification X de la même manière – setup installe le Digg CLI gratuit pour vous (#590). Trustpilot envoient l’option pour la recherche sur la marque grand public.
 
-### Free Reddit a augmenté ses scores réels et ses meilleurs commentaires
+### Les Reddit gratuits ont fait fructifier de vrais scores et ont fait grimper les commentaires
 
-L'API publique .json de Reddit est morte ; le libre chemin est revenu plus fort. RSS sans clé + scraping shreddit (#457), découverte de subreddit dédié avec un nombre réel de votes positifs via arctic-shift (#696) et un seuil de pertinence pour qu'une publication virale hors sujet ne puisse pas détourner votre brief (#488, merci [@rzachsmith](https://github.com/rzachsmith)). Aucune clé API. De vrais scores. Principaux commentaires inclus.
+Redditpublic .json API est mort ; le chemin gratuit est revenu plus fort. RSS sans clé + scraping shreddit (#457), découverte de subreddit dédié avec de vrais décomptes de votes via arctic-shift (#696), et un plancher de pertinence pour qu’un post viral hors sujet ne puisse pas détourner votre brief (#488, merci [@rzachsmith](https://github.com/rzachsmith)). Pas de clé API . Scores réels. Commentaires principaux inclus.
 
-### Les meilleurs commentaires dans chaque brief
+### Les meilleurs commentaires dans chaque mémoire
 
-Les commentaires sont désormais une couche par défaut entre les sources : commentaires Instagram avec une diversité basée sur le classement afin que cinq prises chaudes ne proviennent pas toutes d'une seule publication (#751), commentaires YouTube plus une sauvegarde de transcription ScrapeCreators pour le moment où yt-dlp est supprimé (#637), et les commentaires votés par la foule pondérés dans les meilleures prises afin que les lignes les plus drôles de la communauté survivent au score (#592, #608).
+Les commentaires sont désormais une couche par défaut entre les sources : les commentaires Instagram avec une diversité basée sur le classement, donc cinq opinions brûlantes ne proviennent pas toutes d’un même post (#751), YouTube commentaires plus une sauvegarde de ScrapeCreators transcription pour quand yt-dlp est éliminé (#637), et les commentaires votés par le public mis en Best Takes pour que les répliques les plus drôles de la communauté survivent au score (#592, #608).
 
-### Une commande de médecin
+### Commande un médecin
 
-Demandez un bilan de santé et le médecin exécute chaque source, puis prescrit des correctifs exacts : quelle clé manque, quelle CLI est hors PATH, quel cookie a expiré (#753). Plus besoin de deviner pourquoi X est revenu mince.
+Demandez un contrôle de santé et le médecin analyse toutes les sources, puis prescrit des solutions exactes - quelle clé manque, laquelle CLI est décalée PATH, quel cookie a expiré (#753). Plus de devinettes sur les raisons X sont revenues faibles.
 
-### Recherche X, reconstruite
+### X recherche, reconstruite
 
-Le pipeline X a fait l'objet d'une refonte de fond : les voies FROM et ABOUT afin que les propres publications d'une personne et la conversation à leur sujet soient toutes deux classées (#610), la désambiguïsation des sous-requêtes sensibles à la personne (#611), la paternité de première partie avec classement des signaux d'interaction (#613) et une source X unique avec basculement automatique du backend (#622). Plus un honnête `--diagnose` qui sonde réellement l'authentification (#609).
+Le pipeline X a bénéficié d’une refonte complète : les voies FROM et ABOUT pour que les posts d’une personne et la conversation à leur sujet soient tous deux classés (#610), désambiguïsation des sous-requêtes conscientes (#611), mise à la terre de l’auteur de première partie avec classement du signal d’interaction (#613), et une source X unique avec basculement automatique backend (#622). En plus d’un `--diagnose` honnête qui sonde réellement l’authentification (#609).
 
-### Plus de sources jointes
+### D’autres sources ont rejoint
 
-LinkedIn via ScrapeCreators, avec des articles comme signal fort ([@ravstr](https://github.com/ravstr), #702). StockTwits s'active automatiquement pour les sujets de ticker et de cryptographie ([@wtiwana](https://github.com/wtiwana), #658). Perplexity a développé les modes API directs et la recherche approfondie asynchrone ([@sk-holmes](https://github.com/sk-holmes), #629).
+LinkedIn via ScrapeCreators, avec des articles comme signal élevé ([@ravstr](https://github.com/ravstr), #702). StockTwits s’active automatiquement pour les thèmes ticker et crypto ([@wtiwana](https://github.com/wtiwana), #658). Perplexity développé en modes API directs et asynchrone Deep Research ([@sk-holmes](https://github.com/sk-holmes), #629).
 
 ### Endurci par la communauté
 
-La vague de sécurité était presque entièrement un travail communautaire : correctifs XSS stockés dans le moteur de rendu HTML ([@iliaal](https://github.com/iliaal), [@aaronjmars](https://github.com/aaronjmars)), fichiers temporaires de cookies verrouillés, CI renforcés par la chaîne d'approvisionnement avec OpenSSF Scorecard et attestation de provenance de la construction ([@shaanmajid](https://github.com/shaanmajid), [@hammadxcm](https://github.com/hammadxcm), [@aniruddh909](https://github.com/aniruddh909)), analyses Semgrep et OSV-Scanner ainsi qu'une porte d'examen des dépendances PR ([@23241a6749](https://github.com/23241a6749)), un plancher de couverture de test introduit à 60 % et augmenté depuis à 84 % ([@gourab5139014](https://github.com/gourab5139014)) et une analyse de sécurité Hermes effacée de toutes les découvertes CRITIQUES (#768).
+La vague de sécurité consistait presque entièrement en travail communautaire : correctifs stocked-XSS dans le moteur de rendu HTML ([@iliaal](https://github.com/iliaal), [@aaronjmars](https://github.com/aaronjmars)), fichiers temporaires de cookies verrouillés, CI renforcé par la chaîne d’approvisionnement avec OpenSSF Scorecard et attestation de provenance de compilation ([@shaanmajid](https://github.com/shaanmajid), [@hammadxcm](https://github.com/hammadxcm), [@aniruddh909](https://github.com/aniruddh909)), scans Semgrep et OSV-Scanner plus une porte de contrôle de dépendance PR ([@23241a6749](https://github.com/23241a6749)), un plancher de couverture de test introduit à 60 % et depuis porté à 84 % ([@gourab5139014](https://github.com/gourab5139014)), et un scan de sécurité Hermes effacé de toutes les conclusions CRITIQUES (#768).
 
 ### Va plus loin
 
-Langues hébraïques et non latines ([@dudyme](https://github.com/dudyme)). Tokenisation compatible CJK pour les sources chinoises ([@An-idd](https://github.com/An-idd)). Une vague de compatibilité Windows. Extraction de cookies dans toute la famille Chromium - Brave, Edge, Vivaldi, Opera, Arc ([@andrey-esipov](https://github.com/andrey-esipov)) - ainsi que les sources d'informations d'identification macOS Keychain et Linux pass(1). Analyse historique `--as-of` ([@chiyi-creator](https://github.com/chiyi-creator)). Python 3.12 provisionné automatiquement via uv ([@buntysomroy](https://github.com/buntysomroy)). `--hiring-signals` pour lire les pages d'emploi d'une entreprise. Deltas de liste de surveillance entre les exécutions.
+Hébreu et langues non latines ([@dudyme](https://github.com/dudyme)). Tokenisation consciente CJKpour les sources chinoises ([@An-idd](https://github.com/An-idd)). Une vague de compatibilité Windows . Extraction des cookies à travers toute la famille Chromium - Brave, Edge, Vivaldi, Opera, Arc ([@andrey-esipov](https://github.com/andrey-esipov)) - plus macOS Keychain et Linux pass(1) sources de certification. `--as-of` rétrospection historique ([@chiyi-creator](https://github.com/chiyi-creator)). Provisionnement automatique Python 3.12 via uv ([@buntysomroy](https://github.com/buntysomroy)). `--hiring-signals` pour lire les pages d’emplois d’une entreprise. Deltas de la liste de surveillance entre les exécutions.
 
-### Toujours dans la boîte de la v3
+### Toujours dans la boîte depuis la v3
 
-Les fondations de la v3 sont toujours là : le cerveau de pré-recherche qui résout les bons identifiants, sous-reddits et hashtags avant qu'un seul appel d'API ne se déclenche (construit par [@j-sperling](https://github.com/j-sperling)) ; Meilleurs scores pour l'humour et la viralité ainsi que la pertinence ; fusion de clusters multi-sources ; comparaisons en un seul passage (« CLI vs MCP » en 3 minutes, et non 12) ; comparaisons `--competitors` découvertes automatiquement ; Mode personne GitHub (`--github-user=steipete`) ; Mode ELI5 (« eli5 activé » après toute exécution) ; et des mémoires HTML autonomes et partageables (`--emit=html`). Les boutons de configuration se trouvent dans [CONFIGURATION.md](CONFIGURATION.md).
+Les fondations de la v3 sont toujours là : le cerveau pré-recherche qui résout les bons pseudos, subreddits et hashtags avant qu’un seul appel de API ne se déclenche (construit par [@j-sperling](https://github.com/j-sperling)) ; Best Takes la notation pour l’humour et la viralité en plus de la pertinence ; la fusion de clusters multisources ; les comparaisons en un seul passage («CLI vs MCP» en 3 minutes, pas 12) ; la découverte automatique `--competitors` comparaisons ; GitHub mode personne (`--github-user=steipete`) ; ELI5 mode (« eli5 on » après chaque partie ; et des briefs HTML partageables et autonomes (`--emit=html`). Les boutons de configuration sont présents dans [CONFIGURATION.md](CONFIGURATION.md).
 
-## Installer
+## Installation
 
-| Surfaces | Installer | Mises à jour |
+| Surface | Installation | Mises à jour |
 |---------|---------|---------|
-| **Claude Code** (recommandé) | `/plugin marketplace add mvanhorn/last30days-skill` | Auto via Marketplace, ou `claude plugin update last30days@last30days-skill` |
-| **Grok** (CLI xAI Build) | `grok plugin marketplace add mvanhorn/last30days-skill` puis `grok plugin install last30days` | `grok plugin update last30days` |
-| **Codex, Cursor, Copilot, Gemini CLI ou l'un des 50+ [Hôtes Agent Skills](https://agentskills.io)** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
-| **claude.ai** (web) | [Téléchargez `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) et téléchargez via claude.ai > Personnaliser > Compétences > + > Créer une compétence > Télécharger une compétence | Re-télécharger et ré-uploader |
-| **Claude Desktop** | [Téléchargez le `.mcpb` pour votre plateforme](https://github.com/mvanhorn/last30days-skill/releases/latest) et faites-le glisser dans Paramètres > Extensions | Re-téléchargez et faites glisser le nouveau bundle dans |
+| **Claude Code**(recommandé) | `/plugin marketplace add mvanhorn/last30days-skill` | Auto via le marché, ou `claude plugin update last30days@last30days-skill` |
+| **Grok**(Build xAI CLI) | `grok plugin marketplace add mvanhorn/last30days-skill` alors `grok plugin install last30days` | `grok plugin update last30days` |
+| **Codex, Cursor, Copilot, Gemini CLI, ou n’importe lequel des 50+ [Agent Skills](https://agentskills.io) hôtes** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
+| **claude.ai**(toile) | [Download `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) et téléverser via claude.ai > Personnaliser > compétences > + > Créer une compétence > Télécharger une compétence | Téléchargez et ré-téléchargez |
+| **Claude Desktop** | [Download the `.mcpb` for your platform](https://github.com/mvanhorn/last30days-skill/releases/latest) et glisser dans Paramètres > Extensions | Retéléchargez et faites glisser le nouveau bundle |
 | **OpenClaw** | `clawhub install last30days-official` | `clawhub update last30days-official` |
 
 ### Claude Code (recommandé)
@@ -169,46 +169,46 @@ Les fondations de la v3 sont toujours là : le cerveau de pré-recherche qui r�
 /plugin marketplace add mvanhorn/last30days-skill
 ```
 
-Recommandé car le marché Claude Code gère les mises à jour pour vous : le cache du plugin est versionné et s'actualise automatiquement lors de la publication d'une nouvelle version. Exécutez `claude plugin update last30days@last30days-skill` pour forcer une vérification.
+Recommandé car le marché Claude Code gère les mises à jour pour vous — le cache des plugins est versionné et se rafraîchit automatiquement lorsqu’une nouvelle version est publiée. Lancez `claude plugin update last30days@last30days-skill` pour forcer une vérification.
 
-Si vous préférez utiliser le chemin d'installation des compétences d'agent sur Claude Code, celui-ci est également pris en charge :
+Si vous préférez utiliser le chemin d’installation des compétences agent-skills sur Claude Code, c’est aussi pris en charge :
 
 ```
 npx skills add mvanhorn/last30days-skill -g -a claude-code
 ```
 
-Le plugin natif et l'installation `npx skills` peuvent coexister. Notez que Claude Code n'effectue pas de déduplication entre les méthodes d'installation : si le plugin Marketplace et la copie `npx skills` sont actifs, `/last30days` affichera deux entrées. Utilisez une méthode d'installation par machine.
+Le plugin natif et l’installation `npx skills` peuvent coexister. Notez que Claude Code ne déduppe pas entre les méthodes d’installation : si vous avez activé à la fois le plugin marketplace et la copie `npx skills` , `/last30days` affichera deux entrées. Utilisez une méthode d’installation par machine.
 
-### Grok (CLI xAI Build)
+### Grok ( CLIde construction xAI)
 
-[Grok Build](https://docs.x.ai/build/features/skills-plugins-marketplaces) (`grok`) installe last30days en tant que plugin natif. L'installation directe suit le référentiel :
+[Grok Build](https://docs.x.ai/build/features/skills-plugins-marketplaces) (`grok`) s’installe en dur30days en tant que plugin natif. L’installation directe suit le dépôt :
 
 ```bash
 grok plugin install mvanhorn/last30days-skill
 ```
 
-Ou ajoutez ce dépôt en tant que source de marché, puis installez par nom de plugin :
+Ou ajoutez ce dépôt comme source marketplace, puis installez par nom de plugin :
 
 ```bash
 grok plugin marketplace add mvanhorn/last30days-skill
 grok plugin install last30days
 ```
 
-Ajoutez `--trust` pour ignorer la confirmation d'installation. Mise à jour avec `grok plugin update last30days`. Grok lit également les manifestes du Claude Code pour vérifier leur compatibilité ; la paire native `.grok-plugin/` est la voie de première classe (et à quelle liste officielle [xAI Marketplace](https://github.com/xai-org/plugin-marketplace) pointe). `npx skills add` reste une solution de secours entre hôtes valide.
+Ajouter `--trust` pour sauter la confirmation d’installation. Mettre à jour avec `grok plugin update last30days`. Grok lit aussi les manifestes Claude Code pour la compatibilité ; la paire native `.grok-plugin/` est la voie de première classe (et ce à quoi indique une liste officielle [xAI marketplace](https://github.com/xai-org/plugin-marketplace) ). `npx skills add` reste une solution de secours valide entre hôtes.
 
-### Codex, Cursor, Copilot, Gemini CLI et autres hôtes de compétences d'agent
+### Codex, Cursor, Copilot, Gemini CLI, et autres hôtes Agent Skills
 
-Installation via la CLI ouverte [Agent Skills](https://agentskills.io) — prend en charge plus de 50 harnais, notamment `codex`, `cursor`, `github-copilot`, `gemini-cli`, `claude-code`, `windsurf`, `cline`, `continue`, `roo`, `aider-desk`, `opencode`, `goose` et plus (liste complète sur le [vercel-labs/skills repo](https://github.com/vercel-labs/skills)).
+Installation via l’open [Agent Skills](https://agentskills.io) CLI — prend en charge 50+ harnais incluant `codex`, `cursor`, `github-copilot`, `gemini-cli`, `claude-code`, `windsurf`, `cline`, `continue`, `roo`, `aider-desk`, `opencode`, `goose`et plus encore (liste complète sur le [vercel-labs/skills repo](https://github.com/vercel-labs/skills)).
 
 ```bash
 npx skills add mvanhorn/last30days-skill -g
 ```
 
-L'indicateur `-g` (global) s'installe dans votre répertoire utilisateur afin que la compétence soit disponible dans tous les projets. Sans `-g`, `npx skills` installe le projet localement dans `./.skills/` (engagé avec le dépôt). Pour un outil de recherche sur le monde, vous voulez une approche globale.
+Le drapeau `-g` (global) s’installe dans votre répertoire utilisateur, donc la compétence est disponible sur tous les projets. Sans `-g`, `npx skills` installe localement dans `./.skills/` (engagé avec le dépôt). Pour un outil de recherche du monde, global, c’est ce qu’il vous faut.
 
-Le bureau Codex et d'autres hôtes en mode dossier peuvent fonctionner dans des dossiers ordinaires ainsi que dans les dépôts Git. Avant la première recherche, demandez à l'agent hôte d'exécuter le `scripts/last30days.py --preflight` fourni à partir du répertoire de compétences chargé ; dans une extraction de source, la commande équivalente est `python3 skills/last30days/scripts/last30days.py --preflight`. Il affiche la source de configuration, le plan des cookies du navigateur, les écritures planifiées, les commandes facultatives et la configuration du projet ignorée sans lire les cookies, écrire des fichiers ou exécuter des recherches.
+Codex hôtes de bureau et autres en mode dossier peuvent fonctionner dans des dossiers ordinaires ainsi que dans des dépôts Git. Avant de faire une première recherche, demandez à l’agent hôte d’exécuter les `scripts/last30days.py --preflight` fournis depuis le répertoire skill chargé ; lors d’une vérification de source, la commande équivalente est `python3 skills/last30days/scripts/last30days.py --preflight`. Elle affiche la source de configuration, le plan de cookies-navigateur, les écritures planifiées, les commandes optionnelles et la configuration du projet ignorée sans lire les cookies, écrire des fichiers ou lancer de recherche.
 
-Par défaut, cela s'installe pour le faisceau détecté par `npx skills`. Pour en cibler un en particulier (ou plusieurs) :
+Par défaut, cela s’installe pour le faisceau `npx skills` détecte. Pour cibler un ou plusieurs :
 
 ```bash
 npx skills add mvanhorn/last30days-skill -g -a codex
@@ -217,45 +217,45 @@ npx skills add mvanhorn/last30days-skill -g -a gemini-cli
 npx skills add mvanhorn/last30days-skill -g -a codex -a cursor
 ```
 
-Mettre à jour plus tard avec :
+Mise à jour plus tard avec :
 
 ```bash
 npx skills update last30days -g
 ```
 
-Ou mettez à jour tout ce que vous avez installé globalement via `npx skills` :
+Ou mettez à jour tout ce que vous avez installé globalement via `npx skills`:
 
 ```bash
 npx skills update -g
 ```
 
-Répertoriez et supprimez avec `npx skills list -g` et `npx skills remove last30days -g`.
+Listez et supprimez avec `npx skills list -g` et `npx skills remove last30days -g`.
 
 ### claude.ai (web)
 
-1. [Téléchargez `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) à partir de la dernière version
-2. Accédez à [claude.ai > Personnaliser > Skills](https://claude.ai/customize/skills)
-3. Cliquez sur le bouton `+` dans le panneau Compétences > cliquez sur `Create skill` > `Upload a skill` et parcourez/déposez le fichier dans
+1. [Download `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) de la dernière sortie
+2. Va à [claude.ai > Customize > Skills](https://claude.ai/customize/skills)
+3. Cliquez sur le bouton `+` dans le panneau Compétences > cliquez sur `Create skill` > `Upload a skill` et parcourez/déposez le fichier
 
-Activez d'abord « Exécution de code et création de fichiers » sous Fonctionnalités : les compétences ne fonctionneront pas sans cela.
+Activez d’abord « Exécution de code et création de fichiers » sous Capacités — les compétences ne s’exécuteront pas sans cela.
 
-### Bureau Claude
+### Claude Desktop
 
 Claude Desktop installe `/last30days` en tant que serveur MCP via un bundle `.mcpb` (un package Model Context Protocol en un clic).
 
-1. Accédez à la [dernière version ](https://github.com/mvanhorn/last30days-skill/releases/latest) et téléchargez le `.mcpb` pour votre plateforme :
-- macOS Apple Silicon : `last30days-pp-mcp-darwin-arm64.mcpb`
-- macOS Intel : `last30days-pp-mcp-darwin-amd64.mcpb`
--Linux x86_64 : `last30days-pp-mcp-linux-amd64.mcpb`
-2. Ouvrez Claude Desktop, accédez à Paramètres > Extensions et faites glisser le fichier.
-3. Lorsque vous y êtes invité, collez les clés API des sources que vous souhaitez activer. Chaque champ est facultatif : le moteur passe en mode Web uniquement si vous les ignorez tous. Les clés sont stockées dans le trousseau de votre système d’exploitation.
-4. Redémarrez Claude Desktop. Demandez à Claude de « rechercher Peter Steinberger » ou n'importe quel sujet et il appellera l'outil `research`.
+1. Allez sur le [latest release](https://github.com/mvanhorn/last30days-skill/releases/latest) et téléchargez le `.mcpb` pour votre plateforme :
+   - macOS Apple Silicon : `last30days-pp-mcp-darwin-arm64.mcpb`
+   - macOS Intel : `last30days-pp-mcp-darwin-amd64.mcpb`
+   - Linux x86_64 : `last30days-pp-mcp-linux-amd64.mcpb`
+2. Ouvre Claude Desktop, va dans Paramètres > Extensions, et fais glisser le fichier dedans.
+3. Lorsqu’on vous le demande, collez API clés pour les sources que vous souhaitez activer. Chaque champ est optionnel — le moteur passe au mode web uniquement si vous les sautez tous. Les clés sont stockées dans votre trousseau d’OS.
+4. Redémarrez Claude Desktop. Demandez- Claude de « rechercher Peter Steinberger » ou n’importe quel sujet, et cela appellera l’outil `research` .
 
-**Exigence d'hôte :** Python 3.12+ sur PATH. Le bundle fournit la source du moteur mais utilise votre interpréteur Python local. Installez depuis [python.org](https://www.python.org/downloads/) sous Windows ; macOS et la plupart des distributions Linux proposent une version compatible.
+**Exigence de l’hôte :** Python 3.12+ sur PATH. Le bundle envoie la source moteur mais utilise votre interprète Python local. Installez depuis [python.org](https://www.python.org/downloads/) sur Windows; macOS et la plupart des distributions Linux livrent une version compatible.
 
-**Les clés ne sont pas synchronisées avec la compétence Code.** Claude Desktop et Claude Code conservent des magasins d'informations d'identification distincts de par leur conception. Si vous avez déjà configuré `~/.config/last30days/.env` pour la compétence Code, vous saisirez à nouveau les mêmes clés ici une fois.
+**Les clés ne se synchronisent pas avec la compétence Code.** Claude Desktop et Claude Code maintiennent des magasins d’identifiants séparés par conception. Si vous avez déjà configuré `~/.config/last30days/.env` pour la compétence Code, vous saisirez à nouveau les mêmes clés ici une fois.
 
-La prise en charge de Windows est différée jusqu'à ce que les points d'entrée du manifeste par plate-forme soient réglés ; suivre dans un numéro de suivi.
+Windows support est différé jusqu’à ce que les points d’entrée des manifestes par plateforme soient réglés ; suivre un problème de suivi.
 
 ### OpenClaw
 
@@ -263,11 +263,11 @@ La prise en charge de Windows est différée jusqu'à ce que les points d'entré
 clawhub install last30days-official
 ```
 
-Pour les flux de travail d'action X/Twitter en dehors de la recherche `/last30days`, tels que la publication
-tweets ou réponses, exportation de followers, gestion des médias, moniteurs et cadeaux
-tirages, utilisez [TweetClaw](https://github.com/Xquik-dev/tweetclaw) comme compagnon
-Plugin OpenClaw. TweetClaw est maintenu par Xquik-dev et est répertorié uniquement en tant que
-chemin compagnon facultatif, pas une dépendance ou une approbation des 30 derniers jours.
+Pour Xflux d’action /Twitter en dehors de la recherche `/last30days` , comme la publication
+tweets ou réponses, exportation d’abonnés, gestion des médias, surveillance et concours
+pioche, utilise [TweetClaw](https://github.com/Xquik-dev/tweetclaw) comme compagnon
+OpenClaw plugin. TweetClaw est maintenu par Xquik-dev et n’est listé que comme un
+Chemin de compagnon optionnel, pas une dépendance ou une endosse de Last30Days.
 
 ### Manuel (développeur)
 
@@ -276,30 +276,30 @@ git clone https://github.com/mvanhorn/last30days-skill.git
 ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.claude/skills/last30days
 ```
 
-Le lien symbolique maintient l'installation synchronisée avec votre arborescence de travail pendant que vous modifiez - aucune recopie n'est nécessaire. Pour `claude.ai`, créez le fichier `.skill` à partir de la source : `bash skills/last30days/scripts/build-skill.sh` produit `dist/last30days.skill`.
+Le lien sym maintient l’installation synchronisée avec votre arbre de travail pendant la modification — pas besoin de recopier. Pour `claude.ai`, construisez le fichier `.skill` à partir de la source : `bash skills/last30days/scripts/build-skill.sh` produit `dist/last30days.skill`.
 
-Reddit (avec commentaires), Hacker News, Polymarket et GitHub fonctionnent immédiatement. Zéro configuration. Exécutez `/last30days` une fois et l'assistant de configuration déverrouille plus de sources en 30 secondes, y compris les CLI gratuites arXiv et Techmeme.
+Reddit (avec commentaires), Hacker News, Polymarketet GitHub fonctionnent immédiatement. Zéro configuration. Lancez- `/last30days` une fois et l’assistant de configuration débloque plus de sources en 30 secondes, y compris les arXiv gratuits et les Techmeme CLIs.
 
 ## Apportez vos propres clés
 
-Ces plateformes n'ont pas de relations entre elles. X ne sait pas ce que pense Reddit. YouTube ne voit pas TikTok. Mais vous pouvez apporter vos propres clés API et jetons de navigateur, et du coup vous avez accès à tous en même temps.
+Ces plateformes n’ont pas de relations entre elles. X ne sait pas ce que Reddit pense. YouTube ne voit pas TikTok. Mais vous pouvez apporter vos propres clés de API et jetons navigateur, et soudainement vous avez accès à tout en même temps.
 
-| Sources | Ce dont vous avez besoin | Coût |
+| Sources | Ce dont tu as besoin | Coût |
 |---------|---------------|------|
 | Reddit (avec commentaires) + HN + Polymarket + GitHub + StockTwits | Rien | Gratuit |
-| arXiv + Techmeme | CLI gratuites, installées automatiquement lors de la première configuration | Gratuit |
-| X/Twitter | Connectez-vous à x.com dans n'importe quel navigateur ou définissez `XQUIK_API_KEY` / `XAI_API_KEY` | Les cookies du navigateur sont gratuits ; les clés sont spécifiques au fournisseur |
+| arXiv + Techmeme | Free CLIs, installé automatiquement par la première exécution | Gratuit |
+| X / Twitter | Connectez-vous à x.com dans n’importe quel navigateur, ou configurez `XQUIK_API_KEY` / `XAI_API_KEY` | Les cookies du navigateur sont gratuits ; les clés sont spécifiques à chaque fournisseur |
 | YouTube | `brew install yt-dlp` | Gratuit |
-| Ciel bleu | Mot de passe de l'application de bsky.app | Gratuit |
-| TikTok + Instagram + Fils de discussion + Pinterest + LinkedIn + Commentaires YouTube | Clé ScrapeCreators | 10 000 appels gratuits, puis PAYG |
-| Xiaohongshu (ROUGE) | Exécutez un plug-in de navigateur x-mcp connecté ou un service `xiaohongshu-mcp` et inscrivez-vous avec `--search xhs` par exécution ou `INCLUDE_SOURCES=xiaohongshu` dans `.env` ; last30days sonde automatiquement `http://localhost:18060` puis `http://host.docker.internal:18060`, ou utilise `XIAOHONGSHU_API_BASE` pour une URL personnalisée | Aucune clé API des 30 derniers jours ; dépend de votre service de session de navigateur local |
-| DripStack (newsletters financières premium) | Opt-in : `--search dripstack` par exécution, ou `INCLUDE_SOURCES=dripstack` dans `.env` | Pas de clé ; API de recherche publique gratuite |
-| Sonar Perplexity / API de recherche / Recherche approfondie | Clé Perplexité ou clé OpenRouter comme solution de secours Sonar | Payez au fur et à mesure |
-| Recherche sur le Web | Clé de recherche courageuse | 2 000 requêtes gratuites/mois |
+| Bluesky | Mot de passe de l’application depuis bsky.app | Gratuit |
+| TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube commentaires | ScrapeCreators clé | 10 000 appels gratuits, puis PAYG |
+| Xiaohongshu (RED) | Exécutez un plugin de navigateur x-mcp connecté ou un service `xiaohongshu-mcp` et optez pour `--search xhs` par exécution ou `INCLUDE_SOURCES=xiaohongshu` dans `.env`; last30days s’auto-sonde `http://localhost:18060` puis `http://host.docker.internal:18060`, ou utilisez `XIAOHONGSHU_API_BASE` pour une URL personnalisée | Pas de clé de API des derniers 30 jours ; cela dépend de votre service local de session de navigateur |
+| DripStack (newsletters financières premium) | Opt-in : `--search dripstack` par partie, ou `INCLUDE_SOURCES=dripstack` en `.env` | Pas de clé ; recherche publique gratuite API |
+| Perplexity Sonar / API de recherche / Recherche approfondie | Perplexity clé, ou clé OpenRouter comme solution de secours Sonar | Payez au fur et à mesure |
+| Web recherche | Clé de recherche Brave | 2 000 requêtes gratuites par mois |
 
-### Trousseau macOS (facultatif)
+### macOS Keychain (optionnel)
 
-Sur macOS, vous pouvez stocker les clés dans le trousseau système au lieu d'un fichier `.env`. La compétence les sélectionne automatiquement en tant que source de priorité la plus faible : les fichiers `.env` et l'environnement de processus gagnent toujours en cas de collision.
+Sur macOS , vous pouvez stocker les clés dans le Keychain système au lieu d’un fichier `.env` . La compétence les détecte automatiquement comme source de priorité la plus basse — `.env` fichiers et environnement de processus l’emportent toujours en cas de collision.
 
 ```bash
 # Interactive setup — prompts for each known key, skip with empty input
@@ -313,61 +313,61 @@ skills/last30days/scripts/setup-keychain.sh --list
 skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 ```
 
-Les éléments sont stockés sous le nom de service `last30days-<KEY>` pour l'utilisateur actuel. Sur les plates-formes non Darwin, le chargeur ne fonctionne pas, il n'y a donc aucun changement de comportement pour les utilisateurs Linux/Windows.
+Les éléments sont stockés sous le nom de service `last30days-<KEY>` pour l’utilisateur actuel. Sur les plateformes non-Darwin, le chargeur est un no-op, donc il n’y a pas de changement de comportement pour les utilisateurs Linux/Windows .
 
-Vous disposez déjà de clés sous différents noms de service de trousseau ? Définissez le mappage non secret `LAST30DAYS_KEYCHAIN_ALIASES` décrit dans [CONFIGURATION.md](CONFIGURATION.md#reusing-existing-macos-keychain-items) au lieu de copier les secrets.
+Avez-vous déjà des clés sous différents noms de service Keychain ? Définissez la `LAST30DAYS_KEYCHAIN_ALIASES` non secrète décrite dans [CONFIGURATION.md](CONFIGURATION.md#reusing-existing-macos-keychain-items) au lieu de copier les secrets.
 
-Voir [CONFIGURATION.md](CONFIGURATION.md) pour la matrice complète des clés par source, la priorité du fournisseur de raisonnement et la priorité du backend de recherche Web.
+Voir [CONFIGURATION.md](CONFIGURATION.md) pour la matrice complète de clés par source, la priorité du fournisseur de raisonnement et la priorité backend de recherche web.
 
 ## Configuration
 
-Deux choses que vous voudrez probablement savoir dès le premier jour :
+Deux choses que vous voudrez probablement savoir dès le premier jour :
 
-**Où les fichiers de recherche sont enregistrés.** `LAST30DAYS_MEMORY_DIR` est par défaut `~/Documents/Last30Days/` (Windows : `C:\Users\<you>\Documents\Last30Days\`). Remplacez en définissant cette variable d'environnement sur n'importe quel chemin de votre shell, ou `--save-dir <path>` par exécution. Utilisez `--output <file>` lorsque vous avez besoin du résultat rendu selon un chemin exact, en utilisant le format sélectionné par `--emit`. Utilisez `--save-suffix=<name>` pour séparer plusieurs variantes du même sujet (par exemple, par client). Chaque exécution de `--save-dir` produit `<slug>-raw[-suffix].md`. Exécutez `python3 skills/last30days/scripts/last30days.py --preflight` pour examiner les écritures planifiées avant une exécution de recherche.
+**Où les fichiers de recherche sont sauvegardés.** `LAST30DAYS_MEMORY_DIR` par défaut est `~/Documents/Last30Days/` (Windows: `C:\Users\<you>\Documents\Last30Days\`). Remplaça en définissant cette variable d’environnement sur n’importe quel chemin dans ton shell, ou `--save-dir <path>` par exécution. Utilise `--output <file>` lorsque tu as besoin que le résultat affiché soit sur un chemin exact, en utilisant le format choisi par `--emit`. Utilise `--save-suffix=<name>` pour séparer plusieurs variantes du même sujet (par exemple par client). Chaque exécution `--save-dir` produit `<slug>-raw[-suffix].md`. Exécute `python3 skills/last30days/scripts/last30days.py --preflight` pour revoir les écritures prévues avant une exécution de recherche.
 
-**Sortie structurée pour les agents et les flux de travail.** Demandez à `/last30days` un JSON lisible par machine pour recevoir le profil d'agent stable et versionné. Pour une utilisation directe du moteur dans les scripts ou le développement, exécutez `python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json` ; ajoutez `--json-profile=raw` uniquement lorsque vous avez besoin du vidage interne `Report` non versionné. Consultez la [référence du champ d'exportation JSON et la politique de gestion des versions](docs/reference/json-export.md).
+**Sortie structurée pour les agents et les flux de travail.** Demandez `/last30days` JSON lisibles par machine pour recevoir le profil d’agent stable et versionné. Pour une utilisation directe du moteur dans les scripts ou le développement, exécutez `python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json`; ajoutez `--json-profile=raw` uniquement lorsque vous avez besoin du vidage interne de `Report` non versionné. Voir le [JSON export field reference and versioning policy](docs/reference/json-export.md).
 
-**Découverte sans sujet.** Demandez à `/last30days what's trending in AI agents?` d'obtenir un dossier de découverte classé au lieu de rechercher un sujet que vous connaissez déjà. Sur un hôte d'agent, cela exécute le protocole d'évaluation de l'hôte à trois commandes (le modèle nomme les sujets, filtre les indésirables, note la valeur et écrit les angles du contenu). Pour une utilisation directe du moteur dans des scripts ou cron, exécutez `python3 skills/last30days/scripts/last30days.py --discover "AI agents"` (one-shot : noms de sujets déterministes, sans angles) ; ajoutez `--emit=json` pour le contrat de découverte versionné. La découverte s'exclut mutuellement avec un sujet positionnel et `--drill`.
+**Découverte sans sujet.** Demandez- `/last30days what's trending in AI agents?` d’obtenir un brief de découverte classé au lieu de rechercher un sujet déjà connu – sur un agent hôte, cela exécute le protocole à trois commandes hôte-jugé (le modèle nomme les sujets, filtre les indésirables, note la valeur et écrit les angles de contenu). Pour une utilisation directe du moteur dans des scripts ou des crons, exécutez `python3 skills/last30days/scripts/last30days.py --discover "AI agents"` (one-shot : noms de sujets déterministes, sans angles) ; ajoutez `--emit=json` pour le contrat de découverte versionné. La découverte est mutuellement exclusive avec un sujet positionnel et `--drill`.
 
-**Surveillance des tendances entre les exécutions.** Le mode par défaut produit un nouvel instantané de démarque par exécution. Pour accumuler les résultats au fil du temps, ajoutez `--store` pour persister dans une base de données SQLite, puis utilisez [`scripts/watchlist.py`](skills/last30days/scripts/watchlist.py) pour les exécutions planifiées (avec livraison Slack/webhook en option sur les nouveaux résultats) et [`scripts/briefing.py`](skills/last30days/scripts/briefing.py) pour les résumés quotidiens/hebdomadaires. Le modèle de cadence complet se trouve dans [CONFIGURATION.md](CONFIGURATION.md#trend-monitoring-store--watchlist--briefings).
+**Surveillance des tendances entre les exécutions.** Le mode par défaut produit un instantané de remarques fraîchement par exécution. Pour accumuler les résultats au fil du temps, ajoutez `--store` pour persister dans une base SQLite, puis utilisez [`scripts/watchlist.py`](skills/last30days/scripts/watchlist.py) pour les exécutions planifiées (avec une livraison optionnelle par Slack / webhook sur les nouvelles découvertes) et [`scripts/briefing.py`](skills/last30days/scripts/briefing.py) pour les digestes quotidiens / hebdomadaires. Le schéma de cadence complet est dans [CONFIGURATION.md](CONFIGURATION.md#trend-monitoring-store--watchlist--briefings).
 
-**Une bibliothèque de recherche avec abonnement.** Demandez à `/last30days` de créer votre flux de bibliothèque ou utilisez `python3 skills/last30days/scripts/last30days.py library feed` directement pour les scripts et le développement. Il transforme les mémoires enregistrés en `index.html`, en Atom `feed.xml` local et en pages brèves lisibles. Ajoutez `--publish` uniquement lorsque vous souhaitez héberger l'index HTML et les pages brèves ; la publication est explicite et publique par défaut. Pour rendre le flux Atom accessible, hébergez le répertoire de sortie généré sur un hôte statique tel que GitHub Pages.
+**Une bibliothèque de recherche abonnée.** Demandez- `/last30days` de construire votre fil d’actualité de bibliothèque, ou utilisez- `python3 skills/last30days/scripts/last30days.py library feed` directement pour le script et le développement. Cela transforme les briefs sauvegardés en `index.html`, un `feed.xml`Atom local et des pages brèves lisibles. Ajoutez `--publish` uniquement lorsque vous souhaitez que l’index HTML et les pages de briefs soient hébergés ; la publication est explicitement volontaire et publique par défaut. Pour rendre le flux Atom abonné, hébergez le répertoire de sortie généré sur un hôte statique tel que GitHub Pages.
 
-**Recherchez tout ce que vous avez recherché.** Demandez à `/last30days search my library for MCP servers` ou `/last30days have I researched MCP servers before?`. Pour une utilisation directe du moteur, exécutez `python3 skills/last30days/scripts/last30days.py library search "MCP servers"`. La recherche est hors ligne et déterministe : elle indexe progressivement les mêmes résumés enregistrés que ceux utilisés par le flux de la bibliothèque, fusionne les observations de magasin correspondantes par exécution et regroupe les résultats par sujet et par date. De nouvelles analyses font également apparaître une section compacte **De votre bibliothèque** lorsque des recherches antérieures chevauchent le sujet actuel ; définissez `LAST30DAYS_LIBRARY_CONTEXT=off` pour désactiver ce contexte passif.
+**Recherchez tout ce que vous avez recherché.** Demandez `/last30days search my library for MCP servers` ou `/last30days have I researched MCP servers before?`. Pour une utilisation directe du moteur, exécutez `python3 skills/last30days/scripts/last30days.py library search "MCP servers"`. La recherche est hors ligne et déterministe : elle indexe progressivement les mêmes briefs sauvegardés utilisés par le fil de la bibliothèque, fusionne les observations correspondantes à chaque exécution, et regroupe les résultats par sujet et date. Les nouvelles sessions font également apparaître une section compacte **Depuis votre bibliothèque** lorsque des recherches antérieures chevauchent le sujet actuel ; réglez `LAST30DAYS_LIBRARY_CONTEXT=off` pour désactiver ce contexte passif.
 
-Les scripts wrapper par client, les sous-reddits de catégorie personnalisés et le canal bêta expérimental pour les personnalisations en cours sont également documentés dans [CONFIGURATION.md](CONFIGURATION.md).
+Des scripts wrapper par client, des subreddits personnalisés par catégories peer et le canal bêta expérimental pour les personnalisations en cours sont également documentés dans [CONFIGURATION.md](CONFIGURATION.md).
 
-## Showcase : flux de recherche communautaire
+## Vitrine : flux de recherche communautaires
 
-Vous avez publié une mise à jour récurrente de l'IA, une surveillance du marché ou une obsession merveilleusement étroite pour les 30 derniers jours ? Partagez l'URL de la bibliothèque publique (ou l'URL Atom après avoir hébergé `feed.xml` sur un hôte statique) dans [le fil de discussion de la communauté ](https://github.com/mvanhorn/last30days-skill/issues/532). Les flux communautaires seront liés ici au fur et à mesure que leurs propriétaires les soumettront ; le fil est le point de collecte entre-temps.
+Publié une mise à jour récurrente de l’IA, une surveillance du marché, ou une obsession merveilleusement étroite pour les dernier30 jours ? Partagez l’URL de la bibliothèque publique — ou l’URL Atom après `feed.xml` hébergé sur un hébergeur statique — dans [the community showcase thread](https://github.com/mvanhorn/last30days-skill/issues/532). Les fils communautaires seront liés ici au fur et à mesure que leurs propriétaires les soumettent ; le fil de discussion sert de point de collecte en attendant.
 
-## Comment ça marche
+## Comment ça fonctionne
 
-1. **Vous saisissez un sujet.** Personne, entreprise, produit, technologie, « X contre Y ». Rien.
-2. **L'agent décide qui compte.** Trouve X identifiants (y compris les fondateurs), les dépôts GitHub, les subreddits, les hashtags TikTok, les chaînes YouTube. Pour "Kanye West", il connaît r/hiphopheads, @kanyewest et "bully review" sur YouTube. Pour "OpenClaw", il résout openclaw/openclaw sur GitHub et récupère le nombre d'étoiles en direct.
-3. **Toutes les sources recherchées en parallèle.** Expansion multi-requêtes. Des résultats notés par engagement, pertinence, fraîcheur.
-4. **La profondeur que personne d'autre n'a.** Transcriptions YouTube complètes de vidéos de réaction. Meilleurs commentaires Reddit avec le nombre de votes positifs. Légendes TikTok. Cotes du polymarché. Pas seulement des titres et des liens.
-5. **Même histoire, fusionné.** Wireless Festival annoncé sur Reddit, discuté sur X, prix des billets sur TikTok = un cluster, pas trois éléments distincts.
-6. **Synthétisé en un seul mémoire.** Fondé sur des données spécifiques. Cité par la source. Classé en fonction de ce avec quoi les gens s'engagent réellement. Pas "voici ce que j'ai trouvé". C'est "voici ce qui compte".
-7. **Il devient alors votre expert.** Après une seule exécution, votre session Claude sait tout ce que la communauté sait. Posez des questions de suivi. Demandez-lui de rédiger des invites, de rédiger des e-mails, de planifier des voyages, de concevoir des systèmes - le tout fondé sur la réalité actuelle.
+1. **Tu tapes un sujet.** Personne, entreprise, produit, technologie, «X vs Y. » N’importe quoi.
+2. **L’agent décide qui compte.** Trouve X pseudos (y compris les fondateurs), GitHub dépôts, subreddits, hashtags TikTok YouTube chaînes. Pour « Kanye West », il connaît r/hiphopheads, @kanyewest, et « bully review » sur YouTube. Pour «OpenClaw», il résout openclaw/openclaw sur GitHub et récupère les comptes d’étoiles en direct.
+3. **Toutes les sources recherchées en parallèle.** Extension multi-requêtes. Résultats notés par engagement, pertinence, fraîcheur.
+4. **La profondeur que personne d’autre n’a.** Transcriptions complètes YouTube des vidéos de réactions. Meilleurs Reddit commentaires avec le nombre de votes positifs. TikTok légendes. Polymarket chances. Pas seulement les titres et les liens.
+5. **Même histoire, fusionnée.** Wireless Festival annoncé le Reddit, discuté sur X, prix des billets sur TikTok = un cluster, pas trois articles séparés.
+6. **Synthétisé en un seul mémoire.** Fondé sur des données spécifiques. Cité par source. Classée selon ce avec quoi les gens interagissent réellement. Pas « voici ce que j’ai trouvé ». C’est « voici ce qui compte ».
+7. **Puis il devient votre expert.** Après une seule partie, votre Claude session sait tout ce que la communauté sait. Posez des questions de suivi. Faites-lui écrire des suggestions, rédiger des e-mails, planifier des voyages, créer des systèmes d’architecture – tout cela ancré dans ce qui est réel en ce moment.
 
-## Ce que disent les gens
+## Ce que les gens disent
 
-> "J'ai trouvé une compétence Claude Code qui recherche n'importe quel sujet sur Reddit, X, YouTube et HN au cours des 30 derniers jours. Ensuite, j'écris les invites pour vous. J'ai effectué des recherches manuelles sur Reddit et X avant chaque élément de contenu que j'écris. Onglet par onglet. Fil par fil. C'est la partie qui prend 90 minutes. Cela l'élimine. " -@itsjasonai
+> « J’ai trouvé une compétence Claude Code qui recherche n’importe quel sujet à travers Reddit, X, YouTubeet HN des 30 derniers jours. Ensuite, il écrit les consignes pour vous. J’ai cherché manuellement Reddit et X recherches avant chaque contenu que j’écris. Onglet par onglet. Fil par fil. C’est la partie qui prend 90 minutes. Ça l’élimine. » -@itsjasonai
 
-> "Cette compétence a remplacé l'ensemble de mon flux de travail de recherche. Vous lui donnez un sujet, elle supprime Reddit, X et le Web de ce dont les gens parlent réellement. Pas d'anciens articles de blog. De vraies conversations des 30 derniers jours." -@itswilsoncharles
+> « Cette compétence a remplacé tout mon flux de recherche. Tu lui donnes un sujet, ça gratte Reddit, X, et le web pour trouver ce dont les gens parlent vraiment. Pas de vieux articles de blog. De vraies conversations des 30 derniers jours. » -@itswilsoncharles
 
-> "5 des 10 dépôts tendances sur GitHub aujourd'hui sont des outils Claude. #1 : mvanhorn/last30days-skill" -@yieldhunter95
+> « 5 des 10 dépôts tendance sur GitHub aujourd’hui sont Claude outils. #1 : Mvanhorn/last30days- compétence » -@yieldhunter95
 
 ## Open source
 
-Licence MIT. Aucun suivi. Aucune analyse. Votre recherche reste sur votre machine. Plus de 2 700 tests.
+Licence MIT. Pas de suivi. Pas d’analyses. Votre recherche reste sur votre machine. 2 700+ tests.
 
-Construit avec Python 3.12+, yt-dlp, Node.js (client Bird fourni pour la recherche X) et l'API ScrapeCreators. Architecture du moteur v3 par [@j-sperling](https://github.com/j-sperling).
+Construit avec Python architecture du moteur v3.12+, yt-dlp, Node.js (client Bird fourni pour X recherche), et ScrapeCreators API. Architecture du moteur v3 par [@j-sperling](https://github.com/j-sperling).
 
-Voir [CONTRIBUTING.md](CONTRIBUTING.md) pour ouvrir un PR, [CONTRIBUTORS.md](CONTRIBUTORS.md) pour la liste complète des contributeurs de la communauté et [CHANGELOG.md](CHANGELOG.md) pour l'historique des versions.
+Voir [CONTRIBUTING.md](CONTRIBUTING.md) pour ouvrir un PR, [CONTRIBUTORS.md](CONTRIBUTORS.md) pour la liste complète des contributeurs de la communauté, et [CHANGELOG.md](CHANGELOG.md) pour l’historique des versions.
 
-## Historique des étoiles
+## Histoire de Star
 
 <a href="https://star-history.com/#mvanhorn/last30days-skill&Date">
   <picture>
