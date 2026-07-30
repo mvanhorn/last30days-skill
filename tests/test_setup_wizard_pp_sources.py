@@ -58,6 +58,35 @@ def test_install_success(monkeypatch, no_off_path):
     assert action == "installed"
 
 
+def test_install_uses_resolved_windows_npx_path(monkeypatch, no_off_path):
+    """Regression for #904: subprocess.run must receive the resolved npx
+    path (e.g. a Windows PATHEXT-resolved npx.CMD), not the bare "npx"
+    string -- bare "npx" fails with WinError 2 on Windows."""
+    calls = {"n": 0}
+    windows_npx = r"C:\Program Files\nodejs\npx.CMD"
+
+    def fake_which(name):
+        if name == "npx":
+            return windows_npx
+        if name == "techmeme-pp-cli":
+            calls["n"] += 1
+            return None if calls["n"] == 1 else r"C:\Users\me\.local\bin\techmeme-pp-cli"
+        return None
+
+    run_calls = []
+
+    def fake_run(cmd, **kwargs):
+        run_calls.append(cmd)
+        return type("P", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+    monkeypatch.setattr(sw.shutil, "which", fake_which)
+    monkeypatch.setattr(sw.subprocess, "run", fake_run)
+    installed, action, stderr, off = sw._install_pp_cli("techmeme", "techmeme-pp-cli")
+    assert installed is True
+    assert action == "installed"
+    assert run_calls[0][0] == windows_npx
+
+
 def test_install_failed_nonzero_rc(monkeypatch, no_off_path):
     def fake_which(name):
         return "/usr/bin/npx" if name == "npx" else None
