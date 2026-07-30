@@ -156,7 +156,7 @@ v3の基盤はすべてまだ存在しています:単一の API コールが発
 
 | 表面 | 設置 | アップデート |
 |---------|---------|---------|
-| **Claude Code**(推奨) | `/plugin marketplace add mvanhorn/last30days-skill` | マーケットプレイスを通じた自動車保険、または `claude plugin update last30days@last30days-skill` |
+| **Claude Code**(推奨) | `/plugin marketplace add mvanhorn/last30days-skill` | マーケットプレイス経由で自動更新、または `claude plugin update last30days@last30days-skill` |
 | **Grok**(xAIビルド CLI) | `grok plugin marketplace add mvanhorn/last30days-skill``grok plugin install last30days` | `grok plugin update last30days` |
 | **Codex、 Cursor、 Copilot、 Gemini CLI、または50+のホストのいずれか [Agent Skills](https://agentskills.io)** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
 | **claude.ai**(ウェブ) | [Download `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) ・アップロード claude.ai > カスタマイズ > スキル > + > スキル作成 > スキルをアップロード | 再ダウンロードと再アップロード |

@@ -156,7 +156,7 @@ As bases da v3 ainda estão todas aqui: o cérebro pré-pesquisa que resolve os 
 
 | Superfície | Instalação | Atualizações |
 |---------|---------|---------|
-| **Claude Code**(recomendado) | `/plugin marketplace add mvanhorn/last30days-skill` | Automóvel via marketplace, ou `claude plugin update last30days@last30days-skill` |
+| **Claude Code**(recomendado) | `/plugin marketplace add mvanhorn/last30days-skill` | Atualização automática via marketplace ou `claude plugin update last30days@last30days-skill` |
 | **Grok**(Build xAI CLI) | `grok plugin marketplace add mvanhorn/last30days-skill` então `grok plugin install last30days` | `grok plugin update last30days` |
 | **Codex, Cursor, Copilot, Gemini CLIou qualquer um dos 50+ [Agent Skills](https://agentskills.io) apresentadores** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
 | **claude.ai**(web) | [Download `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) e envie via claude.ai > Personalizar > Habilidades > + > Criar habilidades > Enviar uma habilidade | Rebaixe e refaça o upload |
