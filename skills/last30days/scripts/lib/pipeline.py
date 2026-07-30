@@ -2103,12 +2103,12 @@ def run(
     _github_person_done = False
     if github_user and "github" in available and not _github_custom_done:
         bundle.mark_attempted("github")
+        _github_person_done = True
         try:
             person_items = github.search_github_person(
                 github_user, from_date, to_date,
                 depth=depth, token=config.get("GITHUB_TOKEN"),
             )
-            _github_person_done = True
             if person_items:
                 normalized = _normalize_score_dedupe(
                     "github", person_items, from_date, to_date,

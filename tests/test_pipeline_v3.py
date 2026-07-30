@@ -2,8 +2,9 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from lib import pipeline
+from lib import health
 from lib import http
+from lib import pipeline
 from lib import schema
 
 
@@ -485,6 +486,51 @@ class TestPinnedGithubPersonAuthority(unittest.TestCase):
         self.assertIn(
             "Person mode found no activity for @octocat",
             report.source_status["github"].detail,
+        )
+
+    @patch("lib.pipeline._retrieve_stream")
+    @patch(
+        "lib.pipeline.github.search_github_person",
+        side_effect=RuntimeError("GitHub API unavailable"),
+    )
+    def test_person_failure_suppresses_generic_fanout_and_retry(
+        self, mock_person_search, mock_retrieve
+    ):
+        plan = {
+            "intent": "person",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "topic",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "octocat recent activity",
+                    "ranking_query": "What has @octocat done on GitHub recently?",
+                    "sources": ["github"],
+                }
+            ],
+            "source_weights": {"github": 1.0},
+        }
+
+        report = pipeline.run(
+            topic="octocat",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="default",
+            requested_sources=["github"],
+            mock=True,
+            external_plan=plan,
+            github_user="octocat",
+        )
+
+        mock_person_search.assert_called_once()
+        mock_retrieve.assert_not_called()
+        self.assertEqual(health.ERROR, report.source_status["github"].state)
+        self.assertEqual(
+            "GitHub API unavailable",
+            report.source_status["github"].detail,
+        )
+        self.assertEqual(
+            "Person-mode failed: GitHub API unavailable",
+            report.errors_by_source["github"],
         )
 
 
