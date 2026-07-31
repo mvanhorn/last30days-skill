@@ -85,16 +85,17 @@ class TestSearchGithub(unittest.TestCase):
         self.assertEqual(result["context"]["from_date"], "2026-03-01")
         # Unauth requests are capped to the low-rate tier.
         self.assertLessEqual(result["context"]["count"], github.UNAUTH_COUNT_CAP)
-        # The request was actually attempted without a token (no early return).
-        mock_fetch.assert_called_once()
-        self.assertIsNone(mock_fetch.call_args.kwargs.get("token"))
+        # Both lanes attempted without a token (no early return).
+        self.assertEqual(mock_fetch.call_count, 2)
+        for call in mock_fetch.call_args_list:
+            self.assertIsNone(call.kwargs.get("token"))
 
     @patch.dict("os.environ", {}, clear=True)
     @patch("subprocess.run", side_effect=FileNotFoundError)
     @patch("lib.github._fetch_json", return_value={"items": [{"id": 1, "title": "x"}]})
     def test_no_token_unauth_success_returns_items(self, mock_fetch, mock_run):
         result = github.search_github("react", "2026-03-01", "2026-03-31", token=None)
-        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(len(result["items"]), 1)  # deduped
         self.assertNotIn("error", result)
 
     def test_resolve_token_public_alias(self):
@@ -158,23 +159,23 @@ class TestSearchGithub(unittest.TestCase):
     @patch.object(github, "_fetch_json")
     @patch.object(github, "_resolve_token", return_value="test-token")
     def test_pr_detected(self, mock_token, mock_fetch):
-        mock_fetch.return_value = {
-            "total_count": 1,
-            "items": [
-                {
-                    "html_url": "https://github.com/vercel/next.js/pull/99",
-                    "title": "Add streaming support",
-                    "body": "This PR adds...",
-                    "created_at": "2026-03-20T10:00:00Z",
-                    "state": "open",
-                    "comments": 5,
-                    "reactions": {"total_count": 3},
-                    "labels": [],
-                    "user": {"login": "dev"},
-                    "pull_request": {"url": "..."},
-                },
-            ],
+        pr_item = {
+            "id": 99,
+            "html_url": "https://github.com/vercel/next.js/pull/99",
+            "title": "Add streaming support",
+            "body": "This PR adds...",
+            "created_at": "2026-03-20T10:00:00Z",
+            "state": "open",
+            "comments": 5,
+            "reactions": {"total_count": 3},
+            "labels": [],
+            "user": {"login": "dev"},
+            "pull_request": {"url": "..."},
         }
+        mock_fetch.side_effect = [
+            {"total_count": 0, "items": []},
+            {"total_count": 1, "items": [pr_item]},
+        ]
         response = github.search_github("next.js", "2026-03-01", "2026-03-31")
         items = github.parse_github_response(response)
         self.assertEqual(len(items), 1)
@@ -276,6 +277,114 @@ class TestParseGithubResponse(unittest.TestCase):
     def test_empty_envelope(self):
         self.assertEqual(github.parse_github_response({"items": []}), [])
         self.assertEqual(github.parse_github_response({}), [])
+
+
+class TestDualLaneSearch(unittest.TestCase):
+    """Two-lane search (issue #916)."""
+
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    @patch.object(github, "_fetch_json")
+    def test_queries_include_qualifiers(self, mock_fetch, mock_token):
+        mock_fetch.return_value = {"items": []}
+        github.search_github("react", "2026-03-01", "2026-03-31")
+        self.assertEqual(mock_fetch.call_count, 2)
+        urls = [call.args[0] for call in mock_fetch.call_args_list]
+        qualifiers_found = set()
+        for url in urls:
+            if "is%3Aissue" in url:
+                qualifiers_found.add("is:issue")
+            if "is%3Apull-request" in url:
+                qualifiers_found.add("is:pull-request")
+        self.assertEqual(qualifiers_found, {"is:issue", "is:pull-request"})
+
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    @patch.object(github, "_fetch_json")
+    def test_merges_results_from_both_lanes(self, mock_fetch, mock_token):
+        issue_item = {"id": 1, "title": "Bug", "reactions": {"total_count": 5}}
+        pr_item = {"id": 2, "title": "Fix", "reactions": {"total_count": 3},
+                   "pull_request": {"url": "..."}}
+        mock_fetch.side_effect = [
+            {"items": [issue_item]},
+            {"items": [pr_item]},
+        ]
+        result = github.search_github("react", "2026-03-01", "2026-03-31")
+        self.assertEqual(len(result["items"]), 2)
+        ids = {item["id"] for item in result["items"]}
+        self.assertEqual(ids, {1, 2})
+
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    @patch.object(github, "_fetch_json")
+    def test_deduplicates_by_id(self, mock_fetch, mock_token):
+        item = {"id": 42, "title": "Shared", "reactions": {"total_count": 10}}
+        mock_fetch.side_effect = [
+            {"items": [item]},
+            {"items": [item]},
+        ]
+        result = github.search_github("react", "2026-03-01", "2026-03-31")
+        self.assertEqual(len(result["items"]), 1)
+        self.assertEqual(result["items"][0]["id"], 42)
+
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    @patch.object(github, "_fetch_json")
+    def test_sorts_by_reactions_descending(self, mock_fetch, mock_token):
+        low = {"id": 1, "title": "Low", "reactions": {"total_count": 2}}
+        high = {"id": 2, "title": "High", "reactions": {"total_count": 50}}
+        mid = {"id": 3, "title": "Mid", "reactions": {"total_count": 10}}
+        mock_fetch.side_effect = [
+            {"items": [low, mid]},
+            {"items": [high]},
+        ]
+        result = github.search_github("react", "2026-03-01", "2026-03-31")
+        reaction_counts = [
+            item["reactions"]["total_count"] for item in result["items"]
+        ]
+        self.assertEqual(reaction_counts, [50, 10, 2])
+
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    @patch.object(github, "_fetch_json")
+    def test_partial_lane_failure_returns_available(self, mock_fetch, mock_token):
+        item = {"id": 7, "title": "Survivor", "reactions": {"total_count": 1}}
+        mock_fetch.side_effect = [
+            None,
+            {"items": [item]},
+        ]
+        result = github.search_github("react", "2026-03-01", "2026-03-31")
+        self.assertEqual(len(result["items"]), 1)
+        self.assertNotIn("error", result)
+
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    @patch.object(github, "_fetch_json")
+    def test_both_lanes_fail_returns_error(self, mock_fetch, mock_token):
+        def _fail(url, *, token=None, timeout=15, failure_out=None):
+            if failure_out is not None:
+                failure_out.append("HTTP 422: unprocessable query")
+            return None
+        mock_fetch.side_effect = _fail
+        result = github.search_github("react", "2026-03-01", "2026-03-31")
+        self.assertEqual(result["items"], [])
+        self.assertIn("error", result)
+
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    @patch.object(github, "_fetch_json")
+    def test_empty_lane_responses(self, mock_fetch, mock_token):
+        mock_fetch.return_value = {"items": []}
+        result = github.search_github("react", "2026-03-01", "2026-03-31")
+        self.assertEqual(result["items"], [])
+        self.assertNotIn("error", result)
+
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    @patch.object(github, "_fetch_json")
+    def test_missing_reactions_handled_safely(self, mock_fetch, mock_token):
+        a = {"id": 1, "title": "A", "reactions": {"total_count": 5}}
+        b = {"id": 2, "title": "B"}
+        c = {"id": 3, "title": "C", "reactions": "bad"}
+        mock_fetch.side_effect = [
+            {"items": [b, a]},
+            {"items": [c]},
+        ]
+        result = github.search_github("react", "2026-03-01", "2026-03-31")
+        self.assertEqual(len(result["items"]), 3)
+        self.assertEqual(result["items"][0]["id"], 1)
 
 
 class TestComputeRelevance(unittest.TestCase):
