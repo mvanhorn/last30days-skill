@@ -26,6 +26,34 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_DEFAULT = "google/gemini-3.1-flash-lite-preview"
 
 
+_ENDPOINT_PATHS = {
+    OPENAI_RESPONSES_URL: "/responses",
+    XAI_RESPONSES_URL: "/responses",
+    OPENROUTER_URL: "/chat/completions",
+}
+
+
+def resolve_endpoint(env_var: str, default_url: str) -> str:
+    """Resolve a ``*_BASE_URL`` override into a full endpoint URL.
+
+    By the convention every OpenAI-compatible provider documents, ``*_BASE_URL``
+    names the API root (``https://host/v1``) and the client appends the endpoint
+    path. This module historically required the full endpoint URL instead, so a
+    value copied from a provider's setup guide POSTed to the API root and failed.
+
+    Accept both forms: an API root gets the endpoint path appended, and a value
+    that already ends with the endpoint path is used unchanged.
+    """
+    override = os.environ.get(env_var, "").strip()
+    if not override:
+        return default_url
+    override = override.rstrip("/")
+    path = _ENDPOINT_PATHS[default_url]
+    if override.endswith(path):
+        return override
+    return override + path
+
+
 class ReasoningClient:
     """Shared interface for planner and rerank providers."""
 
@@ -119,7 +147,7 @@ class OpenAIClient(ReasoningClient):
             "temperature": 0,
         }
         response = http.post(
-            os.environ.get("OPENAI_BASE_URL", OPENAI_RESPONSES_URL),
+            resolve_endpoint("OPENAI_BASE_URL", OPENAI_RESPONSES_URL),
             payload,
             headers={
                 "Authorization": f"Bearer {self.token}",
@@ -150,7 +178,7 @@ class XAIClient(ReasoningClient):
             "input": [{"role": "user", "content": prompt}],
         }
         response = http.post(
-            os.environ.get("XAI_BASE_URL", XAI_RESPONSES_URL),
+            resolve_endpoint("XAI_BASE_URL", XAI_RESPONSES_URL),
             payload,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
@@ -182,7 +210,7 @@ class OpenRouterClient(ReasoningClient):
             "temperature": 0,
         }
         response = http.post(
-            os.environ.get("OPENROUTER_BASE_URL", OPENROUTER_URL),
+            resolve_endpoint("OPENROUTER_BASE_URL", OPENROUTER_URL),
             payload,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
