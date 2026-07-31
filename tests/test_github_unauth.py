@@ -20,12 +20,15 @@ class TestUnauthCap:
              mock.patch.object(github, "_fetch_json", return_value={"items": []}) as fetch:
             github.search_github("kubernetes", "2026-03-01", "2026-03-31", depth="deep")
         # deep would be 60 with a token; unauth caps to UNAUTH_COUNT_CAP.
-        called_url = fetch.call_args.args[0]
-        assert f"per_page={github.UNAUTH_COUNT_CAP}" in called_url
+        assert fetch.call_count == 2
+        for call in fetch.call_args_list:
+            assert f"per_page={github.UNAUTH_COUNT_CAP}" in call.args[0]
 
     def test_authed_keeps_full_depth(self):
         with mock.patch.object(github, "_resolve_token", return_value="tok"), \
              mock.patch.object(github, "_fetch_json", return_value={"items": []}) as fetch:
             github.search_github("kubernetes", "2026-03-01", "2026-03-31", depth="deep")
-        called_url = fetch.call_args.args[0]
-        assert "per_page=60" in called_url
+        assert fetch.call_count == 2
+        for call in fetch.call_args_list:
+            assert "per_page=60" in call.args[0]
+
