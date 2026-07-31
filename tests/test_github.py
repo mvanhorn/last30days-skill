@@ -333,6 +333,117 @@ class TestComputeRelevance(unittest.TestCase):
         low = github._compute_relevance("react", "React", 20, 0, 0)
         self.assertGreater(high, low)
 
+
+class TestFetchItemComments(unittest.TestCase):
+    def test_bot_detection_uses_type_or_conventional_identity_suffix(self):
+        self.assertTrue(github._is_bot_user({"login": "release-helper", "type": "Bot"}))
+        self.assertTrue(github._is_bot_user({"login": "dependabot[bot]"}))
+        self.assertTrue(github._is_bot_user({"login": "actions", "name": "CI Helper [BOT]"}))
+        self.assertFalse(github._is_bot_user({"login": "robotics-team", "type": "User"}))
+        self.assertFalse(github._is_bot_user(None))
+        self.assertFalse(github._is_bot_user({}))
+
+    @patch.object(github, "_fetch_json")
+    def test_non_positive_limit_skips_request(self, mock_fetch):
+        self.assertEqual(
+            github._fetch_item_comments(
+                "https://github.com/example/project/issues/9",
+                "test-token",
+                max_comments=0,
+            ),
+            [],
+        )
+        mock_fetch.assert_not_called()
+
+    @patch.object(github, "_fetch_json")
+    def test_requests_largest_page_without_unsupported_sort(self, mock_fetch):
+        mock_fetch.return_value = []
+
+        github._fetch_item_comments(
+            "https://github.com/example/project/issues/9",
+            "test-token",
+        )
+
+        self.assertEqual(
+            mock_fetch.call_args.args[0],
+            "https://api.github.com/repos/example/project/issues/9/comments?per_page=100",
+        )
+        self.assertNotIn("sort=", mock_fetch.call_args.args[0])
+        self.assertNotIn("direction=", mock_fetch.call_args.args[0])
+
+    @patch.object(github, "_fetch_json")
+    def test_filters_bots_and_stably_ranks_humans_by_reactions(self, mock_fetch):
+        mock_fetch.return_value = [
+            {
+                "body": "Early low-signal response",
+                "reactions": {"total_count": 5},
+                "user": {"login": "alice", "type": "User"},
+            },
+            {
+                "body": "Automated release summary",
+                "reactions": {"total_count": 100},
+                "user": {"login": "release-helper", "type": "Bot"},
+            },
+            {
+                "body": "Dependency update",
+                "reactions": {"total_count": 90},
+                "user": {"login": "dependabot[bot]"},
+            },
+            {
+                "body": "First tied human response",
+                "reactions": {"total_count": 21},
+                "user": {"login": "bruno", "type": "User"},
+            },
+            {
+                "body": "Workflow report",
+                "reactions": {"total_count": 80},
+                "user": {"login": "actions", "name": "CI Helper [BOT]"},
+            },
+            {
+                "body": "Highest-signal human response",
+                "reactions": {"total_count": 34},
+                "user": {"login": "carol"},
+            },
+            {
+                "body": "Second tied human response",
+                "reactions": {"total_count": 21},
+                "user": {"login": "dana"},
+            },
+            {
+                "body": "Deleted author's useful response",
+                "reactions": {"total_count": 13},
+                "user": None,
+            },
+        ]
+
+        comments = github._fetch_item_comments(
+            "https://github.com/example/project/issues/9",
+            "test-token",
+            max_comments=3,
+        )
+
+        self.assertEqual(
+            comments,
+            [
+                {
+                    "score": 34,
+                    "excerpt": "Highest-signal human response",
+                    "author": "carol",
+                },
+                {
+                    "score": 21,
+                    "excerpt": "First tied human response",
+                    "author": "bruno",
+                },
+                {
+                    "score": 21,
+                    "excerpt": "Second tied human response",
+                    "author": "dana",
+                },
+            ],
+        )
+
+
 class TestPersonPushEventsLane(unittest.TestCase):
     """Person mode must not go dark when PR search returns nothing."""
 
