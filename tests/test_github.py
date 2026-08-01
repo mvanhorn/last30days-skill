@@ -2,6 +2,7 @@
 
 import json
 import unittest
+import urllib.parse
 from unittest.mock import patch, MagicMock
 
 from lib import github
@@ -86,7 +87,8 @@ class TestSearchGithub(unittest.TestCase):
         # Unauth requests are capped to the low-rate tier.
         self.assertLessEqual(result["context"]["count"], github.UNAUTH_COUNT_CAP)
         # The request was actually attempted without a token (no early return).
-        mock_fetch.assert_called_once()
+        # Both lanes (is:issue, is:pull-request) are attempted (issue #916).
+        self.assertEqual(mock_fetch.call_count, 2)
         self.assertIsNone(mock_fetch.call_args.kwargs.get("token"))
 
     @patch.dict("os.environ", {}, clear=True)
@@ -179,6 +181,62 @@ class TestSearchGithub(unittest.TestCase):
         items = github.parse_github_response(response)
         self.assertEqual(len(items), 1)
         self.assertTrue(items[0]["metadata"]["is_pr"])
+
+    @patch.object(github, "_fetch_json")
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    def test_two_lanes_query_issue_and_pull_request_separately(self, mock_token, mock_fetch):
+        """Each lane must carry one qualifier (is:issue / is:pull-request) so the
+        query is not rejected with HTTP 422 and issues are not silently dropped
+        (issue #916)."""
+        mock_fetch.return_value = {"total_count": 0, "items": []}
+
+        result = github.search_github("react", "2026-03-01", "2026-03-31")
+        self.assertEqual(result["items"], [])
+        self.assertEqual(mock_fetch.call_count, 2)
+        queries = [
+            urllib.parse.parse_qs(urllib.parse.urlparse(call.args[0]).query)["q"][0]
+            for call in mock_fetch.call_args_list
+        ]
+        self.assertEqual(
+            queries,
+            [
+                "react created:>2026-03-01 is:issue",
+                "react created:>2026-03-01 is:pull-request",
+            ],
+        )
+
+    @patch.object(github, "_fetch_json")
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    def test_merged_lanes_are_deduped_and_reaction_sorted(self, mock_token, mock_fetch):
+        """The two lanes are merged, deduped, and re-sorted by reactions so
+        parse_github_response's position-based truncation keeps the best of both
+        lanes instead of the tail of one."""
+        mock_fetch.side_effect = [
+            {
+                "total_count": 2,
+                "items": [
+                    {"id": 1, "html_url": "https://github.com/a/b/issues/1",
+                     "title": "Issue low", "reactions": {"total_count": 2}},
+                    {"id": 2, "html_url": "https://github.com/a/b/issues/2",
+                     "title": "Issue high", "reactions": {"total_count": 9}},
+                ],
+            },
+            {
+                "total_count": 1,
+                "items": [
+                    {"id": 1, "html_url": "https://github.com/a/b/issues/1",
+                     "title": "Issue low", "reactions": {"total_count": 2}},
+                    {"id": 3, "html_url": "https://github.com/c/d/pull/3",
+                     "title": "PR mid", "reactions": {"total_count": 5}},
+                ],
+            },
+        ]
+        response = github.search_github("react", "2026-03-01", "2026-03-31")
+        titles = [item["title"] for item in response["items"]]
+        # Duplicate id 1 appears in both lanes but is kept once; the merged list
+        # is re-sorted by reactions so the best item lands first for the
+        # position-based truncation in parse_github_response.
+        self.assertEqual(titles, ["Issue high", "PR mid", "Issue low"])
 
 
 class TestParseGithubResponse(unittest.TestCase):

@@ -202,19 +202,36 @@ def search_github(
         _log("No GitHub token; using the unauthenticated REST tier (low rate limit)")
     _log(f"Searching for '{core}' (raw: '{topic}', since {from_date}, count={count})")
 
-    # Build search query with date filter
-    q = f"{core} created:>{from_date}"
-    params = {
-        "q": q,
-        "sort": "reactions",
-        "order": "desc",
-        "per_page": str(min(count, 100)),
-    }
-    url = f"{SEARCH_URL}?{urllib.parse.urlencode(params)}"
+    # Build search query with date filter.
+    #
+    # GitHub's issue search API rejects any query that carries neither
+    # `is:issue` nor `is:pull-request` -- it answers HTTP 422 "Query must
+    # include 'is:issue' or 'is:pull-request'". The two qualifiers also do NOT
+    # union inside a single query: `is:pull-request` wins and issues are
+    # silently dropped. So run each lane separately and merge. Verified against
+    # the live API on 2026-07-31 (issue #916).
+    base_q = f"{core} created:>{from_date}"
+    per_page = str(min(count, 100))
 
     fetch_failures: List[str] = []
-    data = _fetch_json(url, token=resolved_token, timeout=30, failure_out=fetch_failures)
-    if not data:
+    raw_items: List[Dict[str, Any]] = []
+    any_lane_ok = False
+    for qualifier in ("is:issue", "is:pull-request"):
+        params = {
+            "q": f"{base_q} {qualifier}",
+            "sort": "reactions",
+            "order": "desc",
+            "per_page": per_page,
+        }
+        url = f"{SEARCH_URL}?{urllib.parse.urlencode(params)}"
+        lane = _fetch_json(url, token=resolved_token, timeout=30,
+                           failure_out=fetch_failures)
+        if lane is None:
+            continue
+        any_lane_ok = True
+        raw_items.extend(lane.get("items") or [])
+
+    if not any_lane_ok:
         envelope = {"items": [], "context": {"core": core, "from_date": from_date,
                                              "to_date": to_date, "count": count}}
         if authed and fetch_failures:
@@ -231,7 +248,27 @@ def search_github(
             )
         return envelope
 
-    raw_items = data.get("items", [])
+    # Each lane is reaction-sorted on its own, so the merged list is not.
+    # Re-sort before returning: parse_github_response() truncates with
+    # `raw_items[:count]` and derives relevance from list position, so an
+    # unsorted merge would hand it the tail of the issue lane instead of the
+    # best of both. Dedupe first -- the two lanes share no items today, but
+    # defense-in-depth costs nothing.
+    def _reaction_total(item: Dict[str, Any]) -> int:
+        reactions = item.get("reactions")
+        return reactions.get("total_count", 0) if isinstance(reactions, dict) else 0
+
+    seen: set = set()
+    deduped: List[Dict[str, Any]] = []
+    for item in raw_items:
+        key = item.get("id") if item.get("id") is not None else item.get("html_url")
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    deduped.sort(key=_reaction_total, reverse=True)
+    raw_items = deduped
+
     _log(f"Found {len(raw_items)} issues/PRs")
 
     return {
