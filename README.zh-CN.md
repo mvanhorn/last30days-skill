@@ -103,13 +103,13 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 
 **突发事件发生时。** `/last30days Kanye West`——英国拒绝其签证，Wireless Festival 取消演出，赞助商纷纷离场；但《BULLY》首周登上 Billboard 第二名。Fantano 结束自己的 “Yay sabbatical” 回归评测（65.3 万次观看）；SoFi Homecoming 请来 Lauryn Hill 和 Travis Scott，共演出 44 首歌。Polymarket：“Kanye 还会再发推吗？”86% 认为会。共找到 23 个 Reddit 主题、17 个 YouTube 视频和 8.6 万次赞同。
 
-**比较工具。** `/last30days OpenClaw vs Hermes vs Paperclip`——“它们并非竞品，而是处于不同层次。”OpenClaw 是执行器（GitHub 35.1 万 Star，持续更新），Hermes 是会自我改进的大脑（3.1 万 Star），Paperclip 是组织结构图（4.9 万 Star）。Star 数来自 GitHub API 的实时数据，不是过期博客。报告会提供架构、记忆、安全性和适用场景的横向表格。正如 @IMJustinBrooke 所说：“OpenClaw = 小火龙，Hermes = 喷火龙。”
+**比较工具。** `/last30days OpenClaw vs Hermes vs Paperclip`——“它们并非竞品，而是处于不同层次。”OpenClaw 是执行层（GitHub 35.1 万 Star，已上线），Hermes 是会自我改进的大脑（3.1 万 Star），Paperclip 是组织结构图（4.9 万 Star）。Star 数来自 GitHub API 的实时数据，不是过期博客。报告会提供架构、记忆、安全性和适用场景的横向表格。正如 @IMJustinBrooke 所说：“OpenClaw = 小火龙，Hermes = 喷火龙。”
 
 **理解世界。** `/last30days Iran vs USA`——战争进入第 38 天。特朗普要求伊朗在周二的最后期限前重新开放霍尔木兹海峡；两架美国战机被击落；油价涨至每桶 126 美元。IEA 称之为“全球石油市场史上最大规模的供应中断”。Polymarket 认为 12 月 31 日前停火的概率为 74%。共找到 27 条 X 帖子、10 个 YouTube 视频和 20 个预测市场。
 
-**旅行之前。** `/last30days Universal Epic Universe`——扩建工程已经开工，“Project 680” 许可已提交；基础设施证实将有烟花表演，但官方尚未公布。Mine-Cart Madness 平均排队 148 分钟；年票仍未推出，本地游客对此不满；Stardust Racers 将停运翻修至 4 月 5 日。
+**旅行之前。** `/last30days Universal Epic Universe`——扩建工程已经开工，“Project 680” 许可已提交；基础设施证实将有烟花表演，但官方尚未公布。Mine-Cart Madness 平均排队 148 分钟；年票仍未推出，当地居民对此不满；Stardust Racers 将停运翻修至 4 月 5 日。
 
-**快速学习。** `/last30days Nano Banana Pro prompting`——JSON 结构化提示词正在取代标签堆砌；@pictsbyai 的嵌套格式能避免“概念串色”；先编辑、再生成的工作流优于反复重新生成。随后，它会严格依据社区验证有效的方法，为你写出一条可用于生产的提示词。
+**快速学习。** `/last30days Nano Banana Pro prompting`——JSON 结构化提示词正在取代标签堆砌；@pictsbyai 的嵌套格式能避免“概念串色”；以编辑为先的工作流优于反复重新生成。随后，它会严格依据社区验证有效的方法，为你写出一条可用于生产的提示词。
 
 ## 最近更新
 
