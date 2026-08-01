@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -25,6 +26,25 @@ class SubprocResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+def _taskkill_tree(pid: int) -> None:
+    """Kill a Windows process tree rooted at *pid* via ``taskkill``.
+
+    Uses ``taskkill /F /T /PID`` to forcibly terminate the process and all
+    of its children.  This is a no-op on non-Windows platforms (callers
+    should guard on ``sys.platform == "win32"`` before calling).
+
+    Raises:
+        subprocess.CalledProcessError: If ``taskkill`` itself fails (e.g.
+            the PID has already exited).
+    """
+    subprocess.run(
+        ["taskkill", "/F", "/T", "/PID", str(pid)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
 
 
 def run_with_timeout(
@@ -81,7 +101,16 @@ def run_with_timeout(
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         try:
-            if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+            if sys.platform == "win32":
+                # Windows: version-manager shims (proto, nodenv, fnm) create a
+                # deeper spawn tree than a direct Node binary.  ``proc.kill()``
+                # only terminates the immediate child, leaving proto.exe +
+                # grandchild node.exe alive.  Under agent retries / parallel
+                # probes these orphan trees accumulate and can exhaust RAM
+                # (#823).  Use ``taskkill /F /T`` to terminate the entire
+                # process tree.
+                _taskkill_tree(proc.pid)
+            elif hasattr(os, "killpg") and hasattr(os, "getpgid"):
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             else:
                 proc.kill()
@@ -97,7 +126,9 @@ def run_with_timeout(
             # escalation path (added later in #433) so the same crash can't
             # re-surface here (#588).
             try:
-                if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                if sys.platform == "win32":
+                    _taskkill_tree(proc.pid)
+                elif hasattr(os, "killpg") and hasattr(os, "getpgid"):
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 else:
                     proc.kill()
