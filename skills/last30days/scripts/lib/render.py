@@ -1710,8 +1710,12 @@ def _markdown_url_link(url: str) -> str:
     return _escape_markdown_plain_text(sanitized_url)
 
 
-def render_full(report: schema.Report) -> str:
-    """Full data dump: ALL clusters + ALL items by source. For saved files and debugging."""
+def render_full(report: schema.Report, save_path: str | None = None) -> str:
+    """Full data dump: ALL clusters + ALL items by source. For saved files and debugging.
+
+    When ``save_path`` is provided, the deterministic emoji footer is appended
+    so the saved artifact cites the file actually written (collision fallback
+    included), matching the stdout footer contract."""
     evidence_report = schema.without_sources(report, {"corpus"})
     # Start with the same header as compact
     non_empty = [s for s, items in sorted(report.items_by_source.items()) if items]
@@ -1897,6 +1901,10 @@ def render_full(report: schema.Report) -> str:
         lines.append("")
     lines.extend(_render_stats(evidence_report))
     lines.extend(_render_source_coverage(evidence_report))
+    if save_path:
+        footer_lines = _render_emoji_footer(evidence_report, save_path)
+        if footer_lines:
+            lines.extend(["", *footer_lines])
     return "\n".join(lines).strip() + "\n"
 
 

@@ -2304,6 +2304,15 @@ def _render_save_and_print(
                     json_profile=args.json_profile,
                     register=audience.name,
                 )
+            if args.emit not in {"json", "html"} and not entity_reports:
+                # Markdown saves keep the complete debug artifact (all clusters
+                # and per-source items), matching the render_fn-less path in
+                # save_output and the comparison peer saves. Saving the compact
+                # stdout render instead made most collected evidence
+                # unrecoverable from the raw file (#923). The stdout re-render
+                # above still runs so the visible footer cites the real path,
+                # and the saved artifact carries the same citation.
+                return render.render_full(report, save_path=display)
             return rendered
 
         save_path = save_output(

@@ -349,6 +349,34 @@ class CliV3Tests(unittest.TestCase):
             payload = json.loads(path.read_text())
             self.assertEqual("OpenClaw vs NanoClaw", payload["query"])
 
+    def test_compact_emit_saves_full_artifact_not_compact_render(self):
+        """A --emit=compact --save-dir run must save the complete debug
+        artifact (all clusters plus per-source items), not the compact stdout
+        render. Saving the compact render made most collected evidence
+        unrecoverable from the raw file (#923)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "skills/last30days/scripts/last30days.py",
+                    "compact save probe",
+                    "--mock",
+                    "--emit=compact",
+                    f"--save-dir={tmp}",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            saved = list(Path(tmp).glob("*.md"))
+            self.assertEqual(1, len(saved), saved)
+            content = saved[0].read_text(encoding="utf-8")
+            self.assertIn("## All Items by Source", content)
+            self.assertNotIn("## All Items by Source", result.stdout)
+
     def test_save_output_uses_unique_dated_fallback(self):
         report = self.make_report()
         with tempfile.TemporaryDirectory() as tmp:
