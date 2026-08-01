@@ -855,22 +855,98 @@ def poll_device_auth(
     return None
 
 
-def fetch_api_key(access_token: str) -> Optional[str]:
+# Bounded retries for transient ScrapeCreators /profile 5xx (see #882).
+_PROFILE_FETCH_ATTEMPTS = 3
+_PROFILE_FETCH_RETRY_SLEEP_S = 1.0
+_PROFILE_ERROR_BODY_LIMIT = 200
+
+
+def _http_error_detail(exc: HTTPError, *, body_limit: int = _PROFILE_ERROR_BODY_LIMIT) -> str:
+    """Build a diagnosable HTTPError string including a truncated body.
+
+    The body is capped and never treated as a secret source of truth; callers
+    still must not log bearer tokens. Used so a 5xx is not a black box.
+    """
+    base = f"HTTP Error {exc.code}: {getattr(exc, 'reason', '') or ''}".rstrip(": ")
+    try:
+        raw = exc.read() or b""
+    except Exception:
+        return base
+    if not raw:
+        return base
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return base
+    if len(text) > body_limit:
+        text = text[:body_limit] + "…"
+    return f"{base} body={text!r}"
+
+
+def fetch_api_key(access_token: str) -> Dict[str, Any]:
     """Fetch the ScrapeCreators API key using the GitHub access token.
 
-    GETs the device/profile endpoint with Bearer auth.
+    GETs the device/profile endpoint with Bearer auth. Distinguishes outcomes
+    so callers (and SKILL.md) do not collapse a server 5xx into the
+    already-linked guidance (#882).
 
-    Returns:
-        api_key string on success, None on failure.
+    Returns a result dict:
+      - ``{"ok": True, "api_key": str}`` on success
+      - ``{"ok": False, "reason": "no_api_key"}`` when /profile is 2xx but has
+        no ``api_key`` field (typical already-linked account)
+      - ``{"ok": False, "reason": "upstream_error", "http_status": int,
+        "detail": str}`` on 5xx after bounded retries
+      - ``{"ok": False, "reason": "http_error", "http_status": int,
+        "detail": str}`` on other HTTP errors (e.g. 401)
+      - ``{"ok": False, "reason": "request_failed", "detail": str}`` on
+        network/OS failures
     """
-    try:
-        req = Request(f"{_DEVICE_BASE}/profile")
-        req.add_header("Authorization", f"Bearer {access_token}")
-        with urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-    except (HTTPError, URLError, OSError) as exc:
-        logger.warning("Failed to fetch API key: %s", exc)
-        return None
+    data: Optional[Dict[str, Any]] = None
+    last_upstream: Optional[Dict[str, Any]] = None
+
+    for attempt in range(_PROFILE_FETCH_ATTEMPTS):
+        try:
+            req = Request(f"{_DEVICE_BASE}/profile")
+            req.add_header("Authorization", f"Bearer {access_token}")
+            with urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+            break
+        except HTTPError as exc:
+            detail = _http_error_detail(exc)
+            if 500 <= int(exc.code) <= 599:
+                logger.warning(
+                    "Device auth /profile upstream error (attempt %s/%s): %s",
+                    attempt + 1,
+                    _PROFILE_FETCH_ATTEMPTS,
+                    detail,
+                )
+                last_upstream = {
+                    "ok": False,
+                    "reason": "upstream_error",
+                    "http_status": int(exc.code),
+                    "detail": detail,
+                }
+                if attempt + 1 < _PROFILE_FETCH_ATTEMPTS:
+                    time.sleep(_PROFILE_FETCH_RETRY_SLEEP_S)
+                    continue
+                return last_upstream
+            logger.warning("Failed to fetch API key: %s", detail)
+            return {
+                "ok": False,
+                "reason": "http_error",
+                "http_status": int(exc.code),
+                "detail": detail,
+            }
+        except (URLError, OSError) as exc:
+            logger.warning("Failed to fetch API key: %s", exc)
+            return {"ok": False, "reason": "request_failed", "detail": str(exc)}
+
+    if data is None:
+        # Defensive: loop exited without success or an explicit return.
+        return last_upstream or {
+            "ok": False,
+            "reason": "request_failed",
+            "detail": "No profile response",
+        }
 
     api_key = data.get("api_key")
     if not api_key:
@@ -882,8 +958,8 @@ def fetch_api_key(access_token: str) -> Optional[str]:
         logger.warning(
             "Device auth /profile returned no api_key (fields: %s)", sorted(data.keys())
         )
-        return None
-    return api_key
+        return {"ok": False, "reason": "no_api_key"}
+    return {"ok": True, "api_key": api_key}
 
 
 def _device_handle_path() -> Path:
@@ -1078,15 +1154,50 @@ def run_github_poll(timeout: int = 300, *, _handle: Optional[Dict[str, Any]] = N
         _cleanup()
         return {"status": "timeout", "user_code": user_code}
 
-    api_key = fetch_api_key(access_token)
+    fetched = fetch_api_key(access_token)
     _cleanup()
-    if api_key is None:
+    if fetched.get("ok") and fetched.get("api_key"):
+        return {
+            "status": "success",
+            "method": "device",
+            "api_key": fetched["api_key"],
+            "user_code": user_code,
+        }
+
+    # Discriminate failure modes so SKILL.md does not misdiagnose a 5xx as
+    # "GitHub already linked" (#882). Keep the historical message only for the
+    # 2xx-without-api_key / already-linked case.
+    reason = fetched.get("reason") or "request_failed"
+    if reason == "no_api_key":
         return {
             "status": "error",
             "message": "Authorized but failed to fetch API key",
+            "reason": "no_api_key",
         }
-
-    return {"status": "success", "method": "device", "api_key": api_key, "user_code": user_code}
+    if reason == "upstream_error":
+        http_status = fetched.get("http_status")
+        return {
+            "status": "error",
+            "message": f"Authorized but ScrapeCreators profile failed (HTTP {http_status})",
+            "reason": "upstream_error",
+            "http_status": http_status,
+            "detail": fetched.get("detail"),
+        }
+    if reason == "http_error":
+        http_status = fetched.get("http_status")
+        return {
+            "status": "error",
+            "message": f"Authorized but failed to fetch API key (HTTP {http_status})",
+            "reason": "http_error",
+            "http_status": http_status,
+            "detail": fetched.get("detail"),
+        }
+    return {
+        "status": "error",
+        "message": "Authorized but failed to fetch API key",
+        "reason": reason,
+        "detail": fetched.get("detail"),
+    }
 
 
 def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:

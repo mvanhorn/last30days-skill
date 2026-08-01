@@ -306,6 +306,16 @@ class TestOnboardingContract(unittest.TestCase):
             self.assertIn("Authorized but failed to fetch API key", slice_text, slice_name)
             self.assertIn("already linked", slice_text, slice_name)
 
+    def test_upstream_profile_error_branch_distinct_from_already_linked(self):
+        """A ScrapeCreators /profile 5xx must not be diagnosed as already-linked (#882)."""
+        for slice_name, slice_text in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn("ScrapeCreators profile failed", slice_text, slice_name)
+            self.assertIn("upstream_error", slice_text, slice_name)
+            self.assertIn("server error", slice_text, slice_name)
+            # Guidance forbids the already-linked misdiagnosis on this path.
+            self.assertIn("do **NOT** say", slice_text, slice_name)
+            self.assertIn("already linked", slice_text, slice_name)
+
     # --- Legacy guarantees retained ---
 
     def test_old_silent_wizard_instruction_removed(self):
