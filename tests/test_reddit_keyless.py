@@ -253,3 +253,38 @@ class TestSlotPriority:
         with mock.patch("lib.rerank._primary_entity", side_effect=Exception("boom")):
             out = reddit_keyless._slot_priority("openclaw", posts)
         assert out == posts
+
+    def test_known_comment_count_orders_within_tier(self):
+        # Two on-topic threads: the lower-upvote one with 400 comments must get
+        # its comments fetched ahead of the high-upvote one with only 5 — the
+        # scarce enrichment slots go to the discussion that has one (#906).
+        low_vote_busy = self._titled(1, "openclaw tips thread", score=50)
+        low_vote_busy["num_comments"] = 400
+        low_vote_busy["engagement"]["num_comments"] = 400
+        high_vote_quiet = self._titled(2, "openclaw roadmap", score=900)
+        high_vote_quiet["num_comments"] = 5
+        high_vote_quiet["engagement"]["num_comments"] = 5
+        out = reddit_keyless._slot_priority("openclaw", [high_vote_quiet, low_vote_busy])
+        assert out[0] is low_vote_busy
+        assert out[1] is high_vote_quiet
+
+    def test_unknown_comment_count_keeps_incoming_order(self):
+        # RSS-only posts backfill num_comments to 0 where 0 means "unknown",
+        # not "no comments". They must NOT be demoted to the back of the tier
+        # by a literal zero; the incoming score-first order is preserved.
+        a = self._titled(1, "openclaw thread one", score=800)
+        b = self._titled(2, "openclaw thread two", score=300)
+        c = self._titled(3, "openclaw thread three", score=100)
+        out = reddit_keyless._slot_priority("openclaw", [a, b, c])
+        assert out == [a, b, c]
+
+    def test_comment_count_does_not_jump_tiers(self):
+        # The entity tier still wins even against a higher-comment off-topic
+        # monster: slots stay on-topic first, then go to the busiest thread.
+        on_topic_unknown = self._titled(1, "openclaw tips", score=20)
+        off_topic_busy = self._titled(2, "Gemma 4 news", score=9000)
+        off_topic_busy["num_comments"] = 5000
+        off_topic_busy["engagement"]["num_comments"] = 5000
+        out = reddit_keyless._slot_priority("openclaw", [off_topic_busy, on_topic_unknown])
+        assert out[0] is on_topic_unknown
+        assert out[1] is off_topic_busy
