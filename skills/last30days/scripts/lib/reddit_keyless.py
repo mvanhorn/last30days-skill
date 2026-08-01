@@ -20,7 +20,7 @@ import concurrent.futures
 import math
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from collections import Counter
 
@@ -211,6 +211,20 @@ def _enrich(posts: List[Dict[str, Any]], depth: str) -> List[Dict[str, Any]]:
     return enriched + rest
 
 
+def _comment_count_sort_key(post: Dict[str, Any]) -> Tuple[int, int]:
+    """Sort key for enrichment-slot selection: known comment counts first.
+
+    ``num_comments`` is only reliable pre-enrichment for listing-discovered
+    posts (reddit_listing reads a real comment-count attribute). RSS-only posts
+    backfill ``num_comments`` to 0, where 0 means *unknown*, not *no comments*
+    (issue #906). So posts with a known count sort by count descending, while
+    posts with 0 keep their incoming (score-first) relative order instead of
+    being pushed to the back by a literal zero.
+    """
+    count = post.get("num_comments") or 0
+    return (count > 0, count)
+
+
 def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Order posts for enrichment slots: entity-matching posts first.
 
@@ -223,9 +237,11 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
     post text) so slots go to posts likely to survive final ranking — keying
     on the same head token keeps the two paths from diverging. Falls back to
     token-overlap relevance when the topic yields no usable primary entity.
-    Within each tier the incoming
-    (score-first) order is preserved. Never raises; on any failure the
-    incoming order is returned unchanged.
+    Within each tier, posts with a known comment count sort by count
+    descending (the highest-comment thread gets its comments fetched) and
+    posts whose count is unknown (RSS-only backfill, 0) keep the incoming
+    score-first order. Never raises; on any failure the incoming order is
+    returned unchanged.
     """
     try:
         from . import relevance, rerank
@@ -247,6 +263,8 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
         misses: List[Dict[str, Any]] = []
         for post in posts:
             (matches if _matches(post) else misses).append(post)
+        matches.sort(key=_comment_count_sort_key, reverse=True)
+        misses.sort(key=_comment_count_sort_key, reverse=True)
         return matches + misses
     except Exception:
         return posts
