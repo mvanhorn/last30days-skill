@@ -36,8 +36,11 @@ DATE_POSTED_BUCKETS: tuple[tuple[int, str], ...] = (
     (366, "last-year"),
 )
 
-# Queries past this length 404 upstream. Observed: 108 chars fails, 79 passes.
-MAX_QUERY_CHARS = 80
+# This endpoint returns HTTP 404 with {"message": "No posts found"} for a query
+# that simply matched nothing. That is an empty result, not a failure: treating
+# it as an error marks a whole run partial and hides a legitimate null behind
+# what looks like an outage.
+EMPTY_RESULT_STATUS = 404
 
 # Each cursor page returns ~10 posts; this bounds a runaway pagination loop.
 MAX_PAGES = 10
@@ -50,8 +53,11 @@ MAX_EMPTY_ADD_PAGES = 3
 
 # Whole-call wall-clock budget. Pagination bounds the request COUNT, not time:
 # 2 buckets x MAX_PAGES pages x (30s timeout + retry) is ~10 minutes against a
-# slow-but-alive endpoint, with no error to attribute the stall to.
+# slow-but-alive endpoint, with no error to attribute the stall to. Each request
+# is additionally clamped to the remaining budget so the bound actually holds.
 SEARCH_BUDGET_SECONDS = 120.0
+PAGE_TIMEOUT = 30.0
+MIN_PAGE_TIMEOUT = 5.0
 
 # Endpoint-scoped failures. These are properties of the credential or the
 # account, not of one bucket, so retrying the next bucket only wastes a call
@@ -134,29 +140,6 @@ def _buckets_for_window(
     return buckets[-2:]
 
 
-def _trim_query(topic: str) -> str:
-    """Trim to MAX_QUERY_CHARS to avoid an upstream 404.
-
-    Trimming is lossy: a qualifier at the end of a long query is dropped and
-    the search means something narrower than the caller asked for. The log
-    distinguishes a clean word-boundary trim from a mid-word hard cut so the
-    message never overstates what was preserved.
-    """
-    if len(topic) <= MAX_QUERY_CHARS:
-        return topic
-    head = topic[:MAX_QUERY_CHARS]
-    cut = head.rsplit(" ", 1)[0].strip() if " " in head.strip() else ""
-    if cut:
-        _log(f"Query too long ({len(topic)} chars), trimmed to {len(cut)} on a word boundary")
-        return cut
-    hard = head.strip() or topic.strip()[:MAX_QUERY_CHARS]
-    if not hard:
-        _log(f"Query is {len(topic)} chars of whitespace — nothing to search")
-    else:
-        _log(f"Query too long ({len(topic)} chars), HARD-CUT mid-token to {len(hard)}")
-    return hard
-
-
 def _dedupe_key(post: Dict[str, Any]) -> str:
     """Stable identity for a post.
 
@@ -201,9 +184,9 @@ def search_linkedin(
     cfg = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     buckets = _buckets_for_window(from_date, to_date, cfg["date_posted"])
     max_results = cfg["max_results"]
-    query = _trim_query(topic)
+    query = topic.strip()
     if not query:
-        _log("Empty query after trim — skipping")
+        _log("Empty query — skipping")
         return {"posts": []}
 
     # max_results bounds the RETURNED collection, not each retrieval lane, so
@@ -233,10 +216,19 @@ def search_linkedin(
         stop = "pages exhausted"
 
         for _ in range(MAX_PAGES):
-            if time.monotonic() > deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 stop = "wall-clock budget exceeded"
                 errors.append(f"{date_posted}: search budget of {SEARCH_BUDGET_SECONDS}s exceeded")
                 break
+
+            # Clamp the request to what is left of the budget, and drop the
+            # retry when there is not room for one. Checking the deadline only
+            # BETWEEN requests does not bound the call: a request starting a
+            # second before the deadline could still run its full
+            # timeout-times-retries budget past it.
+            page_timeout = max(MIN_PAGE_TIMEOUT, min(PAGE_TIMEOUT, remaining))
+            page_retries = 2 if remaining > (page_timeout * 2 + 2) else 1
 
             params: Dict[str, Any] = {"query": query, "date_posted": date_posted}
             if cursor:
@@ -246,10 +238,16 @@ def search_linkedin(
                     f"{SC_BASE}/search/posts",
                     params=params,
                     headers=http.scrapecreators_headers(token),
-                    timeout=30,
-                    retries=2,
+                    timeout=page_timeout,
+                    retries=page_retries,
                 )
             except http.HTTPError as exc:
+                if exc.status_code == EMPTY_RESULT_STATUS:
+                    # "No posts found" — a legitimate empty result, not a
+                    # failure. Recording it as an error would mark the whole
+                    # run partial and hide a real null behind a fake outage.
+                    stop = "no posts found"
+                    break
                 _log(f"Search failed (HTTP {exc.status_code}, {date_posted}): {exc}")
                 errors.append(f"{date_posted}: {exc}")
                 stop = f"HTTP {exc.status_code}"
