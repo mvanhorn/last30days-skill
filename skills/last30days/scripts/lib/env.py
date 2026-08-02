@@ -196,12 +196,34 @@ def load_env_file(path: Path) -> dict[str, str]:
         if '=' in line:
             key, _, value = line.partition('=')
             key = key.strip()
+            # Strip leading 'export' prefix (e.g. "export FOO=bar" -> key="FOO")
+            if key.startswith('export '):
+                key = key[len('export '):].strip()
             value = value.strip()
-            # Remove quotes if present
+            # Strip inline comments: a '#' preceded by whitespace, but not
+            # inside quotes.  Process left-to-right tracking quote state so
+            # that 'SECRET="my#secret"  # comment' keeps the inner '#'.
+            in_quote = None
+            comment_pos = -1
+            for ci, ch in enumerate(value):
+                if ch in ('"', "'") and (ci == 0 or value[ci - 1] != '\\'):
+                    if in_quote is None:
+                        in_quote = ch
+                    elif in_quote == ch:
+                        in_quote = None
+                elif ch == '#' and in_quote is None and (
+                    (ci > 0 and value[ci - 1] == ' ')
+                    or (ci == 0 and (len(value) == 1 or value[1] == ' '))
+                ):
+                    comment_pos = max(ci - 1, 0)  # include preceding space if present
+                    break
+            if comment_pos != -1:
+                value = value[:comment_pos].rstrip()
+            # Remove surrounding quotes if present
             if value and value[0] in ('"', "'") and value[-1] == value[0]:
                 value = value[1:-1]
-            if key and value:
-                env.update({key: value})
+            if key:
+                env[key] = value
     return env
 
 
