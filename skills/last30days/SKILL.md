@@ -208,9 +208,9 @@ Named-entity topics (capitalized proper nouns, product names, person names, proj
 **LAW 8 - CITE READABLY FOR THE CURRENT HOST. INLINE-LINK ON HIDDEN-LINK HOSTS; PLAIN LABELS ON VISIBLE-URL HOSTS. NEVER A RAW URL STRING. NEVER URL SOUP.** Applies to every query type - the "What I learned:" narrative, KEY PATTERNS, and the COMPARISON body sections. There are two rendering regimes and the host picks which one you use:
 
 - **Hidden-link hosts (Claude Code) - inline-link every citation.** Claude Code renders `[text](url)` as blue CMD-clickable text: the URL is hidden, only the label shows. Wrap every cited @handle, r/subreddit, publication, YouTube channel, TikTok creator, Instagram creator, and Polymarket market as `[name](url)` at first mention. The URL comes from the raw research dump (every engine item carries one; WebSearch supplements carry their own). This rich-citation form is the default and must not regress.
-- **Visible-URL hosts (Codex, Cursor, Gemini CLI, raw CLI) - plain source labels, no narrative Markdown links.** These hosts render `[label](url)` as `label (https://...)` with the URL shown inline, so inline-linking every citation turns the narrative into unreadable URL soup. Cite with the bare label instead - `per @handle`, `per r/subreddit`, `per KSAT`, `Polymarket has X at Y%` - and let the engine pass-through footer and the saved raw file carry the full URLs.
+- **Visible-URL hosts (Codex, Cursor, Gemini CLI, Grok, raw CLI) - plain source labels, no narrative Markdown links.** These hosts render `[label](url)` as `label (https://...)` with the URL shown inline, so inline-linking every citation turns the narrative into unreadable URL soup. Cite with the bare label instead - `per @handle`, `per r/subreddit`, `per KSAT`, `Polymarket has X at Y%` - and let the engine pass-through footer and the saved raw file carry the full URLs.
 
-**Host detection is deterministic - do not guess.** If the `CLAUDECODE` environment variable is set, you are on a hidden-link host: inline-link. If it is unset, treat the host as visible-URL: plain labels. This is the same split the Step 0 platform branch already draws (modal hosts are Claude Code; non-modal are Codex/Cursor/Gemini CLI/raw CLI); the env signal just pins it so it cannot drift. When genuinely unsure, prefer plain labels - a missing link is readable, URL soup is not.
+**Host detection is deterministic - do not guess.** If the `CLAUDECODE` environment variable is set, you are on a hidden-link host: inline-link. If it is unset, treat the host as visible-URL: plain labels. This is the same split the Step 0 platform branch already draws (modal hosts are Claude Code; non-modal are Codex/Cursor/Gemini CLI/Grok (xAI Build CLI)/raw CLI); the env signal just pins it so it cannot drift. When genuinely unsure, prefer plain labels - a missing link is readable, URL soup is not.
 
 The stats footer (emoji-tree block) is engine-emitted per LAW 5 and passes through verbatim on every host - do NOT reformat its links yourself.
 
@@ -220,7 +220,7 @@ The stats footer (emoji-tree block) is engine-emitted per LAW 5 and passes throu
 **BAD (URL soup on a visible-URL host):** `per [Rolling Stone](https://www.rollingstone.com/...)` when the host prints it as `Rolling Stone (https://...)`
 **BAD (broken empty link):** `per [Rolling Stone]()`
 **GOOD on hidden-link hosts (Claude Code):** `per [Rolling Stone](https://www.rollingstone.com/music/music-news/kanye-west-bully-1235506094/)`, `per [@honest30bgfan_](https://x.com/honest30bgfan_)`, `[r/hiphopheads](https://reddit.com/r/hiphopheads)`
-**GOOD on visible-URL hosts (Codex):** `per Rolling Stone`, `per @honest30bgfan_`, `per r/hiphopheads`
+**GOOD on visible-URL hosts (Codex, Cursor, Gemini CLI, Grok):** `per Rolling Stone`, `per @honest30bgfan_`, `per r/hiphopheads`
 
 **Observed LAW 8 need (2026-04-20 inline-links saga; renderer split 2026-06-25):** the citation rule originally lived in the CITATION PRIORITY block around line 1224 - below the chunked-read window - and four consecutive runs (Matt Van Horn, Peter Steinberger, Best Headphones, OpenClaw vs Hermes) skipped it because the model read lines 1-1000 and stopped ("I never reached line 1224"). Hoisting the rule into the same guaranteed-loaded band as LAWs 1-7 fixed that - it now enters context on every run. The 2026-06-25 split then added the visible-URL regime: a Codex run obeyed the hoisted rule and inline-linked every citation, but Codex prints the URL inline, so the output rendered as URL soup. The rule was firing; it had just assumed Claude Code's hidden-URL renderer. Same hoist pattern that solved v3.0.6 (invented titles), disaster #2 (stripped bold), disaster #3 (trailing Sources), and the Hermes 2026-04-19 evidence-dump disaster.
 
@@ -549,7 +549,7 @@ When both `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` are set, the engine run
 
 **Platform split - run exactly ONE branch:**
 - **If you HAVE WebSearch and AskUserQuestion (Claude Code):** run the **Claude Code Modal Flow** immediately below.
-- **If you do NOT (OpenClaw, Codex, Cursor, Gemini CLI, raw CLI):** run the **Non-Modal Prose Flow** further down. It does the same work conversationally, without modals.
+- **If you do NOT (OpenClaw, Codex, Cursor, Gemini CLI, Grok (xAI Build CLI), raw CLI):** run the **Non-Modal Prose Flow** further down. It does the same work conversationally, without modals.
 
 ---
 
@@ -641,7 +641,7 @@ If the user picks an example, run research with it. If "Type my own", ask what t
 
 ### Non-Modal Prose Flow
 
-For hosts without interactive modal prompts (OpenClaw, Codex, Cursor, Gemini CLI, raw CLI). Same work, done conversationally. Run in order; wait where it says to wait.
+For hosts without interactive modal prompts (OpenClaw, Codex, Cursor, Gemini CLI, Grok (xAI Build CLI), raw CLI). Same work, done conversationally. Run in order; wait where it says to wait.
 
 **1. Welcome.** Run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py --welcome` and show its stdout to the user VERBATIM (do not summarize or reformat). The welcome is engine-owned so it renders the same everywhere.
 
@@ -712,6 +712,18 @@ The magic of /last30days is Reddit comments + X posts together - and both are fr
 4. If it doesn't exist: `mkdir -p ~/.config/last30days && touch ~/.config/last30days/.env`
 
 Always add this last line: `SETUP_COMPLETE=true`. Then proceed to research.
+
+### Grok Build (xAI) Tool Equivalents
+
+When running on Grok Build, the following tool mappings apply:
+
+| Skill Tool | Grok Equivalent |
+|---|---|
+| `Bash` | `shell` tool |
+| `WebSearch` | Host web search (built-in) |
+| `AskUserQuestion` | Host question UI or prose prompt |
+
+**Recommended X backend on Grok:** Use `XAI_API_KEY` (get a key at [api.x.ai](https://api.x.ai)) — cookie-free, no browser access needed. This is the preferred X authentication method on Grok Build.
 
 The setup wizard's mechanical work lives in a Python module so it runs across all hosts (Claude Code, Codex, Cursor, etc.) while you drive the consent conversation above. The common-case (already set up) path through this file stays short.
 
@@ -1163,7 +1175,7 @@ The output must distinguish evidence from interpretation. Good: "3 current roles
 
 ## Step 0.55: Pre-Research Intelligence (resolve communities + handles)
 
-> **PLATFORM GATE:** If your platform does NOT support WebSearch (e.g., OpenClaw, raw CLI), **skip Steps 0.55 and 0.75** but add `--auto-resolve` to the Python command in the Research Execution section. The engine will do its own pre-research using configured web search backends (Brave, Exa, or Serper) to discover subreddits, X handles, and current events context before planning.
+> **PLATFORM GATE:** If your platform does NOT support WebSearch (e.g., OpenClaw, raw CLI, Codex without web tools, Cursor without web tools, Gemini CLI without web tools, Grok (xAI Build CLI) without web tools), **skip Steps 0.55 and 0.75** but add `--auto-resolve` to the Python command in the Research Execution section. The engine will do its own pre-research using configured web search backends (Brave, Exa, or Serper) to discover subreddits, X handles, and current events context before planning.
 
 **MANDATORY on Claude Code (and any platform with WebSearch).** You MUST perform Step 0.55 before calling the Python engine. Skipping this step is the second-most-common failure mode of this skill, right after skipping the engine entirely. If your Bash call to `last30days.py` does NOT include a `--plan` flag with resolved handles and subreddits, that is a Step 0.55 skip and a failure. The engine's `[Resolve] No web search backend available, skipping resolve` log line means you, the model, did not do your job - it does NOT mean "the engine will handle it." Treat this step as non-skippable. Repeat invocations on the same topic still re-run Step 0.55 because Reddit/X/TikTok handles for breaking-news topics change week to week.
 

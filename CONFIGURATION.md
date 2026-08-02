@@ -310,6 +310,34 @@ Write `LAST30DAYS_KEYCHAIN_ALIASES` as a single-line JSON value in `.env`.
 Multiline JSON formatting is not supported because `.env` files are parsed
 line-by-line.
 
+### How `.env` lines are parsed
+
+Both readers of your `.env` — the engine (`lib/env.py`) and the session-start
+status hook (`hooks/scripts/check-config.sh`) — accept the same shape:
+
+| Line | Parsed as |
+|---|---|
+| `KEY=value` | `value` |
+| `KEY=value   # note` | `value` — a `#` **preceded by whitespace** starts a comment |
+| `KEY=abc#def` | `abc#def` — a `#` glued to the value is data, not a comment |
+| `KEY="a b  # literal"` | `a b  # literal` — quoting keeps a `#` verbatim |
+| `KEY="a b"   # note` | `a b` — an inline comment may follow the closing quote |
+| `export KEY=value` | `value` — the `export ` prefix is ignored |
+| `KEY=` | **unset**, not empty string — the documented default still applies |
+| `KEY=   # note` | **unset** — a value that is only a comment leaves the key unset |
+| `# whole line` | ignored |
+
+Two consequences worth knowing:
+
+- If a secret or password contains a space followed by `#`, **quote it**:
+  `BSKY_APP_PASSWORD="abcd efgh # ijkl"`. Unquoted, everything from ` #`
+  onward is read as a comment.
+- To restore a default, delete or comment out the line rather than blanking it.
+  `KEY=` is treated as absent, so it cannot force an empty value.
+
+Values are stored verbatim otherwise: no `$HOME`/variable expansion and no
+backslash escape processing (`~` is expanded downstream for path settings).
+
 ### Bluesky app-password format and search host
 
 `BSKY_APP_PASSWORD` should be a 19-char app password in `xxxx-xxxx-xxxx-xxxx` format (lowercase alphanumeric, three hyphens). Generate one at <https://bsky.app/settings/app-passwords>. The AT Protocol's `createSession` endpoint also accepts your main account login password, but that's bad hygiene — main passwords have no scope (an app password can be limited to non-DM access) and can't be revoked individually.
