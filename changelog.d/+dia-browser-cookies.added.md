@@ -1,1 +1,3 @@
 Browser-cookie auth now covers **Dia** (The Browser Company) on macOS, alongside the rest of the Chromium family. Dia stores cookies in the same `Dia/User Data` layout as Arc and uses the standard `Dia Safe Storage` Keychain entry, so it decrypts through the existing shared v10 core. Use `FROM_BROWSER=dia`, or let `FROM_BROWSER=auto` find it. Verified end-to-end against a real Dia install: `.x.com` `auth_token`/`ct0` decrypted from a logged-in profile and an X-sourced run returned live items.
+
+The first-run setup wizard also scans Dia, so a user whose only session lives there is detected without setting `FROM_BROWSER` first.
