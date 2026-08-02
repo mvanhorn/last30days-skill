@@ -194,7 +194,7 @@ CT0=<your-ct0-token>
 # XQUIK_API_KEY=<your-xquik-key>
 # OR cookie-jar (free; logs in via your browser session).
 # Unset = no browser-cookie reads. FROM_BROWSER=auto tries Firefox/Safari and
-# the Chromium family (Chrome, Brave, Edge, Vivaldi, Opera, Arc, Chromium); it
+# the Chromium family (Chrome, Brave, Edge, Vivaldi, Opera, Arc, Dia, Chromium); it
 # only prompts for macOS Keychain access on the browser that actually holds your
 # X cookies. Or name a single browser, e.g. brave/edge. On Windows only Firefox
 # is supported.

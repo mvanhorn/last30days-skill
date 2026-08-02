@@ -378,6 +378,7 @@ class TestExtractCookiesAuto:
             patch("lib.cookie_extract.extract_vivaldi_cookies", return_value=None),
             patch("lib.cookie_extract.extract_opera_cookies", return_value=None),
             patch("lib.cookie_extract.extract_arc_cookies", return_value=None),
+            patch("lib.cookie_extract.extract_dia_cookies", return_value=None),
             patch("lib.cookie_extract.extract_chromium_cookies", return_value=None),
             patch("lib.cookie_extract.extract_safari_cookies", return_value=None),
             patch(

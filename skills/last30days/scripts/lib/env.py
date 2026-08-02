@@ -657,7 +657,7 @@ def cookie_extraction_browsers(config: dict[str, Any]) -> list[str]:
     """Browsers to try for cookie extraction, honoring FROM_BROWSER.
 
     Default (FROM_BROWSER unset): no browser-cookie reads. The Chromium family
-    (Chrome, Brave, Edge, Vivaldi, Opera, Arc, Chromium) is available only when
+    (Chrome, Brave, Edge, Vivaldi, Opera, Arc, Dia, Chromium) is available only when
     explicitly selected because reading their cookies on macOS requires the
     browser's Safe Storage Keychain key, which triggers a system password prompt
     that cannot be reliably suppressed. On Windows only Firefox cookie
@@ -676,7 +676,7 @@ def cookie_extraction_browsers(config: dict[str, Any]) -> list[str]:
     unrequested Keychain prompt.
     """
     silent_browsers = ["firefox", "safari"]
-    chromium_browsers = ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"]
+    chromium_browsers = ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "dia", "chromium"]
     known_browsers = silent_browsers + chromium_browsers
     from_browser = (config.get("FROM_BROWSER") or "").strip().lower()
     if not from_browser:
