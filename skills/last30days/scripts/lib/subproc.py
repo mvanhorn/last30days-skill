@@ -35,13 +35,13 @@ def _taskkill_tree(pid: int) -> None:
     of its children.  This is a no-op on non-Windows platforms (callers
     should guard on ``sys.platform == "win32"`` before calling).
 
-    Raises:
-        subprocess.CalledProcessError: If ``taskkill`` itself fails (e.g.
-            the PID has already exited).
+    Best-effort: if ``taskkill`` fails (e.g. the PID has already exited or
+    termination was denied), the error is suppressed so the caller can
+    fall back to ``proc.kill()`` / ``proc.wait()`` cleanup.
     """
     subprocess.run(
         ["taskkill", "/F", "/T", "/PID", str(pid)],
-        check=True,
+        check=False,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
