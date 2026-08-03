@@ -521,7 +521,8 @@ class SynthesisDirectiveSurvivesTruncationTests(unittest.TestCase):
         # ...and the concrete "do not emit the cluster headings" self-check, so
         # the directive is actionable without the tail boundary.
         self.assertIn("### N.", head)
-        self.assertIn("PASS-THROUGH FOOTER", head)
+        self.assertIn("fenced `text` footer block", head)
+        self.assertNotIn("PASS-THROUGH FOOTER", head)
 
     def test_early_directive_sits_inside_evidence_envelope(self):
         # It is a model instruction, not user output, so it belongs in the

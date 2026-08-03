@@ -1059,7 +1059,7 @@ def _render_synthesis_directive() -> list[str]:
         "> READ, not text to emit. Transform it into `What I learned:` prose paragraphs",
         "> per LAW 2. Do NOT pass the `### N.` evidence clusters or the stats and",
         "> source-coverage blocks through verbatim. The ONLY block you emit verbatim is",
-        "> the PASS-THROUGH FOOTER (the emoji tree) lower down. The full contract repeats",
+        "> the fenced `text` footer block (the emoji tree) lower down. The full contract repeats",
         "> at the end-of-output boundary near the bottom; if your captured output was",
         "> truncated and never reached it, this contract still binds.",
         "",
