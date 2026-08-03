@@ -24,6 +24,8 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # constant is suffix-free. If GEMINI_FLASH_LITE moves to a non-preview stable ID,
 # double-check that OpenRouter's slug still maps to the same upstream model.
 OPENROUTER_DEFAULT = "google/gemini-3.1-flash-lite-preview"
+NOVITA_URL = "https://api.novita.ai/openai/v1/chat/completions"
+NOVITA_DEFAULT = "meta-llama/llama-3.1-8b-instruct"
 
 
 class ReasoningClient:
@@ -193,11 +195,44 @@ class OpenRouterClient(ReasoningClient):
         return extract_openai_text(response)
 
 
+class NovitaClient(ReasoningClient):
+    name = "novita"
+
+    def __init__(self, api_key: str):
+        self.api_key = api_key
+
+    def generate_text(
+        self,
+        model: str,
+        prompt: str,
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        response_mime_type: str | None = None,
+    ) -> str:
+        del tools, response_mime_type
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0,
+        }
+        response = http.post(
+            os.environ.get("NOVITA_BASE_URL", NOVITA_URL),
+            payload,
+            headers={
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json",
+            },
+            timeout=90,
+        )
+        return extract_openai_text(response)
+
+
 _MODEL_DEFAULTS: dict[str, tuple[str, str]] = {
     "gemini": (GEMINI_FLASH_LITE, GEMINI_FLASH_LITE),
     "openai": (OPENAI_DEFAULT, OPENAI_DEFAULT),
     "xai": (XAI_DEFAULT, XAI_DEFAULT),
     "openrouter": (OPENROUTER_DEFAULT, OPENROUTER_DEFAULT),
+    "novita": (NOVITA_DEFAULT, NOVITA_DEFAULT),
 }
 
 
@@ -251,6 +286,8 @@ def resolve_runtime(config: dict[str, Any], depth: str) -> tuple[schema.Provider
             provider_name = "xai"
         elif config.get("OPENROUTER_API_KEY"):
             provider_name = "openrouter"
+        elif config.get("NOVITA_API_KEY"):
+            provider_name = "novita"
         else:
             return schema.ProviderRuntime(
                 reasoning_provider="local",
@@ -310,6 +347,18 @@ def resolve_runtime(config: dict[str, Any], depth: str) -> tuple[schema.Provider
             x_search_backend=_resolve_x_backend(config),
         )
         return runtime, OpenRouterClient(openrouter_key)
+
+    if provider_name == "novita":
+        novita_key = config.get("NOVITA_API_KEY")
+        if not novita_key:
+            raise RuntimeError("Novita selected but NOVITA_API_KEY is not configured.")
+        runtime = schema.ProviderRuntime(
+            reasoning_provider="novita",
+            planner_model=planner_model,
+            rerank_model=rerank_model,
+            x_search_backend=_resolve_x_backend(config),
+        )
+        return runtime, NovitaClient(novita_key)
 
     raise RuntimeError(f"Unsupported reasoning provider: {provider_name}")
 

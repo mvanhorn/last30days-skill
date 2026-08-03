@@ -34,6 +34,14 @@ class ProvidersV3Tests(unittest.TestCase):
         )
         self.assertEqual("xai", runtime.reasoning_provider)
 
+    def test_auto_falls_back_to_novita(self):
+        runtime, client = providers.resolve_runtime(
+            {"NOVITA_API_KEY": "test-key", "LAST30DAYS_REASONING_PROVIDER": "auto"},
+            depth="default",
+        )
+        self.assertEqual("novita", runtime.reasoning_provider)
+        self.assertEqual("novita", client.name)
+
     def test_auto_returns_local_runtime_when_no_keys(self):
         runtime, client = providers.resolve_runtime(
             {"LAST30DAYS_REASONING_PROVIDER": "auto"},
@@ -62,6 +70,13 @@ class ProvidersV3Tests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             providers.resolve_runtime(
                 {"LAST30DAYS_REASONING_PROVIDER": "xai"},
+                depth="default",
+            )
+
+    def test_explicit_novita_without_key_still_raises(self):
+        with self.assertRaises(RuntimeError):
+            providers.resolve_runtime(
+                {"LAST30DAYS_REASONING_PROVIDER": "novita"},
                 depth="default",
             )
 
