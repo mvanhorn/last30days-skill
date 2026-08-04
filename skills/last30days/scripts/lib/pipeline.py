@@ -2335,6 +2335,7 @@ def run(
         rate_limit_lock=rate_limit_lock,
         x_handle=x_handle,
         x_related=x_related,
+        github_user=github_user,
     )
 
     # Phase 2b: retry thin sources with simplified query
@@ -3120,6 +3121,7 @@ def _run_supplemental_searches(
     rate_limit_lock: threading.Lock,
     x_handle: str | None = None,
     x_related: list[str] | None = None,
+    github_user: str | None = None,
 ) -> None:
     """Phase 2: extract entities from Phase 1 results, run targeted supplemental searches."""
     if depth == "quick" or mock:
@@ -3155,7 +3157,27 @@ def _run_supplemental_searches(
         max_handles=3, max_subreddits=3,
     )
 
-    handles = entities.get("x_handles", [])
+    # Auto-extracted handles are only trustworthy on a person/entity run. The
+    # extractor returns whichever @handles appear most often in the Phase 1
+    # corpus, which on a person topic IS the subject and their circle - but on a
+    # thematic topic is just whoever happened to get mentioned. A run on
+    # "men feeling stuck and losing direction" pulled 39 of its 43 X items from
+    # three such handles, none of them about the topic, drowning the
+    # topic-search lane that had found the actually-relevant posts.
+    #
+    # An explicit anchor (--x-handle / --x-related / --github-user, all set by
+    # the skill's person-topic pre-flight) is the signal that the caller means a
+    # person. Without one, keep only explicitly-named handles and let the topic
+    # search carry the run.
+    person_anchored = bool(x_handle or x_related or github_user)
+    handles = entities.get("x_handles", []) if person_anchored else []
+    if not person_anchored and entities.get("x_handles"):
+        log.source_log(
+            "x",
+            "no person anchor (--x-handle/--x-related/--github-user); skipping "
+            f"{len(entities['x_handles'])} auto-extracted handle lanes",
+            tty_only=False,
+        )
 
     # Add explicit --x-handle if provided
     if x_handle:
