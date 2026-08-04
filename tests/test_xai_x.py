@@ -1,7 +1,8 @@
 import json
 import unittest
+from unittest import mock
 
-from lib.xai_x import parse_x_response
+from lib.xai_x import parse_x_response, search_x
 
 
 def _wrap_items(items):
@@ -58,6 +59,32 @@ class TestXaiXEngagementZero(unittest.TestCase):
         self.assertEqual(3, eng["reposts"])
         self.assertEqual(1, eng["replies"])
         self.assertEqual(0, eng["quotes"])
+
+
+class TestXaiXRequest(unittest.TestCase):
+    def test_grok_45_search_uses_low_reasoning(self):
+        with mock.patch("lib.xai_x.http.post", return_value={}) as post:
+            search_x(
+                "key",
+                "grok-4.5",
+                "topic",
+                "2026-07-01",
+                "2026-07-31",
+            )
+        payload = post.call_args.args[1]
+        self.assertEqual({"effort": "low"}, payload["reasoning"])
+        self.assertEqual("grok-4.5", payload["model"])
+
+    def test_older_model_pin_does_not_receive_45_only_fields(self):
+        with mock.patch("lib.xai_x.http.post", return_value={}) as post:
+            search_x(
+                "key",
+                "grok-4.3",
+                "topic",
+                "2026-07-01",
+                "2026-07-31",
+            )
+        self.assertNotIn("reasoning", post.call_args.args[1])
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,20 +10,39 @@ from typing import Any
 
 from . import env, http, schema
 
-GEMINI_FLASH_LITE = "gemini-3.1-flash-lite"
-GEMINI_PRO = "gemini-3.1-pro-preview"
-OPENAI_DEFAULT = "gpt-5.4-nano"
-XAI_DEFAULT = "grok-4-1-fast"
+GEMINI_FLASH_LITE = "gemini-3.5-flash-lite"
+GEMINI_DEEP = "gemini-3.6-flash"
+OPENAI_DEFAULT = "gpt-5.6-luna"
+XAI_DEFAULT = "grok-4.5"
 
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
 OPENAI_RESPONSES_URL = "https://api.openai.com/v1/responses"
 XAI_RESPONSES_URL = "https://api.x.ai/v1/responses"
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
-# OpenRouter routes the Gemini Flash Lite tier as the -preview slug; that is the
-# stable form on that routing layer even though native Gemini's GEMINI_FLASH_LITE
-# constant is suffix-free. If GEMINI_FLASH_LITE moves to a non-preview stable ID,
-# double-check that OpenRouter's slug still maps to the same upstream model.
-OPENROUTER_DEFAULT = "google/gemini-3.1-flash-lite-preview"
+OPENROUTER_DEFAULT = "google/gemini-3.5-flash-lite"
+
+
+def gemini_generation_config(
+    model: str,
+    *,
+    response_mime_type: str | None = None,
+) -> dict[str, Any]:
+    """Build a generateContent config compatible with old and current Gemini models."""
+    config: dict[str, Any] = {}
+    match = re.match(r"^gemini-(\d+)\.(\d+)", model)
+    if match and tuple(map(int, match.groups())) < (3, 5):
+        config["temperature"] = 0
+    if response_mime_type:
+        config["responseMimeType"] = response_mime_type
+    return config
+
+
+def _uses_gpt_56_contract(model: str) -> bool:
+    return model == "gpt-5.6" or model.startswith("gpt-5.6-")
+
+
+def _uses_grok_45_contract(model: str) -> bool:
+    return model == "grok-4.5" or model.startswith("grok-4.5-")
 
 
 class ReasoningClient:
@@ -68,10 +87,13 @@ class GeminiClient(ReasoningClient):
     ) -> dict[str, Any]:
         body: dict[str, Any] = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0},
         }
-        if response_mime_type:
-            body["generationConfig"]["responseMimeType"] = response_mime_type
+        generation_config = gemini_generation_config(
+            model,
+            response_mime_type=response_mime_type,
+        )
+        if generation_config:
+            body["generationConfig"] = generation_config
         if tools:
             body["tools"] = tools
         return http.post(
@@ -118,6 +140,8 @@ class OpenAIClient(ReasoningClient):
             "input": prompt,
             "temperature": 0,
         }
+        if _uses_gpt_56_contract(model):
+            payload["reasoning"] = {"effort": "none"}
         response = http.post(
             os.environ.get("OPENAI_BASE_URL", OPENAI_RESPONSES_URL),
             payload,
@@ -149,6 +173,8 @@ class XAIClient(ReasoningClient):
             "model": model,
             "input": [{"role": "user", "content": prompt}],
         }
+        if _uses_grok_45_contract(model):
+            payload["reasoning"] = {"effort": "low"}
         response = http.post(
             os.environ.get("XAI_BASE_URL", XAI_RESPONSES_URL),
             payload,
@@ -201,18 +227,18 @@ _MODEL_DEFAULTS: dict[str, tuple[str, str]] = {
 }
 
 
-def _resolve_model_pins(config: dict[str, Any], depth: str, provider_name: str) -> tuple[str, str, str]:
-    """Resolve planner, rerank, and grounding model pins for a provider."""
+def _resolve_model_pins(config: dict[str, Any], depth: str, provider_name: str) -> tuple[str, str]:
+    """Resolve planner and rerank model pins for a provider."""
     default_planner, default_rerank = _MODEL_DEFAULTS.get(provider_name, (GEMINI_FLASH_LITE, GEMINI_FLASH_LITE))
     if depth == "deep" and provider_name == "gemini":
-        default_rerank = GEMINI_PRO
+        default_rerank = GEMINI_DEEP
 
     planner_model = config.get("LAST30DAYS_PLANNER_MODEL") or default_planner
     rerank_model = config.get("LAST30DAYS_RERANK_MODEL") or default_rerank
 
     if provider_name == "gemini":
-        _require_gemini_31(planner_model, role="planner")
-        _require_gemini_31(rerank_model, role="rerank")
+        _require_gemini_model(planner_model, role="planner")
+        _require_gemini_model(rerank_model, role="rerank")
 
     return planner_model, rerank_model
 
@@ -321,11 +347,11 @@ def _resolve_x_backend(config: dict[str, Any]) -> str | None:
     return env.get_x_source(config)
 
 
-def _require_gemini_31(model: str, *, role: str) -> None:
-    if model.startswith("gemini-3.1-"):
+def _require_gemini_model(model: str, *, role: str) -> None:
+    if model.startswith("gemini-"):
         return
     raise RuntimeError(
-        f"{role} must use a Gemini 3.1 model. Got: {model}"
+        f"{role} must use a Gemini model. Got: {model}"
     )
 
 

@@ -20,7 +20,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from lib import env as envlib
 from lib import schema
-from lib.providers import GEMINI_FLASH_LITE
+from lib.providers import GEMINI_FLASH_LITE, gemini_generation_config
 
 
 SKILL_ROOT = Path(__file__).resolve().parents[1]
@@ -215,7 +215,10 @@ def extract_gemini_text(payload: dict[str, Any]) -> str:
 def call_gemini_judge(api_key: str, model: str, prompt: str) -> dict[str, Any]:
     body = {
         "contents": [{"parts": [{"text": prompt}]}],
-        "generationConfig": {"temperature": 0, "responseMimeType": "application/json"},
+        "generationConfig": gemini_generation_config(
+            model,
+            response_mime_type="application/json",
+        ),
     }
     request = Request(
         GEMINI_API_URL.format(model=model, api_key=api_key),

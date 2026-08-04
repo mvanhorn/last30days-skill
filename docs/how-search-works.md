@@ -101,7 +101,7 @@ X search has **two backends** — the skill auto-detects which to use.
 if node_available and AUTH_TOKEN and CT0:
     use bundled Bird    # Free, popup-free, env-authenticated
 elif XAI_API_KEY:
-    use xAI API         # Paid, uses grok-4-1-fast
+    use xAI API         # Paid, uses grok-4.5 with low reasoning effort
 else:
     skip X entirely     # No X results
 ```
@@ -117,7 +117,8 @@ Authorization: Bearer {XAI_API_KEY}
 **Payload:**
 ```json
 {
-  "model": "grok-4-1-fast",
+  "model": "grok-4.5",
+  "reasoning": { "effort": "low" },
   "tools": [{ "type": "x_search" }],
   "input": "Search X for posts about {topic} from {from_date} to {to_date}..."
 }

@@ -354,6 +354,8 @@ An explicit `--register` wins over `LAST30DAYS_REGISTER`; the environment/config
 
 When you invoke `/last30days` from Claude Code, Codex, or Gemini, the host model **is** the reasoning provider for plan + synthesis - you don't need any of the keys above unless you also run the script headlessly (cron, CI, watchlist).
 
+Headless runs use role-matched defaults: Gemini 3.5 Flash-Lite for planning and normal reranking, Gemini 3.6 Flash for deep reranking, GPT-5.6 Luna with `none` reasoning effort for OpenAI, Grok 4.5 with `low` reasoning effort for xAI, and Gemini 3.5 Flash-Lite through OpenRouter. Override planner and reranker models with `LAST30DAYS_PLANNER_MODEL` and `LAST30DAYS_RERANK_MODEL`. Override the xAI model used for X search with `LAST30DAYS_X_MODEL`.
+
 ---
 
 ## Web search backend priority

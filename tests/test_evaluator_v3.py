@@ -112,6 +112,28 @@ class EvaluatorV3Tests(unittest.TestCase):
         with self.assertRaises(ValueError):
             evaluator.extract_gemini_text({"candidates": [{"content": {"parts": [{}]}}]})
 
+    def test_current_gemini_judge_omits_deprecated_sampling_parameters(self):
+        payload = {
+            "candidates": [
+                {"content": {"parts": [{"text": '{"items": []}'}]}}
+            ]
+        }
+        response = mock.MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(payload).encode()
+        with mock.patch.object(evaluator, "urlopen", return_value=response) as urlopen:
+            result = evaluator.call_gemini_judge(
+                "key",
+                "gemini-3.5-flash-lite",
+                "prompt",
+            )
+        request = urlopen.call_args.args[0]
+        body = json.loads(request.data)
+        self.assertEqual({"items": []}, result)
+        self.assertEqual(
+            {"responseMimeType": "application/json"},
+            body["generationConfig"],
+        )
+
     def test_get_judgments_uses_cache_and_skips_when_not_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)

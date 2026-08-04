@@ -36,7 +36,7 @@ def _first_non_none(*values: Any) -> Any:
 class ProviderRuntime:
     """Resolved runtime provider selection."""
 
-    reasoning_provider: Literal["gemini", "openai", "xai", "local"]
+    reasoning_provider: Literal["gemini", "openai", "xai", "openrouter", "local"]
     planner_model: str
     rerank_model: str
     x_search_backend: Literal["xai", "bird"] | None = None

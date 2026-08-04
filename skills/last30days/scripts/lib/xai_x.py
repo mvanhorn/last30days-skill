@@ -121,6 +121,8 @@ def search_x(
             }
         ],
     }
+    if model == "grok-4.5" or model.startswith("grok-4.5-"):
+        payload["reasoning"] = {"effort": "low"}
 
     return http.post(XAI_RESPONSES_URL, payload, headers=headers, timeout=timeout)
 

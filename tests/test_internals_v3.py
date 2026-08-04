@@ -546,8 +546,6 @@ class TestXaiModelDefault(unittest.TestCase):
         self.assertNotEqual(providers.XAI_DEFAULT, "grok-3-mini-fast",
                             "grok-3-mini-fast returns HTTP 400 from xAI API")
 
-    def test_default_is_grok_4_generation(self):
+    def test_default_is_current_grok_generation(self):
         from lib import providers
-        self.assertIn("grok-4", providers.XAI_DEFAULT,
-                      f"XAI_DEFAULT should be a grok-4 model, got: {providers.XAI_DEFAULT}")
-
+        self.assertEqual("grok-4.5", providers.XAI_DEFAULT)
