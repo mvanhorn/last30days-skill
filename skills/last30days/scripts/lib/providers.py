@@ -25,7 +25,7 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # double-check that OpenRouter's slug still maps to the same upstream model.
 OPENROUTER_DEFAULT = "google/gemini-3.1-flash-lite-preview"
 NOVITA_URL = "https://api.novita.ai/openai/v1/chat/completions"
-NOVITA_DEFAULT = "meta-llama/llama-3.1-8b-instruct"
+NOVITA_DEFAULT = "moonshotai/kimi-k3"
 
 
 class ReasoningClient:
