@@ -194,6 +194,77 @@ class TestRunWithTimeout(unittest.TestCase):
         # Both the primary and escalation paths must have fallen back to kill().
         self.assertGreaterEqual(fake.kill_count, 2)
 
+    def test_windows_taskkill_failure_falls_back_to_proc_kill(self):
+        """A failed ``taskkill`` (nonzero exit) must still call ``proc.kill()``.
+
+        Regression for the #823 Greptile re-review: with ``check=False`` a
+        nonzero ``taskkill`` return is silently swallowed, so neither cleanup
+        handler called ``proc.kill()`` and the direct child + its tree stayed
+        alive. ``_taskkill_tree`` now returns False on failure, and both the
+        primary and escalation Windows paths must fall back to ``proc.kill()``.
+        """
+        TimeoutExpired = subproc.subprocess.TimeoutExpired
+
+        class _FakeProc:
+            def __init__(self):
+                self.pid = 7777
+                self.kill_count = 0
+
+            def communicate(self, timeout=None):
+                raise TimeoutExpired(cmd="x", timeout=timeout)
+
+            def wait(self, timeout=None):
+                # Force the SIGKILL escalation branch so both Windows call
+                # sites are exercised.
+                raise TimeoutExpired(cmd="x", timeout=timeout)
+
+            def kill(self):
+                self.kill_count += 1
+
+        fake = _FakeProc()
+        with patch.object(subproc.sys, "platform", "win32"), \
+             patch.object(subproc.subprocess, "Popen", return_value=fake), \
+             patch.object(subproc, "_taskkill_tree", return_value=False):
+            with self.assertRaises(subproc.SubprocTimeout):
+                subproc.run_with_timeout(["x"], timeout=1)
+        # Primary + escalation paths each called proc.kill() because taskkill
+        # reported failure.
+        self.assertGreaterEqual(fake.kill_count, 2)
+
+    def test_windows_taskkill_success_skips_proc_kill(self):
+        """A successful ``taskkill`` must not call ``proc.kill()``.
+
+        Mirror of the failure test: when ``_taskkill_tree`` returns True the
+        tree was reaped and the direct-child fallback must be skipped.
+        """
+        TimeoutExpired = subproc.subprocess.TimeoutExpired
+
+        class _FakeProc:
+            def __init__(self):
+                self.pid = 7778
+                self.kill_count = 0
+
+            def communicate(self, timeout=None):
+                raise TimeoutExpired(cmd="x", timeout=timeout)
+
+            def wait(self, timeout=None):
+                # taskkill succeeded, so the process is gone — wait returns 0
+                # and the escalation path is not reached.
+                return 0
+
+            def kill(self):
+                self.kill_count += 1
+
+        fake = _FakeProc()
+        with patch.object(subproc.sys, "platform", "win32"), \
+             patch.object(subproc.subprocess, "Popen", return_value=fake), \
+             patch.object(subproc, "_taskkill_tree", return_value=True):
+            with self.assertRaises(subproc.SubprocTimeout):
+                subproc.run_with_timeout(["x"], timeout=1)
+        self.assertEqual(
+            fake.kill_count, 0, "proc.kill() must not run when taskkill succeeded"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
