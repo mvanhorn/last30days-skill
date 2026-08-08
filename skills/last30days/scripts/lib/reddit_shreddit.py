@@ -21,6 +21,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from . import http
+from . import reddit_arctic
 from . import reddit_enrich
 
 # Up to N posts enriched per subquery, by depth. Raised from 3/5/8 once the
@@ -210,10 +211,21 @@ def fetch_comments(
     sub, post_id = ref
 
     html_text = http.reddit_keyless_get_text(_svc_url(sub, post_id), timeout=timeout, accept="text/html")
-    if not html_text:
-        return {"top_comments": [], "comment_insights": [], "num_comments": None}
+    comments = parse_comments(html_text, limit=MAX_COMMENTS) if html_text else []
+    total = _total_comments(html_text) if html_text else None
+    if not comments:
+        # The shreddit comment partials 403 on some hosts (datacenter egress).
+        # Fall back to the arctic-shift archive, which serves scored comments
+        # from any IP keyless (ranked by score client-side).
+        try:
+            comments = reddit_arctic.fetch_post_comments(
+                post_id, limit=MAX_COMMENTS, skip_author=_is_bot_author)
+        except Exception as exc:  # the fallback must never break enrichment
+            _log(f"arctic comment fallback failed: {exc}")
+            comments = []
+    if not comments:
+        return {"top_comments": [], "comment_insights": [], "num_comments": total}
 
-    comments = parse_comments(html_text, limit=MAX_COMMENTS)
     insights = reddit_enrich.extract_comment_insights(comments)
     return {
         "top_comments": [
@@ -227,5 +239,5 @@ def fetch_comments(
             for c in comments
         ],
         "comment_insights": insights,
-        "num_comments": _total_comments(html_text),
+        "num_comments": total,
     }

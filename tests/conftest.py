@@ -101,7 +101,8 @@ def _isolated_config(tmp_path_factory, monkeypatch):
 def _no_arctic_network():
     """Default Arctic transport collaborators to no-ops outside adapter tests."""
     with mock.patch("lib.reddit_arctic.fetch_scores", return_value={}), \
-         mock.patch("lib.reddit_arctic.fetch_listings", return_value=[]):
+         mock.patch("lib.reddit_arctic.fetch_listings", return_value=[]), \
+         mock.patch("lib.reddit_arctic.fetch_post_comments", return_value=[]):
         yield
 
 
