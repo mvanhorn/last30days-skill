@@ -98,6 +98,56 @@ class TestFetchComments:
 
     def test_fetch_failure_returns_empty(self):
         url = "https://www.reddit.com/r/Rakuten/comments/1taeiw0/title/"
-        with mock.patch.object(rs.http, "get_text", return_value=None):
+        with mock.patch.object(rs.http, "get_text", return_value=None), \
+             mock.patch.object(rs.reddit_arctic, "fetch_post_comments", return_value=[]):
             out = rs.fetch_comments(url)
+        assert out["top_comments"] == [] and out["num_comments"] is None
+
+
+class TestFetchCommentsFallback:
+    """fetch_comments falls back to the arctic-shift archive when the shreddit
+    comment partials return nothing (datacenter egress 403)."""
+
+    URL = "https://www.reddit.com/r/Rakuten/comments/1taeiw0/title/"
+
+    def _arctic_comment(self, score=10, body="great thread", author="u"):
+        return {
+            "score": score, "date": "2026-07-02", "author": author,
+            "body": body, "excerpt": body[:200], "permalink": "/r/Rakuten/comments/1taeiw0/x/",
+            "url": "https://reddit.com/r/Rakuten/comments/1taeiw0/x/",
+        }
+
+    def test_arctic_fallback_when_shreddit_empty(self):
+        comments = [self._arctic_comment(score=42)]
+        with mock.patch.object(rs.http, "get_text", return_value=None), \
+             mock.patch.object(rs.reddit_arctic, "fetch_post_comments",
+                               return_value=comments) as arctic:
+            out = rs.fetch_comments(self.URL)
+        assert out["top_comments"] == [{
+            "score": 42, "date": "2026-07-02", "author": "u",
+            "excerpt": "great thread", "url": "https://reddit.com/r/Rakuten/comments/1taeiw0/x/",
+        }]
+        assert out["comment_insights"] == [] or isinstance(out["comment_insights"], list)
+        assert out["num_comments"] is None  # archive rows carry no post total
+        arctic.assert_called_once_with("1taeiw0", limit=rs.MAX_COMMENTS)
+
+    def test_shreddit_results_skip_arctic(self):
+        with mock.patch.object(rs.http, "get_text", return_value=_html()), \
+             mock.patch.object(rs.reddit_arctic, "fetch_post_comments") as arctic:
+            out = rs.fetch_comments(self.URL)
+        assert out["top_comments"]  # shreddit parse results
+        assert out["num_comments"] == 14
+        arctic.assert_not_called()
+
+    def test_both_empty_returns_empty(self):
+        with mock.patch.object(rs.http, "get_text", return_value=None), \
+             mock.patch.object(rs.reddit_arctic, "fetch_post_comments", return_value=[]):
+            out = rs.fetch_comments(self.URL)
+        assert out["top_comments"] == [] and out["num_comments"] is None
+
+    def test_never_raises_when_arctic_fails(self):
+        with mock.patch.object(rs.http, "get_text", return_value=None), \
+             mock.patch.object(rs.reddit_arctic, "fetch_post_comments",
+                               side_effect=Exception("boom")):
+            out = rs.fetch_comments(self.URL)
         assert out["top_comments"] == [] and out["num_comments"] is None

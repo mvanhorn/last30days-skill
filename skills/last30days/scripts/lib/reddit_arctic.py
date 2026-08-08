@@ -16,16 +16,21 @@ count rather than failing the Reddit source.
 
 import sys
 import time
-from typing import Dict, List
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 from . import http
 
 API = "https://arctic-shift.photon-reddit.com/api/posts/ids"
+COMMENTS_API = "https://arctic-shift.photon-reddit.com/api/comments/search"
 BATCH = 50          # ids per request
 TIMEOUT = 15
 MAX_BATCHES = 3     # cap total requests per run (bounds latency + rate-limit risk)
 PACE_SECONDS = 0.4  # gap between batches; arctic-shift answers 422 "slow down"
 CACHE_MAX = 4096    # hard size bound so the in-run memo can never grow unbounded
+# Comment fallback: fetch a wide recency slice, then rank by score client-side
+# (the archive's sort_type only supports created_utc).
+MAX_COMMENT_ROWS = 100
 # In-run memo: base36 id -> {score, num_comments}. Module-level so repeated
 # fetch_scores calls within one `/last30days` run (e.g. across subqueries) reuse
 # results, but capped at CACHE_MAX entries (never reached in a normal CLI run).
@@ -90,3 +95,63 @@ def fetch_scores(post_ids: List[str]) -> Dict[str, Dict[str, int]]:
                 _cache[rid] = entry
             out[rid] = entry
     return out
+
+
+def _comment_date(value: Any) -> Optional[str]:
+    """Epoch seconds -> YYYY-MM-DD (UTC), or None on garbage."""
+    try:
+        return datetime.fromtimestamp(int(value), tz=timezone.utc).date().isoformat()
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def fetch_post_comments(post_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+    """Top comments for a post from the arctic-shift archive, keyless.
+
+    Drop-in fallback for ``reddit_shreddit.parse_comments`` output on hosts
+    where the shreddit comment partials 403 (datacenter egress). Rows carry
+    the same dict shape (score/author/body/excerpt/permalink/date/url), are
+    ranked by score desc, and capped at ``limit``. Best-effort, never raises:
+    returns ``[]`` on any failure so the caller keeps whatever it had.
+    """
+    pid = str(post_id or "").removeprefix("t3_")
+    if not pid:
+        return []
+    try:
+        data = http.get(
+            f"{COMMENTS_API}?link_id=t3_{pid}&limit={MAX_COMMENT_ROWS}&sort=desc",
+            headers={"User-Agent": http.BROWSER_USER_AGENT},
+            timeout=TIMEOUT,
+        )
+    except Exception as e:  # network error / non-200 — degrade, never raise
+        _log(f"comments lookup failed t3_{pid}: {e}")
+        return []
+    rows = (data or {}).get("data")
+    if not isinstance(rows, list):
+        _log(f"unexpected comments response for t3_{pid}: {str(data)[:80]}")
+        return []
+
+    comments: List[Dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        author = row.get("author") or "[deleted]"
+        body = row.get("body") or ""
+        if author in ("[deleted]", "[removed]") or body in ("[deleted]", "[removed]"):
+            continue
+        try:
+            score = int(row.get("score") or 0)
+        except (TypeError, ValueError):
+            score = 0
+        permalink = row.get("permalink") or ""
+        comments.append({
+            "score": score,
+            "author": author,
+            "body": body[:300],
+            "excerpt": body[:200],
+            "permalink": permalink,
+            "date": _comment_date(row.get("created_utc")),
+            "url": f"https://reddit.com{permalink}" if permalink else "",
+        })
+    comments.sort(key=lambda c: c.get("score", 0), reverse=True)
+    return comments[:limit]
