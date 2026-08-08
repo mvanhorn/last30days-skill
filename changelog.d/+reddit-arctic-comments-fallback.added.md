@@ -1,0 +1,1 @@
+Reddit comment enrichment now falls back to the arctic-shift archive when the shreddit comment partials return nothing — hosts on datacenter egress (where Reddit 403s `/svc/shreddit`) keep top-comment text (ranked by score) instead of silently degrading to counts only.
