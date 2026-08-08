@@ -33,6 +33,8 @@ class TestDiscovery:
         with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
                                return_value=[_post(1), _post(2)]) as rss, \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
                                return_value=[]):
             out = reddit_keyless._discover("topic", "default", ["test"])
         assert len(out) == 2
@@ -253,3 +255,55 @@ class TestSlotPriority:
         with mock.patch("lib.rerank._primary_entity", side_effect=Exception("boom")):
             out = reddit_keyless._slot_priority("openclaw", posts)
         assert out == posts
+
+
+class TestScoredListingsFallback:
+    """_scored_listings falls back to the arctic-shift archive when the
+    shreddit listing partials return nothing (datacenter egress 403)."""
+
+    def test_arctic_fallback_when_shreddit_empty(self):
+        arctic_post = _scored(1, score=406)
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[arctic_post]) as arctic:
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        assert out == [arctic_post]
+        arctic.assert_called_once_with(["tea"], depth="quick", query="matcha", sorts=None)
+
+    def test_shreddit_results_skip_arctic(self):
+        shreddit_post = _scored(1, score=42)
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[shreddit_post]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings") as arctic:
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        assert out == [shreddit_post]
+        arctic.assert_not_called()
+
+    def test_both_empty_returns_empty(self):
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[]):
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        assert out == []
+
+    def test_never_raises_when_arctic_fails(self):
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               side_effect=Exception("boom")):
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        assert out == []
+
+    def test_dedicated_sorts_passed_through(self):
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[]) as arctic:
+            reddit_keyless._scored_listings(
+                ["Kanye"], depth="default", query="Kanye", sorts=["top", "hot", "new"]
+            )
+        arctic.assert_called_once_with(
+            ["Kanye"], depth="default", query="Kanye", sorts=["top", "hot", "new"]
+        )

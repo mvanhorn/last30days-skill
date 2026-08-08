@@ -72,6 +72,31 @@ def _apply_scores(post: Dict[str, Any], scored: Dict[str, int]) -> None:
     post["engagement"]["num_comments"] = scored["num_comments"]
 
 
+def _scored_listings(
+    subreddits: List[str],
+    depth: str = "default",
+    query: str = "",
+    sorts: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Scored subreddit listings: shreddit partials, arctic-shift fallback.
+
+    The shreddit ``community-more-posts`` partials 403 from datacenter IPs
+    (and any host Reddit decides to block). When they return nothing, fall
+    back to the arctic-shift archive (keyless, IP-agnostic, real scores) so
+    discovery and score backfill keep working. Never raises.
+    """
+    posts = reddit_listing.fetch_listings(subreddits, depth=depth, query=query, sorts=sorts)
+    if not posts:
+        try:
+            posts = reddit_arctic.fetch_listings(subreddits, depth=depth, query=query, sorts=sorts)
+        except Exception as exc:  # the fallback must never break the pipeline
+            _log(f"arctic-shift listing fallback failed: {exc}")
+            posts = []
+        if posts:
+            _log(f"arctic-shift listing fallback: {len(posts)} posts")
+    return posts
+
+
 def _discover(
     topic: str,
     depth: str,
@@ -83,7 +108,7 @@ def _discover(
     # an on-topic post whose title lacks the entity name is never dropped.
     dedicated_posts: List[Dict[str, Any]] = []
     if dedicated_subreddits:
-        dedicated_posts = reddit_listing.fetch_listings(
+        dedicated_posts = _scored_listings(
             dedicated_subreddits, depth=depth, query=topic, sorts=DEDICATED_SORTS
         )
         for p in dedicated_posts:
@@ -98,7 +123,7 @@ def _discover(
     if subreddits:
         # Targeted run: the caller chose these subreddits, so their listing cards
         # are on-topic — include them as scored discovery AND as a score source.
-        listing_posts = reddit_listing.fetch_listings(subreddits, depth=depth, query=topic)
+        listing_posts = _scored_listings(subreddits, depth=depth, query=topic)
         score_source = listing_posts
     else:
         # Bare global run: subreddits derived from noisy RSS results are NOT
@@ -107,7 +132,7 @@ def _discover(
         # would flood results with high-upvote but irrelevant posts.
         listing_posts = []
         derived = _top_subreddits(rss_posts)
-        score_source = reddit_listing.fetch_listings(derived, depth=depth, query=topic)
+        score_source = _scored_listings(derived, depth=depth, query=topic)
     _log(
         f"Tier 1 (RSS) {len(rss_posts)} posts; "
         f"{'listing discovery ' + str(len(listing_posts)) if subreddits else 'score-only'}; "
