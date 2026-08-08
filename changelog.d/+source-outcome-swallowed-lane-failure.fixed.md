@@ -1,0 +1,1 @@
+Sources that return items are no longer branded `auth-failed` / `partial` when a swallowed lane-level HTTP failure (e.g. Reddit shreddit partials 403-ing on datacenter egress) is captured by the pipeline sink. The transport-failure outcome still surfaces when nothing was delivered, so `doctor` prescriptions are unaffected.

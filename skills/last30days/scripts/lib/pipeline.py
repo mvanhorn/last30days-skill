@@ -4153,8 +4153,16 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
         failures,
     )
     if outcome_note:
-        artifact = dict(artifact or {})
-        artifact["_source_outcome"] = outcome_note
+        # Lane-level HTTP failures (e.g. a blocked shreddit partial on a
+        # datacenter IP) are captured by the sink even when the source
+        # delivered items. Only attach them when the run produced nothing,
+        # or when the impl attached its own explicit outcome artifact (e.g.
+        # "primary failed; fallback returned N items"). A swallowed lane
+        # failure must not brand a successful source auth-failed/partial.
+        explicit = isinstance(artifact, dict) and bool(artifact.get("_source_outcome"))
+        if explicit or not items:
+            artifact = dict(artifact or {})
+            artifact["_source_outcome"] = outcome_note
     if module_backed:
         http.fixture_source_record(fixture_request, [items, artifact])
     return items, artifact
