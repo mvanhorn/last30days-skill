@@ -245,6 +245,17 @@ def fetch_discovery_listings(
             continue
         seen.add(item["url"])
         unique.append(item)
+    if not unique and errors:
+        # Shreddit partials are blocked for some hosts (datacenter IPs get
+        # HTTP 403 on /svc/shreddit). Fall back to the arctic-shift archive,
+        # which serves scored recent listings from any IP keyless.
+        from . import reddit_arctic
+        arctic_items = reddit_arctic.fetch_listings(
+            subreddits, depth=depth, query=query, sorts=("rising", "top")
+        )
+        if arctic_items:
+            _log(f"discovery arctic fallback: {len(arctic_items)} posts")
+            return {"items": arctic_items, "errors": []}
     return {"items": unique, "errors": errors}
 
 

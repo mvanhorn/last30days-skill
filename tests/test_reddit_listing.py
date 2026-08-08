@@ -83,3 +83,45 @@ class TestScoreIndex:
         first = next(iter(idx.values()))
         assert set(first.keys()) == {"score", "num_comments"}
         assert any(v["score"] == 52692 for v in idx.values())
+
+
+class TestFetchDiscoveryListingsFallback:
+    """fetch_discovery_listings falls back to arctic-shift when every shreddit
+    partial fails (datacenter egress 403), and clears the errors on success."""
+
+    def test_arctic_fallback_when_all_shreddit_feeds_fail(self):
+        arctic_post = {
+            "id": "", "title": "matcha farm tour", "url": "https://www.reddit.com/r/tea/comments/abc/x/",
+            "score": 406, "num_comments": 88, "subreddit": "tea", "created_utc": None,
+            "author": "u", "selftext": "", "date": "2026-07-02",
+            "engagement": {"score": 406, "num_comments": 88, "upvote_ratio": None},
+            "relevance": 0.5, "why_relevant": "Reddit listing (arctic-shift)",
+            "metadata": {"post_id": "abc"},
+        }
+        with mock.patch.object(rl.http, "get_text", return_value=None), \
+             mock.patch("lib.reddit_arctic.fetch_listings", return_value=[arctic_post]) as arctic:
+            result = rl.fetch_discovery_listings(["tea"], query="matcha", depth="quick")
+        assert result["items"] == [arctic_post]
+        assert result["errors"] == []  # recovered — no failure to report
+        arctic.assert_called_once()
+
+    def test_errors_preserved_when_arctic_also_empty(self):
+        with mock.patch.object(rl.http, "get_text", return_value=None), \
+             mock.patch("lib.reddit_arctic.fetch_listings", return_value=[]):
+            result = rl.fetch_discovery_listings(["tea"], query="matcha", depth="quick")
+        assert result["items"] == []
+        assert result["errors"]  # the shreddit failures still surface
+
+    def test_no_arctic_call_when_shreddit_succeeds(self):
+        with mock.patch.object(rl.http, "get_text", return_value=_html()), \
+             mock.patch("lib.reddit_arctic.fetch_listings") as arctic:
+            result = rl.fetch_discovery_listings(["technology"], query="netherlands", depth="quick")
+        assert result["items"]  # parsed shreddit cards
+        assert result["errors"] == []
+        arctic.assert_not_called()
+
+    def test_no_subreddits_skips_fallback(self):
+        with mock.patch("lib.reddit_arctic.fetch_listings") as arctic:
+            result = rl.fetch_discovery_listings([], query="matcha", depth="quick")
+        assert result == {"items": [], "errors": []}
+        arctic.assert_not_called()
