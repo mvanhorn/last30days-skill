@@ -117,5 +117,90 @@ class TestExpandInstagramQueries(unittest.TestCase):
         queries = expand_instagram_queries("Kanye West", "quick")
         self.assertEqual(len(queries), 1)
 
+
+class TestUserReelsMediaEnvelope(unittest.TestCase):
+    """Regression tests for #957: /v1/instagram/user/reels wraps each reel in a
+    ``media`` envelope that _parse_items did not unwrap, so every parsed item
+    came back empty."""
+
+    def _make_reel(self, **overrides):
+        base = {
+            "pk": "33445566",
+            "code": "Cabc123",
+            "taken_at": 1785596409,
+            "caption": {"text": "demo caption #demo"},
+            "play_count": 1234,
+            "like_count": 56,
+            "comment_count": 7,
+            "user": {"username": "demohandle"},
+            "video_duration": 12.5,
+        }
+        base.update(overrides)
+        return base
+
+    def test_user_reels_unwraps_media_envelope(self):
+        """_user_reels should unwrap the ``media`` key so _parse_items sees the
+        reel fields at the top level."""
+        from unittest.mock import patch
+        from lib import instagram
+
+        # /v1/instagram/user/reels response shape (see #957)
+        api_response = {
+            "success": True,
+            "items": [{"media": self._make_reel()}],
+        }
+        with patch.object(instagram.http, "get", return_value=api_response):
+            raw_items = instagram._user_reels("demohandle", "fake-token")
+
+        self.assertEqual(len(raw_items), 1)
+        # after unwrapping, fields are at the top level
+        self.assertEqual(raw_items[0]["pk"], "33445566")
+        self.assertEqual(raw_items[0]["code"], "Cabc123")
+
+        items = instagram._parse_items(raw_items, "demo")
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["video_id"], "33445566")
+        self.assertEqual(item["url"], "https://www.instagram.com/reel/Cabc123")
+        self.assertEqual(item["text"], "demo caption #demo")
+        self.assertEqual(item["author_name"], "demohandle")
+        self.assertEqual(item["engagement"]["views"], 1234)
+        self.assertEqual(item["engagement"]["likes"], 56)
+        self.assertEqual(item["engagement"]["comments"], 7)
+        self.assertIsNotNone(item["date"])
+
+    def test_user_reels_passthrough_when_no_media_envelope(self):
+        """Items without a ``media`` envelope (e.g. already-unwrapped shapes)
+        must pass through unchanged so the search lane is not affected."""
+        from unittest.mock import patch
+        from lib import instagram
+
+        api_response = {"items": [self._make_reel()]}
+        with patch.object(instagram.http, "get", return_value=api_response):
+            raw_items = instagram._user_reels("demohandle", "fake-token")
+
+        self.assertEqual(len(raw_items), 1)
+        self.assertEqual(raw_items[0]["pk"], "33445566")
+
+    def test_user_reels_empty_items(self):
+        from unittest.mock import patch
+        from lib import instagram
+
+        with patch.object(instagram.http, "get", return_value={"items": []}):
+            raw_items = instagram._user_reels("demohandle", "fake-token")
+        self.assertEqual(raw_items, [])
+
+    def test_search_lane_not_affected_by_envelope_logic(self):
+        """The search lane (/v2/instagram/reels/search) returns unwrapped objects
+        and must still parse correctly — the unwrap lives in _user_reels only."""
+        from lib.instagram import _parse_items
+
+        reel = self._make_reel(owner={"username": "searchuser"})
+        items = _parse_items([reel], "demo")
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["author_name"], "searchuser")
+        self.assertEqual(items[0]["video_id"], "33445566")
+
+
 if __name__ == "__main__":
     unittest.main()

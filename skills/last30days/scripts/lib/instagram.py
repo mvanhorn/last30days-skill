@@ -270,6 +270,11 @@ def _user_reels(
         return []
 
     raw_items = data.get("items") or data.get("reels") or data.get("data") or []
+    # The /v1/instagram/user/reels endpoint wraps each reel in a "media" envelope,
+    # e.g. {"items": [{"media": {"pk": ..., "code": ..., ...}}]}. The /v2/.../search
+    # endpoint returns unwrapped objects, so unwrap here to give _parse_items one
+    # consistent shape (#957).
+    raw_items = [(it.get("media") or it) if isinstance(it, dict) else it for it in raw_items]
     _log(f"  -> {len(raw_items)} reels from @{handle}")
     return raw_items
 
