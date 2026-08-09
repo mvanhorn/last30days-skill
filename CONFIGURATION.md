@@ -153,6 +153,7 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 |---|---|---|---|
 | Local corpus | `--corpus <dir>` or `LAST30DAYS_CORPUS_DIRS` | private `.md`/`.txt`; `.pdf` when `pdftotext` is on PATH | yes (offline) |
 | Reddit (public) | none (default free keyless path). With `SCRAPECREATORS_API_KEY`: search backfill when the free path returns fewer than 5 items by default (`LAST30DAYS_REDDIT_SC_MIN_ITEMS=<N>` changes the floor, `LAST30DAYS_REDDIT_SC_MIN_ITEMS=0` backfills only when it returns nothing); `LAST30DAYS_REDDIT_BACKEND=scrapecreators` pins SC primary with free fallback. `LAST30DAYS_REDDIT_KEYLESS_RATE` paces unauthenticated reddit.com requests (default `1` req/sec) | always on; SC knobs require `SCRAPECREATORS_API_KEY` | yes |
+| Reddit comments (keyless) | `scrapling` CLI on PATH adds a browser fallback for the shreddit comment scrape (install manually, not part of first-run setup: `uv tool install 'scrapling[all]' && scrapling install`). When the keyless HTTP path is 403'd, a stealthy-fetch renders the same `/svc/shreddit/comments` page in a real browser and feeds the existing parser; no-ops silently when `scrapling` is absent | free path always on; browser fallback only if `scrapling` on PATH | yes (free, keyless; local browser, no proxy) |
 | Hacker News | none | always on | yes |
 | Polymarket | none | always on | yes |
 | StockTwits | none | auto-on for ticker/crypto topics only (gated by symbol detection); never registered for non-financial topics | yes (public API, ~200 req/hr per IP) |
