@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from . import http
 from . import reddit_enrich
+from . import scrapling_fetch
 
 # Up to N posts enriched per run, by depth (mirrors reddit_public.ENRICH_LIMITS).
 ENRICH_LIMITS = {
@@ -34,6 +35,10 @@ ENRICH_LIMITS = {
 MAX_COMMENTS = 10
 
 SVC_TIMEOUT = 12
+
+# Browser fallback is slower than the HTTP path: a stealthy-fetch launches a real
+# browser to clear Reddit's block, so it gets a wider window.
+SCRAPLING_TIMEOUT = 75
 
 # Match the exact <shreddit-comment> element start tag, not <shreddit-comment-tree>
 # or <shreddit-comment-tree-stats> (lookahead requires whitespace or '>').
@@ -69,7 +74,13 @@ def _svc_url(subreddit: str, post_id: str) -> str:
 
 
 def _attr(tag: str, name: str) -> str:
-    m = re.search(rf'\b{name}="([^"]*)"', tag)
+    # Case-insensitive on the attribute NAME: the server partial emits the
+    # custom-element attribute as ``thingId`` (camelCase), but when the same
+    # markup is fetched through a real browser (the Scrapling fallback below),
+    # the DOM lowercases every attribute name to ``thingid``. HTML attribute
+    # names are case-insensitive, so matching either shape keeps both fetch
+    # paths feeding the one parser. Attribute values stay case-sensitive.
+    m = re.search(rf'\b{name}="([^"]*)"', tag, re.IGNORECASE)
     return _html.unescape(m.group(1)) if m else ""
 
 
@@ -142,6 +153,31 @@ def _total_comments(html_text: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def _scrapling_svc_fallback(svc_url: str) -> Optional[str]:
+    """Browser fallback for the shreddit partial when the keyless HTTP path is
+    blocked.
+
+    Reddit now 403s the keyless GET from many contexts. When the Scrapling CLI
+    is installed, a stealthy-fetch renders the same URL in a real browser, clears
+    the block (Reddit's own "network security" wall, not Cloudflare, so no
+    challenge-solve is needed), and returns the same shreddit markup -- with
+    attribute names lowercased by the DOM, which ``_attr`` tolerates.
+
+    Strictly additive: only runs after the HTTP path already returned nothing,
+    and no-ops to ``None`` when the CLI is absent (CI, Cowork), so behavior is
+    unchanged wherever Scrapling is not installed. Returns None on any failure.
+    """
+    if not scrapling_fetch.is_available():
+        return None
+    _log("keyless blocked; trying Scrapling browser fallback")
+    return scrapling_fetch.fetch(
+        svc_url,
+        mode=scrapling_fetch.MODE_STEALTHY,
+        fmt="html",
+        timeout=SCRAPLING_TIMEOUT,
+    )
+
+
 def fetch_comments(
     post_url: str,
     timeout: int = SVC_TIMEOUT,
@@ -162,7 +198,10 @@ def fetch_comments(
         return {"top_comments": [], "comment_insights": [], "num_comments": None}
     sub, post_id = ref
 
-    html_text = http.reddit_keyless_get_text(_svc_url(sub, post_id), timeout=timeout, accept="text/html")
+    svc_url = _svc_url(sub, post_id)
+    html_text = http.reddit_keyless_get_text(svc_url, timeout=timeout, accept="text/html")
+    if not html_text:
+        html_text = _scrapling_svc_fallback(svc_url)
     if not html_text:
         return {"top_comments": [], "comment_insights": [], "num_comments": None}
 
