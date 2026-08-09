@@ -574,6 +574,7 @@ class TestSearchGithubQualifiers(unittest.TestCase):
     def _capturing_fetch(self, captured):
         def fake_fetch(url, *args, **kwargs):
             captured["url"] = url
+            captured.setdefault("urls", []).append(url)
             return {"total_count": 0, "items": []}
         return fake_fetch
 
@@ -590,9 +591,52 @@ class TestSearchGithubQualifiers(unittest.TestCase):
                 "open source ai stars:>1000 created:>2025-03-20",
                 "2026-07-01", "2026-07-31",
             )
-        q = self._query(captured["url"])
-        self.assertEqual(q, "open source ai created:>2026-07-01")
-        self.assertEqual(q.count("created:"), 1)
+        queries = [self._query(u) for u in captured["urls"]]
+        # Authenticated searches must carry `is:issue` or `is:pull-request`
+        # (GitHub 422s without one), so the subject is asserted per sub-query
+        # rather than against a single exact string.
+        self.assertEqual(len(queries), 2)
+        for q in queries:
+            self.assertTrue(q.startswith("open source ai created:>2026-07-01"))
+            self.assertEqual(q.count("created:"), 1)
+            self.assertNotIn("stars:", q)
+        self.assertEqual(
+            {q.rsplit(" ", 1)[-1] for q in queries},
+            {"is:issue", "is:pull-request"},
+        )
+
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    def test_authenticated_search_merges_issues_and_pull_requests(self, mock_token):
+        """Both qualifier queries run, and their results are deduped and
+        re-sorted by reactions — a plain concatenation would let the second
+        query's tail outrank the first query's head."""
+        issue = {"id": 1, "reactions": {"total_count": 5}}
+        pull = {"id": 2, "reactions": {"total_count": 9}}
+        also_issue = {"id": 1, "reactions": {"total_count": 5}}  # cross-query dupe
+
+        def fake_fetch(url, *args, **kwargs):
+            q = self._query(url)
+            if "is:issue" in q:
+                return {"items": [issue]}
+            return {"items": [pull, also_issue]}
+
+        with patch.object(github, "_fetch_json", side_effect=fake_fetch):
+            envelope = github.search_github("topic", "2026-07-01", "2026-07-31")
+
+        ids = [item["id"] for item in envelope["items"]]
+        self.assertEqual(ids, [2, 1], "expected reaction-sorted, deduped merge")
+
+    @patch.object(github, "_resolve_token", return_value=None)
+    def test_unauthenticated_search_omits_qualifier(self, mock_token):
+        """Anonymous /search/issues is still grandfathered without a
+        qualifier, so the single-query path must stay qualifier-free."""
+        captured = {}
+        with patch.object(github, "_fetch_json", side_effect=self._capturing_fetch(captured)):
+            github.search_github("open source ai", "2026-07-01", "2026-07-31")
+        self.assertEqual(len(captured["urls"]), 1)
+        q = self._query(captured["urls"][0])
+        self.assertNotIn("is:issue", q)
+        self.assertNotIn("is:pull-request", q)
 
     @patch.object(github, "_resolve_token", return_value="test-token")
     def test_qualifier_only_topic_errors_without_network(self, mock_token):
