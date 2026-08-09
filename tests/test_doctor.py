@@ -868,6 +868,17 @@ class FourStateAudit(unittest.TestCase):
             doctor.audit_state("tiktok", rec, None, {"ok": False}),
         )
 
+    def test_transient_probe_failure_is_unverified_not_broken(self):
+        # A source that rate-limited the probe is unknown, not down. Calling it
+        # NOT WORKING sends people debugging a source that serves fine.
+        rec = {"tier": "ok", "status": "ok"}
+        self.assertEqual(
+            doctor.AUDIT_UNVERIFIED,
+            doctor.audit_state(
+                "reddit", rec, None, {"ok": False, "transient": True}
+            ),
+        )
+
     def test_render_json_keeps_legacy_keys_and_adds_audit(self):
         report = _build({})
         for name, rec in report["sources"].items():
@@ -971,8 +982,10 @@ class LiveProbe(unittest.TestCase):
         error = urllib.error.HTTPError(
             doctor._HTTP_PROBE_URLS["reddit"], code, "Blocked", {}, None
         )
-        with mock.patch(
-            "lib.doctor.urllib.request.urlopen", side_effect=error
+        with (
+            mock.patch("lib.doctor.urllib.request.urlopen", side_effect=error),
+            # 429 buys a retry; don't pay the real backoff in the suite.
+            mock.patch("lib.doctor.time.sleep"),
         ):
             return doctor._probe_source("reddit", {}, 5)
 
@@ -985,6 +998,64 @@ class LiveProbe(unittest.TestCase):
         res = self._probe_reddit_with_status(429)
         self.assertFalse(res["ok"])
         self.assertIn("429", res["detail"])
+
+    def test_reddit_probe_429_is_retried_once(self):
+        # A single keyless probe draws a 429 during a burst while the lane —
+        # which retries with backoff — serves the same query fine. Give the
+        # probe that same second chance before it accuses a working source.
+        with (
+            mock.patch(
+                "lib.doctor._http_ok", return_value=(False, "HTTP 429")
+            ) as http_ok,
+            mock.patch("lib.doctor.time.sleep") as sleep,
+        ):
+            res = doctor._probe_source("reddit", {}, 5)
+        self.assertEqual(2, http_ok.call_count)
+        sleep.assert_called_once_with(doctor._PROBE_RETRY_DELAY_SECONDS)
+        self.assertTrue(res["transient"])
+        self.assertIn("429", res["detail"])
+
+    def test_reddit_probe_429_then_ok_is_reachable(self):
+        # The retry is the whole point: a probe that lands on the second
+        # attempt reports plain success, with no transient residue.
+        with (
+            mock.patch(
+                "lib.doctor._http_ok",
+                side_effect=[(False, "HTTP 429"), (True, "HTTP 200")],
+            ),
+            mock.patch("lib.doctor.time.sleep"),
+        ):
+            res = doctor._probe_source("reddit", {}, 5)
+        self.assertTrue(res["ok"])
+        self.assertNotIn("transient", res)
+
+    def test_reddit_probe_403_is_not_retried(self):
+        # 403 is the standing keyless block, not a burst. Retrying it only
+        # doubles the wait before reporting a real outage.
+        with (
+            mock.patch(
+                "lib.doctor._http_ok", return_value=(False, "HTTP 403")
+            ) as http_ok,
+            mock.patch("lib.doctor.time.sleep") as sleep,
+        ):
+            res = doctor._probe_source("reddit", {}, 5)
+        self.assertEqual(1, http_ok.call_count)
+        sleep.assert_not_called()
+        self.assertFalse(res.get("transient", False))
+
+    def test_transient_retry_is_per_source(self):
+        # Like the blocked-status carve-out above, the retry is scoped to the
+        # source that actually rate-limits us.
+        with (
+            mock.patch(
+                "lib.doctor._http_ok", return_value=(False, "HTTP 429")
+            ) as http_ok,
+            mock.patch("lib.doctor.time.sleep") as sleep,
+        ):
+            res = doctor._probe_source("hackernews", {}, 5)
+        self.assertEqual(1, http_ok.call_count)
+        sleep.assert_not_called()
+        self.assertFalse(res.get("transient", False))
 
     def test_non_reddit_probe_keeps_4xx_as_reachable(self):
         # The blocked-status carve-out is per-source: a 4xx elsewhere still
