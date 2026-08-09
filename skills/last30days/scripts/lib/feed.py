@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from datetime import datetime
-from xml.etree import ElementTree as ET
+import defusedxml.ElementTree as ET
 
 from .library import LibraryEntry
 
