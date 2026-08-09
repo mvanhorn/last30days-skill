@@ -733,6 +733,7 @@ class TestSupplementalSearches(unittest.TestCase):
             mock=False,
             rate_limited_sources=set(),
             rate_limit_lock=threading.Lock(),
+            x_handle="analyst1",
         )
 
         mock_extract.assert_called_once()
@@ -787,6 +788,7 @@ class TestSupplementalSearches(unittest.TestCase):
             depth="default", date_range=("2026-02-15", "2026-03-17"),
             runtime=_make_runtime(None), mock=False,
             rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+            x_handle="analyst1",
         )
 
         mock_xq_handles.assert_called_once()
@@ -821,6 +823,7 @@ class TestSupplementalSearches(unittest.TestCase):
             depth="default", date_range=("2026-02-15", "2026-03-17"),
             runtime=_make_runtime("xai"), mock=False,
             rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+            x_handle="analyst1",
         )
         mock_xq_handles.assert_called_once()
         x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
@@ -862,6 +865,7 @@ class TestSupplementalSearches(unittest.TestCase):
             mock=False,
             rate_limited_sources=set(),
             rate_limit_lock=threading.Lock(),
+            x_handle="analyst1",
         )
 
         # Should still have only 1 item (no duplicates)
@@ -871,6 +875,74 @@ class TestSupplementalSearches(unittest.TestCase):
             urls.count("https://x.com/analyst1/status/1"), 1,
             f"Duplicate URL found: {urls}",
         )
+
+    @patch("lib.bird_x.search_mentions")
+    @patch("lib.bird_x.search_handles")
+    @patch("lib.entity_extract.extract_entities")
+    def test_auto_handles_skipped_without_person_anchor(self, mock_extract, mock_handles, mock_mentions):
+        """Auto-extracted handles only run when the caller anchored the run to a
+        person (--x-handle / --x-related / --github-user).
+
+        On a thematic topic the extractor returns whoever happened to be
+        mentioned most in Phase 1, and their timelines drown the topic search.
+        A 2026-08-04 run on "men feeling stuck and losing direction" pulled 39 of
+        43 X items from three such unrelated handles.
+        """
+        mock_extract.return_value = {"x_handles": ["noise1", "noise2"], "x_hashtags": [], "reddit_subreddits": []}
+        mock_handles.return_value = []
+        mock_mentions.return_value = []
+
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/noise1/status/1", author="noise1", body="off-topic @noise2"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="men feeling lost",
+            bundle=bundle,
+            plan=_make_plan("men feeling lost"),
+            config={},
+            depth="default",
+            date_range=("2026-07-05", "2026-08-04"),
+            runtime=_make_runtime("bird"),
+            mock=False,
+            rate_limited_sources=set(),
+            rate_limit_lock=threading.Lock(),
+        )
+
+        mock_handles.assert_not_called()
+        mock_mentions.assert_not_called()
+
+    @patch("lib.bird_x.search_mentions")
+    @patch("lib.bird_x.search_handles")
+    @patch("lib.entity_extract.extract_entities")
+    def test_auto_handles_run_when_person_anchored(self, mock_extract, mock_handles, mock_mentions):
+        """The same auto-extracted handles DO run once the caller names a person:
+        on a person topic those handles are the subject's actual circle."""
+        mock_extract.return_value = {"x_handles": ["circle1"], "x_hashtags": [], "reddit_subreddits": []}
+        mock_handles.return_value = []
+        mock_mentions.return_value = []
+
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/circle1/status/1", author="circle1", body="about steipete"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="Peter Steinberger",
+            bundle=bundle,
+            plan=_make_plan("Peter Steinberger"),
+            config={},
+            depth="default",
+            date_range=("2026-07-05", "2026-08-04"),
+            runtime=_make_runtime("bird"),
+            mock=False,
+            rate_limited_sources=set(),
+            rate_limit_lock=threading.Lock(),
+            github_user="steipete",
+        )
+
+        mock_handles.assert_called_once()
 
     @patch("lib.bird_x.search_mentions")
     @patch("lib.bird_x.search_handles")
@@ -896,6 +968,7 @@ class TestSupplementalSearches(unittest.TestCase):
             mock=False,
             rate_limited_sources=set(),
             rate_limit_lock=threading.Lock(),
+            x_handle="analyst1",
         )
         from_call = mock_handles.call_args_list[0]
         self.assertEqual(pipeline.FROM_LANE_COUNT_PER, from_call.kwargs.get("count_per"))
@@ -920,6 +993,7 @@ class TestSupplementalSearches(unittest.TestCase):
             mock=False,
             rate_limited_sources=set(),
             rate_limit_lock=threading.Lock(),
+            x_handle="analyst1",
         )
         # Bundle should be unchanged (only original item)
         self.assertEqual(len(bundle.items_by_source["x"]), 1)
@@ -942,6 +1016,7 @@ class TestSupplementalSearches(unittest.TestCase):
             mock=True,
             rate_limited_sources=set(),
             rate_limit_lock=threading.Lock(),
+            x_handle="analyst1",
         )
         self.assertEqual(len(bundle.items_by_source["x"]), 1)
 
@@ -984,6 +1059,7 @@ class TestSupplementalSearches(unittest.TestCase):
             mock=False,
             rate_limited_sources=set(),
             rate_limit_lock=threading.Lock(),
+            x_handle="analyst1",
         )
         self.assertEqual(len(bundle.items_by_source["x"]), 1)
 
