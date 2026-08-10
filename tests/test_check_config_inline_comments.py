@@ -11,6 +11,7 @@ hook for the observable regression.
 
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -102,11 +103,14 @@ def _run_hook(tmp_path: Path, project_env_lines: list[str]) -> subprocess.Comple
     env_file.write_text("\n".join(project_env_lines) + "\n", encoding="utf-8")
     (tmp_path / "empty-config").mkdir()
     (tmp_path / "memory").mkdir()
-    env = {
-        "LAST30DAYS_CONFIG_DIR": str(tmp_path / "empty-config"),
-        "LAST30DAYS_MEMORY_DIR": str(tmp_path / "memory"),
-        "LAST30DAYS_TRUST_PROJECT_CONFIG": "1",
-    }
+    env = os.environ.copy()
+    env.update(
+        {
+            "LAST30DAYS_CONFIG_DIR": str(tmp_path / "empty-config"),
+            "LAST30DAYS_MEMORY_DIR": str(tmp_path / "memory"),
+            "LAST30DAYS_TRUST_PROJECT_CONFIG": "1",
+        }
+    )
     return subprocess.run(
         [bash, str(HOOK)],
         capture_output=True,

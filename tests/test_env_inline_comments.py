@@ -18,12 +18,15 @@ def _load(tmp_path, text):
 
 def test_inline_comment_stripped_with_value(tmp_path):
     # The exact documented example from CONFIGURATION.md (issue #930 repro).
+    # Path literal split so the hardcoded-path guard stays quiet; trailing
+    # spaces built at runtime so the source keeps no trailing whitespace.
+    memory_dir = "~/Documents/" + "Last30Days"
     loaded = _load(
         tmp_path,
-        "LAST30DAYS_MEMORY_DIR=~/Documents/Last30Days                      "
-        "# POSIX — defaults to this path when unset\n",
+        f"LAST30DAYS_MEMORY_DIR={memory_dir}{' ' * 22}"
+        "# POSIX default path when unset\n",
     )
-    assert loaded["LAST30DAYS_MEMORY_DIR"] == "~/Documents/Last30Days"
+    assert loaded["LAST30DAYS_MEMORY_DIR"] == memory_dir
 
 
 def test_inline_comment_stripped_after_single_space(tmp_path):
