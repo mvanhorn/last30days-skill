@@ -1,0 +1,1 @@
+The local MCP server can now use an explicit `LAST30DAYS_PYTHON` interpreter and a default-deny, consent-gated `LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES` switch, enabling reproducible Windows Claude Desktop deployments without weakening the existing cookie-access default.

@@ -94,6 +94,15 @@ Re-run onboarding by deleting `~/.config/last30days/.env`. The mechanical work l
 
 ---
 
+## MCP host controls
+
+These variables configure the local Go MCP server and are read from its process environment, not from the engine's `.env` files:
+
+| Env var | Default | Accepted values | Behavior and precedence |
+|---|---|---|---|
+| `LAST30DAYS_PYTHON` | unset | An executable name or path | Selects the Python 3.12+ interpreter used by the MCP server. A caller-supplied `RunOptions.PythonPath` remains the test/caller override; otherwise this variable must resolve to an executable. When it is unset, the server looks up `python3` on `PATH`. An empty or unresolvable value is an error rather than a fallback. |
+| `LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES` | unset (deny) | `1`, `true`, `yes`, or `on`, case-insensitive | A recognized truthy value removes the MCP layer's default `--no-browser-cookies` flag. Every other value keeps that denial. This switch grants no consent by itself: browser-cookie access still requires the engine's separately recorded consent and `FROM_BROWSER` configuration. |
+
 ## API keys (`.env`)
 
 The skill reads keys from a `.env` file. Two locations are supported:

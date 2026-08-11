@@ -36,11 +36,15 @@ const DefaultTimeout = 5 * time.Minute
 // (seconds, integer). Honored by Run when RunOptions.Timeout is zero.
 const TimeoutEnvOverride = "LAST30DAYS_MCP_TIMEOUT"
 
+// PythonEnvOverride lets operators select the Python 3.12+ executable used
+// by the MCP server. When unset, Run preserves the python3 PATH lookup.
+const PythonEnvOverride = "LAST30DAYS_PYTHON"
+
 // RunOptions configures one invocation of the embedded Python engine.
 // PythonPath is exposed so tests can substitute a stub interpreter without
 // manipulating the process PATH.
 type RunOptions struct {
-	PythonPath string        // resolved python3 binary; empty means look up DefaultPythonBinary on PATH
+	PythonPath string        // resolved test/caller override; empty honors PythonEnvOverride, then DefaultPythonBinary
 	CacheDir   string        // engine.Ensure result; lib/ here is added to PYTHONPATH
 	Args       []string      // arguments after last30days.py (topic, --emit=..., etc.)
 	ExtraEnv   []string      // appended to os.Environ() for the child process
@@ -113,12 +117,29 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	return res, fmt.Errorf("engine: subprocess failed to start: %w", err)
 }
 
-// resolvePython returns an absolute path to the interpreter or an error
-// naming the install URL. If the caller supplied a path we trust it - tests
-// rely on this to inject a stub. Otherwise we look up python3 on PATH.
+// resolvePython returns a resolved interpreter path or a clear error. A
+// caller-supplied path remains the highest-priority test seam. Otherwise an
+// explicitly configured LAST30DAYS_PYTHON must resolve successfully; only
+// an absent override falls back to the existing python3 PATH lookup.
 func resolvePython(override string) (string, error) {
 	if override != "" {
 		return override, nil
+	}
+	if configured, ok := os.LookupEnv(PythonEnvOverride); ok {
+		if configured == "" {
+			return "", fmt.Errorf(
+				"engine: %s is set but empty; set it to a Python %s+ executable or unset it to use %s on PATH",
+				PythonEnvOverride, MinPythonVersion, DefaultPythonBinary,
+			)
+		}
+		path, err := exec.LookPath(configured)
+		if err != nil {
+			return "", fmt.Errorf(
+				"engine: %s=%q does not resolve to an executable (need Python %s+, install from %s): %w",
+				PythonEnvOverride, configured, MinPythonVersion, PythonInstallURL, err,
+			)
+		}
+		return path, nil
 	}
 	path, err := exec.LookPath(DefaultPythonBinary)
 	if err == nil {
