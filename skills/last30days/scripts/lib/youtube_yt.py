@@ -282,15 +282,75 @@ def classify_run_failure(detail: str) -> str:
     return http.classify_failure(message=detail)
 
 
-def is_ytdlp_installed() -> bool:
-    """Check if yt-dlp is available locally, or if SSH routing is configured.
+# Ephemeral directories must never be the final home of a persistent tool
+# binary: a yt-dlp that only lives under /tmp (or /var/tmp) vanishes on
+# reboot and silently stops being "installed" mid-week. The canonical
+# availability predicate rejects them so a /tmp install (or a dangling
+# /tmp pointer) can never be reported as active.
+_EPHEMERAL_BIN_DIRS = ("/tmp", "/var/tmp")
 
-    When LAST30DAYS_YOUTUBE_SSH_HOST is set, returns True without a local check —
-    yt-dlp lives on the remote host. Failures surface naturally on first use.
+
+def _is_ephemeral_path(path: str) -> bool:
+    """True when the resolved path lives under an ephemeral directory."""
+    real = os.path.realpath(path)
+    return any(
+        real == ephemeral or real.startswith(ephemeral + os.sep)
+        for ephemeral in _EPHEMERAL_BIN_DIRS
+    )
+
+
+def ytdlp_route() -> str:
+    """Return the canonical yt-dlp execution route.
+
+    ONE predicate answers availability for the planner, the pipeline gates,
+    diagnostics, and the doctor: a source may be advertised as available
+    only when its exact execution route can actually run.
+
+    Returns:
+        "local": a persistent, executable ``yt-dlp`` resolves on PATH and is
+            not under an ephemeral directory (``/tmp``, ``/var/tmp``).
+        "ssh": ``LAST30DAYS_YOUTUBE_SSH_HOST`` names a valid plain SSH alias
+            AND a local ``ssh`` executable exists — yt-dlp runs remotely via
+            ``ssh -o BatchMode=yes -- <host> ...``.
+        "unavailable": neither route can execute (no binary, dangling or
+            off-PATH binary, ephemeral-only binary, SSH configured without a
+            local ssh binary, or invalid SSH alias).
     """
     if _ytdlp_ssh_host():
-        return True
-    return shutil.which("yt-dlp") is not None
+        return "ssh" if shutil.which("ssh") else "unavailable"
+    local = shutil.which("yt-dlp")
+    if local is None or _is_ephemeral_path(local):
+        return "unavailable"
+    return "local"
+
+
+def ytdlp_availability() -> Dict[str, Any]:
+    """Route-aware availability dict for diagnostics (--diagnose/doctor).
+
+    ``route`` is one of ``local`` / ``ssh`` / ``unavailable``; ``available``
+    is the boolean every availability gate must use; ``path`` is the resolved
+    local binary path (None for the SSH route); ``ssh_host`` is the validated
+    plain SSH alias (None unless the SSH route is live). The alias regex
+    forbids flags and shell/SSH metacharacters, so it cannot carry options,
+    credentials, or secrets — exposing it in diagnostics is safe.
+    """
+    route = ytdlp_route()
+    return {
+        "route": route,
+        "available": route != "unavailable",
+        "path": shutil.which("yt-dlp") if route == "local" else None,
+        "ssh_host": _ytdlp_ssh_host() if route == "ssh" else None,
+    }
+
+
+def is_ytdlp_installed() -> bool:
+    """Check whether the canonical yt-dlp execution route is available.
+
+    Mirrors ``ytdlp_route()``: True for a persistent local yt-dlp on PATH
+    (never under /tmp or /var/tmp) or a configured SSH route with a local
+    ssh binary; False otherwise. Failures surface naturally on first use.
+    """
+    return ytdlp_route() != "unavailable"
 
 
 # Host aliases must be plain hostnames / SSH config aliases — no flags, no

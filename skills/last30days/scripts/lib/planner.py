@@ -458,6 +458,14 @@ Rules:
 """.strip()
 
 
+def _skipped_detail(source: str) -> str:
+    """Safe, secret-free detail for a typed skipped-unconfigured outcome."""
+    return (
+        f"Source '{source}' was explicitly requested but is not configured "
+        "for this run."
+    )
+
+
 def _sanitize_plan(
     raw: dict,
     topic: str,
@@ -494,19 +502,56 @@ def _sanitize_plan(
             source_weights.setdefault(source, 1.0)
     source_weights = _normalize_weights(source_weights)
 
+    # Typed planned-source accounting: every source the plan explicitly
+    # references that is NOT configured for this run is preserved as a
+    # (source, detail) skip instead of being silently dropped or replaced
+    # with unrelated eligible sources. The pipeline records each entry as a
+    # SKIPPED_UNCONFIGURED SourceOutcome (attempted=False).
+    skipped: dict[str, str] = {}
+    raw_weights = raw.get("source_weights") or {}
+    for source in raw_weights:
+        if not isinstance(source, str) or not source.strip():
+            continue
+        if source not in available and (not requested or source in requested):
+            skipped.setdefault(source, _skipped_detail(source))
+
     subqueries: list[schema.SubQuery] = []
+    saw_valid_raw_subquery = False
     for index, subquery in enumerate((raw.get("subqueries") or [])[:_max_subqueries(intent_hint, topic)], start=1):
         if not isinstance(subquery, dict):
             continue
-        sources = [source for source in subquery.get("sources") or [] if source in source_weights]
-        if requested:
-            sources = [source for source in sources if source in requested]
-        if not sources:
-            sources = list(source_weights)
+        raw_sources = [
+            source for source in (subquery.get("sources") or [])
+            if isinstance(source, str) and source.strip()
+        ]
+        # Sources the run-level request actually allows (all explicit sources
+        # when no --search constraint was given).
+        requested_explicit = (
+            [source for source in raw_sources if source in requested]
+            if requested else list(raw_sources)
+        )
+        unavailable_explicit = [
+            source for source in requested_explicit if source not in available
+        ]
+        for source in unavailable_explicit:
+            skipped.setdefault(source, _skipped_detail(source))
+        sources = [source for source in requested_explicit if source in available]
         search_query = str(subquery.get("search_query") or "").strip()
         ranking_query = str(subquery.get("ranking_query") or "").strip()
         if not search_query or not ranking_query:
             continue
+        saw_valid_raw_subquery = True
+        if not sources:
+            if raw_sources:
+                # Explicitly constrained subquery whose every source is
+                # unavailable: drop it and keep the typed skips. Never
+                # substitute unrelated eligible sources (regression: a plan
+                # that asked only for unconfigured sources used to be
+                # silently rewritten to run every other configured source).
+                continue
+            # No explicit sources: generic eligibility fallback stays — a
+            # plan that did not constrain sources may use any eligible one.
+            sources = list(source_weights)
         subqueries.append(
             schema.SubQuery(
                 label=str(subquery.get("label") or f"q{index}").strip() or f"q{index}",
@@ -519,6 +564,21 @@ def _sanitize_plan(
     if depth == "quick" and subqueries:
         subqueries = subqueries[:1]
     if not subqueries:
+        if saw_valid_raw_subquery and skipped:
+            # Every explicit subquery was dropped because its sources are all
+            # unconfigured. Return an honest plan carrying ONLY the typed
+            # skips — do NOT fall back to a generic plan that would substitute
+            # unrelated sources for the explicit request.
+            return schema.QueryPlan(
+                intent=intent_hint,
+                freshness_mode=_default_freshness(intent_hint),
+                cluster_mode=_default_cluster_mode(intent_hint),
+                raw_topic=topic,
+                subqueries=[],
+                source_weights={},
+                notes=["all-requested-sources-unavailable"],
+                skipped_sources=sorted(skipped.items()),
+            )
         return _fallback_plan(topic, available_sources, requested_sources, depth)
 
     intent = intent_hint
@@ -545,6 +605,7 @@ def _sanitize_plan(
         ),
         source_weights=source_weights,
         notes=[str(note).strip() for note in raw.get("notes") or [] if str(note).strip()],
+        skipped_sources=sorted(skipped.items()),
     )
 
 

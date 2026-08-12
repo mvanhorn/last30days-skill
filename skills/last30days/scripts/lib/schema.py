@@ -70,6 +70,13 @@ class QueryPlan:
     subqueries: list[SubQuery]
     source_weights: dict[str, float]
     notes: list[str] = field(default_factory=list)
+    # Sources the plan explicitly referenced but that are NOT configured for
+    # this run, as (source, safe detail) pairs. The pipeline records each as a
+    # typed SKIPPED_UNCONFIGURED SourceOutcome (attempted=False) so an
+    # explicitly requested unavailable source is never silently dropped or
+    # replaced with unrelated eligible sources. Default empty keeps every
+    # existing construction site backward compatible.
+    skipped_sources: list[tuple[str, str]] = field(default_factory=list)
 
 
 @dataclass
@@ -425,6 +432,10 @@ def query_plan_from_dict(payload: dict[str, Any]) -> QueryPlan:
         subqueries=[subquery_from_dict(item) for item in payload.get("subqueries") or []],
         source_weights=dict(payload.get("source_weights") or {}),
         notes=list(payload.get("notes") or []),
+        skipped_sources=[
+            (str(source), str(detail))
+            for source, detail in (payload.get("skipped_sources") or [])
+        ],
     )
 
 

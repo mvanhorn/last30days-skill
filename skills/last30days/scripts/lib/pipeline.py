@@ -206,7 +206,11 @@ def available_sources(
             x_pending = env.x_pending_browser_auth(config)
         if x_pending:
             available.append("x")
-    if which("yt-dlp") or env.is_youtube_sc_available(config):
+    # Canonical YouTube availability: the SAME predicate the execution path
+    # uses (youtube_yt.is_ytdlp_installed is SSH-aware and rejects ephemeral
+    # /tmp-only binaries), so a source is never advertised available when its
+    # exact execution route cannot run.
+    if youtube_yt.is_ytdlp_installed() or env.is_youtube_sc_available(config):
         available.append("youtube")
     available.extend(["hackernews", "polymarket"])
     # StockTwits is gated to ticker/crypto topics only (flag set in run()).
@@ -1730,7 +1734,10 @@ def diagnose(
         providers_status[name] for name in ("google", "openai", "xai", "openrouter")
     )
     external_commands = {
-        "yt-dlp": bool(which("yt-dlp")),
+        # Canonical predicate (SSH-aware, ephemeral-rejecting) — the same one
+        # available_sources() and the execution gate use. Route detail
+        # (local/ssh/unavailable) lives in the ``ytdlp_route`` diag key.
+        "yt-dlp": youtube_yt.is_ytdlp_installed(),
         "digg-pp-cli": bool(which("digg-pp-cli")),
         "arxiv-pp-cli": bool(which("arxiv-pp-cli")),
         "techmeme-pp-cli": bool(which("techmeme-pp-cli")),
@@ -1768,6 +1775,11 @@ def diagnose(
         "native_search": env.is_native_search(config),
         "has_scrapecreators": bool(config.get("SCRAPECREATORS_API_KEY")),
         "has_github": bool(config.get("GITHUB_TOKEN") or which("gh")),
+        # Route-aware YouTube tool availability: "local" (persistent PATH
+        # binary), "ssh" (LAST30DAYS_YOUTUBE_SSH_HOST + local ssh), or
+        # "unavailable". ssh_host is a regex-validated plain alias — no
+        # secrets, flags, or shell metacharacters can appear in it.
+        "ytdlp_route": youtube_yt.ytdlp_availability(),
         # safe=True (doctor/--diagnose/--preflight) must stay network-free:
         # answer X availability from local evidence only. x_pending is
         # precomputed by diagnose() to avoid double evaluation.
@@ -1973,7 +1985,14 @@ def run(
         if not requested_sources:
             available = ["jobs"]
     if not available:
-        raise RuntimeError("No sources are available for this run.")
+        if requested_sources:
+            # Every explicitly requested source is unconfigured. Do not fail
+            # the run: proceed so each requested source records a typed
+            # SKIPPED_UNCONFIGURED outcome and the run returns an honest
+            # empty result (strict-exit treats skipped-unconfigured as clean).
+            pass
+        else:
+            raise RuntimeError("No sources are available for this run.")
 
     planner_requested_sources = requested_sources
     if hiring_signals_mode and not planner_requested_sources:
@@ -2054,8 +2073,20 @@ def run(
         print("[Planner]   (no subqueries in plan)", file=sys.stderr)
 
     bundle = schema.RetrievalBundle(artifacts={"grounding": []})
+    # Typed planned-source accounting: sources the plan explicitly referenced
+    # but that are not configured are recorded as SKIPPED_UNCONFIGURED
+    # outcomes (attempted=False) so an explicit request is never silently
+    # dropped or substituted with unrelated eligible sources.
+    for source, detail in getattr(plan, "skipped_sources", []):
+        if source not in bundle.source_status:
+            bundle.record_failure(
+                source,
+                schema.SKIPPED_UNCONFIGURED,
+                detail,
+                attempted=False,
+            )
     for source in (requested_sources or []):
-        if source not in available:
+        if source not in available and source not in bundle.source_status:
             bundle.record_failure(
                 source,
                 schema.SKIPPED_UNCONFIGURED,
@@ -3765,7 +3796,9 @@ def _retrieve_stream_impl(
             if env.is_youtube_sc_available(config) else None
         )
         # Try yt-dlp first; the SC transcript fallback covers per-video failures.
-        if which("yt-dlp"):
+        # Canonical predicate: SSH-aware and ephemeral-rejecting, so the exact
+        # route that will execute is the route availability was answered from.
+        if youtube_yt.is_ytdlp_installed():
             try:
                 result = youtube_yt.search_and_transcribe(
                     yt_query, from_date, to_date, depth=depth, token=sc_token,
@@ -3775,6 +3808,16 @@ def _retrieve_stream_impl(
             except Exception as exc:
                 youtube_failure = str(exc)
                 result = None
+        elif not sc_token:
+            # Canonical route says unavailable and there is no SC fallback.
+            # The scheduler never reaches here (available_sources excludes the
+            # source), but a direct call must still record the honest typed
+            # outcome instead of silently pretending the source ran.
+            return [], _outcome_artifact(
+                schema.SKIPPED_UNCONFIGURED,
+                "yt-dlp not installed",
+                attempted=False,
+            )
         # Fall back to SC YouTube search if yt-dlp failed or isn't installed.
         if (result is None or not result.get("items")) and sc_token:
             try:
