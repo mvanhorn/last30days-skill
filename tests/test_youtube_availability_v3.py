@@ -89,8 +89,13 @@ class TestCanonicalRoute:
         fake_bin = tmp_path / "dangling_bin"
         fake_bin.mkdir()
         (fake_bin / "yt-dlp").symlink_to(tmp_path / "does-not-exist")
-        monkeypatch.setenv("PATH", f"{fake_bin}:{os.environ['PATH']}")
-        assert shutil.which("yt-dlp") is None
+        # The dangling pointer must be the ONLY yt-dlp candidate: scrub the
+        # host PATH (a persistent yt-dlp here would otherwise resolve and
+        # read as active, which is exactly the leak this regression exists
+        # to prevent).
+        monkeypatch.setenv("PATH", f"{fake_bin}:/usr/bin:/bin")
+        real_which = shutil.which
+        assert real_which("yt-dlp") is None
 
         assert youtube_yt.ytdlp_route() == "unavailable"
         assert youtube_yt.is_ytdlp_installed() is False
@@ -138,6 +143,10 @@ class TestCanonicalRoute:
         """Metacharacter host values are rejected: never treated as a route,
         never forwarded to ssh, and the warning leaks no secrets."""
         monkeypatch.setenv("LAST30DAYS_YOUTUBE_SSH_HOST", "host; rm -rf /")
+        # Reject the invalid alias even when a local yt-dlp exists: with the
+        # alias unset the host binary would make the route 'local', which
+        # would silently mask the alias-rejection contract under test.
+        monkeypatch.setattr(youtube_yt.shutil, "which", lambda name: None)
         assert youtube_yt.ytdlp_route() == "unavailable"
         assert youtube_yt.is_ytdlp_installed() is False
         warning = capsys.readouterr().err
@@ -148,6 +157,7 @@ class TestCanonicalRoute:
 
     def test_empty_ssh_host_env_is_unavailable(self, monkeypatch):
         monkeypatch.setenv("LAST30DAYS_YOUTUBE_SSH_HOST", "  ")
+        monkeypatch.setattr(youtube_yt.shutil, "which", lambda name: None)
         assert youtube_yt.ytdlp_route() == "unavailable"
 
 
