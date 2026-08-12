@@ -15,9 +15,8 @@ bad hygiene (no scope, can't revoke individually).
 import math
 import os
 import re
-import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from . import http, log
@@ -178,6 +177,15 @@ def _parse_date(item: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def _exclusive_until_date(to_date: str) -> str:
+    """Convert the inclusive pipeline end date to the API's exclusive bound."""
+    try:
+        return (datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    except ValueError:
+        # Keep the request usable for callers that pass a provider-specific date value.
+        return to_date
+
+
 def search_bluesky(
     topic: str,
     from_date: str,
@@ -228,6 +236,8 @@ def search_bluesky(
         "q": core_topic,
         "limit": str(min(count, 100)),
         "sort": "top",
+        "since": from_date,
+        "until": _exclusive_until_date(to_date),
     }
     url = f"{_resolve_search_url(config)}?{urlencode(params)}"
 
