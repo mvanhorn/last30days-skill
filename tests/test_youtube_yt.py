@@ -779,11 +779,31 @@ class TestYtdlpSSHRouting(unittest.TestCase):
             self.assertEqual(youtube_yt._ytdlp_ssh_host(), good)
 
     def test_is_ytdlp_installed_short_circuits_with_ssh(self):
-        """is_ytdlp_installed returns True without local check when SSH routing is on."""
+        """SSH routing + local ssh binary => installed without a local yt-dlp.
+
+        Canonical contract (source-truth repair): availability answers from
+        the EXACT execution route. With the SSH alias set, only the ssh binary
+        is probed — never the local yt-dlp PATH check.
+        """
         os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
-        with mock.patch("lib.youtube_yt.shutil.which", return_value=None) as which_mock:
+
+        def _which(name):
+            if name == "ssh":
+                return "/usr/bin/ssh"
+            return None
+
+        with mock.patch("lib.youtube_yt.shutil.which", side_effect=_which) as which_mock:
             self.assertTrue(youtube_yt.is_ytdlp_installed())
-            which_mock.assert_not_called()
+            called_names = [call.args[0] for call in which_mock.call_args_list]
+            self.assertIn("ssh", called_names)
+            self.assertNotIn("yt-dlp", called_names)
+
+    def test_is_ytdlp_installed_unavailable_without_local_ssh(self):
+        """SSH host configured but NO local ssh binary: the exact execution
+        route cannot run, so the source must NOT be advertised available."""
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        with mock.patch("lib.youtube_yt.shutil.which", return_value=None):
+            self.assertFalse(youtube_yt.is_ytdlp_installed())
 
     def test_is_ytdlp_installed_falls_through_without_ssh(self):
         """is_ytdlp_installed checks PATH normally when SSH routing is off."""

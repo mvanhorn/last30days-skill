@@ -66,6 +66,10 @@ DIAGNOSE_TOP_KEYS = {
     "native_search",
     "has_scrapecreators",
     "has_github",
+    # Route-aware YouTube tool availability ("local" | "ssh" | "unavailable"
+    # plus resolved path/alias) — the packet-mandated diagnostic split so a
+    # /tmp-only or dangling binary can never read as active.
+    "ytdlp_route",
     "x_pending_browser_auth",
     "available_sources",
     "safe",
