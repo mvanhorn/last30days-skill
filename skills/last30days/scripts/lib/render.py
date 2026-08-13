@@ -1797,6 +1797,18 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         "perplexity",
         "jobs",
     ]
+    # The list above fixes the display order for the sources it names, but it
+    # is not the source registry and drifts every time one is added: amazon,
+    # arxiv, techmeme, trustpilot, linkedin, and dripstack were all silently
+    # absent from this dump while appearing normally in the ranked section
+    # above, so the saved artifact -- the copy users keep -- was missing
+    # evidence the run actually collected. Append whatever else the report
+    # carries, sorted for determinism, so a new source is visible here the
+    # day it lands rather than the day someone notices.
+    source_order += sorted(
+        source for source in evidence_report.items_by_source
+        if source not in source_order
+    )
     for source in source_order:
         items = evidence_report.items_by_source.get(source, [])
         if not items:
@@ -1928,10 +1940,21 @@ def _format_item_engagement(item: schema.SourceItem) -> str:
         "digg_count",
         "share_count",
         "num_comments",
+        "ratings",
     ]:
         val = eng.get(key)
         if val is not None and val != 0:
             parts.append(f"{val} {key}")
+    # Same drift as the source list above: this allowlist silently blanks the
+    # engagement of any source whose metric is not on it (trustpilot's
+    # `reviews`/`trustScore` today), so the item renders an empty `[]` in the
+    # saved dump. Fall through only when nothing matched, which fixes the
+    # blank case without adding previously-unshown keys to sources that
+    # already render fine.
+    if not parts:
+        for key, val in sorted(eng.items()):
+            if val not in (None, 0, ""):
+                parts.append(f"{val} {key}")
     return ", ".join(parts) if parts else ""
 
 

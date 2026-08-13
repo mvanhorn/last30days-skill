@@ -740,3 +740,61 @@ class TestReviewFindingRegressions:
         assert "8,446 ratings" in item.title
         assert "84 ratings" not in item.title
         assert item.metadata["stats"]["ratings_total"] == 8446
+
+
+class TestSavedArtifactCompleteness:
+    """The saved report is the copy users keep; it must not drop evidence."""
+
+    def _saved(self, sources):
+        from lib import render, schema
+        report = object.__new__(schema.Report)
+        for field, value in {
+            "topic": "bentgo", "range_from": "2026-07-14", "range_to": "2026-08-13",
+            "generated_at": "2026-08-13", "clusters": [], "ranked_candidates": [],
+            "items_by_source": sources, "errors_by_source": {}, "source_status": {},
+            "freshness_verdicts": [], "warnings": [], "artifacts": {},
+            "library_context": [], "drill_of": None,
+            "provider_runtime": schema.ProviderRuntime(
+                reasoning_provider="local", planner_model="m", rerank_model="m",
+            ),
+            "query_plan": schema.QueryPlan(
+                intent="product", freshness_mode="balanced_recent", cluster_mode="none",
+                raw_topic="bentgo", subqueries=[],
+                source_weights={s: 1.0 for s in sources},
+            ),
+        }.items():
+            object.__setattr__(report, field, value)
+        return render.render_full(report)
+
+    def _item(self, source, item_id, engagement):
+        from lib import schema
+        return schema.SourceItem(
+            item_id=item_id, source=source, title=f"{source} item", body="b",
+            url="https://example.com", author="A", container=None,
+            published_at="2026-08-10", date_confidence="high",
+            engagement=engagement, relevance_hint=0.5, why_relevant="",
+            snippet="", metadata={},
+        )
+
+    def test_amazon_items_appear_in_the_per_source_dump(self):
+        """Regression: a hardcoded source list silently dropped this section."""
+        out = self._saved({"amazon": [self._item("amazon", "B0AAA00001", {"ratings": 459})]})
+        assert "### Amazon (1 items)" in out
+        assert "B0AAA00001" in out
+
+    def test_a_source_absent_from_the_fixed_order_still_renders(self):
+        """The list is display order, not the source registry."""
+        out = self._saved({"trustpilot": [self._item("trustpilot", "TP1", {"reviews": 12})]})
+        assert "TP1" in out
+
+    def test_engagement_is_not_blank_for_a_non_allowlisted_metric(self):
+        out = self._saved({"amazon": [self._item("amazon", "B0AAA00001", {"ratings": 459})]})
+        assert "459 ratings" in out
+
+    def test_allowlisted_sources_keep_their_existing_engagement_format(self):
+        """The fall-through must not add previously-unshown keys."""
+        out = self._saved({"reddit": [self._item(
+            "reddit", "R1", {"score": 120, "num_comments": 48, "upvote_ratio": 0.91}
+        )]})
+        assert "120 score, 48 num_comments" in out
+        assert "upvote_ratio" not in out
