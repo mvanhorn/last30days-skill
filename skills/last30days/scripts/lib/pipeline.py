@@ -2371,6 +2371,7 @@ def run(
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
 
     # Phase 2: supplemental entity-based searches
+    supplemental_handles: list[str] = []
     _run_supplemental_searches(
         topic=topic,
         bundle=bundle,
@@ -2384,6 +2385,7 @@ def run(
         rate_limit_lock=rate_limit_lock,
         x_handle=x_handle,
         x_related=x_related,
+        resolved_handles_out=supplemental_handles,
     )
 
     # Phase 2b: retry thin sources with simplified query
@@ -2451,7 +2453,7 @@ def run(
     # subject's own highest-signal posts).
     resolved_handles = {
         h.lstrip("@").strip().lower()
-        for h in ([x_handle, github_user, *(x_related or [])])
+        for h in ([x_handle, github_user, *(x_related or []), *supplemental_handles])
         if h and h.strip()
     }
     private_candidates = [
@@ -3204,6 +3206,7 @@ def _run_supplemental_searches(
     rate_limit_lock: threading.Lock,
     x_handle: str | None = None,
     x_related: list[str] | None = None,
+    resolved_handles_out: list[str] | None = None,
 ) -> None:
     """Phase 2: extract entities from Phase 1 results, run targeted supplemental searches."""
     if depth == "quick" or mock:
@@ -3255,6 +3258,21 @@ def _run_supplemental_searches(
             rh_clean = rh.lstrip("@").lower().strip()
             if rh_clean and rh_clean != primary_lower and rh_clean not in [h.lower() for h in handles]:
                 related_handles.append(rh_clean)
+
+    # Surface every handle this run resolved back to the caller. resolved_handles
+    # is built later from --x-handle / --github-user / --x-related only, so
+    # without this an auto-discovered subject handle never reaches it and every
+    # downstream first-party protection (entity-miss exemption, FIRST_PARTY_FLOOR,
+    # interaction floor) stays inert on any run that did not pass --x-handle.
+    # Populated before the early return below so a run whose lanes cannot execute
+    # still contributes its resolved handles.
+    if resolved_handles_out is not None:
+        seen = {h.lower() for h in resolved_handles_out}
+        for h in [*handles, *related_handles]:
+            clean = h.lstrip("@").strip().lower()
+            if clean and clean not in seen:
+                resolved_handles_out.append(clean)
+                seen.add(clean)
 
     if not handles and not related_handles:
         return
