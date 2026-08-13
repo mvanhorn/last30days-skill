@@ -793,7 +793,7 @@ def get_reddit_source(config: dict[str, Any]) -> str | None:
 #   bird  — X GraphQL scrape via the user's browser cookies (AUTH_TOKEN/CT0)
 #   xurl  — official X API v2 (xurl CLI, OAuth2)
 #   xquik — key-based REST X search (XQUIK_API_KEY); keyless of browser cookies
-_X_BACKEND_ORDER = ("xai", "bird", "xurl", "xquik")
+_X_BACKEND_ORDER = ("xai", "grok", "bird", "xurl", "xquik")
 
 # Public routing definitions for the doctor/backend-descriptor layer
 # (lib/backends.py). These are aliases for knowledge this module already
@@ -813,6 +813,12 @@ def _x_backend_available(
 ) -> bool:
     if backend == 'xai':
         return bool(config.get('XAI_API_KEY'))
+    if backend == 'grok':
+        # Keyless relative to X: needs only an installed, signed-in grok CLI.
+        # Both surfaces are filesystem-only (PATH lookup + credential store),
+        # so local_only needs no separate branch.
+        from . import grok_x
+        return grok_x.has_stored_auth()
     if backend == 'bird':
         from . import bird_x
         return has_bird_creds and bird_x.is_bird_installed()
@@ -1244,13 +1250,22 @@ def get_x_source_status(config: dict[str, Any], probe: bool = False) -> dict[str
     from . import xurl_x as _xurl_x
     xurl_available = _xurl_x.is_available() if probe else _xurl_x.has_stored_auth()
 
+    # Grok availability is filesystem-only on both paths (PATH lookup plus the
+    # credential store), so it is safe to compute here regardless of `probe`.
+    from . import grok_x as _grok_x
+    grok_available = _grok_x.has_stored_auth()
+
     # Determine active source. bird (browser cookies) and xAI win when present;
     # when neither is available, xquik is the active X source. A probe that
     # clearly failed (False) means xquik is not actually usable.
-    if bird_status["authenticated"]:
-        source = 'bird'
-    elif xai_available:
+    if xai_available:
         source = 'xai'
+    elif grok_available:
+        # Ahead of bird per the chain order: grok needs no X credential at all,
+        # while a cookie session is one expiry away from silently degrading.
+        source = 'grok'
+    elif bird_status["authenticated"]:
+        source = 'bird'
     else:
         if xurl_available:
             source = 'xurl'
@@ -1265,6 +1280,7 @@ def get_x_source_status(config: dict[str, Any], probe: bool = False) -> dict[str
         "bird_authenticated": bird_status["authenticated"],
         "bird_username": bird_status["username"],
         "xai_available": xai_available,
+        "grok_available": grok_available,
         "xurl_available": xurl_available,
         "xquik_available": xquik_available,
         "xquik_working": xquik_working,

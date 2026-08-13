@@ -33,6 +33,7 @@ from . import (
     entity_extract,
     env,
     github,
+    grok_x,
     grounding,
     hackernews,
     health,
@@ -3560,6 +3561,9 @@ def _fetch_x_backend(backend, subquery, from_date, to_date, depth, config):
     if backend == "bird":
         result = bird_x.search_x(query, from_date, to_date, depth=depth)
         items = bird_x.parse_bird_response(result, query=query)
+    elif backend == "grok":
+        result = grok_x.search_x(query, from_date, to_date, depth=depth)
+        items = result.get("items", []) if isinstance(result, dict) else []
     elif backend == "xai":
         model = config.get("LAST30DAYS_X_MODEL") or config.get("XAI_MODEL_PIN") or providers.XAI_DEFAULT
         result = xai_x.search_x(config["XAI_API_KEY"], model, query, from_date, to_date, depth=depth)

@@ -39,7 +39,7 @@ class ProviderRuntime:
     reasoning_provider: Literal["gemini", "openai", "xai", "local"]
     planner_model: str
     rerank_model: str
-    x_search_backend: Literal["xai", "bird"] | None = None
+    x_search_backend: Literal["xai", "grok", "bird", "xurl", "xquik"] | None = None
 
 
 @dataclass(frozen=True)

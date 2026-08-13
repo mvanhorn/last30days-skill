@@ -251,6 +251,53 @@ def _probe_bird(config: Dict[str, Any]) -> BackendFinding:
     )
 
 
+def _probe_grok(config: Dict[str, Any]) -> BackendFinding:
+    """grok CLI = keyless X. LOCAL-ONLY probe, like _probe_xurl.
+
+    Deliberately does NOT call ``health.probe_dependency``: that helper runs
+    ``subprocess.run([name, "--version"])``, and the whole-doctor-path test
+    patches ``subprocess.run`` to raise. The broken-shim class is detected at
+    research time via ``grok_x.is_available``, not here.
+    """
+    from . import grok_x
+
+    requires = "grok CLI installed + signed in (no X credential)"
+    if which("grok") is None:
+        return BackendFinding(
+            name="grok",
+            status=health.MISSING,
+            requires=requires,
+            detail="grok CLI not found on PATH",
+            prescription=(
+                "install the Grok CLI: curl -fsSL https://x.ai/cli/install.sh | bash, "
+                "then run `grok login`"
+            ),
+        )
+    store_status, store_detail = grok_x.stored_auth_status()
+    if store_status == grok_x.AUTH_OK:
+        return BackendFinding(
+            name="grok",
+            status=health.OK,
+            requires=requires,
+            detail=f"{store_detail} (not live-verified until a run)",
+        )
+    if store_status == grok_x.AUTH_ERROR:
+        return BackendFinding(
+            name="grok",
+            status=health.ERROR,
+            requires=requires,
+            detail=store_detail,
+            prescription="grok login",
+        )
+    return BackendFinding(
+        name="grok",
+        status=health.MISSING,
+        requires=requires,
+        detail="grok CLI installed but not signed in",
+        prescription="grok login",
+    )
+
+
 def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
     """xurl = official X API v2 CLI (OAuth2). Free lane; LOCAL-ONLY probe.
 
@@ -347,6 +394,7 @@ def _probe_reddit_public(config: Dict[str, Any]) -> BackendFinding:
 
 _X_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "xai": _key_probe("xai", "XAI_API_KEY", "XAI_API_KEY (xAI/Grok live search)"),
+    "grok": _probe_grok,
     "bird": _probe_bird,
     "xurl": _probe_xurl,
     "xquik": _key_probe("xquik", "XQUIK_API_KEY", "XQUIK_API_KEY (xquik.com)"),
@@ -382,6 +430,7 @@ DESCRIPTORS: Dict[str, ChainDescriptor] = {
                 name=name,
                 requires={
                     "xai": "XAI_API_KEY (xAI/Grok live search)",
+                    "grok": "grok CLI installed + signed in (no X credential)",
                     "bird": "X browser cookies (AUTH_TOKEN/CT0) + node",
                     "xurl": "xurl CLI installed + OAuth2 login",
                     "xquik": "XQUIK_API_KEY (xquik.com)",

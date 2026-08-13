@@ -23,7 +23,7 @@ from unittest import mock
 
 import pytest
 
-from lib import backends, env, health, xurl_x
+from lib import backends, env, grok_x, health, xurl_x
 
 
 # ---------------------------------------------------------------------------
@@ -54,6 +54,8 @@ def _x_env(
     xurl_installed=False,
     xurl_authed=False,
     node_status=health.OK,
+    grok_installed=False,
+    grok_authed=False,
 ):
     """Context managers configuring the X-chain probe environment.
 
@@ -67,14 +69,32 @@ def _x_env(
         if xurl_authed
         else (xurl_x.AUTH_MISSING, "no token store at ~/.xurl")
     )
+    # grok defaults to absent so an existing X test never resolves it against
+    # the developer's own machine. Both grok surfaces are filesystem-only, so
+    # one flag drives them consistently.
+    grok_stored = (
+        (grok_x.AUTH_OK, "stored Grok credentials found in ~/.grok/auth.json")
+        if grok_authed
+        else (grok_x.AUTH_MISSING, "no Grok credential store at ~/.grok/auth.json")
+    )
     return (
         mock.patch("lib.bird_x.is_bird_installed", return_value=bird_installed),
         mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None),
         mock.patch("lib.xurl_x.is_available", return_value=xurl_authed),
         mock.patch(
             "lib.backends.which",
-            lambda name: "/usr/local/bin/xurl" if (name == "xurl" and xurl_installed) else None,
+            lambda name: (
+                "/usr/local/bin/xurl" if (name == "xurl" and xurl_installed)
+                else "/usr/local/bin/grok" if (name == "grok" and grok_installed)
+                else None
+            ),
         ),
+        mock.patch("lib.grok_x.stored_auth_status", return_value=grok_stored),
+        mock.patch(
+            "lib.grok_x.has_stored_auth",
+            return_value=grok_installed and grok_authed,
+        ),
+        mock.patch("lib.grok_x.is_available", return_value=grok_installed and grok_authed),
         mock.patch("lib.health.probe_dependency", _probe_dep({"node": node_status})),
         mock.patch("lib.xurl_x.stored_auth_status", return_value=stored),
         mock.patch(
@@ -115,7 +135,7 @@ class TestDescriptorRegistry:
         d = backends.get_descriptor("x")
         assert d.mode == backends.MODE_ALTERNATIVE
         assert tuple(s.name for s in d.backends) == env.X_BACKEND_ORDER
-        assert env.X_BACKEND_ORDER == ("xai", "bird", "xurl", "xquik")
+        assert env.X_BACKEND_ORDER == ("xai", "grok", "bird", "xurl", "xquik")
         assert d.pin_var == env.X_BACKEND_PIN_VAR == "LAST30DAYS_X_BACKEND"
 
     def test_env_exposes_reddit_pin_constants(self):
