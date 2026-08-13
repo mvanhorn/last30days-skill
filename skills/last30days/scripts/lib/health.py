@@ -132,7 +132,7 @@ _PP_CLI_SUFFIX = "-pp-cli"
 _PRINTING_PRESS_NPM = "@mvanhorn/printing-press-library@0.1.16"
 
 # Dependencies the doctor probes by default.
-KNOWN_DEPENDENCIES: Tuple[str, ...] = ("yt-dlp", "digg-pp-cli", "node", "ffmpeg")
+KNOWN_DEPENDENCIES: Tuple[str, ...] = ("yt-dlp", "digg-pp-cli", "node", "ffmpeg", "grok")
 
 # Cheap side-effect-free version invocation per dependency (default --version).
 _VERSION_ARGS: Dict[str, List[str]] = {
@@ -157,6 +157,15 @@ _MANAGER_PRESCRIPTIONS: Dict[str, Dict[str, Tuple[str, str]]] = {
         "brew": ("brew install ffmpeg", "brew reinstall ffmpeg"),
         "apt": ("sudo apt-get install -y ffmpeg", "sudo apt-get install -y --reinstall ffmpeg"),
     },
+    # The official installer is the primary path; npm is a real alternative
+    # (the package is published as @xai-official/grok) and fits the existing
+    # manager-preference machinery.
+    "grok": {
+        "npm": (
+            "npm install -g @xai-official/grok",
+            "reinstall the Grok CLI: npm install -g @xai-official/grok@latest",
+        ),
+    },
 }
 
 # Last-resort prescriptions when no known package manager is detected.
@@ -172,6 +181,10 @@ _FALLBACK_PRESCRIPTIONS: Dict[str, Tuple[str, str]] = {
     "ffmpeg": (
         "install ffmpeg (https://ffmpeg.org/download.html) and ensure it is on PATH",
         "reinstall ffmpeg (https://ffmpeg.org/download.html); the current binary won't run",
+    ),
+    "grok": (
+        "install the Grok CLI: curl -fsSL https://x.ai/cli/install.sh | bash, then run `grok login`",
+        "reinstall the Grok CLI: curl -fsSL https://x.ai/cli/install.sh | bash; the current binary won't run",
     ),
 }
 
