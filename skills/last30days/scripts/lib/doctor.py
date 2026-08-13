@@ -417,6 +417,20 @@ def _reddit_record(config):
 
 def _x_record(config):
     record = _chained_record("x", config)
+    # A usable grok CLI covers X with no X credential at all, so it must not be
+    # reported as unconfigured. Checked before the browser-auth override below
+    # because it outranks bird in the chain and, unlike a cookie session, its
+    # availability is verifiable locally rather than "not verified until a run".
+    from . import grok_x
+    if record["status"] == "unconfigured" and grok_x.has_stored_auth():
+        record["status"] = health.OK
+        record["tier"] = TIER_BY_STATUS[health.OK]
+        record["note"] = (
+            "will use: grok (grok CLI, signed in; no X account, cookies, or "
+            "API key needed)"
+        )
+        record["fix"] = ""
+        return record
     # Diagnose/doctor load config in plan_only mode, so browser cookies are not
     # extracted and every X backend reads as statically missing -> unconfigured.
     # But if bird is installed and FROM_BROWSER will authenticate X at run time,
