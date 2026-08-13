@@ -1669,3 +1669,39 @@ class TestScrapeCreatorsTierGating(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAmazonSourceGating:
+    """U2: the amazon source is dual-gated -- CLI available AND requested."""
+
+    def _config(self, include=""):
+        return {"INCLUDE_SOURCES": include}
+
+    def test_unavailable_without_the_cli_even_when_requested(self):
+        with patch.object(pipeline.brightdata, "is_available", return_value=False):
+            available = pipeline.available_sources(self._config(), ["amazon"])
+        assert "amazon" not in available
+
+    def test_unavailable_with_the_cli_when_not_requested(self):
+        """Installing the CLI for other work must not start spending credits."""
+        with patch.object(pipeline.brightdata, "is_available", return_value=True):
+            available = pipeline.available_sources(self._config(), None)
+        assert "amazon" not in available
+
+    def test_available_via_per_run_request(self):
+        with patch.object(pipeline.brightdata, "is_available", return_value=True):
+            available = pipeline.available_sources(self._config(), ["amazon"])
+        assert "amazon" in available
+
+    def test_available_via_durable_include_sources(self):
+        with patch.object(pipeline.brightdata, "is_available", return_value=True):
+            available = pipeline.available_sources(self._config("amazon"), None)
+        assert "amazon" in available
+
+    def test_search_flag_accepts_the_amazon_token(self):
+        import last30days
+        assert "amazon" in last30days.parse_search_flag("reddit,x,amazon")
+
+    def test_capped_at_one_fetch_per_run(self):
+        """One model-supplied keyword per run: extra streams are pure cost."""
+        assert pipeline.MAX_SOURCE_FETCHES["amazon"] == 1

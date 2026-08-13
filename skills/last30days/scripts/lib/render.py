@@ -10,6 +10,7 @@ from datetime import date
 from urllib.parse import urlparse
 
 from . import (
+    amazon,
     dates,
     health,
     hiring_signals,
@@ -226,6 +227,7 @@ SOURCE_LABELS = {
     "arxiv": "arXiv",
     "techmeme": "Techmeme",
     "trustpilot": "Trustpilot",
+    "amazon": "Amazon",
     "perplexity": "Perplexity",
     "jobs": "Jobs",
     "corpus": "Your files",
@@ -2793,6 +2795,10 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
             line += f" │ ⚠ {_format_outcome(outcome)}"
         out.append(line)
 
+    amazon_line = _amazon_footer_line(report)
+    if amazon_line:
+        out.append(amazon_line)
+
     # Web (sources from grounding)
     web_items = report.items_by_source.get("grounding") or []
     if web_items:
@@ -2816,6 +2822,83 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
     # ## Partial Coverage / ## Source Coverage evidence blocks, so nothing is
     # silently lost; the conclusion surface just stays clean.
     return out
+
+
+def _amazon_footer_line(report: schema.Report) -> str | None:
+    """Build the 📦 Amazon emoji-footer line (R1c).
+
+    Follows the Polymarket shape -- unit count, then *named products
+    carrying their own numbers* -- rather than the three-count inventory
+    shape every social source uses. ``3 products │ 611 ratings │ 56
+    reviews`` fits the box and says nothing; a named product with the
+    direction its rating moved this month is the whole reason the source
+    exists.
+
+    Three renderings:
+
+    * **Default/deep** -- per-product drift entries (see
+      ``amazon.footer_entry``).
+    * **Quick depth** -- no review pulls means no recent window, so the
+      inventory form is the honest one here and only here. Never render a
+      ``→`` against a null window.
+    * **Empty search** -- name the keyword rather than suppressing the
+      line. Observability, not spend: an empty result means the model's
+      keyword or its relevance judgment was wrong, and a hidden line means
+      nobody ever finds out.
+    """
+    items = report.items_by_source.get("amazon") or []
+    keyword = str((report.artifacts or {}).get("amazon_query") or "").strip()
+
+    if not items:
+        if keyword:
+            return f'📦 Amazon: no products matched "{keyword}"'
+        return None
+
+    count = len(items)
+    plural = "products" if count != 1 else "product"
+    stats = [amazon.stats_from_item(item) for item in items]
+
+    # Quick depth pulls no reviews at all, so nothing has a recent window.
+    if not any(s.get("reviews_pulled") for s in stats):
+        rated = [s["all_time"] for s in stats if s.get("all_time") is not None]
+        total_ratings = sum(s.get("ratings_total") or 0 for s in stats)
+        parts = [f"{count} {plural}"]
+        if rated:
+            parts.append(f"{sum(rated) / len(rated):.1f}★ average")
+        if total_ratings:
+            parts.append(f"{total_ratings:,} ratings")
+        return f"📦 Amazon: {' │ '.join(parts)}"
+
+    # At most one quote, on the sharpest negative drift only, and only if
+    # the model supplied one at weave time. The engine never derives it:
+    # every heuristic tried on real payloads (lowest recent star, leading
+    # characters of the most recent 1-2★) fails, because reviews open with
+    # narrative and gripes routinely live inside 4★ and 5★ text.
+    sagging = [
+        (s, item) for s, item in zip(stats, items) if s.get("drift") == "down"
+    ]
+    quote_for = ""
+    if sagging:
+        worst, worst_item = min(
+            sagging,
+            key=lambda pair: (pair[0].get("recent_avg") or 0) - (pair[0].get("all_time") or 0),
+        )
+        supplied = str((worst_item.metadata or {}).get("pulse_quote") or "").strip()
+        if supplied:
+            quote_for = worst.get("short_name") or ""
+
+    entries = [
+        amazon.footer_entry(
+            s,
+            quote=(
+                str((item.metadata or {}).get("pulse_quote") or "").strip()
+                if s.get("short_name") == quote_for and quote_for
+                else ""
+            ),
+        )
+        for s, item in zip(stats, items)
+    ]
+    return f"📦 Amazon: {count} {plural} │ {', '.join(entries)}"
 
 
 def _top_voices_footer_line(report: schema.Report) -> str | None:
@@ -3021,6 +3104,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "perplexity": [("citations", "cite")],
     "digg": [("postCount", "posts"), ("uniqueAuthors", "auth")],
     "trustpilot": [("reviews", "reviews")],
+    "amazon": [("ratings", "ratings")],
 }
 
 

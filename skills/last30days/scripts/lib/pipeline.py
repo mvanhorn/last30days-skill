@@ -19,6 +19,7 @@ from shutil import which
 from typing import Any
 
 from . import (
+    amazon,
     arxiv,
     bird_x,
     bluesky,
@@ -97,7 +98,12 @@ SEARCH_ALIAS = {
 # trustpilot is capped at 1: every subquery would use the identical company
 # identifier, so N streams are pure redundancy -- and each extra stream risks
 # its own WAF-cookie Chrome harvest.
-MAX_SOURCE_FETCHES: dict[str, int] = {"x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1}
+# amazon is capped at 1 for the same reason as trustpilot: the model supplies
+# one product keyword for the run, so every subquery would issue the identical
+# product search. Extra streams would be pure redundancy at one credit each.
+MAX_SOURCE_FETCHES: dict[str, int] = {
+    "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
+}
 
 
 def _resolve_depth_settings(depth: str, config: dict[str, Any]) -> dict[str, int]:
@@ -153,6 +159,7 @@ MOCK_AVAILABLE_SOURCES = [
     "arxiv",
     "techmeme",
     "trustpilot",
+    "amazon",
     "jobs",
     "linkedin",
     "corpus",
@@ -276,6 +283,16 @@ def available_sources(
         "trustpilot" in include_sources or (requested_sources and "trustpilot" in requested_sources)
     ):
         available.append("trustpilot")
+    # Amazon: opt-in additive source, dual-gated. The Bright Data CLI must be
+    # on the agent subprocess PATH and carry a credential signal, AND the run
+    # must ask for it -- the model per-run via --search, or the user durably
+    # via INCLUDE_SOURCES=amazon. Never inferred from topic shape: the engine
+    # misroutes most shopping phrasings, and auto-firing would spend a CLI
+    # owner's credits on runs that have nothing to do with products.
+    if brightdata.is_available(config) and (
+        "amazon" in include_sources or (requested_sources and "amazon" in requested_sources)
+    ):
+        available.append("amazon")
     if (
         "xiaohongshu" in include_sources
         or (requested_sources and "xiaohongshu" in requested_sources)
@@ -2086,6 +2103,14 @@ def run(
     # the LAW 7 degraded-run and Step 0.55 pre-research banners do not apply -
     # they would contradict the documented jobs-scoped flow. Suppress them.
     bundle.artifacts["hiring_signals_mode"] = hiring_signals_mode
+    # Record the resolved Amazon keyword whenever the lane is active, so the
+    # footer can name it on an empty result. A search that matched nothing
+    # still spent a credit, and the fix is almost always the keyword -- a
+    # suppressed line means nobody ever learns it was wrong.
+    if "amazon" in (available or []):
+        bundle.artifacts["amazon_query"] = (
+            str(config.get("_amazon_query") or "").strip() or topic
+        )
 
     # Project-mode or person-mode GitHub: run once before the main subquery loop
     _github_custom_done = False
@@ -2786,6 +2811,21 @@ def _finalize_items_by_source(
                 items = _merge_replayed_enrichment(items, replayed)
             else:
                 digg.enrich_source_items(items, top_k=3)
+                http.fixture_source_record(enrichment_request, schema.to_dict(items))
+        if source == "amazon" and items and not mock:
+            # Same budget-at-the-survivors principle: review pulls are the
+            # expensive half of this lane (one credit each, and the slow
+            # half by wall clock), so they go to the products dedupe kept.
+            matched, replayed = http.fixture_source_replay(enrichment_request)
+            if matched:
+                items = _merge_replayed_enrichment(items, replayed)
+            else:
+                amazon.enrich_source_items(
+                    items,
+                    depth=depth,
+                    config=config,
+                    keyword=str((config or {}).get("_amazon_query") or "").strip() or topic,
+                )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         finalized[source] = items
     return finalized
@@ -3920,6 +3960,22 @@ def _retrieve_stream_impl(
             trustpilot.parse_trustpilot_response(result, query=relevance_topic),
             _result_outcome_artifact(source, result),
         )
+    if source == "amazon":
+        # The search keyword is model-supplied and may differ from the topic
+        # ("Matt Van Horn" searches "June Oven"), so it keys off the stable
+        # research topic rather than the narrowed per-subquery search_query.
+        # Review enrichment is deferred to _finalize_items_by_source so the
+        # credit budget lands on products that survive dedupe.
+        keyword = (
+            str((config or {}).get("_amazon_query") or "").strip()
+            or raw_topic or topic or subquery.search_query
+        )
+        domain = str((config or {}).get("LAST30DAYS_AMAZON_DOMAIN") or amazon.DEFAULT_DOMAIN)
+        result = amazon.search_products(keyword, domain=domain, config=config)
+        return (
+            amazon.parse_search_response(result, keyword, domain=domain),
+            _result_outcome_artifact(source, result),
+        )
     if source == "bluesky":
         result = bluesky.search_bluesky(subquery.search_query, from_date, to_date, depth=depth, config=config)
         return bluesky.parse_bluesky_response(result), _result_outcome_artifact(source, result)
@@ -4125,6 +4181,110 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
                 "engagement": {"reviews": 128, "trustScore": 3.4},
                 "relevance": 0.8,
                 "why_relevant": "Mock Trustpilot sentiment",
+            },
+        ],
+        # Three products spanning the drift states the footer renders: one
+        # sagging below its all-time average (with enough in-window reviews
+        # to clear the arrow threshold), one steady, and one too new to have
+        # a baseline. Mock runs exercise the full R1c line without a CLI.
+        "amazon": [
+            {
+                "asin": "B0MOCK00X1",
+                "date": dates.get_date_range(1)[1],
+                "name": f"{subquery.search_query} Pro Model | Flagship Edition",
+                "short_name": "Pro Model",
+                "brand": subquery.search_query.split()[0].title() if subquery.search_query else "Example",
+                "url": "https://www.amazon.com/dp/B0MOCK00X1",
+                "rating": 4.4,
+                "num_ratings": 459,
+                "price": 39.99,
+                "currency": "USD",
+                "badge": "Best Seller",
+                "sponsored": False,
+                "relevance": 0.85,
+                "why_relevant": "Mock Amazon product",
+                "product_rating": 4.4,
+                "product_rating_count": 459,
+                "star_distribution": {
+                    "one_star": 28, "two_star": 9, "three_star": 28,
+                    "four_star": 60, "five_star": 335,
+                },
+                "top_comments": [
+                    {
+                        "score": 3, "rating": 2, "verified": True,
+                        "date": dates.get_date_range(3)[1],
+                        "excerpt": "The tray shifts in transit and the lid jams shut.",
+                        "title": "Lid jams",
+                    },
+                    {
+                        "score": 1, "rating": 4, "verified": True,
+                        "date": dates.get_date_range(9)[1],
+                        "excerpt": "Solid build, but arrived with a dented panel.",
+                        "title": "Shipping dent",
+                    },
+                    {
+                        "score": 0, "rating": 5, "verified": True,
+                        "date": dates.get_date_range(14)[1],
+                        "excerpt": "Keeps everything cold through a full school day.",
+                        "title": "Works great",
+                    },
+                    {
+                        "score": 0, "rating": 4, "verified": True,
+                        "date": dates.get_date_range(19)[1],
+                        "excerpt": "Good size for the price.",
+                        "title": "Good value",
+                    },
+                    {
+                        "score": 0, "rating": 4, "verified": False,
+                        "date": dates.get_date_range(24)[1],
+                        "excerpt": "Does the job, nothing fancy.",
+                        "title": "Fine",
+                    },
+                ],
+            },
+            {
+                "asin": "B0MOCK00X2",
+                "date": dates.get_date_range(1)[1],
+                "name": f"{subquery.search_query} Classic | Everyday Model",
+                "short_name": "Classic",
+                "brand": subquery.search_query.split()[0].title() if subquery.search_query else "Example",
+                "url": "https://www.amazon.com/dp/B0MOCK00X2",
+                "rating": 4.7,
+                "num_ratings": 8446,
+                "price": 24.99,
+                "currency": "USD",
+                "sponsored": False,
+                "relevance": 0.8,
+                "why_relevant": "Mock Amazon product",
+                "product_rating": 4.7,
+                "product_rating_count": 8446,
+                "star_distribution": {
+                    "one_star": 120, "two_star": 90, "three_star": 300,
+                    "four_star": 1010, "five_star": 6926,
+                },
+                "top_comments": [
+                    {
+                        "score": 12, "rating": 5, "verified": True,
+                        "date": dates.get_date_range(4)[1],
+                        "excerpt": "Third one we've bought. They last.",
+                        "title": "Repeat buyer",
+                    },
+                ],
+            },
+            {
+                "asin": "B0MOCK00X3",
+                "date": dates.get_date_range(1)[1],
+                "name": f"{subquery.search_query} Mini | New Release",
+                "short_name": "Mini",
+                "brand": subquery.search_query.split()[0].title() if subquery.search_query else "Example",
+                "url": "https://www.amazon.com/dp/B0MOCK00X3",
+                "rating": None,
+                "num_ratings": 57,
+                "price": 19.99,
+                "currency": "USD",
+                "sponsored": False,
+                "relevance": 0.72,
+                "why_relevant": "Mock Amazon product",
             },
         ],
         "jobs": [

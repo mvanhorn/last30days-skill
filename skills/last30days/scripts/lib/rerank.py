@@ -642,6 +642,17 @@ def _fallback_tuple(
     if resolved_handles and _is_first_party(candidate, resolved_handles):
         score += FIRST_PARTY_AUTHOR_CREDIT
         return max(0.0, min(100.0, score)), "fallback-local-score (first-party authorship)"
+    # Grounding-exempt evidence (currently Amazon): the adapter gated these
+    # against the model-supplied keyword before they existed, so the
+    # entity-miss demotion below would punish them for a match they were
+    # never going to make -- a "Weber Grills" run legitimately surfaces a
+    # product called "Spirit E-325" whose reviews discuss searing, not Weber.
+    # Returning here also skips _final_score's secondary penalty, which greps
+    # the reason string for "entity-miss": one flag, both paths, per the
+    # propagation pattern in
+    # docs/solutions/logic-errors/entity-grounding-full-phrase-false-demotion.md
+    if _is_grounding_exempt(candidate):
+        return max(0.0, min(100.0, score)), "fallback-local-score (grounding-exempt source)"
     # Entity-grounding demotion: subtract ENTITY_MISS_PENALTY when the candidate
     # never mentions the primary entity's head token, across all text surfaces
     # (title, snippet, transcript, transcript highlights, top comments,
@@ -668,6 +679,23 @@ def _primary_entity(topic: str) -> str:
     # Also collapse multiple spaces and strip punctuation.
     stripped = re.sub(r"\s+", " ", stripped).strip(" \t\r\n?.,:;!")
     return stripped
+
+
+def _is_grounding_exempt(candidate: schema.Candidate) -> bool:
+    """True when the candidate carries the relevant-by-construction label.
+
+    Set by adapters that already gated their results against an explicit
+    keyword at retrieval time (see normalize._normalize_amazon). Checked on
+    the candidate's own metadata and on any of its source items, since
+    clustering can build a candidate from several items.
+    """
+    metadata = candidate.metadata or {}
+    if isinstance(metadata, dict) and metadata.get("grounding_exempt"):
+        return True
+    return any(
+        isinstance(item.metadata, dict) and item.metadata.get("grounding_exempt")
+        for item in candidate.source_items
+    )
 
 
 def _is_corpus_candidate(candidate: schema.Candidate) -> bool:

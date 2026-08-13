@@ -65,6 +65,7 @@ def normalize_source_items(
         "arxiv": _normalize_arxiv,
         "techmeme": _normalize_techmeme,
         "trustpilot": _normalize_trustpilot,
+        "amazon": _normalize_amazon,
         "grounding": _normalize_grounding,
         "xiaohongshu": _normalize_grounding,
         "github": _normalize_github,
@@ -732,6 +733,87 @@ def _normalize_trustpilot(
             "trustScore": item.get("trustScore"),
             "reviewCount": item.get("reviewCount"),
             "aiSummary": summary,
+        },
+    )
+
+
+def _normalize_amazon(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for Amazon product-and-review signals.
+
+    One item per product. The aggregate rating is current-state evidence, so
+    the item is stamped with today's date on the Trustpilot precedent -- a
+    live 4.4-star average is a fact about now, not about whenever the
+    product launched.
+
+    Reviews arrive already in the shared score/excerpt comment shape (built
+    in the amazon adapter, deliberately not routed through _remap_comments,
+    which would strip the rating/date/verified keys this source needs), so
+    they pass straight through to metadata.
+    """
+    name = str(item.get("name") or "").strip()
+    brand = str(item.get("brand") or "").strip()
+    top_comments = item.get("top_comments") or []
+    comment_text = _join_comment_excerpts(top_comments, "excerpt")
+    rating = item.get("product_rating") if item.get("product_rating") is not None else item.get("rating")
+    ratings_total = item.get("product_rating_count") or item.get("num_ratings") or 0
+
+    headline = " ".join(
+        part for part in [
+            f"{rating}/5" if rating is not None else "",
+            f"({ratings_total:,} ratings)" if ratings_total else "",
+        ] if part
+    )
+    # The brand rides in its own field and is usually absent from the name,
+    # so prepend it -- unless the name already leads with it, which would
+    # otherwise read "Weber Weber Spirit E-325".
+    if brand and not name.lower().startswith(brand.lower()):
+        product_label = f"{brand} {name}".strip()
+    else:
+        product_label = name or brand
+    title = " - ".join(part for part in [product_label, headline] if part)
+    body = "\n".join(part for part in [title, comment_text] if part)
+
+    return _source_item(
+        item_id=str(item.get("asin") or f"AMZ{index + 1}"),
+        source=source,
+        title=title or f"Amazon product {index + 1}",
+        body=body,
+        url=str(item.get("url") or ""),
+        author=brand or None,
+        container="Amazon",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="low"),
+        engagement=item.get("engagement") or {"ratings": ratings_total},
+        relevance_hint=item.get("relevance", 0.6),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=comment_text[:400],
+        metadata={
+            "asin": str(item.get("asin") or ""),
+            "name": name,
+            "short_name": item.get("short_name") or "",
+            "brand": brand,
+            "rating": item.get("rating"),
+            "num_ratings": item.get("num_ratings") or 0,
+            "price": item.get("price"),
+            "currency": item.get("currency") or "",
+            "badge": item.get("badge") or "",
+            # Recorded, never used as a filter: the flag's distribution
+            # swings with keyword phrasing, so filtering can blank the lane.
+            "sponsored": bool(item.get("sponsored")),
+            "top_comments": top_comments,
+            "product_rating": item.get("product_rating"),
+            "product_rating_count": item.get("product_rating_count") or 0,
+            "star_distribution": item.get("star_distribution") or {},
+            # Relevant by construction: the adapter already gated products
+            # against the model-supplied keyword, and review text rarely
+            # names the product (KTD8).
+            "grounding_exempt": True,
         },
     )
 

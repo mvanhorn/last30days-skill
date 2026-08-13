@@ -17,6 +17,8 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from . import brightdata
+
 logger = logging.getLogger(__name__)
 
 
@@ -159,6 +161,9 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         # Per-CLI status for the additional default-on Printing Press sources
         # (arxiv, techmeme, trustpilot): {source: {installed, action, ...}}.
         "pp_sources": pp_sources,
+        # Reported, never installed: this CLI spends the user's own metered
+        # credits, so acquiring it stays their decision (U5/R11).
+        "brightdata": brightdata_status(),
         "env_written": False,
     }
     if ytdlp_action == "install_failed":
@@ -321,6 +326,85 @@ PP_DEFAULT_SOURCES: list[tuple[str, str, str]] = [
     ("arxiv", "arxiv", "arxiv-pp-cli"),
     ("techmeme", "techmeme", "techmeme-pp-cli"),
 ]
+
+# Bright Data is deliberately absent from PP_DEFAULT_SOURCES: it is not a
+# Printing Press CLI, it is opt-in like Trustpilot, and it spends the user's
+# own metered credits. Setup reports its state and never installs it.
+BRIGHTDATA_BIN = "brightdata"
+
+
+def _brightdata_off_path_binary() -> Optional[str]:
+    """Locate a brightdata binary that exists on disk but not on PATH.
+
+    Covers the common npm global prefixes. The distinction matters because
+    Hermes and OpenClaw gateways routinely run the engine with a PATH that
+    excludes the user's npm bin directory, so "installed" and "the engine
+    can see it" are different questions.
+    """
+    home = Path.home()
+    candidates = [
+        home / ".local" / "bin" / BRIGHTDATA_BIN,
+        home / ".npm-global" / "bin" / BRIGHTDATA_BIN,
+        Path("/opt/homebrew/bin") / BRIGHTDATA_BIN,
+        Path("/usr/local/bin") / BRIGHTDATA_BIN,
+    ]
+    npm_prefix = os.environ.get("NPM_CONFIG_PREFIX")
+    if npm_prefix:
+        candidates.insert(0, Path(npm_prefix) / "bin" / BRIGHTDATA_BIN)
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def brightdata_status(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Report the Bright Data install and auth state honestly.
+
+    Deliberately never claims the source is active unless the engine's own
+    gate would pass -- ``brightdata.is_available`` is the single predicate,
+    so setup and the engine cannot drift apart. Three states matter:
+
+    * ``already_installed``  -- on PATH; ``authenticated`` says whether the
+      amazon lane will actually run.
+    * ``installed_off_path`` -- on disk but invisible to the engine, which
+      is the Hermes/OpenClaw failure mode. Carries the path so the user can
+      fix their PATH.
+    * ``not_installed``      -- nothing found. No auto-install: this CLI
+      spends the user's metered credits, so acquiring it is their call.
+    """
+    installed = brightdata.is_installed()
+    authenticated = brightdata.has_credentials(config)
+    if installed:
+        action = "already_installed"
+        off_path = ""
+    else:
+        off_path = _brightdata_off_path_binary() or ""
+        action = "installed_off_path" if off_path else "not_installed"
+
+    status: Dict[str, Any] = {
+        "installed": installed,
+        "action": action,
+        "authenticated": installed and authenticated,
+        # The engine gate, verbatim. Never report active on anything else.
+        "engine_active": brightdata.is_available(config),
+    }
+    if off_path:
+        status["path"] = off_path
+        status["hint"] = (
+            f"brightdata found at {off_path} but not on PATH; add its directory "
+            "to PATH so the engine subprocess can see it"
+        )
+    elif installed and not authenticated:
+        status["hint"] = "run `brightdata login` to activate the amazon source"
+    elif not installed:
+        status["hint"] = (
+            "install with `npm i -g @brightdata/cli` then `brightdata login` "
+            "to enable the amazon source"
+        )
+    return status
 
 
 def _pp_bin_candidate_paths(bin_name: str) -> list[Path]:

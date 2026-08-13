@@ -16,6 +16,9 @@ SOURCE_QUALITY = {
     "arxiv": 0.9,
     "techmeme": 0.85,
     "trustpilot": 0.78,
+    # Verified-purchase reviews on a live aggregate rating: high-quality
+    # buyer evidence, a notch above Trustpilot's open review model.
+    "amazon": 0.8,
     "reddit": 0.6,
     "x": 0.68,
     "bluesky": 0.66,
@@ -57,6 +60,17 @@ def local_relevance(
     # get pruned despite being the primary search target.
     labels = item.metadata.get("labels", []) if isinstance(item.metadata, dict) else []
     if "project-mode" in labels:
+        score = max(score, 0.8)
+
+    # Grounding-exempt floor (currently Amazon): the adapter already gated
+    # these against the model-supplied product keyword before creating them,
+    # so they are relevant by construction. Their text is marketing copy plus
+    # buyer reviews, which rarely repeats the topic phrasing -- a "Weber
+    # Grills" run surfaces a product named "Spirit E-325" whose reviews talk
+    # about searing, not about Weber. Without the floor, correctly-retrieved
+    # evidence gets pruned for failing a keyword match it was never going to
+    # win. Mirrors the project-mode GitHub floor above.
+    if isinstance(item.metadata, dict) and item.metadata.get("grounding_exempt"):
         score = max(score, 0.8)
 
     return score
@@ -167,6 +181,7 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "polymarket":   [("volume", 0.60), ("liquidity", 0.40)],
     "digg":         [("postCount", 0.40), ("uniqueAuthors", 0.30), ("rank_score", 0.30)],
     "trustpilot":   [("reviews", 1.0)],
+    "amazon":       [("ratings", 1.0)],
 }
 
 
