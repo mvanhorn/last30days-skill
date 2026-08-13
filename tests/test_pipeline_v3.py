@@ -1667,10 +1667,6 @@ class TestScrapeCreatorsTierGating(unittest.TestCase):
         self.assertIn("pinterest", avail)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class TestAmazonSourceGating:
     """U2: the amazon source is dual-gated -- CLI available AND requested."""
 
@@ -1705,3 +1701,7 @@ class TestAmazonSourceGating:
     def test_capped_at_one_fetch_per_run(self):
         """One model-supplied keyword per run: extra streams are pure cost."""
         assert pipeline.MAX_SOURCE_FETCHES["amazon"] == 1
+
+
+if __name__ == "__main__":
+    unittest.main()

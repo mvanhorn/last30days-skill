@@ -637,30 +637,28 @@ class TestFooterLine:
         assert "→" not in line
         assert "average" in line and "ratings" in line
 
+    def test_footer_renders_no_quote_today(self):
+        """The engine renders this line before the model sees the report, so
+        there is no weave-time path for a model-written quote. Deferred."""
+        items = [_FooterItem("Sagging", reviews=20, recent=3.8, drift="down",
+                             quote="the lid jams")]
+        line = self._line(items)
+        assert "↓" in line
+        assert '"' not in line
+
+    def test_footer_entry_still_accepts_a_quote_for_a_future_writer(self):
+        entry = amazon.footer_entry(
+            {"short_name": "X", "all_time": 4.4, "recent_avg": 3.8, "drift": "down"},
+            quote="the lid jams",
+        )
+        assert '"the lid jams"' in entry
+
     def test_empty_result_names_the_keyword(self):
         assert self._line([]) == '📦 Amazon: no products matched "bentgo lunch box"'
 
     def test_no_line_at_all_when_the_source_never_ran(self):
         assert self._line([], keyword="") is None
 
-    def test_quote_lands_only_on_the_sharpest_negative_drift(self):
-        items = [
-            _FooterItem("Mild", reviews=20, all_time=4.4, recent=4.2, drift="down",
-                        quote="minor gripe"),
-            _FooterItem("Worst", reviews=20, all_time=4.4, recent=3.0, drift="down",
-                        quote="the lid jams"),
-        ]
-        line = self._line(items)
-        assert '"the lid jams"' in line
-        assert "minor gripe" not in line
-
-    def test_no_quote_when_the_model_supplied_none(self):
-        items = [_FooterItem("Sagging", reviews=20, recent=3.8, drift="down")]
-        line = self._line(items)
-        assert "↓" in line and '"' not in line
-
-
-class TestInputHardening:
     def test_malformed_asin_records_are_rejected(self):
         """The ASIN is interpolated into a URL that is refetched and rendered."""
         records = [

@@ -107,6 +107,10 @@ The project-scoped file is useful for **intentional per-client setups**: drop a 
 
 **`LAST30DAYS_API_KEY`** + **`LAST30DAYS_API_BASE`** - optional remote-API backend. Set BOTH to route research through a remote API endpoint instead of running the local sources: `LAST30DAYS_API_BASE` is the endpoint (there is no built-in default), and `LAST30DAYS_API_KEY` is the bearer key for it. When both are set (and `--mock` is not passed), the engine submits the topic to that endpoint, polls with progress on stderr, and prints the server's report; none of the per-source keys below are used for that run. A configured local corpus is the privacy exception: the engine bypasses the hosted backend and runs locally rather than forwarding file-derived input. Non-default `--register` selections are forwarded with the request so server-side synthesis uses the same audience preset. Leave either unset to run local sources exactly as normal. Unlike the other keys here, these two are read only from the **process environment** (export them in your shell or host config) - they are deliberately not loaded from the `.env` files above, so a project-scoped `.env` can never silently redirect research to a remote endpoint. The remote endpoint does not return the local `Report` needed for the versioned agent JSON profile; use `--emit=json --json-profile=raw` for its existing server-response JSON contract.
 
+**`BRIGHTDATA_API_KEY`** - optional, for the `amazon` source. The Bright Data CLI normally owns its own auth via `brightdata login`, so this is only needed if you would rather keep an explicit key in `.env` or the keychain. It is resolved through the standard config layering and passed to the CLI through the child process environment, never on the command line (where it would be readable from `/proc/<pid>/cmdline` by other local users on a shared host).
+
+**`LAST30DAYS_AMAZON_DOMAIN`** - optional, default `https://www.amazon.com`. The marketplace the `amazon` source searches; set it to `https://www.amazon.co.uk`, `https://www.amazon.de`, and so on. Product URLs are validated against this host, so records from other marketplaces are rejected.
+
 ### Local corpus (your files)
 
 Register persistent directories with `LAST30DAYS_CORPUS_DIRS`. Separate paths with `:` on macOS/Linux (the platform path separator is `;` on Windows):
@@ -371,8 +375,6 @@ Relevant env vars:
 | --- | --- |
 | `LAST30DAYS_NATIVE_SEARCH=1` | Tells the engine your agent session has host-side web search; suppresses the keyless floor. Set automatically by the skill when web search is available. Leave unset when the agent has no web-search tool so the floor runs. |
 | `LAST30DAYS_SEARXNG_URL=<base-url>` | Optional. A SearXNG instance used as the keyless-search fallback rung when DuckDuckGo returns nothing. |
-| `BRIGHTDATA_API_KEY` | Optional. The Bright Data CLI normally owns its own auth via `brightdata login`, so this is only needed if you would rather keep an explicit key in a `.env` file or the keychain. Resolved through the standard config layering and handed to the CLI via `-k`. |
-| `LAST30DAYS_AMAZON_DOMAIN` | Optional (default `https://www.amazon.com`). Marketplace the `amazon` source searches — set to `https://www.amazon.co.uk`, `https://www.amazon.de`, etc. Product URLs are validated against this host, so records from other marketplaces are rejected. |
 | `LAST30DAYS_TRUSTPILOT_NO_BROWSER=1` | Optional. Truthy value disables the Trustpilot source's one-time headless-Chrome WAF-cookie harvest, so an automated/headless run (cron, CI, the eval harness) never spawns a browser. Trustpilot still degrades to empty gracefully. |
 
 Privacy note: the keyless floor sends the query (to DuckDuckGo / your SearXNG instance) and any fetched URL (to Jina Reader) to those third parties. It is intended for public-research use; results may be cached snapshots. It never runs when native search or a paid backend is in play.

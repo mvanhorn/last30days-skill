@@ -2902,35 +2902,16 @@ def _amazon_footer_line(report: schema.Report) -> str | None:
         shown_items.append(item)
     items = shown_items
 
-    # At most one quote, on the sharpest negative drift only, and only if
-    # the model supplied one at weave time. The engine never derives it:
-    # every heuristic tried on real payloads (lowest recent star, leading
-    # characters of the most recent 1-2★) fails, because reviews open with
-    # narrative and gripes routinely live inside 4★ and 5★ text.
-    sagging = [
-        (s, item) for s, item in zip(stats, items) if s.get("drift") == "down"
-    ]
-    quote_for = ""
-    if sagging:
-        worst, worst_item = min(
-            sagging,
-            key=lambda pair: (pair[0].get("recent_avg") or 0) - (pair[0].get("all_time") or 0),
-        )
-        supplied = str((worst_item.metadata or {}).get("pulse_quote") or "").strip()
-        if supplied:
-            quote_for = worst.get("short_name") or ""
-
-    entries = [
-        amazon.footer_entry(
-            s,
-            quote=(
-                str((item.metadata or {}).get("pulse_quote") or "").strip()
-                if s.get("short_name") == quote_for and quote_for
-                else ""
-            ),
-        )
-        for s, item in zip(stats, items)
-    ]
+    # Deliberately no quote fragment here. The design called for one
+    # model-written phrase on the sharpest negative drift ("... ↓ \"the lid
+    # jams\""), but this footer is rendered by the engine *before* the model
+    # ever sees the report, and the model passes it through verbatim -- so
+    # there is no weave-time write path for the model to supply one. Rather
+    # than ship a branch that can never fire, the quote is deferred: the
+    # same evidence reaches the reader through the body section's
+    # Loved/Gripes/Watch line, which the model does author. `footer_entry`
+    # still accepts a quote so a future writer can supply one.
+    entries = [amazon.footer_entry(s) for s in stats]
     line = f"📦 Amazon: {count} {plural} │ {', '.join(entries)}"
     if failed:
         line += f" │ ⚠ {_format_outcome(outcome)}"

@@ -740,6 +740,33 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
                 f"then: `npx -y {PRINTING_PRESS_NPM} install {source_key} --cli-only`"
             )
 
+    # Bright Data / Amazon. Reported but never installed (it spends the user's
+    # own metered credits), so the only useful thing setup can do is say
+    # precisely why the lane is or is not active -- the three states below are
+    # otherwise invisible, since SKILL.md tells the model not to raise the
+    # subject mid-run.
+    brightdata_status_entry = results.get("brightdata") or {}
+    bd_action = brightdata_status_entry.get("action", "")
+    if brightdata_status_entry.get("engine_active"):
+        lines.append("  - Bright Data CLI ready (Amazon buyer signals available)")
+    elif bd_action == "already_installed":
+        lines.append(
+            "  - Bright Data CLI installed but not logged in — run "
+            "`brightdata login` to enable Amazon buyer signals (optional)"
+        )
+    elif bd_action == "installed_off_path":
+        bd_path = brightdata_status_entry.get("path", "")
+        lines.append(
+            f"  - Bright Data CLI found at {bd_path} but not on PATH — add "
+            f"{os.path.dirname(os.path.expanduser(bd_path))} to PATH and restart "
+            "your agent session/gateway for Amazon buyer signals to activate"
+        )
+    elif bd_action == "not_installed":
+        lines.append(
+            "  - Amazon buyer signals not installed (optional; 5,000 free "
+            "requests/month). Install with: npm i -g @brightdata/cli && brightdata login"
+        )
+
     env_written = results.get("env_written", False)
     if env_written:
         lines.append("")

@@ -3325,6 +3325,22 @@ def _main(
         # it is one optional string consumed in exactly two places.
         if getattr(args, "amazon_query", None):
             config["_amazon_query"] = args.amazon_query.strip()
+            # Unlike --trustpilot-domain, this flag deliberately does NOT
+            # auto-activate its source: the lane spends metered credits, so
+            # turning it on stays an explicit request. But silence is the
+            # wrong failure mode -- a model that resolves the keyword and
+            # forgets the --search token would otherwise get no signal at
+            # all that the flag did nothing.
+            _amazon_requested = (
+                (requested_sources and "amazon" in requested_sources)
+                or "amazon" in str(config.get("INCLUDE_SOURCES") or "").lower()
+            )
+            if not _amazon_requested:
+                sys.stderr.write(
+                    "[Amazon] --amazon-query was set but the amazon source was not "
+                    "requested; add it to --search (e.g. --search reddit,x,amazon) "
+                    "or set INCLUDE_SOURCES=amazon. Ignoring the keyword.\n"
+                )
 
         # vs-mode / plan routing: split a vs-topic into main + peers unless
         # discover-N or an explicit --competitors-list already decided who runs.

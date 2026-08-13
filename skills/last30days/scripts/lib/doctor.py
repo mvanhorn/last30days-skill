@@ -53,7 +53,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, env, health, http, prescriptions
+from . import backends, brightdata, env, health, http, prescriptions
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -157,6 +157,7 @@ SOURCE_ORDER = (
     "techmeme",
     "arxiv",
     "trustpilot",
+    "amazon",
     "tiktok",
     "instagram",
     "threads",
@@ -181,6 +182,9 @@ CLI_DEPENDENCIES = {
     "techmeme": "techmeme-pp-cli",
     "arxiv": "arxiv-pp-cli",
     "trustpilot": "trustpilot-pp-cli",
+    # The only entry that also needs auth; _amazon_record reports the
+    # installed-but-unauthenticated state the shared CLI helper cannot.
+    "amazon": "brightdata",
     "github": "gh",
 }
 _OPTIONAL_CLI_SOURCES = frozenset({"github"})
@@ -540,6 +544,39 @@ def _trustpilot_record(config):
     return _cli_gated_record(config, "trustpilot-pp-cli", "trustpilot")
 
 
+def _amazon_record(config):
+    """Amazon buyer signals: CLI-gated *and* auth-gated.
+
+    Unlike the other CLI-gated sources, a present binary is not enough --
+    the Bright Data CLI owns its own login, so a user can have `brightdata`
+    on PATH and still get nothing. Report those states separately: an
+    unauthenticated install is configured-but-broken (a real fix exists and
+    the user wants to hear it), while a missing binary is just an optional
+    source nobody opted into.
+    """
+    probe = health.probe_dependency(brightdata.CLI_BIN)
+    requires = f"{brightdata.CLI_BIN} on the agent-subprocess PATH, logged in"
+    if probe.ok:
+        if brightdata.has_credentials(config):
+            return _record(status=health.OK, detail=probe.detail, requires=requires)
+        return _record(
+            status="unconfigured",
+            fix="run `brightdata login` to activate the amazon source",
+            detail="brightdata is installed but has no credentials",
+            requires=requires,
+        )
+    entry = prescriptions.for_dependency_probe(probe)
+    fix = _fix_text(entry) if entry else probe.prescription
+    if probe.status == health.MISSING and not probe.off_path:
+        return _record(
+            status="opt-in",
+            fix="npm i -g @brightdata/cli && brightdata login",
+            detail=probe.detail,
+            requires=requires,
+        )
+    return _record(status=probe.status, fix=fix, detail=probe.detail, requires=requires)
+
+
 def _tiktok_record(config):
     return _sc_gated_record(config, "tiktok")
 
@@ -716,6 +753,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "techmeme": _techmeme_record,
     "arxiv": _arxiv_record,
     "trustpilot": _trustpilot_record,
+    "amazon": _amazon_record,
     "tiktok": _tiktok_record,
     "instagram": _instagram_record,
     "threads": _threads_record,

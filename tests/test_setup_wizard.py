@@ -887,3 +887,35 @@ class TestBrightDataStatusHonesty:
     def test_brightdata_is_excluded_from_auto_installed_pp_sources(self):
         slugs = {slug for _, slug, _ in setup_wizard.PP_DEFAULT_SOURCES}
         assert "brightdata" not in slugs
+
+
+class TestBrightDataSetupSurface:
+    """The three states must be visible somewhere, or the honesty is moot."""
+
+    def _text(self, status):
+        return setup_wizard.get_setup_status_text({
+            "cookies_found": {}, "ytdlp_installed": True,
+            "ytdlp_action": "already_installed", "digg_installed": True,
+            "digg_action": "already_installed", "pp_sources": {},
+            "brightdata": status, "env_written": False,
+        })
+
+    def test_active_state_is_reported(self):
+        text = self._text({"action": "already_installed", "engine_active": True})
+        assert "Bright Data CLI ready" in text
+
+    def test_installed_but_not_logged_in_names_the_fix(self):
+        text = self._text({"action": "already_installed", "engine_active": False})
+        assert "brightdata login" in text
+
+    def test_off_path_reports_the_path_and_the_fix(self):
+        text = self._text({
+            "action": "installed_off_path", "engine_active": False,
+            "path": "/Users/x/.npm-global/bin/brightdata",
+        })
+        assert "/Users/x/.npm-global/bin/brightdata" in text
+        assert "PATH" in text
+
+    def test_absent_offers_the_install_command_without_running_it(self):
+        text = self._text({"action": "not_installed", "engine_active": False})
+        assert "npm i -g @brightdata/cli" in text
