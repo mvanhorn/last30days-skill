@@ -858,6 +858,7 @@ Before running the engine, determine which flags apply to this topic and resolve
 | `--github-user={user}` | Step 0.5b | Topic is a person who ships code (developer, engineer, CEO-who-codes, researcher) |
 | `--github-repo={owner/repo}` | Step 0.5c | Topic is a product / project / open-source tool |
 | `--trustpilot-domain={domain}` | Step 0.5d | Topic is a company / brand / service with a Trustpilot presence (passing the flag also auto-activates the opt-in Trustpilot source for this run) |
+| `--amazon-query={keyword}` | Step 0.5e | Recent buyer sentiment would materially inform the report AND `brightdata` is on PATH and logged in. Keyword is brand-plus-category (`Weber grill`), and for a person topic it is their company's product line (`June Oven`), not their name. Also add `amazon` to `--search` |
 | `--subreddits={sub1,sub2,...}` | Step 0.55 | Always — almost every topic has active Reddit communities |
 | `--tiktok-hashtags={h1,h2,...}` | Step 0.55 | Always — inferred from topic |
 | `--tiktok-creators={c1,c2,...}` | Step 0.55 | Creator / influencer / brand topics |
@@ -1013,6 +1014,36 @@ The flag is used verbatim, bypasses the engine's brand-shape gate, and auto-acti
 - You intentionally want Trustpilot off for this run (`EXCLUDE_SOURCES=trustpilot`)
 
 Store: `RESOLVED_TRUSTPILOT_DOMAIN = {domain or empty}`
+
+---
+
+### Step 0.5e: Decide the Amazon Buyer-Signal Lane (if `brightdata` is available)
+
+**Availability first.** This lane exists only when the Bright Data CLI is on PATH and logged in (`--diagnose` reports `brightdata_installed` and `brightdata_authenticated`). If either is false the source does not exist, nothing changes, and you should skip this step entirely — do not mention it, do not suggest installing it mid-run.
+
+**The one question to ask:** *would recent Amazon buyer sentiment materially inform this report?* Not "is this shopping" — the test is whether buyer evidence is real evidence for this topic.
+
+| Topic | Fires? | `--amazon-query` |
+|---|---|---|
+| "Weber Grills" | Yes — brand topic where review signal is core evidence | `Weber grill` |
+| "best bluetooth speaker under $100" | Yes — buying question, the whole point | `bluetooth speaker` |
+| "Bentgo Box" | Yes — brand line | `Bentgo lunch box` |
+| "Matt Van Horn" (CEO of June) | Yes — **and the keyword is the company's product, not the person** | `June Oven` |
+| "Kanye West" | No — person/culture topic, buyer reviews are noise | — |
+| "the 2026 election" | No — nothing to buy | — |
+
+**Two mechanics that matter:**
+
+1. **The keyword is yours to choose and is often not the topic.** Map person → company → product line using what you know plus what Step 0.55 surfaced. A "Matt Van Horn" run that searches Amazon for his name returns nothing; searching `June Oven` returns his company's product reviews, which is the actual signal.
+2. **Phrase it as brand plus category, never bare brand.** A bare brand keyword lands on Amazon's ad-heavy page 1 and can miss the brand's own bestsellers — a live `Bentgo` search returned 57 competitor ads and missed the flagship, while `Bentgo lunch box` surfaced it. Say `Weber grill`, not `Weber`.
+
+**`--search` is replace-not-add.** Passing `--search` narrows the run to exactly the sources listed, so include the full intended set: `--search reddit,x,youtube,amazon` — never a bare `--search amazon`, which would silently drop every other source.
+
+**Cost and latency, so you can set expectations:** one credit for the product search plus one per review pull, 4 per typical run against a 5,000/month free tier. Review sampling adds roughly 30 seconds to 2 minutes at default depth. Quick depth pulls no reviews at all.
+
+Store: `AMAZON_QUERY = {product keyword or empty}` — pass as `--amazon-query="{AMAZON_QUERY}"` and add `amazon` to `--search`.
+
+**Skip this step if:** the CLI is unavailable, the topic has no consumer-product dimension, or the user set `EXCLUDE_SOURCES=amazon`.
 
 ---
 
@@ -1367,7 +1398,7 @@ Only show lines for platforms where something was resolved. Skip empty lines. On
 - For how_to: prioritize YouTube (tutorials) and Reddit (guides)
 - Primary subquery weight = 1.0, secondary = 0.6-0.8, peripheral = 0.3-0.5
 
-**Available sources (include ALL in primary subquery):** reddit, x, youtube, tiktok, instagram, hackernews, polymarket. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg clusters - only if `digg-pp-cli` is on PATH)
+**Available sources (include ALL in primary subquery):** reddit, x, youtube, tiktok, instagram, hackernews, polymarket. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg clusters - only if `digg-pp-cli` is on PATH), amazon (buyer reviews - only if `brightdata` is on PATH and logged in; see Step 0.5e)
 
 **Intent → freshness_mode mapping:**
 - breaking_news, prediction → `strict_recent`

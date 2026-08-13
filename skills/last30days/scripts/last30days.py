@@ -733,6 +733,18 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--amazon-query",
+        help=(
+            "Product keyword the amazon source searches, when that source is active. "
+            "Defaults to the topic. Supply it whenever the topic is not the product: "
+            "a person topic searches their company's product line "
+            "(--amazon-query='June Oven'), and a brand searches brand-plus-category "
+            "(--amazon-query='Weber grill', not 'Weber' -- a bare brand keyword lands "
+            "on an ad-heavy page that can miss the brand's own bestsellers). "
+            "Requires the brightdata CLI on PATH and logged in."
+        ),
+    )
+    parser.add_argument(
         "--competitors",
         nargs="?",
         const=2,
@@ -3307,6 +3319,12 @@ def _main(
             ]
             if keywords:
                 config["_polymarket_keywords"] = keywords
+
+        # Product keyword for the amazon source. Carried on config rather than
+        # threaded through the run signature (the _polymarket_keywords idiom):
+        # it is one optional string consumed in exactly two places.
+        if getattr(args, "amazon_query", None):
+            config["_amazon_query"] = args.amazon_query.strip()
 
         # vs-mode / plan routing: split a vs-topic into main + peers unless
         # discover-N or an explicit --competitors-list already decided who runs.
