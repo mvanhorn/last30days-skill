@@ -26,6 +26,10 @@ ENTITY_MISS_PENALTY = 25.0
 FALLBACK_ENTITY_MISS_CONFIDENCE_ESCAPE = 0.5
 FALLBACK_ENTITY_MISS_TOPIC_ESCAPE = 0.25
 _FALLBACK_ENTITY_MISS_EXPLANATION = "fallback-local-score (entity-miss demotion)"
+# Explanation stamped on a first-party post whose entity-miss marker was
+# cleared by _apply_first_party_floor. Carries no "entity-miss" substring, so
+# every downstream relevance gate treats the post as grounded.
+_FIRST_PARTY_EXPLANATION = "first-party post (authored by a resolved handle)"
 
 # Small additive credit for a post authored by one of the run's resolved
 # handles (see rerank_candidates / _fallback_tuple). Deliberately small: the
@@ -537,8 +541,18 @@ def _apply_first_party_floor(
     if not resolved_handles:
         return
     for c in candidates:
-        if _is_first_party(c, resolved_handles) and c.final_score < FIRST_PARTY_FLOOR:
+        if not _is_first_party(c, resolved_handles):
+            continue
+        if c.final_score < FIRST_PARTY_FLOOR:
             c.final_score = FIRST_PARTY_FLOOR
+        # Clear the entity-miss marker here, at the one site that knows the
+        # resolved handles. Downstream relevance gates key on the marker, not
+        # on handle knowledge, so neutralizing it once lets the carve-out
+        # propagate instead of forcing every gate to re-derive first-party.
+        # A first-party post is entity-grounded by authorship: nobody repeats
+        # their own name in their own post.
+        if c.explanation and "entity-miss" in c.explanation.lower():
+            c.explanation = _FIRST_PARTY_EXPLANATION
 
 
 def _apply_engagement_rescue(
@@ -931,3 +945,24 @@ def _normalized_rrf(rrf_score: float) -> float:
     # Max single-stream RRF at rank 1 is 1/(K+1) ~ 0.016; multi-stream
     # accumulation reaches ~0.08.
     return max(0.0, min(100.0, (rrf_score / 0.08) * 100.0))
+
+
+def candidate_relevance_ok(candidate: schema.Candidate) -> bool:
+    """Shared gate: is this candidate topically usable for display surfaces?
+
+    Single owner of the entity-miss demotion test. Render-side surfaces (Best
+    Takes, cluster visibility) must call this rather than re-testing the
+    explanation string themselves -- a second copy of the predicate is how the
+    documented mirrored-predicate drift bug recurs, and it means a carve-out
+    added here silently fails to reach them.
+
+    First-party posts are handled upstream: ``_apply_first_party_floor`` clears
+    their entity-miss marker at the one site that knows the resolved handles,
+    so this predicate needs no handle knowledge.
+    """
+    explanation = (candidate.explanation or "").lower()
+    if "entity-miss" in explanation:
+        return False
+    if (candidate.final_score or 0.0) <= 0.0:
+        return False
+    return True

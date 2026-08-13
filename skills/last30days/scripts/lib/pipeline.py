@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterable
 import math
 import queue
 import re
@@ -2750,8 +2751,13 @@ def _normalize_score_dedupe(
     to_date: str,
     freshness_mode: str,
     ranking_query: str,
+    first_party_handles: Iterable[str] | None = None,
 ) -> list[schema.SourceItem]:
-    """Normalize, annotate, prune, dedupe, and extract snippets for a batch of raw items."""
+    """Normalize, annotate, prune, dedupe, and extract snippets for a batch of raw items.
+
+    ``first_party_handles`` names accounts this run is explicitly searching, so
+    their own posts survive the relevance floor (see signals.prune_low_relevance).
+    """
     normalized = normalize.normalize_source_items(
         source, raw_items, from_date, to_date,
         freshness_mode=freshness_mode,
@@ -2769,7 +2775,9 @@ def _normalize_score_dedupe(
         max_days=lookback_window_days,
     )
     if source != "jobs":
-        normalized = signals.prune_low_relevance(normalized)
+        normalized = signals.prune_low_relevance(
+            normalized, first_party_handles=first_party_handles
+        )
     normalized = dedupe.dedupe_items(normalized)
     for item in normalized:
         item.snippet = snippet.extract_best_snippet(item, prepared_query)
@@ -3337,6 +3345,7 @@ def _run_supplemental_searches(
                 x_slug, raw_items, from_date, to_date,
                 freshness_mode=plan.freshness_mode,
                 ranking_query=ranking_query,
+                first_party_handles=handles,
             )
             # Deduplicate against Phase 1 URLs
             normalized = [item for item in normalized if item.url not in existing_urls]

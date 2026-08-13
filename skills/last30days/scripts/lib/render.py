@@ -17,6 +17,7 @@ from . import (
     library_index,
     registers,
     relevance,
+    rerank,
     schema,
     signals,
     skill_meta,
@@ -3411,20 +3412,12 @@ def _source_label(source: str) -> str:
 def _best_take_relevance_ok(candidate) -> bool:
     """Exclude off-topic-but-viral candidates from Best Takes.
 
-    The engine demotes candidates that don't match the topic entity by tagging
-    ``entity-miss`` in the explanation and/or zeroing ``final_score`` (e.g. a
-    39k-like Grand Tour comment surfacing in a 'Patagonia brand' run). Those
-    must never reach Best Takes no matter how upvoted their comments are.
-    Plain ``fallback-local-score`` (without entity-miss) is NOT a demotion --
-    it is the default reason when LLM rerank didn't score an item -- so it is
-    not gated here.
+    Delegates to ``rerank.candidate_relevance_ok``, which owns the entity-miss
+    demotion test. Do not re-implement the check here: this site previously
+    carried its own copy, which meant the first-party carve-out applied in
+    rerank never reached Best Takes or cluster visibility.
     """
-    explanation = (candidate.explanation or "").lower()
-    if "entity-miss" in explanation:
-        return False
-    if (candidate.final_score or 0.0) <= 0.0:
-        return False
-    return True
+    return rerank.candidate_relevance_ok(candidate)
 
 
 def _effective_fun_score(candidate, vote_weight: float) -> float:
