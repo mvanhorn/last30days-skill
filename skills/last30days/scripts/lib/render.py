@@ -2848,11 +2848,19 @@ def _amazon_footer_line(report: schema.Report) -> str | None:
     """
     items = report.items_by_source.get("amazon") or []
     keyword = str((report.artifacts or {}).get("amazon_query") or "").strip()
+    outcome = report.source_status.get("amazon")
+    failed = bool(outcome and outcome.state != health.OK)
 
     if not items:
-        if keyword:
-            return f'📦 Amazon: no products matched "{keyword}"'
-        return None
+        if not keyword:
+            return None
+        # An empty result is only a keyword problem when the search actually
+        # ran and came back empty. On an expired token or a CLI failure,
+        # "no products matched" sends the user to fix the wrong thing --
+        # so lead with the real outcome, same as every other footer branch.
+        if failed:
+            return f'📦 Amazon: no results for "{keyword}" │ ⚠ {_format_outcome(outcome)}'
+        return f'📦 Amazon: no products matched "{keyword}"'
 
     count = len(items)
     plural = "products" if count != 1 else "product"
@@ -2867,7 +2875,10 @@ def _amazon_footer_line(report: schema.Report) -> str | None:
             parts.append(f"{sum(rated) / len(rated):.1f}★ average")
         if total_ratings:
             parts.append(f"{total_ratings:,} ratings")
-        return f"📦 Amazon: {' │ '.join(parts)}"
+        line = f"📦 Amazon: {' │ '.join(parts)}"
+        if failed:
+            line += f" │ ⚠ {_format_outcome(outcome)}"
+        return line
 
     # Only the *sampled* products earn a slot. A run can carry a dozen
     # discovered products, but only the two or three that got a review pull
@@ -2920,7 +2931,10 @@ def _amazon_footer_line(report: schema.Report) -> str | None:
         )
         for s, item in zip(stats, items)
     ]
-    return f"📦 Amazon: {count} {plural} │ {', '.join(entries)}"
+    line = f"📦 Amazon: {count} {plural} │ {', '.join(entries)}"
+    if failed:
+        line += f" │ ⚠ {_format_outcome(outcome)}"
+    return line
 
 
 def _top_voices_footer_line(report: schema.Report) -> str | None:

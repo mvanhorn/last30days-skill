@@ -215,28 +215,67 @@ def test_params_are_passed_positionally_in_order(monkeypatch):
     brightdata.run_pipeline("amazon_product_reviews", ["https://a/dp/X", 50], timeout=60)
     cmd = seen["cmd"]
     assert cmd[:3] == ["brightdata", "pipelines", "amazon_product_reviews"]
-    assert cmd[3:5] == ["https://a/dp/X", "50"]
+    # Positionals sit after the option fence, in the order supplied.
+    assert cmd[cmd.index("--") + 1:] == ["https://a/dp/X", "50"]
     assert "--json" in cmd
 
 
-def test_api_key_passed_via_k_only_when_not_already_in_process_env(monkeypatch):
+def test_api_key_travels_in_the_environment_never_in_argv(monkeypatch):
+    """argv is not a secret channel: /proc/<pid>/cmdline is world-readable."""
+    _installed(monkeypatch)
+    seen = {}
+    monkeypatch.setattr(
+        subproc, "run_with_timeout",
+        lambda cmd, **k: seen.update(cmd=cmd, env=k.get("env")) or _Result(stdout="[]"),
+    )
+    monkeypatch.delenv("BRIGHTDATA_API_KEY", raising=False)
+    brightdata.run_pipeline(
+        "amazon_product", ["u"], timeout=30, config={"BRIGHTDATA_API_KEY": "dummy-key"}
+    )
+    assert "-k" not in seen["cmd"]
+    assert "dummy-key" not in " ".join(seen["cmd"])
+    assert seen["env"]["BRIGHTDATA_API_KEY"] == "dummy-key"
+
+
+def test_no_key_means_the_child_simply_inherits_the_parent_env(monkeypatch):
+    _installed(monkeypatch)
+    seen = {}
+    monkeypatch.setattr(
+        subproc, "run_with_timeout",
+        lambda cmd, **k: seen.update(env=k.get("env")) or _Result(stdout="[]"),
+    )
+    brightdata.run_pipeline("amazon_product", ["u"], timeout=30, config={})
+    assert seen["env"] is None
+
+
+def test_positional_params_are_fenced_behind_a_double_dash(monkeypatch):
+    """A keyword beginning with '-' must not be parsed as an option."""
     _installed(monkeypatch)
     seen = {}
     monkeypatch.setattr(
         subproc, "run_with_timeout",
         lambda cmd, **k: seen.update(cmd=cmd) or _Result(stdout="[]"),
     )
-    # From a .env/keychain layer: the child cannot see it, so -k is required,
-    # and it must precede the subcommand (-k is a global option on this CLI).
-    monkeypatch.delenv("BRIGHTDATA_API_KEY", raising=False)
-    brightdata.run_pipeline("amazon_product", ["u"], timeout=30, config={"BRIGHTDATA_API_KEY": "dummy-key"})
-    assert seen["cmd"][1:3] == ["-k", "dummy-key"]
-    assert seen["cmd"].index("-k") < seen["cmd"].index("pipelines")
+    brightdata.run_pipeline("amazon_product_search", ["--help", "https://a"], timeout=30)
+    cmd = seen["cmd"]
+    assert "--" in cmd
+    assert cmd.index("--") < cmd.index("--help")
 
-    # Already in the process env: inherited by the child, so no flag.
-    monkeypatch.setenv("BRIGHTDATA_API_KEY", "dummy-key")
-    brightdata.run_pipeline("amazon_product", ["u"], timeout=30, config={"BRIGHTDATA_API_KEY": "dummy-key"})
-    assert "-k" not in seen["cmd"]
+
+def test_the_key_is_scrubbed_out_of_surfaced_stderr(monkeypatch):
+    """Auth failures are exactly where a CLI echoes the rejected key back."""
+    _installed(monkeypatch)
+    logged = []
+    monkeypatch.setattr(brightdata.log, "source_log", lambda n, m, **k: logged.append(m))
+    monkeypatch.setattr(
+        subproc, "run_with_timeout",
+        lambda *a, **k: _Result(returncode=1, stderr="Error: 401 for key dummy-key"),
+    )
+    out = brightdata.run_pipeline(
+        "amazon_product", ["u"], timeout=30, config={"BRIGHTDATA_API_KEY": "dummy-key"}
+    )
+    assert "dummy-key" not in out["error"]
+    assert not any("dummy-key" in m for m in logged)
 
 
 # ------------------------------------------------------------- warnings

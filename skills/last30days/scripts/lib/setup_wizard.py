@@ -162,8 +162,11 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         # (arxiv, techmeme, trustpilot): {source: {installed, action, ...}}.
         "pp_sources": pp_sources,
         # Reported, never installed: this CLI spends the user's own metered
-        # credits, so acquiring it stays their decision (U5/R11).
-        "brightdata": brightdata_status(),
+        # credits, so acquiring it stays their decision (U5/R11). Passing
+        # config matters: a user whose key lives in a .env file or the
+        # keychain (rather than a `brightdata login` credentials file) is
+        # active in the engine, and setup must not tell them otherwise.
+        "brightdata": brightdata_status(config),
         "env_written": False,
     }
     if ytdlp_action == "install_failed":

@@ -129,22 +129,56 @@ def _build_args(
     params: Sequence[str],
     *,
     cli_timeout: int,
-    api_key: str = "",
 ) -> List[str]:
     """Assemble the CLI invocation.
 
-    ``-k`` is a *global* option on this CLI, so it precedes the subcommand.
-    It is only passed when the key came from a config layer the subprocess
-    would not otherwise see (a `.env` file or the keychain); a key already
-    in the process environment is inherited and needs no flag.
+    The API key is deliberately **absent** here -- it travels in the child's
+    environment instead (see ``_child_env``). Process arguments are not a
+    secret channel: ``/proc/<pid>/cmdline`` is world-readable under the
+    default ``hidepid=0``, and a review pull lives for up to 180s, so a key
+    on the command line is readable by any other local user and is captured
+    verbatim by execve auditing, process accounting, and any monitoring
+    agent that snapshots ``ps``. Mirrors the ``bird_x`` cookie-injection
+    precedent.
+
+    Positional params are fenced behind ``--`` so a keyword that happens to
+    begin with a dash is parsed as a search term rather than as an option.
     """
-    args: List[str] = [CLI_BIN]
-    if api_key:
-        args += ["-k", api_key]
-    args += ["pipelines", pipeline_type]
-    args += [str(p) for p in params]
-    args += ["--json", "--timeout", str(cli_timeout)]
-    return args
+    return [
+        CLI_BIN,
+        "pipelines",
+        pipeline_type,
+        "--json",
+        "--timeout",
+        str(cli_timeout),
+        "--",
+        *(str(p) for p in params),
+    ]
+
+
+def _child_env(api_key: str) -> Optional[Dict[str, str]]:
+    """Environment for the child process, carrying the key when we have one.
+
+    Returns None when there is nothing to inject, so the child simply
+    inherits the parent environment (the common case: the CLI owns its own
+    credentials file, or the key is already exported).
+    """
+    if not api_key:
+        return None
+    return {**os.environ, API_KEY_ENV: api_key}
+
+
+def _scrub(text: str, secret: str) -> str:
+    """Remove a secret from text before it is logged or returned.
+
+    Defense in depth for the passthrough paths: the stderr lines this
+    module deliberately surfaces are auth and quota failures, which are
+    exactly the messages a CLI is most likely to echo the rejected
+    credential back in.
+    """
+    if not secret or not text:
+        return text
+    return text.replace(secret, "***")
 
 
 def _extract_records(payload: Any) -> List[Dict[str, Any]]:
@@ -197,14 +231,11 @@ def run_pipeline(
         return {"records": [], "error": f"{CLI_BIN} not on PATH"}
 
     cli_timeout = max(5, int(timeout) - _CLI_TIMEOUT_MARGIN)
-    # A key already in the process env is inherited by the child; only pass
-    # -k when config layering surfaced it from somewhere the child can't see.
     key = _api_key(config)
-    passthrough = key if key and key != os.environ.get(API_KEY_ENV, "") else ""
-    cmd = _build_args(pipeline_type, params, cli_timeout=cli_timeout, api_key=passthrough)
+    cmd = _build_args(pipeline_type, params, cli_timeout=cli_timeout)
 
     try:
-        result = subproc.run_with_timeout(cmd, timeout=timeout)
+        result = subproc.run_with_timeout(cmd, timeout=timeout, env=_child_env(key))
     except subproc.SubprocTimeout as exc:
         _log(f"Timeout: {exc}")
         return {"records": [], "error": str(exc)}
@@ -215,7 +246,7 @@ def run_pipeline(
         _log(f"Spawn failed: {exc}")
         return {"records": [], "error": str(exc)}
 
-    stderr = result.stderr or ""
+    stderr = _scrub(result.stderr or "", key)
     _passthrough_warnings(stderr)
 
     if result.returncode != 0:

@@ -1943,6 +1943,11 @@ def run(
         youtube_yt.reset_search_cache()
     settings = _resolve_depth_settings(depth, config)
     requested_sources = normalize_requested_sources(requested_sources)
+    # Wall-clock origin for budget-aware enrichment lanes. Retrieval can eat
+    # most of the foreground contract before enrichment starts, so a lane that
+    # sizes its deadline against a constant alone can push a run past the
+    # contract; the amazon review lane clamps against what is actually left.
+    run_started = time.monotonic()
     from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
     resolved_corpus_dirs = corpus.resolve_directories(
         corpus_dirs or config.get("_CORPUS_DIRS"),
@@ -2418,6 +2423,7 @@ def run(
 
     items_by_source = _finalize_items_by_source(
         bundle.items_by_source, topic=topic, config=config, depth=depth, mock=mock,
+        elapsed=time.monotonic() - run_started,
     )
     source_status = _finalize_source_status(bundle.source_status, items_by_source)
     candidates = weighted_rrf(bundle.items_by_source_and_query, plan, pool_limit=settings["pool_limit"])
@@ -2759,6 +2765,7 @@ def _finalize_items_by_source(
     config: dict | None = None,
     depth: str = "default",
     mock: bool = False,
+    elapsed: float = 0.0,
 ) -> dict[str, list[schema.SourceItem]]:
     finalized = {}
     for source, items in items_by_source_raw.items():
@@ -2825,6 +2832,10 @@ def _finalize_items_by_source(
                     depth=depth,
                     config=config,
                     keyword=str((config or {}).get("_amazon_query") or "").strip() or topic,
+                    # Retrieval time already spent, so the lane sizes its
+                    # deadline against what remains of the 300s contract
+                    # rather than always claiming its full constant.
+                    elapsed=elapsed,
                 )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         finalized[source] = items

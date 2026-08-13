@@ -118,8 +118,15 @@ def undouble(text: str) -> str:
     if not value:
         return ""
     half, odd = divmod(len(value), 2)
-    if not odd and value[:half] == value[half:]:
-        return value[:half].strip()
+    # Only treat an exact repeat as doubling when the halves are substantial
+    # and look like a phrase rather than a syllable -- otherwise a real title
+    # of "ByeBye" or "NoNo" gets silently truncated to half of itself. The
+    # observed artifact doubles whole headlines, so requiring some length and
+    # either whitespace or terminal punctuation keeps the repair targeted.
+    if not odd and half >= 6 and value[:half] == value[half:]:
+        first = value[:half]
+        if " " in first or first[-1] in ".!?":
+            return first.strip()
     parts = [p.strip() for p in value.split(",")]
     if len(parts) == 2 and parts[0] and parts[0] == parts[1]:
         return parts[0]
@@ -158,8 +165,15 @@ def short_name(name: str, brand: str = "") -> str:
     """
     text = re.split(r"[|(–—]", str(name or ""), maxsplit=1)[0].strip(" -,")
     brand_token = str(brand or "").strip()
-    if brand_token and text.lower().startswith(brand_token.lower()):
-        text = text[len(brand_token):].strip(" -,")
+    if brand_token:
+        # Word-boundary anchored: a bare startswith() eats into sub-brands and
+        # coincidental prefixes ("AnkerWork" under brand "Anker" would become
+        # "Work", "Chillax" under "Chill" would become "ax").
+        stripped = re.sub(
+            rf"^{re.escape(brand_token)}\b[\s\-,]*", "", text, count=1, flags=re.IGNORECASE
+        )
+        if stripped:
+            text = stripped.strip(" -,")
     if len(text) <= SHORT_NAME_MAX:
         return text
     clipped = text[:SHORT_NAME_MAX].rsplit(" ", 1)[0].strip(" -,")
@@ -207,14 +221,27 @@ def _valid_product_url(url: str, domain: str) -> bool:
     return bool(want) and host == want
 
 
+# Amazon ASINs are a fixed shape. Validating it matters because the value
+# is interpolated into a URL that is then refetched through the CLI *and*
+# rendered as a link in the report -- two sinks, one unvalidated API field.
+_ASIN_RE = re.compile(r"^[A-Za-z0-9]{10}$")
+
+
+def _valid_asin(asin: str) -> bool:
+    return bool(_ASIN_RE.match(asin or ""))
+
+
 def canonical_product_url(url: str, asin: str, domain: str) -> str:
     """Strip Amazon's tracking tail down to a stable /dp/<asin> link.
 
     Search records carry 200+ character URLs with session-scoped ``dib``
     tokens. Those work but are unreadable in a report and unstable across
     runs, which breaks dedupe on re-runs of the same topic.
+
+    Falls back to the (already host-validated) original URL if the ASIN is
+    not well-formed, so a malformed record can never shape the rebuilt URL.
     """
-    if not asin:
+    if not _valid_asin(asin):
         return url
     base = (domain or DEFAULT_DOMAIN).rstrip("/")
     return f"{base}/dp/{asin}"
@@ -234,6 +261,13 @@ def search_products(
     query = (keyword or "").strip()
     if not query:
         return {"records": []}
+    # A leading dash would be parsed as a CLI option rather than a search
+    # term. The keyword is model-supplied and can be influenced by
+    # pre-research over untrusted web content, so reject rather than
+    # sanitize -- a keyword starting with '-' is never a real product.
+    if query.startswith("-"):
+        _log(f"rejecting option-shaped keyword: {query!r}")
+        return {"records": [], "error": "amazon keyword may not begin with '-'"}
     _log(f"search '{query}' on {domain}")
     response = brightdata.run_pipeline(
         SEARCH_PIPELINE, [query, domain or DEFAULT_DOMAIN],
@@ -271,7 +305,7 @@ def parse_search_response(
             continue
         asin = str(record.get("asin") or "").strip()
         raw_url = str(record.get("url") or "").strip()
-        if not asin or not _valid_product_url(raw_url, domain):
+        if not _valid_asin(asin) or not _valid_product_url(raw_url, domain):
             continue
 
         name = str(record.get("name") or "").strip()
@@ -335,15 +369,34 @@ def infer_brand(products: Sequence[Dict[str, Any]], keyword: str) -> str:
     the top products across brands compete on merit -- which is exactly
     what that topic shape wants.
     """
-    tokens = {t for t in re.findall(r"[a-z0-9]+", (keyword or "").lower()) if len(t) > 2}
-    if not tokens:
+    normalized_keyword = " ".join(re.findall(r"[a-z0-9]+", (keyword or "").lower()))
+    if not normalized_keyword:
         return ""
-    candidates = {
-        str(p.get("brand") or "").strip()
-        for p in products
-        if str(p.get("brand") or "").strip().lower() in tokens
-    }
-    return candidates.pop() if len(candidates) == 1 else ""
+    keyword_tokens = set(normalized_keyword.split())
+
+    # Keyed by the lowercased brand so one vendor spelled two ways ("Bentgo"
+    # and "BENTGO" in the same result set) reads as one candidate. Without
+    # this the set has two members, the function bails, and the guard it
+    # exists to provide silently turns off.
+    candidates: Dict[str, str] = {}
+    for product in products:
+        brand = str(product.get("brand") or "").strip()
+        if not brand:
+            continue
+        brand_tokens = re.findall(r"[a-z0-9]+", brand.lower())
+        if not brand_tokens:
+            continue
+        # Multi-word brands ("Hydro Flask") can never match a single-token
+        # test, so compare the brand's whole token sequence against the
+        # keyword's -- otherwise the guard is off for every two-word brand.
+        if len(brand_tokens) == 1:
+            matched = brand_tokens[0] in keyword_tokens and len(brand_tokens[0]) > 2
+        else:
+            matched = " ".join(brand_tokens) in normalized_keyword
+        if matched:
+            # First spelling wins, so the result is deterministic across runs.
+            candidates.setdefault(brand.lower(), brand)
+    return next(iter(candidates.values())) if len(candidates) == 1 else ""
 
 
 def select_enrichment_targets(
@@ -524,7 +577,15 @@ def enrich_with_reviews(
 
     _log(f"pulling up to {max_reviews} reviews for {len(targets)} products (budget {budget}s)")
     started = time.monotonic()
-    with ThreadPoolExecutor(max_workers=max(1, len(targets))) as pool:
+    # Not a `with` block on purpose. Every future is already running (one
+    # worker per target), so `future.cancel()` can never succeed, and
+    # ThreadPoolExecutor's context-manager exit calls shutdown(wait=True) --
+    # which would block on the very straggler the deadline just declared
+    # dropped, making the deadline advisory rather than real. Shutting down
+    # without waiting lets the abandoned thread finish and discard its result
+    # in the background while the run proceeds.
+    pool = ThreadPoolExecutor(max_workers=max(1, len(targets)))
+    try:
         futures = {pool.submit(pull, t["url"]): t["asin"] for t in targets}
         try:
             for future in as_completed(futures, timeout=budget):
@@ -544,10 +605,10 @@ def enrich_with_reviews(
                 product["top_comments"] = comments
                 product.update({k: v for k, v in stats.items() if v})
         except TimeoutError:
-            dropped = [a for f, a in futures.items() if not f.done()]
-            _log(f"lane deadline {budget}s hit; dropped {len(dropped)} straggling pull(s)")
-            for future in futures:
-                future.cancel()
+            dropped = sum(1 for f in futures if not f.done())
+            _log(f"lane deadline {budget}s hit; dropped {dropped} straggling pull(s)")
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
     _log(f"review lane finished in {time.monotonic() - started:.0f}s")
     return enriched
@@ -609,8 +670,35 @@ def enrich_source_items(
             continue
         if product.get("top_comments"):
             metadata["top_comments"] = product["top_comments"]
-        metadata["stats"] = product_stats(product)
+        stats = product_stats(product)
+        metadata["stats"] = stats
+        # The review pull's product_rating_count supersedes the search
+        # record's, which is variant-level and can undercount by orders of
+        # magnitude (84 on a record whose pull reported 8,446). Normalization
+        # ran before enrichment, so refresh the surfaces that already baked
+        # the old number in -- otherwise one product shows two different
+        # rating counts in the same report.
+        for key in ("product_rating", "product_rating_count", "star_distribution"):
+            if product.get(key):
+                metadata[key] = product[key]
+        authoritative = stats.get("ratings_total") or 0
+        if authoritative and getattr(item, "engagement", None) is not None:
+            item.engagement["ratings"] = authoritative
+            metadata["num_ratings"] = authoritative
+            _refresh_title(item, stats)
     return items
+
+
+def _refresh_title(item: Any, stats: Dict[str, Any]) -> None:
+    """Rewrite the trailing "- 4.4/5 (N ratings)" headline after enrichment."""
+    title = getattr(item, "title", "") or ""
+    rating = stats.get("all_time")
+    total = stats.get("ratings_total") or 0
+    if not title or rating is None or not total:
+        return
+    headline = f"{rating}/5 ({total:,} ratings)"
+    base = title.rsplit(" - ", 1)[0] if " - " in title else title
+    item.title = f"{base} - {headline}"
 
 
 # ------------------------------------------------------------------ stats

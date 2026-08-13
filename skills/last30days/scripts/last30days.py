@@ -3446,6 +3446,14 @@ def _main(
                 # leak across sub-runs. Each sub-run writes its own
                 # `_auto_resolve_context` into its local config copy.
                 entity_config = dict(config)
+                # The Amazon keyword is entity-SPECIFIC, unlike the depth caps
+                # this shallow copy exists to inherit. Leaving the main topic's
+                # keyword in place would search Weber SKUs for a Traeger peer,
+                # render a rival's products as that peer's buyer evidence, and
+                # multiply the metered spend by the number of entities. Drop it
+                # so each peer derives its own keyword from its own topic; a
+                # per-entity keyword can ride in the --competitors-plan entry.
+                entity_config.pop("_amazon_query", None)
                 plan_entry = comp_plan.get(entity.strip().lower(), {})
                 resolved = {
                     "entity": entity,

@@ -137,20 +137,20 @@ class TestDiscovery:
     def test_off_keyword_products_are_gated_out(self):
         records = [
             search_record(),
-            search_record(asin="B0ZZZ", name="Cordless Drill Driver Kit", brand="DeWalt",
-                          url="https://www.amazon.com/dp/B0ZZZ"),
+            search_record(asin="B0ZZZ00001", name="Cordless Drill Driver Kit", brand="DeWalt",
+                          url="https://www.amazon.com/dp/B0ZZZ00001"),
         ]
         products = amazon.parse_search_response({"records": records}, "bentgo lunch box")
         assert [p["asin"] for p in products] == ["B0AAA00001"]
 
     def test_non_amazon_and_non_https_urls_are_rejected(self):
         records = [
-            search_record(asin="B1", url="http://www.amazon.com/dp/B1"),
-            search_record(asin="B2", url="https://evil.example.com/dp/B2"),
-            search_record(asin="B3", url="https://www.amazon.com/dp/B3"),
+            search_record(asin="B000000001", url="http://www.amazon.com/dp/B000000001"),
+            search_record(asin="B000000002", url="https://evil.example.com/dp/B2"),
+            search_record(asin="B000000003", url="https://www.amazon.com/dp/B000000003"),
         ]
         products = amazon.parse_search_response({"records": records}, "bentgo chill max lunch box")
-        assert [p["asin"] for p in products] == ["B3"]
+        assert [p["asin"] for p in products] == ["B000000003"]
 
     def test_alternate_marketplace_domain_is_honored(self):
         record = search_record(url="https://www.amazon.co.uk/dp/B0AAA00001")
@@ -162,12 +162,12 @@ class TestDiscovery:
     def test_sponsored_string_is_recorded_as_bool_never_filtered(self):
         """R4: the flag is metadata only. Filtering can blank the lane."""
         records = [
-            search_record(asin="B1", sponsored="true", url="https://www.amazon.com/dp/B1"),
-            search_record(asin="B2", sponsored="false", url="https://www.amazon.com/dp/B2"),
+            search_record(asin="B000000001", sponsored="true", url="https://www.amazon.com/dp/B000000001"),
+            search_record(asin="B000000002", sponsored="false", url="https://www.amazon.com/dp/B000000002"),
         ]
         products = amazon.parse_search_response({"records": records}, "bentgo chill max lunch box")
         assert len(products) == 2
-        assert {p["asin"]: p["sponsored"] for p in products} == {"B1": True, "B2": False}
+        assert {p["asin"]: p["sponsored"] for p in products} == {"B000000001": True, "B000000002": False}
 
     def test_error_envelope_yields_no_products(self):
         assert amazon.parse_search_response({"records": [], "error": "401"}, "x") == []
@@ -178,18 +178,18 @@ class TestTargetSelection:
         return amazon.parse_search_response(
             {
                 "records": [
-                    search_record(asin="C1", brand="Fimibuke", num_ratings=901,
+                    search_record(asin="C000000001", brand="Fimibuke", num_ratings=901,
                                   name="60oz Leakproof Bento Lunch Box",
-                                  url="https://www.amazon.com/dp/C1"),
-                    search_record(asin="B1", brand="Bentgo", num_ratings=821,
+                                  url="https://www.amazon.com/dp/C000000001"),
+                    search_record(asin="B000000001", brand="Bentgo", num_ratings=821,
                                   name="Kids Insulated Lunch Bag",
-                                  url="https://www.amazon.com/dp/B1"),
-                    search_record(asin="B2", brand="Bentgo", num_ratings=710,
+                                  url="https://www.amazon.com/dp/B000000001"),
+                    search_record(asin="B000000002", brand="Bentgo", num_ratings=710,
                                   name="MicroSteel Bento Lunch Box",
-                                  url="https://www.amazon.com/dp/B2"),
-                    search_record(asin="B3", brand="Bentgo", num_ratings=623,
+                                  url="https://www.amazon.com/dp/B000000002"),
+                    search_record(asin="B000000003", brand="Bentgo", num_ratings=623,
                                   name="Classic Stackable Lunch Box",
-                                  url="https://www.amazon.com/dp/B3"),
+                                  url="https://www.amazon.com/dp/B000000003"),
                 ]
             },
             "bentgo lunch box",
@@ -198,12 +198,12 @@ class TestTargetSelection:
     def test_brand_topic_excludes_competitors_buying_the_keyword(self):
         """The guard against paying to review a rival's product."""
         targets = amazon.select_enrichment_targets(self._pool(), limit=3, keyword="bentgo lunch box")
-        assert [t["asin"] for t in targets] == ["B1", "B2", "B3"]
+        assert [t["asin"] for t in targets] == ["B000000001", "B000000002", "B000000003"]
         assert all(t["brand"] == "Bentgo" for t in targets)
 
     def test_category_topic_stays_unfiltered_and_ranks_on_merit(self):
         targets = amazon.select_enrichment_targets(self._pool(), limit=3, keyword="kids lunch box")
-        assert targets[0]["asin"] == "C1"
+        assert targets[0]["asin"] == "C000000001"
 
     def test_infer_brand_needs_the_keyword_to_name_it(self):
         pool = self._pool()
@@ -214,18 +214,18 @@ class TestTargetSelection:
         pool = amazon.parse_search_response(
             {
                 "records": [
-                    search_record(asin="V1", num_ratings=901, name="60oz Leakproof Box | Blue",
-                                  url="https://www.amazon.com/dp/V1"),
-                    search_record(asin="V2", num_ratings=900, name="60oz Leakproof Box | Pink",
-                                  url="https://www.amazon.com/dp/V2"),
-                    search_record(asin="V3", num_ratings=500, name="Chill Max XL Box",
-                                  url="https://www.amazon.com/dp/V3"),
+                    search_record(asin="V000000001", num_ratings=901, name="60oz Leakproof Box | Blue",
+                                  url="https://www.amazon.com/dp/V000000001"),
+                    search_record(asin="V000000002", num_ratings=900, name="60oz Leakproof Box | Pink",
+                                  url="https://www.amazon.com/dp/V000000002"),
+                    search_record(asin="V000000003", num_ratings=500, name="Chill Max XL Box",
+                                  url="https://www.amazon.com/dp/V000000003"),
                 ]
             },
             "bentgo lunch box",
         )
         targets = amazon.select_enrichment_targets(pool, limit=2, keyword="bentgo lunch box")
-        assert [t["asin"] for t in targets] == ["V1", "V3"]
+        assert [t["asin"] for t in targets] == ["V000000001", "V000000003"]
 
     def test_zero_limit_selects_nothing(self):
         assert amazon.select_enrichment_targets(self._pool(), limit=0) == []
@@ -270,7 +270,7 @@ class TestReviewParsing:
 class TestEnrichmentLane:
     def _products(self, n=4):
         return [
-            {"asin": f"B{i}", "url": f"https://www.amazon.com/dp/B{i}",
+            {"asin": f"B00000000{i}", "url": f"https://www.amazon.com/dp/B00000000{i}",
              "name": f"Product {i}", "short_name": f"Product {i}",
              "brand": "Bentgo", "num_ratings": 900 - i, "rating": 4.4}
             for i in range(n)
@@ -314,10 +314,10 @@ class TestEnrichmentLane:
         original = bd.run_pipeline
         bd.run_pipeline = lambda p, params, **k: seen.update(params=params) or {"records": []}
         try:
-            amazon.fetch_reviews("https://www.amazon.com/dp/B1")
+            amazon.fetch_reviews("https://www.amazon.com/dp/B000000001")
         finally:
             bd.run_pipeline = original
-        assert seen["params"] == ["https://www.amazon.com/dp/B1", "50"]
+        assert seen["params"] == ["https://www.amazon.com/dp/B000000001", "50"]
 
     def test_reviews_attach_to_the_right_product(self):
         out = amazon.enrich_with_reviews(
@@ -329,19 +329,19 @@ class TestEnrichmentLane:
 
     def test_one_failing_pull_does_not_discard_its_siblings(self):
         def fetcher(url):
-            if url.endswith("B1"):
+            if url.endswith("B000000001"):
                 return {"records": [], "error": "snapshot failed"}
             return {"records": [review_record(2, 5)]}
 
         out = amazon.enrich_with_reviews(self._products(3), depth="default", fetcher=fetcher)
         by_asin = {p["asin"]: p for p in out}
-        assert not by_asin["B1"].get("top_comments")
-        assert by_asin["B0"].get("top_comments")
-        assert by_asin["B2"].get("top_comments")
+        assert not by_asin["B000000001"].get("top_comments")
+        assert by_asin["B000000000"].get("top_comments")
+        assert by_asin["B000000002"].get("top_comments")
 
     def test_one_raising_pull_does_not_kill_the_lane(self):
         def fetcher(url):
-            if url.endswith("B1"):
+            if url.endswith("B000000001"):
                 raise RuntimeError("boom")
             return {"records": [review_record(2, 5)]}
 
@@ -353,7 +353,7 @@ class TestEnrichmentLane:
         import time as _time
 
         def slow(url):
-            if url.endswith("B0"):
+            if url.endswith("B000000000"):
                 _time.sleep(3)
             return {"records": [review_record(2, 5)]}
 
@@ -362,10 +362,10 @@ class TestEnrichmentLane:
             elapsed=amazon.FOREGROUND_CONTRACT - amazon.RENDER_MARGIN - 1,
         )
         by_asin = {p["asin"]: p for p in out}
-        assert set(by_asin) == {"B0", "B1"}
+        assert set(by_asin) == {"B000000000", "B000000001"}
         # Search-record stats survive on the dropped product.
-        assert by_asin["B0"]["rating"] == 4.4
-        assert by_asin["B0"]["num_ratings"] == 900
+        assert by_asin["B000000000"]["rating"] == 4.4
+        assert by_asin["B000000000"]["num_ratings"] == 900
 
     def test_exhausted_wall_clock_skips_the_lane_entirely(self):
         calls = []
@@ -522,7 +522,7 @@ class _Item:
 
 class TestSourceItemEnrichment:
     def test_reviews_and_stats_land_on_item_metadata(self):
-        items = [_Item("B1"), _Item("B2")]
+        items = [_Item("B000000001"), _Item("B000000002")]
         amazon.enrich_source_items(
             items, depth="default", keyword="bentgo lunch box",
             fetcher=lambda url: {"records": [
@@ -534,13 +534,13 @@ class TestSourceItemEnrichment:
             assert item.metadata["stats"]["drift"] == "down"
 
     def test_non_amazon_items_are_untouched(self):
-        other = _Item("B1")
+        other = _Item("B000000001")
         other.source = "reddit"
         amazon.enrich_source_items([other], depth="default", fetcher=lambda url: {"records": []})
         assert "top_comments" not in other.metadata
 
     def test_already_enriched_items_are_not_re_pulled(self):
-        item = _Item("B1", top_comments=[{"excerpt": "cached", "score": 0, "rating": 5, "date": None}])
+        item = _Item("B000000001", top_comments=[{"excerpt": "cached", "score": 0, "rating": 5, "date": None}])
         calls = []
         amazon.enrich_source_items(
             [item], depth="default",
@@ -549,7 +549,7 @@ class TestSourceItemEnrichment:
         assert calls == []
 
     def test_quick_depth_touches_nothing(self):
-        items = [_Item("B1")]
+        items = [_Item("B000000001")]
         calls = []
         amazon.enrich_source_items(
             items, depth="quick",
@@ -561,7 +561,7 @@ class TestSourceItemEnrichment:
 
 class TestStatsFromItem:
     def test_uses_the_cached_block_when_enrichment_already_ran(self):
-        item = _Item("B1", stats={"short_name": "Cached", "drift": "up"})
+        item = _Item("B000000001", stats={"short_name": "Cached", "drift": "up"})
         assert amazon.stats_from_item(item)["short_name"] == "Cached"
 
     def test_recomputes_from_metadata_when_absent(self):
@@ -658,3 +658,87 @@ class TestFooterLine:
         items = [_FooterItem("Sagging", reviews=20, recent=3.8, drift="down")]
         line = self._line(items)
         assert "↓" in line and '"' not in line
+
+
+class TestInputHardening:
+    def test_malformed_asin_records_are_rejected(self):
+        """The ASIN is interpolated into a URL that is refetched and rendered."""
+        records = [
+            search_record(asin="../../etc/passwd", url="https://www.amazon.com/dp/x"),
+            search_record(asin="B0AAA0000", url="https://www.amazon.com/dp/y"),   # 9 chars
+            search_record(asin="B0AAA000012", url="https://www.amazon.com/dp/z"),  # 11 chars
+            search_record(asin="B0AAA00001", url="https://www.amazon.com/dp/ok"),
+        ]
+        products = amazon.parse_search_response({"records": records}, "bentgo chill max lunch box")
+        assert [p["asin"] for p in products] == ["B0AAA00001"]
+
+    def test_canonical_url_falls_back_when_the_asin_is_malformed(self):
+        original = "https://www.amazon.com/dp/legit"
+        assert amazon.canonical_product_url(original, "not-an-asin", DOMAIN) == original
+
+    def test_option_shaped_keyword_is_rejected_before_the_cli_runs(self):
+        """A leading dash would be parsed as a flag, not a search term."""
+        calls = []
+        import lib.brightdata as bd
+        original = bd.run_pipeline
+        bd.run_pipeline = lambda *a, **k: calls.append(a) or {"records": []}
+        try:
+            out = amazon.search_products("--help")
+        finally:
+            bd.run_pipeline = original
+        assert calls == []
+        assert "may not begin" in out["error"]
+
+
+class TestReviewFindingRegressions:
+    """Regressions caught by the correctness review pass."""
+
+    def test_brand_inference_survives_mixed_casing(self):
+        """One vendor spelled two ways must not disable the guard."""
+        pool = [{"brand": "Bentgo"}, {"brand": "BENTGO"}, {"brand": "Umi"}]
+        assert amazon.infer_brand(pool, "bentgo lunch box") == "Bentgo"
+
+    def test_multi_word_brands_are_matched(self):
+        pool = [{"brand": "Hydro Flask"}, {"brand": "Iron Flask"}]
+        assert amazon.infer_brand(pool, "hydro flask water bottle") == "Hydro Flask"
+
+    def test_two_distinct_brands_in_the_keyword_stay_ambiguous(self):
+        pool = [{"brand": "Yeti"}, {"brand": "Stanley"}]
+        assert amazon.infer_brand(pool, "yeti vs stanley tumbler") == ""
+
+    def test_short_name_respects_word_boundaries_on_the_brand(self):
+        """A bare startswith() ate into sub-brands and coincidental prefixes."""
+        assert amazon.short_name("AnkerWork B600 Video Bar", "Anker") == "AnkerWork B600"
+        assert amazon.short_name("Chillax Bento Lunch Box", "Chill") == "Chillax Bento"
+
+    def test_undouble_leaves_short_repeated_words_alone(self):
+        assert amazon.undouble("ByeBye") == "ByeBye"
+        assert amazon.undouble("NoNo") == "NoNo"
+        # Real doubling of a whole headline still repairs.
+        assert amazon.undouble("Best Box!Best Box!") == "Best Box!"
+        assert amazon.undouble("Great value for money.Great value for money.") == \
+            "Great value for money."
+
+    def test_lane_budget_shrinks_as_the_run_clock_advances(self):
+        """The clamp was dead code until `elapsed` was threaded through."""
+        assert amazon._remaining_lane_budget(0.0) == amazon.LANE_DEADLINE
+        mid = amazon._remaining_lane_budget(200.0)
+        assert 0 < mid < amazon.LANE_DEADLINE
+        assert amazon._remaining_lane_budget(295.0) == 0
+
+    def test_enrichment_refreshes_the_variant_level_rating_count(self):
+        """Search counts undercount badly; the pull's count is authoritative."""
+        item = _Item("B000000001", name="Deluxe Bag", num_ratings=84)
+        item.title = "Bentgo Deluxe Bag - 4.7/5 (84 ratings)"
+        item.engagement = {"ratings": 84}
+        amazon.enrich_source_items(
+            [item], depth="default",
+            fetcher=lambda url: {"records": [
+                review_record(i + 1, 5, product_rating=4.7, product_rating_count=8446)
+                for i in range(5)
+            ]},
+        )
+        assert item.engagement["ratings"] == 8446
+        assert "8,446 ratings" in item.title
+        assert "84 ratings" not in item.title
+        assert item.metadata["stats"]["ratings_total"] == 8446
