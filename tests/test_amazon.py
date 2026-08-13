@@ -578,3 +578,83 @@ class TestStatsFromItem:
         assert stats["drift"] == "down"
         assert stats["all_time"] == 4.4
         assert round(stats["five_star_share"] * 100) == 73
+
+
+class _FooterItem:
+    def __init__(self, short_name, *, reviews=0, all_time=4.4, recent=None,
+                 drift="quiet", quote=None):
+        self.source = "amazon"
+        self.url = "https://www.amazon.com/dp/X"
+        self.title = short_name
+        self.metadata = {
+            "asin": short_name,
+            "stats": {
+                "short_name": short_name, "all_time": all_time,
+                "recent_avg": recent, "drift": drift,
+                "reviews_pulled": reviews, "ratings_total": 100,
+                "five_star_share": 0.7, "recent_n": 5 if recent else 0,
+                "url": self.url,
+            },
+        }
+        if quote:
+            self.metadata["pulse_quote"] = quote
+
+
+def _report(items, *, keyword="bentgo lunch box"):
+    from lib import schema
+    report = object.__new__(schema.Report)
+    object.__setattr__(report, "items_by_source", {"amazon": items})
+    object.__setattr__(report, "artifacts", {"amazon_query": keyword})
+    object.__setattr__(report, "source_status", {})
+    return report
+
+
+class TestFooterLine:
+    def _line(self, items, **kw):
+        from lib import render
+        return render._amazon_footer_line(_report(items, **kw))
+
+    def test_only_sampled_products_get_a_slot(self):
+        """A dozen discovered products must not become a dozen entries."""
+        items = [_FooterItem("Sampled", reviews=20, recent=3.8, drift="down")]
+        items += [_FooterItem(f"Unsampled{i}") for i in range(9)]
+        line = self._line(items)
+        assert "Sampled 4.4★→3.8★ ↓" in line
+        assert "Unsampled" not in line
+        # The count still reports everything discovered.
+        assert line.startswith("📦 Amazon: 10 products │")
+
+    def test_duplicate_variant_names_are_collapsed(self):
+        items = [
+            _FooterItem("Kids Bento", reviews=20, recent=4.9, drift="up"),
+            _FooterItem("Kids Bento", reviews=20, recent=4.8, drift="up"),
+        ]
+        assert self._line(items).count("Kids Bento") == 1
+
+    def test_quick_depth_renders_the_inventory_form(self):
+        items = [_FooterItem("A"), _FooterItem("B")]
+        line = self._line(items)
+        assert "→" not in line
+        assert "average" in line and "ratings" in line
+
+    def test_empty_result_names_the_keyword(self):
+        assert self._line([]) == '📦 Amazon: no products matched "bentgo lunch box"'
+
+    def test_no_line_at_all_when_the_source_never_ran(self):
+        assert self._line([], keyword="") is None
+
+    def test_quote_lands_only_on_the_sharpest_negative_drift(self):
+        items = [
+            _FooterItem("Mild", reviews=20, all_time=4.4, recent=4.2, drift="down",
+                        quote="minor gripe"),
+            _FooterItem("Worst", reviews=20, all_time=4.4, recent=3.0, drift="down",
+                        quote="the lid jams"),
+        ]
+        line = self._line(items)
+        assert '"the lid jams"' in line
+        assert "minor gripe" not in line
+
+    def test_no_quote_when_the_model_supplied_none(self):
+        items = [_FooterItem("Sagging", reviews=20, recent=3.8, drift="down")]
+        line = self._line(items)
+        assert "↓" in line and '"' not in line

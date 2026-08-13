@@ -2856,18 +2856,40 @@ def _amazon_footer_line(report: schema.Report) -> str | None:
 
     count = len(items)
     plural = "products" if count != 1 else "product"
-    stats = [amazon.stats_from_item(item) for item in items]
+    all_stats = [amazon.stats_from_item(item) for item in items]
 
     # Quick depth pulls no reviews at all, so nothing has a recent window.
-    if not any(s.get("reviews_pulled") for s in stats):
-        rated = [s["all_time"] for s in stats if s.get("all_time") is not None]
-        total_ratings = sum(s.get("ratings_total") or 0 for s in stats)
+    if not any(s.get("reviews_pulled") for s in all_stats):
+        rated = [s["all_time"] for s in all_stats if s.get("all_time") is not None]
+        total_ratings = sum(s.get("ratings_total") or 0 for s in all_stats)
         parts = [f"{count} {plural}"]
         if rated:
             parts.append(f"{sum(rated) / len(rated):.1f}★ average")
         if total_ratings:
             parts.append(f"{total_ratings:,} ratings")
         return f"📦 Amazon: {' │ '.join(parts)}"
+
+    # Only the *sampled* products earn a slot. A run can carry a dozen
+    # discovered products, but only the two or three that got a review pull
+    # have a recent window at all -- rendering the rest appends a string of
+    # `quiet` entries that push the line past every other source in the box
+    # while adding nothing (observed live: 12 entries, 9 of them padding).
+    # The count still reports everything found, so nothing is hidden.
+    sampled = [
+        (s, item) for s, item in zip(all_stats, items) if s.get("reviews_pulled")
+    ]
+    # Variants of one product share a short name; showing both reads as a
+    # rendering bug even though the ASINs differ.
+    stats, shown_items, seen_names = [], [], set()
+    for stat, item in sampled:
+        key = (stat.get("short_name") or "").strip().lower()
+        if key and key in seen_names:
+            continue
+        if key:
+            seen_names.add(key)
+        stats.append(stat)
+        shown_items.append(item)
+    items = shown_items
 
     # At most one quote, on the sharpest negative drift only, and only if
     # the model supplied one at weave time. The engine never derives it:
