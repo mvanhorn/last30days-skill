@@ -16,7 +16,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
-from . import log, schema, youtube_yt
+from . import doctor, log, schema, youtube_yt
 
 # Sub-runs hit the same upstream APIs as the main topic. Cap parallelism so a
 # 6-way fan-out does not stampede a single backend's rate limit.
@@ -60,6 +60,11 @@ def run_competitor_fanout(
     def _run_one(label: str, fn: Callable[[], schema.Report]) -> tuple[str, schema.Report | None, Exception | None]:
         try:
             return label, fn(), None
+        except doctor.SourceGateError:
+            # A selected-source failure is a run-level coverage failure, not an
+            # entity-local degradation. Let it escape so comparison rendering
+            # is suppressed and the CLI returns the gate's exit code.
+            raise
         except Exception as exc:
             return label, None, exc
 

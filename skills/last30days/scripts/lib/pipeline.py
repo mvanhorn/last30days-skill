@@ -2170,6 +2170,30 @@ def run(
                     # diagnostic. Adapter stderr can include provider response
                     # text, so discard it rather than echoing an unknown body.
                     with contextlib.redirect_stderr(io.StringIO()):
+                        if source == "github" and github_repos:
+                            items = github.search_github_project(
+                                github_repos,
+                                from_date,
+                                to_date,
+                                depth=probe_depth,
+                                token=config.get("GITHUB_TOKEN"),
+                            )
+                            return doctor.LiveProbeResult(
+                                state=health.OK if items else health.NO_RESULTS,
+                                value=("github-project", items),
+                            )
+                        if source == "github" and github_user:
+                            items = github.search_github_person(
+                                github_user,
+                                from_date,
+                                to_date,
+                                depth=probe_depth,
+                                token=config.get("GITHUB_TOKEN"),
+                            )
+                            return doctor.LiveProbeResult(
+                                state=health.OK if items else health.NO_RESULTS,
+                                value=("github-person", items),
+                            )
                         items, artifact = _retrieve_stream(
                             topic=topic,
                             subquery=probe_subqueries[source],
@@ -2304,14 +2328,23 @@ def run(
     _github_custom_done = False
     _github_enriched_repos: set[str] = set()
 
-    # Project mode takes priority over person mode
+    # Project mode takes priority over person mode. Normal runs reuse the
+    # targeted request that passed the gate; mock/legacy callers without gate
+    # evidence still execute the same targeted adapter here.
     if github_repos and "github" in available:
         bundle.mark_attempted("github")
         try:
-            project_items = github.search_github_project(
-                github_repos, from_date, to_date,
-                depth=depth, token=config.get("GITHUB_TOKEN"),
-            )
+            github_gate_value = gate_results.get("github")
+            github_gate_value = github_gate_value.value if github_gate_value else None
+            if github_gate_value and github_gate_value[0] == "github-project":
+                project_items = github_gate_value[1]
+            else:
+                project_items = github.search_github_project(
+                    github_repos, from_date, to_date,
+                    depth=depth, token=config.get("GITHUB_TOKEN"),
+                )
+            _github_custom_done = True
+            _github_enriched_repos = {r.lower() for r in github_repos}
             if project_items:
                 normalized = _normalize_score_dedupe(
                     "github", project_items, from_date, to_date,
@@ -2320,8 +2353,12 @@ def run(
                 )
                 primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
                 bundle.add_items(primary_label, "github", normalized)
-                _github_custom_done = True
-                _github_enriched_repos = {r.lower() for r in github_repos}
+            else:
+                bundle.record_failure(
+                    "github",
+                    health.NO_RESULTS,
+                    "Project mode found no activity in the window",
+                )
         except Exception as exc:
             bundle.errors_by_source["github"] = f"Project-mode failed: {exc}"
             state, attempted = _classify_source_failure(exc)
@@ -2332,10 +2369,15 @@ def run(
         bundle.mark_attempted("github")
         _github_person_done = True
         try:
-            person_items = github.search_github_person(
-                github_user, from_date, to_date,
-                depth=depth, token=config.get("GITHUB_TOKEN"),
-            )
+            github_gate_value = gate_results.get("github")
+            github_gate_value = github_gate_value.value if github_gate_value else None
+            if github_gate_value and github_gate_value[0] == "github-person":
+                person_items = github_gate_value[1]
+            else:
+                person_items = github.search_github_person(
+                    github_user, from_date, to_date,
+                    depth=depth, token=config.get("GITHUB_TOKEN"),
+                )
             if person_items:
                 normalized = _normalize_score_dedupe(
                     "github", person_items, from_date, to_date,

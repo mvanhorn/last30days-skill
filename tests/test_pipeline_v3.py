@@ -1971,6 +1971,62 @@ class SelectedSourceGateIntegration(unittest.TestCase):
         self.assertEqual(["default"], depths)
         self.assertEqual(health.NO_RESULTS, report.source_status["reddit"].state)
 
+    def test_targeted_github_project_gate_uses_and_reuses_project_route(self):
+        from lib import health, schema
+
+        runtime = schema.ProviderRuntime("local", "planner", "reranker")
+        with patch.object(
+            pipeline.providers, "resolve_runtime", return_value=(runtime, None)
+        ), patch.object(
+            pipeline, "available_sources", return_value=["github"]
+        ), patch.object(
+            pipeline.github, "search_github_project", return_value=[]
+        ) as project_search, patch.object(
+            pipeline, "_retrieve_stream",
+            side_effect=AssertionError("generic GitHub route was used"),
+        ), patch.object(
+            pipeline, "_retry_thin_sources"
+        ):
+            report = pipeline.run(
+                topic="test topic",
+                config={"EXCLUDE_SOURCES": ""},
+                depth="default",
+                requested_sources=["github"],
+                external_plan=self._plan("github"),
+                github_repos=["owner/repo"],
+            )
+
+        project_search.assert_called_once()
+        self.assertEqual(health.NO_RESULTS, report.source_status["github"].state)
+
+    def test_targeted_github_person_gate_uses_and_reuses_person_route(self):
+        from lib import health, schema
+
+        runtime = schema.ProviderRuntime("local", "planner", "reranker")
+        with patch.object(
+            pipeline.providers, "resolve_runtime", return_value=(runtime, None)
+        ), patch.object(
+            pipeline, "available_sources", return_value=["github"]
+        ), patch.object(
+            pipeline.github, "search_github_person", return_value=[]
+        ) as person_search, patch.object(
+            pipeline, "_retrieve_stream",
+            side_effect=AssertionError("generic GitHub route was used"),
+        ), patch.object(
+            pipeline, "_retry_thin_sources"
+        ):
+            report = pipeline.run(
+                topic="test topic",
+                config={"EXCLUDE_SOURCES": ""},
+                depth="default",
+                requested_sources=["github"],
+                external_plan=self._plan("github"),
+                github_user="octocat",
+            )
+
+        person_search.assert_called_once()
+        self.assertEqual(health.NO_RESULTS, report.source_status["github"].state)
+
     def test_doctor_gate_uses_quick_probe_without_ranking(self):
         from lib import health, schema
 
