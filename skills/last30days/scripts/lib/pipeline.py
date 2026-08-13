@@ -3294,9 +3294,27 @@ def _run_supplemental_searches(
     pinned = runtime.x_search_backend
     if pinned:
         chain = [pinned] + [b for b in chain if b != pinned]
-    primary = next((b for b in chain if b in ("bird", "xquik")), None)
+    primary = next((b for b in chain if b in ("grok", "bird", "xquik")), None)
 
-    if primary == "bird":
+    # Name lane (posts naming the subject in plain text, no @-mention) is
+    # grok-only for now: it needs phrase-quoting and negation operators the
+    # other handle-capable backends do not expose uniformly. It is NOT a
+    # fallback for the mention lane -- most discussion of a person or company
+    # never @-mentions them, so the two lanes reach disjoint sets.
+    _name_lane = None
+
+    if primary == "grok":
+        def _from_lane(hs: list, count: int) -> list:
+            return grok_x.search_handles(hs, topic, from_date, to_date, count_per=count)
+
+        def _about_lane(hs: list, count: int) -> list:
+            return grok_x.search_mentions(hs, from_date, to_date, topic=topic, count_per=count)
+
+        def _name_lane(hs: list, count: int) -> list:
+            return grok_x.search_name(
+                topic, from_date, to_date, exclude_handles=hs, count_per=count
+            )
+    elif primary == "bird":
         def _from_lane(hs: list, count: int) -> list:
             return bird_x.search_handles(hs, topic, from_date, count_per=count)
 
@@ -3360,7 +3378,36 @@ def _run_supplemental_searches(
                 f"Phase 2 ABOUT-lane: {exc}",
                 attempted=attempted,
             )
-        raw_items = from_items + about_items
+        name_items: list = []
+        if _name_lane is not None:
+            try:
+                name_items = _name_lane(handles, MENTION_LANE_COUNT_PER)
+            except Exception as exc:
+                print(f"[Pipeline] Phase 2 NAME-lane search failed: {exc}", file=sys.stderr)
+                state, attempted = _classify_source_failure(exc)
+                bundle.record_failure(
+                    x_slug, state, f"Phase 2 NAME-lane: {exc}", attempted=attempted,
+                )
+
+        raw_items = from_items + about_items + name_items
+
+        # Partial coverage is a reportable outcome, not a normal result: a
+        # report carrying only one side of an entity topic is incomplete, and
+        # without this it looks indistinguishable from genuinely thin
+        # discussion.
+        if _name_lane is not None:
+            empty = [
+                label for label, items in
+                (("by", from_items), ("mention", about_items), ("name", name_items))
+                if not items
+            ]
+            if empty and len(empty) < 3:
+                bundle.record_failure(
+                    x_slug,
+                    "degraded",
+                    f"Phase 2 partial coverage: {', '.join(empty)} lane(s) returned nothing",
+                    attempted=True,
+                )
 
         if raw_items:
             normalized = _normalize_score_dedupe(
