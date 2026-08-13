@@ -60,7 +60,7 @@ KEYCHAIN_KEYS = (
     "AUTH_TOKEN", "CT0", "BSKY_HANDLE", "BSKY_APP_PASSWORD",
     "TRUTHSOCIAL_TOKEN", "BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY",
     "OPENROUTER_API_KEY", "PERPLEXITY_API_KEY", "PARALLEL_API_KEY", "XQUIK_API_KEY",
-    "XIAOHONGSHU_API_BASE", "GITHUB_TOKEN",
+    "XIAOHONGSHU_API_BASE", "GITHUB_TOKEN", "BRIGHTDATA_API_KEY",
 )
 
 # pass(1) integration: Linux/Unix analog of the Keychain source. Each key in
@@ -530,6 +530,14 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS', '600'),
         ('PARALLEL_API_KEY', None),
         ('XQUIK_API_KEY', None),
+        # Bright Data CLI. Optional: the CLI normally owns its own auth via
+        # `brightdata login`, so this only matters for users who prefer an
+        # explicit key in a `.env` file or the keychain. Registered here so
+        # those layers reach the gate and the subprocess (-k) alike.
+        ('BRIGHTDATA_API_KEY', None),
+        # Amazon marketplace the amazon source searches. Non-US users point
+        # this at their own storefront (e.g. https://www.amazon.co.uk).
+        ('LAST30DAYS_AMAZON_DOMAIN', 'https://www.amazon.com'),
         # Host-native search signal: set by the SKILL.md agent-host path when the
         # invoking runtime has its own (better) web-search tool, so the engine's
         # keyless search floor stays off there. Defaults unset -> floor allowed.

@@ -22,6 +22,7 @@ from . import (
     arxiv,
     bird_x,
     bluesky,
+    brightdata,
     corpus,
     dates,
     dedupe,
@@ -1735,8 +1736,13 @@ def diagnose(
         "arxiv-pp-cli": bool(which("arxiv-pp-cli")),
         "techmeme-pp-cli": bool(which("techmeme-pp-cli")),
         "trustpilot-pp-cli": bool(which("trustpilot-pp-cli")),
+        "brightdata": bool(which("brightdata")),
         "gh": bool(which("gh")),
     }
+    # Network-free two-field probe (bird_installed/bird_authenticated
+    # precedent): "installed" is PATH resolution, "authenticated" is a
+    # presence-only credential signal that never reads the secret.
+    brightdata_status = brightdata.gate_status(config)
     credential_destinations = {
         "global_env": str(env.CONFIG_FILE) if env.CONFIG_FILE else None,
     }
@@ -1768,6 +1774,8 @@ def diagnose(
         "native_search": env.is_native_search(config),
         "has_scrapecreators": bool(config.get("SCRAPECREATORS_API_KEY")),
         "has_github": bool(config.get("GITHUB_TOKEN") or which("gh")),
+        "brightdata_installed": brightdata_status["brightdata_installed"],
+        "brightdata_authenticated": brightdata_status["brightdata_authenticated"],
         # safe=True (doctor/--diagnose/--preflight) must stay network-free:
         # answer X availability from local evidence only. x_pending is
         # precomputed by diagnose() to avoid double evaluation.
