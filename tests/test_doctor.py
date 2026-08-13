@@ -497,6 +497,37 @@ class TopicWordDispatch(unittest.TestCase):
         payload = json.loads(out)
         self.assertIn("sources", payload)
 
+    def test_doctor_gate_runs_pipeline_gate_only_and_emits_no_report(self):
+        with mock.patch.object(cli.env, "get_config", return_value={}), \
+             mock.patch.object(cli.pipeline, "run", return_value={"reddit": object()}) as run, \
+             mock.patch.object(sys, "argv", [
+                 "last30days.py", "doctor", "gate", "test", "topic", "--search=reddit"
+             ]):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                rc = cli.main()
+
+        self.assertEqual(0, rc)
+        self.assertEqual("", stdout.getvalue())
+        self.assertTrue(run.call_args.kwargs["gate_only"])
+        self.assertEqual(["reddit"], run.call_args.kwargs["requested_sources"])
+
+    def test_doctor_gate_failure_exits_3_and_emits_no_report(self):
+        failure = doctor.SourceGateError({
+            "reddit": doctor.LiveProbeResult(state=health.TIMEOUT)
+        })
+        with mock.patch.object(cli.env, "get_config", return_value={}), \
+             mock.patch.object(cli.pipeline, "run", side_effect=failure), \
+             mock.patch.object(sys, "argv", [
+                 "last30days.py", "doctor", "gate", "test", "topic", "--search=reddit"
+             ]):
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                rc = cli.main()
+
+        self.assertEqual(3, rc)
+        self.assertEqual("", stdout.getvalue())
+
     def test_multiword_topic_containing_doctor_is_research_not_report(self):
         # Same collision rule as setup: exact single-word match only. A real
         # research topic goes down the research path (sentinel raised there).
@@ -1200,6 +1231,64 @@ class ThreadsOptIn(unittest.TestCase):
         report = _build({"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"})
         self.assertEqual("ok", report["sources"]["tiktok"]["status"])
         self.assertEqual("ok", report["sources"]["instagram"]["status"])
+
+
+class StrictSourceGate(unittest.TestCase):
+    def test_all_selected_probes_run_and_no_results_passes(self):
+        seen = []
+
+        def result(source, state):
+            def probe():
+                seen.append(source)
+                return doctor.LiveProbeResult(state=state)
+            return probe
+
+        stderr = io.StringIO()
+        results = doctor.require_live_sources(
+            ["reddit", "hackernews", "reddit"],
+            {
+                "reddit": result("reddit", health.OK),
+                "hackernews": result("hackernews", health.NO_RESULTS),
+            },
+            stderr=stderr,
+        )
+
+        self.assertEqual(["reddit", "hackernews"], seen)
+        self.assertEqual(health.NO_RESULTS, results["hackernews"].state)
+        self.assertNotIn("SOURCE_GATE_FAILED", stderr.getvalue())
+
+    def test_gate_collects_failures_without_exposing_exception_messages(self):
+        private_message = "private-provider-body-must-not-appear"
+
+        def explode():
+            raise RuntimeError(private_message)
+
+        stderr = io.StringIO()
+        with self.assertRaises(doctor.SourceGateError) as caught:
+            doctor.require_live_sources(
+                ["reddit", "missing"],
+                {"reddit": explode},
+                stderr=stderr,
+            )
+
+        self.assertEqual({"reddit", "missing"}, set(caught.exception.failures))
+        self.assertEqual(2, stderr.getvalue().count("SOURCE_GATE_FAILED"))
+        self.assertNotIn(private_message, stderr.getvalue())
+
+    def test_final_outcome_failure_is_terminal(self):
+        stderr = io.StringIO()
+        with self.assertRaises(doctor.SourceGateError) as caught:
+            doctor.require_source_outcomes(
+                ["reddit", "hackernews"],
+                {
+                    "reddit": type("Outcome", (), {"state": health.OK})(),
+                    "hackernews": type("Outcome", (), {"state": health.TIMEOUT})(),
+                },
+                stderr=stderr,
+            )
+
+        self.assertEqual(health.TIMEOUT, caught.exception.failures["hackernews"].state)
+        self.assertIn("source=hackernews", stderr.getvalue())
 
 
 class CliHealth(unittest.TestCase):

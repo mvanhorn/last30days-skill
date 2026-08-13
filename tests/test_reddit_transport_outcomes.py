@@ -1,15 +1,16 @@
-"""Reddit transport failures must not be reported as a clean no-results.
+"""Reddit transport failures must fail the strict selected-source gate.
 
-Regression coverage for issue #899: on a datacenter egress Reddit answers
-429/403 on the keyless lanes, the adapters swallow that into an empty list, and
-the run used to export ``"reddit": "no-results"`` with ``doctor --postmortem``
-printing "No failures on the last run." These tests drive the real pipeline and
-the real postmortem renderer over a mocked socket, so the whole chain --
-capture sink -> source outcome -> postmortem bucket -- stays honest.
+Regression coverage for issue #899: on datacenter egress Reddit may answer
+429/403 on keyless lanes. A selected Reddit source must not become clean
+``no-results`` or produce a reduced report; the actual adapter failure is
+classified and surfaced through the secret-free doctor gate.
 """
 
+import io
 import urllib.error
 from unittest import mock
+
+import pytest
 
 from lib import doctor, pipeline, schema
 
@@ -49,54 +50,40 @@ def _run_reddit_against(error):
         )
 
 
-def _postmortem_from(report):
-    return {
-        "engine_version": "test",
-        "mode": "postmortem",
-        "present": True,
-        "topic": report.topic,
-        "at": report.generated_at,
-        "outcomes": {
-            source: schema.to_dict(outcome)
-            for source, outcome in report.source_status.items()
-        },
-    }
-
-
-def test_reddit_rate_limit_is_not_reported_as_clean_no_results():
-    report = _run_reddit_against(
-        urllib.error.HTTPError(
-            "https://www.reddit.com/search.rss", 429, "Too Many Requests", {}, None
+def test_reddit_rate_limit_fails_before_a_report(capsys):
+    with pytest.raises(doctor.SourceGateError) as caught:
+        _run_reddit_against(
+            urllib.error.HTTPError(
+                "https://www.reddit.com/search.rss", 429, "Too Many Requests", {}, None
+            )
         )
-    )
 
-    outcome = report.source_status["reddit"]
-    assert outcome.state == schema.RATE_LIMITED
-    assert "429" in (outcome.detail or "")
+    assert caught.value.failures["reddit"].state == schema.RATE_LIMITED
+    stderr = capsys.readouterr().err
+    assert "SOURCE_GATE_FAILED source=reddit" in stderr
+    assert "reason=\"rate-limited\"" in stderr
 
 
-def test_reddit_block_is_not_reported_as_clean_no_results():
-    report = _run_reddit_against(
-        urllib.error.HTTPError(
-            "https://www.reddit.com/search.rss", 403, "Blocked", {}, None
+def test_reddit_block_fails_before_a_report(capsys):
+    with pytest.raises(doctor.SourceGateError) as caught:
+        _run_reddit_against(
+            urllib.error.HTTPError(
+                "https://www.reddit.com/search.rss", 403, "Blocked", {}, None
+            )
         )
-    )
 
-    # 403 lands on auth-failed via http.classify_failure. The point of the test
-    # is that a blocked host is a failure state at all, not which noun it gets.
-    assert report.source_status["reddit"].state != schema.NO_RESULTS
+    assert caught.value.failures["reddit"].state != schema.NO_RESULTS
+    stderr = capsys.readouterr().err
+    assert "SOURCE_GATE_FAILED source=reddit" in stderr
 
 
-def test_postmortem_does_not_claim_success_after_a_reddit_block():
-    report = _run_reddit_against(
-        urllib.error.HTTPError(
-            "https://www.reddit.com/search.rss", 429, "Too Many Requests", {}, None
+def test_reddit_gate_does_not_expose_transport_exception_text(capsys):
+    private_message = "private-provider-body-must-not-appear"
+    with pytest.raises(doctor.SourceGateError):
+        _run_reddit_against(
+            urllib.error.HTTPError(
+                "https://www.reddit.com/search.rss", 429, private_message, {}, None
+            )
         )
-    )
 
-    text = doctor.render_postmortem_text(_postmortem_from(report))
-
-    assert "No failures on the last run." not in text
-    assert "Succeeded: reddit" not in text
-    assert "Failed:" in text
-    assert schema.RATE_LIMITED in text
+    assert private_message not in capsys.readouterr().err

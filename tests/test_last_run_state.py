@@ -326,6 +326,9 @@ class LastRunStateTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             env = os.environ.copy()
             env["HOME"] = str(Path(tmp) / "home")
+            # Do not inherit a suite-level or developer-shell config directory
+            # containing an unrelated prior run.
+            env["LAST30DAYS_CONFIG_DIR"] = str(Path(tmp) / "config")
             env["SETUP_COMPLETE"] = "true"
             env["ENV_SCRAPECREATORS_API_KEY"] = "sk-test"
 

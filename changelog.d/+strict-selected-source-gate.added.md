@@ -1,0 +1,1 @@
+Add a fail-closed live source gate shared by normal research and `doctor gate`: only sources selected by configuration, explicit arguments, or the resolved plan are checked, and a failed selected source suppresses reduced reports with secret-free diagnostics.
