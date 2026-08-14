@@ -39,6 +39,10 @@ def _run_hook(env_overrides: dict[str, str], path_override: str | None = None) -
         "BSKY_HANDLE",
         "BSKY_APP_PASSWORD",
         "EXA_API_KEY",
+        "LAST30DAYS_CREDENTIAL_ALIASES",
+        "TEAM_SC_KEY",
+        "TEAM_X_AUTH",
+        "TEAM_X_CT0",
     ):
         env.pop(k, None)
     env.update(env_overrides)
@@ -205,6 +209,28 @@ def test_setup_done_user_source_count_includes_ytdlp(tmp_path: Path):
         f"Stdout with:    {with_yt.stdout!r}\n"
         f"Stdout without: {without_yt.stdout!r}"
     )
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+def test_credential_alias_avoids_new_user_welcome_and_counts_source(tmp_path: Path):
+    """The SessionStart hook should see credentials resolved through aliases."""
+    cfg_dir = _write_fake_last_run(tmp_path)
+    path = _tool_path_without_ytdlp(tmp_path)
+    result = _run_hook(
+        {
+            "LAST30DAYS_CONFIG_DIR": cfg_dir,
+            "LAST30DAYS_CREDENTIAL_ALIASES": json.dumps(
+                {"SCRAPECREATORS_API_KEY": "TEAM_SC_KEY"}
+            ),
+            "TEAM_SC_KEY": "dummy-sc-key",
+        },
+        path_override=path,
+    )
+
+    assert result.returncode == 0, f"hook failed: stderr={result.stderr!r}"
+    assert "Ready to use. Run /last30days" not in result.stdout
+    assert "Ready" in result.stdout
+    assert "Tip: Add ScrapeCreators" not in result.stdout
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
