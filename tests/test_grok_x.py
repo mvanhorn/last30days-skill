@@ -439,12 +439,16 @@ def test_from_lane_filters_by_actual_author(monkeypatch):
     """Operator fidelity is not guaranteed: a measured from: query returned a
     post by a different account."""
     _stub_response(monkeypatch, _block("2087568620465607078", handle="leojr94_"))
-    assert grok_x.search_handles(["steipete"], "topic", *WINDOW) == []
+    items, revoked = grok_x.search_handles(["steipete"], "topic", *WINDOW)
+    assert items == []
+    assert revoked is False
 
 
 def test_from_lane_keeps_matching_author(monkeypatch):
     _stub_response(monkeypatch, _block("2087568620465607078", handle="steipete"))
-    assert len(grok_x.search_handles(["steipete"], "topic", *WINDOW)) == 1
+    items, revoked = grok_x.search_handles(["steipete"], "topic", *WINDOW)
+    assert len(items) == 1
+    assert revoked is False
 
 
 def test_from_lane_does_not_and_the_topic_into_the_query(monkeypatch):
@@ -463,13 +467,16 @@ def test_from_lane_does_not_and_the_topic_into_the_query(monkeypatch):
 def test_mention_lane_excludes_the_subject_client_side(monkeypatch):
     """A measured run carrying -from:X still returned a post authored by X."""
     _stub_response(monkeypatch, _block("2087568620465607078", handle="GetEnergy_"))
-    assert grok_x.search_mentions(["GetEnergy_"], *WINDOW) == []
+    items, revoked = grok_x.search_mentions(["GetEnergy_"], *WINDOW)
+    assert items == []
+    assert revoked is False
 
 
 def test_name_lane_needs_no_handle(monkeypatch):
     _stub_response(monkeypatch, _block("2087568620465607078", handle="iamcaroren"))
-    items = grok_x.search_name("Bentgo", *WINDOW)
+    items, revoked = grok_x.search_name("Bentgo", *WINDOW)
     assert len(items) == 1
+    assert revoked is False
 
 
 def test_name_lane_quotes_multi_word_names(monkeypatch):
@@ -487,7 +494,9 @@ def test_name_lane_quotes_multi_word_names(monkeypatch):
 
 def test_name_lane_excludes_subject_authored_posts(monkeypatch):
     _stub_response(monkeypatch, _block("2087568620465607078", handle="Bentgo"))
-    assert grok_x.search_name("Bentgo", *WINDOW, exclude_handles=["Bentgo"]) == []
+    items, revoked = grok_x.search_name("Bentgo", *WINDOW, exclude_handles=["Bentgo"])
+    assert items == []
+    assert revoked is False
 
 
 def test_name_lane_applies_an_engagement_floor(monkeypatch):
@@ -505,6 +514,46 @@ def test_name_lane_applies_an_engagement_floor(monkeypatch):
         "other two do not"
     )
 
+
+# --- lane revocation propagation -------------------------------------------
+
+def test_from_lane_returns_revoked_on_auth_failure(monkeypatch):
+    """search_handles should return (items, True) when auth is revoked mid-lane."""
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, "", "Error: Not signed in")
+
+    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    items, revoked = grok_x.search_handles(["steipete"], "topic", *WINDOW)
+    assert revoked is True
+    assert items == []
+
+
+def test_mention_lane_returns_revoked_on_auth_failure(monkeypatch):
+    """search_mentions should return (items, True) when auth is revoked."""
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, "", "Error: Not signed in")
+
+    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    items, revoked = grok_x.search_mentions(["steipete"], *WINDOW)
+    assert revoked is True
+    assert items == []
+
+
+def test_name_lane_returns_revoked_on_auth_failure(monkeypatch):
+    """search_name should return (items, True) when auth is revoked."""
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, "", "Error: Not signed in")
+
+    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    items, revoked = grok_x.search_name("Bentgo", *WINDOW)
+    assert revoked is True
+    assert items == []
 
 
 # --- fixes applied after review --------------------------------------------

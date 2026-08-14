@@ -80,10 +80,11 @@ def test_lane_budget_stops_issuing_queries(monkeypatch):
 
     monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
     past = _time.monotonic() - 1
-    got = grok_x.search_handles(
+    items, revoked = grok_x.search_handles(
         ["a", "b", "c"], "topic", "2026-07-14", "2026-08-13", deadline=past
     )
-    assert got == []
+    assert items == []
+    assert revoked is False
     assert calls["n"] == 0, "an expired budget must stop the lane before any call"
 
 

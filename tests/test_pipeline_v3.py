@@ -684,6 +684,36 @@ class TestXBackendChainAndFailover(unittest.TestCase):
         self.assertNotIn("xquik", avail)
 
 
+class TestMixedResultRevocation(unittest.TestCase):
+    """Mixed-result revocation: when grok returns items AND an error, preserve both."""
+
+    @patch("lib.env.x_backend_chain", return_value=["grok"])
+    def test_items_with_auth_error_surfaces_error(self, _chain):
+        """Grok returns some items but then auth is revoked → error is surfaced."""
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+
+        def fake_fetch(backend, *a, **k):
+            if backend == "grok":
+                # Mixed result: got some items, but also hit auth revocation
+                return (
+                    [{"id": "G1", "url": "https://x.com/a/status/1"}],
+                    "grok: grok session expired or was revoked",
+                )
+            return ([], "")
+
+        with patch("lib.pipeline._fetch_x_backend", side_effect=fake_fetch):
+            items, artifact = pipeline._retrieve_stream(
+                topic="q", subquery=sq, source="x", config={}, depth="default",
+                date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
+            )
+        self.assertEqual(1, len(items))
+        # The artifact should have _source_outcome with the error info
+        outcome = artifact.get("_source_outcome", {})
+        self.assertIn("grok session expired", outcome.get("detail", "").lower())
+        # State should be AUTH_FAILED since the error contains auth markers
+        self.assertEqual(schema.AUTH_FAILED, outcome.get("state"))
+
+
 class TestSupplementalSearches(unittest.TestCase):
     """R1: Phase 2 entity drilling should be wired into the pipeline."""
 

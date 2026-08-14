@@ -800,13 +800,16 @@ def search_handles(
     *,
     count_per: int = 8,
     deadline: Optional[float] = None,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], bool]:
     """BY lane: posts authored by each handle.
 
     ``topic`` is used for relevance ranking only and is never ANDed into the
     query -- doing so was a prior defect that emptied the lane.
+
+    Returns (items, auth_revoked) so the pipeline can record AUTH_FAILED.
     """
     collected: List[Dict[str, Any]] = []
+    auth_revoked = False
     for handle in handles:
         if deadline is not None and time.monotonic() >= deadline:
             _log("lane budget exhausted; skipping remaining handles")
@@ -821,12 +824,13 @@ def search_handles(
         )
         if revoked:
             _log("Grok session revoked; stopping lane")
+            auth_revoked = True
             break
         collected.extend(
             i for i in items
             if i["author_handle"].lower() == clean.lower()
         )
-    return collected
+    return collected, auth_revoked
 
 
 def search_mentions(
@@ -837,9 +841,13 @@ def search_mentions(
     topic: str = "",
     count_per: int = 5,
     deadline: Optional[float] = None,
-) -> List[Dict[str, Any]]:
-    """ABOUT lane (mention form): posts @-mentioning each handle."""
+) -> Tuple[List[Dict[str, Any]], bool]:
+    """ABOUT lane (mention form): posts @-mentioning each handle.
+
+    Returns (items, auth_revoked) so the pipeline can record AUTH_FAILED.
+    """
     collected: List[Dict[str, Any]] = []
+    auth_revoked = False
     for handle in handles:
         if deadline is not None and time.monotonic() >= deadline:
             _log("lane budget exhausted; skipping remaining handles")
@@ -854,12 +862,13 @@ def search_mentions(
         )
         if revoked:
             _log("Grok session revoked; stopping lane")
+            auth_revoked = True
             break
         collected.extend(
             i for i in items
             if i["author_handle"].lower() != clean.lower()
         )
-    return collected
+    return collected, auth_revoked
 
 
 def search_name(
@@ -871,7 +880,7 @@ def search_name(
     count_per: int = 8,
     min_faves: int = 2,
     deadline: Optional[float] = None,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], bool]:
     """ABOUT lane (name form): posts naming the subject in plain text.
 
     Not redundant with the mention lane and not a fallback for it. Most talk
@@ -879,10 +888,12 @@ def search_name(
     lunch box from Costco", not "@Bentgo lunch box from Costco". A modest
     engagement floor applies here only, because a bare name query is the
     widest and noisiest of the three lanes.
+
+    Returns (items, auth_revoked) so the pipeline can record AUTH_FAILED.
     """
     name = (name or "").strip()
     if not name:
-        return []
+        return [], False
     if name.count('"') % 2:
         name = name.replace('"', " ").strip()
     phrase = f'"{name}"' if " " in name else name
@@ -902,4 +913,4 @@ def search_name(
     if revoked:
         _log("Grok session revoked")
     blocked = {c.lower() for c in (_clean_handle(h) for h in (exclude_handles or [])) if c}
-    return [i for i in items if i["author_handle"].lower() not in blocked]
+    return [i for i in items if i["author_handle"].lower() not in blocked], revoked

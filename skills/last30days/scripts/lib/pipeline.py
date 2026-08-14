@@ -3499,16 +3499,22 @@ def _run_supplemental_searches(
         lane_deadline = time.monotonic() + grok_x.LANE_BUDGET_SECONDS
 
         def _from_lane(hs: list, count: int) -> list:
-            return grok_x.search_handles(
+            items, revoked = grok_x.search_handles(
                 hs, topic, from_date, to_date, count_per=count,
                 deadline=lane_deadline,
             )
+            if revoked:
+                raise SourceRunError("grok session expired or was revoked", schema.AUTH_FAILED)
+            return items
 
         def _about_lane(hs: list, count: int) -> list:
-            return grok_x.search_mentions(
+            items, revoked = grok_x.search_mentions(
                 hs, from_date, to_date, topic=topic, count_per=count,
                 deadline=lane_deadline,
             )
+            if revoked:
+                raise SourceRunError("grok session expired or was revoked", schema.AUTH_FAILED)
+            return items
 
         def _name_lane(hs: list, count: int) -> list:
             # Use the resolved entity name, not the raw topic. Phrase-quoting
@@ -3517,10 +3523,13 @@ def _run_supplemental_searches(
             subject = _name_lane_subject(topic)
             if not subject.strip():
                 return []
-            return grok_x.search_name(
+            items, revoked = grok_x.search_name(
                 subject, from_date, to_date, exclude_handles=hs, count_per=count,
                 deadline=lane_deadline,
             )
+            if revoked:
+                raise SourceRunError("grok session expired or was revoked", schema.AUTH_FAILED)
+            return items
     elif primary == "bird":
         def _from_lane(hs: list, count: int) -> list:
             return bird_x.search_handles(hs, topic, from_date, count_per=count)
@@ -4115,14 +4124,19 @@ def _retrieve_stream_impl(
                 if i > 0:
                     print(f"[X] primary backend(s) returned nothing; used fallback '{backend}'", file=sys.stderr)
                 if last_error:
-                    state = (
-                        bird_x.classify_run_failure(last_error)
-                        if last_error.startswith("bird:")
-                        else http.classify_failure(message=last_error)
+                    # Fallback succeeded after earlier backend failed entirely.
+                    return items, _outcome_artifact(
+                        health.OK,
+                        f"X served via {backend} after {last_error}",
                     )
+                if err:
+                    # Mixed result: backend returned items BUT also hit an error
+                    # (e.g., grok got some posts then auth was revoked mid-fanout).
+                    # Surface the error so the user gets re-login guidance.
+                    state = http.classify_failure(message=err)
                     return items, _outcome_artifact(
                         state,
-                        f"X fallback '{backend}' returned {len(items)} items after {last_error}",
+                        f"X returned {len(items)} items but also errored: {err}",
                     )
                 return items, {}
             if err:
