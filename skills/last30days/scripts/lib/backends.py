@@ -256,13 +256,32 @@ def _probe_grok(config: Dict[str, Any]) -> BackendFinding:
 
     Deliberately does NOT call ``health.probe_dependency``: that helper runs
     ``subprocess.run([name, "--version"])``, and the whole-doctor-path test
-    patches ``subprocess.run`` to raise. The broken-shim class is detected at
-    research time via ``grok_x.is_available``, not here.
+    patches ``subprocess.run`` to raise.
+
+    Consequence to be honest about: a grok binary that resolves on PATH but
+    will not execute (the stale-shim class) reports OK here and fails only when
+    a real run shells out. ``grok_x.is_available`` does not close that gap
+    either -- it is also filesystem-only. ``health.probe_dependency("grok")``
+    is the executing probe, and it runs in doctor's CLI-health block rather
+    than on this no-subprocess path.
     """
     from . import grok_x
 
     requires = "grok CLI installed + signed in (no X credential)"
     if which("grok") is None:
+        # Installed-but-off-PATH is a distinct outcome with a distinct fix:
+        # telling the user to install again fixes nothing. Confirmed real --
+        # the official installer places the binary at ~/.grok/bin/grok, which
+        # an agent subprocess PATH often omits.
+        off_path = health._off_path_binary("grok")
+        if off_path is not None:
+            return BackendFinding(
+                name="grok",
+                status=health.MISSING,
+                requires=requires,
+                detail=f"grok is installed at {off_path} but that directory is not on this process's PATH",
+                prescription=f'add {off_path.parent} to PATH (e.g. export PATH="{off_path.parent}:$PATH")',
+            )
         return BackendFinding(
             name="grok",
             status=health.MISSING,

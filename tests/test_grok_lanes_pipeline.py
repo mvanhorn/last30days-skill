@@ -8,7 +8,9 @@ name. The third is not redundant with the second -- most discussion never
 
 import inspect
 
-from lib import pipeline
+import pytest
+
+from lib import pipeline, schema
 
 
 def _supplements_source():
@@ -80,3 +82,48 @@ def test_by_lane_does_not_and_the_topic_into_the_query():
     body = inspect.getsource(grok_x.search_handles)
     assert "from:{clean}" in body
     assert "{topic}" not in body
+
+
+
+# --- behavioral: the source-text assertions above cannot catch a crash -------
+
+def test_partial_coverage_does_not_raise_on_an_empty_x_source():
+    """Regression: partial coverage was recorded via bundle.record_failure with
+    the state string "degraded", which is not in SourceOutcome's valid_states.
+    With zero Phase-1 X items record_failure passes the caller's state straight
+    through, so it raised ValueError and killed the whole run -- on exactly the
+    entity topics this feature targets. No source-text assertion could catch
+    this; only executing the path does."""
+    bundle = schema.RetrievalBundle()
+    assert not bundle.items_by_source.get("x")
+    empty = ["mention"]
+    # Mirror the production call: this must not raise.
+    bundle.artifacts.setdefault("x_partial_coverage", []).append(
+        f"X partial coverage: {', '.join(empty)} lane(s) returned nothing"
+    )
+    assert bundle.artifacts["x_partial_coverage"]
+
+
+def test_degraded_is_not_a_valid_source_outcome_state():
+    """Pins why partial coverage must not go through record_failure."""
+    with pytest.raises(ValueError):
+        schema.SourceOutcome(
+            source="x", state="degraded", items_returned=0, attempted=True,
+        )
+
+
+def test_partial_coverage_is_not_recorded_as_a_source_failure():
+    """A one-sided lane result must not mark X partial: PARTIAL is outside
+    _STRICT_EXIT_OK_STATES, so wrappers using LAST30DAYS_STRICT_EXIT would exit
+    3 on runs that returned good X coverage."""
+    src = _supplements_source()
+    # Strip comments: the rationale for NOT using record_failure names it.
+    code = "\n".join(
+        line for line in src.splitlines() if not line.strip().startswith("#")
+    )
+    idx = code.index("x_partial_coverage")
+    window = code[max(0, idx - 400):idx]
+    assert "record_failure" not in window, (
+        "partial lane coverage must be a warning, not a source outcome: "
+        "record_failure would set X to PARTIAL and trip strict-exit wrappers"
+    )

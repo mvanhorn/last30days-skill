@@ -6,6 +6,7 @@ rather than an API client, so the module's job is as much rejecting confident
 fabrication as it is parsing.
 """
 
+import re
 import subprocess
 
 import pytest
@@ -167,7 +168,9 @@ def test_subprocess_runs_in_an_isolated_empty_directory(monkeypatch):
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
     grok_x.search_x("steipete", *WINDOW)
     assert seen["cwd"] and seen["cwd"] != os.getcwd()
-    assert seen["existed"] and seen["entries"] == []
+    # Isolated and near-empty: the only entry is the throwaway HOME staged for
+    # the child, never the user's checkout.
+    assert seen["existed"] and seen["entries"] == ["home"]
 
 
 def test_subprocess_environment_is_minimal(monkeypatch):
@@ -220,7 +223,11 @@ def test_timeout_returns_error_not_raises(monkeypatch):
 
 def test_non_execution_is_retried(monkeypatch):
     """A response that fails provenance is a retryable non-execution, not a
-    thin result -- the measured rate made single-shot unreliable."""
+    thin result -- the measured rate made single-shot unreliable.
+
+    Asserted against _run_query directly: search_x additionally fans out across
+    query variants to reach the depth target, which would confound a call count.
+    """
     calls = {"n": 0}
 
     def fake_run(cmd, **kwargs):
@@ -233,9 +240,9 @@ def test_non_execution_is_retried(monkeypatch):
 
     monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
     monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
-    result = grok_x.search_x("steipete", *WINDOW)
-    assert calls["n"] == 2
-    assert len(result["items"]) == 1
+    items, error = grok_x._run_query("steipete", *WINDOW)
+    assert calls["n"] == 2, "a provenance rejection must be retried once"
+    assert len(items) == 1 and not error
 
 
 # --- auth surfaces ---------------------------------------------------------
@@ -372,3 +379,79 @@ def test_name_lane_applies_an_engagement_floor(monkeypatch):
         "the bare-name lane is the widest of the three and needs a floor the "
         "other two do not"
     )
+
+
+
+# --- fixes applied after review --------------------------------------------
+
+def test_child_home_is_not_the_users_home(monkeypatch, tmp_path):
+    """Stripping credential env vars is not enough: the engine writes those same
+    credentials to $HOME/.config/last30days/.env, and an empty cwd is no
+    boundary for a filesystem-capable child (cwd bounds relative paths, not
+    $HOME/... reads)."""
+    seen = {}
+
+    def fake_run(cmd, **kwargs):
+        seen["env"] = kwargs.get("env")
+        seen["cwd"] = kwargs.get("cwd")
+        return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
+
+    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
+    grok_x.search_x("steipete", *WINDOW)
+    import os as _os
+    assert seen["env"]["HOME"] != _os.path.expanduser("~")
+    assert seen["env"]["HOME"].startswith(seen["cwd"])
+
+
+def test_abbreviated_engagement_does_not_invert_ranking():
+    """'1.2M' parsed as 1 ranked a viral post below one with 500 likes."""
+    assert grok_x._as_int("39K") == 39_000
+    assert grok_x._as_int("1.2M") == 1_200_000
+    assert grok_x._as_int("1,462") == 1462
+    assert grok_x._as_int("N/A") is None
+
+
+def test_unparsable_window_rejects_rather_than_bypasses():
+    """Fail closed: a bad window must not silently disable provenance."""
+    assert grok_x.parse_x_response(
+        {"text": _block("2087568620465607078")}, "steipete", "not-a-date", "also-bad"
+    ) == []
+
+
+def test_handle_outside_x_grammar_is_rejected():
+    """Model-reported handles reach post URLs and the next child's prompt."""
+    text = _block("2087568620465607078", handle="Peter Steinberger (@steipete)")
+    items = grok_x.parse_x_response({"text": text}, "steipete", *WINDOW)
+    # Falls back to the @-pattern inside the value, or drops the item entirely.
+    assert all(
+        re.fullmatch(r"[A-Za-z0-9_]{1,15}", i["author_handle"]) for i in items
+    )
+
+
+def test_clean_handle_rejects_non_grammar_values():
+    assert grok_x._clean_handle("@steipete") == "steipete"
+    assert grok_x._clean_handle("Peter Steinberger") == ""
+    assert grok_x._clean_handle("a" * 16) == ""
+    assert grok_x._clean_handle("bad'; drop") == ""
+
+
+def test_empty_result_is_not_reported_as_an_error():
+    """A quiet window is not a broken backend."""
+    import subprocess as sp
+    import unittest.mock as m
+    with m.patch.object(grok_x, "binary_path", lambda: "/usr/bin/grok"), \
+         m.patch.object(grok_x.subprocess, "run",
+                        lambda cmd, **kw: sp.CompletedProcess(cmd, 0, "no posts found", "")):
+        result = grok_x.search_x("nothing-matches-this", *WINDOW)
+    assert result["items"] == []
+    assert "error" not in result
+
+
+def test_depth_drives_the_fanout_call_count():
+    """DEPTH_CONFIG was dead: grok returned 10 posts at every depth while
+    sitting ahead of bird, silently downgrading a deep run."""
+    quick = grok_x._fanout_queries("t", "2026-07-14", "2026-08-13", 1)
+    deep = grok_x._fanout_queries("t", "2026-07-14", "2026-08-13", 4)
+    assert len(quick) == 1 and len(deep) == 4
+    assert len(set(deep)) == 4, "fan-out variants must differ or they repeat one result set"

@@ -2545,6 +2545,10 @@ def run(
 
     clusters = cluster_candidates(ranked_candidates, plan)
     warnings = _warnings(items_by_source, ranked_candidates, bundle.errors_by_source, degraded_by_source)
+    # One-sided entity coverage is a reporting warning, not a source failure:
+    # marking the source PARTIAL would trip LAST30DAYS_STRICT_EXIT on runs that
+    # returned good X results.
+    warnings.extend(bundle.artifacts.get("x_partial_coverage", []))
     library_context, library_warning = _load_library_context(
         topic=topic,
         config=config,
@@ -3196,6 +3200,27 @@ def _is_transient_error(exc: Exception) -> bool:
     return any(code in msg for code in ("500", "502", "503", "504"))
 
 
+def _name_lane_subject(topic: str) -> str:
+    """Resolve the entity name to search for by name, not the whole topic.
+
+    Phrase-quoting a raw topic ("Peter Steinberger steipete") matches nothing
+    on X: nobody writes the handle and the display name together. Prefer a
+    title-cased proper noun the way the planner's keyword query does, and fall
+    back to the first compound term, then to the topic.
+    """
+    import re as _re
+    compounds = query.extract_compound_terms(topic) or []
+    title_cased = [
+        term for term in compounds
+        if _re.match(r"^(?:[A-Z][a-z]+\s+){1,}[A-Z][a-z]+$", term)
+    ]
+    if title_cased:
+        return title_cased[0]
+    if compounds:
+        return compounds[0]
+    return topic.strip()
+
+
 def _run_supplemental_searches(
     *,
     topic: str,
@@ -3271,10 +3296,29 @@ def _run_supplemental_searches(
     # Populated before the early return below so a run whose lanes cannot execute
     # still contributes its resolved handles.
     if resolved_handles_out is not None:
+        # Only corroborated handles get first-party status. The extracted set is
+        # frequency-ranked over retrieved post text, so a prolific commentator --
+        # or an engagement-farming account that posts on every topic -- lands in
+        # it without being the subject. First-party status is strong: it exempts
+        # an author from the relevance floor entirely and raises their per-author
+        # cap, so granting it on frequency alone would let a spam account buy
+        # immunity from filtering. Require the handle to look like the topic's
+        # subject, or to have been named explicitly by the user.
+        explicit = {
+            h.lstrip("@").strip().lower()
+            for h in ([x_handle] + list(x_related or []))
+            if h and h.strip()
+        }
+        topic_tokens = {t for t in re.findall(r"[a-z0-9]+", topic.lower()) if len(t) > 2}
         seen = {h.lower() for h in resolved_handles_out}
         for h in [*handles, *related_handles]:
             clean = h.lstrip("@").strip().lower()
-            if clean and clean not in seen:
+            if not clean or clean in seen:
+                continue
+            corroborated = clean in explicit or any(
+                token in clean or clean in token for token in topic_tokens
+            )
+            if corroborated:
                 resolved_handles_out.append(clean)
                 seen.add(clean)
 
@@ -3304,15 +3348,32 @@ def _run_supplemental_searches(
     _name_lane = None
 
     if primary == "grok":
+        # One budget shared by all three lanes, started here rather than per
+        # lane: the point is to bound the total, not each part.
+        lane_deadline = time.monotonic() + grok_x.LANE_BUDGET_SECONDS
+
         def _from_lane(hs: list, count: int) -> list:
-            return grok_x.search_handles(hs, topic, from_date, to_date, count_per=count)
+            return grok_x.search_handles(
+                hs, topic, from_date, to_date, count_per=count,
+                deadline=lane_deadline,
+            )
 
         def _about_lane(hs: list, count: int) -> list:
-            return grok_x.search_mentions(hs, from_date, to_date, topic=topic, count_per=count)
+            return grok_x.search_mentions(
+                hs, from_date, to_date, topic=topic, count_per=count,
+                deadline=lane_deadline,
+            )
 
         def _name_lane(hs: list, count: int) -> list:
+            # Use the resolved entity name, not the raw topic. Phrase-quoting
+            # the whole topic ("Peter Steinberger steipete") matches nothing on
+            # X; the subject's name is what other people actually write.
+            subject = _name_lane_subject(topic)
+            if not subject.strip():
+                return []
             return grok_x.search_name(
-                topic, from_date, to_date, exclude_handles=hs, count_per=count
+                subject, from_date, to_date, exclude_handles=hs, count_per=count,
+                deadline=lane_deadline,
             )
     elif primary == "bird":
         def _from_lane(hs: list, count: int) -> list:
@@ -3402,11 +3463,16 @@ def _run_supplemental_searches(
                 if not items
             ]
             if empty and len(empty) < 3:
-                bundle.record_failure(
-                    x_slug,
-                    "degraded",
-                    f"Phase 2 partial coverage: {', '.join(empty)} lane(s) returned nothing",
-                    attempted=True,
+                # A warning, not a source outcome. record_failure would set the
+                # X source to PARTIAL, which is outside _STRICT_EXIT_OK_STATES
+                # and would make wrappers using LAST30DAYS_STRICT_EXIT exit 3 on
+                # runs that returned perfectly good X coverage. An empty lane is
+                # common and legitimate: the name lane carries an engagement
+                # floor and the mention lane is empty for most non-famous
+                # handles.
+                bundle.artifacts.setdefault("x_partial_coverage", []).append(
+                    f"X partial coverage: {', '.join(empty)} lane(s) returned "
+                    "nothing; the report may show only one side of this entity."
                 )
 
         if raw_items:
