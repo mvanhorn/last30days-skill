@@ -40,6 +40,7 @@ def _compute_relevance(query: str, text: str) -> float:
     Uses case-sensitive matching for ambiguous short tokens like 'us' to
     distinguish country acronym 'US' from pronoun 'us'.
     """
+    import re
     if not query or not text:
         return 0.0
 
@@ -49,23 +50,35 @@ def _compute_relevance(query: str, text: str) -> float:
 
     # Check for ambiguous acronyms that need case-sensitive handling
     t_tokens = relevance.tokenize(text)
+    filtered_q_tokens = set(q_tokens)
     for acronym in _CASE_SENSITIVE_ACRONYMS:
         if acronym in q_tokens and acronym in t_tokens:
             # Text has the token, but we need to check if it's the acronym (US)
             # or the common word (us). If text only has lowercase, don't count it.
-            import re
             has_uppercase = bool(re.search(rf'\b{acronym.upper()}\b', text))
             has_lowercase = bool(re.search(rf'\b{acronym}\b', text))
             if has_lowercase and not has_uppercase:
-                # Text only has lowercase version (pronoun) - remove from overlap
+                # Text only has lowercase version (pronoun) - don't count this
+                # token in query overlap. This effectively removes "us" from
+                # contributing to the score when text has only the pronoun.
                 t_tokens = t_tokens - {acronym}
+                # Also remove from query for this calculation to avoid
+                # penalizing the overall coverage ratio
+                filtered_q_tokens = filtered_q_tokens - {acronym}
 
-    overlap_tokens = q_tokens & t_tokens
+    # If filtering removed all query tokens, fall back to 0
+    if not filtered_q_tokens:
+        return 0.0
+
+    overlap_tokens = filtered_q_tokens & t_tokens
     if not overlap_tokens:
         return 0.0
 
-    # Use the standard relevance calculation
-    return relevance.token_overlap_relevance(query, text)
+    # Compute simplified relevance: coverage ratio
+    # This is a simpler version of token_overlap_relevance that uses
+    # the filtered tokens rather than re-tokenizing the original text
+    coverage = len(overlap_tokens) / len(filtered_q_tokens)
+    return coverage
 
 
 def judge_x_corpus(

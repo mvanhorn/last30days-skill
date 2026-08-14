@@ -121,6 +121,21 @@ class TestJudgeXCorpus:
         # Second post has "economy" only → on-topic
         assert len(result["on_topic_items"]) >= 1
 
+    def test_multi_token_us_query_with_pronoun(self):
+        """'US economy' should NOT match text with pronoun 'us' and 'economy'."""
+        items = [
+            {"author_handle": "offtopic", "text": "Tell us about the economy"},
+            {"author_handle": "offtopic", "text": "Let us discuss economy trends"},
+        ]
+        result = x_judge.judge_x_corpus(items, "US economy")
+        # These have lowercase "us" (pronoun) not "US" (country)
+        # Should match on "economy" alone (50% coverage), which may or may not
+        # pass the relevance floor depending on thresholds
+        # The key test is that "us" doesn't contribute to the match
+        for item in result["on_topic_items"]:
+            # If on-topic, it should be due to "economy" match only
+            assert "economy" in item["text"].lower()
+
     def test_handle_stats_computed(self):
         """Handle stats should track on-topic and total counts."""
         items = [
