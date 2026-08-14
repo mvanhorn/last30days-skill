@@ -3005,9 +3005,11 @@ def _render_emoji_footer(report: schema.Report, save_path: str | None) -> list[s
     body.extend(source_lines)
     if voices_line:
         body.append(voices_line)
-    # Only annotate a footer that has something to annotate: an otherwise
-    # empty run stays silent here rather than announcing its own emptiness.
-    if freshness_line and body:
+    # Append freshness whenever it would annotate something: either the body
+    # already has content, or the raw-results line will make the footer
+    # non-empty. An otherwise empty run stays silent rather than announcing
+    # its own emptiness.
+    if freshness_line and (body or raw_line):
         body.append(freshness_line)
     if raw_line:
         body.append(raw_line)

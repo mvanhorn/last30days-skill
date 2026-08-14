@@ -233,3 +233,24 @@ def test_footer_freshness_line_absent_when_evidence_is_recent():
     )
 
     assert "🕒" not in render.render_compact(report)
+
+
+def test_raw_results_only_footer_includes_freshness_line():
+    """AE3: raw-results-only footer still includes the freshness line.
+
+    When every source returns zero items (so source_lines would be empty and
+    body starts empty) but a save_path is provided, the freshness verdict
+    must still appear alongside the raw-results line. Without the fix,
+    `if freshness_line and body:` would be False because body was empty.
+    """
+    report = _report(
+        items_by_source={},
+        source_status={},
+    )
+
+    footer = render._render_emoji_footer(report, "/tmp/l30d-scratch/topic-raw.md")
+    text = "\n".join(footer)
+
+    assert "🕒" in text
+    assert "no usable dated evidence" in text
+    assert "Raw results saved to /tmp/l30d-scratch/topic-raw.md" in text
