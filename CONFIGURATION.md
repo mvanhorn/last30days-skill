@@ -357,7 +357,8 @@ An explicit `--register` wins over `LAST30DAYS_REGISTER`; the environment/config
 2. **OpenAI** - `OPENAI_API_KEY` only. Codex ChatGPT auth at `~/.codex/auth.json` is intentionally not used as an OpenAI provider credential.
 3. **xAI** - `XAI_API_KEY`
 4. **OpenRouter** - `OPENROUTER_API_KEY` (Sonar fallback for the Perplexity source / `--deep-research`; also usable as a reasoning provider)
-5. **Local / deterministic** - always available, lowest quality
+5. **Novita** - `NOVITA_API_KEY` (OpenAI-compatible; override the endpoint with `NOVITA_BASE_URL`)
+6. **Local / deterministic** - always available, lowest quality
 
 When you invoke `/last30days` from Claude Code, Codex, or Gemini, the host model **is** the reasoning provider for plan + synthesis - you don't need any of the keys above unless you also run the script headlessly (cron, CI, watchlist).
 
