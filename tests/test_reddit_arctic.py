@@ -102,12 +102,36 @@ class TestFetchListings:
         assert len(out) == 1
         assert g.call_count == 1  # only r/tea fetched; "all"/"" skipped
 
+    def test_supports_up_to_16_subreddits(self):
+        """Raised cap allows up to 16 subreddits for supplement coverage."""
+        subs = [f"sub{i}" for i in range(16)]
+        with mock.patch.object(reddit_arctic.http, "get",
+                               return_value=_resp([_listing_row()])) as g:
+            reddit_arctic.fetch_listings(subs)
+        # All 16 should be fetched (cap is 16).
+        assert g.call_count == 16
+
     def test_depth_controls_volume(self):
         for depth, want in (("quick", 10), ("default", 25), ("deep", 50)):
             with mock.patch.object(reddit_arctic.http, "get",
                                    return_value=_resp([_listing_row()])) as g:
                 reddit_arctic.fetch_listings(["tea"], depth=depth)
             assert f"limit={want}" in g.call_args[0][0], depth
+
+    def test_multi_sort_request_increases_limit(self):
+        """When multiple sorts are requested, fetch 2x posts to compensate."""
+        with mock.patch.object(reddit_arctic.http, "get",
+                               return_value=_resp([_listing_row()])) as g:
+            reddit_arctic.fetch_listings(["tea"], depth="default", sorts=["top", "hot", "new"])
+        # default depth = 25, with 3 sorts → 25 * 2 = 50
+        assert "limit=50" in g.call_args[0][0]
+
+    def test_single_sort_uses_base_limit(self):
+        """Single sort uses base limit, no multiplier."""
+        with mock.patch.object(reddit_arctic.http, "get",
+                               return_value=_resp([_listing_row()])) as g:
+            reddit_arctic.fetch_listings(["tea"], depth="default", sorts=["top"])
+        assert "limit=25" in g.call_args[0][0]
 
     def test_dedupes_by_url(self):
         rows = [_listing_row(), _listing_row()]

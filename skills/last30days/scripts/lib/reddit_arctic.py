@@ -28,10 +28,14 @@ TIMEOUT = 15
 MAX_BATCHES = 3     # cap total requests per run (bounds latency + rate-limit risk)
 PACE_SECONDS = 0.4  # gap between batches; arctic-shift answers 422 "slow down"
 CACHE_MAX = 4096    # hard size bound so the in-run memo can never grow unbounded
-# Listing-lane knobs (mirror reddit_listing's DEPTH_LIMITS so callers get the
-# same per-depth volume from either backend).
+# Listing-lane knobs. Base limits mirror reddit_listing's DEPTH_LIMITS so callers
+# get the same per-depth volume. The supplement multiplier is applied when the
+# caller requested multiple sorts (top/hot/new) — arctic-shift has no sort lanes,
+# so we fetch more posts to increase the chance of covering what the failed
+# shreddit lanes would have returned.
 _LISTING_DEPTH_LIMITS = {"quick": 10, "default": 25, "deep": 50}
-_MAX_LISTING_SUBS = 8  # cap concurrent subreddits per listing call
+_LISTING_SUPPLEMENT_MULTIPLIER = 2  # fetch 2x posts when supplementing multi-sort requests
+_MAX_LISTING_SUBS = 16  # cap concurrent subreddits per listing call (raised to support supplements)
 # In-run memo: base36 id -> {score, num_comments}. Module-level so repeated
 # fetch_scores calls within one `/last30days` run (e.g. across subqueries) reuse
 # results, but capped at CACHE_MAX entries (never reached in a normal CLI run).
@@ -158,17 +162,23 @@ def fetch_listings(
 ) -> List[Dict[str, Any]]:
     """Scored subreddit listings from the arctic-shift archive, keyless.
 
-    Drop-in fallback for ``reddit_listing.fetch_listings`` (shreddit partials),
-    which datacenter IPs get HTTP 403 on. Arctic-shift serves recent posts with
-    real score/num_comments from any IP. ``sorts``/``timeframe`` are accepted
-    for signature parity and ignored — the archive has no top/hot/new lanes, so
-    the caller's engagement ranking does the sorting.
+    Drop-in fallback/supplement for ``reddit_listing.fetch_listings`` (shreddit
+    partials), which datacenter IPs get HTTP 403 on. Arctic-shift serves recent
+    posts with real score/num_comments from any IP.
+
+    Arctic-shift has no top/hot/new lanes, only recency. When ``sorts`` contains
+    multiple entries (e.g., dedicated lanes requesting top+hot+new), we fetch
+    more posts per subreddit to partially compensate for the missing lane
+    coverage — the caller's engagement ranking does the final sorting.
 
     Best-effort, never raises: returns ``[]`` on any failure.
     """
     if not subreddits:
         return []
-    n = limit or _LISTING_DEPTH_LIMITS.get(depth, _LISTING_DEPTH_LIMITS["default"])
+    base = limit or _LISTING_DEPTH_LIMITS.get(depth, _LISTING_DEPTH_LIMITS["default"])
+    # When multiple sorts were requested, fetch more posts to compensate for
+    # arctic-shift's lack of sort lanes.
+    n = base * _LISTING_SUPPLEMENT_MULTIPLIER if sorts and len(sorts) > 1 else base
     out: List[Dict[str, Any]] = []
     for i, sub in enumerate(subreddits[:_MAX_LISTING_SUBS]):
         sub = sub.removeprefix("r/").strip()
