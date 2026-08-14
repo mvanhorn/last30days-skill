@@ -713,6 +713,54 @@ class TestMixedResultRevocation(unittest.TestCase):
         # State should be AUTH_FAILED since the error contains auth markers
         self.assertEqual(schema.AUTH_FAILED, outcome.get("state"))
 
+    @patch("lib.env.x_backend_chain", return_value=["grok", "bird"])
+    def test_fallback_after_auth_failed_keeps_auth_failed_state(self, _chain):
+        """Grok auth fails → bird succeeds → state is AUTH_FAILED (not OK).
+
+        The user needs re-login guidance for grok even though fallback served items.
+        """
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+
+        def fake_fetch(backend, *a, **k):
+            if backend == "grok":
+                return ([], "grok: grok session expired or was revoked")
+            if backend == "bird":
+                return ([{"id": "B1", "url": "https://x.com/a/status/1"}], "")
+            return ([], "")
+
+        with patch("lib.pipeline._fetch_x_backend", side_effect=fake_fetch):
+            items, artifact = pipeline._retrieve_stream(
+                topic="q", subquery=sq, source="x", config={}, depth="default",
+                date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
+            )
+        self.assertEqual(1, len(items))
+        outcome = artifact.get("_source_outcome", {})
+        # State should be AUTH_FAILED so user gets re-login guidance
+        self.assertEqual(schema.AUTH_FAILED, outcome.get("state"))
+        self.assertIn("re-login", outcome.get("detail", "").lower())
+
+    @patch("lib.env.x_backend_chain", return_value=["grok", "bird"])
+    def test_fallback_after_non_auth_error_is_ok(self, _chain):
+        """Grok fails with non-auth error → bird succeeds → state is OK."""
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+
+        def fake_fetch(backend, *a, **k):
+            if backend == "grok":
+                return ([], "grok: network timeout")
+            if backend == "bird":
+                return ([{"id": "B1", "url": "https://x.com/a/status/1"}], "")
+            return ([], "")
+
+        with patch("lib.pipeline._fetch_x_backend", side_effect=fake_fetch):
+            items, artifact = pipeline._retrieve_stream(
+                topic="q", subquery=sq, source="x", config={}, depth="default",
+                date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
+            )
+        self.assertEqual(1, len(items))
+        outcome = artifact.get("_source_outcome", {})
+        # Non-auth error followed by fallback success is OK
+        self.assertEqual("ok", outcome.get("state"))
+
 
 class TestSupplementalSearches(unittest.TestCase):
     """R1: Phase 2 entity drilling should be wired into the pipeline."""

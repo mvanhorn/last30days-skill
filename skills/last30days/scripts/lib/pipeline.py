@@ -3498,52 +3498,46 @@ def _run_supplemental_searches(
         # lane: the point is to bound the total, not each part.
         lane_deadline = time.monotonic() + grok_x.LANE_BUDGET_SECONDS
 
-        def _from_lane(hs: list, count: int) -> list:
+        def _from_lane(hs: list, count: int) -> tuple[list, bool]:
             items, revoked = grok_x.search_handles(
                 hs, topic, from_date, to_date, count_per=count,
                 deadline=lane_deadline,
             )
-            if revoked:
-                raise SourceRunError("grok session expired or was revoked", schema.AUTH_FAILED)
-            return items
+            return items, revoked
 
-        def _about_lane(hs: list, count: int) -> list:
+        def _about_lane(hs: list, count: int) -> tuple[list, bool]:
             items, revoked = grok_x.search_mentions(
                 hs, from_date, to_date, topic=topic, count_per=count,
                 deadline=lane_deadline,
             )
-            if revoked:
-                raise SourceRunError("grok session expired or was revoked", schema.AUTH_FAILED)
-            return items
+            return items, revoked
 
-        def _name_lane(hs: list, count: int) -> list:
+        def _name_lane(hs: list, count: int) -> tuple[list, bool]:
             # Use the resolved entity name, not the raw topic. Phrase-quoting
             # the whole topic ("Peter Steinberger steipete") matches nothing on
             # X; the subject's name is what other people actually write.
             subject = _name_lane_subject(topic)
             if not subject.strip():
-                return []
+                return [], False
             items, revoked = grok_x.search_name(
                 subject, from_date, to_date, exclude_handles=hs, count_per=count,
                 deadline=lane_deadline,
             )
-            if revoked:
-                raise SourceRunError("grok session expired or was revoked", schema.AUTH_FAILED)
-            return items
+            return items, revoked
     elif primary == "bird":
-        def _from_lane(hs: list, count: int) -> list:
-            return bird_x.search_handles(hs, topic, from_date, count_per=count)
+        def _from_lane(hs: list, count: int) -> tuple[list, bool]:
+            return bird_x.search_handles(hs, topic, from_date, count_per=count), False
 
-        def _about_lane(hs: list, count: int) -> list:
-            return bird_x.search_mentions(hs, from_date, count_per=count)
+        def _about_lane(hs: list, count: int) -> tuple[list, bool]:
+            return bird_x.search_mentions(hs, from_date, count_per=count), False
     elif primary == "xquik":
         xquik_token = env.get_xquik_token(config)
 
-        def _from_lane(hs: list, count: int) -> list:
-            return xquik.search_handles(hs, topic, from_date, to_date, count_per=count, token=xquik_token)
+        def _from_lane(hs: list, count: int) -> tuple[list, bool]:
+            return xquik.search_handles(hs, topic, from_date, to_date, count_per=count, token=xquik_token), False
 
-        def _about_lane(hs: list, count: int) -> list:
-            return xquik.search_mentions(hs, from_date, to_date, topic=topic, count_per=count, token=xquik_token)
+        def _about_lane(hs: list, count: int) -> tuple[list, bool]:
+            return xquik.search_mentions(hs, from_date, to_date, topic=topic, count_per=count, token=xquik_token), False
     else:
         return  # primary X backend has no handle-lane support (xai/xurl) or none configured
 
@@ -3565,13 +3559,24 @@ def _run_supplemental_searches(
     # Search primary handles (full weight): FROM lane (their own tweets) +
     # ABOUT lane (tweets mentioning them). Both engagement-weighted and deduped
     # by URL at normalize time.
+    any_revoked = False  # Track auth revocation across lanes
     if handles:
         # Independent try/except per lane so a failure in one does not discard
         # the other's already-computed results.
         from_items: list = []
         about_items: list = []
+        from_revoked = False
+        about_revoked = False
+        name_revoked = False
         try:
-            from_items = _from_lane(handles, FROM_LANE_COUNT_PER)
+            from_items, from_revoked = _from_lane(handles, FROM_LANE_COUNT_PER)
+            if from_revoked:
+                any_revoked = True
+                bundle.record_failure(
+                    x_slug, schema.AUTH_FAILED,
+                    "Phase 2 FROM-lane: grok session expired or was revoked",
+                    attempted=True,
+                )
         except Exception as exc:
             print(f"[Pipeline] Phase 2 FROM-lane search failed: {exc}", file=sys.stderr)
             state, attempted = _classify_source_failure(exc)
@@ -3584,7 +3589,14 @@ def _run_supplemental_searches(
             if not bundle.items_by_source.get(x_slug):
                 bundle.errors_by_source[x_slug] = f"Phase 2 FROM-lane: {exc}"
         try:
-            about_items = _about_lane(handles, MENTION_LANE_COUNT_PER)
+            about_items, about_revoked = _about_lane(handles, MENTION_LANE_COUNT_PER)
+            if about_revoked:
+                any_revoked = True
+                bundle.record_failure(
+                    x_slug, schema.AUTH_FAILED,
+                    "Phase 2 ABOUT-lane: grok session expired or was revoked",
+                    attempted=True,
+                )
         except Exception as exc:
             print(f"[Pipeline] Phase 2 ABOUT-lane search failed: {exc}", file=sys.stderr)
             state, attempted = _classify_source_failure(exc)
@@ -3597,7 +3609,14 @@ def _run_supplemental_searches(
         name_items: list = []
         if _name_lane is not None:
             try:
-                name_items = _name_lane(handles, MENTION_LANE_COUNT_PER)
+                name_items, name_revoked = _name_lane(handles, MENTION_LANE_COUNT_PER)
+                if name_revoked:
+                    any_revoked = True
+                    bundle.record_failure(
+                        x_slug, schema.AUTH_FAILED,
+                        "Phase 2 NAME-lane: grok session expired or was revoked",
+                        attempted=True,
+                    )
             except Exception as exc:
                 print(f"[Pipeline] Phase 2 NAME-lane search failed: {exc}", file=sys.stderr)
                 state, attempted = _classify_source_failure(exc)
@@ -3649,7 +3668,14 @@ def _run_supplemental_searches(
     # Search related handles with lower weight (0.3)
     if related_handles:
         try:
-            raw_items = _from_lane(related_handles, RELATED_HANDLE_COUNT_PER)
+            raw_items, rel_revoked = _from_lane(related_handles, RELATED_HANDLE_COUNT_PER)
+            if rel_revoked:
+                any_revoked = True
+                bundle.record_failure(
+                    x_slug, schema.AUTH_FAILED,
+                    "Phase 2 related handle search: grok session expired or was revoked",
+                    attempted=True,
+                )
         except Exception as exc:
             print(f"[Pipeline] Phase 2 related handle search failed: {exc}", file=sys.stderr)
             state, attempted = _classify_source_failure(exc)
@@ -4124,7 +4150,17 @@ def _retrieve_stream_impl(
                 if i > 0:
                     print(f"[X] primary backend(s) returned nothing; used fallback '{backend}'", file=sys.stderr)
                 if last_error:
-                    # Fallback succeeded after earlier backend failed entirely.
+                    # Fallback succeeded after earlier backend failed. Classify
+                    # the original error: if it was AUTH_FAILED (grok revoked),
+                    # preserve that state so user gets re-login guidance. If it
+                    # was a different failure, fallback success is OK.
+                    prior_state = http.classify_failure(message=last_error)
+                    if prior_state == schema.AUTH_FAILED:
+                        # Keep AUTH_FAILED visible so host shows re-login hint
+                        return items, _outcome_artifact(
+                            schema.AUTH_FAILED,
+                            f"X served via {backend} after {last_error}; re-login needed for primary backend",
+                        )
                     return items, _outcome_artifact(
                         health.OK,
                         f"X served via {backend} after {last_error}",

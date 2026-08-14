@@ -556,6 +556,30 @@ def test_name_lane_returns_revoked_on_auth_failure(monkeypatch):
     assert items == []
 
 
+def test_from_lane_preserves_items_collected_before_revocation(monkeypatch):
+    """Items collected before auth revocation should be returned with revoked=True."""
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
+    call_count = {"n": 0}
+
+    def fake_run(cmd, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            # First handle succeeds
+            return subprocess.CompletedProcess(
+                cmd, 0, _block("2087568620465607078", handle="steipete"), ""
+            )
+        else:
+            # Second handle hits auth revocation
+            return subprocess.CompletedProcess(cmd, 1, "", "Error: Not signed in")
+
+    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    items, revoked = grok_x.search_handles(["steipete", "other"], "topic", *WINDOW)
+    # Should return items from first successful call AND signal revocation
+    assert len(items) == 1
+    assert items[0]["author_handle"] == "steipete"
+    assert revoked is True
+
+
 # --- fixes applied after review --------------------------------------------
 
 def test_child_home_is_not_the_users_home(monkeypatch, tmp_path):
