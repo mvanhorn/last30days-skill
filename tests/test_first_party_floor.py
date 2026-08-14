@@ -223,3 +223,49 @@ def test_related_handles_lane_gets_the_exemption():
     from lib import pipeline
     src = inspect.getsource(pipeline._run_supplemental_searches)
     assert "first_party_handles=related_handles," in src
+
+
+def test_quick_run_without_an_explicit_handle_still_protects_the_subject():
+    """The gap in the first fix: covering only user-typed handles does nothing
+    for a quick run, where nobody typed one and Phase 2's automatic resolution
+    never executes."""
+    from lib import pipeline
+    candidates = pipeline._topic_first_party_candidates("Peter Steinberger steipete")
+    assert "steipete" in candidates
+
+    items = _annotate(_mixed_batch())
+    kept = signals.prune_low_relevance(items, first_party_handles=candidates)
+    assert any(i.author == "steipete" for i in kept), (
+        "a quick search naming the subject must not discard what they wrote"
+    )
+
+
+def test_topic_candidates_include_explicit_mentions():
+    from lib import pipeline
+    assert "getenergy_" in pipeline._topic_first_party_candidates("@GetEnergy_ launch")
+
+
+def test_topic_candidates_exclude_stopwords():
+    from lib import pipeline
+    got = pipeline._topic_first_party_candidates("the best of the year")
+    assert "the" not in got and "of" not in got
+
+
+def test_topic_candidates_do_not_exempt_unrelated_authors():
+    """Candidates only matter when a post's author matches one, so ordinary
+    words cost nothing -- no account is named 'lunch'."""
+    from lib import pipeline
+    candidates = pipeline._topic_first_party_candidates("bentgo lunch boxes")
+    items = _annotate(_mixed_batch() + [_x_item("9", "spam_acct", 0.01, {"likes": 0})])
+    kept = signals.prune_low_relevance(items, first_party_handles=candidates)
+    assert all(i.author != "spam_acct" for i in kept)
+
+
+def test_topic_candidates_are_unioned_into_the_explicit_set():
+    import inspect
+    from lib import pipeline
+    src = inspect.getsource(pipeline.run)
+    assert "_topic_first_party_candidates(topic)" in src
+    build = src.index("explicit_first_party")
+    use = src.index("first_party_handles=explicit_first_party,")
+    assert build < use

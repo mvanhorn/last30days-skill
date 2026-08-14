@@ -2107,6 +2107,10 @@ def run(
         for h in ([x_handle, github_user, *(x_related or [])])
         if h and h.strip()
     }
+    # Plus handle-shaped tokens from the topic. Phase 1 and quick-depth runs
+    # never reach automatic handle resolution, so without this a quick search
+    # naming a subject still discards everything that subject wrote.
+    explicit_first_party |= _topic_first_party_candidates(topic)
 
     for source in (requested_sources or []):
         if source not in available:
@@ -3211,6 +3215,31 @@ def _is_transient_error(exc: Exception) -> bool:
         return True
     msg = str(exc)
     return any(code in msg for code in ("500", "502", "503", "504"))
+
+
+def _topic_first_party_candidates(topic: str) -> set[str]:
+    """Handle-shaped tokens in the topic itself, usable before any retrieval.
+
+    Phase 1 runs before automatic handle resolution, and a quick-depth run
+    skips that resolution entirely, so neither has access to the extracted
+    handle set. Without this a quick search for "Peter Steinberger steipete"
+    still drops every post steipete wrote, which is the exact failure this
+    branch exists to fix.
+
+    Deliberately permissive about what looks like a handle and strict about
+    what it does: a candidate only ever matters if a retrieved post's *author*
+    matches it, so an ordinary word like "lunch" costs nothing -- no author is
+    named "lunch". The realistic false positive is an account named after a
+    topic word, which the frequency-ranked path could surface anyway.
+    """
+    tokens = set()
+    for mention in re.findall(r"@([A-Za-z0-9_]{1,15})", topic or ""):
+        tokens.add(mention.lower())
+    for word in re.findall(r"[A-Za-z0-9_]{3,15}", topic or ""):
+        lowered = word.lower()
+        if lowered not in relevance.STOPWORDS:
+            tokens.add(lowered)
+    return tokens
 
 
 def _name_lane_subject(topic: str) -> str:
