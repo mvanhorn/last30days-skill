@@ -9,6 +9,18 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.20.0] - 2026-08-14
+
+### Added
+
+- X search now judges corpus on-topic ratio and retries once with a wider AND query when the initial results are mostly off-topic (e.g., phrase-quoted "Rome Italy" returning AS Roma sports accounts). Multi-word search queries use unquoted AND as the primary variant instead of phrase-quoting. Handles extracted from entity_extract are now filtered for the from: lane based on whether their already-retrieved posts are on-topic (≥2 on-topic hits and ≥50% ratio), not just frequency. Extracted handles that qualify for the from: lane AND the topic into the query (`from:handle Rome`) to prevent off-topic timelines from filling the X budget. Explicit --x-handle and --x-related handles always get the from: lane without ANDing the topic. Source status reflects off-topic floods as a warning artifact, not a failure. First-party floor immunity remains conservative (explicit handles only, not promoted commentators).
+
+### Fixed
+
+- Amazon review enrichment now starts at search time instead of after all other sources finish, ensuring multi-source runs have a useful budget (up to 180s) rather than leftover crumbs. Previously, a run that spent 269s on retrieval would leave only 11s for reviews, causing all Bright Data pulls to time out. Budgets below 90s now skip the lane entirely instead of firing doomed short pulls that spend credits without returning reviews.
+- Grok session expiry is now detected locally by parsing `expires_at` from `~/.grok/auth.json`. Doctor reports expired sessions as **degraded** (not ok) with the expiry timestamp and a hint to run `grok login --device-auth` if refresh fails. Research-time availability still attempts grok when credentials exist (expired access_token does not prove the refresh_token is dead). When the Grok CLI returns "Not signed in" or `invalid_grant` mid-run, the pipeline now reports `auth-failed` with a proper fix hint instead of a generic PARTIAL outcome, and falls back to the next X backend.
+
+
 ## [3.19.0] - 2026-08-14
 
 ### Security
