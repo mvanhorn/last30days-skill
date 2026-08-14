@@ -78,37 +78,42 @@ def _scored_listings(
     query: str = "",
     sorts: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
-    """Scored subreddit listings: shreddit partials, arctic-shift fallback.
+    """Scored subreddit listings: shreddit partials, arctic-shift supplement.
 
     The shreddit ``community-more-posts`` partials 403 from datacenter IPs
-    (and any host Reddit decides to block). When shreddit returns nothing for
-    a subreddit, fall back to the arctic-shift archive (keyless, IP-agnostic,
-    real scores) for that subreddit so discovery and score backfill keep
-    working. Never raises.
+    (and any host Reddit decides to block). Shreddit is tried first; arctic-
+    shift supplements with any posts shreddit missed. Individual sort lanes
+    can fail silently (shreddit's ``fetch_listings`` flattens results without
+    exposing per-sort status), so arctic is called for all requested subreddits
+    and merged via deduplication. This ensures fresh posts sought through
+    ``hot`` or ``new`` are recovered even when only ``top`` succeeded. Never
+    raises.
     """
     posts = reddit_listing.fetch_listings(subreddits, depth=depth, query=query, sorts=sorts)
-    # Track which subreddits shreddit returned posts for.
-    shreddit_subs = {(p.get("subreddit") or "").lower() for p in posts}
-    requested_subs = {s.removeprefix("r/").lower() for s in subreddits if s}
-    failed_subs = [s for s in subreddits if s.removeprefix("r/").lower() not in shreddit_subs]
 
-    if failed_subs:
-        # Fall back to arctic for subreddits that shreddit didn't return posts for.
+    # Supplement with arctic for all requested subreddits. Shreddit's per-sort
+    # success/failure is opaque, so arctic provides coverage for any failed
+    # sort lanes (e.g., hot/new failing while top succeeded). Deduplication
+    # ensures no redundant posts when shreddit fully succeeded.
+    if subreddits:
         try:
             arctic_posts = reddit_arctic.fetch_listings(
-                failed_subs, depth=depth, query=query, sorts=sorts
+                subreddits, depth=depth, query=query, sorts=sorts
             )
         except Exception as exc:  # the fallback must never break the pipeline
-            _log(f"arctic-shift listing fallback failed: {exc}")
+            _log(f"arctic-shift listing supplement failed: {exc}")
             arctic_posts = []
         if arctic_posts:
-            _log(f"arctic-shift listing fallback for {failed_subs}: {len(arctic_posts)} posts")
-            # Merge and dedupe by URL.
+            # Merge and dedupe by URL — shreddit posts take priority.
             seen = {p["url"] for p in posts}
+            added = 0
             for p in arctic_posts:
                 if p["url"] not in seen:
                     seen.add(p["url"])
                     posts.append(p)
+                    added += 1
+            if added:
+                _log(f"arctic-shift supplement: {added} new posts from {len(arctic_posts)} arctic results")
     return posts
 
 

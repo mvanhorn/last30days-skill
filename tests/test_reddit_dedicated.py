@@ -52,6 +52,8 @@ class TestDedicatedLane:
 
         with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
                                side_effect=fake_fetch), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[]), \
              mock.patch.object(reddit_keyless.reddit_rss, "search_rss", return_value=[]):
             out = reddit_keyless._discover("Kanye West", "default", None,
                                            dedicated_subreddits=["Kanye"])
