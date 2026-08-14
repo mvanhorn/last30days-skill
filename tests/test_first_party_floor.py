@@ -386,3 +386,136 @@ def test_deferred_prune_still_drops_off_topic_posts():
     kept = signals.prune_low_relevance(items, first_party_handles={"steipete"})
     assert any(i.author == "steipete" for i in kept)
     assert all(i.author != "spam_acct" for i in kept)
+
+
+# --- unresolved subject policy: skip X floor when no real handle identified ---
+
+def test_topic_handle_mentions_extracts_only_at_mentions():
+    """@mentions in the topic are real handles; regular words are not."""
+    from lib import pipeline
+    assert pipeline._topic_handle_mentions("Peter Steinberger @steipete") == {"steipete"}
+    assert pipeline._topic_handle_mentions("Peter Steinberger") == set()
+    assert pipeline._topic_handle_mentions("@GetEnergy_ launch") == {"getenergy_"}
+
+
+def test_topic_handle_mentions_is_case_insensitive():
+    from lib import pipeline
+    assert pipeline._topic_handle_mentions("@SteiPete") == {"steipete"}
+
+
+def test_entity_topic_no_handle_no_discovery_skips_x_floor():
+    """Policy: when the subject cannot be identified, skip the X floor entirely.
+
+    Entity-shaped topic like "Peter Steinberger" with:
+    - no --x-handle
+    - no @mentions in the topic
+    - auto-resolve returns nothing (quick run or no corroboration)
+
+    A zero-relevance post whose author is not a topic token survives because
+    the X floor is never applied. A noisier report beats losing evidence.
+    """
+    from lib import pipeline
+
+    topic = "Peter Steinberger"
+    explicit_x_handles = set()
+    supplemental_handles = []
+
+    assert pipeline._topic_handle_mentions(topic) == set(), (
+        "precondition: no @mentions in entity topic"
+    )
+
+    topic_candidates = pipeline._topic_first_party_candidates(topic)
+    assert "peter" in topic_candidates and "steinberger" in topic_candidates, (
+        "precondition: topic words are in candidates, not real handles"
+    )
+
+    real_x_handles = explicit_x_handles | {
+        h.lstrip("@").strip().lower() for h in supplemental_handles if h and h.strip()
+    }
+    assert real_x_handles == set(), (
+        "precondition: no real X handles resolved"
+    )
+
+    items = _annotate([
+        _x_item("1", "rando_acct", 0.0, {"likes": 0, "reposts": 0}),
+        _x_item("2", "another_rando", 0.05, {"likes": 1, "reposts": 0}),
+        _x_item("3", "third_acct", 0.18, {"likes": 20, "reposts": 2}),
+    ])
+
+    if real_x_handles:
+        kept = signals.prune_low_relevance(items, first_party_handles=topic_candidates | real_x_handles)
+    else:
+        kept = items
+
+    assert "rando_acct" in {i.author for i in kept}, (
+        "unresolved subject policy: skip X floor when no real handle identified; "
+        "the zero-relevance post should survive"
+    )
+    assert len(kept) == 3, (
+        "all X items should survive when the X floor is skipped"
+    )
+
+
+def test_entity_topic_with_at_mention_applies_x_floor():
+    """When the topic DOES include @mentions, the X floor applies normally."""
+    from lib import pipeline
+
+    topic = "Peter Steinberger @steipete"
+    explicit_x_handles = pipeline._topic_handle_mentions(topic)
+    supplemental_handles = []
+
+    assert "steipete" in explicit_x_handles, (
+        "precondition: @mention is a real handle"
+    )
+
+    real_x_handles = explicit_x_handles | {
+        h.lstrip("@").strip().lower() for h in supplemental_handles if h and h.strip()
+    }
+    assert real_x_handles, "real handles were resolved"
+
+    topic_candidates = pipeline._topic_first_party_candidates(topic)
+    items = _annotate([
+        _x_item("1", "steipete", 0.0, {"likes": 100, "reposts": 10}),
+        _x_item("2", "rando_acct", 0.0, {"likes": 0, "reposts": 0}),
+        _x_item("3", "third_acct", 0.18, {"likes": 20, "reposts": 2}),
+    ])
+
+    kept = signals.prune_low_relevance(items, first_party_handles=topic_candidates | real_x_handles)
+
+    assert "steipete" in {i.author for i in kept}, (
+        "first-party posts survive the floor"
+    )
+    assert "rando_acct" not in {i.author for i in kept}, (
+        "when real handles exist, off-topic zero-relevance posts are pruned"
+    )
+
+
+def test_explicit_x_handle_applies_x_floor():
+    """--x-handle triggers the floor even with entity-only topic."""
+    from lib import pipeline
+
+    topic = "Peter Steinberger"
+    x_handle = "steipete"
+    explicit_x_handles = {x_handle.lstrip("@").strip().lower()}
+
+    assert pipeline._topic_handle_mentions(topic) == set(), (
+        "precondition: topic has no @mentions"
+    )
+    assert explicit_x_handles == {"steipete"}, (
+        "but we have an explicit --x-handle"
+    )
+
+    topic_candidates = pipeline._topic_first_party_candidates(topic)
+    resolved_handles = topic_candidates | explicit_x_handles
+
+    items = _annotate([
+        _x_item("1", "steipete", 0.0, {"likes": 100, "reposts": 10}),
+        _x_item("2", "rando_acct", 0.0, {"likes": 0, "reposts": 0}),
+    ])
+
+    kept = signals.prune_low_relevance(items, first_party_handles=resolved_handles)
+
+    assert "steipete" in {i.author for i in kept}
+    assert "rando_acct" not in {i.author for i in kept}, (
+        "--x-handle triggers the floor, pruning off-topic posts"
+    )

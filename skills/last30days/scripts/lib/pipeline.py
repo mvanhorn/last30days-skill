@@ -2107,6 +2107,16 @@ def run(
         for h in ([x_handle, github_user, *(x_related or [])])
         if h and h.strip()
     }
+    # Real X handles: --x-handle, --x-related, or @mentions in the topic. These
+    # determine whether the deferred X floor applies. Topic words like "peter"
+    # are NOT real handles and should not trigger the floor — when no real
+    # handle is identified, the floor is skipped entirely (policy: a noisier
+    # report beats losing the subject's evidence).
+    explicit_x_handles = {
+        h.lstrip("@").strip().lower()
+        for h in ([x_handle, *(x_related or [])])
+        if h and h.strip()
+    } | _topic_handle_mentions(topic)
     # Plus handle-shaped tokens from the topic. Phase 1 and quick-depth runs
     # never reach automatic handle resolution, so without this a quick search
     # naming a subject still discards everything that subject wrote.
@@ -2472,11 +2482,22 @@ def run(
         for h in supplemental_handles
         if h and h.strip()
     }
+    # Real X handles from explicit flags, @mentions in topic, or Phase 2 discovery.
+    # When no real handle is identified, skip the X floor entirely — a noisier
+    # report beats losing the subject's evidence. Topic tokens like "peter" are
+    # NOT real handles: they populate resolved_handles for downstream first-party
+    # protection but should NOT trigger the floor.
+    real_x_handles = explicit_x_handles | {
+        h.lstrip("@").strip().lower()
+        for h in supplemental_handles
+        if h and h.strip()
+    }
     # Deferred X relevance floor. Phase 1 skipped it so this could run with the
     # run's actual resolved handles rather than a guess made before anyone knew
     # who the subject was. Applied per subquery stream so fusion sees the same
-    # shape it always has.
-    if resolved_handles:
+    # shape it always has. Only applied when we have real X handles — topic
+    # tokens alone cannot identify the subject.
+    if real_x_handles:
         for key, stream in list(bundle.items_by_source_and_query.items()):
             if key[1] != "x" or not stream:
                 continue
@@ -3275,6 +3296,19 @@ def _is_transient_error(exc: Exception) -> bool:
         return True
     msg = str(exc)
     return any(code in msg for code in ("500", "502", "503", "504"))
+
+
+def _topic_handle_mentions(topic: str) -> set[str]:
+    """@mentions in the topic, which are real X handles.
+
+    These are used to determine whether the subject was identified: an
+    @mention like "@steipete" is a real handle that can exempt its owner from
+    the relevance floor. Regular words like "Peter" are not real handles.
+    """
+    return {
+        mention.lower()
+        for mention in re.findall(r"@([A-Za-z0-9_]{1,15})", topic or "")
+    }
 
 
 def _topic_first_party_candidates(topic: str) -> set[str]:
