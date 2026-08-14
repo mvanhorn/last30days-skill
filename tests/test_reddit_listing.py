@@ -86,10 +86,11 @@ class TestScoreIndex:
 
 
 class TestFetchDiscoveryListingsFallback:
-    """fetch_discovery_listings falls back to arctic-shift when every shreddit
-    partial fails (datacenter egress 403), and clears the errors on success."""
+    """fetch_discovery_listings supplements with arctic-shift. Arctic is recency-only
+    and cannot "recover" failed hot/top/rising lanes — errors are preserved."""
 
-    def test_arctic_fallback_when_all_shreddit_feeds_fail(self):
+    def test_arctic_supplement_preserves_shreddit_errors(self):
+        """Arctic supplements posts but cannot clear shreddit errors (recency-only)."""
         arctic_post = {
             "id": "", "title": "matcha farm tour", "url": "https://www.reddit.com/r/tea/comments/abc/x/",
             "score": 406, "num_comments": 88, "subreddit": "tea", "created_utc": None,
@@ -102,7 +103,9 @@ class TestFetchDiscoveryListingsFallback:
              mock.patch("lib.reddit_arctic.fetch_listings", return_value=[arctic_post]) as arctic:
             result = rl.fetch_discovery_listings(["tea"], query="matcha", depth="quick")
         assert result["items"] == [arctic_post]
-        assert result["errors"] == []  # recovered — no failure to report
+        # Arctic is recency-only — it can supplement but cannot "recover" a failed
+        # rising/top lane. Errors for failed shreddit lanes are preserved.
+        assert result["errors"]  # shreddit errors preserved
         arctic.assert_called_once()
 
     def test_errors_preserved_when_both_shreddit_and_arctic_empty(self):
@@ -138,9 +141,9 @@ class TestFetchDiscoveryListingsFallback:
         assert result == {"items": [], "errors": []}
         arctic.assert_not_called()
 
-    def test_multi_sub_partial_recovery_keeps_unrecovered_errors(self):
-        """AE4: arctic recovers only some subreddits; errors kept for missing subs."""
-        # Request tea and coffee; arctic only returns posts from tea.
+    def test_multi_sub_partial_arctic_keeps_all_shreddit_errors(self):
+        """AE4: arctic supplements but cannot clear shreddit sort-lane errors."""
+        # Request tea and coffee; shreddit fails for both, arctic returns tea posts.
         arctic_post = {
             "id": "", "title": "matcha farm tour", "url": "https://www.reddit.com/r/tea/comments/abc/x/",
             "score": 406, "num_comments": 88, "subreddit": "tea", "created_utc": None,
@@ -153,12 +156,12 @@ class TestFetchDiscoveryListingsFallback:
              mock.patch("lib.reddit_arctic.fetch_listings", return_value=[arctic_post]):
             result = rl.fetch_discovery_listings(["tea", "coffee"], query="matcha", depth="quick")
         assert result["items"] == [arctic_post]
-        # r/coffee had shreddit errors, arctic returned nothing for it → errors kept.
+        # Both subs had shreddit errors. Arctic is recency-only and cannot recover
+        # failed sort lanes, so ALL errors are preserved.
         coffee_errors = [e for e in result["errors"] if "r/coffee" in e.lower()]
-        assert coffee_errors, "unrecovered sub's errors should be preserved"
-        # r/tea was recovered → its errors should NOT appear.
+        assert coffee_errors, "shreddit errors for coffee should be preserved"
         tea_errors = [e for e in result["errors"] if "r/tea" in e.lower()]
-        assert not tea_errors, "recovered sub's errors should be cleared"
+        assert tea_errors, "arctic supplement cannot clear shreddit sort-lane errors"
 
     def test_arctic_rows_failing_keyword_gate_keep_errors(self):
         """AE5: arctic rows that fail the keyword gate do not count as recovery."""
@@ -193,18 +196,53 @@ class TestFetchDiscoveryListingsFallback:
              mock.patch("lib.reddit_arctic.fetch_listings", return_value=[offtopic_post]):
             # Empty query = global discover, no keyword gate.
             result = rl.fetch_discovery_listings(["tea"], query="", depth="quick")
-        # No keyword gate → post survives, errors cleared.
+        # No keyword gate → post survives. But arctic is recency-only, so shreddit
+        # errors for failed sort lanes are preserved.
         assert result["items"] == [offtopic_post]
-        assert result["errors"] == []
+        assert result["errors"]  # shreddit errors preserved despite arctic supplement
 
 
-class TestErrorAttributionWordBoundary:
-    """Verify error attribution uses word-boundary matching, not substring."""
+class TestSortLaneErrorPreservation:
+    """Verify errors are cleared per (sub, sort) pair, not per subreddit."""
 
-    def test_recovered_foobar_does_not_keep_foo_errors(self):
-        """Recovered r/foobar should not be misattributed to unrecovered r/foo."""
-        # Arctic returns posts only from r/foobar (recovered), not r/foo.
-        foobar_post = {
+    def test_shreddit_partial_success_keeps_failed_sort_errors(self):
+        """One sort succeeds, another fails → only the failed lane's error is kept.
+
+        This is the key test: shreddit rising succeeds for a sub, shreddit top fails,
+        arctic supplements with recency posts. The failed top error is preserved
+        because arctic is recency-only and cannot claim to have recovered a "top" lane.
+        """
+        # Shreddit returns posts for "rising" but None for "top".
+        def shreddit_response(url, *args, **kwargs):
+            if "rising" in url:
+                return _html()  # success for rising
+            return None  # fail for top
+
+        arctic_post = {
+            "id": "", "title": "extra from arctic", "url": "https://www.reddit.com/r/technology/comments/arctic/x/",
+            "score": 100, "num_comments": 10, "subreddit": "technology", "created_utc": None,
+            "author": "u", "selftext": "", "date": "2026-07-02",
+            "engagement": {"score": 100, "num_comments": 10, "upvote_ratio": None},
+            "relevance": 0.5, "why_relevant": "Reddit listing (arctic-shift)",
+            "metadata": {"post_id": "arctic"},
+        }
+        with mock.patch.object(rl.http, "get_text", side_effect=shreddit_response), \
+             mock.patch("lib.reddit_arctic.fetch_listings", return_value=[arctic_post]):
+            result = rl.fetch_discovery_listings(["technology"], query="netherlands", depth="quick")
+
+        # Shreddit rising succeeded → no error for rising.
+        # Shreddit top failed → error for top is preserved.
+        # Arctic supplement cannot clear shreddit errors (recency-only).
+        rising_errors = [e for e in result["errors"] if "rising" in e.lower()]
+        top_errors = [e for e in result["errors"] if " top:" in e.lower()]
+        assert not rising_errors, "successful rising lane should have no error"
+        assert top_errors, "failed top lane error should be preserved"
+        # Posts from both shreddit and arctic should be in the result.
+        assert len(result["items"]) > 1
+
+    def test_arctic_does_not_recover_shreddit_sort_lanes(self):
+        """Arctic supplement adds posts but cannot clear shreddit sort-lane errors."""
+        arctic_post = {
             "id": "", "title": "foobar topic", "url": "https://www.reddit.com/r/foobar/comments/abc/x/",
             "score": 500, "num_comments": 50, "subreddit": "foobar", "created_utc": None,
             "author": "u", "selftext": "", "date": "2026-07-02",
@@ -212,17 +250,17 @@ class TestErrorAttributionWordBoundary:
             "relevance": 0.5, "why_relevant": "Reddit listing (arctic-shift)",
             "metadata": {"post_id": "abc"},
         }
+        # Shreddit fails for both subs; arctic supplements for foobar only.
         with mock.patch.object(rl.http, "get_text", return_value=None), \
-             mock.patch("lib.reddit_arctic.fetch_listings", return_value=[foobar_post]):
+             mock.patch("lib.reddit_arctic.fetch_listings", return_value=[arctic_post]):
             result = rl.fetch_discovery_listings(["foo", "foobar"], query="topic", depth="quick")
-        # foobar is recovered, foo is not.
-        assert result["items"] == [foobar_post]
-        # Errors for r/foo should be kept.
+        # Arctic is recency-only — it cannot recover failed rising/top lanes.
+        # ALL shreddit errors should be preserved.
+        assert result["items"] == [arctic_post]
         foo_errors = [e for e in result["errors"] if e.lower().startswith("r/foo ")]
-        assert foo_errors, "unrecovered r/foo errors should be preserved"
-        # Errors for r/foobar should NOT be in the kept errors (foobar was recovered).
+        assert foo_errors, "shreddit errors for r/foo should be preserved"
         foobar_errors = [e for e in result["errors"] if e.lower().startswith("r/foobar ")]
-        assert not foobar_errors, "recovered r/foobar errors should be cleared"
+        assert foobar_errors, "arctic cannot clear shreddit errors — foobar errors preserved"
 
 
 class TestMatchesDiscoveryDomainParity:

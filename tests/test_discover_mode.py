@@ -408,6 +408,11 @@ def test_discovery_listing_block_is_reported_as_rate_limited():
 
 
 def test_reddit_discovery_adapter_preserves_partial_feed_errors():
+    """When one shreddit sort lane fails and another succeeds, the failed lane's error is kept.
+
+    Errors are cleared per (sub, sort) pair, not per subreddit. Arctic-shift cannot
+    recover a specific sort lane since it's recency-only.
+    """
     item = {
         "url": "https://reddit.com/r/example/comments/1",
         "title": "AI agent launch",
@@ -426,8 +431,11 @@ def test_reddit_discovery_adapter_preserves_partial_feed_errors():
         )
 
     assert result["items"] == [item]
-    # With subreddit coverage from shreddit, errors are cleared.
-    assert result["errors"] == []
+    # Shreddit top succeeded → no error for top.
+    # Shreddit rising failed → error for rising is preserved.
+    # Error-clearing is per (sub, sort) pair, not per subreddit.
+    assert len(result["errors"]) == 1
+    assert "rising" in result["errors"][0].lower()
 
 
 def test_discovery_cli_json_contract_and_mutual_exclusion():

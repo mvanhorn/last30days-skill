@@ -99,6 +99,21 @@ def _post_id(permalink: str) -> str:
     return m.group(1) if m else ""
 
 
+_ERROR_PATTERN = re.compile(r"^r/(\S+)\s+(\S+):", re.IGNORECASE)
+
+
+def _shreddit_error_recovered(error: str, successes: Set[tuple[str, str]]) -> bool:
+    """Return True if the error's (sub, sort) pair is in the successes set.
+
+    Error format: "r/{sub} {sort}: {message}".
+    """
+    m = _ERROR_PATTERN.match(error)
+    if not m:
+        return False
+    sub, sort = m.group(1).lower(), m.group(2).lower()
+    return (sub, sort) in successes
+
+
 def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
     """Parse <shreddit-post> cards into normalized post dicts with real scores."""
     posts: List[Dict[str, Any]] = []
@@ -249,6 +264,10 @@ def fetch_discovery_listings(
     jobs = [(subreddit, sort) for subreddit in subreddits for sort in ("rising", "top")]
     items: List[Dict[str, Any]] = []
     errors: List[str] = []
+    # Track which (sub, sort) pairs shreddit successfully delivered posts for.
+    # Used to decide which errors to clear — Arctic can supplement but cannot
+    # "recover" a failed hot/top/new/rising lane (it's recency-only).
+    shreddit_successes: Set[tuple[str, str]] = set()
     with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs)) or 1) as executor:
         # submit_with_context, not executor.submit: a plain submit starts the
         # worker with an empty context, dropping the pipeline's
@@ -269,6 +288,9 @@ def fetch_discovery_listings(
             items.extend(fetched)
             if error:
                 errors.append(f"r/{subreddit} {sort}: {error}")
+            elif fetched:
+                # Shreddit succeeded for this (sub, sort) lane.
+                shreddit_successes.add((subreddit.lower(), sort.lower()))
 
     seen: set[str] = set()
     unique = []
@@ -309,21 +331,15 @@ def fetch_discovery_listings(
         if added:
             _log(f"discovery arctic supplement added {added} new posts")
 
-    # Clear errors for subreddits with posts (from shreddit or arctic).
-    if unique and errors:
-        recovered_subs = {(item.get("subreddit") or "").lower() for item in unique}
-        requested_subs = {s.removeprefix("r/").lower() for s in subreddits}
-        if recovered_subs >= requested_subs:
-            # Full recovery — all requested subs have posts.
-            errors = []
-        else:
-            # Partial recovery — keep errors only for unrecovered subs.
-            unrecovered = requested_subs - recovered_subs
-            # Match word-boundary: "r/{sub} " to avoid r/foo matching r/foobar.
-            errors = [
-                e for e in errors
-                if any(e.lower().startswith(f"r/{sub} ") for sub in unrecovered)
-            ]
+    # Clear errors only for (sub, sort) pairs where shreddit succeeded.
+    # Arctic supplements recency posts but cannot "recover" a failed hot/top/
+    # rising lane — it has no sort lanes. Errors for failed shreddit lanes are
+    # preserved even when another sort for the same subreddit succeeded.
+    if errors and shreddit_successes:
+        errors = [
+            e for e in errors
+            if not _shreddit_error_recovered(e, shreddit_successes)
+        ]
     return {"items": unique, "errors": errors}
 
 
