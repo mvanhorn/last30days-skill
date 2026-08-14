@@ -77,7 +77,7 @@ def test_nominations_ranked_by_seed_velocity():
     ]
     nominations = pipeline.nominate_topics(
         _bundle(items), _query_plan("AI", ["hackernews"]), _plan("AI", ["hackernews"]),
-        to_date="2026-07-10", limit=10,
+        from_date="2026-06-10", to_date="2026-07-10", limit=10,
     )
     assert nominations, "expected at least one nomination"
     assert "GPT-6" in nominations[0].name
@@ -95,7 +95,7 @@ def test_nominations_dedupe_names_casefold():
     nominations = pipeline.nominate_topics(
         _bundle(items), _query_plan("AI agents", ["hackernews", "reddit"]),
         _plan("AI agents", ["hackernews", "reddit"]),
-        to_date="2026-07-10", limit=10,
+        from_date="2026-06-10", to_date="2026-07-10", limit=10,
     )
     names = [nomination.name.casefold() for nomination in nominations]
     assert len(names) == len(set(names))
@@ -109,7 +109,7 @@ def test_fewer_clusters_than_limit_returns_all_without_padding():
     nominations = pipeline.nominate_topics(
         _bundle(items), _query_plan("quantum", ["hackernews"]),
         _plan("quantum", ["hackernews"]),
-        to_date="2026-07-10", limit=8,
+        from_date="2026-06-10", to_date="2026-07-10", limit=8,
     )
     assert 1 <= len(nominations) < 8
 
@@ -122,7 +122,7 @@ def test_zero_velocity_clusters_are_dropped():
     ]
     nominations = pipeline.nominate_topics(
         _bundle(items), _query_plan("AI", ["hackernews"]), _plan("AI", ["hackernews"]),
-        to_date="2026-07-10", limit=8,
+        from_date="2026-06-10", to_date="2026-07-10", limit=8,
     )
     assert nominations == []
 
@@ -145,7 +145,7 @@ def test_names_are_short_distilled_topics_not_raw_titles():
     nominations = pipeline.nominate_topics(
         _bundle(items), _query_plan("AI agents", ["hackernews"]),
         _plan("AI agents", ["hackernews"]),
-        to_date="2026-07-10", limit=10,
+        from_date="2026-06-10", to_date="2026-07-10", limit=10,
     )
     assert nominations
     name = nominations[0].name
@@ -169,7 +169,7 @@ def test_no_provider_names_are_distilled_and_deterministic():
         return pipeline.nominate_topics(
             bundle, _query_plan("AI agents", ["hackernews"]),
             _plan("AI agents", ["hackernews"]),
-            to_date="2026-07-10", limit=10,
+            from_date="2026-06-10", to_date="2026-07-10", limit=10,
         )
 
     first, second = run(), run()
@@ -197,7 +197,7 @@ def test_nomination_carries_leader_summary_and_items():
     ]
     nominations = pipeline.nominate_topics(
         _bundle(items), _query_plan("Linux", ["hackernews"]), _plan("Linux", ["hackernews"]),
-        to_date="2026-07-10", limit=8,
+        from_date="2026-06-10", to_date="2026-07-10", limit=8,
     )
     assert nominations
     top = nominations[0]
@@ -226,7 +226,7 @@ def test_same_entity_clusters_disambiguate_instead_of_dropping():
     nominations = pipeline.nominate_topics(
         _bundle(items), _query_plan("AI agents", ["hackernews"]),
         _plan("AI agents", ["hackernews"]),
-        to_date="2026-07-10", limit=10,
+        from_date="2026-06-10", to_date="2026-07-10", limit=10,
     )
 
     assert len(nominations) == 2
@@ -259,7 +259,7 @@ def test_third_same_entity_cluster_survives_via_successive_tokens():
     nominations = pipeline.nominate_topics(
         _bundle(items), _query_plan("AI agents", ["hackernews"]),
         _plan("AI agents", ["hackernews"]),
-        to_date="2026-07-10", limit=10,
+        from_date="2026-06-10", to_date="2026-07-10", limit=10,
     )
 
     assert len(nominations) == 3
@@ -314,7 +314,7 @@ def test_indistinguishable_distinct_representative_clusters_still_dedupe():
             _bundle(items),
             _query_plan("AI agents", ["hackernews", "reddit"]),
             _plan("AI agents", ["hackernews", "reddit"]),
-            to_date="2026-07-10", limit=10,
+            from_date="2026-06-10", to_date="2026-07-10", limit=10,
         )
 
     assert len(nominations) == 1
@@ -358,7 +358,7 @@ def test_clusters_sharing_a_representative_dedupe_to_one():
             _bundle(items),
             _query_plan("AI agents", ["hackernews", "reddit"]),
             _plan("AI agents", ["hackernews", "reddit"]),
-            to_date="2026-07-10", limit=10,
+            from_date="2026-06-10", to_date="2026-07-10", limit=10,
         )
 
     assert len(nominations) == 1
@@ -381,10 +381,10 @@ def test_nominate_topic_pool_pairs_nominations_with_cluster_ids():
     query_plan = _query_plan("AI", ["hackernews"])
     plan = _plan("AI", ["hackernews"])
     pool = pipeline.nominate_topic_pool(
-        bundle, query_plan, plan, to_date="2026-07-10", limit=10,
+        bundle, query_plan, plan, from_date="2026-06-10", to_date="2026-07-10", limit=10,
     )
     nominations = pipeline.nominate_topics(
-        bundle, query_plan, plan, to_date="2026-07-10", limit=10,
+        bundle, query_plan, plan, from_date="2026-06-10", to_date="2026-07-10", limit=10,
     )
     assert [nomination for nomination, _cluster_id in pool] == nominations
     cluster_ids = [cluster_id for _nomination, cluster_id in pool]
