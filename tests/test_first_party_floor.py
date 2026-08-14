@@ -406,53 +406,73 @@ def test_topic_handle_mentions_is_case_insensitive():
 def test_entity_topic_no_handle_no_discovery_skips_x_floor():
     """Policy: when the subject cannot be identified, skip the X floor entirely.
 
-    Entity-shaped topic like "Peter Steinberger" with:
-    - no --x-handle
-    - no @mentions in the topic
-    - auto-resolve returns nothing (quick run or no corroboration)
-
-    A zero-relevance post whose author is not a topic token survives because
-    the X floor is never applied. A noisier report beats losing evidence.
+    Entity-shaped topic, no --x-handle, auto-resolve/Phase 2 return nothing.
+    Retrieved X items include a zero-relevance post whose author is not a
+    topic token. That post survives prune because the floor is not applied.
+    A companion on-topic post is in the batch so the all-fail rescue cannot
+    hide an incorrectly applied floor.
     """
+    from unittest.mock import patch
     from lib import pipeline
 
     topic = "Peter Steinberger"
-    explicit_x_handles = set()
-    supplemental_handles = []
+    assert pipeline._topic_handle_mentions(topic) == set()
+    topic_tokens = pipeline._topic_first_party_candidates(topic)
+    assert "peter" in topic_tokens and "steinberger" in topic_tokens
+    assert "rando_acct" not in topic_tokens
 
-    assert pipeline._topic_handle_mentions(topic) == set(), (
-        "precondition: no @mentions in entity topic"
-    )
-
-    topic_candidates = pipeline._topic_first_party_candidates(topic)
-    assert "peter" in topic_candidates and "steinberger" in topic_candidates, (
-        "precondition: topic words are in candidates, not real handles"
-    )
-
-    real_x_handles = explicit_x_handles | {
-        h.lstrip("@").strip().lower() for h in supplemental_handles if h and h.strip()
+    raw_items = [
+        {
+            "id": "1",
+            "text": "shipping a new agent loop tonight",
+            "url": "https://x.com/rando_acct/status/1",
+            "author_handle": "rando_acct",
+            "date": "2026-08-01",
+            "engagement": {"likes": 0, "reposts": 0, "replies": 0},
+        },
+        {
+            "id": "2",
+            "text": "Peter Steinberger just shipped another agent demo",
+            "url": "https://x.com/third_acct/status/2",
+            "author_handle": "third_acct",
+            "date": "2026-08-01",
+            "engagement": {"likes": 50, "reposts": 5, "replies": 2},
+        },
+    ]
+    plan = {
+        "intent": "person",
+        "freshness_mode": "balanced_recent",
+        "cluster_mode": "topic",
+        "subqueries": [{
+            "label": "primary",
+            "search_query": topic,
+            "ranking_query": topic,
+            "sources": ["x"],
+        }],
+        "source_weights": {"x": 1.0},
     }
-    assert real_x_handles == set(), (
-        "precondition: no real X handles resolved"
-    )
 
-    items = _annotate([
-        _x_item("1", "rando_acct", 0.0, {"likes": 0, "reposts": 0}),
-        _x_item("2", "another_rando", 0.05, {"likes": 1, "reposts": 0}),
-        _x_item("3", "third_acct", 0.18, {"likes": 20, "reposts": 2}),
-    ])
+    def fake_retrieve(**kwargs):
+        if kwargs.get("source") == "x":
+            return raw_items, {}
+        return [], {}
 
-    if real_x_handles:
-        kept = signals.prune_low_relevance(items, first_party_handles=topic_candidates | real_x_handles)
-    else:
-        kept = items
+    with patch("lib.pipeline._retrieve_stream", side_effect=lambda **kw: fake_retrieve(**kw)):
+        report = pipeline.run(
+            topic=topic,
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            requested_sources=["x"],
+            mock=True,
+            external_plan=plan,
+            as_of_date="2026-08-14",
+        )
 
-    assert "rando_acct" in {i.author for i in kept}, (
+    x_items = report.items_by_source.get("x") or []
+    authors = {item.author for item in x_items}
+    assert "rando_acct" in authors, (
         "unresolved subject policy: skip X floor when no real handle identified; "
-        "the zero-relevance post should survive"
-    )
-    assert len(kept) == 3, (
-        "all X items should survive when the X floor is skipped"
+        "the zero-relevance post whose author is not a topic token must survive"
     )
 
 

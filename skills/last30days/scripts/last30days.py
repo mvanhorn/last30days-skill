@@ -3275,8 +3275,10 @@ def _main(
         # case where first-party evidence is hardest to protect: the handle is
         # absent from the topic and may never appear in retrieved mentions, so
         # nothing downstream can identify the subject's own posts. One web
-        # search closes that. Skipped when a handle was already supplied, when
-        # an external plan owns resolution, or in mock runs.
+        # search closes that. If it returns nothing, pipeline.run skips the X
+        # relevance floor entirely — a noisier report beats losing evidence.
+        # Skipped when a handle was already supplied, when an external plan
+        # owns resolution, or in mock runs.
         if (
             not args.auto_resolve
             and not external_plan
@@ -3299,6 +3301,8 @@ def _main(
             if resolution.get("x_handle") and not args.x_handle:
                 args.x_handle = resolution["x_handle"]
                 sys.stderr.write(f"[AutoResolve] X handle: @{args.x_handle}\n")
+            # Empty x_handle is intentional: do not invent a lexical stand-in.
+            # pipeline.run treats an unidentified subject as "skip the X floor".
             if resolution.get("github_user") and not args.github_user:
                 args.github_user = resolution["github_user"]
                 sys.stderr.write(f"[AutoResolve] GitHub user: @{args.github_user}\n")
