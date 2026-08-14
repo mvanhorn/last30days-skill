@@ -577,8 +577,6 @@ Options:
 
 **If the user picks Auto setup:**
 
-**Check for a Grok path before asking for cookies.** Run `command -v grok`. If it resolves, X can be unlocked with no X credential at all, so lead with that instead of a cookie read: tell the user `grok login` is enough and only offer the cookie options if they decline. Do not call it free — it needs a Grok plan.
-
 Get cookie consent first. Check if `BROWSER_CONSENT=true` already exists in `~/.config/last30days/.env`; if so, skip the consent prompt and run `setup --allow-browser-cookies` directly. Otherwise **call AskUserQuestion:**
 Question: "Auto setup installs the free CLIs either way - yt-dlp (YouTube), Digg, arXiv, and Techmeme. The only thing that needs your OK is reading your browser's x.com cookies to authenticate X/Twitter search: I check Chrome first (a one-time macOS Keychain prompt may appear; click Always Allow), then Firefox and Safari. Cookies are read live, never saved to disk. Include X?"
 Options (give each option the description shown):
@@ -586,7 +584,7 @@ Options (give each option the description shown):
 - "Skip X - just the CLIs" - description: "No cookie reads. Still installs yt-dlp (YouTube), Digg, arXiv, and Techmeme." Run `FROM_BROWSER=off "${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup`.
 - "xAI API key for X instead" - description: "Use an api.x.ai key for X search (no cookie read), plus install yt-dlp (YouTube), Digg, arXiv, and Techmeme." Ask them to paste it, write `XAI_API_KEY` to `.env`, then run `FROM_BROWSER=off "${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup`.
 
-When `command -v grok` resolved, replace the "xAI API key for X instead" option with: "Sign in to Grok instead" - description: "X search with no X account, cookies, or API key. Run `grok login` once." Nothing is written to `.env`; still install the free CLIs with `FROM_BROWSER=off "${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup`.
+**Grok CLI is an opt-in backup, not a setup-time recommendation.** Do NOT check for grok first or offer it as a primary option during setup. A leftover `~/.grok/auth.json` must never steal the X lane. If the user mentions having a Grok account, tell them: "You can use the Grok CLI by pinning `LAST30DAYS_X_BACKEND=grok` in your `.env` after running `grok login`. This is opt-in because a leftover grok login should not take over X automatically." Do not call it free — it needs a Grok plan.
 
 The consented `setup --allow-browser-cookies` run extracts cookies (Chrome/Chromium family first via the Keychain with no Full Disk Access, then Firefox and Safari as fallbacks; the winning browser is pinned for future runs only when it is Firefox or Safari, so Chrome never re-triggers the Keychain prompt on later runs) and best-effort installs yt-dlp (YouTube), the free keyless Digg CLI (`digg-pp-cli` via `@mvanhorn/printing-press-library install digg --cli-only`; Digg activates only when the binary is on the **agent subprocess PATH**, typically `$HOME/.local/bin`; setup reports honestly if installed off-PATH; recommend-only if `npx` is unavailable), plus the free keyless arXiv and Techmeme CLIs. Show the user what was found and installed - including whether Digg landed on PATH (active) or off-PATH (installed but not yet active).
 
@@ -2010,23 +2008,15 @@ If the research output contains a `**🔍 Research Coverage:**` block, render it
 
 **Just-in-time X unlock:** If X returned 0 results because no X auth is configured (no AUTH_TOKEN/CT0, no XAI_API_KEY, no FROM_BROWSER), offer to set it up right there.
 
-**First check whether a Grok path is already present.** Run `command -v grok`. If it resolves, the user needs no X credential at all — say so and offer `grok login` as the first option, because it is one command and unlocks X with no X account, no cookies, and no API key.
-
 **Call AskUserQuestion.** Question: "X/Twitter wasn't searched. Want to unlock it?"
 
-Options when `grok` IS on PATH (or the user has said they have a Grok account):
-- "Sign in to Grok (no X account needed)" - Have them run `grok login`; nothing is written to .env and no X credential is involved
-- "Scan my browser cookies (free)" - Get consent, run cookie scan, write BROWSER_CONSENT=true + FROM_BROWSER=auto to .env
-- "I have AUTH_TOKEN and CT0 from my browser" - Ask them to paste each value, then write AUTH_TOKEN=<value>\nCT0=<value> to .env
-- "Skip for now"
-
-Options when `grok` is NOT on PATH — offer today's options unchanged, and mention the Grok path only as a closing one-liner rather than a menu entry. A user with no Grok account should not have their actionable choices pushed down the list by one they cannot take:
+Default options (always presented first — cookie consent and paid keys are the primary X fix):
 - "Scan my browser cookies (free)" - Get consent, run cookie scan, write BROWSER_CONSENT=true + FROM_BROWSER=auto to .env
 - "I have AUTH_TOKEN and CT0 from my browser" - Ask them to paste each value, then write AUTH_TOKEN=<value>\nCT0=<value> to .env
 - "I have an xAI API key" - Ask them to paste it, write XAI_API_KEY to .env
 - "Skip for now"
 
-After the modal, if `grok` was absent, add one line: "If you have a Grok account, installing the Grok CLI (`curl -fsSL https://x.ai/cli/install.sh | bash`) unlocks X with no X credential at all." Do not describe the Grok path as free — it needs a Grok plan.
+**Grok CLI is an opt-in backup, not a default prescription.** After showing the modal, add one line: "If you have a Grok account and prefer to use it: install the Grok CLI (`curl -fsSL https://x.ai/cli/install.sh | bash`), run `grok login`, then set `LAST30DAYS_X_BACKEND=grok` to enable it." Do not describe the Grok path as free — it needs a Grok plan. Do not put grok first or as a primary recommendation; a leftover `~/.grok/auth.json` must never steal the X lane.
 
 **THEN - Engine footer pass-through (right before invitation):**
 

@@ -153,8 +153,21 @@ class TestDescriptorRegistry:
     def test_x_chain_comes_from_env_definitions(self):
         d = backends.get_descriptor("x")
         assert d.mode == backends.MODE_ALTERNATIVE
-        assert tuple(s.name for s in d.backends) == env.X_BACKEND_ORDER
-        assert env.X_BACKEND_ORDER == ("xai", "grok", "bird", "xurl", "xquik")
+        # Auto chain order: bird first, grok excluded (opt-in only).
+        assert env.X_BACKEND_ORDER == ("bird", "xai", "xurl", "xquik")
+        # Grok is opt-in only, not in the auto chain.
+        assert env.X_BACKEND_OPT_IN == ("grok",)
+        # All known backends (auto + opt-in) for pin validation.
+        assert env.X_BACKEND_KNOWN == ("bird", "xai", "xurl", "xquik", "grok")
+        # Descriptor includes all backends (auto + opt-in) for doctor visibility.
+        assert tuple(s.name for s in d.backends) == env.X_BACKEND_ORDER + env.X_BACKEND_OPT_IN
+        # Grok is marked opt-in in the descriptor.
+        grok_spec = next(s for s in d.backends if s.name == "grok")
+        assert grok_spec.opt_in is True
+        # Auto chain backends are NOT marked opt-in.
+        for name in env.X_BACKEND_ORDER:
+            spec = next(s for s in d.backends if s.name == name)
+            assert spec.opt_in is False
         assert d.pin_var == env.X_BACKEND_PIN_VAR == "LAST30DAYS_X_BACKEND"
 
     def test_env_exposes_reddit_pin_constants(self):
@@ -197,10 +210,48 @@ class TestXPrediction:
         assert res.active_backend == "bird"
         assert res.tier == backends.TIER_OK
         assert res.pinned is False
-        # Chain rendered in declared order regardless of availability.
-        assert res.chain == list(env.X_BACKEND_ORDER)
-        assert [f.name for f in res.findings] == list(env.X_BACKEND_ORDER)
+        # Chain includes all backends (auto + opt-in) for doctor visibility.
+        expected_chain = list(env.X_BACKEND_ORDER + env.X_BACKEND_OPT_IN)
+        assert res.chain == expected_chain
+        assert [f.name for f in res.findings] == expected_chain
         assert "will use: bird" in res.summary
+
+    def test_bird_predicted_even_when_xai_key_present(self):
+        """Cookies beat XAI_API_KEY when both are present (bird-first chain)."""
+        config = {"AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0", "XAI_API_KEY": "dummy-key"}
+        res = _resolve_x(config, bird_installed=True)
+        assert res.active_backend == "bird"
+        assert res.tier == backends.TIER_OK
+        assert "will use: bird" in res.summary
+
+    def test_grok_is_never_auto_selected_unpinned(self):
+        """Grok is opt-in only: even if grok is the only configured backend, X is unconfigured unpinned."""
+        config = {}
+        res = _resolve_x(config, grok_installed=True, grok_authed=True)
+        # Grok is available but opt-in - should NOT be auto-selected.
+        grok = next(f for f in res.findings if f.name == "grok")
+        assert grok.status == health.OK
+        # But it should not be the active backend.
+        assert res.active_backend is None
+        assert res.tier == backends.TIER_ERROR
+
+    def test_grok_selected_when_pinned(self):
+        """Pin grok to enable it explicitly."""
+        config = {"LAST30DAYS_X_BACKEND": "grok"}
+        res = _resolve_x(config, grok_installed=True, grok_authed=True)
+        assert res.active_backend == "grok"
+        assert res.pinned is True
+        assert res.pin == "grok"
+        assert res.tier == backends.TIER_OK
+
+    def test_grok_pin_with_no_store_is_error(self):
+        """Pin grok without a valid store -> error with grok login prescription."""
+        config = {"LAST30DAYS_X_BACKEND": "grok"}
+        res = _resolve_x(config, grok_installed=True, grok_authed=False)
+        assert res.active_backend is None
+        assert res.pinned is True
+        assert res.tier == backends.TIER_ERROR
+        assert "grok login" in res.prescription.lower()
 
     # Scenario 2: pin var set to a later backend -> honored + marked pinned.
     def test_pin_to_later_backend_honored_and_marked(self):
@@ -233,7 +284,9 @@ class TestXPrediction:
         res = _resolve_x({})
         assert res.active_backend is None
         assert res.tier == backends.TIER_ERROR
-        assert "XAI_API_KEY" in res.prescription
+        # bird (cookies) is first in the chain, so the prescription is about
+        # browser cookies, not XAI_API_KEY.
+        assert "browser-cookie" in res.prescription or "cookies" in res.prescription.lower()
 
     def test_pinned_but_unusable_backend_is_error_with_its_prescription(self):
         # Pin bird without cookies: env.x_backend_chain returns [] (pipeline
@@ -286,21 +339,32 @@ class TestXPrediction:
 
     def test_grok_expired_is_degraded_not_ok(self):
         """Expired grok session -> DEGRADED tier (warn), not OK."""
-        res = _resolve_x({}, grok_installed=True, grok_expired=True)
+        # Grok is opt-in: needs explicit pin to be selected.
+        config = {"LAST30DAYS_X_BACKEND": "grok"}
+        res = _resolve_x(config, grok_installed=True, grok_expired=True)
         grok = next(f for f in res.findings if f.name == "grok")
         assert grok.status == health.DEGRADED
         assert grok.usable  # DEGRADED is still usable (refresh may work)
         assert "expired" in grok.detail.lower()
         assert "grok login" in grok.prescription.lower()
-        # The chain resolution should still pick grok (degraded is usable).
+        # With pin, grok is selected (degraded is usable).
         assert res.active_backend == "grok"
         assert res.tier == backends.TIER_WARN
 
+    def test_grok_expired_unpinned_not_selected(self):
+        """Expired grok without pin: X unconfigured, grok not auto-selected."""
+        res = _resolve_x({}, grok_installed=True, grok_expired=True)
+        grok = next(f for f in res.findings if f.name == "grok")
+        assert grok.status == health.DEGRADED
+        # Grok is opt-in, so even though it's usable (degraded), it's not selected.
+        assert res.active_backend is None
+        assert res.tier == backends.TIER_ERROR
+
     def test_grok_expired_with_fallback_picks_fallback(self):
-        """When grok is expired AND a better backend is OK, pick the OK one."""
+        """When grok is expired AND a better auto-chain backend is OK, pick the OK one."""
         config = {"AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0"}
         res = _resolve_x(config, grok_installed=True, grok_expired=True, bird_installed=True)
-        # Bird is OK, grok is DEGRADED. OK wins over DEGRADED.
+        # Bird is OK and in the auto chain. Grok is not considered (opt-in).
         assert res.active_backend == "bird"
         assert res.tier == backends.TIER_OK
 
@@ -313,14 +377,17 @@ class TestXPrediction:
 
 
 # ---------------------------------------------------------------------------
-# Grok session expiry: three states
+# Grok session expiry: three states (grok is opt-in only)
 # ---------------------------------------------------------------------------
 
 class TestGrokExpiryStates:
     """Test the three grok auth states from the plan:
-    1. No grok CLI -> silent fallback
-    2. CLI installed, never logged in -> silent fallback
-    3. CLI installed, WAS logged in, session dead -> DEGRADED with expiry info
+    1. No grok CLI -> silent fallback (opt-in only)
+    2. CLI installed, never logged in -> silent fallback (opt-in only)
+    3. CLI installed, WAS logged in, session dead -> DEGRADED with expiry info (opt-in only)
+
+    Note: Grok is opt-in only. These tests verify the finding status, but grok
+    is never auto-selected unpinned.
     """
 
     def test_no_grok_cli_is_missing(self):
@@ -329,6 +396,9 @@ class TestGrokExpiryStates:
         grok = next(f for f in res.findings if f.name == "grok")
         assert grok.status == health.MISSING
         assert "not found on PATH" in grok.detail
+        # Grok is opt-in, so even MISSING doesn't affect the resolution.
+        # X is unconfigured (no auto-chain backends available).
+        assert res.active_backend is None
 
     def test_grok_installed_never_logged_in_is_missing(self):
         """CLI installed but never logged in -> MISSING with login hint."""
@@ -337,6 +407,8 @@ class TestGrokExpiryStates:
         assert grok.status == health.MISSING
         assert "not signed in" in grok.detail
         assert "grok login" in grok.prescription
+        # Grok is opt-in, so X is unconfigured.
+        assert res.active_backend is None
 
     def test_grok_session_expired_is_degraded_with_expiry(self):
         """Session expired -> DEGRADED with timestamp and refresh hint."""
@@ -346,12 +418,16 @@ class TestGrokExpiryStates:
         assert "expired" in grok.detail.lower()
         # The detail should include the expiry timestamp and hint
         assert "refresh" in grok.detail.lower() or "login" in grok.prescription.lower()
+        # Grok is opt-in, so X is unconfigured even with degraded grok.
+        assert res.active_backend is None
 
     def test_grok_healthy_session_is_ok(self):
-        """Non-expired credentials -> OK."""
+        """Non-expired credentials -> OK, but still opt-in only."""
         res = _resolve_x({}, grok_installed=True, grok_authed=True)
         grok = next(f for f in res.findings if f.name == "grok")
         assert grok.status == health.OK
+        # Grok is opt-in, so X is unconfigured unpinned.
+        assert res.active_backend is None
 
 
 # ---------------------------------------------------------------------------
@@ -604,6 +680,25 @@ class TestXParityWithPipeline:
 
     def test_parity_nothing_configured(self):
         self._assert_parity({})
+
+    def test_parity_grok_only_unpinned_is_unconfigured(self):
+        """Grok-only with no pin: X unconfigured (parity with env.x_backend_chain)."""
+        self._assert_parity({}, grok_installed=True, grok_authed=True)
+
+    def test_parity_grok_pinned(self):
+        """Grok pinned: grok is selected (parity with env.x_backend_chain)."""
+        self._assert_parity(
+            {"LAST30DAYS_X_BACKEND": "grok"},
+            grok_installed=True,
+            grok_authed=True,
+        )
+
+    def test_parity_cookies_beat_xai_key(self):
+        """Cookies beat XAI_API_KEY when both present (bird-first chain)."""
+        self._assert_parity(
+            {"AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0", "XAI_API_KEY": "dummy-key"},
+            bird_installed=True,
+        )
 
 
 # ---------------------------------------------------------------------------

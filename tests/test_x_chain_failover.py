@@ -1,7 +1,9 @@
 """grok must never be a dead end: every failure falls through to the next backend.
 
-grok sits ahead of bird in the chain, so any way it can come back empty has to
-hand off rather than leave the run with no X coverage.
+Grok is opt-in only (not in the auto chain), but when pinned via
+LAST30DAYS_X_BACKEND=grok, any way grok can come back empty or error must
+surface properly so the run reports the failure honestly rather than silently
+leaving X uncovered.
 """
 
 from unittest import mock
