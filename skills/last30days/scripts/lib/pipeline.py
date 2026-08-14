@@ -2443,6 +2443,7 @@ def run(
         tiktok_hashtags=tiktok_hashtags,
         tiktok_creators=tiktok_creators,
         ig_creators=ig_creators,
+        first_party_handles=explicit_first_party,
     )
 
     # Reclassify partial failures as DEGRADED instead of silently dropping them.
@@ -3687,6 +3688,7 @@ def _retry_thin_sources(
     tiktok_hashtags: list[str] | None = None,
     tiktok_creators: list[str] | None = None,
     ig_creators: list[str] | None = None,
+    first_party_handles: Iterable[str] | None = None,
 ) -> None:
     """Retry sources with thin results using simplified core subject query."""
     if depth == "quick":
@@ -3762,6 +3764,13 @@ def _retry_thin_sources(
             to_date,
             freshness_mode=plan.freshness_mode,
             ranking_query=retry_subquery.ranking_query,
+            first_party_handles=first_party_handles,
+            # Match Phase 1: X defers its relevance floor until the run has
+            # resolved handles. Applying it here would discard a subject-
+            # authored post that does not repeat the subject's name, and the
+            # later resolved-handle floor cannot recover a post that never
+            # entered the bundle.
+            defer_relevance_prune=(source == "x"),
         )
         if source == "jobs":
             return source, normalized, outcome_note

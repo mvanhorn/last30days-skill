@@ -539,3 +539,85 @@ def test_explicit_x_handle_applies_x_floor():
     assert "rando_acct" not in {i.author for i in kept}, (
         "--x-handle triggers the floor, pruning off-topic posts"
     )
+
+
+# --- thin-source retry must not prune X before handle resolution ------------
+
+def test_thin_retry_keeps_zero_relevance_subject_authored_x_post():
+    """Phase 1 defers the X floor; the simplified-query retry must too.
+
+    A default/deep run with fewer than three X items retries with a simpler
+    query. If that retry returns a subject-authored post that does not repeat
+    the subject's name, applying the relevance floor here (with no resolved
+    handles) discards it before it enters the bundle. The later
+    resolved-handle floor cannot recover a post that never arrived.
+    """
+    import threading
+    from unittest.mock import patch
+    from lib import pipeline
+
+    topic = "Peter Steinberger"
+    raw_items = [
+        {
+            "id": "1",
+            "text": "shipping a new agent loop tonight",
+            "url": "https://x.com/steipete/status/1",
+            "author_handle": "steipete",
+            "date": "2026-08-01",
+            "engagement": {"likes": 3466, "reposts": 128, "replies": 40},
+        },
+        {
+            "id": "2",
+            "text": "Peter Steinberger just shipped another agent demo",
+            "url": "https://x.com/third_acct/status/2",
+            "author_handle": "third_acct",
+            "date": "2026-08-01",
+            "engagement": {"likes": 50, "reposts": 5, "replies": 2},
+        },
+    ]
+    plan = schema.QueryPlan(
+        intent="person",
+        freshness_mode="balanced_recent",
+        cluster_mode="topic",
+        raw_topic=topic,
+        subqueries=[
+            schema.SubQuery(
+                label="primary",
+                search_query=topic,
+                ranking_query=topic,
+                sources=["x"],
+            )
+        ],
+        source_weights={"x": 1.0},
+    )
+    bundle = schema.RetrievalBundle()
+
+    with patch("lib.pipeline._retrieve_stream", return_value=(raw_items, {})):
+        pipeline._retry_thin_sources(
+            topic=topic,
+            bundle=bundle,
+            plan=plan,
+            config={},
+            depth="default",
+            date_range=("2026-07-15", "2026-08-14"),
+            runtime=schema.ProviderRuntime(
+                reasoning_provider="mock",
+                planner_model="mock",
+                rerank_model="mock",
+            ),
+            mock=False,
+            rate_limited_sources=set(),
+            rate_limit_lock=threading.Lock(),
+            settings=pipeline.DEPTH_SETTINGS["default"],
+        )
+
+    x_items = bundle.items_by_source.get("x") or []
+    authors = {item.author for item in x_items}
+    assert "steipete" in authors, (
+        "thin-retry X path must defer the relevance floor the way Phase 1 does; "
+        "a zero-relevance subject-authored post must survive into the bundle"
+    )
+    assert "third_acct" in authors, (
+        "precondition: the companion on-topic post cleared the floor, so the "
+        "all-fail rescue cannot hide an incorrectly applied prune"
+    )
