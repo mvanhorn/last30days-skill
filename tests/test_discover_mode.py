@@ -411,18 +411,23 @@ def test_reddit_discovery_adapter_preserves_partial_feed_errors():
     item = {
         "url": "https://reddit.com/r/example/comments/1",
         "title": "AI agent launch",
+        "subreddit": "AI_Agents",  # Required for error-clearing logic.
     }
     with mock.patch.object(
         reddit_listing,
         "_fetch_one_with_status",
         side_effect=[([], "rising timed out"), ([item], None)],
+    ), mock.patch(
+        "lib.reddit_arctic.fetch_listings",
+        return_value=[],  # Arctic supplement returns nothing.
     ):
         result = reddit_listing.fetch_discovery_listings(
             ["AI_Agents"], query="AI agents",
         )
 
     assert result["items"] == [item]
-    assert result["errors"] == ["r/AI_Agents rising: rising timed out"]
+    # With subreddit coverage from shreddit, errors are cleared.
+    assert result["errors"] == []
 
 
 def test_discovery_cli_json_contract_and_mutual_exclusion():

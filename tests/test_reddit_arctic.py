@@ -102,14 +102,14 @@ class TestFetchListings:
         assert len(out) == 1
         assert g.call_count == 1  # only r/tea fetched; "all"/"" skipped
 
-    def test_supports_up_to_16_subreddits(self):
-        """Raised cap allows up to 16 subreddits for supplement coverage."""
-        subs = [f"sub{i}" for i in range(16)]
+    def test_processes_all_subreddits_no_cap(self):
+        """All requested subreddits are processed (no hard cap)."""
+        subs = [f"sub{i}" for i in range(20)]
         with mock.patch.object(reddit_arctic.http, "get",
                                return_value=_resp([_listing_row()])) as g:
             reddit_arctic.fetch_listings(subs)
-        # All 16 should be fetched (cap is 16).
-        assert g.call_count == 16
+        # All 20 should be fetched (no cap).
+        assert g.call_count == 20
 
     def test_depth_controls_volume(self):
         for depth, want in (("quick", 10), ("default", 25), ("deep", 50)):
