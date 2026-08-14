@@ -197,3 +197,42 @@ def test_doctor_grok_error_unpinned_is_not_tier_error():
     assert "opt-in" in record["note"].lower() or "unused" in record["note"].lower()
     # Fix should be empty (no grok login prescription for unused opt-in).
     assert record["fix"] == ""
+
+
+def test_doctor_grok_store_with_pending_bird_predicts_bird():
+    """Unpinned + grok store + pending browser auth -> doctor predicts bird.
+
+    When bird is installed and browser-cookie extraction is configured,
+    doctor should predict bird (pending-cookie usable), NOT report X as
+    unconfigured due to an unused grok store. Pending bird takes precedence.
+    """
+    from lib import env, grok_x
+
+    config = {}  # No pin, no static AUTH_TOKEN/CT0
+    bird_status = {
+        "installed": True,  # Bird IS installed
+        "authenticated": False,  # No static cookies in config
+        "username": "",
+        "can_install": True,
+    }
+    # Grok has OK status; bird is pending (installed, FROM_BROWSER configured).
+    with (
+        mock.patch.object(grok_x, "binary_path", return_value="/usr/bin/grok"),
+        mock.patch.object(grok_x, "has_stored_auth", return_value=True),
+        mock.patch.object(grok_x, "stored_auth_status", return_value=(grok_x.AUTH_OK, "", None)),
+        mock.patch("lib.backends.which", return_value="/usr/bin/grok"),
+        mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
+        mock.patch("lib.bird_x.is_bird_installed", return_value=True),
+        mock.patch("lib.xurl_x.has_stored_auth", return_value=False),
+        # Simulate x_pending_browser_auth returning True (bird pending)
+        mock.patch.object(env, "x_pending_browser_auth", return_value=True),
+    ):
+        record = doctor._x_record(config)
+    # Doctor should predict bird (pending), NOT report X as unconfigured.
+    assert record["tier"] != "off", "pending bird should not be tier off"
+    assert record["status"] != "unconfigured", "pending bird should not be unconfigured"
+    # Should be OK tier with bird prediction.
+    assert record["tier"] == "ok"
+    assert record["status"] == health.OK
+    assert "bird" in record["note"].lower()
+    assert "browser cookies" in record["note"].lower() or "cookie" in record["note"].lower()

@@ -791,6 +791,55 @@ class TestGetXSourceStatusGrokPin:
         assert status["bird_authenticated"] is True
         assert status["xai_available"] is True
 
+    def test_pin_xai_with_cookies_returns_xai(self):
+        """Pin xai + cookies + XAI_API_KEY -> source is xai, not bird."""
+        config = {
+            "LAST30DAYS_X_BACKEND": "xai",
+            "AUTH_TOKEN": "dummy-token",
+            "CT0": "dummy-ct0",
+            "XAI_API_KEY": "dummy-key",
+        }
+        bird_status = {
+            "installed": True,
+            "authenticated": True,
+            "username": "test",
+            "can_install": True,
+        }
+        with (
+            mock.patch("lib.grok_x.has_stored_auth", return_value=False),
+            mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
+        ):
+            status = env.get_x_source_status(config, probe=False)
+        # Pin is exclusive: xai pinned + available -> xai (not bird)
+        assert status["source"] == "xai"
+        # Bird is also available, but pin forces xai
+        assert status["bird_authenticated"] is True
+
+    def test_pin_xai_no_key_with_cookies_returns_none(self):
+        """Pin xai + no XAI_API_KEY + cookies -> source is None (exclusive pin)."""
+        config = {
+            "LAST30DAYS_X_BACKEND": "xai",
+            "AUTH_TOKEN": "dummy-token",
+            "CT0": "dummy-ct0",
+            # No XAI_API_KEY
+        }
+        bird_status = {
+            "installed": True,
+            "authenticated": True,
+            "username": "test",
+            "can_install": True,
+        }
+        with (
+            mock.patch("lib.grok_x.has_stored_auth", return_value=False),
+            mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
+        ):
+            status = env.get_x_source_status(config, probe=False)
+        # Pin is exclusive: xai pinned but unavailable -> None (no fallback)
+        assert status["source"] is None
+        assert status["xai_available"] is False
+        # Bird is available but pin blocks fallback
+        assert status["bird_authenticated"] is True
+
 
 # ---------------------------------------------------------------------------
 # YouTube chain: yt-dlp -> ScrapeCreators

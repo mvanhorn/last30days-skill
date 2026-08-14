@@ -417,6 +417,30 @@ def _reddit_record(config):
 
 def _x_record(config):
     record = _chained_record("x", config)
+    # Diagnose/doctor load config in plan_only mode, so browser cookies are not
+    # extracted and every X backend reads as statically missing -> unconfigured.
+    # But if bird is installed and FROM_BROWSER will authenticate X at run time,
+    # a normal run serves X fine (this is how the reporting user pulled 29 posts
+    # while doctor said "Off"). Reuse the existing shared predicate so doctor and
+    # diagnose cannot drift. It reads no cookie *values*, so it confirms a run
+    # will *attempt* browser auth, not that the session is currently valid -
+    # keep the note honest and point at the verified key-backed path.
+    #
+    # This check MUST come before grok normalization: a pending bird path takes
+    # precedence over marking X as unconfigured due to an unused grok store.
+    # Handle both "unconfigured" (all backends missing) and "error" (grok present
+    # but opt-in, no auto-chain backend usable) when pending bird applies.
+    pending_bird = env.x_pending_browser_auth(config, local_only=True)
+    if pending_bird and record["status"] in ("unconfigured", health.ERROR):
+        record["status"] = health.OK
+        record["tier"] = TIER_BY_STATUS[health.OK]
+        record["note"] = (
+            "will use: bird (browser cookies; session not verified until a run "
+            "- add XAI_API_KEY for a verified, cookie-free path)"
+        )
+        record["fix"] = ""
+        return record
+    #
     # Grok is opt-in only: a leftover ~/.grok/auth.json must never steal the X
     # lane. The grok backend appears in the chain findings (for visibility) but
     # is never auto-selected. Doctor reports it as "available, unused - pin
@@ -427,10 +451,14 @@ def _x_record(config):
     # broken/auth-failed. The tier must be "off" (unconfigured), not "error"
     # (NOT WORKING). A corrupt/unreadable grok store is still unused when
     # unpinned — do not prescribe `grok login` for an unused opt-in backend.
+    #
+    # Do NOT apply this normalization when pending browser auth would make bird
+    # usable — check pending_bird first (handled above via early return).
     if (
         record["tier"] == TIER_ERROR
         and not record.get("pinned")
         and record.get("active_backend") is None
+        and not pending_bird
     ):
         grok_finding = next(
             (b for b in record.get("backends", []) if b.get("name") == "grok"),
@@ -455,25 +483,6 @@ def _x_record(config):
                 )
             record["fix"] = ""
             return record
-    #
-    # Diagnose/doctor load config in plan_only mode, so browser cookies are not
-    # extracted and every X backend reads as statically missing -> unconfigured.
-    # But if bird is installed and FROM_BROWSER will authenticate X at run time,
-    # a normal run serves X fine (this is how the reporting user pulled 29 posts
-    # while doctor said "Off"). Reuse the existing shared predicate so doctor and
-    # diagnose cannot drift. It reads no cookie *values*, so it confirms a run
-    # will *attempt* browser auth, not that the session is currently valid -
-    # keep the note honest and point at the verified key-backed path.
-    if record["status"] == "unconfigured" and env.x_pending_browser_auth(
-        config, local_only=True
-    ):
-        record["status"] = health.OK
-        record["tier"] = TIER_BY_STATUS[health.OK]
-        record["note"] = (
-            "will use: bird (browser cookies; session not verified until a run "
-            "- add XAI_API_KEY for a verified, cookie-free path)"
-        )
-        record["fix"] = ""
     return record
 
 
