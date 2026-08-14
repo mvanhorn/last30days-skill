@@ -702,6 +702,71 @@ class TestXParityWithPipeline:
 
 
 # ---------------------------------------------------------------------------
+# get_x_source_status pin semantics (R4): grok pin forces grok source
+# ---------------------------------------------------------------------------
+
+class TestGetXSourceStatusGrokPin:
+    """get_x_source_status must respect LAST30DAYS_X_BACKEND=grok pin."""
+
+    def test_pin_grok_with_store_returns_grok_source(self):
+        """Pin grok + valid store -> get_x_source_status source is 'grok'."""
+        config = {"LAST30DAYS_X_BACKEND": "grok"}
+        bird_status = {
+            "installed": False,
+            "authenticated": False,
+            "username": "",
+            "can_install": False,
+        }
+        with (
+            mock.patch("lib.grok_x.has_stored_auth", return_value=True),
+            mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
+        ):
+            status = env.get_x_source_status(config, probe=False)
+        assert status["source"] == "grok"
+        assert status["grok_available"] is True
+
+    def test_unpinned_with_store_does_not_return_grok_source(self):
+        """Unpinned + valid grok store -> source is NOT 'grok' (opt-in only)."""
+        config = {}  # No pin
+        bird_status = {
+            "installed": False,
+            "authenticated": False,
+            "username": "",
+            "can_install": False,
+        }
+        with (
+            mock.patch("lib.grok_x.has_stored_auth", return_value=True),
+            mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
+        ):
+            status = env.get_x_source_status(config, probe=False)
+        # Grok is available but NOT the source (opt-in only)
+        assert status["source"] != "grok"
+        assert status["source"] is None  # No other backend configured
+        assert status["grok_available"] is True
+
+    def test_pin_grok_with_cookies_still_returns_grok(self):
+        """Pin grok with cookies present -> grok (pin forces single backend)."""
+        config = {
+            "LAST30DAYS_X_BACKEND": "grok",
+            "AUTH_TOKEN": "dummy-token",
+            "CT0": "dummy-ct0",
+        }
+        bird_status = {
+            "installed": True,
+            "authenticated": True,
+            "username": "test",
+            "can_install": True,
+        }
+        with (
+            mock.patch("lib.grok_x.has_stored_auth", return_value=True),
+            mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
+        ):
+            status = env.get_x_source_status(config, probe=False)
+        # Pin forces grok even when bird is available
+        assert status["source"] == "grok"
+
+
+# ---------------------------------------------------------------------------
 # YouTube chain: yt-dlp -> ScrapeCreators
 # ---------------------------------------------------------------------------
 
