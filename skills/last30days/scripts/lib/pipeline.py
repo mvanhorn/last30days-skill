@@ -2378,6 +2378,9 @@ def run(
                 freshness_mode=plan.freshness_mode,
                 ranking_query=subquery.ranking_query,
                 first_party_handles=explicit_first_party,
+                # X defers its relevance floor until resolved_handles exists.
+                # Everything else prunes here as before.
+                defer_relevance_prune=(source == "x"),
             )
             # Jobs is exempt from per_stream_limit: a careers board is a complete
             # snapshot of open roles, and truncating it to the default 12 drops
@@ -2469,6 +2472,22 @@ def run(
         for h in supplemental_handles
         if h and h.strip()
     }
+    # Deferred X relevance floor. Phase 1 skipped it so this could run with the
+    # run's actual resolved handles rather than a guess made before anyone knew
+    # who the subject was. Applied per subquery stream so fusion sees the same
+    # shape it always has.
+    if resolved_handles:
+        for key, stream in list(bundle.items_by_source_and_query.items()):
+            if key[1] != "x" or not stream:
+                continue
+            bundle.items_by_source_and_query[key] = signals.prune_low_relevance(
+                stream, first_party_handles=resolved_handles
+            )
+        if bundle.items_by_source.get("x"):
+            bundle.items_by_source["x"] = signals.prune_low_relevance(
+                bundle.items_by_source["x"], first_party_handles=resolved_handles
+            )
+
     candidates = weighted_rrf(
         bundle.items_by_source_and_query,
         plan,
@@ -2799,8 +2818,15 @@ def _normalize_score_dedupe(
     freshness_mode: str,
     ranking_query: str,
     first_party_handles: Iterable[str] | None = None,
+    defer_relevance_prune: bool = False,
 ) -> list[schema.SourceItem]:
     """Normalize, annotate, prune, dedupe, and extract snippets for a batch of raw items.
+
+    ``defer_relevance_prune`` skips the relevance floor here so the caller can
+    apply it once the run has resolved who the topic's subject is. Pruning X
+    before handle resolution is the ordering bug behind the whole first-party
+    evidence loss: the floor cannot exempt an author nobody has identified yet,
+    and no amount of guessing at prune time substitutes for knowing.
 
     ``first_party_handles`` names accounts this run is explicitly searching, so
     their own posts survive the relevance floor (see signals.prune_low_relevance).
@@ -2821,7 +2847,7 @@ def _normalize_score_dedupe(
         reference_date=to_date,
         max_days=lookback_window_days,
     )
-    if source != "jobs":
+    if source != "jobs" and not defer_relevance_prune:
         floor_handles = set(first_party_handles or ())
         if source == "x":
             # Union, never a fallback. The caller's set is derived partly from

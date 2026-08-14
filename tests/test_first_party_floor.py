@@ -346,3 +346,43 @@ def test_name_only_topic_keeps_subject_posts_end_to_end():
         items, first_party_handles=supplied | inferred
     )
     assert any(i.author == "steipete" for i in kept)
+
+
+# --- ordering fix: prune X after resolution, not before ---------------------
+
+def test_x_defers_its_relevance_floor_past_resolution():
+    """The root ordering bug: X was pruned before the run knew who the subject
+    was, so the floor could not exempt an author nobody had identified yet. No
+    amount of guessing at prune time substitutes for knowing."""
+    import inspect
+    from lib import pipeline
+    src = inspect.getsource(pipeline.run)
+    assert 'defer_relevance_prune=(source == "x")' in src
+
+
+def test_deferred_prune_runs_after_resolution_and_before_fusion():
+    import inspect
+    from lib import pipeline
+    src = inspect.getsource(pipeline.run)
+    resolve_at = src.index("resolved_handles = explicit_first_party")
+    prune_at = src.index("Deferred X relevance floor")
+    fuse_at = src.index("candidates = weighted_rrf(")
+    assert resolve_at < prune_at < fuse_at, (
+        "the deferred floor must see resolved handles and still run before fusion"
+    )
+
+
+def test_non_x_sources_still_prune_in_place():
+    """Only X defers; everything else keeps its existing behavior."""
+    import inspect
+    from lib import pipeline
+    src = inspect.getsource(pipeline._normalize_score_dedupe)
+    assert 'if source != "jobs" and not defer_relevance_prune:' in src
+
+
+def test_deferred_prune_still_drops_off_topic_posts():
+    """Deferring must not mean skipping."""
+    items = _annotate(_mixed_batch() + [_x_item("9", "spam_acct", 0.01, {"likes": 0})])
+    kept = signals.prune_low_relevance(items, first_party_handles={"steipete"})
+    assert any(i.author == "steipete" for i in kept)
+    assert all(i.author != "spam_acct" for i in kept)
