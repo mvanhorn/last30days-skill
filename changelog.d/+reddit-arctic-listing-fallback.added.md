@@ -1,1 +1,0 @@
-Reddit keyless discovery now falls back to the arctic-shift archive when the shreddit listing partials return nothing — hosts on datacenter egress (where Reddit 403s `/svc/shreddit`) keep scored Reddit discovery, score backfill, and discover-mode listings instead of reporting `auth-failed`.
