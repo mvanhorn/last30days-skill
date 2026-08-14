@@ -422,6 +422,28 @@ def _x_record(config):
     # is never auto-selected. Doctor reports it as "available, unused - pin
     # LAST30DAYS_X_BACKEND=grok to enable" rather than "will use: grok".
     #
+    # R3/R8: When no auto-chain backend is usable but grok is available (OK or
+    # DEGRADED), X is unconfigured/skipped - NOT broken/auth-failed. The tier
+    # must be "off" (unconfigured), not "error" (NOT WORKING).
+    if (
+        record["tier"] == TIER_ERROR
+        and not record.get("pinned")
+        and record.get("active_backend") is None
+    ):
+        grok_finding = next(
+            (b for b in record.get("backends", []) if b.get("name") == "grok"),
+            None,
+        )
+        if grok_finding and grok_finding.get("status") in (health.OK, health.DEGRADED):
+            record["status"] = "unconfigured"
+            record["tier"] = TIER_OFF
+            record["note"] = (
+                "X unconfigured; grok CLI available but opt-in only — "
+                "pin LAST30DAYS_X_BACKEND=grok to enable"
+            )
+            record["fix"] = ""
+            return record
+    #
     # Diagnose/doctor load config in plan_only mode, so browser cookies are not
     # extracted and every X backend reads as statically missing -> unconfigured.
     # But if bird is installed and FROM_BROWSER will authenticate X at run time,
