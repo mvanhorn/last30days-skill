@@ -33,11 +33,15 @@ CACHE_MAX = 4096    # hard size bound so the in-run memo can never grow unbounde
 # caller requested multiple sorts (top/hot/new) — arctic-shift has no sort lanes,
 # so we fetch more posts to increase the chance of covering what the failed
 # shreddit lanes would have returned.
+#
+# KNOWN LIMITATION: Arctic-shift is recency-only (sort=desc). It has no top/hot/
+# new/rising lanes — failed shreddit sort lanes are supplemented with recent
+# posts, not lane-specific results. This is a fundamental backend constraint.
 _LISTING_DEPTH_LIMITS = {"quick": 10, "default": 25, "deep": 50}
 _LISTING_SUPPLEMENT_MULTIPLIER = 2  # fetch 2x posts when supplementing multi-sort requests
-# No hard cap on subreddits — process all requested subs with pacing to avoid
-# arctic-shift's rate limit. The PACE_SECONDS gap between requests provides the
-# throttling; callers rely on this for supplement coverage.
+# Total deadline for listing fetches to prevent unbounded stalls when many
+# subreddits are requested and arctic is slow/unreachable.
+_LISTING_DEADLINE_SECONDS = 45  # ~3 subs at 15s timeout each
 # In-run memo: base36 id -> {score, num_comments}. Module-level so repeated
 # fetch_scores calls within one `/last30days` run (e.g. across subqueries) reuse
 # results, but capped at CACHE_MAX entries (never reached in a normal CLI run).
@@ -182,9 +186,14 @@ def fetch_listings(
     # arctic-shift's lack of sort lanes.
     n = base * _LISTING_SUPPLEMENT_MULTIPLIER if sorts and len(sorts) > 1 else base
     out: List[Dict[str, Any]] = []
-    # Process all requested subreddits with pacing (no hard cap).
+    # Process all requested subreddits with pacing and a total deadline to
+    # prevent unbounded stalls when arctic is slow or unreachable.
+    deadline = time.time() + _LISTING_DEADLINE_SECONDS
     fetched_count = 0
     for sub in subreddits:
+        if time.time() >= deadline:
+            _log(f"listing deadline reached after {fetched_count} subs; skipping remaining")
+            break
         sub = sub.removeprefix("r/").strip()
         if not sub or sub.lower() == "all":
             continue
