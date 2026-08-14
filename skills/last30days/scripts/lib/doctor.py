@@ -422,9 +422,11 @@ def _x_record(config):
     # is never auto-selected. Doctor reports it as "available, unused - pin
     # LAST30DAYS_X_BACKEND=grok to enable" rather than "will use: grok".
     #
-    # R3/R8: When no auto-chain backend is usable but grok is available (OK or
-    # DEGRADED), X is unconfigured/skipped - NOT broken/auth-failed. The tier
-    # must be "off" (unconfigured), not "error" (NOT WORKING).
+    # R3/R8: When no auto-chain backend is usable but grok has any non-MISSING
+    # status (OK, DEGRADED, or ERROR), X is unconfigured/skipped - NOT
+    # broken/auth-failed. The tier must be "off" (unconfigured), not "error"
+    # (NOT WORKING). A corrupt/unreadable grok store is still unused when
+    # unpinned — do not prescribe `grok login` for an unused opt-in backend.
     if (
         record["tier"] == TIER_ERROR
         and not record.get("pinned")
@@ -434,13 +436,23 @@ def _x_record(config):
             (b for b in record.get("backends", []) if b.get("name") == "grok"),
             None,
         )
-        if grok_finding and grok_finding.get("status") in (health.OK, health.DEGRADED):
+        if grok_finding and grok_finding.get("status") in (
+            health.OK,
+            health.DEGRADED,
+            health.ERROR,
+        ):
             record["status"] = "unconfigured"
             record["tier"] = TIER_OFF
-            record["note"] = (
-                "X unconfigured; grok CLI available but opt-in only — "
-                "pin LAST30DAYS_X_BACKEND=grok to enable"
-            )
+            if grok_finding.get("status") == health.ERROR:
+                record["note"] = (
+                    "X unconfigured; grok CLI store is broken but unused (opt-in only) — "
+                    "pin LAST30DAYS_X_BACKEND=grok to enable, then fix the store"
+                )
+            else:
+                record["note"] = (
+                    "X unconfigured; grok CLI available but opt-in only — "
+                    "pin LAST30DAYS_X_BACKEND=grok to enable"
+                )
             record["fix"] = ""
             return record
     #

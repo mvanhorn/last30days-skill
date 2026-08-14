@@ -155,3 +155,45 @@ def test_doctor_grok_only_unpinned_is_not_tier_error():
     # Note should mention grok is available but requires a pin.
     assert "grok" in record["note"].lower()
     assert "pin" in record["note"].lower() or "LAST30DAYS_X_BACKEND" in record["note"]
+
+
+def test_doctor_grok_error_unpinned_is_not_tier_error():
+    """Unpinned grok ERROR (broken store) is unconfigured, NOT tier error.
+
+    When grok's auth store is unreadable/corrupt, doctor should NOT report X
+    as NOT WORKING with a `grok login` prescription. An unused opt-in backend
+    with a broken store is still unused — tier off, not tier error.
+    """
+    from lib import grok_x
+
+    config = {}  # No pin, no auto-chain credentials
+    bird_status = {
+        "installed": False,
+        "authenticated": False,
+        "username": "",
+        "can_install": False,
+    }
+    # Grok has ERROR status (unreadable store); all auto-chain backends MISSING.
+    with (
+        mock.patch.object(grok_x, "binary_path", return_value="/usr/bin/grok"),
+        mock.patch.object(grok_x, "has_stored_auth", return_value=False),
+        mock.patch.object(
+            grok_x, "stored_auth_status",
+            return_value=(grok_x.AUTH_ERROR, "store unreadable", None),
+        ),
+        mock.patch("lib.backends.which", return_value="/usr/bin/grok"),
+        mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
+        mock.patch("lib.bird_x.is_bird_installed", return_value=False),
+        mock.patch("lib.xurl_x.has_stored_auth", return_value=False),
+    ):
+        record = doctor._x_record(config)
+    # Must NOT be tier error / NOT WORKING.
+    assert record["tier"] != "error", "grok ERROR unpinned must not be tier error"
+    # Should be unconfigured (tier off).
+    assert record["status"] == "unconfigured"
+    assert record["tier"] == "off"
+    # Note should mention grok is unused/opt-in; should NOT prescribe grok login.
+    assert "grok" in record["note"].lower()
+    assert "opt-in" in record["note"].lower() or "unused" in record["note"].lower()
+    # Fix should be empty (no grok login prescription for unused opt-in).
+    assert record["fix"] == ""
