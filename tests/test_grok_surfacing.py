@@ -295,3 +295,59 @@ def test_doctor_grok_does_not_hide_xurl_error():
     # The fix should contain xurl repair guidance, not be empty.
     assert record["fix"], "xurl repair guidance must not be cleared"
     assert "xurl" in record["fix"].lower() or "oauth" in record["fix"].lower()
+
+
+def test_doctor_pending_bird_does_not_hide_xurl_error():
+    """Unpinned + FROM_BROWSER + bird installed + xurl ERROR -> keeps xurl error.
+
+    Pending bird must NOT replace a record with a configured auto-chain backend
+    in ERROR. Doctor should report the xurl error with its repair guidance,
+    NOT report X as OK via pending bird.
+    """
+    from lib import backends as _backends
+    from lib import env, grok_x
+
+    config = {}  # No pin, no static AUTH_TOKEN/CT0
+    bird_status = {
+        "installed": True,  # Bird IS installed (for pending bird)
+        "authenticated": False,  # No static cookies
+        "username": "",
+        "can_install": True,
+    }
+
+    # Mock xurl probe to return ERROR status
+    def mock_probe_xurl(config):
+        return _backends.BackendFinding(
+            name="xurl",
+            status=health.ERROR,
+            detail="store unreadable",
+            prescription="xurl auth oauth2 login",
+            requires="xurl CLI installed + OAuth2 login",
+        )
+
+    original_run_probe = _backends._run_probe
+
+    def patched_run_probe(spec, config):
+        if spec.name == "xurl":
+            return mock_probe_xurl(config)
+        return original_run_probe(spec, config)
+
+    # x_pending_browser_auth returns True (bird pending), but xurl has ERROR.
+    with (
+        mock.patch.object(grok_x, "binary_path", return_value=None),
+        mock.patch.object(grok_x, "has_stored_auth", return_value=False),
+        mock.patch("lib.backends.which", return_value=None),
+        mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
+        mock.patch("lib.bird_x.is_bird_installed", return_value=True),
+        mock.patch.object(env, "x_pending_browser_auth", return_value=True),
+        mock.patch.object(_backends, "_run_probe", patched_run_probe),
+    ):
+        record = doctor._x_record(config)
+
+    # Doctor should NOT report X as OK via pending bird.
+    assert record["tier"] != "ok", "xurl error must not be hidden by pending bird"
+    assert record["status"] != health.OK, "xurl error must not become OK"
+    # Should keep the error tier and xurl repair guidance.
+    assert record["tier"] == "error"
+    assert record["fix"], "xurl repair guidance must not be cleared"
+    assert "xurl" in record["fix"].lower() or "oauth" in record["fix"].lower()

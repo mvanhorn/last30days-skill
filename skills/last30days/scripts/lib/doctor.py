@@ -430,16 +430,29 @@ def _x_record(config):
     # precedence over marking X as unconfigured due to an unused grok store.
     # Handle both "unconfigured" (all backends missing) and "error" (grok present
     # but opt-in, no auto-chain backend usable) when pending bird applies.
+    #
+    # HOWEVER: pending bird must NOT replace a record that has a configured
+    # auto-chain backend in ERROR/DEGRADED/BROKEN/TIMEOUT. Same rule as the
+    # grok normalizer: only upgrade when no auto backend is configured-but-broken.
     pending_bird = env.x_pending_browser_auth(config, local_only=True)
     if pending_bird and record["status"] in ("unconfigured", health.ERROR):
-        record["status"] = health.OK
-        record["tier"] = TIER_BY_STATUS[health.OK]
-        record["note"] = (
-            "will use: bird (browser cookies; session not verified until a run "
-            "- add XAI_API_KEY for a verified, cookie-free path)"
+        backends_list = record.get("backends", [])
+        auto_chain_names = {"bird", "xai", "xurl", "xquik"}
+        auto_backends = [b for b in backends_list if b.get("name") in auto_chain_names]
+        # Only apply pending-bird upgrade if ALL auto-chain backends are MISSING.
+        # If any auto backend is configured but broken, keep that error.
+        all_auto_missing = all(
+            b.get("status") == health.MISSING for b in auto_backends
         )
-        record["fix"] = ""
-        return record
+        if all_auto_missing:
+            record["status"] = health.OK
+            record["tier"] = TIER_BY_STATUS[health.OK]
+            record["note"] = (
+                "will use: bird (browser cookies; session not verified until a run "
+                "- add XAI_API_KEY for a verified, cookie-free path)"
+            )
+            record["fix"] = ""
+            return record
     #
     # Grok is opt-in only: a leftover ~/.grok/auth.json must never steal the X
     # lane. The grok backend appears in the chain findings (for visibility) but
