@@ -61,6 +61,34 @@ class TestJudgeXCorpus:
         assert result["is_off_topic_flood"]
         assert len(result["on_topic_items"]) == 8
 
+    def test_no_substring_collision_ai_in_said(self):
+        """'AI' as a topic token should NOT match 'said' (no substring collisions).
+
+        This verifies that topic judging uses proper word tokenization, not
+        substring matching. If substring matching were used, 'ai' would match
+        inside 'said', causing false positives.
+        """
+        items = [
+            {"author_handle": "offtopic", "text": "He said something interesting"},
+            {"author_handle": "offtopic", "text": "She said the weather was nice"},
+            {"author_handle": "offtopic", "text": "They said it was great"},
+        ]
+        result = x_judge.judge_x_corpus(items, "AI")
+        # None of these posts contain "AI" as a word, so all should be off-topic
+        assert len(result["on_topic_items"]) == 0
+        assert len(result["off_topic_items"]) == 3
+
+    def test_no_substring_collision_us_in_house(self):
+        """'US' as a topic token should NOT match 'house' (no substring collisions)."""
+        items = [
+            {"author_handle": "offtopic", "text": "The house is beautiful"},
+            {"author_handle": "offtopic", "text": "My house needs repairs"},
+        ]
+        result = x_judge.judge_x_corpus(items, "US")
+        # None of these posts contain "US" as a word
+        assert len(result["on_topic_items"]) == 0
+        assert len(result["off_topic_items"]) == 2
+
     def test_handle_stats_computed(self):
         """Handle stats should track on-topic and total counts."""
         items = [
