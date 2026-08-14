@@ -50,14 +50,21 @@ def test_out_param_is_part_of_the_contract():
 
 
 def test_resolved_handles_includes_supplemental_handles():
-    """The merge site must read the supplement pass's output."""
+    """The merge site must read the supplement pass's output.
+
+    Matched on the assignment rather than an exact literal: an earlier version
+    pinned "resolved_handles = {" and broke when the construction changed to
+    merge the explicit set, proving nothing about behavior either way.
+    """
     src = inspect.getsource(pipeline)
-    marker = "resolved_handles = {"
-    start = src.index(marker)
+    start = src.index("resolved_handles =")
     block = src[start:start + 400]
     assert "supplemental_handles" in block, (
         "resolved_handles is still built without the handles the supplement "
         "pass discovered; auto-discovered subjects stay unprotected"
+    )
+    assert "explicit_first_party" in block, (
+        "the user-named handles must still be part of resolved_handles"
     )
 
 

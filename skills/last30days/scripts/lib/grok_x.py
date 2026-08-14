@@ -59,6 +59,11 @@ _MAX_FANOUT_CALLS = 4
 # return whatever they have.
 LANE_BUDGET_SECONDS = 150.0
 
+# Below this, a call cannot plausibly complete (measured calls run 15-45s), so
+# the budget is spent rather than overrun. Skipping is strictly better than
+# starting a call guaranteed to be killed mid-flight.
+_MIN_USEFUL_CALL_SECONDS = 15
+
 
 def _fanout_queries(topic: str, from_date: str, to_date: str, calls: int) -> List[str]:
     """Distinct query formulations for one topic, widest signal first.
@@ -568,10 +573,15 @@ def _run_query(
     prompt = _PROMPT.format(tool=tool, query=query, limit=min(limit, _MAX_LIMIT_PER_CALL))
     last_error = ""
     for attempt in range(1, attempts + 1):
-        if deadline is not None and time.monotonic() >= deadline:
-            return [], last_error or "X lane budget exhausted"
         if deadline is not None:
-            timeout = max(15, min(timeout, int(deadline - time.monotonic())))
+            remaining = deadline - time.monotonic()
+            # Never start a call that cannot finish inside the shared budget.
+            # A floor here (max(15, ...)) would let the last call overrun the
+            # documented ceiling by up to that floor, since the lanes run
+            # synchronously with no outer timeout to catch it.
+            if remaining < _MIN_USEFUL_CALL_SECONDS:
+                return [], last_error or "X lane budget exhausted"
+            timeout = min(timeout, int(remaining))
         _log(f"searching: {query}" + (f" (attempt {attempt})" if attempt > 1 else ""))
         response = _invoke(prompt, timeout)
         if response.get("error"):

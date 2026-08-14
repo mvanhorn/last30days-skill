@@ -168,3 +168,42 @@ def test_every_empty_path_leaves_the_chain_free_to_continue(monkeypatch):
             )
         result = grok_x.search_x("topic", "2026-07-14", "2026-08-13")
         assert result["items"] == [], f"{label} must yield no items so the chain advances"
+
+
+def test_a_call_is_not_started_when_it_cannot_finish_in_budget(monkeypatch):
+    """The lanes run synchronously with no outer timeout, so a per-call floor
+    would let the last call overrun the documented shared ceiling."""
+    import time as _time
+    calls = {"n": 0}
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
+
+    def fake_run(cmd, **kwargs):
+        import subprocess
+        calls["n"] += 1
+        return subprocess.CompletedProcess(cmd, 0, "no posts", "")
+
+    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    # 5s left: below the minimum useful call, so nothing should start.
+    near = _time.monotonic() + 5
+    items, error = grok_x._run_query("topic", "2026-07-14", "2026-08-13", deadline=near)
+    assert calls["n"] == 0
+    assert "budget exhausted" in error
+
+
+def test_timeout_never_exceeds_the_remaining_budget(monkeypatch):
+    import time as _time
+    seen = {}
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
+
+    def fake_run(cmd, **kwargs):
+        import subprocess
+        seen["timeout"] = kwargs.get("timeout")
+        return subprocess.CompletedProcess(cmd, 0, "no posts", "")
+
+    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    remaining = 40
+    grok_x._run_query(
+        "topic", "2026-07-14", "2026-08-13",
+        deadline=_time.monotonic() + remaining,
+    )
+    assert seen["timeout"] <= remaining

@@ -189,3 +189,37 @@ def test_non_first_party_demotion_survives_the_floor_pass():
     assert not render._best_take_relevance_ok(cand), (
         "an off-topic collision post must stay buried"
     )
+
+
+# --- Phase 1 / quick-depth wiring (Greptile) --------------------------------
+
+def test_phase_one_normalize_receives_the_explicit_handles():
+    """Quick runs skip Phase 2 entirely, so an exemption reaching only the
+    supplement path leaves quick-depth reports discarding the subject's posts."""
+    import inspect
+    from lib import pipeline
+    src = inspect.getsource(pipeline.run)
+    assert "explicit_first_party = {" in src, (
+        "the user-named handles must be resolved before retrieval, not after"
+    )
+    assert "first_party_handles=explicit_first_party," in src, (
+        "the Phase 1 per-source normalize must receive the exemption"
+    )
+
+
+def test_explicit_handles_are_available_before_any_retrieval():
+    """The entity-extracted set does not exist until Phase 2; the explicit one
+    must be built from run()'s own arguments so Phase 1 can use it."""
+    import inspect
+    from lib import pipeline
+    src = inspect.getsource(pipeline.run)
+    build_at = src.index("explicit_first_party = {")
+    first_use = src.index("first_party_handles=explicit_first_party,")
+    assert build_at < first_use
+
+
+def test_related_handles_lane_gets_the_exemption():
+    import inspect
+    from lib import pipeline
+    src = inspect.getsource(pipeline._run_supplemental_searches)
+    assert "first_party_handles=related_handles," in src

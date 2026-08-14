@@ -2096,6 +2096,18 @@ def run(
         print("[Planner]   (no subqueries in plan)", file=sys.stderr)
 
     bundle = schema.RetrievalBundle(artifacts={"grounding": []})
+    # Handles the user named explicitly. Available before any retrieval, unlike
+    # the entity-extracted set, so Phase 1 and quick-depth runs get first-party
+    # protection too. Without this the exemption reached only the Phase 2
+    # supplement path -- which quick runs skip entirely -- so a subject-authored
+    # post retrieved in Phase 1 was still pruned before fusion, which is exactly
+    # the evidence loss this change exists to prevent.
+    explicit_first_party = {
+        h.lstrip("@").strip().lower()
+        for h in ([x_handle, github_user, *(x_related or [])])
+        if h and h.strip()
+    }
+
     for source in (requested_sources or []):
         if source not in available:
             bundle.record_failure(
@@ -2361,6 +2373,7 @@ def run(
                 source, raw_items, from_date, to_date,
                 freshness_mode=plan.freshness_mode,
                 ranking_query=subquery.ranking_query,
+                first_party_handles=explicit_first_party,
             )
             # Jobs is exempt from per_stream_limit: a careers board is a complete
             # snapshot of open roles, and truncating it to the default 12 drops
@@ -2447,9 +2460,9 @@ def run(
     # subject's own highest-signal posts). Built before fusion so the
     # per-author cap can give the topic's subject a higher allowance than an
     # incidental third-party account.
-    resolved_handles = {
+    resolved_handles = explicit_first_party | {
         h.lstrip("@").strip().lower()
-        for h in ([x_handle, github_user, *(x_related or []), *supplemental_handles])
+        for h in supplemental_handles
         if h and h.strip()
     }
     candidates = weighted_rrf(
@@ -3511,6 +3524,7 @@ def _run_supplemental_searches(
                 x_slug, raw_items, from_date, to_date,
                 freshness_mode=plan.freshness_mode,
                 ranking_query=ranking_query,
+                first_party_handles=related_handles,
             )
             # Deduplicate against all existing URLs (Phase 1 + primary handles)
             normalized = [item for item in normalized if item.url not in existing_urls]
