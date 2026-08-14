@@ -842,6 +842,74 @@ class TestGetXSourceStatusGrokPin:
 
 
 # ---------------------------------------------------------------------------
+# Runtime X backend pin (x_backend_chain / _resolve_x_backend)
+# ---------------------------------------------------------------------------
+
+class TestRuntimeXBackendPin:
+    """Runtime fetch path must honor any known pin exclusively, including grok."""
+
+    def test_pin_grok_with_store_and_cookies_returns_grok(self):
+        """Pin grok + grok store + cookies -> runtime returns grok, not bird."""
+        from lib import grok_x, providers
+
+        config = {
+            "LAST30DAYS_X_BACKEND": "grok",
+            "AUTH_TOKEN": "dummy-token",
+            "CT0": "dummy-ct0",
+            "XAI_API_KEY": "dummy-key",
+        }
+        with (
+            mock.patch.object(grok_x, "has_stored_auth", return_value=True),
+            mock.patch("lib.bird_x.is_bird_installed", return_value=True),
+        ):
+            # x_backend_chain is the authoritative runtime path
+            chain = env.x_backend_chain(config)
+            # _resolve_x_backend delegates to get_x_source (wraps x_backend_chain)
+            resolved = providers._resolve_x_backend(config)
+        # Pin grok + available -> grok (not bird/xai)
+        assert chain == ["grok"]
+        assert resolved == "grok"
+
+    def test_pin_grok_no_store_with_cookies_returns_none(self):
+        """Pin grok + no store + cookies -> runtime returns None (exclusive pin)."""
+        from lib import grok_x, providers
+
+        config = {
+            "LAST30DAYS_X_BACKEND": "grok",
+            "AUTH_TOKEN": "dummy-token",
+            "CT0": "dummy-ct0",
+        }
+        with (
+            mock.patch.object(grok_x, "has_stored_auth", return_value=False),
+            mock.patch("lib.bird_x.is_bird_installed", return_value=True),
+        ):
+            chain = env.x_backend_chain(config)
+            resolved = providers._resolve_x_backend(config)
+        # Pin grok + unavailable -> [] / None (no fallthrough to bird)
+        assert chain == []
+        assert resolved is None
+
+    def test_unpinned_with_grok_store_and_cookies_returns_bird(self):
+        """Unpinned + grok store + cookies -> runtime returns bird, never grok."""
+        from lib import grok_x, providers
+
+        config = {
+            "AUTH_TOKEN": "dummy-token",
+            "CT0": "dummy-ct0",
+        }
+        with (
+            mock.patch.object(grok_x, "has_stored_auth", return_value=True),
+            mock.patch("lib.bird_x.is_bird_installed", return_value=True),
+        ):
+            chain = env.x_backend_chain(config)
+            resolved = providers._resolve_x_backend(config)
+        # Unpinned -> auto-chain (bird first), grok never auto-selected
+        assert chain[0] == "bird"
+        assert "grok" not in chain
+        assert resolved == "bird"
+
+
+# ---------------------------------------------------------------------------
 # YouTube chain: yt-dlp -> ScrapeCreators
 # ---------------------------------------------------------------------------
 
