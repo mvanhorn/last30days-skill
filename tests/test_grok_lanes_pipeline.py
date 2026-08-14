@@ -74,14 +74,22 @@ def test_partial_coverage_is_recorded():
     )
 
 
-def test_by_lane_does_not_and_the_topic_into_the_query():
-    """A prior defect emptied the from-lane by ANDing the topic into it."""
+def test_by_lane_does_not_and_the_topic_by_default():
+    """A prior defect emptied the from-lane by ANDing the topic into it.
+
+    The `and_topic` parameter now exists for extracted handles that need to
+    demonstrate on-topic content, but the default is False (no topic AND).
+    """
     from lib import grok_x
     sig = inspect.signature(grok_x.search_handles)
     assert "topic" in sig.parameters
+    # and_topic parameter should default to False
+    assert "and_topic" in sig.parameters
+    assert sig.parameters["and_topic"].default is False
     body = inspect.getsource(grok_x.search_handles)
     assert "from:{clean}" in body
-    assert "{topic}" not in body
+    # The default path (and_topic=False) should not include {topic} in the query
+    assert 'query = f"from:{clean} since:{from_date}' in body
 
 
 
