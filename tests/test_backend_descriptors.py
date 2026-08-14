@@ -765,6 +765,32 @@ class TestGetXSourceStatusGrokPin:
         # Pin forces grok even when bird is available
         assert status["source"] == "grok"
 
+    def test_pin_grok_no_store_with_other_creds_returns_none(self):
+        """Pin grok + no store + other creds present -> source is None (exclusive pin)."""
+        config = {
+            "LAST30DAYS_X_BACKEND": "grok",
+            "AUTH_TOKEN": "dummy-token",
+            "CT0": "dummy-ct0",
+            "XAI_API_KEY": "dummy-key",
+        }
+        bird_status = {
+            "installed": True,
+            "authenticated": True,
+            "username": "test",
+            "can_install": True,
+        }
+        with (
+            mock.patch("lib.grok_x.has_stored_auth", return_value=False),
+            mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
+        ):
+            status = env.get_x_source_status(config, probe=False)
+        # Pin is exclusive: grok unavailable -> None, NOT fallback to bird/xai
+        assert status["source"] is None
+        assert status["grok_available"] is False
+        # Other backends ARE available, but pin blocks fallback
+        assert status["bird_authenticated"] is True
+        assert status["xai_available"] is True
+
 
 # ---------------------------------------------------------------------------
 # YouTube chain: yt-dlp -> ScrapeCreators

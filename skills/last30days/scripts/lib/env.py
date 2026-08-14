@@ -1282,14 +1282,16 @@ def get_x_source_status(config: dict[str, Any], probe: bool = False) -> dict[str
     grok_available = _grok_x.has_stored_auth()
 
     # Determine active source. A pin forces a single backend (R4): when
-    # LAST30DAYS_X_BACKEND=grok and grok is available, source is grok.
+    # LAST30DAYS_X_BACKEND=grok, source is grok if available, else None (no
+    # fallback - pin is exclusive, mirroring x_backend_chain's [] semantics).
     # Otherwise, order mirrors _X_BACKEND_ORDER: bird first (cookies beat
     # XAI_API_KEY when both are present), then xai, then xurl, then xquik.
     # Grok is opt-in only and never auto-selected; a leftover ~/.grok/auth.json
     # must not steal the X lane.
     pin = (config.get(X_BACKEND_PIN_VAR) or '').lower()
-    if pin == 'grok' and grok_available:
-        source = 'grok'
+    if pin == 'grok':
+        # Pin is exclusive: grok if available, else None (no fallback to bird/xai).
+        source = 'grok' if grok_available else None
     elif bird_status["authenticated"]:
         source = 'bird'
     elif xai_available:
