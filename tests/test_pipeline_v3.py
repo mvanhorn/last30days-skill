@@ -841,6 +841,30 @@ class TestRetrievalBundleAuthPreservation(unittest.TestCase):
         # Detail should be preserved
         self.assertEqual("request timed out", bundle.source_status["x"].detail)
 
+    def test_record_failure_preserves_auth_failed_when_items_exist(self):
+        """record_failure should preserve AUTH_FAILED even when items already exist.
+
+        When Phase 1 has already collected X posts and a supplemental Grok lane
+        reports revocation, record_failure must not convert AUTH_FAILED to PARTIAL.
+        """
+        bundle = schema.RetrievalBundle()
+        bundle.mark_attempted("x")
+
+        # Phase 1 already collected items
+        phase1_items = [_make_source_item("x", "X1", "https://x.com/a/status/1")]
+        bundle.add_items("primary", "x", phase1_items)
+        self.assertEqual(health.OK, bundle.source_status["x"].state)
+
+        # Supplemental lane reports auth failure
+        bundle.record_failure("x", schema.AUTH_FAILED, "grok session revoked", attempted=True)
+
+        # State must be AUTH_FAILED, not PARTIAL
+        self.assertEqual(schema.AUTH_FAILED, bundle.source_status["x"].state)
+        # Detail should be set
+        self.assertEqual("grok session revoked", bundle.source_status["x"].detail)
+        # Items should still be there
+        self.assertEqual(1, len(bundle.items_by_source["x"]))
+
 
 class TestSupplementalSearches(unittest.TestCase):
     """R1: Phase 2 entity drilling should be wired into the pipeline."""
