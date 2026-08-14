@@ -3758,6 +3758,10 @@ def _retry_thin_sources(
             tiktok_creators=tiktok_creators,
             ig_creators=ig_creators,
             run_started=run_started,
+            # Skip Amazon review enrichment here to avoid duplicate Bright Data
+            # pulls for ASINs already enriched in Phase 1. Finalize will enrich
+            # any genuinely new products that weren't in Phase 1.
+            skip_amazon_enrichment=True,
         )
         outcome_note = artifact.get("_source_outcome") if isinstance(artifact, dict) else None
         normalized = _normalize_score_dedupe(
@@ -3939,6 +3943,7 @@ def _retrieve_stream_impl(
     trustpilot_domain: str | None = None,
     trustpilot_domain_is_hint: bool = False,
     run_started: float | None = None,
+    skip_amazon_enrichment: bool = False,
 ) -> tuple[list[dict], dict]:
     # Early exit if source was rate-limited by a sibling future
     if rate_limited_sources is not None and source in rate_limited_sources:
@@ -4298,6 +4303,13 @@ def _retrieve_stream_impl(
         result = amazon.search_products(keyword, domain=domain, config=config)
         products = amazon.parse_search_response(result, keyword, domain=domain)
         artifact = _result_outcome_artifact(source, result)
+
+        # Skip enrichment when called from thin retry (_retry_thin_sources) to
+        # avoid duplicate Bright Data pulls for ASINs already enriched in Phase 1.
+        # Finalize will enrich any NEW products (enrich_source_items no-ops when
+        # top_comments is already set, so duplicates get skipped there too).
+        if skip_amazon_enrichment:
+            return products, artifact
 
         # Start review enrichment now, while other sources are still running.
         # Elapsed is measured from run_started so multi-source runs that finish

@@ -635,6 +635,15 @@ class TestSourceItemEnrichment:
         assert "top_comments" not in other.metadata
 
     def test_already_enriched_items_are_not_re_pulled(self):
+        """enrich_source_items no-ops when top_comments is already set.
+
+        This is critical for the thin-retry path: Phase 1 enriches products at
+        search time, then thin retry (Phase 2b) may return the same ASINs. The
+        pipeline passes skip_amazon_enrichment=True in thin retry, so products
+        arrive at finalize without re-enrichment. Finalize calls enrich_source_items,
+        which skips already-enriched items (top_comments set) and only enriches
+        genuinely new products. This prevents duplicate Bright Data pulls.
+        """
         item = _Item("B000000001", top_comments=[{"excerpt": "cached", "score": 0, "rating": 5, "date": None}])
         calls = []
         amazon.enrich_source_items(
