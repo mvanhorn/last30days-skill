@@ -4226,17 +4226,30 @@ def _retrieve_stream_impl(
                             schema.AUTH_FAILED,
                             f"X served via {backend} after {last_error}; re-login needed for primary backend",
                         )
+                    # Prior error was non-auth. Check if *current* backend also
+                    # reported an error (e.g., grok returned items + revocation).
+                    if err:
+                        current_state = http.classify_failure(message=err)
+                        if current_state == schema.AUTH_FAILED:
+                            return items, _outcome_artifact(
+                                schema.AUTH_FAILED,
+                                f"X served {len(items)} items via {backend} but also errored: {err}; re-login needed",
+                            )
+                    # Non-auth prior error, no current auth error → fallback OK
+                    return items, _outcome_artifact(
+                        health.OK,
+                        f"X served via {backend} after {last_error}",
+                    )
                 if err:
                     # Mixed result: backend returned items BUT also hit an error
                     # (e.g., grok got some posts then auth was revoked mid-fanout).
                     # Surface the error so the user gets re-login guidance.
                     state = http.classify_failure(message=err)
-                    if state == schema.AUTH_FAILED:
-                        return items, _outcome_artifact(
-                            state,
-                            f"X returned {len(items)} items but also errored: {err}",
-                        )
-                # No auth issues - proceed to judge-retry
+                    return items, _outcome_artifact(
+                        state,
+                        f"X returned {len(items)} items but also errored: {err}",
+                    )
+                # No auth issues and no prior errors - proceed to judge-retry
                 used_backend = backend
                 break
             if err:
@@ -4261,7 +4274,8 @@ def _retrieve_stream_impl(
             ]
             if x_judge.should_retry_x_search(items_for_judge, x_query, ranking_query=ranking_query, depth=depth):
                 # Retry with cleaned query (1 retry, ≤2 extra grok calls)
-                # Strip noise words but preserve all significant terms
+                # Strip noise words but preserve all significant terms to avoid
+                # losing disambiguating terms (e.g., "react server components")
                 core_tokens = query.extract_core_subject(x_query)
                 retry_query = core_tokens or x_query
                 print(f"[X] corpus off-topic; retrying with '{retry_query}'", file=sys.stderr)
