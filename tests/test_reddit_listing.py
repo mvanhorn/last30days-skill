@@ -186,6 +186,33 @@ class TestFetchDiscoveryListingsFallback:
         assert result["errors"] == []
 
 
+class TestErrorAttributionWordBoundary:
+    """Verify error attribution uses word-boundary matching, not substring."""
+
+    def test_recovered_foobar_does_not_keep_foo_errors(self):
+        """Recovered r/foobar should not be misattributed to unrecovered r/foo."""
+        # Arctic returns posts only from r/foobar (recovered), not r/foo.
+        foobar_post = {
+            "id": "", "title": "foobar topic", "url": "https://www.reddit.com/r/foobar/comments/abc/x/",
+            "score": 500, "num_comments": 50, "subreddit": "foobar", "created_utc": None,
+            "author": "u", "selftext": "", "date": "2026-07-02",
+            "engagement": {"score": 500, "num_comments": 50, "upvote_ratio": None},
+            "relevance": 0.5, "why_relevant": "Reddit listing (arctic-shift)",
+            "metadata": {"post_id": "abc"},
+        }
+        with mock.patch.object(rl.http, "get_text", return_value=None), \
+             mock.patch("lib.reddit_arctic.fetch_listings", return_value=[foobar_post]):
+            result = rl.fetch_discovery_listings(["foo", "foobar"], query="topic", depth="quick")
+        # foobar is recovered, foo is not.
+        assert result["items"] == [foobar_post]
+        # Errors for r/foo should be kept.
+        foo_errors = [e for e in result["errors"] if e.lower().startswith("r/foo ")]
+        assert foo_errors, "unrecovered r/foo errors should be preserved"
+        # Errors for r/foobar should NOT be in the kept errors (foobar was recovered).
+        foobar_errors = [e for e in result["errors"] if e.lower().startswith("r/foobar ")]
+        assert not foobar_errors, "recovered r/foobar errors should be cleared"
+
+
 class TestMatchesDiscoveryDomainParity:
     """Verify the copied _matches_discovery_domain stays in sync with pipeline.py."""
 

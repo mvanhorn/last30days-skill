@@ -81,19 +81,34 @@ def _scored_listings(
     """Scored subreddit listings: shreddit partials, arctic-shift fallback.
 
     The shreddit ``community-more-posts`` partials 403 from datacenter IPs
-    (and any host Reddit decides to block). When they return nothing, fall
-    back to the arctic-shift archive (keyless, IP-agnostic, real scores) so
-    discovery and score backfill keep working. Never raises.
+    (and any host Reddit decides to block). When shreddit returns nothing for
+    a subreddit, fall back to the arctic-shift archive (keyless, IP-agnostic,
+    real scores) for that subreddit so discovery and score backfill keep
+    working. Never raises.
     """
     posts = reddit_listing.fetch_listings(subreddits, depth=depth, query=query, sorts=sorts)
-    if not posts:
+    # Track which subreddits shreddit returned posts for.
+    shreddit_subs = {(p.get("subreddit") or "").lower() for p in posts}
+    requested_subs = {s.removeprefix("r/").lower() for s in subreddits if s}
+    failed_subs = [s for s in subreddits if s.removeprefix("r/").lower() not in shreddit_subs]
+
+    if failed_subs:
+        # Fall back to arctic for subreddits that shreddit didn't return posts for.
         try:
-            posts = reddit_arctic.fetch_listings(subreddits, depth=depth, query=query, sorts=sorts)
+            arctic_posts = reddit_arctic.fetch_listings(
+                failed_subs, depth=depth, query=query, sorts=sorts
+            )
         except Exception as exc:  # the fallback must never break the pipeline
             _log(f"arctic-shift listing fallback failed: {exc}")
-            posts = []
-        if posts:
-            _log(f"arctic-shift listing fallback: {len(posts)} posts")
+            arctic_posts = []
+        if arctic_posts:
+            _log(f"arctic-shift listing fallback for {failed_subs}: {len(arctic_posts)} posts")
+            # Merge and dedupe by URL.
+            seen = {p["url"] for p in posts}
+            for p in arctic_posts:
+                if p["url"] not in seen:
+                    seen.add(p["url"])
+                    posts.append(p)
     return posts
 
 

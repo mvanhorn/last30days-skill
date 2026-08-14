@@ -273,6 +273,7 @@ class TestScoredListingsFallback:
 
     def test_shreddit_results_skip_arctic(self):
         shreddit_post = _scored(1, score=42)
+        shreddit_post["subreddit"] = "tea"  # Match the requested subreddit.
         with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
                                return_value=[shreddit_post]), \
              mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings") as arctic:
@@ -307,3 +308,31 @@ class TestScoredListingsFallback:
         arctic.assert_called_once_with(
             ["Kanye"], depth="default", query="Kanye", sorts=["top", "hot", "new"]
         )
+
+    def test_partial_shreddit_success_falls_back_for_failed_subs(self):
+        """When shreddit returns posts for only some subs, arctic is called for
+        the failed siblings and those posts are merged."""
+        shreddit_post = _scored(1, score=100)
+        shreddit_post["subreddit"] = "tea"
+        arctic_post = _scored(2, score=200)
+        arctic_post["subreddit"] = "coffee"
+
+        def shreddit_side_effect(subs, **kwargs):
+            # Shreddit only returns posts for "tea", not "coffee".
+            return [shreddit_post] if "tea" in subs else []
+
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               side_effect=shreddit_side_effect), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[arctic_post]) as arctic:
+            out = reddit_keyless._scored_listings(
+                ["tea", "coffee"], depth="quick", query="beverages"
+            )
+        # Arctic should be called only for the failed sub (coffee).
+        arctic.assert_called_once()
+        call_args = arctic.call_args
+        assert call_args[0][0] == ["coffee"], "arctic should be called for failed sub only"
+        # Both posts should be in the result.
+        urls = [p["url"] for p in out]
+        assert shreddit_post["url"] in urls
+        assert arctic_post["url"] in urls

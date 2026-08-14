@@ -40,6 +40,7 @@ def _no_enrich():
 class TestDedicatedLane:
     def test_dedicated_listings_pulled_with_top_hot_new_and_marked(self):
         ded = _listing_post(1, 2643, "What the actual fuck is this ye?")
+        ded["subreddit"] = "Kanye"  # Match the requested dedicated subreddit.
         captured = {}
 
         def fake_fetch(subs, depth="default", query="", sorts=None):
@@ -76,7 +77,9 @@ class TestDedicatedLane:
         # A thread present in both the dedicated lane and a broad listing keeps
         # its dedicated (floor-exempt) flag — dedicated is merged first.
         shared_ded = _listing_post(1, 500, "fresh thread", rel=0.0)
+        shared_ded["subreddit"] = "Kanye"  # Match the requested dedicated subreddit.
         shared_broad = _listing_post(1, 500, "fresh thread", rel=0.0)  # same url/id
+        shared_broad["subreddit"] = "hiphopheads"  # Match the requested broad subreddit.
 
         def fake_fetch(subs, depth="default", query="", sorts=None):
             return [shared_ded] if sorts == reddit_keyless.DEDICATED_SORTS else [shared_broad]

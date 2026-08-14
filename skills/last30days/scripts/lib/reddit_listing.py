@@ -312,9 +312,10 @@ def fetch_discovery_listings(
                     return {"items": arctic_items, "errors": []}
                 # Partial recovery — keep errors for unrecovered subs.
                 unrecovered = requested_subs - recovered_subs
+                # Match word-boundary: "r/{sub} " to avoid r/foo matching r/foobar.
                 kept_errors = [
                     e for e in errors
-                    if any(f"r/{sub}" in e.lower() for sub in unrecovered)
+                    if any(e.lower().startswith(f"r/{sub} ") for sub in unrecovered)
                 ]
                 return {"items": arctic_items, "errors": kept_errors}
     return {"items": unique, "errors": errors}
