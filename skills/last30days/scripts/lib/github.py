@@ -268,6 +268,7 @@ def search_github(
                            failure_out=fetch_failures)
 
     fetch_failures: List[str] = []
+    partition_failure: Optional[str] = None
     if authed:
         # GitHub rejects AUTHENTICATED /search/issues queries that carry
         # neither `is:issue` nor `is:pull-request` (HTTP 422). Anonymous
@@ -281,9 +282,13 @@ def search_github(
         # coverage AND the authenticated rate limit.
         merged: List[Dict[str, Any]] = []
         seen_ids = set()
+        failed_qualifiers: List[str] = []
         for qualifier in ("is:issue", "is:pull-request"):
             part = _search(qualifier)
-            for item in (part or {}).get("items", []):
+            if part is None:
+                failed_qualifiers.append(qualifier)
+                continue
+            for item in part.get("items", []):
                 item_id = item.get("id")
                 if item_id in seen_ids:
                     continue
@@ -295,12 +300,19 @@ def search_github(
         merged.sort(key=lambda i: (i.get("reactions") or {}).get("total_count", 0),
                     reverse=True)
         data = {"items": merged[:count]} if merged else None
+        if failed_qualifiers:
+            partition_failure = (
+                f"GitHub partition(s) failed: {', '.join(failed_qualifiers)}"
+                + (f" ({fetch_failures[-1]})" if fetch_failures else "")
+            )
     else:
         data = _search(None)
     if not data:
         envelope = {"items": [], "context": {"core": core, "from_date": from_date,
                                              "to_date": to_date, "count": count}}
-        if authed and fetch_failures:
+        if authed and partition_failure:
+            envelope["error"] = partition_failure
+        elif authed and fetch_failures:
             # Authenticated transport failures must not be laundered into a
             # clean no-results outcome (issue #384).
             envelope["error"] = f"GitHub API request failed: {fetch_failures[-1]}"
@@ -317,7 +329,7 @@ def search_github(
     raw_items = data.get("items", [])
     _log(f"Found {len(raw_items)} issues/PRs")
 
-    return {
+    envelope: Dict[str, Any] = {
         "items": raw_items,
         "context": {
             "core": core,
@@ -326,6 +338,9 @@ def search_github(
             "count": count,
         },
     }
+    if partition_failure:
+        envelope["error"] = partition_failure
+    return envelope
 
 
 def parse_github_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:

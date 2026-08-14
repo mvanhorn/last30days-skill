@@ -626,6 +626,40 @@ class TestSearchGithubQualifiers(unittest.TestCase):
         ids = [item["id"] for item in envelope["items"]]
         self.assertEqual(ids, [2, 1], "expected reaction-sorted, deduped merge")
 
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    def test_authenticated_search_one_partition_fails_keeps_items_and_reports_error(self, mock_token):
+        """If one authenticated partition fails (returns None) and the other
+        returns items, the surviving items are kept but the envelope carries
+        an error so the source is not marked as a clean success."""
+        issue = {"id": 1, "reactions": {"total_count": 5}}
+
+        def fake_fetch(url, *args, **kwargs):
+            q = self._query(url)
+            if "is:issue" in q:
+                return {"items": [issue]}
+            return None  # PR partition failed
+
+        with patch.object(github, "_fetch_json", side_effect=fake_fetch):
+            envelope = github.search_github("topic", "2026-07-01", "2026-07-31")
+
+        self.assertEqual(len(envelope["items"]), 1)
+        self.assertEqual(envelope["items"][0]["id"], 1)
+        self.assertIn("error", envelope)
+        self.assertIn("is:pull-request", envelope["error"])
+        self.assertIn("partition", envelope["error"].lower())
+
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    def test_authenticated_search_both_partitions_fail_is_full_failure(self, mock_token):
+        """If both authenticated partitions fail (return None), the envelope
+        has empty items and carries an error indicating complete failure."""
+
+        with patch.object(github, "_fetch_json", return_value=None):
+            envelope = github.search_github("topic", "2026-07-01", "2026-07-31")
+
+        self.assertEqual(envelope["items"], [])
+        self.assertIn("error", envelope)
+        self.assertIn("GitHub", envelope["error"])
+
     @patch.object(github, "_resolve_token", return_value=None)
     def test_unauthenticated_search_omits_qualifier(self, mock_token):
         """Anonymous /search/issues is still grandfathered without a
