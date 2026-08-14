@@ -925,9 +925,12 @@ class TestSupplementalSearches(unittest.TestCase):
         ]
 
         bundle = schema.RetrievalBundle()
+        # Handles need ≥2 on-topic posts to be promotable per x_judge.MIN_ON_TOPIC_HITS
         bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="Some tweet about AI"),
-            _make_source_item("x", "X2", "https://x.com/reporter2/status/2", author="reporter2", body="AI analysis @expert3"),
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2", author="analyst1", body="AI safety research"),
+            _make_source_item("x", "X3", "https://x.com/reporter2/status/3", author="reporter2", body="AI safety report"),
+            _make_source_item("x", "X4", "https://x.com/reporter2/status/4", author="reporter2", body="AI safety news"),
         ]
 
         plan = _make_plan("AI safety")
@@ -954,9 +957,10 @@ class TestSupplementalSearches(unittest.TestCase):
 
     @patch("lib.env.x_backend_chain", return_value=["xquik"])
     @patch("lib.xquik.search_xquik", return_value={"items": []})
-    def test_x_topic_lane_uses_anchored_query_via_xquik(self, mock_search, _chain):
-        """The X topic lane (here resolved to the xquik backend) consumes the
-        anchored subquery.search_query (#611), not the bare raw_topic."""
+    def test_x_topic_lane_uses_raw_topic_via_xquik(self, mock_search, _chain):
+        """The X topic lane uses raw_topic (like Reddit/YouTube), not the
+        planner's search_query. This avoids phrase-quoting issues like "Rome Italy"
+        returning off-topic results. Disambiguation lives in ranking_query."""
         anchored = schema.SubQuery(
             label="primary", search_query="kevin rose digg founder",
             ranking_query="What has Kevin Rose, founder of Digg, been doing?",
@@ -969,7 +973,8 @@ class TestSupplementalSearches(unittest.TestCase):
             mock=False, raw_topic="kevin rose",
         )
         mock_search.assert_called_once()
-        self.assertEqual("kevin rose digg founder", mock_search.call_args[0][0])
+        # X now uses raw_topic, not search_query (like Reddit/YouTube)
+        self.assertEqual("kevin rose", mock_search.call_args[0][0])
 
     @patch("lib.env.get_xquik_token", return_value="k")
     @patch("lib.env.x_backend_chain", return_value=["xquik"])
@@ -989,8 +994,10 @@ class TestSupplementalSearches(unittest.TestCase):
         }]
 
         bundle = schema.RetrievalBundle()
+        # Handles need ≥2 on-topic posts to be promotable per x_judge.MIN_ON_TOPIC_HITS
         bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="tweet about AI"),
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2", author="analyst1", body="AI safety research"),
         ]
 
         pipeline._run_supplemental_searches(
@@ -1024,8 +1031,10 @@ class TestSupplementalSearches(unittest.TestCase):
             "engagement": {"likes": 5}, "relevance": 0.8, "why_relevant": "",
         }]
         bundle = schema.RetrievalBundle()
+        # Handles need ≥2 on-topic posts to be promotable per x_judge.MIN_ON_TOPIC_HITS
         bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="tweet"),
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2", author="analyst1", body="AI safety research"),
         ]
         pipeline._run_supplemental_searches(
             topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
@@ -1093,8 +1102,10 @@ class TestSupplementalSearches(unittest.TestCase):
         mock_handles.return_value = []
         mock_mentions.return_value = []
         bundle = schema.RetrievalBundle()
+        # Handles need ≥2 on-topic posts to be promotable per x_judge.MIN_ON_TOPIC_HITS
         bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/subject1/status/1", author="subject1", body="hi"),
+            _make_source_item("x", "X1", "https://x.com/subject1/status/1", author="subject1", body="subject1 discussion"),
+            _make_source_item("x", "X2", "https://x.com/subject1/status/2", author="subject1", body="subject1 update"),
         ]
         pipeline._run_supplemental_searches(
             topic="subject1",

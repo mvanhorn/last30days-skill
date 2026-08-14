@@ -653,3 +653,59 @@ def test_depth_drives_the_fanout_call_count():
     deep = grok_x._fanout_queries("t", "2026-07-14", "2026-08-13", 4)
     assert len(quick) == 1 and len(deep) == 4
     assert len(set(deep)) == 4, "fan-out variants must differ or they repeat one result set"
+
+
+def test_fanout_queries_no_phrase_quote_for_place_names():
+    """_fanout_queries("Rome Italy") must not emit '"Rome Italy"' variant.
+
+    This was the 2026-08-14 Rome failure: phrase-quoting "Rome Italy" returned
+    thin hits that promoted off-topic accounts (PrettyCitiesX, visegrad24).
+    """
+    variants = grok_x._fanout_queries("Rome Italy", "2026-07-14", "2026-08-13", 4)
+    for v in variants:
+        assert '"Rome Italy"' not in v, (
+            "Place/disambiguation strings must not be phrase-quoted; "
+            f"got {v!r}"
+        )
+    # First variant should use unquoted AND
+    assert "Rome Italy" in variants[0]
+
+
+def test_fanout_queries_proper_name_gets_phrase_quote():
+    """Proper names like 'Peter Steinberger' should get phrase-quoted variant."""
+    variants = grok_x._fanout_queries("Peter Steinberger", "2026-07-14", "2026-08-13", 4)
+    # One of the variants should phrase-quote the proper name
+    has_phrase = any('"Peter Steinberger"' in v for v in variants)
+    assert has_phrase, (
+        "Proper person names should have a phrase-quoted variant for exact match"
+    )
+
+
+def test_search_handles_and_topic_false_does_not_add_topic(monkeypatch):
+    """search_handles without and_topic should not AND the topic into query."""
+    seen = {}
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
+
+    def fake_run(cmd, **kwargs):
+        seen["prompt"] = cmd[2]
+        return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
+
+    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    grok_x.search_handles(["steipete"], "quantum widgets", *WINDOW, and_topic=False)
+    assert "quantum widgets" not in seen["prompt"]
+
+
+def test_search_handles_and_topic_true_adds_topic_to_query(monkeypatch):
+    """search_handles with and_topic=True should AND the topic into query."""
+    seen = {}
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
+
+    def fake_run(cmd, **kwargs):
+        seen["prompt"] = cmd[2]
+        return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
+
+    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    grok_x.search_handles(["visegrad24"], "Rome", *WINDOW, and_topic=True)
+    assert "Rome" in seen["prompt"], (
+        "Extracted handles should AND the topic to ensure on-topic results"
+    )

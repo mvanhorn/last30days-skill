@@ -66,20 +66,58 @@ LANE_BUDGET_SECONDS = 150.0
 _MIN_USEFUL_CALL_SECONDS = 15
 
 
+def _is_proper_name(topic: str) -> bool:
+    """True when topic looks like a title-cased proper name (person/product).
+
+    "Peter Steinberger" → True (phrase-quote in fanout)
+    "Rome Italy" → False (no phrase-quote; place/disambiguation string)
+    """
+    words = topic.split()
+    if len(words) < 2:
+        return False
+    # Title-cased: each word starts uppercase, rest lowercase
+    # Place names like "Rome Italy" are title-cased but are NOT proper names
+    # for phrase-quoting purposes. Heuristic: if ALL words are common place/
+    # disambiguation words OR all-caps acronyms, don't phrase-quote.
+    place_words = {
+        "italy", "rome", "paris", "london", "berlin", "tokyo", "new", "york",
+        "los", "angeles", "san", "francisco", "city", "country", "state",
+        "north", "south", "east", "west", "united", "states", "kingdom",
+    }
+    lower_words = [w.lower() for w in words]
+    if all(w in place_words or w.isupper() for w in lower_words):
+        return False
+    # Check for title case pattern (First Last, First Middle Last)
+    return all(
+        w[0].isupper() and (len(w) == 1 or w[1:].islower())
+        for w in words
+        if w.isalpha()
+    )
+
+
 def _fanout_queries(topic: str, from_date: str, to_date: str, calls: int) -> List[str]:
     """Distinct query formulations for one topic, widest signal first.
 
     Each returns at most 10 posts, and the formulations surface different
     sets -- Top vs Latest ordering, and an engagement-floored variant -- so
     fanning out adds coverage rather than repeating one result set.
+
+    Multi-word topics are NOT phrase-quoted unless they look like proper names
+    (person/product). "Rome Italy" → no phrase-quote (place/disambiguation).
+    "Peter Steinberger" → phrase-quote in one variant (proper name).
     """
     window = f"since:{from_date} until:{to_date}"
+    # First variant: unquoted AND (multi-word topics naturally AND their terms)
     variants = [
         f"{topic} {window}",
         f"{topic} {window} min_faves:5",
-        f'"{topic}" {window}' if " " in topic else f"{topic} {window} filter:links",
-        f"{topic} {window} -filter:replies",
     ]
+    # Third variant: phrase-quote only for proper names, else filter:links
+    if " " in topic and _is_proper_name(topic):
+        variants.append(f'"{topic}" {window}')
+    else:
+        variants.append(f"{topic} {window} filter:links")
+    variants.append(f"{topic} {window} -filter:replies")
     return variants[:calls]
 
 DEPTH_CONFIG = {
@@ -800,11 +838,17 @@ def search_handles(
     *,
     count_per: int = 8,
     deadline: Optional[float] = None,
+    and_topic: bool = False,
 ) -> Tuple[List[Dict[str, Any]], bool]:
     """BY lane: posts authored by each handle.
 
     ``topic`` is used for relevance ranking only and is never ANDed into the
-    query -- doing so was a prior defect that emptied the lane.
+    query by default -- doing so was a prior defect that emptied the lane
+    (person posts omit their own name).
+
+    When ``and_topic=True``, the topic IS ANDed into the query (e.g.,
+    ``from:handle Rome``) to ensure extracted handles demonstrate on-topic
+    content. This prevents off-topic timelines from filling the X budget.
 
     Returns (items, auth_revoked) so the pipeline can record AUTH_FAILED.
     """
@@ -817,8 +861,13 @@ def search_handles(
         clean = _clean_handle(handle)
         if not clean:
             continue
+        # AND topic only when explicitly requested (extracted handles)
+        if and_topic and topic:
+            query = f"from:{clean} {topic} since:{from_date} until:{to_date}"
+        else:
+            query = f"from:{clean} since:{from_date} until:{to_date}"
         items, _, revoked = _run_query(
-            f"from:{clean} since:{from_date} until:{to_date}",
+            query,
             from_date, to_date, limit=count_per, relevance_topic=topic,
             attempts=1, deadline=deadline,
         )
