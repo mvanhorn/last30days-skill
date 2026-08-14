@@ -1955,10 +1955,9 @@ def run(
         youtube_yt.reset_search_cache()
     settings = _resolve_depth_settings(depth, config)
     requested_sources = normalize_requested_sources(requested_sources)
-    # Wall-clock origin for budget-aware enrichment lanes. Retrieval can eat
-    # most of the foreground contract before enrichment starts, so a lane that
-    # sizes its deadline against a constant alone can push a run past the
-    # contract; the amazon review lane clamps against what is actually left.
+    # Wall-clock origin for budget-aware enrichment lanes. Amazon review
+    # enrichment starts at search time (inside _retrieve_stream_impl) so it
+    # overlaps other sources instead of waiting for them all to finish.
     run_started = time.monotonic()
     from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
     resolved_corpus_dirs = corpus.resolve_directories(
@@ -2327,6 +2326,7 @@ def run(
                         ig_creators=ig_creators,
                         trustpilot_domain=trustpilot_domain,
                         trustpilot_domain_is_hint=trustpilot_domain_is_hint,
+                        run_started=run_started,
                     )
                 ] = (subquery, source)
 
@@ -2361,6 +2361,7 @@ def run(
                             ig_creators=ig_creators,
                             trustpilot_domain=trustpilot_domain,
                             trustpilot_domain_is_hint=trustpilot_domain_is_hint,
+                            run_started=run_started,
                         )
                     except Exception as retry_exc:
                         detail = f"{exc} (retried once, still failed: {retry_exc})"
@@ -2444,6 +2445,7 @@ def run(
         tiktok_creators=tiktok_creators,
         ig_creators=ig_creators,
         first_party_handles=explicit_first_party,
+        run_started=run_started,
     )
 
     # Reclassify partial failures as DEGRADED instead of silently dropping them.
@@ -2954,9 +2956,11 @@ def _finalize_items_by_source(
                 digg.enrich_source_items(items, top_k=3)
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
         if source == "amazon" and items and not mock:
-            # Same budget-at-the-survivors principle: review pulls are the
-            # expensive half of this lane (one credit each, and the slow
-            # half by wall clock), so they go to the products dedupe kept.
+            # Attach-if-missing: review enrichment now runs at search time in
+            # _retrieve_stream_impl, so items arriving here should already have
+            # top_comments. enrich_source_items no-ops when top_comments is set.
+            # This path handles fixture replay and any edge cases where retrieve
+            # didn't enrich (e.g., run_started was not passed).
             matched, replayed = http.fixture_source_replay(enrichment_request)
             if matched:
                 items = _merge_replayed_enrichment(items, replayed)
@@ -2966,9 +2970,6 @@ def _finalize_items_by_source(
                     depth=depth,
                     config=config,
                     keyword=str((config or {}).get("_amazon_query") or "").strip() or topic,
-                    # Retrieval time already spent, so the lane sizes its
-                    # deadline against what remains of the 300s contract
-                    # rather than always claiming its full constant.
                     elapsed=elapsed,
                 )
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
@@ -3733,6 +3734,7 @@ def _retry_thin_sources(
     tiktok_creators: list[str] | None = None,
     ig_creators: list[str] | None = None,
     first_party_handles: Iterable[str] | None = None,
+    run_started: float | None = None,
 ) -> None:
     """Retry sources with thin results using simplified core subject query."""
     if depth == "quick":
@@ -3799,6 +3801,11 @@ def _retry_thin_sources(
             tiktok_hashtags=tiktok_hashtags,
             tiktok_creators=tiktok_creators,
             ig_creators=ig_creators,
+            run_started=run_started,
+            # Skip Amazon review enrichment here to avoid duplicate Bright Data
+            # pulls for ASINs already enriched in Phase 1. Finalize will enrich
+            # any genuinely new products that weren't in Phase 1.
+            skip_amazon_enrichment=True,
         )
         outcome_note = artifact.get("_source_outcome") if isinstance(artifact, dict) else None
         normalized = _normalize_score_dedupe(
@@ -3915,6 +3922,7 @@ def _merge_reddit_items(free: list[dict], sc: list[dict]) -> list[dict]:
 
 def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
     """Run one stream and retain HTTP failures swallowed by source adapters."""
+    # run_started is passed through but not used here; it goes to _retrieve_stream_impl
     source = str(kwargs.get("source") or "")
     fixture_request = {
         "source": source,
@@ -3985,6 +3993,8 @@ def _retrieve_stream_impl(
     ig_creators: list[str] | None = None,
     trustpilot_domain: str | None = None,
     trustpilot_domain_is_hint: bool = False,
+    run_started: float | None = None,
+    skip_amazon_enrichment: bool = False,
 ) -> tuple[list[dict], dict]:
     # Early exit if source was rate-limited by a sibling future
     if rate_limited_sources is not None and source in rate_limited_sources:
@@ -4360,18 +4370,47 @@ def _retrieve_stream_impl(
         # The search keyword is model-supplied and may differ from the topic
         # ("Matt Van Horn" searches "June Oven"), so it keys off the stable
         # research topic rather than the narrowed per-subquery search_query.
-        # Review enrichment is deferred to _finalize_items_by_source so the
-        # credit budget lands on products that survive dedupe.
         keyword = (
             str((config or {}).get("_amazon_query") or "").strip()
             or raw_topic or topic or subquery.search_query
         )
         domain = str((config or {}).get("LAST30DAYS_AMAZON_DOMAIN") or amazon.DEFAULT_DOMAIN)
         result = amazon.search_products(keyword, domain=domain, config=config)
-        return (
-            amazon.parse_search_response(result, keyword, domain=domain),
-            _result_outcome_artifact(source, result),
+        products = amazon.parse_search_response(result, keyword, domain=domain)
+        artifact = _result_outcome_artifact(source, result)
+
+        # Skip enrichment when called from thin retry (_retry_thin_sources) to
+        # avoid duplicate Bright Data pulls for ASINs already enriched in Phase 1.
+        # Finalize will enrich any NEW products (enrich_source_items no-ops when
+        # top_comments is already set, so duplicates get skipped there too).
+        if skip_amazon_enrichment:
+            return products, artifact
+
+        # Start review enrichment now, while other sources are still running.
+        # Elapsed is measured from run_started so multi-source runs that finish
+        # search quickly (30-90s) still have 190-250s of budget (clamped to 180).
+        # This replaces the old deferred-to-finalize path which left only crumbs
+        # (e.g. 11s) after long retrieval phases.
+        elapsed = time.monotonic() - run_started if run_started else 0.0
+        enriched, review_status = amazon.enrich_with_reviews(
+            products,
+            depth=depth,
+            config=config,
+            elapsed=elapsed,
+            keyword=keyword,
         )
+
+        # Record PARTIAL status if review lane was skipped or all pulls dropped
+        if review_status:
+            artifact = artifact or {}
+            artifact = dict(artifact) if artifact else {}
+            artifact["_source_outcome"] = {
+                "state": schema.PARTIAL,
+                "detail": review_status,
+                "attempted": True,
+            }
+
+        return enriched, artifact
     if source == "bluesky":
         result = bluesky.search_bluesky(subquery.search_query, from_date, to_date, depth=depth, config=config)
         return bluesky.parse_bluesky_response(result), _result_outcome_artifact(source, result)
