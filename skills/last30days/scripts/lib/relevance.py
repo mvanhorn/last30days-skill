@@ -15,7 +15,7 @@ from . import cjk
 STOPWORDS = frozenset({
     'the', 'a', 'an', 'to', 'for', 'how', 'is', 'in', 'of', 'on',
     'and', 'with', 'from', 'by', 'at', 'this', 'that', 'it', 'my',
-    'your', 'i', 'me', 'we', 'us', 'you', 'what', 'are', 'do', 'can',
+    'your', 'i', 'me', 'we', 'you', 'what', 'are', 'do', 'can',
     'its', 'be', 'or', 'not', 'no', 'so', 'if', 'but', 'about',
     'all', 'just', 'get', 'has', 'have', 'was', 'will',
     # Hebrew function words / prepositions / conjunctions

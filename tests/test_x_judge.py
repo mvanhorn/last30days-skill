@@ -89,16 +89,26 @@ class TestJudgeXCorpus:
         assert len(result["on_topic_items"]) == 0
         assert len(result["off_topic_items"]) == 2
 
-    def test_us_pronoun_is_stopword(self):
-        """'us' pronoun should not match 'US' topic (us is a stopword)."""
+    def test_us_pronoun_does_not_match_us_topic(self):
+        """Lowercase 'us' pronoun should not match 'US' country topic."""
         items = [
             {"author_handle": "offtopic", "text": "Tell us what you think"},
             {"author_handle": "offtopic", "text": "Join us for the event"},
         ]
-        # "US" alone → "us" is stopword → no tokens → no overlap
+        # "US" topic vs "us" pronoun in text - case-sensitive check filters
         result = x_judge.judge_x_corpus(items, "US")
         assert len(result["on_topic_items"]) == 0
         assert len(result["off_topic_items"]) == 2
+
+    def test_us_acronym_matches_us_topic(self):
+        """Uppercase 'US' country acronym in text matches 'US' topic."""
+        items = [
+            {"author_handle": "ontopic", "text": "The US is expanding trade"},
+            {"author_handle": "ontopic", "text": "US policy update"},
+        ]
+        result = x_judge.judge_x_corpus(items, "US")
+        assert len(result["on_topic_items"]) == 2
+        assert len(result["off_topic_items"]) == 0
 
     def test_us_with_context_matches(self):
         """'US economy' matches posts about US economy."""
@@ -107,9 +117,8 @@ class TestJudgeXCorpus:
             {"author_handle": "ontopic", "text": "Economy news from America"},
         ]
         result = x_judge.judge_x_corpus(items, "US economy")
-        # "US economy" → {"economy"} after stopword removal
-        # First post has "economy" → on-topic
-        # Second post has "economy" → on-topic
+        # First post has "US" (acronym) and "economy" → on-topic
+        # Second post has "economy" only → on-topic
         assert len(result["on_topic_items"]) >= 1
 
     def test_handle_stats_computed(self):

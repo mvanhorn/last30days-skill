@@ -23,19 +23,48 @@ HANDLE_ON_TOPIC_FLOOR = 0.5
 MIN_ON_TOPIC_HITS = 2
 
 
+# Ambiguous short tokens that require case-sensitive matching to avoid
+# pronoun/acronym collisions. E.g., "US" (country) vs "us" (pronoun).
+# For these tokens, require the text to contain the uppercase form (acronym)
+# rather than just the lowercase form (common word).
+_CASE_SENSITIVE_ACRONYMS = frozenset({'us'})
+
+
 def _compute_relevance(query: str, text: str) -> float:
     """Compute relevance score for a post against the topic query.
 
     Returns 0.0 for empty/stopword-only queries to avoid treating all items
     as equally relevant (the shared relevance module returns 0.5 for empty
     queries as a neutral fallback, but x_judge needs strict filtering).
+
+    Uses case-sensitive matching for ambiguous short tokens like 'us' to
+    distinguish country acronym 'US' from pronoun 'us'.
     """
     if not query or not text:
         return 0.0
-    # Check if query has any tokens after stopword removal
-    tokens = relevance.tokenize(query)
-    if not tokens:
+
+    q_tokens = relevance.tokenize(query)
+    if not q_tokens:
         return 0.0  # All query tokens were stopwords
+
+    # Check for ambiguous acronyms that need case-sensitive handling
+    t_tokens = relevance.tokenize(text)
+    for acronym in _CASE_SENSITIVE_ACRONYMS:
+        if acronym in q_tokens and acronym in t_tokens:
+            # Text has the token, but we need to check if it's the acronym (US)
+            # or the common word (us). If text only has lowercase, don't count it.
+            import re
+            has_uppercase = bool(re.search(rf'\b{acronym.upper()}\b', text))
+            has_lowercase = bool(re.search(rf'\b{acronym}\b', text))
+            if has_lowercase and not has_uppercase:
+                # Text only has lowercase version (pronoun) - remove from overlap
+                t_tokens = t_tokens - {acronym}
+
+    overlap_tokens = q_tokens & t_tokens
+    if not overlap_tokens:
+        return 0.0
+
+    # Use the standard relevance calculation
     return relevance.token_overlap_relevance(query, text)
 
 
