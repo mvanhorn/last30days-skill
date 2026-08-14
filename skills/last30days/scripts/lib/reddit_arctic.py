@@ -201,10 +201,14 @@ def fetch_listings(
             time.sleep(PACE_SECONDS)
         fetched_count += 1
         try:
+            # Use retries=1 (single attempt) so retries don't exceed our deadline.
+            # The deadline handles overall timing; per-request retries would
+            # multiply the delay unpredictably.
             data = http.get(
                 f"{SEARCH_API}?subreddit={sub}&limit={n}&sort=desc",
                 headers={"User-Agent": http.BROWSER_USER_AGENT},
                 timeout=TIMEOUT,
+                retries=1,
             )
         except Exception as e:  # network error / non-200 — degrade, never raise
             _log(f"listing search failed r/{sub}: {e}")
