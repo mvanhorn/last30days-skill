@@ -446,11 +446,13 @@ def _x_record(config):
     # is never auto-selected. Doctor reports it as "available, unused - pin
     # LAST30DAYS_X_BACKEND=grok to enable" rather than "will use: grok".
     #
-    # R3/R8: When no auto-chain backend is usable but grok has any non-MISSING
-    # status (OK, DEGRADED, or ERROR), X is unconfigured/skipped - NOT
-    # broken/auth-failed. The tier must be "off" (unconfigured), not "error"
-    # (NOT WORKING). A corrupt/unreadable grok store is still unused when
-    # unpinned — do not prescribe `grok login` for an unused opt-in backend.
+    # R3/R8: When no auto-chain backend is CONFIGURED (all MISSING) but grok has
+    # any non-MISSING status, X is unconfigured/skipped - NOT broken/auth-failed.
+    # The tier must be "off" (unconfigured), not "error" (NOT WORKING).
+    #
+    # HOWEVER: if an auto-chain backend IS configured but broken (ERROR/DEGRADED),
+    # do NOT normalize to unconfigured. Keep that backend's error and repair
+    # guidance. Unused grok must not swallow a genuine auto-chain failure.
     #
     # Do NOT apply this normalization when pending browser auth would make bird
     # usable — check pending_bird first (handled above via early return).
@@ -460,8 +462,20 @@ def _x_record(config):
         and record.get("active_backend") is None
         and not pending_bird
     ):
+        backends_list = record.get("backends", [])
+        auto_chain_names = {"bird", "xai", "xurl", "xquik"}
+        auto_backends = [b for b in backends_list if b.get("name") in auto_chain_names]
+        # Only normalize if ALL auto-chain backends are MISSING (not configured).
+        # If any auto backend is ERROR/DEGRADED/BROKEN/TIMEOUT, keep that error.
+        all_auto_missing = all(
+            b.get("status") == health.MISSING for b in auto_backends
+        )
+        if not all_auto_missing:
+            # An auto-chain backend is configured but broken — do NOT normalize.
+            # Keep the original error and its repair guidance.
+            return record
         grok_finding = next(
-            (b for b in record.get("backends", []) if b.get("name") == "grok"),
+            (b for b in backends_list if b.get("name") == "grok"),
             None,
         )
         if grok_finding and grok_finding.get("status") in (

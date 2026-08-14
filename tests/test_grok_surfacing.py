@@ -236,3 +236,62 @@ def test_doctor_grok_store_with_pending_bird_predicts_bird():
     assert record["status"] == health.OK
     assert "bird" in record["note"].lower()
     assert "browser cookies" in record["note"].lower() or "cookie" in record["note"].lower()
+
+
+def test_doctor_grok_does_not_hide_xurl_error():
+    """Unpinned + grok store + xurl ERROR -> doctor keeps xurl error, not unconfigured.
+
+    When an auto-chain backend (xurl) is configured but broken, doctor must
+    report that error with its repair guidance. Unused grok must NOT swallow
+    the genuine auto-chain failure.
+    """
+    from lib import backends as _backends
+    from lib import grok_x
+
+    config = {}  # No pin
+    bird_status = {
+        "installed": False,
+        "authenticated": False,
+        "username": "",
+        "can_install": False,
+    }
+
+    # Mock xurl probe to return ERROR status
+    def mock_probe_xurl(config):
+        return _backends.BackendFinding(
+            name="xurl",
+            status=health.ERROR,
+            detail="store unreadable",
+            prescription="xurl auth oauth2 login",
+            requires="xurl CLI installed + OAuth2 login",
+        )
+
+    # Intercept _run_probe to inject xurl ERROR
+    original_run_probe = _backends._run_probe
+
+    def patched_run_probe(spec, config):
+        if spec.name == "xurl":
+            return mock_probe_xurl(config)
+        return original_run_probe(spec, config)
+
+    # Grok has OK status; xurl has ERROR (unreadable store).
+    # All other auto-chain backends are MISSING.
+    with (
+        mock.patch.object(grok_x, "binary_path", return_value="/usr/bin/grok"),
+        mock.patch.object(grok_x, "has_stored_auth", return_value=True),
+        mock.patch.object(grok_x, "stored_auth_status", return_value=(grok_x.AUTH_OK, "", None)),
+        mock.patch("lib.backends.which", side_effect=lambda cmd: "/usr/bin/grok" if cmd == "grok" else None),
+        mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
+        mock.patch("lib.bird_x.is_bird_installed", return_value=False),
+        mock.patch.object(_backends, "_run_probe", patched_run_probe),
+    ):
+        record = doctor._x_record(config)
+
+    # Doctor should NOT report X as unconfigured.
+    assert record["tier"] != "off", "xurl error must not be hidden by unused grok"
+    assert record["status"] != "unconfigured", "xurl error must not become unconfigured"
+    # Should keep the error tier and xurl repair guidance.
+    assert record["tier"] == "error"
+    # The fix should contain xurl repair guidance, not be empty.
+    assert record["fix"], "xurl repair guidance must not be cleared"
+    assert "xurl" in record["fix"].lower() or "oauth" in record["fix"].lower()
