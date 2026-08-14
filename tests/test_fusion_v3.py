@@ -476,3 +476,45 @@ class OutOfWindowSortTests(unittest.TestCase):
         dated = self._candidate("dated", "2026-07-20", "high", rrf=0.01)
         ordered = sorted([dated, undated], key=fusion._candidate_sort_key)
         self.assertEqual(["undated", "dated"], [c.candidate_id for c in ordered])
+
+    def test_adapter_high_confidence_outside_window_is_still_stale(self):
+        """Adapters may supply date_confidence='high' for old dates.
+
+        The window membership must be derived from the actual date compared to
+        the run window, not solely from adapter-provided date_confidence.
+        """
+        item = schema.SourceItem(
+            item_id="old_job",
+            source="jobs",
+            title="Old job posting",
+            body="body",
+            url="https://example.com/job",
+            published_at="2025-10-15",
+            date_confidence="high",
+        )
+        stale_with_high_confidence = schema.Candidate(
+            candidate_id="stale_high",
+            item_id="old_job",
+            source="jobs",
+            title="Old job posting",
+            url="https://example.com/job",
+            snippet="snippet",
+            subquery_labels=["primary"],
+            native_ranks={"primary:jobs": 1},
+            local_relevance=0.9,
+            freshness=90,
+            engagement=60.0,
+            source_quality=0.85,
+            rrf_score=0.9,
+            source_items=[item],
+            metadata={"range_from": "2026-06-15", "range_to": "2026-07-15"},
+        )
+        fresh = self._candidate("fresh", "2026-07-10", "high", rrf=0.01)
+        fresh.metadata["range_from"] = "2026-06-15"
+        fresh.metadata["range_to"] = "2026-07-15"
+
+        self.assertTrue(schema.candidate_out_of_window(stale_with_high_confidence))
+        self.assertFalse(schema.candidate_out_of_window(fresh))
+
+        ordered = sorted([stale_with_high_confidence, fresh], key=fusion._candidate_sort_key)
+        self.assertEqual(["fresh", "stale_high"], [c.candidate_id for c in ordered])

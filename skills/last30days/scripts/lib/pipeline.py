@@ -724,6 +724,7 @@ def nominate_topic_pool(
     query_plan: schema.QueryPlan,
     plan: schema.DiscoveryPlan,
     *,
+    from_date: str,
     to_date: str,
     limit: int,
 ) -> list[tuple[Nomination, str]]:
@@ -755,7 +756,13 @@ def nominate_topic_pool(
     confidence floor downstream decides whether what survived is worth
     showing.
     """
-    candidates = weighted_rrf(bundle.items_by_source_and_query, query_plan, pool_limit=80)
+    candidates = weighted_rrf(
+        bundle.items_by_source_and_query,
+        query_plan,
+        pool_limit=80,
+        range_from=from_date,
+        range_to=to_date,
+    )
     for candidate in candidates:
         velocity = rerank.discovery_velocity_score(candidate.source_items, as_of_date=to_date)
         candidate.final_score = min(100.0, 12.0 * math.log1p(velocity)) if velocity else 0.0
@@ -824,6 +831,7 @@ def nominate_topics(
     query_plan: schema.QueryPlan,
     plan: schema.DiscoveryPlan,
     *,
+    from_date: str,
     to_date: str,
     limit: int,
 ) -> list[Nomination]:
@@ -832,7 +840,7 @@ def nominate_topics(
     return [
         nomination
         for nomination, _cluster_id in nominate_topic_pool(
-            bundle, query_plan, plan, to_date=to_date, limit=limit,
+            bundle, query_plan, plan, from_date=from_date, to_date=to_date, limit=limit,
         )
     ]
 
@@ -1179,6 +1187,7 @@ def run_discover_nominate(
     )
     pool = nominate_topic_pool(
         sweep.bundle, sweep.query_plan, sweep.plan,
+        from_date=sweep.from_date,
         to_date=sweep.to_date,
         limit=rerank.JUDGE_POOL_LIMIT,
     )
@@ -1454,6 +1463,7 @@ def run_discover(
     topic_limit = max(5, min(10, limit))
     nominations = nominate_topics(
         sweep.bundle, sweep.query_plan, plan,
+        from_date=from_date,
         to_date=to_date,
         limit=ENRICH_LIMIT if enrich else topic_limit,
     )
@@ -2426,7 +2436,13 @@ def run(
         elapsed=time.monotonic() - run_started,
     )
     source_status = _finalize_source_status(bundle.source_status, items_by_source)
-    candidates = weighted_rrf(bundle.items_by_source_and_query, plan, pool_limit=settings["pool_limit"])
+    candidates = weighted_rrf(
+        bundle.items_by_source_and_query,
+        plan,
+        pool_limit=settings["pool_limit"],
+        range_from=from_date,
+        range_to=to_date,
+    )
     # Normalized set of handles this run resolved for the topic. A candidate
     # authored by one of these is first-party and is exempted from the
     # entity-miss demotion in rerank (a post never repeats its own author's
