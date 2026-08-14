@@ -4152,8 +4152,7 @@ def _retrieve_stream_impl(
                 if last_error:
                     # Fallback succeeded after earlier backend failed. Classify
                     # the original error: if it was AUTH_FAILED (grok revoked),
-                    # preserve that state so user gets re-login guidance. If it
-                    # was a different failure, fallback success is OK.
+                    # preserve that state so user gets re-login guidance.
                     prior_state = http.classify_failure(message=last_error)
                     if prior_state == schema.AUTH_FAILED:
                         # Keep AUTH_FAILED visible so host shows re-login hint
@@ -4161,6 +4160,16 @@ def _retrieve_stream_impl(
                             schema.AUTH_FAILED,
                             f"X served via {backend} after {last_error}; re-login needed for primary backend",
                         )
+                    # Prior error was non-auth. Check if *current* backend also
+                    # reported an error (e.g., grok returned items + revocation).
+                    if err:
+                        current_state = http.classify_failure(message=err)
+                        if current_state == schema.AUTH_FAILED:
+                            return items, _outcome_artifact(
+                                schema.AUTH_FAILED,
+                                f"X served {len(items)} items via {backend} but also errored: {err}; re-login needed",
+                            )
+                    # Non-auth prior error, no current auth error → fallback OK
                     return items, _outcome_artifact(
                         health.OK,
                         f"X served via {backend} after {last_error}",
