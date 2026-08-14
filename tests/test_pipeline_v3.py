@@ -797,6 +797,51 @@ class TestMixedResultRevocation(unittest.TestCase):
         self.assertIn("re-login", outcome.get("detail", "").lower())
 
 
+class TestRetrievalBundleAuthPreservation(unittest.TestCase):
+    """AUTH_FAILED state must be preserved through add_items.
+
+    When a lane records AUTH_FAILED before items are added, the state
+    must not be downgraded to PARTIAL by subsequent add_items calls.
+    """
+
+    def test_add_items_preserves_auth_failed_state(self):
+        """add_items should preserve AUTH_FAILED state, not downgrade to PARTIAL."""
+        bundle = schema.RetrievalBundle()
+        bundle.mark_attempted("x")
+        # First: record auth failure (no items yet)
+        bundle.record_failure("x", schema.AUTH_FAILED, "grok session expired", attempted=True)
+        # At this point, state should be AUTH_FAILED
+        self.assertEqual(schema.AUTH_FAILED, bundle.source_status["x"].state)
+
+        # Now add items
+        items = [_make_source_item("x", "X1", "https://x.com/a/status/1")]
+        bundle.add_items("primary", "x", items)
+
+        # State must still be AUTH_FAILED, not PARTIAL
+        self.assertEqual(schema.AUTH_FAILED, bundle.source_status["x"].state)
+        # Detail should be preserved
+        self.assertEqual("grok session expired", bundle.source_status["x"].detail)
+        # Items should be recorded
+        self.assertEqual(1, len(bundle.items_by_source["x"]))
+
+    def test_add_items_keeps_partial_for_non_auth_failures(self):
+        """For non-auth failures, add_items should still produce PARTIAL."""
+        bundle = schema.RetrievalBundle()
+        bundle.mark_attempted("x")
+        # Record a non-auth failure
+        bundle.record_failure("x", health.TIMEOUT, "request timed out", attempted=True)
+        self.assertEqual(health.TIMEOUT, bundle.source_status["x"].state)
+
+        # Add items
+        items = [_make_source_item("x", "X1", "https://x.com/a/status/1")]
+        bundle.add_items("primary", "x", items)
+
+        # State should become PARTIAL (not TIMEOUT)
+        self.assertEqual(schema.PARTIAL, bundle.source_status["x"].state)
+        # Detail should be preserved
+        self.assertEqual("request timed out", bundle.source_status["x"].detail)
+
+
 class TestSupplementalSearches(unittest.TestCase):
     """R1: Phase 2 entity drilling should be wired into the pipeline."""
 

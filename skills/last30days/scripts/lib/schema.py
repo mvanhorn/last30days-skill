@@ -379,7 +379,13 @@ class RetrievalBundle:
         detail = None
         fix_hint = None
         if previous and previous.state not in (health.OK, NO_RESULTS):
-            state = PARTIAL if self.items_by_source[source] else previous.state
+            # Preserve AUTH_FAILED state even when items are added: it's an
+            # actionable signal (re-login needed) that shouldn't be downgraded
+            # to PARTIAL. Other failure states become PARTIAL when items exist.
+            if previous.state == AUTH_FAILED:
+                state = AUTH_FAILED
+            else:
+                state = PARTIAL if self.items_by_source[source] else previous.state
             detail = previous.detail
             fix_hint = previous.fix_hint
         self.source_status[source] = SourceOutcome(
