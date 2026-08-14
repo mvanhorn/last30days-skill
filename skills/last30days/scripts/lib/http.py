@@ -506,6 +506,7 @@ def classify_failure(*, status_code: Optional[int] = None, message: str = "") ->
             "authentication failed",
             "expired token",
             "not signed in",
+            "not logged in",
             "invalid_grant",
             "refresh token",
             "session expired",
