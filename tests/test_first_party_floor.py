@@ -313,11 +313,36 @@ def test_batch_subject_is_empty_without_mentions():
     assert pipeline._batch_subject_handles([]) == set()
 
 
-def test_supplied_handles_take_precedence_over_batch_inference():
-    """Inference is a fallback, never an override of what the caller knows."""
+def test_batch_inference_is_unioned_not_gated():
+    """Regression: gating this on "no handles supplied" made it dead code.
+
+    The caller's set is derived partly from topic tokens, so it is non-empty
+    for essentially every real topic -- a fallback would never fire and the
+    name-only case would stay broken while looking fixed.
+    """
     import inspect
     from lib import pipeline
     src = inspect.getsource(pipeline._normalize_score_dedupe)
-    assert "if source == \"x\" and not floor_handles:" in src, (
-        "batch inference must only fill in when no handles were supplied"
+    assert "floor_handles |= _batch_subject_handles(raw_items)" in src
+    assert "not floor_handles" not in src, (
+        "batch inference must union, never gate on an empty supplied set"
     )
+
+
+def test_name_only_topic_keeps_subject_posts_end_to_end():
+    """The full path: topic names a person, handle appears nowhere in it, and
+    the subject's own zero-relevance posts still survive the floor."""
+    from lib import pipeline
+    supplied = pipeline._topic_first_party_candidates("Peter Steinberger")
+    assert "steipete" not in supplied, "precondition: the handle is not in the topic"
+    raw = [
+        {"text": "Great thread from @steipete on agent loops"},
+        {"text": "@steipete nailed this"},
+        {"text": "more praise for @steipete"},
+    ]
+    inferred = pipeline._batch_subject_handles(raw)
+    items = _annotate(_mixed_batch())
+    kept = signals.prune_low_relevance(
+        items, first_party_handles=supplied | inferred
+    )
+    assert any(i.author == "steipete" for i in kept)

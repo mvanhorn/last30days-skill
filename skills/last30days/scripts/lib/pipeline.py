@@ -2823,16 +2823,19 @@ def _normalize_score_dedupe(
     )
     if source != "jobs":
         floor_handles = set(first_party_handles or ())
-        if source == "x" and not floor_handles:
-            # No handle was supplied and Phase 2's resolution has not run yet
-            # (a bare CLI run without --auto-resolve, or a quick-depth run).
-            # Reuse the engine's own resolution signal on the batch we already
-            # have: posts *about* a subject mention their handle, so the
+        if source == "x":
+            # Union, never a fallback. The caller's set is derived partly from
+            # topic tokens, so it is non-empty for essentially every real topic
+            # -- gating this on "no handles supplied" would make it dead code
+            # and leave the name-only case exactly as broken as before.
+            #
+            # Reuses the engine's own resolution signal on the batch already in
+            # hand: posts *about* a subject mention their handle, so the
             # most-mentioned account in a topic's own results is the subject.
             # Costs nothing extra -- no search, no network -- and closes the
-            # name-only case where the handle never appears in the topic
+            # case where the handle never appears in the topic at all
             # ("Peter Steinberger" -> @steipete).
-            floor_handles = _batch_subject_handles(raw_items)
+            floor_handles |= _batch_subject_handles(raw_items)
         normalized = signals.prune_low_relevance(
             normalized, first_party_handles=floor_handles
         )
