@@ -2771,6 +2771,26 @@ def merge_drill_report(
     return merged
 
 
+def _batch_subject_handles(raw_items: list[dict], *, top_n: int = 2) -> set[str]:
+    """Most-mentioned handles in a batch of X items, as first-party candidates.
+
+    Mirrors entity_extract's ranking but runs before pruning rather than after,
+    and keys on *mentions only* rather than mentions plus authors. That
+    distinction is the safety property: a prolific commentator inflates the
+    author count, but being mentioned by other accounts is what identifies the
+    subject of a topic. Capped at the top few so a busy thread cannot exempt
+    the whole batch.
+    """
+    counts: Counter = Counter()
+    for item in raw_items or []:
+        text = str((item or {}).get("text") or "")
+        for mention in re.findall(r"@([A-Za-z0-9_]{1,15})", text):
+            counts[mention.lower()] += 1
+    if not counts:
+        return set()
+    return {handle for handle, _ in counts.most_common(top_n)}
+
+
 def _normalize_score_dedupe(
     source: str,
     raw_items: list[dict],
@@ -2802,8 +2822,19 @@ def _normalize_score_dedupe(
         max_days=lookback_window_days,
     )
     if source != "jobs":
+        floor_handles = set(first_party_handles or ())
+        if source == "x" and not floor_handles:
+            # No handle was supplied and Phase 2's resolution has not run yet
+            # (a bare CLI run without --auto-resolve, or a quick-depth run).
+            # Reuse the engine's own resolution signal on the batch we already
+            # have: posts *about* a subject mention their handle, so the
+            # most-mentioned account in a topic's own results is the subject.
+            # Costs nothing extra -- no search, no network -- and closes the
+            # name-only case where the handle never appears in the topic
+            # ("Peter Steinberger" -> @steipete).
+            floor_handles = _batch_subject_handles(raw_items)
         normalized = signals.prune_low_relevance(
-            normalized, first_party_handles=first_party_handles
+            normalized, first_party_handles=floor_handles
         )
     normalized = dedupe.dedupe_items(normalized)
     for item in normalized:

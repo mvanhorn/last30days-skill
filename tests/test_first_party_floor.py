@@ -269,3 +269,55 @@ def test_topic_candidates_are_unioned_into_the_explicit_set():
     build = src.index("explicit_first_party")
     use = src.index("first_party_handles=explicit_first_party,")
     assert build < use
+
+
+def test_name_only_topic_resolves_the_subject_from_mentions():
+    """The hard case: search "Peter Steinberger" with no handle anywhere. His
+    handle is @steipete, which matches no topic token, and Phase 2's resolution
+    has not run. Posts *about* him mention him, which is the signal the engine
+    already uses -- just later than the prune."""
+    from lib import pipeline
+    raw = [
+        {"text": "Great thread from @steipete on agent loops"},
+        {"text": "@steipete nailed this one"},
+        {"text": "watching @steipete build in public is wild"},
+        {"text": "unrelated chatter with no mention"},
+    ]
+    assert "steipete" in pipeline._batch_subject_handles(raw)
+
+
+def test_batch_subject_keys_on_mentions_not_authors():
+    """A prolific commentator inflates author counts; being mentioned by other
+    accounts is what identifies the subject."""
+    from lib import pipeline
+    raw = [
+        {"author_handle": "spam_acct", "text": "buy now"},
+        {"author_handle": "spam_acct", "text": "buy now again"},
+        {"author_handle": "spam_acct", "text": "and again"},
+        {"author_handle": "someone", "text": "actually useful thread by @realsubject"},
+    ]
+    got = pipeline._batch_subject_handles(raw)
+    assert "spam_acct" not in got
+    assert "realsubject" in got
+
+
+def test_batch_subject_is_capped():
+    from lib import pipeline
+    raw = [{"text": f"@acct{i} said something"} for i in range(10)]
+    assert len(pipeline._batch_subject_handles(raw)) <= 2
+
+
+def test_batch_subject_is_empty_without_mentions():
+    from lib import pipeline
+    assert pipeline._batch_subject_handles([{"text": "no mentions here"}]) == set()
+    assert pipeline._batch_subject_handles([]) == set()
+
+
+def test_supplied_handles_take_precedence_over_batch_inference():
+    """Inference is a fallback, never an override of what the caller knows."""
+    import inspect
+    from lib import pipeline
+    src = inspect.getsource(pipeline._normalize_score_dedupe)
+    assert "if source == \"x\" and not floor_handles:" in src, (
+        "batch inference must only fill in when no handles were supplied"
+    )
