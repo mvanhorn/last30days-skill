@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.21.0] - 2026-08-14
+
+### Changed
+
+- X backend priority changed: bird (browser cookies) is now first in the auto chain, ahead of xai/xurl/xquik. Cookies beat XAI_API_KEY when both are present. Grok CLI is demoted to opt-in only: a leftover `~/.grok/auth.json` no longer steals the X lane. Pin `LAST30DAYS_X_BACKEND=grok` to enable it explicitly.
+
+
 ## [3.20.0] - 2026-08-14
 
 ### Added

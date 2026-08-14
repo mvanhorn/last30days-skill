@@ -1,1 +1,0 @@
-X backend priority changed: bird (browser cookies) is now first in the auto chain, ahead of xai/xurl/xquik. Cookies beat XAI_API_KEY when both are present. Grok CLI is demoted to opt-in only: a leftover `~/.grok/auth.json` no longer steals the X lane. Pin `LAST30DAYS_X_BACKEND=grok` to enable it explicitly.
