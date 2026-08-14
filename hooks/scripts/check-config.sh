@@ -146,6 +146,7 @@ if [[ -n "$GLOBAL_ENV" && -f "$GLOBAL_ENV" ]]; then
   check_perms "$GLOBAL_ENV"
   load_env_vars "$GLOBAL_ENV"
 fi
+GLOBAL_CREDENTIAL_ALIASES="${ENV_LAST30DAYS_CREDENTIAL_ALIASES:-}"
 
 PROJECT_ENV=""
 if project_config_trusted; then
@@ -157,6 +158,68 @@ if [[ -n "$PROJECT_ENV" && -f "$PROJECT_ENV" ]]; then
   check_perms "$PROJECT_ENV"
   load_env_vars "$PROJECT_ENV"
 fi
+
+# Resolve the credential aliases that affect this status hook. The runtime owns
+# the complete supported-key list; this bounded mirror covers only credentials
+# used below for first-run and source-count reporting. Alias values override
+# canonical values but never create canonical process environment variables.
+CREDENTIAL_ALIAS_X_PARTIAL=""
+load_credential_aliases() {
+  local raw canonical alias value auth_resolved="" ct0_resolved=""
+  # ENV_ values from load_env_vars may include the trusted project file, so
+  # capture the user-global mapping before that file is loaded. A project may
+  # supply mapped values but cannot choose which ambient names are inspected.
+  raw="${LAST30DAYS_CREDENTIAL_ALIASES:-${GLOBAL_CREDENTIAL_ALIASES:-}}"
+  [[ -n "$raw" ]] || return 0
+  command -v python3 >/dev/null 2>&1 || return 0
+
+  while IFS=$'\t' read -r canonical alias; do
+    [[ -n "$canonical" && "$alias" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    value="${!alias:-}"
+    if [[ -z "$value" ]]; then
+      local file_var="ENV_${alias}"
+      value="${!file_var:-}"
+    fi
+    [[ -n "$value" ]] || continue
+    case "$canonical" in
+      AUTH_TOKEN) auth_resolved="$value" ;;
+      CT0) ct0_resolved="$value" ;;
+      OPENAI_API_KEY|SCRAPECREATORS_API_KEY|XAI_API_KEY|BSKY_HANDLE|EXA_API_KEY)
+        printf -v "ENV_${canonical}" '%s' "$value"
+        ;;
+    esac
+  done < <(
+    LAST30DAYS_CREDENTIAL_ALIASES_JSON="$raw" python3 -c '
+import json
+import os
+import re
+
+allowed = {
+    "AUTH_TOKEN", "CT0", "OPENAI_API_KEY", "SCRAPECREATORS_API_KEY",
+    "XAI_API_KEY", "BSKY_HANDLE", "EXA_API_KEY",
+}
+try:
+    aliases = json.loads(os.environ["LAST30DAYS_CREDENTIAL_ALIASES_JSON"])
+except (json.JSONDecodeError, TypeError):
+    aliases = {}
+if isinstance(aliases, dict):
+    for canonical, alias in aliases.items():
+        if canonical in allowed and isinstance(alias, str) and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", alias.strip()):
+            print(f"{canonical}\t{alias.strip()}")
+' 2>/dev/null
+  )
+
+  if [[ -n "$auth_resolved" && -n "$ct0_resolved" ]]; then
+    ENV_AUTH_TOKEN="$auth_resolved"
+    ENV_CT0="$ct0_resolved"
+  elif [[ -n "$auth_resolved" || -n "$ct0_resolved" ]]; then
+    CREDENTIAL_ALIAS_X_PARTIAL="yes"
+    ENV_AUTH_TOKEN=""
+    ENV_CT0=""
+  fi
+}
+
+load_credential_aliases
 
 # Load Keychain item presence for status checks without reading secret values.
 # Runtime credential resolution still happens in lib/env.py; this hook only
@@ -241,8 +304,15 @@ if command -v yt-dlp &>/dev/null; then
   HAS_YTDLP="yes"
 fi
 
-# If setup has never been run, show welcome message for new users
-if [[ -z "$SETUP_COMPLETE" && -z "$CONFIG_FILE" && -z "${ENV_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}" && -z "${ENV_SCRAPECREATORS_API_KEY:-${SCRAPECREATORS_API_KEY:-}}" && -z "${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}" && -z "${ENV_XAI_API_KEY:-${XAI_API_KEY:-}}" ]]; then
+# If setup has never been run, show welcome message for new users. A partial X
+# alias pair is intentionally not completed from canonical credentials.
+EFFECTIVE_AUTH_TOKEN="${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}"
+EFFECTIVE_CT0="${ENV_CT0:-${CT0:-}}"
+if [[ -n "$CREDENTIAL_ALIAS_X_PARTIAL" ]]; then
+  EFFECTIVE_AUTH_TOKEN=""
+  EFFECTIVE_CT0=""
+fi
+if [[ -z "$SETUP_COMPLETE" && -z "$CONFIG_FILE" && -z "${ENV_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}" && -z "${ENV_SCRAPECREATORS_API_KEY:-${SCRAPECREATORS_API_KEY:-}}" && -z "$EFFECTIVE_AUTH_TOKEN" && -z "${ENV_XAI_API_KEY:-${XAI_API_KEY:-}}" ]]; then
   # printf, NOT cat-with-heredoc: see the bash 5.3 heredoc deadlock note above.
   if [[ -n "$HAS_YTDLP" ]]; then
     # YouTube is already working via the on-system yt-dlp binary — don't list
@@ -271,7 +341,7 @@ fi
 # Setup done but check for ScrapeCreators
 HAS_SCRAPECREATORS="${ENV_SCRAPECREATORS_API_KEY:-${SCRAPECREATORS_API_KEY:-}}"
 HAS_X=""
-if [[ -n "${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}" && -n "${ENV_CT0:-${CT0:-}}" ]]; then
+if [[ -n "$EFFECTIVE_AUTH_TOKEN" && -n "$EFFECTIVE_CT0" ]]; then
   HAS_X="yes"
 fi
 HAS_XAI="${ENV_XAI_API_KEY:-${XAI_API_KEY:-}}"
