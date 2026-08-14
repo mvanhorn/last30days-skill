@@ -78,16 +78,39 @@ class TestJudgeXCorpus:
         assert len(result["on_topic_items"]) == 0
         assert len(result["off_topic_items"]) == 3
 
-    def test_no_substring_collision_us_in_house(self):
-        """'US' as a topic token should NOT match 'house' (no substring collisions)."""
+    def test_no_substring_collision_rome_in_promoter(self):
+        """'rome' as a topic token should NOT match 'promoter' (no substring collisions)."""
         items = [
-            {"author_handle": "offtopic", "text": "The house is beautiful"},
-            {"author_handle": "offtopic", "text": "My house needs repairs"},
+            {"author_handle": "offtopic", "text": "A viral promoter of products"},
+            {"author_handle": "offtopic", "text": "She is a band promoter"},
         ]
-        result = x_judge.judge_x_corpus(items, "US")
-        # None of these posts contain "US" as a word
+        result = x_judge.judge_x_corpus(items, "Rome")
+        # None of these posts contain "Rome" as a word
         assert len(result["on_topic_items"]) == 0
         assert len(result["off_topic_items"]) == 2
+
+    def test_us_pronoun_is_stopword(self):
+        """'us' pronoun should not match 'US' topic (us is a stopword)."""
+        items = [
+            {"author_handle": "offtopic", "text": "Tell us what you think"},
+            {"author_handle": "offtopic", "text": "Join us for the event"},
+        ]
+        # "US" alone → "us" is stopword → no tokens → no overlap
+        result = x_judge.judge_x_corpus(items, "US")
+        assert len(result["on_topic_items"]) == 0
+        assert len(result["off_topic_items"]) == 2
+
+    def test_us_with_context_matches(self):
+        """'US economy' matches posts about US economy."""
+        items = [
+            {"author_handle": "ontopic", "text": "The US economy is growing"},
+            {"author_handle": "ontopic", "text": "Economy news from America"},
+        ]
+        result = x_judge.judge_x_corpus(items, "US economy")
+        # "US economy" → {"economy"} after stopword removal
+        # First post has "economy" → on-topic
+        # Second post has "economy" → on-topic
+        assert len(result["on_topic_items"]) >= 1
 
     def test_handle_stats_computed(self):
         """Handle stats should track on-topic and total counts."""

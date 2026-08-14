@@ -24,9 +24,18 @@ MIN_ON_TOPIC_HITS = 2
 
 
 def _compute_relevance(query: str, text: str) -> float:
-    """Compute relevance score for a post against the topic query."""
+    """Compute relevance score for a post against the topic query.
+
+    Returns 0.0 for empty/stopword-only queries to avoid treating all items
+    as equally relevant (the shared relevance module returns 0.5 for empty
+    queries as a neutral fallback, but x_judge needs strict filtering).
+    """
     if not query or not text:
         return 0.0
+    # Check if query has any tokens after stopword removal
+    tokens = relevance.tokenize(query)
+    if not tokens:
+        return 0.0  # All query tokens were stopwords
     return relevance.token_overlap_relevance(query, text)
 
 
