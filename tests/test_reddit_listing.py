@@ -125,3 +125,89 @@ class TestFetchDiscoveryListingsFallback:
             result = rl.fetch_discovery_listings([], query="matcha", depth="quick")
         assert result == {"items": [], "errors": []}
         arctic.assert_not_called()
+
+    def test_multi_sub_partial_recovery_keeps_unrecovered_errors(self):
+        """AE4: arctic recovers only some subreddits; errors kept for missing subs."""
+        # Request tea and coffee; arctic only returns posts from tea.
+        arctic_post = {
+            "id": "", "title": "matcha farm tour", "url": "https://www.reddit.com/r/tea/comments/abc/x/",
+            "score": 406, "num_comments": 88, "subreddit": "tea", "created_utc": None,
+            "author": "u", "selftext": "", "date": "2026-07-02",
+            "engagement": {"score": 406, "num_comments": 88, "upvote_ratio": None},
+            "relevance": 0.5, "why_relevant": "Reddit listing (arctic-shift)",
+            "metadata": {"post_id": "abc"},
+        }
+        with mock.patch.object(rl.http, "get_text", return_value=None), \
+             mock.patch("lib.reddit_arctic.fetch_listings", return_value=[arctic_post]):
+            result = rl.fetch_discovery_listings(["tea", "coffee"], query="matcha", depth="quick")
+        assert result["items"] == [arctic_post]
+        # r/coffee had shreddit errors, arctic returned nothing for it → errors kept.
+        coffee_errors = [e for e in result["errors"] if "r/coffee" in e.lower()]
+        assert coffee_errors, "unrecovered sub's errors should be preserved"
+        # r/tea was recovered → its errors should NOT appear.
+        tea_errors = [e for e in result["errors"] if "r/tea" in e.lower()]
+        assert not tea_errors, "recovered sub's errors should be cleared"
+
+    def test_arctic_rows_failing_keyword_gate_keep_errors(self):
+        """AE5: arctic rows that fail the keyword gate do not count as recovery."""
+        # Arctic returns a row from tea, but the title doesn't match the query.
+        offtopic_post = {
+            "id": "", "title": "best oolong guide", "url": "https://www.reddit.com/r/tea/comments/xyz/x/",
+            "score": 999, "num_comments": 200, "subreddit": "tea", "created_utc": None,
+            "author": "u", "selftext": "", "date": "2026-07-02",
+            "engagement": {"score": 999, "num_comments": 200, "upvote_ratio": None},
+            "relevance": 0.0, "why_relevant": "Reddit listing (arctic-shift)",
+            "metadata": {"post_id": "xyz"},
+        }
+        with mock.patch.object(rl.http, "get_text", return_value=None), \
+             mock.patch("lib.reddit_arctic.fetch_listings", return_value=[offtopic_post]):
+            result = rl.fetch_discovery_listings(["tea"], query="matcha", depth="quick")
+        # "matcha" is not in "best oolong guide", so the row fails the keyword gate.
+        # With no surviving rows, arctic didn't effectively recover → errors kept.
+        assert result["items"] == []
+        assert result["errors"], "keyword-rejected rows should not clear errors"
+
+    def test_empty_query_skips_keyword_gate(self):
+        """Global --discover (empty query) skips the keyword gate entirely."""
+        offtopic_post = {
+            "id": "", "title": "best oolong guide", "url": "https://www.reddit.com/r/tea/comments/xyz/x/",
+            "score": 999, "num_comments": 200, "subreddit": "tea", "created_utc": None,
+            "author": "u", "selftext": "", "date": "2026-07-02",
+            "engagement": {"score": 999, "num_comments": 200, "upvote_ratio": None},
+            "relevance": 0.0, "why_relevant": "Reddit listing (arctic-shift)",
+            "metadata": {"post_id": "xyz"},
+        }
+        with mock.patch.object(rl.http, "get_text", return_value=None), \
+             mock.patch("lib.reddit_arctic.fetch_listings", return_value=[offtopic_post]):
+            # Empty query = global discover, no keyword gate.
+            result = rl.fetch_discovery_listings(["tea"], query="", depth="quick")
+        # No keyword gate → post survives, errors cleared.
+        assert result["items"] == [offtopic_post]
+        assert result["errors"] == []
+
+
+class TestMatchesDiscoveryDomainParity:
+    """Verify the copied _matches_discovery_domain stays in sync with pipeline.py."""
+
+    def test_parity_with_pipeline_implementation(self):
+        # Import both implementations and verify they agree on test cases.
+        from lib import pipeline
+        test_cases = [
+            ("matcha", "matcha farm tour", True),
+            ("matcha", "best oolong guide", False),
+            ("AI", "New AI model release", True),  # "ai" is generic but no anchors → use domain_terms
+            ("OpenClaw", "My OpenClaw setup", True),
+            ("OpenClaw", "Generic post about nothing", False),
+            ("Stripe payments", "Stripe is great", True),
+            ("bias", "cognitive bias research", True),  # no naive stem corruption
+        ]
+        for domain, text, expected in test_cases:
+            pipeline_result = pipeline._matches_discovery_domain(domain, text)
+            listing_result = rl._matches_discovery_domain(domain, text)
+            assert pipeline_result == listing_result, (
+                f"Parity mismatch for ({domain!r}, {text!r}): "
+                f"pipeline={pipeline_result}, listing={listing_result}"
+            )
+            assert pipeline_result == expected, (
+                f"Expected {expected} for ({domain!r}, {text!r}), got {pipeline_result}"
+            )

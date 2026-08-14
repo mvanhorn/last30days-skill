@@ -18,10 +18,16 @@ import re
 import sys
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
 from . import http
-from .relevance import token_overlap_relevance
+from .relevance import token_overlap_relevance, tokenize
+
+# Generic domain terms that are excluded from the keyword gate — matches
+# pipeline._DISCOVERY_GENERIC_DOMAIN_TERMS (duplicated to avoid circular import).
+_DISCOVERY_GENERIC_DOMAIN_TERMS: Set[str] = {
+    "ai", "artificial", "intelligence", "tech", "technology", "trending", "trend",
+}
 
 # Listing sorts pulled per subreddit, by depth.
 LISTING_SORTS = {
@@ -40,6 +46,26 @@ _POST_CARD = re.compile(r"<shreddit-post(?=[\s>])[^>]*>")
 def _log(msg: str) -> None:
     sys.stderr.write(f"[RedditListing] {msg}\n")
     sys.stderr.flush()
+
+
+def _matches_discovery_domain(domain: str, text: str) -> bool:
+    """Require a distinctive domain term, not a generic token such as ``AI``.
+
+    Duplicated from pipeline._matches_discovery_domain to avoid circular imports.
+    The rule must stay in sync: pipeline.py owns the authoritative version and
+    test_reddit_listing.py verifies parity.
+    """
+    def terms(value: str) -> Set[str]:
+        words: Set[str] = set()
+        for word in tokenize(value):
+            words.add(word)
+            if len(word) > 4 and word.endswith("s") and not word.endswith("ss"):
+                words.add(word[:-1])
+        return words
+
+    domain_terms = terms(domain)
+    anchors = domain_terms - _DISCOVERY_GENERIC_DOMAIN_TERMS
+    return bool((anchors or domain_terms) & terms(text))
 
 
 def _attr(tag: str, name: str) -> Optional[str]:
@@ -211,7 +237,13 @@ def fetch_discovery_listings(
     query: str,
     depth: str = "default",
 ) -> Dict[str, Any]:
-    """Fetch rising/top-week listings while preserving per-feed failures."""
+    """Fetch rising/top-week listings while preserving per-feed failures.
+
+    When shreddit fails and arctic-shift recovers, errors are cleared only for
+    subreddits whose posts survive the keyword gate. If query is empty (global
+    ``--discover`` with no domain), the gate is skipped and any arctic result
+    counts as recovery.
+    """
     if not subreddits:
         return {"items": [], "errors": []}
     jobs = [(subreddit, sort) for subreddit in subreddits for sort in ("rising", "top")]
@@ -255,7 +287,36 @@ def fetch_discovery_listings(
         )
         if arctic_items:
             _log(f"discovery arctic fallback: {len(arctic_items)} posts")
-            return {"items": arctic_items, "errors": []}
+            # Apply the same keyword gate that pipeline._fetch_discovery_source
+            # uses downstream. When query is empty (global --discover), skip the
+            # gate — there's no keyword to match, and the river feed IS the
+            # signal.
+            if query:
+                arctic_items = [
+                    item for item in arctic_items
+                    if _matches_discovery_domain(
+                        query,
+                        f"{item.get('title') or ''} {item.get('selftext') or ''}",
+                    )
+                ]
+            # Effective recovery: clear errors only for subreddits with
+            # surviving posts. Keep errors for subs that arctic returned nothing
+            # for, or whose rows the keyword gate rejected.
+            if arctic_items:
+                recovered_subs = {
+                    (item.get("subreddit") or "").lower() for item in arctic_items
+                }
+                requested_subs = {s.removeprefix("r/").lower() for s in subreddits}
+                if recovered_subs >= requested_subs:
+                    # Full recovery — all requested subs have surviving rows.
+                    return {"items": arctic_items, "errors": []}
+                # Partial recovery — keep errors for unrecovered subs.
+                unrecovered = requested_subs - recovered_subs
+                kept_errors = [
+                    e for e in errors
+                    if any(f"r/{sub}" in e.lower() for sub in unrecovered)
+                ]
+                return {"items": arctic_items, "errors": kept_errors}
     return {"items": unique, "errors": errors}
 
 
