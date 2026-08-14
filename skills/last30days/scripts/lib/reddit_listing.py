@@ -277,47 +277,53 @@ def fetch_discovery_listings(
             continue
         seen.add(item["url"])
         unique.append(item)
-    if not unique and errors:
-        # Shreddit partials are blocked for some hosts (datacenter IPs get
-        # HTTP 403 on /svc/shreddit). Fall back to the arctic-shift archive,
-        # which serves scored recent listings from any IP keyless.
-        from . import reddit_arctic
-        arctic_items = reddit_arctic.fetch_listings(
-            subreddits, depth=depth, query=query, sorts=("rising", "top")
-        )
-        if arctic_items:
-            _log(f"discovery arctic fallback: {len(arctic_items)} posts")
-            # Apply the same keyword gate that pipeline._fetch_discovery_source
-            # uses downstream. When query is empty (global --discover), skip the
-            # gate — there's no keyword to match, and the river feed IS the
-            # signal.
-            if query:
-                arctic_items = [
-                    item for item in arctic_items
-                    if _matches_discovery_domain(
-                        query,
-                        f"{item.get('title') or ''} {item.get('selftext') or ''}",
-                    )
-                ]
-            # Effective recovery: clear errors only for subreddits with
-            # surviving posts. Keep errors for subs that arctic returned nothing
-            # for, or whose rows the keyword gate rejected.
-            if arctic_items:
-                recovered_subs = {
-                    (item.get("subreddit") or "").lower() for item in arctic_items
-                }
-                requested_subs = {s.removeprefix("r/").lower() for s in subreddits}
-                if recovered_subs >= requested_subs:
-                    # Full recovery — all requested subs have surviving rows.
-                    return {"items": arctic_items, "errors": []}
-                # Partial recovery — keep errors for unrecovered subs.
-                unrecovered = requested_subs - recovered_subs
-                # Match word-boundary: "r/{sub} " to avoid r/foo matching r/foobar.
-                kept_errors = [
-                    e for e in errors
-                    if any(e.lower().startswith(f"r/{sub} ") for sub in unrecovered)
-                ]
-                return {"items": arctic_items, "errors": kept_errors}
+
+    # Supplement with arctic-shift for all requested subreddits. Shreddit's
+    # per-sort success/failure is opaque (individual rising/top lanes can fail
+    # while others succeed), so arctic provides coverage for any failed lanes.
+    # Deduplication ensures no redundant posts when shreddit fully succeeded.
+    from . import reddit_arctic
+    arctic_items = reddit_arctic.fetch_listings(
+        subreddits, depth=depth, query=query, sorts=("rising", "top")
+    )
+    if arctic_items:
+        _log(f"discovery arctic supplement: {len(arctic_items)} posts")
+        # Apply the same keyword gate that pipeline._fetch_discovery_source
+        # uses downstream. When query is empty (global --discover), skip the
+        # gate — there's no keyword to match, and the river feed IS the signal.
+        if query:
+            arctic_items = [
+                item for item in arctic_items
+                if _matches_discovery_domain(
+                    query,
+                    f"{item.get('title') or ''} {item.get('selftext') or ''}",
+                )
+            ]
+        # Merge arctic items into unique list, deduping by URL.
+        added = 0
+        for item in arctic_items:
+            if item["url"] not in seen:
+                seen.add(item["url"])
+                unique.append(item)
+                added += 1
+        if added:
+            _log(f"discovery arctic supplement added {added} new posts")
+
+    # Clear errors for subreddits with posts (from shreddit or arctic).
+    if unique and errors:
+        recovered_subs = {(item.get("subreddit") or "").lower() for item in unique}
+        requested_subs = {s.removeprefix("r/").lower() for s in subreddits}
+        if recovered_subs >= requested_subs:
+            # Full recovery — all requested subs have posts.
+            errors = []
+        else:
+            # Partial recovery — keep errors only for unrecovered subs.
+            unrecovered = requested_subs - recovered_subs
+            # Match word-boundary: "r/{sub} " to avoid r/foo matching r/foobar.
+            errors = [
+                e for e in errors
+                if any(e.lower().startswith(f"r/{sub} ") for sub in unrecovered)
+            ]
     return {"items": unique, "errors": errors}
 
 

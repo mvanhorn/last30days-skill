@@ -105,20 +105,32 @@ class TestFetchDiscoveryListingsFallback:
         assert result["errors"] == []  # recovered — no failure to report
         arctic.assert_called_once()
 
-    def test_errors_preserved_when_arctic_also_empty(self):
+    def test_errors_preserved_when_both_shreddit_and_arctic_empty(self):
         with mock.patch.object(rl.http, "get_text", return_value=None), \
              mock.patch("lib.reddit_arctic.fetch_listings", return_value=[]):
             result = rl.fetch_discovery_listings(["tea"], query="matcha", depth="quick")
         assert result["items"] == []
         assert result["errors"]  # the shreddit failures still surface
 
-    def test_no_arctic_call_when_shreddit_succeeds(self):
+    def test_arctic_supplements_shreddit_success(self):
+        """Arctic is always called to supplement shreddit; results are deduped."""
+        arctic_post = {
+            "id": "", "title": "netherlands tech news extra", "url": "https://www.reddit.com/r/technology/comments/arctic/x/",
+            "score": 100, "num_comments": 10, "subreddit": "technology", "created_utc": None,
+            "author": "u", "selftext": "", "date": "2026-07-02",
+            "engagement": {"score": 100, "num_comments": 10, "upvote_ratio": None},
+            "relevance": 0.5, "why_relevant": "Reddit listing (arctic-shift)",
+            "metadata": {"post_id": "arctic"},
+        }
         with mock.patch.object(rl.http, "get_text", return_value=_html()), \
-             mock.patch("lib.reddit_arctic.fetch_listings") as arctic:
+             mock.patch("lib.reddit_arctic.fetch_listings", return_value=[arctic_post]) as arctic:
             result = rl.fetch_discovery_listings(["technology"], query="netherlands", depth="quick")
-        assert result["items"]  # parsed shreddit cards
+        # Both shreddit cards and arctic supplement should be in the result.
+        urls = {item["url"] for item in result["items"]}
+        assert arctic_post["url"] in urls
+        assert len(result["items"]) > 1  # shreddit + arctic
         assert result["errors"] == []
-        arctic.assert_not_called()
+        arctic.assert_called_once()
 
     def test_no_subreddits_skips_fallback(self):
         with mock.patch("lib.reddit_arctic.fetch_listings") as arctic:
