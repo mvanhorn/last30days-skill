@@ -2761,18 +2761,35 @@ def _run_library_search(
 def _looks_like_entity_topic(topic: str) -> bool:
     """Whether a topic names a person, company, or product rather than a theme.
 
-    Deliberately narrow: a short topic carrying a proper noun. "Peter
-    Steinberger" and "Bentgo" qualify; "best AI coding tools 2026" does not.
+    Keys on brevity, not capitalization. People type lowercase: "bentgo",
+    "peter steinberger" and "getenergy.com" are entity searches every bit as
+    much as their title-cased forms, and requiring a capital meant the most
+    common real-world spelling never resolved a handle.
+
+    A short topic is an entity search; a longer one is a theme. "Peter
+    Steinberger", "bentgo" and "getenergy.com" qualify; "best AI coding tools
+    2026" and "how to build agents that scale" do not. Question-shaped topics
+    are themes regardless of length.
+
     Used only to decide whether resolving an X handle is worth one web search,
     so a false negative costs the old behavior and a false positive costs a
     single search.
     """
-    words = [w for w in re.findall(r"[A-Za-z0-9_.@'-]+", topic or "") if w]
+    text = (topic or "").strip()
+    if not text or text.endswith("?"):
+        return False
+    words = [w for w in re.findall(r"[A-Za-z0-9_.@'-]+", text) if w]
     if not words or len(words) > 4:
         return False
     if any(w.startswith("@") for w in words):
         return True
-    return any(w[:1].isupper() for w in words)
+    # A theme reads as a phrase built from common words; an entity does not.
+    common = {
+        "best", "top", "how", "why", "what", "when", "vs", "versus", "guide",
+        "tips", "review", "reviews", "news", "latest", "update", "updates",
+        "trends", "tools", "and", "or", "for", "the", "with", "about",
+    }
+    return not any(w.lower() in common for w in words)
 
 
 def main() -> int:
