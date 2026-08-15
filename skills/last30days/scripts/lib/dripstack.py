@@ -1,24 +1,30 @@
 """DripStack source for last30days — premium financial newsletter search.
 
 DripStack indexes paid Substack newsletters, analyst writeups, and financial
-podcasts. The search endpoint is free and public (no API key); it returns
-article metadata including title, publication, date, and a relevance-scored
-snippet. Full article summaries and stock picks are behind a paid layer and
-are out of scope for this source adapter.
+podcasts. The API has two tiers:
+
+  Free (no auth): search, publication listing, publication search, and post
+  metadata (titles, dates, prices). These endpoints power discovery — they
+  tell you *what* analysts are writing about with publication attribution
+  (e.g. "SemiAnalysis", "Bloomberg").
+
+  Paid (DRIPSTACK_API_KEY): full synthesized article summaries and stock
+  picks. Requires an API key from dripstack.xyz (My Profile > Dashboard >
+  API Keys > + Create Api Key) with preloaded credits. The post endpoint
+  returns HTTP 402 when unauthenticated; with a key, the bearer token is
+  sent on retry.
 
 The signal is complementary to the other financial sources: StockTwits gives
 retail sentiment, Polymarket gives prediction-market odds, and DripStack gives
 what professional analysts and paid newsletter authors are actually writing
-about. The search results carry publication attribution (e.g. "SemiAnalysis",
-"Bloomberg") which is high-credibility signal for synthesis.
+about. The search results carry publication attribution which is high-
+credibility signal for synthesis.
 
 GATING: DripStack search is most valuable for finance, markets, company
 analysis, and industry research topics. Like arXiv (science) and Techmeme
 (tech news), DripStack is relevance-gated — the search API itself filters
 for topic match, so off-topic runs return thin results naturally and the
 engine's thin-retry + relevance scoring handles the rest.
-
-API: public, no auth. Search endpoint returns up to 30 items per query.
 """
 
 from __future__ import annotations
@@ -34,6 +40,8 @@ from . import http
 
 _BASE_URL = "https://dripstack.xyz"
 _SEARCH_URL = f"{_BASE_URL}/api/v1/search"
+_PUBLICATIONS_URL = f"{_BASE_URL}/api/v1/publications"
+_PUBLICATION_SEARCH_URL = f"{_BASE_URL}/api/v1/publications/search"
 _UA = "Mozilla/5.0 (last30days dripstack source)"
 
 # Depth controls how many results we request per subquery.
@@ -48,10 +56,13 @@ def _log(msg: str) -> None:
         print(f"[DripStack] {msg}", file=sys.stderr)
 
 
-def _get_json(url: str, timeout: int = 20) -> dict[str, Any]:
+def _get_json(url: str, timeout: int = 20, headers: dict[str, str] | None = None) -> dict[str, Any]:
     # All engine traffic goes through the shared lib/http.py choke point so
     # capture/replay, fixtures, and failure taxonomy apply to this source too.
-    return http.get(url, headers={"User-Agent": _UA}, timeout=timeout, retries=2)
+    merged = {"User-Agent": _UA}
+    if headers:
+        merged.update(headers)
+    return http.get(url, headers=merged, timeout=timeout, retries=2)
 
 
 def search_dripstack(
@@ -184,12 +195,161 @@ def parse_dripstack_response(
 
 
 # --------------------------------------------------------------------------- #
+# Publication browsing (free) and post fetch (paid)                            #
+# --------------------------------------------------------------------------- #
+
+
+def get_publications(timeout: int = 20) -> list[dict[str, Any]]:
+    """List all curated publications. Free, no auth required.
+
+    Returns a list of publication dicts with slug, title, description,
+    siteUrl, and lastSyncedAt.
+    """
+    try:
+        data = _get_json(_PUBLICATIONS_URL, timeout=timeout)
+    except Exception as e:
+        _log(f"list publications failed: {e}")
+        return []
+    return data.get("publications") or []
+
+
+def search_publications(query: str, timeout: int = 20) -> list[dict[str, Any]]:
+    """Search publications by name, author, or slug. Free, no auth required.
+
+    Args:
+        query: Publication name, author, podcast show, newsletter, or slug.
+            Minimum 2 characters.
+
+    Returns up to 3 matches with publicationSlug, title, author, siteUrl.
+    """
+    if len(query.strip()) < 2:
+        return []
+    params = urllib.parse.urlencode({"q": query})
+    url = f"{_PUBLICATION_SEARCH_URL}?{params}"
+    try:
+        data = _get_json(url, timeout=timeout)
+    except Exception as e:
+        _log(f"search publications failed for '{query}': {e}")
+        return []
+    return data.get("items") or []
+
+
+def get_publication_posts(
+    pub_slug: str,
+    limit: int = 10,
+    timeout: int = 20,
+) -> dict[str, Any]:
+    """Get publication metadata and recent post list. Free, no auth required.
+
+    Args:
+        pub_slug: Publication slug (the normalized host, e.g.
+            "newsletter.semianalysis.com").
+        limit: Max posts to return (1-100).
+
+    Returns the full publication detail dict including a "posts" list with
+    title, slug, subtitle, publishedAt, and priceCents per post. Returns an
+    empty dict on failure.
+    """
+    params = urllib.parse.urlencode({"limit": limit})
+    url = f"{_PUBLICATIONS_URL}/{urllib.parse.quote(pub_slug, safe='')}?{params}"
+    try:
+        return _get_json(url, timeout=timeout)
+    except Exception as e:
+        _log(f"get publication posts failed for '{pub_slug}': {e}")
+        return {}
+
+
+def get_publication_post(
+    pub_slug: str,
+    post_slug: str,
+    api_key: str | None = None,
+    timeout: int = 30,
+) -> dict[str, Any]:
+    """Fetch a single post's synthesized summary. Paid; requires api_key.
+
+    Without an API key, the endpoint returns HTTP 402 (payment required).
+    With a key, the bearer token is sent on the first attempt. If the key
+    is missing, returns an empty dict without hitting the endpoint.
+
+    Args:
+        pub_slug: Publication slug.
+        post_slug: Post slug from the publication feed.
+        api_key: Optional DripStack API key (starts with pk_drip_). When
+            None, the fetch is skipped to avoid a guaranteed 402.
+        timeout: HTTP timeout in seconds.
+
+    Returns the post dict with synthesizedSummary on success, empty dict
+    on failure or missing key.
+    """
+    if not api_key:
+        return {}
+    encoded_pub = urllib.parse.quote(pub_slug, safe="")
+    encoded_post = urllib.parse.quote(post_slug, safe="")
+    url = f"{_PUBLICATIONS_URL}/{encoded_pub}/{encoded_post}"
+    headers = {"Authorization": f"Bearer {api_key}"}
+    try:
+        return _get_json(url, timeout=timeout, headers=headers)
+    except http.HTTPError as e:
+        if e.status_code == 402:
+            _log(f"post '{pub_slug}/{post_slug}' requires payment (402)")
+        elif e.status_code == 404:
+            _log(f"post '{pub_slug}/{post_slug}' not found (404)")
+        elif e.status_code == 503:
+            _log(f"post '{pub_slug}/{post_slug}' summary not ready (503)")
+        else:
+            _log(f"fetch post '{pub_slug}/{post_slug}' failed: {e}")
+        return {}
+    except Exception as e:
+        _log(f"fetch post '{pub_slug}/{post_slug}' failed: {e}")
+        return {}
+
+
+# --------------------------------------------------------------------------- #
 # Standalone CLI                                                               #
 #   python3 dripstack.py "AI capex risk"                                      #
+#   python3 dripstack.py --publications                                       #
+#   python3 dripstack.py --search-pub semianalysis                            #
+#   python3 dripstack.py --pub-posts newsletter.semianalysis.com              #
 # --------------------------------------------------------------------------- #
 
 if __name__ == "__main__":
-    topic = " ".join(sys.argv[1:]) or "AI capex"
+    args = sys.argv[1:]
+
+    if args and args[0] == "--publications":
+        pubs = get_publications()
+        print(f"{len(pubs)} publications:")
+        for p in pubs:
+            desc = (p.get("description") or "")[:80]
+            print(f"  {p['slug']} - {p.get('title') or '(untitled)'}")
+            if desc:
+                print(f"    {desc}")
+        sys.exit(0)
+
+    if args and args[0] == "--search-pub":
+        q = " ".join(args[1:]) or ""
+        results = search_publications(q)
+        print(f"{len(results)} matches for '{q}':")
+        for r in results:
+            print(f"  {r['publicationSlug']} - {r.get('title') or '(untitled)'} ({r.get('author') or '?'})")
+        sys.exit(0)
+
+    if args and args[0] == "--pub-posts":
+        slug = args[1] if len(args) > 1 else ""
+        if not slug:
+            print("Usage: dripstack.py --pub-posts <publication-slug>", file=sys.stderr)
+            sys.exit(1)
+        detail = get_publication_posts(slug)
+        posts = detail.get("posts") or []
+        title = detail.get("title") or slug
+        print(f"{title} - {len(posts)} posts:")
+        for p in posts:
+            date = (p.get("publishedAt") or "")[:10] or "no date"
+            price = p.get("priceCents")
+            price_str = f" (${price / 100:.2f})" if isinstance(price, (int, float)) else ""
+            print(f"  [{date}] {p['title']}{price_str}")
+        sys.exit(0)
+
+    topic = " ".join(args) or "AI capex"
     today = datetime.date.today()
     since = (today - datetime.timedelta(days=30)).isoformat()
 
