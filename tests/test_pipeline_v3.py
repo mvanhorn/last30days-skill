@@ -104,20 +104,21 @@ class PipelineV3Tests(unittest.TestCase):
             ],
             "source_weights": {"grounding": 1.0},
         }
-        report = pipeline.run(
-            topic="test topic",
-            config={"LAST30DAYS_REASONING_PROVIDER": "auto"},
-            depth="quick",
-            requested_sources=["grounding"],
-            web_backend="parallel",
-            external_plan=plan,
-        )
-        # Anchor on the stable source key, not the exact wording of the
-        # grounding.py error message. Phrasing can shift (e.g., when the
-        # missing-key check moves or the message is reworded) without
-        # changing the contract that the grounding source registers an
-        # error when its required backend key is unset.
-        self.assertIn("grounding", report.errors_by_source)
+        from lib import doctor
+
+        # A user-selected grounding backend without its required key is now a
+        # pre-retrieval source-gate failure, not a reduced report containing a
+        # grounding error.
+        with self.assertRaises(doctor.SourceGateError) as caught:
+            pipeline.run(
+                topic="test topic",
+                config={"LAST30DAYS_REASONING_PROVIDER": "auto"},
+                depth="quick",
+                requested_sources=["grounding"],
+                web_backend="parallel",
+                external_plan=plan,
+            )
+        self.assertIn("grounding", caught.exception.failures)
 
     def test_hiring_signals_mode_enables_jobs_source_in_mock_run(self):
         report = pipeline.run(
@@ -1923,6 +1924,188 @@ class TestAmazonSourceGating:
     def test_capped_at_one_fetch_per_run(self):
         """One model-supplied keyword per run: extra streams are pure cost."""
         assert pipeline.MAX_SOURCE_FETCHES["amazon"] == 1
+
+class SelectedSourceGateIntegration(unittest.TestCase):
+    @staticmethod
+    def _plan(source):
+        return {
+            "intent": "concept",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "story",
+            "subqueries": [{
+                "label": "primary",
+                "search_query": "test topic",
+                "ranking_query": "test topic",
+                "sources": [source],
+            }],
+            "source_weights": {source: 1.0},
+        }
+
+    def test_default_depth_reuses_first_adapter_result(self):
+        from lib import health, schema
+
+        runtime = schema.ProviderRuntime("local", "planner", "reranker")
+        depths = []
+
+        def retrieve(**kwargs):
+            depths.append(kwargs["depth"])
+            return [], {}
+
+        with patch.object(
+            pipeline.providers, "resolve_runtime", return_value=(runtime, None)
+        ), patch.object(
+            pipeline, "available_sources", return_value=["reddit"]
+        ), patch.object(
+            pipeline, "_retrieve_stream", side_effect=retrieve
+        ), patch.object(
+            pipeline, "_retry_thin_sources"
+        ):
+            report = pipeline.run(
+                topic="test topic",
+                config={"EXCLUDE_SOURCES": ""},
+                depth="default",
+                requested_sources=["reddit"],
+                external_plan=self._plan("reddit"),
+            )
+
+        self.assertEqual(["default"], depths)
+        self.assertEqual(health.NO_RESULTS, report.source_status["reddit"].state)
+
+    def test_targeted_github_project_gate_uses_and_reuses_project_route(self):
+        from lib import health, schema
+
+        runtime = schema.ProviderRuntime("local", "planner", "reranker")
+        with patch.object(
+            pipeline.providers, "resolve_runtime", return_value=(runtime, None)
+        ), patch.object(
+            pipeline, "available_sources", return_value=["github"]
+        ), patch.object(
+            pipeline.github, "search_github_project", return_value=[]
+        ) as project_search, patch.object(
+            pipeline, "_retrieve_stream",
+            side_effect=AssertionError("generic GitHub route was used"),
+        ), patch.object(
+            pipeline, "_retry_thin_sources"
+        ):
+            report = pipeline.run(
+                topic="test topic",
+                config={"EXCLUDE_SOURCES": ""},
+                depth="default",
+                requested_sources=["github"],
+                external_plan=self._plan("github"),
+                github_repos=["owner/repo"],
+            )
+
+        project_search.assert_called_once()
+        self.assertEqual(health.NO_RESULTS, report.source_status["github"].state)
+
+    def test_targeted_github_person_gate_uses_and_reuses_person_route(self):
+        from lib import health, schema
+
+        runtime = schema.ProviderRuntime("local", "planner", "reranker")
+        with patch.object(
+            pipeline.providers, "resolve_runtime", return_value=(runtime, None)
+        ), patch.object(
+            pipeline, "available_sources", return_value=["github"]
+        ), patch.object(
+            pipeline.github, "search_github_person", return_value=[]
+        ) as person_search, patch.object(
+            pipeline, "_retrieve_stream",
+            side_effect=AssertionError("generic GitHub route was used"),
+        ), patch.object(
+            pipeline, "_retry_thin_sources"
+        ):
+            report = pipeline.run(
+                topic="test topic",
+                config={"EXCLUDE_SOURCES": ""},
+                depth="default",
+                requested_sources=["github"],
+                external_plan=self._plan("github"),
+                github_user="octocat",
+            )
+
+        person_search.assert_called_once()
+        self.assertEqual(health.NO_RESULTS, report.source_status["github"].state)
+
+    def test_jobs_gate_passes_when_discovery_guess_fails_but_web_fallback_succeeds(self):
+        from lib import health, http, jobs, schema
+
+        runtime = schema.ProviderRuntime("local", "planner", "reranker")
+        raw_job = {
+            "id": "JW1",
+            "title": "Vercel careers",
+            "url": "https://vercel.com/careers",
+            "snippet": "Open roles and jobs at Vercel",
+            "description": "Open roles and jobs at Vercel",
+            "provider": "web",
+        }
+
+        def unavailable_candidate(*_args, **_kwargs):
+            http._record_failure(http.HTTPError(
+                "guessed careers host unavailable",
+                outcome_state=health.UNREACHABLE,
+            ))
+            return None
+
+        with patch.object(
+            pipeline.providers, "resolve_runtime", return_value=(runtime, None)
+        ), patch.object(
+            pipeline, "available_sources", return_value=["jobs"]
+        ), patch.object(
+            jobs.http, "get_text", side_effect=unavailable_candidate
+        ), patch.object(
+            jobs, "_probe_ats", return_value=(None, None, [])
+        ), patch.object(
+            jobs.grounding,
+            "web_search",
+            side_effect=[([], {}), ([raw_job], {"backend": "brave"})],
+        ), patch.object(
+            pipeline, "_retry_thin_sources"
+        ):
+            report = pipeline.run(
+                topic="Vercel agent-browser vs surf-cli vs Browser Use",
+                config={"EXCLUDE_SOURCES": ""},
+                depth="default",
+                requested_sources=["jobs"],
+                external_plan=self._plan("jobs"),
+                hiring_signals_mode=True,
+            )
+
+        self.assertEqual(health.OK, report.source_status["jobs"].state)
+        self.assertEqual(["Vercel careers"], [item.title for item in report.items_by_source["jobs"]])
+
+    def test_doctor_gate_uses_quick_probe_without_ranking(self):
+        from lib import health, schema
+
+        runtime = schema.ProviderRuntime("local", "planner", "reranker")
+        depths = []
+
+        def retrieve(**kwargs):
+            depths.append(kwargs["depth"])
+            return [], {}
+
+        with patch.object(
+            pipeline.providers, "resolve_runtime", return_value=(runtime, None)
+        ), patch.object(
+            pipeline, "available_sources", return_value=["reddit"]
+        ), patch.object(
+            pipeline, "_retrieve_stream", side_effect=retrieve
+        ), patch.object(
+            pipeline.rerank,
+            "rerank_candidates",
+            side_effect=AssertionError("gate-only reached ranking"),
+        ):
+            results = pipeline.run(
+                topic="test topic",
+                config={"EXCLUDE_SOURCES": ""},
+                depth="deep",
+                requested_sources=["reddit"],
+                external_plan=self._plan("reddit"),
+                gate_only=True,
+            )
+
+        self.assertEqual(["quick"], depths)
+        self.assertEqual(health.NO_RESULTS, results["reddit"].state)
 
 
 if __name__ == "__main__":
