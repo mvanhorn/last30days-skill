@@ -2027,6 +2027,53 @@ class SelectedSourceGateIntegration(unittest.TestCase):
         person_search.assert_called_once()
         self.assertEqual(health.NO_RESULTS, report.source_status["github"].state)
 
+    def test_jobs_gate_passes_when_discovery_guess_fails_but_web_fallback_succeeds(self):
+        from lib import health, http, jobs, schema
+
+        runtime = schema.ProviderRuntime("local", "planner", "reranker")
+        raw_job = {
+            "id": "JW1",
+            "title": "Vercel careers",
+            "url": "https://vercel.com/careers",
+            "snippet": "Open roles and jobs at Vercel",
+            "description": "Open roles and jobs at Vercel",
+            "provider": "web",
+        }
+
+        def unavailable_candidate(*_args, **_kwargs):
+            http._record_failure(http.HTTPError(
+                "guessed careers host unavailable",
+                outcome_state=health.UNREACHABLE,
+            ))
+            return None
+
+        with patch.object(
+            pipeline.providers, "resolve_runtime", return_value=(runtime, None)
+        ), patch.object(
+            pipeline, "available_sources", return_value=["jobs"]
+        ), patch.object(
+            jobs.http, "get_text", side_effect=unavailable_candidate
+        ), patch.object(
+            jobs, "_probe_ats", return_value=(None, None, [])
+        ), patch.object(
+            jobs.grounding,
+            "web_search",
+            side_effect=[([], {}), ([raw_job], {"backend": "brave"})],
+        ), patch.object(
+            pipeline, "_retry_thin_sources"
+        ):
+            report = pipeline.run(
+                topic="Vercel agent-browser vs surf-cli vs Browser Use",
+                config={"EXCLUDE_SOURCES": ""},
+                depth="default",
+                requested_sources=["jobs"],
+                external_plan=self._plan("jobs"),
+                hiring_signals_mode=True,
+            )
+
+        self.assertEqual(health.OK, report.source_status["jobs"].state)
+        self.assertEqual(["Vercel careers"], [item.title for item in report.items_by_source["jobs"]])
+
     def test_doctor_gate_uses_quick_probe_without_ranking(self):
         from lib import health, schema
 

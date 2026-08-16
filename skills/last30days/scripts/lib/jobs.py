@@ -140,18 +140,23 @@ def _resolve_careers_page(
         for host in (f"{slug}.com", f"{slug}.ai", f"{slug}.io"):
             candidates.extend([f"https://{host}/careers", f"https://{host}/jobs"])
 
-    for url in candidates:
-        with http.expected_misses(403, 404):
-            html = http.get_text(url, accept="text/html", retries=1)
-        if html and _looks_like_careers_html(html):
-            return html, url
+    # Candidate careers URLs are discovery guesses, not the source result. Keep
+    # their failures local: a later ATS or web fallback can still prove that the
+    # jobs source is healthy. If every tier fails, the final web/ATS operation
+    # supplies the source-level outcome instead.
+    with http.capture_failures():
+        for url in candidates:
+            with http.expected_misses(403, 404):
+                html = http.get_text(url, accept="text/html", retries=1)
+            if html and _looks_like_careers_html(html):
+                return html, url
 
-    if backend != "none":
-        careers_url = _search_for_careers_url(company, date_range, config, backend=backend)
-        if careers_url:
-            html = http.get_text(careers_url, accept="text/html", retries=1)
-            if html:
-                return html, careers_url
+        if backend != "none":
+            careers_url = _search_for_careers_url(company, date_range, config, backend=backend)
+            if careers_url:
+                html = http.get_text(careers_url, accept="text/html", retries=1)
+                if html:
+                    return html, careers_url
 
     return None, None
 
