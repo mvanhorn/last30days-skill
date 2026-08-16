@@ -112,6 +112,43 @@ class CliV3Tests(unittest.TestCase):
         self.assertIn("Invalid --plan schema", result.stderr)
         self.assertNotIn("fallback-plan", result.stderr)
 
+    def test_plan_reads_json_from_stdin(self):
+        plan = {
+            "intent": "factual",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "none",
+            "subqueries": [{
+                "label": "primary",
+                "search_query": "test topic",
+                "ranking_query": "What are people saying about test topic?",
+                "sources": [
+                    "reddit", "x", "youtube", "tiktok", "instagram",
+                    "hackernews", "polymarket",
+                ],
+                "weight": 1.0,
+            }],
+        }
+        result = subprocess.run(
+            [
+                sys.executable,
+                "skills/last30days/scripts/last30days.py",
+                "test topic",
+                "--mock",
+                "--emit=json",
+                "--plan",
+                "-",
+            ],
+            cwd=REPO_ROOT,
+            input=json.dumps(plan),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, result.stderr)
+        payload = json.loads(result.stdout)
+        self.assertEqual("test topic", payload["query"])
+
     def test_parse_search_flag_normalizes_aliases_and_dedupes(self):
         self.assertEqual(
             ["grounding", "reddit", "hackernews"],
