@@ -54,6 +54,7 @@ from . import (
     providers,
     query,
     reddit,
+    reddit_rdt,
     reddit_listing,
     reddit_public,
     relevance,
@@ -4139,6 +4140,22 @@ def _retrieve_stream_impl(
             min_items = 0
         public_results: list[dict] = []
         public_failure: Exception | None = None
+        rdt_outcome = None
+        # Prefer the local, read-only rdt CLI when installed.  The established
+        # RSS/shreddit/ArcticShift composite remains the next fallback and is
+        # intentionally untouched when rdt is absent or returns no posts.
+        if reddit_rdt._command() is not None:
+            try:
+                rdt_results, rdt_outcome = reddit_rdt.search(
+                    reddit_query, from_date, to_date, depth=depth,
+                    subreddits=subreddits,
+                )
+                if rdt_results:
+                    return rdt_results, {}
+                sys.stderr.write("[Reddit] rdt-cli returned no in-window items; using public fallback\n")
+            except Exception as exc:
+                rdt_outcome = health.SourceHealth("reddit-rdt", health.ERROR, "rdt adapter failed")
+                sys.stderr.write(f"[Reddit] rdt-cli failed ({type(exc).__name__}); using public fallback\n")
         try:
             public_results = reddit_public.search_reddit_public(
                 reddit_query, from_date, to_date, depth=depth,
@@ -4158,6 +4175,11 @@ def _retrieve_stream_impl(
         # 1) keeps the default (min_items=0) as empty-only AND treats exactly
         # `min_items` results as acceptable (no backfill) for min_items > 0.
         if len(public_results) >= max(min_items, 1) or not has_sc_key:
+            if rdt_outcome is not None:
+                return public_results, _outcome_artifact(
+                    rdt_outcome.state,
+                    f"rdt-cli fallback failed; public Reddit returned {len(public_results)} items: {rdt_outcome.reason}",
+                )
             return public_results, {}
         if public_results:
             sys.stderr.write(
