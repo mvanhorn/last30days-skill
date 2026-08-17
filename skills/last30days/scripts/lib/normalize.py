@@ -40,14 +40,24 @@ def normalize_source_items(
         "reddit": _normalize_reddit,
         "x": _normalize_x,
         "youtube": _normalize_youtube,
-        "tiktok": lambda s, i, idx, fd, td: _normalize_shortform_video(s, i, idx, fd, td, "TK", "TikTok post"),
-        "instagram": lambda s, i, idx, fd, td: _normalize_shortform_video(s, i, idx, fd, td, "IG", "Instagram reel"),
+        "tiktok": lambda s, i, idx, fd, td: _normalize_shortform_video(
+            s, i, idx, fd, td, "TK", "TikTok post"
+        ),
+        "instagram": lambda s, i, idx, fd, td: _normalize_shortform_video(
+            s, i, idx, fd, td, "IG", "Instagram reel"
+        ),
         "hackernews": _normalize_hackernews,
         "stocktwits": _normalize_stocktwits,
         "dripstack": _normalize_dripstack,
-        "bluesky": lambda s, i, idx, fd, td: _normalize_microblog(s, i, idx, fd, td, "BS", "Bluesky post"),
-        "truthsocial": lambda s, i, idx, fd, td: _normalize_microblog(s, i, idx, fd, td, "TS", "Truth Social post"),
-        "threads": lambda s, i, idx, fd, td: _normalize_microblog(s, i, idx, fd, td, "TH", "Threads post"),
+        "bluesky": lambda s, i, idx, fd, td: _normalize_microblog(
+            s, i, idx, fd, td, "BS", "Bluesky post"
+        ),
+        "truthsocial": lambda s, i, idx, fd, td: _normalize_microblog(
+            s, i, idx, fd, td, "TS", "Truth Social post"
+        ),
+        "threads": lambda s, i, idx, fd, td: _normalize_microblog(
+            s, i, idx, fd, td, "TH", "Threads post"
+        ),
         "xquik": _normalize_x,
         "pinterest": _normalize_pinterest,
         "polymarket": _normalize_polymarket,
@@ -55,6 +65,7 @@ def normalize_source_items(
         "arxiv": _normalize_arxiv,
         "techmeme": _normalize_techmeme,
         "trustpilot": _normalize_trustpilot,
+        "amazon": _normalize_amazon,
         "grounding": _normalize_grounding,
         "xiaohongshu": _normalize_grounding,
         "github": _normalize_github,
@@ -65,7 +76,10 @@ def normalize_source_items(
     normalizer = normalizers.get(source)
     if normalizer is None:
         raise ValueError(f"Unsupported source: {source}")
-    normalized = [normalizer(source, item, index, from_date, to_date) for index, item in enumerate(items)]
+    normalized = [
+        normalizer(source, item, index, from_date, to_date)
+        for index, item in enumerate(items)
+    ]
     if source == "jobs":
         # A careers board is a snapshot of CURRENTLY OPEN roles. An open posting
         # is current evidence regardless of when it was posted, so date-windowing
@@ -74,7 +88,9 @@ def normalize_source_items(
         # Keep the full board; recency is annotated, not used to drop.
         return normalized
     require_date = source == "grounding"
-    filtered = filter_by_date_range(normalized, from_date, to_date, require_date=require_date)
+    filtered = filter_by_date_range(
+        normalized, from_date, to_date, require_date=require_date
+    )
     if filtered:
         return filtered
     if freshness_mode == "evergreen_ok" and source == "youtube":
@@ -88,6 +104,8 @@ def _remap_comments(
     raw: list[Any],
     score_keys: tuple[str, ...],
     excerpt_keys: tuple[str, ...],
+    *,
+    preserve_absent_score: bool = False,
 ) -> list[dict[str, Any]]:
     """Normalize comments from any source into the shared Reddit-compatible shape.
 
@@ -95,19 +113,29 @@ def _remap_comments(
     entity_extract, rerank) all expect `score` and `excerpt`. This helper maps
     per-source field names (YT: likes/text, TikTok: digg_count/text) onto that
     shape while preserving author/date/url passthrough.
+
+    Sources that distinguish an absent vote from a measured zero can opt into
+    preserving the absent value as ``None``.
     """
     out: list[dict[str, Any]] = []
     for raw_c in raw:
         if not isinstance(raw_c, dict):
             continue
-        score = _first_present(raw_c, score_keys, default=0)
+        score = _first_present(
+            raw_c,
+            score_keys,
+            default=None if preserve_absent_score else 0,
+        )
         excerpt = _first_present(raw_c, excerpt_keys, default="")
-        try:
-            score_int = int(score or 0)
-        except (TypeError, ValueError):
-            score_int = 0
+        if score is None and preserve_absent_score:
+            normalized_score = None
+        else:
+            try:
+                normalized_score = int(score or 0)
+            except (TypeError, ValueError):
+                normalized_score = 0
         entry: dict[str, Any] = {
-            "score": score_int,
+            "score": normalized_score,
             "excerpt": str(excerpt or "")[:400],
             "author": str(raw_c.get("author") or ""),
             "date": str(raw_c.get("date") or ""),
@@ -145,7 +173,9 @@ def _domain_from_url(url: str) -> str | None:
     return domain or None
 
 
-def _date_confidence(item: dict[str, Any], from_date: str, to_date: str, default: str = "low") -> str:
+def _date_confidence(
+    item: dict[str, Any], from_date: str, to_date: str, default: str = "low"
+) -> str:
     if item.get("date_confidence"):
         return str(item["date_confidence"])
     date_value = item.get("date")
@@ -211,7 +241,7 @@ def _normalize_stocktwits(
         relevance_hint=item.get("relevance", 0.7),
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=str(item.get("snippet") or "")[:400],
-        metadata=meta,   # carries sentiment + symbol-level bull/bear aggregate
+        metadata=meta,  # carries sentiment + symbol-level bull/bear aggregate
     )
 
 
@@ -234,7 +264,9 @@ def _normalize_dripstack(
         item_id=str(item.get("id") or f"DS{index + 1}"),
         source=source,
         title=str(item.get("title") or ""),
-        body=str(item.get("body") or "") or str(item.get("snippet") or "") or str(item.get("title") or ""),
+        body=str(item.get("body") or "")
+        or str(item.get("snippet") or "")
+        or str(item.get("title") or ""),
         url=str(item.get("url") or ""),
         author=str(item.get("author") or "") or None,
         container=str(meta.get("publication_slug") or "") or None,
@@ -326,7 +358,9 @@ def _normalize_jobs(
     title = str(item.get("title") or "").strip()
     department = str(item.get("department") or "").strip()
     location = str(item.get("location") or "").strip()
-    body = "\n".join(part for part in [title, department, location, description] if part)
+    body = "\n".join(
+        part for part in [title, department, location, description] if part
+    )
     provider = str(item.get("provider") or "").strip()
     return _source_item(
         item_id=str(item.get("id") or f"J{index + 1}"),
@@ -345,12 +379,15 @@ def _normalize_jobs(
         metadata={
             "provider": provider,
             "department": department,
-            "departments": item.get("departments") or ([department] if department else []),
+            "departments": item.get("departments")
+            or ([department] if department else []),
             "location": location,
             "offices": item.get("offices") or [],
             "board_token": item.get("board_token") or "",
             "source_url": item.get("source_url") or "",
-            "source_domain": item.get("source_domain") or _domain_from_url(str(item.get("url") or "")) or "",
+            "source_domain": item.get("source_domain")
+            or _domain_from_url(str(item.get("url") or ""))
+            or "",
         },
     )
 
@@ -471,10 +508,23 @@ def _normalize_hackernews(
     from_date: str,
     to_date: str,
 ) -> schema.SourceItem:
-    top_comments = item.get("top_comments") or []
-    comment_text = _join_comment_excerpts(top_comments, "text")
+    # HN comments arrive as {author, text, points}; downstream code keys on
+    # score/excerpt, so remap here exactly as the YouTube and TikTok normalisers
+    # do. Without this the per-source floor in render._top_comments_list reads a
+    # `score` that is never present and rejects every HN comment.
+    top_comments = _remap_comments(
+        item.get("top_comments") or [],
+        score_keys=("points", "score"),
+        excerpt_keys=("text", "excerpt"),
+        preserve_absent_score=True,
+    )
+    comment_text = _join_comment_excerpts(top_comments, "excerpt")
     title = str(item.get("title") or "").strip()
-    body = "\n".join(part for part in [title, str(item.get("text") or "").strip(), comment_text] if part)
+    body = "\n".join(
+        part
+        for part in [title, str(item.get("text") or "").strip(), comment_text]
+        if part
+    )
     return _source_item(
         item_id=str(item.get("id") or f"HN{index + 1}"),
         source=source,
@@ -666,7 +716,8 @@ def _normalize_trustpilot(
     return _source_item(
         item_id=str(item.get("id") or f"TP{index + 1}"),
         source=source,
-        title=title or (f"{name} on Trustpilot" if name else f"Trustpilot reviews {index + 1}"),
+        title=title
+        or (f"{name} on Trustpilot" if name else f"Trustpilot reviews {index + 1}"),
         body=body,
         url=str(item.get("url") or ""),
         author=name or None,
@@ -682,6 +733,87 @@ def _normalize_trustpilot(
             "trustScore": item.get("trustScore"),
             "reviewCount": item.get("reviewCount"),
             "aiSummary": summary,
+        },
+    )
+
+
+def _normalize_amazon(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for Amazon product-and-review signals.
+
+    One item per product. The aggregate rating is current-state evidence, so
+    the item is stamped with today's date on the Trustpilot precedent -- a
+    live 4.4-star average is a fact about now, not about whenever the
+    product launched.
+
+    Reviews arrive already in the shared score/excerpt comment shape (built
+    in the amazon adapter, deliberately not routed through _remap_comments,
+    which would strip the rating/date/verified keys this source needs), so
+    they pass straight through to metadata.
+    """
+    name = str(item.get("name") or "").strip()
+    brand = str(item.get("brand") or "").strip()
+    top_comments = item.get("top_comments") or []
+    comment_text = _join_comment_excerpts(top_comments, "excerpt")
+    rating = item.get("product_rating") if item.get("product_rating") is not None else item.get("rating")
+    ratings_total = item.get("product_rating_count") or item.get("num_ratings") or 0
+
+    headline = " ".join(
+        part for part in [
+            f"{rating}/5" if rating is not None else "",
+            f"({ratings_total:,} ratings)" if ratings_total else "",
+        ] if part
+    )
+    # The brand rides in its own field and is usually absent from the name,
+    # so prepend it -- unless the name already leads with it, which would
+    # otherwise read "Weber Weber Spirit E-325".
+    if brand and not name.lower().startswith(brand.lower()):
+        product_label = f"{brand} {name}".strip()
+    else:
+        product_label = name or brand
+    title = " - ".join(part for part in [product_label, headline] if part)
+    body = "\n".join(part for part in [title, comment_text] if part)
+
+    return _source_item(
+        item_id=str(item.get("asin") or f"AMZ{index + 1}"),
+        source=source,
+        title=title or f"Amazon product {index + 1}",
+        body=body,
+        url=str(item.get("url") or ""),
+        author=brand or None,
+        container="Amazon",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="low"),
+        engagement=item.get("engagement") or {"ratings": ratings_total},
+        relevance_hint=item.get("relevance", 0.6),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=comment_text[:400],
+        metadata={
+            "asin": str(item.get("asin") or ""),
+            "name": name,
+            "short_name": item.get("short_name") or "",
+            "brand": brand,
+            "rating": item.get("rating"),
+            "num_ratings": item.get("num_ratings") or 0,
+            "price": item.get("price"),
+            "currency": item.get("currency") or "",
+            "badge": item.get("badge") or "",
+            # Recorded, never used as a filter: the flag's distribution
+            # swings with keyword phrasing, so filtering can blank the lane.
+            "sponsored": bool(item.get("sponsored")),
+            "top_comments": top_comments,
+            "product_rating": item.get("product_rating"),
+            "product_rating_count": item.get("product_rating_count") or 0,
+            "star_distribution": item.get("star_distribution") or {},
+            # Relevant by construction: the adapter already gated products
+            # against the model-supplied keyword, and review text rarely
+            # names the product (KTD8).
+            "grounding_exempt": True,
         },
     )
 
@@ -703,7 +835,11 @@ def _normalize_polymarket(
         item_id=str(item.get("event_id") or item.get("id") or f"PM{index + 1}"),
         source=source,
         title=title or question or f"Polymarket event {index + 1}",
-        body="\n".join(part for part in [title, question, str(item.get("price_movement") or "")] if part),
+        body="\n".join(
+            part
+            for part in [title, question, str(item.get("price_movement") or "")]
+            if part
+        ),
         url=str(item.get("url") or ""),
         author=None,
         container="Polymarket",
@@ -721,7 +857,6 @@ def _normalize_polymarket(
             "outcomes_remaining": item.get("outcomes_remaining"),
         },
     )
-
 
 
 def _normalize_github(
@@ -758,6 +893,7 @@ def _normalize_github(
             "is_pr": metadata.get("is_pr", False),
         },
     )
+
 
 def _normalize_grounding(
     source: str,

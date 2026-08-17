@@ -4,7 +4,19 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lib import bird_x, health, http, jobs, pipeline, reddit, render, schema, youtube_yt
+from lib import (
+    bird_x,
+    health,
+    http,
+    jobs,
+    pipeline,
+    reddit,
+    reddit_listing,
+    reddit_rss,
+    render,
+    schema,
+    youtube_yt,
+)
 
 
 def _report(*, source_status=None, items_by_source=None, errors_by_source=None):
@@ -74,6 +86,7 @@ def test_source_specific_text_failures_are_mapped():
     assert bird_x.classify_run_failure("likely Twitter anti-bot interstitial") == schema.SCHEMA_DRIFT
     assert reddit.classify_run_failure("blocked by Reddit interstitial") == schema.RATE_LIMITED
     assert youtube_yt.classify_run_failure("Sign in to confirm you're not a bot") == schema.RATE_LIMITED
+    assert youtube_yt.classify_run_failure("Search timed out after 1s") == health.TIMEOUT
 
 
 def test_bundle_distinguishes_clean_no_results_from_failure():
@@ -135,6 +148,73 @@ def test_reddit_nested_worker_propagates_failure_capture(mock_urlopen, _mock_sle
 
     assert result["items"] == []
     assert failures[-1].outcome_state == schema.RATE_LIMITED
+
+
+def _reddit_429(url="https://www.reddit.com/search.rss"):
+    return urllib.error.HTTPError(url, 429, "Too Many Requests", {}, None)
+
+
+@patch("lib.http.time.sleep")
+@patch("lib.http.urllib.request.urlopen")
+def test_reddit_rss_fanout_propagates_failure_capture(mock_urlopen, _mock_sleep):
+    # get_text launders the 429 into None; the sink is what must survive the
+    # ThreadPoolExecutor hop into the feed workers (issue #899).
+    mock_urlopen.side_effect = _reddit_429()
+
+    with http.capture_failures() as failures:
+        posts = reddit_rss.search_rss("test topic", depth="quick")
+
+    assert posts == []
+    assert failures[-1].outcome_state == schema.RATE_LIMITED
+
+
+@patch("lib.http.time.sleep")
+@patch("lib.http.urllib.request.urlopen")
+def test_reddit_listing_fanout_propagates_failure_capture(mock_urlopen, _mock_sleep):
+    mock_urlopen.side_effect = _reddit_429(
+        "https://www.reddit.com/svc/shreddit/community-more-posts/hot/"
+    )
+
+    with http.capture_failures() as failures:
+        posts = reddit_listing.fetch_listings(["example"], depth="quick", query="test topic")
+
+    assert posts == []
+    assert failures[-1].outcome_state == schema.RATE_LIMITED
+
+
+@patch("lib.http.time.sleep")
+@patch("lib.http.urllib.request.urlopen")
+def test_reddit_discovery_listing_fanout_propagates_failure_capture(mock_urlopen, _mock_sleep):
+    mock_urlopen.side_effect = _reddit_429(
+        "https://www.reddit.com/svc/shreddit/community-more-posts/rising/"
+    )
+
+    with http.capture_failures() as failures:
+        result = reddit_listing.fetch_discovery_listings(["example"], query="test topic")
+
+    assert result["items"] == []
+    # The discovery path reads this list, not the sink — a blocked feed must not
+    # look like an empty one there either.
+    assert result["errors"]
+    assert any("429" in error for error in result["errors"])
+    assert failures[-1].outcome_state == schema.RATE_LIMITED
+
+
+@patch("lib.http.urllib.request.urlopen")
+def test_tee_failures_does_not_hide_from_parent_sink(mock_urlopen):
+    # tee_failures must never become capture_failures: the latter replaces the
+    # sink, which would silently re-break the Reddit lanes above.
+    mock_urlopen.side_effect = urllib.error.HTTPError(
+        "https://api.example.com/missing", 404, "Not Found", {}, None
+    )
+
+    with http.capture_failures() as parent:
+        with http.tee_failures() as local:
+            with pytest.raises(http.HTTPError):
+                http.get("https://api.example.com/missing", retries=1)
+
+    assert len(local) == 1
+    assert local == parent
 
 
 @patch("lib.http.urllib.request.urlopen")

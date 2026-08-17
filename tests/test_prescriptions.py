@@ -24,7 +24,7 @@ RUNNABLE = re.compile(
     r"^(?:python3 \S*last30days\.py\b"
     r"|[A-Z][A-Z0-9_]*="
     r"|export [A-Z][A-Z0-9_]*="
-    r"|(?:brew|pipx|pip|scoop|npx|npm|xurl|yt-dlp|docker) )"
+    r"|(?:brew|pipx|pip|scoop|npx|npm|xurl|yt-dlp|docker|grok) )"
 )
 
 # The seed failure inventory from the plan (U3 approach section).

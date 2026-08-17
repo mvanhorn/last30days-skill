@@ -14,15 +14,19 @@ jobs:
   tag:
     runs-on: ubuntu-latest
     # Only act on the release-prep commit shape produced by prepare-release.yml
-    # (or an equivalent manual chore(release) commit).
-    if: startsWith(github.event.head_commit.message, 'chore(release): bump version to ')
+    # (or an equivalent manual chore(release) commit). Quote the expression —
+    # a bare `chore(release):` colon is invalid YAML and fails the whole
+    # workflow before any job runs. Use contains (not startsWith) so merge
+    # commits whose subject is "Merge pull request #N …" still match when the
+    # PR title is in the body.
+    if: "contains(github.event.head_commit.message, 'chore(release): bump version to ')"
     permissions:
       contents: write
       actions: write
       pull-requests: read
     steps:
       - name: Checkout
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -36,7 +40,8 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          VERSION="$(printf '%s\n' "${HEAD_MSG}" | head -n1 | sed -n 's/^chore(release): bump version to \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p')"
+          # Scan every line — merge commits put the chore(release) title in the body.
+          VERSION="$(printf '%s\n' "${HEAD_MSG}" | sed -n 's/^chore(release): bump version to \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n1)"
           if [ -z "${VERSION}" ]; then
             echo "Could not parse version from commit message: ${HEAD_MSG}"
             exit 1

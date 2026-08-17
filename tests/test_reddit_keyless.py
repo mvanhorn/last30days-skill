@@ -33,6 +33,8 @@ class TestDiscovery:
         with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
                                return_value=[_post(1), _post(2)]) as rss, \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
                                return_value=[]):
             out = reddit_keyless._discover("topic", "default", ["test"])
         assert len(out) == 2
@@ -42,10 +44,13 @@ class TestDiscovery:
         # RSS finds post 1 (no score); listing card for post 1 carries the score.
         rss_post = _post(1)
         listing_post = _scored(1, score=52692, ncmt=1743)
+        listing_post["subreddit"] = "test"  # Match the requested subreddit.
         with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
                                return_value=[rss_post]), \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
-                               return_value=[listing_post]):
+                               return_value=[listing_post]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[]):  # No arctic supplement.
             out = reddit_keyless._discover("topic", "default", ["test"])
         # listing post (scored) is kept; RSS dup of same url is dropped
         assert len(out) == 1
@@ -253,3 +258,94 @@ class TestSlotPriority:
         with mock.patch("lib.rerank._primary_entity", side_effect=Exception("boom")):
             out = reddit_keyless._slot_priority("openclaw", posts)
         assert out == posts
+
+
+class TestScoredListingsFallback:
+    """_scored_listings falls back to the arctic-shift archive when the
+    shreddit listing partials return nothing (datacenter egress 403)."""
+
+    def test_arctic_fallback_when_shreddit_empty(self):
+        arctic_post = _scored(1, score=406)
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[arctic_post]) as arctic:
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        assert out == [arctic_post]
+        arctic.assert_called_once_with(["tea"], depth="quick", query="matcha", sorts=None)
+
+    def test_shreddit_and_arctic_both_called_deduped(self):
+        """Shreddit and arctic are both called; arctic supplements missing posts."""
+        shreddit_post = _scored(1, score=42)
+        shreddit_post["subreddit"] = "tea"
+        arctic_post = _scored(2, score=100)
+        arctic_post["subreddit"] = "tea"
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[shreddit_post]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[arctic_post]) as arctic:
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        # Both shreddit and arctic posts should be in the result (deduped by URL).
+        assert len(out) == 2
+        urls = {p["url"] for p in out}
+        assert shreddit_post["url"] in urls
+        assert arctic_post["url"] in urls
+        arctic.assert_called_once()
+
+    def test_both_empty_returns_empty(self):
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[]):
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        assert out == []
+
+    def test_never_raises_when_arctic_fails(self):
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               side_effect=Exception("boom")):
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        assert out == []
+
+    def test_dedicated_sorts_passed_through(self):
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[]) as arctic:
+            reddit_keyless._scored_listings(
+                ["Kanye"], depth="default", query="Kanye", sorts=["top", "hot", "new"]
+            )
+        arctic.assert_called_once_with(
+            ["Kanye"], depth="default", query="Kanye", sorts=["top", "hot", "new"]
+        )
+
+    def test_arctic_supplements_all_subreddits(self):
+        """Arctic is called for all subreddits to supplement any failed sort lanes."""
+        shreddit_post = _scored(1, score=100)
+        shreddit_post["subreddit"] = "tea"
+        arctic_post_tea = _scored(2, score=200)
+        arctic_post_tea["subreddit"] = "tea"
+        arctic_post_coffee = _scored(3, score=150)
+        arctic_post_coffee["subreddit"] = "coffee"
+
+        def shreddit_side_effect(subs, **kwargs):
+            # Shreddit only returns posts for "tea", not "coffee".
+            return [shreddit_post] if "tea" in subs else []
+
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               side_effect=shreddit_side_effect), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[arctic_post_tea, arctic_post_coffee]) as arctic:
+            out = reddit_keyless._scored_listings(
+                ["tea", "coffee"], depth="quick", query="beverages"
+            )
+        # Arctic is called for ALL requested subreddits to supplement any failed sorts.
+        arctic.assert_called_once()
+        call_args = arctic.call_args
+        assert set(call_args[0][0]) == {"tea", "coffee"}, "arctic should be called for all subs"
+        # All posts should be in the result (deduped by URL).
+        urls = [p["url"] for p in out]
+        assert shreddit_post["url"] in urls
+        assert arctic_post_tea["url"] in urls
+        assert arctic_post_coffee["url"] in urls

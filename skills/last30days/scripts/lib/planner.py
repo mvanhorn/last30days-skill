@@ -150,6 +150,7 @@ SOURCE_CAPABILITIES = {
     "arxiv": {"reference", "analysis", "link"},
     "techmeme": {"discussion", "link", "reference"},
     "trustpilot": {"reference", "company_signal", "social"},
+    "amazon": {"reference", "company_signal", "product_signal"},
     "xiaohongshu": {"video", "video_shortform", "social"},
     "github": {"discussion", "link"},
     "grounding": {"web", "reference", "link"},
@@ -835,8 +836,26 @@ def _keyword_query(topic: str, core: str) -> str:
         term for term in compounds
         if re.match(r"^(?:[A-Z][a-z]+\s+){1,}[A-Z][a-z]+$", term)
     ]
-    quoted = " ".join(f'"{term}"' for term in title_cased[:2])
-    keywords = [quoted.strip(), core.strip() or topic.strip()]
+    selected = title_cased[:2]
+    quoted = " ".join(f'"{term}"' for term in selected)
+    remainder = core.strip() or topic.strip()
+    # Drop words already carried by a quoted phrase. Emitting both produced
+    # '"Peter Steinberger" peter steinberger steipete', which reads to a
+    # provider as the phrase AND each of its words again -- strictly narrower
+    # than the phrase alone, and on X it degraded to a bare token conjunction
+    # once the quotes were stripped downstream. Distinct tokens (here
+    # "steipete") are preserved.
+    if selected and remainder:
+        phrase_words = {
+            word.lower()
+            for term in selected
+            for word in term.split()
+        }
+        remainder = " ".join(
+            word for word in remainder.split()
+            if word.strip('"').lower() not in phrase_words
+        )
+    keywords = [quoted.strip(), remainder.strip()]
     return " ".join(part for part in keywords if part).strip()
 
 

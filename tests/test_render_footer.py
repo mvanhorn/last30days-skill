@@ -183,3 +183,74 @@ def test_footer_keeps_partial_populated_source_with_warning():
 
     assert "📸 Instagram: 1 reel" in text
     assert "⚠" in text  # partial suffix preserved on the populated line
+
+
+def test_footer_carries_freshness_verdict():
+    """The freshness verdict reaches the footer, not just the report body."""
+    stale = [
+        schema.SourceItem(
+            item_id=f"r{i}",
+            source="reddit",
+            title=f"Old thread {i}",
+            body="body",
+            url=f"https://reddit.com/r/test/comments/{i}",
+            published_at="2026-06-12",
+            date_confidence="high",
+        )
+        for i in range(6)
+    ]
+    report = _report(
+        items_by_source={"reddit": stale},
+        source_status={
+            "reddit": schema.SourceOutcome(source="reddit", state=health.OK, items_returned=6),
+        },
+    )
+
+    text = render.render_compact(report)
+
+    assert "🕒" in text
+    assert "from the last 7 days" in text
+
+
+def test_footer_freshness_line_absent_when_evidence_is_recent():
+    fresh = [
+        schema.SourceItem(
+            item_id=f"r{i}",
+            source="reddit",
+            title=f"Fresh thread {i}",
+            body="body",
+            url=f"https://reddit.com/r/test/comments/{i}",
+            published_at="2026-07-08",
+            date_confidence="high",
+        )
+        for i in range(6)
+    ]
+    report = _report(
+        items_by_source={"reddit": fresh},
+        source_status={
+            "reddit": schema.SourceOutcome(source="reddit", state=health.OK, items_returned=6),
+        },
+    )
+
+    assert "🕒" not in render.render_compact(report)
+
+
+def test_raw_results_only_footer_includes_freshness_line():
+    """AE3: raw-results-only footer still includes the freshness line.
+
+    When every source returns zero items (so source_lines would be empty and
+    body starts empty) but a save_path is provided, the freshness verdict
+    must still appear alongside the raw-results line. Without the fix,
+    `if freshness_line and body:` would be False because body was empty.
+    """
+    report = _report(
+        items_by_source={},
+        source_status={},
+    )
+
+    footer = render._render_emoji_footer(report, "/tmp/l30d-scratch/topic-raw.md")
+    text = "\n".join(footer)
+
+    assert "🕒" in text
+    assert "no usable dated evidence" in text
+    assert "Raw results saved to /tmp/l30d-scratch/topic-raw.md" in text

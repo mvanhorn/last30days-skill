@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections.abc import Iterable
 
 from . import dates, relevance, schema
 
@@ -16,6 +17,9 @@ SOURCE_QUALITY = {
     "arxiv": 0.9,
     "techmeme": 0.85,
     "trustpilot": 0.78,
+    # Verified-purchase reviews on a live aggregate rating: high-quality
+    # buyer evidence, a notch above Trustpilot's open review model.
+    "amazon": 0.8,
     "reddit": 0.6,
     "x": 0.68,
     "bluesky": 0.66,
@@ -57,6 +61,17 @@ def local_relevance(
     # get pruned despite being the primary search target.
     labels = item.metadata.get("labels", []) if isinstance(item.metadata, dict) else []
     if "project-mode" in labels:
+        score = max(score, 0.8)
+
+    # Grounding-exempt floor (currently Amazon): the adapter already gated
+    # these against the model-supplied product keyword before creating them,
+    # so they are relevant by construction. Their text is marketing copy plus
+    # buyer reviews, which rarely repeats the topic phrasing -- a "Weber
+    # Grills" run surfaces a product named "Spirit E-325" whose reviews talk
+    # about searing, not about Weber. Without the floor, correctly-retrieved
+    # evidence gets pruned for failing a keyword match it was never going to
+    # win. Mirrors the project-mode GitHub floor above.
+    if isinstance(item.metadata, dict) and item.metadata.get("grounding_exempt"):
         score = max(score, 0.8)
 
     return score
@@ -167,6 +182,7 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "polymarket":   [("volume", 0.60), ("liquidity", 0.40)],
     "digg":         [("postCount", 0.40), ("uniqueAuthors", 0.30), ("rank_score", 0.30)],
     "trustpilot":   [("reviews", 1.0)],
+    "amazon":       [("ratings", 1.0)],
 }
 
 
@@ -318,16 +334,35 @@ def _passes_engagement_floor(item: schema.SourceItem, sole_source: bool) -> bool
 def prune_low_relevance(
     items: list[schema.SourceItem],
     minimum: float = 0.15,
+    first_party_handles: Iterable[str] | None = None,
 ) -> list[schema.SourceItem]:
     """Drop weak lexical matches when stronger evidence exists.
 
-    Social-source items with zero engagement get a stricter threshold
-    because zero engagement on a social platform is a strong noise signal.
+    Social-source items with genuinely zero engagement get a stricter
+    threshold because zero engagement on a social platform is a strong noise
+    signal.
 
     TikTok and Instagram items with fewer than 1000 views are pruned
     (unless they are the only source represented in the batch).
+
+    ``first_party_handles`` names accounts this run is explicitly searching
+    (the subject of the topic). Their own posts are exempt from the floor: a
+    post almost never contains its own author's name, so lexical relevance
+    scores it at or near zero no matter how on-topic it is. Without the
+    exemption a mixed batch loses them silently, because the ``filtered or
+    items`` rescue below only fires when *every* item fails.
     """
     sources_present = {item.source for item in items}
+    first_party = {
+        h.strip().lstrip("@").lower()
+        for h in (first_party_handles or ())
+        if h and h.strip()
+    }
+
+    def _is_first_party(item: schema.SourceItem) -> bool:
+        if not first_party or not item.author:
+            return False
+        return item.author.strip().lstrip("@").lower() in first_party
 
     def passes(item: schema.SourceItem) -> bool:
         # YouTube items with successfully extracted transcripts should not
@@ -335,10 +370,18 @@ def prune_low_relevance(
         # already proves substantive topical coverage.
         if item.source == "youtube" and item.snippet:
             return True
+        # Posts by an account this run is explicitly searching are evidence by
+        # provenance, not by lexical overlap with the topic.
+        if _is_first_party(item):
+            return True
         rel = item.local_relevance if item.local_relevance is not None else 0.0
         if rel < minimum:
             return False
-        if item.source in _SOCIAL_SOURCES and (item.engagement_score is None or item.engagement_score == 0):
+        # Key the stricter social gate on genuinely absent engagement, not on
+        # the normalized score: signals.normalize is min-max over the batch, so
+        # it maps the least-engaged item to exactly 0 even when that item has
+        # thousands of likes.
+        if item.source in _SOCIAL_SOURCES and not engagement_raw(item):
             if rel < minimum * 1.5:
                 return False
         sole_source = sources_present == {item.source}

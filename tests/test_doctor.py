@@ -22,12 +22,13 @@ import os
 import sys
 import tempfile
 import unittest
+import urllib.error
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
 import last30days as cli
-from lib import backends, doctor, health, prescriptions
+from lib import backends, doctor, health, http, prescriptions
 
 BIRD_STATUS_OFF = {
     "installed": False,
@@ -958,6 +959,54 @@ class LiveProbe(unittest.TestCase):
 
     def test_probe_source_credit_gated_returns_none(self):
         self.assertIsNone(doctor._probe_source("tiktok", {}, 5))
+
+    def test_reddit_probe_targets_the_endpoint_the_engine_uses(self):
+        # /r/all/hot.json is permanently 403 keyless and no lane requests it;
+        # probing it certified an endpoint the engine had abandoned (#899).
+        url = doctor._HTTP_PROBE_URLS["reddit"]
+        self.assertIn("search.rss", url)
+        self.assertNotIn("hot.json", url)
+
+    def _probe_reddit_with_status(self, code):
+        error = urllib.error.HTTPError(
+            doctor._HTTP_PROBE_URLS["reddit"], code, "Blocked", {}, None
+        )
+        with mock.patch(
+            "lib.doctor.urllib.request.urlopen", side_effect=error
+        ):
+            return doctor._probe_source("reddit", {}, 5)
+
+    def test_reddit_probe_403_is_not_reachable(self):
+        res = self._probe_reddit_with_status(403)
+        self.assertFalse(res["ok"])
+        self.assertIn("403", res["detail"])
+
+    def test_reddit_probe_429_is_not_reachable(self):
+        res = self._probe_reddit_with_status(429)
+        self.assertFalse(res["ok"])
+        self.assertIn("429", res["detail"])
+
+    def test_non_reddit_probe_keeps_4xx_as_reachable(self):
+        # The blocked-status carve-out is per-source: a 4xx elsewhere still
+        # means the endpoint responded.
+        error = urllib.error.HTTPError(
+            doctor._HTTP_PROBE_URLS["github"], 403, "Forbidden", {}, None
+        )
+        with mock.patch("lib.doctor.urllib.request.urlopen", side_effect=error):
+            res = doctor._probe_source("github", {}, 5)
+        self.assertTrue(res["ok"])
+
+    def test_reddit_probe_sends_the_engine_user_agent(self):
+        # Probing with a different UA measures the User-Agent, not the endpoint.
+        seen = {}
+
+        def capture(req, timeout=None):
+            seen["ua"] = req.get_header("User-agent")
+            raise urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
+
+        with mock.patch("lib.doctor.urllib.request.urlopen", capture):
+            doctor._probe_source("reddit", {}, 5)
+        self.assertEqual(http.BROWSER_USER_AGENT, seen["ua"])
 
     def test_probe_failure_is_isolated(self):
         def flaky(name, config, timeout):

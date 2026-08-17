@@ -315,9 +315,12 @@ def resolve_runtime(config: dict[str, Any], depth: str) -> tuple[schema.Provider
 
 
 def _resolve_x_backend(config: dict[str, Any]) -> str | None:
-    preferred = (config.get(env.X_BACKEND_PIN_VAR) or "").lower()
-    if preferred in {"xai", "bird"}:
-        return preferred
+    """Resolve the X backend for runtime fetch.
+
+    Delegates to env.get_x_source which handles:
+    - Any known pin (X_BACKEND_KNOWN) exclusively: returns pin if available, None otherwise
+    - Unpinned: walks auto-chain (X_BACKEND_ORDER) only, never auto-selects opt-in backends
+    """
     return env.get_x_source(config)
 
 

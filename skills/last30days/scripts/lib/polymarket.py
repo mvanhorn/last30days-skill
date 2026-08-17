@@ -199,6 +199,31 @@ def _domain_word_fallback_allows(core_words: list[str], informative: list[str],
     return False
 
 
+def _acronym_credit(core_words: list[str], title_words: set[str]) -> int:
+    """Credit matches when the title abbreviates a phrase the topic spells out.
+
+    Prediction-market titles use shorthand ("AGI by 2030?") while topics arrive
+    spelled out ("artificial general intelligence"), so word overlap scores zero
+    on a title that is squarely on topic. For each run of 3+ consecutive
+    informative words, build its initialism and, if the title carries it as a
+    whole word, credit one match per abbreviated word. Requiring at least three
+    letters avoids treating ambiguous tokens such as "ML" as expanded phrases.
+    """
+    informative_set = set(_informative_words(core_words))
+    credit = 0
+    run: list[str] = []
+    for word in core_words + [""]:
+        if word in informative_set:
+            run.append(word)
+            continue
+        if len(run) >= 3:
+            acronym = "".join(w[0] for w in run)
+            if len(acronym) >= 3 and acronym in title_words:
+                credit = max(credit, len(run))
+        run = []
+    return credit
+
+
 def _passes_topic_filter(topic: str, event_title: str) -> bool:
     """Check if event title contains enough informative words from the topic.
 
@@ -235,6 +260,12 @@ def _passes_topic_filter(topic: str, event_title: str) -> bool:
         # Also check as substring for compound words (e.g., "kanye" in "kanyewest")
         if len(word) >= 4 and word in title_lower:
             match_count += 1
+
+    # A title that abbreviates what the topic spells out ("AGI" for
+    # "artificial general intelligence") scores zero above; credit it here.
+    if match_count < 2:
+        match_count = max(match_count,
+                          _acronym_credit(core_words, title_words))
 
     # For topics with 3+ informative words, require at least 2 matches.
     # This prevents single-word false positives like "mill" in "Meek Mill"
@@ -592,6 +623,14 @@ def _compute_text_similarity(topic: str, title: str, outcomes: List[str] = None)
 
     # Full substring match in title
     if core in title_lower:
+        return 1.0
+
+    # Same match, abbreviated: "AGI" standing in for an informative phrase.
+    # Use the filter's matcher so modifiers and minimum acronym length cannot
+    # produce different decisions at the filtering and scoring stages.
+    core_words = [w for w in re.sub(r"[^\w\s]", " ", core).split() if len(w) > 1]
+    title_words = set(re.sub(r"[^\w\s]", " ", title_lower).split())
+    if _acronym_credit(core_words, title_words):
         return 1.0
 
     query_type = _infer_query_intent(topic)

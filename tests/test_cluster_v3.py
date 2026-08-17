@@ -170,6 +170,84 @@ class TestPolymarketIsolation(unittest.TestCase):
         self.assertEqual(2, len(clusters[0].candidate_ids))
 
 
+class TestStaleClusterDemotion(unittest.TestCase):
+    """Stale candidates must never become cluster representatives or titles."""
+
+    def _plan(self):
+        return schema.QueryPlan(
+            intent="breaking_news",
+            freshness_mode="strict_recent",
+            cluster_mode="story",
+            raw_topic="test",
+            subqueries=[schema.SubQuery(label="primary", search_query="test", ranking_query="test", sources=["reddit", "x"])],
+            source_weights={"reddit": 0.5, "x": 0.5},
+        )
+
+    def _candidate_with_date(
+        self, candidate_id: str, source: str, title: str, score: float,
+        published_at: str, date_confidence: str, range_from: str, range_to: str,
+    ) -> schema.Candidate:
+        item = schema.SourceItem(
+            item_id=candidate_id,
+            source=source,
+            title=title,
+            body=title,
+            url=f"https://example.com/{candidate_id}",
+            published_at=published_at,
+            date_confidence=date_confidence,
+        )
+        return schema.Candidate(
+            candidate_id=candidate_id,
+            item_id=candidate_id,
+            source=source,
+            title=title,
+            url=f"https://example.com/{candidate_id}",
+            snippet=title,
+            subquery_labels=["primary"],
+            native_ranks={"primary:reddit": 1},
+            local_relevance=0.8,
+            freshness=80,
+            engagement=10,
+            source_quality=0.7,
+            rrf_score=0.02,
+            rerank_score=score,
+            final_score=score,
+            source_items=[item],
+            metadata={"range_from": range_from, "range_to": range_to},
+        )
+
+    def test_stale_candidate_not_cluster_representative(self):
+        """A stale item with higher final_score must not lead a cluster over a fresh item.
+
+        This guards against the issue where a 2025-10 video ranked #1 in a
+        2026-07 brief because clustering re-sorted by final_score alone.
+        """
+        range_from = "2026-06-15"
+        range_to = "2026-07-15"
+        stale = self._candidate_with_date(
+            "stale", "reddit", "Model launch reactions discussion",
+            score=95.0,
+            published_at="2025-10-15",
+            date_confidence="low",
+            range_from=range_from,
+            range_to=range_to,
+        )
+        fresh = self._candidate_with_date(
+            "fresh", "x", "Model launch reactions update",
+            score=50.0,
+            published_at="2026-07-10",
+            date_confidence="high",
+            range_from=range_from,
+            range_to=range_to,
+        )
+        candidates = [stale, fresh]
+        clusters = cluster.cluster_candidates(candidates, self._plan())
+
+        self.assertEqual(1, len(clusters))
+        self.assertEqual("fresh", clusters[0].representative_ids[0])
+        self.assertEqual(fresh.title, clusters[0].title)
+
+
 class TestClusterUncertainty(unittest.TestCase):
     def test_single_source_returns_single_source(self):
         candidates = [make_candidate("c1", "reddit", "Title", "Body", 80)]

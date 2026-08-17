@@ -53,7 +53,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, env, health, prescriptions
+from . import backends, brightdata, env, health, http, prescriptions
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -157,6 +157,7 @@ SOURCE_ORDER = (
     "techmeme",
     "arxiv",
     "trustpilot",
+    "amazon",
     "tiktok",
     "instagram",
     "threads",
@@ -181,6 +182,9 @@ CLI_DEPENDENCIES = {
     "techmeme": "techmeme-pp-cli",
     "arxiv": "arxiv-pp-cli",
     "trustpilot": "trustpilot-pp-cli",
+    # The only entry that also needs auth; _amazon_record reports the
+    # installed-but-unauthenticated state the shared CLI helper cannot.
+    "amazon": "brightdata",
     "github": "gh",
 }
 _OPTIONAL_CLI_SOURCES = frozenset({"github"})
@@ -421,16 +425,91 @@ def _x_record(config):
     # diagnose cannot drift. It reads no cookie *values*, so it confirms a run
     # will *attempt* browser auth, not that the session is currently valid -
     # keep the note honest and point at the verified key-backed path.
-    if record["status"] == "unconfigured" and env.x_pending_browser_auth(
-        config, local_only=True
-    ):
-        record["status"] = health.OK
-        record["tier"] = TIER_BY_STATUS[health.OK]
-        record["note"] = (
-            "will use: bird (browser cookies; session not verified until a run "
-            "- add XAI_API_KEY for a verified, cookie-free path)"
+    #
+    # This check MUST come before grok normalization: a pending bird path takes
+    # precedence over marking X as unconfigured due to an unused grok store.
+    # Handle both "unconfigured" (all backends missing) and "error" (grok present
+    # but opt-in, no auto-chain backend usable) when pending bird applies.
+    #
+    # HOWEVER: pending bird must NOT replace a record that has a configured
+    # auto-chain backend in ERROR/DEGRADED/BROKEN/TIMEOUT. Same rule as the
+    # grok normalizer: only upgrade when no auto backend is configured-but-broken.
+    pending_bird = env.x_pending_browser_auth(config, local_only=True)
+    if pending_bird and record["status"] in ("unconfigured", health.ERROR):
+        backends_list = record.get("backends", [])
+        auto_chain_names = {"bird", "xai", "xurl", "xquik"}
+        auto_backends = [b for b in backends_list if b.get("name") in auto_chain_names]
+        # Only apply pending-bird upgrade if ALL auto-chain backends are MISSING.
+        # If any auto backend is configured but broken, keep that error.
+        all_auto_missing = all(
+            b.get("status") == health.MISSING for b in auto_backends
         )
-        record["fix"] = ""
+        if all_auto_missing:
+            record["status"] = health.OK
+            record["tier"] = TIER_BY_STATUS[health.OK]
+            record["note"] = (
+                "will use: bird (browser cookies; session not verified until a run "
+                "- add XAI_API_KEY for a verified, cookie-free path)"
+            )
+            record["fix"] = ""
+            return record
+    #
+    # Grok is opt-in only: a leftover ~/.grok/auth.json must never steal the X
+    # lane. The grok backend appears in the chain findings (for visibility) but
+    # is never auto-selected. Doctor reports it as "available, unused - pin
+    # LAST30DAYS_X_BACKEND=grok to enable" rather than "will use: grok".
+    #
+    # R3/R8: When no auto-chain backend is CONFIGURED (all MISSING) but grok has
+    # any non-MISSING status, X is unconfigured/skipped - NOT broken/auth-failed.
+    # The tier must be "off" (unconfigured), not "error" (NOT WORKING).
+    #
+    # HOWEVER: if an auto-chain backend IS configured but broken (ERROR/DEGRADED),
+    # do NOT normalize to unconfigured. Keep that backend's error and repair
+    # guidance. Unused grok must not swallow a genuine auto-chain failure.
+    #
+    # Do NOT apply this normalization when pending browser auth would make bird
+    # usable — check pending_bird first (handled above via early return).
+    if (
+        record["tier"] == TIER_ERROR
+        and not record.get("pinned")
+        and record.get("active_backend") is None
+        and not pending_bird
+    ):
+        backends_list = record.get("backends", [])
+        auto_chain_names = {"bird", "xai", "xurl", "xquik"}
+        auto_backends = [b for b in backends_list if b.get("name") in auto_chain_names]
+        # Only normalize if ALL auto-chain backends are MISSING (not configured).
+        # If any auto backend is ERROR/DEGRADED/BROKEN/TIMEOUT, keep that error.
+        all_auto_missing = all(
+            b.get("status") == health.MISSING for b in auto_backends
+        )
+        if not all_auto_missing:
+            # An auto-chain backend is configured but broken — do NOT normalize.
+            # Keep the original error and its repair guidance.
+            return record
+        grok_finding = next(
+            (b for b in backends_list if b.get("name") == "grok"),
+            None,
+        )
+        if grok_finding and grok_finding.get("status") in (
+            health.OK,
+            health.DEGRADED,
+            health.ERROR,
+        ):
+            record["status"] = "unconfigured"
+            record["tier"] = TIER_OFF
+            if grok_finding.get("status") == health.ERROR:
+                record["note"] = (
+                    "X unconfigured; grok CLI store is broken but unused (opt-in only) — "
+                    "pin LAST30DAYS_X_BACKEND=grok to enable, then fix the store"
+                )
+            else:
+                record["note"] = (
+                    "X unconfigured; grok CLI available but opt-in only — "
+                    "pin LAST30DAYS_X_BACKEND=grok to enable"
+                )
+            record["fix"] = ""
+            return record
     return record
 
 
@@ -538,6 +617,39 @@ def _arxiv_record(config):
 
 def _trustpilot_record(config):
     return _cli_gated_record(config, "trustpilot-pp-cli", "trustpilot")
+
+
+def _amazon_record(config):
+    """Amazon buyer signals: CLI-gated *and* auth-gated.
+
+    Unlike the other CLI-gated sources, a present binary is not enough --
+    the Bright Data CLI owns its own login, so a user can have `brightdata`
+    on PATH and still get nothing. Report those states separately: an
+    unauthenticated install is configured-but-broken (a real fix exists and
+    the user wants to hear it), while a missing binary is just an optional
+    source nobody opted into.
+    """
+    probe = health.probe_dependency(brightdata.CLI_BIN)
+    requires = f"{brightdata.CLI_BIN} on the agent-subprocess PATH, logged in"
+    if probe.ok:
+        if brightdata.has_credentials(config):
+            return _record(status=health.OK, detail=probe.detail, requires=requires)
+        return _record(
+            status="unconfigured",
+            fix="run `brightdata login` to activate the amazon source",
+            detail="brightdata is installed but has no credentials",
+            requires=requires,
+        )
+    entry = prescriptions.for_dependency_probe(probe)
+    fix = _fix_text(entry) if entry else probe.prescription
+    if probe.status == health.MISSING and not probe.off_path:
+        return _record(
+            status="opt-in",
+            fix="npm i -g @brightdata/cli && brightdata login",
+            detail=probe.detail,
+            requires=requires,
+        )
+    return _record(status=probe.status, fix=fix, detail=probe.detail, requires=requires)
 
 
 def _tiktok_record(config):
@@ -716,6 +828,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "techmeme": _techmeme_record,
     "arxiv": _arxiv_record,
     "trustpilot": _trustpilot_record,
+    "amazon": _amazon_record,
     "tiktok": _tiktok_record,
     "instagram": _instagram_record,
     "threads": _threads_record,
@@ -1469,10 +1582,28 @@ def _write_cache(report: Dict[str, Any], config: Dict[str, Any]) -> bool:
 
 # Free, keyless liveness endpoints (reachability check, tiny payload).
 _HTTP_PROBE_URLS = {
-    "reddit": "https://www.reddit.com/r/all/hot.json?limit=1",
+    # The keyless engine's real discovery endpoint (reddit_rss._build_urls).
+    # /r/all/hot.json is permanently 403 keyless (see the reddit_keyless module
+    # docstring) and no lane requests it any more, so probing it measured an
+    # endpoint the engine had already abandoned.
+    "reddit": "https://www.reddit.com/search.rss?q=test&sort=relevance&t=month",
     "hackernews": "https://hn.algolia.com/api/v1/search?query=test&hitsPerPage=1",
     "polymarket": "https://gamma-api.polymarket.com/events?limit=1",
     "github": "https://api.github.com/rate_limit",
+}
+
+# Per-source exception to "a 4xx still means the endpoint responded". The
+# keyless Reddit lanes send no credentials, so a 403/429 there is the host
+# refusing this client — the exact failure the engine hits — not reachability.
+_PROBE_BLOCKED_STATUSES = {"reddit": frozenset({403, 429})}
+
+# Probe with the identity the lane sends, or the probe measures the User-Agent
+# rather than the endpoint (get_text sends http.BROWSER_USER_AGENT).
+_PROBE_HEADERS = {
+    "reddit": {
+        "User-Agent": http.BROWSER_USER_AGENT,
+        "Accept": "application/atom+xml",
+    },
 }
 
 DEFAULT_PROBE_TIMEOUT_SECONDS = 10
@@ -1501,18 +1632,32 @@ def _probeable_sources() -> tuple:
     return tuple(dict.fromkeys(list(_HTTP_PROBE_URLS) + cli_only))
 
 
-def _http_ok(url: str, timeout: float) -> tuple:
+def _http_ok(
+    url: str,
+    timeout: float,
+    *,
+    blocked_statuses: frozenset = frozenset(),
+    headers: Optional[Dict[str, str]] = None,
+) -> tuple:
     """Reachability check: a 4xx still means the endpoint responded; 5xx or a
-    connection/timeout error means it did not."""
+    connection/timeout error means it did not.
+
+    ``blocked_statuses`` names the per-source codes that mean "responded, but
+    refused us" (Reddit's keyless 403/429) — those are a failure, not
+    reachability. ``headers`` overrides the probe identity so a source can be
+    probed with the same User-Agent its lane sends.
+    """
+    def _verdict(code: int) -> tuple:
+        return code < 500 and code not in blocked_statuses, f"HTTP {code}"
+
     try:
         req = urllib.request.Request(
-            url, headers={"User-Agent": "last30days-doctor"}
+            url, headers=headers or {"User-Agent": "last30days-doctor"}
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            code = getattr(resp, "status", 200) or 200
-        return code < 500, f"HTTP {code}"
+            return _verdict(getattr(resp, "status", 200) or 200)
     except urllib.error.HTTPError as exc:
-        return exc.code < 500, f"HTTP {exc.code}"
+        return _verdict(exc.code)
     except Exception as exc:
         return False, f"{type(exc).__name__}: {exc}"
 
@@ -1520,7 +1665,12 @@ def _http_ok(url: str, timeout: float) -> tuple:
 def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
     url = _HTTP_PROBE_URLS.get(name)
     if url:
-        ok, detail = _http_ok(url, timeout)
+        ok, detail = _http_ok(
+            url,
+            timeout,
+            blocked_statuses=_PROBE_BLOCKED_STATUSES.get(name, frozenset()),
+            headers=_PROBE_HEADERS.get(name),
+        )
         return {"ok": ok, "detail": detail, "probed": True}
     cli = CLI_DEPENDENCIES.get(name)
     if cli:

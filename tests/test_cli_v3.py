@@ -186,6 +186,26 @@ class CliV3Tests(unittest.TestCase):
         self.assertEqual(["biosecurity", "ai", "agents"], args.topic)
         self.assertEqual([], extra)
 
+    def test_build_parser_accepts_web_backend_keyless(self):
+        """Regression for #905: CONFIGURATION.md documents --web-backend=keyless
+        to force the zero-key floor, but the choices list rejected it."""
+        parser = cli.build_parser()
+        args, extra = parser.parse_known_args(["--web-backend", "keyless", "biosecurity"])
+        self.assertEqual("keyless", args.web_backend)
+        self.assertEqual([], extra)
+
+    def test_build_parser_still_accepts_other_web_backend_values(self):
+        parser = cli.build_parser()
+        for value in ("auto", "brave", "exa", "serper", "parallel", "none"):
+            args, extra = parser.parse_known_args(["--web-backend", value, "biosecurity"])
+            self.assertEqual(value, args.web_backend)
+            self.assertEqual([], extra)
+
+    def test_build_parser_rejects_invalid_web_backend(self):
+        parser = cli.build_parser()
+        with self.assertRaises(SystemExit):
+            parser.parse_known_args(["--web-backend", "bogus", "biosecurity"])
+
     def test_build_parser_accepts_explicit_output_file(self):
         parser = cli.build_parser()
         args, extra = parser.parse_known_args(
@@ -328,6 +348,34 @@ class CliV3Tests(unittest.TestCase):
             self.assertEqual(".json", path.suffix)
             payload = json.loads(path.read_text())
             self.assertEqual("OpenClaw vs NanoClaw", payload["query"])
+
+    def test_compact_emit_saves_full_artifact_not_compact_render(self):
+        """A --emit=compact --save-dir run must save the complete debug
+        artifact (all clusters plus per-source items), not the compact stdout
+        render. Saving the compact render made most collected evidence
+        unrecoverable from the raw file (#923)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    "skills/last30days/scripts/last30days.py",
+                    "compact save probe",
+                    "--mock",
+                    "--emit=compact",
+                    f"--save-dir={tmp}",
+                ],
+                cwd=REPO_ROOT,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, result.stderr)
+            saved = list(Path(tmp).glob("*.md"))
+            self.assertEqual(1, len(saved), saved)
+            content = saved[0].read_text(encoding="utf-8")
+            self.assertIn("## All Items by Source", content)
+            self.assertNotIn("## All Items by Source", result.stdout)
 
     def test_save_output_uses_unique_dated_fallback(self):
         report = self.make_report()

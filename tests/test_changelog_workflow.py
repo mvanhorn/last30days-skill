@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import re
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+
+import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -43,6 +47,41 @@ def _assert_run_blocks_indented(text: str, *, label: str) -> None:
                 f"(indent={indent}, run_indent={run_indent}): {line!r}"
             )
         in_run = False
+
+
+def _tag_release_workflow_text() -> str:
+    return (ROOT / ".github" / "workflows" / "tag-release.yml").read_text(
+        encoding="utf-8"
+    )
+
+
+def _tag_release_version_sed_expr(workflow_text: str) -> str:
+    """Extract the sed expression from tag-release.yml's VERSION pipeline."""
+    match = re.search(
+        r'printf \'%s\\n\' "\$\{HEAD_MSG\}" \| sed -n \'([^\']+)\' \| head -n1',
+        workflow_text,
+    )
+    if not match:
+        raise AssertionError(
+            "Could not find VERSION sed pipeline in tag-release.yml"
+        )
+    return match.group(1)
+
+
+def _parse_release_version_from_message(message: str, sed_expr: str) -> str:
+    """Run the same sed pipeline tag-release.yml uses to extract VERSION."""
+    result = subprocess.run(
+        [
+            "bash",
+            "-c",
+            f"printf '%s\\n' \"${{HEAD_MSG}}\" | sed -n '{sed_expr}' | head -n1",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "HEAD_MSG": message},
+    )
+    return result.stdout.strip()
 
 
 def _load_prepare_release():
@@ -89,6 +128,41 @@ class TestChangelogWorkflow(unittest.TestCase):
             "changelog-guard.yml",
         ):
             self.assertTrue((workflows / name).is_file(), msg=name)
+
+    def test_tag_release_workflow_yaml_parses(self) -> None:
+        """Bare ``chore(release):`` in an unquoted ``if:`` breaks Actions YAML.
+
+        GitHub then reports the run as failed with zero jobs on every push to
+        main. The expression must be double-quoted; prefer ``contains`` so
+        merge-commit messages still match.
+        """
+        text = _tag_release_workflow_text()
+        yaml.safe_load(text)
+        self.assertRegex(
+            text,
+            r'(?m)^\s+if:\s+"contains\(github\.event\.head_commit\.message, '
+            r"'chore\(release\): bump version to '\)\"\s*$",
+        )
+        # VERSION parse must scan the full message (merge commits put the
+        # chore line in the body, not on line 1).
+        self.assertNotIn("| head -n1 | sed -n", text)
+
+    def test_tag_release_workflow_version_extraction(self) -> None:
+        """VERSION sed must match direct and merge-commit message shapes."""
+        text = _tag_release_workflow_text()
+        sed_expr = _tag_release_version_sed_expr(text)
+        expected = "3.18.3"
+        direct = f"chore(release): bump version to {expected}"
+        merge = (
+            "Merge pull request #879 from mvanhorn/release/v3.18.3\n\n"
+            f"chore(release): bump version to {expected}"
+        )
+        for message in (direct, merge):
+            with self.subTest(message=message.splitlines()[0]):
+                self.assertEqual(
+                    _parse_release_version_from_message(message, sed_expr),
+                    expected,
+                )
 
     def test_changelog_guard_run_blocks_stay_indented(self) -> None:
         """Column-0 lines inside ``run: |`` break Actions YAML parsing."""

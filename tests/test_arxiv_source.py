@@ -46,6 +46,28 @@ def test_search_query_strips_inner_quotes():
     assert q == 'all:"say hello world"'
 
 
+def test_unquoted_fallback_search_args_conjoin_terms_at_command_boundary():
+    args = arxiv._build_search_args("AI video generation advances", 10, quoted=False)
+    assert args == [
+        "arxiv-pp-cli",
+        "query",
+        "--search-query",
+        'all:"AI" AND all:"video" AND all:"generation" AND all:"advances"',
+        "--sort-by",
+        "relevance",
+        "--max-results",
+        "10",
+        "--agent",
+    ]
+
+
+def test_unquoted_fallback_quotes_operator_and_colon_terms_at_command_boundary():
+    args = arxiv._build_search_args("AI AND OR title:video", 5, quoted=False)
+    assert args[args.index("--search-query") + 1] == (
+        'all:"AI" AND all:"AND" AND all:"OR" AND all:"title:video"'
+    )
+
+
 # ---- envelope extraction ----
 
 def test_extract_entries_handles_nested_results_envelope():
@@ -165,3 +187,99 @@ def test_run_cli_bad_json_returns_error(monkeypatch):
     monkeypatch.setattr(arxiv.subproc, "run_with_timeout", lambda cmd, timeout: _Proc(0, "not json"))
     resp = arxiv.search_arxiv("topic", "2026-06-01", "2026-06-27")
     assert resp["results"] == [] and "error" in resp
+
+
+def test_empty_stdout_returns_error_without_retry(monkeypatch):
+    monkeypatch.setattr(arxiv, "_is_available", lambda: True)
+    calls = []
+
+    def fake_run(cmd, timeout):
+        calls.append(cmd)
+        return _Proc(0, "")
+
+    monkeypatch.setattr(arxiv.subproc, "run_with_timeout", fake_run)
+    resp = arxiv.search_arxiv("topic", "2026-06-01", "2026-06-27")
+    assert resp == {"results": [], "error": "empty stdout"}
+    assert len(calls) == 1
+
+
+def test_unrecognized_json_returns_error_without_retry(monkeypatch):
+    monkeypatch.setattr(arxiv, "_is_available", lambda: True)
+    calls = []
+
+    def fake_run(cmd, timeout):
+        calls.append(cmd)
+        return _Proc(0, '{"status":"ok"}')
+
+    monkeypatch.setattr(arxiv.subproc, "run_with_timeout", fake_run)
+    resp = arxiv.search_arxiv("topic", "2026-06-01", "2026-06-27")
+    assert resp == {"results": [], "error": "unrecognized JSON response"}
+    assert len(calls) == 1
+
+
+def test_recognized_empty_list_retries(monkeypatch):
+    monkeypatch.setattr(arxiv, "_is_available", lambda: True)
+    calls = []
+
+    def fake_run(cmd, timeout):
+        calls.append(cmd)
+        return _Proc(0, "[]")
+
+    monkeypatch.setattr(arxiv.subproc, "run_with_timeout", fake_run)
+    resp = arxiv.search_arxiv("topic", "2026-06-01", "2026-06-27")
+    assert resp == {"results": []}
+    assert len(calls) == 2
+
+
+# ---- unquoted-retry on zero results (#908) ----
+
+def test_zero_result_quoted_query_retries_unquoted_and_finds_results(monkeypatch):
+    """A natural-language multi-word topic matches nothing as an exact
+    phrase, but the unquoted retry finds it -- the fix for #908."""
+    monkeypatch.setattr(arxiv, "_is_available", lambda: True)
+    calls = []
+
+    def fake_run(cmd, timeout):
+        calls.append(cmd)
+        query = cmd[cmd.index("--search-query") + 1]
+        if query == 'all:"AI video generation advances"':
+            return _Proc(0, '{"results":{"entries":[]}}')
+        return _Proc(0, '{"results":{"entries":[{"title":"AI video generation advances"}]}}')
+
+    monkeypatch.setattr(arxiv.subproc, "run_with_timeout", fake_run)
+    resp = arxiv.search_arxiv("AI video generation advances", "2026-06-01", "2026-06-27")
+    assert resp["results"] == [{"title": "AI video generation advances"}]
+    assert len(calls) == 2
+    assert 'all:"AI video generation advances"' in calls[0]
+    assert 'all:"AI" AND all:"video" AND all:"generation" AND all:"advances"' in calls[1]
+
+
+def test_zero_result_quoted_query_retry_also_empty_returns_empty(monkeypatch):
+    monkeypatch.setattr(arxiv, "_is_available", lambda: True)
+    calls = []
+
+    def fake_run(cmd, timeout):
+        calls.append(cmd)
+        return _Proc(0, '{"results":{"entries":[]}}')
+
+    monkeypatch.setattr(arxiv.subproc, "run_with_timeout", fake_run)
+    resp = arxiv.search_arxiv("truly obscure nonsense topic", "2026-06-01", "2026-06-27")
+    assert resp["results"] == []
+    assert "error" not in resp
+    assert len(calls) == 2
+
+
+def test_real_cli_error_does_not_trigger_unquoted_retry(monkeypatch):
+    """A genuine failure (nonzero exit) must not retry -- only a clean
+    zero-result success should (R6)."""
+    monkeypatch.setattr(arxiv, "_is_available", lambda: True)
+    calls = []
+
+    def fake_run(cmd, timeout):
+        calls.append(cmd)
+        return _Proc(1, "", "boom")
+
+    monkeypatch.setattr(arxiv.subproc, "run_with_timeout", fake_run)
+    resp = arxiv.search_arxiv("topic", "2026-06-01", "2026-06-27")
+    assert resp["results"] == [] and "boom" in resp["error"]
+    assert len(calls) == 1

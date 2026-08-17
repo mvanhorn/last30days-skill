@@ -68,6 +68,10 @@ Agents open most PRs. Follow this so `CHANGELOG.md` stops conflicting and versio
 - Keep examples safe by redacting secrets and avoiding copy/pasteable live credentials in docs, fixtures, and test data.
 - Do not weaken or disable the advisory security workflow (`.github/workflows/security.yml`) without explaining why in the PR description or review thread.
 
+## Maintaining README translations
+
+`README.md` is the canonical English README. When changing it, reflect the same substantive updates in `README.fr.md`, `README.de.md`, `README.es.md`, `README.pt-BR.md`, `README.ja.md`, and `README.zh-CN.md`, preserving commands, links, tables, and reciprocal language navigation.
+
 ## Maintaining CONFIGURATION.md
 
 `CONFIGURATION.md` is the user-facing configuration reference — save paths, per-source API keys, web-search backend priority, trend-monitoring stack, per-client install patterns. Distinct from `SKILL.md` (the canonical runtime spec).

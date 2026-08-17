@@ -17,6 +17,8 @@ from typing import Any, Dict, Optional, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from . import brightdata
+
 logger = logging.getLogger(__name__)
 
 
@@ -112,11 +114,17 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
                     cookies_found[source_name] = result[1]
                     break  # Found cookies for this service, stop trying browsers
 
-    # Check yt-dlp availability and install via Homebrew if missing
+    # Check yt-dlp availability and install via Homebrew if missing. Windows
+    # has no Homebrew, and its working install path is `pip install yt-dlp`
+    # (see #904), so it gets its own no-op-install guidance branch instead of
+    # falling into the Homebrew-oriented no_homebrew outcome.
     ytdlp_action: str
     if shutil.which("yt-dlp") is not None:
         ytdlp_installed = True
         ytdlp_action = "already_installed"
+    elif os.name == "nt":
+        ytdlp_installed = False
+        ytdlp_action = "no_pip_windows"
     elif shutil.which("brew") is not None:
         brew_stderr = ""
         try:
@@ -153,6 +161,12 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         # Per-CLI status for the additional default-on Printing Press sources
         # (arxiv, techmeme, trustpilot): {source: {installed, action, ...}}.
         "pp_sources": pp_sources,
+        # Reported, never installed: this CLI spends the user's own metered
+        # credits, so acquiring it stays their decision (U5/R11). Passing
+        # config matters: a user whose key lives in a .env file or the
+        # keychain (rather than a `brightdata login` credentials file) is
+        # active in the engine, and setup must not tell them otherwise.
+        "brightdata": brightdata_status(config),
         "env_written": False,
     }
     if ytdlp_action == "install_failed":
@@ -226,6 +240,46 @@ def _digg_bin_dir_hint(digg_path: str) -> str:
     return parent
 
 
+def _run_npx_install(slug: str) -> Tuple[str, str]:
+    """Resolve ``npx`` and run the Printing Press catalog install for ``slug``.
+
+    Shared by ``_install_digg_cli`` and ``_install_pp_cli`` -- this is only the
+    "resolve npx, run the install, interpret no_npx/exception/nonzero-rc"
+    slice; each caller keeps its own on-path/off-path re-verification
+    (``_digg_bin_candidate_paths`` vs ``_pp_bin_candidate_paths`` already use
+    different candidate-directory sources, so merging them here would change
+    off-path detection behavior beyond this fix's scope).
+
+    Fixes the Windows PATHEXT mismatch: ``shutil.which("npx")`` resolves
+    ``npx.CMD`` via PATHEXT, but ``subprocess.run`` given the bare string
+    ``"npx"`` as argv[0] does not do that resolution and fails with
+    ``WinError 2``. Passing the resolved path is a no-op on macOS/Linux, where
+    ``shutil.which`` already returns the exact path ``CreateProcess``/``execve``
+    would resolve.
+
+    Returns ``(action, stderr)``: ``action`` is ``"no_npx"``,
+    ``"install_failed"``, or ``""`` when the subprocess ran and returned
+    ``rc=0`` (in which case ``stderr`` carries any non-fatal stderr output for
+    the caller's own off-path logging).
+    """
+    npx = shutil.which("npx")
+    if npx is None:
+        return "no_npx", ""
+    try:
+        proc = subprocess.run(
+            [npx, "-y", PRINTING_PRESS_NPM, "install", slug, "--cli-only"],
+            capture_output=True, text=True, timeout=DIGG_INSTALL_TIMEOUT,
+        )
+    except Exception as exc:
+        logger.warning("npx install %s exception: %s", slug, exc)
+        return "install_failed", str(exc)
+    if proc.returncode != 0:
+        stderr = proc.stderr or f"npx install {slug} exited {proc.returncode}"
+        logger.warning("npx install %s failed (rc=%s): %s", slug, proc.returncode, stderr)
+        return "install_failed", stderr
+    return "", (proc.stderr or "")
+
+
 def _install_digg_cli() -> Tuple[bool, str, str, str]:
     """Best-effort install of the digg-pp-cli binary.
 
@@ -247,32 +301,21 @@ def _install_digg_cli() -> Tuple[bool, str, str, str]:
     off_path = _digg_off_path_binary()
     if off_path:
         return False, "installed_off_path", "", off_path
-    if shutil.which("npx") is None:
-        return False, "no_npx", "", ""
-    try:
-        proc = subprocess.run(
-            ["npx", "-y", PRINTING_PRESS_NPM, "install", "digg", "--cli-only"],
-            capture_output=True, text=True, timeout=DIGG_INSTALL_TIMEOUT,
-        )
-    except Exception as exc:
-        logger.warning("npx install digg exception: %s", exc)
-        return False, "install_failed", str(exc), ""
-    if proc.returncode != 0:
-        stderr = proc.stderr or f"npx install digg exited {proc.returncode}"
-        logger.warning("npx install digg failed (rc=%s): %s", proc.returncode, stderr)
-        return False, "install_failed", stderr, ""
+    action, stderr = _run_npx_install("digg")
+    if action:
+        return False, action, stderr, ""
     on_path = _digg_on_path()
     if on_path:
         return True, "installed", "", ""
     off_path = _digg_off_path_binary()
     if off_path:
-        combined = (proc.stderr or "").strip()
+        combined = stderr.strip()
         if combined:
             logger.warning("digg-pp-cli installed off PATH: %s", combined)
         return False, "installed_off_path", combined, off_path
-    stderr = proc.stderr or "install completed but digg-pp-cli was not found"
-    logger.warning("npx install digg failed verification: %s", stderr)
-    return False, "install_failed", stderr, ""
+    stderr_msg = stderr or "install completed but digg-pp-cli was not found"
+    logger.warning("npx install digg failed verification: %s", stderr_msg)
+    return False, "install_failed", stderr_msg, ""
 
 
 # Additional default-on Printing Press sources installed the same way as Digg:
@@ -286,6 +329,85 @@ PP_DEFAULT_SOURCES: list[tuple[str, str, str]] = [
     ("arxiv", "arxiv", "arxiv-pp-cli"),
     ("techmeme", "techmeme", "techmeme-pp-cli"),
 ]
+
+# Bright Data is deliberately absent from PP_DEFAULT_SOURCES: it is not a
+# Printing Press CLI, it is opt-in like Trustpilot, and it spends the user's
+# own metered credits. Setup reports its state and never installs it.
+BRIGHTDATA_BIN = "brightdata"
+
+
+def _brightdata_off_path_binary() -> Optional[str]:
+    """Locate a brightdata binary that exists on disk but not on PATH.
+
+    Covers the common npm global prefixes. The distinction matters because
+    Hermes and OpenClaw gateways routinely run the engine with a PATH that
+    excludes the user's npm bin directory, so "installed" and "the engine
+    can see it" are different questions.
+    """
+    home = Path.home()
+    candidates = [
+        home / ".local" / "bin" / BRIGHTDATA_BIN,
+        home / ".npm-global" / "bin" / BRIGHTDATA_BIN,
+        Path("/opt/homebrew/bin") / BRIGHTDATA_BIN,
+        Path("/usr/local/bin") / BRIGHTDATA_BIN,
+    ]
+    npm_prefix = os.environ.get("NPM_CONFIG_PREFIX")
+    if npm_prefix:
+        candidates.insert(0, Path(npm_prefix) / "bin" / BRIGHTDATA_BIN)
+    for candidate in candidates:
+        try:
+            if candidate.is_file() and os.access(candidate, os.X_OK):
+                return str(candidate)
+        except OSError:
+            continue
+    return None
+
+
+def brightdata_status(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Report the Bright Data install and auth state honestly.
+
+    Deliberately never claims the source is active unless the engine's own
+    gate would pass -- ``brightdata.is_available`` is the single predicate,
+    so setup and the engine cannot drift apart. Three states matter:
+
+    * ``already_installed``  -- on PATH; ``authenticated`` says whether the
+      amazon lane will actually run.
+    * ``installed_off_path`` -- on disk but invisible to the engine, which
+      is the Hermes/OpenClaw failure mode. Carries the path so the user can
+      fix their PATH.
+    * ``not_installed``      -- nothing found. No auto-install: this CLI
+      spends the user's metered credits, so acquiring it is their call.
+    """
+    installed = brightdata.is_installed()
+    authenticated = brightdata.has_credentials(config)
+    if installed:
+        action = "already_installed"
+        off_path = ""
+    else:
+        off_path = _brightdata_off_path_binary() or ""
+        action = "installed_off_path" if off_path else "not_installed"
+
+    status: Dict[str, Any] = {
+        "installed": installed,
+        "action": action,
+        "authenticated": installed and authenticated,
+        # The engine gate, verbatim. Never report active on anything else.
+        "engine_active": brightdata.is_available(config),
+    }
+    if off_path:
+        status["path"] = off_path
+        status["hint"] = (
+            f"brightdata found at {off_path} but not on PATH; add its directory "
+            "to PATH so the engine subprocess can see it"
+        )
+    elif installed and not authenticated:
+        status["hint"] = "run `brightdata login` to activate the amazon source"
+    elif not installed:
+        status["hint"] = (
+            "install with `npm i -g @brightdata/cli` then `brightdata login` "
+            "to enable the amazon source"
+        )
+    return status
 
 
 def _pp_bin_candidate_paths(bin_name: str) -> list[Path]:
@@ -328,32 +450,21 @@ def _install_pp_cli(slug: str, bin_name: str) -> Tuple[bool, str, str, str]:
     off_path = _pp_off_path_binary(bin_name)
     if off_path:
         return False, "installed_off_path", "", off_path
-    if shutil.which("npx") is None:
-        return False, "no_npx", "", ""
-    try:
-        proc = subprocess.run(
-            ["npx", "-y", PRINTING_PRESS_NPM, "install", slug, "--cli-only"],
-            capture_output=True, text=True, timeout=DIGG_INSTALL_TIMEOUT,
-        )
-    except Exception as exc:
-        logger.warning("npx install %s exception: %s", slug, exc)
-        return False, "install_failed", str(exc), ""
-    if proc.returncode != 0:
-        stderr = proc.stderr or f"npx install {slug} exited {proc.returncode}"
-        logger.warning("npx install %s failed (rc=%s): %s", slug, proc.returncode, stderr)
-        return False, "install_failed", stderr, ""
+    action, stderr = _run_npx_install(slug)
+    if action:
+        return False, action, stderr, ""
     on_path = shutil.which(bin_name)
     if on_path:
         return True, "installed", "", ""
     off_path = _pp_off_path_binary(bin_name)
     if off_path:
-        combined = (proc.stderr or "").strip()
+        combined = stderr.strip()
         if combined:
             logger.warning("%s installed off PATH: %s", bin_name, combined)
         return False, "installed_off_path", combined, off_path
-    stderr = proc.stderr or f"install completed but {bin_name} was not found"
-    logger.warning("npx install %s failed verification: %s", slug, stderr)
-    return False, "install_failed", stderr, ""
+    stderr_msg = stderr or f"install completed but {bin_name} was not found"
+    logger.warning("npx install %s failed verification: %s", slug, stderr_msg)
+    return False, "install_failed", stderr_msg, ""
 
 
 def install_default_pp_sources() -> Dict[str, Dict[str, Any]]:
@@ -555,6 +666,11 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
         lines.append("  - yt-dlp install failed \u2014 run `brew install yt-dlp` manually")
     elif ytdlp_action == "no_homebrew":
         lines.append("  - yt-dlp not found. Install Homebrew first, then: brew install yt-dlp")
+    elif ytdlp_action == "no_pip_windows":
+        lines.append(
+            "  - yt-dlp not found. Install with: pip install yt-dlp "
+            "(it may install to a Scripts directory not on PATH -- add it to PATH if YouTube search stays inactive)"
+        )
     elif ytdlp_action == "already_installed":
         lines.append("  - yt-dlp already installed")
     elif results.get("ytdlp_installed", False):
@@ -623,6 +739,33 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
                 f"  - {name} CLI not installed (free, optional). Install Node/npx, "
                 f"then: `npx -y {PRINTING_PRESS_NPM} install {source_key} --cli-only`"
             )
+
+    # Bright Data / Amazon. Reported but never installed (it spends the user's
+    # own metered credits), so the only useful thing setup can do is say
+    # precisely why the lane is or is not active -- the three states below are
+    # otherwise invisible, since SKILL.md tells the model not to raise the
+    # subject mid-run.
+    brightdata_status_entry = results.get("brightdata") or {}
+    bd_action = brightdata_status_entry.get("action", "")
+    if brightdata_status_entry.get("engine_active"):
+        lines.append("  - Bright Data CLI ready (Amazon buyer signals available)")
+    elif bd_action == "already_installed":
+        lines.append(
+            "  - Bright Data CLI installed but not logged in — run "
+            "`brightdata login` to enable Amazon buyer signals (optional)"
+        )
+    elif bd_action == "installed_off_path":
+        bd_path = brightdata_status_entry.get("path", "")
+        lines.append(
+            f"  - Bright Data CLI found at {bd_path} but not on PATH — add "
+            f"{os.path.dirname(os.path.expanduser(bd_path))} to PATH and restart "
+            "your agent session/gateway for Amazon buyer signals to activate"
+        )
+    elif bd_action == "not_installed":
+        lines.append(
+            "  - Amazon buyer signals not installed (optional; 5,000 free "
+            "requests/month). Install with: npm i -g @brightdata/cli && brightdata login"
+        )
 
     env_written = results.get("env_written", False)
     if env_written:
