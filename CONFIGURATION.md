@@ -135,7 +135,7 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | Source | Key(s) | Required for | Free tier |
 |---|---|---|---|
 | Local corpus | `--corpus <dir>` or `LAST30DAYS_CORPUS_DIRS` | private `.md`/`.txt`; `.pdf` when `pdftotext` is on PATH | yes (offline) |
-| Reddit (public) | none (default free keyless path). With `SCRAPECREATORS_API_KEY`: empty-only search backup by default; `LAST30DAYS_REDDIT_SC_MIN_ITEMS=<N>` backfills thin free runs; `LAST30DAYS_REDDIT_BACKEND=scrapecreators` pins SC primary with free fallback | always on; SC knobs require `SCRAPECREATORS_API_KEY` | yes |
+| Reddit (public) | none (default free keyless path). If the read-only `rdt` CLI is installed, it is tried first; set `LAST30DAYS_RDT_CLI=/path/to/rdt` to select an explicit executable. With `SCRAPECREATORS_API_KEY`: empty-only search backup by default; `LAST30DAYS_REDDIT_SC_MIN_ITEMS=<N>` backfills thin free runs; `LAST30DAYS_REDDIT_BACKEND=scrapecreators` pins SC primary with free fallback | always on; `rdt` is optional and read-only; SC knobs require `SCRAPECREATORS_API_KEY` | yes |
 | Hacker News | none | always on | yes |
 | Polymarket | none | always on | yes |
 | StockTwits | none | auto-on for ticker/crypto topics only (gated by symbol detection); never registered for non-financial topics | yes (public API, ~200 req/hr per IP) |

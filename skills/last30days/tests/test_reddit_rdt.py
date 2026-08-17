@@ -31,6 +31,27 @@ class RdtAdapterTests(unittest.TestCase):
         self.assertIn("--subreddit", args)
 
     @patch("scripts.lib.reddit_rdt._command", return_value="rdt")
+    @patch("scripts.lib.reddit_rdt.subprocess.run")
+    def test_prefers_reddit_permalink_over_external_link(self, run, _command):
+        run.return_value = self._proc([
+            {
+                "id": "t3_linkpost",
+                "title": "Link post",
+                "url": "https://example.com/article",
+                "permalink": "/r/hermesagent/comments/linkpost/link_post/",
+                "subreddit": "hermesagent",
+            },
+        ])
+
+        items, outcome = reddit_rdt.search("Link post", "2026-08-01", "2026-08-31")
+
+        self.assertIsNone(outcome)
+        self.assertEqual(
+            items[0]["url"],
+            "https://www.reddit.com/r/hermesagent/comments/linkpost/link_post/",
+        )
+
+    @patch("scripts.lib.reddit_rdt._command", return_value="rdt")
     @patch("scripts.lib.reddit_rdt.subprocess.run", side_effect=subprocess.TimeoutExpired("rdt", 20))
     def test_timeout_is_typed(self, run, _command):
         items, outcome = reddit_rdt.search("x", "2026-08-01", "2026-08-31")

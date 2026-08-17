@@ -52,7 +52,10 @@ def _subreddit(value: Any) -> str:
 
 
 def _url(row: Dict[str, Any]) -> str:
-    value = str(row.get("url") or row.get("permalink") or "").strip()
+    # Link posts may expose the linked article in ``url`` while the Reddit
+    # thread itself is in ``permalink``. Keep the thread as the canonical
+    # result URL so we do not lose the Reddit post's identity and metadata.
+    value = str(row.get("permalink") or row.get("url") or "").strip()
     if value.startswith("/"):
         return "https://www.reddit.com" + value
     return value if "reddit.com" in value else ""
