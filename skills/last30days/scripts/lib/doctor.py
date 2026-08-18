@@ -687,8 +687,13 @@ def _truthsocial_record(config):
 
 
 def _perplexity_record(config):
-    requires = "PERPLEXITY_API_KEY or OPENROUTER_API_KEY + INCLUDE_SOURCES=perplexity"
-    has_key = bool(config.get("PERPLEXITY_API_KEY") or config.get("OPENROUTER_API_KEY"))
+    requires = (
+        "PERPLEXITY_API_KEY or OPENROUTER_API_KEY + "
+        "INCLUDE_SOURCES=perplexity"
+    )
+    has_direct_key = bool(config.get("PERPLEXITY_API_KEY"))
+    has_openrouter_key = bool(config.get("OPENROUTER_API_KEY"))
+    has_key = has_direct_key or has_openrouter_key
     include = env.include_sources(config)
     if not has_key:
         return _record(
@@ -699,7 +704,15 @@ def _perplexity_record(config):
             ),
         )
     if "perplexity" in include:
-        return _record(status=health.OK, requires=requires)
+        return _record(
+            status=health.OK,
+            requires=requires,
+            note=(
+                "direct Agent/Search APIs"
+                if has_direct_key
+                else "OpenRouter Sonar compatibility fallback"
+            ),
+        )
     return _record(
         status="opt-in", requires=requires,
         fix="add perplexity to INCLUDE_SOURCES (or request it via --search perplexity)",

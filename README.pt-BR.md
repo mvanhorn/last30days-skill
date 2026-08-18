@@ -81,7 +81,7 @@ Se você vai se reunir com um CEO, já leu todos os tweets e todas as transcriç
 | **Pinterest** | Descoberta visual. Pins, itens salvos e comentários sobre produtos e ideias. |
 | **Xiaohongshu (RED)** | Sinais chineses sobre estilo de vida, produtos e criadores. É pedido explicitamente com `--search xhs` quando há um plugin de navegador x-mcp logado ou um serviço `xiaohongshu-mcp` rodando localmente. |
 | **Bluesky** | A camada social descentralizada. Publicações do AT Protocol vindas da migração pós-Twitter. |
-| **Perplexity** | A síntese fundamentada do Sonar, os resultados brutos da Search API e o Deep Research. |
+| **Perplexity** | Síntese controlada da Agent API, alternativa Sonar via OpenRouter, resultados brutos da Search API e Deep Research explícito. |
 | **Web** | A cobertura editorial, as comparações de blog. Um sinal entre muitos, não o único. |
 
 A comunidade não para de acrescentar fontes. Truth Social e outras fontes de nicho já estão no motor, e vêm mais por aí.
@@ -295,7 +295,7 @@ Essas plataformas não têm relação nenhuma entre si. O X não sabe o que o Re
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + comentários do YouTube | Uma chave do ScrapeCreators | 10.000 chamadas gratuitas e depois pagamento por uso |
 | Xiaohongshu (RED) | Deixe rodando um plugin de navegador x-mcp logado ou um serviço `xiaohongshu-mcp` e habilite a fonte com `--search xhs` por execução ou com `INCLUDE_SOURCES=xiaohongshu` no `.env`; o last30days testa automaticamente `http://localhost:18060` e depois `http://host.docker.internal:18060`, ou use `XIAOHONGSHU_API_BASE` para uma URL própria | Não precisa de chave de API do last30days; depende do seu serviço local de sessão de navegador |
 | DripStack (newsletters financeiras premium) | Opcional: `--search dripstack` por execução, ou `INCLUDE_SOURCES=dripstack` no `.env` | Sem chave; API de busca pública e gratuita |
-| Perplexity Sonar / Search API / Deep Research | Uma chave do Perplexity, ou uma chave do OpenRouter como alternativa para o Sonar | Pagamento por uso |
+| Perplexity Agent API / Search API / Deep Research | Uma chave do Perplexity, ou uma chave do OpenRouter como alternativa para o Sonar | Pagamento por uso; uma chave direta ativa a Agent API e o Deep Research em segundo plano |
 | Busca na web | Uma chave do Brave Search | 2.000 consultas gratuitas por mês |
 
 ### Keychain do macOS (opcional)

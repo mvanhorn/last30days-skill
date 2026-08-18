@@ -3,6 +3,7 @@ import unittest
 from unittest.mock import patch
 
 from lib import health
+from lib import fanout
 from lib import http
 from lib import pipeline
 from lib import schema
@@ -250,6 +251,14 @@ class PipelineV3Tests(unittest.TestCase):
 
 
 class TestSourceFetchCap(unittest.TestCase):
+    def test_paid_budget_rejects_non_owner_before_owner_claims(self):
+        paid_budget = pipeline.PaidSourceBudget(owner="main")
+
+        self.assertFalse(paid_budget.try_consume(1, claimant="peer"))
+        self.assertEqual(0, paid_budget.used)
+        self.assertTrue(paid_budget.try_consume(1, claimant="main"))
+        self.assertEqual(1, paid_budget.used)
+
     """X source fetch count must be capped by MAX_SOURCE_FETCHES."""
 
     def test_x_capped_in_max_source_fetches(self):
@@ -260,6 +269,50 @@ class TestSourceFetchCap(unittest.TestCase):
     def test_jobs_capped_in_max_source_fetches(self):
         self.assertIn("jobs", pipeline.MAX_SOURCE_FETCHES)
         self.assertEqual(pipeline.MAX_SOURCE_FETCHES["jobs"], 1)
+
+    def test_perplexity_paid_call_cap_cannot_be_raised_by_generic_override(self):
+        self.assertEqual(
+            1,
+            pipeline._source_fetch_cap(
+                "perplexity",
+                {"_max_source_fetches": 10},
+            ),
+        )
+        self.assertEqual(
+            0,
+            pipeline._source_fetch_cap(
+                "perplexity",
+                {"_max_source_fetches": 0},
+            ),
+        )
+
+    def test_deep_research_lane_is_isolated_and_does_not_replace_primary(self):
+        primary = schema.SubQuery(
+            label="primary",
+            search_query="narrow angle",
+            ranking_query="narrow angle",
+            sources=["reddit", "grounding", "perplexity"],
+        )
+        plan = schema.QueryPlan(
+            intent="general",
+            freshness_mode="balanced_recent",
+            cluster_mode="story",
+            raw_topic="whole topic",
+            subqueries=[primary],
+            source_weights={"reddit": 1.0, "grounding": 1.0, "perplexity": 1.0},
+        )
+
+        pipeline._ensure_perplexity_in_plan(
+            plan,
+            "whole topic",
+            ["reddit", "grounding", "perplexity"],
+            force=True,
+        )
+
+        self.assertEqual("primary", plan.subqueries[0].label)
+        self.assertEqual(["reddit", "grounding"], plan.subqueries[0].sources)
+        self.assertEqual("deep-research", plan.subqueries[-1].label)
+        self.assertEqual(["perplexity"], plan.subqueries[-1].sources)
 
     def test_cap_logic_limits_source_submissions(self):
         """Verify the cap logic skips submissions beyond the limit."""
@@ -334,6 +387,196 @@ class TestSourceFetchCap(unittest.TestCase):
         ]
         self.assertEqual([], x_calls)
         self.assertGreater(len(reddit_calls), 0)
+
+    @patch("lib.pipeline._retrieve_stream")
+    def test_deep_research_subquery_fanout_submits_once(self, mock_retrieve):
+        mock_retrieve.return_value = ([], {})
+        plan = {
+            "intent": "comparison",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "debate",
+            "subqueries": [
+                {
+                    "label": f"angle-{index}",
+                    "search_query": f"topic angle {index}",
+                    "ranking_query": f"topic angle {index}",
+                    "sources": ["perplexity"],
+                }
+                for index in range(3)
+            ],
+            "source_weights": {"perplexity": 1.0},
+        }
+
+        pipeline.run(
+            topic="whole topic",
+            config={
+                "LAST30DAYS_REASONING_PROVIDER": "gemini",
+                "PERPLEXITY_API_KEY": "pplx-test",
+                "_deep_research": True,
+                "_max_source_fetches": 10,
+            },
+            depth="default",
+            requested_sources=["reddit", "perplexity"],
+            mock=True,
+            external_plan=plan,
+        )
+
+        perplexity_calls = [
+            call
+            for call in mock_retrieve.call_args_list
+            if call.kwargs.get("source") == "perplexity"
+        ]
+        self.assertEqual(1, len(perplexity_calls))
+        self.assertEqual(
+            "whole topic",
+            perplexity_calls[0].kwargs["subquery"].search_query,
+        )
+
+    @patch("lib.pipeline._retrieve_stream")
+    def test_normal_perplexity_subquery_fanout_submits_once(self, mock_retrieve):
+        mock_retrieve.return_value = ([], {})
+        plan = {
+            "intent": "comparison",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "debate",
+            "subqueries": [
+                {
+                    "label": f"angle-{index}",
+                    "search_query": f"topic angle {index}",
+                    "ranking_query": f"topic angle {index}",
+                    "sources": ["perplexity"],
+                }
+                for index in range(4)
+            ],
+            "source_weights": {"perplexity": 1.0},
+        }
+
+        pipeline.run(
+            topic="whole topic",
+            config={
+                "LAST30DAYS_REASONING_PROVIDER": "gemini",
+                "PERPLEXITY_API_KEY": "pplx-test",
+                "_max_source_fetches": 10,
+            },
+            depth="default",
+            requested_sources=["perplexity"],
+            mock=True,
+            external_plan=plan,
+        )
+
+        perplexity_calls = [
+            call
+            for call in mock_retrieve.call_args_list
+            if call.kwargs.get("source") == "perplexity"
+        ]
+        self.assertEqual(1, len(perplexity_calls))
+        self.assertEqual(
+            "whole topic",
+            perplexity_calls[0].kwargs["subquery"].search_query,
+        )
+
+    @patch("lib.pipeline._retrieve_stream")
+    def test_shared_paid_budget_caps_competitor_subruns(self, mock_retrieve):
+        mock_retrieve.return_value = ([], {})
+        paid_budget = pipeline.PaidSourceBudget()
+        plan = {
+            "intent": "general",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "story",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "entity angle",
+                    "ranking_query": "entity angle",
+                    "sources": ["perplexity"],
+                }
+            ],
+            "source_weights": {"perplexity": 1.0},
+        }
+
+        for entity in ("main", "peer-a", "peer-b"):
+            pipeline.run(
+                topic=entity,
+                config={
+                    "LAST30DAYS_REASONING_PROVIDER": "gemini",
+                    "PERPLEXITY_API_KEY": "pplx-test",
+                    "_perplexity_paid_budget": paid_budget,
+                },
+                depth="quick",
+                requested_sources=["perplexity"],
+                mock=True,
+                external_plan=plan,
+                internal_subrun=True,
+            )
+
+        perplexity_calls = [
+            call
+            for call in mock_retrieve.call_args_list
+            if call.kwargs.get("source") == "perplexity"
+        ]
+        self.assertEqual(1, len(perplexity_calls))
+        self.assertEqual(1, paid_budget.used)
+
+    @patch("lib.pipeline._retrieve_stream")
+    def test_shared_paid_budget_is_reserved_for_main_competitor_topic(
+        self,
+        mock_retrieve,
+    ):
+        mock_retrieve.return_value = ([], {})
+        paid_budget = pipeline.PaidSourceBudget(owner="main")
+        barrier = threading.Barrier(3)
+        plan = {
+            "intent": "general",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "story",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "entity angle",
+                    "ranking_query": "entity angle",
+                    "sources": ["perplexity"],
+                }
+            ],
+            "source_weights": {"perplexity": 1.0},
+        }
+
+        def run_entity(entity):
+            barrier.wait()
+            return pipeline.run(
+                topic=entity,
+                config={
+                    "LAST30DAYS_REASONING_PROVIDER": "gemini",
+                    "PERPLEXITY_API_KEY": "pplx-test",
+                    "_perplexity_paid_budget": paid_budget,
+                },
+                depth="quick",
+                requested_sources=["perplexity"],
+                mock=True,
+                external_plan=plan,
+                internal_subrun=True,
+            )
+
+        results = fanout.run_competitor_fanout(
+            main_topic="main",
+            main_runner=lambda: run_entity("main"),
+            competitors=["peer-a", "peer-b"],
+            competitor_runner=run_entity,
+        )
+
+        perplexity_calls = [
+            call
+            for call in mock_retrieve.call_args_list
+            if call.kwargs.get("source") == "perplexity"
+        ]
+        self.assertEqual(1, len(perplexity_calls))
+        self.assertEqual("main", perplexity_calls[0].kwargs["topic"])
+        self.assertEqual(1, paid_budget.used)
+        for entity, report in results[1:]:
+            receipt = report.artifacts["paid_source_budget"]["perplexity"]
+            self.assertEqual("skipped-budget", receipt["state"])
+            self.assertFalse(receipt["attempted"])
+            self.assertEqual("main", receipt["owner"])
+            self.assertEqual(entity, receipt["claimant"])
 
 
 class TestRateLimitSharing(unittest.TestCase):
@@ -1361,6 +1604,41 @@ class TestThinSourceRetry(unittest.TestCase):
             )
             mock_retrieve.assert_not_called()
 
+    def test_perplexity_is_not_retried_when_results_are_thin(self):
+        plan = schema.QueryPlan(
+            intent="general",
+            freshness_mode="balanced_recent",
+            cluster_mode="story",
+            raw_topic="AI safety",
+            subqueries=[
+                schema.SubQuery(
+                    label="primary",
+                    search_query="AI safety",
+                    ranking_query="AI safety",
+                    sources=["perplexity"],
+                )
+            ],
+            source_weights={"perplexity": 1.0},
+        )
+        bundle = schema.RetrievalBundle()
+
+        with patch("lib.pipeline._retrieve_stream") as mock_retrieve:
+            pipeline._retry_thin_sources(
+                topic="AI safety",
+                bundle=bundle,
+                plan=plan,
+                config={},
+                depth="default",
+                date_range=("2026-02-15", "2026-03-17"),
+                runtime=_make_runtime(),
+                mock=False,
+                rate_limited_sources=set(),
+                rate_limit_lock=threading.Lock(),
+                settings=pipeline.DEPTH_SETTINGS["default"],
+            )
+
+        mock_retrieve.assert_not_called()
+
 
 class TestErrorCleanup(unittest.TestCase):
     """Source errors should be cleared when the source has items from other subqueries."""
@@ -1713,6 +1991,37 @@ class TestExcludeSources(unittest.TestCase):
 
 
 class TestPerplexityAvailability(unittest.TestCase):
+    def test_agent_background_failure_uses_safe_provider_detail(self):
+        outcome = pipeline._legacy_artifact_outcome(
+            "perplexity",
+            {
+                "error": "failed",
+                "backgroundErrorMessage": "Provider reported an incomplete run",
+            },
+        )
+
+        self.assertEqual(health.ERROR, outcome["state"])
+        self.assertEqual("Provider reported an incomplete run", outcome["detail"])
+
+    def test_agent_background_poll_429_is_rate_limited(self):
+        outcome = pipeline._legacy_artifact_outcome(
+            "perplexity",
+            {
+                "error": "poll_error",
+                "backgroundPollError": "HTTP 429: Too Many Requests",
+                "backgroundPollStatusCode": 429,
+            },
+        )
+
+        self.assertEqual(health.RATE_LIMITED, outcome["state"])
+        self.assertEqual("HTTP 429: Too Many Requests", outcome["detail"])
+
+    def test_perplexity_source_available_with_openrouter_fallback(self):
+        sources = pipeline.available_sources(
+            {"OPENROUTER_API_KEY": "test-key", "INCLUDE_SOURCES": "perplexity"}
+        )
+        self.assertIn("perplexity", sources)
+
     def test_perplexity_source_not_available_with_direct_key_without_opt_in(self):
         sources = pipeline.available_sources({"PERPLEXITY_API_KEY": "test-key"})
         self.assertNotIn("perplexity", sources)

@@ -202,6 +202,30 @@ class KeylessEnvironment(unittest.TestCase):
         self.assertIn("last30days doctor", out)
 
 
+class PerplexityKeyBoundary(unittest.TestCase):
+    def test_openrouter_only_enables_sonar_fallback(self):
+        record = _build(
+            {
+                "OPENROUTER_API_KEY": "dummy-openrouter-secret-000",
+                "INCLUDE_SOURCES": "perplexity",
+            }
+        )["sources"]["perplexity"]
+
+        self.assertEqual("ok", record["status"])
+        self.assertIn("PERPLEXITY_API_KEY", record["requires"])
+        self.assertIn("OPENROUTER_API_KEY", record["requires"])
+
+    def test_direct_perplexity_key_with_opt_in_is_ready(self):
+        record = _build(
+            {
+                "PERPLEXITY_API_KEY": "dummy-perplexity-secret-000",
+                "INCLUDE_SOURCES": "perplexity",
+            }
+        )["sources"]["perplexity"]
+
+        self.assertEqual("ok", record["status"])
+
+
 class GitHubAuthDetection(unittest.TestCase):
     """GitHub doctor auth must mirror the real fetcher token source."""
 

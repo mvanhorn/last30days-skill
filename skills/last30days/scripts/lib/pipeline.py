@@ -108,6 +108,49 @@ MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
 }
 
+_FAILURE_SPECIFICITY = {
+    health.AUTH_FAILED: 0,
+    health.RATE_LIMITED: 1,
+    health.SCHEMA_DRIFT: 2,
+    health.TIMEOUT: 3,
+    health.UNREACHABLE: 4,
+    health.ERROR: 5,
+}
+
+
+@dataclass
+class PaidSourceBudget:
+    """Command-wide, thread-safe budget for paid source adapter calls."""
+
+    used: int = 0
+    owner: str | None = None
+    _lock: Any = field(default_factory=threading.Lock, repr=False)
+
+    def try_consume(self, limit: int, *, claimant: str | None = None) -> bool:
+        with self._lock:
+            if self.owner is not None and claimant != self.owner:
+                return False
+            if self.used >= limit:
+                return False
+            self.used += 1
+            return True
+
+
+def _source_fetch_cap(source: str, config: dict[str, Any]) -> int | None:
+    """Return the effective per-run cap for one source.
+
+    Every Perplexity adapter call is paid, and ``both`` performs two paid POSTs.
+    A generic fetch-cap override must not multiply either normal or Deep
+    Research mode across planner subqueries.
+    """
+    override = config.get("_max_source_fetches")
+    if source == "perplexity":
+        return 1 if override is None else min(1, int(override))
+    cap = MAX_SOURCE_FETCHES.get(source)
+    if cap is not None and override is not None:
+        return int(override)
+    return cap
+
 
 def _resolve_depth_settings(depth: str, config: dict[str, Any]) -> dict[str, int]:
     """Depth profile with optional CLI cap overrides applied (issue #716).
@@ -140,7 +183,11 @@ RELATED_HANDLE_COUNT_PER = 3
 
 
 def _has_perplexity_provider(config: dict[str, Any]) -> bool:
-    return bool(config.get("PERPLEXITY_API_KEY") or config.get("OPENROUTER_API_KEY"))
+    # Prefer direct Agent/Search APIs, but preserve the synchronous OpenRouter
+    # Sonar fallback for existing installs.
+    return bool(
+        config.get("PERPLEXITY_API_KEY") or config.get("OPENROUTER_API_KEY")
+    )
 
 MOCK_AVAILABLE_SOURCES = [
     "reddit",
@@ -264,7 +311,7 @@ def available_sources(
         available.append("grounding")
     if requested_sources and "jobs" in requested_sources:
         available.append("jobs")
-    # Perplexity Sonar: opt-in additive source via INCLUDE_SOURCES=perplexity
+    # Perplexity Agent API: opt-in additive source via INCLUDE_SOURCES=perplexity
     if _has_perplexity_provider(config) and (
         "perplexity" in include_sources or (requested_sources and "perplexity" in requested_sources)
     ):
@@ -2070,6 +2117,17 @@ def run(
             plan.source_weights["corpus"] = 1.0
             plan.source_weights = planner._normalize_weights(plan.source_weights)
 
+    # Add the paid-only Perplexity lane after all normal-source safety nets.
+    # This preserves the planner's primary subquery, gives the bounded paid
+    # call the whole user topic, and prevents grounding, jobs, or corpus from
+    # being attached to the dedicated lane.
+    _ensure_perplexity_in_plan(
+        plan,
+        topic,
+        available,
+        force=bool(config.get("_deep_research")),
+    )
+
     # Always-on planner trace. Emits one summary line plus one per subquery
     # so retrieval-breadth failures like the 2026-04-19 Hermes Agent Use Cases
     # disaster are visible without --debug. Stderr only; does not leak into
@@ -2290,15 +2348,30 @@ def run(
                 # Enforce per-source fetch cap. A CLI override (issue #716) raises
                 # the cap for capped sources so every X subquery in a multi-angle
                 # --plan fetches, instead of only the first two.
-                cap = MAX_SOURCE_FETCHES.get(source)
-                _cap_override = config.get("_max_source_fetches")
-                if cap is not None and _cap_override is not None:
-                    # `is not None` so --max-source-fetches 0 (disable fetching a
-                    # capped source) is honored instead of falling back to default.
-                    cap = int(_cap_override)
+                cap = _source_fetch_cap(source, config)
                 if cap is not None:
+                    if cap <= 0:
+                        continue
                     current = source_fetch_count.get(source, 0)
                     if current >= cap:
+                        continue
+                    shared_paid_budget = config.get("_perplexity_paid_budget")
+                    if (
+                        source == "perplexity"
+                        and isinstance(shared_paid_budget, PaidSourceBudget)
+                        and not shared_paid_budget.try_consume(
+                            cap,
+                            claimant=topic,
+                        )
+                    ):
+                        bundle.artifacts.setdefault("paid_source_budget", {})[
+                            "perplexity"
+                        ] = {
+                            "state": "skipped-budget",
+                            "attempted": False,
+                            "owner": shared_paid_budget.owner,
+                            "claimant": topic,
+                        }
                         continue
                     source_fetch_count[source] = current + 1
                 bundle.mark_attempted(source)
@@ -3034,6 +3107,46 @@ def _ensure_jobs_in_plan(
             subquery.sources.append("jobs")
 
 
+def _ensure_perplexity_in_plan(
+    plan: schema.QueryPlan,
+    topic: str,
+    available: list[str],
+    *,
+    force: bool,
+) -> None:
+    """Route a bounded paid Perplexity action through the whole topic.
+
+    Deep Research forces its explicit lane. Normal modes are rerouted only when
+    the sanitized plan already selected Perplexity.
+    """
+    if "perplexity" not in available:
+        return
+    planned = any(
+        "perplexity" in subquery.sources for subquery in plan.subqueries
+    )
+    if not force and not planned:
+        return
+    retained: list[schema.SubQuery] = []
+    for subquery in plan.subqueries:
+        sources = [
+            source for source in subquery.sources if source != "perplexity"
+        ]
+        if sources:
+            retained.append(replace(subquery, sources=sources))
+    retained.append(
+        schema.SubQuery(
+            label="deep-research" if force else "perplexity-whole-topic",
+            search_query=topic,
+            ranking_query=f"What current source-grounded evidence matters for {topic}?",
+            sources=["perplexity"],
+            weight=1.0,
+        ),
+    )
+    plan.subqueries = planner._normalize_subquery_weights(retained)
+    plan.source_weights.setdefault("perplexity", 1.0)
+    plan.source_weights = planner._normalize_weights(plan.source_weights)
+
+
 def _company_topic_likely(topic: str) -> bool:
     text = topic.strip()
     if not text:
@@ -3201,22 +3314,45 @@ def _legacy_artifact_outcome(
     explicit = artifact.get("_source_outcome")
     if isinstance(explicit, dict):
         return explicit
-    if source == "perplexity" and artifact.get("error"):
-        error = str(artifact["error"])
-        detail = str(
-            artifact.get("asyncErrorMessage")
-            or artifact.get("message")
-            or error
-        )
-        state = (
-            health.TIMEOUT
-            if error.lower() == "timeout"
-            else http.classify_failure(
-                status_code=artifact.get("statusCode"),
-                message=f"{error}: {detail}",
+    if source == "perplexity":
+        candidates: list[tuple[str | None, dict[str, Any]]] = [(None, artifact)]
+        if artifact.get("mode") == "both":
+            for leg in ("search", "agent"):
+                value = artifact.get(leg)
+                if isinstance(value, dict):
+                    candidates.append((leg, value))
+        outcomes: list[dict[str, Any]] = []
+        for leg, candidate in candidates:
+            if not candidate.get("error"):
+                continue
+            error = str(candidate["error"])
+            detail = str(
+                candidate.get("backgroundErrorMessage")
+                or candidate.get("backgroundPollError")
+                or candidate.get("agentErrorMessage")
+                or candidate.get("asyncErrorMessage")
+                or candidate.get("message")
+                or error
             )
-        )
-        return _outcome_artifact(state, detail)["_source_outcome"]
+            if leg:
+                detail = f"{leg} leg: {detail}"
+            status_code = candidate.get("statusCode")
+            if status_code is None:
+                status_code = candidate.get("backgroundPollStatusCode")
+            state = (
+                health.TIMEOUT
+                if error.lower() == "timeout"
+                else http.classify_failure(
+                    status_code=status_code,
+                    message=f"{error}: {detail}",
+                )
+            )
+            outcomes.append(_outcome_artifact(state, detail)["_source_outcome"])
+        if outcomes:
+            return min(
+                outcomes,
+                key=lambda outcome: _FAILURE_SPECIFICITY.get(outcome["state"], 9),
+            )
     if (
         source == "grounding"
         and artifact.get("reason") == "keyless-search-unavailable"
@@ -3240,14 +3376,6 @@ def _resolve_stream_outcome(
     # Pick the most specific failure rather than the last-appended one:
     # parallel workers append in nondeterministic order, and an auth failure
     # must not be masked by a later 429 (wrong doctor prescription).
-    _FAILURE_SPECIFICITY = {
-        health.AUTH_FAILED: 0,
-        health.RATE_LIMITED: 1,
-        health.SCHEMA_DRIFT: 2,
-        health.TIMEOUT: 3,
-        health.UNREACHABLE: 4,
-        health.ERROR: 5,
-    }
     failure = min(
         failures,
         key=lambda f: _FAILURE_SPECIFICITY.get(f.outcome_state, 9),
@@ -3795,7 +3923,7 @@ def _retry_thin_sources(
     # MAX_SOURCE_FETCHES and re-resolving WITHOUT the caller's
     # --trustpilot-domain (a lookalike-misattribution path). Its thin result
     # is its normal success state; never retry it here.
-    _skip = (skip_sources or set()) | {"trustpilot"}
+    _skip = (skip_sources or set()) | {"trustpilot", "perplexity"}
     thin_sources = [
         source
         for source in planned_sources
@@ -4905,4 +5033,3 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
             "resultCount": 1,
         }
     return payloads.get(source, []), {}
-
