@@ -178,6 +178,11 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
         if not isinstance(raw, dict):
             continue
 
+        # /v1/instagram/user/reels nests every field under "media";
+        # /v2/instagram/reels/search returns them flat.
+        if isinstance(raw.get("media"), dict):
+            raw = raw["media"]
+
         # Extract reel ID and shortcode
         reel_pk = str(raw.get("id", raw.get("pk", "")))
         shortcode = raw.get("shortcode", raw.get("code", ""))
@@ -192,7 +197,13 @@ def _parse_items(raw_items: List[Dict[str, Any]], core_topic: str) -> List[Dict[
             text = raw.get("desc", raw.get("text", ""))
 
         # Engagement metrics
-        play_count = raw.get("video_play_count") or raw.get("video_view_count") or raw.get("play_count") or 0
+        play_count = (
+            raw.get("video_play_count")
+            or raw.get("video_view_count")
+            or raw.get("play_count")
+            or raw.get("ig_play_count")
+            or 0
+        )
         like_count = raw.get("like_count") or 0
         comment_count = raw.get("comment_count") or 0
 

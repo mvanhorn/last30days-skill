@@ -1,0 +1,1 @@
+Instagram creator reels (`--ig-creators`) now parse. `/v1/instagram/user/reels` nests each item under `media`, so items came back with no caption, author, URL, date, or view count. View counts also fall back to `ig_play_count`.

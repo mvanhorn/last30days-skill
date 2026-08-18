@@ -117,5 +117,53 @@ class TestExpandInstagramQueries(unittest.TestCase):
         queries = expand_instagram_queries("Kanye West", "quick")
         self.assertEqual(len(queries), 1)
 
+class TestInstagramMediaWrapper(unittest.TestCase):
+    """/v1/instagram/user/reels nests each item under "media"."""
+
+    def _wrapped(self):
+        return {
+            "media": {
+                "pk": "3963765146907609231",
+                "code": "DcCH2ZygIiP",
+                "caption": {"text": "eclipse from 50,000 feet #eclipse"},
+                "user": {"username": "nasa"},
+                "taken_at": 1786060800,
+                "play_count": 4551344,
+                "ig_play_count": 4551344,
+                "like_count": 82487,
+                "comment_count": 903,
+            }
+        }
+
+    def test_unwraps_media(self):
+        item = _parse_items([self._wrapped()], "eclipse")[0]
+        self.assertEqual("3963765146907609231", item["video_id"])
+        self.assertEqual("nasa", item["author_name"])
+        self.assertIn("eclipse", item["text"])
+        self.assertEqual(
+            "https://www.instagram.com/reel/DcCH2ZygIiP", item["url"])
+        self.assertEqual(4551344, item["engagement"]["views"])
+        self.assertEqual(82487, item["engagement"]["likes"])
+        self.assertEqual(903, item["engagement"]["comments"])
+        self.assertIsNotNone(item["date"])
+
+    def test_flat_item_still_parses(self):
+        flat = self._wrapped()["media"]
+        item = _parse_items([flat], "eclipse")[0]
+        self.assertEqual("nasa", item["author_name"])
+        self.assertEqual(4551344, item["engagement"]["views"])
+
+    def test_ig_play_count_fallback(self):
+        raw = self._wrapped()
+        del raw["media"]["play_count"]
+        item = _parse_items([raw], "eclipse")[0]
+        self.assertEqual(4551344, item["engagement"]["views"])
+
+    def test_media_not_a_dict_is_ignored(self):
+        item = _parse_items(
+            [{"media": "nope", "pk": "1", "user": {"username": "x"}}], "t")[0]
+        self.assertEqual("x", item["author_name"])
+
+
 if __name__ == "__main__":
     unittest.main()
