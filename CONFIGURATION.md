@@ -248,31 +248,42 @@ Perplexity-specific env vars:
 | `LAST30DAYS_PERPLEXITY_REASONING_EFFORT` | unset | direct Sonar | `minimal`, `low`, `medium`, or `high`. |
 | `LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS` | `600` | direct async Deep Research | Wall-clock polling deadline. |
 
-### Encrypted credential sources (Keychain / pass)
+### OS credential sources (Keychain / keyring / pass)
 
-If you'd rather not keep keys in a plaintext `.env`, the loader has two
-encrypted sources that decrypt secrets transiently at call time (never written
-to disk, never logged). Both are **lowest-priority and additive** — an explicit
-`.env` or process-env value always overrides them, so you can mix and match. The
-`pass` source is only consulted for keys still missing after the higher-priority
-sources, so a box that merely has `pass` installed pays no decrypt cost when
-everything is already in `.env`.
+If you'd rather not keep keys in a plaintext `.env`, the loader can read them
+from your OS credential store at call time (never written to disk, never
+logged). All three sources are **lowest-priority and additive** — an explicit
+`.env` or process-env value always overrides them, so you can mix and match.
+Each is only consulted for keys still missing after the higher-priority sources,
+so a box that merely has `pass` or `secret-tool` installed pays no lookup cost
+when everything is already in `.env`.
+
+Note that only Keychain and `pass` guarantee encryption at rest. A Secret
+Service item is protected by whatever the holding collection provides: a
+password-protected keyring encrypts, but a passwordless one — the default on
+some desktop distributions, notably Omarchy — leaves items readable by anything
+running as you, equivalent to a `0600` file.
 
 Effective credential priority is: process env > trusted project config
 (`.claude/last30days.env`) > global config (`~/.config/last30days/.env`) >
-macOS Keychain > `pass`(1). The SessionStart status hook also checks for
-Keychain item **presence** under `last30days-<KEY>` without reading secret
-values, so a Keychain-only setup is treated as configured instead of showing the
-first-run welcome again.
+macOS Keychain > Secret Service keyring > `pass`(1). The SessionStart status
+hook also checks for Keychain item **presence** under `last30days-<KEY>` without
+reading secret values, so a Keychain-only setup is treated as configured instead
+of showing the first-run welcome again.
 
 | Platform | Source | Store keys with | Lookup convention |
 |---|---|---|---|
 | macOS | Keychain | `scripts/setup-keychain.sh` | service name `last30days-<KEY>` |
+| Linux / BSD desktops (GNOME Keyring, KWallet, KeePassXC…) | Secret Service via [libsecret](https://wiki.gnome.org/Projects/Libsecret) | `scripts/setup-keyring.sh` | attribute `service=last30days-<KEY>` |
 | Linux / Unix (anywhere `pass` exists, incl. macOS) | [`pass`(1)](https://www.passwordstore.org/) | `scripts/setup-pass.sh` | pass path `last30days/<KEY>` |
 
 ```bash
 # macOS Keychain
 ./scripts/setup-keychain.sh                 # interactive; --list / --delete KEY
+
+# Secret Service keyring — Linux/BSD desktop analog (needs libsecret's secret-tool)
+./scripts/setup-keyring.sh                   # interactive; --list / --delete KEY
+./scripts/setup-keyring.sh --collection work GEMINI_API_KEY   # password-protected collection
 
 # pass(1) — Linux/Unix analog
 ./scripts/setup-pass.sh                      # interactive; --list / --delete KEY
@@ -288,7 +299,16 @@ The prefix is used verbatim, so keep the trailing separator:
 export LAST30DAYS_PASS_PREFIX="secrets/last30days/"   # default: last30days/
 ```
 
-Both sources cover the same key set as the `.env` skeleton above.
+The keyring source looks items up by the attribute `service=last30days-<KEY>`.
+Point it at a different namespace with `LAST30DAYS_KEYRING_PREFIX` (works from
+your `.env` too, and must match where `setup-keyring.sh` wrote them). Like the
+`pass` prefix it is used verbatim, so keep any trailing separator:
+
+```bash
+export LAST30DAYS_KEYRING_PREFIX="myorg-"   # default: last30days-
+```
+
+All three sources cover the same key set as the `.env` skeleton above.
 
 #### Reusing existing macOS Keychain items
 

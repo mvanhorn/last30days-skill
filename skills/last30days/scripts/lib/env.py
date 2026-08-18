@@ -72,6 +72,16 @@ KEYCHAIN_KEYS = (
 # separator. Honors PASSWORD_STORE_DIR.
 DEFAULT_PASS_PATH_PREFIX = "last30days/"
 
+# libsecret / Secret Service integration: the Linux desktop analog of the macOS
+# Keychain source, and the default credential store on Omarchy, which ships
+# gnome-keyring + libsecret in omarchy-base.packages. Each key in KEYCHAIN_KEYS
+# is looked up as a Secret Service item carrying the attribute
+# service=f"{prefix}{KEY}" -- the direct analog of Keychain's "last30days-<KEY>"
+# service-name convention -- so keys live under one namespace without editing
+# code. Overridable via LAST30DAYS_KEYRING_PREFIX; included verbatim, so keep
+# the trailing separator.
+DEFAULT_KEYRING_SERVICE_PREFIX = KEYCHAIN_SERVICE_PREFIX
+
 AuthSource = Literal["api_key", "none"]
 AuthStatus = Literal["ok", "missing"]
 
@@ -320,6 +330,55 @@ def _load_keychain(keys: list[str], aliases: dict[str, list[dict[str, str]]] | N
     return env
 
 
+def _load_libsecret(keys: list[str], prefix: str) -> dict[str, str]:
+    """Load credentials from the Secret Service (no-op if `secret-tool` is absent).
+
+    The Linux desktop analog of the macOS Keychain source. Each env-var name is
+    looked up as an item with attribute ``service=f"{prefix}{key}"`` -- mirroring
+    Keychain's ``last30days-<key>`` convention -- so any user stores keys under
+    one namespace without editing code (prefix overridable via
+    ``LAST30DAYS_KEYRING_PREFIX``). Skipped on Darwin, which ``_load_keychain``
+    already covers.
+
+    Protection at rest is whatever the holding collection provides, which is not
+    always encryption: Omarchy's default keyring is deliberately passwordless and
+    never locks, so its items are readable by anything running as the user -- the
+    same level as a 0600 file. Store secrets in a password-protected collection,
+    or in pass(1), when the threat model needs more.
+
+    Missing entries and failures are silent: like Keychain and pass, this is a
+    lowest-priority additive source, so an explicit .env or process-env value
+    still wins.
+    """
+    import platform
+    if platform.system() == "Darwin":
+        return {}
+
+    import shutil
+    secret_tool = shutil.which("secret-tool")
+    if not secret_tool:
+        return {}
+
+    import subprocess
+    env: dict[str, str] = {}
+    for key in keys:
+        try:
+            result = subprocess.run(
+                [secret_tool, "lookup", "service", f"{prefix}{key}"],
+                capture_output=True, text=True, timeout=5,
+                encoding="utf-8", errors="replace",
+            )
+        except (subprocess.TimeoutExpired, OSError):
+            # A locked collection can block on a prompter that never answers in
+            # a headless or agent run. As in the pass loader, that is a
+            # store-wide condition, not a per-key one: stop instead of paying
+            # the timeout once per key.
+            break
+        if result.returncode == 0 and result.stdout.strip():
+            env.update({key: result.stdout.strip().splitlines()[0]})
+    return env
+
+
 def _load_pass(keys: list[str], prefix: str) -> dict[str, str]:
     """Load credentials from a pass(1) store (no-op if `pass` is absent).
 
@@ -430,6 +489,21 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     keychain_aliases = _parse_keychain_aliases(keychain_aliases_raw)
     keychain_env = _load_keychain(list(KEYCHAIN_KEYS), keychain_aliases)
     merged_env = {**keychain_env, **merged_env}
+    # Secret Service (libsecret): the Linux desktop analog of Keychain and the
+    # default store on Omarchy. Same two efficiency guards as the pass loader --
+    # resolve the prefix from the loaded config/env rather than at import time,
+    # and probe ONLY keys still unset after the higher-priority sources, so an
+    # empty list short-circuits with no secret-tool calls at all.
+    libsecret_prefix = (
+        read_secret_env("LAST30DAYS_KEYRING_PREFIX")
+        or merged_env.get("LAST30DAYS_KEYRING_PREFIX")
+        or DEFAULT_KEYRING_SERVICE_PREFIX
+    )
+    libsecret_missing = [
+        k for k in KEYCHAIN_KEYS if k not in os.environ and not merged_env.get(k)
+    ]
+    libsecret_env = _load_libsecret(libsecret_missing, libsecret_prefix)
+    merged_env = {**libsecret_env, **merged_env}
     # pass(1) store: Linux/Unix analog of Keychain at convention path
     # {prefix}<KEY>. Decrypts transiently so secrets stay encrypted at rest (no
     # plaintext .env). Lowest priority: Keychain, the config files, and process
@@ -623,6 +697,8 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         config['_CONFIG_SOURCE'] = f'global:{CONFIG_FILE}'
     elif keychain_env:
         config['_CONFIG_SOURCE'] = 'keychain'
+    elif libsecret_env:
+        config['_CONFIG_SOURCE'] = 'libsecret'
     elif pass_env:
         config['_CONFIG_SOURCE'] = 'pass'
     else:

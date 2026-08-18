@@ -141,6 +141,7 @@ def clean_env(monkeypatch, tmp_path):
 
 def test_get_config_reports_pass_source(clean_env):
     with mock.patch.object(env, "_load_keychain", return_value={}), \
+         mock.patch.object(env, "_load_libsecret", return_value={}), \
          mock.patch.object(env, "_load_pass", return_value={"XAI_API_KEY": "xai-from-pass"}):
         cfg = env.get_config()
     assert cfg["_CONFIG_SOURCE"] == "pass"
