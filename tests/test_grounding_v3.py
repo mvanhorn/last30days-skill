@@ -172,6 +172,68 @@ class ParallelSearchTests(unittest.TestCase):
             self.assertEqual(0, artifact["resultCount"])
 
 
+class KeenableSearchTests(unittest.TestCase):
+    def test_keenable_search_reads_snippet_and_filters_to_in_range_items(self):
+        mock_response = {
+            "results": [
+                {
+                    "title": "Keenable Result",
+                    "url": "https://example.com/keenable",
+                    "description": "",
+                    "snippet": "line one\n\nline two",
+                    "published_at": "2026-03-15T08:00:00Z",
+                },
+                {
+                    "title": "Old Result",
+                    "url": "https://example.com/old",
+                    "snippet": "Should be filtered",
+                    "published_at": "2026-01-15T08:00:00Z",
+                },
+                {
+                    "title": "No URL",
+                    "snippet": "Should be skipped",
+                    "published_at": "2026-03-15T08:00:00Z",
+                },
+            ]
+        }
+        with patch("lib.grounding.http.request", return_value=mock_response) as mock_req:
+            items, artifact = grounding.keenable_search("test", ("2026-02-25", "2026-03-27"))
+        self.assertEqual(1, len(items))
+        self.assertEqual("line one line two", items[0]["snippet"])
+        self.assertEqual("2026-03-15", items[0]["date"])
+        self.assertEqual("keenable", artifact["label"])
+        self.assertEqual("https://api.keenable.ai/v1/search/public", mock_req.call_args.args[1])
+
+    def test_keenable_search_caps_page_text_and_falls_back_to_description(self):
+        mock_response = {
+            "results": [
+                {
+                    "title": "Long Page",
+                    "url": "https://example.com/long",
+                    "snippet": "word " * 400,
+                    "published_at": "2026-03-15",
+                },
+                {
+                    "title": "Meta Only",
+                    "url": "https://example.com/meta",
+                    "description": "only a meta description",
+                    "published_at": "2026-03-15",
+                },
+            ]
+        }
+        with patch("lib.grounding.http.request", return_value=mock_response):
+            items, _ = grounding.keenable_search("test", ("2026-02-25", "2026-03-27"))
+        self.assertEqual(2, len(items))
+        self.assertEqual(500, len(items[0]["snippet"]))
+        self.assertEqual("only a meta description", items[1]["snippet"])
+
+    def test_keenable_search_uses_the_keyed_endpoint_when_a_key_is_set(self):
+        with patch("lib.grounding.http.request", return_value={"results": []}) as mock_req:
+            grounding.keenable_search("test", ("2026-02-25", "2026-03-27"), "a-key")
+        self.assertEqual("https://api.keenable.ai/v1/search", mock_req.call_args.args[1])
+        self.assertEqual("a-key", mock_req.call_args.kwargs["headers"]["X-API-Key"])
+
+
 class WebSearchDispatchTests(unittest.TestCase):
     def test_auto_selects_brave_when_key_present(self):
         config = {"BRAVE_API_KEY": "test-key"}

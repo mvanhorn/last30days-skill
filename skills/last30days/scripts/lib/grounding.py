@@ -245,7 +245,11 @@ def keenable_search(
             "title": r.get("title", ""),
             "url": url_r,
             "source_domain": _domain(url_r),
-            "snippet": (r.get("description") or "")[:500],
+            # Keenable returns both `snippet` (the page text) and `description`
+            # (the page's meta description, usually empty), and it returns whole
+            # pages rather than a snippet-sized excerpt, so collapse and cap it
+            # to the length the other backends here produce.
+            "snippet": " ".join(str(r.get("snippet") or r.get("description") or "").split())[:500],
             "date": pub_date,
             "relevance": 0.8,
             "why_relevant": "Keenable web search",
