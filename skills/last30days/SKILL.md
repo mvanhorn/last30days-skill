@@ -1860,23 +1860,14 @@ Identify from the ACTUAL RESEARCH OUTPUT:
 
 **FIRST - What I learned (based on QUERY_TYPE):**
 
-**If RECOMMENDATIONS** - Show specific things mentioned with sources:
-```
-🏆 Most mentioned:
-
-[Tool Name] - {n}x mentions
-Use Case: [what it does]
-Sources: @handle1, @handle2, r/sub, blog.com
-
-[Tool Name] - {n}x mentions
-Use Case: [what it does]
-Sources: @handle3, r/sub2, Complex
-
-Notable mentions: [other specific things with 1-2 mentions]
-```
+**If RECOMMENDATIONS** - use the signal-weighted template from the
+`### If QUERY_TYPE = RECOMMENDATIONS` section above. Rank by signal quality, NOT
+by mention count. Do NOT emit a `🏆 Most mentioned:` list with `{n}x mentions`
+counts - that exact shape is the named 2026-04-18 failure mode documented in that
+section, where counting buried the real headline.
 
 **CRITICAL for RECOMMENDATIONS:**
-- Each item MUST have a "Sources:" line with actual @handles from X posts (e.g., @LONGLIVE47, @ByDobson)
+- Each pick MUST have a `Voices:` line with actual @handles from X posts (e.g., @LONGLIVE47, @ByDobson)
 - Include subreddit names (r/hiphopheads) and web sources (Complex, Variety)
 - Parse @handles from research output and include the highest-engagement ones
 - Format naturally - tables work well for wide terminals, stacked cards for narrow
