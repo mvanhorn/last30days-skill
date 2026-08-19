@@ -120,7 +120,7 @@ These anchors used to live at line 1094 of this file. Three independent Opus 4.7
 🌐 last30days v{VERSION} · synced {YYYY-MM-DD}
 ```
 
-Replace `{VERSION}` with the installed plugin version (`jq -r '.version' "$SKILL_DIR/../../.claude-plugin/plugin.json" 2>/dev/null || awk '/^version:/{gsub(/"/,"",$2); print $2; exit}' "$SKILL_DIR/SKILL.md"`) and `{YYYY-MM-DD}` with today's date. No other text on this line. One blank line after, then the synthesis begins.
+Replace `{VERSION}` with the installed plugin version (`jq -r '.version' "$SKILL_DIR/../../.claude-plugin/plugin.json" 2>/dev/null || sed -n 's/^version: *"\([^"]*\)".*/\1/p' "$SKILL_DIR/SKILL.md" | head -1`) and `{YYYY-MM-DD}` with today's date. No other text on this line. One blank line after, then the synthesis begins.
 
 **Why the badge is MANDATORY:** it is the structural anchor for the canonical output shape. Without it the model drifts into blog-post narrative format with `##` section headers and invented titles, violating LAW 2 and LAW 4. The 2026-04-18 public v3.0.6 0/8 regression produced outputs with section headers like "The headline", "Why he is everywhere", "1. gstack dominates", "The 'Homecoming' peak". Direct cause: this anchor was absent. Do NOT skip the badge. Do NOT describe it. Do NOT paraphrase it. Emit it verbatim as line 1.
 
@@ -423,81 +423,26 @@ Research ANY topic across Reddit, X, YouTube, and other sources. Surface what pe
 Before running any `last30days.py` command in this skill, resolve a Python 3.12+ interpreter once and keep it in `LAST30DAYS_PYTHON`:
 
 ```bash
-try_last30days_python() {
-  candidate="$1"
-  [ -n "$candidate" ] || return 1
-  if [ -x "$candidate" ]; then
-    :
-  elif command -v "$candidate" >/dev/null 2>&1; then
-    :
-  else
-    return 1
-  fi
-  "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || return 1
-  LAST30DAYS_PYTHON="$candidate"
-  return 0
-}
+# SKILL_DIR = absolute path of the directory containing THIS SKILL.md you just Read.
+# Substitute the actual path your harness reported; scripts/ is always a direct
+# child of SKILL_DIR in every install layout.
+SKILL_DIR="<absolute path of the directory containing the SKILL.md you Read>"
 
-windows_path_to_unix() {
-  path="$1"
-  [ -n "$path" ] || return 1
-  if command -v cygpath >/dev/null 2>&1; then
-    cygpath -u "$path"
-  else
-    printf '%s\n' "$path"
-  fi
-}
-
-if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
-  while IFS= read -r windows_python_root; do
-    [ -n "$windows_python_root" ] && [ -d "$windows_python_root" ] || continue
-    while IFS= read -r py; do
-      try_last30days_python "$py" && break 2
-    done <<EOF_PYTHON_CANDIDATES
-$(find "$windows_python_root" -maxdepth 2 -type f -iname python.exe 2>/dev/null | sort -r)
-EOF_PYTHON_CANDIDATES
-  done <<EOF_WINDOWS_PYTHON_ROOTS
-$([ -n "${LOCALAPPDATA:-}" ] && printf '%s\n' "$(windows_path_to_unix "$LOCALAPPDATA")/Programs/Python")
-$([ -n "${ProgramFiles:-}" ] && windows_path_to_unix "$ProgramFiles")
-$([ -n "${PROGRAMFILES:-}" ] && windows_path_to_unix "$PROGRAMFILES")
-$(program_files_x86="$(printenv 'ProgramFiles(x86)' 2>/dev/null || true)"; [ -n "$program_files_x86" ] && windows_path_to_unix "$program_files_x86")
-EOF_WINDOWS_PYTHON_ROOTS
-fi
-
-if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
-  for py in python3.14 python3.13 python3.12 python3 python; do
-    try_last30days_python "$py" && break
-  done
-fi
-
-# uv fallback: on hosts without a system 3.12 but with `uv` on PATH (most agent
-# sandboxes: Cowork, Codex, etc.), provision a managed 3.12 automatically instead
-# of hard-failing. No-op when uv is absent — those hosts still hit the error below.
-if [ -z "${LAST30DAYS_PYTHON:-}" ] && command -v uv >/dev/null 2>&1; then
-  uv_py="$(uv python find '>=3.12' 2>/dev/null)"
-  if [ -z "$uv_py" ] || [ ! -x "$uv_py" ]; then
-    echo "NOTE: no Python 3.12+ found; installing a managed CPython 3.12 via uv (~28MB, one-time)." >&2
-    if UV_HTTP_TIMEOUT=30 uv python install 3.12 >/dev/null 2>&1; then
-      uv_py="$(uv python find '>=3.12' 2>/dev/null)"
-    else
-      echo "WARN: 'uv python install 3.12' failed (network, disk space, or proxy?); falling through to the version-gate error below." >&2
-    fi
-  fi
-  try_last30days_python "$uv_py"
-fi
-
-if [ -z "${LAST30DAYS_PYTHON:-}" ]; then
-  echo "ERROR: last30days v3 requires Python 3.12+. Install Python 3.12+ or set LAST30DAYS_PYTHON to a supported interpreter." >&2
-  exit 1
-fi
-
-"${LAST30DAYS_PYTHON}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' || {
-  echo "ERROR: LAST30DAYS_PYTHON must point to Python 3.12+." >&2
-  exit 1
-}
-
-LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+# Resolve Python 3.12+ into LAST30DAYS_PYTHON and default LAST30DAYS_MEMORY_DIR.
+# SOURCE it (leading dot) - do not execute it. It must export into your shell.
+. "${SKILL_DIR}/scripts/preflight.sh"
 ```
+
+**Why this is a sourced script and not an inline block:** slash-command argument
+substitution rewrites bare shell positional parameters (argument slots one, two,
+and so on) inside this file with the user's own argument words before the model
+reads it. When the preflight logic lived inline, an invocation like
+`/last30days how to improve the skill` rewrote the interpreter-candidate
+assignment to the literal word `to`, so every interpreter probe tested a binary
+literally named `to`, `LAST30DAYS_PYTHON` never resolved, and the skill
+hard-failed with `requires Python 3.12+` on machines that had 3.12+ installed.
+It broke on any topic of two or more words. Do NOT inline executable shell that
+uses positional parameters back into SKILL.md.
 
 **PYTHON VERSION GATE — when the Runtime Preflight Bash block above exits with a Python version error:**
 
