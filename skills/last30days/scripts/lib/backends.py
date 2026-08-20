@@ -107,12 +107,15 @@ class BackendSpec:
 
     ``probe`` must be side-effect-free. When ``paid`` is True the probe is
     key-presence only: no subprocess, no network, no credential spend.
+    ``opt_in`` marks backends that are never auto-selected and require an
+    explicit pin (grok).
     """
 
     name: str
     requires: str
     probe: Callable[[Dict[str, Any]], "BackendFinding"]
     paid: bool = False
+    opt_in: bool = False
 
 
 @dataclass(frozen=True)
@@ -251,6 +254,80 @@ def _probe_bird(config: Dict[str, Any]) -> BackendFinding:
     )
 
 
+def _probe_grok(config: Dict[str, Any]) -> BackendFinding:
+    """grok CLI = keyless X. LOCAL-ONLY probe, like _probe_xurl.
+
+    Deliberately does NOT call ``health.probe_dependency``: that helper runs
+    ``subprocess.run([name, "--version"])``, and the whole-doctor-path test
+    patches ``subprocess.run`` to raise.
+
+    Consequence to be honest about: a grok binary that resolves on PATH but
+    will not execute (the stale-shim class) reports OK here and fails only when
+    a real run shells out. ``grok_x.is_available`` does not close that gap
+    either -- it is also filesystem-only. ``health.probe_dependency("grok")``
+    is the executing probe, and it runs in doctor's CLI-health block rather
+    than on this no-subprocess path.
+    """
+    from . import grok_x
+
+    requires = "grok CLI installed + signed in (no X credential)"
+    if which("grok") is None:
+        off_path = health._off_path_binary("grok")
+        if off_path is not None:
+            return BackendFinding(
+                name="grok",
+                status=health.MISSING,
+                requires=requires,
+                detail=f"grok is installed at {off_path} but that directory is not on this process's PATH",
+                prescription=f'add {off_path.parent} to PATH (e.g. export PATH="{off_path.parent}:$PATH")',
+            )
+        return BackendFinding(
+            name="grok",
+            status=health.MISSING,
+            requires=requires,
+            detail="grok CLI not found on PATH",
+            prescription=(
+                "install the Grok CLI: curl -fsSL https://x.ai/cli/install.sh | bash, "
+                "then run `grok login`"
+            ),
+        )
+    store_status, store_detail, expires_at = grok_x.stored_auth_status()
+    if store_status == grok_x.AUTH_OK:
+        return BackendFinding(
+            name="grok",
+            status=health.OK,
+            requires=requires,
+            detail=f"{store_detail} (not live-verified until a run)",
+        )
+    if store_status == grok_x.AUTH_EXPIRED:
+        expiry_str = expires_at.isoformat() if expires_at else "unknown"
+        return BackendFinding(
+            name="grok",
+            status=health.DEGRADED,
+            requires=requires,
+            detail=(
+                f"Grok session expired at {expiry_str}; "
+                "refresh happens at run time (if revoked, run `grok login --device-auth`)"
+            ),
+            prescription="grok login --device-auth",
+        )
+    if store_status == grok_x.AUTH_ERROR:
+        return BackendFinding(
+            name="grok",
+            status=health.ERROR,
+            requires=requires,
+            detail=store_detail,
+            prescription="grok login",
+        )
+    return BackendFinding(
+        name="grok",
+        status=health.MISSING,
+        requires=requires,
+        detail="grok CLI installed but not signed in",
+        prescription="grok login",
+    )
+
+
 def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
     """xurl = official X API v2 CLI (OAuth2). Free lane; LOCAL-ONLY probe.
 
@@ -347,11 +424,14 @@ def _probe_reddit_public(config: Dict[str, Any]) -> BackendFinding:
 
 _X_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "xai": _key_probe("xai", "XAI_API_KEY", "XAI_API_KEY (xAI/Grok live search)"),
+    "grok": _probe_grok,
     "bird": _probe_bird,
     "xurl": _probe_xurl,
     "xquik": _key_probe("xquik", "XQUIK_API_KEY", "XQUIK_API_KEY (xquik.com)"),
 }
 _X_PAID = {"xai", "xquik"}
+# Opt-in backends: never auto-selected; require explicit pin.
+_X_OPT_IN = set(env.X_BACKEND_OPT_IN)
 
 _WEB_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "brave": _key_probe("brave", "BRAVE_API_KEY", "BRAVE_API_KEY"),
@@ -372,24 +452,32 @@ _SC_SPEC = BackendSpec(
     paid=True,
 )
 
+# X backend requirements, keyed by name.
+_X_REQUIRES: Dict[str, str] = {
+    "xai": "XAI_API_KEY (xAI/Grok live search)",
+    "grok": "grok CLI installed + signed in (opt-in only; pin to enable)",
+    "bird": "X browser cookies (AUTH_TOKEN/CT0) + node",
+    "xurl": "xurl CLI installed + OAuth2 login",
+    "xquik": "XQUIK_API_KEY (xquik.com)",
+}
+
 DESCRIPTORS: Dict[str, ChainDescriptor] = {
     # X: chain order and pin var imported from env.py (single source of truth).
+    # Backends include the auto chain (X_BACKEND_ORDER) plus opt-in entries
+    # (X_BACKEND_OPT_IN) for doctor visibility. Opt-in backends like grok
+    # appear in findings but are never auto-selected; pin to enable.
     "x": ChainDescriptor(
         source="x",
         mode=MODE_ALTERNATIVE,
         backends=tuple(
             BackendSpec(
                 name=name,
-                requires={
-                    "xai": "XAI_API_KEY (xAI/Grok live search)",
-                    "bird": "X browser cookies (AUTH_TOKEN/CT0) + node",
-                    "xurl": "xurl CLI installed + OAuth2 login",
-                    "xquik": "XQUIK_API_KEY (xquik.com)",
-                }[name],
+                requires=_X_REQUIRES[name],
                 probe=_X_PROBES[name],
                 paid=name in _X_PAID,
+                opt_in=name in _X_OPT_IN,
             )
-            for name in env.X_BACKEND_ORDER
+            for name in env.X_BACKEND_ORDER + env.X_BACKEND_OPT_IN
         ),
         pin_var=env.X_BACKEND_PIN_VAR,
     ),
@@ -499,6 +587,8 @@ def _resolve_alternative(
 ) -> BackendResolution:
     names = [spec.name for spec in descriptor.backends]
     by_name = {f.name: f for f in findings}
+    # Track which backends are opt-in (never auto-selected).
+    opt_in_names = {spec.name for spec in descriptor.backends if spec.opt_in}
     res = BackendResolution(
         source=descriptor.source,
         mode=MODE_ALTERNATIVE,
@@ -535,18 +625,21 @@ def _resolve_alternative(
 
     # Collect-then-pick: first fully-usable wins; else best degraded; else
     # error carrying the highest-priority backend's prescription.
-    for finding in findings:
+    # Opt-in backends are NEVER auto-selected; skip them entirely.
+    auto_findings = [f for f in findings if f.name not in opt_in_names]
+    for finding in auto_findings:
         if finding.status == health.OK:
             res.active_backend = finding.name
             res.tier = TIER_OK
             return res
-    for finding in findings:
+    for finding in auto_findings:
         if finding.status == health.DEGRADED:
             res.active_backend = finding.name
             res.tier = TIER_WARN
             return res
     res.tier = TIER_ERROR
-    res.prescription = findings[0].prescription if findings else ""
+    # Prescription comes from the first auto-chain backend, not opt-in.
+    res.prescription = auto_findings[0].prescription if auto_findings else ""
     return res
 
 

@@ -879,5 +879,89 @@ class InteractionSignalTests(unittest.TestCase):
         self.assertEqual(80.0, c.final_score)  # floor only lifts, never lowers
 
 
+class TestOutOfWindowDemotion(unittest.TestCase):
+    """A "last 30 days" brief must not rank stale evidence at the top."""
+
+    def _candidate(self, name: str, published_at: str, confidence: str) -> schema.Candidate:
+        item = schema.SourceItem(
+            item_id=name,
+            source="youtube",
+            title=name,
+            body="body",
+            url=f"https://youtube.com/watch?v={name}",
+            published_at=published_at,
+            date_confidence=confidence,
+        )
+        return schema.Candidate(
+            candidate_id=name,
+            item_id=name,
+            source="youtube",
+            title=name,
+            url=item.url,
+            snippet="snippet",
+            subquery_labels=["primary"],
+            native_ranks={"primary:youtube": 1},
+            local_relevance=0.9,
+            freshness=90,
+            engagement=60.0,
+            source_quality=0.85,
+            rrf_score=0.02,
+            source_items=[item],
+        )
+
+    def test_stale_candidate_cannot_outrank_an_in_window_one(self):
+        # The stale item is the *stronger* candidate on every other signal —
+        # exactly the 2025-10 video that ranked #1 in a 2026-07 brief.
+        stale = self._candidate("stale", "2025-10-15", "low")
+        stale.rerank_score = 95.0
+        fresh = self._candidate("fresh", "2026-07-20", "high")
+        fresh.rerank_score = 55.0
+
+        stale.final_score = rerank._final_score(stale)
+        fresh.final_score = rerank._final_score(fresh)
+
+        self.assertLess(stale.final_score, fresh.final_score)
+
+    def test_undated_candidate_is_not_demoted(self):
+        undated = self._candidate("undated", "", "low")
+        undated.source_items[0].published_at = None
+        undated.rerank_score = 60.0
+        dated = self._candidate("dated", "2026-07-20", "high")
+        dated.rerank_score = 60.0
+
+        self.assertEqual(rerank._final_score(undated), rerank._final_score(dated))
+
+    def test_stale_cannot_lead_in_final_sort_even_with_dominant_score(self):
+        """AE2: stale rerank_score=95 vs in-window rerank_score=10 — stale sorts below.
+
+        The 0.35 multiplier alone is not enough: stale 95 * 0.35 ≈ 33 still beats
+        fresh 10. The final sort key (the same as pipeline.run's final sort) must
+        partition stale below fresh, regardless of individual final_score values.
+        """
+        stale = self._candidate("stale", "2025-10-15", "low")
+        stale.rerank_score = 95.0
+        fresh = self._candidate("fresh", "2026-07-20", "high")
+        fresh.rerank_score = 10.0
+
+        stale.final_score = rerank._final_score(stale)
+        fresh.final_score = rerank._final_score(fresh)
+
+        self.assertGreater(stale.final_score, fresh.final_score)
+
+        sorted_candidates = sorted(
+            [stale, fresh],
+            key=lambda candidate: (
+                1 if schema.candidate_out_of_window(candidate) else 0,
+                -candidate.final_score,
+                -(candidate.engagement or -1),
+                candidate.candidate_id,
+            ),
+        )
+        self.assertEqual(
+            ["fresh", "stale"],
+            [c.candidate_id for c in sorted_candidates],
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

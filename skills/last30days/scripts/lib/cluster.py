@@ -4,6 +4,18 @@ from __future__ import annotations
 
 from . import dedupe, entity_extract, schema
 
+
+def _cluster_sort_key(candidate: schema.Candidate) -> tuple:
+    """Sort key that partitions stale candidates below fresh ones.
+
+    Stale items (all dated source_items outside the window) must never lead
+    cluster representatives or render as the cluster title.
+    """
+    return (
+        1 if schema.candidate_out_of_window(candidate) else 0,
+        -candidate.final_score,
+    )
+
 CLUSTERABLE_INTENTS = {"breaking_news", "opinion", "comparison", "prediction"}
 
 def _candidate_text(candidate: schema.Candidate) -> str:
@@ -20,7 +32,7 @@ def _mmr_representatives(
     remaining = list(candidates)
     while remaining and len(selected) < limit:
         if not selected:
-            best = max(remaining, key=lambda candidate: candidate.final_score)
+            best = min(remaining, key=_cluster_sort_key)
             selected.append(best)
             remaining_set.discard(best.candidate_id)
             remaining = [c for c in remaining if c.candidate_id in remaining_set]
@@ -28,12 +40,16 @@ def _mmr_representatives(
 
         selected_preps = [text_cache[c.candidate_id] for c in selected]
 
-        def score(candidate: schema.Candidate) -> float:
+        def score(candidate: schema.Candidate) -> tuple:
             prep = text_cache[candidate.candidate_id]
             diversity_penalty = max(
                 dedupe.prepared_similarity(prep, sp) for sp in selected_preps
             )
-            return (diversity_lambda * candidate.final_score) - ((1 - diversity_lambda) * diversity_penalty * 100)
+            base_score = (diversity_lambda * candidate.final_score) - ((1 - diversity_lambda) * diversity_penalty * 100)
+            return (
+                0 if schema.candidate_out_of_window(candidate) else 1,
+                base_score,
+            )
 
         best = max(remaining, key=score)
         selected.append(best)
@@ -89,7 +105,7 @@ def cluster_candidates(
 
     clusters: list[schema.Cluster] = []
     for index, group in enumerate(groups, start=1):
-        group.sort(key=lambda candidate: candidate.final_score, reverse=True)
+        group.sort(key=_cluster_sort_key)
         cluster_id = f"cluster-{index}"
         representatives = _mmr_representatives(group, text_cache)
         for candidate in group:
@@ -197,7 +213,7 @@ def _merge_entity_clusters(
 
         # Pick representatives from combined pool
         combined_candidates = [candidate_map[cid] for cid in combined_cids if cid in candidate_map]
-        combined_candidates.sort(key=lambda c: c.final_score, reverse=True)
+        combined_candidates.sort(key=_cluster_sort_key)
         merge_text_cache = {
             c.candidate_id: dedupe._PreparedText(_candidate_text(c))
             for c in combined_candidates

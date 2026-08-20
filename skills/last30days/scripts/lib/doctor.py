@@ -425,16 +425,91 @@ def _x_record(config):
     # diagnose cannot drift. It reads no cookie *values*, so it confirms a run
     # will *attempt* browser auth, not that the session is currently valid -
     # keep the note honest and point at the verified key-backed path.
-    if record["status"] == "unconfigured" and env.x_pending_browser_auth(
-        config, local_only=True
-    ):
-        record["status"] = health.OK
-        record["tier"] = TIER_BY_STATUS[health.OK]
-        record["note"] = (
-            "will use: bird (browser cookies; session not verified until a run "
-            "- add XAI_API_KEY for a verified, cookie-free path)"
+    #
+    # This check MUST come before grok normalization: a pending bird path takes
+    # precedence over marking X as unconfigured due to an unused grok store.
+    # Handle both "unconfigured" (all backends missing) and "error" (grok present
+    # but opt-in, no auto-chain backend usable) when pending bird applies.
+    #
+    # HOWEVER: pending bird must NOT replace a record that has a configured
+    # auto-chain backend in ERROR/DEGRADED/BROKEN/TIMEOUT. Same rule as the
+    # grok normalizer: only upgrade when no auto backend is configured-but-broken.
+    pending_bird = env.x_pending_browser_auth(config, local_only=True)
+    if pending_bird and record["status"] in ("unconfigured", health.ERROR):
+        backends_list = record.get("backends", [])
+        auto_chain_names = {"bird", "xai", "xurl", "xquik"}
+        auto_backends = [b for b in backends_list if b.get("name") in auto_chain_names]
+        # Only apply pending-bird upgrade if ALL auto-chain backends are MISSING.
+        # If any auto backend is configured but broken, keep that error.
+        all_auto_missing = all(
+            b.get("status") == health.MISSING for b in auto_backends
         )
-        record["fix"] = ""
+        if all_auto_missing:
+            record["status"] = health.OK
+            record["tier"] = TIER_BY_STATUS[health.OK]
+            record["note"] = (
+                "will use: bird (browser cookies; session not verified until a run "
+                "- add XAI_API_KEY for a verified, cookie-free path)"
+            )
+            record["fix"] = ""
+            return record
+    #
+    # Grok is opt-in only: a leftover ~/.grok/auth.json must never steal the X
+    # lane. The grok backend appears in the chain findings (for visibility) but
+    # is never auto-selected. Doctor reports it as "available, unused - pin
+    # LAST30DAYS_X_BACKEND=grok to enable" rather than "will use: grok".
+    #
+    # R3/R8: When no auto-chain backend is CONFIGURED (all MISSING) but grok has
+    # any non-MISSING status, X is unconfigured/skipped - NOT broken/auth-failed.
+    # The tier must be "off" (unconfigured), not "error" (NOT WORKING).
+    #
+    # HOWEVER: if an auto-chain backend IS configured but broken (ERROR/DEGRADED),
+    # do NOT normalize to unconfigured. Keep that backend's error and repair
+    # guidance. Unused grok must not swallow a genuine auto-chain failure.
+    #
+    # Do NOT apply this normalization when pending browser auth would make bird
+    # usable — check pending_bird first (handled above via early return).
+    if (
+        record["tier"] == TIER_ERROR
+        and not record.get("pinned")
+        and record.get("active_backend") is None
+        and not pending_bird
+    ):
+        backends_list = record.get("backends", [])
+        auto_chain_names = {"bird", "xai", "xurl", "xquik"}
+        auto_backends = [b for b in backends_list if b.get("name") in auto_chain_names]
+        # Only normalize if ALL auto-chain backends are MISSING (not configured).
+        # If any auto backend is ERROR/DEGRADED/BROKEN/TIMEOUT, keep that error.
+        all_auto_missing = all(
+            b.get("status") == health.MISSING for b in auto_backends
+        )
+        if not all_auto_missing:
+            # An auto-chain backend is configured but broken — do NOT normalize.
+            # Keep the original error and its repair guidance.
+            return record
+        grok_finding = next(
+            (b for b in backends_list if b.get("name") == "grok"),
+            None,
+        )
+        if grok_finding and grok_finding.get("status") in (
+            health.OK,
+            health.DEGRADED,
+            health.ERROR,
+        ):
+            record["status"] = "unconfigured"
+            record["tier"] = TIER_OFF
+            if grok_finding.get("status") == health.ERROR:
+                record["note"] = (
+                    "X unconfigured; grok CLI store is broken but unused (opt-in only) — "
+                    "pin LAST30DAYS_X_BACKEND=grok to enable, then fix the store"
+                )
+            else:
+                record["note"] = (
+                    "X unconfigured; grok CLI available but opt-in only — "
+                    "pin LAST30DAYS_X_BACKEND=grok to enable"
+                )
+            record["fix"] = ""
+            return record
     return record
 
 
@@ -628,8 +703,13 @@ def _truthsocial_record(config):
 
 
 def _perplexity_record(config):
-    requires = "PERPLEXITY_API_KEY or OPENROUTER_API_KEY + INCLUDE_SOURCES=perplexity"
-    has_key = bool(config.get("PERPLEXITY_API_KEY") or config.get("OPENROUTER_API_KEY"))
+    requires = (
+        "PERPLEXITY_API_KEY or OPENROUTER_API_KEY + "
+        "INCLUDE_SOURCES=perplexity"
+    )
+    has_direct_key = bool(config.get("PERPLEXITY_API_KEY"))
+    has_openrouter_key = bool(config.get("OPENROUTER_API_KEY"))
+    has_key = has_direct_key or has_openrouter_key
     include = env.include_sources(config)
     if not has_key:
         return _record(
@@ -640,7 +720,15 @@ def _perplexity_record(config):
             ),
         )
     if "perplexity" in include:
-        return _record(status=health.OK, requires=requires)
+        return _record(
+            status=health.OK,
+            requires=requires,
+            note=(
+                "direct Agent/Search APIs"
+                if has_direct_key
+                else "OpenRouter Sonar compatibility fallback"
+            ),
+        )
     return _record(
         status="opt-in", requires=requires,
         fix="add perplexity to INCLUDE_SOURCES (or request it via --search perplexity)",

@@ -517,8 +517,15 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('SERPER_API_KEY', None),
         ('OPENROUTER_API_KEY', None),
         ('PERPLEXITY_API_KEY', None),
-        ('LAST30DAYS_PERPLEXITY_MODE', 'sonar'),
+        ('LAST30DAYS_PERPLEXITY_MODE', 'agent'),
+        # Legacy Sonar setting. Retain it during migration so existing env
+        # files load, but the Agent adapter does not map it to a dynamic preset.
         ('LAST30DAYS_PERPLEXITY_MODEL', None),
+        ('LAST30DAYS_PERPLEXITY_AGENT_MODEL', None),
+        ('LAST30DAYS_PERPLEXITY_AGENT_PRESET', None),
+        ('LAST30DAYS_PERPLEXITY_AGENT_MAX_STEPS', None),
+        ('LAST30DAYS_PERPLEXITY_AGENT_MAX_OUTPUT_TOKENS', None),
+        ('LAST30DAYS_PERPLEXITY_AGENT_TIMEOUT_SECONDS', '120'),
         ('LAST30DAYS_PERPLEXITY_MAX_RESULTS', None),
         ('LAST30DAYS_PERPLEXITY_SEARCH_CONTEXT_SIZE', None),
         ('LAST30DAYS_PERPLEXITY_SEARCH_MODE', None),
@@ -756,12 +763,18 @@ def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
 
 
 def get_x_source_with_method(config: dict[str, Any]) -> tuple[str | None, str]:
-    """Return (source, method) for X search, where method describes the auth origin."""
-    if config.get("XAI_API_KEY"):
-        return "xai", "xai"
+    """Return (source, method) for X search, where method describes the auth origin.
+
+    Order mirrors _X_BACKEND_ORDER: bird first (cookies beat XAI_API_KEY when
+    both are present), then xai, then xurl. Grok is opt-in only and is never
+    auto-selected here.
+    """
+    # Bird first: cookies beat XAI_API_KEY when both are present.
     if config.get("AUTH_TOKEN") and config.get("CT0"):
         method = config.get("_AUTH_TOKEN_SOURCE", "env")
         return "bird", method
+    if config.get("XAI_API_KEY"):
+        return "xai", "xai"
     # Fall back to xurl CLI (official X API v2, OAuth2, free developer app)
     from . import xurl_x
     if xurl_x.is_available():
@@ -794,17 +807,27 @@ def get_reddit_source(config: dict[str, Any]) -> str | None:
 # source; the rest are ordered failover backups, tried only if the one before
 # returns nothing or errors. There is one X source ("x"); these are its
 # interchangeable backends, never run in parallel.
-#   xai   — xAI/Grok live search (XAI_API_KEY)
 #   bird  — X GraphQL scrape via the user's browser cookies (AUTH_TOKEN/CT0)
+#   xai   — xAI/Grok live search (XAI_API_KEY)
 #   xurl  — official X API v2 (xurl CLI, OAuth2)
-#   xquik — key-based REST X search (XQUIK_API_KEY); keyless of browser cookies
-_X_BACKEND_ORDER = ("xai", "bird", "xurl", "xquik")
+#   xquik — key-based REST X search (XQUIK_API_KEY)
+_X_BACKEND_ORDER = ("bird", "xai", "xurl", "xquik")
+
+# Opt-in backends: never in the unpinned auto chain; require explicit pin.
+# grok is here because a leftover ~/.grok/auth.json must never steal the X
+# lane. Pin LAST30DAYS_X_BACKEND=grok to enable it.
+_X_BACKEND_OPT_IN = ("grok",)
+
+# All known backends (auto chain + opt-in): valid values for the pin var.
+_X_BACKEND_KNOWN = _X_BACKEND_ORDER + _X_BACKEND_OPT_IN
 
 # Public routing definitions for the doctor/backend-descriptor layer
 # (lib/backends.py). These are aliases for knowledge this module already
 # owns — the declared X chain order and the pin/floor env var names — so
 # descriptors import one source of truth instead of restating it.
 X_BACKEND_ORDER = _X_BACKEND_ORDER
+X_BACKEND_OPT_IN = _X_BACKEND_OPT_IN
+X_BACKEND_KNOWN = _X_BACKEND_KNOWN
 X_BACKEND_PIN_VAR = 'LAST30DAYS_X_BACKEND'
 REDDIT_BACKEND_PIN_VAR = 'LAST30DAYS_REDDIT_BACKEND'
 REDDIT_SC_MIN_ITEMS_VAR = 'LAST30DAYS_REDDIT_SC_MIN_ITEMS'
@@ -818,6 +841,12 @@ def _x_backend_available(
 ) -> bool:
     if backend == 'xai':
         return bool(config.get('XAI_API_KEY'))
+    if backend == 'grok':
+        # Keyless relative to X: needs only an installed, signed-in grok CLI.
+        # Both surfaces are filesystem-only (PATH lookup + credential store),
+        # so local_only needs no separate branch.
+        from . import grok_x
+        return grok_x.has_stored_auth()
     if backend == 'bird':
         from . import bird_x
         return has_bird_creds and bird_x.is_bird_installed()
@@ -841,9 +870,14 @@ def x_backend_chain(config: dict[str, Any], local_only: bool = False) -> list[st
     exactly one X source — these are its backends, never fetched in parallel.
 
     A ``LAST30DAYS_X_BACKEND`` pin forces a single backend (no failover): the
-    user explicitly chose it. Browser-cookie probing is intentionally avoided
-    (automatic Keychain access causes popups); bird counts as available only
-    when AUTH_TOKEN and CT0 are present explicitly.
+    user explicitly chose it. Valid pin values are in ``_X_BACKEND_KNOWN``
+    (the auto chain plus opt-in backends like grok). Browser-cookie probing
+    is intentionally avoided (automatic Keychain access causes popups); bird
+    counts as available only when AUTH_TOKEN and CT0 are present explicitly.
+
+    Unpinned runs walk only ``_X_BACKEND_ORDER``: opt-in backends like grok
+    are never auto-selected. A leftover ~/.grok/auth.json must not steal the
+    X lane; pin ``LAST30DAYS_X_BACKEND=grok`` to enable it explicitly.
 
     ``local_only=True`` is the doctor/safe-diagnose flavor: availability is
     answered from local evidence only (no subprocess spawns that reach the
@@ -856,11 +890,14 @@ def x_backend_chain(config: dict[str, Any], local_only: bool = False) -> list[st
         bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
 
     preferred = (config.get(X_BACKEND_PIN_VAR) or '').lower()
-    if preferred in _X_BACKEND_ORDER:
+    # Pin accepted from _X_BACKEND_KNOWN (auto chain + opt-in like grok).
+    if preferred in _X_BACKEND_KNOWN:
         if _x_backend_available(preferred, config, has_bird_creds, local_only):
             return [preferred]
         return []
 
+    # Unpinned: walk only _X_BACKEND_ORDER (bird -> xai -> xurl -> xquik).
+    # Opt-in backends like grok are never auto-selected.
     return [
         b for b in _X_BACKEND_ORDER
         if _x_backend_available(b, config, has_bird_creds, local_only)
@@ -1249,20 +1286,45 @@ def get_x_source_status(config: dict[str, Any], probe: bool = False) -> dict[str
     from . import xurl_x as _xurl_x
     xurl_available = _xurl_x.is_available() if probe else _xurl_x.has_stored_auth()
 
-    # Determine active source. bird (browser cookies) and xAI win when present;
-    # when neither is available, xquik is the active X source. A probe that
-    # clearly failed (False) means xquik is not actually usable.
-    if bird_status["authenticated"]:
+    # Grok availability is filesystem-only on both paths (PATH lookup plus the
+    # credential store), so it is safe to compute here regardless of `probe`.
+    # Grok is opt-in only: it appears in grok_available but never wins the
+    # unpinned source selection.
+    from . import grok_x as _grok_x
+    grok_available = _grok_x.has_stored_auth()
+
+    # Determine active source. A pin forces a single backend (R4): ANY known
+    # pin is exclusive, mirroring x_backend_chain's [] semantics. Pinned
+    # backend available → that source. Pinned backend unavailable → None.
+    # Otherwise, order mirrors _X_BACKEND_ORDER: bird first (cookies beat
+    # XAI_API_KEY when both are present), then xai, then xurl, then xquik.
+    # Grok is opt-in only and never auto-selected; a leftover ~/.grok/auth.json
+    # must not steal the X lane.
+    pin = (config.get(X_BACKEND_PIN_VAR) or '').lower()
+    if pin and pin in _X_BACKEND_KNOWN:
+        # Pin is exclusive: pinned backend if available, else None (no fallback).
+        if pin == 'bird':
+            source = 'bird' if bird_status["authenticated"] else None
+        elif pin == 'xai':
+            source = 'xai' if xai_available else None
+        elif pin == 'xurl':
+            source = 'xurl' if xurl_available else None
+        elif pin == 'xquik':
+            source = 'xquik' if (xquik_available and xquik_working is not False) else None
+        elif pin == 'grok':
+            source = 'grok' if grok_available else None
+        else:
+            source = None
+    elif bird_status["authenticated"]:
         source = 'bird'
     elif xai_available:
         source = 'xai'
+    elif xurl_available:
+        source = 'xurl'
+    elif xquik_available and xquik_working is not False:
+        source = 'xquik'
     else:
-        if xurl_available:
-            source = 'xurl'
-        elif xquik_available and xquik_working is not False:
-            source = 'xquik'
-        else:
-            source = None
+        source = None
 
     return {
         "source": source,
@@ -1270,6 +1332,7 @@ def get_x_source_status(config: dict[str, Any], probe: bool = False) -> dict[str
         "bird_authenticated": bird_status["authenticated"],
         "bird_username": bird_status["username"],
         "xai_available": xai_available,
+        "grok_available": grok_available,
         "xurl_available": xurl_available,
         "xquik_available": xquik_available,
         "xquik_working": xquik_working,

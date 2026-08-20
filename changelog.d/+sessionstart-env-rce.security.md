@@ -1,1 +1,0 @@
-SessionStart `check-config.sh` now rejects non-identifier `.env` keys before `printf -v` (blocking array-subscript command substitution) and loads `.claude/last30days.env` only when `LAST30DAYS_TRUST_PROJECT_CONFIG` is set in the process environment or global config, matching `lib/env.py`.

@@ -74,6 +74,12 @@ LANE_DEADLINE = 180
 FOREGROUND_CONTRACT = 300
 RENDER_MARGIN = 20
 
+# Minimum useful budget for the review lane. Below this threshold, Bright
+# Data pulls reliably time out (cli_timeout = max(5, timeout-10), so budget
+# 11s → CLI timeout 1s). Crumbs are a skip, not a short timeout: firing
+# doomed pulls still spends 3 credits with no reviews returned.
+MIN_USEFUL_REVIEW_BUDGET = 90
+
 # Minimum dated reviews inside the window before a drift arrow is honest.
 # Live census: a 50-cap pull returned 31 records of which only 5 were
 # inside 30 days, so an unguarded arrow would routinely publish a "trend"
@@ -526,9 +532,17 @@ def parse_reviews(response: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Dict[
 
 
 def _remaining_lane_budget(elapsed: float) -> int:
-    """Clamp the lane deadline against what is left of the run's contract."""
+    """Compute the review lane's wall-clock budget.
+
+    Returns the lesser of LANE_DEADLINE and whatever remains of the foreground
+    contract. If the remaining time is below MIN_USEFUL_REVIEW_BUDGET, returns
+    0 (skip the lane entirely) rather than firing doomed short pulls that spend
+    Bright Data credits without returning reviews.
+    """
     remaining = FOREGROUND_CONTRACT - elapsed - RENDER_MARGIN
-    return int(min(LANE_DEADLINE, max(0, remaining)))
+    if remaining < MIN_USEFUL_REVIEW_BUDGET:
+        return 0
+    return int(min(LANE_DEADLINE, remaining))
 
 
 def enrich_with_reviews(
@@ -541,7 +555,7 @@ def enrich_with_reviews(
     brand: str = "",
     keyword: str = "",
     fetcher=None,
-) -> List[Dict[str, Any]]:
+) -> Tuple[List[Dict[str, Any]], Optional[str]]:
     """Attach review samples to the top products, in parallel, under a deadline.
 
     Every product is returned either way. A product whose pull is dropped
@@ -549,23 +563,28 @@ def enrich_with_reviews(
     review sample -- it renders as ``quiet`` rather than vanishing, because
     losing a top product entirely is a worse failure than losing its
     recent-window read. The dropped pull has spent its credit regardless.
+
+    Returns (enriched_products, status_detail). status_detail is None when
+    enrichment succeeded normally, or a string describing a degraded outcome:
+    - ``"review lane skipped (budget 0s)"`` -- crumb budget, lane did not run
+    - ``"review lane timed out"`` -- all pulls dropped by the deadline
     """
     enriched = [dict(p) for p in products]
     pull_count = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     if pull_count <= 0:
         _log(f"depth={depth}: discovery only, no review pulls")
-        return enriched
+        return enriched, None
 
     budget = _remaining_lane_budget(elapsed)
     if budget <= 0:
-        _log("no wall-clock budget left for review pulls; skipping the lane")
-        return enriched
+        _log(f"review lane skipped (budget {budget}s, floor {MIN_USEFUL_REVIEW_BUDGET}s)")
+        return enriched, "review lane skipped (budget 0s)"
 
     targets = select_enrichment_targets(
         enriched, limit=pull_count, brand=brand, keyword=keyword
     )
     if not targets:
-        return enriched
+        return enriched, None
 
     by_asin = {p["asin"]: p for p in enriched}
     pull = fetcher or (
@@ -577,6 +596,8 @@ def enrich_with_reviews(
 
     _log(f"pulling up to {max_reviews} reviews for {len(targets)} products (budget {budget}s)")
     started = time.monotonic()
+    completed_count = 0
+    dropped_count = 0
     # Not a `with` block on purpose. Every future is already running (one
     # worker per target), so `future.cancel()` can never succeed, and
     # ThreadPoolExecutor's context-manager exit calls shutdown(wait=True) --
@@ -604,14 +625,21 @@ def enrich_with_reviews(
                     continue
                 product["top_comments"] = comments
                 product.update({k: v for k, v in stats.items() if v})
+                completed_count += 1
         except TimeoutError:
-            dropped = sum(1 for f in futures if not f.done())
-            _log(f"lane deadline {budget}s hit; dropped {dropped} straggling pull(s)")
+            dropped_count = sum(1 for f in futures if not f.done())
+            _log(f"lane deadline {budget}s hit; dropped {dropped_count} straggling pull(s)")
     finally:
         pool.shutdown(wait=False, cancel_futures=True)
 
     _log(f"review lane finished in {time.monotonic() - started:.0f}s")
-    return enriched
+
+    # Report degraded outcome if all pulls dropped (none completed)
+    status_detail = None
+    if completed_count == 0 and dropped_count > 0:
+        status_detail = "review lane timed out"
+
+    return enriched, status_detail
 
 
 def enrich_source_items(
@@ -657,7 +685,7 @@ def enrich_source_items(
     if not products:
         return items
 
-    enriched = enrich_with_reviews(
+    enriched, _status = enrich_with_reviews(
         products, depth=depth, config=config, elapsed=elapsed,
         max_reviews=max_reviews, keyword=keyword, fetcher=fetcher,
     )

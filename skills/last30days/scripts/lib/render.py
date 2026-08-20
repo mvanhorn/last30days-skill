@@ -17,6 +17,7 @@ from . import (
     library_index,
     registers,
     relevance,
+    rerank,
     schema,
     signals,
     skill_meta,
@@ -2994,12 +2995,23 @@ def _render_emoji_footer(report: schema.Report, save_path: str | None) -> list[s
     """
     source_lines = _build_source_footer_lines(report)
     voices_line = _top_voices_footer_line(report)
+    # The freshness verdict is computed for the report body, but a reader who
+    # only scans this footer never sees it — and it is the one line that says
+    # how much of the evidence is actually recent.
+    freshness_warning = _assess_data_freshness(report)
+    freshness_line = f"🕒 {freshness_warning}" if freshness_warning else None
     raw_line = f"📎 Raw results saved to {save_path}" if save_path else None
 
     body: list[str] = []
     body.extend(source_lines)
     if voices_line:
         body.append(voices_line)
+    # Append freshness whenever it would annotate something: either the body
+    # already has content, or the raw-results line will make the footer
+    # non-empty. An otherwise empty run stays silent rather than announcing
+    # its own emptiness.
+    if freshness_line and (body or raw_line):
+        body.append(freshness_line)
     if raw_line:
         body.append(raw_line)
 
@@ -3400,20 +3412,12 @@ def _source_label(source: str) -> str:
 def _best_take_relevance_ok(candidate) -> bool:
     """Exclude off-topic-but-viral candidates from Best Takes.
 
-    The engine demotes candidates that don't match the topic entity by tagging
-    ``entity-miss`` in the explanation and/or zeroing ``final_score`` (e.g. a
-    39k-like Grand Tour comment surfacing in a 'Patagonia brand' run). Those
-    must never reach Best Takes no matter how upvoted their comments are.
-    Plain ``fallback-local-score`` (without entity-miss) is NOT a demotion --
-    it is the default reason when LLM rerank didn't score an item -- so it is
-    not gated here.
+    Delegates to ``rerank.candidate_relevance_ok``, which owns the entity-miss
+    demotion test. Do not re-implement the check here: this site previously
+    carried its own copy, which meant the first-party carve-out applied in
+    rerank never reached Best Takes or cluster visibility.
     """
-    explanation = (candidate.explanation or "").lower()
-    if "entity-miss" in explanation:
-        return False
-    if (candidate.final_score or 0.0) <= 0.0:
-        return False
-    return True
+    return rerank.candidate_relevance_ok(candidate)
 
 
 def _effective_fun_score(candidate, vote_weight: float) -> float:

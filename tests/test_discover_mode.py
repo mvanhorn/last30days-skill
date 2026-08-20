@@ -408,21 +408,34 @@ def test_discovery_listing_block_is_reported_as_rate_limited():
 
 
 def test_reddit_discovery_adapter_preserves_partial_feed_errors():
+    """When one shreddit sort lane fails and another succeeds, the failed lane's error is kept.
+
+    Errors are cleared per (sub, sort) pair, not per subreddit. Arctic-shift cannot
+    recover a specific sort lane since it's recency-only.
+    """
     item = {
         "url": "https://reddit.com/r/example/comments/1",
         "title": "AI agent launch",
+        "subreddit": "AI_Agents",  # Required for error-clearing logic.
     }
     with mock.patch.object(
         reddit_listing,
         "_fetch_one_with_status",
         side_effect=[([], "rising timed out"), ([item], None)],
+    ), mock.patch(
+        "lib.reddit_arctic.fetch_listings",
+        return_value=[],  # Arctic supplement returns nothing.
     ):
         result = reddit_listing.fetch_discovery_listings(
             ["AI_Agents"], query="AI agents",
         )
 
     assert result["items"] == [item]
-    assert result["errors"] == ["r/AI_Agents rising: rising timed out"]
+    # Shreddit top succeeded → no error for top.
+    # Shreddit rising failed → error for rising is preserved.
+    # Error-clearing is per (sub, sort) pair, not per subreddit.
+    assert len(result["errors"]) == 1
+    assert "rising" in result["errors"][0].lower()
 
 
 def test_discovery_cli_json_contract_and_mutual_exclusion():

@@ -9,6 +9,69 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.21.1] - 2026-08-18
+
+### Changed
+
+- Direct Perplexity keys now use the Agent API for controlled synthesis and explicit Deep Research. Controlled synthesis forces grounded web search and supports explicit Anthropic Agent models with a bounded output budget, while Deep Research starts at most one paid background run per command and preserves safe polling and incomplete-run receipts. Existing OpenRouter-only installs keep the synchronous Sonar and Sonar Deep Research fallbacks.
+
+
+## [3.21.0] - 2026-08-14
+
+### Changed
+
+- X backend priority changed: bird (browser cookies) is now first in the auto chain, ahead of xai/xurl/xquik. Cookies beat XAI_API_KEY when both are present. Grok CLI is demoted to opt-in only: a leftover `~/.grok/auth.json` no longer steals the X lane. Pin `LAST30DAYS_X_BACKEND=grok` to enable it explicitly.
+
+
+## [3.20.0] - 2026-08-14
+
+### Added
+
+- X search now judges corpus on-topic ratio and retries once with a wider AND query when the initial results are mostly off-topic (e.g., phrase-quoted "Rome Italy" returning AS Roma sports accounts). Multi-word search queries use unquoted AND as the primary variant instead of phrase-quoting. Handles extracted from entity_extract are now filtered for the from: lane based on whether their already-retrieved posts are on-topic (≥2 on-topic hits and ≥50% ratio), not just frequency. Extracted handles that qualify for the from: lane AND the topic into the query (`from:handle Rome`) to prevent off-topic timelines from filling the X budget. Explicit --x-handle and --x-related handles always get the from: lane without ANDing the topic. Source status reflects off-topic floods as a warning artifact, not a failure. First-party floor immunity remains conservative (explicit handles only, not promoted commentators).
+
+### Fixed
+
+- Amazon review enrichment now starts at search time instead of after all other sources finish, ensuring multi-source runs have a useful budget (up to 180s) rather than leftover crumbs. Previously, a run that spent 269s on retrieval would leave only 11s for reviews, causing all Bright Data pulls to time out. Budgets below 90s now skip the lane entirely instead of firing doomed short pulls that spend credits without returning reviews.
+- Grok session expiry is now detected locally by parsing `expires_at` from `~/.grok/auth.json`. Doctor reports expired sessions as **degraded** (not ok) with the expiry timestamp and a hint to run `grok login --device-auth` if refresh fails. Research-time availability still attempts grok when credentials exist (expired access_token does not prove the refresh_token is dead). When the Grok CLI returns "Not signed in" or `invalid_grant` mid-run, the pipeline now reports `auth-failed` with a proper fix hint instead of a generic PARTIAL outcome, and falls back to the next X backend.
+
+
+## [3.19.0] - 2026-08-14
+
+### Security
+
+- Source URLs containing unsafe schemes or Markdown delimiters are now rendered as inert escaped text instead of raw Markdown. ([#886](https://github.com/mvanhorn/last30days-skill/issues/886))
+- SessionStart `check-config.sh` now rejects non-identifier `.env` keys before `printf -v` (blocking array-subscript command substitution) and loads `.claude/last30days.env` only when `LAST30DAYS_TRUST_PROJECT_CONFIG` is set in the process environment or global config, matching `lib/env.py`.
+
+### Added
+
+- **Amazon buyer signals** — a new opt-in `amazon` source, backed by the Bright Data CLI. On shopping-intent topics it pulls discovered products with live ratings and prices, plus a capped sample of recent written reviews woven in as buyer voice.
+
+  The signal it exists for is *drift*: an all-time rating from thousands of ratings set against the average of only the reviews inside the last 30 days. When those disagree, something changed this month, and the review text says what. The emoji footer names each product and the direction it moved — `📦 Amazon: 3 products │ Chill Max XL 4.4★→3.8★ ↓, Deluxe Bag 4.7★→5.0★, BLUEY Set 4.8★ new` — rather than reporting inventory counts.
+
+  Off by default and dual-gated: the `brightdata` CLI must be on PATH and logged in, *and* the run must ask for the source (`--search ...,amazon` or `INCLUDE_SOURCES=amazon`). It never auto-fires from inferred intent. Use `--amazon-query` when the product keyword differs from the topic — a person topic searches their company's product line, not their name. `LAST30DAYS_AMAZON_DOMAIN` selects a non-US marketplace.
+
+  Billing is one credit per request against a 5,000/month free tier, so a typical run costs 4 credits regardless of how many reviews come back.
+- Reddit keyless discovery now falls back to the arctic-shift archive when the shreddit listing partials return nothing — hosts on datacenter egress (where Reddit 403s `/svc/shreddit`) keep scored Reddit discovery, score backfill, and discover-mode listings instead of reporting `auth-failed`.
+- X search now works with no X credential at all. Install the Grok CLI (`curl -fsSL https://x.ai/cli/install.sh | bash`, then `grok login`) and last30days reaches X with no X account, no browser cookies, and no `XAI_API_KEY` — on any host, including Claude Code, Codex, Cursor and GrokBot. It sits ahead of the browser-cookie path by default; pin `LAST30DAYS_X_BACKEND=bird` to keep cookies. Covers three lanes for a person or company topic: posts by the subject, posts @-mentioning them, and posts naming them in plain text (which is most of the discussion, and which a mention-only search misses).
+
+### Fixed
+
+- Source URLs in the saved raw report and internal evidence output now render as clickable markdown links instead of plain text. ([#886](https://github.com/mvanhorn/last30days-skill/issues/886))
+- Hacker News comments no longer vanish from every per-source path. HN comments arrive as `{author, text, points}` while downstream readers key on `score`/`excerpt`, and `_normalize_hackernews` stored them raw, so `render._top_comments_list` filtered `(c.get("score") or 0) >= 5` against a key that was never present and rejected the entire source. HN comments are now remapped like the YouTube and TikTok ones, and the HN floor is 0 because the Algolia API returns `points: null` for every comment child, which makes any positive threshold unmeetable. A comment with no vote signal renders without a fabricated "(0 points)". ([#889](https://github.com/mvanhorn/last30days-skill/issues/889))
+- Polymarket topics spelled out in full ("artificial general intelligence") now match markets titled in shorthand ("AGI by 2030?"). Previously the topic filter and the relevance floor both compared full words against an acronym, so every on-topic market was dropped and the run reported zero results — indistinguishable from the source genuinely having none. ([#891](https://github.com/mvanhorn/last30days-skill/issues/891))
+- Reddit HTTP 429/403 on the keyless lanes is no longer reported as a clean `no-results`: the failure now survives the worker-thread hop into the run outcome, so `source_status` carries `rate-limited`/`auth-failed` with the status in `detail` and `doctor --postmortem` lists Reddit under Failed instead of "No failures on the last run." `doctor --probe` now checks the RSS endpoint the engine actually uses (the old `/r/all/hot.json` probe is permanently 403 keyless) and counts a 403/429 there as blocked rather than reachable. Under `LAST30DAYS_STRICT_EXIT` a blocked Reddit run now exits 3 instead of 0. ([#899](https://github.com/mvanhorn/last30days-skill/issues/899))
+- On Windows, the setup wizard's npx-based installs (Digg, arXiv, Techmeme) always failed silently because `shutil.which("npx")` resolves `PATHEXT` but `subprocess.run` given the bare string `"npx"` does not. Windows users also got macOS-only Homebrew guidance when yt-dlp was missing. Both are fixed: the resolved npx path is now passed through, and Windows gets `pip install yt-dlp` guidance instead. ([#904](https://github.com/mvanhorn/last30days-skill/issues/904))
+- `--web-backend=keyless` is now accepted by the CLI, matching what `CONFIGURATION.md` already documented. The keyless web-search floor was already fully supported internally; only the argument parser rejected the value. ([#905](https://github.com/mvanhorn/last30days-skill/issues/905))
+- arXiv no longer returns zero results for natural-language multi-word topics. The exact-phrase quoted query now retries unquoted once when it matches nothing, instead of silently dropping arXiv from the report. ([#908](https://github.com/mvanhorn/last30days-skill/issues/908))
+- Truth Social search no longer fails with a Cloudflare-triggered HTTP 403 on every request. Requests now send browser-like headers, the same fix already applied to Reddit. ([#909](https://github.com/mvanhorn/last30days-skill/issues/909))
+- `--emit=compact --save-dir` runs now save the complete debug artifact (all clusters plus every per-source item, with the emoji footer citing the actual written path) instead of the compact stdout render, which had made most collected evidence unrecoverable from the raw file. ([#923](https://github.com/mvanhorn/last30days-skill/issues/923))
+- The GitHub source no longer reports zero results when the planner writes search qualifiers into the topic (e.g. `open source AI stars:>1000 created:>2025-03-20`). `search_github` appends its own `created:>{from_date}` window, and two `created:` qualifiers collide: GitHub honors the first and ignores the appended window, so out-of-window items are fetched and then dropped wholesale by the local date filter, surfacing as a silent `no-results`. Qualifiers are now stripped from the topic before the query is built (including comma/semicolon-glued forms and quoted values such as `label:"bug fix"`), topic terms glued after a qualifier value are preserved, and a qualifier-only topic reports an explicit error instead of searching the whole site. ([#949](https://github.com/mvanhorn/last30days-skill/issues/949))
+- The GitHub source no longer returns zero results once a credential is available. GitHub rejects authenticated `/search/issues` requests that carry neither `is:issue` nor `is:pull-request` with HTTP 422, while anonymous requests are still accepted without one — so the source worked until a user ran `gh auth login` or set `GITHUB_TOKEN`, then failed silently while `doctor` still reported it healthy. Authenticated searches now run both qualifier-scoped queries and merge them, deduped by item id and re-sorted by reaction count, which keeps issues and pull requests in the same result set; appending a single qualifier would have dropped roughly 87% of matches on a typical topic. The unauthenticated path is unchanged. When one partition fails but the other returns items, the surviving items are now kept and the source is reported as partial rather than silently claiming success — full-failure (both partitions return nothing) is still a clear failure. ([#967](https://github.com/mvanhorn/last30days-skill/issues/967))
+- Out-of-window evidence no longer leads the ranked output. Items whose dates fall outside the run's window were flagged `[date:low]` but ranked normally, so a 2025-10 video took the #1 cluster in a 2026-07 brief and a 2025-12 one took #5. Candidates whose every dated item is out of window are now demoted in both the fusion sort and `_final_score`, so they still appear as evidence but never above in-window material; items with no date at all are untouched, since an unknown date is a coverage gap rather than a stale item. The freshness verdict ("only N of M dated items are from the last 7 days") also reaches the pass-through footer instead of only the report body.
+- X runs on a person or company no longer discard the subject's own posts. A post almost never contains its own author's name, so lexical relevance scored it at zero and the retrieval floor pruned it — a run for "Peter Steinberger steipete" fetched 8 posts by him and reported none of them. Fixed across the chain: planner scaffolding words no longer count as topic signal, posts by a handle the run is searching are exempt from the floor, auto-discovered handles now reach the first-party protections (previously only `--x-handle` did), quoted proper-noun phrases survive into the provider query instead of degrading into a token conjunction, and the subject of the topic gets a higher per-author cap than incidental accounts. When no real handle can be identified at all, the X floor is skipped rather than pruning against lexical name tokens. The thin-source retry path defers the X floor the same way Phase 1 does, so a subject-authored post recovered on retry is not discarded before handle resolution.
+- `--github-user` no longer returns unrelated repos for people whose PR search comes back empty or is unavailable. Person mode now falls back to the selected user's public GitHub events and returns only in-window `PushEvent` activity attributed to that actor, instead of treating repository-level `pushed_at` as proof that the selected user pushed. A pinned `--github-user` that still yields nothing is recorded as `no-results` instead of passing silently.
+
+
 ## [3.18.4] - 2026-07-28
 
 ### Fixed

@@ -130,7 +130,7 @@ wheels = [
 
 [[package]]
 name = "last30days-skill"
-version = "3.18.4"
+version = "3.21.1"
 source = { virtual = "." }
 
 [package.dev-dependencies]

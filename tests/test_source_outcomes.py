@@ -339,6 +339,91 @@ def test_pipeline_records_clean_empty_source_as_no_results():
     assert "x" not in report.errors_by_source
 
 
+def _perplexity_plan():
+    return {
+        "intent": "general",
+        "freshness_mode": "balanced_recent",
+        "cluster_mode": "story",
+        "subqueries": [
+            {
+                "label": "primary",
+                "search_query": "test topic",
+                "ranking_query": "test topic",
+                "sources": ["perplexity"],
+            }
+        ],
+        "source_weights": {"perplexity": 1.0},
+    }
+
+
+def test_pipeline_records_both_mode_semantic_leg_failure_as_partial():
+    raw_item = {
+        "id": "PXS1",
+        "title": "Search result",
+        "url": "https://example.com/result",
+        "snippet": "Raw search evidence",
+        "date": "2026-08-10",
+        "relevance": 0.8,
+        "why_relevant": "Perplexity Search result",
+        "engagement": {},
+    }
+    artifact = {
+        "mode": "both",
+        "search": {"mode": "search"},
+        "agent": {
+            "error": "failed",
+            "agentErrorMessage": "Provider rejected synthesis",
+        },
+        "itemCount": 1,
+    }
+    with patch("lib.pipeline._retrieve_stream_impl", return_value=([raw_item], artifact)):
+        report = pipeline.run(
+            topic="test topic",
+            config={
+                "LAST30DAYS_REASONING_PROVIDER": "gemini",
+                "PERPLEXITY_API_KEY": "pplx-test",
+            },
+            depth="quick",
+            requested_sources=["perplexity"],
+            mock=True,
+            external_plan=_perplexity_plan(),
+        )
+
+    outcome = report.source_status["perplexity"]
+    assert outcome.state == schema.PARTIAL
+    assert outcome.items_returned == 1
+    assert outcome.detail == "agent leg: Provider rejected synthesis"
+
+
+def test_pipeline_records_both_mode_semantic_failure_without_items():
+    artifact = {
+        "mode": "both",
+        "search": {"mode": "search"},
+        "agent": {
+            "error": "failed",
+            "agentErrorMessage": "Provider rejected synthesis",
+        },
+        "itemCount": 0,
+    }
+    with patch("lib.pipeline._retrieve_stream_impl", return_value=([], artifact)):
+        report = pipeline.run(
+            topic="test topic",
+            config={
+                "LAST30DAYS_REASONING_PROVIDER": "gemini",
+                "PERPLEXITY_API_KEY": "pplx-test",
+            },
+            depth="quick",
+            requested_sources=["perplexity"],
+            mock=True,
+            external_plan=_perplexity_plan(),
+        )
+
+    outcome = report.source_status["perplexity"]
+    assert outcome.state == health.ERROR
+    assert outcome.items_returned == 0
+    assert outcome.detail == "agent leg: Provider rejected synthesis"
+
+
 def test_pipeline_preserves_typed_http_failure():
     plan = {
         "intent": "general",
