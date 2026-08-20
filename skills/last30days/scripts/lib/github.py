@@ -253,21 +253,66 @@ def search_github(
     _log(f"Searching for '{core}' (raw: '{topic}', since {from_date}, count={count})")
 
     # Build search query with date filter
-    q = f"{core} created:>{from_date}"
-    params = {
-        "q": q,
-        "sort": "reactions",
-        "order": "desc",
-        "per_page": str(min(count, 100)),
-    }
-    url = f"{SEARCH_URL}?{urllib.parse.urlencode(params)}"
+    base_q = f"{core} created:>{from_date}"
+
+    def _search(qualifier: Optional[str]) -> Optional[Dict[str, Any]]:
+        q = f"{base_q} {qualifier}" if qualifier else base_q
+        params = {
+            "q": q,
+            "sort": "reactions",
+            "order": "desc",
+            "per_page": str(min(count, 100)),
+        }
+        url = f"{SEARCH_URL}?{urllib.parse.urlencode(params)}"
+        return _fetch_json(url, token=resolved_token, timeout=30,
+                           failure_out=fetch_failures)
 
     fetch_failures: List[str] = []
-    data = _fetch_json(url, token=resolved_token, timeout=30, failure_out=fetch_failures)
+    partition_failure: Optional[str] = None
+    if authed:
+        # GitHub rejects AUTHENTICATED /search/issues queries that carry
+        # neither `is:issue` nor `is:pull-request` (HTTP 422). Anonymous
+        # queries are still grandfathered, which is why this only bites once
+        # a token is present -- including via the `gh auth token` fallback.
+        #
+        # Appending a single qualifier would silently halve the corpus: for
+        # "rust async created:>2026-08-02" GitHub reports 1,072 issues and
+        # 7,044 pull requests against 8,115 combined, so `is:issue` alone
+        # drops ~87% of matches. Query both and merge instead, which keeps
+        # coverage AND the authenticated rate limit.
+        merged: List[Dict[str, Any]] = []
+        seen_ids = set()
+        failed_qualifiers: List[str] = []
+        for qualifier in ("is:issue", "is:pull-request"):
+            part = _search(qualifier)
+            if part is None:
+                failed_qualifiers.append(qualifier)
+                continue
+            for item in part.get("items", []):
+                item_id = item.get("id")
+                if item_id in seen_ids:
+                    continue
+                seen_ids.add(item_id)
+                merged.append(item)
+        # Both sub-queries are reaction-sorted; the merge is not, so re-sort
+        # before truncating or the second query's tail would outrank the
+        # first query's head.
+        merged.sort(key=lambda i: (i.get("reactions") or {}).get("total_count", 0),
+                    reverse=True)
+        data = {"items": merged[:count]} if merged else None
+        if failed_qualifiers:
+            partition_failure = (
+                f"GitHub partition(s) failed: {', '.join(failed_qualifiers)}"
+                + (f" ({fetch_failures[-1]})" if fetch_failures else "")
+            )
+    else:
+        data = _search(None)
     if not data:
         envelope = {"items": [], "context": {"core": core, "from_date": from_date,
                                              "to_date": to_date, "count": count}}
-        if authed and fetch_failures:
+        if authed and partition_failure:
+            envelope["error"] = partition_failure
+        elif authed and fetch_failures:
             # Authenticated transport failures must not be laundered into a
             # clean no-results outcome (issue #384).
             envelope["error"] = f"GitHub API request failed: {fetch_failures[-1]}"
@@ -284,7 +329,7 @@ def search_github(
     raw_items = data.get("items", [])
     _log(f"Found {len(raw_items)} issues/PRs")
 
-    return {
+    envelope: Dict[str, Any] = {
         "items": raw_items,
         "context": {
             "core": core,
@@ -293,6 +338,9 @@ def search_github(
             "count": count,
         },
     }
+    if partition_failure:
+        envelope["error"] = partition_failure
+    return envelope
 
 
 def parse_github_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:

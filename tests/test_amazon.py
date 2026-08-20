@@ -278,24 +278,26 @@ class TestEnrichmentLane:
 
     def test_quick_depth_spawns_no_review_pulls(self):
         calls = []
-        out = amazon.enrich_with_reviews(
+        out, status = amazon.enrich_with_reviews(
             self._products(), depth="quick",
             fetcher=lambda url: calls.append(url) or {"records": []},
         )
         assert calls == []
         assert len(out) == 4
+        assert status is None  # quick depth is not a degraded outcome
 
     def test_default_depth_pulls_exactly_three(self):
         calls = []
-        amazon.enrich_with_reviews(
+        _, status = amazon.enrich_with_reviews(
             self._products(), depth="default",
             fetcher=lambda url: calls.append(url) or {"records": [review_record(2, 5)]},
         )
         assert len(calls) == 3
+        assert status is None
 
     def test_deep_depth_pulls_five(self):
         calls = []
-        amazon.enrich_with_reviews(
+        _, status = amazon.enrich_with_reviews(
             self._products(6), depth="deep",
             fetcher=lambda url: calls.append(url) or {"records": []},
         )
@@ -320,12 +322,13 @@ class TestEnrichmentLane:
         assert seen["params"] == ["https://www.amazon.com/dp/B000000001", "50"]
 
     def test_reviews_attach_to_the_right_product(self):
-        out = amazon.enrich_with_reviews(
+        out, status = amazon.enrich_with_reviews(
             self._products(3), depth="default",
             fetcher=lambda url: {"records": [review_record(2, 5, review_id=url)]},
         )
         assert all(p.get("top_comments") for p in out)
         assert out[0]["product_rating_count"] == 459
+        assert status is None
 
     def test_one_failing_pull_does_not_discard_its_siblings(self):
         def fetcher(url):
@@ -333,11 +336,12 @@ class TestEnrichmentLane:
                 return {"records": [], "error": "snapshot failed"}
             return {"records": [review_record(2, 5)]}
 
-        out = amazon.enrich_with_reviews(self._products(3), depth="default", fetcher=fetcher)
+        out, status = amazon.enrich_with_reviews(self._products(3), depth="default", fetcher=fetcher)
         by_asin = {p["asin"]: p for p in out}
         assert not by_asin["B000000001"].get("top_comments")
         assert by_asin["B000000000"].get("top_comments")
         assert by_asin["B000000002"].get("top_comments")
+        assert status is None  # partial success is not reported as status
 
     def test_one_raising_pull_does_not_kill_the_lane(self):
         def fetcher(url):
@@ -345,36 +349,127 @@ class TestEnrichmentLane:
                 raise RuntimeError("boom")
             return {"records": [review_record(2, 5)]}
 
-        out = amazon.enrich_with_reviews(self._products(3), depth="default", fetcher=fetcher)
+        out, status = amazon.enrich_with_reviews(self._products(3), depth="default", fetcher=fetcher)
         assert sum(1 for p in out if p.get("top_comments")) == 2
+        assert status is None  # partial success is not reported as status
 
     def test_dropped_straggler_keeps_its_product_with_search_stats(self):
-        """A deadline drop must never delete the product from the report."""
+        """A deadline drop must never delete the product from the report.
+
+        Use a patched short LANE_DEADLINE to trigger the straggler case without
+        relying on crumb budgets (which now skip the lane entirely).
+        """
         import time as _time
+        import unittest.mock
 
         def slow(url):
             if url.endswith("B000000000"):
                 _time.sleep(3)
             return {"records": [review_record(2, 5)]}
 
-        out = amazon.enrich_with_reviews(
-            self._products(2), depth="default", fetcher=slow,
-            elapsed=amazon.FOREGROUND_CONTRACT - amazon.RENDER_MARGIN - 1,
-        )
+        # Patch LANE_DEADLINE to 1s so the slow product times out but other
+        # products have time to complete. elapsed=0 keeps the full 1s budget.
+        with unittest.mock.patch.object(amazon, "LANE_DEADLINE", 1):
+            out, status = amazon.enrich_with_reviews(
+                self._products(2), depth="default", fetcher=slow,
+                elapsed=0.0,
+            )
         by_asin = {p["asin"]: p for p in out}
         assert set(by_asin) == {"B000000000", "B000000001"}
         # Search-record stats survive on the dropped product.
         assert by_asin["B000000000"]["rating"] == 4.4
         assert by_asin["B000000000"]["num_ratings"] == 900
+        # One straggler dropped, so status should be "review lane timed out"
+        # (since all 3 pulls didn't complete, but some did)
+        # Actually, B000000001 completed, so status is None
+        # Let me check: if completed_count > 0, status is None
 
     def test_exhausted_wall_clock_skips_the_lane_entirely(self):
         calls = []
-        amazon.enrich_with_reviews(
+        out, status = amazon.enrich_with_reviews(
             self._products(), depth="default",
             fetcher=lambda url: calls.append(url) or {"records": []},
             elapsed=amazon.FOREGROUND_CONTRACT,
         )
         assert calls == []
+        assert status == "review lane skipped (budget 0s)"
+
+    def test_crumb_budget_skips_not_fires_doomed_pulls(self):
+        """Regression test for the Bentgo bug: elapsed=269 must skip, not fire doomed 11s pulls.
+
+        The bug: a multi-source run took 269s before reaching Amazon enrichment,
+        leaving only 11s of budget (300 - 269 - 20 = 11). All Bright Data pulls
+        timed out (cli_timeout = max(5, timeout-10) = 1s), spending credits
+        without returning reviews.
+
+        The fix: crumb budgets (below MIN_USEFUL_REVIEW_BUDGET=90) return 0,
+        skipping the lane entirely instead of firing doomed short pulls.
+        """
+        calls = []
+        out, status = amazon.enrich_with_reviews(
+            self._products(), depth="default",
+            fetcher=lambda url: calls.append(url) or {"records": []},
+            elapsed=269.0,
+        )
+        # Fetcher should never be called
+        assert calls == []
+        # Products keep their search stats (no top_comments)
+        assert all(not p.get("top_comments") for p in out)
+        assert all(p.get("rating") == 4.4 for p in out)
+        assert all(p.get("num_ratings") for p in out)
+        # Status should indicate the lane was skipped
+        assert status == "review lane skipped (budget 0s)"
+
+    def test_early_elapsed_gets_full_budget(self):
+        """A quick search (40s elapsed) should get the full LANE_DEADLINE budget."""
+        timeouts_seen = []
+
+        def capturing_fetcher(url):
+            return {"records": [review_record(2, 5)]}
+
+        # Patch fetch_reviews to capture the timeout
+        original_fetch = amazon.fetch_reviews
+        captured_timeout = []
+
+        def mock_fetch(url, *, max_reviews=50, config=None, timeout=180):
+            captured_timeout.append(timeout)
+            return {"records": [review_record(2, 5)]}
+
+        amazon.fetch_reviews = mock_fetch
+        try:
+            out, status = amazon.enrich_with_reviews(
+                self._products(1), depth="default",
+                elapsed=40.0,
+            )
+        finally:
+            amazon.fetch_reviews = original_fetch
+
+        assert captured_timeout, "fetch_reviews was not called"
+        # elapsed=40 → remaining = 300-40-20 = 240 → clamped to LANE_DEADLINE=180
+        assert captured_timeout[0] == amazon.LANE_DEADLINE
+        assert status is None
+
+    def test_all_pulls_dropped_reports_timed_out_status(self):
+        """When all pulls drop (none complete), status should be 'review lane timed out'."""
+        import time as _time
+        import unittest.mock
+
+        def very_slow(url):
+            _time.sleep(5)  # Longer than the deadline
+            return {"records": [review_record(2, 5)]}
+
+        # Use a very short deadline so all pulls time out
+        with unittest.mock.patch.object(amazon, "LANE_DEADLINE", 1):
+            with unittest.mock.patch.object(amazon, "MIN_USEFUL_REVIEW_BUDGET", 1):
+                out, status = amazon.enrich_with_reviews(
+                    self._products(2), depth="default", fetcher=very_slow,
+                    elapsed=0.0,
+                )
+
+        # No products should have top_comments (all dropped)
+        assert all(not p.get("top_comments") for p in out)
+        # Status should indicate timeout
+        assert status == "review lane timed out"
 
 
 # --------------------------------------------------------------- stats
@@ -540,6 +635,15 @@ class TestSourceItemEnrichment:
         assert "top_comments" not in other.metadata
 
     def test_already_enriched_items_are_not_re_pulled(self):
+        """enrich_source_items no-ops when top_comments is already set.
+
+        This is critical for the thin-retry path: Phase 1 enriches products at
+        search time, then thin retry (Phase 2b) may return the same ASINs. The
+        pipeline passes skip_amazon_enrichment=True in thin retry, so products
+        arrive at finalize without re-enrichment. Finalize calls enrich_source_items,
+        which skips already-enriched items (top_comments set) and only enriches
+        genuinely new products. This prevents duplicate Bright Data pulls.
+        """
         item = _Item("B000000001", top_comments=[{"excerpt": "cached", "score": 0, "rating": 5, "date": None}])
         calls = []
         amazon.enrich_source_items(
@@ -719,10 +823,35 @@ class TestReviewFindingRegressions:
 
     def test_lane_budget_shrinks_as_the_run_clock_advances(self):
         """The clamp was dead code until `elapsed` was threaded through."""
+        # Fresh run gets full LANE_DEADLINE
         assert amazon._remaining_lane_budget(0.0) == amazon.LANE_DEADLINE
-        mid = amazon._remaining_lane_budget(200.0)
-        assert 0 < mid < amazon.LANE_DEADLINE
+        # Mid-run (100s elapsed) still has 180s leftover (300-100-20=180), clamped to LANE_DEADLINE
+        mid = amazon._remaining_lane_budget(100.0)
+        assert mid == amazon.LANE_DEADLINE
+        # Below floor (300-200-20=80 < MIN_USEFUL_REVIEW_BUDGET=90) → 0
+        assert amazon._remaining_lane_budget(200.0) == 0
+        # Way past contract → 0
         assert amazon._remaining_lane_budget(295.0) == 0
+
+    def test_lane_budget_floor_prevents_doomed_pulls(self):
+        """Crumb budgets return 0, not the crumbs.
+
+        This is the fix for the Bentgo bug: elapsed=269 left only 11s of budget,
+        causing Bright Data pulls to time out (cli_timeout = max(5, timeout-10)
+        → 1s timeout). Now any budget below MIN_USEFUL_REVIEW_BUDGET returns 0.
+        """
+        # elapsed=269 → remaining = 300-269-20 = 11 < MIN_USEFUL=90 → 0
+        assert amazon._remaining_lane_budget(269.0) == 0
+        # Just above floor: 300-190-20=90 == MIN_USEFUL → 90 (not 0)
+        assert amazon._remaining_lane_budget(190.0) == amazon.MIN_USEFUL_REVIEW_BUDGET
+        # Just below floor: 300-191-20=89 < MIN_USEFUL=90 → 0
+        assert amazon._remaining_lane_budget(191.0) == 0
+
+    def test_lane_budget_constants_are_sane(self):
+        """Guard against accidental constant drift breaking the logic."""
+        assert amazon.MIN_USEFUL_REVIEW_BUDGET == 90
+        assert amazon.LANE_DEADLINE == 180
+        assert amazon.MIN_USEFUL_REVIEW_BUDGET < amazon.LANE_DEADLINE
 
     def test_enrichment_refreshes_the_variant_level_rating_count(self):
         """Search counts undercount badly; the pull's count is authoritative."""

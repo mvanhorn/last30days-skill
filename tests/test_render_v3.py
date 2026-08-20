@@ -370,7 +370,7 @@ class OutputEnvelopeTests(unittest.TestCase):
         return schema.SourceItem(
             item_id=item_id,
             source="perplexity",
-            title=f"Perplexity Sonar Pro: test topic ({item_id})",
+            title=f"Perplexity Agent: test topic ({item_id})",
             body="AI synthesis body.",
             url="",
             container="perplexity.ai",
@@ -1654,7 +1654,7 @@ class TestSourceUrlsAreClickable(unittest.TestCase):
         empty_url_item = schema.SourceItem(
             item_id="i3",
             source="perplexity",
-            title="Perplexity Sonar Pro: test topic",
+            title="Perplexity Agent: test topic",
             body="AI synthesis body.",
             url="",
             container="perplexity.ai",

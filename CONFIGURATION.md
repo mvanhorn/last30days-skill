@@ -151,8 +151,8 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | arXiv | `arxiv-pp-cli` on PATH (auto-installed during first-run setup via `npx -y @mvanhorn/printing-press-library@0.1.16 install arxiv --cli-only`) | always on if `arxiv-pp-cli` on PATH; fires on research/technical topics and stays quiet otherwise (relevance + 365-day recency gating) | yes (free, keyless) |
 | Techmeme | `techmeme-pp-cli` on PATH (auto-installed via `... install techmeme --cli-only`) | always on if `techmeme-pp-cli` on PATH; searches Techmeme's live archive and keeps only headlines dated within the research window (undated headlines flow through as low-confidence) | yes (free, keyless) |
 | Trustpilot | `trustpilot-pp-cli` on PATH (NOT auto-installed; install on demand via `npx -y @mvanhorn/printing-press-library@0.1.16 install trustpilot --cli-only`) + (`INCLUDE_SOURCES` contains `trustpilot` **or** an explicit `--trustpilot-domain` / plan-level `trustpilot_domain`) | **opt-in, off by default**; `--trustpilot-domain=<domain>` (and per-entity `trustpilot_domain` in `--competitors-plan`) auto-activates the source for that run and bypasses the brand-shape gate. Persist with `INCLUDE_SOURCES=trustpilot` to skip per-run auto-enable. `EXCLUDE_SOURCES=trustpilot` still wins. Bare company names auto-resolve to the review-page domain via the CLI's search only when the source is already active. The session warms once before the search fan-out; a stale session does a ~10s headless-Chrome WAF-cookie harvest (set `LAST30DAYS_TRUSTPILOT_NO_BROWSER=1` to disable in cron/CI) | yes (no API key; cookie-replay after the one-time harvest) |
-| Amazon | `brightdata` CLI on PATH **and logged in** + (`LAST30DAYS_AMAZON_ENABLED`, `INCLUDE_SOURCES` contains `amazon`, or `--search` includes `amazon`) | product records with live rating, rating count, and price, plus a capped sample of recent written reviews woven as buyer voice; the emoji footer shows each product's all-time-vs-last-30-days drift | **Offered during first-run setup.** Accepting installs the CLI (`npm i -g @brightdata/cli`) and registers a free account through your GitHub login - no browser, no signup form, no credit card (requires the `gh` CLI installed and authenticated). Declining installs nothing. Free tier is 5,000 requests/month; a typical run spends 4 regardless of how many reviews come back, since billing is per request. Past the tier it bills the account balance at $1.50 per 1,000 records (~$0.32 for a default run). `--amazon-query=<keyword>` sets the product keyword when it differs from the topic; `LAST30DAYS_AMAZON_DOMAIN` selects a non-US marketplace. `EXCLUDE_SOURCES=amazon` wins. Never auto-fires: availability is default-on after consent, but whether it runs on a given topic stays the model's per-run judgment |
-| X / Twitter | one of: `AUTH_TOKEN` + `CT0` (browser cookies, Bird CLI), `XAI_API_KEY`, `XQUIK_API_KEY`, `SCRAPECREATORS_API_KEY`, or `FROM_BROWSER` (cookie-jar auth) | X items in results | cookie-jar / Bird = free; Xquik / xAI / ScrapeCreators = key-based |
+| Amazon | `brightdata` CLI on PATH **and logged in** + (`LAST30DAYS_AMAZON_ENABLED`, `INCLUDE_SOURCES` contains `amazon`, or `--search` includes `amazon`) | product records with live rating, rating count, and price, plus a capped sample of recent written reviews woven as buyer voice; the emoji footer shows each product's all-time-vs-last-30-days drift | **Offered during first-run setup.** Accepting installs the CLI (`npm i -g @brightdata/cli`) and registers a free account through your GitHub login - no browser, no signup form, no credit card (requires the `gh` CLI installed and authenticated). Declining installs nothing. Free tier is 5,000 requests/month (~$7.50 equivalent); a typical run spends 4 (1 product search + up to 3 review pulls) regardless of how many reviews come back, since billing is per request. Past the free tier it bills the account balance at $1.50 per 1,000 records (~$0.32 for a default run). `--amazon-query=<keyword>` sets the product keyword when it differs from the topic; `LAST30DAYS_AMAZON_DOMAIN` selects a non-US marketplace. `EXCLUDE_SOURCES=amazon` wins. Never auto-fires: availability is default-on after consent, but whether it runs on a given topic stays the model's per-run judgment |
+| X / Twitter | one of: a signed-in `grok` CLI (no X credential), `AUTH_TOKEN` + `CT0` (browser cookies, Bird CLI), `XAI_API_KEY`, `XQUIK_API_KEY`, `SCRAPECREATORS_API_KEY`, or `FROM_BROWSER` (cookie-jar auth) | X items in results | grok = no X credential, draws on your Grok plan; cookie-jar / Bird = free; Xquik / xAI / ScrapeCreators = key-based |
 | TikTok | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `tiktok` | TikTok items | 10K free calls |
 | Instagram | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `instagram` | Instagram Reels | 10K free calls; raise `LAST30DAYS_TRANSCRIPT_TIMEOUT` (default 30s) if SC is slow on your network |
 | Threads | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `threads` | Threads items | 10K free calls |
@@ -162,12 +162,16 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | Bluesky | `BSKY_HANDLE` + `BSKY_APP_PASSWORD` | Bluesky items | yes (app password at bsky.app) |
 | TruthSocial | `TRUTHSOCIAL_TOKEN` | TruthSocial items | yes |
 | Web search | one of: `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY` | `--auto-resolve` and Step 2 supplements | Brave has a free tier; native WebSearch on Claude Code / Codex / Gemini works as a fallback |
-| Perplexity Sonar / Search API / Deep Research | `PERPLEXITY_API_KEY` (preferred) or `OPENROUTER_API_KEY` (Sonar fallback) | `INCLUDE_SOURCES=perplexity`; `--deep-research` flag (~$0.90/query) | no |
+| Perplexity Agent API / Search API / Deep Research | `PERPLEXITY_API_KEY` (preferred) or `OPENROUTER_API_KEY` (Sonar fallback) | `INCLUDE_SOURCES=perplexity`; `--deep-research` uses background Agent API with a direct key or synchronous Sonar through OpenRouter | no |
 | Caption-free transcription | `GROQ_API_KEY` (free tier, preferred) or `OPENAI_API_KEY` (paid backstop); requires `ffmpeg` | Whisper transcription for audio/video without captions (groundwork: module shipped, not yet auto-invoked by the engine) | Groq free tier is generous; needs ffmpeg installed |
 | Jobs / careers pages | none for public ATS pages; web backend improves fallback discovery | `--hiring-signals` and strong Hiring Signals in standard company reports | yes |
 | Apify (alternate scraper) | `APIFY_API_TOKEN` | fallback for Reddit/TikTok/Instagram when ScrapeCreators is exhausted | yes (limited) |
 
 **YouTube transcript tuning.** `LAST30DAYS_YT_SUB_LANGS` controls the comma-separated caption-language priority passed to yt-dlp and defaults to `en,es,pt`. When `SCRAPECREATORS_API_KEY` is available, yt-dlp uses one fast attempt before the paid fallback; set `LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT` to the number of seconds allowed for that attempt when a throttled host needs longer than the 12-second default. A VTT completed before the timeout is reused rather than discarded. `LAST30DAYS_YT_SEARCH_TIMEOUT` sets the per-search yt-dlp deadline (default 120s). Comparison-mode fan-out also caps concurrent yt-dlp processes process-wide and caches identical searches within a run so redundant `ytsearch` calls do not self-throttle the same IP.
+
+**X backend priority (bird first).** The default X backend chain is bird (browser cookies) → xai (API key) → xurl (OAuth2 CLI) → xquik (API key). Cookies beat `XAI_API_KEY` when both are present. A leftover grok login never steals the X lane; see below.
+
+**Grok CLI (opt-in backup).** Install the Grok CLI (`curl -fsSL https://x.ai/cli/install.sh | bash`) and run `grok login`, and X can work with no X account, no browser cookies, and no `XAI_API_KEY`. However, grok is **opt-in only**: a leftover `~/.grok/auth.json` must never steal the X lane. Pin `LAST30DAYS_X_BACKEND=grok` to enable it. It is not "free" in the way the cookie path is: calls draw on your Grok plan, and depth costs several calls per run because the underlying tool caps each search at 10 posts. Results are validated before use — every returned post's ID is decoded to confirm it falls inside the requested date range, because the retrieval is performed by a language model and can otherwise return confident, well-formed posts that were never searched for.
 
 **X on cookie-less hosts.** Bird (the free X source) scrapes X using your logged-in browser cookies (`AUTH_TOKEN`/`CT0`), which agent hosts like OpenClaw, CI, or headless runs often can't supply — and scraping carries some account risk. On those, set `XQUIK_API_KEY` (or `XAI_API_KEY`) for full, ranked X coverage from a single API key: the same engagement-based ranking, first-party authorship, and handle (from/mentions) lanes the native X source gets. `--diagnose` reports whether the key is working (and flags an unpaid key).
 
@@ -189,8 +193,10 @@ INCLUDE_SOURCES=tiktok,instagram
 # Add perplexity to INCLUDE_SOURCES when you want the paid Perplexity source.
 # PERPLEXITY_API_KEY=<your-perplexity-key>
 # INCLUDE_SOURCES=tiktok,instagram,perplexity
-# LAST30DAYS_PERPLEXITY_MODE=sonar  # sonar | search | both
-# LAST30DAYS_PERPLEXITY_MODEL=sonar-pro  # sonar | sonar-pro | sonar-reasoning-pro
+# LAST30DAYS_PERPLEXITY_MODE=agent  # agent | search | both; sonar is a legacy alias
+# LAST30DAYS_PERPLEXITY_AGENT_MODEL=perplexity/sonar
+# LAST30DAYS_PERPLEXITY_AGENT_MAX_STEPS=5
+# LAST30DAYS_PERPLEXITY_AGENT_MAX_OUTPUT_TOKENS=4096  # required for anthropic/*
 
 # X authentication (one option only)
 AUTH_TOKEN=<your-auth-token>
@@ -218,33 +224,44 @@ After editing: `chmod 600 ~/.config/last30days/.env` (or `chmod 600 .claude/last
 
 ### Perplexity source modes
 
-Perplexity is a paid opt-in source. A direct `PERPLEXITY_API_KEY` unlocks first-party Perplexity features. `OPENROUTER_API_KEY` remains a Sonar compatibility fallback only; Perplexity Search API and async Deep Research call Perplexity directly.
+Perplexity is a paid opt-in source. A direct `PERPLEXITY_API_KEY` enables the Agent API, Search API, and background Deep Research. Existing `OPENROUTER_API_KEY` installs remain compatible through synchronous Sonar: `perplexity/sonar-pro` for normal synthesis and `perplexity/sonar-deep-research` for `--deep-research`. Search API and Agent API features still require the direct key.
 
 `LAST30DAYS_PERPLEXITY_MODE` controls normal `perplexity` source runs:
 
 | Value | Behavior | Calls |
 |---|---|---|
-| `sonar` (default) | Sonar synthesis plus citations. | one Sonar call |
-| `search` | Raw ranked Search API rows; best when you want source aggregation over prose. | one Search API call |
-| `both` | Sonar synthesis plus raw ranked Search API rows, deduped by URL. | one Search API call and one Sonar call |
+| `agent` (default) | Direct key: controlled Agent API synthesis with required `web_search`. OpenRouter-only: synchronous Sonar fallback. | at most one paid synthesis call per last30days run |
+| `sonar` | Direct key: deprecated alias for `agent`. OpenRouter-only: synchronous Sonar fallback. | at most one paid synthesis call per last30days run |
+| `search` | Direct key: raw ranked Search API rows. OpenRouter-only: falls back to synchronous Sonar. | at most one paid call per last30days run |
+| `both` | Direct key: Agent synthesis plus Search rows. OpenRouter-only: falls back to synchronous Sonar. | direct: at most two paid calls; OpenRouter: at most one |
 
-`--deep-research` ignores `LAST30DAYS_PERPLEXITY_MODE` and uses `sonar-deep-research`. With `PERPLEXITY_API_KEY`, it submits to Perplexity's async Sonar endpoint and polls with a hard wall-clock timeout. The async request uses a deterministic idempotency key derived from the request body. If the request is still running at timeout, fails remotely, or polling hits a transport/rate-limit error after the async id exists, the raw artifact records the async request id, idempotency key, last status, lifecycle timestamps returned by Perplexity, poll count, and timeout/error fields so you can inspect or resume by id outside the run. With only `OPENROUTER_API_KEY`, it keeps the OpenRouter synchronous fallback.
+With a direct key, normal `agent` mode uses the controlled `last30days-controlled-web-search/v1` profile: `perplexity/sonar`, a bounded `max_steps`, a local instruction, and only the configured `web_search` tool. It forces that tool for citation-critical grounding. It does not enable sandbox, file, finance, MCP, or function tools. OpenRouter fallback keeps the older OpenAI-compatible Sonar request and does not claim Agent API controls.
+
+The engine routes every normal Perplexity mode through one whole-topic planner subquery per command, including competitor fanout, and does not repeat it during thin-source retries. A generic source-fetch override cannot raise this paid-call cap.
+
+`LAST30DAYS_PERPLEXITY_AGENT_PRESET` is a separate explicit opt-in for a mutable Perplexity preset (`fast`, `low`, `medium`, or `high`). Presets can change their model, prompt, tools, cost, and output behavior. The engine still supplies its configured `web_search` tool so date, domain, location, result-count, and context constraints merge with the preset; other preset tools can remain enabled. Do not set this variable when you need the controlled profile. The engine never selects a preset automatically for normal runs.
+
+`--deep-research` requires a normal positional topic and ignores `LAST30DAYS_PERPLEXITY_MODE`. With a direct key it starts at most one Agent API background run with the explicit dynamic `high` preset. With only OpenRouter it preserves the older synchronous `perplexity/sonar-deep-research` fallback. It cannot be combined with discovery, drill, cached-only, competitor, or vs-mode. This is a separate paid action. The engine caps it at one planner subquery and does not repeat it during thin-source retries. Direct background runs merge the configured `web_search` constraints with the preset, but the provider controls its other tools and can change them. A local timeout stops waiting but does not stop a direct remote run. Direct artifacts retain the served model, response ID, provider status, incomplete reason, poll count, timeout, and safe error metadata; OpenRouter artifacts retain the served model, response ID, usage, and citation count. Neither stores request headers or raw tool traces.
 
 Perplexity-specific env vars:
 
 | Env var | Default | Applies to | Notes |
 |---|---|---|---|
-| `LAST30DAYS_PERPLEXITY_MODE` | `sonar` | normal Perplexity source runs | `sonar`, `search`, or `both`; `search` and `both` require `PERPLEXITY_API_KEY`. |
-| `LAST30DAYS_PERPLEXITY_MODEL` | `sonar-pro` | direct Sonar only | Supported: `sonar`, `sonar-pro`, `sonar-reasoning-pro`. `--deep-research` forces `sonar-deep-research`. |
-| `LAST30DAYS_PERPLEXITY_MAX_RESULTS` | `10` | Search API | Clamped to Perplexity's 1..20 range. |
-| `LAST30DAYS_PERPLEXITY_SEARCH_CONTEXT_SIZE` | provider default | Search API | `low`, `medium`, or `high`; omitted unless set. |
-| `LAST30DAYS_PERPLEXITY_SEARCH_MODE` | provider default | direct Sonar | `web`, `academic`, or `sec`. |
-| `LAST30DAYS_PERPLEXITY_DOMAIN_FILTER` | unset | Search API and direct Sonar | Comma-separated domains, max 20. |
-| `LAST30DAYS_PERPLEXITY_LANGUAGE_FILTER` | unset | Search API and direct Sonar | Comma-separated ISO 639-1 language codes, max 20. |
-| `LAST30DAYS_PERPLEXITY_COUNTRY` | unset | Search API | Two-letter country code such as `US`. |
-| `LAST30DAYS_PERPLEXITY_RECENCY_FILTER` | unset | Search API and direct Sonar | `hour`, `day`, `week`, `month`, or `year`. |
-| `LAST30DAYS_PERPLEXITY_REASONING_EFFORT` | unset | direct Sonar | `minimal`, `low`, `medium`, or `high`. |
-| `LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS` | `600` | direct async Deep Research | Wall-clock polling deadline. |
+| `LAST30DAYS_PERPLEXITY_MODE` | `agent` | normal Perplexity source runs | `agent`, `search`, or `both`; `sonar` remains a deprecated alias for `agent`. |
+| `LAST30DAYS_PERPLEXITY_AGENT_MODEL` | `perplexity/sonar` | controlled Agent profile | Explicit Agent model for normal synthesis. |
+| `LAST30DAYS_PERPLEXITY_AGENT_MAX_STEPS` | `5` | controlled Agent profile | Clamped to the last30days safety range 1..15. |
+| `LAST30DAYS_PERPLEXITY_AGENT_MAX_OUTPUT_TOKENS` | `4096` for `anthropic/*` models | controlled Agent profile | Required for explicit Anthropic models; clamped to the last30days safety range 1..32768. |
+| `LAST30DAYS_PERPLEXITY_AGENT_TIMEOUT_SECONDS` | `120` | controlled Agent profile | Synchronous request timeout, clamped to 1..600 seconds. |
+| `LAST30DAYS_PERPLEXITY_AGENT_PRESET` | unset | normal Agent runs | Explicit mutable preset only: `fast`, `low`, `medium`, or `high`. It replaces the controlled profile for that run. |
+| `LAST30DAYS_PERPLEXITY_MAX_RESULTS` | `10` | Search API and all Agent `web_search` requests | Clamped to 1..20. |
+| `LAST30DAYS_PERPLEXITY_SEARCH_CONTEXT_SIZE` | provider default | Search API and all Agent `web_search` requests | `low`, `medium`, or `high`; omitted unless set. |
+| `LAST30DAYS_PERPLEXITY_DOMAIN_FILTER` | unset | Search API and all Agent `web_search` requests | Comma-separated domains, max 20. |
+| `LAST30DAYS_PERPLEXITY_LANGUAGE_FILTER` | unset | Search API only | Comma-separated ISO 639-1 language codes. Agent API has no equivalent. |
+| `LAST30DAYS_PERPLEXITY_COUNTRY` | unset | Search API and all Agent `web_search` requests | Two-letter country code such as `US`. |
+| `LAST30DAYS_PERPLEXITY_RECENCY_FILTER` | unset | Search API and all Agent `web_search` requests | `hour`, `day`, `week`, `month`, or `year`; exact date filters take precedence. |
+| `LAST30DAYS_PERPLEXITY_REASONING_EFFORT` | unset | controlled Agent profile | `minimal`, `low`, `medium`, or `high`. |
+| `LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS` | `600` | direct Agent API background Deep Research | Wall-clock polling deadline; remote work can continue after a local timeout. OpenRouter fallback is synchronous. |
+| `LAST30DAYS_PERPLEXITY_MODEL` / `LAST30DAYS_PERPLEXITY_SEARCH_MODE` | unset | legacy Sonar config | Retained for config-file compatibility. They do not select an Agent API preset or search mode. |
 
 ### Encrypted credential sources (Keychain / pass)
 
@@ -356,7 +373,7 @@ An explicit `--register` wins over `LAST30DAYS_REGISTER`; the environment/config
 1. **Gemini** - `GOOGLE_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_GENAI_API_KEY`
 2. **OpenAI** - `OPENAI_API_KEY` only. Codex ChatGPT auth at `~/.codex/auth.json` is intentionally not used as an OpenAI provider credential.
 3. **xAI** - `XAI_API_KEY`
-4. **OpenRouter** - `OPENROUTER_API_KEY` (Sonar fallback for the Perplexity source / `--deep-research`; also usable as a reasoning provider)
+4. **OpenRouter** - `OPENROUTER_API_KEY` (reasoning provider, auto-resolve, and synchronous Sonar fallback for the Perplexity source)
 5. **Local / deterministic** - always available, lowest quality
 
 When you invoke `/last30days` from Claude Code, Codex, or Gemini, the host model **is** the reasoning provider for plan + synthesis - you don't need any of the keys above unless you also run the script headlessly (cron, CI, watchlist).
@@ -421,7 +438,7 @@ Every live run writes its JSON result to `~/.config/last30days/doctor-cache.json
 | --- | --- |
 | `LAST30DAYS_DOCTOR_TTL` | Freshness window for `doctor --cached`, in **seconds**. Defaults to `900` (15 minutes). `0` makes every `--cached` call run live. |
 | `LAST30DAYS_DOCTOR_PROBE_TIMEOUT` | Per-source deadline (**seconds**) for `doctor --probe` live checks. Defaults to `10`. Caps each concurrent probe so a slow source cannot hang the command. |
-| `LAST30DAYS_X_BACKEND` | Pins the X backend (`xai` / `bird` / `xurl` / `xquik`); doctor renders the pin and predicts "will use" accordingly. |
+| `LAST30DAYS_X_BACKEND` | Pins the X backend (`bird` / `xai` / `xurl` / `xquik` / `grok`); doctor renders the pin and predicts "will use" accordingly. The unpinned auto chain is bird → xai → xurl → xquik (grok is opt-in only). Pin `grok` to enable it; a leftover `~/.grok/auth.json` is never auto-selected. |
 | `LAST30DAYS_REDDIT_BACKEND` | `scrapecreators` makes ScrapeCreators the primary Reddit backend; doctor renders Reddit's conditional routing with the pin applied. |
 | `LAST30DAYS_REDDIT_SC_MIN_ITEMS` | Integer thinness floor for ScrapeCreators Reddit **search** backfill. Default `0` = empty-only (free path keeps any non-empty result; no credit spend). Set above `0` to backfill when free yield is below that count; merged results dedupe by post id. Requires `SCRAPECREATORS_API_KEY`. Ignored when `LAST30DAYS_REDDIT_BACKEND=scrapecreators` (SC is already primary). |
 

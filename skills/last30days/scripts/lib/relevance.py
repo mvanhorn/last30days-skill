@@ -59,6 +59,19 @@ SYNONYMS = {
 
 # Generic query words that should not carry relevance on their own.
 # They still help when paired with stronger entity/topic matches.
+#
+# The second group is scaffolding emitted by planner's ranking-query templates
+# ("What recent evidence from the last 30 days is most relevant to X?" and its
+# siblings). Those words are not the topic, but every one of them was being
+# counted as an informative query token, which capped achievable coverage at the
+# topic's share of the query and demoted on-topic posts. Kept here rather than
+# stripped in the planner so any caller building a similar natural-language
+# ranking query gets the same treatment.
+#
+# Domain nouns from those same templates (production, market, workflows,
+# experience, signals, ...) are deliberately absent: they can legitimately be a
+# user's topic, and demoting them globally would hurt every source.
+# tests/test_ranking_query_scaffolding.py pins that split.
 LOW_SIGNAL_QUERY_TOKENS = frozenset({
     'advice', 'animation', 'animations', 'best', 'chance', 'chances',
     'code', 'compare', 'comparison', 'differences', 'explain', 'guide',
@@ -67,6 +80,10 @@ LOW_SIGNAL_QUERY_TOKENS = frozenset({
     'prompting', 'prompts', 'rate', 'review', 'reviews', 'thoughts',
     'tip', 'tips', 'tutorial', 'tutorials', 'update', 'updates', 'use',
     'using', 'versus', 'vs', 'worth',
+    # planner ranking-query scaffolding
+    '30', 'current', 'days', 'describing', 'especially', 'evidence', 'exist',
+    'follow', 'hands', 'last', 'matter', 'most', 'new', 'people', 'real',
+    'recent', 'relevant', 'running', 'up', 'world',
 })
 
 

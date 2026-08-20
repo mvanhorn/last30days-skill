@@ -112,13 +112,50 @@ def _extract_core_subject(topic: str) -> str:
 
 
 def _plain_query_tokens(text: str) -> list[str]:
-    """Return lexical tokens without Bird query grouping syntax."""
+    """Return lexical tokens without Bird query grouping syntax.
+
+    Strips phrase quotes as well as grouping characters. Used where a flat
+    token list is wanted; use ``build_topic_query`` for the provider query,
+    which preserves quoted phrases.
+    """
     separators = str.maketrans({char: " " for char in '\"“”()[]{}'})
     return [
         clean
         for token in text.translate(separators).split()
         if (clean := token.strip("'‘’"))
     ]
+
+
+# Bird/X grouping syntax that carries no lexical meaning. Double quotes are
+# deliberately absent: X advanced search treats "..." as a phrase match, which
+# is exactly what the planner intended when it quoted a proper noun.
+_GROUPING_CHARS = "“”()[]{}"
+
+
+def build_topic_query(topic: str, from_date: str) -> str:
+    """Build the X topic query, preserving quoted proper-noun phrases.
+
+    Previously the topic went through ``_plain_query_tokens``, which stripped
+    the quotes the planner had added, so an intended phrase match for
+    '"Peter Steinberger"' degraded into `peter AND steinberger` -- narrower and
+    noisier at once. X supports phrase queries natively, so the quotes are
+    passed through.
+    """
+    separators = str.maketrans({char: " " for char in _GROUPING_CHARS})
+    cleaned = topic.translate(separators)
+    # An unbalanced quote is worse than no quote: X reads the orphan as an
+    # unterminated phrase and matches nothing. Upstream trimming (core-subject
+    # extraction, retry shortening) can cut a topic mid-phrase, so verify the
+    # quotes pair up and fall back to bare tokens when they do not.
+    if cleaned.count('"') % 2:
+        cleaned = cleaned.replace('"', " ")
+    tokens = [
+        clean
+        for token in cleaned.split()
+        if (clean := token.strip("'‘’"))
+    ]
+    core = " ".join(tokens).strip()
+    return f"{core} since:{from_date}" if core else f"since:{from_date}"
 
 
 def is_bird_installed() -> bool:
@@ -371,9 +408,10 @@ def search_x(
     timeout = 30 if depth == "quick" else 45 if depth == "default" else 60
 
     # Extract core subject - X search is literal, not semantic
-    core_words = _plain_query_tokens(_extract_core_subject(topic))
+    core_subject = _extract_core_subject(topic)
+    core_words = _plain_query_tokens(core_subject)
     core_topic = " ".join(core_words)
-    query = f"{core_topic} since:{from_date}"
+    query = build_topic_query(core_subject, from_date)
 
     _log(f"Searching: {query}")
     response = _run_bird_search(query, count, timeout)

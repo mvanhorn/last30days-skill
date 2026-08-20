@@ -1,5 +1,6 @@
 import urllib.error
 import unittest
+import time
 from unittest.mock import patch, MagicMock
 
 from lib import http
@@ -37,6 +38,91 @@ class Test429RetryLimit(unittest.TestCase):
             http.request("GET", "http://example.com", retries=3)
 
         self.assertEqual(mock_urlopen.call_count, 3)
+
+    @patch("lib.http.urllib.request.urlopen")
+    @patch("lib.http.time.sleep")
+    @patch("lib.http.time.monotonic", side_effect=[0.0, 0.5, 0.5])
+    def test_shared_deadline_stops_retry_before_backoff_crosses_it(
+        self,
+        _mock_monotonic,
+        mock_sleep,
+        mock_urlopen,
+    ):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "http://example.com", 500, "Internal Server Error", {}, None
+        )
+
+        with self.assertRaises(http.HTTPError) as caught:
+            http.request(
+                "GET",
+                "http://example.com",
+                retries=3,
+                deadline_monotonic=1.0,
+            )
+
+        self.assertEqual(http.health.TIMEOUT, caught.exception.outcome_state)
+        self.assertEqual(1, mock_urlopen.call_count)
+        mock_sleep.assert_not_called()
+
+    @patch("lib.http.urllib.request.urlopen")
+    @patch("lib.http.time.monotonic", side_effect=[0.0, 0.5, 1.5])
+    def test_shared_deadline_rejects_response_that_finishes_late(
+        self,
+        _mock_monotonic,
+        mock_urlopen,
+    ):
+        mock_urlopen.return_value = _mock_response()
+
+        with self.assertRaises(http.DeadlineExceeded):
+            http.request(
+                "GET",
+                "http://example.com",
+                retries=1,
+                deadline_monotonic=1.0,
+            )
+
+    @patch("lib.http.urllib.request.urlopen")
+    def test_shared_deadline_stops_waiting_during_slow_body_read(
+        self,
+        mock_urlopen,
+    ):
+        response = _mock_response()
+
+        def slow_read():
+            time.sleep(0.2)
+            return b'{"ok": true}'
+
+        response.read.side_effect = slow_read
+        mock_urlopen.return_value = response
+        started = time.monotonic()
+
+        with self.assertRaises(http.DeadlineExceeded):
+            http.request(
+                "GET",
+                "http://example.com",
+                retries=1,
+                deadline_monotonic=started + 0.02,
+            )
+
+        self.assertLess(time.monotonic() - started, 0.12)
+
+    @patch("lib.http.urllib.request.urlopen")
+    def test_worker_socket_timeout_is_not_wall_deadline_expiration(
+        self,
+        mock_urlopen,
+    ):
+        mock_urlopen.side_effect = TimeoutError("early socket timeout")
+
+        with self.assertRaises(http.HTTPError) as caught:
+            http.request(
+                "GET",
+                "http://example.com",
+                retries=1,
+                deadline_monotonic=time.monotonic() + 600,
+            )
+
+        self.assertNotIsInstance(caught.exception, http.DeadlineExceeded)
+        self.assertEqual(http.health.TIMEOUT, caught.exception.outcome_state)
 
 
 def _mock_response(body: str = '{"ok": true}', status: int = 200):
