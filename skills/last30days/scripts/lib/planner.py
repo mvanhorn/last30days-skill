@@ -157,6 +157,10 @@ SOURCE_CAPABILITIES = {
     "perplexity": {"web", "reference", "analysis"},
     "jobs": {"jobs", "company_signal", "link"},
     "corpus": {"reference", "analysis"},
+    "facebook": {"social", "discussion"},
+    "bilibili": {"video", "video_longform", "social", "discussion"},
+    "xueqiu": {"social", "market", "finance_social"},
+    "v2ex": {"discussion", "social"},
 }
 
 

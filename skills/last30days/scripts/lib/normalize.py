@@ -72,6 +72,10 @@ def normalize_source_items(
         "perplexity": _normalize_grounding,
         "jobs": _normalize_jobs,
         "linkedin": _normalize_linkedin,
+        "facebook": _normalize_grounding,
+        "bilibili": _normalize_grounding,
+        "xueqiu": _normalize_grounding,
+        "v2ex": _normalize_grounding,
     }
     normalizer = normalizers.get(source)
     if normalizer is None:

@@ -21,7 +21,9 @@ from typing import Any
 
 from . import (
     amazon,
+    apify_client,
     arxiv,
+    bilibili,
     bird_x,
     bluesky,
     brightdata,
@@ -32,6 +34,7 @@ from . import (
     dripstack,
     entity_extract,
     env,
+    facebook,
     github,
     grok_x,
     grounding,
@@ -68,10 +71,13 @@ from . import (
     topic_shape,
     truthsocial,
     trustpilot,
+    v2ex,
     x_judge,
     xai_x,
     xiaohongshu_api,
+    xiaohongshu_apify,
     xquik,
+    xueqiu,
     xurl_x,
     youtube_yt,
 )
@@ -214,6 +220,10 @@ MOCK_AVAILABLE_SOURCES = [
     "linkedin",
     "corpus",
     "dripstack",
+    "facebook",
+    "bilibili",
+    "xueqiu",
+    "v2ex",
 ]
 
 
@@ -346,8 +356,34 @@ def available_sources(
     if (
         "xiaohongshu" in include_sources
         or (requested_sources and "xiaohongshu" in requested_sources)
-    ) and env.is_xiaohongshu_available(config):
+    ) and (
+        config.get("APIFY_API_TOKEN")
+        or env.is_xiaohongshu_available(config)
+    ):
         available.append("xiaohongshu")
+    # Facebook / Bilibili / Xueqiu: paid Apify actors, opt-in via
+    # INCLUDE_SOURCES (same consent pattern as linkedin/perplexity).
+    if config.get("APIFY_API_TOKEN") and (
+        "facebook" in include_sources
+        or (requested_sources and "facebook" in requested_sources)
+    ):
+        available.append("facebook")
+    if config.get("APIFY_API_TOKEN") and (
+        "bilibili" in include_sources
+        or (requested_sources and "bilibili" in requested_sources)
+    ):
+        available.append("bilibili")
+    if config.get("APIFY_API_TOKEN") and (
+        "xueqiu" in include_sources
+        or (requested_sources and "xueqiu" in requested_sources)
+    ):
+        available.append("xueqiu")
+    # V2EX: free public topics API — default-on like digg/arxiv.
+    _v2ex_excluded = {
+        s.strip().lower() for s in (config.get("EXCLUDE_SOURCES") or "").split(",") if s.strip()
+    }
+    if "v2ex" not in _v2ex_excluded:
+        available.append("v2ex")
     # Threads: opt-in via INCLUDE_SOURCES (same pattern as perplexity/linkedin).
     # Was auto-on with the key; gated so the onboarding "Everything" tier is a
     # real choice vs the "Recommended" (TikTok/Instagram) tier.
@@ -1997,6 +2033,7 @@ def run(
     # parallel entity sub-runs can still share in-run hits.
     if not internal_subrun:
         youtube_yt.reset_search_cache()
+    apify_client.reset_budget()
     settings = _resolve_depth_settings(depth, config)
     requested_sources = normalize_requested_sources(requested_sources)
     # Wall-clock origin for budget-aware enrichment lanes. Amazon review
@@ -4729,13 +4766,39 @@ def _retrieve_stream_impl(
         )
         return pinterest.parse_pinterest_response(result), _result_outcome_artifact(source, result)
     if source == "xiaohongshu":
-        return xiaohongshu_api.search_feeds(
-            subquery.search_query,
-            from_date,
-            to_date,
-            env.get_xiaohongshu_api_base(config),
-            depth=depth,
-        ), {}
+        # Local cookie API first (free); Apify backend as fallback (paid).
+        base_url = env.get_xiaohongshu_api_base(config)
+        if base_url:
+            return xiaohongshu_api.search_feeds(
+                subquery.search_query, from_date, to_date, base_url, depth=depth,
+            ), {}
+        if config.get("APIFY_API_TOKEN"):
+            return xiaohongshu_apify.search_xiaohongshu(
+                subquery.search_query, from_date, to_date,
+                token=config["APIFY_API_TOKEN"], depth=depth,
+            ), {}
+        return [], {}
+    if source == "facebook":
+        result = facebook.search_facebook(
+            subquery.search_query, from_date, to_date,
+            token=config.get("APIFY_API_TOKEN", ""), depth=depth,
+        )
+        return result, _result_outcome_artifact(source, {"items": len(result)})
+    if source == "bilibili":
+        result = bilibili.search_bilibili(
+            subquery.search_query, from_date, to_date,
+            token=config.get("APIFY_API_TOKEN", ""), depth=depth,
+        )
+        return result, _result_outcome_artifact(source, {"items": len(result)})
+    if source == "xueqiu":
+        result = xueqiu.search_xueqiu(
+            subquery.search_query, from_date, to_date,
+            token=config.get("APIFY_API_TOKEN", ""), depth=depth,
+        )
+        return result, _result_outcome_artifact(source, {"items": len(result)})
+    if source == "v2ex":
+        result = v2ex.search_v2ex(subquery.search_query, from_date, to_date, depth=depth)
+        return result, _result_outcome_artifact(source, {"items": len(result)})
     if source == "perplexity":
         return perplexity.search(subquery.search_query, date_range, config, deep=config.get("_deep_research", False))
     raise RuntimeError(f"Unsupported source: {source}")

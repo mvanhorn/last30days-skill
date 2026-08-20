@@ -29,6 +29,10 @@ SOURCE_QUALITY = {
     "tiktok": 0.58,
     "jobs": 0.72,
     "corpus": 0.75,
+    "v2ex": 0.6,
+    "facebook": 0.55,
+    "bilibili": 0.62,
+    "xueqiu": 0.58,
 }
 
 

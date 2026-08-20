@@ -79,7 +79,11 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 | **StockTwits** | Trader sentiment. Auto-activates when your topic is a ticker or crypto. |
 | **Threads** | The post-Twitter text layer. Conversations from creators and brands. |
 | **Pinterest** | Visual discovery. Pins, saves, and comments on products and ideas. |
-| **Xiaohongshu (RED)** | Chinese lifestyle, product, and creator signals. Requested explicitly with `--search xhs` when a logged-in x-mcp browser plugin or `xiaohongshu-mcp` service is running locally. |
+| **Xiaohongshu (RED)** | Chinese lifestyle, product, and creator signals. Keyword search via Apify (no cookies needed) or local x-mcp browser plugin. Opt-in via `INCLUDE_SOURCES=xiaohongshu`. |
+| **Facebook** | Public post search by keyword. Engagement-ranked by reactions, comments, shares. Opt-in via `INCLUDE_SOURCES=facebook` with `APIFY_API_TOKEN`. |
+| **Bilibili** | Chinese video platform. Search with auto-localization (brand names translated to Chinese). Opt-in via `INCLUDE_SOURCES=bilibili` with `APIFY_API_TOKEN`. |
+| **Xueqiu (Snowball)** | Chinese investor sentiment. Trending posts from retail investors discussing stocks and markets. Opt-in via `INCLUDE_SOURCES=xueqiu` with `APIFY_API_TOKEN`. |
+| **V2EX** | Chinese developer forum. Hot and latest topics, keyword-filtered engine-side. Free, default-on. |
 | **Bluesky** | The decentralized social layer. AT Protocol posts from the post-Twitter migration. |
 | **Perplexity** | Controlled Agent API synthesis, OpenRouter Sonar fallback, raw Search API rows, and explicit Deep Research. |
 | **Web** | The editorial coverage, the blog comparisons. One signal of many, not the only one. |
