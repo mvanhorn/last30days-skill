@@ -14,12 +14,9 @@ dicts match the normalized shape emitted by ``reddit_public._parse_posts`` so
 downstream code (pipeline, renderer) is unaffected.
 """
 
-import math
 import sys
 import threading
 import time
-import urllib.error
-import urllib.request
 import xml.etree.ElementTree as ET
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
@@ -65,11 +62,10 @@ CACHE_STALE_TTL = 300.0
 MAX_CACHE_ENTRIES = 128
 
 # Cooldowns are checked before every host request.  No request sleeps: a
-# Retry-After value becomes host state, which prevents parallel fan-out from
-# multiplying a block or rate limit.
+# failure becomes host state, which prevents parallel fan-out from multiplying
+# a block or rate limit.
 HOST_COOLDOWN_BASE = 5.0
 HOST_COOLDOWN_MAX = 300.0
-MAX_RETRY_AFTER = HOST_COOLDOWN_MAX
 MAX_BACKOFF_FAILURES = 6
 
 
@@ -88,8 +84,6 @@ class _HostState:
 @dataclass(frozen=True)
 class _HTTPResult:
     text: Optional[str]
-    status_code: Optional[int] = None
-    retry_after: Optional[float] = None
 
 
 _STATE_LOCK = threading.RLock()
@@ -196,30 +190,7 @@ def _cache_store(url: str, text: str, now: float) -> None:
             _FEED_CACHE.popitem(last=False)
 
 
-def _numeric_retry_after(headers: Any) -> Optional[float]:
-    """Read only numeric Retry-After values and clamp them to a finite bound."""
-    if headers is None:
-        return None
-    raw = None
-    for key in ("Retry-After", "retry-after"):
-        try:
-            raw = headers.get(key)
-        except AttributeError:
-            raw = None
-        if raw is not None:
-            break
-    if raw is None:
-        return None
-    try:
-        value = float(str(raw).strip())
-    except (TypeError, ValueError):
-        return None
-    if not math.isfinite(value):
-        return None
-    return min(MAX_RETRY_AFTER, max(0.0, value))
-
-
-def _record_host_failure(host: str, retry_after: Optional[float] = None) -> None:
+def _record_host_failure(host: str) -> None:
     """Record bounded backoff for one of the two Reddit feed hosts."""
     if host not in _HOST_LOCKS:
         return
@@ -230,8 +201,6 @@ def _record_host_failure(host: str, retry_after: Optional[float] = None) -> None
             HOST_COOLDOWN_MAX,
             HOST_COOLDOWN_BASE * (2 ** (state.failures - 1)),
         )
-        if retry_after is not None:
-            backoff = max(backoff, min(MAX_RETRY_AFTER, retry_after))
         state.cooldown_until = max(state.cooldown_until, _now() + min(backoff, HOST_COOLDOWN_MAX))
 
 
@@ -246,55 +215,20 @@ def _clear_host_failure(host: str) -> None:
         _HOST_STATE.pop(host, None)
 
 
-def _response_status(response: Any) -> int:
-    value = getattr(response, "status", None)
-    if value is None:
-        value = getattr(response, "code", None)
-    if value is None and hasattr(response, "getcode"):
-        value = response.getcode()
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return 200
-
-
 def _request_feed_unlocked(url: str, host: str) -> _HTTPResult:
-    """Make one bounded, status-aware request; caller holds the host lock."""
-    # Share the keyless limiter so a broad multi-query run does not stampede
-    # Reddit's keyless endpoints (see http.reddit_keyless_get_text).
-    http.REDDIT_KEYLESS_LIMITER.acquire()
-    request = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": http.BROWSER_USER_AGENT,
-            "Accept": "application/atom+xml",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-        method="GET",
+    """Fetch one feed via the throttled keyless helper; caller holds the host lock.
+
+    Routing through ``http.reddit_keyless_get_text`` (not raw urllib) keeps the
+    shared keyless limiter in play and lets the pipeline's failure-capture sink
+    see a 403/429 instead of swallowing it into a clean no-results (issue #899).
+    """
+    text = http.reddit_keyless_get_text(
+        url, timeout=FEED_TIMEOUT, accept="application/atom+xml"
     )
-    try:
-        with urllib.request.urlopen(request, timeout=FEED_TIMEOUT) as response:
-            status = _response_status(response)
-            retry_after = _numeric_retry_after(getattr(response, "headers", None))
-            if status >= 400:
-                _record_host_failure(host, retry_after)
-                return _HTTPResult(None, status, retry_after)
-            body = response.read()
-            text = (
-                body.decode("utf-8", errors="replace")
-                if isinstance(body, bytes)
-                else str(body)
-            )
-            return _HTTPResult(text, status, retry_after)
-    except urllib.error.HTTPError as exc:
-        retry_after = _numeric_retry_after(getattr(exc, "headers", None))
-        _record_host_failure(host, retry_after)
-        _log(f"HTTP {exc.code} from {host} for {url}")
-        return _HTTPResult(None, exc.code, retry_after)
-    except Exception as exc:  # one unavailable feed must never sink the run
+    if text is None:
         _record_host_failure(host)
-        _log(f"request failed for {url}: {exc}")
         return _HTTPResult(None)
+    return _HTTPResult(text)
 
 
 def _iso_to_date(value: Optional[str]) -> Optional[str]:

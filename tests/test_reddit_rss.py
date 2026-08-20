@@ -1,7 +1,6 @@
 """Tests for scripts/lib/reddit_rss.py — keyless Reddit RSS discovery."""
 
 import threading
-import urllib.error
 from pathlib import Path
 from unittest import mock
 from urllib.parse import urlsplit
@@ -15,28 +14,6 @@ FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "reddit_search_r
 
 def _feed_text():
     return FIXTURE.read_text(encoding="utf-8")
-
-
-class _FakeResponse:
-    def __init__(self, body, status=200, headers=None):
-        self._body = body.encode("utf-8") if isinstance(body, str) else body
-        self.status = status
-        self.headers = headers or {}
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        return False
-
-    def read(self):
-        return self._body
-
-
-def _http_error(url, status, headers=None):
-    return urllib.error.HTTPError(
-        url, status, "HTTP failure", headers or {}, None
-    )
 
 
 def _atom_feed(*urls):
@@ -119,9 +96,7 @@ class TestSearchRss:
     def test_dedupe_and_ids(self):
         # Same feed returned for every URL -> deduped to 5 unique posts.
         with mock.patch.object(
-            reddit_rss.urllib.request,
-            "urlopen",
-            return_value=_FakeResponse(_feed_text()),
+            reddit_rss.http, "reddit_keyless_get_text", return_value=_feed_text()
         ):
             posts = reddit_rss.search_rss("lifelock", depth="default",
                                           subreddits=["Rakuten", "ConsumerAdvice"])
@@ -131,18 +106,14 @@ class TestSearchRss:
 
     def test_depth_limit_quick(self):
         with mock.patch.object(
-            reddit_rss.urllib.request,
-            "urlopen",
-            return_value=_FakeResponse(_feed_text()),
+            reddit_rss.http, "reddit_keyless_get_text", return_value=_feed_text()
         ):
             posts = reddit_rss.search_rss("lifelock", depth="quick")
         assert len(posts) <= reddit_rss.DEPTH_LIMITS["quick"]
 
     def test_all_feeds_fail_returns_empty(self):
         with mock.patch.object(
-            reddit_rss.urllib.request,
-            "urlopen",
-            side_effect=urllib.error.URLError("blocked"),
+            reddit_rss.http, "reddit_keyless_get_text", return_value=None
         ):
             posts = reddit_rss.search_rss("lifelock", subreddits=["Rakuten"])
         assert posts == []
@@ -158,13 +129,13 @@ class TestSearchRss:
         primary = "https://www.reddit.com/r/Rakuten/top.rss?t=month"
         calls = []
 
-        def open_url(request, timeout):
-            calls.append(request.full_url)
-            if urlsplit(request.full_url).hostname == reddit_rss.WWW_REDDIT_HOST:
-                raise _http_error(request.full_url, 403)
-            return _FakeResponse(_feed_text())
+        def fetch(url, **kwargs):
+            calls.append(url)
+            if urlsplit(url).hostname == reddit_rss.WWW_REDDIT_HOST:
+                return None  # 403 -> failure
+            return _feed_text()
 
-        with mock.patch.object(reddit_rss.urllib.request, "urlopen", side_effect=open_url):
+        with mock.patch.object(reddit_rss.http, "reddit_keyless_get_text", side_effect=fetch):
             posts = reddit_rss._fetch_feed(primary, "lifelock")
 
         assert posts
@@ -200,16 +171,16 @@ class TestSearchRss:
         results = [None, None]
         errors = []
 
-        def open_url(request, timeout):
-            host = urlsplit(request.full_url).hostname
+        def fetch(url, **kwargs):
+            host = urlsplit(url).hostname
             with calls_lock:
                 calls.append(host)
             if host == reddit_rss.WWW_REDDIT_HOST:
-                raise _http_error(request.full_url, 403)
+                return None  # 403
             old_waiting.wait(timeout=5)
-            return _FakeResponse(_feed_text())
+            return _feed_text()
 
-        def fetch(index):
+        def run(index):
             try:
                 start.wait(timeout=5)
                 results[index] = reddit_rss._fetch_feed(primary, "x")
@@ -217,10 +188,10 @@ class TestSearchRss:
                 errors.append(exc)
 
         threads = [
-            threading.Thread(target=fetch, args=(index,), daemon=True)
+            threading.Thread(target=run, args=(index,), daemon=True)
             for index in range(2)
         ]
-        with mock.patch.object(reddit_rss.urllib.request, "urlopen", side_effect=open_url):
+        with mock.patch.object(reddit_rss.http, "reddit_keyless_get_text", side_effect=fetch):
             for thread in threads:
                 thread.start()
             for thread in threads:
@@ -236,13 +207,13 @@ class TestSearchRss:
         primary = "https://www.reddit.com/r/Rakuten/search.rss?q=x"
         calls = []
 
-        def open_url(request, timeout):
-            calls.append(request.full_url)
-            if urlsplit(request.full_url).hostname == reddit_rss.WWW_REDDIT_HOST:
-                return _FakeResponse("<html>anti-bot page</html>")
-            return _FakeResponse(_feed_text())
+        def fetch(url, **kwargs):
+            calls.append(url)
+            if urlsplit(url).hostname == reddit_rss.WWW_REDDIT_HOST:
+                return "<html>anti-bot page</html>"
+            return _feed_text()
 
-        with mock.patch.object(reddit_rss.urllib.request, "urlopen", side_effect=open_url):
+        with mock.patch.object(reddit_rss.http, "reddit_keyless_get_text", side_effect=fetch):
             posts = reddit_rss._fetch_feed(primary, "x")
 
         assert posts
@@ -278,24 +249,24 @@ class TestSearchRss:
         clock = [100.0]
         first = [True]
 
-        def open_url(request, timeout):
+        def fetch(url, **kwargs):
             if first[0]:
                 first[0] = False
-                return _FakeResponse(_feed_text())
-            raise _http_error(request.full_url, 503)
+                return _feed_text()
+            return None  # 503 -> failure
 
         with mock.patch.object(reddit_rss, "_now", side_effect=lambda: clock[0]), \
-             mock.patch.object(reddit_rss.urllib.request, "urlopen", side_effect=open_url) as opened:
+             mock.patch.object(reddit_rss.http, "reddit_keyless_get_text", side_effect=fetch) as fetched:
             fresh = reddit_rss._fetch_feed(primary, "x")
             assert fresh
-            assert opened.call_count == 1
+            assert fetched.call_count == 1
 
             clock[0] += reddit_rss.CACHE_FRESH_TTL + 1
             stale = reddit_rss._fetch_feed(primary, "x")
             assert stale
             assert [p["url"] for p in stale] == [p["url"] for p in fresh]
             # www 503 plus old 503; the old response must be tried serially.
-            assert opened.call_count == 3
+            assert fetched.call_count == 3
 
             clock[0] += reddit_rss.CACHE_STALE_TTL + 1
             assert reddit_rss._fetch_feed(primary, "x") == []
@@ -305,9 +276,7 @@ class TestSearchRss:
         feed = _feed_text()
 
         with mock.patch.object(
-            reddit_rss.urllib.request,
-            "urlopen",
-            return_value=_FakeResponse(feed),
+            reddit_rss.http, "reddit_keyless_get_text", return_value=feed
         ):
             for subreddit in ("one", "two", "three"):
                 reddit_rss._fetch_feed(
@@ -321,43 +290,35 @@ class TestSearchRss:
         primary = "https://www.reddit.com/search.rss?q=x"
         clock = [10.0]
 
-        def open_url(request, timeout):
-            raise _http_error(
-                request.full_url,
-                status,
-                {"Retry-After": "999999"},
-            )
-
         with mock.patch.object(reddit_rss, "_now", side_effect=lambda: clock[0]), \
              mock.patch.object(reddit_rss.time, "sleep") as sleep, \
-             mock.patch.object(reddit_rss.http.REDDIT_KEYLESS_LIMITER, "acquire"), \
-             mock.patch.object(reddit_rss.urllib.request, "urlopen", side_effect=open_url) as opened:
+             mock.patch.object(reddit_rss.http, "reddit_keyless_get_text", return_value=None) as fetched:
             assert reddit_rss._fetch_feed(primary, "x") == []
-            assert opened.call_count == 1
+            assert fetched.call_count == 1
             state = reddit_rss._HOST_STATE[reddit_rss.WWW_REDDIT_HOST]
             assert state.cooldown_until <= clock[0] + reddit_rss.HOST_COOLDOWN_MAX
             sleep.assert_not_called()
 
             # The cooldown suppresses a second request from the same host.
             assert reddit_rss._fetch_feed(primary, "x") == []
-            assert opened.call_count == 1
+            assert fetched.call_count == 1
 
             clock[0] += reddit_rss.HOST_COOLDOWN_MAX + 1
             assert reddit_rss._fetch_feed(primary, "x") == []
-            assert opened.call_count == 2
+            assert fetched.call_count == 2
 
     def test_cooldown_is_per_host_and_old_fallback_remains_available(self):
         first = "https://www.reddit.com/r/one/top.rss?t=month"
         second = "https://www.reddit.com/r/two/top.rss?t=month"
         calls = []
 
-        def open_url(request, timeout):
-            calls.append(request.full_url)
-            if urlsplit(request.full_url).hostname == reddit_rss.WWW_REDDIT_HOST:
-                raise _http_error(request.full_url, 429, {"Retry-After": "60"})
-            return _FakeResponse(_feed_text())
+        def fetch(url, **kwargs):
+            calls.append(url)
+            if urlsplit(url).hostname == reddit_rss.WWW_REDDIT_HOST:
+                return None  # 429
+            return _feed_text()
 
-        with mock.patch.object(reddit_rss.urllib.request, "urlopen", side_effect=open_url):
+        with mock.patch.object(reddit_rss.http, "reddit_keyless_get_text", side_effect=fetch):
             assert reddit_rss._fetch_feed(first, "x")
             assert reddit_rss._fetch_feed(second, "x")
 
@@ -368,11 +329,11 @@ class TestSearchRss:
     def test_parallel_fanout_does_not_amplify_429s_per_host(self):
         calls = []
 
-        def open_url(request, timeout):
-            calls.append(request.full_url)
-            raise _http_error(request.full_url, 429, {"Retry-After": "600"})
+        def fetch(url, **kwargs):
+            calls.append(url)
+            return None  # 429
 
-        with mock.patch.object(reddit_rss.urllib.request, "urlopen", side_effect=open_url):
+        with mock.patch.object(reddit_rss.http, "reddit_keyless_get_text", side_effect=fetch):
             assert reddit_rss.search_rss(
                 "x", depth="quick", subreddits=["one", "two", "three"]
             ) == []

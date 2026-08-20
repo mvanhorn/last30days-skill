@@ -46,3 +46,15 @@ def _reset_probe_caches():
     health.clear_dependency_probe_cache()
     xurl_x.clear_availability_cache()
     grok_x.clear_availability_cache()
+
+
+@pytest.fixture(autouse=True)
+def _reset_reddit_rss_state():
+    """reddit_rss keeps process-local host cooldowns and a feed cache (safe for
+    the one-shot CLI process, wrong across tests). Clear them around every test
+    so a cooldown or cached feed set by one test can never leak into another."""
+    from lib import reddit_rss
+
+    reddit_rss._reset_state()
+    yield
+    reddit_rss._reset_state()
