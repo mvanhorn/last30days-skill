@@ -222,6 +222,7 @@ class TestSearchXquik(unittest.TestCase):
         for to_date, exclusive_until in (
             ("2026-08-20", "2026-08-21"),
             ("2026-12-31", "2027-01-01"),
+            ("9999-12-31", None),
         ):
             with self.subTest(to_date=to_date):
                 mock_get.reset_mock()
@@ -233,7 +234,10 @@ class TestSearchXquik(unittest.TestCase):
                     token="test-key",
                 )
                 url = mock_get.call_args[0][0]
-                self.assertIn(f"until%3A{exclusive_until}", url)
+                if exclusive_until:
+                    self.assertIn(f"until%3A{exclusive_until}", url)
+                else:
+                    self.assertNotIn("until%3A", url)
 
     @patch("lib.xquik.http.get")
     def test_deduplicates_across_queries(self, mock_get):

@@ -30,9 +30,13 @@ _BASE_URL = "https://xquik.com/api/v1"
 def _with_date_window(query: str, from_date: str, to_date: str) -> str:
     """Apply the engine's inclusive date window to an X search query."""
     try:
-        exclusive_until = (date.fromisoformat(to_date) + timedelta(days=1)).isoformat()
+        end_date = date.fromisoformat(to_date)
     except (TypeError, ValueError):
         exclusive_until = to_date
+    else:
+        if end_date == date.max:
+            return f"{query} since:{from_date}"
+        exclusive_until = (end_date + timedelta(days=1)).isoformat()
     return f"{query} since:{from_date} until:{exclusive_until}"
 
 
