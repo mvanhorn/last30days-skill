@@ -44,6 +44,11 @@ class TestVersionConsistency(unittest.TestCase):
         self.assertNotIn("--save-dir=~/Documents/Last30Days", skill_text)
         self.assertIn('--save-dir="${LAST30DAYS_MEMORY_DIR}"', skill_text)
 
+    def test_compare_script_does_not_skip_permissions(self) -> None:
+        compare_text = (SKILL_ROOT / "scripts" / "compare.sh").read_text(encoding="utf-8")
+
+        self.assertNotIn("--dangerously-skip-permissions", compare_text)
+
     def test_no_stray_hardcoded_memory_dir_paths(self) -> None:
         allowed_suffixes = {".md", ".py", ".sh", ".txt", ".yml", ".yaml", ".json"}
         skip_dirs = {".git", "assets", "fixtures", "docs"}
@@ -67,7 +72,15 @@ class TestVersionConsistency(unittest.TestCase):
                     continue
                 allowed_default = (
                     "LAST30DAYS_MEMORY_DIR" in line
-                    and ("defaults to" in line or "${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}" in line)
+                    and (
+                        "defaults to" in line
+                        or (
+                            path.parent == ROOT
+                            and path.name.startswith("README.")
+                            and path.name.endswith(".md")
+                        )
+                        or "${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}" in line
+                    )
                 )
                 if not allowed_default:
                     offenders.append(f"{path.relative_to(ROOT)}:{line_number}: {line.strip()}")

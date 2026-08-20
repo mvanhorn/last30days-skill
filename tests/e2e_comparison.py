@@ -46,7 +46,7 @@ def run_query(script: str, topic: str, timeout: int = 180) -> dict:
     start = time.time()
     try:
         result = subprocess.run(
-            [sys.executable, script, topic, "--emit=json"],
+            [sys.executable, script, topic, "--emit=json", "--json-profile=raw"],
             capture_output=True,
             text=True,
             timeout=timeout,

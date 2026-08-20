@@ -65,3 +65,71 @@ class FilterItemsAgainstKeywordsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_acronym_title_matches_spelled_out_topic():
+    """A title abbreviating what the topic spells out must not be filtered.
+
+    Market titles use shorthand ("AGI by 2030?") while topics arrive spelled
+    out, so proportional word overlap scored zero on squarely on-topic markets.
+    """
+    assert polymarket._passes_topic_filter(
+        "artificial general intelligence",
+        "OpenAI announces it has achieved AGI before 2027?",
+    )
+    assert polymarket._passes_topic_filter("artificial general intelligence", "AGI by 2030?")
+
+
+def test_acronym_credit_does_not_widen_the_filter():
+    """The acronym bridge must not rescue off-topic or weak single-word hits."""
+    assert not polymarket._passes_topic_filter(
+        "artificial general intelligence", "Premier League top scorer 2026"
+    )
+    assert not polymarket._passes_topic_filter(
+        "Mill.com food recycler", "Meek Mill announces tour"
+    )
+    assert polymarket._passes_topic_filter("AGI", "AGI by 2030?")
+    assert polymarket._passes_topic_filter("Kanye West", "Kanye West announces new album")
+
+
+def test_similarity_scores_acronym_title_as_full_match():
+    """Clearing the topic filter is not enough: the relevance floor also drops it.
+
+    An on-topic market passed _passes_topic_filter and was then dropped by the
+    0.15 relevance floor, because the similarity scorer compared spelled-out
+    topic words against a shorthand title.
+    """
+    assert (
+        polymarket._compute_text_similarity(
+            "artificial general intelligence", "AGI by 2030?"
+        )
+        == 1.0
+    )
+    assert (
+        polymarket._compute_text_similarity(
+            "artificial general intelligence", "Premier League top scorer 2026"
+        )
+        == 0.0
+    )
+    assert (
+        polymarket._compute_text_similarity("Kanye West", "Kanye West announces new album")
+        == 1.0
+    )
+
+
+def test_modifier_separated_acronym_matches_filter_and_similarity():
+    """A leading modifier must not change the initialism used by the scorer."""
+    topic = "impact of artificial general intelligence"
+    title = "AGI by 2030?"
+
+    assert polymarket._passes_topic_filter(topic, title)
+    assert polymarket._compute_text_similarity(topic, title) == 1.0
+
+
+def test_two_letter_initialism_does_not_expand_topic():
+    """Ambiguous two-letter tokens must not receive full expanded-phrase relevance."""
+    topic = "machine learning"
+    title = "ML market cap above $1 billion?"
+
+    assert not polymarket._passes_topic_filter(topic, title)
+    assert polymarket._compute_text_similarity(topic, title) < 1.0

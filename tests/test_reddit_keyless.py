@@ -26,24 +26,15 @@ def _scored(i, score, ncmt=0):
     return p
 
 
-class TestDiscoveryTierOrder:
-    """Tier 0 (.json) is tried first; RSS + scored listings are the keyless path."""
+class TestDiscovery:
+    """RSS breadth + scored listings are the keyless discovery path (no .json)."""
 
-    def test_tier0_success_skips_keyless(self):
-        with mock.patch.object(reddit_keyless, "_tier0_json", return_value=[_post(1)]) as t0, \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss") as rss, \
-             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings") as lst:
-            out = reddit_keyless._discover("topic", "default", None)
-        assert len(out) == 1
-        t0.assert_called_once()
-        rss.assert_not_called()
-        lst.assert_not_called()
-
-    def test_tier0_empty_falls_to_keyless(self):
-        with mock.patch.object(reddit_keyless, "_tier0_json", return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
+    def test_keyless_path_runs_rss_and_listings(self):
+        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
                                return_value=[_post(1), _post(2)]) as rss, \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
                                return_value=[]):
             out = reddit_keyless._discover("topic", "default", ["test"])
         assert len(out) == 2
@@ -53,11 +44,13 @@ class TestDiscoveryTierOrder:
         # RSS finds post 1 (no score); listing card for post 1 carries the score.
         rss_post = _post(1)
         listing_post = _scored(1, score=52692, ncmt=1743)
-        with mock.patch.object(reddit_keyless, "_tier0_json", return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
+        listing_post["subreddit"] = "test"  # Match the requested subreddit.
+        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
                                return_value=[rss_post]), \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
-                               return_value=[listing_post]):
+                               return_value=[listing_post]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[]):  # No arctic supplement.
             out = reddit_keyless._discover("topic", "default", ["test"])
         # listing post (scored) is kept; RSS dup of same url is dropped
         assert len(out) == 1
@@ -69,8 +62,7 @@ class TestDiscoveryTierOrder:
         rss_post = _post(7)  # url .../000007/...
         listing_post = _scored(7, score=999)
         listing_post["url"] = "https://www.reddit.com/r/test/comments/zzzzzz/other/"
-        with mock.patch.object(reddit_keyless, "_tier0_json", return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
+        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
                                return_value=[rss_post]), \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
                                return_value=[listing_post]):
@@ -85,8 +77,7 @@ class TestDiscoveryTierOrder:
         rss_post = _post(1)  # on-topic keyword match
         offtopic_listing = _scored(99, score=88888)  # high score, unrelated sub
         offtopic_listing["url"] = "https://www.reddit.com/r/random/comments/zzz999/x/"
-        with mock.patch.object(reddit_keyless, "_tier0_json", return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
+        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
                                return_value=[rss_post]), \
              mock.patch.object(reddit_keyless, "_top_subreddits", return_value=["random"]), \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
@@ -96,9 +87,8 @@ class TestDiscoveryTierOrder:
         assert rss_post["url"] in urls
         assert offtopic_listing["url"] not in urls  # not merged as discovery
 
-    def test_tier0_never_raises(self):
-        with mock.patch("lib.reddit_public.search", side_effect=Exception("boom")), \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss", return_value=[]), \
+    def test_discover_never_raises_returns_empty(self):
+        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss", return_value=[]), \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", return_value=[]):
             assert reddit_keyless._discover("t", "default", None) == []
 
@@ -166,3 +156,196 @@ class TestSearchAndEnrich:
             reddit_keyless.search_and_enrich("t", "2026-05-01", "2026-05-31", depth="quick")
         # quick depth enriches only top 3 posts
         assert fc.call_count == reddit_keyless.ENRICH_LIMITS["quick"]
+
+
+class TestSlotPriority:
+    """Enrichment slot selection prefers entity-matching posts (R1-R3)."""
+
+    @staticmethod
+    def _titled(i, title, score=0, selftext=""):
+        p = _post(i)
+        p["title"] = title
+        p["selftext"] = selftext
+        p["score"] = score
+        p["engagement"]["score"] = score
+        return p
+
+    def test_on_topic_low_score_beats_off_topic_high_score(self):
+        # 3 off-topic monsters + 2 on-topic small threads; quick depth = 3 slots.
+        posts = [
+            self._titled(1, "Stop asking what model to run", score=2662),
+            self._titled(2, "RTX 4090 PSA", score=2068),
+            self._titled(3, "Gemma 4 release", score=997),
+            self._titled(4, "My OpenClaw self-migrated", score=73),
+            self._titled(5, "Using openclaw with Claude API key is so expensive", score=47),
+        ]
+        enriched_urls = []
+
+        def _capture(url):
+            enriched_urls.append(url)
+            return {"top_comments": [], "comment_insights": [], "num_comments": None}
+
+        with mock.patch.object(reddit_keyless, "_discover", return_value=posts), \
+             mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments",
+                               side_effect=_capture):
+            reddit_keyless.search_and_enrich(
+                "openclaw", "2026-05-01", "2026-05-31", depth="quick")
+        assert posts[3]["url"] in enriched_urls
+        assert posts[4]["url"] in enriched_urls
+        assert len(enriched_urls) == reddit_keyless.ENRICH_LIMITS["quick"]
+
+    def test_slot_priority_grounds_on_head_token_not_full_phrase(self):
+        # Mirrors rerank's head-token grounding: a post naming the brand head
+        # ("Stripe") lands in the match tier even without the trailing search
+        # descriptor ("payments"), so it is not buried under an unrelated
+        # high-upvote post that never names the brand.
+        head_only = self._titled(1, "Stripe is friendly to 'friendly fraud'", score=5)
+        off_topic = self._titled(2, "PayPal raises dispute fees again", score=900)
+        out = reddit_keyless._slot_priority("Stripe payments", [off_topic, head_only])
+        assert out[0] is head_only
+        assert out[1] is off_topic
+
+    def test_intent_modifier_topic_prioritizes_head_token_match(self):
+        # Intent-modifier topics still partition by the brand head token: the
+        # on-entity post wins over a high-upvote post that never names the brand.
+        on_topic = self._titled(1, "Hermes Agent v0.13 is great", score=1)
+        off_topic = self._titled(2, "LangGraph tutorial walkthrough", score=900)
+        out = reddit_keyless._slot_priority("Hermes Agent review", [off_topic, on_topic])
+        assert out[0] is on_topic
+
+    def test_all_miss_keeps_score_order_and_full_slots(self):
+        posts = [self._titled(i, f"Gemma thread {i}", score=1000 - i) for i in range(5)]
+        out = reddit_keyless._slot_priority("openclaw", posts)
+        assert out == posts  # order unchanged
+        with mock.patch.object(reddit_keyless, "_discover", return_value=posts), \
+             mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments",
+                               return_value={"top_comments": [], "comment_insights": [],
+                                             "num_comments": None}) as fc:
+            reddit_keyless.search_and_enrich(
+                "openclaw", "2026-05-01", "2026-05-31", depth="quick")
+        assert fc.call_count == reddit_keyless.ENRICH_LIMITS["quick"]
+
+    def test_same_tier_order_preserved(self):
+        posts = [self._titled(i, f"openclaw thread {i}", score=100 - i) for i in range(4)]
+        out = reddit_keyless._slot_priority("openclaw", posts)
+        assert out == posts
+
+    def test_empty_entity_falls_back_to_token_overlap(self):
+        # Pure intent-modifier topic yields no primary entity; fallback path
+        # must not raise and must keep every post.
+        posts = [self._titled(1, "Post one"), self._titled(2, "review of things")]
+        out = reddit_keyless._slot_priority("review", posts)
+        assert len(out) == 2
+        assert {p["url"] for p in out} == {p["url"] for p in posts}
+
+    def test_selftext_match_lands_in_match_tier(self):
+        body_match = self._titled(1, "Need help with my setup", score=2,
+                                  selftext="my openclaw agent keeps asking for ssh keys")
+        off_topic = self._titled(2, "Gemma 4 with QAT", score=700)
+        out = reddit_keyless._slot_priority("openclaw", [off_topic, body_match])
+        assert out[0] is body_match
+
+    def test_none_score_posts_do_not_break_partition(self):
+        p1 = self._titled(1, "openclaw tips")
+        p1["engagement"]["score"] = None
+        p2 = self._titled(2, "Gemma news")
+        p2["engagement"]["score"] = None
+        out = reddit_keyless._slot_priority("openclaw", [p2, p1])
+        assert out[0] is p1
+
+    def test_partition_never_raises(self):
+        posts = [self._titled(1, "openclaw tips", score=1)]
+        with mock.patch("lib.rerank._primary_entity", side_effect=Exception("boom")):
+            out = reddit_keyless._slot_priority("openclaw", posts)
+        assert out == posts
+
+
+class TestScoredListingsFallback:
+    """_scored_listings falls back to the arctic-shift archive when the
+    shreddit listing partials return nothing (datacenter egress 403)."""
+
+    def test_arctic_fallback_when_shreddit_empty(self):
+        arctic_post = _scored(1, score=406)
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[arctic_post]) as arctic:
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        assert out == [arctic_post]
+        arctic.assert_called_once_with(["tea"], depth="quick", query="matcha", sorts=None)
+
+    def test_shreddit_and_arctic_both_called_deduped(self):
+        """Shreddit and arctic are both called; arctic supplements missing posts."""
+        shreddit_post = _scored(1, score=42)
+        shreddit_post["subreddit"] = "tea"
+        arctic_post = _scored(2, score=100)
+        arctic_post["subreddit"] = "tea"
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[shreddit_post]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[arctic_post]) as arctic:
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        # Both shreddit and arctic posts should be in the result (deduped by URL).
+        assert len(out) == 2
+        urls = {p["url"] for p in out}
+        assert shreddit_post["url"] in urls
+        assert arctic_post["url"] in urls
+        arctic.assert_called_once()
+
+    def test_both_empty_returns_empty(self):
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[]):
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        assert out == []
+
+    def test_never_raises_when_arctic_fails(self):
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               side_effect=Exception("boom")):
+            out = reddit_keyless._scored_listings(["tea"], depth="quick", query="matcha")
+        assert out == []
+
+    def test_dedicated_sorts_passed_through(self):
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               return_value=[]), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[]) as arctic:
+            reddit_keyless._scored_listings(
+                ["Kanye"], depth="default", query="Kanye", sorts=["top", "hot", "new"]
+            )
+        arctic.assert_called_once_with(
+            ["Kanye"], depth="default", query="Kanye", sorts=["top", "hot", "new"]
+        )
+
+    def test_arctic_supplements_all_subreddits(self):
+        """Arctic is called for all subreddits to supplement any failed sort lanes."""
+        shreddit_post = _scored(1, score=100)
+        shreddit_post["subreddit"] = "tea"
+        arctic_post_tea = _scored(2, score=200)
+        arctic_post_tea["subreddit"] = "tea"
+        arctic_post_coffee = _scored(3, score=150)
+        arctic_post_coffee["subreddit"] = "coffee"
+
+        def shreddit_side_effect(subs, **kwargs):
+            # Shreddit only returns posts for "tea", not "coffee".
+            return [shreddit_post] if "tea" in subs else []
+
+        with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                               side_effect=shreddit_side_effect), \
+             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                               return_value=[arctic_post_tea, arctic_post_coffee]) as arctic:
+            out = reddit_keyless._scored_listings(
+                ["tea", "coffee"], depth="quick", query="beverages"
+            )
+        # Arctic is called for ALL requested subreddits to supplement any failed sorts.
+        arctic.assert_called_once()
+        call_args = arctic.call_args
+        assert set(call_args[0][0]) == {"tea", "coffee"}, "arctic should be called for all subs"
+        # All posts should be in the result (deduped by URL).
+        urls = [p["url"] for p in out]
+        assert shreddit_post["url"] in urls
+        assert arctic_post_tea["url"] in urls
+        assert arctic_post_coffee["url"] in urls

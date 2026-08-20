@@ -1,0 +1,83 @@
+{
+  "format": "last30days-http-fixture/v1",
+  "exchanges": [
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://api.search.brave.com/res/v1/web/search?q=maya&count=5&freshness=2026-06-10to2026-07-10",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "web": {
+            "results": [
+              {
+                "title": "Maya Chen shares a practical AI safety field guide",
+                "url": "https://web.example.test/person/result-1",
+                "description": "Maya Chen shares a practical AI safety field guide. Recorded public fixture content.",
+                "page_age": "2026-07-02T00:00:00Z"
+              },
+              {
+                "title": "Maya Chen explains recurring evaluation failures",
+                "url": "https://web.example.test/person/result-2",
+                "description": "Maya Chen explains recurring evaluation failures. Recorded public fixture content.",
+                "page_age": "2026-07-03T00:00:00Z"
+              },
+              {
+                "title": "Maya Chen releases an open AI safety benchmark",
+                "url": "https://web.example.test/person/result-3",
+                "description": "Maya Chen releases an open AI safety benchmark. Recorded public fixture content.",
+                "page_age": "2026-07-04T00:00:00Z"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hn.algolia.com/api/v1/search?query=maya&tags=story&numericFilters=created_at_i%3E1781049600%2Ccreated_at_i%3C1783728000&hitsPerPage=30",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "hits": [
+            {
+              "objectID": "person-hn-1",
+              "title": "Maya Chen publishes an AI safety field guide",
+              "url": "https://news.example.test/person/hn-1",
+              "author": "fixture_author_1",
+              "points": 120,
+              "num_comments": 35,
+              "created_at_i": 1782864000,
+              "created_at": "2026-07-01T00:00:00Z"
+            },
+            {
+              "objectID": "person-hn-2",
+              "title": "Maya Chen discusses evaluation failures",
+              "url": "https://news.example.test/person/hn-2",
+              "author": "fixture_author_2",
+              "points": 100,
+              "num_comments": 30,
+              "created_at_i": 1782950400,
+              "created_at": "2026-07-02T00:00:00Z"
+            },
+            {
+              "objectID": "person-hn-3",
+              "title": "Maya Chen opens a safety benchmark",
+              "url": "https://news.example.test/person/hn-3",
+              "author": "fixture_author_3",
+              "points": 80,
+              "num_comments": 25,
+              "created_at_i": 1783036800,
+              "created_at": "2026-07-03T00:00:00Z"
+            }
+          ],
+          "page": 0,
+          "nbHits": 3
+        }
+      }
+    }
+  ]
+}

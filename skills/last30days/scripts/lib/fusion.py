@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
+
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from . import schema
@@ -11,7 +13,18 @@ RRF_K = 60
 
 
 def _candidate_sort_key(c: schema.Candidate) -> tuple:
-    return (-c.rrf_score, -c.local_relevance, -c.freshness, schema.candidate_source_label(c), c.title)
+    # Out-of-window evidence sorts strictly below anything in the window. A
+    # "last 30 days" brief that ranks a nine-month-old video at #1 breaks its
+    # own contract, however relevant that video is; it still appears, just
+    # never above in-window evidence.
+    return (
+        1 if schema.candidate_out_of_window(c) else 0,
+        -c.rrf_score,
+        -c.local_relevance,
+        -c.freshness,
+        schema.candidate_source_label(c),
+        c.title,
+    )
 
 
 def _normalize_url(url: str) -> str:
@@ -39,6 +52,15 @@ _DIVERSITY_RELEVANCE_THRESHOLD = 0.25
 # Per-author cap: no single author/handle should dominate the pool.
 _MAX_ITEMS_PER_AUTHOR = 3
 
+# Raised cap for the subject of the topic (a handle in the run's
+# resolved_handles). On a person or company topic the subject is what the user
+# asked about, so the flat cap discards exactly the evidence the run worked
+# hardest to retrieve -- the measured 'Peter Steinberger steipete' baseline
+# recovered 8 subject-authored posts and would have kept 3. Still bounded: a
+# prolific subject must not crowd out commentary about them, which is the other
+# half of the answer a user wants.
+_MAX_ITEMS_PER_FIRST_PARTY_AUTHOR = 8
+
 
 def _extract_author(candidate: schema.Candidate) -> str | None:
     """Return a normalized author key from a candidate's source items."""
@@ -51,12 +73,23 @@ def _extract_author(candidate: schema.Candidate) -> str | None:
 def _apply_per_author_cap(
     candidates: list[schema.Candidate],
     max_per_author: int = _MAX_ITEMS_PER_AUTHOR,
+    first_party_handles: Iterable[str] | None = None,
+    max_per_first_party_author: int = _MAX_ITEMS_PER_FIRST_PARTY_AUTHOR,
 ) -> list[schema.Candidate]:
     """Keep at most *max_per_author* items from any single author.
+
+    Authors named in *first_party_handles* -- the subject of the topic -- get
+    the higher *max_per_first_party_author* allowance instead, because their
+    own posts are the point of the query rather than one voice among many.
 
     Candidates are assumed to already be sorted by quality (rrf_score etc.),
     so the first N encountered per author are the best ones.
     """
+    first_party = {
+        h.strip().lstrip("@").lower()
+        for h in (first_party_handles or ())
+        if h and h.strip()
+    }
     author_counts: dict[str, int] = {}
     result: list[schema.Candidate] = []
     for c in candidates:
@@ -64,8 +97,13 @@ def _apply_per_author_cap(
         if author is None:
             result.append(c)
             continue
+        limit = (
+            max_per_first_party_author
+            if author.strip().lstrip("@").lower() in first_party
+            else max_per_author
+        )
         count = author_counts.get(author, 0)
-        if count < max_per_author:
+        if count < limit:
             result.append(c)
             author_counts[author] = count + 1
     return result
@@ -112,8 +150,19 @@ def weighted_rrf(
     plan: schema.QueryPlan,
     *,
     pool_limit: int,
+    range_from: str | None = None,
+    range_to: str | None = None,
+    first_party_handles: Iterable[str] | None = None,
 ) -> list[schema.Candidate]:
-    """Fuse ranked lists into a single candidate pool."""
+    """Fuse ranked lists into a single candidate pool.
+
+    When ``range_from`` and ``range_to`` are provided, they are stored in each
+    candidate's metadata so ``candidate_out_of_window`` can compare the actual
+    date against the run window (instead of relying solely on adapter-provided
+    ``date_confidence``). ``first_party_handles`` raises the per-author cap
+    for the topic's subject so their own posts are not flattened to the
+    incidental-account allowance.
+    """
     subqueries = {subquery.label: subquery for subquery in plan.subqueries}
     candidates: dict[str, schema.Candidate] = {}
     # Track (source, item_id) pairs already attached to each candidate for O(1) dedup.
@@ -129,6 +178,20 @@ def weighted_rrf(
             item_freshness = item.freshness if item.freshness is not None else int(item.metadata.get("freshness", 0))
             item_source_quality = item.source_quality if item.source_quality is not None else float(item.metadata.get("source_quality", 0.6))
             if key not in candidates:
+                candidate_metadata: dict = {
+                    "provenance": [
+                        {
+                            "source": source,
+                            "subquery_label": label,
+                            "native_rank": rank,
+                            "item_id": item.item_id,
+                        }
+                    ]
+                }
+                if range_from:
+                    candidate_metadata["range_from"] = range_from
+                if range_to:
+                    candidate_metadata["range_to"] = range_to
                 candidates[key] = schema.Candidate(
                     candidate_id=key,
                     item_id=item.item_id,
@@ -145,16 +208,7 @@ def weighted_rrf(
                     rrf_score=score,
                     sources=[item.source],
                     source_items=[item],
-                    metadata={
-                        "provenance": [
-                            {
-                                "source": source,
-                                "subquery_label": label,
-                                "native_rank": rank,
-                                "item_id": item.item_id,
-                            }
-                        ]
-                    },
+                    metadata=candidate_metadata,
                 )
                 seen_source_items[key] = {(item.source, item.item_id)}
                 continue
@@ -203,5 +257,5 @@ def weighted_rrf(
                 candidate.snippet = item.snippet
 
     fused = sorted(candidates.values(), key=_candidate_sort_key)
-    fused = _apply_per_author_cap(fused)
+    fused = _apply_per_author_cap(fused, first_party_handles=first_party_handles)
     return _diversify_pool(fused, pool_limit)

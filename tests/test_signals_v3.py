@@ -86,6 +86,32 @@ class SignalsV3Tests(unittest.TestCase):
         )
         self.assertAlmostEqual(expected, signals.engagement_raw(item), places=6)
 
+    def test_instagram_engagement_adds_top_comment_slot(self):
+        """U2: IG gets the same 0.10 top-comment carve-out as TikTok, so a
+        highly-liked IG comment lifts its post's ranking."""
+        item = schema.SourceItem(
+            item_id="ig1",
+            source="instagram",
+            title="Title",
+            body="Body",
+            url="https://www.instagram.com/reel/ABC/",
+            engagement={"views": 100000, "likes": 5000, "comments": 500},
+            metadata={"top_comments": [{"score": 1200}]},
+        )
+        expected = (
+            0.45 * math.log1p(100000)
+            + 0.27 * math.log1p(5000)
+            + 0.18 * math.log1p(500)
+            + 0.10 * math.log1p(1200)
+        )
+        self.assertAlmostEqual(expected, signals.engagement_raw(item), places=6)
+
+    def test_instagram_comment_vote_uses_instagram_reference(self):
+        """U2: normalized_comment_vote uses the instagram reference, not the default."""
+        strength = signals.normalized_comment_vote("instagram", 5000)
+        self.assertGreater(strength, 0.0)
+        self.assertLessEqual(strength, 1.0)
+
     def test_youtube_ranking_promotes_viral_comment_thread(self):
         """A moderately-viewed YouTube video with a 10k-like comment should
         outrank a slightly-higher-viewed video with no high-signal comments."""
@@ -385,10 +411,12 @@ class SignalsV3Tests(unittest.TestCase):
         )
         result = signals.engagement_raw(item)
         self.assertIsNotNone(result)
+        # U2: IG now uses _instagram_engagement (video-shaped, with a 0.10
+        # top-comment carve-out); no top comment here so that term is 0.
         expected = (
-            0.50 * math.log1p(8000)
-            + 0.30 * math.log1p(1500)
-            + 0.20 * math.log1p(100)
+            0.45 * math.log1p(8000)
+            + 0.27 * math.log1p(1500)
+            + 0.18 * math.log1p(100)
         )
         self.assertAlmostEqual(expected, result)
 
@@ -408,7 +436,7 @@ class SignalsV3Tests(unittest.TestCase):
         )
         result = signals.engagement_raw(item)
         self.assertIsNotNone(result)
-        expected = 0.20 * math.log1p(50)
+        expected = 0.18 * math.log1p(50)
         self.assertAlmostEqual(expected, result)
 
     def test_hackernews_engagement_all_zero_returns_none(self):
@@ -701,6 +729,89 @@ class SignalsV3Tests(unittest.TestCase):
         pruned = signals.prune_low_relevance([good] + spam_items)
         aspire_ids = [item.item_id for item in pruned if item.item_id.startswith("aspire")]
         self.assertEqual(len(aspire_ids), 0, f"All @aspiresnippets items should be pruned, got {aspire_ids}")
+
+    # -- Fix 468: YouTube items with transcripts survive relevance pruning --
+
+    def test_youtube_with_transcript_survives_pruning_even_with_low_relevance(self):
+        """A YouTube item with a non-empty snippet (transcript) should not be
+        pruned even if its title-only relevance is below the threshold."""
+        has_transcript = schema.SourceItem(
+            item_id="yt-transcript",
+            source="youtube",
+            title="Short title",
+            body="Short body",
+            url="https://youtube.com/watch?v=abc",
+            snippet="This is a detailed transcript about the topic with substantive discussion...",
+            local_relevance=0.05,
+        )
+        strong = schema.SourceItem(
+            item_id="yt-strong",
+            source="youtube",
+            title="Strong video",
+            body="Detailed analysis of the topic",
+            url="https://youtube.com/watch?v=strong",
+            snippet="Detailed transcript content about the topic",
+            local_relevance=0.6,
+        )
+        pruned = signals.prune_low_relevance([strong, has_transcript], minimum=0.15)
+        ids = [item.item_id for item in pruned]
+        self.assertIn("yt-transcript", ids,
+                      "YouTube item with transcript should survive pruning")
+        self.assertIn("yt-strong", ids, "Strong item should survive")
+
+    def test_youtube_without_transcript_is_pruned_normally(self):
+        """A YouTube item with no transcript (empty snippet) and low relevance
+        should still be pruned when stronger items exist."""
+        no_transcript = schema.SourceItem(
+            item_id="yt-no-transcript",
+            source="youtube",
+            title="Short title",
+            body="Short body",
+            url="https://youtube.com/watch?v=xyz",
+            snippet="",
+            local_relevance=0.05,
+        )
+        strong = schema.SourceItem(
+            item_id="yt-strong",
+            source="youtube",
+            title="Strong video",
+            body="Detailed analysis of the topic",
+            url="https://youtube.com/watch?v=strong",
+            snippet="Detailed transcript content about the topic",
+            local_relevance=0.6,
+        )
+        pruned = signals.prune_low_relevance([strong, no_transcript], minimum=0.15)
+        ids = [item.item_id for item in pruned]
+        self.assertIn("yt-strong", ids, "Strong item should survive")
+        self.assertNotIn("yt-no-transcript", ids,
+                         "YouTube item without transcript should be pruned normally")
+
+    def test_youtube_transcript_exemption_does_not_affect_other_sources(self):
+        """Non-YouTube items with low relevance are still pruned even if they
+        have a non-empty snippet (the exemption is YouTube-specific)."""
+        reddit_with_snippet = schema.SourceItem(
+            item_id="reddit-snippet",
+            source="reddit",
+            title="Short title",
+            body="Short body",
+            url="https://reddit.com/r/test",
+            snippet="Some snippet content",
+            local_relevance=0.05,
+        )
+        strong = schema.SourceItem(
+            item_id="strong",
+            source="reddit",
+            title="Strong post",
+            body="Detailed analysis of the topic",
+            url="https://reddit.com/r/strong",
+            local_relevance=0.5,
+        )
+        pruned = signals.prune_low_relevance([strong, reddit_with_snippet], minimum=0.15)
+        ids = [item.item_id for item in pruned]
+        self.assertIn("strong", ids, "Strong item should survive")
+        self.assertNotIn("reddit-snippet", ids,
+                         "Non-YouTube items should still be pruned by relevance threshold")
+
 
 if __name__ == "__main__":
     unittest.main()

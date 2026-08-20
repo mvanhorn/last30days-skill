@@ -1,0 +1,42 @@
+{
+  "name": "tech-product",
+  "archetype": "tech-product",
+  "topic": "Nimbus Agent workflows?",
+  "as_of_date": "2026-07-10",
+  "lookback_days": 30,
+  "depth": "quick",
+  "fixture_sources": [
+    "grounding",
+    "hackernews"
+  ],
+  "web_backend": "brave",
+  "config": {
+    "BRAVE_API_KEY": "fixture-key"
+  },
+  "plan": {
+    "intent": "product",
+    "freshness_mode": "balanced_recent",
+    "cluster_mode": "none",
+    "raw_topic": "Nimbus Agent workflows",
+    "subqueries": [
+      {
+        "label": "primary",
+        "search_query": "nimbus",
+        "ranking_query": "What recent evidence matters for Nimbus Agent workflows?",
+        "sources": [
+          "grounding",
+          "hackernews"
+        ],
+        "weight": 1
+      }
+    ],
+    "source_weights": {
+      "grounding": 1,
+      "hackernews": 1
+    },
+    "notes": [
+      "eval-fixture-plan"
+    ]
+  },
+  "expects_clusters": false
+}

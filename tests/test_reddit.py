@@ -262,3 +262,45 @@ class TestEnrichmentBudget(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_window_to_time_filter_rounds_up_for_rolling_buckets(monkeypatch):
+    """Recent calendar windows need the next Reddit rolling bucket (Greptile on #860)."""
+    from datetime import date
+    from lib import reddit
+
+    class _FrozenDateTime:
+        @staticmethod
+        def now(tz=None):
+            class _D:
+                @staticmethod
+                def date():
+                    return date(2026, 7, 24)
+            return _D()
+
+    monkeypatch.setattr(reddit, "datetime", _FrozenDateTime)
+    assert reddit._window_to_time_filter("2026-07-23", "2026-07-24") == "week"
+    assert reddit._window_to_time_filter("2026-07-17", "2026-07-24") == "month"
+    assert reddit._window_to_time_filter("2026-06-24", "2026-07-24") == "month"
+    # Just past the month bucket (+1 slack) needs year.
+    assert reddit._window_to_time_filter("2026-06-23", "2026-07-24") == "year"
+
+
+def test_window_to_time_filter_covers_historical_from_date(monkeypatch):
+    """Short historical windows must still reach from_date (Greptile follow-up on #860)."""
+    from datetime import date
+    from lib import reddit
+
+    class _FrozenDateTime:
+        @staticmethod
+        def now(tz=None):
+            class _D:
+                @staticmethod
+                def date():
+                    return date(2026, 7, 24)
+            return _D()
+
+    monkeypatch.setattr(reddit, "datetime", _FrozenDateTime)
+    # One-day request ending two weeks ago: span alone would pick "week" and
+    # miss the entire range; age of from_date requires "month".
+    assert reddit._window_to_time_filter("2026-07-09", "2026-07-10") == "month"

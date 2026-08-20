@@ -16,32 +16,44 @@ def test_security_workflow_exists() -> None:
     assert WORKFLOW.is_file()
 
 
-def test_security_workflow_runs_dependency_audit_advisory_first() -> None:
+def test_security_workflow_runs_dependency_audit_as_blocking_check() -> None:
     text = _workflow_text()
+    dependency_audit_job = text.split("dependency-audit:", 1)[1].split("secret-scan:", 1)[0]
 
     assert "dependency-audit:" in text
-    assert "pip-audit" in text
-    assert "continue-on-error: true" in text
-    assert "Set continue-on-error: false once a clean baseline run is confirmed" in text
+    assert "uv audit --locked" in dependency_audit_job
+    assert "continue-on-error: true" not in dependency_audit_job
 
 
 def test_security_workflow_runs_secret_scan_for_pull_requests_and_main_pushes() -> None:
     text = _workflow_text()
+    secret_scan_job = text.split("secret-scan:", 1)[1].split("sast-scan:", 1)[0]
 
     assert "secret-scan:" in text
-    assert "trufflesecurity/trufflehog" in text
-    assert "github.event_name == 'pull_request'" in text
-    assert "github.event_name == 'push'" in text
-    assert "--only-verified" in text
+    assert "pull_request:" in text
+    assert "push:" in text
+    assert "workflow_dispatch:" in text
+    assert "branches:\n      - main" in text
+    assert "trufflesecurity/trufflehog" in secret_scan_job
+    assert "version: 3.95.5" in secret_scan_job
+    assert "extra_args: --results=verified" in secret_scan_job
+    assert "continue-on-error: true" not in secret_scan_job
+    assert "if: github.event_name" not in secret_scan_job
+    assert "path: ./" not in secret_scan_job
 
 
-def test_security_workflow_documents_advisory_policy() -> None:
+def test_security_workflow_runs_sast_without_unused_code_scanning_permission() -> None:
     text = _workflow_text()
+    sast_job = text.split("sast-scan:", 1)[1]
 
-    assert "advisory-first" in text.lower()
-    assert "does not block merges" in text.lower()
-    assert "fixtures" in text.lower()
-    assert "env-based auth" in text.lower()
+    assert "semgrep/semgrep@sha256:" in sast_job
+    assert "semgrep scan --config=auto" in sast_job
+    assert "SEMGREP_SEND_METRICS: off" in sast_job
+    assert "continue-on-error: true" in sast_job
+    assert "contents: read" in sast_job
+    assert "security-events: write" not in sast_job
+    assert "--sarif" not in sast_job
+    assert "upload-sarif" not in sast_job
 
 
 def test_agent_guidance_mentions_secret_hygiene() -> None:

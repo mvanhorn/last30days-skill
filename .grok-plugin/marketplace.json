@@ -1,0 +1,25 @@
+{
+  "name": "last30days-skill",
+  "owner": {
+    "name": "Matt Van Horn",
+    "url": "https://github.com/mvanhorn"
+  },
+  "description": "Marketplace for the last30days research plugin",
+  "plugins": [
+    {
+      "name": "last30days",
+      "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and 5+ more sources. AI agent scores by upvotes, likes, and real money - not editors.",
+      "version": "3.21.1",
+      "category": "productivity",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/mvanhorn/last30days-skill.git"
+      },
+      "homepage": "https://github.com/mvanhorn/last30days-skill",
+      "keywords": [
+        "last30days",
+        "last 30 days"
+      ]
+    }
+  ]
+}

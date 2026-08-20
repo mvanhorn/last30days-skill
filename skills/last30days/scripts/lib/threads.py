@@ -25,19 +25,21 @@ DEPTH_CONFIG = {
 
 
 def _log(msg: str):
-    log.source_log("Threads", msg)
+    log.source_log("Threads", msg, tty_only=False)
 
 
 def _extract_core_subject(topic: str) -> str:
-    """Extract core subject from verbose query for Threads search."""
-    from .query import extract_core_subject
-    _THREADS_NOISE = frozenset({
-        'best', 'top', 'good', 'great', 'awesome',
-        'latest', 'new', 'news', 'update', 'updates',
-        'trending', 'hottest', 'popular', 'viral',
-        'practices', 'features', 'recommendations', 'advice',
-    })
-    return extract_core_subject(topic, noise=_THREADS_NOISE)
+    """Extract core subject from verbose query for Threads search.
+
+    The ScrapeCreators Threads keyword endpoint only returns hits for short
+    (1-2 word) queries; 3+ words or leaked boolean operators (the planner
+    emits "A OR B") return zero. Strip boolean operators and cap to the two
+    most salient words.
+    """
+    from .query import SOCIAL_NOISE, extract_core_subject
+    core = extract_core_subject(topic, noise=SOCIAL_NOISE, max_words=2)
+    return " ".join(core.rstrip("?!.").split()[:2])
+
 
 
 def _parse_date(item: Dict[str, Any]) -> Optional[str]:
@@ -154,7 +156,7 @@ def search_threads(
     try:
         data = http.get(
             f"{SCRAPECREATORS_BASE}/search",
-            params={"keyword": core_topic},
+            params={"query": core_topic},
             headers=http.scrapecreators_headers(token),
             timeout=30,
             retries=2,

@@ -260,6 +260,9 @@ def _response_status(response: Any) -> int:
 
 def _request_feed_unlocked(url: str, host: str) -> _HTTPResult:
     """Make one bounded, status-aware request; caller holds the host lock."""
+    # Share the keyless limiter so a broad multi-query run does not stampede
+    # Reddit's keyless endpoints (see http.reddit_keyless_get_text).
+    http.REDDIT_KEYLESS_LIMITER.acquire()
     request = urllib.request.Request(
         url,
         headers={
@@ -523,7 +526,14 @@ def search_rss(
     all_posts: List[Dict[str, Any]] = []
     workers = min(MAX_WORKERS, len(urls)) or 1
     with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = {executor.submit(_fetch_feed, url, query): url for url in urls}
+        # submit_with_context, not executor.submit: a plain submit starts the
+        # worker with an empty context, dropping the pipeline's
+        # capture_failures() sink so a feed's 429/403 is silently discarded and
+        # the source reports a clean no-results (issue #899).
+        futures = {
+            http.submit_with_context(executor, _fetch_feed, url, query): url
+            for url in urls
+        }
         for future in futures:
             try:
                 all_posts.extend(future.result(timeout=FEED_TIMEOUT + 5))

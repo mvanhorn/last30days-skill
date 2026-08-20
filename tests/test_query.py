@@ -2,7 +2,14 @@
 
 import unittest
 
-from lib.query import NOISE_WORDS, extract_compound_terms, extract_core_subject
+from lib.query import (
+    NOISE_WORDS,
+    SOCIAL_NOISE,
+    VIRAL_NOISE,
+    extract_compound_terms,
+    extract_core_subject,
+    infer_query_intent,
+)
 
 
 class TestExtractCoreSubject(unittest.TestCase):
@@ -120,6 +127,103 @@ class TestNoiseWordsCompleteness(unittest.TestCase):
     def test_research_meta_present(self):
         for w in ('best', 'top', 'latest', 'trending', 'popular'):
             self.assertIn(w, NOISE_WORDS)
+
+
+
+class TestSharedAdapterNoiseSets(unittest.TestCase):
+    """Pin SOCIAL_NOISE / VIRAL_NOISE so adapters can rely on stable membership.
+
+    Bluesky, Threads, Truth Social use SOCIAL_NOISE.
+    TikTok, Instagram, Pinterest use VIRAL_NOISE.
+    YouTube extends VIRAL_NOISE with temporal/meta tokens (asserted in its
+    own adapter test).
+    """
+
+    def test_social_noise_membership(self):
+        # Words shared with the historical _BSKY_NOISE / _TS_NOISE / _THREADS_NOISE.
+        expected = {
+            'best', 'top', 'good', 'great', 'awesome',
+            'latest', 'new', 'news', 'update', 'updates',
+            'trending', 'hottest', 'popular', 'viral',
+            'practices', 'features', 'recommendations', 'advice',
+            'or', 'and',
+        }
+        self.assertEqual(set(SOCIAL_NOISE), expected)
+
+    def test_viral_noise_is_social_superset(self):
+        self.assertTrue(SOCIAL_NOISE.issubset(VIRAL_NOISE))
+        # The extra words VIRAL adds on top of SOCIAL: the historical
+        # tiktok / instagram / pinterest delta.
+        delta = VIRAL_NOISE - SOCIAL_NOISE
+        self.assertEqual(
+            delta,
+            {'killer', 'prompt', 'prompts', 'prompting',
+             'methods', 'strategies', 'approaches'},
+        )
+
+    def test_extract_core_subject_with_social_noise(self):
+        # Sanity: a Bluesky-style query strips through SOCIAL_NOISE.
+        result = extract_core_subject(
+            "best new Claude Code update",
+            noise=SOCIAL_NOISE,
+        )
+        self.assertEqual(result, "claude code")
+
+    def test_extract_core_subject_with_viral_noise(self):
+        # Viral set strips 'killer' and the prompt cluster.
+        result = extract_core_subject(
+            "killer prompting strategies for React",
+            noise=VIRAL_NOISE,
+        )
+        # 'for' is in the default NOISE_WORDS path but VIRAL_NOISE alone
+        # doesn't include articles/prepositions; extract_core_subject
+        # falls back to original when nothing survives, so allow 'for'.
+        self.assertIn("react", result)
+        self.assertNotIn("killer", result)
+        self.assertNotIn("prompting", result)
+
+
+class TestInferQueryIntent(unittest.TestCase):
+    """Tests for infer_query_intent() — the shared canonical classifier.
+
+    Adapters previously kept five near-duplicate copies with subtle drift
+    (reddit added `prediction` and the longest `how_to` regex; youtube had
+    a partial extension; instagram and tiktok lagged). Canonical here is
+    reddit's superset.
+    """
+
+    def test_comparison(self):
+        self.assertEqual(infer_query_intent("Claude vs Gemini"), "comparison")
+        self.assertEqual(infer_query_intent("difference between X and Y"), "comparison")
+
+    def test_how_to_base(self):
+        self.assertEqual(infer_query_intent("how to deploy Kubernetes"), "how_to")
+        self.assertEqual(infer_query_intent("install nginx"), "how_to")
+        self.assertEqual(infer_query_intent("setup OAuth tutorial"), "how_to")
+
+    def test_how_to_extended_keywords(self):
+        # Bare imperatives covered by reddit's extended regex.
+        self.assertEqual(infer_query_intent("configure DNS"), "how_to")
+        self.assertEqual(infer_query_intent("troubleshoot router"), "how_to")
+        self.assertEqual(infer_query_intent("debug python"), "how_to")
+        self.assertEqual(infer_query_intent("fix kernel panic"), "how_to")
+
+    def test_opinion(self):
+        self.assertEqual(infer_query_intent("thoughts on Claude Code"), "opinion")
+        self.assertEqual(infer_query_intent("should I buy a Pixel"), "opinion")
+
+    def test_product(self):
+        self.assertEqual(infer_query_intent("best laptop for programming"), "product")
+        self.assertEqual(infer_query_intent("Surface pricing"), "product")
+
+    def test_prediction(self):
+        self.assertEqual(infer_query_intent("predict the 2028 election"), "prediction")
+        self.assertEqual(infer_query_intent("odds Trump wins"), "prediction")
+        self.assertEqual(infer_query_intent("forecast Q4 earnings"), "prediction")
+
+    def test_breaking_news_default(self):
+        self.assertEqual(infer_query_intent("Kanye West"), "breaking_news")
+        self.assertEqual(infer_query_intent("OpenAI"), "breaking_news")
 
 
 class TestExtractCompoundTerms(unittest.TestCase):

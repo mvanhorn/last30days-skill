@@ -13,11 +13,10 @@ config, depth, and overrides for each entity.
 
 from __future__ import annotations
 
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
-from . import schema
+from . import log, schema, youtube_yt
 
 # Sub-runs hit the same upstream APIs as the main topic. Cap parallelism so a
 # 6-way fan-out does not stampede a single backend's rate limit.
@@ -25,7 +24,7 @@ MAX_PARALLEL_SUBRUNS = 6
 
 
 def _log(msg: str) -> None:
-    print(f"[Fanout] {msg}", file=sys.stderr)
+    log.source_log("Fanout", msg, tty_only=False)
 
 
 def run_competitor_fanout(
@@ -51,6 +50,10 @@ def run_competitor_fanout(
     if not competitors:
         report = main_runner()
         return [(main_topic, report)]
+
+    # One clear for the whole comparison so entity sub-runs share the YouTube
+    # search cache without inheriting a prior run's results in this process.
+    youtube_yt.reset_search_cache()
 
     workers = min(len(competitors) + 1, MAX_PARALLEL_SUBRUNS)
 

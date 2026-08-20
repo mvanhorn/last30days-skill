@@ -21,7 +21,7 @@ DEPTH_CONFIG = {
 
 
 def _log(msg: str):
-    log.source_log("TruthSocial", msg)
+    log.source_log("TruthSocial", msg, tty_only=False)
 
 
 def _strip_html(html: str) -> str:
@@ -33,14 +33,8 @@ def _strip_html(html: str) -> str:
 
 def _extract_core_subject(topic: str) -> str:
     """Extract core subject from verbose query for Truth Social search."""
-    from .query import extract_core_subject
-    _TS_NOISE = frozenset({
-        'best', 'top', 'good', 'great', 'awesome',
-        'latest', 'new', 'news', 'update', 'updates',
-        'trending', 'hottest', 'popular', 'viral',
-        'practices', 'features', 'recommendations', 'advice',
-    })
-    return extract_core_subject(topic, noise=_TS_NOISE)
+    from .query import SOCIAL_NOISE, extract_core_subject
+    return extract_core_subject(topic, noise=SOCIAL_NOISE)
 
 
 def _parse_date(status: Dict[str, Any]) -> Optional[str]:
@@ -95,7 +89,15 @@ def search_truthsocial(
     try:
         response = http.request(
             "GET", url,
-            headers={"Authorization": f"Bearer {token}"},
+            headers={
+                "Authorization": f"Bearer {token}",
+                # Cloudflare 403s the skill's default User-Agent regardless of token validity (#909).
+                # Reuse http.BROWSER_USER_AGENT, as the keyless Reddit path does.
+                "User-Agent": http.BROWSER_USER_AGENT,
+                "Accept": "application/json, text/plain, */*",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://truthsocial.com/",
+            },
             timeout=30,
         )
     except http.HTTPError as e:

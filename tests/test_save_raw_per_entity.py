@@ -33,7 +33,7 @@ class PerEntitySaveFilesTests(unittest.TestCase):
             *argv,
         ]
         env = {**os.environ, "LAST30DAYS_SKIP_PREFLIGHT": "1"}
-        result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", env=env)
         return result, save_dir
 
     def test_vs_mode_produces_per_entity_files(self):
@@ -45,6 +45,17 @@ class PerEntitySaveFilesTests(unittest.TestCase):
         self.assertIn("kanye-west-raw.md", names)
         self.assertIn("drake-raw.md", names)
         self.assertIn("kendrick-lamar-raw.md", names)
+
+    def test_vs_mode_logs_authoritative_artifact_set(self):
+        result, save_dir = self._run(topic="Kanye West vs Drake")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        expected_main = (save_dir / "kanye-west-raw.md").resolve()
+        expected_peer = (save_dir / "drake-raw.md").resolve()
+        self.assertIn(
+            f"[last30days] Comparison artifact set: main={expected_main}; "
+            f"peers={expected_peer}",
+            result.stderr,
+        )
 
     def test_competitors_list_produces_per_entity_files(self):
         result, save_dir = self._run(

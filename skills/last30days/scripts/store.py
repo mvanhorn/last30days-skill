@@ -12,16 +12,19 @@ Database location: ~/.local/share/last30days/research.db
 
 import argparse
 import json
+import os
+import re
 import sqlite3
 import sys
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import schema
+from lib import dedupe, entity_extract, schema
 
 DB_DIR = Path.home() / ".local" / "share" / "last30days"
 DB_PATH = DB_DIR / "research.db"
@@ -32,6 +35,45 @@ _db_override = None
 
 def _get_db_path() -> Path:
     return _db_override or DB_PATH
+
+
+@contextmanager
+def scoped_db(db_path: Optional[Path]) -> Iterator[None]:
+    """Route all store access inside the block to ``db_path``.
+
+    ``None`` keeps the shared store. Scoped runs (``--save-dir``) use this so
+    their findings land next to their briefs instead of leaking into the
+    shared research.db that unscoped searches read.
+    """
+    global _db_override
+    if db_path is None:
+        yield
+        return
+    previous = _db_override
+    _db_override = Path(db_path)
+    try:
+        yield
+    finally:
+        _db_override = previous
+
+
+def ensure_private_db_files(db_path: Optional[Path] = None) -> Path:
+    """Create/harden the research database and SQLite sidecars owner-only."""
+    path = db_path or _get_db_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.exists():
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            pass
+        else:
+            os.close(fd)
+    for candidate in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        try:
+            candidate.chmod(0o600)
+        except FileNotFoundError:
+            pass
+    return path
 
 
 SCHEMA_V1 = """
@@ -182,6 +224,24 @@ CREATE INDEX IF NOT EXISTS idx_finding_sightings_topic_seen
 CREATE INDEX IF NOT EXISTS idx_finding_sightings_url
     ON finding_sightings(source_url);
 """,
+    3: """
+CREATE TABLE IF NOT EXISTS discovery_topics (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    normalized_name TEXT NOT NULL UNIQUE,
+    entity_key TEXT,
+    domain TEXT,
+    first_surfaced TEXT NOT NULL,
+    last_surfaced TEXT NOT NULL,
+    surface_count INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'surfaced' CHECK(status IN ('surfaced','covered')),
+    covered_at TEXT,
+    last_run_ref TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_discovery_topics_status_surfaced
+    ON discovery_topics(status, last_surfaced);
+""",
 }
 
 
@@ -193,6 +253,10 @@ def _connect(db_path: Optional[Path] = None) -> sqlite3.Connection:
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.execute("PRAGMA foreign_keys=ON")
+    # WAL lets readers coexist with one writer, but two writers (cron + user)
+    # still contend for the write lock. Default busy_timeout is 0, so the loser
+    # raises "database is locked" instantly; wait instead.
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 
@@ -420,7 +484,7 @@ def store_findings(
 
         for url, f in with_urls:
             existing = existing_by_url.get(url)
-            new_engagement = f.get("engagement_score", 0)
+            new_engagement = f.get("engagement_score") or 0
             if existing:
                 update_rows.append((
                     max(new_engagement, existing["engagement_score"] or 0),
@@ -452,16 +516,41 @@ def store_findings(
                 update_rows,
             )
         if insert_rows:
+            # source_url is UNIQUE. The SELECT above is not atomic with this
+            # write, so a concurrent run (cron + user) can insert the same URL
+            # between our read and write. Upsert on conflict instead of letting
+            # IntegrityError abort the whole batch and lose every finding.
             conn.executemany(
                 """INSERT INTO findings
                    (run_id, topic_id, source, source_url, source_title,
                     author, content, summary, engagement_score, relevance_score)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(source_url) DO UPDATE SET
+                       last_seen = datetime('now'),
+                       sighting_count = sighting_count + 1,
+                       engagement_score = max(
+                           engagement_score, excluded.engagement_score),
+                       run_id = excluded.run_id""",
                 insert_rows,
             )
 
         new_count = len(insert_rows)
         updated_count = len(update_rows)
+        if insert_rows:
+            # A row whose URL was inserted by a concurrent run between our SELECT
+            # and the upsert resolves via ON CONFLICT (an update, not a new row),
+            # bumping its sighting_count above 1. Re-derive the split so
+            # research_runs.findings_new isn't inflated by conflict-resolved rows
+            # (source_url is field index 3 in each insert tuple).
+            inserted_urls = [row[3] for row in insert_rows]
+            placeholders = ",".join("?" for _ in inserted_urls)
+            conflicted = conn.execute(
+                f"SELECT COUNT(*) FROM findings "
+                f"WHERE source_url IN ({placeholders}) AND sighting_count > 1",
+                inserted_urls,
+            ).fetchone()[0]
+            new_count -= conflicted
+            updated_count += conflicted
         _record_sightings(conn, run_id, topic_id, with_urls, existing_by_url)
         conn.execute(
             "UPDATE research_runs SET findings_new = ?, findings_updated = ? WHERE id = ?",
@@ -514,8 +603,8 @@ def _record_sightings(
             finding.get("source", "unknown"),
             url,
             finding.get("source_title") or finding.get("title", ""),
-            finding.get("engagement_score", 0),
-            finding.get("relevance_score", 0),
+            finding.get("engagement_score") if finding.get("engagement_score") is not None else 0,
+            finding.get("relevance_score") if finding.get("relevance_score") is not None else 0,
         ))
 
     if not sighting_rows:
@@ -709,6 +798,209 @@ def delete_finding(finding_id: int):
 def dismiss_finding(finding_id: int):
     """Mark a finding as dismissed."""
     update_finding(finding_id, dismissed=1)
+
+
+# --- Discovery topic queue ---
+
+# Conservative floor for fuzzy queue matching (overlap coefficient of entity
+# tokens via entity_extract.entity_overlap). Tunable: raise toward 1.0 for
+# stricter matching, lower for looser. Matching is annotate-only - a fuzzy
+# match stamps prior-surfacing context onto an incoming topic but NEVER merges
+# queue rows, so a too-loose threshold can mislabel a card yet never lose data.
+DISCOVERY_QUEUE_OVERLAP_THRESHOLD = 0.6
+
+
+def _normalize_discovery_name(name: str) -> str:
+    """Queue identity: lowercased, punctuation-stripped, whitespace-collapsed
+    (thin alias for dedupe.normalize_text)."""
+    return dedupe.normalize_text(name)
+
+
+def _discovery_entity_key(name: str) -> str:
+    """Sorted joined significant tokens, computed once at write time."""
+    return " ".join(sorted(entity_extract.extract_text_entities(name)))
+
+
+def _discovery_anchor_entities(name: str) -> set[str]:
+    """Anchor tokens for fuzzy matching: capitalized, all-caps, or
+    digit-bearing words minus stopwords (product/person/version anchors).
+
+    Generic lowercase words ("chat", "templates") are excluded so two angles
+    on the same subject ("Gemma 4 chat templates" / "Gemma 4 tool calling
+    fixes") cross-match while different subjects sharing filler words don't.
+    """
+    anchors = set()
+    for word in re.sub(r"[^\w\s]", " ", name).split():
+        lower = word.casefold()
+        if lower in entity_extract.ENTITY_STOPWORDS:
+            continue
+        if entity_extract.has_anchor_signal(word):
+            anchors.add(lower)
+    return anchors
+
+
+def record_discovery_surfacing(
+    name: str,
+    domain: str = "",
+    run_ref: str = "",
+    as_of: str = "",
+    inherit_covered_at: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Upsert a queue row by normalized name.
+
+    A fresh topic inserts with surface_count 1; re-surfacing the same
+    normalized name increments the count and refreshes last_surfaced and
+    last_run_ref (first_surfaced never changes). Returns the resulting row.
+
+    A resurfacing with a blank domain (e.g. a global-trending sweep with no
+    domain) never blanks a domain recorded by an earlier, domain-scoped
+    surfacing - the stored domain only changes when the incoming domain is
+    non-empty. ``domain`` is normalized to "" here (never NULL bound) so the
+    column's storage convention stays consistent regardless of whether a
+    caller passes "" or None.
+
+    ``inherit_covered_at`` makes a FRESH row be born covered (status
+    'covered', covered_at set to the given date). Callers pass it when this
+    name fuzzy-matched an already-covered prior row, so a user's covered
+    mark survives judge naming drift instead of forking into a fresh
+    uncovered row. An existing row's status/covered_at are never modified
+    by this function - the ON CONFLICT path deliberately ignores it.
+
+    Idempotency guard: when the existing row's last_run_ref already equals
+    this call's (non-blank) run_ref, the surfacing was ALREADY counted by
+    this run identity - a retry (e.g. a --finalize re-run with a corrected
+    angles file) returns the row unchanged instead of double-counting.
+    Blank run_refs never guard, so callers without a run identity keep the
+    every-call-increments behavior.
+    """
+    init_db()
+    domain = domain or ""
+    normalized = _normalize_discovery_name(name)
+    entity_key = _discovery_entity_key(name)
+    status = "covered" if inherit_covered_at else "surfaced"
+    conn = _connect()
+    try:
+        if run_ref:
+            existing = conn.execute(
+                "SELECT * FROM discovery_topics WHERE normalized_name = ?",
+                (normalized,),
+            ).fetchone()
+            if existing is not None and existing["last_run_ref"] == run_ref:
+                return dict(existing)
+        conn.execute(
+            """INSERT INTO discovery_topics
+               (name, normalized_name, entity_key, domain, first_surfaced,
+                last_surfaced, surface_count, last_run_ref, status, covered_at)
+               VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+               ON CONFLICT(normalized_name) DO UPDATE SET
+                   surface_count = surface_count + 1,
+                   last_surfaced = excluded.last_surfaced,
+                   last_run_ref = excluded.last_run_ref,
+                   domain = CASE WHEN excluded.domain <> '' THEN excluded.domain ELSE domain END""",
+            (name, normalized, entity_key, domain, as_of, as_of, run_ref, status, inherit_covered_at),
+        )
+        conn.commit()
+        row = conn.execute(
+            "SELECT * FROM discovery_topics WHERE normalized_name = ?",
+            (normalized,),
+        ).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
+
+
+def match_discovery_topic(name: str) -> Optional[Dict[str, Any]]:
+    """Find the queue row a topic name refers to, or None.
+
+    Exact normalized-name match wins; otherwise the best entity-overlap match
+    at or above DISCOVERY_QUEUE_OVERLAP_THRESHOLD. Overlap is the better of
+    the full entity_key token overlap and the anchor-token overlap (see
+    _discovery_anchor_entities) - full-token overlap alone dilutes the subject
+    anchor with generic words, so same-subject near-duplicates would never
+    clear a conservative floor. Matching NEVER merges rows: a fuzzy match only
+    annotates the incoming topic with the prior row's context.
+    """
+    init_db()
+    normalized = _normalize_discovery_name(name)
+    conn = _connect()
+    try:
+        row = conn.execute(
+            "SELECT * FROM discovery_topics WHERE normalized_name = ?",
+            (normalized,),
+        ).fetchone()
+        if row:
+            return dict(row)
+
+        entities = entity_extract.extract_text_entities(name)
+        anchors = _discovery_anchor_entities(name)
+        if not entities and not anchors:
+            return None
+        best: Optional[sqlite3.Row] = None
+        best_overlap = 0.0
+        for candidate in conn.execute("SELECT * FROM discovery_topics").fetchall():
+            candidate_entities = set((candidate["entity_key"] or "").split())
+            overlap = max(
+                entity_extract.entity_overlap(entities, candidate_entities),
+                entity_extract.entity_overlap(
+                    anchors, _discovery_anchor_entities(candidate["name"])
+                ),
+            )
+            if overlap > best_overlap:
+                best, best_overlap = candidate, overlap
+        if best is not None and best_overlap >= DISCOVERY_QUEUE_OVERLAP_THRESHOLD:
+            return dict(best)
+        return None
+    finally:
+        conn.close()
+
+
+def list_discovery_queue(status: Optional[str] = None) -> List[Dict[str, Any]]:
+    """List queue rows, newest surfacing first, optionally filtered by status."""
+    init_db()
+    conn = _connect()
+    try:
+        if status:
+            rows = conn.execute(
+                """SELECT * FROM discovery_topics WHERE status = ?
+                   ORDER BY last_surfaced DESC, id DESC""",
+                (status,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM discovery_topics ORDER BY last_surfaced DESC, id DESC"
+            ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        conn.close()
+
+
+def mark_discovery_covered(name: str, as_of: str) -> Optional[Dict[str, Any]]:
+    """Mark a queued topic covered by EXACT normalized name.
+
+    Returns the updated row, or None when no row matches - callers must error
+    loudly on None, never silently no-op. Fuzzy matching is deliberately not
+    offered here: covering mutates state, so it demands the exact name.
+    """
+    init_db()
+    normalized = _normalize_discovery_name(name)
+    conn = _connect()
+    try:
+        cursor = conn.execute(
+            """UPDATE discovery_topics
+               SET status = 'covered', covered_at = ?
+               WHERE normalized_name = ?""",
+            (as_of, normalized),
+        )
+        conn.commit()
+        if cursor.rowcount == 0:
+            return None
+        row = conn.execute(
+            "SELECT * FROM discovery_topics WHERE normalized_name = ?",
+            (normalized,),
+        ).fetchone()
+        return dict(row)
+    finally:
+        conn.close()
 
 
 # --- Cost Tracking ---

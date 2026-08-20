@@ -2,9 +2,41 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from lib import pipeline
+from lib import health
+from lib import fanout
 from lib import http
+from lib import pipeline
 from lib import schema
+
+
+class DepthSettingsOverrideTests(unittest.TestCase):
+    def test_no_overrides_returns_depth_defaults(self):
+        settings = pipeline._resolve_depth_settings("deep", {})
+        self.assertEqual(pipeline.DEPTH_SETTINGS["deep"], settings)
+
+    def test_overrides_raise_caps_and_do_not_mutate_module_defaults(self):
+        before = dict(pipeline.DEPTH_SETTINGS["deep"])
+        settings = pipeline._resolve_depth_settings(
+            "deep", {"_max_per_source": 60, "_max_results": 200}
+        )
+        self.assertEqual(60, settings["per_stream_limit"])
+        self.assertEqual(200, settings["pool_limit"])
+        self.assertEqual(200, settings["rerank_limit"])
+        # Module-level defaults must be untouched (issue #716 regression guard).
+        self.assertEqual(before, pipeline.DEPTH_SETTINGS["deep"])
+
+    def test_overrides_can_also_lower_caps(self):
+        settings = pipeline._resolve_depth_settings("deep", {"_max_results": 10})
+        self.assertEqual(10, settings["rerank_limit"])
+
+    def test_zero_override_is_honored_not_swallowed(self):
+        # 0 is a valid explicit value (e.g. disable a source), not "unset".
+        settings = pipeline._resolve_depth_settings(
+            "deep", {"_max_results": 0, "_max_per_source": 0}
+        )
+        self.assertEqual(0, settings["pool_limit"])
+        self.assertEqual(0, settings["rerank_limit"])
+        self.assertEqual(0, settings["per_stream_limit"])
 
 
 class PipelineV3Tests(unittest.TestCase):
@@ -23,6 +55,16 @@ class PipelineV3Tests(unittest.TestCase):
         # Grounding items now enter the ranked pool (web search backends produce real items)
         self.assertIn("grounding", report.items_by_source)
         self.assertEqual("gemini", report.provider_runtime.reasoning_provider)
+
+    def test_empty_explicit_plan_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "intent"):
+            pipeline.run(
+                topic="test topic",
+                config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+                depth="quick",
+                external_plan={},
+                mock=True,
+            )
 
     def test_planner_trace_always_fires_on_mock_run(self):
         """Unit 5: The unified planner trace emits one summary line plus one
@@ -78,8 +120,145 @@ class PipelineV3Tests(unittest.TestCase):
         # error when its required backend key is unset.
         self.assertIn("grounding", report.errors_by_source)
 
+    def test_hiring_signals_mode_enables_jobs_source_in_mock_run(self):
+        report = pipeline.run(
+            topic="Listen Labs",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            requested_sources=["jobs"],
+            mock=True,
+            hiring_signals_mode=True,
+        )
+        self.assertIn("jobs", report.items_by_source)
+        self.assertIn("hiring_signals", report.artifacts)
+        self.assertTrue(report.artifacts["hiring_signals"]["include"])
+
+    def test_hiring_signals_mode_defaults_to_jobs_source(self):
+        report = pipeline.run(
+            topic="Listen Labs",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            mock=True,
+            hiring_signals_mode=True,
+        )
+        self.assertEqual(["jobs"], sorted(report.items_by_source))
+        self.assertTrue(report.artifacts["hiring_signals"]["include"])
+
+    def test_explicit_sources_suppress_automatic_company_jobs(self):
+        report = pipeline.run(
+            topic="Listen Labs",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            requested_sources=["grounding", "x"],
+            mock=True,
+        )
+        self.assertEqual({"grounding", "x"}, set(report.items_by_source))
+        self.assertTrue(
+            all("jobs" not in subquery.sources for subquery in report.query_plan.subqueries)
+        )
+
+    def test_hiring_signals_forces_jobs_with_explicit_non_jobs_sources(self):
+        report = pipeline.run(
+            topic="Listen Labs",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            requested_sources=["grounding", "x"],
+            mock=True,
+            hiring_signals_mode=True,
+        )
+        self.assertEqual({"grounding", "jobs", "x"}, set(report.items_by_source))
+
+    def test_standard_company_run_fetches_jobs_for_signal_gate(self):
+        report = pipeline.run(
+            topic="Listen Labs",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            mock=True,
+        )
+        self.assertIn("jobs", report.items_by_source)
+        self.assertIn("hiring_signals", report.artifacts)
+
+    def test_standard_mock_run_does_not_add_jobs_for_generic_topic(self):
+        report = pipeline.run(
+            topic="how to deploy on Fly.io",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            mock=True,
+        )
+        self.assertNotIn("jobs", report.items_by_source)
+        self.assertNotIn("hiring_signals", report.artifacts)
+
+    def test_single_word_generic_topic_does_not_add_jobs(self):
+        report = pipeline.run(
+            topic="bitcoin",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            mock=True,
+        )
+        self.assertNotIn("jobs", report.items_by_source)
+        self.assertNotIn("hiring_signals", report.artifacts)
+
+    def test_question_comparison_topic_does_not_add_jobs(self):
+        report = pipeline.run(
+            topic="Python vs Ruby benchmark?",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            mock=True,
+        )
+        self.assertNotIn("jobs", report.items_by_source)
+        self.assertNotIn("hiring_signals", report.artifacts)
+
+    def test_bare_language_comparison_topics_do_not_add_jobs(self):
+        for topic in ("python vs ruby", "Python vs Ruby"):
+            with self.subTest(topic=topic):
+                self.assertFalse(pipeline._company_topic_likely(topic))
+
+    def test_company_comparison_topics_add_jobs(self):
+        for topic in ("Stripe vs Brex", "OpenAI versus Anthropic"):
+            with self.subTest(topic=topic):
+                self.assertTrue(pipeline._company_topic_likely(topic))
+
+    def test_standard_mode_omits_weak_large_company_jobs_signal(self):
+        with patch("lib.pipeline._retrieve_stream") as mock_retrieve:
+            def fake_retrieve(**kwargs):
+                if kwargs["source"] == "jobs":
+                    return (
+                        [
+                            {
+                                "id": "J1",
+                                "title": "Retail Associate",
+                                "description": "Store operations",
+                                "url": "https://example.com/jobs/1",
+                                "department": "Retail",
+                                "date": "2026-06-01",
+                                "provider": "mock",
+                            }
+                        ],
+                        {},
+                    )
+                return pipeline._mock_stream_results(kwargs["source"], kwargs["subquery"])
+
+            mock_retrieve.side_effect = fake_retrieve
+            report = pipeline.run(
+                topic="Apple",
+                config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+                depth="quick",
+                requested_sources=["jobs"],
+                mock=True,
+            )
+        self.assertNotIn("jobs", report.items_by_source)
+        self.assertFalse(report.artifacts["hiring_signals"]["include"])
+
 
 class TestSourceFetchCap(unittest.TestCase):
+    def test_paid_budget_rejects_non_owner_before_owner_claims(self):
+        paid_budget = pipeline.PaidSourceBudget(owner="main")
+
+        self.assertFalse(paid_budget.try_consume(1, claimant="peer"))
+        self.assertEqual(0, paid_budget.used)
+        self.assertTrue(paid_budget.try_consume(1, claimant="main"))
+        self.assertEqual(1, paid_budget.used)
+
     """X source fetch count must be capped by MAX_SOURCE_FETCHES."""
 
     def test_x_capped_in_max_source_fetches(self):
@@ -87,9 +266,56 @@ class TestSourceFetchCap(unittest.TestCase):
         self.assertIn("x", pipeline.MAX_SOURCE_FETCHES)
         self.assertEqual(pipeline.MAX_SOURCE_FETCHES["x"], 2)
 
+    def test_jobs_capped_in_max_source_fetches(self):
+        self.assertIn("jobs", pipeline.MAX_SOURCE_FETCHES)
+        self.assertEqual(pipeline.MAX_SOURCE_FETCHES["jobs"], 1)
+
+    def test_perplexity_paid_call_cap_cannot_be_raised_by_generic_override(self):
+        self.assertEqual(
+            1,
+            pipeline._source_fetch_cap(
+                "perplexity",
+                {"_max_source_fetches": 10},
+            ),
+        )
+        self.assertEqual(
+            0,
+            pipeline._source_fetch_cap(
+                "perplexity",
+                {"_max_source_fetches": 0},
+            ),
+        )
+
+    def test_deep_research_lane_is_isolated_and_does_not_replace_primary(self):
+        primary = schema.SubQuery(
+            label="primary",
+            search_query="narrow angle",
+            ranking_query="narrow angle",
+            sources=["reddit", "grounding", "perplexity"],
+        )
+        plan = schema.QueryPlan(
+            intent="general",
+            freshness_mode="balanced_recent",
+            cluster_mode="story",
+            raw_topic="whole topic",
+            subqueries=[primary],
+            source_weights={"reddit": 1.0, "grounding": 1.0, "perplexity": 1.0},
+        )
+
+        pipeline._ensure_perplexity_in_plan(
+            plan,
+            "whole topic",
+            ["reddit", "grounding", "perplexity"],
+            force=True,
+        )
+
+        self.assertEqual("primary", plan.subqueries[0].label)
+        self.assertEqual(["reddit", "grounding"], plan.subqueries[0].sources)
+        self.assertEqual("deep-research", plan.subqueries[-1].label)
+        self.assertEqual(["perplexity"], plan.subqueries[-1].sources)
+
     def test_cap_logic_limits_source_submissions(self):
         """Verify the cap logic skips submissions beyond the limit."""
-        cap = pipeline.MAX_SOURCE_FETCHES.get("x", float("inf"))
         subquery_sources = [
             ["x", "reddit", "youtube"],
             ["x", "reddit", "youtube"],
@@ -119,7 +345,7 @@ class TestSourceFetchCap(unittest.TestCase):
         mock_retrieve.side_effect = lambda **kwargs: pipeline._mock_stream_results(
             kwargs["source"], kwargs["subquery"]
         )
-        report = pipeline.run(
+        pipeline.run(
             topic="compare iPhone vs Android vs Pixel vs Samsung",
             config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
             depth="quick",
@@ -134,6 +360,223 @@ class TestSourceFetchCap(unittest.TestCase):
             len(x_calls), 2,
             f"X should be fetched at most 2 times, got {len(x_calls)}",
         )
+
+    @patch("lib.pipeline._retrieve_stream")
+    def test_zero_source_fetch_override_suppresses_capped_source(self, mock_retrieve):
+        """A 0 override is explicit and should suppress capped-source submissions."""
+        mock_retrieve.side_effect = lambda **kwargs: pipeline._mock_stream_results(
+            kwargs["source"], kwargs["subquery"]
+        )
+        pipeline.run(
+            topic="compare iPhone vs Android vs Pixel vs Samsung",
+            config={
+                "LAST30DAYS_REASONING_PROVIDER": "gemini",
+                "_max_source_fetches": 0,
+            },
+            depth="quick",
+            requested_sources=["reddit", "x"],
+            mock=True,
+        )
+        x_calls = [
+            call for call in mock_retrieve.call_args_list
+            if call.kwargs.get("source") == "x"
+        ]
+        reddit_calls = [
+            call for call in mock_retrieve.call_args_list
+            if call.kwargs.get("source") == "reddit"
+        ]
+        self.assertEqual([], x_calls)
+        self.assertGreater(len(reddit_calls), 0)
+
+    @patch("lib.pipeline._retrieve_stream")
+    def test_deep_research_subquery_fanout_submits_once(self, mock_retrieve):
+        mock_retrieve.return_value = ([], {})
+        plan = {
+            "intent": "comparison",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "debate",
+            "subqueries": [
+                {
+                    "label": f"angle-{index}",
+                    "search_query": f"topic angle {index}",
+                    "ranking_query": f"topic angle {index}",
+                    "sources": ["perplexity"],
+                }
+                for index in range(3)
+            ],
+            "source_weights": {"perplexity": 1.0},
+        }
+
+        pipeline.run(
+            topic="whole topic",
+            config={
+                "LAST30DAYS_REASONING_PROVIDER": "gemini",
+                "PERPLEXITY_API_KEY": "pplx-test",
+                "_deep_research": True,
+                "_max_source_fetches": 10,
+            },
+            depth="default",
+            requested_sources=["reddit", "perplexity"],
+            mock=True,
+            external_plan=plan,
+        )
+
+        perplexity_calls = [
+            call
+            for call in mock_retrieve.call_args_list
+            if call.kwargs.get("source") == "perplexity"
+        ]
+        self.assertEqual(1, len(perplexity_calls))
+        self.assertEqual(
+            "whole topic",
+            perplexity_calls[0].kwargs["subquery"].search_query,
+        )
+
+    @patch("lib.pipeline._retrieve_stream")
+    def test_normal_perplexity_subquery_fanout_submits_once(self, mock_retrieve):
+        mock_retrieve.return_value = ([], {})
+        plan = {
+            "intent": "comparison",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "debate",
+            "subqueries": [
+                {
+                    "label": f"angle-{index}",
+                    "search_query": f"topic angle {index}",
+                    "ranking_query": f"topic angle {index}",
+                    "sources": ["perplexity"],
+                }
+                for index in range(4)
+            ],
+            "source_weights": {"perplexity": 1.0},
+        }
+
+        pipeline.run(
+            topic="whole topic",
+            config={
+                "LAST30DAYS_REASONING_PROVIDER": "gemini",
+                "PERPLEXITY_API_KEY": "pplx-test",
+                "_max_source_fetches": 10,
+            },
+            depth="default",
+            requested_sources=["perplexity"],
+            mock=True,
+            external_plan=plan,
+        )
+
+        perplexity_calls = [
+            call
+            for call in mock_retrieve.call_args_list
+            if call.kwargs.get("source") == "perplexity"
+        ]
+        self.assertEqual(1, len(perplexity_calls))
+        self.assertEqual(
+            "whole topic",
+            perplexity_calls[0].kwargs["subquery"].search_query,
+        )
+
+    @patch("lib.pipeline._retrieve_stream")
+    def test_shared_paid_budget_caps_competitor_subruns(self, mock_retrieve):
+        mock_retrieve.return_value = ([], {})
+        paid_budget = pipeline.PaidSourceBudget()
+        plan = {
+            "intent": "general",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "story",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "entity angle",
+                    "ranking_query": "entity angle",
+                    "sources": ["perplexity"],
+                }
+            ],
+            "source_weights": {"perplexity": 1.0},
+        }
+
+        for entity in ("main", "peer-a", "peer-b"):
+            pipeline.run(
+                topic=entity,
+                config={
+                    "LAST30DAYS_REASONING_PROVIDER": "gemini",
+                    "PERPLEXITY_API_KEY": "pplx-test",
+                    "_perplexity_paid_budget": paid_budget,
+                },
+                depth="quick",
+                requested_sources=["perplexity"],
+                mock=True,
+                external_plan=plan,
+                internal_subrun=True,
+            )
+
+        perplexity_calls = [
+            call
+            for call in mock_retrieve.call_args_list
+            if call.kwargs.get("source") == "perplexity"
+        ]
+        self.assertEqual(1, len(perplexity_calls))
+        self.assertEqual(1, paid_budget.used)
+
+    @patch("lib.pipeline._retrieve_stream")
+    def test_shared_paid_budget_is_reserved_for_main_competitor_topic(
+        self,
+        mock_retrieve,
+    ):
+        mock_retrieve.return_value = ([], {})
+        paid_budget = pipeline.PaidSourceBudget(owner="main")
+        barrier = threading.Barrier(3)
+        plan = {
+            "intent": "general",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "story",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "entity angle",
+                    "ranking_query": "entity angle",
+                    "sources": ["perplexity"],
+                }
+            ],
+            "source_weights": {"perplexity": 1.0},
+        }
+
+        def run_entity(entity):
+            barrier.wait()
+            return pipeline.run(
+                topic=entity,
+                config={
+                    "LAST30DAYS_REASONING_PROVIDER": "gemini",
+                    "PERPLEXITY_API_KEY": "pplx-test",
+                    "_perplexity_paid_budget": paid_budget,
+                },
+                depth="quick",
+                requested_sources=["perplexity"],
+                mock=True,
+                external_plan=plan,
+                internal_subrun=True,
+            )
+
+        results = fanout.run_competitor_fanout(
+            main_topic="main",
+            main_runner=lambda: run_entity("main"),
+            competitors=["peer-a", "peer-b"],
+            competitor_runner=run_entity,
+        )
+
+        perplexity_calls = [
+            call
+            for call in mock_retrieve.call_args_list
+            if call.kwargs.get("source") == "perplexity"
+        ]
+        self.assertEqual(1, len(perplexity_calls))
+        self.assertEqual("main", perplexity_calls[0].kwargs["topic"])
+        self.assertEqual(1, paid_budget.used)
+        for entity, report in results[1:]:
+            receipt = report.artifacts["paid_source_budget"]["perplexity"]
+            self.assertEqual("skipped-budget", receipt["state"])
+            self.assertFalse(receipt["attempted"])
+            self.assertEqual("main", receipt["owner"])
+            self.assertEqual(entity, receipt["claimant"])
 
 
 class TestRateLimitSharing(unittest.TestCase):
@@ -186,7 +629,7 @@ class TestRateLimitSharing(unittest.TestCase):
         self.assertEqual(artifact, {})
 
 
-class TestThinSourceRetry(unittest.TestCase):
+class TestThinSourceRetryPlannedSource(unittest.TestCase):
     @patch("lib.pipeline._retrieve_stream")
     def test_retry_includes_planned_source_with_zero_initial_items(self, mock_retrieve):
         mock_retrieve.return_value = (
@@ -249,6 +692,145 @@ class TestThinSourceRetry(unittest.TestCase):
         self.assertEqual("https://x.com/example/status/100", bundle.items_by_source["x"][0].url)
 
 
+class TestPinnedGithubPersonAuthority(unittest.TestCase):
+    @patch("lib.pipeline._retrieve_stream")
+    @patch("lib.pipeline.github.search_github_person", return_value=[])
+    def test_empty_person_result_suppresses_generic_fanout_and_retry(
+        self, mock_person_search, mock_retrieve
+    ):
+        plan = {
+            "intent": "person",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "topic",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "octocat recent activity",
+                    "ranking_query": "What has @octocat done on GitHub recently?",
+                    "sources": ["github"],
+                }
+            ],
+            "source_weights": {"github": 1.0},
+        }
+
+        report = pipeline.run(
+            topic="octocat",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="default",
+            requested_sources=["github"],
+            mock=True,
+            external_plan=plan,
+            github_user="octocat",
+        )
+
+        mock_person_search.assert_called_once()
+        mock_retrieve.assert_not_called()
+        self.assertEqual(schema.NO_RESULTS, report.source_status["github"].state)
+        self.assertIn(
+            "Person mode found no activity for @octocat",
+            report.source_status["github"].detail,
+        )
+
+    @patch("lib.pipeline._retrieve_stream")
+    @patch(
+        "lib.pipeline.github.search_github_person",
+        side_effect=RuntimeError("GitHub API unavailable"),
+    )
+    def test_person_failure_suppresses_generic_fanout_and_retry(
+        self, mock_person_search, mock_retrieve
+    ):
+        plan = {
+            "intent": "person",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "topic",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "octocat recent activity",
+                    "ranking_query": "What has @octocat done on GitHub recently?",
+                    "sources": ["github"],
+                }
+            ],
+            "source_weights": {"github": 1.0},
+        }
+
+        report = pipeline.run(
+            topic="octocat",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="default",
+            requested_sources=["github"],
+            mock=True,
+            external_plan=plan,
+            github_user="octocat",
+        )
+
+        mock_person_search.assert_called_once()
+        mock_retrieve.assert_not_called()
+        self.assertEqual(health.ERROR, report.source_status["github"].state)
+        self.assertEqual(
+            "GitHub API unavailable",
+            report.source_status["github"].detail,
+        )
+        self.assertEqual(
+            "Person-mode failed: GitHub API unavailable",
+            report.errors_by_source["github"],
+        )
+
+
+
+class TestTrustpilotNeverRetriedAsThin(unittest.TestCase):
+    @patch("lib.pipeline._retrieve_stream")
+    def test_trustpilot_excluded_from_thin_source_retry(self, mock_retrieve):
+        """Trustpilot returns at most one item by design, so the '<3 items'
+        thinness rule must never re-fetch it: a retry would bypass
+        MAX_SOURCE_FETCHES and re-resolve without the caller's
+        --trustpilot-domain (a lookalike-misattribution path)."""
+        mock_retrieve.return_value = ([], {})
+
+        plan = schema.QueryPlan(
+            intent="product",
+            freshness_mode="balanced_recent",
+            cluster_mode="none",
+            raw_topic="ThriftBooks",
+            subqueries=[
+                schema.SubQuery(
+                    label="primary",
+                    search_query="thriftbooks",
+                    ranking_query="What matters for ThriftBooks?",
+                    sources=["trustpilot", "x"],
+                )
+            ],
+            source_weights={"trustpilot": 1.0, "x": 1.0},
+        )
+        bundle = schema.RetrievalBundle(
+            items_by_source={
+                # one successful trustpilot item -- its normal success state,
+                # yet still "<3" and thus retry-eligible without the exclusion
+                "trustpilot": [
+                    _make_source_item("trustpilot", "tp1", "https://www.trustpilot.com/review/x.com"),
+                ],
+            }
+        )
+
+        pipeline._retry_thin_sources(
+            topic="ThriftBooks",
+            bundle=bundle,
+            plan=plan,
+            config={},
+            depth="default",
+            date_range=("2026-06-04", "2026-07-04"),
+            runtime=_make_runtime("bird"),
+            mock=False,
+            rate_limited_sources=set(),
+            rate_limit_lock=threading.Lock(),
+            settings=pipeline.DEPTH_SETTINGS["default"],
+        )
+
+        retried = [call.kwargs["source"] for call in mock_retrieve.call_args_list]
+        self.assertNotIn("trustpilot", retried)
+        self.assertIn("x", retried)  # other thin sources still retry
+
+
 def _make_runtime(x_backend="bird"):
     return schema.ProviderRuntime(
         reasoning_provider="mock",
@@ -289,6 +871,273 @@ def _make_source_item(source, item_id, url, author=None, body="", container=None
     )
 
 
+class TestXBackendChainAndFailover(unittest.TestCase):
+    """One X source, an ordered backend chain with failover; never parallel."""
+
+    @patch("lib.xurl_x.is_available", return_value=False)
+    def test_chain_orders_by_priority(self, _xurl):
+        from lib import env
+        chain = env.x_backend_chain({"XAI_API_KEY": "k", "XQUIK_API_KEY": "q"})
+        self.assertEqual(["xai", "xquik"], chain)  # xai primary, xquik backup
+
+    @patch("lib.xurl_x.is_available", return_value=False)
+    def test_pin_forces_single_backend(self, _xurl):
+        from lib import env
+        chain = env.x_backend_chain(
+            {"XAI_API_KEY": "k", "XQUIK_API_KEY": "q", "LAST30DAYS_X_BACKEND": "xquik"}
+        )
+        self.assertEqual(["xquik"], chain)  # pin = no failover
+
+    @patch("lib.xurl_x.is_available", return_value=False)
+    def test_chain_empty_when_nothing_configured(self, _xurl):
+        from lib import env
+        self.assertEqual([], env.x_backend_chain({}))
+
+    @patch("lib.env.x_backend_chain", return_value=["bird", "xquik"])
+    def test_failover_to_next_backend_on_empty(self, _chain):
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+
+        def fake_fetch(backend, *a, **k):
+            if backend == "xquik":
+                return ([{"id": "XQ1", "url": "https://x.com/a/status/1"}], "")
+            return ([], "")  # bird returns nothing
+
+        with patch("lib.pipeline._fetch_x_backend", side_effect=fake_fetch):
+            items, _ = pipeline._retrieve_stream(
+                topic="q", subquery=sq, source="x", config={}, depth="default",
+                date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
+            )
+        self.assertEqual(1, len(items))
+        self.assertEqual("XQ1", items[0]["id"])
+
+    @patch("lib.env.x_backend_chain", return_value=["xquik"])
+    def test_sole_backend_error_raises_honestly(self, _chain):
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+        with patch("lib.pipeline._fetch_x_backend", return_value=([], "Xquik key unpaid (402)")):
+            with self.assertRaises(RuntimeError):
+                pipeline._retrieve_stream(
+                    topic="q", subquery=sq, source="x", config={}, depth="default",
+                    date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
+                )
+
+    def test_xquik_is_not_a_separate_source(self):
+        # xquik registers only as a backend of "x", never its own source.
+        avail = pipeline.available_sources({"XQUIK_API_KEY": "k"})
+        self.assertIn("x", avail)
+        self.assertNotIn("xquik", avail)
+
+
+class TestMixedResultRevocation(unittest.TestCase):
+    """Mixed-result revocation: when grok returns items AND an error, preserve both."""
+
+    @patch("lib.env.x_backend_chain", return_value=["grok"])
+    def test_items_with_auth_error_surfaces_error(self, _chain):
+        """Grok returns some items but then auth is revoked → error is surfaced."""
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+
+        def fake_fetch(backend, *a, **k):
+            if backend == "grok":
+                # Mixed result: got some items, but also hit auth revocation
+                return (
+                    [{"id": "G1", "url": "https://x.com/a/status/1"}],
+                    "grok: grok session expired or was revoked",
+                )
+            return ([], "")
+
+        with patch("lib.pipeline._fetch_x_backend", side_effect=fake_fetch):
+            items, artifact = pipeline._retrieve_stream(
+                topic="q", subquery=sq, source="x", config={}, depth="default",
+                date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
+            )
+        self.assertEqual(1, len(items))
+        # The artifact should have _source_outcome with the error info
+        outcome = artifact.get("_source_outcome", {})
+        self.assertIn("grok session expired", outcome.get("detail", "").lower())
+        # State should be AUTH_FAILED since the error contains auth markers
+        self.assertEqual(schema.AUTH_FAILED, outcome.get("state"))
+
+    @patch("lib.env.x_backend_chain", return_value=["grok", "bird"])
+    def test_fallback_after_auth_failed_keeps_auth_failed_state(self, _chain):
+        """Grok auth fails → bird succeeds → state is AUTH_FAILED (not OK).
+
+        The user needs re-login guidance for grok even though fallback served items.
+        """
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+
+        def fake_fetch(backend, *a, **k):
+            if backend == "grok":
+                return ([], "grok: grok session expired or was revoked")
+            if backend == "bird":
+                return ([{"id": "B1", "url": "https://x.com/a/status/1"}], "")
+            return ([], "")
+
+        with patch("lib.pipeline._fetch_x_backend", side_effect=fake_fetch):
+            items, artifact = pipeline._retrieve_stream(
+                topic="q", subquery=sq, source="x", config={}, depth="default",
+                date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
+            )
+        self.assertEqual(1, len(items))
+        outcome = artifact.get("_source_outcome", {})
+        # State should be AUTH_FAILED so user gets re-login guidance
+        self.assertEqual(schema.AUTH_FAILED, outcome.get("state"))
+        self.assertIn("re-login", outcome.get("detail", "").lower())
+
+    @patch("lib.env.x_backend_chain", return_value=["grok", "bird"])
+    def test_fallback_after_non_auth_error_is_ok(self, _chain):
+        """Grok fails with non-auth error → bird succeeds → state is OK."""
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+
+        def fake_fetch(backend, *a, **k):
+            if backend == "grok":
+                return ([], "grok: network timeout")
+            if backend == "bird":
+                return ([{"id": "B1", "url": "https://x.com/a/status/1"}], "")
+            return ([], "")
+
+        with patch("lib.pipeline._fetch_x_backend", side_effect=fake_fetch):
+            items, artifact = pipeline._retrieve_stream(
+                topic="q", subquery=sq, source="x", config={}, depth="default",
+                date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
+            )
+        self.assertEqual(1, len(items))
+        outcome = artifact.get("_source_outcome", {})
+        # Non-auth error followed by fallback success is OK
+        self.assertEqual("ok", outcome.get("state"))
+
+    @patch("lib.env.x_backend_chain", return_value=["bird", "grok"])
+    def test_prior_non_auth_then_current_auth_fail_yields_auth_failed(self, _chain):
+        """Bird non-auth fail → Grok items + revocation → AUTH_FAILED, items kept.
+
+        If an earlier backend fails for a non-auth reason and the current backend
+        returns items plus an auth revocation error, the outcome must be AUTH_FAILED
+        (not OK) so the user gets re-login guidance.
+        """
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+
+        def fake_fetch(backend, *a, **k):
+            if backend == "bird":
+                # Bird fails with a non-auth error
+                return ([], "bird: network timeout")
+            if backend == "grok":
+                # Grok returns items but also signals auth revocation
+                return (
+                    [{"id": "G1", "url": "https://x.com/a/status/1"}],
+                    "grok: grok session expired or was revoked",
+                )
+            return ([], "")
+
+        with patch("lib.pipeline._fetch_x_backend", side_effect=fake_fetch):
+            items, artifact = pipeline._retrieve_stream(
+                topic="q", subquery=sq, source="x", config={}, depth="default",
+                date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
+            )
+        # Items should be preserved
+        self.assertEqual(1, len(items))
+        outcome = artifact.get("_source_outcome", {})
+        # State must be AUTH_FAILED, not OK
+        self.assertEqual(schema.AUTH_FAILED, outcome.get("state"))
+        # Re-login guidance must be present
+        self.assertIn("re-login", outcome.get("detail", "").lower())
+
+    @patch("lib.env.x_backend_chain", return_value=["grok", "bird"])
+    def test_not_logged_in_triggers_auth_failed_fallback(self, _chain):
+        """Grok 'not logged in' → bird fallback → AUTH_FAILED state preserved.
+
+        The 'not logged in' message from Grok is a recognized revocation marker.
+        If Grok fails with this message and bird fallback succeeds, the outcome
+        must be AUTH_FAILED so the user gets re-login guidance.
+        """
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+
+        def fake_fetch(backend, *a, **k):
+            if backend == "grok":
+                # Grok fails with 'not logged in' error
+                return ([], "grok: not logged in")
+            if backend == "bird":
+                return ([{"id": "B1", "url": "https://x.com/a/status/1"}], "")
+            return ([], "")
+
+        with patch("lib.pipeline._fetch_x_backend", side_effect=fake_fetch):
+            items, artifact = pipeline._retrieve_stream(
+                topic="q", subquery=sq, source="x", config={}, depth="default",
+                date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
+            )
+        self.assertEqual(1, len(items))
+        outcome = artifact.get("_source_outcome", {})
+        # State must be AUTH_FAILED because 'not logged in' is an auth marker
+        self.assertEqual(schema.AUTH_FAILED, outcome.get("state"))
+        self.assertIn("re-login", outcome.get("detail", "").lower())
+
+
+class TestRetrievalBundleAuthPreservation(unittest.TestCase):
+    """AUTH_FAILED state must be preserved through add_items.
+
+    When a lane records AUTH_FAILED before items are added, the state
+    must not be downgraded to PARTIAL by subsequent add_items calls.
+    """
+
+    def test_add_items_preserves_auth_failed_state(self):
+        """add_items should preserve AUTH_FAILED state, not downgrade to PARTIAL."""
+        bundle = schema.RetrievalBundle()
+        bundle.mark_attempted("x")
+        # First: record auth failure (no items yet)
+        bundle.record_failure("x", schema.AUTH_FAILED, "grok session expired", attempted=True)
+        # At this point, state should be AUTH_FAILED
+        self.assertEqual(schema.AUTH_FAILED, bundle.source_status["x"].state)
+
+        # Now add items
+        items = [_make_source_item("x", "X1", "https://x.com/a/status/1")]
+        bundle.add_items("primary", "x", items)
+
+        # State must still be AUTH_FAILED, not PARTIAL
+        self.assertEqual(schema.AUTH_FAILED, bundle.source_status["x"].state)
+        # Detail should be preserved
+        self.assertEqual("grok session expired", bundle.source_status["x"].detail)
+        # Items should be recorded
+        self.assertEqual(1, len(bundle.items_by_source["x"]))
+
+    def test_add_items_keeps_partial_for_non_auth_failures(self):
+        """For non-auth failures, add_items should still produce PARTIAL."""
+        bundle = schema.RetrievalBundle()
+        bundle.mark_attempted("x")
+        # Record a non-auth failure
+        bundle.record_failure("x", health.TIMEOUT, "request timed out", attempted=True)
+        self.assertEqual(health.TIMEOUT, bundle.source_status["x"].state)
+
+        # Add items
+        items = [_make_source_item("x", "X1", "https://x.com/a/status/1")]
+        bundle.add_items("primary", "x", items)
+
+        # State should become PARTIAL (not TIMEOUT)
+        self.assertEqual(schema.PARTIAL, bundle.source_status["x"].state)
+        # Detail should be preserved
+        self.assertEqual("request timed out", bundle.source_status["x"].detail)
+
+    def test_record_failure_preserves_auth_failed_when_items_exist(self):
+        """record_failure should preserve AUTH_FAILED even when items already exist.
+
+        When Phase 1 has already collected X posts and a supplemental Grok lane
+        reports revocation, record_failure must not convert AUTH_FAILED to PARTIAL.
+        """
+        bundle = schema.RetrievalBundle()
+        bundle.mark_attempted("x")
+
+        # Phase 1 already collected items
+        phase1_items = [_make_source_item("x", "X1", "https://x.com/a/status/1")]
+        bundle.add_items("primary", "x", phase1_items)
+        self.assertEqual(health.OK, bundle.source_status["x"].state)
+
+        # Supplemental lane reports auth failure
+        bundle.record_failure("x", schema.AUTH_FAILED, "grok session revoked", attempted=True)
+
+        # State must be AUTH_FAILED, not PARTIAL
+        self.assertEqual(schema.AUTH_FAILED, bundle.source_status["x"].state)
+        # Detail should be set
+        self.assertEqual("grok session revoked", bundle.source_status["x"].detail)
+        # Items should still be there
+        self.assertEqual(1, len(bundle.items_by_source["x"]))
+
+
 class TestSupplementalSearches(unittest.TestCase):
     """R1: Phase 2 entity drilling should be wired into the pipeline."""
 
@@ -319,9 +1168,12 @@ class TestSupplementalSearches(unittest.TestCase):
         ]
 
         bundle = schema.RetrievalBundle()
+        # Handles need ≥2 on-topic posts to be promotable per x_judge.MIN_ON_TOPIC_HITS
         bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="Some tweet about AI"),
-            _make_source_item("x", "X2", "https://x.com/reporter2/status/2", author="reporter2", body="AI analysis @expert3"),
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2", author="analyst1", body="AI safety research"),
+            _make_source_item("x", "X3", "https://x.com/reporter2/status/3", author="reporter2", body="AI safety report"),
+            _make_source_item("x", "X4", "https://x.com/reporter2/status/4", author="reporter2", body="AI safety news"),
         ]
 
         plan = _make_plan("AI safety")
@@ -345,6 +1197,97 @@ class TestSupplementalSearches(unittest.TestCase):
         # Supplemental items should be merged into bundle
         x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
         self.assertIn("https://x.com/analyst1/status/999", x_urls)
+
+    @patch("lib.env.x_backend_chain", return_value=["xquik"])
+    @patch("lib.xquik.search_xquik", return_value={"items": []})
+    def test_x_topic_lane_uses_raw_topic_via_xquik(self, mock_search, _chain):
+        """The X topic lane uses raw_topic (like Reddit/YouTube), not the
+        planner's search_query. This avoids phrase-quoting issues like "Rome Italy"
+        returning off-topic results. Disambiguation lives in ranking_query."""
+        anchored = schema.SubQuery(
+            label="primary", search_query="kevin rose digg founder",
+            ranking_query="What has Kevin Rose, founder of Digg, been doing?",
+            sources=["x"],
+        )
+        pipeline._retrieve_stream(
+            topic="kevin rose digg founder", subquery=anchored, source="x",
+            config={"XQUIK_API_KEY": "k"}, depth="default",
+            date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None),
+            mock=False, raw_topic="kevin rose",
+        )
+        mock_search.assert_called_once()
+        # X now uses raw_topic, not search_query (like Reddit/YouTube)
+        self.assertEqual("kevin rose", mock_search.call_args[0][0])
+
+    @patch("lib.env.get_xquik_token", return_value="k")
+    @patch("lib.env.x_backend_chain", return_value=["xquik"])
+    @patch("lib.xquik.search_mentions", return_value=[])
+    @patch("lib.xquik.search_handles")
+    @patch("lib.entity_extract.extract_entities")
+    def test_handle_lanes_route_to_xquik_when_primary(
+        self, mock_extract, mock_xq_handles, mock_xq_mentions, *_patches
+    ):
+        """When xquik is the primary X backend, the FROM/ABOUT handle lanes run
+        via xquik and items land under the single 'x' slug."""
+        mock_extract.return_value = {"x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": []}
+        mock_xq_handles.return_value = [{
+            "id": "XF1", "text": "from analyst1", "url": "https://x.com/analyst1/status/777",
+            "author_handle": "analyst1", "date": "2026-03-15",
+            "engagement": {"likes": 30}, "relevance": 0.8, "why_relevant": "",
+        }]
+
+        bundle = schema.RetrievalBundle()
+        # Handles need ≥2 on-topic posts to be promotable per x_judge.MIN_ON_TOPIC_HITS
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2", author="analyst1", body="AI safety research"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime(None), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+
+        mock_xq_handles.assert_called_once()
+        x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
+        self.assertIn("https://x.com/analyst1/status/777", x_urls)
+        # There is no separate 'xquik' source — everything is under 'x'.
+        self.assertNotIn("xquik", bundle.items_by_source)
+
+    @patch("lib.env.get_xquik_token", return_value="k")
+    @patch("lib.env.x_backend_chain", return_value=["xai", "xquik"])
+    @patch("lib.xquik.search_mentions", return_value=[])
+    @patch("lib.xquik.search_handles")
+    @patch("lib.entity_extract.extract_entities")
+    def test_handle_lanes_use_xquik_when_xai_is_primary(
+        self, mock_extract, mock_xq_handles, *_patches
+    ):
+        """When xAI is the topic primary but xquik is in the chain, the
+        supplemental handle lanes still run via xquik (first handle-capable
+        backend) rather than being skipped."""
+        mock_extract.return_value = {"x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": []}
+        mock_xq_handles.return_value = [{
+            "id": "XF1", "text": "from analyst1", "url": "https://x.com/analyst1/status/888",
+            "author_handle": "analyst1", "date": "2026-03-15",
+            "engagement": {"likes": 5}, "relevance": 0.8, "why_relevant": "",
+        }]
+        bundle = schema.RetrievalBundle()
+        # Handles need ≥2 on-topic posts to be promotable per x_judge.MIN_ON_TOPIC_HITS
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2", author="analyst1", body="AI safety research"),
+        ]
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime("xai"), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+        mock_xq_handles.assert_called_once()
+        x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
+        self.assertIn("https://x.com/analyst1/status/888", x_urls)
 
     @patch("lib.bird_x.search_handles")
     @patch("lib.entity_extract.extract_entities")
@@ -391,6 +1334,37 @@ class TestSupplementalSearches(unittest.TestCase):
             urls.count("https://x.com/analyst1/status/1"), 1,
             f"Duplicate URL found: {urls}",
         )
+
+    @patch("lib.bird_x.search_mentions")
+    @patch("lib.bird_x.search_handles")
+    @patch("lib.entity_extract.extract_entities")
+    def test_from_lane_uses_raised_cap_mention_lane_modest(self, mock_extract, mock_handles, mock_mentions):
+        """U4: the FROM lane (subject's own timeline) uses the raised per-handle
+        cap; the mention lane stays modest."""
+        mock_extract.return_value = {"x_handles": ["subject1"], "x_hashtags": [], "reddit_subreddits": []}
+        mock_handles.return_value = []
+        mock_mentions.return_value = []
+        bundle = schema.RetrievalBundle()
+        # Handles need ≥2 on-topic posts to be promotable per x_judge.MIN_ON_TOPIC_HITS
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/subject1/status/1", author="subject1", body="subject1 discussion"),
+            _make_source_item("x", "X2", "https://x.com/subject1/status/2", author="subject1", body="subject1 update"),
+        ]
+        pipeline._run_supplemental_searches(
+            topic="subject1",
+            bundle=bundle,
+            plan=_make_plan("subject1"),
+            config={},
+            depth="default",
+            date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime("bird"),
+            mock=False,
+            rate_limited_sources=set(),
+            rate_limit_lock=threading.Lock(),
+        )
+        from_call = mock_handles.call_args_list[0]
+        self.assertEqual(pipeline.FROM_LANE_COUNT_PER, from_call.kwargs.get("count_per"))
+        self.assertEqual(pipeline.MENTION_LANE_COUNT_PER, mock_mentions.call_args.kwargs.get("count_per"))
 
     def test_phase2_skipped_in_quick_mode(self):
         """_run_supplemental_searches should return immediately when depth='quick'."""
@@ -602,7 +1576,6 @@ class TestThinSourceRetry(unittest.TestCase):
             )
             # x (non-errored, thin) should be retried; reddit (errored) should not
             if mock_retrieve.call_count > 0:
-                retried_sources = [call.kwargs.get("source") or call.args[2] for call in mock_retrieve.call_args_list if hasattr(call, 'kwargs')]
                 self.assertNotIn("reddit", [c.kwargs.get("source") for c in mock_retrieve.call_args_list])
 
     def test_retry_skipped_in_quick_mode(self):
@@ -630,6 +1603,41 @@ class TestThinSourceRetry(unittest.TestCase):
                 settings=settings,
             )
             mock_retrieve.assert_not_called()
+
+    def test_perplexity_is_not_retried_when_results_are_thin(self):
+        plan = schema.QueryPlan(
+            intent="general",
+            freshness_mode="balanced_recent",
+            cluster_mode="story",
+            raw_topic="AI safety",
+            subqueries=[
+                schema.SubQuery(
+                    label="primary",
+                    search_query="AI safety",
+                    ranking_query="AI safety",
+                    sources=["perplexity"],
+                )
+            ],
+            source_weights={"perplexity": 1.0},
+        )
+        bundle = schema.RetrievalBundle()
+
+        with patch("lib.pipeline._retrieve_stream") as mock_retrieve:
+            pipeline._retry_thin_sources(
+                topic="AI safety",
+                bundle=bundle,
+                plan=plan,
+                config={},
+                depth="default",
+                date_range=("2026-02-15", "2026-03-17"),
+                runtime=_make_runtime(),
+                mock=False,
+                rate_limited_sources=set(),
+                rate_limit_lock=threading.Lock(),
+                settings=pipeline.DEPTH_SETTINGS["default"],
+            )
+
+        mock_retrieve.assert_not_called()
 
 
 class TestErrorCleanup(unittest.TestCase):
@@ -982,6 +1990,106 @@ class TestExcludeSources(unittest.TestCase):
         self.assertIn("reddit", sources)
 
 
+class TestPerplexityAvailability(unittest.TestCase):
+    def test_agent_background_failure_uses_safe_provider_detail(self):
+        outcome = pipeline._legacy_artifact_outcome(
+            "perplexity",
+            {
+                "error": "failed",
+                "backgroundErrorMessage": "Provider reported an incomplete run",
+            },
+        )
+
+        self.assertEqual(health.ERROR, outcome["state"])
+        self.assertEqual("Provider reported an incomplete run", outcome["detail"])
+
+    def test_agent_background_poll_429_is_rate_limited(self):
+        outcome = pipeline._legacy_artifact_outcome(
+            "perplexity",
+            {
+                "error": "poll_error",
+                "backgroundPollError": "HTTP 429: Too Many Requests",
+                "backgroundPollStatusCode": 429,
+            },
+        )
+
+        self.assertEqual(health.RATE_LIMITED, outcome["state"])
+        self.assertEqual("HTTP 429: Too Many Requests", outcome["detail"])
+
+    def test_perplexity_source_available_with_openrouter_fallback(self):
+        sources = pipeline.available_sources(
+            {"OPENROUTER_API_KEY": "test-key", "INCLUDE_SOURCES": "perplexity"}
+        )
+        self.assertIn("perplexity", sources)
+
+    def test_perplexity_source_not_available_with_direct_key_without_opt_in(self):
+        sources = pipeline.available_sources({"PERPLEXITY_API_KEY": "test-key"})
+        self.assertNotIn("perplexity", sources)
+
+    def test_perplexity_source_available_with_direct_key(self):
+        sources = pipeline.available_sources(
+            {"PERPLEXITY_API_KEY": "test-key", "INCLUDE_SOURCES": "perplexity"}
+        )
+        self.assertIn("perplexity", sources)
+
+    def test_perplexity_diagnose_reports_direct_provider(self):
+        diag = pipeline.diagnose({"PERPLEXITY_API_KEY": "test-key"})
+        self.assertTrue(diag["providers"]["perplexity"])
+        self.assertTrue(diag["local_mode"])
+
+
+class TestLinkedinAvailability(unittest.TestCase):
+    """LinkedIn is power-user opt-in (INCLUDE_SOURCES=linkedin), unlike
+    tiktok/instagram which activate on SCRAPECREATORS_API_KEY alone. This
+    keeps existing SCRAPECREATORS_API_KEY holders from silently picking up a
+    new source — and spending new credits — on their next run."""
+
+    def test_not_available_with_key_alone(self):
+        sources = pipeline.available_sources({"SCRAPECREATORS_API_KEY": "test-key"})
+        self.assertNotIn("linkedin", sources)
+        # tiktok/instagram remain unconditional with just the key
+        self.assertIn("tiktok", sources)
+        self.assertIn("instagram", sources)
+
+    def test_available_with_key_and_include_sources(self):
+        sources = pipeline.available_sources(
+            {"SCRAPECREATORS_API_KEY": "test-key", "INCLUDE_SOURCES": "linkedin"}
+        )
+        self.assertIn("linkedin", sources)
+
+    def test_available_with_key_and_requested_sources(self):
+        sources = pipeline.available_sources(
+            {"SCRAPECREATORS_API_KEY": "test-key"}, requested_sources=["linkedin"]
+        )
+        self.assertIn("linkedin", sources)
+
+    def test_not_available_with_include_sources_but_no_key(self):
+        sources = pipeline.available_sources({"INCLUDE_SOURCES": "linkedin"})
+        self.assertNotIn("linkedin", sources)
+
+
+class TestKeylessGroundingAvailability(unittest.TestCase):
+    """Grounding (general web) availability is host-aware.
+
+    Non-native hosts get the keyless floor by default; native-search hosts leave
+    general web to the model's own search unless a paid key is configured.
+    """
+
+    def test_grounding_available_without_key_on_non_native_host(self):
+        sources = pipeline.available_sources({})
+        self.assertIn("grounding", sources)
+
+    def test_grounding_suppressed_without_key_on_native_host(self):
+        config = {"LAST30DAYS_NATIVE_SEARCH": "1"}
+        sources = pipeline.available_sources(config)
+        self.assertNotIn("grounding", sources)
+
+    def test_grounding_available_with_paid_key_even_on_native_host(self):
+        config = {"LAST30DAYS_NATIVE_SEARCH": "1", "BRAVE_API_KEY": "k"}
+        sources = pipeline.available_sources(config)
+        self.assertIn("grounding", sources)
+
+
 class TestExcludeSourcesEndToEnd(unittest.TestCase):
     """Wiring regression: EXCLUDE_SOURCES from the process environment must
     reach available_sources() via env.get_config(). The unit tests above
@@ -1004,6 +2112,127 @@ class TestExcludeSourcesEndToEnd(unittest.TestCase):
         sources = pipeline.available_sources(cfg)
         self.assertNotIn("tiktok", sources)
         self.assertNotIn("instagram", sources)
+
+
+class TestInnerMaxWorkers(unittest.TestCase):
+    """Cap inner ThreadPoolExecutor concurrency under competitor fanout.
+
+    Without the cap, six competitor sub-runs each open their own
+    ``ThreadPoolExecutor(max_workers=16)``, peaking around 96 worker threads
+    that all hammer the same upstream APIs. ``internal_subrun=True`` should
+    reduce the inner pool so the nested fanout stays bounded.
+    """
+
+    def test_normal_run_uses_full_ceiling(self):
+        self.assertEqual(pipeline._inner_max_workers(20, internal_subrun=False), 16)
+        self.assertEqual(pipeline._inner_max_workers(10, internal_subrun=False), 10)
+        self.assertEqual(pipeline._inner_max_workers(1, internal_subrun=False), 4)
+
+    def test_subrun_caps_at_four(self):
+        self.assertEqual(pipeline._inner_max_workers(20, internal_subrun=True), 4)
+        self.assertEqual(pipeline._inner_max_workers(10, internal_subrun=True), 4)
+        self.assertEqual(pipeline._inner_max_workers(3, internal_subrun=True), 3)
+        self.assertEqual(pipeline._inner_max_workers(1, internal_subrun=True), 2)
+
+    def test_subrun_caps_total_concurrency_below_uncapped(self):
+        # Derive the outer cap from fanout so this test stays meaningful if
+        # MAX_PARALLEL_SUBRUNS is bumped. The contract under test is "subrun
+        # mode meaningfully reduces total inner-thread count", not a magic
+        # number tied to today's value of MAX_PARALLEL_SUBRUNS=6.
+        from lib import fanout
+        max_subruns = fanout.MAX_PARALLEL_SUBRUNS
+        capped = pipeline._inner_max_workers(20, internal_subrun=True) * max_subruns
+        uncapped = pipeline._inner_max_workers(20, internal_subrun=False) * max_subruns
+        self.assertLess(capped, uncapped, f"capped={capped} not < uncapped={uncapped}")
+        # The cap must cut total concurrency to at most half of the un-capped
+        # value; otherwise the cap is doing real work.
+        self.assertLessEqual(
+            capped,
+            uncapped // 2,
+            f"capped {capped} should be at most half of uncapped {uncapped}",
+        )
+
+
+class TestScrapeCreatorsTierGating(unittest.TestCase):
+    """The onboarding Recommended vs Everything tiers must be real.
+
+    Recommended (key, no INCLUDE_SOURCES) = TikTok + Instagram only.
+    Everything (INCLUDE_SOURCES lists them) = also Threads, Pinterest, ...
+    """
+
+    KEY = {"SCRAPECREATORS_API_KEY": "k"}
+
+    def test_recommended_tier_runs_tiktok_instagram(self):
+        avail = pipeline.available_sources(dict(self.KEY))
+        self.assertIn("tiktok", avail)
+        self.assertIn("instagram", avail)
+
+    def test_threads_off_without_include_sources(self):
+        self.assertNotIn("threads", pipeline.available_sources(dict(self.KEY)))
+
+    def test_threads_on_with_include_sources(self):
+        cfg = {**self.KEY, "INCLUDE_SOURCES": "threads"}
+        self.assertIn("threads", pipeline.available_sources(cfg))
+
+    def test_pinterest_off_without_include_sources(self):
+        self.assertNotIn("pinterest", pipeline.available_sources(dict(self.KEY)))
+
+    def test_pinterest_on_with_persisted_include_sources(self):
+        # Regression: this failed before U6 because the pinterest gate read
+        # requested_sources only and ignored a persisted INCLUDE_SOURCES.
+        cfg = {**self.KEY, "INCLUDE_SOURCES": "pinterest"}
+        self.assertIn("pinterest", pipeline.available_sources(cfg))
+
+    def test_pinterest_on_via_requested_sources(self):
+        # The per-run --sources path must still work.
+        avail = pipeline.available_sources(dict(self.KEY), requested_sources=["pinterest"])
+        self.assertIn("pinterest", avail)
+
+    def test_everything_tier_enables_all(self):
+        cfg = {
+            **self.KEY,
+            "INCLUDE_SOURCES": "tiktok,instagram,threads,pinterest,youtube_comments,tiktok_comments",
+        }
+        avail = pipeline.available_sources(cfg)
+        self.assertIn("threads", avail)
+        self.assertIn("pinterest", avail)
+
+
+class TestAmazonSourceGating:
+    """U2: the amazon source is dual-gated -- CLI available AND requested."""
+
+    def _config(self, include=""):
+        return {"INCLUDE_SOURCES": include}
+
+    def test_unavailable_without_the_cli_even_when_requested(self):
+        with patch.object(pipeline.brightdata, "is_available", return_value=False):
+            available = pipeline.available_sources(self._config(), ["amazon"])
+        assert "amazon" not in available
+
+    def test_unavailable_with_the_cli_when_not_requested(self):
+        """Installing the CLI for other work must not start spending credits."""
+        with patch.object(pipeline.brightdata, "is_available", return_value=True):
+            available = pipeline.available_sources(self._config(), None)
+        assert "amazon" not in available
+
+    def test_available_via_per_run_request(self):
+        with patch.object(pipeline.brightdata, "is_available", return_value=True):
+            available = pipeline.available_sources(self._config(), ["amazon"])
+        assert "amazon" in available
+
+    def test_available_via_durable_include_sources(self):
+        with patch.object(pipeline.brightdata, "is_available", return_value=True):
+            available = pipeline.available_sources(self._config("amazon"), None)
+        assert "amazon" in available
+
+    def test_search_flag_accepts_the_amazon_token(self):
+        import last30days
+        assert "amazon" in last30days.parse_search_flag("reddit,x,amazon")
+
+    def test_capped_at_one_fetch_per_run(self):
+        """One model-supplied keyword per run: extra streams are pure cost."""
+        assert pipeline.MAX_SOURCE_FETCHES["amazon"] == 1
+
 
 if __name__ == "__main__":
     unittest.main()

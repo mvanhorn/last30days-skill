@@ -5,6 +5,8 @@ import os
 import tempfile
 import unittest
 import urllib.error
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest import mock
 
 from lib import youtube_yt
@@ -60,6 +62,9 @@ class TestYouTubeEngagementZero(unittest.TestCase):
 
 
 class TestYtDlpFlags(unittest.TestCase):
+    def setUp(self):
+        youtube_yt.reset_search_cache()
+
     def _fake_result(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
         from lib.subproc import SubprocResult
         return SubprocResult(returncode=returncode, stdout=stdout, stderr=stderr)
@@ -93,6 +98,146 @@ class TestYtDlpFlags(unittest.TestCase):
         cmd = run_mock.call_args.args[0]
         self.assertIn("--ignore-config", cmd)
         self.assertIn("--no-cookies-from-browser", cmd)
+
+
+class TestYtDlpSubLangs(unittest.TestCase):
+    """Verify LAST30DAYS_YT_SUB_LANGS knob and language-agnostic VTT matching."""
+
+    def _fake_result(self, stdout: str = "", returncode: int = 0):
+        from lib.subproc import SubprocResult
+        return SubprocResult(returncode=returncode, stdout=stdout, stderr="")
+
+    def test_default_sub_langs_when_env_unset(self):
+        """When LAST30DAYS_YT_SUB_LANGS is not set, the default is en,es,pt."""
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("LAST30DAYS_YT_SUB_LANGS", None)
+            self.assertEqual(youtube_yt._ytdlp_sub_langs(), "en,es,pt")
+
+    def test_env_var_overrides_default(self):
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "fr,de"}):
+            self.assertEqual(youtube_yt._ytdlp_sub_langs(), "fr,de")
+
+    def test_env_var_normalizes_whitespace_and_case(self):
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": " EN , Es , PT "}):
+            self.assertEqual(youtube_yt._ytdlp_sub_langs(), "en,es,pt")
+
+    def test_env_var_handles_empty_segments(self):
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "en,,pt,"}):
+            self.assertEqual(youtube_yt._ytdlp_sub_langs(), "en,pt")
+
+    def test_env_var_empty_string_falls_back_to_default(self):
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "   "}):
+            self.assertEqual(youtube_yt._ytdlp_sub_langs(), "en,es,pt")
+
+    def test_transcript_cmd_uses_default_sub_langs(self):
+        """Regression: the --sub-lang arg is en,es,pt by default (issue #469)."""
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.dict(os.environ, {}, clear=False), \
+             mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()) as run_mock:
+            os.environ.pop("LAST30DAYS_YT_SUB_LANGS", None)
+            youtube_yt.fetch_transcript("abc123", temp_dir)
+
+        cmd = run_mock.call_args_list[0].args[0]
+        idx = cmd.index("--sub-lang")
+        self.assertEqual(cmd[idx + 1], "en,es,pt")
+
+    def test_transcript_cmd_respects_env_var_override(self):
+        with tempfile.TemporaryDirectory() as temp_dir, \
+             mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "fr,de,it"}), \
+             mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()) as run_mock:
+            youtube_yt.fetch_transcript("abc123", temp_dir)
+
+        cmd = run_mock.call_args_list[0].args[0]
+        idx = cmd.index("--sub-lang")
+        self.assertEqual(cmd[idx + 1], "fr,de,it")
+
+    def test_vtt_matching_picks_non_english_track(self):
+        """When yt-dlp writes a Spanish track (no English available), we read it."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            # Simulate yt-dlp output: only a Spanish VTT is available
+            (Path(temp_dir) / "abc123.es.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nHola mundo esta es una prueba.\n",
+                encoding="utf-8",
+            )
+            with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+                 mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()):
+                vtt = youtube_yt._fetch_transcript_ytdlp("abc123", temp_dir)
+
+        self.assertIsNotNone(vtt)
+        self.assertIn("Hola mundo", vtt)
+
+    def test_partial_success_returns_vtt_despite_nonzero_exit(self):
+        """A non-zero yt-dlp exit must not discard a VTT already on disk.
+
+        Regression for the 0/N-transcripts bug: with the default
+        ``--sub-lang en,es,pt``, an English video fetches ``en`` successfully,
+        then ``es``/``pt`` hit a 429 and yt-dlp exits non-zero. The ``en``
+        track is already written and must be returned, not discarded (and not
+        retried back into the same rate limit).
+        """
+        with tempfile.TemporaryDirectory() as temp_dir:
+            (Path(temp_dir) / "abc123.en.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nThis is the english transcript.\n",
+                encoding="utf-8",
+            )
+            status: dict = {}
+            with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+                 mock.patch.object(
+                     youtube_yt.subproc,
+                     "run_with_timeout",
+                     return_value=self._fake_result(returncode=1),
+                 ) as run_mock:
+                vtt = youtube_yt._fetch_transcript_ytdlp("abc123", temp_dir, status)
+
+        self.assertIsNotNone(vtt)
+        self.assertIn("english transcript", vtt)
+        self.assertNotIn("ytdlp_error", status)
+        # Salvage must short-circuit the retry loop: yt-dlp must not be called a
+        # second time when a partial VTT is already on disk (locks in the
+        # no-retry guarantee against a future salvage-after-retry regression).
+        self.assertEqual(run_mock.call_count, 1)
+
+    def test_vtt_matching_respects_non_default_priority(self):
+        """When multiple tracks exist, the user-requested priority wins
+        over alphabetical order (regression for the Greptile review on #486)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            (Path(temp_dir) / "abc123.en.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nEnglish first track.\n",
+                encoding="utf-8",
+            )
+            (Path(temp_dir) / "abc123.es.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nSpanish second track.\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "es,en"}), \
+                 mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+                 mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()):
+                vtt = youtube_yt._fetch_transcript_ytdlp("abc123", temp_dir)
+
+        self.assertIsNotNone(vtt)
+        self.assertIn("Spanish", vtt)
+
+    def test_vtt_matching_unknown_suffix_sorts_last(self):
+        """A non-lang suffix (e.g. a stray .tmp or .live_chat) must not
+        win over a real track that just happens to be alphabetically later."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            (Path(temp_dir) / "abc123.zz.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nZZ track content.\n",
+                encoding="utf-8",
+            )
+            (Path(temp_dir) / "abc123.es.vtt").write_text(
+                "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nSpanish content.\n",
+                encoding="utf-8",
+            )
+            with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "es,en,pt"}), \
+                 mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+                 mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()):
+                vtt = youtube_yt._fetch_transcript_ytdlp("abc123", temp_dir)
+
+        self.assertIsNotNone(vtt)
+        self.assertIn("Spanish", vtt)
 
 
 class TestExtractTranscriptHighlights(unittest.TestCase):
@@ -269,7 +414,7 @@ class TestFetchTranscriptFallback(unittest.TestCase):
              mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp", return_value="WEBVTT\n\nfake") as yt_mock, \
              mock.patch.object(youtube_yt, "_fetch_transcript_direct") as direct_mock:
             result = youtube_yt.fetch_transcript("vid1", "/tmp/test")
-        yt_mock.assert_called_once_with("vid1", "/tmp/test")
+        yt_mock.assert_called_once_with("vid1", "/tmp/test", status=None, fast_fail=False)
         direct_mock.assert_not_called()
 
     def test_uses_direct_when_ytdlp_missing(self):
@@ -349,23 +494,81 @@ class TestExpandYouTubeQueries(unittest.TestCase):
         self.assertIn("west", core)
 
 
-class TestInferQueryIntent(unittest.TestCase):
-    """Tests for _infer_query_intent() classification."""
+class TestTranscriptCandidateSortKey(unittest.TestCase):
+    """Tests for _transcript_candidate_sort_key recency-boosted ordering."""
 
-    def test_comparison_intent(self):
-        self.assertEqual(youtube_yt._infer_query_intent("Claude vs Gemini"), "comparison")
+    @staticmethod
+    def _d(days_ago: int) -> str:
+        return (datetime.now(timezone.utc) - timedelta(days=days_ago)).strftime("%Y-%m-%d")
 
-    def test_how_to_intent(self):
-        self.assertEqual(youtube_yt._infer_query_intent("how to deploy Kubernetes"), "how_to")
+    def _make_item(self, video_id, views, date_str):
+        return {
+            "video_id": video_id,
+            "title": f"Video {video_id}",
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_name": "TestChannel",
+            "date": date_str,
+            "engagement": {"views": views, "likes": 10, "comments": 5},
+            "relevance": 0.8,
+            "why_relevant": "test",
+            "description": "test desc",
+            "duration": 600,
+        }
 
-    def test_opinion_intent(self):
-        self.assertEqual(youtube_yt._infer_query_intent("thoughts on Claude Code"), "opinion")
+    def test_recency_breaks_views_tie(self):
+        """When views are equal, the more recent video gets a higher sort key."""
+        new = self._make_item("new", 100_000, self._d(1))
+        old = self._make_item("old", 100_000, self._d(13))
+        self.assertGreater(
+            youtube_yt._transcript_candidate_sort_key(new),
+            youtube_yt._transcript_candidate_sort_key(old),
+        )
 
-    def test_product_intent(self):
-        self.assertEqual(youtube_yt._infer_query_intent("best laptop for programming"), "product")
+    def test_old_high_view_can_still_qualify_for_transcript(self):
+        """An old video with very high views still gets a transcript slot;
+        recency is a tiebreaker, not a gate."""
+        old_high = self._make_item("old_high", 10_000_000, self._d(45))
+        recent_low = self._make_item("recent_low", 100, self._d(1))
+        self.assertGreater(
+            youtube_yt._transcript_candidate_sort_key(old_high),
+            youtube_yt._transcript_candidate_sort_key(recent_low),
+        )
 
-    def test_breaking_news_default(self):
-        self.assertEqual(youtube_yt._infer_query_intent("Kanye West"), "breaking_news")
+    def test_no_date_falls_to_back(self):
+        """An item with no date gets recency 0, sorting behind dated items."""
+        no_date = self._make_item("no_date", 50_000, "")
+        dated = self._make_item("dated", 50_000, self._d(5))
+        self.assertGreater(
+            youtube_yt._transcript_candidate_sort_key(dated),
+            youtube_yt._transcript_candidate_sort_key(no_date),
+        )
+
+    def test_transcript_candidates_pick_recent_over_old_same_views(self):
+        """search_and_transcribe selects candidates by (views, recency),
+        so a recent video is tried before an equal-view older video."""
+        items = [
+            self._make_item("old", 100_000, self._d(13)),
+            self._make_item("recent", 100_000, self._d(1)),
+            self._make_item("mid", 50_000, self._d(5)),
+        ]
+
+        def fake_search(*args, **kwargs):
+            return {"items": items}
+
+        call_args_list = []
+
+        def fake_fetch(video_ids, max_workers=5, out_captions_disabled=None, token=None):
+            call_args_list.extend(video_ids)
+            return {vid: "transcript" for vid in video_ids}
+
+        with mock.patch.object(youtube_yt, "search_youtube", side_effect=fake_search), \
+             mock.patch.object(youtube_yt, "fetch_transcripts_parallel", side_effect=fake_fetch):
+            youtube_yt.search_and_transcribe("test", self._d(14), self._d(0), depth="default")
+
+        # transcript_limit=2, attempt_count=4 (limited to 3 items)
+        # Sorted by (views, recency): recent(100k) > old(100k) > mid(50k)
+        self.assertEqual(call_args_list[:2], ["recent", "old"],
+                         "Recent video should be tried before equal-view older video")
 
 
 class TestSearchAndTranscribe(unittest.TestCase):
@@ -395,7 +598,7 @@ class TestSearchAndTranscribe(unittest.TestCase):
         ]
 
         # fetch_transcripts_parallel returns None for music videos, text for talks
-        def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None):
+        def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None, token=None):
             result = {}
             for vid in video_ids:
                 if vid.startswith("talk"):
@@ -440,12 +643,86 @@ class TestSearchAndTranscribe(unittest.TestCase):
         ft_mock.assert_not_called()
 
 
+class TestTranscriptFetchStats(unittest.TestCase):
+    """Track yt-dlp fetch outcomes for quality_nudge (#531 false stale-yt-dlp nudge)."""
+
+    FROM_DATE = "2026-03-01"
+    TO_DATE = "2026-03-31"
+
+    def setUp(self):
+        youtube_yt.reset_transcript_fetch_stats()
+
+    def _make_item(self, video_id, views, date):
+        return {
+            "video_id": video_id,
+            "title": f"Video {video_id}",
+            "url": f"https://www.youtube.com/watch?v={video_id}",
+            "channel_name": "TestChannel",
+            "date": date,
+            "engagement": {"views": views, "likes": 10, "comments": 5},
+            "relevance": 0.8,
+            "why_relevant": "test",
+            "description": "test desc",
+            "duration": 600,
+        }
+
+    def _run(self, items, fake_parallel=None):
+        if fake_parallel is None:
+            def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None, token=None):
+                return {vid: "A detailed transcript about the topic." for vid in video_ids}
+        with mock.patch.object(youtube_yt, "search_youtube", return_value={"items": items}), \
+             mock.patch.object(youtube_yt, "fetch_transcripts_parallel", side_effect=fake_parallel):
+            return youtube_yt.search_and_transcribe(
+                "test topic", self.FROM_DATE, self.TO_DATE, depth="default",
+            )
+
+    def test_fetch_stats_track_attempts_and_failures(self):
+        items = [
+            self._make_item("ok1", 3_000, "2026-03-20"),
+            self._make_item("fail1", 2_000, "2026-03-15"),
+            self._make_item("nocap1", 1_000, "2026-03-10"),
+        ]
+
+        def fake_parallel(video_ids, max_workers=5, out_captions_disabled=None, token=None):
+            result = {}
+            for vid in video_ids:
+                if vid.startswith("nocap"):
+                    result[vid] = None
+                    if out_captions_disabled is not None:
+                        out_captions_disabled.add(vid)
+                elif vid.startswith("fail"):
+                    result[vid] = None
+                else:
+                    result[vid] = "A detailed transcript about the topic."
+            return result
+
+        self._run(items, fake_parallel)
+
+        stats = youtube_yt.get_transcript_fetch_stats()
+        self.assertEqual(stats["attempts"], 3)
+        # Captions-disabled videos can never succeed; they are not failures.
+        self.assertEqual(stats["failures"], 1)
+
+    def test_fetch_stats_zero_failures_when_all_succeed(self):
+        # The #531 scenario: every fetch succeeds (on videos later pruned by
+        # freshness scoring). failures must be 0 so quality_nudge does not
+        # blame a stale yt-dlp binary.
+        items = [self._make_item(f"v{i}", 1_000 * (i + 1), "2024-01-15") for i in range(4)]
+
+        self._run(items)
+
+        stats = youtube_yt.get_transcript_fetch_stats()
+        self.assertEqual(stats["attempts"], 4)
+        self.assertEqual(stats["failures"], 0)
+
+
 class TestYtdlpSSHRouting(unittest.TestCase):
     """LAST30DAYS_YOUTUBE_SSH_HOST routes yt-dlp invocations through SSH for residential IP."""
 
     def setUp(self):
         # Ensure clean env for each test
         self._saved_env = os.environ.pop("LAST30DAYS_YOUTUBE_SSH_HOST", None)
+        youtube_yt.reset_search_cache()
 
     def tearDown(self):
         os.environ.pop("LAST30DAYS_YOUTUBE_SSH_HOST", None)
@@ -567,6 +844,526 @@ class TestYtdlpSSHRouting(unittest.TestCase):
         self.assertIn("yt-dlp", cmd[5])
         self.assertIn("--ignore-config", cmd[5])
         self.assertIn("--no-cookies-from-browser", cmd[5])
+
+    def test_search_surfaces_ssh_failure_as_error(self):
+        """SSH connection failures surface as an error, not silent '0 results'."""
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        from lib.subproc import SubprocResult
+        fake_result = SubprocResult(
+            returncode=255,
+            stdout="",
+            stderr="ssh: connect to host macmini port 22: Connection refused\n",
+        )
+        with mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                               return_value=fake_result):
+            out = youtube_yt.search_youtube("test", "2026-02-01", "2026-03-01")
+        self.assertIn("error", out)
+        self.assertIn("Connection refused", out["error"])
+
+
+class TestTranscriptSSHRouting(unittest.TestCase):
+    """LAST30DAYS_YOUTUBE_SSH_HOST routes yt-dlp transcript fetches through SSH."""
+
+    def setUp(self):
+        self._saved_env = os.environ.pop("LAST30DAYS_YOUTUBE_SSH_HOST", None)
+
+    def tearDown(self):
+        os.environ.pop("LAST30DAYS_YOUTUBE_SSH_HOST", None)
+        if self._saved_env is not None:
+            os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = self._saved_env
+
+    def test_ssh_helper_invokes_remote_mktemp_pipeline(self):
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        from lib.subproc import SubprocResult
+        fake_vtt = "WEBVTT\nKind: captions\nLanguage: en\n\n00:00:00.000 --> 00:00:02.000\nhi\n"
+        fake_result = SubprocResult(returncode=0, stdout=fake_vtt, stderr="")
+        with mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                               return_value=fake_result) as run_mock:
+            out = youtube_yt._fetch_transcript_ytdlp_via_ssh("vid1", "macmini")
+        self.assertEqual(out, fake_vtt)
+        remote_script = run_mock.call_args.args[0][5]
+        self.assertIn("mktemp -d", remote_script)
+        self.assertIn("find ", remote_script)
+
+    def test_fetch_transcript_uses_ssh_helper_when_routing_on(self):
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "macmini"
+        fake_vtt = "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nhello there friends\n"
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp_via_ssh",
+                               return_value=fake_vtt) as ssh_mock, \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp") as local_mock, \
+             mock.patch.object(youtube_yt, "_fetch_transcript_direct") as direct_mock:
+            result = youtube_yt.fetch_transcript("vidX", "/tmp/test")
+        ssh_mock.assert_called_once_with("vidX", "macmini")
+        local_mock.assert_not_called()
+        direct_mock.assert_not_called()
+        self.assertIn("hello there friends", result)
+
+
+class TestScTranscriptFallback(unittest.TestCase):
+    """ScrapeCreators fallback wiring in fetch_transcript (U1/U2)."""
+
+    def _ytdlp_hard_fail(self, reason="HTTP Error 429: Too Many Requests"):
+        def _fake(video_id, temp_dir, status=None, fast_fail=False):
+            if status is not None:
+                status["ytdlp_error"] = reason
+            return None
+        return _fake
+
+    def test_sc_fallback_fires_on_ytdlp_hard_failure_with_token(self):
+        """A yt-dlp hard failure (429) with a key falls back to ScrapeCreators."""
+        status = {}
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp",
+                               side_effect=self._ytdlp_hard_fail()), \
+             mock.patch.object(youtube_yt, "_fetch_transcript_direct") as direct_mock, \
+             mock.patch.object(youtube_yt, "_sc_fetch_transcript",
+                               return_value="scrapecreators transcript text") as sc_mock:
+            result = youtube_yt.fetch_transcript("vidA", "/tmp/x", status=status, token="key123")
+        sc_mock.assert_called_once_with("vidA", "key123")
+        direct_mock.assert_not_called()  # hard error skips the (also-blocked) direct path
+        self.assertEqual(result, "scrapecreators transcript text")
+
+    def test_sc_rescue_logged_and_flagged_in_status(self):
+        """A yt-dlp hard failure rescued by ScrapeCreators must be logged and
+        flagged via status['sc_rescued'] — not just returned silently — so
+        fetch_transcripts_parallel() can report the rescue instead of letting
+        the batch summary read as a clean success (#831)."""
+        status = {}
+        logs = []
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp",
+                               side_effect=self._ytdlp_hard_fail()), \
+             mock.patch.object(youtube_yt, "_sc_fetch_transcript",
+                               return_value="rescued transcript text"), \
+             mock.patch.object(youtube_yt, "_log", side_effect=lambda m: logs.append(m)):
+            result = youtube_yt.fetch_transcript("vidR", "/tmp/x", status=status, token="key123")
+        self.assertEqual(result, "rescued transcript text")
+        self.assertTrue(status.get("sc_rescued"))
+        self.assertTrue(any("ScrapeCreators" in m and "vidR" in m for m in logs))
+
+    def test_sc_not_called_when_ytdlp_succeeds(self):
+        """No credit is spent when yt-dlp returns a transcript."""
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp",
+                               return_value="WEBVTT\n\nreal captions here"), \
+             mock.patch.object(youtube_yt, "_sc_fetch_transcript") as sc_mock:
+            result = youtube_yt.fetch_transcript("vidB", "/tmp/x", status={}, token="key123")
+        sc_mock.assert_not_called()
+        self.assertIn("real captions", result)
+
+    def test_sc_not_called_without_token(self):
+        """Keyless behavior unchanged: no token means no ScrapeCreators."""
+        status = {}
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp",
+                               side_effect=self._ytdlp_hard_fail()), \
+             mock.patch.object(youtube_yt, "_sc_fetch_transcript") as sc_mock:
+            result = youtube_yt.fetch_transcript("vidC", "/tmp/x", status=status, token=None)
+        sc_mock.assert_not_called()
+        self.assertIsNone(result)
+
+    def test_sc_skipped_when_proven_captionless(self):
+        """A video proven to have no caption track must not spend a credit."""
+        def _ytdlp_no_captions(video_id, temp_dir, status=None, fast_fail=False):
+            return None  # exit-0 no captions: returns None, no ytdlp_error
+
+        def _direct_no_tracks(video_id, status=None):
+            if status is not None:
+                status["no_caption_tracks"] = True
+            return None
+
+        status = {}
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt, "_fetch_transcript_ytdlp", side_effect=_ytdlp_no_captions), \
+             mock.patch.object(youtube_yt, "_fetch_transcript_direct", side_effect=_direct_no_tracks), \
+             mock.patch.object(youtube_yt, "_sc_fetch_transcript") as sc_mock:
+            result = youtube_yt.fetch_transcript("vidD", "/tmp/x", status=status, token="key123")
+        sc_mock.assert_not_called()
+        self.assertIsNone(result)
+
+    def test_should_try_sc_transcript_predicate(self):
+        self.assertTrue(youtube_yt._should_try_sc_transcript(None))
+        self.assertTrue(youtube_yt._should_try_sc_transcript({}))
+        self.assertTrue(youtube_yt._should_try_sc_transcript({"ytdlp_error": "429"}))
+        self.assertFalse(youtube_yt._should_try_sc_transcript({"no_caption_tracks": True}))
+
+    def test_token_threads_through_parallel(self):
+        """fetch_transcripts_parallel passes the token to every fetch_transcript."""
+        captured = {}
+
+        def _fake_fetch_transcript(video_id, temp_dir, status=None, token=None):
+            captured[video_id] = token
+            return None
+
+        with mock.patch.object(youtube_yt, "fetch_transcript", side_effect=_fake_fetch_transcript):
+            youtube_yt.fetch_transcripts_parallel(["v1", "v2"], token="tok")
+        self.assertEqual(captured, {"v1": "tok", "v2": "tok"})
+
+    def test_summary_reports_sc_rescue_not_bare_success(self):
+        """Regression for #831: when every video's yt-dlp fetch fails and the
+        ScrapeCreators fallback rescues all of them, the batch summary must
+        not read as a bare "0 failed" success — it has to say the videos
+        were rescued via the fallback, so a fully rate-limited yt-dlp run
+        doesn't look like nothing went wrong."""
+        logs = []
+
+        def _rescued_fetch_transcript(video_id, temp_dir, status=None, token=None):
+            if status is not None:
+                status["sc_rescued"] = True
+            return "rescued transcript"
+
+        with mock.patch.object(youtube_yt, "fetch_transcript",
+                                side_effect=_rescued_fetch_transcript), \
+             mock.patch.object(youtube_yt, "_log", side_effect=lambda m: logs.append(m)):
+            results = youtube_yt.fetch_transcripts_parallel(["v1", "v2"], token="tok")
+
+        self.assertEqual(results, {"v1": "rescued transcript", "v2": "rescued transcript"})
+        summary = next(m for m in logs if m.startswith("Got transcripts for"))
+        self.assertIn("2/2", summary)
+        self.assertIn("0 failed", summary)
+        self.assertIn("2 rescued via ScrapeCreators fallback", summary)
+
+    def test_summary_omits_rescue_note_when_no_fallback_used(self):
+        """The plain 'N/N (M failed)' format must be unchanged when no video
+        needed the ScrapeCreators fallback — no rescue tag should appear."""
+        logs = []
+
+        def _plain_fetch_transcript(video_id, temp_dir, status=None, token=None):
+            return "a normal transcript"
+
+        with mock.patch.object(youtube_yt, "fetch_transcript",
+                                side_effect=_plain_fetch_transcript), \
+             mock.patch.object(youtube_yt, "_log", side_effect=lambda m: logs.append(m)):
+            youtube_yt.fetch_transcripts_parallel(["v1", "v2", "v3"], token="tok")
+
+        summary = next(m for m in logs if m.startswith("Got transcripts for"))
+        self.assertEqual(summary, "Got transcripts for 3/3 videos (0 failed)")
+
+
+class TestYtdlpFastFail(unittest.TestCase):
+    """Fail-fast behavior when a ScrapeCreators key is present (U3)."""
+
+    def _transient_fail(self):
+        from lib.subproc import SubprocResult
+        return SubprocResult(
+            returncode=1, stdout="",
+            stderr="ERROR: HTTP Error 429: Too Many Requests",
+        )
+
+    def test_fast_fail_single_attempt_short_timeout(self):
+        """token present -> one attempt, shortened timeout, no retry sleeps."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status = {}
+            with mock.patch.dict(os.environ, {"LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT": ""}), \
+                 mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+                 mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                                   return_value=self._transient_fail()) as run_mock, \
+                 mock.patch.object(youtube_yt.time, "sleep") as sleep_mock:
+                vtt = youtube_yt._fetch_transcript_ytdlp("vidF", temp_dir, status, fast_fail=True)
+        self.assertIsNone(vtt)
+        self.assertEqual(run_mock.call_count, 1)  # no retries
+        self.assertEqual(run_mock.call_args.kwargs.get("timeout"), 12)
+        sleep_mock.assert_not_called()
+        self.assertIn("ytdlp_error", status)
+
+    def test_no_token_retries_with_full_timeout(self):
+        """token absent -> full retry budget and 30s timeout, unchanged."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            status = {}
+            with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+                 mock.patch.object(youtube_yt.subproc, "run_with_timeout",
+                                   return_value=self._transient_fail()) as run_mock, \
+                 mock.patch.object(youtube_yt.time, "sleep"):
+                vtt = youtube_yt._fetch_transcript_ytdlp("vidG", temp_dir, status, fast_fail=False)
+        self.assertIsNone(vtt)
+        self.assertEqual(run_mock.call_count, youtube_yt._TRANSCRIPT_MAX_RETRIES + 1)
+        self.assertEqual(run_mock.call_args.kwargs.get("timeout"), 30)
+
+
+class TestScTranscriptParsing(unittest.TestCase):
+    """ScrapeCreators transcript parse + credits warning (U4)."""
+
+    def test_list_of_dict_segments_parsed_to_text(self):
+        payload = {
+            "transcript": [
+                {"text": "hello there", "startMs": 0, "endMs": 1000},
+                {"text": "general kenobi", "startMs": 1000, "endMs": 2000},
+            ],
+            "credits_remaining": 9999,
+        }
+        with mock.patch.object(youtube_yt.http, "get", return_value=payload):
+            result = youtube_yt._sc_fetch_transcript("vidH", "key")
+        self.assertIsNotNone(result)
+        self.assertIn("hello there", result)
+        self.assertIn("general kenobi", result)
+        self.assertNotIn("startMs", result)
+        self.assertNotIn("{'text'", result)
+
+    def test_null_text_segment_does_not_emit_none(self):
+        """A present-but-null text field (silent/music segment) must not become "None"."""
+        payload = {
+            "transcript": [
+                {"text": "real words here", "startMs": 0},
+                {"text": None, "startMs": 1000},
+                {"text": "more real words", "startMs": 2000},
+            ],
+            "credits_remaining": 9999,
+        }
+        with mock.patch.object(youtube_yt.http, "get", return_value=payload):
+            result = youtube_yt._sc_fetch_transcript("vidNull", "key")
+        self.assertIsNotNone(result)
+        self.assertNotIn("None", result)
+        self.assertIn("real words here", result)
+        self.assertIn("more real words", result)
+
+    def test_plain_string_transcript_preserved(self):
+        payload = {"transcript": "just a plain transcript string here", "credits_remaining": 9999}
+        with mock.patch.object(youtube_yt.http, "get", return_value=payload):
+            result = youtube_yt._sc_fetch_transcript("vidI", "key")
+        self.assertIn("just a plain transcript", result)
+
+    def test_low_credits_emits_warning(self):
+        payload = {"transcript": "some transcript text", "credits_remaining": 5}
+        logs = []
+        with mock.patch.object(youtube_yt.http, "get", return_value=payload), \
+             mock.patch.object(youtube_yt, "_log", side_effect=lambda m: logs.append(m)):
+            youtube_yt._sc_fetch_transcript("vidJ", "key")
+        self.assertTrue(any("credits low" in m.lower() for m in logs))
+
+    def test_healthy_credits_no_warning(self):
+        payload = {"transcript": "some transcript text", "credits_remaining": 9999}
+        logs = []
+        with mock.patch.object(youtube_yt.http, "get", return_value=payload), \
+             mock.patch.object(youtube_yt, "_log", side_effect=lambda m: logs.append(m)):
+            youtube_yt._sc_fetch_transcript("vidK", "key")
+        self.assertFalse(any("credits low" in m.lower() for m in logs))
+
+
+class TestYoutubeCommentsGating(unittest.TestCase):
+    """The legacy ScrapeCreators comment path, which applies only when yt-dlp
+    is absent. With yt-dlp installed, comments are free and need no opt-in —
+    see tests/test_youtube_comments_ytdlp.py."""
+
+    def test_off_with_key_and_no_include_sources(self):
+        """SC path: key without INCLUDE_SOURCES does NOT fetch comments."""
+        from lib import env
+        with mock.patch.object(env, "is_ytdlp_available", return_value=False):
+            self.assertFalse(env.is_youtube_comments_available({"SCRAPECREATORS_API_KEY": "k"}))
+
+    def test_on_with_include_sources(self):
+        from lib import env
+        cfg = {"SCRAPECREATORS_API_KEY": "k", "INCLUDE_SOURCES": "youtube_comments"}
+        with mock.patch.object(env, "is_ytdlp_available", return_value=False):
+            self.assertTrue(env.is_youtube_comments_available(cfg))
+
+    def test_unavailable_without_key(self):
+        """SC path: no key and no yt-dlp means no comments at all."""
+        from lib import env
+        with mock.patch.object(env, "is_ytdlp_available", return_value=False):
+            self.assertFalse(env.is_youtube_comments_available({"INCLUDE_SOURCES": "youtube_comments"}))
+
+    def test_tiktok_comments_still_opt_in(self):
+        """Regression: TikTok comments must STILL require INCLUDE_SOURCES."""
+        from lib import env
+        self.assertFalse(
+            env.is_tiktok_comments_available({"SCRAPECREATORS_API_KEY": "k"})
+        )
+        self.assertTrue(env.is_tiktok_comments_available(
+            {"SCRAPECREATORS_API_KEY": "k", "INCLUDE_SOURCES": "tiktok_comments"}
+        ))
+
+
+class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
+    """Comparison-mode load: timeouts, status honesty, and in-run dedup."""
+
+    def setUp(self):
+        youtube_yt.reset_search_cache()
+
+    def _fake_result(self, stdout: str = "", returncode: int = 0):
+        from lib.subproc import SubprocResult
+        return SubprocResult(returncode=returncode, stdout=stdout, stderr="")
+
+    def test_search_timeout_reports_timeout_error_not_empty(self):
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.dict(os.environ, {"LAST30DAYS_YT_SEARCH_TIMEOUT": "1"}), \
+             mock.patch.object(
+                 youtube_yt.subproc, "run_with_timeout",
+                 side_effect=youtube_yt.subproc.SubprocTimeout("boom"),
+             ):
+            out = youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+        self.assertEqual(out.get("items"), [])
+        self.assertIn("timed out", (out.get("error") or "").lower())
+        self.assertEqual(
+            youtube_yt.classify_run_failure(out["error"]),
+            youtube_yt.health.TIMEOUT,
+        )
+
+    def test_search_timeout_env_is_passed_to_subprocess(self):
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.dict(os.environ, {"LAST30DAYS_YT_SEARCH_TIMEOUT": "7"}), \
+             mock.patch.object(
+                 youtube_yt.subproc, "run_with_timeout",
+                 return_value=self._fake_result(),
+             ) as run_mock:
+            youtube_yt.search_youtube("Alo Yoga", "2026-06-01", "2026-07-01")
+        self.assertEqual(run_mock.call_args.kwargs.get("timeout"), 7.0)
+
+    def test_identical_searches_are_cached_within_run(self):
+        video = {
+            "id": "abc123",
+            "title": "Vuori review",
+            "view_count": 100,
+            "like_count": 1,
+            "comment_count": 0,
+            "upload_date": "20260615",
+            "description": "desc",
+            "channel": "Tester",
+        }
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(
+                 youtube_yt.subproc, "run_with_timeout",
+                 return_value=self._fake_result(stdout=json.dumps(video) + "\n"),
+             ) as run_mock:
+            first = youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+            second = youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+        self.assertEqual(run_mock.call_count, 1)
+        self.assertEqual(len(first["items"]), 1)
+        self.assertEqual(len(second["items"]), 1)
+        self.assertEqual(first["items"][0]["video_id"], second["items"][0]["video_id"])
+        # Callers get independent copies so mutations cannot poison the cache.
+        second["items"][0]["title"] = "mutated"
+        self.assertNotEqual(first["items"][0]["title"], "mutated")
+
+    def test_timeout_errors_are_not_cached(self):
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(
+                 youtube_yt.subproc, "run_with_timeout",
+                 side_effect=youtube_yt.subproc.SubprocTimeout("boom"),
+             ) as run_mock:
+            youtube_yt.search_youtube("lululemon", "2026-06-01", "2026-07-01")
+            youtube_yt.search_youtube("lululemon", "2026-06-01", "2026-07-01")
+        self.assertEqual(run_mock.call_count, 2)
+
+    def test_waiter_receives_leader_result_without_synthetic_timeout(self):
+        """A coalesced waiter must not invent a timeout while the leader runs."""
+        import threading
+        from lib.subproc import SubprocResult
+
+        video = {
+            "id": "waiter1",
+            "title": "Vuori review",
+            "view_count": 10,
+            "like_count": 1,
+            "comment_count": 0,
+            "upload_date": "20260615",
+            "description": "desc",
+            "channel": "Tester",
+        }
+        started = threading.Event()
+        release = threading.Event()
+
+        def slow_run(cmd, timeout=None):
+            started.set()
+            release.wait(timeout=5)
+            return SubprocResult(
+                returncode=0, stdout=json.dumps(video) + "\n", stderr="",
+            )
+
+        results = []
+
+        def leader():
+            results.append(
+                youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+            )
+
+        def waiter():
+            started.wait(timeout=5)
+            results.append(
+                youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+            )
+
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", side_effect=slow_run):
+            t_leader = threading.Thread(target=leader)
+            t_waiter = threading.Thread(target=waiter)
+            t_leader.start()
+            self.assertTrue(started.wait(timeout=5))
+            t_waiter.start()
+            release.set()
+            t_leader.join(timeout=5)
+            t_waiter.join(timeout=5)
+
+        self.assertEqual(len(results), 2)
+        self.assertTrue(all(r.get("items") for r in results))
+        self.assertTrue(all(not r.get("error") for r in results))
+
+    def test_stale_leader_after_reset_does_not_pop_newer_inflight(self):
+        """A leader that outlives reset_search_cache must not drop the new slot."""
+        import threading
+
+        key = ("ownership", 8, "2026-06-01")
+        old_event = threading.Event()
+        old_slot: list = [None]
+        new_event = threading.Event()
+        new_slot: list = [None]
+
+        with youtube_yt._search_cache_lock:
+            youtube_yt._search_inflight[key] = (old_event, old_slot)
+
+        youtube_yt.reset_search_cache()
+        with youtube_yt._search_cache_lock:
+            youtube_yt._search_inflight[key] = (new_event, new_slot)
+
+        youtube_yt._finish_search_slot(
+            key,
+            {"items": [{"video_id": "old"}]},
+            event=old_event,
+            slot=old_slot,
+        )
+
+        with youtube_yt._search_cache_lock:
+            current = youtube_yt._search_inflight.get(key)
+            cached = youtube_yt._search_cache.get(key)
+
+        self.assertIsNotNone(current)
+        self.assertIs(current[1], new_slot)
+        self.assertIsNone(cached)
+        self.assertTrue(old_event.is_set())
+        self.assertEqual(old_slot[0]["items"][0]["video_id"], "old")
+
+    def test_multi_query_preserves_timeout_over_later_empty(self):
+        responses = [
+            {"items": [], "error": "Search timed out after 1s"},
+            {"items": []},
+        ]
+
+        def fake_search(*_args, **_kwargs):
+            return responses.pop(0)
+
+        with mock.patch.object(youtube_yt, "expand_youtube_queries", return_value=["a", "b"]), \
+             mock.patch.object(youtube_yt, "search_youtube", side_effect=fake_search):
+            out = youtube_yt.search_and_transcribe(
+                "topic", "2026-06-01", "2026-07-01", depth="default",
+            )
+        self.assertEqual(out.get("items"), [])
+        self.assertIn("timed out", (out.get("error") or "").lower())
+        self.assertEqual(
+            youtube_yt.classify_run_failure(out["error"]),
+            youtube_yt.health.TIMEOUT,
+        )
+
+    def test_bundle_records_timeout_not_no_results(self):
+        from lib import health, schema
+
+        bundle = schema.RetrievalBundle()
+        bundle.mark_attempted("youtube")
+        state = youtube_yt.classify_run_failure("Search timed out after 1s")
+        bundle.record_failure("youtube", state, "Search timed out after 1s")
+        bundle.add_items("main", "youtube", [])
+        self.assertEqual(bundle.source_status["youtube"].state, health.TIMEOUT)
+        self.assertNotEqual(bundle.source_status["youtube"].state, schema.NO_RESULTS)
+
 
 if __name__ == "__main__":
     unittest.main()

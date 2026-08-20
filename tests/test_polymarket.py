@@ -146,8 +146,13 @@ def test_passes_topic_filter_partial_match():
     """Test that at least one informative word must match."""
     # "AI" appears in both topic and title
     assert polymarket._passes_topic_filter("AI safety", "New AI Safety Conference") is True
-    # "models" doesn't appear, should fail
-    assert polymarket._passes_topic_filter("AI models", "New AI prediction") is False
+    # LOCAL DIVERGENCE from upstream: this asserted False, on the rule that a
+    # domain word ("ai") is too broad to be the sole match signal. That rule
+    # made domain sweeps impossible — an AI-news topic matched zero AI markets
+    # ever, because real titles say "AI" and never "artificial intelligence".
+    # _passes_topic_filter now falls back to _DOMAIN_WORDS when the informative
+    # words miss, so "AI models" does match an AI market.
+    assert polymarket._passes_topic_filter("AI models", "New AI prediction") is True
 
 
 def test_passes_topic_filter_all_noise_words():
@@ -182,6 +187,36 @@ def test_passes_topic_filter_two_word_still_needs_one():
     assert polymarket._passes_topic_filter(
         "Kanye West", "Kanye divorce settlement"
     ) is True
+
+
+
+def test_domain_fallback_keeps_soft_sweep_ai_markets():
+    """Soft sweep residue may match via domain words (the #859 fix)."""
+    assert polymarket._passes_topic_filter(
+        "AI frontier developments", "Will AI models beat humans at coding?"
+    ) is True
+
+
+
+def test_domain_fallback_treats_plural_domain_terms_as_domain():
+    """Plural domain tokens (models) must not block soft AI sweeps."""
+    assert polymarket._passes_topic_filter(
+        "AI models frontier developments",
+        "Will AI beat humans at coding by 2027?",
+    ) is True
+    assert polymarket._passes_topic_filter(
+        "AI models", "New AI prediction"
+    ) is True
+
+
+def test_domain_fallback_blocked_when_hard_informative_misses():
+    """Mixed topics must not accept unrelated markets via a shared domain token."""
+    assert polymarket._passes_topic_filter(
+        "MCP protocol benchmark", "Will the Kyoto Protocol survive?"
+    ) is False
+    assert polymarket._passes_any_informative_word(
+        "MCP protocol benchmark", "Will the Kyoto Protocol survive?"
+    ) is False
 
 
 def test_passes_topic_filter_multi_word_edge_exactly_three():
@@ -347,8 +382,31 @@ def test_shorten_question_long():
     """Test truncation of very long questions."""
     long_q = "A" * 100
     result = polymarket._shorten_question(long_q)
-    
+
     assert len(result) <= 40
+
+
+def test_shorten_question_fallback_strips_leading_article():
+    """The truncation fallback must not keep a leading article like 'an' or 'the'.
+
+    Without stripping, a question like 'an Anthropic Claude model scores...' yields
+    a lead name of just 'an', which renders as the mangled 'an 19%' footer fragment.
+    """
+    result = polymarket._shorten_question(
+        "an Anthropic Claude model scores at the top of the leaderboard this month"
+    )
+    lower = result.lower()
+    assert not lower.startswith("a ")
+    assert not lower.startswith("an ")
+    assert not lower.startswith("the ")
+
+
+def test_shorten_question_fallback_keeps_non_article_lead():
+    """Stripping only removes a leading article, not the first informative word."""
+    result = polymarket._shorten_question(
+        "Anthropic ships a major Claude model update before the end of this month"
+    )
+    assert result.lower().startswith("anthropic")
 
 # === Tests for search_polymarket() ===
 
@@ -464,10 +522,50 @@ def test_parse_polymarket_response_engagement():
     }
     
     items = polymarket.parse_polymarket_response(response, topic="AI")
-    
+
     if items:  # If not filtered
         # Check for volume or liquidity fields
         assert "volume24hr" in items[0] or "liquidity" in items[0] or isinstance(items[0], dict)
+
+
+def _claude_downtime_response():
+    """An off-topic Polymarket event that mentions only the generic word 'Claude'."""
+    return {
+        "events": [
+            create_mock_event(
+                event_id="evt-noise",
+                title="Will Claude go down 3-5 times in June?",
+                slug="claude-downtime",
+            ),
+        ]
+    }
+
+
+def test_parse_polymarket_response_filters_noise_on_full_subquery():
+    """A multi-word subquery filters off-topic 'Claude downtime' noise.
+
+    'Claude Code subagents workflow' carries 3 informative words; the downtime
+    title matches only one ('claude'), so the min-2 rule drops it.
+    """
+    items = polymarket.parse_polymarket_response(
+        _claude_downtime_response(), topic="Claude Code subagents workflow"
+    )
+    assert items == []
+
+
+def test_parse_polymarket_response_narrow_subquery_leaks_noise():
+    """The SAME off-topic market leaks through a single-word subquery.
+
+    'claude' has one informative word, so the min-match threshold drops to 1 and
+    the downtime market passes. Because the pipeline previously fed the per-subquery
+    search_query, filtering swung between these two outcomes across the fanout;
+    keying off the stable original topic makes it consistent. This pair pins that
+    threshold-by-word-count behavior the wiring fix depends on.
+    """
+    items = polymarket.parse_polymarket_response(
+        _claude_downtime_response(), topic="claude"
+    )
+    assert len(items) == 1
 
 # === Tests for engagement scoring ===
 

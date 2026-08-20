@@ -8,10 +8,14 @@ bookmarks). Requires an API key from xquik.com.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from . import http, log
 from .relevance import token_overlap_relevance as _compute_relevance
+
+# Per-process probe cache: (state, reason). state is "unset" until probed, then
+# True (funded/working) | False (auth/payment failure) | None (inconclusive).
+_probe_cache: tuple = ("unset", "")
 
 # Depth configurations: number of results to request per query
 DEPTH_CONFIG = {
@@ -44,6 +48,12 @@ def expand_xquik_queries(topic: str, depth: str) -> List[str]:
         List of query strings (1 for quick, 2 for default, 3 for deep).
     """
     core = _extract_core_subject(topic)
+    # Anti-bare-generic guard (#607): never let the core collapse to a single
+    # bare token when the topic carries more — a lone generic word floods X with
+    # off-topic collisions. Fall back to the full multi-word topic as the anchor.
+    topic_clean = topic.strip()
+    if len(core.split()) <= 1 and len(topic_clean.split()) > 1 and core.lower() != topic_clean.lower():
+        core = topic_clean
     queries = [core]
 
     # Add original topic if meaningfully different
@@ -90,46 +100,209 @@ def search_xquik(
     seen_ids: set[str] = set()
 
     for query_text in queries:
-        try:
-            url = f"{_BASE_URL}/x/tweets/search"
-            # Build query with date filter
-            q = f"{query_text} since:{from_date} until:{to_date}"
-            params = f"q={_url_encode(q)}&queryType=Top&limit={cfg['limit']}"
-            full_url = f"{url}?{params}"
-
-            _log(f"Searching: {query_text}")
-            response = http.get(
-                full_url,
-                headers={"X-Api-Key": token},
-                timeout=30,
-                retries=2,
-            )
-
-            tweets = response.get("tweets", [])
-            if not isinstance(tweets, list):
-                continue
-
-            for i, tweet in enumerate(tweets):
-                if not isinstance(tweet, dict):
-                    continue
-                tweet_id = str(tweet.get("id", ""))
-                if tweet_id in seen_ids:
-                    continue
-                seen_ids.add(tweet_id)
-
-                item = _parse_tweet(tweet, i + len(all_items), query_text)
-                if item:
-                    all_items.append(item)
-
-        except http.HTTPError as exc:
-            status = getattr(exc, "status_code", None)
-            if status in (401, 403):
-                return {"items": [], "error": f"Xquik auth failed ({status})"}
-            _log(f"HTTP error for query '{query_text}': {exc}")
-        except Exception as exc:
-            _log(f"Error for query '{query_text}': {exc}")
+        q = f"{query_text} since:{from_date} until:{to_date}"
+        items, auth_error = _execute_search(
+            q, cfg["limit"], token,
+            label=query_text, id_prefix="XQ",
+            seen_ids=seen_ids, relevance_query=query_text,
+            index_offset=len(all_items),
+        )
+        if auth_error:
+            # Auth/payment failure is fatal for the whole source (e.g. 401/403,
+            # and 402-unpaid surfaced via U5 diagnose) — return it so the caller
+            # settles honestly instead of silently empty.
+            return {"items": [], "error": auth_error}
+        all_items.extend(items)
 
     return {"items": all_items}
+
+
+def _execute_search(
+    q: str,
+    limit: int,
+    token: str,
+    *,
+    label: str,
+    id_prefix: str,
+    seen_ids: set[str],
+    relevance_query: str,
+    index_offset: int = 0,
+) -> tuple[List[Dict[str, Any]], str | None]:
+    """Run one Xquik search call and parse its tweets.
+
+    Returns ``(items, auth_error)``. ``auth_error`` is a non-empty string only
+    on a fatal auth/payment failure (401/403); transient/HTTP errors log and
+    return ``([], None)`` so one bad lane never discards another's results.
+    ``relevance_query`` (the topic) is what items are scored against — for the
+    handle lanes that differs from the search query (``from:handle``).
+    ``index_offset`` keeps item ids unique across multiple calls that share an
+    accumulator (multi-query topic search, per-handle lanes).
+    """
+    full_url = f"{_BASE_URL}/x/tweets/search?q={_url_encode(q)}&queryType=Top&limit={limit}"
+    _log(f"Searching: {label}")
+    try:
+        request_headers = {"X-Api-Key": token}
+        response = http.get(full_url, headers=request_headers, timeout=30, retries=2)
+    except http.HTTPError as exc:
+        status = getattr(exc, "status_code", None)
+        if status == 402:
+            # Unpaid key — fatal for the source, and surfaced on the real search
+            # path (not just --diagnose) so a live run reports it instead of
+            # settling silently empty.
+            return [], "Xquik key unpaid (402)"
+        if status in (401, 403):
+            return [], f"Xquik auth failed ({status})"
+        _log(f"HTTP error for '{label}': {exc}")
+        return [], None
+    except Exception as exc:
+        _log(f"Error for '{label}': {exc}")
+        return [], None
+
+    tweets = response.get("tweets", [])
+    if not isinstance(tweets, list):
+        return [], None
+    items: List[Dict[str, Any]] = []
+    for tweet in tweets:
+        if not isinstance(tweet, dict):
+            continue
+        tweet_id = str(tweet.get("id", ""))
+        if tweet_id in seen_ids:
+            continue
+        seen_ids.add(tweet_id)
+        item = _parse_tweet(tweet, index_offset + len(items), relevance_query, id_prefix=id_prefix)
+        if item:
+            items.append(item)
+    return items, None
+
+
+def _is_own(url: str, handle: str) -> bool:
+    """True when a tweet URL is authored by ``handle`` (their own post).
+
+    Used by the ABOUT lane to drop the subject's own tweets so only mentions
+    *by others* remain. Handles both x.com and twitter.com permalinks.
+    """
+    u = (url or "").lower()
+    h = handle.lower().lstrip("@").strip()
+    return bool(h) and (f"x.com/{h}/status" in u or f"twitter.com/{h}/status" in u)
+
+
+def search_handles(
+    handles: List[str],
+    topic: str,
+    from_date: str,
+    to_date: str,
+    *,
+    count_per: int = 8,
+    token: str = "",
+) -> List[Dict[str, Any]]:
+    """FROM lane: tweets authored BY each handle (their own timeline).
+
+    The topic is NOT AND'd into the query (that was the from:-AND bug, #610) —
+    we pull the raw timeline and use ``topic`` for relevance ranking only.
+    Returns a flat list of item dicts (mirrors ``bird_x.search_handles``).
+    """
+    if not token or not handles:
+        return []
+    items: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw in handles:
+        handle = str(raw).lstrip("@").strip()
+        if not handle:
+            continue
+        q = f"from:{handle} since:{from_date} until:{to_date}"
+        got, auth_error = _execute_search(
+            q, count_per, token,
+            label=f"from:{handle}", id_prefix="XF",
+            seen_ids=seen_ids, relevance_query=topic,
+            index_offset=len(items),
+        )
+        if auth_error:
+            break  # fatal auth/payment failure — stop, keep what we have
+        items.extend(got)
+    return items
+
+
+def search_mentions(
+    handles: List[str],
+    from_date: str,
+    to_date: str,
+    *,
+    topic: str = "",
+    count_per: int = 5,
+    token: str = "",
+) -> List[Dict[str, Any]]:
+    """ABOUT lane: tweets mentioning each handle, authored by OTHERS.
+
+    Queries ``@handle`` then drops the handle's own tweets (``_is_own``) so only
+    third-party mentions remain. Returns a flat list of item dicts.
+    """
+    if not token or not handles:
+        return []
+    items: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for raw in handles:
+        handle = str(raw).lstrip("@").strip()
+        if not handle:
+            continue
+        q = f"@{handle} since:{from_date} until:{to_date}"
+        got, auth_error = _execute_search(
+            q, count_per, token,
+            label=f"@{handle}", id_prefix="XA",
+            seen_ids=seen_ids, relevance_query=topic,
+            index_offset=len(items),
+        )
+        if auth_error:
+            break
+        items.extend(it for it in got if not _is_own(it.get("url", ""), handle))
+    return items
+
+
+def probe_works(token: str, timeout: int = 8) -> Optional[bool]:
+    """Cheap runtime check that the xquik key actually returns data.
+
+    Mirrors ``bird_x.probe_works`` for the key-based X path so ``--diagnose``
+    reflects reality instead of static key presence. Returns True
+    (funded/working), False (a clear auth/payment failure — 401/403, or 402
+    when the key is configured but unpaid), or None (inconclusive: timeout /
+    transient HTTP) so callers fail open.
+    The human-readable reason is available via ``probe_reason()``. Cached per
+    process so repeated diagnose calls don't re-probe.
+    """
+    global _probe_cache
+    if _probe_cache[0] != "unset":
+        return _probe_cache[0]
+    if not token:
+        _probe_cache = (False, "no XQUIK_API_KEY configured")
+        return False
+    from datetime import timedelta, timezone
+    since = (datetime.now(timezone.utc) - timedelta(days=30)).strftime("%Y-%m-%d")
+    # @x (the platform's own account) posts frequently, so a no-error response
+    # means the key works even if this particular window is quiet.
+    q = f"from:x since:{since}"
+    full_url = f"{_BASE_URL}/x/tweets/search?q={_url_encode(q)}&queryType=Top&limit=1"
+    try:
+        request_headers = {"X-Api-Key": token}
+        http.get(full_url, headers=request_headers, timeout=timeout, retries=0)
+    except http.HTTPError as exc:
+        status = getattr(exc, "status_code", None)
+        if status == 402:
+            _probe_cache = (False, "xquik key unpaid (402)")
+        elif status in (401, 403):
+            _probe_cache = (False, f"xquik auth failed ({status})")
+        else:
+            # 5xx / unexpected status — inconclusive, don't report a false-down.
+            _probe_cache = (None, f"xquik probe inconclusive ({status})")
+        return _probe_cache[0]
+    except Exception as exc:
+        _probe_cache = (None, f"xquik probe inconclusive ({type(exc).__name__})")
+        return None
+    _probe_cache = (True, "ok")
+    return True
+
+
+def probe_reason() -> str:
+    """Human-readable reason for the last ``probe_works`` result (or '')."""
+    return _probe_cache[1]
 
 
 def search_and_enrich(
@@ -160,7 +333,7 @@ def parse_xquik_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def _parse_tweet(
-    tweet: Dict[str, Any], index: int, query: str
+    tweet: Dict[str, Any], index: int, query: str, id_prefix: str = "XQ"
 ) -> Dict[str, Any] | None:
     """Parse a single tweet from the API response into the standard item format."""
     author = tweet.get("author") or {}
@@ -189,6 +362,11 @@ def _parse_tweet(
 
     text = str(tweet.get("text", "")).strip()[:500]
 
+    # Leading-run @mentions = who the post is directed at (reply target). Shared
+    # parser with bird so the first-party interaction signal fires for xquik too.
+    from .query import leading_mentions
+    mentioned_handles = leading_mentions(text)
+
     # Build engagement dict with full metrics
     engagement = {
         "likes": _safe_int(tweet.get("likeCount")),
@@ -200,12 +378,13 @@ def _parse_tweet(
     }
 
     return {
-        "id": f"XQ{index + 1}",
+        "id": f"{id_prefix}{index + 1}",
         "text": text,
         "url": url,
         "author_handle": username,
         "date": date,
         "engagement": engagement,
+        "mentioned_handles": mentioned_handles,
         "relevance": _compute_relevance(query, text) if query else 0.7,
         "why_relevant": "",
     }

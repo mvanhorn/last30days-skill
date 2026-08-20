@@ -191,10 +191,26 @@ class WebSearchDispatchTests(unittest.TestCase):
             grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
             mock.assert_called_once()
 
-    def test_auto_returns_empty_when_no_keys(self):
-        items, artifact = grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="auto")
+    def test_auto_returns_empty_when_no_keys_and_native_search(self):
+        # On a native-search host (signal set) with no paid key, the engine
+        # leaves general web to the model's own search and returns nothing.
+        config = {"LAST30DAYS_NATIVE_SEARCH": "1"}
+        items, artifact = grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
         self.assertEqual([], items)
         self.assertEqual({}, artifact)
+
+    def test_auto_falls_to_keyless_when_no_keys_and_no_native_search(self):
+        # No paid key and no native search -> keyless floor is used.
+        with patch("lib.grounding.web_search_keyless.keyless_search",
+                   return_value=([], {"label": "keyless"})) as mock_keyless:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="auto")
+        mock_keyless.assert_called_once()
+
+    def test_explicit_keyless_backend_invokes_keyless(self):
+        with patch("lib.grounding.web_search_keyless.keyless_search",
+                   return_value=([], {"label": "keyless"})) as mock_keyless:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="keyless")
+        mock_keyless.assert_called_once()
 
     def test_none_returns_empty(self):
         config = {"BRAVE_API_KEY": "test-key"}
@@ -333,6 +349,35 @@ class RedditEnrichItemsTests(unittest.TestCase):
             any("rate-limited" in msg.lower() or "rate limited" in msg.lower() for msg in captured_stderr),
             msg=f"Expected a rate-limit stderr message, got: {captured_stderr!r}",
         )
+
+class RedditEnrichmentIsolationTests(unittest.TestCase):
+    def test_enrichment_http_failure_does_not_poison_web_source(self):
+        """A reddit.com enrichment fetch failure (e.g. a 403 on a datacenter IP)
+        is a secondary operation on already-retrieved web results; it must not be
+        attributed to the web/grounding source and discard those results."""
+        from lib import http
+
+        retrieved = [
+            {"url": "https://www.reddit.com/r/x/comments/1/abc/", "title": "T", "snippet": "s"},
+        ]
+
+        def fake_enrich(items):
+            # The enricher swallows the error, but the http layer records the
+            # terminal failure into whatever capture sink is currently active.
+            http._record_failure(http.HTTPError("Blocked", status_code=403))
+            return items
+
+        with http.capture_failures() as source_sink:
+            with patch.object(grounding, "web_search_keyless") as wsk, \
+                 patch.object(grounding, "_enrich_reddit_items", side_effect=fake_enrich):
+                wsk.keyless_search.return_value = (list(retrieved), {"keyless_backend": "startpage"})
+                items, _ = grounding.web_search(
+                    "q", ("2026-02-25", "2026-03-27"), {}, backend="keyless")
+
+        self.assertEqual(len(items), 1)
+        # The enrichment 403 is isolated in its own sink; the source's sink is clean.
+        self.assertEqual(source_sink, [])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,151 @@
+{
+  "manifest_version": "0.3",
+  "name": "last30days-pp-mcp",
+  "display_name": "Last30Days",
+  "version": "3.6.0",
+  "description": "Research any topic across Reddit, X, YouTube, Hacker News, Polymarket, GitHub, and the web - last 30 days, scored by upvotes, likes, and real-money prediction-market odds.",
+  "author": {
+    "name": "Matt Van Horn",
+    "url": "https://github.com/mvanhorn/last30days-skill"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/mvanhorn/last30days-skill"
+  },
+  "license": "MIT",
+  "keywords": [
+    "research",
+    "reddit",
+    "twitter",
+    "x",
+    "youtube",
+    "hacker-news",
+    "polymarket",
+    "github",
+    "search",
+    "synthesis"
+  ],
+  "server": {
+    "type": "binary",
+    "entry_point": "bin/last30days-pp-mcp",
+    "mcp_config": {
+      "command": "${__dirname}/bin/last30days-pp-mcp",
+      "args": [],
+      "env": {
+        "OPENAI_API_KEY": "${user_config.openai_api_key}",
+        "XAI_API_KEY": "${user_config.xai_api_key}",
+        "BRAVE_API_KEY": "${user_config.brave_api_key}",
+        "EXA_API_KEY": "${user_config.exa_api_key}",
+        "SERPER_API_KEY": "${user_config.serper_api_key}",
+        "GOOGLE_API_KEY": "${user_config.google_api_key}",
+        "GEMINI_API_KEY": "${user_config.gemini_api_key}",
+        "GOOGLE_GENAI_API_KEY": "${user_config.google_genai_api_key}",
+        "APIFY_API_TOKEN": "${user_config.apify_api_token}",
+        "BSKY_APP_PASSWORD": "${user_config.bsky_app_password}",
+        "PARALLEL_API_KEY": "${user_config.parallel_api_key}",
+        "SCRAPECREATORS_API_KEY": "${user_config.scrapecreators_api_key}",
+        "OPENROUTER_API_KEY": "${user_config.openrouter_api_key}"
+      }
+    }
+  },
+  "user_config": {
+    "openai_api_key": {
+      "type": "string",
+      "title": "OPENAI_API_KEY",
+      "description": "OpenAI API key. Powers Reddit research via OpenAI's web_search tool. Get one at https://platform.openai.com/api-keys.",
+      "sensitive": true,
+      "required": false
+    },
+    "xai_api_key": {
+      "type": "string",
+      "title": "XAI_API_KEY",
+      "description": "xAI API key. Powers X / Twitter research via xAI's x_search tool. Get one at https://console.x.ai/.",
+      "sensitive": true,
+      "required": false
+    },
+    "brave_api_key": {
+      "type": "string",
+      "title": "BRAVE_API_KEY",
+      "description": "Brave Search API key. Used for grounded web search results. Get one at https://brave.com/search/api/.",
+      "sensitive": true,
+      "required": false
+    },
+    "exa_api_key": {
+      "type": "string",
+      "title": "EXA_API_KEY",
+      "description": "Exa search API key. Alternative web search backend with semantic ranking. Get one at https://exa.ai/.",
+      "sensitive": true,
+      "required": false
+    },
+    "serper_api_key": {
+      "type": "string",
+      "title": "SERPER_API_KEY",
+      "description": "Serper API key. Google search via API. Get one at https://serper.dev/.",
+      "sensitive": true,
+      "required": false
+    },
+    "google_api_key": {
+      "type": "string",
+      "title": "GOOGLE_API_KEY",
+      "description": "Google API key for YouTube transcript fetching and other Google services. Get one at https://console.cloud.google.com/apis/credentials.",
+      "sensitive": true,
+      "required": false
+    },
+    "gemini_api_key": {
+      "type": "string",
+      "title": "GEMINI_API_KEY",
+      "description": "Gemini API key. Used for synthesis fallback when other LLM providers are unavailable. Get one at https://aistudio.google.com/apikey.",
+      "sensitive": true,
+      "required": false
+    },
+    "google_genai_api_key": {
+      "type": "string",
+      "title": "GOOGLE_GENAI_API_KEY",
+      "description": "Alternative Google generative-AI API key. Same source as GEMINI_API_KEY; set whichever name your tooling expects.",
+      "sensitive": true,
+      "required": false
+    },
+    "apify_api_token": {
+      "type": "string",
+      "title": "APIFY_API_TOKEN",
+      "description": "Apify API token. Powers TikTok and Instagram Reels search via Apify actors. Get one at https://console.apify.com/account/integrations.",
+      "sensitive": true,
+      "required": false
+    },
+    "bsky_app_password": {
+      "type": "string",
+      "title": "BSKY_APP_PASSWORD",
+      "description": "Bluesky app password (not your main password). Powers AT Protocol post search. Create at https://bsky.app/settings/app-passwords.",
+      "sensitive": true,
+      "required": false
+    },
+    "parallel_api_key": {
+      "type": "string",
+      "title": "PARALLEL_API_KEY",
+      "description": "Parallel AI key. Powers parallel research runs across sources. Get one at https://parallel.ai/.",
+      "sensitive": true,
+      "required": false
+    },
+    "scrapecreators_api_key": {
+      "type": "string",
+      "title": "SCRAPECREATORS_API_KEY",
+      "description": "ScrapeCreators API key. Powers creator-focused social search across TikTok, Instagram, and YouTube. Get one at https://scrapecreators.com/.",
+      "sensitive": true,
+      "required": false
+    },
+    "openrouter_api_key": {
+      "type": "string",
+      "title": "OPENROUTER_API_KEY",
+      "description": "OpenRouter API key. Alternative LLM provider gateway for synthesis. Get one at https://openrouter.ai/keys.",
+      "sensitive": true,
+      "required": false
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=1.0.0",
+    "platforms": [
+      "darwin",
+      "linux"
+    ]
+  }
+}

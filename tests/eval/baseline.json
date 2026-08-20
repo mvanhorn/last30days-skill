@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "metrics": {
+    "citation_grounding": 1.0,
+    "recency_compliance": 1.0,
+    "cluster_coherence": 0.8,
+    "coverage": 1.0,
+    "determinism": 1.0
+  },
+  "per_fixture_floors": {
+    "citation_grounding": 1.0,
+    "recency_compliance": 1.0,
+    "cluster_coherence": 0.4,
+    "coverage": 1.0,
+    "determinism": 1.0
+  }
+}

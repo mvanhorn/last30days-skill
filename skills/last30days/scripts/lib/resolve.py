@@ -8,18 +8,17 @@ before the planner runs. This is the engine-side equivalent of SKILL.md Steps
 from __future__ import annotations
 
 import re
-import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Optional
 
-from . import categories, dates, grounding
+from . import categories, dates, grounding, log
 
 MAX_SUBS = 10
 
 
 def _log(msg: str) -> None:
-    print(f"[Resolve] {msg}", file=sys.stderr)
+    log.source_log("Resolve", msg, tty_only=False)
 
 
 def _merge_category_peers(topic: str, subreddits: list[str]) -> tuple[list[str], Optional[str]]:
@@ -77,6 +76,7 @@ def _has_backend(config: dict) -> bool:
         or config.get("SERPER_API_KEY")
         or config.get("PARALLEL_API_KEY")
         or config.get("OPENROUTER_API_KEY")
+        or config.get("PERPLEXITY_API_KEY")
     )
 
 
@@ -137,6 +137,47 @@ def _extract_github_user(items: list[dict]) -> str:
     if not counts:
         return ""
     return max(counts, key=counts.get)
+
+
+# Hosts that can never be a brand's own site; their presence in results is
+# platform noise, not an official-domain signal.
+_PLATFORM_HOSTS = {
+    "reddit.com", "x.com", "twitter.com", "github.com", "youtube.com",
+    "facebook.com", "instagram.com", "tiktok.com", "linkedin.com",
+    "wikipedia.org", "medium.com", "trustpilot.com", "crunchbase.com",
+    "bloomberg.com", "apple.com", "play.google.com", "google.com",
+    "threads.com", "pinterest.com", "glassdoor.com", "indeed.com",
+    "news.ycombinator.com", "substack.com", "amazon.com", "ebay.com",
+}
+
+
+def _extract_official_domain(topic: str, items: list[dict]) -> str:
+    """Extract the brand's own domain from search-result URLs.
+
+    Conservative on purpose: only a hostname whose registrable label
+    normalizes to the topic name qualifies ("ThriftBooks" -> thriftbooks.com).
+    This feeds Trustpilot targeting as a HINT (the engine retries via the
+    CLI's own search when the hint misses), so a miss here is cheap and a
+    wrong guess is recoverable.
+    """
+    want = re.sub(r"[^a-z0-9]", "", topic.lower())
+    if not want:
+        return ""
+    host_pattern = re.compile(r"https?://([A-Za-z0-9.-]+)")
+    for item in items:
+        for source in [item.get("url", ""), f"{item.get('title', '')} {item.get('snippet', '')}"]:
+            for host in host_pattern.findall(source):
+                host = host.lower().strip(".")
+                bare = host.removeprefix("www.")
+                if any(bare == p or bare.endswith("." + p) for p in _PLATFORM_HOSTS):
+                    continue
+                labels = bare.split(".")
+                if len(labels) < 2:
+                    continue
+                registrable = labels[-2] if labels[-2] not in ("co", "com") or len(labels) < 3 else labels[-3]
+                if re.sub(r"[^a-z0-9]", "", registrable) == want:
+                    return bare
+    return ""
 
 
 def _extract_github_repos(items: list[dict]) -> list[str]:
@@ -280,6 +321,7 @@ def auto_resolve(topic: str, config: dict) -> dict:
         "x_handle": "",
         "github_user": "",
         "github_repos": [],
+        "trustpilot_domain": "",
         "context": "",
         "category": None,
         "searches_run": 0,
@@ -329,16 +371,23 @@ def auto_resolve(topic: str, config: dict) -> dict:
     github_user = _extract_github_user(results.get("github", []))
     github_repos = canonicalize_github_repos(topic, _extract_github_repos(results.get("github", [])))
     context = _build_context_summary(results.get("news", []))
+    # Official-site domain doubles as the Trustpilot targeting hint (review
+    # pages are keyed by domain). Scan news first (official sites surface in
+    # coverage), then the handle query's profile-adjacent results.
+    trustpilot_domain = _extract_official_domain(
+        topic, (results.get("news") or []) + (results.get("x_handle") or [])
+    )
 
     subreddits, category = _merge_category_peers(topic, subreddits)
 
-    _log(f"Resolved {len(subreddits)} subreddits, x_handle={x_handle!r}, github_user={github_user!r}, github_repos={github_repos!r}, context_len={len(context)}, category={category!r}")
+    _log(f"Resolved {len(subreddits)} subreddits, x_handle={x_handle!r}, github_user={github_user!r}, github_repos={github_repos!r}, trustpilot_domain={trustpilot_domain!r}, context_len={len(context)}, category={category!r}")
 
     return {
         "subreddits": subreddits,
         "x_handle": x_handle,
         "github_user": github_user,
         "github_repos": github_repos,
+        "trustpilot_domain": trustpilot_domain,
         "context": context,
         "category": category,
         "searches_run": searches_run,

@@ -40,6 +40,64 @@ class TestInstagramOwnerTypeSafety(unittest.TestCase):
         self.assertEqual("fallbackuser", items[0]["author_name"])
 
 
+class TestInstagramComments(unittest.TestCase):
+    """U1: Instagram comment fetching via ScrapeCreators."""
+
+    def test_fetch_post_comments_parses_and_sorts_by_likes(self):
+        from unittest.mock import patch
+        from lib import instagram
+
+        fake = {
+            "success": True,
+            "comments": [
+                {"text": "mid", "comment_like_count": 3,
+                 "created_at": "2026-07-04T14:27:58.000Z", "user": {"username": "bob"}},
+                {"text": "gold", "comment_like_count": 500,
+                 "created_at": "2026-07-03T10:00:00.000Z", "user": {"username": "alice"}},
+                {"text": "", "comment_like_count": 999,
+                 "created_at": "2026-07-02T10:00:00.000Z", "user": {"username": "skip"}},
+            ],
+            "cursor": None,
+        }
+        with patch.object(instagram.http, "get", return_value=fake):
+            out = instagram._fetch_post_comments(
+                "https://www.instagram.com/reel/ABC/", token="k", max_comments=5,
+            )
+        # Empty-text dropped; sorted desc by comment_like_count.
+        self.assertEqual([c["text"] for c in out], ["gold", "mid"])
+        self.assertEqual(out[0]["comment_like_count"], 500)
+        self.assertEqual(out[0]["author"], "alice")
+        self.assertEqual(out[0]["date"], "2026-07-03")
+
+    def test_fetch_post_comments_error_returns_empty(self):
+        from unittest.mock import patch
+        from lib import instagram
+
+        def _boom(*a, **k):
+            raise RuntimeError("network")
+
+        with patch.object(instagram.http, "get", side_effect=_boom):
+            out = instagram._fetch_post_comments("https://x/", token="k")
+        self.assertEqual(out, [])
+
+    def test_enrich_with_comments_no_token_or_items_noop(self):
+        from lib import instagram
+        self.assertEqual([], instagram.enrich_with_comments([], token="k"))
+        items = [{"url": "u", "engagement": {"likes": 5}}]
+        self.assertEqual(items, instagram.enrich_with_comments(items, token=""))
+        self.assertNotIn("top_comments", items[0])
+
+    def test_is_instagram_comments_available_gate(self):
+        from lib import env
+        self.assertFalse(env.is_instagram_comments_available({}))
+        self.assertFalse(env.is_instagram_comments_available(
+            {"SCRAPECREATORS_API_KEY": "k"}))  # key but no INCLUDE_SOURCES
+        self.assertFalse(env.is_instagram_comments_available(
+            {"INCLUDE_SOURCES": "instagram_comments"}))  # opt-in but no key
+        self.assertTrue(env.is_instagram_comments_available(
+            {"SCRAPECREATORS_API_KEY": "k", "INCLUDE_SOURCES": "tiktok,instagram_comments"}))
+
+
 class TestExpandInstagramQueries(unittest.TestCase):
     """Tests for expand_instagram_queries() multi-query generation."""
 

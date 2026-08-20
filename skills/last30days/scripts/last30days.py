@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# fmt: off
 # ruff: noqa: E402
 """last30days CLI."""
 
@@ -7,12 +8,15 @@ from __future__ import annotations
 import argparse
 import atexit
 import datetime
+import hashlib
 import json
 import os
 import re
 import signal
+import sqlite3
 import sys
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 MIN_PYTHON = (3, 12)
@@ -24,10 +28,15 @@ def ensure_supported_python(version_info: tuple[int, int, int] | object | None =
     major, minor, micro = tuple(version_info[:3])
     if (major, minor) >= MIN_PYTHON:
         return
+    req = f"{MIN_PYTHON[0]}.{MIN_PYTHON[1]}"
     sys.stderr.write(
-        "last30days v3 requires Python 3.12+.\n"
+        f"last30days v3 requires Python {req}+.\n"
         f"Detected Python {major}.{minor}.{micro}.\n"
-        "Install and use python3.12 or python3.13, then rerun this command.\n"
+        f"Install with:\n"
+        f"  Mac:     brew install python@{req}\n"
+        f"  Windows: winget install Python.Python.{req}\n"
+        f"  Linux:   sudo apt install python{req}  (or pyenv install {req})\n"
+        f"Then rerun: python{req} <path-to-script> setup\n"
     )
     raise SystemExit(1)
 
@@ -42,7 +51,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import env, html_render, pipeline, render, schema, ui
+from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, freshness, html_render, http, permission_preflight, pipeline, registers, render, schema, ui
 
 _child_pids: set[int] = set()
 _child_pids_lock = threading.Lock()
@@ -74,7 +83,7 @@ def _cleanup_children() -> None:
 atexit.register(_cleanup_children)
 
 
-def parse_search_flag(raw: str) -> list[str]:
+def parse_search_flag(raw: str, flag_name: str = "--search") -> list[str]:
     sources = []
     for source in raw.split(","):
         source = source.strip().lower()
@@ -82,17 +91,162 @@ def parse_search_flag(raw: str) -> list[str]:
             continue
         normalized = pipeline.SEARCH_ALIAS.get(source, source)
         if normalized not in pipeline.MOCK_AVAILABLE_SOURCES:
-            raise SystemExit(f"Unknown search source: {source}")
+            raise SystemExit(f"Unknown search source in {flag_name}: {source}")
         if normalized not in sources:
             sources.append(normalized)
     if not sources:
-        raise SystemExit("--search requires at least one source.")
+        raise SystemExit(f"{flag_name} requires at least one source.")
     return sources
 
+def parse_as_of_date_arg(value: str) -> str:
+    try:
+        parsed = dates.parse_as_of_date(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from exc
+    return parsed
 
-def slugify(value: str) -> str:
+def resolve_requested_sources(args_search: str | None, config: dict) -> list[str] | None:
+    """Resolve the requested source set: explicit --search wins, then the
+    LAST30DAYS_DEFAULT_SEARCH config key (env var or .env file), then None
+    (per-query default behavior). The config fallback lets users pin a fixed
+    source set that survives upgrades without patching SKILL.md (#442).
+    """
+    if args_search:
+        return parse_search_flag(args_search)
+    default_search = (config.get("LAST30DAYS_DEFAULT_SEARCH") or "").strip()
+    if default_search:
+        return parse_search_flag(default_search, flag_name="LAST30DAYS_DEFAULT_SEARCH")
+    return None
+
+
+def add_deep_research_source(
+    requested_sources: list[str] | None,
+) -> list[str] | None:
+    """Add Perplexity without replacing the default-source sentinel.
+
+    ``None`` means that the planner can use the normal configured source set.
+    Deep Research enables Perplexity through ``INCLUDE_SOURCES`` separately, so
+    converting this sentinel to ``["perplexity"]`` would suppress every normal
+    source.
+    """
+    if requested_sources is None:
+        return None
+    if "perplexity" in requested_sources:
+        return requested_sources
+    return [*requested_sources, "perplexity"]
+
+
+def enable_deep_research_source(config: dict) -> None:
+    """Enable the exact Perplexity token or reject a hard exclusion."""
+    excluded = {
+        token.strip().lower()
+        for token in str(config.get("EXCLUDE_SOURCES") or "").split(",")
+        if token.strip()
+    }
+    if "perplexity" in excluded:
+        raise ValueError(
+            "--deep-research conflicts with EXCLUDE_SOURCES=perplexity"
+        )
+
+    include = str(config.get("INCLUDE_SOURCES") or "")
+    tokens = [token.strip() for token in include.split(",") if token.strip()]
+    if "perplexity" not in {token.lower() for token in tokens}:
+        tokens.append("perplexity")
+        config["INCLUDE_SOURCES"] = ",".join(tokens)
+
+
+def plan_has_explicit_trustpilot_domain(comp_plan: dict | None) -> bool:
+    """True when any --competitors-plan entry pins a trustpilot_domain."""
+    if not comp_plan:
+        return False
+    for entry in comp_plan.values():
+        if not isinstance(entry, dict):
+            continue
+        domain = entry.get("trustpilot_domain")
+        if isinstance(domain, str) and domain.strip():
+            return True
+    return False
+
+
+def activate_trustpilot_for_explicit_domain(
+    config: dict,
+    requested_sources: list[str] | None,
+    *,
+    reason: str,
+) -> list[str] | None:
+    """Activate the opt-in Trustpilot source when the user pinned a domain.
+
+    Passing ``--trustpilot-domain`` (or a plan-level ``trustpilot_domain``) is
+    unambiguous intent — silently ignoring it when Trustpilot is not in
+    ``INCLUDE_SOURCES`` / ``--search`` is the #873 failure mode. Auto-resolve
+    hints must not call this helper.
+
+    ``EXCLUDE_SOURCES=trustpilot`` still wins. Mutates ``config`` in place and
+    returns the (possibly extended) ``requested_sources`` list.
+    """
+    excluded = {
+        token.strip().lower()
+        for token in str(config.get("EXCLUDE_SOURCES") or "").split(",")
+        if token.strip()
+    }
+    if "trustpilot" in excluded:
+        sys.stderr.write(
+            f"[Trustpilot] {reason} ignored: trustpilot is in EXCLUDE_SOURCES\n"
+        )
+        return requested_sources
+
+    include = str(config.get("INCLUDE_SOURCES") or "")
+    tokens = [token.strip() for token in include.split(",") if token.strip()]
+    if "trustpilot" not in {token.lower() for token in tokens}:
+        tokens.append("trustpilot")
+        config["INCLUDE_SOURCES"] = ",".join(tokens)
+        sys.stderr.write(
+            f"[Trustpilot] {reason} activated trustpilot source "
+            "(add to INCLUDE_SOURCES permanently to skip this auto-enable)\n"
+        )
+
+    if requested_sources is not None and "trustpilot" not in requested_sources:
+        requested_sources = [*requested_sources, "trustpilot"]
+    return requested_sources
+
+
+def slugify(value: str, max_length: int = 180) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    if len(slug) > max_length:
+        # Filenames built from long topics can exceed the OS 255-byte limit
+        # (macOS errno 63). Truncate and append a hash of the full value so
+        # distinct long topics still get distinct, deterministic names.
+        digest = hashlib.sha1(slug.encode("utf-8")).hexdigest()[:10]
+        slug = f"{slug[:max_length].rstrip('-')}-{digest}"
     return slug or "last30days"
+
+
+def _report_has_private_corpus(report: schema.Report) -> bool:
+    items_by_source = getattr(report, "items_by_source", {})
+    if isinstance(items_by_source, dict) and items_by_source.get("corpus"):
+        return True
+    candidates = getattr(report, "ranked_candidates", ())
+    if not isinstance(candidates, (list, tuple)):
+        return False
+    return any(
+        candidate.source == "corpus"
+        or any(item.source == "corpus" for item in candidate.source_items)
+        for candidate in candidates
+    )
+
+
+def _ensure_output_directory(path: Path, *, private: bool) -> None:
+    if not private:
+        path.mkdir(parents=True, exist_ok=True)
+        return
+    missing: list[Path] = []
+    current = path
+    while not current.exists():
+        missing.append(current)
+        current = current.parent
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    for directory in missing:
+        directory.chmod(0o700)
 
 
 def save_output(
@@ -103,27 +257,158 @@ def save_output(
     synthesis_md: str | None = None,
     topic_override: str | None = None,
     rendered_content: str | None = None,
+    json_profile: str = "agent",
+    register: str = "default",
+    private: bool | None = None,
+    render_fn: Callable[[Path], str] | None = None,
 ) -> Path:
     from datetime import datetime
     path = Path(save_dir).expanduser().resolve()
-    path.mkdir(parents=True, exist_ok=True)
     slug = slugify(topic_override or report.topic)
     extension = "json" if emit == "json" else "html" if emit == "html" else "md"
     raw_label = "raw-html" if emit == "html" else "raw"
     suffix_part = f"-{suffix}" if suffix else ""
-    out_path = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
-    if out_path.exists():
-        out_path = path / f"{slug}-{raw_label}{suffix_part}-{datetime.now().strftime('%Y-%m-%d')}.{extension}"
+    base = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
+    date_str = datetime.now().strftime('%Y-%m-%d')
+    candidates = [base]
+    candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}.{extension}")
+    for i in range(1, 100):
+        candidates.append(path / f"{slug}-{raw_label}{suffix_part}-{date_str}-{i}.{extension}")
     # Markdown saves keep the complete debug artifact. JSON and HTML preserve
     # their requested wire format so file extensions match their content.
-    if rendered_content is not None:
-        content = rendered_content
-    elif emit in {"json", "html"}:
-        content = emit_output(report, emit, synthesis_md=synthesis_md)
-    else:
-        content = render.render_full(report)
-    out_path.write_text(content, encoding="utf-8")
+    # When render_fn is supplied, content is produced after O_EXCL allocates
+    # the candidate. This lets the footer cite the file actually written
+    # without racing a separate filesystem probe.
+    if render_fn is None:
+        if rendered_content is not None:
+            static_content = rendered_content
+        elif emit in {"json", "html"}:
+            static_content = emit_output(
+                report,
+                emit,
+                synthesis_md=synthesis_md,
+                json_profile=json_profile,
+                register=register,
+            )
+        else:
+            static_content = render.render_full(report)
+    private_corpus = _report_has_private_corpus(report) or bool(private)
+    _ensure_output_directory(path, private=private_corpus)
+    for candidate in candidates:
+        try:
+            fd = os.open(
+                candidate,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600 if private_corpus else 0o644,
+            )
+        except FileExistsError:
+            continue
+        try:
+            with os.fdopen(fd, "wb") as f:
+                content = render_fn(candidate) if render_fn is not None else static_content
+                f.write(content.encode("utf-8"))
+        except BaseException:
+            # Deferred rendering happens after the candidate is reserved. Do
+            # not leave an empty or partial report if rendering or writing fails.
+            try:
+                candidate.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+        if candidate.suffix.lower() == ".md":
+            try:
+                from lib import library, library_index
+
+                save_root = candidate.parent.resolve()
+                if save_root == Path(library.DEFAULT_MEMORY_DIR).expanduser().resolve():
+                    library_index.sync_library(save_root)
+                else:
+                    # A scoped save must sync a per-directory index with the
+                    # same paths scoped search uses; syncing the shared DB
+                    # from one scope's scan would prune other scopes' rows.
+                    library_index.sync_library(
+                        save_root,
+                        save_root / "briefings",
+                        db_path=save_root / ".last30days-library.db",
+                    )
+            except (library_index.LibrarySearchUnavailable, OSError, sqlite3.DatabaseError):
+                # Saving research must not depend on the optional local index;
+                # `library search` reports a clear capability error on demand.
+                pass
+        return candidate
+    # Fallback: all 101 candidates existed (extremely unlikely).
+    raise RuntimeError(
+        f"save_output: could not find a unique filename after 101 attempts in {path}"
+    )
+
+
+def save_rendered_output(
+    rendered_content: str,
+    output_file: str,
+    *,
+    private: bool = False,
+) -> Path:
+    out_path = Path(output_file).expanduser().resolve()
+    _ensure_output_directory(out_path.parent, private=private)
+    if private and out_path.exists():
+        out_path.chmod(0o600)
+    fd = os.open(
+        out_path,
+        os.O_CREAT | os.O_TRUNC | os.O_WRONLY,
+        0o600 if private else 0o644,
+    )
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(rendered_content)
+    if private:
+        out_path.chmod(0o600)
     return out_path
+
+
+def _publish_metadata_path(html_path: Path) -> Path:
+    return html_path.with_name(f"{html_path.name}.publish.json")
+
+
+def _write_publish_metadata(html_path: Path, publish_result: dict[str, object]) -> None:
+    payload = {
+        "url": publish_result.get("url"),
+        "site_id": publish_result.get("site_id"),
+        "status": publish_result.get("status"),
+        "published_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+    _publish_metadata_path(html_path).write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+
+def publish_rendered_html(
+    rendered: str,
+    *,
+    password: str | None = None,
+    companion_paths: list[Path] | None = None,
+) -> dict[str, object]:
+    from lib import html_publish
+
+    result = html_publish.publish_html(rendered, password=password)
+    metadata_errors: list[str] = []
+    for path in companion_paths or []:
+        try:
+            _write_publish_metadata(path, result)
+        except OSError as exc:
+            metadata_errors.append(f"{path}: {exc}")
+    if metadata_errors:
+        result = dict(result)
+        result["_metadata_errors"] = metadata_errors
+    return result
+
+
+def _publish_password_for_args(
+    args: argparse.Namespace,
+    config: dict[str, object] | None = None,
+) -> str | None:
+    return (
+        args.publish_password
+        or env.read_secret_env("LAST30DAYS_PUBLISH_PASSWORD")
+        or (config or {}).get("LAST30DAYS_PUBLISH_PASSWORD")
+        or None
+    )
 
 
 def emit_output(
@@ -132,17 +417,35 @@ def emit_output(
     fun_level: str = "medium",
     save_path: str | None = None,
     synthesis_md: str | None = None,
+    json_profile: str = "agent",
+    register: str = "default",
 ) -> str:
     if emit == "json":
-        return json.dumps(schema.to_dict(report), indent=2, sort_keys=True)
+        payload = (
+            schema.to_dict(report)
+            if json_profile == "raw"
+            else schema.to_agent_export(report)
+        )
+        return json.dumps(payload, indent=2, sort_keys=True)
     if emit == "html":
         return html_render.render_html(
-            report, fun_level=fun_level, save_path=save_path, synthesis_md=synthesis_md,
+            report,
+            fun_level=fun_level,
+            save_path=save_path,
+            synthesis_md=synthesis_md,
+            register=register,
         )
     if emit in {"compact", "md"}:
-        return render.render_compact(report, fun_level=fun_level, save_path=save_path)
+        return render.render_compact(
+            report,
+            fun_level=fun_level,
+            save_path=save_path,
+            register=register,
+        )
     if emit == "context":
         return render.render_context(report)
+    if emit == "brief":
+        return render.render_brief(report)
     raise SystemExit(f"Unsupported emit mode: {emit}")
 
 
@@ -152,16 +455,26 @@ def emit_comparison_output(
     fun_level: str = "medium",
     save_path: str | None = None,
     synthesis_md: str | None = None,
+    json_profile: str = "agent",
 ) -> str:
     if emit == "json":
         payload = {
             "comparison": True,
             "entities": [label for label, _ in entity_reports],
             "reports": [
-                {"entity": label, "report": schema.to_dict(report)}
+                {
+                    "entity": label,
+                    "report": (
+                        schema.to_dict(report)
+                        if json_profile == "raw"
+                        else schema.to_agent_export(report)
+                    ),
+                }
                 for label, report in entity_reports
             ],
         }
+        if json_profile == "agent":
+            payload["schema_version"] = schema.AGENT_EXPORT_SCHEMA_VERSION
         return json.dumps(payload, indent=2, sort_keys=True)
     if emit == "html":
         return html_render.render_html_comparison(
@@ -204,6 +517,17 @@ def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str)
         return raw.as_posix()
 
 
+def compute_output_path_display(output_file: str) -> str:
+    """Compute the user-friendly explicit output path shown in render footers."""
+    raw = Path(output_file).expanduser().resolve()
+    try:
+        home = Path.home().resolve()
+        relative = raw.relative_to(home)
+        return f"~/{relative.as_posix()}"
+    except ValueError:
+        return raw.as_posix()
+
+
 def read_synthesis_file(path: str) -> str:
     try:
         return Path(path).expanduser().read_text(encoding="utf-8")
@@ -212,52 +536,194 @@ def read_synthesis_file(path: str) -> str:
         raise SystemExit(2)
 
 
-def persist_report(report: schema.Report) -> dict[str, int]:
+def _scoped_store_db(args: argparse.Namespace) -> Path | None:
+    """Scoped runs write findings inside the save dir, matching scoped reads."""
+    save_dir = getattr(args, "save_dir", None)
+    if save_dir:
+        return Path(save_dir).expanduser().resolve() / "research.db"
+    return None
+
+
+def persist_report(report: schema.Report, store_db: Path | None = None) -> dict[str, int]:
     import store
 
-    store.init_db()
-    topic_row = store.add_topic(report.topic)
-    topic_id = topic_row["id"]
-    source_mode = ",".join(sorted(report.items_by_source)) or "v3"
-    run_id = store.record_run(topic_id, source_mode=source_mode, status="running")
-    try:
-        findings = store.findings_from_report(report)
-        counts = store.store_findings(run_id, topic_id, findings)
-        store.update_run(
-            run_id,
-            status="completed",
-            findings_new=counts["new"],
-            findings_updated=counts["updated"],
-        )
-        return counts
-    except Exception as exc:
-        store.update_run(run_id, status="failed", error_message=str(exc)[:500])
-        raise
+    private_corpus = _report_has_private_corpus(report)
+    with store.scoped_db(store_db):
+        if private_corpus:
+            store.ensure_private_db_files()
+        store.init_db()
+        if private_corpus:
+            store.ensure_private_db_files()
+        topic_row = store.add_topic(report.topic)
+        topic_id = topic_row["id"]
+        source_mode = ",".join(sorted(report.items_by_source)) or "v3"
+        run_id = store.record_run(topic_id, source_mode=source_mode, status="running")
+        try:
+            findings = store.findings_from_report(report)
+            if private_corpus:
+                store.ensure_private_db_files()
+            counts = store.store_findings(run_id, topic_id, findings)
+            store.update_run(
+                run_id,
+                status="completed",
+                findings_new=counts["new"],
+                findings_updated=counts["updated"],
+            )
+            return counts
+        except Exception as exc:
+            store.update_run(run_id, status="failed", error_message=str(exc)[:500])
+            raise
+        finally:
+            if private_corpus:
+                store.ensure_private_db_files()
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Research a topic across live social, market, and grounded web sources.")
+    parser = argparse.ArgumentParser(
+        description="Research a topic across live social, market, and grounded web sources.",
+        allow_abbrev=False,
+    )
     parser.add_argument("topic", nargs="*", help="Research topic")
-    parser.add_argument("--emit", default="compact", choices=["compact", "json", "context", "md", "html"])
+    parser.add_argument("--emit", default="compact", choices=["compact", "json", "context", "md", "html", "brief"])
+    parser.add_argument(
+        "--register",
+        choices=registers.REGISTER_NAMES,
+        default=None,
+        help="Audience synthesis preset for the standard brief (default, exec, dev, creator, eli5)",
+    )
+    parser.add_argument(
+        "--json-profile",
+        default="agent",
+        choices=["agent", "raw"],
+        help="JSON export profile for --emit=json (default: agent)",
+    )
     parser.add_argument("--search", help="Comma-separated source list")
     parser.add_argument("--quick", action="store_true", help="Lower-latency retrieval profile")
     parser.add_argument("--deep", action="store_true", help="Higher-recall retrieval profile")
+    freshness_group = parser.add_mutually_exclusive_group()
+    freshness_group.add_argument(
+        "--verify-freshness",
+        action="store_true",
+        default=None,
+        help="Re-check source-grounded claims after research, or verify the cached report when no topic is supplied",
+    )
+    freshness_group.add_argument(
+        "--no-verify-freshness",
+        dest="verify_freshness",
+        action="store_false",
+        help="Disable freshness verification configured by LAST30DAYS_VERIFY_FRESHNESS",
+    )
+    parser.add_argument(
+        "--drill",
+        metavar="TARGET",
+        help="Deep follow-up on a cluster from the fresh last-report.json cache",
+    )
+    parser.add_argument(
+        "--discover",
+        metavar="DOMAIN",
+        nargs="?",
+        const="",
+        default=None,
+        help=(
+            "Sweep river listings and rank the topics accelerating in a domain; "
+            "each survivor gets a full research pass. Bare --discover (no domain) "
+            "runs global trending across every feed's hot list"
+        ),
+    )
+    parser.add_argument(
+        "--discover-shallow",
+        action="store_true",
+        help=(
+            "Skip the per-topic research pass during --discover: rank on listing "
+            "evidence only (faster, thinner; the confidence floor still applies)"
+        ),
+    )
+    parser.add_argument(
+        "--nominate-only",
+        action="store_true",
+        help=(
+            "Leg 1 of the host-judged discovery protocol: sweep, write the "
+            "nominations bundle for host judgment, and stop (no judging, no "
+            "enrichment). Requires --discover"
+        ),
+    )
+    parser.add_argument(
+        "--judgments",
+        metavar="PATH",
+        help=(
+            "Leg 2 of the discovery protocol: resume from the nominations "
+            "bundle, applying the host judgments file at PATH. Requires "
+            "--discover"
+        ),
+    )
+    parser.add_argument(
+        "--finalize",
+        action="store_true",
+        help=(
+            "Leg 3 of the discovery protocol: apply host angles, render the "
+            "final discovery brief, and record the topic queue. Requires "
+            "--discover"
+        ),
+    )
+    parser.add_argument(
+        "--angles",
+        metavar="PATH",
+        help=(
+            "Optional host angles file for --discover --finalize (omitting it "
+            "ships the brief without angle lines)"
+        ),
+    )
     parser.add_argument("--debug", action="store_true", help="Enable HTTP debug logging")
     parser.add_argument("--mock", action="store_true", help="Use mock retrieval fixtures")
+    parser.add_argument(
+        "--record-fixtures",
+        metavar="DIR",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--diagnose", action="store_true", help="Print provider and source availability")
+    parser.add_argument("--preflight", action="store_true",
+                        help="Print a safe human-readable permission preflight")
+    parser.add_argument("--welcome", action="store_true",
+                        help="Print the first-run welcome text (engine-owned; relay verbatim)")
+    parser.add_argument("--preflight-report-on-save-dir", help=argparse.SUPPRESS)
+    parser.add_argument("--no-browser-cookies", action="store_true",
+                        help="Disable browser-cookie extraction even when FROM_BROWSER is configured")
     parser.add_argument("--save-dir", help="Optional directory for saving the rendered output")
+    parser.add_argument(
+        "--corpus",
+        action="append",
+        default=[],
+        metavar="DIR",
+        help="Add a local .md/.txt/.pdf directory as a private ranked source (repeatable)",
+    )
+    parser.add_argument(
+        "--corpus-all-time",
+        action="store_true",
+        help="Include matching corpus files older than the research window",
+    )
+    parser.add_argument("--output", help="Optional exact file path for saving the rendered output")
     parser.add_argument("--synthesis-file", help="Markdown synthesis to embed in --emit=html output")
+    parser.add_argument("--publish-html", action="store_true",
+                        help="Publish --emit=html output to ht-ml.app (explicit opt-in; public by default)")
+    parser.add_argument("--publish", action="store_true",
+                        help="With 'library feed', publish the HTML index and briefs (explicit opt-in; public by default); feed.xml remains local")
+    parser.add_argument("--publish-password",
+                        help="Optional shared password for --publish-html or 'library feed --publish'; prefer LAST30DAYS_PUBLISH_PASSWORD to avoid exposing secrets in process lists")
     parser.add_argument("--store", action="store_true", help="Persist ranked findings to the SQLite research store")
     parser.add_argument("--x-handle", help="X handle for targeted supplemental search")
     parser.add_argument("--x-related", help="Comma-separated related X handles (searched with lower weight)")
     parser.add_argument("--web-backend", default="auto",
-                        choices=["auto", "brave", "exa", "serper", "parallel", "none"],
-                        help="Web search backend (default: auto, tries Brave then Exa then Serper then Parallel)")
+                        choices=["auto", "brave", "exa", "serper", "parallel", "keyless", "none"],
+                        help="Web search backend (default: auto, tries Brave then Exa then Serper then Parallel; "
+                             "keyless forces the zero-key DuckDuckGo/SearXNG floor)")
     parser.add_argument("--deep-research", action="store_true",
-                        help="Use Perplexity Deep Research (~$0.90/query) for in-depth analysis. Requires OPENROUTER_API_KEY.")
+                        help="Use at most one Perplexity Deep Research run. Direct PERPLEXITY_API_KEY uses the Agent API background path; OPENROUTER_API_KEY keeps the synchronous Sonar fallback; cannot be combined with competitor or vs-mode.")
+    parser.add_argument("--hiring-signals", action="store_true",
+                        help="Analyze public jobs/careers postings as evidence-backed company focus signals.")
     parser.add_argument("--plan", help="JSON query plan (skips internal LLM planner). Can be a JSON string or a file path.")
     parser.add_argument("--save-suffix", help="Suffix for saved output filename (e.g., 'gemini' → kanye-west-raw-gemini.md)")
-    parser.add_argument("--subreddits", help="Comma-separated subreddit names to search (e.g., SaaS,Entrepreneur)")
+    parser.add_argument("--subreddits", help="Comma-separated broad/category subreddit names to search (e.g., SaaS,Entrepreneur)")
+    parser.add_argument("--dedicated-subreddits", help="Comma-separated entity-home subreddit names (e.g., Kanye,WestSubEver). Pulled in full (top+hot+new) and exempt from the relevance floor since the whole sub is the topic.")
     parser.add_argument("--tiktok-hashtags", help="Comma-separated TikTok hashtags without # (e.g., tella,screenrecording)")
     parser.add_argument("--tiktok-creators", help="Comma-separated TikTok creator handles (e.g., TellaHQ,taborplace)")
     parser.add_argument("--ig-creators", help="Comma-separated Instagram creator handles (e.g., tella.tv,laborstories)")
@@ -266,13 +732,54 @@ def build_parser() -> argparse.ArgumentParser:
         "--lookback-days",
         dest="lookback_days",
         type=int,
-        default=30,
+        default=None,
         help="Number of days to look back for research (default: 30, watchlist uses 90)",
     )
+    parser.add_argument(
+        "--as-of",
+        dest="as_of_date",
+        type=parse_as_of_date_arg,
+        help=(
+            "End date for the lookback window in YYYY-MM-DD format. "
+            "When set, --days looks back from this date instead of today."
+            ),
+    )
+    parser.add_argument("--max-results", dest="max_results", type=int,
+                        help="Override the final ranked-pool cap (pool_limit/rerank_limit) from the depth profile. "
+                             "Use for high-volume topics where the default (deep=60) under-covers. See issue #716.")
+    parser.add_argument("--max-per-source", dest="max_per_source", type=int,
+                        help="Override the per-stream cap (per_stream_limit) applied to each (source, subquery) before "
+                             "pooling. Raising it increases unique-item yield when one source has many relevant items. "
+                             "See issue #716.")
+    parser.add_argument("--max-source-fetches", dest="max_source_fetches", type=int,
+                        help="Override the per-source fetch cap (MAX_SOURCE_FETCHES, default x=2) that limits how many "
+                             "subqueries actually fetch a capped source. Raise it so every X subquery in a multi-angle "
+                             "--plan runs instead of just the first two. See issue #716.")
     parser.add_argument("--auto-resolve", action="store_true",
                         help="Use web search to discover subreddits/handles before planning (for platforms without WebSearch)")
     parser.add_argument("--github-user", help="GitHub username for person-mode search (e.g., steipete)")
     parser.add_argument("--github-repo", help="Comma-separated owner/repo for project-mode search (e.g., openclaw/openclaw,paperclipai/paperclip)")
+    parser.add_argument(
+        "--trustpilot-domain",
+        help=(
+            "Trustpilot review-page domain for the topic (e.g., www.thriftbooks.com). "
+            "Used verbatim, bypasses the brand-shape gate, and auto-activates the "
+            "opt-in Trustpilot source for this run (unless EXCLUDE_SOURCES=trustpilot). "
+            "Find the domain with `trustpilot-pp-cli search '<name>'`."
+        ),
+    )
+    parser.add_argument(
+        "--amazon-query",
+        help=(
+            "Product keyword the amazon source searches, when that source is active. "
+            "Defaults to the topic. Supply it whenever the topic is not the product: "
+            "a person topic searches their company's product line "
+            "(--amazon-query='June Oven'), and a brand searches brand-plus-category "
+            "(--amazon-query='Weber grill', not 'Weber' -- a bare brand keyword lands "
+            "on an ad-heavy page that can miss the brand's own bestsellers). "
+            "Requires the brightdata CLI on PATH and logged in."
+        ),
+    )
     parser.add_argument(
         "--competitors",
         nargs="?",
@@ -325,8 +832,9 @@ def parse_competitors_plan(raw: str | None) -> dict[str, dict]:
     plan_str = raw
     if os.path.isfile(plan_str):
         try:
-            plan_str = open(plan_str).read()
-        except OSError as exc:
+            with open(plan_str, encoding="utf-8") as f:
+                plan_str = f.read()
+        except (OSError, UnicodeDecodeError) as exc:
             sys.stderr.write(f"[CompetitorsPlan] Cannot read plan file: {exc}\n")
             raise SystemExit(2)
     try:
@@ -342,7 +850,7 @@ def parse_competitors_plan(raw: str | None) -> dict[str, dict]:
         raise SystemExit(2)
     known_fields = {
         "x_handle", "x_related", "subreddits",
-        "github_user", "github_repos", "context",
+        "github_user", "github_repos", "trustpilot_domain", "context",
     }
     normalized: dict[str, dict] = {}
     for entity, entry in parsed.items():
@@ -359,7 +867,8 @@ def parse_competitors_plan(raw: str | None) -> dict[str, dict]:
                 f"{sorted(unknown)}; ignoring.\n"
             )
         normalized[entity.strip().lower()] = {
-            k: v for k, v in entry.items() if k in known_fields
+            **{k: v for k, v in entry.items() if k in known_fields},
+            "_name": entity.strip(),
         }
     return normalized
 
@@ -407,6 +916,15 @@ def subrun_kwargs_for(
     if isinstance(github_repos, list):
         github_repos = [r.strip() for r in github_repos if r.strip() and "/" in r.strip()] or None
 
+    trustpilot_domain = _choose("trustpilot_domain", "trustpilot_domain")
+    if isinstance(trustpilot_domain, str):
+        trustpilot_domain = trustpilot_domain.strip() or None
+    # Provenance: a plan-supplied domain is user-set (verbatim-final); one that
+    # only came from auto_resolve is a hint that retries via search on a miss.
+    trustpilot_domain_is_hint = bool(
+        trustpilot_domain and not plan_entry.get("trustpilot_domain")
+    )
+
     context = plan_entry.get("context") or resolved.get("context") or ""
 
     return {
@@ -415,20 +933,98 @@ def subrun_kwargs_for(
         "subreddits": subreddits,
         "github_user": github_user,
         "github_repos": github_repos,
+        "trustpilot_domain": trustpilot_domain,
+        "_trustpilot_domain_is_hint": trustpilot_domain_is_hint,
         "_context": context,
     }
 
 
-COMPETITORS_MIN = 1
-COMPETITORS_MAX = 6
-COMPETITORS_DEFAULT = 2
+COMPETITORS_MIN = competitors_mod.COMPETITORS_MIN
+COMPETITORS_MAX = competitors_mod.COMPETITORS_MAX
+COMPETITORS_DEFAULT = competitors_mod.COMPETITORS_DEFAULT
+
+
+def truncate_comparison_entities(entities: list[str], *, warn: bool = True) -> list[str]:
+    """Cap a vs-entity list at COMPARISON_ENTITY_MAX; optionally warn on stderr."""
+    ceiling = competitors_mod.COMPARISON_ENTITY_MAX
+    if len(entities) <= ceiling:
+        return list(entities)
+    kept = entities[:ceiling]
+    dropped = entities[ceiling:]
+    if warn:
+        sys.stderr.write(
+            f"[Competitors] vs-topic has {len(entities)} entities; "
+            f"using first {ceiling}, dropped: {', '.join(dropped)}\n"
+        )
+    return kept
+
+
+def apply_vs_competitor_routing(
+    topic: str,
+    *,
+    competitors_flag: int | None,
+    comp_enabled: bool,
+    comp_count: int,
+    comp_explicit: list[str],
+    comp_plan: dict[str, dict] | None = None,
+) -> tuple[str, bool, int, list[str]]:
+    """Apply vs-string / plan routing on top of resolve_competitors_args.
+
+    Precedence for *who* runs:
+      1. ``--competitors-list`` (explicit peers; topic unchanged)
+      2. Pure discover-N (``--competitors`` without list or plan) — topic
+         unchanged, even if it contains ``vs``
+      3. vs-string split (first entity becomes main topic) — used for bare
+         vs-topics and vs-topic + ``--competitors-plan``
+      4. ``--competitors-plan`` keys as peers when there is no vs-string
+         (including when ``--competitors N`` is also set)
+    """
+    from lib import planner as _planner
+
+    if comp_explicit:
+        return topic, True, len(comp_explicit), list(comp_explicit)
+
+    # Preserve discover-N semantics: numeric flag without plan/list must not
+    # rewrite a vs-string into named peers.
+    if competitors_flag is not None and not comp_plan:
+        return topic, True, comp_count, []
+
+    vs_entities = truncate_comparison_entities(
+        _planner._comparison_entities(topic, uncapped=True),
+        warn=True,
+    )
+    if len(vs_entities) >= 2:
+        main, peers = vs_entities[0], vs_entities[1:]
+        sys.stderr.write(
+            f"[Competitors] vs-mode: routing to N-pass fanout: "
+            f"{main} vs {' vs '.join(peers)}\n"
+        )
+        return main, True, len(peers), peers
+
+    if comp_plan:
+        plan_peers = [
+            (entry.get("_name") or key)
+            for key, entry in comp_plan.items()
+        ]
+        plan_peers = [name for name in plan_peers if name]
+        if len(plan_peers) > COMPETITORS_MAX:
+            sys.stderr.write(
+                f"[Competitors] --competitors-plan has {len(plan_peers)} entries, "
+                f"clamping to {COMPETITORS_MAX}.\n"
+            )
+            plan_peers = plan_peers[:COMPETITORS_MAX]
+        return topic, True, len(plan_peers), plan_peers
+
+    return topic, comp_enabled, comp_count, comp_explicit
 
 
 def resolve_competitors_args(args: argparse.Namespace) -> tuple[bool, int, list[str]]:
-    """Normalize --competitors / --competitors-list into (enabled, count, explicit_list).
+    """Normalize competitors flags into (enabled, count, explicit_list).
 
-    - (False, 0, []) when neither flag is set.
-    - An explicit list always wins; count is derived from list length.
+    - (False, 0, []) when neither flag, list, nor plan is set.
+    - An explicit ``--competitors-list`` always wins; count is derived from list length.
+    - ``--competitors-plan`` alone enables mode with an empty peer list; vs-routing
+      fills peers from the vs-string or plan keys.
     - A numeric count outside [1, 6] is clamped with a stderr warning.
     - count <= 0 (explicit) raises SystemExit(2).
     """
@@ -447,8 +1043,9 @@ def resolve_competitors_args(args: argparse.Namespace) -> tuple[bool, int, list[
     competitors_flag = args.competitors
     list_present = bool(explicit_list)
     flag_present = competitors_flag is not None
+    plan_present = bool(getattr(args, "competitors_plan", None))
 
-    if not list_present and not flag_present:
+    if not list_present and not flag_present and not plan_present:
         return False, 0, []
 
     if list_present:
@@ -466,19 +1063,22 @@ def resolve_competitors_args(args: argparse.Namespace) -> tuple[bool, int, list[
             count = COMPETITORS_MAX
         return True, count, explicit_list
 
-    # flag_present, no explicit list
-    count = competitors_flag
-    if count < COMPETITORS_MIN:
-        sys.stderr.write(
-            f"[Competitors] --competitors must be >= {COMPETITORS_MIN} (got {count}).\n"
-        )
-        raise SystemExit(2)
-    if count > COMPETITORS_MAX:
-        sys.stderr.write(
-            f"[Competitors] --competitors={count} exceeds max {COMPETITORS_MAX}; clamping.\n"
-        )
-        count = COMPETITORS_MAX
-    return True, count, []
+    if flag_present:
+        count = competitors_flag
+        if count < COMPETITORS_MIN:
+            sys.stderr.write(
+                f"[Competitors] --competitors must be >= {COMPETITORS_MIN} (got {count}).\n"
+            )
+            raise SystemExit(2)
+        if count > COMPETITORS_MAX:
+            sys.stderr.write(
+                f"[Competitors] --competitors={count} exceeds max {COMPETITORS_MAX}; clamping.\n"
+            )
+            count = COMPETITORS_MAX
+        return True, count, []
+
+    # plan_present alone: enable; peers filled by apply_vs_competitor_routing.
+    return True, 0, []
 
 
 def _missing_sources_for_promo(diag: dict[str, object]) -> str | None:
@@ -488,7 +1088,12 @@ def _missing_sources_for_promo(diag: dict[str, object]) -> str | None:
         missing.append("reddit")
     if "x" not in available:
         missing.append("x")
-    if "grounding" not in available:
+    # The web promo nudges toward a paid backend for higher-quality web search.
+    # Grounding is now available keyless on non-native hosts, so key the promo on
+    # the absence of a *paid* backend, not on grounding availability. Suppress it
+    # entirely on native-search hosts, where the model's own search is better and
+    # setting a paid engine key would be the wrong advice.
+    if not diag.get("native_web_backend") and not diag.get("native_search"):
         missing.append("web")
     if not missing:
         return None
@@ -535,22 +1140,1692 @@ def _show_runtime_ui(
         progress.show_promo(promo, diag=diag)
 
 
-def _write_last_run(topic: str, report: "schema.Report") -> None:
+REPORT_CACHE_VERSION = "last30days-report-cache/v1"
+DEFAULT_REPORT_CACHE_TTL_SECONDS = 3600
+
+
+def _last_report_cache_path() -> Path | None:
+    if env.CONFIG_DIR is None:
+        return None
+    return env.CONFIG_DIR / "last-report.json"
+
+
+def _report_cache_ttl_seconds(config: dict[str, object]) -> int:
+    raw = os.environ.get("LAST30DAYS_REPORT_CACHE_TTL_SECONDS")
+    if raw is None:
+        raw = config.get("LAST30DAYS_REPORT_CACHE_TTL_SECONDS")
+    if raw is None or raw == "":
+        return DEFAULT_REPORT_CACHE_TTL_SECONDS
+    try:
+        return max(0, int(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_REPORT_CACHE_TTL_SECONDS
+
+
+def _is_report_cache_fresh(timestamp: object, ttl_seconds: int) -> bool:
+    return env.is_timestamp_fresh(timestamp, ttl_seconds)
+
+
+def _write_last_run(
+    topic: str,
+    report: "schema.Report",
+    entity_reports: list[tuple[str, schema.Report]] | None = None,
+) -> bool:
     try:
         if env.CONFIG_DIR is None:
-            return
+            return False
         target = env.CONFIG_DIR
-        target.mkdir(parents=True, exist_ok=True)
+        cached_reports = entity_reports or [(report.topic, report)]
+        has_private_corpus = any(
+            cached_report.items_by_source.get("corpus")
+            for _, cached_report in cached_reports
+        )
+        _ensure_output_directory(target, private=has_private_corpus)
         counts = {source: len(items) for source, items in report.items_by_source.items()}
         payload = {
             "topic": topic,
             "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "sources": counts,
             "total": sum(counts.values()),
+            "report_cache": str(target / "last-report.json"),
+            "comparison": bool(entity_reports),
         }
         (target / "last-run.json").write_text(json.dumps(payload, indent=2))
+        cache_payload = {
+            "schema": REPORT_CACHE_VERSION,
+            "topic": topic,
+            "timestamp": payload["timestamp"],
+            "comparison": bool(entity_reports),
+            "reports": [
+                {"entity": label, "report": schema.to_dict(cached_report)}
+                for label, cached_report in cached_reports
+            ],
+        }
+        report_cache_path = target / "last-report.json"
+        report_cache_path.write_text(json.dumps(cache_payload, indent=2))
+        if has_private_corpus:
+            report_cache_path.chmod(0o600)
+        return True
+    except Exception as exc:
+        # Never fatal, but never silent either (#787's lesson): callers that
+        # promise cache state (drill chaining) branch on the return value.
+        sys.stderr.write(f"[last30days] warning: could not write run cache: {exc}\n")
+        return False
+
+
+def _load_last_report_cache(
+    topic: str | None,
+    ttl_seconds: int = DEFAULT_REPORT_CACHE_TTL_SECONDS,
+) -> tuple[schema.Report, list[tuple[str, schema.Report]] | None, Path] | None:
+    cache_path = _last_report_cache_path()
+    if cache_path is None or not cache_path.exists():
+        return None
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise TypeError("report cache payload must be a JSON object")
+        if payload.get("schema") != REPORT_CACHE_VERSION:
+            return None
+        if not _is_report_cache_fresh(payload.get("timestamp"), ttl_seconds):
+            return None
+        cached_topic = str(payload.get("topic") or "").strip().lower()
+        if topic is not None and cached_topic != topic.strip().lower():
+            return None
+        reports_payload = payload.get("reports") or []
+        if not reports_payload:
+            return None
+        entity_reports = [
+            (str(item.get("entity") or ""), schema.report_from_dict(item["report"]))
+            for item in reports_payload
+            if isinstance(item, dict) and isinstance(item.get("report"), dict)
+        ]
+        if not entity_reports:
+            return None
+        if payload.get("comparison"):
+            if len(entity_reports) < 2:
+                return None
+            if len(entity_reports) != len(reports_payload):
+                return None
+            return entity_reports[0][1], entity_reports, cache_path
+        return entity_reports[0][1], None, cache_path
+    except (OSError, json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
+        sys.stderr.write(
+            f"[last30days] Could not read report cache {cache_path}: "
+            f"{type(exc).__name__}: {exc}\n"
+        )
+        return None
+
+
+def _config_truthy(value: object) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _freshness_enabled(args: argparse.Namespace, config: dict[str, object]) -> bool:
+    if args.verify_freshness is not None:
+        return bool(args.verify_freshness)
+    return _config_truthy(config.get("LAST30DAYS_VERIFY_FRESHNESS"))
+
+
+def _update_cached_freshness(
+    cache_path: Path,
+    report: schema.Report,
+    entity_reports: list[tuple[str, schema.Report]] | None,
+) -> bool:
+    """Rewrite cached report bodies without extending the research-cache TTL."""
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict) or payload.get("schema") != REPORT_CACHE_VERSION:
+            return False
+        existing = payload.get("reports") or []
+        if entity_reports:
+            cached_reports = entity_reports
+        else:
+            label = (
+                str(existing[0].get("entity") or report.topic)
+                if existing and isinstance(existing[0], dict)
+                else report.topic
+            )
+            cached_reports = [(label, report)]
+        payload["reports"] = [
+            {"entity": label, "report": schema.to_dict(cached_report)}
+            for label, cached_report in cached_reports
+        ]
+        cache_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        return True
+    except (OSError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        sys.stderr.write(
+            f"[last30days] warning: could not update freshness cache: {exc}\n"
+        )
+        return False
+
+
+def _verify_report_set(
+    report: schema.Report,
+    entity_reports: list[tuple[str, schema.Report]] | None,
+    *,
+    allow_network: bool,
+) -> None:
+    reports = [item for _, item in entity_reports] if entity_reports else [report]
+    for current_report in reports:
+        freshness.verify_report(current_report, allow_network=allow_network)
+    if not any(current_report.freshness_verdicts for current_report in reports):
+        # An empty verdict list is a legitimate outcome, but a silent one has
+        # already misled operators once; say why there is nothing to show.
+        sys.stderr.write(
+            "[last30days] Freshness verification found no re-checkable claims"
+            " in this report; the verdict list is empty.\n"
+        )
+
+
+def _run_cached_freshness(
+    args: argparse.Namespace,
+    config: dict[str, object],
+) -> int:
+    cached = _load_last_report_cache(
+        None,
+        ttl_seconds=_report_cache_ttl_seconds(config),
+    )
+    if cached is None:
+        sys.stderr.write("[last30days] No fresh cached report; run a research pass first.\n")
+        return 2
+    report, entity_reports, cache_path = cached
+    _verify_report_set(report, entity_reports, allow_network=not args.mock)
+    if _update_cached_freshness(cache_path, report, entity_reports):
+        sys.stderr.write(f"[last30days] Updated freshness verdicts in {cache_path}\n")
+    else:
+        sys.stderr.write("[last30days] warning: freshness cache update failed\n")
+    return _render_save_and_print(args, report, entity_reports, None, config)
+
+
+def _drill_config(config: dict[str, object], sources: list[str]) -> dict[str, object]:
+    """Enable configured comment enrichments for a deep follow-up."""
+    drill_config = dict(config)
+    include = {
+        value.strip().lower()
+        for value in str(config.get("INCLUDE_SOURCES") or "").split(",")
+        if value.strip()
+    }
+    comment_flags = {
+        "youtube": "youtube_comments",
+        "tiktok": "tiktok_comments",
+        "instagram": "instagram_comments",
+    }
+    include.update(comment_flags[source] for source in sources if source in comment_flags)
+    if include:
+        drill_config["INCLUDE_SOURCES"] = ",".join(sorted(include))
+    drill_config["_drill_mode"] = True
+    return drill_config
+
+
+def _run_drill(
+    args: argparse.Namespace,
+    config: dict[str, object],
+) -> int:
+    from lib import planner
+
+    cached = _load_last_report_cache(
+        None,
+        ttl_seconds=_report_cache_ttl_seconds(config),
+    )
+    if cached is None:
+        sys.stderr.write(
+            "[last30days] No fresh cached report; run a research pass first.\n"
+        )
+        return 2
+    report, entity_reports, cache_path = cached
+    if entity_reports:
+        sys.stderr.write(
+            "[last30days] Drill mode needs a single-topic cached report; "
+            "run a research pass for one entity first.\n"
+        )
+        return 2
+
+    lookback_days = args.lookback_days
+    if lookback_days is None:
+        range_from = datetime.date.fromisoformat(report.range_from)
+        range_to = datetime.date.fromisoformat(report.range_to)
+        lookback_days = (range_to - range_from).days
+    as_of_date = args.as_of_date or report.range_to
+
+    try:
+        matched_clusters = planner.resolve_drill_clusters(report, args.drill)
+        drill_plan = planner.build_drill_plan(
+            report,
+            args.drill,
+            clusters=matched_clusters,
+        )
+    except planner.DrillTargetError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+
+    sources = list(drill_plan.source_weights)
+    drill_config = _drill_config(config, sources)
+    diag = pipeline.diagnose(drill_config, sources, safe=False)
+    progress = ui.ProgressDisplay(
+        f"{report.topic} — drill: {args.drill}",
+        show_banner=True,
+    )
+    progress.start_processing()
+    resolved = report.artifacts.get("resolved") or {}
+    try:
+        drill_report = pipeline.run(
+            # Keep source gating anchored to the cached entity (for example,
+            # StockTwits needs the original cashtag/finance context). The
+            # external drill plan below remains cluster-focused.
+            topic=report.topic,
+            config=drill_config,
+            depth="deep",
+            requested_sources=sources,
+            mock=args.mock,
+            x_handle=(
+                (args.x_handle or resolved.get("x_handle") or None)
+                if "x" in sources else None
+            ),
+            x_related=(
+                [value.strip() for value in args.x_related.split(",") if value.strip()]
+                if (args.x_related and "x" in sources) else None
+            ),
+            web_backend=args.web_backend,
+            external_plan=schema.to_dict(drill_plan),
+            subreddits=(
+                ([value.strip().removeprefix("r/") for value in args.subreddits.split(",") if value.strip()]
+                 if args.subreddits else list(resolved.get("subreddits") or []) or None)
+                if "reddit" in sources else None
+            ),
+            tiktok_hashtags=(
+                [value.strip().lstrip("#") for value in args.tiktok_hashtags.split(",") if value.strip()]
+                if args.tiktok_hashtags else None
+            ),
+            tiktok_creators=(
+                [value.strip().lstrip("@") for value in args.tiktok_creators.split(",") if value.strip()]
+                if args.tiktok_creators else None
+            ),
+            ig_creators=(
+                [value.strip().lstrip("@") for value in args.ig_creators.split(",") if value.strip()]
+                if args.ig_creators else None
+            ),
+            lookback_days=lookback_days,
+            as_of_date=as_of_date,
+            github_user=(
+                (args.github_user or resolved.get("github_user") or None)
+                if "github" in sources else None
+            ),
+            github_repos=(
+                ([value.strip() for value in args.github_repo.split(",") if value.strip()]
+                 if args.github_repo else list(resolved.get("github_repos") or []) or None)
+                if "github" in sources else None
+            ),
+            trustpilot_domain=(
+                (args.trustpilot_domain or resolved.get("trustpilot_domain") or None)
+                if "trustpilot" in sources else None
+            ),
+            internal_subrun=True,
+            corpus_dirs=args.corpus,
+            corpus_all_time=args.corpus_all_time,
+        )
     except Exception:
-        pass
+        progress.end_processing()
+        raise
+
+    _show_runtime_ui(drill_report, progress, diag, suppress_web_promo=True)
+    merged = pipeline.merge_drill_report(
+        report,
+        drill_report,
+        matched_clusters,
+        target=args.drill,
+    )
+    if _freshness_enabled(args, config):
+        _verify_report_set(merged, None, allow_network=not args.mock)
+    else:
+        merged.freshness_verdicts = []
+    if _write_last_run(report.topic, merged):
+        sys.stderr.write(f"[last30days] Updated drill cache in {cache_path}\n")
+    else:
+        sys.stderr.write(
+            "[last30days] warning: drill cache update failed; the next drill "
+            "will see the pre-drill report\n"
+        )
+
+    store_default = str(
+        os.environ.get("LAST30DAYS_STORE")
+        or config.get("LAST30DAYS_STORE")
+        or ""
+    ).lower()
+    if args.store or store_default in {"1", "true", "yes"}:
+        counts = persist_report(merged, store_db=_scoped_store_db(args))
+        sys.stderr.write(
+            f"[last30days] Stored {counts['new']} new, "
+            f"{counts['updated']} updated findings\n"
+        )
+
+    synthesis_md = None
+    if args.synthesis_file:
+        if args.emit == "html":
+            synthesis_md = read_synthesis_file(args.synthesis_file)
+        else:
+            sys.stderr.write(
+                "[last30days] Warning: --synthesis-file is only used with "
+                "--emit=html; ignoring.\n"
+            )
+    return _render_save_and_print(args, merged, None, synthesis_md, config)
+
+
+def _save_discovery_output(
+    rendered: str,
+    *,
+    domain: str,
+    emit: str,
+    save_dir: str,
+    suffix: str = "",
+) -> Path:
+    directory = Path(save_dir).expanduser().resolve()
+    directory.mkdir(parents=True, exist_ok=True)
+    extension = "json" if emit == "json" else "md"
+    suffix_part = f"-{suffix}" if suffix else ""
+    stem = f"{slugify(domain)}-discover-raw{suffix_part}"
+    date_str = datetime.datetime.now().strftime("%Y-%m-%d")
+    candidates = [directory / f"{stem}.{extension}", directory / f"{stem}-{date_str}.{extension}"]
+    candidates.extend(directory / f"{stem}-{date_str}-{index}.{extension}" for index in range(1, 100))
+    encoded = rendered.encode("utf-8")
+    for candidate in candidates:
+        try:
+            fd = os.open(candidate, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as output:
+            output.write(encoded)
+        return candidate
+    raise RuntimeError("Could not find a unique discovery output filename")
+
+
+def _pre_run_prior_state(
+    prior: dict[str, object] | None, run_ref: str
+) -> dict[str, object] | None:
+    """Reconstruct the queue state a topic had BEFORE this run identity
+    recorded it.
+
+    A row whose last_run_ref equals THIS run's run_ref was stamped by this
+    very run's own earlier attempt (a finalize retry), so its surface_count
+    already includes this run's surfacing: subtract it and keep the prior's
+    covered state (covered_at intact) so the retry renders exactly like the
+    first attempt did. Only when nothing remains after the subtraction AND
+    the row was never covered is the topic genuinely first-ever (no prior).
+    """
+    if not prior or prior.get("last_run_ref") != run_ref:
+        return prior
+    previously = max(0, int(prior["surface_count"]) - 1)
+    if previously == 0 and prior["status"] != "covered":
+        return None
+    adjusted = dict(prior)
+    adjusted["surface_count"] = previously
+    return adjusted
+
+
+def _annotate_and_record_discovery_queue(
+    report: schema.DiscoveryReport,
+    args: argparse.Namespace,
+    config: dict[str, object],
+    run_ref: str | None = None,
+) -> schema.DiscoveryReport:
+    """Stamp queue annotations onto report topics, then record this surfacing.
+
+    Order matters: annotations describe the queue state BEFORE this run, so
+    each topic is matched first and recorded second. The queue is on by
+    default; the resolved config value LAST30DAYS_DISCOVERY_QUEUE == "off"
+    (env var or .env, via env.get_config) disables it. Scoped runs
+    (--save-dir) write the scoped research.db, never the global one. Runs
+    synchronously after the pipeline returns - this writes disk, so the
+    abandon-on-timeout daemon-thread pattern is forbidden here.
+
+    ``run_ref`` overrides the run identity: the finalize leg passes the
+    pending report's leg-2 run_ref through so a finalize retry records (and
+    annotates) as the SAME run - store.record_discovery_surfacing skips the
+    double-count, and rows this very run identity stamped are not "prior"
+    state, so retries render identically instead of claiming a resurfacing.
+    """
+    queue_setting = str(config.get("LAST30DAYS_DISCOVERY_QUEUE") or "").strip().lower()
+    if queue_setting == "off" or not report.topics:
+        return report
+
+    import dataclasses
+
+    import store
+
+    run_ref = run_ref or f"discover:{report.domain or 'trending'}:{report.generated_at}"
+    as_of = (report.generated_at or "")[:10] or report.range_to
+    annotated: list[schema.DiscoveryTopic] = []
+    with store.scoped_db(_scoped_store_db(args)):
+        store.init_db()
+        # Phase 1: match EVERY topic before recording ANY. Interleaving
+        # match+record in one loop lets topic N fuzzy-match a same-anchor
+        # sibling row this very run recorded seconds earlier, falsely
+        # annotating a first-ever topic as "surfaced 2nd time".
+        # A row stamped by THIS run identity is this run's own earlier
+        # attempt (finalize retry), not prior state: reconstruct the pre-run
+        # state (count minus this run's own surfacing, covered state kept)
+        # so retries render identically for topics WITH history too.
+        priors = [
+            _pre_run_prior_state(prior, run_ref)
+            for prior in (
+                store.match_discovery_topic(topic.name) for topic in report.topics
+            )
+        ]
+        # Phase 2: record this run's surfacings. A topic whose (possibly
+        # fuzzy) prior row is covered inherits that covered state, so a
+        # user's covered mark survives judge naming drift instead of
+        # silently forking into a fresh uncovered row.
+        for topic, prior in zip(report.topics, priors):
+            inherit_covered_at = None
+            if prior and prior["status"] == "covered":
+                inherit_covered_at = prior["covered_at"] or prior["last_surfaced"]
+            store.record_discovery_surfacing(
+                topic.name,
+                domain=report.domain,
+                run_ref=run_ref,
+                as_of=as_of,
+                inherit_covered_at=inherit_covered_at,
+            )
+    for topic, prior in zip(report.topics, priors):
+        if prior:
+            topic = dataclasses.replace(
+                topic,
+                previously_surfaced_count=prior["surface_count"],
+                last_surfaced=prior["last_surfaced"],
+                covered=prior["status"] == "covered",
+            )
+        annotated.append(topic)
+    return dataclasses.replace(report, topics=annotated)
+
+
+def _record_discovery_queue_safely(
+    report: schema.DiscoveryReport,
+    args: argparse.Namespace,
+    config: dict[str, object],
+    run_ref: str | None = None,
+) -> schema.DiscoveryReport:
+    """Annotate + record the discovery queue, degrading a broken research.db
+    (locked, read-only dir, corrupt) to a stderr warning: a queue failure
+    must never destroy a finished pipeline run or the protocol's final
+    brief. Shared verbatim by the one-shot and finalize paths."""
+    try:
+        return _annotate_and_record_discovery_queue(
+            report, args, config, run_ref=run_ref,
+        )
+    except (sqlite3.Error, OSError) as exc:
+        sys.stderr.write(
+            f"[last30days] Warning: discovery queue unavailable ({exc}); "
+            "continuing without queue annotations.\n"
+        )
+        return report
+
+
+def _emit_and_save_discovery_report(
+    report: schema.DiscoveryReport,
+    args: argparse.Namespace,
+    domain: str,
+) -> None:
+    """Render a discovery report per --emit, honor --output/--save-dir, and
+    print it. Shared verbatim by the one-shot and finalize paths."""
+    if args.emit == "json":
+        payload = schema.to_dict(report) if args.json_profile == "raw" else schema.to_discovery_export(report)
+        rendered = json.dumps(payload, indent=2, sort_keys=True)
+    else:
+        rendered = render.render_discovery(report)
+
+    if args.output:
+        output_path = save_rendered_output(rendered, args.output)
+        sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
+    if args.save_dir:
+        save_path = _save_discovery_output(
+            rendered,
+            domain=domain or "trending",
+            emit=args.emit,
+            save_dir=args.save_dir,
+            suffix=args.save_suffix or "",
+        )
+        sys.stderr.write(f"[last30days] Saved output to {save_path}\n")
+    print(rendered)
+
+
+def _discovery_strict_exit_code(
+    source_status: dict[str, schema.SourceOutcome],
+    config: dict[str, object],
+) -> int:
+    """The ONE LAST30DAYS_STRICT_EXIT evaluation for every discovery
+    invocation - the one-shot and all three protocol legs (issue #384's
+    discovery counterpart). Rendering/output already happened by the time
+    this runs; only the exit code shifts to 3 when strict exit is on and any
+    source outcome is neither clean nor an expected skip."""
+    strict = str(config.get("LAST30DAYS_STRICT_EXIT") or "").strip().lower()
+    if strict not in {"1", "true", "yes", "on"}:
+        return 0
+    degraded = sorted(
+        source for source, outcome in (source_status or {}).items()
+        if outcome.state not in _STRICT_EXIT_OK_STATES
+    )
+    if not degraded:
+        return 0
+    sys.stderr.write(
+        f"[last30days] strict-exit: degraded sources: {', '.join(degraded)}\n"
+    )
+    sys.stderr.flush()
+    return 3
+
+
+def _require_discover_mock_parity(
+    loaded_mock: bool,
+    args_mock: bool,
+    *,
+    label: str,
+    path: Path | None,
+) -> None:
+    """A protocol leg's --mock flag must match the loaded handoff file's
+    stamped provenance: mock-born state finalized by a real run would fake a
+    real brief from fixture data, and real state finalized by --mock would
+    silently drop the round's queue write. Mismatch is a contract failure
+    (exit 2 via HandoffContractError)."""
+    if bool(loaded_mock) == bool(args_mock):
+        return
+    location = str(path) if path is not None else "(unknown path)"
+    if loaded_mock:
+        raise discovery_handoff.HandoffContractError(
+            f"{label} {location} is mock-born (a --mock leg wrote it): "
+            "mock-born state cannot be finalized by a real run. Re-run this "
+            "leg with --mock, or start a fresh real `--discover "
+            "--nominate-only` sweep."
+        )
+    raise discovery_handoff.HandoffContractError(
+        f"{label} {location} was written by a real run: real state "
+        "cannot be finalized by a --mock run. Drop --mock, or start a fresh "
+        "`--discover --nominate-only --mock` sweep."
+    )
+
+
+def _run_queue_list(args: argparse.Namespace, config: dict[str, object]) -> int:
+    """List uncovered surfaced topics from the persistent discovery queue."""
+    import store
+
+    db_path = _scoped_store_db(args)
+    if not Path(db_path or store.DB_PATH).exists():
+        print("Discovery queue is empty - no discovery run has recorded topics yet.")
+        return 0
+    with store.scoped_db(db_path):
+        rows = store.list_discovery_queue(status="surfaced")
+        if not rows:
+            # An existing db with zero queue rows (e.g. created via --store)
+            # means no discovery run has recorded anything - only claim
+            # "every topic is covered" when covered rows actually exist.
+            if store.list_discovery_queue():
+                print("Discovery queue is empty - every surfaced topic is marked covered.")
+            else:
+                print("Discovery queue is empty - no discovery run has recorded topics yet.")
+            return 0
+
+    headers = ("name", "domain", "surface_count", "last_surfaced", "status")
+    table = [
+        (
+            str(row["name"]),
+            str(row["domain"] or "-"),
+            str(row["surface_count"]),
+            str(row["last_surfaced"]),
+            str(row["status"]),
+        )
+        for row in rows
+    ]
+    widths = [
+        max(len(headers[column]), *(len(row[column]) for row in table))
+        for column in range(len(headers))
+    ]
+    lines = [
+        "  ".join(header.ljust(widths[i]) for i, header in enumerate(headers)).rstrip(),
+        "  ".join("-" * widths[i] for i in range(len(headers))),
+    ]
+    lines.extend(
+        "  ".join(row[i].ljust(widths[i]) for i in range(len(headers))).rstrip()
+        for row in table
+    )
+    print("\n".join(lines))
+    return 0
+
+
+def _run_queue_cover(
+    args: argparse.Namespace,
+    config: dict[str, object],
+    name: str,
+) -> int:
+    """Mark a queued discovery topic covered; unknown names error loudly."""
+    import store
+
+    if not name:
+        sys.stderr.write(
+            "[last30days] queue cover requires a topic name: "
+            'queue cover "<topic name>".\n'
+        )
+        return 2
+    db_path = _scoped_store_db(args)
+    if not Path(db_path or store.DB_PATH).exists():
+        sys.stderr.write(
+            f"[last30days] No queued topic named {name!r}: the discovery queue "
+            "is empty (no discovery run has recorded topics yet).\n"
+        )
+        return 2
+    with store.scoped_db(db_path):
+        row = store.mark_discovery_covered(
+            name, as_of=datetime.date.today().isoformat()
+        )
+    if row is None:
+        sys.stderr.write(
+            f"[last30days] No queued topic named {name!r}. Covering requires "
+            "the exact topic name; run 'queue list' to see queued names.\n"
+        )
+        return 2
+    print(f"Marked covered: {row['name']} (covered {row['covered_at']})")
+    return 0
+
+
+def _resolve_discovery_source_boundary(
+    args: argparse.Namespace, config: dict[str, object],
+) -> tuple[list[str] | None, list[str] | None] | None:
+    """Resolve the discovery sweep's source lists from the user's boundary.
+
+    Returns ``(listing_sources, enrichment_boundary)`` - the discovery-capable
+    subset for the sweep, and the user's ORIGINAL boundary honored by the
+    per-topic research passes (which reach beyond the listing feeds - e.g.
+    Techmeme, arXiv, YouTube, Polymarket); both None mean every available
+    source. Returns None (after writing the exit-2 error) when the configured
+    boundary leaves nothing to sweep: silently widening to all feeds would
+    query sources the user filtered out.
+    """
+    requested_sources = resolve_requested_sources(args.search, config)
+    enrich_requested_sources = list(requested_sources) if requested_sources else None
+    if requested_sources:
+        discovery_sources = [
+            source for source in requested_sources
+            if source in pipeline.DISCOVERY_SOURCES
+        ]
+        if not discovery_sources:
+            origin = "--search" if args.search is not None else "LAST30DAYS_DEFAULT_SEARCH"
+            sys.stderr.write(
+                f"[last30days] {origin} has no discovery-capable sources "
+                f"(unsupported: {', '.join(requested_sources)}); discovery "
+                f"sweeps use: {', '.join(pipeline.DISCOVERY_SOURCES)}. Pass "
+                "--search with one of those (or clear the source filter) to "
+                "run a sweep.\n"
+            )
+            return None
+        requested_sources = discovery_sources
+    return requested_sources, enrich_requested_sources
+
+
+def _discover_subreddits(args: argparse.Namespace) -> list[str] | None:
+    return (
+        [value.strip().removeprefix("r/") for value in args.subreddits.split(",") if value.strip()]
+        if args.subreddits else None
+    )
+
+
+def _discover_domain(args: argparse.Namespace) -> str:
+    """The whitespace-normalized discovery domain; empty = global trending."""
+    return " ".join(str(args.discover or "").split())
+
+
+def _run_discover(args: argparse.Namespace, config: dict[str, object]) -> int:
+    domain = _discover_domain(args)
+    # Empty domain = global trending: sweep every river feed's hot list with no
+    # keyword gate. The confidence floor is what keeps junk out, not a keyword.
+    # (--as-of and HTML rejection live in _main's shared --discover dispatch,
+    # so every leg - one-shot or protocol - applies the same guards.)
+    if args.synthesis_file:
+        sys.stderr.write("[last30days] Warning: --synthesis-file is not used by discovery mode.\n")
+
+    boundary = _resolve_discovery_source_boundary(args, config)
+    if boundary is None:
+        return 2
+    requested_sources, enrich_requested_sources = boundary
+    subreddits = _discover_subreddits(args)
+    depth = "deep" if args.deep else "quick" if args.quick else "default"
+    try:
+        report = pipeline.run_discover(
+            domain=domain,
+            config=config,
+            depth=depth,
+            requested_sources=requested_sources,
+            mock=args.mock,
+            subreddits=subreddits,
+            lookback_days=args.lookback_days or 30,
+            as_of_date=args.as_of_date,
+            enrich=not args.discover_shallow,
+            enrich_requested_sources=enrich_requested_sources,
+        )
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+
+    # Persistent topic queue: annotate this report from prior surfacings, then
+    # record this run's surfacings - BEFORE rendering/export so the Pipeline
+    # line and the JSON queue fields see the annotations. Mock runs stay 100%
+    # side-effect-free.
+    if not args.mock:
+        report = _record_discovery_queue_safely(report, args, config)
+
+    _emit_and_save_discovery_report(report, args, domain)
+    return _discovery_strict_exit_code(report.source_status, config)
+
+
+def _discover_handoff_state_dir(args: argparse.Namespace) -> Path | None:
+    """One resolver for every protocol leg's handoff files: the save dir when
+    given (mirroring _scoped_store_db's scoping), else the config dir - the
+    same base _last_report_cache_path uses. args.save_dir is read AFTER the
+    LAST30DAYS_MEMORY_DIR fallback in _main resolved it."""
+    return discovery_handoff.handoff_state_dir(
+        getattr(args, "save_dir", None), env.CONFIG_DIR
+    )
+
+
+def _run_discover_nominate(args: argparse.Namespace, config: dict[str, object]) -> int:
+    """Protocol leg 1: sweep the listings, build the full judge pool, write
+    the nominations bundle, and print the host-facing judging digest.
+
+    No stage-1 judge, enrichment, confidence floor, or queue writes happen on
+    this leg - the host judges from the bundle and leg 2 (--judgments)
+    resumes from it. A zero-nomination sweep short-circuits to the existing
+    nothing-solid brief with NO bundle written: there is nothing to judge.
+    Writing a fresh bundle starts a NEW protocol round, so any pending
+    report left by a prior round is deleted alongside it.
+    """
+    domain = _discover_domain(args)
+    boundary = _resolve_discovery_source_boundary(args, config)
+    if boundary is None:
+        return 2
+    requested_sources, enrich_requested_sources = boundary
+    lookback_days = args.lookback_days or 30
+    try:
+        result = pipeline.run_discover_nominate(
+            domain=domain,
+            config=config,
+            depth="deep" if args.deep else "quick" if args.quick else "default",
+            requested_sources=requested_sources,
+            mock=args.mock,
+            subreddits=_discover_subreddits(args),
+            lookback_days=lookback_days,
+            as_of_date=args.as_of_date,
+        )
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+
+    if not result.pool:
+        print(render.render_discovery(pipeline.nominate_nothing_solid_report(result)))
+        return _discovery_strict_exit_code(result.source_status, config)
+
+    entries = [
+        discovery_handoff.PoolEntry(
+            nomination=nomination,
+            cluster_id=cluster_id,
+            # No provider runs on this leg, so the nomination's name and junk
+            # flag ARE the topic_shape heuristics - stored on the row as
+            # leg 2's fallback for anything the host leaves unjudged.
+            heuristic_name=nomination.name,
+            heuristic_junk=nomination.junk_shape,
+        )
+        for nomination, cluster_id in result.pool
+    ]
+    bundle = discovery_handoff.write_nominations_bundle(
+        entries,
+        domain=result.plan.domain,
+        tier="shallow" if args.discover_shallow else "deep",
+        from_date=result.from_date,
+        to_date=result.to_date,
+        lookback_days=lookback_days,
+        enrichment_source_boundary=enrich_requested_sources,
+        requested_sources=requested_sources,
+        # The sweep's finalized per-source outcomes ride the bundle so legs
+        # 2-3 report degraded coverage instead of silently reading clean; the
+        # mock stamp keeps mock-born and real state from cross-finalizing.
+        source_status=result.source_status,
+        mock=args.mock,
+        # Same resolution as _discover_handoff_state_dir: save dir when
+        # given, else the config dir.
+        save_dir=getattr(args, "save_dir", None),
+        config_dir=env.CONFIG_DIR,
+    )
+    # A fresh bundle starts a NEW protocol round: a pending report left by a
+    # prior round is cross-round state a bare --finalize could silently
+    # consume - delete it (missing file is a no-op).
+    state_dir = _discover_handoff_state_dir(args)
+    if state_dir is not None:
+        discovery_handoff.pending_report_path(state_dir).unlink(missing_ok=True)
+    print(discovery_handoff.build_host_digest(bundle))
+    print(
+        "\nJudgments file schema (leg 2): "
+        f'{{"bundle_id": "{bundle.bundle_id}", "judgments": '
+        '[{"id": "n1", "name": "<short topic name>", "junk": false, '
+        '"worthiness": 0-100}, ...]}. '
+        "Then resume with: --discover --judgments <path>."
+    )
+    return _discovery_strict_exit_code(result.source_status, config)
+
+
+def _run_discover_resume(args: argparse.Namespace, config: dict[str, object]) -> int:
+    """Protocol leg 2: resume from the nominations bundle, apply the host
+    judgments file, run the deep per-topic research pass, and persist the
+    ranked result as the pending report for leg 3 (--finalize).
+
+    Contract failures (missing/stale bundle, judgments not bound to it, a
+    bundle whose mock provenance disagrees with this run's --mock flag, an
+    unwritable pending-report path) raise HandoffContractError and map to
+    exit 2 in _run_discover_protocol_leg. Zero floor survivors renders the
+    nothing-solid brief right here (clearing any stale prior-round pending
+    file): no pending file, no leg 3. No queue writes and no artifact saves
+    happen on this leg - the topic queue and the rendered brief belong to
+    leg 3.
+    """
+    save_dir = getattr(args, "save_dir", None)
+    bundle = discovery_handoff.read_nominations_bundle(
+        save_dir=save_dir, config_dir=env.CONFIG_DIR,
+    )
+    _require_discover_mock_parity(
+        bundle.mock, args.mock,
+        label="Nominations bundle", path=bundle.path,
+    )
+    judgments = discovery_handoff.read_judgments(
+        args.judgments, bundle, save_dir=save_dir, config_dir=env.CONFIG_DIR,
+    )
+    result = pipeline.run_discover_resume(
+        bundle, judgments, config=config, mock=args.mock,
+    )
+    report = result.report
+
+    if not report.topics:
+        # Nothing cleared the floor: the honest brief ends the protocol here.
+        # This round wrote no pending file, so a stale one from an earlier
+        # round must not survive to feed a bare --finalize (missing file is
+        # a no-op).
+        state_dir = _discover_handoff_state_dir(args)
+        if state_dir is not None:
+            discovery_handoff.pending_report_path(state_dir).unlink(missing_ok=True)
+        print(render.render_discovery(report))
+        return _discovery_strict_exit_code(report.source_status, config)
+
+    state_dir = _discover_handoff_state_dir(args)
+    if state_dir is None:
+        # Unreachable in practice - reading the bundle above required one of
+        # these locations - but kept as a loud contract error, not an assert.
+        raise discovery_handoff.HandoffContractError(
+            "No handoff location available to write the pending report: "
+            "pass --save-dir or configure ~/.config/last30days/."
+        )
+    pending_path = discovery_handoff.pending_report_path(state_dir)
+    payload = {
+        "kind": schema.DISCOVERY_PENDING_KIND,
+        "schema_version": schema.DISCOVERY_PENDING_SCHEMA_VERSION,
+        "bundle_id": bundle.bundle_id,
+        # Fresh TTL clock: leg 3 measures staleness from THIS resume run,
+        # not from the leg-1 sweep.
+        "generated_at": report.generated_at,
+        # Same run_ref format the queue records (leg 3 replays it verbatim).
+        "run_ref": f"discover:{report.domain or 'trending'}:{report.generated_at}",
+        # Leg-2 provenance: leg 3 refuses to finalize across the mock/real
+        # boundary in either direction.
+        "mock": bool(args.mock),
+        # Full schema round-trip (the _write_last_run precedent): leg 3
+        # rebuilds the report from this dict instead of re-running anything.
+        "report": schema.to_dict(report),
+        "angle_inputs": result.angle_inputs,
+    }
+    # ONE post-loop write from the main thread; enrichment workers are daemon
+    # threads and never touch disk.
+    try:
+        state_dir.mkdir(parents=True, exist_ok=True)
+        pending_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    except OSError as exc:
+        # A locked/read-only/full disk is the protocol's clean exit-2 path,
+        # never a traceback (same contract as the bundle write).
+        raise discovery_handoff.HandoffContractError(
+            f"Could not write pending discovery report {pending_path}: {exc}"
+        ) from exc
+
+    print(
+        f"Judged discovery resume: {len(report.topics)} topic"
+        f"{'s' if len(report.topics) != 1 else ''} cleared the floor "
+        f"(bundle_id {bundle.bundle_id})."
+    )
+    print(f"Pending report: {pending_path}")
+    print("\nAngle inputs by nomination id:")
+    print(json.dumps(result.angle_inputs, indent=2))
+    print(
+        "\nWrite the angles file (leg 3): "
+        f'{{"bundle_id": "{bundle.bundle_id}", "angles": '
+        '[{"id": "n1", "podcast": "<one-sentence hook>", '
+        '"x_article": "<one-sentence hook>"}, ...]} - one row per topic id '
+        "above.\n"
+        "Then finalize with: --discover --finalize --angles <path>."
+    )
+    return _discovery_strict_exit_code(report.source_status, config)
+
+
+def _run_discover_finalize(args: argparse.Namespace, config: dict[str, object]) -> int:
+    """Protocol leg 3: load the leg-2 pending report, apply host angles,
+    render the final brief, save discovery artifacts, and record the topic
+    queue. The cheap offline leg - no sweep, no enrichment, no providers,
+    no network; everything renders from the pending report. (HTML/--as-of
+    rejection lives in _main's shared --discover dispatch.)
+
+    Contract failures (missing/stale/mismatched pending report or angles)
+    raise HandoffContractError and map to exit 2 in
+    _run_discover_protocol_leg. The pending file is deliberately LEFT IN
+    PLACE on success: a finalize retry with a corrected angles file must
+    keep working within the TTL, and the queue records under the pending
+    report's leg-2 run_ref, so retries never double-count a surfacing.
+    Mock finalize renders identically but writes no queue rows.
+    """
+    import dataclasses
+
+    save_dir = getattr(args, "save_dir", None)
+    pending = discovery_handoff.read_pending_report(
+        save_dir=save_dir, config_dir=env.CONFIG_DIR,
+    )
+    _require_discover_mock_parity(
+        pending.mock, args.mock,
+        label="Pending discovery report", path=pending.path,
+    )
+    angles = discovery_handoff.read_angles(
+        args.angles, pending, save_dir=save_dir, config_dir=env.CONFIG_DIR,
+    )
+    try:
+        report = schema.discovery_report_from_dict(pending.report)
+    except (KeyError, TypeError, ValueError) as exc:
+        # The envelope validated but the report body is structurally
+        # incomplete: a contract failure with the resume remedy, never a
+        # traceback out of the finalize leg.
+        raise discovery_handoff.HandoffContractError(
+            f"Pending discovery report {pending.path} carries a malformed "
+            f"report body ({type(exc).__name__}: {exc}). "
+            f"{discovery_handoff._RESUME_REMEDY}"
+        ) from exc
+
+    if angles:
+        # Host angles are keyed by nomination id; the pending report's
+        # angle_inputs mapping carries each surviving id's applied topic
+        # name, which is how angles land on the right DiscoveryTopic.
+        angles_by_name = {
+            name: host
+            for nomination_id, host in angles.items()
+            if (name := (pending.angle_inputs.get(nomination_id) or {}).get("name"))
+        }
+        report = dataclasses.replace(report, topics=[
+            dataclasses.replace(
+                topic,
+                podcast_angle=host.podcast,
+                x_article_angle=host.x_article,
+            )
+            if (host := angles_by_name.get(topic.name)) is not None
+            else topic
+            for topic in report.topics
+        ])
+
+    # Persistent topic queue: the protocol's ONE queue write happens here,
+    # under the leg-2 run identity (pending.run_ref) so finalize retries are
+    # idempotent. Mock runs stay 100% side-effect-free.
+    if not args.mock:
+        report = _record_discovery_queue_safely(
+            report, args, config, run_ref=pending.run_ref or None,
+        )
+
+    _emit_and_save_discovery_report(report, args, report.domain)
+    return _discovery_strict_exit_code(report.source_status, config)
+
+
+def _run_discover_protocol_leg(
+    args: argparse.Namespace, config: dict[str, object]
+) -> int:
+    """Route one validated protocol invocation to its leg. Contract failures
+    (unreadable/stale/mismatched handoff files) map to stderr + exit 2 here,
+    so the leg bodies (U3-U5) raise HandoffContractError freely."""
+    try:
+        if args.nominate_only:
+            return _run_discover_nominate(args, config)
+        # --judgments dispatch keys on flag presence (is not None), matching
+        # the --discover convention: never on the path string's truthiness.
+        if args.judgments is not None:
+            return _run_discover_resume(args, config)
+        return _run_discover_finalize(args, config)
+    except discovery_handoff.HandoffContractError as exc:
+        sys.stderr.write(f"[last30days] {exc.message}\n")
+        return 2
+
+
+_STRICT_EXIT_OK_STATES = {"ok", "no-results", "skipped-unconfigured"}
+
+
+def _strict_exit_code(
+    report: schema.Report,
+    entity_reports: list[tuple[str, schema.Report]] | None,
+    config: dict[str, object],
+) -> int:
+    """Opt-in machine-detectable degraded-run signal (issue #384).
+
+    When LAST30DAYS_STRICT_EXIT is truthy, a run whose report carries any
+    source outcome that is neither clean nor a plain no-results exits 3 so
+    cron/CI wrappers can distinguish degraded coverage from success. Default
+    behavior (exit 0, warning rendered in the report footer) is unchanged.
+    """
+    raw = str(config.get("LAST30DAYS_STRICT_EXIT") or "").strip().lower()
+    if raw not in {"1", "true", "yes", "on"}:
+        return 0
+    reports = [report] + [rep for _, rep in (entity_reports or [])]
+    degraded = sorted({
+        name
+        for rep in reports
+        for name, outcome in (rep.source_status or {}).items()
+        if outcome.state not in _STRICT_EXIT_OK_STATES
+    })
+    if not degraded:
+        return 0
+    sys.stderr.write(
+        f"[last30days] strict-exit: degraded sources: {', '.join(degraded)}\n"
+    )
+    sys.stderr.flush()
+    return 3
+
+
+def _audience_register_for_run(
+    args: argparse.Namespace,
+    config: dict[str, object],
+    entity_reports: list[tuple[str, schema.Report]] | None,
+) -> registers.AudienceRegister:
+    """Resolve CLI > config for single-topic standard brief renderers."""
+
+    from lib import planner
+
+    topic = " ".join(getattr(args, "topic", [])).strip()
+    comparison_topic_requested = bool(
+        len(planner._comparison_entities(topic)) >= 2
+        or args.competitors is not None
+        or args.competitors_list
+        or args.competitors_plan
+    )
+    if (
+        entity_reports
+        or comparison_topic_requested
+        or args.drill
+        or args.emit not in {"compact", "md", "html"}
+    ):
+        return registers.get_register()
+    explicit = getattr(args, "register", None)
+    configured = config.get("LAST30DAYS_REGISTER")
+    name = explicit or (str(configured) if configured else "default")
+    # Preserve configs written by the pre-register ELI5 follow-up command.
+    legacy_eli5 = str(config.get("ELI5_MODE") or "").strip().lower()
+    if not explicit and not configured and legacy_eli5 in {"1", "true", "yes", "on"}:
+        name = "eli5"
+    return registers.get_register(name)
+
+
+def _render_save_and_print(
+    args: argparse.Namespace,
+    report: schema.Report,
+    entity_reports: list[tuple[str, schema.Report]] | None,
+    synthesis_md: str | None,
+    config: dict[str, object],
+) -> int:
+    fun_level = str(config.get("FUN_LEVEL", "medium")).lower()
+    try:
+        audience = _audience_register_for_run(args, config, entity_reports)
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+    if audience.name != "default":
+        sys.stderr.write(f"[last30days] Audience register: {audience.name}\n")
+        sys.stderr.flush()
+    # Comparison HTML is the one case where the saved file's title and content
+    # have to be overridden away from the leading entity's report. Compute the
+    # gate once so the footer-display and save-output paths can't disagree.
+    is_comparison_html = bool(entity_reports) and args.emit == "html"
+    footer_save_path = None
+    if args.output:
+        footer_save_path = compute_output_path_display(args.output)
+    elif args.save_dir:
+        save_topic_for_display = comparison_topic(entity_reports) if is_comparison_html else report.topic
+        footer_save_path = compute_save_path_display(
+            args.save_dir, save_topic_for_display, args.save_suffix or "", args.emit
+        )
+
+    if entity_reports:
+        rendered = emit_comparison_output(
+            entity_reports,
+            args.emit,
+            fun_level=fun_level,
+            save_path=footer_save_path,
+            synthesis_md=synthesis_md,
+            json_profile=args.json_profile,
+        )
+    else:
+        rendered = emit_output(
+            report,
+            args.emit,
+            fun_level=fun_level,
+            save_path=footer_save_path,
+            synthesis_md=synthesis_md,
+            json_profile=args.json_profile,
+            register=audience.name,
+        )
+    has_private_corpus = _report_has_private_corpus(report) or bool(
+        entity_reports
+        and any(_report_has_private_corpus(entity) for _label, entity in entity_reports)
+    )
+    private_saved_format = has_private_corpus
+    publish_companion_paths: list[Path] = []
+    if args.output:
+        output_path = save_rendered_output(
+            rendered,
+            args.output,
+            private=private_saved_format,
+        )
+        if args.emit == "html":
+            publish_companion_paths.append(output_path)
+        sys.stderr.write(f"[last30days] Saved output to {output_path}\n")
+        sys.stderr.flush()
+    if args.save_dir:
+        # Save the main topic's raw file (single-entity or comparison main).
+        # Bind the render to the path save_output actually allocates so the
+        # saved report and stdout agree even when collision fallback is used.
+        def _render_with_actual_path(actual_path: Path) -> str:
+            nonlocal rendered
+            display = compute_output_path_display(str(actual_path))
+            if entity_reports:
+                rendered = emit_comparison_output(
+                    entity_reports,
+                    args.emit,
+                    fun_level=fun_level,
+                    save_path=display,
+                    synthesis_md=synthesis_md,
+                    json_profile=args.json_profile,
+                )
+            else:
+                rendered = emit_output(
+                    report,
+                    args.emit,
+                    fun_level=fun_level,
+                    save_path=display,
+                    synthesis_md=synthesis_md,
+                    json_profile=args.json_profile,
+                    register=audience.name,
+                )
+            if args.emit not in {"json", "html"} and not entity_reports:
+                # Markdown saves keep the complete debug artifact (all clusters
+                # and per-source items), matching the render_fn-less path in
+                # save_output and the comparison peer saves. Saving the compact
+                # stdout render instead made most collected evidence
+                # unrecoverable from the raw file (#923). The stdout re-render
+                # above still runs so the visible footer cites the real path,
+                # and the saved artifact carries the same citation.
+                return render.render_full(report, save_path=display)
+            return rendered
+
+        save_path = save_output(
+            report,
+            args.emit,
+            args.save_dir,
+            suffix=args.save_suffix or "",
+            synthesis_md=synthesis_md,
+            topic_override=comparison_topic(entity_reports) if is_comparison_html else None,
+            json_profile=args.json_profile,
+            register=audience.name,
+            private=private_saved_format,
+            render_fn=_render_with_actual_path,
+        )
+        if args.emit == "html":
+            publish_companion_paths.append(save_path)
+        sys.stderr.write(f"[last30days] Saved output to {save_path}\n")
+        comparison_peer_paths: list[Path] = []
+        # Competitor / vs-mode: also save a per-entity raw file for each peer.
+        # Matches historical vs-mode behavior (N passes -> N save files).
+        if entity_reports and len(entity_reports) > 1:
+            for label, entity_report in entity_reports[1:]:
+                peer_path = save_output(
+                    entity_report, args.emit, args.save_dir,
+                    suffix=args.save_suffix or "",
+                    synthesis_md=synthesis_md,
+                    json_profile=args.json_profile,
+                    private=_report_has_private_corpus(entity_report),
+                )
+                comparison_peer_paths.append(peer_path)
+                sys.stderr.write(f"[last30days] Saved output to {peer_path}\n")
+            peers_display = ", ".join(str(path) for path in comparison_peer_paths)
+            sys.stderr.write(
+                f"[last30days] Comparison artifact set: main={save_path}; "
+                f"peers={peers_display}\n"
+            )
+        sys.stderr.flush()
+    if args.publish_html:
+        try:
+            has_private_corpus = "corpus" in report.source_status or bool(
+                entity_reports
+                and any("corpus" in entity.source_status for _label, entity in entity_reports)
+            )
+            publish_rendered = rendered
+            if has_private_corpus:
+                sys.stderr.write(
+                    "[last30days] Excluding local corpus evidence and synthesis from published HTML.\n"
+                )
+                if entity_reports:
+                    publish_rendered = emit_comparison_output(
+                        [
+                            (label, schema.without_sources(entity, {"corpus"}))
+                            for label, entity in entity_reports
+                        ],
+                        "html",
+                        fun_level=fun_level,
+                        save_path=footer_save_path,
+                        synthesis_md=None,
+                        json_profile=args.json_profile,
+                    )
+                else:
+                    publish_rendered = emit_output(
+                        schema.without_sources(report, {"corpus"}),
+                        "html",
+                        fun_level=fun_level,
+                        save_path=footer_save_path,
+                        synthesis_md=None,
+                        json_profile=args.json_profile,
+                        register=audience.name,
+                    )
+            publish_result = publish_rendered_html(
+                publish_rendered,
+                password=_publish_password_for_args(args, config),
+                companion_paths=publish_companion_paths,
+            )
+            sys.stderr.write(f"[last30days] Published HTML to {publish_result['url']}\n")
+            for warning in publish_result.get("_metadata_errors") or []:
+                sys.stderr.write(f"[last30days] Publish metadata warning: {warning}\n")
+            if publish_result.get("update_key"):
+                sys.stderr.write(
+                    "[last30days] ht-ml.app returned an update key; not writing it "
+                    "to stdout, HTML, or publish metadata.\n"
+                )
+            sys.stderr.flush()
+        except Exception as exc:
+            sys.stderr.write(f"[last30days] HTML publish failed: {exc}\n")
+            sys.stderr.flush()
+    print(rendered)
+    return _strict_exit_code(report, entity_reports, config)
+
+
+def _propagate_config_to_environ(config: dict[str, object]) -> None:
+    """Push relevant env keys to os.environ so provider modules can read them.
+
+    The env.get_config() function reads from a .env file, but providers.py
+    reads from os.environ directly. Without this, OPENAI_BASE_URL and
+    XAI_BASE_URL overrides are silently ignored. This is a no-op for
+    keys that are already set in process env.
+    """
+    for key in ("OPENAI_BASE_URL", "XAI_BASE_URL", "OPENROUTER_BASE_URL"):
+        val = config.get(key)
+        if val and not os.environ.get(key):
+            os.environ[key] = val
+
+
+def _setup_allows_browser_cookies(args: argparse.Namespace, extra_argv: list[str]) -> bool:
+    return (
+        not args.no_browser_cookies
+        and not args.diagnose
+        and not args.preflight
+        and "--allow-browser-cookies" in extra_argv
+    )
+
+
+SETUP_PASSTHROUGH_FLAGS = {
+    "--allow-browser-cookies",
+    "--device-auth",
+    "--github",
+    "--github-start",
+    "--github-poll",
+    "--openclaw",
+}
+
+SKILL_ONLY_FLAGS = {
+    "--agent",
+}
+
+# Doctor passthrough: `doctor --json` / `doctor --cached` mirror the setup
+# passthrough pattern (neither is a global parser flag; they only mean
+# something to doctor). `--cached` serves the stored doctor-cache.json report
+# within its TTL and falls through to a live run otherwise.
+DOCTOR_PASSTHROUGH_FLAGS = {
+    "--json",
+    "--cached",
+    "--postmortem",
+    "--probe",
+}
+
+
+def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv: list[str]) -> None:
+    if not extra_argv:
+        return
+    if topic.lower() == "setup":
+        unsupported = [arg for arg in extra_argv if arg not in SETUP_PASSTHROUGH_FLAGS]
+        if unsupported:
+            parser.error(
+                "unsupported setup argument(s): "
+                + ", ".join(unsupported)
+                + f"; supported setup passthrough flags are {', '.join(sorted(SETUP_PASSTHROUGH_FLAGS))}"
+            )
+        return
+    if topic.lower() == "doctor":
+        unsupported = [arg for arg in extra_argv if arg not in DOCTOR_PASSTHROUGH_FLAGS]
+        if unsupported:
+            parser.error(
+                "unsupported doctor argument(s): "
+                + ", ".join(unsupported)
+                + f"; supported doctor passthrough flags are {', '.join(sorted(DOCTOR_PASSTHROUGH_FLAGS))}"
+            )
+        return
+    skill_only = [arg for arg in extra_argv if arg in SKILL_ONLY_FLAGS]
+    other_unknown = [arg for arg in extra_argv if arg not in SKILL_ONLY_FLAGS]
+    if skill_only:
+        message = (
+            "unsupported Python CLI argument(s): "
+            + ", ".join(skill_only)
+            + "; these are skill arguments and must not be forwarded to scripts/last30days.py"
+        )
+        if other_unknown:
+            message += "; also unsupported: " + ", ".join(other_unknown)
+        parser.error(message)
+    parser.error("unsupported Python CLI argument(s): " + ", ".join(extra_argv))
+
+
+def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: list[str]) -> env.ConfigLoadPolicy:
+    normalized_topic = topic.lower()
+    is_library_command = (
+        normalized_topic == "library feed"
+        or normalized_topic == "library search"
+        or normalized_topic.startswith("library search ")
+    )
+    # Queue commands are local SQLite reads/writes: like library commands they
+    # must never trigger browser-cookie extraction or Keychain prompts.
+    is_queue_command = (
+        normalized_topic == "queue list"
+        or normalized_topic == "queue cover"
+        or normalized_topic.startswith("queue cover ")
+    )
+    is_cached_verification = bool(getattr(args, "verify_freshness", None)) and not normalized_topic
+    if args.no_browser_cookies:
+        browser_mode = "off"
+    elif (
+        args.diagnose or args.preflight or normalized_topic == "doctor"
+        or is_library_command or is_queue_command or is_cached_verification
+    ):
+        # doctor is plan-only like --diagnose: it must never read cookies.
+        # Cache-only freshness verification hits only point APIs (Polymarket,
+        # GitHub, StockTwits) - no cookie-backed source, so no Keychain prompt.
+        browser_mode = "plan_only"
+    elif normalized_topic == "setup":
+        browser_mode = "read" if _setup_allows_browser_cookies(args, extra_argv) else "off"
+    else:
+        browser_mode = "read"
+    return env.ConfigLoadPolicy(
+        browser_cookies=browser_mode,
+        inspect_ignored_project_config=args.diagnose or args.preflight or normalized_topic == "doctor",
+    )
+
+
+def _run_library_feed(args: argparse.Namespace, config: dict[str, object]) -> int:
+    """Generate the local research index/feed and optionally publish it."""
+    from lib import feed, html_publish, library
+
+    if args.publish_html:
+        sys.stderr.write(
+            "[last30days] library feed uses --publish, not --publish-html.\n"
+        )
+        return 2
+    if args.output:
+        sys.stderr.write(
+            "[last30days] library feed writes index.html and feed.xml to --save-dir; "
+            "--output is not supported.\n"
+        )
+        return 2
+
+    memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
+    output_dir = memory_dir.resolve()
+    # Scoped libraries (--save-dir) must not mix in the global briefing
+    # archive: a client-specific or publishable feed pulling unrelated default
+    # briefings could publish them publicly. The default library keeps the
+    # archive; a scoped one reads only its own directory.
+    briefs_dir = (
+        library.DEFAULT_BRIEFS_DIR if not args.save_dir else memory_dir / "briefings"
+    )
+    entries, notes = library.scan_library(memory_dir, briefs_dir)
+    feed_author = str(
+        config.get("LAST30DAYS_LIBRARY_OWNER") or "last30days research library"
+    )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    library_id = library.get_or_create_library_id(output_dir)
+    rendered_briefs_dir = output_dir / "briefs"
+    has_private_entries = any(
+        render.PRIVATE_CORPUS_START in entry.content for entry in entries
+    )
+    _ensure_output_directory(rendered_briefs_dir, private=has_private_entries)
+
+    def _preserve_hand_written_page(existing_path: Path, generated_marker: str) -> None:
+        """Back up any page library feed did not generate before overwriting it."""
+        if not existing_path.exists():
+            return
+        try:
+            marker_found = generated_marker in existing_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            marker_found = False
+        if marker_found:
+            return
+        backup = existing_path.with_suffix(existing_path.suffix + ".bak")
+        counter = 1
+        while backup.exists():
+            backup = existing_path.with_suffix(f"{existing_path.suffix}.bak{counter}")
+            counter += 1
+        existing_path.replace(backup)
+        sys.stderr.write(
+            f"[last30days] {existing_path.name} was not generated by "
+            f"library feed; preserved the original at {backup.name}\n"
+        )
+
+    publishable_brief_documents: dict[str, str] = {}
+    for entry in entries:
+        rendered = html_render.render_library_brief(entry)
+        target = rendered_briefs_dir / entry.output_name
+        _preserve_hand_written_page(target, html_render.LIBRARY_BRIEF_MARKER)
+        save_rendered_output(
+            rendered,
+            str(target),
+            private=render.PRIVATE_CORPUS_START in entry.content,
+        )
+        publishable_brief_documents[entry.entry_id] = html_render.render_library_brief(
+            entry, include_private=False
+        )
+
+    current_brief_names = {entry.output_name for entry in entries}
+    for path in rendered_briefs_dir.glob("*.html"):
+        is_orphan = path.name not in current_brief_names
+        if not (is_orphan and library.is_generated_brief_name(path.name)):
+            continue
+        # A generated-looking name is not proof of ownership; only prune
+        # pages that carry the renderer's own marker.
+        try:
+            generated = html_render.LIBRARY_BRIEF_MARKER in path.read_text(
+                encoding="utf-8"
+            )
+        except (OSError, UnicodeDecodeError):
+            generated = False
+        if generated:
+            path.unlink()
+
+    feed_xml = feed.render_atom(entries, library_id=library_id, author=feed_author)
+    index_html = html_render.render_library_index(entries)
+    feed_path = output_dir / "feed.xml"
+    index_path = output_dir / "index.html"
+    _preserve_hand_written_page(feed_path, "urn:last30days:research-library")
+    _preserve_hand_written_page(
+        index_path, "Generated locally by <strong>last30days</strong>"
+    )
+    feed_path.write_text(feed_xml, encoding="utf-8")
+    index_path.write_text(index_html, encoding="utf-8")
+
+    for note in notes:
+        sys.stderr.write(f"[last30days] Library note: {note}\n")
+    sys.stderr.write(
+        f"[last30days] Library feed generated {len(entries)} brief(s): "
+        f"{index_path} and {feed_path}\n"
+    )
+
+    if args.publish:
+        password = _publish_password_for_args(args, config)
+        entry_urls: dict[str, str] = {}
+        try:
+            brief_results = html_publish.publish_html_documents(
+                publishable_brief_documents,
+                password=password,
+            )
+            entry_urls = {
+                entry_id: str(result["url"])
+                for entry_id, result in brief_results.items()
+            }
+            if batch_error := getattr(brief_results, "error", None):
+                raise batch_error
+            published_index = html_render.render_library_index(
+                entries,
+                entry_urls=entry_urls,
+                feed_url=None,
+            )
+            index_result = html_publish.publish_html(published_index, password=password)
+            index_url = str(index_result["url"])
+        except (html_publish.HtmlPublishError, KeyError, OSError) as exc:
+            sys.stderr.write(f"[last30days] Library publish failed: {exc}\n")
+            if entry_urls:
+                sys.stderr.write(
+                    f"[last30days] Partial publish: {len(entry_urls)} public brief "
+                    "page(s) were created before the failure.\n"
+                )
+            return 1
+
+        # Keep the local artifacts useful as a record of the live publication.
+        feed_path.write_text(
+            feed.render_atom(
+                entries,
+                library_id=library_id,
+                entry_urls=entry_urls,
+                author=feed_author,
+            ),
+            encoding="utf-8",
+        )
+        index_path.write_text(
+            html_render.render_library_index(entries, entry_urls=entry_urls),
+            encoding="utf-8",
+        )
+        sys.stderr.write(f"[last30days] Published library to {index_url}\n")
+        sys.stderr.write(f"[last30days] Local Atom feed: {feed_path}\n")
+        print(
+            f"Library: {index_url}\nFeed: {feed_path}\n"
+            "Atom feed is local; host feed.xml on any static host (for example, GitHub Pages) "
+            "to make it subscribable."
+        )
+        return 0
+
+    print(
+        f"Library: {index_path}\nFeed: {feed_path}\n"
+        "Atom feed is local; host feed.xml on any static host (for example, GitHub Pages) "
+        "to make it subscribable."
+    )
+    return 0
+
+
+def _run_library_search(
+    args: argparse.Namespace,
+    config: dict[str, object],
+    query: str,
+) -> int:
+    """Search saved briefs and store sightings without network access."""
+    from lib import library, library_index
+
+    if not query.strip():
+        sys.stderr.write("[last30days] library search requires a non-empty query.\n")
+        return 2
+    if args.publish or args.publish_html:
+        sys.stderr.write("[last30days] library search does not publish output.\n")
+        return 2
+    if args.emit != "compact":
+        sys.stderr.write("[last30days] library search currently supports text output only.\n")
+        return 2
+    if args.output:
+        sys.stderr.write(
+            "[last30days] library search prints to stdout; --output is not supported.\n"
+        )
+        return 2
+
+    memory_dir = Path(args.save_dir).expanduser() if args.save_dir else library.DEFAULT_MEMORY_DIR
+    try:
+        matches, synced = library_index.sync_and_search(
+            query,
+            memory_dir=memory_dir,
+            briefs_dir=(
+                memory_dir / "briefings" if args.save_dir else library.DEFAULT_BRIEFS_DIR
+            ),
+            db_path=(
+                memory_dir.resolve() / ".last30days-library.db"
+                if args.save_dir else library_index.DEFAULT_LIBRARY_DB
+            ),
+            # A scoped search must never merge in the shared store: one
+            # client's sightings would leak into another client's scope. A
+            # scoped store is read only if it exists inside the save dir.
+            store_db_path=(
+                memory_dir.resolve() / "research.db"
+                if args.save_dir else library_index.DEFAULT_STORE_DB
+            ),
+        )
+    except library_index.LibrarySearchUnavailable as exc:
+        sys.stderr.write(f"[last30days] Library search unavailable: {exc}.\n")
+        return 2
+    except (OSError, sqlite3.DatabaseError) as exc:
+        sys.stderr.write(f"[last30days] Library search failed: {exc}.\n")
+        return 1
+    for note in synced.notes:
+        sys.stderr.write(f"[last30days] Library note: {note}\n")
+    if synced.rebuilt:
+        sys.stderr.write("[last30days] Rebuilt a corrupt library search index.\n")
+    print(render.render_library_search(query, matches), end="")
+    return 0
+
+
+def _looks_like_entity_topic(topic: str) -> bool:
+    """Whether a topic names a person, company, or product rather than a theme.
+
+    Keys on brevity, not capitalization. People type lowercase: "bentgo",
+    "peter steinberger" and "getenergy.com" are entity searches every bit as
+    much as their title-cased forms, and requiring a capital meant the most
+    common real-world spelling never resolved a handle.
+
+    A short topic is an entity search; a longer one is a theme. "Peter
+    Steinberger", "bentgo" and "getenergy.com" qualify; "best AI coding tools
+    2026" and "how to build agents that scale" do not. Question-shaped topics
+    are themes regardless of length.
+
+    Used only to decide whether resolving an X handle is worth one web search,
+    so a false negative costs the old behavior and a false positive costs a
+    single search.
+    """
+    text = (topic or "").strip()
+    if not text or text.endswith("?"):
+        return False
+    words = [w for w in re.findall(r"[A-Za-z0-9_.@'-]+", text) if w]
+    if not words or len(words) > 4:
+        return False
+    if any(w.startswith("@") for w in words):
+        return True
+    # A theme reads as a phrase built from common words; an entity does not.
+    common = {
+        "best", "top", "how", "why", "what", "when", "vs", "versus", "guide",
+        "tips", "review", "reviews", "news", "latest", "update", "updates",
+        "trends", "tools", "and", "or", "for", "the", "with", "about",
+    }
+    return not any(w.lower() in common for w in words)
 
 
 def main() -> int:
@@ -558,10 +2833,61 @@ def main() -> int:
     # Use parse_known_args so setup sub-flags (--device-auth, --github,
     # --openclaw) pass through without argparse hard-exiting.
     args, extra_argv = parser.parse_known_args()
+    if args.record_fixtures:
+        with http.recording_requests(Path(args.record_fixtures)):
+            return _main(parser, args, extra_argv)
+    return _main(parser, args, extra_argv)
+
+
+def _main(
+    parser: argparse.ArgumentParser,
+    args: argparse.Namespace,
+    extra_argv: list[str],
+) -> int:
     if args.debug:
         os.environ["LAST30DAYS_DEBUG"] = "1"
 
-    config = env.get_config()
+    if args.welcome:
+        from lib import setup_wizard
+        print(setup_wizard.render_welcome())
+        return 0
+
+    topic = " ".join(args.topic).strip()
+    original_topic = topic
+    _validate_extra_argv(parser, topic, extra_argv)
+    if args.publish and topic.lower() != "library feed":
+        sys.stderr.write(
+            "[last30days] --publish is only supported by the 'library feed' command.\n"
+        )
+        return 2
+    config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
+    resolved_corpus_dirs = corpus.resolve_directories(
+        args.corpus, config.get("LAST30DAYS_CORPUS_DIRS")
+    )
+    # EXCLUDE_SOURCES=corpus disables corpus retrieval entirely; the hosted
+    # privacy bypass below must use the same predicate, or hosted users with
+    # configured-but-excluded dirs silently lose the remote backend.
+    excluded_sources = {
+        value.strip().lower()
+        for value in str(config.get("EXCLUDE_SOURCES") or "").split(",")
+        if value.strip()
+    }
+    if "corpus" in excluded_sources:
+        resolved_corpus_dirs = []
+    if resolved_corpus_dirs:
+        config["_CORPUS_DIRS"] = [str(path) for path in resolved_corpus_dirs]
+    if _config_truthy(config.get("LAST30DAYS_CORPUS_IN_EXPORT")):
+        config["_CORPUS_IN_EXPORT"] = True
+    _propagate_config_to_environ(config)
+
+    # Env-var fallback for --save-dir, mirroring the LAST30DAYS_STORE pattern below.
+    # Uses `is None` / `is not None` checks (not truthy `or`) at every layer so that
+    # `--save-dir ""`, `LAST30DAYS_MEMORY_DIR=""` (shell-export-empty), and explicit
+    # absence each correctly suppress save. An `or` chain would collapse the empty
+    # shell-export into the same path as unset, silently falling through to .env.
+    if args.save_dir is None:
+        env_val = os.environ.get("LAST30DAYS_MEMORY_DIR")
+        args.save_dir = env_val if env_val is not None else config.get("LAST30DAYS_MEMORY_DIR")
 
     # Surface SSH-routing config as an env var so library modules (e.g.
     # youtube_yt) can read it without taking a config dependency. This
@@ -570,42 +2896,367 @@ def main() -> int:
     if config.get("LAST30DAYS_YOUTUBE_SSH_HOST") and "LAST30DAYS_YOUTUBE_SSH_HOST" not in os.environ:
         os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = config["LAST30DAYS_YOUTUBE_SSH_HOST"]
 
+    if args.preflight:
+        requested_sources = resolve_requested_sources(args.search, config)
+        diag = pipeline.diagnose(config, requested_sources, safe=True)
+        if args.save_dir or args.preflight_report_on_save_dir:
+            preflight = permission_preflight.build(
+                config,
+                diag,
+                planned_save_dir=args.save_dir,
+                report_on_save_dir=args.preflight_report_on_save_dir,
+            )
+        else:
+            preflight = diag["permission_preflight"]
+        if args.emit == "json":
+            print(json.dumps(preflight, indent=2, sort_keys=True))
+        else:
+            print(permission_preflight.render_text(preflight), end="")
+        return 0
+
+    # Handle doctor subcommand: topic-word dispatch mirroring setup (exact
+    # match only, so multi-word research topics containing "doctor" still
+    # research normally). Aggregates probes/descriptors/prescriptions into
+    # one grouped health surface; always exits 0.
+    if topic.lower() == "doctor":
+        from lib import doctor
+        return doctor.run(
+            config,
+            emit_json=(args.emit == "json" or "--json" in extra_argv),
+            cached="--cached" in extra_argv,
+            postmortem="--postmortem" in extra_argv,
+            probe="--probe" in extra_argv,
+        )
+
+    if topic.lower() == "library feed":
+        return _run_library_feed(args, config)
+    if topic.lower() == "library search" or topic.lower().startswith("library search "):
+        return _run_library_search(args, config, topic[len("library search") :].strip())
+
+    if topic.lower() == "queue list":
+        return _run_queue_list(args, config)
+    if topic.lower() == "queue cover" or topic.lower().startswith("queue cover "):
+        return _run_queue_cover(args, config, topic[len("queue cover") :].strip())
+
     # Handle setup subcommand
-    topic = " ".join(args.topic).strip()
     if topic.lower() == "setup":
         from lib import setup_wizard
         if "--openclaw" in extra_argv:
             results = setup_wizard.run_openclaw_setup(config)
             print(json.dumps(results))
             return 0
-        if "--github" in extra_argv:
-            results = setup_wizard.run_github_auth()
-            print(json.dumps(results))
-            return 0
-        if "--device-auth" in extra_argv:
-            results = setup_wizard.run_full_device_auth()
+        if any(f in extra_argv for f in ("--github", "--device-auth", "--github-start", "--github-poll")):
+            if "--github-start" in extra_argv:
+                results = setup_wizard.run_github_start()
+            elif "--github-poll" in extra_argv:
+                results = setup_wizard.run_github_poll()
+            elif "--github" in extra_argv:
+                results = setup_wizard.run_github_auth()
+            else:
+                results = setup_wizard.run_full_device_auth()
+            # Persist the returned key so the paid sources activate on the next
+            # run, and mask it in stdout so the secret never lands in the host
+            # model's captured Bash output.
+            api_key = results.get("api_key")
+            status = results.get("status")
+            if api_key:
+                if status == "success":
+                    results["persisted"] = setup_wizard.write_api_key(env.CONFIG_FILE, api_key)
+                elif status == "already_registered":
+                    results["persisted"] = True  # key was already saved
+                else:
+                    results.setdefault("persisted", False)
+                # Mask for EVERY status that carries a key, not just success, so
+                # the raw secret never reaches the host model's captured stdout.
+                results["api_key"] = setup_wizard.mask_api_key(api_key)
+            else:
+                results["persisted"] = False
             print(json.dumps(results))
             return 0
         sys.stderr.write("Running auto-setup...\n")
-        results = setup_wizard.run_auto_setup(config)
-        from_browser = "auto"
-        if results.get("cookies_found"):
-            first_browser = next(iter(results["cookies_found"].values()))
-            from_browser = first_browser
+        results = setup_wizard.run_auto_setup(
+            config,
+            allow_browser_cookies=_setup_allows_browser_cookies(args, extra_argv),
+        )
+        # Persist FROM_BROWSER only when every service's cookies came from the
+        # SAME single browser — then we can fast-path future runs to it. If
+        # different services matched different browsers, or none matched, leave
+        # FROM_BROWSER unset so the safe default remains no browser-cookie
+        # reads. We deliberately do NOT pin "auto" here (it would re-probe
+        # Chrome and re-trigger the prompt) nor a single browser (it would
+        # silently skip the service that used the other one).
+        found_browsers = set(results.get("cookies_found", {}).values())
+        from_browser = found_browsers.pop() if len(found_browsers) == 1 else None
+        # Pin only a silent winner (firefox/safari). Pinning a Chromium browser
+        # would make every steady-state run re-read its Keychain-encrypted store
+        # and can re-trigger the "Always Allow" prompt, so Chrome is used for the
+        # first-run scan but never pinned.
+        if from_browser in {"chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"}:
+            from_browser = None
         setup_wizard.write_setup_config(env.CONFIG_FILE, from_browser=from_browser)
         results["env_written"] = True
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")
         return 0
 
-    requested_sources = parse_search_flag(args.search) if args.search else None
-    diag = pipeline.diagnose(config, requested_sources)
+    # Bare --discover (no domain) is global trending, so the dispatch keys on
+    # "flag present" (is not None), never on the domain string's truthiness.
+    if args.deep_research and not topic:
+        sys.stderr.write(
+            "[last30days] --deep-research requires a normal positional topic; "
+            "it cannot be combined with discovery, drill, or cached-only modes.\n"
+        )
+        return 2
+
+    if args.discover is not None:
+        if topic:
+            sys.stderr.write(
+                "[last30days] --discover supplies the domain and cannot be combined "
+                "with a positional topic.\n"
+            )
+            return 2
+        if args.drill:
+            sys.stderr.write("[last30days] --discover and --drill are mutually exclusive.\n")
+            return 2
+        # Shared guards for EVERY discover invocation - the one-shot and all
+        # three protocol legs - hoisted here so no leg can drift: discovery
+        # sweeps live listings (never --as-of) and has no HTML pipeline yet.
+        if args.as_of_date:
+            sys.stderr.write(
+                "[last30days] --as-of cannot be used with --discover because discovery "
+                "sweeps current live listings.\n"
+            )
+            return 2
+        if args.emit == "html" or args.publish_html:
+            sys.stderr.write("[last30days] discovery mode does not support HTML publishing yet.\n")
+            return 2
+        # The three protocol legs are one-leg-per-invocation: each pairing
+        # below asks for two legs at once, so name the combination and stop.
+        # (--judgments/--angles dispatch on presence, never path truthiness.)
+        for first, second, conflict in (
+            ("--nominate-only", "--judgments", args.nominate_only and args.judgments is not None),
+            ("--nominate-only", "--finalize", args.nominate_only and args.finalize),
+            ("--judgments", "--finalize", args.judgments is not None and args.finalize),
+        ):
+            if conflict:
+                sys.stderr.write(
+                    f"[last30days] {first} and {second} are mutually exclusive: "
+                    "each runs a different leg of the discovery protocol.\n"
+                )
+                return 2
+        if args.angles is not None and not args.finalize:
+            sys.stderr.write(
+                "[last30days] --angles only applies to --discover --finalize "
+                "runs; add --finalize or drop the flag.\n"
+            )
+            return 2
+        protocol_leg = (
+            args.nominate_only or args.judgments is not None or args.finalize
+        )
+        if protocol_leg and args.mock and not args.save_dir:
+            # Truthiness is right here: an empty --save-dir/env value means
+            # "no save dir", and handoff state would land in the real config
+            # dir - a side effect mock runs must never have.
+            sys.stderr.write(
+                "[last30days] mock protocol legs require --save-dir to stay "
+                "side-effect-free: --mock with --nominate-only/--judgments/"
+                "--finalize would otherwise write handoff state into the real "
+                "config dir.\n"
+            )
+            return 2
+        if protocol_leg:
+            return _run_discover_protocol_leg(args, config)
+        return _run_discover(args, config)
+
+    if args.discover_shallow:
+        # Without --discover this flag would silently no-op into a full
+        # research run - reject it instead of ignoring the requested mode.
+        sys.stderr.write(
+            "[last30days] --discover-shallow only applies to --discover runs; "
+            "add --discover [domain] or drop the flag.\n"
+        )
+        return 2
+
+    # Same orphan rule for every protocol-leg flag: without --discover each
+    # would silently no-op into a normal research run.
+    for flag_label, present in (
+        ("--nominate-only", args.nominate_only),
+        ("--judgments", args.judgments is not None),
+        ("--finalize", args.finalize),
+    ):
+        if present:
+            sys.stderr.write(
+                f"[last30days] {flag_label} only applies to --discover runs; "
+                "add --discover [domain] or drop the flag.\n"
+            )
+            return 2
+    if args.angles is not None:
+        sys.stderr.write(
+            "[last30days] --angles only applies to --discover --finalize runs; "
+            "add --discover --finalize or drop the flag.\n"
+        )
+        return 2
+
+    if args.drill:
+        if topic:
+            sys.stderr.write(
+                "[last30days] --drill uses the cached topic and cannot be "
+                "combined with a new topic.\n"
+            )
+            return 2
+        if args.publish_html and args.emit != "html":
+            sys.stderr.write("[last30days] --publish-html requires --emit=html\n")
+            return 2
+        if args.dedicated_subreddits:
+            config["_dedicated_subreddits"] = [
+                value.strip().removeprefix("r/")
+                for value in args.dedicated_subreddits.split(",")
+                if value.strip()
+            ]
+        if args.polymarket_keywords:
+            config["_polymarket_keywords"] = [
+                value.strip().lower()
+                for value in args.polymarket_keywords.split(",")
+                if value.strip()
+            ]
+        return _run_drill(args, config)
+
+    if args.verify_freshness and not topic:
+        return _run_cached_freshness(args, config)
+
+    if args.lookback_days is None:
+        args.lookback_days = 30
+
+    if args.deep_research and not args.diagnose:
+        from lib import planner as _planner
+
+        if not (
+            config.get("PERPLEXITY_API_KEY")
+            or config.get("OPENROUTER_API_KEY")
+        ):
+            print(
+                "Error: --deep-research requires PERPLEXITY_API_KEY or "
+                "OPENROUTER_API_KEY",
+                file=sys.stderr,
+            )
+            return 1
+        comparison_requested = any(
+            value is not None
+            for value in (
+                args.competitors,
+                args.competitors_list,
+                args.competitors_plan,
+            )
+        ) or len(_planner._comparison_entities(topic, uncapped=True)) >= 2
+        if comparison_requested:
+            sys.stderr.write(
+                "Error: --deep-research cannot be combined with competitor or vs-mode. "
+                "It permits one paid Deep Research run per user action; run each topic "
+                "separately.\n"
+            )
+            return 2
+        config["_deep_research"] = True
+        try:
+            enable_deep_research_source(config)
+        except ValueError as exc:
+            print(f"Error: {exc}", file=sys.stderr)
+            return 2
+
+    # Reject a misspelled configured register before remote submission or any
+    # local source retrieval. Excluded modes resolve to default and remain
+    # unaffected by the register setting.
+    try:
+        _audience_register_for_run(args, config, None)
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+
+    # Remote API path: when BOTH LAST30DAYS_API_KEY and LAST30DAYS_API_BASE are
+    # set (and --mock is not), the search runs through the configured remote API
+    # instead of local sources; no local provider keys are needed (see
+    # lib/hosted.py). With either env var unset, behavior below is byte-identical
+    # to local-only runs - there is no built-in endpoint.
+    if (
+        topic
+        and resolved_corpus_dirs
+        and env.read_secret_env("LAST30DAYS_API_KEY")
+        and os.environ.get("LAST30DAYS_API_BASE")
+    ):
+        sys.stderr.write(
+            "[last30days] Local corpus configured; bypassing the hosted backend so files stay on this machine.\n"
+        )
+    if (
+        topic
+        and not args.diagnose
+        and not args.mock
+        and not args.record_fixtures
+        and env.read_secret_env("LAST30DAYS_API_KEY")
+        and os.environ.get("LAST30DAYS_API_BASE")
+        and not resolved_corpus_dirs
+        and not args.deep_research
+    ):
+        if _freshness_enabled(args, config):
+            if args.verify_freshness is True:
+                sys.stderr.write(
+                    "[last30days] Freshness verification is not supported by the hosted backend; "
+                    "run locally or omit --verify-freshness.\n"
+                )
+                return 2
+            sys.stderr.write(
+                "hosted backend does not support freshness verification; skipping\n"
+            )
+        if args.emit == "json" and args.json_profile == "agent":
+            sys.stderr.write(
+                "[last30days] --json-profile=agent requires the local Report; "
+                "the remote API backend only supports --json-profile=raw.\n"
+            )
+            return 2
+        from lib import hosted
+        depth = "deep" if args.deep else "quick" if args.quick else "default"
+        try:
+            audience = _audience_register_for_run(args, config, None)
+        except ValueError as exc:
+            sys.stderr.write(f"[last30days] {exc}\n")
+            return 2
+        hosted_kwargs = {
+            "emit": args.emit,
+            "save_dir": args.save_dir,
+            "save_suffix": args.save_suffix or "",
+        }
+        if audience.name != "default":
+            hosted_kwargs["register"] = audience.name
+        return hosted.run_hosted(topic, depth, **hosted_kwargs)
+
+    requested_sources = resolve_requested_sources(args.search, config)
+    if args.deep_research:
+        requested_sources = add_deep_research_source(requested_sources)
+    # Explicit --trustpilot-domain is user intent: activate the opt-in source
+    # before diagnose/run so the flag cannot silently no-op (#873). Auto-resolve
+    # hints are applied later and must not call this path.
+    cli_trustpilot_domain = (
+        args.trustpilot_domain.strip() if args.trustpilot_domain else ""
+    )
+    if cli_trustpilot_domain:
+        requested_sources = activate_trustpilot_for_explicit_domain(
+            config,
+            requested_sources,
+            reason=f"--trustpilot-domain={cli_trustpilot_domain}",
+        )
+    diag = pipeline.diagnose(config, requested_sources, safe=args.diagnose)
 
     if args.diagnose:
         print(json.dumps(diag, indent=2, sort_keys=True))
         return 0
 
+    # Competitor sub-runs shallow-copy this config. The shared object makes the
+    # paid Perplexity cap command-wide and thread-safe across that fanout. Keep
+    # this runtime-only object out of the safe diagnose configuration contract.
+    config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget()
+
     if not topic:
         parser.print_usage(sys.stderr)
+        return 2
+    if args.publish_html and args.emit != "html":
+        sys.stderr.write("[last30days] --publish-html requires --emit=html\n")
         return 2
 
     synthesis_md = None
@@ -622,13 +3273,58 @@ def main() -> int:
             sys.stderr.write(refuse_msg)
             return 2
 
+    if (
+        args.emit == "html"
+        and synthesis_md is not None
+        and not args.deep_research
+    ):
+        cached = _load_last_report_cache(
+            topic,
+            ttl_seconds=_report_cache_ttl_seconds(config),
+        )
+        if cached is not None:
+            cached_report, cached_entity_reports, cache_path = cached
+            sys.stderr.write(
+                f"[last30days] Reusing cached report data from {cache_path}\n"
+            )
+            sys.stderr.flush()
+            if _freshness_enabled(args, config):
+                _verify_report_set(
+                    cached_report,
+                    cached_entity_reports,
+                    allow_network=not args.mock,
+                )
+                _update_cached_freshness(
+                    cache_path,
+                    cached_report,
+                    cached_entity_reports,
+                )
+            return _render_save_and_print(
+                args, cached_report, cached_entity_reports, synthesis_md, config
+            )
+        sys.stderr.write(
+            "[last30days] No matching cached report data for "
+            "--emit=html --synthesis-file; running fresh research.\n"
+        )
+        sys.stderr.flush()
+
     progress = ui.ProgressDisplay(topic, show_banner=True)
     progress.start_processing()
 
     depth = "deep" if args.deep else "quick" if args.quick else "default"
+    # CLI overrides for the depth profile's result caps (issue #716). Stashed on
+    # config so pipeline.run() can apply them without widening its signature; the
+    # comparison path inherits them via `entity_config = dict(config)`.
+    if args.max_results is not None:
+        config["_max_results"] = args.max_results
+    if args.max_per_source is not None:
+        config["_max_per_source"] = args.max_per_source
+    if args.max_source_fetches is not None:
+        config["_max_source_fetches"] = args.max_source_fetches
     try:
         x_related = [h.strip() for h in args.x_related.split(",") if h.strip()] if args.x_related else None
         subreddits = [s.strip().removeprefix("r/") for s in args.subreddits.split(",") if s.strip()] if args.subreddits else None
+        dedicated_subreddits = [s.strip().removeprefix("r/") for s in args.dedicated_subreddits.split(",") if s.strip()] if args.dedicated_subreddits else None
         tiktok_hashtags = [h.strip().lstrip("#") for h in args.tiktok_hashtags.split(",") if h.strip()] if args.tiktok_hashtags else None
         tiktok_creators = [c.strip().lstrip("@") for c in args.tiktok_creators.split(",") if c.strip()] if args.tiktok_creators else None
         ig_creators = [c.strip().lstrip("@") for c in args.ig_creators.split(",") if c.strip()] if args.ig_creators else None
@@ -638,16 +3334,54 @@ def main() -> int:
             import json as _json
             plan_str = args.plan
             if os.path.isfile(plan_str):
-                plan_str = open(plan_str).read()
+                try:
+                    with open(plan_str, encoding="utf-8") as f:
+                        plan_str = f.read()
+                except (OSError, UnicodeDecodeError) as exc:
+                    sys.stderr.write(f"[Planner] Cannot read --plan file: {exc}\n")
+                    raise SystemExit(2)
             try:
                 external_plan = _json.loads(plan_str)
             except _json.JSONDecodeError as exc:
                 sys.stderr.write(f"[Planner] Invalid --plan JSON: {exc}\n")
+                # Fail fast instead of silently dropping to the internal planner
+                # and burning a paid run the user did not ask for. Mirrors the
+                # --plan file-read branch above and parse_competitors_plan.
+                raise SystemExit(2)
+            from lib import planner as _plan_validator
+            try:
+                _plan_validator.validate_external_plan(external_plan)
+            except ValueError as exc:
+                sys.stderr.write(f"[Planner] Invalid --plan schema: {exc}.\n")
+                raise SystemExit(2)
 
         # Auto-resolve: use web search to discover subreddits/handles before planning.
         # This is the engine-side equivalent of SKILL.md Steps 0.55/0.75 for platforms
         # without WebSearch (OpenClaw, Codex, raw CLI).
         repos_from_auto_resolve = False
+        trustpilot_domain_is_hint = False
+        # Resolve automatically for entity-shaped topics even without the flag.
+        # A person or company topic whose handle the user did not supply is the
+        # case where first-party evidence is hardest to protect: the handle is
+        # absent from the topic and may never appear in retrieved mentions, so
+        # nothing downstream can identify the subject's own posts. One web
+        # search closes that. If it returns nothing, pipeline.run skips the X
+        # relevance floor entirely — a noisier report beats losing evidence.
+        # Skipped when a handle was already supplied, when an external plan
+        # owns resolution, or in mock runs.
+        if (
+            not args.auto_resolve
+            and not external_plan
+            and not args.x_handle
+            and not args.mock
+            and _looks_like_entity_topic(topic)
+        ):
+            args.auto_resolve = True
+            sys.stderr.write(
+                "[AutoResolve] entity-shaped topic with no --x-handle; "
+                "resolving the subject's handle so its own posts are not pruned\n"
+            )
+
         if args.auto_resolve and not external_plan:
             from lib import resolve
             resolution = resolve.auto_resolve(topic, config)
@@ -657,6 +3391,8 @@ def main() -> int:
             if resolution.get("x_handle") and not args.x_handle:
                 args.x_handle = resolution["x_handle"]
                 sys.stderr.write(f"[AutoResolve] X handle: @{args.x_handle}\n")
+            # Empty x_handle is intentional: do not invent a lexical stand-in.
+            # pipeline.run treats an unidentified subject as "skip the X floor".
             if resolution.get("github_user") and not args.github_user:
                 args.github_user = resolution["github_user"]
                 sys.stderr.write(f"[AutoResolve] GitHub user: @{args.github_user}\n")
@@ -666,6 +3402,12 @@ def main() -> int:
                 # mark so we don't re-canonicalize below and clobber its relevance order.
                 repos_from_auto_resolve = True
                 sys.stderr.write(f"[AutoResolve] GitHub repos: {args.github_repo}\n")
+            if resolution.get("trustpilot_domain") and not args.trustpilot_domain:
+                # Hint provenance matters: only user-set flags are verbatim-final;
+                # a resolved hint retries via the CLI search when it misses.
+                args.trustpilot_domain = resolution["trustpilot_domain"]
+                trustpilot_domain_is_hint = True
+                sys.stderr.write(f"[AutoResolve] Trustpilot domain: {args.trustpilot_domain} (hint)\n")
             if resolution.get("context"):
                 # Inject context into external_plan metadata for the planner to use
                 if not external_plan:
@@ -676,6 +3418,19 @@ def main() -> int:
 
         github_user = args.github_user.lstrip("@").lower() if args.github_user else None
         github_repos = [r.strip() for r in args.github_repo.split(",") if r.strip() and "/" in r.strip()] if args.github_repo else None
+        trustpilot_domain = args.trustpilot_domain.strip() if args.trustpilot_domain else None
+
+        comp_enabled, comp_count, comp_explicit = resolve_competitors_args(args)
+        comp_plan = parse_competitors_plan(args.competitors_plan)
+
+        # Plan-level trustpilot_domain pins are the same user intent as the CLI
+        # flag (already activated above). Auto-resolve hints must not activate.
+        if plan_has_explicit_trustpilot_domain(comp_plan):
+            requested_sources = activate_trustpilot_for_explicit_domain(
+                config,
+                requested_sources,
+                reason="competitors-plan trustpilot_domain",
+            )
 
         # Only canonicalize when repos came from a user-supplied --github-repo flag.
         # When repos_from_auto_resolve is True, auto_resolve already ran
@@ -691,20 +3446,6 @@ def main() -> int:
                     f"{','.join(original_github_repos)} -> {','.join(github_repos)}\n"
                 )
 
-        # --deep-research: auto-enable perplexity source and set deep flag
-        if args.deep_research:
-            if not config.get("OPENROUTER_API_KEY"):
-                print("Error: --deep-research requires OPENROUTER_API_KEY", file=sys.stderr)
-                sys.exit(1)
-            config["_deep_research"] = True
-            # Auto-enable perplexity in INCLUDE_SOURCES
-            include = config.get("INCLUDE_SOURCES") or ""
-            if "perplexity" not in include.lower():
-                config["INCLUDE_SOURCES"] = f"{include},perplexity" if include else "perplexity"
-
-        comp_enabled, comp_count, comp_explicit = resolve_competitors_args(args)
-        comp_plan = parse_competitors_plan(args.competitors_plan)
-
         # Polymarket disambiguation: if user passed --polymarket-keywords,
         # store on config so the polymarket adapter can filter matches.
         if args.polymarket_keywords:
@@ -716,23 +3457,63 @@ def main() -> int:
             if keywords:
                 config["_polymarket_keywords"] = keywords
 
-        # vs-mode: if the topic string contains " vs " / " versus " and the
-        # planner can split it into >=2 entities, route through the same
-        # N-pass fanout path as --competitors. The first entity becomes the
-        # main topic; remaining entities become the competitor list. User's
-        # outer --x-handle / --subreddits apply to the first entity unless
-        # --competitors-plan covers it.
-        from lib import planner as _planner
-        vs_entities = _planner._comparison_entities(topic)
-        if len(vs_entities) >= 2 and not comp_enabled:
-            topic = vs_entities[0]
-            comp_enabled = True
-            comp_count = len(vs_entities) - 1
-            comp_explicit = vs_entities[1:]
-            sys.stderr.write(
-                f"[Competitors] vs-mode: routing to N-pass fanout: "
-                f"{' vs '.join(vs_entities)}\n"
+        # Product keyword for the amazon source. Carried on config rather than
+        # threaded through the run signature (the _polymarket_keywords idiom):
+        # it is one optional string consumed in exactly two places.
+        if getattr(args, "amazon_query", None):
+            config["_amazon_query"] = args.amazon_query.strip()
+            # Unlike --trustpilot-domain, this flag deliberately does NOT
+            # auto-activate its source: the lane spends metered credits, so
+            # turning it on stays an explicit request. But silence is the
+            # wrong failure mode -- a model that resolves the keyword and
+            # forgets the --search token would otherwise get no signal at
+            # all that the flag did nothing.
+            _amazon_requested = (
+                (requested_sources and "amazon" in requested_sources)
+                or "amazon" in str(config.get("INCLUDE_SOURCES") or "").lower()
             )
+            if not _amazon_requested:
+                sys.stderr.write(
+                    "[Amazon] --amazon-query was set but the amazon source was not "
+                    "requested; add it to --search (e.g. --search reddit,x,amazon) "
+                    "or set INCLUDE_SOURCES=amazon. Ignoring the keyword.\n"
+                )
+
+        # vs-mode / plan routing: split a vs-topic into main + peers unless
+        # discover-N or an explicit --competitors-list already decided who runs.
+        topic, comp_enabled, comp_count, comp_explicit = apply_vs_competitor_routing(
+            topic,
+            competitors_flag=args.competitors,
+            comp_enabled=comp_enabled,
+            comp_count=comp_count,
+            comp_explicit=comp_explicit,
+            comp_plan=comp_plan,
+        )
+        if comp_enabled:
+            config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget(
+                owner=topic,
+            )
+
+        # Plan alone with zero peers (empty/invalid JSON object, or all entries
+        # skipped) must not fall through to discover-N with a misleading abort.
+        if (
+            comp_enabled
+            and not comp_explicit
+            and args.competitors is None
+            and args.competitors_plan
+        ):
+            sys.stderr.write(
+                "[Competitors] --competitors-plan has no usable peer entries "
+                "(and the topic is not a vs-comparison). Pass a non-empty plan, "
+                "a vs-topic, --competitors-list, or --competitors N.\n"
+            )
+            return 2
+
+        # Dedicated subs ride the config dict (already threaded to every source
+        # fetch) so the keyless Reddit path can pull them floor-exempt without
+        # widening pipeline.run / _retrieve_stream signatures.
+        if dedicated_subreddits:
+            config["_dedicated_subreddits"] = dedicated_subreddits
 
         def _main_runner() -> schema.Report:
             r = pipeline.run(
@@ -750,8 +3531,16 @@ def main() -> int:
                 tiktok_creators=tiktok_creators,
                 ig_creators=ig_creators,
                 lookback_days=args.lookback_days,
+                as_of_date=args.as_of_date,
                 github_user=github_user,
                 github_repos=github_repos,
+                trustpilot_domain=trustpilot_domain,
+                trustpilot_domain_is_hint=trustpilot_domain_is_hint,
+                internal_subrun=comp_enabled,
+                hiring_signals_mode=args.hiring_signals,
+                save_dir=args.save_dir,
+                corpus_dirs=args.corpus,
+                corpus_all_time=args.corpus_all_time,
             )
             r.artifacts["resolved"] = {
                 "entity": topic,
@@ -759,6 +3548,7 @@ def main() -> int:
                 "subreddits": list(subreddits or []),
                 "github_user": (github_user or ""),
                 "github_repos": list(github_repos or []),
+                "trustpilot_domain": (trustpilot_domain or ""),
                 "context": config.get("_auto_resolve_context", "") or "",
             }
             return r
@@ -787,7 +3577,7 @@ def main() -> int:
                         "\n"
                         "HEADLESS / CRON PATH (no hosting model available): set "
                         "BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY / "
-                        "OPENROUTER_API_KEY and re-run.\n"
+                        "PERPLEXITY_API_KEY / OPENROUTER_API_KEY and re-run.\n"
                         "\n"
                         "MINIMUM ESCAPE HATCH: pass --competitors-list 'A,B,C' to skip "
                         "discovery. Without --competitors-plan, peer sub-runs fall back to "
@@ -813,6 +3603,14 @@ def main() -> int:
                 # leak across sub-runs. Each sub-run writes its own
                 # `_auto_resolve_context` into its local config copy.
                 entity_config = dict(config)
+                # The Amazon keyword is entity-SPECIFIC, unlike the depth caps
+                # this shallow copy exists to inherit. Leaving the main topic's
+                # keyword in place would search Weber SKUs for a Traeger peer,
+                # render a rival's products as that peer's buyer evidence, and
+                # multiply the metered spend by the number of entities. Drop it
+                # so each peer derives its own keyword from its own topic; a
+                # per-entity keyword can ride in the --competitors-plan entry.
+                entity_config.pop("_amazon_query", None)
                 plan_entry = comp_plan.get(entity.strip().lower(), {})
                 resolved = {
                     "entity": entity,
@@ -820,6 +3618,7 @@ def main() -> int:
                     "subreddits": [],
                     "github_user": "",
                     "github_repos": [],
+                    "trustpilot_domain": "",
                     "context": "",
                 }
                 # Skip engine-internal auto_resolve when the hosting model
@@ -846,6 +3645,7 @@ def main() -> int:
                     resolved["subreddits"] = list(r.get("subreddits") or [])
                     resolved["github_user"] = r.get("github_user", "") or ""
                     resolved["github_repos"] = list(r.get("github_repos") or [])
+                    resolved["trustpilot_domain"] = r.get("trustpilot_domain", "") or ""
                     resolved["context"] = r.get("context", "") or ""
                 kwargs = subrun_kwargs_for(entity, plan_entry, resolved=resolved)
                 # Record effective per-entity targeting for the Resolved block.
@@ -855,6 +3655,7 @@ def main() -> int:
                     "subreddits": kwargs["subreddits"] or [],
                     "github_user": kwargs["github_user"] or "",
                     "github_repos": kwargs["github_repos"] or [],
+                    "trustpilot_domain": kwargs["trustpilot_domain"] or "",
                     "context": kwargs["_context"],
                 }
                 if kwargs["_context"]:
@@ -877,9 +3678,16 @@ def main() -> int:
                     subreddits=kwargs["subreddits"],
                     github_user=kwargs["github_user"],
                     github_repos=kwargs["github_repos"],
+                    trustpilot_domain=kwargs["trustpilot_domain"],
+                    trustpilot_domain_is_hint=kwargs["_trustpilot_domain_is_hint"],
                     web_backend=args.web_backend,
                     lookback_days=args.lookback_days,
+                    as_of_date=args.as_of_date,
+                    hiring_signals_mode=args.hiring_signals,
                     internal_subrun=True,
+                    save_dir=args.save_dir,
+                    corpus_dirs=args.corpus,
+                    corpus_all_time=args.corpus_all_time,
                 )
                 report.artifacts["resolved"] = resolved_effective
                 return report
@@ -906,11 +3714,14 @@ def main() -> int:
         progress.end_processing()
         progress.show_error(str(exc))
         raise
+    if _freshness_enabled(args, config):
+        _verify_report_set(report, entity_reports, allow_network=not args.mock)
+
     _show_runtime_ui(
         report, progress, diag,
         suppress_web_promo=bool(external_plan or comp_plan),
     )
-    _write_last_run(topic, report)
+    _write_last_run(original_topic, report, entity_reports=entity_reports)
     # LAST30DAYS_STORE env var = persistence default-on. Read both os.environ
     # (for shell-exported users) and config (for users who set it in
     # ~/.config/last30days/.env, which env.py loads but does not propagate
@@ -922,58 +3733,57 @@ def main() -> int:
         or ""
     ).lower()
     if args.store or _store_env in ("1", "true", "yes"):
-        counts = persist_report(report)
+        counts = persist_report(report, store_db=_scoped_store_db(args))
         sys.stderr.write(
             f"[last30days] Stored {counts['new']} new, {counts['updated']} updated findings\n"
         )
         sys.stderr.flush()
 
-    # Show quality nudge if applicable
-    try:
-        from lib import quality_nudge
-        # Populate transcript-fetch ratio so quality_nudge can detect the
-        # degraded-YouTube failure mode (videos returned but transcripts
-        # silently failed - typically a stale yt-dlp binary).
-        youtube_items = report.items_by_source.get("youtube") or []
-        instagram_items = report.items_by_source.get("instagram") or []
-        research_results = {
-            "youtube_videos_count": len(youtube_items),
-            "youtube_transcripts_count": sum(
-                1 for it in youtube_items
-                if (it.metadata.get("transcript_highlights") or it.metadata.get("transcript_snippet"))
-            ),
-            "youtube_error": report.errors_by_source.get("youtube"),
-            "x_error": report.errors_by_source.get("x"),
-            # Captions-disabled videos can never produce a transcript regardless
-            # of yt-dlp version; subtract them from the degraded-ratio
-            # denominator so a single uploader-disabled video does not trip the
-            # "stale yt-dlp" nudge.
-            "youtube_captions_disabled_count": sum(
-                1 for it in youtube_items if it.metadata.get("captions_disabled")
-            ),
-            # Track Instagram returned-zero-items so quality_nudge can detect
-            # the silent-failure case (SC configured but the v2 reels endpoint
-            # 500'd through both the original query and the hashtag retry).
-            "instagram_items_count": len(instagram_items),
-        }
-        quality = quality_nudge.compute_quality_score(config, research_results)
-        if quality.get("nudge_text"):
-            sys.stderr.write(f"\n{quality['nudge_text']}\n")
-            sys.stderr.flush()
-    except Exception:
-        pass
-
-    fun_level = config.get("FUN_LEVEL", "medium").lower()
-    # Comparison HTML is the one case where the saved file's title and content
-    # have to be overridden away from the leading entity's report. Compute the
-    # gate once so the footer-display and save-output paths can't disagree.
-    is_comparison_html = bool(entity_reports) and args.emit == "html"
-    footer_save_path = None
-    if args.save_dir:
-        save_topic_for_display = comparison_topic(entity_reports) if is_comparison_html else report.topic
-        footer_save_path = compute_save_path_display(
-            args.save_dir, save_topic_for_display, args.save_suffix or "", args.emit
-        )
+    # Show quality nudge if applicable. Explicit hiring-signal runs are
+    # intentionally jobs-focused, so generic source setup advice is noise.
+    if not args.hiring_signals:
+        try:
+            from lib import quality_nudge
+            from lib import youtube_yt as _youtube_yt
+            # Populate transcript-fetch ratio so quality_nudge can detect the
+            # degraded-YouTube failure mode (videos returned but transcripts
+            # silently failed - typically a stale yt-dlp binary).
+            youtube_items = report.items_by_source.get("youtube") or []
+            _yt_fetch_stats = _youtube_yt.get_transcript_fetch_stats()
+            instagram_items = report.items_by_source.get("instagram") or []
+            research_results = {
+                "youtube_videos_count": len(youtube_items),
+                "youtube_transcripts_count": sum(
+                    1 for it in youtube_items
+                    if (it.metadata.get("transcript_highlights") or it.metadata.get("transcript_snippet"))
+                ),
+                "youtube_error": report.errors_by_source.get("youtube"),
+                "x_error": report.errors_by_source.get("x"),
+                # Captions-disabled videos can never produce a transcript regardless
+                # of yt-dlp version; subtract them from the degraded-ratio
+                # denominator so a single uploader-disabled video does not trip the
+                # "stale yt-dlp" nudge.
+                "youtube_captions_disabled_count": sum(
+                    1 for it in youtube_items if it.metadata.get("captions_disabled")
+                ),
+                # Actual yt-dlp fetch outcomes for this run. The counts above are
+                # computed from post-pruning items, so they can't tell "fetches
+                # failed (stale binary)" from "fetches succeeded but the videos
+                # were pruned downstream"; the latter was producing false
+                # stale-yt-dlp nudges (#531).
+                "youtube_transcript_fetch_attempts": _yt_fetch_stats["attempts"],
+                "youtube_transcript_fetch_failures": _yt_fetch_stats["failures"],
+                # Track Instagram returned-zero-items so quality_nudge can detect
+                # the silent-failure case (SC configured but the v2 reels endpoint
+                # 500'd through both the original query and the hashtag retry).
+                "instagram_items_count": len(instagram_items),
+            }
+            quality = quality_nudge.compute_quality_score(config, research_results)
+            if quality.get("nudge_text"):
+                sys.stderr.write(f"\n{quality['nudge_text']}\n")
+                sys.stderr.flush()
+        except Exception:
+            pass
 
     # Signal to render_compact whether pre-research flags were supplied.
     # Used to emit a Pre-Research Status warning when the model skipped
@@ -989,47 +3799,7 @@ def main() -> int:
     )
     report.artifacts["pre_research_flags_present"] = pre_research_flags_present
 
-    if entity_reports:
-        rendered = emit_comparison_output(
-            entity_reports,
-            args.emit,
-            fun_level=fun_level,
-            save_path=footer_save_path,
-            synthesis_md=synthesis_md,
-        )
-    else:
-        rendered = emit_output(
-            report,
-            args.emit,
-            fun_level=fun_level,
-            save_path=footer_save_path,
-            synthesis_md=synthesis_md,
-        )
-    if args.save_dir:
-        # Save the main topic's raw file (single-entity or comparison main).
-        save_path = save_output(
-            report,
-            args.emit,
-            args.save_dir,
-            suffix=args.save_suffix or "",
-            synthesis_md=synthesis_md,
-            topic_override=comparison_topic(entity_reports) if is_comparison_html else None,
-            rendered_content=rendered if is_comparison_html else None,
-        )
-        sys.stderr.write(f"[last30days] Saved output to {save_path}\n")
-        # Competitor / vs-mode: also save a per-entity raw file for each peer.
-        # Matches historical vs-mode behavior (N passes → N save files).
-        if entity_reports and len(entity_reports) > 1:
-            for label, entity_report in entity_reports[1:]:
-                peer_path = save_output(
-                    entity_report, args.emit, args.save_dir,
-                    suffix=args.save_suffix or "",
-                    synthesis_md=synthesis_md,
-                )
-                sys.stderr.write(f"[last30days] Saved output to {peer_path}\n")
-        sys.stderr.flush()
-    print(rendered)
-    return 0
+    return _render_save_and_print(args, report, entity_reports, synthesis_md, config)
 
 
 if __name__ == "__main__":

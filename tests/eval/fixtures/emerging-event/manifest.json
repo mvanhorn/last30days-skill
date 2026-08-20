@@ -1,0 +1,42 @@
+{
+  "name": "emerging-event",
+  "archetype": "breaking-event",
+  "topic": "Lunar robotics launch?",
+  "as_of_date": "2026-07-10",
+  "lookback_days": 30,
+  "depth": "quick",
+  "fixture_sources": [
+    "grounding",
+    "hackernews"
+  ],
+  "web_backend": "brave",
+  "config": {
+    "BRAVE_API_KEY": "fixture-key"
+  },
+  "plan": {
+    "intent": "breaking_news",
+    "freshness_mode": "strict_recent",
+    "cluster_mode": "story",
+    "raw_topic": "Lunar robotics launch",
+    "subqueries": [
+      {
+        "label": "primary",
+        "search_query": "lunar",
+        "ranking_query": "What recent evidence matters for Lunar robotics launch?",
+        "sources": [
+          "grounding",
+          "hackernews"
+        ],
+        "weight": 1
+      }
+    ],
+    "source_weights": {
+      "grounding": 1,
+      "hackernews": 1
+    },
+    "notes": [
+      "eval-fixture-plan"
+    ]
+  },
+  "expects_clusters": true
+}

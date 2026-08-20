@@ -1,3 +1,5 @@
+import contextlib
+import io
 import json
 import os
 import tempfile
@@ -115,7 +117,14 @@ class EvaluatorV3Tests(unittest.TestCase):
             output_dir = Path(tmp)
             cache_dir = output_dir / "judgments"
             cache_dir.mkdir()
-            (cache_dir / "topic.json").write_text(json.dumps({"judgments": [{"id": "a", "grade": 3}]}))
+            (cache_dir / "topic.json").write_text(
+                json.dumps(
+                    {
+                        "judge_model": "gemini-3.1-flash-lite",
+                        "judgments": [{"id": "a", "grade": 3}],
+                    }
+                )
+            )
             cached = evaluator.get_judgments(
                 output_dir=output_dir,
                 slug="topic",
@@ -138,26 +147,71 @@ class EvaluatorV3Tests(unittest.TestCase):
             )
             self.assertEqual({}, skipped)
 
+    def test_get_judgments_remisses_on_judge_model_change(self):
+        """A cache written by a different judge model must not be reused; a
+        --judge-model change forces a re-judge instead of returning stale grades."""
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            cache_dir = output_dir / "judgments"
+            cache_dir.mkdir()
+            (cache_dir / "topic.json").write_text(
+                json.dumps(
+                    {
+                        "judge_model": "gemini-3.1-flash-lite",
+                        "judgments": [{"id": "a", "grade": 3}],
+                    }
+                )
+            )
+            # Same slug, different model, no API key to re-judge: the stale
+            # grades must NOT come back — an empty result signals "re-judge
+            # needed" rather than silently wrong numbers, and the discard is
+            # announced on stderr instead of failing silently.
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                result = evaluator.get_judgments(
+                    output_dir=output_dir,
+                    slug="topic",
+                    topic="test topic",
+                    query_type="general",
+                    items=[{"key": "a"}],
+                    judge_model="gemini-2.5-pro",
+                    gemini_api_key=None,
+                )
+            self.assertEqual({}, result)
+            self.assertIn("different", stderr.getvalue())
+
     def test_create_eval_env_and_run_last30days(self):
+        credential_env = {
+            key: ""
+            for key in evaluator.EVAL_CREDENTIAL_ENV_KEYS
+        }
+        credential_env.update({"PATH": "/bin", "GOOGLE_API_KEY": "env-google"})
         with mock.patch.object(evaluator.envlib, "get_config", return_value={"OPENAI_API_KEY": "config-openai"}):
-            with mock.patch.dict("os.environ", {"PATH": "/bin", "GOOGLE_API_KEY": "env-google"}, clear=False):
+            with mock.patch.dict("os.environ", credential_env, clear=False):
                 created = evaluator.create_eval_env()
         self.assertEqual("/bin", created["PATH"])
         self.assertEqual("env-google", created["GOOGLE_API_KEY"])
         self.assertEqual("config-openai", created["OPENAI_API_KEY"])
         self.assertEqual("", created["LAST30DAYS_CONFIG_DIR"])
 
-        with mock.patch.object(evaluator.subprocess, "run", return_value=mock.Mock(returncode=0, stdout='{"topic":"x"}', stderr="")):
-            payload = evaluator.run_last30days(
-                Path("/tmp/repo"),
-                "topic",
-                search="reddit",
-                timeout_seconds=30,
-                quick=True,
-                mock=True,
-                env={"PATH": "/bin"},
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp)
+            engine = repo_dir / "skills" / "last30days" / "scripts" / "last30days.py"
+            engine.parent.mkdir(parents=True)
+            engine.write_text('parser.add_argument("--json-profile")')
+            completed = mock.Mock(returncode=0, stdout='{"topic":"x"}', stderr="")
+            with mock.patch.object(evaluator.subprocess, "run", return_value=completed) as run:
+                payload = evaluator.run_last30days(
+                    repo_dir,
+                    "topic",
+                    search="reddit",
+                    timeout_seconds=30,
+                    quick=True,
+                    mock=True,
+                    env={"PATH": "/bin"},
+                )
         self.assertEqual("x", payload["topic"])
+        self.assertIn("--json-profile=raw", run.call_args.args[0])
 
         with mock.patch.object(evaluator.subprocess, "run", return_value=mock.Mock(returncode=2, stdout="", stderr="bad run")):
             with self.assertRaises(RuntimeError):
@@ -170,6 +224,26 @@ class EvaluatorV3Tests(unittest.TestCase):
                     mock=False,
                     env={"PATH": "/bin"},
                 )
+
+    def test_run_last30days_keeps_legacy_engine_implicit_raw_profile(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_dir = Path(tmp)
+            engine = repo_dir / "skills" / "last30days" / "scripts" / "last30days.py"
+            engine.parent.mkdir(parents=True)
+            engine.write_text('parser.add_argument("--emit")')
+            completed = mock.Mock(returncode=0, stdout='{"topic":"x"}', stderr="")
+            with mock.patch.object(evaluator.subprocess, "run", return_value=completed) as run:
+                evaluator.run_last30days(
+                    repo_dir,
+                    "topic",
+                    search="reddit",
+                    timeout_seconds=30,
+                    quick=False,
+                    mock=False,
+                    env={"PATH": "/bin"},
+                )
+
+        self.assertNotIn("--json-profile=raw", run.call_args.args[0])
 
     def test_parse_topics_file_and_summary_writer(self):
         with tempfile.TemporaryDirectory() as tmp:

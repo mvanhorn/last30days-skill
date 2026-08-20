@@ -1,0 +1,91 @@
+name: Tag release
+
+# After a prepare-release PR merges to main, create the vX.Y.Z tag and
+# dispatch release.yml (GITHUB_TOKEN tag pushes do not start other workflows).
+
+on:
+  push:
+    branches:
+      - main
+
+permissions: {}
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    # Only act on the release-prep commit shape produced by prepare-release.yml
+    # (or an equivalent manual chore(release) commit). Quote the expression —
+    # a bare `chore(release):` colon is invalid YAML and fails the whole
+    # workflow before any job runs. Use contains (not startsWith) so merge
+    # commits whose subject is "Merge pull request #N …" still match when the
+    # PR title is in the body.
+    if: "contains(github.event.head_commit.message, 'chore(release): bump version to ')"
+    permissions:
+      contents: write
+      actions: write
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Create annotated tag and dispatch Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_MSG: ${{ github.event.head_commit.message }}
+          HEAD_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          # Scan every line — merge commits put the chore(release) title in the body.
+          VERSION="$(printf '%s\n' "${HEAD_MSG}" | sed -n 's/^chore(release): bump version to \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | head -n1)"
+          if [ -z "${VERSION}" ]; then
+            echo "Could not parse version from commit message: ${HEAD_MSG}"
+            exit 1
+          fi
+          TAG="v${VERSION}"
+
+          PY_VERSION="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          if [ "${PY_VERSION}" != "${VERSION}" ]; then
+            echo "Commit message version (${VERSION}) does not match pyproject.toml (${PY_VERSION})"
+            exit 1
+          fi
+
+          # Require the merged PR to carry the repository-controlled `release`
+          # label so a matching title alone cannot mint a tag.
+          PR_NUMBER="$(gh api "repos/${REPOSITORY}/commits/${HEAD_SHA}/pulls" \
+            --jq 'map(select(.base.ref == env.DEFAULT_BRANCH)) | .[0].number // empty')"
+          if [ -z "${PR_NUMBER}" ]; then
+            echo "No PR found for ${HEAD_SHA} into ${DEFAULT_BRANCH} — refusing to tag."
+            exit 1
+          fi
+          if ! gh api "repos/${REPOSITORY}/issues/${PR_NUMBER}/labels" \
+            --jq '.[].name' | grep -qx 'release'; then
+            echo "PR #${PR_NUMBER} lacks the 'release' label — refusing to tag."
+            exit 1
+          fi
+
+          if git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "Tag ${TAG} already exists locally — nothing to do."
+            exit 0
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on origin — nothing to do."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "refs/tags/${TAG}"
+          echo "Created and pushed ${TAG}"
+
+          # GITHUB_TOKEN tag pushes do not trigger release.yml; dispatch it.
+          gh workflow run release.yml \
+            --ref "${DEFAULT_BRANCH}" \
+            -f "tag=${TAG}"
+          echo "Dispatched release.yml for ${TAG}"

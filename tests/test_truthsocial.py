@@ -91,6 +91,25 @@ class TestSearchTruthSocial(unittest.TestCase):
         self.assertIn("not configured", result["error"])
 
     @patch("lib.truthsocial.http.request")
+    def test_search_sends_browser_like_headers(self, mock_request):
+        """Regression for #909: Cloudflare 403s the skill's default
+        User-Agent regardless of token validity; the request must include
+        browser-like headers alongside Authorization."""
+        from lib import http as http_module
+        mock_request.return_value = {"statuses": []}
+        truthsocial.search_truthsocial(
+            "health policy", "2026-02-09", "2026-03-09",
+            config={"TRUTHSOCIAL_TOKEN": "valid_token"},
+        )
+        _, kwargs = mock_request.call_args
+        headers = kwargs["headers"]
+        self.assertEqual(headers["Authorization"], "Bearer valid_token")
+        self.assertEqual(headers["User-Agent"], http_module.BROWSER_USER_AGENT)
+        self.assertIn("Accept", headers)
+        self.assertIn("Accept-Language", headers)
+        self.assertEqual(headers["Referer"], "https://truthsocial.com/")
+
+    @patch("lib.truthsocial.http.request")
     def test_401_returns_token_expired(self, mock_request):
         from lib.http import HTTPError
         mock_request.side_effect = HTTPError("Unauthorized", status_code=401)

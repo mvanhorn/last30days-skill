@@ -1,6 +1,6 @@
 [project]
 name = "last30days-skill"
-version = "3.3.1"
+version = "3.21.1"
 description = "Multi-source last-30-days research skill"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -8,9 +8,50 @@ dependencies = []
 
 [dependency-groups]
 dev = [
-  "pytest>=9.0.3,<10",
+  "pytest>=9.1.1,<10",
   "pytest-cov>=7,<8",
+  "pyyaml>=6.0.2,<7",
+  "towncrier>=25.8.0,<26",
 ]
+
+[tool.towncrier]
+name = "last30days-skill"
+directory = "changelog.d"
+filename = "CHANGELOG.md"
+start_string = "<!-- towncrier release notes start -->\n"
+underlines = ["", "", ""]
+title_format = "## [{version}] - {project_date}"
+issue_format = "[#{issue}](https://github.com/mvanhorn/last30days-skill/issues/{issue})"
+
+[[tool.towncrier.type]]
+directory = "security"
+name = "Security"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "removed"
+name = "Removed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "deprecated"
+name = "Deprecated"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "added"
+name = "Added"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "changed"
+name = "Changed"
+showcontent = true
+
+[[tool.towncrier.type]]
+directory = "fixed"
+name = "Fixed"
+showcontent = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -31,6 +72,11 @@ omit = [
 [tool.coverage.report]
 skip_empty = true
 show_missing = true
+# Coverage gate (issue #254). Floor intended to rise over time, not a ceiling.
+# Baseline measured 2026-07-03 on main before feat/hosted-api-mode
+# (source = scripts + tests): TOTAL 84.06%. Gate pinned at that baseline.
+# Do not lower without documenting why in the PR (see AGENTS.md Rules).
+fail_under = 84
 omit = [
   "skills/last30days/scripts/lib/vendor/*",
   "dist/*",

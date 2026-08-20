@@ -330,6 +330,7 @@ class TestSearchRss:
 
         with mock.patch.object(reddit_rss, "_now", side_effect=lambda: clock[0]), \
              mock.patch.object(reddit_rss.time, "sleep") as sleep, \
+             mock.patch.object(reddit_rss.http.REDDIT_KEYLESS_LIMITER, "acquire"), \
              mock.patch.object(reddit_rss.urllib.request, "urlopen", side_effect=open_url) as opened:
             assert reddit_rss._fetch_feed(primary, "x") == []
             assert opened.call_count == 1

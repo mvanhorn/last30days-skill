@@ -28,7 +28,7 @@ echo ""
 # Run 1: public release
 echo "[1/2] Running /last30days (public release)..."
 echo "  This takes 2-4 minutes..."
-claude -p --dangerously-skip-permissions "/last30days $TOPIC" > /dev/null 2>&1 || true
+claude -p "/last30days $TOPIC" > /dev/null 2>&1 || true
 RELEASE_FILE="$DIR/${SLUG}-raw.md"
 [ -f "$RELEASE_FILE" ] && echo "  Done: $RELEASE_FILE" || echo "  FAILED: no output file"
 echo ""
@@ -39,7 +39,7 @@ sleep 30
 # Run 2: private beta
 echo "[2/2] Running /last30days-beta (private beta)..."
 echo "  This takes 2-4 minutes..."
-claude -p --dangerously-skip-permissions "/last30days-beta $TOPIC" > /dev/null 2>&1 || true
+claude -p "/last30days-beta $TOPIC" > /dev/null 2>&1 || true
 BETA_FILE="$DIR/${SLUG}-raw-beta.md"
 [ -f "$BETA_FILE" ] && echo "  Done: $BETA_FILE" || echo "  FAILED: no output file"
 echo ""

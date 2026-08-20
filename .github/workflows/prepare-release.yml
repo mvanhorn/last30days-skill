@@ -1,0 +1,130 @@
+name: Prepare release
+
+# Opens a chore(release) PR that runs towncrier + lockstep version bumps.
+# Merge of that PR is tagged by tag-release.yml; tag push / dispatch runs release.yml.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: Semver bump kind (ignored when version is set)
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+      version:
+        description: Optional explicit X.Y.Z (overrides bump)
+        required: false
+        type: string
+
+permissions: {}
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install project (towncrier)
+        run: uv sync --group dev
+
+      - name: Prepare release files
+        id: prep
+        env:
+          BUMP: ${{ inputs.bump }}
+          EXPLICIT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -n "${EXPLICIT_VERSION}" ]; then
+            uv run python .github/scripts/prepare_release.py --version "${EXPLICIT_VERSION}"
+            VERSION="${EXPLICIT_VERSION}"
+          else
+            uv run python .github/scripts/prepare_release.py --bump "${BUMP}"
+            VERSION="$(python3 -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")"
+          fi
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "branch=release/v${VERSION}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release branch and PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.prep.outputs.version }}
+          BRANCH: ${{ steps.prep.outputs.branch }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/${REPOSITORY}.git"
+
+          if git ls-remote --exit-code --heads origin "${BRANCH}" >/dev/null 2>&1; then
+            echo "Branch ${BRANCH} already exists on origin — aborting to avoid clobbering."
+            exit 1
+          fi
+
+          git switch -c "${BRANCH}"
+          git add \
+            CHANGELOG.md \
+            changelog.d \
+            pyproject.toml \
+            uv.lock \
+            skills/last30days/SKILL.md \
+            .claude-plugin/plugin.json \
+            .claude-plugin/marketplace.json \
+            .codex-plugin/plugin.json \
+            .grok-plugin/plugin.json \
+            .grok-plugin/marketplace.json \
+            gemini-extension.json
+          git status --short
+          if git diff --cached --quiet; then
+            echo "No release changes staged (empty changelog.d?)."
+            exit 1
+          fi
+          git commit -m "chore(release): bump version to ${VERSION}"
+          git push -u origin HEAD
+
+          gh label create release --description "Automated version lockstep release PR" --color 0E8A16 2>/dev/null || true
+          gh label create skip-changelog --description "PR has nothing for release notes" --color BFDADC 2>/dev/null || true
+
+          BODY="$(cat <<EOF
+          ## Summary
+
+          Automated release preparation for **v${VERSION}**.
+
+          - Built \`CHANGELOG.md\` from \`changelog.d/\` via towncrier
+          - Bumped every lockstep version surface (skill, pyproject, plugin/marketplace manifests, uv.lock)
+
+          ## Test plan
+
+          - [ ] \`uv run pytest\` (CI)
+          - [ ] Confirm \`tests/test_plugin_contract.py::test_versions_match_across_manifests\` passes
+          - [ ] After merge, confirm tag \`v${VERSION}\` is created and [Release](../actions/workflows/release.yml) attaches artifacts
+
+          EOF
+          )"
+          # Strip leading spaces from heredoc indentation for readable PR body
+          BODY="$(printf '%s\n' "${BODY}" | sed 's/^          //')"
+
+          gh pr create \
+            --title "chore(release): bump version to ${VERSION}" \
+            --body "${BODY}" \
+            --label "release" \
+            --base "${DEFAULT_BRANCH}" \
+            --head "${BRANCH}"

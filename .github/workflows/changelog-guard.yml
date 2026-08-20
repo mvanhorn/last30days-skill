@@ -1,0 +1,153 @@
+name: Changelog guard
+
+# Non-release PRs must not edit CHANGELOG.md or bump lockstep version strings.
+# Content edits to SKILL.md / pyproject.toml / uv.lock are fine.
+# Release PRs (label: release) are exempt. Engine changes need a changelog
+# fragment unless labeled skip-changelog.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
+
+permissions: {}
+
+jobs:
+  guard:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Enforce changelog / version lockstep rules
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          LABELS="$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" --jq '.[].name')"
+          IS_RELEASE=0
+          SKIP_CHANGELOG=0
+          if printf '%s\n' "${LABELS}" | grep -qx 'release'; then
+            IS_RELEASE=1
+          fi
+          if printf '%s\n' "${LABELS}" | grep -qx 'skip-changelog'; then
+            SKIP_CHANGELOG=1
+          fi
+
+          mapfile -t CHANGED < <(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")
+
+          changed_changelog=0
+          for path in "${CHANGED[@]}"; do
+            if [ "${path}" = "CHANGELOG.md" ]; then
+              changed_changelog=1
+            fi
+          done
+
+          if [ "${IS_RELEASE}" -eq 1 ]; then
+            echo "PR has label 'release' — version/CHANGELOG edits allowed."
+            exit 0
+          fi
+
+          if [ "${changed_changelog}" -eq 1 ]; then
+            # One-time towncrier adoption: replacing ## [Unreleased] with the
+            # start marker / notice is allowed. Adding release-note bullets
+            # (+### sections) is not.
+            cl_diff="$(git diff "${BASE_SHA}...${HEAD_SHA}" -- CHANGELOG.md || true)"
+            if printf '%s\n' "${cl_diff}" | grep -q 'towncrier release notes start' \
+              && ! printf '%s\n' "${cl_diff}" | grep -qE '^\+### '; then
+              echo "Allowing towncrier bootstrap CHANGELOG.md header change."
+              changed_changelog=0
+            fi
+          fi
+
+          if [ "${changed_changelog}" -eq 1 ]; then
+            echo "::error::Do not edit CHANGELOG.md in feature PRs."
+            echo "Add changelog.d/<n>.<type>.md instead (see changelog.d/README.md)."
+            echo "Release PRs created via Actions → Prepare release use the 'release' label."
+            exit 1
+          fi
+
+          # Keep version parsing in .github/scripts/ — a prior inline
+          # python3 -c block used column-0 source and made Actions refuse
+          # to parse this workflow (every run failed with empty jobs).
+          version_at() {
+            local ref="$1"
+            local path="$2"
+            # Fail closed: do not swallow helper/parse errors with || true.
+            # Callers only invoke this after git cat-file confirms the blob.
+            git show "${ref}:${path}" \
+              | python3 .github/scripts/read_manifest_version.py "${path}"
+          }
+
+          VERSION_PATHS=(
+            pyproject.toml
+            uv.lock
+            skills/last30days/SKILL.md
+            .claude-plugin/plugin.json
+            .claude-plugin/marketplace.json
+            .codex-plugin/plugin.json
+            .grok-plugin/plugin.json
+            .grok-plugin/marketplace.json
+            gemini-extension.json
+          )
+
+          bumps=()
+          for path in "${VERSION_PATHS[@]}"; do
+            # Only compare when the file exists on both sides.
+            if ! git cat-file -e "${BASE_SHA}:${path}" 2>/dev/null; then
+              continue
+            fi
+            if ! git cat-file -e "${HEAD_SHA}:${path}" 2>/dev/null; then
+              continue
+            fi
+            base_v="$(version_at "${BASE_SHA}" "${path}")"
+            head_v="$(version_at "${HEAD_SHA}" "${path}")"
+            if [ -n "${base_v}" ] && [ -n "${head_v}" ] && [ "${base_v}" != "${head_v}" ]; then
+              bumps+=("${path}: ${base_v} → ${head_v}")
+            fi
+          done
+
+          if [ "${#bumps[@]}" -gt 0 ]; then
+            echo "::error::Non-release PRs must not bump lockstep version strings."
+            printf '  - %s\n' "${bumps[@]}"
+            echo "Run Actions → Prepare release to cut a version bump PR."
+            exit 1
+          fi
+
+          has_fragment=0
+          for path in "${CHANGED[@]}"; do
+            case "${path}" in
+              changelog.d/*.md)
+                base="$(basename "${path}")"
+                if [ "${base}" != "README.md" ]; then
+                  has_fragment=1
+                fi
+                ;;
+            esac
+          done
+
+          touches_engine=0
+          for path in "${CHANGED[@]}"; do
+            case "${path}" in
+              skills/last30days/scripts/*|skills/last30days/SKILL.md|mcp/*)
+                touches_engine=1
+                ;;
+            esac
+          done
+
+          if [ "${touches_engine}" -eq 1 ] && [ "${has_fragment}" -eq 0 ] && [ "${SKIP_CHANGELOG}" -eq 0 ]; then
+            echo "::error::Engine/skill changes need a changelog.d fragment (or the skip-changelog label)."
+            echo "See changelog.d/README.md"
+            exit 1
+          fi
+
+          echo "Changelog guard passed."

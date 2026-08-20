@@ -162,7 +162,7 @@ def fetch_comments(
         return {"top_comments": [], "comment_insights": [], "num_comments": None}
     sub, post_id = ref
 
-    html_text = http.get_text(_svc_url(sub, post_id), timeout=timeout, accept="text/html")
+    html_text = http.reddit_keyless_get_text(_svc_url(sub, post_id), timeout=timeout, accept="text/html")
     if not html_text:
         return {"top_comments": [], "comment_insights": [], "num_comments": None}
 

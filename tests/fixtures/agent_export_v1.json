@@ -1,0 +1,88 @@
+{
+  "schema_version": "1.2",
+  "query": "AI coding agents",
+  "generated_at": "2026-07-10T00:00:00Z",
+  "window_days": 30,
+  "source_status": {
+    "digg": "ok",
+    "github": "auth-failed",
+    "grounding": "unreachable",
+    "hackernews": "no-results",
+    "reddit": "ok",
+    "x": "ok",
+    "youtube": "rate-limited"
+  },
+  "freshness_verdicts": [],
+  "clusters": [
+    {
+      "title": "Agents move into daily coding workflows",
+      "summary": "Developers shared concrete agent workflows.",
+      "sources": [
+        "reddit"
+      ],
+      "engagement_total": 1543
+    },
+    {
+      "title": "Teams compare coding-agent review loops",
+      "summary": "Teams compared how agents fit into code review.",
+      "sources": [
+        "x"
+      ],
+      "engagement_total": 800
+    },
+    {
+      "title": "Agents climb the Digg AI leaderboard",
+      "summary": "A small Digg cluster appeared low on the leaderboard.",
+      "sources": [
+        "digg"
+      ],
+      "engagement_total": 5
+    }
+  ],
+  "results": [
+    {
+      "candidate_id": "candidate-reddit",
+      "title": "Agents move into daily coding workflows",
+      "source": "reddit",
+      "url": "https://www.reddit.com/r/programming/comments/agent-workflows",
+      "published_at": "2026-06-28",
+      "summary": "Developers shared concrete agent workflows.",
+      "engagement": {
+        "score": 1543,
+        "num_comments": 201
+      },
+      "relevance_score": 0.92,
+      "cluster": 0
+    },
+    {
+      "candidate_id": "candidate-x",
+      "title": "Teams compare coding-agent review loops",
+      "source": "x",
+      "url": "https://x.com/example/status/123",
+      "published_at": "2026-07-02",
+      "summary": "Teams compared how agents fit into code review.",
+      "engagement": {
+        "likes": 800,
+        "reposts": 50
+      },
+      "relevance_score": 0.84,
+      "cluster": 1
+    },
+    {
+      "candidate_id": "candidate-digg",
+      "title": "Agents climb the Digg AI leaderboard",
+      "source": "digg",
+      "url": "https://di.gg/ai/agent-leaderboard",
+      "published_at": "2026-07-05",
+      "summary": "A small Digg cluster appeared low on the leaderboard.",
+      "engagement": {
+        "postCount": 5,
+        "uniqueAuthors": 4,
+        "rank": 500,
+        "rank_score": 0.0
+      },
+      "relevance_score": 0.7,
+      "cluster": 2
+    }
+  ]
+}
