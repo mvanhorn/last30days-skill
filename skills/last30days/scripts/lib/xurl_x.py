@@ -1,11 +1,12 @@
 """X (Twitter) search via xurl CLI — official X API v2 with OAuth2.
 
-xurl is an open-source CLI for the X API (https://github.com/openclaw/xurl).
-It uses OAuth2 with PKCE and automatic token refresh, requiring only a free
-X Developer App. No xAI subscription or browser cookies needed.
+xurl is the official open-source CLI for the X API
+(https://github.com/xdevplatform/xurl). It uses OAuth2 with PKCE and automatic
+token refresh, requiring an enrolled X Developer App. No browser-cookie
+scraping is used.
 
-Install: npm install -g xurl
-Auth:    xurl auth oauth2 login
+Install: npm install -g @xdevplatform/xurl
+Auth:    xurl auth oauth2 --headless
 
 Priority: xAI API > Bird/GraphQL > xurl > web-only fallback
 """
