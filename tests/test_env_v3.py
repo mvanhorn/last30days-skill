@@ -50,6 +50,11 @@ class EnvV3Tests(unittest.TestCase):
         overrides = {
             "LAST30DAYS_PERPLEXITY_MODE": "search",
             "LAST30DAYS_PERPLEXITY_MODEL": "sonar-reasoning-pro",
+            "LAST30DAYS_PERPLEXITY_AGENT_MODEL": "perplexity/sonar",
+            "LAST30DAYS_PERPLEXITY_AGENT_PRESET": "low",
+            "LAST30DAYS_PERPLEXITY_AGENT_MAX_STEPS": "4",
+            "LAST30DAYS_PERPLEXITY_AGENT_MAX_OUTPUT_TOKENS": "8192",
+            "LAST30DAYS_PERPLEXITY_AGENT_TIMEOUT_SECONDS": "120",
             "LAST30DAYS_PERPLEXITY_MAX_RESULTS": "3",
             "LAST30DAYS_PERPLEXITY_SEARCH_CONTEXT_SIZE": "low",
             "LAST30DAYS_PERPLEXITY_SEARCH_MODE": "academic",

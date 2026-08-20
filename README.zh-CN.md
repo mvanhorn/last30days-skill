@@ -84,7 +84,7 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 | **Pinterest** | 视觉发现：围绕产品和创意的 Pin、收藏与评论。 |
 | **小红书（RED）** | 来自中国生活方式、产品和创作者的信号。当本机运行已登录的 x-mcp 浏览器插件或 `xiaohongshu-mcp` 服务时，通过 `--search xhs` 显式启用。 |
 | **Bluesky** | 去中心化的社交内容层，搜索 Twitter 用户迁移后产生的 AT Protocol 帖子。 |
-| **Perplexity** | 基于来源的 Sonar 综合结果、原始 Search API 数据和 Deep Research。 |
+| **Perplexity** | 受控 Agent API 综合结果、OpenRouter Sonar 回退、原始 Search API 数据和显式 Deep Research。 |
 | **Web** | 编辑报道和博客对比。它只是众多信号之一，而不是唯一来源。 |
 
 社区贡献者仍在不断加入更多平台。Truth Social 等垂直来源已经进入引擎，更多来源也在路上。
@@ -293,7 +293,7 @@ Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置�
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube 评论 | ScrapeCreators 密钥 | 前 10,000 次调用免费，之后按量付费 |
 | 小红书（RED） | 运行已登录的 x-mcp 浏览器插件或 `xiaohongshu-mcp` 服务，并在单次运行中通过 `--search xhs` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=xiaohongshu`；last30days 会依次自动探测 `http://localhost:18060` 和 `http://host.docker.internal:18060`，也可通过 `XIAOHONGSHU_API_BASE` 指定自定义地址 | last30days 不需要 API 密钥；依赖本地浏览器会话服务 |
 | DripStack（付费金融通讯） | 每次运行通过 `--search dripstack` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=dripstack` | 无需密钥；公共搜索 API 免费 |
-| Perplexity Sonar / Search API / Deep Research | Perplexity 密钥，或作为 Sonar 回退方案的 OpenRouter 密钥 | 按量付费 |
+| Perplexity Agent API / Search API / Deep Research | Perplexity 密钥，或作为 Sonar 回退方案的 OpenRouter 密钥 | 按量付费；直接密钥启用 Agent API 和后台 Deep Research |
 | Web 搜索 | Brave Search 密钥 | 每月 2,000 次免费查询 |
 
 ### macOS Keychain（可选）
@@ -368,11 +368,11 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 ## Star 历史
 
-<a href="https://star-history.com/#mvanhorn/last30days-skill&Date">
+<a href="https://star-history.dera.page/#mvanhorn/last30days-skill&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=mvanhorn/last30days-skill&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=mvanhorn/last30days-skill&type=Date" />
-    <img alt="Star 历史图" src="https://api.star-history.com/svg?repos=mvanhorn/last30days-skill&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
+    <img alt="Star 历史图" src="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
   </picture>
 </a>
 

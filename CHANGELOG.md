@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.21.1] - 2026-08-18
+
+### Changed
+
+- Direct Perplexity keys now use the Agent API for controlled synthesis and explicit Deep Research. Controlled synthesis forces grounded web search and supports explicit Anthropic Agent models with a bounded output budget, while Deep Research starts at most one paid background run per command and preserves safe polling and incomplete-run receipts. Existing OpenRouter-only installs keep the synchronous Sonar and Sonar Deep Research fallbacks.
+
+
 ## [3.21.0] - 2026-08-14
 
 ### Changed
