@@ -126,10 +126,15 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
             score = int(_attr(tag, "score") or 0)
         except ValueError:
             score = 0
+        raw_num_comments = _attr(tag, "comment-count")
         try:
-            num_comments = int(_attr(tag, "comment-count") or 0)
-        except ValueError:
+            num_comments = int(raw_num_comments) if raw_num_comments is not None else 0
+            counts_verified = raw_num_comments is not None and num_comments >= 0
+            if not counts_verified:
+                num_comments = 0
+        except (TypeError, ValueError):
             num_comments = 0
+            counts_verified = False
         title = _attr(tag, "post-title") or ""
         author = _attr(tag, "author") or "[deleted]"
         subreddit = _attr(tag, "subreddit-name") or ""
@@ -151,6 +156,7 @@ def parse_cards(html_text: str, query: str = "") -> List[Dict[str, Any]]:
                 "score": score,
                 "num_comments": num_comments,
                 "upvote_ratio": None,
+                "counts_verified": counts_verified,
             },
             "relevance": round(token_overlap_relevance(query, title), 3) if query else 0.0,
             "why_relevant": "Reddit listing",
@@ -343,15 +349,19 @@ def fetch_discovery_listings(
     return {"items": unique, "errors": errors}
 
 
-def score_index(subreddits: List[str], depth: str = "default") -> Dict[str, Dict[str, int]]:
-    """Build a {post_id: {score, num_comments}} map from subreddit listings.
+def score_index(subreddits: List[str], depth: str = "default") -> Dict[str, Dict[str, Any]]:
+    """Build a post-id map of scores, comment counts, and count provenance.
 
     Used to backfill real scores onto posts discovered via RSS, which carries
     no engagement numbers.
     """
-    index: Dict[str, Dict[str, int]] = {}
+    index: Dict[str, Dict[str, Any]] = {}
     for p in fetch_listings(subreddits, depth=depth):
         pid = p.get("metadata", {}).get("post_id") or _post_id(p["url"])
         if pid:
-            index[pid] = {"score": p["score"], "num_comments": p["num_comments"]}
+            index[pid] = {
+                "score": p["score"],
+                "num_comments": p["num_comments"],
+                "counts_verified": p["engagement"].get("counts_verified", False),
+            }
     return index

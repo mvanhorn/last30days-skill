@@ -2,7 +2,7 @@
 
 from unittest import mock
 
-from lib import reddit_keyless
+from lib import reddit_keyless, relevance, rerank
 
 
 def _post(i, date="2026-05-20", rel=0.0):
@@ -69,6 +69,36 @@ class TestDiscovery:
             out = reddit_keyless._discover("topic", "default", ["test"])
         backfilled = [p for p in out if p["url"] == rss_post["url"]][0]
         assert backfilled["engagement"]["score"] == 999
+
+    def test_arctic_cannot_erase_verified_listing_count(self):
+        rss_post = _post(7)
+        listing_post = _scored(7, score=0, ncmt=0)
+        listing_post["engagement"]["counts_verified"] = True
+        listing_post["url"] = "https://www.reddit.com/r/test/comments/zzzzzz/other/"
+
+        with mock.patch.object(
+            reddit_keyless.reddit_rss, "search_rss", return_value=[rss_post]
+        ), mock.patch.object(
+            reddit_keyless.reddit_listing,
+            "fetch_listings",
+            return_value=[listing_post],
+        ), mock.patch.object(
+            reddit_keyless.reddit_arctic,
+            "fetch_scores",
+            return_value={
+                "000007": {
+                    "score": 12,
+                    "num_comments": 0,
+                    "counts_verified": False,
+                }
+            },
+        ):
+            out = reddit_keyless._discover("topic", "default", ["test"])
+
+        backfilled = [p for p in out if p["url"] == rss_post["url"]][0]
+        assert backfilled["engagement"]["score"] == 12
+        assert backfilled["engagement"]["counts_verified"] is True
+        assert backfilled["engagement"]["num_comments"] == 0
 
     def test_bare_query_does_not_merge_listing_discovery(self):
         # No subreddits provided: derived-subreddit listings must NOT be added as
@@ -162,13 +192,29 @@ class TestSlotPriority:
     """Enrichment slot selection prefers entity-matching posts (R1-R3)."""
 
     @staticmethod
-    def _titled(i, title, score=0, selftext=""):
+    def _titled(i, title, score=0, selftext="", ncmt=0):
         p = _post(i)
         p["title"] = title
         p["selftext"] = selftext
         p["score"] = score
         p["engagement"]["score"] = score
+        p["num_comments"] = ncmt
+        p["engagement"]["num_comments"] = ncmt
         return p
+
+    @staticmethod
+    def _as_discovered(topic, posts):
+        """Fill post["relevance"] the way discovery does — from the title alone.
+
+        reddit_rss and reddit_listing both score the title only, and slot
+        ordering reads that stored value. A fixture that leaves it at 0.0 tests
+        a state the pipeline never produces.
+        """
+        prepared = relevance.PreparedQuery(topic)
+        for post in posts:
+            post["relevance"] = round(
+                relevance.token_overlap_relevance(prepared, post["title"]), 3)
+        return posts
 
     def test_on_topic_low_score_beats_off_topic_high_score(self):
         # 3 off-topic monsters + 2 on-topic small threads; quick depth = 3 slots.
@@ -258,6 +304,131 @@ class TestSlotPriority:
         with mock.patch("lib.rerank._primary_entity", side_effect=Exception("boom")):
             out = reddit_keyless._slot_priority("openclaw", posts)
         assert out == posts
+
+    def test_entity_match_tier_orders_by_relevance(self):
+        viral_off_topic = [
+            self._titled(1, "OpenClaw licensing debate", score=3156, ncmt=389),
+            self._titled(2, "OpenClaw trademark policy dispute", score=3048, ncmt=204),
+            self._titled(3, "OpenClaw release packaging", score=1824, ncmt=496),
+        ]
+        on_topic = [
+            self._titled(4, "OpenClaw and Obsidian as a maintained second brain",
+                         score=361, ncmt=49),
+            self._titled(5, "OpenClaw personal knowledge base setup",
+                         score=23, ncmt=17),
+        ]
+        topic = "OpenClaw second brain personal knowledge base"
+        posts = self._as_discovered(topic, viral_off_topic + on_topic)
+        assert all(rerank._entity_grounded(post["title"], topic) for post in posts)
+
+        out = reddit_keyless._slot_priority(
+            topic, posts)
+        assert {id(p) for p in out[:2]} == {id(p) for p in on_topic}
+        assert {id(p) for p in out[2:]} == {id(p) for p in viral_off_topic}
+
+    def test_zero_comment_thread_never_takes_a_slot(self):
+        # A comment slot spent on a thread with no comments yields nothing, so it
+        # sorts last however high its score or relevance.
+        no_comments = self._titled(1, "openclaw deluxe leak", score=900, ncmt=0)
+        no_comments["engagement"]["counts_verified"] = True
+        has_comments = self._titled(2, "openclaw first reactions", score=400, ncmt=220)
+        out = reddit_keyless._slot_priority(
+            "openclaw", self._as_discovered("openclaw", [no_comments, has_comments]))
+        assert out[0] is has_comments
+        assert out[1] is no_comments
+
+    def test_unknown_comment_count_is_not_treated_as_empty(self):
+        # RSS-discovered posts carry a placeholder count of 0 until shreddit
+        # backfills them. Sorting those behind a thread known to be empty buries
+        # exactly the posts nothing is known about yet.
+        unknown = self._titled(1, "openclaw thread", score=0, ncmt=0)
+        known_empty = self._titled(2, "openclaw thread", score=900, ncmt=0)
+        known_empty["engagement"]["counts_verified"] = True
+        out = reddit_keyless._slot_priority(
+            "openclaw", self._as_discovered("openclaw", [known_empty, unknown]))
+        assert out[0] is unknown
+        assert out[1] is known_empty
+
+    def test_verified_zero_outranked_by_unknown_count(self):
+        # A listing post downvoted to 0 with 0 comments is confirmed empty, so
+        # its slot can never pay off — even though its score reads like the RSS
+        # placeholder. Only the producer's own verification tells them apart.
+        verified_empty = self._titled(1, "openclaw thread", score=0, ncmt=0)
+        verified_empty["engagement"]["counts_verified"] = True
+        unknown = self._titled(2, "openclaw thread", score=0, ncmt=0)
+        out = reddit_keyless._slot_priority(
+            "openclaw", self._as_discovered("openclaw", [verified_empty, unknown]))
+        assert out[0] is unknown
+        assert out[1] is verified_empty
+
+    def test_relevant_unknown_count_beats_weaker_known_thread(self):
+        topic = "openclaw second brain knowledge base"
+        unknown = self._titled(
+            1, "openclaw second brain knowledge base", score=0, ncmt=0)
+        known_busy = self._titled(
+            2, "openclaw release notes", score=500, ncmt=400)
+        posts = self._as_discovered(topic, [known_busy, unknown])
+
+        out = reddit_keyless._slot_priority(topic, posts)
+        assert out[0] is unknown
+        assert out[1] is known_busy
+
+    def test_known_comments_break_equal_relevance_tie(self):
+        unknown = self._titled(1, "openclaw thread", score=0, ncmt=0)
+        known_busy = self._titled(2, "openclaw thread", score=0, ncmt=40)
+        out = reddit_keyless._slot_priority("openclaw", [unknown, known_busy])
+        assert out[0] is known_busy
+
+    def test_slot_order_matches_display_order(self):
+        # A slot handed to a post that final ranking then drops below the fold
+        # is the exact failure this ordering exists to prevent, so within a tier
+        # the two orders must agree. Here the more relevant post (0.31) carries
+        # the smaller thread, so any key that leans on engagement over stored
+        # relevance hands the slot to the one displayed second.
+        topic = "AI second brain personal knowledge base"
+        higher_relevance = self._titled(
+            1, "It appears that the anti opensource AI lobby is far outgunned",
+            score=1824, ncmt=496)
+        bigger_thread = self._titled(
+            2, "Linus Torvalds tells people to stop attacking others for using AI",
+            score=3156, ncmt=389)
+        posts = self._as_discovered(topic, [bigger_thread, higher_relevance])
+
+        display_order = sorted(
+            posts, key=reddit_keyless._relevance_rank_key, reverse=True)
+        slot_order = reddit_keyless._slot_priority(topic, posts)
+        assert [id(p) for p in slot_order] == [id(p) for p in display_order]
+        assert display_order[0] is higher_relevance
+
+    def test_slot_ranking_scores_the_same_text_as_display_ranking(self):
+        # Discovery scores the title alone (reddit_rss, reddit_listing) and the
+        # display sort reads that stored value, so a slot key that scores title
+        # plus selftext ranks a different quantity under the same name. The
+        # body-heavy post then wins a slot and is displayed last anyway.
+        topic = "AI second brain personal knowledge base"
+        body_heavy = self._titled(
+            1, "My personal setup after two years", score=40, ncmt=12,
+            selftext="I finally got my second brain working as a personal "
+                     "knowledge base, fully AI maintained.")
+        titled_on_topic = self._titled(
+            2, "AI knowledge base tips", score=40, ncmt=12)
+        posts = self._as_discovered(topic, [body_heavy, titled_on_topic])
+        assert body_heavy["relevance"] < titled_on_topic["relevance"]
+
+        out = reddit_keyless._slot_priority(topic, posts)
+        display_order = sorted(
+            posts, key=reddit_keyless._relevance_rank_key, reverse=True)
+        assert out[0] is titled_on_topic
+        assert [id(p) for p in out] == [id(p) for p in display_order]
+
+    def test_equal_relevance_keeps_score_order(self):
+        # Identical titles score identical relevance, so the engagement bonus
+        # is left to decide and the bigger thread keeps the slot.
+        high = self._titled(1, "openclaw thread", score=500, ncmt=10)
+        low = self._titled(2, "openclaw thread", score=5, ncmt=10)
+        out = reddit_keyless._slot_priority(
+            "openclaw", self._as_discovered("openclaw", [low, high]))
+        assert out[0] is high
 
 
 class TestScoredListingsFallback:

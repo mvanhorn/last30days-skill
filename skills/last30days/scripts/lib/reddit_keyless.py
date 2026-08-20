@@ -20,7 +20,7 @@ import concurrent.futures
 import math
 import sys
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from collections import Counter
 
@@ -49,7 +49,7 @@ def _relevance_rank_key(post: Dict[str, Any]) -> float:
     similarly-relevant posts by discussion volume but is too small to lift an
     off-topic post (relevance ~0) above an on-topic one.
     """
-    eng = post.get("engagement", {})
+    eng = post.get("engagement") or {}
     total = (eng.get("score", 0) or 0) + (eng.get("num_comments", 0) or 0)
     return (post.get("relevance") or 0.0) + min(0.25, math.log10(total + 1) / 20.0)
 
@@ -65,11 +65,15 @@ def _top_subreddits(posts: List[Dict[str, Any]], limit: int = MAX_DERIVED_SUBS) 
     return [sub for sub, _ in counts.most_common(limit)]
 
 
-def _apply_scores(post: Dict[str, Any], scored: Dict[str, int]) -> None:
+def _apply_scores(post: Dict[str, Any], scored: Dict[str, Any]) -> None:
+    engagement = post.setdefault("engagement", {})
+    count_was_verified = bool(engagement.get("counts_verified"))
     post["score"] = scored["score"]
-    post["num_comments"] = scored["num_comments"]
-    post.setdefault("engagement", {})["score"] = scored["score"]
-    post["engagement"]["num_comments"] = scored["num_comments"]
+    engagement["score"] = scored["score"]
+    if not count_was_verified:
+        post["num_comments"] = scored["num_comments"]
+        engagement["num_comments"] = scored["num_comments"]
+        engagement["counts_verified"] = bool(scored.get("counts_verified"))
 
 
 def _scored_listings(
@@ -160,11 +164,15 @@ def _discover(
     )
 
     # Score lookup by post id, from the scored listing cards.
-    score_map: Dict[str, Dict[str, int]] = {}
+    score_map: Dict[str, Dict[str, Any]] = {}
     for p in score_source:
         pid = p.get("metadata", {}).get("post_id", "")
         if pid:
-            score_map[pid] = {"score": p["score"], "num_comments": p["num_comments"]}
+            score_map[pid] = {
+                "score": p["score"],
+                "num_comments": p["num_comments"],
+                "counts_verified": p["engagement"].get("counts_verified", False),
+            }
 
     # Merge: dedicated-sub posts first (floor-exempt), then scored broad listing
     # posts (targeted only), then RSS breadth backfilled with real scores where
@@ -218,6 +226,7 @@ def _enrich_one(post: Dict[str, Any]) -> Dict[str, Any]:
         if num is not None:
             post["num_comments"] = num
             post.setdefault("engagement", {})["num_comments"] = num
+            post["engagement"]["counts_verified"] = True
     except Exception:
         pass  # keep the post with whatever discovery gave us
     return post
@@ -259,18 +268,8 @@ def _enrich(posts: List[Dict[str, Any]], depth: str) -> List[Dict[str, Any]]:
 def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Order posts for enrichment slots: entity-matching posts first.
 
-    Comment slots (ENRICH_LIMITS) are scarce; spending them on high-upvote
-    posts that rerank later demotes as entity misses starves the on-topic
-    posts the user actually sees (2026-06-06 "OpenClaw vs Hermes" run:
-    2,000+ upvote Gemma/GPU threads took every slot, then were demoted to
-    zero). Mirror rerank's demotion signal via the shared `_entity_grounded`
-    check (head token of the topic's stripped primary entity present in the
-    post text) so slots go to posts likely to survive final ranking — keying
-    on the same head token keeps the two paths from diverging. Falls back to
-    token-overlap relevance when the topic yields no usable primary entity.
-    Within each tier the incoming
-    (score-first) order is preserved. Never raises; on any failure the
-    incoming order is returned unchanged.
+    Within each grounding tier, display relevance decides which posts receive
+    scarce slots. Known discussion breaks ties; verified-empty threads go last.
     """
     try:
         from . import relevance, rerank
@@ -278,22 +277,43 @@ def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, An
         def _post_text(post: Dict[str, Any]) -> str:
             return f"{post.get('title') or ''} {post.get('selftext') or ''}"
 
+        prepared = relevance.PreparedQuery(topic)
         entity = rerank._primary_entity(topic).lower()
+
         if entity:
             def _matches(post: Dict[str, Any]) -> bool:
                 return rerank._entity_grounded(_post_text(post), entity)
         else:
-            prepared = relevance.PreparedQuery(topic)
-
             def _matches(post: Dict[str, Any]) -> bool:
                 return relevance.token_overlap_relevance(prepared, _post_text(post)) > 0.24
 
+        def _has_comments(post: Dict[str, Any]) -> bool:
+            engagement = post.get("engagement") or {}
+            return (engagement.get("num_comments") or 0) > 0
+
+        def _is_verified_empty(post: Dict[str, Any]) -> bool:
+            engagement = post.get("engagement") or {}
+            return bool(engagement.get("counts_verified")) and not _has_comments(post)
+
+        def _slot_key(post: Dict[str, Any]) -> Tuple[float, bool]:
+            return (_relevance_rank_key(post), _has_comments(post))
+
         matches: List[Dict[str, Any]] = []
         misses: List[Dict[str, Any]] = []
+        empty: List[Dict[str, Any]] = []
         for post in posts:
+            if _is_verified_empty(post):
+                empty.append(post)
+                continue
             (matches if _matches(post) else misses).append(post)
-        return matches + misses
-    except Exception:
+        matches.sort(key=_slot_key, reverse=True)
+        misses.sort(key=_slot_key, reverse=True)
+        empty.sort(key=_relevance_rank_key, reverse=True)
+        return matches + misses + empty
+    except Exception as exc:
+        # The fallback is the score-first order this function exists to
+        # replace, so a silent failure looks exactly like the bug it fixes.
+        _log(f"slot ordering failed, falling back to score order: {exc}")
         return posts
 
 
@@ -348,8 +368,9 @@ def search_and_enrich(
     if len(posts) < before:
         _log(f"Relevance floor dropped {before - len(posts)} off-topic posts")
 
-    # Provisional score-first order so enrichment-slot selection has a stable
-    # within-tier order to preserve.
+    # Provisional score-first order. Slot selection sorts within its own tiers,
+    # so this only settles exact key ties there; it is the order the run falls
+    # back to if slot ordering fails.
     posts.sort(
         key=lambda p: (
             p.get("engagement", {}).get("score", 0) or 0,
@@ -359,9 +380,9 @@ def search_and_enrich(
         reverse=True,
     )
 
-    # Enrichment slot selection is relevance-aware: entity-matching posts
-    # claim the scarce comment slots first (score order preserved within
-    # each tier).
+    # Enrichment slot selection is relevance-aware: entity-matching posts claim
+    # the scarce comment slots first, ordered within each tier by the same key
+    # the final display sort below uses.
     posts = _enrich(_slot_priority(topic, posts), depth)
 
     # Final display order ranks relevance-first with a bounded engagement bonus,
