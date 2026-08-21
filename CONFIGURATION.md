@@ -135,7 +135,7 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | Source | Key(s) | Required for | Free tier |
 |---|---|---|---|
 | Local corpus | `--corpus <dir>` or `LAST30DAYS_CORPUS_DIRS` | private `.md`/`.txt`; `.pdf` when `pdftotext` is on PATH | yes (offline) |
-| Reddit (public) | none (default free keyless path). With `SCRAPECREATORS_API_KEY`: empty-only search backup by default; `LAST30DAYS_REDDIT_SC_MIN_ITEMS=<N>` backfills thin free runs; `LAST30DAYS_REDDIT_BACKEND=scrapecreators` pins SC primary with free fallback | always on; SC knobs require `SCRAPECREATORS_API_KEY` | yes |
+| Reddit (public) | none (default free keyless path). With `SCRAPECREATORS_API_KEY`: empty-only search backup by default; `LAST30DAYS_REDDIT_SC_MIN_ITEMS=<N>` backfills thin free runs; `LAST30DAYS_REDDIT_BACKEND=scrapecreators` pins SC primary with free fallback. `LAST30DAYS_REDDIT_KEYLESS_RATE` paces unauthenticated reddit.com requests (default `1` req/sec) | always on; SC knobs require `SCRAPECREATORS_API_KEY` | yes |
 | Hacker News | none | always on | yes |
 | Polymarket | none | always on | yes |
 | StockTwits | none | auto-on for ticker/crypto topics only (gated by symbol detection); never registered for non-financial topics | yes (public API, ~200 req/hr per IP) |
@@ -166,6 +166,8 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | Jobs / careers pages | none for public ATS pages; web backend improves fallback discovery | `--hiring-signals` and strong Hiring Signals in standard company reports | yes |
 | Apify (alternate scraper) | `APIFY_API_TOKEN` | fallback for Reddit/TikTok/Instagram when ScrapeCreators is exhausted | yes (limited) |
 
+**Reddit keyless pacing.** Unauthenticated reddit.com requests (RSS, listing partials, shreddit) share one token bucket. The default is `1` request per second with a burst of 2, slow enough that engine fan-out does not trip HTTP 429 on a typical home IP. Set `LAST30DAYS_REDDIT_KEYLESS_RATE` to a float req/sec to trade wall-clock for coverage: higher finishes faster and loses more sub-requests to 429; lower is safer and slower. Invalid or non-positive values fall back to `1`. A 429'd RSS or listing sub-request is retried once after a short jittered pause, still through the limiter. This does not change ScrapeCreators routing (`LAST30DAYS_REDDIT_BACKEND` / `LAST30DAYS_REDDIT_SC_MIN_ITEMS`).
+
 **YouTube transcript tuning.** `LAST30DAYS_YT_SUB_LANGS` controls the comma-separated caption-language priority passed to yt-dlp and defaults to `en,es,pt`. When `SCRAPECREATORS_API_KEY` is available, yt-dlp uses one fast attempt before the paid fallback; set `LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT` to the number of seconds allowed for that attempt when a throttled host needs longer than the 12-second default. A VTT completed before the timeout is reused rather than discarded. `LAST30DAYS_YT_SEARCH_TIMEOUT` sets the per-search yt-dlp deadline (default 120s). Comparison-mode fan-out also caps concurrent yt-dlp processes process-wide and caches identical searches within a run so redundant `ytsearch` calls do not self-throttle the same IP.
 
 **X backend priority (bird first).** The default X backend chain is bird (browser cookies) → xai (API key) → xurl (OAuth2 CLI) → xquik (API key). Cookies beat `XAI_API_KEY` when both are present. A leftover grok login never steals the X lane; see below.
@@ -186,6 +188,7 @@ BRAVE_API_KEY=<your-brave-key>
 # Optional sources
 SCRAPECREATORS_API_KEY=<your-scrapecreators-key>
 INCLUDE_SOURCES=tiktok,instagram
+# LAST30DAYS_REDDIT_KEYLESS_RATE=1  # keyless reddit.com req/sec; lower = fewer 429s, slower runs
 # Xiaohongshu is requested-only: run with --search xhs after starting a local
 # browser-session service. Defaults probe localhost, then host.docker.internal.
 # XIAOHONGSHU_API_BASE=http://localhost:18060

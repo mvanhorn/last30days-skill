@@ -189,16 +189,16 @@ def _fetch_one_with_status(
     timeframe: str = TIMEFRAME,
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     try:
-        # tee_failures, not capture_failures: the latter would replace the
-        # pipeline's sink and hide this failure from it. get_text launders a
-        # terminal HTTP failure into None, so the tee is how this lane recovers
-        # the status code it needs to report (issue #899).
-        with http.tee_failures() as swallowed:
-            text = http.reddit_keyless_get_text(_listing_url(subreddit, sort, timeframe), timeout=LISTING_TIMEOUT,
-                                                accept="text/html")
+        # retry_429 records a terminal miss into the pipeline sink (issue #899)
+        # and retries a 429 once through the limiter (issue #985). An empty
+        # body ("") is a real empty listing; None never is.
+        text, error = http.reddit_keyless_get_text_retry_429(
+            _listing_url(subreddit, sort, timeframe),
+            timeout=LISTING_TIMEOUT,
+            accept="text/html",
+        )
         if text is None:
-            # An empty body ("") is a real empty listing; None never is.
-            return [], (str(swallowed[-1]) if swallowed else "no response")
+            return [], (error or "no response")
         return parse_cards(text, query), None
     except Exception as e:
         _log(f"listing fetch failed r/{subreddit} {sort}: {e}")

@@ -1,7 +1,9 @@
 """HTTP utilities for last30days skill (stdlib only)."""
 
 import json
+import math
 import os
+import random
 import re
 import socket
 import sys
@@ -967,7 +969,62 @@ class RateLimiter:
 # Shared across all keyless Reddit tiers (RSS, listing, shreddit) so their
 # combined fan-out is throttled as one family. Burst lets the parallel
 # enrichment workers proceed; sustained rate caps the stampede.
-REDDIT_KEYLESS_LIMITER = RateLimiter(rate_per_sec=5.0, burst=5)
+# 1 req/sec is slow enough that home IPs survive RSS + listing + shreddit
+# fan-out; raise LAST30DAYS_REDDIT_KEYLESS_RATE to trade 429s for wall-clock.
+REDDIT_KEYLESS_RATE_ENV = "LAST30DAYS_REDDIT_KEYLESS_RATE"
+DEFAULT_REDDIT_KEYLESS_RATE = 1.0
+DEFAULT_REDDIT_KEYLESS_BURST = 2
+_REDDIT_429_RETRY_SLEEP_SEC = 1.0
+_REDDIT_429_RETRY_JITTER_SEC = 0.5
+
+
+def parse_reddit_keyless_rate(raw: Optional[str]) -> float:
+    """Parse LAST30DAYS_REDDIT_KEYLESS_RATE; invalid/non-positive -> default."""
+    text = (raw or "").strip()
+    if not text:
+        return DEFAULT_REDDIT_KEYLESS_RATE
+    try:
+        rate = float(text)
+    except (TypeError, ValueError):
+        return DEFAULT_REDDIT_KEYLESS_RATE
+    if not math.isfinite(rate) or rate <= 0:
+        return DEFAULT_REDDIT_KEYLESS_RATE
+    return rate
+
+
+def make_reddit_keyless_limiter(
+    environ: Optional[Dict[str, str]] = None,
+) -> RateLimiter:
+    envmap = os.environ if environ is None else environ
+    return RateLimiter(
+        rate_per_sec=parse_reddit_keyless_rate(envmap.get(REDDIT_KEYLESS_RATE_ENV)),
+        burst=DEFAULT_REDDIT_KEYLESS_BURST,
+    )
+
+
+REDDIT_KEYLESS_LIMITER = make_reddit_keyless_limiter()
+
+
+def _sync_reddit_keyless_rate() -> None:
+    """Apply a process-env override without resetting in-flight tokens."""
+    rate = parse_reddit_keyless_rate(os.environ.get(REDDIT_KEYLESS_RATE_ENV))
+    if REDDIT_KEYLESS_LIMITER.rate != rate:
+        REDDIT_KEYLESS_LIMITER.rate = rate
+
+
+def _failures_are_429(failures: list[HTTPError]) -> bool:
+    if not failures:
+        return False
+    last = failures[-1]
+    return last.status_code == 429 or last.outcome_state == health.RATE_LIMITED
+
+
+def _sleep_reddit_429_retry() -> None:
+    """Short jittered pause before the single in-lane 429 retry."""
+    time.sleep(
+        _REDDIT_429_RETRY_SLEEP_SEC
+        + random.uniform(0.0, _REDDIT_429_RETRY_JITTER_SEC)
+    )
 
 
 def reddit_keyless_get_text(
@@ -983,8 +1040,47 @@ def reddit_keyless_get_text(
     requests via :data:`REDDIT_KEYLESS_LIMITER` so a broad multi-query run does
     not stampede Reddit's keyless endpoints and trip blocks.
     """
+    _sync_reddit_keyless_rate()
     REDDIT_KEYLESS_LIMITER.acquire()
     return get_text(url, timeout=timeout, retries=retries, accept=accept, headers=headers)
+
+
+def reddit_keyless_get_text_retry_429(
+    url: str,
+    timeout: int = DEFAULT_TIMEOUT,
+    accept: str = "*/*",
+    headers: Optional[Dict[str, str]] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Limiter-throttled GET with one extra limiter-respecting retry on 429.
+
+    Returns ``(body, error)``. The first attempt is captured locally so a
+    recovered 429 is not left in the pipeline sink. A second 429, or any
+    non-429 miss, is recorded as before. Internal ``get_text`` retries are
+    skipped (``retries=1``) so the in-lane retry is the one that re-acquires
+    the bucket.
+    """
+    kwargs: Dict[str, Any] = {
+        "timeout": timeout,
+        "retries": 1,
+        "accept": accept,
+        "headers": headers,
+    }
+    with capture_failures() as first:
+        text = reddit_keyless_get_text(url, **kwargs)
+    if text is not None:
+        return text, None
+    if _failures_are_429(first):
+        _sleep_reddit_429_retry()
+        with tee_failures() as second:
+            text = reddit_keyless_get_text(url, **kwargs)
+        if text is not None:
+            return text, None
+        err = second[-1] if second else (first[-1] if first else None)
+        return None, str(err) if err is not None else "no response"
+    for err in first:
+        _record_failure(err)
+    err = first[-1] if first else None
+    return None, str(err) if err is not None else "no response"
 
 
 def scrapecreators_headers(token: str) -> Dict[str, str]:

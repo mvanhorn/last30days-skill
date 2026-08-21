@@ -471,6 +471,9 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_X_MODEL', None),
         ('LAST30DAYS_X_BACKEND', None),
         ('LAST30DAYS_REDDIT_BACKEND', None),
+        # Keyless reddit.com token-bucket rate (req/sec). http.py reads it
+        # from os.environ on each acquire, so .env values are exported below.
+        ('LAST30DAYS_REDDIT_KEYLESS_RATE', None),
         # Doctor cache freshness window in seconds (doctor --cached).
         ('LAST30DAYS_DOCTOR_TTL', None),
         # Per-source deadline (seconds) for doctor --probe live checks.
@@ -599,6 +602,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         'LAST30DAYS_YT_SUB_LANGS',
         'LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT',
         'LAST30DAYS_YT_SEARCH_TIMEOUT',
+        'LAST30DAYS_REDDIT_KEYLESS_RATE',
     ):
         if config.get(key):
             os.environ.setdefault(key, config[key])

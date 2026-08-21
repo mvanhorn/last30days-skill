@@ -2532,7 +2532,15 @@ def _format_outcome(outcome: schema.SourceOutcome) -> str:
     state = outcome.state
     if state == schema.PARTIAL:
         noun = "item" if outcome.items_returned == 1 else "items"
-        summary = f"partial after {outcome.items_returned} {noun}"
+        summary = f"partial — {outcome.items_returned} {noun} returned"
+        detail_l = detail.lower()
+        if (
+            "429" in detail_l
+            or "rate-limited" in detail_l
+            or "rate limit" in detail_l
+            or "too many requests" in detail_l
+        ):
+            summary += ", some requests rate-limited"
     elif state == schema.NO_RESULTS:
         summary = "no results"
     else:

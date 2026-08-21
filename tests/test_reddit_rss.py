@@ -3,7 +3,15 @@
 from pathlib import Path
 from unittest import mock
 
+import pytest
+
 from lib import reddit_rss
+
+
+@pytest.fixture(autouse=True)
+def _no_keyless_throttle():
+    with mock.patch.object(reddit_rss.http.REDDIT_KEYLESS_LIMITER, "acquire"):
+        yield
 
 FIXTURE = Path(__file__).resolve().parent.parent / "fixtures" / "reddit_search_rss_sample.xml"
 
