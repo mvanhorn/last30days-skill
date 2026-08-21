@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import sys
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -25,6 +26,46 @@ class SubprocResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+def _taskkill_tree(pid: int) -> bool:
+    """Kill a Windows process tree rooted at *pid* via ``taskkill``.
+
+    Uses ``taskkill /F /T /PID`` to forcibly terminate the process and all
+    of its children.  This is a no-op on non-Windows platforms (callers
+    should guard on ``sys.platform == "win32"`` before calling).
+
+    Best-effort and never raises: ``check=False`` suppresses
+    ``CalledProcessError`` so a concurrent exit or denied termination cannot
+    bypass the ``SubprocTimeout`` contract. Returns ``True`` only when
+    ``taskkill`` exited 0; a nonzero exit (failure) returns ``False`` so the
+    caller can fall back to ``proc.kill()`` / ``proc.wait()`` cleanup and
+    still reap the direct child instead of leaving the whole tree alive
+    (#823 Greptile re-review).
+    """
+    result = subprocess.run(
+        ["taskkill", "/F", "/T", "/PID", str(pid)],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return result.returncode == 0
+
+
+def _safe_kill(proc: subprocess.Popen) -> None:
+    """Best-effort ``proc.kill()`` that never raises.
+
+    ``proc.kill()`` raises ``ProcessLookupError`` when the child has already
+    exited (it exited concurrently with the timeout, or our `taskkill`/killpg
+    already reaped it).  Without this guard, ``run_with_timeout``'s cleanup
+    handlers would re-raise that exception *after* catching it, escaping the
+    documented ``SubprocTimeout`` contract and surfacing a generic subprocess
+    error to adapters instead of a timeout (Greptile P1 re-review, #927).
+    """
+    try:
+        proc.kill()
+    except (ProcessLookupError, PermissionError, OSError, AttributeError):
+        pass
 
 
 def run_with_timeout(
@@ -81,12 +122,25 @@ def run_with_timeout(
         stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
         try:
-            if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+            if sys.platform == "win32":
+                # Windows: version-manager shims (proto, nodenv, fnm) create a
+                # deeper spawn tree than a direct Node binary.  ``proc.kill()``
+                # only terminates the immediate child, leaving proto.exe +
+                # grandchild node.exe alive.  Under agent retries / parallel
+                # probes these orphan trees accumulate and can exhaust RAM
+                # (#823).  Use ``taskkill /F /T`` to terminate the entire
+                # process tree; if it fails (nonzero exit — e.g. termination
+                # denied or the PID already reaped), fall back to proc.kill()
+                # so the direct child is still reaped instead of leaving the
+                # whole tree alive (Greptile re-review).
+                if not _taskkill_tree(proc.pid):
+                    _safe_kill(proc)
+            elif hasattr(os, "killpg") and hasattr(os, "getpgid"):
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             else:
-                proc.kill()
+                _safe_kill(proc)
         except (ProcessLookupError, PermissionError, OSError, AttributeError):
-            proc.kill()
+            _safe_kill(proc)
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -97,12 +151,15 @@ def run_with_timeout(
             # escalation path (added later in #433) so the same crash can't
             # re-surface here (#588).
             try:
-                if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+                if sys.platform == "win32":
+                    if not _taskkill_tree(proc.pid):
+                        _safe_kill(proc)
+                elif hasattr(os, "killpg") and hasattr(os, "getpgid"):
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 else:
-                    proc.kill()
+                    _safe_kill(proc)
             except (ProcessLookupError, PermissionError, OSError, AttributeError):
-                proc.kill()
+                _safe_kill(proc)
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
