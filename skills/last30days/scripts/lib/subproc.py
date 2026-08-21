@@ -52,6 +52,22 @@ def _taskkill_tree(pid: int) -> bool:
     return result.returncode == 0
 
 
+def _safe_kill(proc: subprocess.Popen) -> None:
+    """Best-effort ``proc.kill()`` that never raises.
+
+    ``proc.kill()`` raises ``ProcessLookupError`` when the child has already
+    exited (it exited concurrently with the timeout, or our `taskkill`/killpg
+    already reaped it).  Without this guard, ``run_with_timeout``'s cleanup
+    handlers would re-raise that exception *after* catching it, escaping the
+    documented ``SubprocTimeout`` contract and surfacing a generic subprocess
+    error to adapters instead of a timeout (Greptile P1 re-review, #927).
+    """
+    try:
+        proc.kill()
+    except (ProcessLookupError, PermissionError, OSError, AttributeError):
+        pass
+
+
 def run_with_timeout(
     cmd: Sequence[str],
     *,
@@ -118,13 +134,13 @@ def run_with_timeout(
                 # so the direct child is still reaped instead of leaving the
                 # whole tree alive (Greptile re-review).
                 if not _taskkill_tree(proc.pid):
-                    proc.kill()
+                    _safe_kill(proc)
             elif hasattr(os, "killpg") and hasattr(os, "getpgid"):
                 os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
             else:
-                proc.kill()
+                _safe_kill(proc)
         except (ProcessLookupError, PermissionError, OSError, AttributeError):
-            proc.kill()
+            _safe_kill(proc)
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -137,13 +153,13 @@ def run_with_timeout(
             try:
                 if sys.platform == "win32":
                     if not _taskkill_tree(proc.pid):
-                        proc.kill()
+                        _safe_kill(proc)
                 elif hasattr(os, "killpg") and hasattr(os, "getpgid"):
                     os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
                 else:
-                    proc.kill()
+                    _safe_kill(proc)
             except (ProcessLookupError, PermissionError, OSError, AttributeError):
-                proc.kill()
+                _safe_kill(proc)
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:

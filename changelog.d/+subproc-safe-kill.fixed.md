@@ -1,0 +1,1 @@
+Windows: when the timed-out child exits concurrently with cleanup (or `taskkill` fails), the fallback `proc.kill()` previously re-raised `ProcessLookupError` and escaped the documented `SubprocTimeout`. Cleanup now goes through a defensive `_safe_kill` so adapters reliably get a timeout instead of a generic subprocess error. (#927)

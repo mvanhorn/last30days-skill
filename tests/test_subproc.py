@@ -265,6 +265,42 @@ class TestRunWithTimeout(unittest.TestCase):
             fake.kill_count, 0, "proc.kill() must not run when taskkill succeeded"
         )
 
+    def test_kill_race_does_not_escape_subproctimeout(self):
+        """A ``ProcessLookupError`` from ``proc.kill()`` must not escape.
+
+        Regression for the Greptile P1 re-review (#927): when the child exits
+        concurrently with the timeout, ``proc.kill()`` raises
+        ``ProcessLookupError``.  The old code caught that in the cleanup
+        handler then immediately re-ran the *unprotected* ``proc.kill()``,
+        which raised again and escaped ``run_with_timeout`` -- so adapters got
+        a generic subprocess error instead of the documented ``SubprocTimeout``.
+        Now the fallback goes through ``_safe_kill`` and the timeout contract
+        is preserved.
+        """
+        TimeoutExpired = subproc.subprocess.TimeoutExpired
+
+        class _FakeProc:
+            def __init__(self):
+                self.pid = 7779
+
+            def communicate(self, timeout=None):
+                raise TimeoutExpired(cmd="x", timeout=timeout)
+
+            def wait(self, timeout=None):
+                return 0
+
+            def kill(self):
+                raise ProcessLookupError()
+
+        fake = _FakeProc()
+        with patch.object(subproc.sys, "platform", "win32"), \
+             patch.object(subproc.subprocess, "Popen", return_value=fake), \
+             patch.object(subproc, "_taskkill_tree", return_value=False):
+            # On Windows with taskkill failing, the fallback must still yield
+            # SubprocTimeout (not a bare ProcessLookupError).
+            with self.assertRaises(subproc.SubprocTimeout):
+                subproc.run_with_timeout(["x"], timeout=1)
+
 
 if __name__ == "__main__":
     unittest.main()
