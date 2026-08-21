@@ -161,6 +161,7 @@ SOURCE_ORDER = (
     "tiktok",
     "instagram",
     "threads",
+    "telegram",
     "bluesky",
     "truthsocial",
     "perplexity",
@@ -666,6 +667,36 @@ def _threads_record(config):
     return _sc_optin_record(config, "threads", "threads")
 
 
+def _telegram_record(config):
+    # Telegram needs the key AND an INCLUDE_SOURCES=telegram opt-in AND a
+    # channel list (TELEGRAM_SOURCES). Without named channels there is no
+    # discovery endpoint to call.
+    requires = "SCRAPECREATORS_API_KEY + INCLUDE_SOURCES=telegram + TELEGRAM_SOURCES"
+    if not config.get("SCRAPECREATORS_API_KEY"):
+        return _record(status="unconfigured", requires=requires, fix=_sc_fix())
+    from . import telegram
+    channels = telegram._get_channel_sources(config)
+    if "telegram" in env.include_sources(config):
+        if channels:
+            return _record(
+                status=health.OK,
+                requires=requires,
+                detail=f"SCRAPECREATORS_API_KEY present, {len(channels)} channel(s) configured",
+            )
+        return _record(
+            status="unconfigured",
+            requires=requires,
+            fix="set TELEGRAM_SOURCES to a comma-separated list of public channel handles",
+            note="key present and opt-in active, but no channels configured",
+        )
+    return _record(
+        status="opt-in",
+        requires=requires,
+        fix="add telegram to INCLUDE_SOURCES and set TELEGRAM_SOURCES to channel handles",
+        note="key present; opt-in only, channels required",
+    )
+
+
 def _bluesky_record(config):
     if env.is_bluesky_available(config):
         return _record(status=health.OK, requires="BSKY_HANDLE + BSKY_APP_PASSWORD")
@@ -845,6 +876,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "tiktok": _tiktok_record,
     "instagram": _instagram_record,
     "threads": _threads_record,
+    "telegram": _telegram_record,
     "bluesky": _bluesky_record,
     "truthsocial": _truthsocial_record,
     "perplexity": _perplexity_record,

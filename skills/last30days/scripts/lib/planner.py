@@ -152,6 +152,7 @@ SOURCE_CAPABILITIES = {
     "trustpilot": {"reference", "company_signal", "social"},
     "amazon": {"reference", "company_signal", "product_signal"},
     "xiaohongshu": {"video", "video_shortform", "social"},
+    "telegram": {"discussion", "social"},
     "github": {"discussion", "link"},
     "grounding": {"web", "reference", "link"},
     "perplexity": {"web", "reference", "analysis"},

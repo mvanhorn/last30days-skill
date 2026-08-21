@@ -58,6 +58,9 @@ def normalize_source_items(
         "threads": lambda s, i, idx, fd, td: _normalize_microblog(
             s, i, idx, fd, td, "TH", "Threads post"
         ),
+        "telegram": lambda s, i, idx, fd, td: _normalize_microblog(
+            s, i, idx, fd, td, "TG", "Telegram post"
+        ),
         "xquik": _normalize_x,
         "pinterest": _normalize_pinterest,
         "polymarket": _normalize_polymarket,

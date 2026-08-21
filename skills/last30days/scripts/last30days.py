@@ -210,6 +210,49 @@ def activate_trustpilot_for_explicit_domain(
     return requested_sources
 
 
+def activate_telegram_for_explicit_sources(
+    config: dict,
+    requested_sources: list[str] | None,
+    *,
+    channels: str,
+) -> list[str] | None:
+    """Activate the opt-in Telegram source when the user pinned channel(s).
+
+    Passing ``--telegram-sources`` is unambiguous intent — silently ignoring it
+    when Telegram is not in ``INCLUDE_SOURCES`` / ``--search`` is the same
+    failure mode as #873 (Trustpilot). Auto-activate the source.
+
+    ``EXCLUDE_SOURCES=telegram`` still wins. Mutates ``config`` in place and
+    returns the (possibly extended) ``requested_sources`` list.
+    """
+    excluded = {
+        token.strip().lower()
+        for token in str(config.get("EXCLUDE_SOURCES") or "").split(",")
+        if token.strip()
+    }
+    if "telegram" in excluded:
+        sys.stderr.write(
+            f"[Telegram] --telegram-sources={channels} ignored: telegram is in EXCLUDE_SOURCES\n"
+        )
+        return requested_sources
+
+    config["TELEGRAM_SOURCES"] = channels
+
+    include = str(config.get("INCLUDE_SOURCES") or "")
+    tokens = [token.strip() for token in include.split(",") if token.strip()]
+    if "telegram" not in {token.lower() for token in tokens}:
+        tokens.append("telegram")
+        config["INCLUDE_SOURCES"] = ",".join(tokens)
+        sys.stderr.write(
+            f"[Telegram] --telegram-sources={channels} activated telegram source "
+            "(add to INCLUDE_SOURCES permanently to skip this auto-enable)\n"
+        )
+
+    if requested_sources is not None and "telegram" not in requested_sources:
+        requested_sources = [*requested_sources, "telegram"]
+    return requested_sources
+
+
 def slugify(value: str, max_length: int = 180) -> str:
     slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     if len(slug) > max_length:
@@ -778,6 +821,16 @@ def build_parser() -> argparse.ArgumentParser:
             "(--amazon-query='Weber grill', not 'Weber' -- a bare brand keyword lands "
             "on an ad-heavy page that can miss the brand's own bestsellers). "
             "Requires the brightdata CLI on PATH and logged in."
+        ),
+    )
+    parser.add_argument(
+        "--telegram-sources",
+        help=(
+            "Comma-separated list of public Telegram channel handles or t.me URLs. "
+            "Auto-activates the opt-in Telegram source for this run. "
+            "Accepts: bare handle (aipost), @handle (@aipost), "
+            "t.me URL (https://t.me/aipost), or preview URL (https://t.me/s/aipost). "
+            "Rejects joinchat links and numeric -100 supergroup IDs."
         ),
     )
     parser.add_argument(
@@ -3240,6 +3293,18 @@ def _main(
             config,
             requested_sources,
             reason=f"--trustpilot-domain={cli_trustpilot_domain}",
+        )
+    # Explicit --telegram-sources is user intent: activate the opt-in source
+    # before diagnose/run so the flag cannot silently no-op (same pattern as
+    # Trustpilot #873). Sets TELEGRAM_SOURCES in config for pipeline.
+    cli_telegram_sources = (
+        args.telegram_sources.strip() if args.telegram_sources else ""
+    )
+    if cli_telegram_sources:
+        requested_sources = activate_telegram_for_explicit_sources(
+            config,
+            requested_sources,
+            channels=cli_telegram_sources,
         )
     diag = pipeline.diagnose(config, requested_sources, safe=args.diagnose)
 

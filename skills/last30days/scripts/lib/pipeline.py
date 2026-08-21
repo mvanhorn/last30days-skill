@@ -63,6 +63,7 @@ from . import (
     snippet,
     stocktwits,
     techmeme,
+    telegram,
     threads,
     tiktok,
     topic_shape,
@@ -106,6 +107,7 @@ SEARCH_ALIAS = {
 # product search. Extra streams would be pure redundancy at one credit each.
 MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
+    "telegram": 1,
 }
 
 _FAILURE_SPECIFICITY = {
@@ -214,6 +216,7 @@ MOCK_AVAILABLE_SOURCES = [
     "linkedin",
     "corpus",
     "dripstack",
+    "telegram",
 ]
 
 
@@ -362,6 +365,14 @@ def available_sources(
         "pinterest" in include_sources or (requested_sources and "pinterest" in requested_sources)
     ):
         available.append("pinterest")
+    # Telegram: opt-in via INCLUDE_SOURCES AND requires a channel list. The
+    # channel list (TELEGRAM_SOURCES env or --telegram-sources CLI) is the gate:
+    # without named channels there is no discovery endpoint to call.
+    if config.get("SCRAPECREATORS_API_KEY") and (
+        "telegram" in include_sources or (requested_sources and "telegram" in requested_sources)
+    ):
+        if telegram.is_telegram_configured(config):
+            available.append("telegram")
     # xquik is a backend of the single "x" source (see env.x_backend_chain),
     # not a separate parallel source — registered via the "x" entry above.
     exclude = {s.strip().lower() for s in (config.get("EXCLUDE_SOURCES") or "").split(",") if s.strip()}
@@ -4694,6 +4705,14 @@ def _retrieve_stream_impl(
             token=config.get("SCRAPECREATORS_API_KEY"),
         )
         return threads.parse_threads_response(result), _result_outcome_artifact(source, result)
+    if source == "telegram":
+        result = telegram.search_telegram(
+            subquery.search_query, from_date, to_date,
+            depth=depth,
+            token=config.get("SCRAPECREATORS_API_KEY"),
+            config=config,
+        )
+        return telegram.parse_telegram_response(result), _result_outcome_artifact(source, result)
     if source == "truthsocial":
         result = truthsocial.search_truthsocial(subquery.search_query, from_date, to_date, depth=depth, config=config)
         return truthsocial.parse_truthsocial_response(result), _result_outcome_artifact(source, result)
