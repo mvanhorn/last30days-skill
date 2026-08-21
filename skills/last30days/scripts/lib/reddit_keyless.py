@@ -54,6 +54,20 @@ def _relevance_rank_key(post: Dict[str, Any]) -> float:
     return (post.get("relevance") or 0.0) + min(0.25, math.log10(total + 1) / 20.0)
 
 
+def _enrich_comment_score(post: Dict[str, Any]) -> float:
+    """Score a post by comment count for enrichment-slot selection.
+
+    Returns ``num_comments`` as a float, or ``-1`` when the value is
+    ``0`` or absent (RSS does not supply comment counts — ``0`` means
+    *unknown*, not *no comments*). The ``-1`` sentinel sorts unknown
+    posts below every known-value post so enrichment slots go to threads
+    with real discussion volume (#906).
+    """
+    eng = post.get("engagement", {})
+    n = (eng.get("num_comments", 0) or 0)
+    return float(n) if n > 0 else -1.0
+
+
 def _log(msg: str) -> None:
     sys.stderr.write(f"[RedditKeyless] {msg}\n")
     sys.stderr.flush()
@@ -224,16 +238,32 @@ def _enrich_one(post: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _enrich(posts: List[Dict[str, Any]], depth: str) -> List[Dict[str, Any]]:
-    """Enrich the top N posts with comments under a total time budget."""
+    """Enrich the top N posts with comments under a total time budget.
+
+    Enrichment-slot selection is decoupled from relevance ranking: slots
+    go to posts with the highest comment count, not the highest relevance
+    rank. This ensures that a high-comment thread at rank 7+ gets enriched
+    instead of near-empty threads that rank higher (#906). Posts with
+    ``num_comments=0`` (unknown — RSS does not supply it) are sorted last.
+    The original post order is preserved in the final result.
+    """
     limit = ENRICH_LIMITS.get(depth, ENRICH_LIMITS["default"])
-    to_enrich = posts[:limit]
-    rest = posts[limit:]
+    if not posts:
+        return posts
+
+    # Pick enrichment candidates by comment count, not relevance order.
+    scored = [(i, _enrich_comment_score(p)) for i, p in enumerate(posts)]
+    scored.sort(key=lambda x: x[1], reverse=True)
+    enrich_indices = {i for i, _ in scored[:limit]}
+
+    to_enrich = [posts[i] for i in sorted(enrich_indices)]
+    rest = [posts[i] for i in range(len(posts)) if i not in enrich_indices]
     if not to_enrich:
         return posts
 
     result_map: Dict[int, Dict[str, Any]] = {}
     try:
-        with ThreadPoolExecutor(max_workers=min(limit, MAX_ENRICH_WORKERS)) as executor:
+        with ThreadPoolExecutor(max_workers=min(len(to_enrich), MAX_ENRICH_WORKERS)) as executor:
             futures = {
                 http.submit_with_context(executor, _enrich_one, post): i
                 for i, post in enumerate(to_enrich)
@@ -253,7 +283,15 @@ def _enrich(posts: List[Dict[str, Any]], depth: str) -> List[Dict[str, Any]]:
     except Exception:
         enriched = to_enrich
 
-    return enriched + rest
+    # Merge enriched posts back into original order.
+    enriched_by_idx = dict(zip(sorted(enrich_indices), enriched))
+    result: List[Dict[str, Any]] = []
+    for i in range(len(posts)):
+        if i in enrich_indices:
+            result.append(enriched_by_idx[i])
+        else:
+            result.append(posts[i])
+    return result
 
 
 def _slot_priority(topic: str, posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
