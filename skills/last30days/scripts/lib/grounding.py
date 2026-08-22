@@ -64,7 +64,7 @@ def brave_search(
     for i, r in enumerate((data.get("web", {}).get("results", []))[:count]):
         raw_date = r.get("page_age") or ""
         pub_date = _normalize_date(raw_date[:10]) if raw_date else None
-        if not _in_date_range(pub_date, date_range):
+        if _known_date_out_of_range(pub_date, date_range):
             continue
         items.append({
             "id": f"WB{i + 1}",
@@ -109,7 +109,7 @@ def exa_search(
             continue
         raw_date = r.get("publishedDate") or ""
         pub_date = _normalize_date(raw_date.split("T")[0] if "T" in raw_date else raw_date[:10]) if raw_date else None
-        if not _in_date_range(pub_date, date_range):
+        if _known_date_out_of_range(pub_date, date_range):
             continue
         items.append({
             "id": f"WE{i + 1}",
@@ -146,7 +146,7 @@ def serper_search(
     for i, r in enumerate((data.get("organic", []))[:count]):
         raw_date = r.get("date") or ""
         pub_date = _parse_serper_date(raw_date)
-        if not _in_date_range(pub_date, date_range):
+        if _known_date_out_of_range(pub_date, date_range):
             continue
         items.append({
             "id": f"WS{i + 1}",
@@ -187,7 +187,7 @@ def parallel_search(
             continue
         raw_date = r.get("publish_date") or ""
         pub_date = _normalize_date(raw_date[:10]) if raw_date else None
-        if not _in_date_range(pub_date, date_range):
+        if _known_date_out_of_range(pub_date, date_range):
             continue
         items.append({
             "id": f"WP{i + 1}",
@@ -363,6 +363,11 @@ def _in_date_range(pub_date: str | None, date_range: tuple[str, str]) -> bool:
     if not pub_date:
         return False
     return date_range[0] <= pub_date <= date_range[1]
+
+
+def _known_date_out_of_range(pub_date: str | None, date_range: tuple[str, str]) -> bool:
+    """True when a parseable date falls outside the window. Unknown dates stay."""
+    return pub_date is not None and not _in_date_range(pub_date, date_range)
 
 
 def _domain(url: str) -> str:
