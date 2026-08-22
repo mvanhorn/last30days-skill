@@ -22,30 +22,28 @@ def _long_qualifier_only_topic() -> str:
     return "created:>2025-03-20 " + ("stars:>1 " * 400)
 
 
-def test_qualifier_only_error_detail_is_bounded():
+def test_qualifier_only_topic_returns_clean_empty_envelope_without_network():
+    """#953 supersedes the #954 error bound: a qualifier-only topic is a clean
+    no-results envelope (no error key), so there is nothing to spam."""
     topic = _long_qualifier_only_topic()
     with patch.object(github, "_resolve_token", return_value="t"), patch.object(
         github, "_fetch_json"
     ) as fetch:
         result = github.search_github(topic, _FROM, _TO)
     fetch.assert_not_called()
-    error = result["error"]
-    assert "qualifier" in error.lower()
-    assert len(error) < _ERROR_BOUND
-    assert len(error) < len(topic)
-    assert "created:>2025-03-20" in error
-    assert "..." in error
+    assert result["items"] == []
+    assert "error" not in result
 
 
-def test_short_qualifier_only_topic_is_fully_shown():
+def test_short_qualifier_only_topic_is_also_clean_no_results():
     topic = "created:>2025-03-20"
     with patch.object(github, "_resolve_token", return_value="t"), patch.object(
         github, "_fetch_json"
     ) as fetch:
         result = github.search_github(topic, _FROM, _TO)
     fetch.assert_not_called()
-    assert topic in result["error"]
-    assert "..." not in result["error"]
+    assert result["items"] == []
+    assert "error" not in result
 
 
 def test_qualifier_only_logs_are_bounded_across_fanout():
