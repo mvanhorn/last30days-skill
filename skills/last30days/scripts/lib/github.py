@@ -239,19 +239,16 @@ def search_github(
     plain_core = strip_search_qualifiers(core)
     if not plain_core:
         # A qualifier-only (or empty) topic leaves nothing to search on.
-        # Report it instead of querying an empty term, which would match the
-        # whole site and then be discarded by the date filter as a bogus
-        # "no results" (issue #949). Truncate the topic; skip the strip log
-        # so this path does not repeat an unbounded core (issue #954).
+        # Skip the network rather than querying an empty term, which would
+        # match the whole site (#949). Return a clean empty envelope, not an
+        # error, so the pipeline records NO_RESULTS instead of ERROR (#953)
+        # and GitHub is not marked as a failed attempt. The strip log below
+        # stays bounded by _truncate_diagnostic (#954).
         _log("Topic contained only search qualifiers or was empty; nothing to search")
-        shown = _truncate_diagnostic(topic)
         return {
             "items": [],
             "context": {"core": core, "from_date": from_date,
                         "to_date": to_date, "count": count},
-            "error": (
-                f"GitHub topic contained only search qualifiers or was empty: {shown!r}"
-            ),
         }
     if plain_core != core:
         _log(
