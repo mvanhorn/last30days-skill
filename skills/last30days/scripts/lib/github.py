@@ -198,6 +198,17 @@ def strip_search_qualifiers(text: str) -> str:
     return " ".join(_QUALIFIER_RE.sub(" ", text).split())
 
 
+# Bound topic fragments in logs/error envelopes so fanout cannot blow them up (#954).
+_DIAGNOSTIC_TOPIC_LIMIT = 120
+
+
+def _truncate_diagnostic(text: str, limit: int = _DIAGNOSTIC_TOPIC_LIMIT) -> str:
+    """Cap a topic fragment used in logs or error envelopes."""
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit]}..."
+
+
 def search_github(
     topic: str,
     from_date: str,
@@ -226,22 +237,27 @@ def search_github(
     count = DEPTH_LIMITS.get(depth, DEPTH_LIMITS["default"])
     core = extract_core_subject(topic)
     plain_core = strip_search_qualifiers(core)
-    if plain_core != core:
-        _log(f"Stripped search qualifiers: '{core}' -> '{plain_core}'")
     if not plain_core:
         # A qualifier-only (or empty) topic leaves nothing to search on.
         # Report it instead of querying an empty term, which would match the
         # whole site and then be discarded by the date filter as a bogus
-        # "no results" (issue #949).
+        # "no results" (issue #949). Truncate the topic; skip the strip log
+        # so this path does not repeat an unbounded core (issue #954).
         _log("Topic contained only search qualifiers or was empty; nothing to search")
+        shown = _truncate_diagnostic(topic)
         return {
             "items": [],
             "context": {"core": core, "from_date": from_date,
                         "to_date": to_date, "count": count},
             "error": (
-                f"GitHub topic contained only search qualifiers or was empty: {topic!r}"
+                f"GitHub topic contained only search qualifiers or was empty: {shown!r}"
             ),
         }
+    if plain_core != core:
+        _log(
+            "Stripped search qualifiers: "
+            f"'{_truncate_diagnostic(core)}' -> '{_truncate_diagnostic(plain_core)}'"
+        )
     core = plain_core
     resolved_token = _resolve_token(token)
     authed = bool(resolved_token)
