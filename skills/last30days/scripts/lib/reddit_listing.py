@@ -101,6 +101,41 @@ def _post_id(permalink: str) -> str:
 
 _ERROR_PATTERN = re.compile(r"^r/(\S+)\s+(\S+):", re.IGNORECASE)
 
+# Challenge/block pages arrive as HTTP 200 HTML with no <shreddit-post> cards.
+# A dedicated-sub shreddit partial can legitimately be a small empty fragment;
+# r/all cannot, and a full HTML document without cards is never a listing.
+_BLOCK_MARKERS = (
+    "verify you are human",
+    "confirm you are a human",
+    "just a moment",
+    "attention required",
+    "cf-browser-verification",
+    "enable javascript and reload",
+    "whoa there",
+)
+
+
+def _listing_gate_error(subreddit: str, text: str) -> Optional[str]:
+    """Return an error when an empty parse is a gate, not a quiet listing."""
+    sub = subreddit.removeprefix("r/").strip().lower()
+    body = text or ""
+    if sub == "all" or _unparseable_listing_body(body):
+        return (
+            f"HTTP 200: no parseable listing cards ({len(body)} bytes; "
+            "likely bot-gated interstitial)"
+        )
+    return None
+
+
+def _unparseable_listing_body(text: str) -> bool:
+    if not text.strip():
+        return False
+    lowered = text.lower()
+    if any(marker in lowered for marker in _BLOCK_MARKERS):
+        return True
+    stripped = text.lstrip().lower()
+    return stripped.startswith(("<!doctype html", "<html"))
+
 
 def _shreddit_error_recovered(error: str, successes: Set[tuple[str, str]]) -> bool:
     """Return True if the error's (sub, sort) pair is in the successes set.
@@ -199,7 +234,10 @@ def _fetch_one_with_status(
         if text is None:
             # An empty body ("") is a real empty listing; None never is.
             return [], (str(swallowed[-1]) if swallowed else "no response")
-        return parse_cards(text, query), None
+        posts = parse_cards(text, query)
+        if posts:
+            return posts, None
+        return [], _listing_gate_error(subreddit, text)
     except Exception as e:
         _log(f"listing fetch failed r/{subreddit} {sort}: {e}")
         return [], str(e)
