@@ -17,6 +17,7 @@ cannot be recovered keylessly here (ScrapeCreators backup still provides it).
 import html as _html
 import re
 import sys
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -37,8 +38,16 @@ MAX_COMMENTS = 10
 SVC_TIMEOUT = 12
 
 # Browser fallback is slower than the HTTP path: a stealthy-fetch launches a real
-# browser to clear Reddit's block, so it gets a wider window.
+# browser to clear Reddit's block, so it gets a wider window. When the caller
+# passes a ``deadline`` (the enrichment budget in reddit_keyless._enrich), the
+# effective timeout is capped to the time remaining so the browser subprocess is
+# killed by the deadline instead of outliving a cancelled future.
 SCRAPLING_TIMEOUT = 75
+
+# Below this many remaining seconds the fallback is skipped outright: launching
+# a stealthy browser takes several seconds by itself, so a tighter window can
+# only burn the tail of the budget without returning usable markup.
+SCRAPLING_MIN_BUDGET = 10
 
 # Match the exact <shreddit-comment> element start tag, not <shreddit-comment-tree>
 # or <shreddit-comment-tree-stats> (lookahead requires whitespace or '>').
@@ -153,7 +162,10 @@ def _total_comments(html_text: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
-def _scrapling_svc_fallback(svc_url: str) -> Optional[str]:
+def _scrapling_svc_fallback(
+    svc_url: str,
+    deadline: Optional[float] = None,
+) -> Optional[str]:
     """Browser fallback for the shreddit partial when the keyless HTTP path is
     blocked.
 
@@ -163,30 +175,47 @@ def _scrapling_svc_fallback(svc_url: str) -> Optional[str]:
     challenge-solve is needed), and returns the same shreddit markup -- with
     attribute names lowercased by the DOM, which ``_attr`` tolerates.
 
+    ``deadline`` is a ``time.monotonic()`` instant (the caller's aggregate
+    enrichment budget). The subprocess timeout is capped to the time remaining,
+    so ``subproc.run_with_timeout`` kills the browser's process group at the
+    deadline rather than letting it outlive a cancelled future; when less than
+    ``SCRAPLING_MIN_BUDGET`` remains the fallback is skipped entirely.
+
     Strictly additive: only runs after the HTTP path already returned nothing,
     and no-ops to ``None`` when the CLI is absent (CI, Cowork), so behavior is
     unchanged wherever Scrapling is not installed. Returns None on any failure.
     """
     if not scrapling_fetch.is_available():
         return None
+    timeout = SCRAPLING_TIMEOUT
+    if deadline is not None:
+        remaining = int(deadline - time.monotonic())
+        if remaining < SCRAPLING_MIN_BUDGET:
+            _log(f"keyless blocked; {remaining}s left in budget, skipping browser fallback")
+            return None
+        timeout = min(timeout, remaining)
     _log("keyless blocked; trying Scrapling browser fallback")
     return scrapling_fetch.fetch(
         svc_url,
         mode=scrapling_fetch.MODE_STEALTHY,
         fmt="html",
-        timeout=SCRAPLING_TIMEOUT,
+        timeout=timeout,
     )
 
 
 def fetch_comments(
     post_url: str,
     timeout: int = SVC_TIMEOUT,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Fetch and parse top comments for a Reddit post via the shreddit endpoint.
 
     Args:
         post_url: Reddit thread URL (…/r/{sub}/comments/{id}/…)
         timeout: HTTP timeout in seconds
+        deadline: optional ``time.monotonic()`` instant bounding the browser
+            fallback (see ``_scrapling_svc_fallback``); the HTTP path keeps
+            its own short ``timeout`` regardless
 
     Returns:
         Dict with 'top_comments' (list, reddit_enrich shape), 'comment_insights'
@@ -201,7 +230,7 @@ def fetch_comments(
     svc_url = _svc_url(sub, post_id)
     html_text = http.reddit_keyless_get_text(svc_url, timeout=timeout, accept="text/html")
     if not html_text:
-        html_text = _scrapling_svc_fallback(svc_url)
+        html_text = _scrapling_svc_fallback(svc_url, deadline=deadline)
     if not html_text:
         return {"top_comments": [], "comment_insights": [], "num_comments": None}
 

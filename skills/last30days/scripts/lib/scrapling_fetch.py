@@ -102,11 +102,17 @@ def fetch(
         return None
 
     # Scrapling writes to a file whose extension selects the format; use a
-    # temp file and read it back so callers receive a string.
+    # temp file and read it back so callers receive a string. Creation is
+    # inside the never-raise contract too: a full or unwritable temp dir
+    # must degrade to None like every other failure, not escape as OSError.
     tmp: Optional[Path] = None
     try:
-        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as fh:
-            tmp = Path(fh.name)
+        try:
+            with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as fh:
+                tmp = Path(fh.name)
+        except OSError as exc:
+            _log(f"temp file failed: {exc}")
+            return None
         cmd = _build_args(
             mode, url, tmp,
             css_selector=css_selector,

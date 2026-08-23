@@ -152,6 +152,22 @@ class TestSearchAndEnrich:
         # quick depth enriches only top 3 posts
         assert fc.call_count == reddit_keyless.ENRICH_LIMITS["quick"]
 
+    def test_enrichment_passes_budget_deadline(self):
+        # Every enrichment worker receives a monotonic deadline bounded by
+        # ENRICH_BUDGET, so the slow Scrapling browser fallback inside
+        # fetch_comments cannot outlive the aggregate budget (its subprocess
+        # timeout is capped to the time remaining).
+        posts = [_post(1)]
+        empty = {"top_comments": [], "comment_insights": [], "num_comments": None}
+        before = reddit_keyless.time.monotonic()
+        with mock.patch.object(reddit_keyless, "_discover", return_value=posts), \
+             mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments",
+                               return_value=empty) as fc:
+            reddit_keyless.search_and_enrich("t", "2026-05-01", "2026-05-31")
+        after = reddit_keyless.time.monotonic()
+        deadline = fc.call_args.kwargs["deadline"]
+        assert before < deadline <= after + reddit_keyless.ENRICH_BUDGET
+
 
 class TestSlotPriority:
     """Enrichment slot selection prefers entity-matching posts (R1-R3)."""
@@ -176,7 +192,7 @@ class TestSlotPriority:
         ]
         enriched_urls = []
 
-        def _capture(url):
+        def _capture(url, **kwargs):
             enriched_urls.append(url)
             return {"top_comments": [], "comment_insights": [], "num_comments": None}
 
