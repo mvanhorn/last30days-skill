@@ -149,3 +149,21 @@ def test_spawn_failure_returns_none(monkeypatch):
 
     monkeypatch.setattr(scrapling_fetch.subproc, "run_with_timeout", _missing)
     assert scrapling_fetch.fetch("https://example.com") is None
+
+
+def test_fetch_returns_none_when_temp_file_creation_fails(monkeypatch):
+    # The never-raise contract covers the output temp file too: a full or
+    # unwritable temp dir degrades to None, and the CLI is never spawned
+    # (it would have no output path to write to).
+    _force_available(monkeypatch, present=True)
+
+    def _no_tmp(*a, **k):
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr(scrapling_fetch.tempfile, "NamedTemporaryFile", _no_tmp)
+
+    def _boom(*a, **k):  # pragma: no cover - asserted not called
+        raise AssertionError("CLI must not run without an output file")
+
+    monkeypatch.setattr(scrapling_fetch.subproc, "run_with_timeout", _boom)
+    assert scrapling_fetch.fetch("https://example.com/x") is None
