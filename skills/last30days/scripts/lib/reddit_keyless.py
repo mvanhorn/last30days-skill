@@ -19,6 +19,7 @@ ScrapeCreators backup when every keyless lane comes up empty.
 import concurrent.futures
 import math
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
@@ -206,10 +207,19 @@ def _discover(
     return merged
 
 
-def _enrich_one(post: Dict[str, Any]) -> Dict[str, Any]:
-    """Attach shreddit comments + real comment count. Never raises."""
+def _enrich_one(
+    post: Dict[str, Any],
+    deadline: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Attach shreddit comments + real comment count. Never raises.
+
+    ``deadline`` bounds the slow Scrapling browser fallback inside
+    ``fetch_comments`` to the enclosing ENRICH_BUDGET, so a blocked post can
+    never keep a browser subprocess alive past the point where ``_enrich``
+    has already discarded its future.
+    """
     try:
-        data = reddit_shreddit.fetch_comments(post.get("url", ""))
+        data = reddit_shreddit.fetch_comments(post.get("url", ""), deadline=deadline)
         if data.get("top_comments"):
             post["top_comments"] = data["top_comments"]
         if data.get("comment_insights"):
@@ -232,10 +242,11 @@ def _enrich(posts: List[Dict[str, Any]], depth: str) -> List[Dict[str, Any]]:
         return posts
 
     result_map: Dict[int, Dict[str, Any]] = {}
+    deadline = time.monotonic() + ENRICH_BUDGET
     try:
         with ThreadPoolExecutor(max_workers=min(limit, MAX_ENRICH_WORKERS)) as executor:
             futures = {
-                http.submit_with_context(executor, _enrich_one, post): i
+                http.submit_with_context(executor, _enrich_one, post, deadline): i
                 for i, post in enumerate(to_enrich)
             }
             done, not_done = concurrent.futures.wait(futures, timeout=ENRICH_BUDGET)

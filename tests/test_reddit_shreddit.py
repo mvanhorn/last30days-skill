@@ -164,3 +164,48 @@ class TestFetchComments:
             out = rs.fetch_comments(url)
         sf.assert_not_called()
         assert out["top_comments"] == [] and out["num_comments"] is None
+
+
+class TestScraplingDeadline:
+    """The browser fallback must respect the caller's aggregate enrichment
+    budget: its subprocess timeout is capped to the time remaining before
+    ``deadline`` (so run_with_timeout kills the browser at the budget edge
+    instead of outliving a cancelled future), and it is skipped outright
+    when too little budget remains to be worth a browser launch."""
+
+    URL = "https://www.reddit.com/r/videos/comments/1vjokkz/title/"
+
+    def _fetch(self, deadline, now=1000.0):
+        with mock.patch.object(rs.http, "reddit_keyless_get_text", return_value=None), \
+                mock.patch.object(rs.scrapling_fetch, "is_available", return_value=True), \
+                mock.patch.object(rs.scrapling_fetch, "fetch",
+                                  return_value=BROWSER_SHAPED_HTML) as sf, \
+                mock.patch.object(rs.time, "monotonic", return_value=now):
+            out = rs.fetch_comments(self.URL, deadline=deadline)
+        return out, sf
+
+    def test_timeout_capped_to_remaining_budget(self):
+        # 30s left of a 45s budget -> the 75s default must shrink to 30s.
+        out, sf = self._fetch(deadline=1030.0)
+        assert sf.call_args.kwargs["timeout"] == 30
+        assert [c["score"] for c in out["top_comments"]] == [1136, 42]
+
+    def test_ample_budget_keeps_default_timeout(self):
+        # More time left than the default: never widen beyond SCRAPLING_TIMEOUT.
+        _, sf = self._fetch(deadline=1000.0 + rs.SCRAPLING_TIMEOUT + 60)
+        assert sf.call_args.kwargs["timeout"] == rs.SCRAPLING_TIMEOUT
+
+    def test_skipped_when_budget_nearly_spent(self):
+        # Below the minimum useful window a browser launch can only burn the
+        # tail of the budget -> no fetch attempt, empty result.
+        out, sf = self._fetch(deadline=1000.0 + rs.SCRAPLING_MIN_BUDGET - 1)
+        sf.assert_not_called()
+        assert out["top_comments"] == [] and out["num_comments"] is None
+
+    def test_no_deadline_keeps_default_timeout(self):
+        with mock.patch.object(rs.http, "reddit_keyless_get_text", return_value=None), \
+                mock.patch.object(rs.scrapling_fetch, "is_available", return_value=True), \
+                mock.patch.object(rs.scrapling_fetch, "fetch",
+                                  return_value=BROWSER_SHAPED_HTML) as sf:
+            rs.fetch_comments(self.URL)
+        assert sf.call_args.kwargs["timeout"] == rs.SCRAPLING_TIMEOUT
