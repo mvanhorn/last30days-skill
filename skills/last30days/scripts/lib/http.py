@@ -30,6 +30,42 @@ def log(msg: str):
 MAX_RETRIES = 5
 MAX_429_RETRIES = 2
 RETRY_DELAY = 2.0
+
+
+def retry_delay_from_headers(headers, fallback):
+    """Seconds to wait after a 429, read from whichever header the host sent.
+
+    ``Retry-After`` is the standard, but Reddit's search/RSS endpoints answer an
+    anonymous 429 with ``x-ratelimit-reset`` (seconds until the window rolls) and
+    no ``Retry-After`` at all::
+
+        HTTP/2 429
+        x-ratelimit-used: 1
+        x-ratelimit-remaining: 0.0
+        x-ratelimit-reset: 42
+
+    Reading only ``Retry-After`` means the caller falls back to exponential
+    backoff -- 3s, 5s, 9s -- every one of which is shorter than the ~42s Reddit
+    actually requires. Each retry re-429s, the budget drains, and the source is
+    reported dead when it was merely early. Honouring the reset header turns a
+    guaranteed zero into a result at the cost of one wait.
+
+    Returns ``fallback`` when neither header is present or parseable.
+    """
+    if not headers:
+        return fallback
+    for name in ("Retry-After", "x-ratelimit-reset"):
+        raw = headers.get(name)
+        if raw is None:
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            return value
+    return fallback
+
 # DNS resolution failures (gaierror) are transient — typically resolved by a
 # brief backoff and retry. Use a dedicated minimum attempt count + exponential
 # delays (1s, 2s, 4s) so callers that pass a small `retries` value still get a
@@ -737,15 +773,12 @@ def request(
             # failures get the widened `effective_retries` budget.
             if attempt < retries - 1:
                 if e.code == 429:
-                    # Respect Retry-After header, fall back to exponential backoff
-                    retry_after = e.headers.get("Retry-After") if hasattr(e, 'headers') else None
-                    if retry_after:
-                        try:
-                            delay = float(retry_after)
-                        except ValueError:
-                            delay = RETRY_DELAY * (2 ** attempt) + 1
-                    else:
-                        delay = RETRY_DELAY * (2 ** attempt) + 1  # 3s, 5s, 9s...
+                    # Respect Retry-After or x-ratelimit-reset (Reddit sends the
+                    # latter), falling back to exponential backoff: 3s, 5s, 9s...
+                    delay = retry_delay_from_headers(
+                        getattr(e, "headers", None),
+                        RETRY_DELAY * (2 ** attempt) + 1,
+                    )
                     log(f"Rate limited (429). Waiting {delay:.1f}s before retry {attempt + 2}/{retries}")
                 else:
                     delay = RETRY_DELAY * (2 ** attempt)

@@ -27,6 +27,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
 
+from lib import http
+
 
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -86,15 +88,12 @@ def _fetch_json(url: str, timeout: int = 15) -> Optional[Dict[str, Any]]:
 
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                delay = BASE_BACKOFF * (2 ** attempt)
-                retry_after = None
-                if hasattr(e, "headers"):
-                    retry_after = e.headers.get("Retry-After")
-                if retry_after:
-                    try:
-                        delay = float(retry_after)
-                    except ValueError:
-                        pass
+                # Reddit answers an anonymous 429 with x-ratelimit-reset and no
+                # Retry-After; honour either. See http.retry_delay_from_headers.
+                delay = http.retry_delay_from_headers(
+                    getattr(e, "headers", None),
+                    BASE_BACKOFF * (2 ** attempt),
+                )
                 _log(f"429 rate limited, retry {attempt + 1}/{MAX_RETRIES} after {delay:.1f}s")
                 if attempt < MAX_RETRIES - 1:
                     time.sleep(delay)
