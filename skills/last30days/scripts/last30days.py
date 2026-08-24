@@ -2403,7 +2403,7 @@ def _propagate_config_to_environ(config: dict[str, object]) -> None:
     XAI_BASE_URL overrides are silently ignored. This is a no-op for
     keys that are already set in process env.
     """
-    for key in ("OPENAI_BASE_URL", "XAI_BASE_URL", "OPENROUTER_BASE_URL"):
+    for key in ("OPENAI_BASE_URL", "XAI_BASE_URL", "OPENROUTER_BASE_URL", "NOVITA_BASE_URL"):
         val = config.get(key)
         if val and not os.environ.get(key):
             os.environ[key] = val
