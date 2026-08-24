@@ -334,6 +334,28 @@ Write `LAST30DAYS_KEYCHAIN_ALIASES` as a single-line JSON value in `.env`.
 Multiline JSON formatting is not supported because `.env` files are parsed
 line-by-line.
 
+#### Disabling the Keychain source
+
+Set `LAST30DAYS_SKIP_KEYCHAIN=1` to switch the Keychain source off entirely,
+making the loader a no-op on macOS as well:
+
+```bash
+LAST30DAYS_SKIP_KEYCHAIN=1 uv run pytest
+```
+
+This exists mainly for tests and reproductions that assert on
+"no credentials configured" behaviour. Clearing `os.environ` and pointing
+`LAST30DAYS_CONFIG_DIR` at nothing is not sufficient on a machine with items
+stored under `last30days-<KEY>`: Keychain is a third, independent source, so a
+stored key can quietly satisfy a lookup the test expected to fail — and the
+test then fails on a contributor's Mac while passing in Linux CI, where the
+loader already no-ops.
+
+Unlike `LAST30DAYS_KEYCHAIN_ALIASES`, this switch is read from the process
+environment only and never from a `.env` file. It gates a credential source
+consulted *while* the config is being assembled, so a file-sourced value would
+be read too late to take effect.
+
 ### Bluesky app-password format and search host
 
 `BSKY_APP_PASSWORD` should be a 19-char app password in `xxxx-xxxx-xxxx-xxxx` format (lowercase alphanumeric, three hyphens). Generate one at <https://bsky.app/settings/app-passwords>. The AT Protocol's `createSession` endpoint also accepts your main account login password, but that's bad hygiene — main passwords have no scope (an app password can be limited to non-DM access) and can't be revoked individually.

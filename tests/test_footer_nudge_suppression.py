@@ -33,6 +33,13 @@ class FooterNudgeSuppressionTests(unittest.TestCase):
             # BRAVE/EXA/SERPER/PARALLEL key doesn't make grounding "available"
             # and suppress the promo we're checking for.
             "LAST30DAYS_CONFIG_DIR": "",
+            # Keychain is a THIRD credential source, independent of the env
+            # stripping below and of LAST30DAYS_CONFIG_DIR. On a contributor's
+            # Mac a stored `last30days-BRAVE_API_KEY` item sets
+            # native_web_backend, _missing_sources_for_promo returns None, and
+            # this test fails for a reason that has nothing to do with promo
+            # selection. Seal that source too.
+            "LAST30DAYS_SKIP_KEYCHAIN": "1",
             # Pin X as available so _missing_sources_for_promo selects "web"
             # (otherwise the "x" promo wins and the BRAVE_API_KEY string never
             # appears).
