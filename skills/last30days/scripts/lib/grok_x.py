@@ -17,6 +17,10 @@ Two invocation constraints, both measured, both load-bearing:
   4 calls, `--json-schema` on 1 of 4.
 * **Never pass `--tools`.** Two runs produced no output in 7 minutes and were
   killed; the identical prompts without it completed normally.
+* **Do pass `--output-format json`.** Grok CLI 1.0.5 narrates tool use and
+  then fences a JSON array; the field-block parser treats that as empty
+  (``no items parsed``). JSON stdout is the CLI's supported way to skip the
+  preamble without constrained decoding. See #1051.
 
 Because retrieval is performed by a language model rather than an API client,
 its output can be *confidently wrong* in a way no other backend's can. Every
@@ -501,6 +505,11 @@ _FIELD_LINE = re.compile(
 # below one with 500 literal likes.
 _INT_RE = re.compile(r"(-?\d[\d,]*(?:\.\d+)?)\s*([KMB])?", re.I)
 _SUFFIX_MULTIPLIER = {"k": 1_000, "m": 1_000_000, "b": 1_000_000_000}
+_STATUS_URL_RE = re.compile(
+    r"(?:x\.com|twitter\.com)/([A-Za-z0-9_]{1,15})/status/(\d+)",
+    re.I,
+)
+_JSON_FENCE_RE = re.compile(r"```(?:json)?\s*\n?(.*?)\n?```", re.I | re.S)
 
 
 def _as_int(value: str) -> Optional[int]:
@@ -528,6 +537,146 @@ def _parse_date(value: str) -> Optional[str]:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).strftime("%Y-%m-%d")
     except (TypeError, ValueError):
         return None
+
+
+def _fields_from_json_obj(obj: Any) -> Optional[Dict[str, Any]]:
+    """Map one JSON object onto the field-block shape, or None if unusable."""
+    if not isinstance(obj, dict):
+        return None
+    url = str(obj.get("url") or obj.get("link") or "")
+    post_id = obj.get("id") or obj.get("post_id") or obj.get("status_id") or obj.get("tweet_id")
+    handle: Any = (
+        obj.get("handle")
+        or obj.get("author_handle")
+        or obj.get("username")
+        or obj.get("author")
+        or obj.get("user")
+    )
+    if isinstance(handle, dict):
+        handle = (
+            handle.get("username")
+            or handle.get("screen_name")
+            or handle.get("handle")
+            or ""
+        )
+    match = _STATUS_URL_RE.search(url)
+    if match:
+        handle = handle or match.group(1)
+        post_id = post_id or match.group(2)
+    post_id_s = str(post_id or "").strip()
+    if not post_id_s.isdigit():
+        return None
+    text = obj.get("text") or obj.get("full_text") or ""
+    # `content` is often the CLI wrapper payload, not post text.
+    if not text and "content" in obj and not isinstance(obj.get("content"), (dict, list)):
+        text = obj.get("content") or ""
+    return {
+        "post_id": post_id_s,
+        "author_handle": str(handle or "").strip().lstrip("@"),
+        "text": str(text or ""),
+        "likes": obj.get("likes") if obj.get("likes") is not None else obj.get("favorite_count"),
+        "reposts": obj.get("reposts") if obj.get("reposts") is not None else obj.get("retweets"),
+        "replies": obj.get("replies"),
+        "quotes": obj.get("quotes"),
+        "created_at": obj.get("created_at") or obj.get("timestamp") or "",
+    }
+
+
+def _extract_json_values(text: str) -> List[Any]:
+    """Yield JSON values from raw stdout, fenced blocks, or embedded payloads."""
+    values: List[Any] = []
+    text = text or ""
+    try:
+        values.append(json.loads(text))
+    except (json.JSONDecodeError, TypeError):
+        pass
+    for match in _JSON_FENCE_RE.finditer(text):
+        blob = (match.group(1) or "").strip()
+        try:
+            values.append(json.loads(blob))
+        except (json.JSONDecodeError, TypeError):
+            continue
+    if values:
+        return values
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(text):
+        starts = [i for i in (text.find("[", idx), text.find("{", idx)) if i >= 0]
+        if not starts:
+            break
+        start = min(starts)
+        try:
+            value, end = decoder.raw_decode(text, start)
+            values.append(value)
+            idx = end
+        except json.JSONDecodeError:
+            idx = start + 1
+        if len(values) >= 8:
+            break
+    return values
+
+
+def _posts_from_json_value(value: Any, *, depth: int = 0) -> List[Dict[str, Any]]:
+    if depth > 4:
+        return []
+    if isinstance(value, list):
+        posts = []
+        for item in value:
+            fields = _fields_from_json_obj(item)
+            if fields:
+                posts.append(fields)
+        return posts
+    if isinstance(value, str):
+        for nested in _extract_json_values(value):
+            posts = _posts_from_json_value(nested, depth=depth + 1)
+            if posts:
+                return posts
+        return []
+    if not isinstance(value, dict):
+        return []
+    direct = _fields_from_json_obj(value)
+    if direct:
+        return [direct]
+    for key in ("posts", "items", "results", "data", "tweets"):
+        if key in value:
+            posts = _posts_from_json_value(value[key], depth=depth + 1)
+            if posts:
+                return posts
+    for key in ("content", "message", "result", "text", "output"):
+        inner = value.get(key)
+        if isinstance(inner, (str, list, dict)):
+            posts = _posts_from_json_value(inner, depth=depth + 1)
+            if posts:
+                return posts
+    return []
+
+
+def _fields_from_json_text(text: str) -> List[Dict[str, Any]]:
+    for value in _extract_json_values(text):
+        posts = _posts_from_json_value(value)
+        if posts:
+            return posts
+    return []
+
+
+def _fields_from_blocks(text: str) -> List[Dict[str, Any]]:
+    raw: List[Dict[str, Any]] = []
+    for block in _split_blocks(text):
+        fields: Dict[str, Any] = {}
+        for line in block.splitlines():
+            match = _FIELD_LINE.match(line)
+            if not match:
+                continue
+            key = _FIELD_ALIASES.get(match.group(1).strip().lower())
+            if key and key not in fields:
+                value = match.group(2).strip()
+                # Field values arrive with varying markdown decoration
+                # (`- **id:** 123`), so strip emphasis and code marks.
+                value = value.strip("*").strip().strip("`").strip()
+                fields[key] = value
+        if fields.get("post_id"):
+            raw.append(fields)
+    return raw
 
 
 def _split_blocks(text: str) -> List[str]:
@@ -567,22 +716,23 @@ def parse_x_response(
         _log(f"error: {response['error']}")
         return []
 
-    raw: List[Dict[str, Any]] = []
-    for block in _split_blocks(response.get("text") or ""):
-        fields: Dict[str, Any] = {}
-        for line in block.splitlines():
-            match = _FIELD_LINE.match(line)
-            if not match:
-                continue
-            key = _FIELD_ALIASES.get(match.group(1).strip().lower())
-            if key and key not in fields:
-                value = match.group(2).strip()
-                # Field values arrive with varying markdown decoration
-                # (`- **id:** 123`), so strip emphasis and code marks.
-                value = value.strip("*").strip().strip("`").strip()
-                fields[key] = value
-        if fields.get("post_id"):
-            raw.append(fields)
+    text = response.get("text") or ""
+    raw = _fields_from_json_text(text)
+    if not raw:
+        probe = text
+        try:
+            loaded = json.loads(text)
+        except (json.JSONDecodeError, TypeError):
+            loaded = None
+        if isinstance(loaded, dict):
+            for key in ("content", "message", "result", "text", "output"):
+                inner = loaded.get(key)
+                if isinstance(inner, str) and inner.strip():
+                    probe = inner
+                    raw = _fields_from_json_text(probe)
+                    break
+        if not raw:
+            raw = _fields_from_blocks(probe)
 
     kept, reason = _validate_items(raw, from_date, to_date) if from_date else (raw, "")
     if reason:
@@ -690,7 +840,15 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
         with tempfile.TemporaryDirectory(prefix="last30days-grok-") as workdir:
             child_home = _stage_child_home(workdir)
             result = subprocess.run(
-                [binary, "-p", prompt, "--permission-mode", "bypassPermissions"],
+                [
+                    binary,
+                    "-p",
+                    prompt,
+                    "--permission-mode",
+                    "bypassPermissions",
+                    "--output-format",
+                    "json",
+                ],
                 capture_output=True,
                 text=True,
                 timeout=timeout,
