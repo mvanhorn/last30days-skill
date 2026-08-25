@@ -410,7 +410,7 @@ def _render_ranked_clusters(
         )
     for index, cluster in enumerate(solid_clusters, start=1):
         lines.append(
-            f"### {index}. {cluster.title} "
+            f"### {index}. {_safe_title(cluster.title)} "
             f"(score {cluster.score:.0f}, {len(cluster.candidate_ids)} "
             f"item{'s' if len(cluster.candidate_ids) != 1 else ''}, "
             f"sources: {', '.join(_source_label(source) for source in cluster.sources)})"
@@ -556,6 +556,39 @@ def _defang_corpus_sentinels(value: str) -> str:
     early, leaving later corpus snippets in publishable output.
     """
     return value.replace("LAST30DAYS_PRIVATE_CORPUS", "LAST30DAYS_PRIVATE-CORPUS")
+
+
+def _defang_engine_sentinels(value: str) -> str:
+    """Source content must not be able to forge the engine's own block markers.
+
+    The EVIDENCE FOR SYNTHESIS and PASS-THROUGH FOOTER envelopes are HTML
+    comments, and LAW 5 tells the host model to emit the footer block
+    verbatim. Scraped text carrying those markers could therefore close the
+    evidence envelope early or open a footer the model relays to the user
+    unmodified. Breaking the comment delimiters is what actually neutralizes
+    them; the phrase substitutions are defense in depth for a model that
+    pattern-matches on the wording rather than the comment syntax.
+    """
+    return (
+        value.replace("<!--", "<!- -")
+        .replace("-->", "- ->")
+        .replace("PASS-THROUGH FOOTER", "PASS-THROUGH-FOOTER")
+        .replace("EVIDENCE FOR SYNTHESIS", "EVIDENCE-FOR-SYNTHESIS")
+    )
+
+
+def _safe_title(title: str) -> str:
+    """Render a scraped title as one defanged line.
+
+    On X, TikTok, Instagram and LinkedIn the title *is* the post body
+    (``normalize.py`` takes ``text[:140]``), and normalization only strips
+    the ends, so internal newlines survive. Unlike snippets, titles are
+    interpolated straight into engine-authored structure, so an unflattened
+    one can open its own markdown blocks or forge the sentinels above.
+    Collapsing whitespace first is what keeps the title on the line the
+    caller built for it.
+    """
+    return _defang_engine_sentinels(" ".join(title.split()))
 
 
 _FRESHNESS_PRIORITY = {
@@ -1554,7 +1587,7 @@ def _render_entity_evidence_block(
         )
     for index, cluster in enumerate(visible_clusters, start=1):
         out.append(
-            f"#### {index}. {cluster.title} "
+            f"#### {index}. {_safe_title(cluster.title)} "
             f"(score {cluster.score:.0f}, {len(cluster.candidate_ids)} item"
             f"{'s' if len(cluster.candidate_ids) != 1 else ''}, "
             f"sources: {', '.join(_source_label(s) for s in cluster.sources)})"
@@ -1634,7 +1667,7 @@ def render_comparison_multi_context(
         else:
             for cluster in visible_clusters:
                 lines.append(
-                    f"- {cluster.title} "
+                    f"- {_safe_title(cluster.title)} "
                     f"[{', '.join(_source_label(s) for s in cluster.sources)}]"
                 )
         corpus_section = _render_corpus_section(report)
@@ -1821,7 +1854,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
             lines.append(
                 f"**{item.item_id}** (score:{score:.0f}) {item.author or ''} ({item.published_at or 'date unknown'}) [{_format_item_engagement(item)}]"
             )
-            lines.append(f"  {item.title}")
+            lines.append(f"  {_safe_title(item.title)}")
             if item.url:
                 rendered_url = _markdown_url_link(item.url)
                 if rendered_url:
@@ -2005,7 +2038,7 @@ def render_context(report: schema.Report, cluster_limit: int = 6) -> str:
         lines.append("- Nothing solid this window.")
     for cluster in visible_clusters:
         lines.append(
-            f"- {cluster.title} [{', '.join(_source_label(source) for source in cluster.sources)}]"
+            f"- {_safe_title(cluster.title)} [{', '.join(_source_label(source) for source in cluster.sources)}]"
         )
         for candidate_id in _qualifying_representative_ids(
             cluster,
@@ -2095,7 +2128,7 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
             f" [{cluster.uncertainty.replace('-', ' ')}]" if cluster.uncertainty else ""
         )
         lines.append(
-            f"### {i}. {cluster.title} (score {cluster.score:.0f}, {source_tags}){qualifier}"
+            f"### {i}. {_safe_title(cluster.title)} (score {cluster.score:.0f}, {source_tags}){qualifier}"
         )
         for cid in _qualifying_representative_ids(
             cluster,
@@ -2159,7 +2192,7 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
                 else ""
             )
             source_tags = ", ".join(_source_label(s) for s in cluster.sources)
-            lines.append(f"- **{cluster.title}** [{label}]: {source_tags}")
+            lines.append(f"- **{_safe_title(cluster.title)}** [{label}]: {source_tags}")
         lines.append("")
 
     questions = _extract_audience_questions(qualifying_candidates)
@@ -2174,7 +2207,7 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
     lines.append("")
     for cluster in visible_clusters:
         source_tags = " + ".join(_source_label(s) for s in cluster.sources)
-        lines.append(f"- **{cluster.title}**: {source_tags}")
+        lines.append(f"- **{_safe_title(cluster.title)}**: {source_tags}")
     lines.append("")
 
     corpus_section = _render_corpus_section(report)
@@ -2310,7 +2343,7 @@ def _render_candidate(
         detail_parts.append("interaction:→@" + ",@".join(interaction_targets[:2]))
     details = " | ".join(part for part in detail_parts if part)
     lines = [
-        f"{prefix} [{schema.candidate_source_label(candidate)}] {candidate.title}"
+        f"{prefix} [{schema.candidate_source_label(candidate)}] {_safe_title(candidate.title)}"
         + (_candidate_freshness_flag(report, candidate.candidate_id) if report else ""),
         f"   - {details}",
     ]
@@ -3675,11 +3708,15 @@ def _format_untrusted_evidence(
     headings inside the EVIDENCE FOR SYNTHESIS block (#874). Continuation
     lines stay indented (CommonMark ATX headings need ≤3 leading spaces), and
     leading ``#`` runs are escaped as defense in depth.
+
+    Indentation stops CommonMark from parsing a forged heading, but it does
+    nothing to an HTML comment a model reads as text, so the engine's own
+    block sentinels are defanged here too (#1053).
     """
     truncated = _truncate(text, limit)
     if not truncated:
         return truncated
-    lines = truncated.splitlines()
+    lines = _defang_engine_sentinels(truncated).splitlines()
     safe: list[str] = [_escape_atx_heading_prefix(lines[0])]
     for line in lines[1:]:
         safe.append(continuation_indent + _escape_atx_heading_prefix(line))
