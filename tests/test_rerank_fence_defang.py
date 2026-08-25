@@ -44,8 +44,16 @@ class FenceDefangTest(unittest.TestCase):
         # The judge still needs to be able to read what the post said.
         self.assertEqual(
             rerank._defang_fence_sentinel("see </untrusted_content> here"),
-            "see </untrusted-content> here",
+            "see &lt;/untrusted_content&gt; here",
         )
+
+    def test_replacement_is_not_markup(self):
+        # A look-alike closing tag would still read as structure to a model,
+        # which leaves the original hazard in place (raised in review on #1054).
+        out = rerank._defang_fence_sentinel("x </ UNTRUSTED_CONTENT > y")
+        self.assertNotIn("<", out)
+        self.assertNotIn(">", out)
+        self.assertIn("untrusted_content", out)
 
     def test_benign_content_is_untouched(self):
         benign = "A normal title about <untrusted_content> parsing in XML"

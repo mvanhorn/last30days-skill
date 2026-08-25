@@ -326,8 +326,14 @@ def _defang_fence_sentinel(value: str) -> str:
     Mirrors ``render._defang_corpus_sentinels``. Matched case-insensitively
     and tolerant of inner whitespace, so near-miss spellings a model would
     still honor cannot slip through.
+
+    The replacement is HTML-escaped rather than a look-alike tag: a substitute
+    that still reads as markup (``</untrusted-content>``) is close enough to
+    the real delimiter that a model could treat it as one, which would leave
+    the original hazard in place. Escaping keeps the text legible to the judge
+    while making it unmistakably data rather than structure.
     """
-    return _UNTRUSTED_CLOSE_TAG_RE.sub("</untrusted-content>", value)
+    return _UNTRUSTED_CLOSE_TAG_RE.sub("&lt;/untrusted_content&gt;", value)
 
 
 def _fenced_untrusted_content(candidate_block: str) -> str:
