@@ -2056,7 +2056,7 @@ def run(
         available.append("corpus")
     if web_backend == "none":
         available = [s for s in available if s != "grounding"]
-    elif web_backend in ("brave", "exa", "serper", "parallel", "keyless") and "grounding" not in available:
+    elif web_backend in ("brave", "exa", "serper", "parallel", "parallel-mcp", "keyless") and "grounding" not in available:
         available.append("grounding")
     if (
         hiring_signals_mode

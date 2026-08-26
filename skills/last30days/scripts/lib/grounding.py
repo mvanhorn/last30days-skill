@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from urllib.parse import urlparse
 
-from . import dates, env, http, schema, web_search_keyless
+from . import dates, env, http, parallel_mcp, schema, web_search_keyless
 
 
 @dataclass(frozen=True)
@@ -268,6 +268,10 @@ def web_search(
         if not key:
             raise RuntimeError("PARALLEL_API_KEY is required when web_backend='parallel'")
         items, artifact = parallel_search(query, date_range, key)
+    elif backend == "parallel-mcp":
+        items, artifact = parallel_mcp.search(
+            query, date_range, config.get("PARALLEL_API_KEY")
+        )
     elif backend == "keyless":
         items, artifact = web_search_keyless.keyless_search(query, date_range, config)
     elif backend != "none":

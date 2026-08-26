@@ -870,6 +870,7 @@ Before running the engine, determine which flags apply to this topic and resolve
 | `--tiktok-creators={c1,c2,...}` | Step 0.55 | Creator / influencer / brand topics |
 | `--ig-creators={c1,c2,...}` | Step 0.55 | Creator / brand topics |
 | `--web-backend brave` | Step 0.45 Class 5 | **MANDATORY** for non-Latin-script topics (Hebrew, Arabic, CJK, etc.) — Brave is the only source that indexes non-English web |
+| `--web-backend parallel-mcp` | Explicit user request only | Use only when the user asks to use Parallel Search MCP. This opts the run into sending its search objective and queries to `https://search.parallel.ai/mcp`; never select it automatically. Anonymous use sends no authorization header; an existing `PARALLEL_API_KEY` is sent as Bearer auth. |
 | `--auto-resolve` | Fallback | WebSearch is available but Step 0.55 could not resolve everything cleanly — use as belt-and-suspenders |
 
 **Checkpoint before running the engine:** your Bash command must include every flag from the checklist that applies to this topic. For a person who ships code (the Peter Steinberger class), that is MINIMUM `--x-handle` AND `--github-user` AND `--subreddits`, and typically `--x-related` too. A command with only `--x-handle` on a person topic is a pre-flight skip and a Step 0.5 regression.

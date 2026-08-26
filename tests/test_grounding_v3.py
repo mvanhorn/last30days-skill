@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import patch
 
@@ -377,6 +378,73 @@ class RedditEnrichmentIsolationTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         # The enrichment 403 is isolated in its own sink; the source's sink is clean.
         self.assertEqual(source_sink, [])
+
+
+class ParallelMCPRuntimeTests(unittest.TestCase):
+    class _Response:
+        def __init__(self, payload, session=None):
+            self.payload = payload
+            self.headers = {"Content-Type": "application/json"}
+            if session:
+                self.headers["Mcp-Session-Id"] = session
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self, _size=-1):
+            return json.dumps(self.payload).encode() if self.payload is not None else b""
+
+    def test_explicit_parallel_mcp_discovers_invokes_and_maps_anonymous_result(self):
+        responses = iter([
+            self._Response({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-03-26"}}, "session-1"),
+            self._Response(None),
+            self._Response({"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "web_search"}, {"name": "web_fetch"}]}}),
+            self._Response({"jsonrpc": "2.0", "id": 3, "result": {"structuredContent": {"results": [{"url": "https://example.com/evidence", "title": None, "excerpts": ["Useful evidence"]}]}}}),
+        ])
+        requests = []
+        def open_response(request, timeout):
+            requests.append(request)
+            return next(responses)
+        with patch("lib.parallel_mcp.urllib.request.urlopen", side_effect=open_response):
+            items, artifact = grounding.web_search(
+                "agent runtimes", ("2026-07-27", "2026-08-26"), {}, backend="parallel-mcp"
+            )
+        self.assertEqual("https://example.com/evidence", items[0]["url"])
+        self.assertEqual("Useful evidence", items[0]["snippet"])
+        self.assertEqual("parallel-mcp", artifact["label"])
+        self.assertTrue(all(request.get_header("Authorization") is None for request in requests))
+        messages = [json.loads(request.data) for request in requests]
+        self.assertEqual(["initialize", "notifications/initialized", "tools/list", "tools/call"], [message["method"] for message in messages])
+        self.assertEqual("web_search", messages[-1]["params"]["name"])
+        self.assertEqual(["agent runtimes"], messages[-1]["params"]["arguments"]["search_queries"])
+        self.assertNotIn("max_results", messages[-1]["params"]["arguments"])
+
+    def test_parallel_mcp_rejects_oversized_response(self):
+        class OversizedResponse(self._Response):
+            def read(self, size=-1):
+                self.requested_size = size
+                return b"x" * size
+        response = OversizedResponse(None)
+        with patch("lib.parallel_mcp.urllib.request.urlopen", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "exceeded 4 MiB"):
+                grounding.web_search(
+                    "test", ("2026-07-27", "2026-08-26"), {}, backend="parallel-mcp"
+                )
+        self.assertEqual(4 * 1024 * 1024 + 1, response.requested_size)
+
+    def test_auto_without_opt_in_does_not_contact_parallel_mcp(self):
+        with patch("lib.grounding.parallel_mcp.search") as mcp_search, \
+             patch("lib.grounding.web_search_keyless.keyless_search", return_value=([], {})):
+            grounding.web_search("test", ("2026-07-27", "2026-08-26"), {}, backend="auto")
+        mcp_search.assert_not_called()
+
+    def test_explicit_parallel_mcp_preserves_optional_bearer_auth(self):
+        with patch("lib.grounding.parallel_mcp.search", return_value=([], {})) as mcp_search:
+            grounding.web_search(
+                "test", ("2026-07-27", "2026-08-26"),
+                {"PARALLEL_API_KEY": "test-key"}, backend="parallel-mcp",
+            )
+        mcp_search.assert_called_once_with("test", ("2026-07-27", "2026-08-26"), "test-key")
 
 
 if __name__ == "__main__":

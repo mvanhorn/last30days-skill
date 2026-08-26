@@ -385,7 +385,8 @@ The search-source preference ladder, strict best-to-floor:
 
 1. **Host web search** - whatever web-search capability the agent session already has: built-in search, a deferred web-search tool that must be loaded first, or an installed connector such as Brave, Firecrawl, Exa, Serper, or another provider. Best results; used automatically on hosts that have it. A failed lookup for one specific tool name is not fatal when another web-search capability is available. Signalled to the engine via `LAST30DAYS_NATIVE_SEARCH=1` (the skill sets this for you when your agent session has web search) so the engine does not run a worse search underneath it.
 2. **Paid engine backend** - one of `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY`, auto-detected in that order. Override per-run with `--web-backend=<name>`.
-3. **Keyless engine floor** - zero-key web search (DuckDuckGo, plus an optional SearXNG instance) and zero-key page fetch (Jina Reader). Runs only when the agent session has **no** host web search **and** no paid key is set, so headless/cron and hosts without a search tool still get general-web coverage. Force it explicitly with `--web-backend=keyless`.
+3. **Explicit hosted MCP** - `--web-backend=parallel-mcp` opts this run into the anonymous `https://search.parallel.ai/mcp` server. Search objectives and queries reach Parallel; the option is never auto-selected. The free path needs no key, while an existing `PARALLEL_API_KEY` is sent as optional Bearer authentication for higher limits.
+4. **Keyless engine floor** - zero-key web search (DuckDuckGo, plus an optional SearXNG instance) and zero-key page fetch (Jina Reader). Runs only when the agent session has **no** host web search **and** no paid key is set, so headless/cron and hosts without a search tool still get general-web coverage. Force it explicitly with `--web-backend=keyless`.
 
 Relevant env vars:
 
