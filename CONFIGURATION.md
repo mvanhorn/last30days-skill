@@ -424,9 +424,12 @@ python3 skills/last30days/scripts/last30days.py doctor --json       # machine co
 python3 skills/last30days/scripts/last30days.py doctor --cached     # serve the cached report while fresh
 python3 skills/last30days/scripts/last30days.py doctor --postmortem # what actually broke on the last run
 python3 skills/last30days/scripts/last30days.py doctor --probe      # bounded live test (free/CLI sources)
+python3 skills/last30days/scripts/last30days.py doctor gate "topic" # strict check for this run's selected sources
 ```
 
-Slash-command form: `/last30days doctor`. Reporting problems is a successful run — the exit code is always 0, no browser cookies are read, and no secret values appear anywhere (key presence is booleans only). Backends within a chained source are probed sequentially with a 5-second budget per binary probe, so a chained source's worst-case check time is additive across its backends (only reached when several binaries hang at once).
+Slash-command forms: `/last30days doctor` and `/last30days doctor gate <topic>`. Ordinary doctor reporting is diagnostic and always exits 0. `doctor gate` resolves the sources selected by saved configuration, explicit arguments, and the topic's final plan, runs the cheapest meaningful request through each source's actual adapter, and exits 3 if any selected source fails. It emits no research report; `ok` and `no-results` are the only passing outcomes. Sources that are neither configured nor selected are not checked.
+
+Normal research calls the same doctor-owned gate function directly before retrieval; it does not run a separate doctor command or maintain a second source/credential configuration. A failed selected source emits `SOURCE_GATE_FAILED` diagnostics and suppresses reduced reports. Backends within a chained source use the same resolved configuration and routing as retrieval.
 
 `doctor --postmortem` reads the last run's `last-report.json` (any age, labeled) and reports what actually happened per source — Failed / Partial / Succeeded / Skipped, with details and fix hints — so a run that returned less than expected can be diagnosed after the fact. It makes no network calls.
 
@@ -446,13 +449,13 @@ Web search has **no** env pin — pin it per-run with `--web-backend=<name>` onl
 
 ### Strict exit for degraded runs
 
-By default a research run exits `0` even when a source failed mid-run (rate-limited, auth-failed, unreachable, timeout, schema-drift) — the report still renders, with the failure annotated in the per-source footer and a partial-coverage warning. Wrappers that need to distinguish degraded coverage from success (cron briefs, CI, downstream agents) can opt in:
+Selected sources are always fail-closed: a preflight or retrieval failure exits `3` before rendering. `LAST30DAYS_STRICT_EXIT` remains a compatibility control for non-gated diagnostic or legacy paths, but is no longer required to prevent reduced reports during normal research:
 
 | Var | Effect |
 | --- | --- |
-| `LAST30DAYS_STRICT_EXIT` | Truthy (`1`/`true`/`yes`/`on`): the engine exits `3` when any source outcome is neither `ok`, `no-results`, nor `skipped-unconfigured`. A one-line `strict-exit: degraded sources: ...` note goes to stderr. Default (unset): exit `0`, unchanged behavior. |
+| `LAST30DAYS_STRICT_EXIT` | Legacy compatibility flag for paths that still produce a report before evaluating degradation. Normal selected-source research already exits `3` without a report on any non-passing outcome, whether this flag is set or not. |
 
-Exit codes with the flag on: `0` clean run, `3` completed-but-degraded (report was produced), non-zero others unchanged (hard failures). Same hybrid pattern as `LAST30DAYS_DEBUG` — works shell-exported or in `.env`.
+Normal gate exit codes: `0` when every selected source is `ok` or `no-results`; `3` when any selected source fails before or during retrieval. Other hard-failure exit codes remain unchanged.
 
 ---
 

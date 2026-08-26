@@ -9,7 +9,7 @@ import unittest
 from contextlib import redirect_stderr
 from unittest import mock
 
-from lib import fanout
+from lib import doctor, fanout, health
 
 
 def _fake_report(topic: str):
@@ -64,6 +64,29 @@ class FanoutOrchestratorTests(unittest.TestCase):
         self.assertEqual(labels, ["OpenAI", "Anthropic", "xAI"])
         self.assertIn("BrokenCo", err.getvalue())
         self.assertIn("upstream offline", err.getvalue())
+
+    def test_source_gate_failure_propagates_instead_of_dropping_entity(self):
+        failure = doctor.SourceGateError({
+            "reddit": doctor.LiveProbeResult(state=health.TIMEOUT)
+        })
+
+        def main_runner():
+            return _fake_report("OpenAI")
+
+        def comp_runner(entity):
+            if entity == "BrokenCo":
+                raise failure
+            return _fake_report(entity)
+
+        with self.assertRaises(doctor.SourceGateError) as caught:
+            fanout.run_competitor_fanout(
+                main_topic="OpenAI",
+                main_runner=main_runner,
+                competitors=["Anthropic", "BrokenCo", "xAI"],
+                competitor_runner=comp_runner,
+            )
+
+        self.assertIs(failure, caught.exception)
 
     def test_main_topic_failure_leaves_only_competitors(self):
         def main_runner():

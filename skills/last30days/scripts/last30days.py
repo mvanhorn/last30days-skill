@@ -2550,7 +2550,17 @@ DOCTOR_PASSTHROUGH_FLAGS = {
     "--cached",
     "--postmortem",
     "--probe",
+    "--gate",
 }
+
+
+def _is_doctor_gate_topic(topic: str) -> bool:
+    return topic.lower().split()[:2] == ["doctor", "gate"]
+
+
+def _doctor_gate_research_topic(topic: str) -> str:
+    words = topic.split()
+    return " ".join(words[2:]).strip() or "last30days doctor readiness"
 
 
 def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv: list[str]) -> None:
@@ -2565,7 +2575,7 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
                 + f"; supported setup passthrough flags are {', '.join(sorted(SETUP_PASSTHROUGH_FLAGS))}"
             )
         return
-    if topic.lower() == "doctor":
+    if topic.lower() == "doctor" or _is_doctor_gate_topic(topic):
         unsupported = [arg for arg in extra_argv if arg not in DOCTOR_PASSTHROUGH_FLAGS]
         if unsupported:
             parser.error(
@@ -2619,7 +2629,9 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
         browser_mode = "read"
     return env.ConfigLoadPolicy(
         browser_cookies=browser_mode,
-        inspect_ignored_project_config=args.diagnose or args.preflight or normalized_topic == "doctor",
+        inspect_ignored_project_config=(
+            args.diagnose or args.preflight or normalized_topic == "doctor"
+        ),
     )
 
 
@@ -2969,10 +2981,36 @@ def _main(
 
     # Handle doctor subcommand: topic-word dispatch mirroring setup (exact
     # match only, so multi-word research topics containing "doctor" still
-    # research normally). Aggregates probes/descriptors/prescriptions into
-    # one grouped health surface; always exits 0.
-    if topic.lower() == "doctor":
+    # research normally). Ordinary doctor remains diagnostic/exit-zero;
+    # `doctor --gate` runs the exact pipeline plan and strict live gate only.
+    if topic.lower() == "doctor" or _is_doctor_gate_topic(topic):
         from lib import doctor
+        gate_requested = "--gate" in extra_argv or _is_doctor_gate_topic(topic)
+        if gate_requested:
+            requested_sources = resolve_requested_sources(args.search, config)
+            depth = "deep" if args.deep else "quick" if args.quick else "default"
+            gate_topic = _doctor_gate_research_topic(topic)
+            try:
+                pipeline.run(
+                    topic=gate_topic,
+                    config=config,
+                    depth=depth,
+                    requested_sources=requested_sources,
+                    web_backend=args.web_backend,
+                    external_plan=(
+                        json.loads(Path(args.plan).read_text(encoding="utf-8"))
+                        if args.plan and os.path.isfile(args.plan)
+                        else json.loads(args.plan) if args.plan else None
+                    ),
+                    lookback_days=args.lookback_days or 30,
+                    internal_subrun=True,
+                    corpus_dirs=args.corpus,
+                    corpus_all_time=args.corpus_all_time,
+                    gate_only=True,
+                )
+            except doctor.SourceGateError:
+                return 3
+            return 0
         return doctor.run(
             config,
             emit_json=(args.emit == "json" or "--json" in extra_argv),
@@ -3775,6 +3813,9 @@ def _main(
         else:
             entity_reports = None
             report = _main_runner()
+    except pipeline.doctor.SourceGateError:
+        progress.end_processing()
+        return 3
     except Exception as exc:
         progress.end_processing()
         progress.show_error(str(exc))

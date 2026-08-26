@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest import mock
 
 import last30days as cli
-from lib import schema
+from lib import doctor, schema
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -787,6 +787,41 @@ class CliV3Tests(unittest.TestCase):
         )
         fake_progress.show_promo.assert_called_once_with("both", diag=diag)
         self.assertIn("# rendered", stdout.getvalue())
+
+    def test_source_gate_failure_exits_3_without_rendering(self):
+        diag = {
+            "available_sources": ["reddit"],
+            "providers": {"google": False, "openai": False, "xai": False},
+            "x_backend": None,
+            "bird_installed": False,
+            "bird_authenticated": False,
+            "bird_username": None,
+            "native_web_backend": None,
+        }
+        failure = doctor.SourceGateError({
+            "reddit": doctor.LiveProbeResult(
+                state="rate-limited",
+                reason="rate-limited",
+                fix="retry later",
+            )
+        })
+        fake_progress = mock.Mock()
+        with mock.patch.object(cli.env, "get_config", return_value={}), \
+             mock.patch.object(cli.pipeline, "diagnose", return_value=diag), \
+             mock.patch.object(cli.pipeline, "run", side_effect=failure), \
+             mock.patch.object(cli.ui, "ProgressDisplay", return_value=fake_progress), \
+             mock.patch.object(cli, "emit_output") as emit, \
+             mock.patch.object(sys, "argv", ["last30days.py", "test", "topic"]):
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                rc = cli.main()
+
+        self.assertEqual(3, rc)
+        self.assertEqual("", stdout.getvalue())
+        emit.assert_not_called()
+        fake_progress.end_processing.assert_called_once()
+        fake_progress.show_complete.assert_not_called()
 
     def test_main_writes_rendered_output_to_explicit_file(self):
         report = self.make_report()

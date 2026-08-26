@@ -26,6 +26,9 @@ four-value rollup and ``status`` preserves the most specific state:
 
 Semantics and guarantees:
 
+- Ordinary ``doctor`` remains an exit-zero diagnostic. The engine and explicit
+  ``doctor gate`` path uses ``require_live_sources`` for an explicit strict
+  readiness check through the selected sources' actual adapters.
 - ``active_backend`` is a PREDICTION ("will use"), never an observation
   (KTD 4). Reddit is conditional mode: honest wording, no single winner.
 - On a native-search host with no web keys, engine-side web search is
@@ -50,8 +53,9 @@ import shutil
 import sys
 import urllib.error
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, TextIO
 
 from . import backends, brightdata, env, health, http, prescriptions
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
@@ -109,6 +113,128 @@ KEYLESS_ALWAYS_ON = frozenset(
 # schema-drift) means the source ran and failed -> NOT WORKING.
 _RUN_WORKING_STATES = frozenset({health.OK, health.NO_RESULTS})
 _RUN_UNVERIFIED_STATES = frozenset({health.PARTIAL, health.SKIPPED_UNCONFIGURED})
+
+# Strict live-gate contract. This builds on doctor's health vocabulary rather
+# than creating a second source-readiness subsystem. A successful request with
+# zero matches is healthy; every degraded or unverified state fails closed.
+GATE_PASS_STATES = frozenset({health.OK, health.NO_RESULTS})
+
+
+@dataclass(frozen=True)
+class LiveProbeResult:
+    state: str
+    reason: str = ""
+    fix: str = ""
+    value: Any = None
+
+
+class SourceGateError(RuntimeError):
+    """One or more intended sources failed strict live verification."""
+
+    def __init__(self, failures: Mapping[str, LiveProbeResult]):
+        self.failures = dict(failures)
+        super().__init__("one or more intended sources failed strict live verification")
+
+
+def _gate_field(value: str, fallback: str) -> str:
+    """One-line JSON string: parseable and safe for source-gate diagnostics."""
+    return json.dumps(" ".join((value or fallback).split()), ensure_ascii=True)
+
+
+def _gate_fix(source: str, state: str) -> str:
+    if source == "x":
+        return "configure an X backend, then rerun doctor gate"
+    if source in {"tiktok", "instagram", "threads", "linkedin", "pinterest"}:
+        return "set SCRAPECREATORS_API_KEY, then rerun doctor gate"
+    entry = prescriptions.get(source, state.replace("-", "_"))
+    return entry.fix_nl or "run last30days doctor and repair this source"
+
+
+def _emit_gate_failure(
+    source: str,
+    result: LiveProbeResult,
+    *,
+    stderr: TextIO,
+) -> None:
+    print(
+        "SOURCE_GATE_FAILED "
+        f"source={source} "
+        f"reason={_gate_field(result.reason, result.state)} "
+        f"fix={_gate_field(result.fix, _gate_fix(source, result.state))}",
+        file=stderr,
+    )
+
+
+def require_live_sources(
+    selected_sources: Iterable[str],
+    probes: Mapping[str, Callable[[], LiveProbeResult]],
+    *,
+    stderr: TextIO = sys.stderr,
+) -> Dict[str, LiveProbeResult]:
+    """Run every intended source's actual-path callback and fail as one gate.
+
+    Every callback runs even after an earlier failure so one repair cycle can
+    address the complete source set. Exception messages are never rendered:
+    provider exceptions can contain request headers or credential material.
+    """
+    selected = tuple(dict.fromkeys(
+        source.strip().lower() for source in selected_sources if source.strip()
+    ))
+    print(f"SOURCE_GATE sources={','.join(selected)}", file=stderr)
+    results: Dict[str, LiveProbeResult] = {}
+    failures: Dict[str, LiveProbeResult] = {}
+    for source in selected:
+        probe = probes.get(source)
+        if probe is None:
+            result = LiveProbeResult(
+                state="unprobed",
+                reason="no live probe is registered",
+                fix="update Last30Days so this selected source has a live probe",
+            )
+        else:
+            try:
+                result = probe()
+                if not isinstance(result, LiveProbeResult):
+                    raise TypeError("probe did not return LiveProbeResult")
+            except Exception as exc:
+                result = LiveProbeResult(
+                    state=health.ERROR,
+                    reason=type(exc).__name__,
+                    fix="run last30days doctor and repair this source",
+                )
+        results[source] = result
+        if result.state not in GATE_PASS_STATES:
+            failures[source] = result
+            _emit_gate_failure(source, result, stderr=stderr)
+    if failures:
+        raise SourceGateError(failures)
+    return results
+
+
+def require_source_outcomes(
+    selected_sources: Iterable[str],
+    outcomes: Mapping[str, Any],
+    *,
+    stderr: TextIO = sys.stderr,
+) -> None:
+    """Fail before rendering when retrieval degraded any intended source."""
+    failures: Dict[str, LiveProbeResult] = {}
+    for source in dict.fromkeys(
+        name.strip().lower() for name in selected_sources if name.strip()
+    ):
+        outcome = outcomes.get(source)
+        state = getattr(outcome, "state", None) if outcome is not None else None
+        if state in GATE_PASS_STATES:
+            continue
+        result = LiveProbeResult(
+            state=state or "missing-outcome",
+            reason=state or "retrieval produced no source outcome",
+            fix=_gate_fix(source, state or "missing_outcome"),
+        )
+        failures[source] = result
+        _emit_gate_failure(source, result, stderr=stderr)
+    if failures:
+        raise SourceGateError(failures)
 
 
 def audit_state(

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import copy
-from collections.abc import Iterable
+import io
 import math
 import queue
 import re
@@ -30,6 +31,7 @@ from . import (
     dedupe,
     digg,
     dripstack,
+    doctor,
     entity_extract,
     env,
     github,
@@ -379,6 +381,32 @@ def available_sources(
     if exclude:
         available = [s for s in available if s not in exclude]
     return available
+
+
+def intended_sources(
+    config: dict[str, Any],
+    requested_sources: list[str] | None,
+) -> list[str]:
+    """Resolve sources explicitly selected by config or command arguments."""
+    requested = normalize_requested_sources(requested_sources) or []
+    configured = [
+        SEARCH_ALIAS.get(source, source)
+        for source in (
+            token.strip().lower()
+            for token in str(config.get("INCLUDE_SOURCES") or "").split(",")
+        )
+        if source and (source in MOCK_AVAILABLE_SOURCES or source in SEARCH_ALIAS)
+    ]
+    excluded = {
+        SEARCH_ALIAS.get(source.strip().lower(), source.strip().lower())
+        for source in str(config.get("EXCLUDE_SOURCES") or "").split(",")
+        if source.strip()
+    }
+    return [
+        source
+        for source in dict.fromkeys([*configured, *requested])
+        if source not in excluded
+    ]
 
 
 def _mock_discovery_items(
@@ -1999,6 +2027,7 @@ def run(
     trustpilot_domain_is_hint: bool = False,
     hiring_signals_mode: bool = False,
     internal_subrun: bool = False,
+    gate_only: bool = False,
     save_dir: Path | str | None = None,
     corpus_dirs: list[str] | None = None,
     corpus_all_time: bool = False,
@@ -2014,6 +2043,9 @@ def run(
     # enrichment starts at search time (inside _retrieve_stream_impl) so it
     # overlaps other sources instead of waiting for them all to finish.
     run_started = time.monotonic()
+    configured_intended_sources = (
+        [] if mock else intended_sources(config, requested_sources)
+    )
     from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
     resolved_corpus_dirs = corpus.resolve_directories(
         corpus_dirs or config.get("_CORPUS_DIRS"),
@@ -2069,6 +2101,18 @@ def run(
         if not requested_sources:
             available = ["jobs"]
     if not available:
+        if configured_intended_sources and not mock:
+            failures = {
+                source: doctor.LiveProbeResult(
+                    state=schema.SKIPPED_UNCONFIGURED,
+                    reason="selected source is not configured",
+                    fix=doctor._gate_fix(source, "unconfigured"),
+                )
+                for source in configured_intended_sources
+            }
+            for source, result in failures.items():
+                doctor._emit_gate_failure(source, result, stderr=sys.stderr)
+            raise doctor.SourceGateError(failures)
         raise RuntimeError("No sources are available for this run.")
 
     planner_requested_sources = requested_sources
@@ -2128,10 +2172,141 @@ def run(
             plan.source_weights["corpus"] = 1.0
             plan.source_weights = planner._normalize_weights(plan.source_weights)
 
-    # Add the paid-only Perplexity lane after all normal-source safety nets.
-    # This preserves the planner's primary subquery, gives the bounded paid
-    # call the whole user topic, and prevents grounding, jobs, or corpus from
-    # being attached to the dedicated lane.
+    # Saved and explicit source selections are user intent. Keep each usable
+    # selected source in the plan so the same set is both checked and retrieved;
+    # unconfigured optional sources (including X) are never added implicitly.
+    if not mock and plan.subqueries:
+        for source in configured_intended_sources:
+            if source in available and source not in plan.subqueries[0].sources:
+                plan.subqueries[0].sources.append(source)
+            if source in available and source not in plan.source_weights:
+                plan.source_weights[source] = 1.0
+        plan.source_weights = planner._normalize_weights(plan.source_weights)
+    selected_sources = list(dict.fromkeys([
+        *configured_intended_sources,
+        *(
+            source
+            for subquery in plan.subqueries
+            for source in subquery.sources
+            if source in available
+        ),
+    ]))
+    if not mock:
+        first_subquery = plan.subqueries[0]
+        probe_subqueries = {
+            source: next(
+                (
+                    subquery
+                    for subquery in plan.subqueries
+                    if source in subquery.sources
+                ),
+                first_subquery,
+            )
+            for source in selected_sources
+        }
+
+        probe_depth = "quick" if gate_only else depth
+
+        def _live_probe(source: str):
+            def probe() -> doctor.LiveProbeResult:
+                if source == "corpus":
+                    if corpus_enabled:
+                        return doctor.LiveProbeResult(state=health.OK)
+                    return doctor.LiveProbeResult(
+                        state=schema.SKIPPED_UNCONFIGURED,
+                        reason="no readable corpus directory is configured",
+                        fix="configure a readable LAST30DAYS_CORPUS_DIRS directory",
+                    )
+                if source not in available:
+                    return doctor.LiveProbeResult(
+                        state=schema.SKIPPED_UNCONFIGURED,
+                        reason="selected source is not configured",
+                        fix=doctor._gate_fix(source, "unconfigured"),
+                    )
+                try:
+                    # Gate probes expose only the typed, secret-free doctor
+                    # diagnostic. Adapter stderr can include provider response
+                    # text, so discard it rather than echoing an unknown body.
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        if source == "github" and github_repos:
+                            items = github.search_github_project(
+                                github_repos,
+                                from_date,
+                                to_date,
+                                depth=probe_depth,
+                                token=config.get("GITHUB_TOKEN"),
+                            )
+                            return doctor.LiveProbeResult(
+                                state=health.OK if items else health.NO_RESULTS,
+                                value=("github-project", items),
+                            )
+                        if source == "github" and github_user:
+                            items = github.search_github_person(
+                                github_user,
+                                from_date,
+                                to_date,
+                                depth=probe_depth,
+                                token=config.get("GITHUB_TOKEN"),
+                            )
+                            return doctor.LiveProbeResult(
+                                state=health.OK if items else health.NO_RESULTS,
+                                value=("github-person", items),
+                            )
+                        items, artifact = _retrieve_stream(
+                            topic=topic,
+                            subquery=probe_subqueries[source],
+                            source=source,
+                            config=config,
+                            depth=probe_depth,
+                            date_range=(from_date, to_date),
+                            runtime=runtime,
+                            mock=False,
+                            web_backend=web_backend,
+                            raw_topic=topic,
+                            subreddits=subreddits,
+                            tiktok_hashtags=tiktok_hashtags,
+                            tiktok_creators=tiktok_creators,
+                            ig_creators=ig_creators,
+                            trustpilot_domain=trustpilot_domain,
+                            trustpilot_domain_is_hint=trustpilot_domain_is_hint,
+                        )
+                except Exception as exc:
+                    state, _attempted = _classify_source_failure(exc)
+                    return doctor.LiveProbeResult(
+                        state=state,
+                        reason=state,
+                        fix=doctor._gate_fix(source, state),
+                    )
+                outcome = _legacy_artifact_outcome(source, artifact)
+                if outcome and outcome.get("state") not in doctor.GATE_PASS_STATES:
+                    state = str(outcome.get("state") or health.ERROR)
+                    return doctor.LiveProbeResult(
+                        state=state,
+                        reason=state,
+                        fix=doctor._gate_fix(source, state),
+                    )
+                return doctor.LiveProbeResult(
+                    state=health.OK if items else health.NO_RESULTS,
+                    value=(items, artifact),
+                )
+            return probe
+
+        gate_results = doctor.require_live_sources(
+            selected_sources,
+            {source: _live_probe(source) for source in selected_sources},
+            stderr=sys.stderr,
+        )
+    else:
+        gate_results = {}
+    if gate_only:
+        return gate_results
+
+    # Add the paid-only Perplexity lane after the fail-closed source gate. This
+    # preserves the planner's primary subquery, gives the bounded paid call the
+    # whole user topic, and prevents grounding, jobs, or corpus from being
+    # attached to the dedicated lane. Keeping it after the gate means the paid
+    # lane is not probed by the gate (no duplicated paid requests); it is still
+    # bounded by the shared paid-source budget in the retrieval loop below.
     _ensure_perplexity_in_plan(
         plan,
         topic,
@@ -2224,14 +2399,23 @@ def run(
     _github_custom_done = False
     _github_enriched_repos: set[str] = set()
 
-    # Project mode takes priority over person mode
+    # Project mode takes priority over person mode. Normal runs reuse the
+    # targeted request that passed the gate; mock/legacy callers without gate
+    # evidence still execute the same targeted adapter here.
     if github_repos and "github" in available:
         bundle.mark_attempted("github")
         try:
-            project_items = github.search_github_project(
-                github_repos, from_date, to_date,
-                depth=depth, token=config.get("GITHUB_TOKEN"),
-            )
+            github_gate_value = gate_results.get("github")
+            github_gate_value = github_gate_value.value if github_gate_value else None
+            if github_gate_value and github_gate_value[0] == "github-project":
+                project_items = github_gate_value[1]
+            else:
+                project_items = github.search_github_project(
+                    github_repos, from_date, to_date,
+                    depth=depth, token=config.get("GITHUB_TOKEN"),
+                )
+            _github_custom_done = True
+            _github_enriched_repos = {r.lower() for r in github_repos}
             if project_items:
                 normalized = _normalize_score_dedupe(
                     "github", project_items, from_date, to_date,
@@ -2240,8 +2424,12 @@ def run(
                 )
                 primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
                 bundle.add_items(primary_label, "github", normalized)
-                _github_custom_done = True
-                _github_enriched_repos = {r.lower() for r in github_repos}
+            else:
+                bundle.record_failure(
+                    "github",
+                    health.NO_RESULTS,
+                    "Project mode found no activity in the window",
+                )
         except Exception as exc:
             bundle.errors_by_source["github"] = f"Project-mode failed: {exc}"
             state, attempted = _classify_source_failure(exc)
@@ -2252,10 +2440,15 @@ def run(
         bundle.mark_attempted("github")
         _github_person_done = True
         try:
-            person_items = github.search_github_person(
-                github_user, from_date, to_date,
-                depth=depth, token=config.get("GITHUB_TOKEN"),
-            )
+            github_gate_value = gate_results.get("github")
+            github_gate_value = github_gate_value.value if github_gate_value else None
+            if github_gate_value and github_gate_value[0] == "github-person":
+                person_items = github_gate_value[1]
+            else:
+                person_items = github.search_github_person(
+                    github_user, from_date, to_date,
+                    depth=depth, token=config.get("GITHUB_TOKEN"),
+                )
             if person_items:
                 normalized = _normalize_score_dedupe(
                     "github", person_items, from_date, to_date,
@@ -2386,6 +2579,18 @@ def run(
                         continue
                     source_fetch_count[source] = current + 1
                 bundle.mark_attempted(source)
+                gate_result = gate_results.get(source)
+                gate_value = gate_result.value if gate_result is not None else None
+                gate_subquery = probe_subqueries.get(source) if not mock else None
+                if gate_value is not None and subquery is gate_subquery:
+                    from concurrent.futures import Future
+                    completed: Future = Future()
+                    completed.set_result(gate_value)
+                    futures[completed] = (subquery, source)
+                    gate_results[source] = doctor.LiveProbeResult(
+                        state=gate_result.state,
+                    )
+                    continue
                 futures[
                     executor.submit(
                         _retrieve_stream,
@@ -2554,6 +2759,12 @@ def run(
         elapsed=time.monotonic() - run_started,
     )
     source_status = _finalize_source_status(bundle.source_status, items_by_source)
+    if not mock:
+        doctor.require_source_outcomes(
+            selected_sources,
+            source_status,
+            stderr=sys.stderr,
+        )
     # Normalized set of handles this run resolved for the topic. A candidate
     # authored by one of these is first-party and is exempted from the
     # entity-miss demotion in rerank (a post never repeats its own author's

@@ -44,6 +44,42 @@ class JobsSourceTests(unittest.TestCase):
         self.assertEqual(0, artifact["resultCount"])
         self.assertEqual("web", artifact["tier"])
 
+    def test_successful_web_fallback_does_not_report_discovery_probe_failures(self):
+        from lib import http
+
+        web_result = [{
+            "id": "JW1",
+            "title": "Acme careers",
+            "url": "https://acme.example/jobs",
+            "snippet": "Open roles and jobs at Acme",
+        }]
+
+        def unavailable_candidate(*_args, **_kwargs):
+            http._record_failure(http.HTTPError(
+                "candidate host unavailable",
+                outcome_state="unreachable",
+            ))
+            return None
+
+        with http.capture_failures() as source_failures, \
+             patch.object(jobs.http, "get_text", side_effect=unavailable_candidate), \
+             patch.object(jobs, "_probe_ats", return_value=(None, None, [])), \
+             patch.object(
+                 jobs.grounding,
+                 "web_search",
+                 side_effect=[([], {}), (web_result, {"backend": "brave"})],
+             ):
+            items, artifact = jobs.search_jobs(
+                "Acme",
+                ("2026-05-16", "2026-06-16"),
+                {},
+                web_backend="brave",
+            )
+
+        self.assertEqual(["Acme careers"], [item["title"] for item in items])
+        self.assertEqual("web", artifact["tier"])
+        self.assertEqual([], source_failures)
+
     def test_detect_ats_reads_provider_and_slug_from_embed(self):
         html = '<a href="https://jobs.ashbyhq.com/listenlabs/4b17">Open roles</a>'
         provider, slug = jobs.detect_ats(html)
