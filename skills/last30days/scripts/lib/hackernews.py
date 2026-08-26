@@ -185,6 +185,14 @@ def fetch_discovery_listings(
         unique_hits.append(hit)
 
     items = parse_hackernews_response({"hits": unique_hits}, query="")
+    # Front page + best-in-window cannot both be legitimately empty; a
+    # successful transport with nothing parseable is a gated river, not a
+    # quiet day (issue #940).
+    if not unique_hits and not errors:
+        errors.append(
+            "HTTP 200: HN front page returned no hits "
+            "(likely bot-gated interstitial)"
+        )
     return {"items": items, "errors": errors}
 
 

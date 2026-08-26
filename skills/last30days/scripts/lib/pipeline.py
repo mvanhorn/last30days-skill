@@ -468,6 +468,32 @@ def _matches_discovery_domain(domain: str, text: str) -> bool:
     return bool((anchors or domain_terms) & terms(text))
 
 
+_DISCOVERY_RIVER_SOURCES = frozenset({"reddit", "hackernews", "digg"})
+_EMPTY_RIVER_DETAIL = (
+    "HTTP 200: river listing returned no parseable items "
+    "(likely bot-gated interstitial)"
+)
+
+
+def _empty_river_error(
+    source: str,
+    items: list[dict[str, Any]],
+    error: str | None,
+    *,
+    keyword_gate: bool,
+) -> str | None:
+    """Keep a blocked river from voting quiet on a global sweep.
+
+    Keyword-scoped zero after a domain gate is a real no-results. r/all, the
+    HN front page, and the Digg feed cannot be legitimately empty (issue #940).
+    """
+    if error:
+        return error
+    if keyword_gate or items or source not in _DISCOVERY_RIVER_SOURCES:
+        return None
+    return _EMPTY_RIVER_DETAIL
+
+
 def _fetch_discovery_source(
     source: str,
     plan: schema.DiscoveryPlan,
@@ -503,7 +529,12 @@ def _fetch_discovery_source(
                     f"{item.get('title') or ''} {item.get('selftext') or ''}",
                 )
             ]
-        return items, "; ".join(result.get("errors") or []) or None
+        return items, _empty_river_error(
+            "reddit",
+            items,
+            "; ".join(result.get("errors") or []) or None,
+            keyword_gate=keyword_gate,
+        )
     if source == "hackernews":
         result = hackernews.fetch_discovery_listings(from_date, to_date, depth=depth)
         items = result.get("items") or []
@@ -520,7 +551,12 @@ def _fetch_discovery_source(
                 if _matches_discovery_domain(plan.domain, str(item.get("title") or ""))
             ]
         errors = result.get("errors") or []
-        return items, "; ".join(errors) or None
+        return items, _empty_river_error(
+            "hackernews",
+            items,
+            "; ".join(errors) or None,
+            keyword_gate=keyword_gate,
+        )
     if source == "digg":
         result = digg.search_digg(plan.domain, from_date, to_date, depth=depth)
         items = digg.parse_digg_response(result, query=plan.domain)
@@ -531,7 +567,12 @@ def _fetch_discovery_source(
                 item for item in items
                 if _matches_discovery_domain(plan.domain, str(item.get("title") or ""))
             ]
-        return items, result.get("error")
+        return items, _empty_river_error(
+            "digg",
+            items,
+            result.get("error"),
+            keyword_gate=keyword_gate,
+        )
     if source == "x":
         # Discovery uses domain directly as query (no planner search_query)
         query = plan.domain
