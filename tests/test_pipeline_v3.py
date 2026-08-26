@@ -120,6 +120,34 @@ class PipelineV3Tests(unittest.TestCase):
         # error when its required backend key is unset.
         self.assertIn("grounding", report.errors_by_source)
 
+    def test_parallel_mcp_enables_grounding_without_key_on_native_host(self):
+        def mcp_response(message, _api_key, _session_id=None):
+            results = {
+                "initialize": {"protocolVersion": "2025-03-26"},
+                "notifications/initialized": {},
+                "tools/list": {"tools": [{"name": "web_search"}]},
+                "tools/call": {"structuredContent": {"results": [{
+                    "url": "https://example.com/update",
+                    "title": "Test topic update",
+                    "publish_date": "2026-08-01",
+                    "excerpts": ["New evidence about test topic"],
+                }]}},
+            }
+            return {"result": results[message["method"]]}, None
+
+        with patch("lib.parallel_mcp._request", side_effect=mcp_response):
+            report = pipeline.run(
+                topic="test topic",
+                config={"LAST30DAYS_REASONING_PROVIDER": "auto", "LAST30DAYS_NATIVE_SEARCH": "1"},
+                depth="quick",
+                requested_sources=["grounding"],
+                web_backend="parallel-mcp",
+                as_of_date="2026-08-26",
+            )
+        self.assertNotIn("grounding", report.errors_by_source)
+        self.assertEqual(1, len(report.items_by_source["grounding"]))
+        self.assertEqual("2026-08-01", report.items_by_source["grounding"][0].published_at)
+
     def test_hiring_signals_mode_enables_jobs_source_in_mock_run(self):
         report = pipeline.run(
             topic="Listen Labs",
