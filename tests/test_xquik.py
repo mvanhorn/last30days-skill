@@ -217,6 +217,28 @@ class TestSearchXquik(unittest.TestCase):
         self.assertEqual(result["items"][0]["engagement"]["likes"], 50)
         self.assertNotIn("error", result)
 
+    @patch("lib.xquik.http.get", return_value={"tweets": []})
+    def test_search_includes_requested_end_date(self, mock_get):
+        for to_date, exclusive_until in (
+            ("2026-08-20", "2026-08-21"),
+            ("2026-12-31", "2027-01-01"),
+            ("9999-12-31", None),
+        ):
+            with self.subTest(to_date=to_date):
+                mock_get.reset_mock()
+                search_xquik(
+                    "AI agents",
+                    "2026-08-01",
+                    to_date,
+                    depth="quick",
+                    token="test-key",
+                )
+                url = mock_get.call_args[0][0]
+                if exclusive_until:
+                    self.assertIn(f"until%3A{exclusive_until}", url)
+                else:
+                    self.assertNotIn("until%3A", url)
+
     @patch("lib.xquik.http.get")
     def test_deduplicates_across_queries(self, mock_get):
         tweet = {
@@ -307,6 +329,7 @@ class TestFromLane(unittest.TestCase):
         url = m.call_args[0][0]
         self.assertIn("from%3Aelonmusk", url)        # from:elonmusk url-encoded
         self.assertIn("since%3A2026-05-19", url)
+        self.assertIn("until%3A2026-06-19", url)
         self.assertNotIn("Grok", url)                 # topic must NOT be AND'd into query
         self.assertEqual(1, len(items))
         self.assertEqual("XF1", items[0]["id"])       # FROM-lane id prefix
@@ -345,6 +368,7 @@ class TestAboutLane(unittest.TestCase):
                                           topic="Grok 4", count_per=5, token="k")
         url = m.call_args[0][0]
         self.assertIn("%40elonmusk", url)             # @elonmusk url-encoded
+        self.assertIn("until%3A2026-06-19", url)
         authors = {it["author_handle"] for it in items}
         self.assertIn("fan", authors)
         self.assertNotIn("elonmusk", authors)         # own tweet dropped

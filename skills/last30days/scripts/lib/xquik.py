@@ -7,7 +7,7 @@ bookmarks). Requires an API key from xquik.com.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from . import http, log
@@ -25,6 +25,19 @@ DEPTH_CONFIG = {
 }
 
 _BASE_URL = "https://xquik.com/api/v1"
+
+
+def _with_date_window(query: str, from_date: str, to_date: str) -> str:
+    """Apply the engine's inclusive date window to an X search query."""
+    try:
+        end_date = date.fromisoformat(to_date)
+    except (TypeError, ValueError):
+        exclusive_until = to_date
+    else:
+        if end_date == date.max:
+            return f"{query} since:{from_date}"
+        exclusive_until = (end_date + timedelta(days=1)).isoformat()
+    return f"{query} since:{from_date} until:{exclusive_until}"
 
 
 def _log(msg: str):
@@ -100,7 +113,7 @@ def search_xquik(
     seen_ids: set[str] = set()
 
     for query_text in queries:
-        q = f"{query_text} since:{from_date} until:{to_date}"
+        q = _with_date_window(query_text, from_date, to_date)
         items, auth_error = _execute_search(
             q, cfg["limit"], token,
             label=query_text, id_prefix="XQ",
@@ -209,7 +222,7 @@ def search_handles(
         handle = str(raw).lstrip("@").strip()
         if not handle:
             continue
-        q = f"from:{handle} since:{from_date} until:{to_date}"
+        q = _with_date_window(f"from:{handle}", from_date, to_date)
         got, auth_error = _execute_search(
             q, count_per, token,
             label=f"from:{handle}", id_prefix="XF",
@@ -244,7 +257,7 @@ def search_mentions(
         handle = str(raw).lstrip("@").strip()
         if not handle:
             continue
-        q = f"@{handle} since:{from_date} until:{to_date}"
+        q = _with_date_window(f"@{handle}", from_date, to_date)
         got, auth_error = _execute_search(
             q, count_per, token,
             label=f"@{handle}", id_prefix="XA",
