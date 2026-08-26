@@ -486,6 +486,10 @@ def search_youtube(
             return published
 
         stdout = result.stdout
+        stderr = result.stderr or ""
+        access_blocked = _is_youtube_bot_wall(stderr)
+        if access_blocked:
+            _log("YouTube search blocked by anti-bot/sign-in gate")
         if ssh_host and result.returncode != 0 and not stdout.strip():
             stderr_first = (result.stderr or "").strip().splitlines()
             first_line = stderr_first[0] if stderr_first else "(no stderr)"
@@ -498,6 +502,9 @@ def search_youtube(
             )
             return published
         if not stdout.strip():
+            if access_blocked:
+                published = _publish({"items": [], "error": "YouTube anti-bot access blocked"})
+                return published
             _log("YouTube search returned 0 results")
             published = _publish({"items": []})
             return published
@@ -552,7 +559,10 @@ def search_youtube(
 
         # Sort by views descending
         items.sort(key=lambda x: x["engagement"]["views"], reverse=True)
-        published = _publish({"items": items})
+        payload: Dict[str, Any] = {"items": items}
+        if access_blocked:
+            payload["warning"] = "YouTube anti-bot access blocked for some requests"
+        published = _publish(payload)
         return published
     except Exception as exc:
         # Post-subprocess failures (parse/relevance/sort) must still unblock
@@ -589,6 +599,16 @@ def _clean_vtt(vtt_text: str) -> str:
 _YT_USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
 
 
+def _is_youtube_bot_wall(html: str) -> bool:
+    """Return True when YouTube served an anti-bot/sign-in interstitial."""
+    lowered = html.lower()
+    return (
+        "sign in to confirm you’re not a bot" in lowered
+        or "sign in to confirm you're not a bot" in lowered
+        or "this helps protect our community" in lowered
+    )
+
+
 def _fetch_transcript_direct(
     video_id: str,
     timeout: int = 30,
@@ -622,6 +642,12 @@ def _fetch_transcript_direct(
             html = resp.read().decode("utf-8", errors="replace")
     except (urllib.error.URLError, urllib.error.HTTPError, OSError, TimeoutError) as exc:
         _log(f"Direct transcript: failed to fetch watch page for {video_id}: {exc}")
+        return None
+
+    if _is_youtube_bot_wall(html):
+        _log(f"Direct transcript: YouTube bot-wall blocked watch page for {video_id}")
+        if status is not None:
+            status["blocked_by_youtube"] = True
         return None
 
     # Step 2: Extract captions URL from ytInitialPlayerResponse

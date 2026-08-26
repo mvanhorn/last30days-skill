@@ -65,9 +65,9 @@ class TestYtDlpFlags(unittest.TestCase):
     def setUp(self):
         youtube_yt.reset_search_cache()
 
-    def _fake_result(self, stdout: str = "", returncode: int = 0):
+    def _fake_result(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
         from lib.subproc import SubprocResult
-        return SubprocResult(returncode=returncode, stdout=stdout, stderr="")
+        return SubprocResult(returncode=returncode, stdout=stdout, stderr=stderr)
 
     def test_search_ignores_global_config_and_browser_cookies(self):
         with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
@@ -77,6 +77,17 @@ class TestYtDlpFlags(unittest.TestCase):
         cmd = run_mock.call_args.args[0]
         self.assertIn("--ignore-config", cmd)
         self.assertIn("--no-cookies-from-browser", cmd)
+
+    def test_search_surfaces_youtube_bot_wall(self):
+        """An empty yt-dlp response with the bot-wall is not generic zero demand."""
+        fake = self._fake_result(
+            stderr="ERROR: Sign in to confirm you’re not a bot",
+        )
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=fake):
+            result = youtube_yt.search_youtube("Promptly", "2026-08-01", "2026-08-03")
+        self.assertEqual(result["items"], [])
+        self.assertEqual(result["error"], "YouTube anti-bot access blocked")
 
     def test_transcript_fetch_ignores_global_config_and_browser_cookies(self):
         with tempfile.TemporaryDirectory() as temp_dir, \
@@ -350,6 +361,31 @@ class TestFetchTranscriptDirect(unittest.TestCase):
         with mock.patch("lib.youtube_yt.urllib.request.urlopen", side_effect=mock_open):
             result = youtube_yt._fetch_transcript_direct("nocaps")
         self.assertIsNone(result)
+
+    def test_bot_wall_is_not_marked_as_captions_disabled(self):
+        """YouTube's anti-bot page must not be misclassified as no captions."""
+        html = (
+            "<html><body>Sign in to confirm you’re not a bot. "
+            "This helps protect our community.</body></html>"
+        )
+
+        class _Resp:
+            def read(self):
+                return html.encode("utf-8")
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+
+        status = {}
+        with mock.patch(
+            "lib.youtube_yt.urllib.request.urlopen",
+            return_value=_Resp(),
+        ):
+            result = youtube_yt._fetch_transcript_direct("blocked", status=status)
+        self.assertIsNone(result)
+        self.assertTrue(status["blocked_by_youtube"])
+        self.assertNotIn("no_caption_tracks", status)
 
     def test_http_timeout_returns_none(self):
         """HTTP timeout on watch page returns None."""
