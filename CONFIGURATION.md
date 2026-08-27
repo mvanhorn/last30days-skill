@@ -414,6 +414,21 @@ The engine treats public jobs/careers postings as evidence of focus or priority 
 
 ---
 
+## Momentum diff (`momentum`)
+
+One command answers "what's moving — rising, fading, holding — inside the research I just ran": re-scores the most recent saved report cache under a shorter lookback window and diffs the two rankings. Offline and deterministic — it makes **no** network calls, spends no source credits, and reads only `~/.config/last30days/last-report.json` (honors `LAST30DAYS_CONFIG_DIR`), the same artifact `doctor --postmortem` reads.
+
+```bash
+python3 skills/last30days/scripts/last30days.py momentum              # diff last report at 7 days
+python3 skills/last30days/scripts/last30days.py momentum --days 3     # any shorter window
+python3 skills/last30days/scripts/last30days.py momentum --emit=json  # machine contract
+python3 skills/last30days/scripts/last30days.py momentum --as-of 2026-08-01  # retroactive
+```
+
+Slash-command form: `/last30days momentum`. Run a normal research pass first, then `momentum` immediately after — both windows come from the same snapshot, so there is no freshness drift by construction, and the short view costs zero additional API calls.
+
+Output classifies every candidate as **breakout** (rank climbed ≥ 5), **fading** (dropped ≥ 5), or **sustained** (top of both windows), plus a short-share headline — the fraction of the long window's engagement that landed inside the short window (a steady field sits near the proportional baseline, ~23% for 7-of-30; well above means the topic is moving fast). Scoring reuses the engine's own functions unchanged, so both windows compute identically except for the freshness scale and window membership; undated items keep the engine's freshness (an unknown date is a coverage gap, not staleness). Comparison caches are analyzed per entity; `--emit=json` emits exactly one JSON document (object for a single report, array for comparison caches). A re-score re-lenses what the long sweep captured — for exhaustive short-window coverage, run a dedicated short research pass instead.
+
 ## Health check (`doctor`)
 
 One command answers "what could be on, what's turned on, what's working, and what isn't" — a four-state audit (WORKING / TURNED ON - UNVERIFIED / NOT WORKING / COULD BE ON), one line per source, with a CLI-health block for sources that need a downloaded binary, indented backup/comment sub-lanes, the backend the next run will use (for chained sources), and an exact fix on anything that isn't working:
