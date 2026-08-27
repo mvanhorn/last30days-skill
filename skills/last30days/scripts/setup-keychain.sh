@@ -72,7 +72,9 @@ case "$ACTION" in
   list)
     echo "Stored last30days-* keychain items:"
     for key in "${ALL_KEYS[@]}"; do
-      if security find-generic-password -a "$USER" -s "${PREFIX}${key}" -w >/dev/null 2>&1; then
+      # No -w: the item's existence is the question, so don't ask Keychain to
+      # decrypt and hand back the secret only to discard it.
+      if security find-generic-password -a "$USER" -s "${PREFIX}${key}" >/dev/null 2>&1; then
         echo "  $key"
       fi
     done
@@ -99,8 +101,14 @@ fi
 
 added=0; skipped=0; replaced=0
 for key in "${TARGETS[@]}"; do
-  existing="$(security find-generic-password -a "$USER" -s "${PREFIX}${key}" -w 2>/dev/null || true)"
-  if [[ -n "$existing" && "$REPLACE" -eq 0 ]]; then
+  # Exit status answers "is it set?" without decrypting the stored secret into
+  # a shell variable, where a stray `set -x` or error trace could surface it.
+  if security find-generic-password -a "$USER" -s "${PREFIX}${key}" >/dev/null 2>&1; then
+    existed=1
+  else
+    existed=0
+  fi
+  if [[ "$existed" -eq 1 && "$REPLACE" -eq 0 ]]; then
     printf "  %-28s (set, skipping — use --replace to overwrite)\n" "$key"
     skipped=$((skipped + 1))
     continue
@@ -112,8 +120,19 @@ for key in "${TARGETS[@]}"; do
     skipped=$((skipped + 1))
     continue
   fi
-  security add-generic-password -U -a "$USER" -s "${PREFIX}${key}" -w "$value"
-  if [[ -n "$existing" ]]; then
+  # Feed the secret on stdin rather than as `-w "$value"`. A command argument is
+  # visible in `ps` output to every user on the machine for the lifetime of the
+  # call; stdin is not. With -w given no argument, `security` prompts for the
+  # value and then a retype (the form its own man page recommends), so the value
+  # goes down the pipe twice and the prompts are discarded.
+  if ! printf '%s\n%s\n' "$value" "$value" \
+      | security add-generic-password -U -a "$USER" -s "${PREFIX}${key}" -w >/dev/null 2>&1; then
+    unset value
+    echo "failed to store $key in the keychain" >&2
+    exit 1
+  fi
+  unset value
+  if [[ "$existed" -eq 1 ]]; then
     replaced=$((replaced + 1))
   else
     added=$((added + 1))
