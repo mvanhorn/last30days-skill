@@ -154,7 +154,8 @@ class AnalyzeReport(unittest.TestCase):
         )
         by_id = {row["candidate_id"]: row for row in result["candidates"]}
 
-        # Long-window ranks come from the saved final_score sort.
+        # Long-window ranks come from the saved array order (the engine's
+        # ranking), which this fixture lists in descending final_score order.
         self.assertEqual(1, by_id["old_top"]["rank_long"])
         self.assertEqual(9, by_id["fresh_low"]["rank_long"])
 
@@ -209,6 +210,25 @@ class AnalyzeReport(unittest.TestCase):
         result = momentum.analyze_report(_report([]), days=7, as_of=AS_OF)
         self.assertEqual([], result["candidates"])
         self.assertEqual(0.0, result["short_share"])
+
+    def test_rank_long_follows_cache_order_not_score_order(self):
+        # The cached array order is the engine's authoritative ranking; a
+        # score-only reconstruction could tie-break differently and corrupt
+        # every rank delta (greptile P1).
+        shuffled = [
+            _candidate(
+                "listed_first",
+                final_score=30.0,
+                rerank_score=90.0,
+                engagement=10.0,
+                published_at=(AS_OF - datetime.timedelta(days=1)).isoformat(),
+            ),
+            _candidate("listed_second", final_score=90.0, rerank_score=0.0),
+        ]
+        result = momentum.analyze_report(_report(shuffled), days=7, as_of=AS_OF)
+        by_id = {row["candidate_id"]: row for row in result["candidates"]}
+        self.assertEqual(1, by_id["listed_first"]["rank_long"])
+        self.assertEqual(2, by_id["listed_second"]["rank_long"])
 
     def test_cluster_share_uses_cluster_titles(self):
         candidates = _engineered()
@@ -297,6 +317,35 @@ class MomentumRun(unittest.TestCase):
         self.assertEqual(0, rc)
         parsed = json.loads(stdout.getvalue())
         self.assertIn("(21d)", parsed["window_short"])
+
+    def test_negative_days_exits_two(self):
+        payload = {
+            "reports": [{"entity": "synthetic topic", "report": _report(_engineered())}]
+        }
+        with mock.patch.object(momentum.env, "CONFIG_DIR", self._cache_env(payload)):
+            stderr = io.StringIO()
+            with redirect_stderr(stderr):
+                rc = momentum.run(self._args(lookback_days=-5), {})
+        self.assertEqual(2, rc)
+        self.assertIn("--days must be a positive", stderr.getvalue())
+
+    def test_multi_report_json_is_a_single_document(self):
+        # Comparison caches carry several reports; machine output must stay
+        # one parseable JSON document (array), not concatenated documents.
+        payload = {
+            "reports": [
+                {"entity": "alpha", "report": _report(_engineered())},
+                {"entity": "beta", "report": _report(_engineered())},
+            ]
+        }
+        with mock.patch.object(momentum.env, "CONFIG_DIR", self._cache_env(payload)):
+            stdout = io.StringIO()
+            with redirect_stdout(stdout):
+                rc = momentum.run(self._args(emit="json"), {})
+        self.assertEqual(0, rc)
+        parsed = json.loads(stdout.getvalue())
+        self.assertIsInstance(parsed, list)
+        self.assertEqual(2, len(parsed))
 
 
 class TopicWordDispatch(unittest.TestCase):

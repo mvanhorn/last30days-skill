@@ -83,8 +83,11 @@ def analyze_report(
     short_from = (as_of - timedelta(days=days - 1)).isoformat()
 
     rows: list[dict[str, Any]] = []
-    ranked = sorted(candidates, key=lambda c: -(c.final_score or 0.0))
-    for rank_long, cand in enumerate(ranked, start=1):
+    # Long-window ranks are the engine's saved ranking: the array order of
+    # ranked_candidates in the cache. Deliberately no re-sort — a score-only
+    # sort reconstructs ties differently than the engine did (its tie-break
+    # is (-final_score, title)), and any divergence corrupts every delta.
+    for rank_long, cand in enumerate(candidates, start=1):
         age = _best_age_days(cand, as_of)
         # Freshness under the NEW window. Undated candidates keep the engine's
         # original value: an unknown date is a coverage gap, not staleness
@@ -235,6 +238,11 @@ def run(args: Any, config: dict[str, Any]) -> int:
         return 2
 
     days = int(getattr(args, "lookback_days", None) or DEFAULT_SHORT_DAYS)
+    if days < 1:
+        sys.stderr.write(
+            "--days must be a positive number of days for the short window\n"
+        )
+        return 2
     as_of_arg = getattr(args, "as_of_date", None)
     emit_json = getattr(args, "emit", None) == "json"
 
@@ -245,9 +253,15 @@ def run(args: Any, config: dict[str, Any]) -> int:
         )
         results.append(analyze_report(report, days=days, as_of=as_of))
 
-    for result in results:
-        if emit_json:
-            print(json.dumps(result, indent=2))
+    # Machine output must be a single JSON document: the result object for a
+    # single report, a JSON array for comparison/competitor caches with
+    # multiple reports. Concatenated documents are unparseable.
+    if emit_json:
+        if len(results) == 1:
+            print(json.dumps(results[0], indent=2))
         else:
+            print(json.dumps(results, indent=2))
+    else:
+        for result in results:
             print(render_markdown(result))
     return 0
