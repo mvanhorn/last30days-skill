@@ -377,6 +377,23 @@ An explicit `--register` wins over `LAST30DAYS_REGISTER`; the environment/config
 
 When you invoke `/last30days` from Claude Code, Codex, or Gemini, the host model **is** the reasoning provider for plan + synthesis - you don't need any of the keys above unless you also run the script headlessly (cron, CI, watchlist).
 
+### Provider endpoint overrides
+
+Point a provider at a gateway (LiteLLM, an enterprise proxy, a self-hosted OpenAI-compatible server) without a code change:
+
+| Var | Default |
+| --- | --- |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1/responses` |
+| `XAI_BASE_URL` | `https://api.x.ai/v1/responses` |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1/chat/completions` |
+
+These redirect the request that carries the provider's `Authorization: Bearer <key>` header, so they are a credential boundary, not just a URL setting:
+
+- **`https://` is required for remote hosts.** An `http://` override to anything other than loopback is refused with a stderr warning and the vendor endpoint is used instead - otherwise the API key would go over the wire in cleartext.
+- **`http://` on loopback is allowed** (`localhost`, `127.0.0.0/8`, `::1`) so a local gateway or SSH tunnel keeps working; nothing leaves the machine.
+- **`--preflight` reports all three** under `endpoint_overrides` / `ignored_endpoint_overrides`, so you can see before a run whether a config file is redirecting a key.
+- A per-project `.claude/last30days.env` can set them only when project config is trusted (`LAST30DAYS_TRUST_PROJECT_CONFIG=1`); untrusted project files are ignored and listed by `--preflight`.
+
 ---
 
 ## Web search backend priority
