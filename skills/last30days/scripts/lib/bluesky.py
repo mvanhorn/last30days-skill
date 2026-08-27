@@ -259,6 +259,11 @@ def search_bluesky(
     if error_msg == "refresh":
         _log("Session expired; recreating token and retrying once")
         response, error_msg = _auth_and_search()
+        if error_msg == "refresh":
+            error_msg = (
+                "Bluesky session appears expired; failed after token refresh; "
+                "check credentials or app password"
+            )
     if error_msg:
         return {"posts": [], "error": error_msg}
     if response is None:

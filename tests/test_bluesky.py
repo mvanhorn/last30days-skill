@@ -208,6 +208,26 @@ class TestSearchBlueskyAuth(unittest.TestCase):
         self.assertEqual(mock_request.call_count, 4)
         self.assertEqual(mock_request.call_args_list[3].kwargs.get("headers", {}), {"Authorization": "Bearer tok-new"})
 
+    @patch("lib.bluesky.http.request")
+    def test_second_401_returns_actionable_refresh_error(self, mock_request):
+        from lib.http import HTTPError
+
+        mock_request.side_effect = [
+            {"accessJwt": "tok-old", "refreshJwt": "ref-old"},
+            HTTPError("HTTP 401: Unauthorized", 401, ""),
+            {"accessJwt": "tok-new", "refreshJwt": "ref-new"},
+            HTTPError("HTTP 401: Unauthorized", 401, ""),
+        ]
+        config = {"BSKY_HANDLE": "user.bsky.social", "BSKY_APP_PASSWORD": "pw"}
+
+        result = bluesky.search_bluesky("test", "2026-01-01", "2026-03-09", config=config)
+
+        self.assertEqual(result["posts"], [])
+        self.assertEqual(mock_request.call_count, 4)
+        self.assertNotEqual(result["error"], "refresh")
+        self.assertIn("failed after token refresh", result["error"])
+        self.assertIn("check credentials or app password", result["error"])
+
 
 class TestSearchEndpointHostResolution(unittest.TestCase):
     """The default search host moved from `public.api.bsky.app` (the
