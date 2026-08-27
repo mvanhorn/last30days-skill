@@ -175,6 +175,21 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         self.assertIn("├─ 🔵 X: 2 posts", body)
         self.assertIn("└─ 🌐 Web: 1 result", body)
 
+    def test_fenced_engine_footer_wrapping_preserves_tree(self):
+        md = (
+            "```text\n"
+            "---\n"
+            "✅ All agents reported back!\n"
+            "├─ 🔵 X: 2 posts\n"
+            "└─ 🌐 Web: 1 result\n"
+            "---\n"
+            "```"
+        )
+        body = html_render._wrap_engine_footer(html_render._markdown_to_html(md))
+        self.assertIn('<div class="engine-footer"><pre>---\n✅ All agents reported back!', body)
+        self.assertIn("├─ 🔵 X: 2 posts", body)
+        self.assertIn("└─ 🌐 Web: 1 result", body)
+
     def test_colophon_contains_topic_and_rerun_command(self):
         rendered = html_render.render_html(_report("AI agent frameworks", []))
         self.assertIn("topic: AI agent frameworks", rendered)
