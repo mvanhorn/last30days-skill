@@ -237,7 +237,11 @@ def run(args: Any, config: dict[str, Any]) -> int:
         )
         return 2
 
-    days = int(getattr(args, "lookback_days", None) or DEFAULT_SHORT_DAYS)
+    # Default only when the flag is absent: an explicit falsy value such as
+    # ``--days 0`` must reach the positivity guard, not be silently promoted
+    # to the default window.
+    lookback_days = getattr(args, "lookback_days", None)
+    days = DEFAULT_SHORT_DAYS if lookback_days is None else int(lookback_days)
     if days < 1:
         sys.stderr.write(
             "--days must be a positive number of days for the short window\n"

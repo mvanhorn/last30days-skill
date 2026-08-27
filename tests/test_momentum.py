@@ -329,6 +329,22 @@ class MomentumRun(unittest.TestCase):
         self.assertEqual(2, rc)
         self.assertIn("--days must be a positive", stderr.getvalue())
 
+    def test_zero_days_exits_two(self):
+        # Regression: `0` is falsy, so the old `or DEFAULT_SHORT_DAYS`
+        # fallback silently promoted an explicit `--days 0` to a 7-day
+        # analysis instead of letting the positivity guard reject it.
+        payload = {
+            "reports": [{"entity": "synthetic topic", "report": _report(_engineered())}]
+        }
+        for explicit_zero in (0, "0"):
+            with self.subTest(explicit_zero=explicit_zero):
+                with mock.patch.object(momentum.env, "CONFIG_DIR", self._cache_env(payload)):
+                    stderr = io.StringIO()
+                    with redirect_stderr(stderr):
+                        rc = momentum.run(self._args(lookback_days=explicit_zero), {})
+                self.assertEqual(2, rc)
+                self.assertIn("--days must be a positive", stderr.getvalue())
+
     def test_multi_report_json_is_a_single_document(self):
         # Comparison caches carry several reports; machine output must stay
         # one parseable JSON document (array), not concatenated documents.
