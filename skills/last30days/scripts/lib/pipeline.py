@@ -17,7 +17,7 @@ from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from shutil import which
-from typing import Any
+from typing import Any, Callable
 
 from . import (
     amazon,
@@ -3990,6 +3990,9 @@ def _retry_thin_sources(
             # pulls for ASINs already enriched in Phase 1. Finalize will enrich
             # any genuinely new products that weren't in Phase 1.
             skip_amazon_enrichment=True,
+            # Skip the SC search backstop on the phase-2b retry: the lane was
+            # already backfilled below the floor once this run (#977).
+            skip_sc_backstop=True,
         )
         outcome_note = artifact.get("_source_outcome") if isinstance(artifact, dict) else None
         normalized = _normalize_score_dedupe(
@@ -4091,20 +4094,93 @@ def _reddit_post_key(item: dict) -> str:
     return m.group(1) if m else url
 
 
+def _merge_items_by_key(
+    free: list[dict],
+    sc: list[dict],
+    key_fn: Callable[[dict], Any],
+    merge_collision: Callable[[dict, dict], None] | None = None,
+) -> list[dict]:
+    """Merge free + ScrapeCreators items, free first, deduped by key.
+
+    Used when a thinness-floor trigger backfills a thin free run with SC, so an
+    item present in both is never double-listed and the free lane's items are
+    never discarded. ``merge_collision``, when given, grafts data from the SC
+    copy onto the kept free copy (e.g. a paid transcript).
+    """
+    merged = list(free)
+    seen: dict[Any, int] = {}
+    for i, it in enumerate(free):
+        seen.setdefault(key_fn(it), i)
+    for it in sc:
+        key = key_fn(it)
+        if key and key in seen:
+            if merge_collision:
+                merge_collision(merged[seen[key]], it)
+            continue
+        if key:
+            seen[key] = len(merged)
+            merged.append(it)
+        else:
+            # No dedupe key at all: keep the item rather than silently
+            # discarding rescue signal (R2).
+            merged.append(it)
+    return merged
+
+
 def _merge_reddit_items(free: list[dict], sc: list[dict]) -> list[dict]:
     """Merge free + ScrapeCreators Reddit items, free first, deduped by post id.
 
     Used when the thinness-floor trigger backfills a thin free run with SC, so a
     thread present in both is never double-listed.
     """
-    merged = list(free)
-    seen = {_reddit_post_key(it) for it in free}
-    for it in sc:
-        key = _reddit_post_key(it)
-        if key and key not in seen:
-            seen.add(key)
-            merged.append(it)
-    return merged
+    return _merge_items_by_key(free, sc, _reddit_post_key)
+
+
+# Thinness floor for the ScrapeCreators YouTube search backstop: yt-dlp results
+# below this count are treated as a degraded lane (e.g. bot-gated runs return
+# 1-2 stale items instead of zero, issue #977) and trigger the SC search
+# backstop. Unlike the Reddit floor (env-configurable, default 0 = empty-only),
+# this floor is a code-level constant that is always active when a key is
+# present; tune it here. Cost: one SC search per thin subquery, plus the
+# per-video transcript spend inside search_youtube_sc bounded by its existing
+# transcript-limit guards.
+_YT_SC_MIN_ITEMS = 3
+
+
+def _youtube_item_key(item: dict) -> Any:
+    """Dedupe key for a raw YouTube item dict."""
+    return item.get("video_id") or item.get("url") or ""
+
+
+def _graft_youtube_transcript(free_item: dict, sc_item: dict) -> None:
+    """Graft an SC-fetched transcript onto the kept free copy on collision.
+
+    The free-first merge keeps the yt-dlp copy; if it lacks a transcript but
+    the (paid-for) SC copy carries one, reuse it so the spend is not thrown
+    away and downstream backfill does not re-fetch the video.
+    """
+    if not free_item.get("transcript_snippet") and sc_item.get("transcript_snippet"):
+        free_item["transcript_snippet"] = sc_item.get("transcript_snippet", "")
+        free_item["transcript_highlights"] = sc_item.get("transcript_highlights", [])
+
+
+def _compose_youtube_failure(previous: str | None, addition: str) -> str:
+    """Append a backstop failure to an existing lane failure instead of
+    overwriting it, so an actionable yt-dlp error (e.g. bot-gate) is not
+    masked by a transient SC failure."""
+    if previous:
+        return f"{previous}; {addition}"
+    return addition
+
+
+def _merge_youtube_items(free: list[dict], sc: list[dict]) -> list[dict]:
+    """Merge free + ScrapeCreators YouTube items, free first, deduped by video id.
+
+    Used when the thinness-floor backstop backfills a thin yt-dlp run with SC,
+    so a video present in both is never double-listed and the backstop never
+    discards items yt-dlp already returned.
+    """
+    return _merge_items_by_key(free, sc, _youtube_item_key, _graft_youtube_transcript)
 
 
 def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
@@ -4182,6 +4258,7 @@ def _retrieve_stream_impl(
     trustpilot_domain_is_hint: bool = False,
     run_started: float | None = None,
     skip_amazon_enrichment: bool = False,
+    skip_sc_backstop: bool = False,
 ) -> tuple[list[dict], dict]:
     # Early exit if source was rate-limited by a sibling future
     if rate_limited_sources is not None and source in rate_limited_sources:
@@ -4513,17 +4590,41 @@ def _retrieve_stream_impl(
             except Exception as exc:
                 youtube_failure = str(exc)
                 result = None
-        # Fall back to SC YouTube search if yt-dlp failed or isn't installed.
-        if (result is None or not result.get("items")) and sc_token:
+        # Fall back to SC YouTube search when yt-dlp failed, returned nothing,
+        # or returned fewer than the thinness floor. YouTube bot-gates yt-dlp
+        # by returning 1-2 stale items instead of zero (#977), so a zero-only
+        # trigger would report a degraded lane as healthy. Phase-2b thin-source
+        # retries pass skip_sc_backstop=True so a persistently thin lane is not
+        # charged twice per run.
+        free_items = list(result.get("items") or []) if result else []
+        backstop_fired = False
+        if len(free_items) < _YT_SC_MIN_ITEMS and sc_token and not skip_sc_backstop:
+            backstop_fired = True
             try:
-                result = youtube_yt.search_youtube_sc(
+                sc_result = youtube_yt.search_youtube_sc(
                     yt_query, from_date, to_date, depth=depth, token=sc_token,
                 )
-                if result.get("error"):
-                    youtube_failure = str(result["error"])
+                if sc_result.get("error"):
+                    youtube_failure = _compose_youtube_failure(
+                        youtube_failure, f"SC backstop: {sc_result['error']}",
+                    )
+                result = {
+                    "items": _merge_youtube_items(
+                        free_items, sc_result.get("items") or [],
+                    ),
+                }
+                if free_items:
+                    sys.stderr.write(
+                        f"[YouTube] yt-dlp returned {len(free_items)} items "
+                        f"(below the {_YT_SC_MIN_ITEMS}-item floor); "
+                        "backfilled with ScrapeCreators\n"
+                    )
             except Exception as exc:
-                youtube_failure = str(exc)
-                result = None
+                youtube_failure = _compose_youtube_failure(
+                    youtube_failure, f"SC backstop failed: {exc}",
+                )
+                # Never discard the free items on backstop failure (R2).
+                result = {"items": free_items}
         if result is None:
             result = {"items": []}
         # Enrich top videos with comments (default-on when a key is present).
@@ -4536,6 +4637,16 @@ def _retrieve_stream_impl(
             state = youtube_yt.classify_run_failure(youtube_failure)
             attempted = state != schema.SKIPPED_UNCONFIGURED
             return items, _outcome_artifact(state, youtube_failure, attempted=attempted)
+        if backstop_fired and free_items:
+            # The below-floor lane was rescued or remained thin; record it as
+            # partial so the report, saved raw file, and doctor postmortem do
+            # not read the lane as clean (R3).
+            return items, _outcome_artifact(
+                schema.PARTIAL,
+                f"yt-dlp returned {len(free_items)} items (below the "
+                f"{_YT_SC_MIN_ITEMS}-item floor); backfilled with ScrapeCreators",
+                attempted=True,
+            )
         return items, {}
     if source == "tiktok":
         # Use raw_topic so expand_tiktok_queries() generates diverse variants
