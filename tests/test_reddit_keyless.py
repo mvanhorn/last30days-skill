@@ -333,6 +333,38 @@ class TestSlotPriority:
         assert posts[2]["url"] not in enriched_urls   # 4-comment thread above it skipped
         assert len(enriched_urls) == reddit_keyless.ENRICH_LIMITS["default"]
 
+    def test_miss_tier_orders_by_comments_for_leftover_slots(self):
+        # Review finding #1 (validated): when the entity-match tier is smaller
+        # than ENRICH_LIMITS, leftover slots are filled from the miss tier in
+        # comment-count order. 1 match + 4 misses at quick depth (limit 3): the
+        # two most-commented misses get slots, the least-commented miss does not.
+        # Score order deliberately differs from comment order so this test
+        # discriminates the miss-tier sort from the old score-first order.
+        posts = [
+            self._titled_nc(1, "openclaw thread", score=100, ncmt=2),
+            self._titled_nc(2, "Gemma thread A", score=5, ncmt=30),
+            self._titled_nc(3, "Gemma thread B", score=40, ncmt=9),
+            self._titled_nc(4, "Gemma thread C", score=30, ncmt=2),
+            self._titled_nc(5, "Gemma thread D", score=20, ncmt=1),
+        ]
+        enriched_urls = []
+
+        def _capture(url):
+            enriched_urls.append(url)
+            return {"top_comments": [], "comment_insights": [], "num_comments": None}
+
+        with mock.patch.object(reddit_keyless, "_discover", return_value=posts), \
+             mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments",
+                               side_effect=_capture):
+            reddit_keyless.search_and_enrich(
+                "openclaw", "2026-05-01", "2026-05-31", depth="quick")
+        assert posts[0]["url"] in enriched_urls       # entity match always slotted
+        assert posts[1]["url"] in enriched_urls       # 30-comment miss (top miss)
+        assert posts[2]["url"] in enriched_urls       # 9-comment miss
+        assert posts[3]["url"] not in enriched_urls   # 2-comment miss below the cut
+        assert posts[4]["url"] not in enriched_urls   # 1-comment miss below the cut
+        assert len(enriched_urls) == reddit_keyless.ENRICH_LIMITS["quick"]
+
 
 class TestScoredListingsFallback:
     """_scored_listings falls back to the arctic-shift archive when the
