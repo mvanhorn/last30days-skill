@@ -259,6 +259,80 @@ class TestSlotPriority:
             out = reddit_keyless._slot_priority("openclaw", posts)
         assert out == posts
 
+    @staticmethod
+    def _titled_nc(i, title, score=0, ncmt=0, selftext=""):
+        """_titled variant that also sets a real comment count (both surfaces)."""
+        p = TestSlotPriority._titled(i, title, score=score, selftext=selftext)
+        p["num_comments"] = ncmt
+        p["engagement"]["num_comments"] = ncmt
+        return p
+
+    def test_comment_count_orders_within_match_tier(self):
+        # Two entity-matching posts: the low-score high-comment thread wins the slot.
+        high_comments = self._titled_nc(1, "openclaw thread with lots of discussion", score=1, ncmt=45)
+        low_comments = self._titled_nc(2, "openclaw thread, quiet", score=900, ncmt=3)
+        out = reddit_keyless._slot_priority("openclaw", [low_comments, high_comments])
+        assert out[0] is high_comments
+        assert out[1] is low_comments
+
+    def test_entity_match_tier_beats_comment_count(self):
+        # Entity priority is preserved: a miss with 100 comments still follows a
+        # match with 1 comment, regardless of discussion volume.
+        match = self._titled_nc(1, "openclaw tips", score=10, ncmt=1)
+        miss = self._titled_nc(2, "Gemma news", score=100, ncmt=100)
+        out = reddit_keyless._slot_priority("openclaw", [miss, match])
+        assert out[0] is match
+        assert out[1] is miss
+
+    def test_equal_comment_counts_preserve_incoming_order_stable(self):
+        # Stable tiebreak: equal comment counts preserve the incoming order. The
+        # score-first order is established by search_and_enrich's provisional
+        # sort before _slot_priority runs; _slot_priority must not re-sort ties.
+        p1 = self._titled_nc(1, "openclaw thread a", score=100, ncmt=5)
+        p2 = self._titled_nc(2, "openclaw thread b", score=50, ncmt=5)
+        out = reddit_keyless._slot_priority("openclaw", [p2, p1])
+        assert out[0] is p2
+        assert out[1] is p1
+
+    def test_unknown_comment_count_ties_with_zero(self):
+        # Missing/None comment count is treated as 0: it ties with a known-zero
+        # post (stable) and sorts below any positive-count post in its tier.
+        unknown = self._titled_nc(1, "openclaw unknown", score=100, ncmt=None)
+        positive = self._titled_nc(2, "openclaw positive", score=10, ncmt=3)
+        known_zero = self._titled_nc(3, "openclaw zero", score=5, ncmt=0)
+        out = reddit_keyless._slot_priority("openclaw", [known_zero, unknown, positive])
+        assert out[0] is positive
+        assert out[1:] == [known_zero, unknown]
+
+    def test_richest_thread_gets_slot_when_score_ranked_low(self):
+        # Issue #906 regression: a 45-comment thread ranked 7th by score must get
+        # an enrichment slot at default depth (limit 5) while a 4-comment thread
+        # above it in score order does not. All posts are in the same entity tier.
+        posts = [
+            self._titled_nc(1, "openclaw thread one", score=1000, ncmt=4),
+            self._titled_nc(2, "openclaw thread two", score=900, ncmt=4),
+            self._titled_nc(3, "openclaw thread three", score=800, ncmt=4),
+            self._titled_nc(4, "openclaw thread four", score=700, ncmt=4),
+            self._titled_nc(5, "openclaw thread five", score=600, ncmt=6),
+            self._titled_nc(6, "openclaw thread six", score=500, ncmt=5),
+            self._titled_nc(7, "openclaw thread seven", score=300, ncmt=4),
+            self._titled_nc(8, "openclaw thread eight", score=77, ncmt=45),
+        ]
+        enriched_urls = []
+
+        def _capture(url):
+            enriched_urls.append(url)
+            return {"top_comments": [], "comment_insights": [], "num_comments": None}
+
+        with mock.patch.object(reddit_keyless, "_discover", return_value=posts), \
+             mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments",
+                               side_effect=_capture):
+            reddit_keyless.search_and_enrich(
+                "openclaw", "2026-05-01", "2026-05-31", depth="default")
+        assert posts[7]["url"] in enriched_urls      # 45-comment thread enriched
+        assert posts[2]["url"] not in enriched_urls   # 4-comment thread above it skipped
+        assert len(enriched_urls) == reddit_keyless.ENRICH_LIMITS["default"]
+
 
 class TestScoredListingsFallback:
     """_scored_listings falls back to the arctic-shift archive when the
