@@ -34,13 +34,10 @@ def test_doctor_mentions_grok_as_opt_in():
     assert "opt-in" in src.lower()
 
 
-def test_quality_nudge_offers_grok_but_does_not_call_it_free():
+def test_quality_nudge_does_not_turn_optional_x_into_a_grok_prompt():
     src = inspect.getsource(quality_nudge)
-    assert "grok_cli_missing" in src
-    assert "no X credential at all" in src
-    # The block is headed "Free suggestions"; grok needs a Grok plan, so the
-    # precondition must be stated inline rather than inherited from the header.
-    assert "if you have a Grok" in src
+    assert "grok_cli_missing" not in src
+    assert 'core_missing.append("x")' not in src
 
 
 def test_configuration_documents_the_grok_path_as_opt_in():
@@ -103,19 +100,19 @@ def test_skill_md_presents_grok_as_opt_in_backup():
     assert "LAST30DAYS_X_BACKEND=grok" in text
 
 
-def test_skill_md_just_in_time_unlock_defaults():
-    """Just-in-time X unlock presents cookies and keys first."""
+def test_skill_md_replaces_just_in_time_unlock_with_optional_omission():
+    """A useful report ends without a second X consent or key prompt."""
     text = _skill_md()
-    section = text[text.index("Just-in-time X unlock"):][:3000]
-    # Default options should be cookies and keys, not grok.
-    assert "Scan my browser cookies" in section
-    assert "xAI API key" in section
+    assert "Just-in-time X unlock" not in text
+    section = text[text.index("Optional X omission"):][:1200]
+    assert "finish the useful findings first" in section
+    assert "Do not open a modal" in section
 
 
-def test_skill_md_does_not_call_the_grok_path_free():
+def test_skill_md_keeps_grok_paid_caveat_in_explicit_setup_path():
     text = _skill_md()
-    section = text[text.index("Just-in-time X unlock"):][:3000]
-    assert "Do not describe the Grok path as free" in section or "Do not call it free" in section
+    section = text[text.index("Grok CLI is an opt-in backup"):][:1200]
+    assert "Do not call it free" in section
 
 
 # --- Doctor grok-only unpinned behavior (R3/R8) -----------------------------

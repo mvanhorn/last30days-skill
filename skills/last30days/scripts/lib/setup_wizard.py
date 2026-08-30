@@ -36,7 +36,6 @@ _WELCOME_TEXT = """Welcome to /last30days! I research any topic across Reddit, X
 I synthesize what people are actually saying right now across social, news, and market sources.
 
 Auto setup gives you the core sources free in about 30 seconds:
-- X/Twitter - reads your browser cookies to authenticate (read live each run, never saved to disk). I check Chrome first (fastest - a one-time macOS Keychain prompt may appear; click Always Allow), then Firefox and Safari.
 - Reddit with comments - free keyless discovery (RSS + shreddit), no API key needed.
 - YouTube search + transcripts - installs yt-dlp (open source, 190K+ GitHub stars).
 - Digg - trending news, GitHub stars, and pipeline feeds - installs the free, keyless Digg CLI.
@@ -44,6 +43,7 @@ Auto setup gives you the core sources free in about 30 seconds:
 - StockTwits - retail trader sentiment - auto-on when your topic is a ticker or crypto (e.g. "$NVDA earnings", "bitcoin"), off for everything else.
 - Trustpilot - brand/company review sentiment - opt-in (add trustpilot to INCLUDE_SOURCES), off by default.
 - Hacker News + Polymarket + GitHub (auto-on if the gh CLI is installed) - always on, zero config.
+- X/Twitter - optional. It stays available when you already configured it, or after you explicitly approve a browser-cookie read; skipping it never blocks research.
 
 Want TikTok and Instagram too? ScrapeCreators adds those (10,000 free calls, scrapecreators.com). No kickbacks, no affiliation.
 
@@ -73,6 +73,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
     Returns:
         Dict with keys:
           cookies_found: {source_name: browser_name} for each source where cookies were found
+          browser_cookie_scan_attempted: bool (True only after explicit consent)
           ytdlp_installed: bool
           ytdlp_action: already_installed | installed | install_failed | no_homebrew
           digg_installed: bool (True when the engine can resolve digg-pp-cli on PATH)
@@ -154,6 +155,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
 
     results: Dict[str, Any] = {
         "cookies_found": cookies_found,
+        "browser_cookie_scan_attempted": allow_browser_cookies,
         "ytdlp_installed": ytdlp_installed,
         "ytdlp_action": ytdlp_action,
         "digg_installed": digg_installed,
@@ -653,11 +655,9 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
     lines.append("")
 
     cookies_found = results.get("cookies_found", {})
-    if cookies_found:
+    if results.get("browser_cookie_scan_attempted") and cookies_found:
         for source, browser in cookies_found.items():
             lines.append(f"  - {source.upper()} cookies found in {browser}")
-    else:
-        lines.append("  - No browser cookies found for X/Twitter")
 
     ytdlp_action = results.get("ytdlp_action", "")
     if ytdlp_action == "installed":

@@ -489,9 +489,9 @@ class CliV3Tests(unittest.TestCase):
     def test_ensure_supported_python_allows_supported_interpreter(self):
         cli.ensure_supported_python((3, 12, 0))
 
-    def test_missing_sources_for_promo_prefers_reddit_x_then_web(self):
+    def test_missing_sources_for_promo_treats_x_as_optional(self):
         self.assertEqual(
-            "both",
+            "reddit",
             cli._missing_sources_for_promo({"available_sources": ["youtube"]}),
         )
         self.assertEqual(
@@ -504,6 +504,31 @@ class CliV3Tests(unittest.TestCase):
             cli._missing_sources_for_promo(
                 {"available_sources": ["reddit", "x", "grounding"], "native_web_backend": "brave"}
             ),
+        )
+
+    def test_optional_x_omission_is_post_result_copy_for_default_runs(self):
+        note = cli._optional_x_omission_text(
+            {"available_sources": ["reddit", "youtube", "grounding"]},
+            None,
+        )
+        self.assertEqual(
+            "Optional source omitted: X/Twitter was not enabled; research "
+            "continued with the available sources.",
+            note,
+        )
+
+    def test_optional_x_omission_is_suppressed_when_x_active_or_search_explicit(self):
+        self.assertIsNone(
+            cli._optional_x_omission_text(
+                {"available_sources": ["reddit", "x", "youtube"]},
+                None,
+            )
+        )
+        self.assertIsNone(
+            cli._optional_x_omission_text(
+                {"available_sources": ["reddit", "youtube"]},
+                ["reddit", "youtube"],
+            )
         )
         # ...or suppressed entirely on a native-search host.
         self.assertIsNone(
@@ -785,7 +810,7 @@ class CliV3Tests(unittest.TestCase):
             source_counts={"grounding": 0},
             display_sources=["grounding"],
         )
-        fake_progress.show_promo.assert_called_once_with("both", diag=diag)
+        fake_progress.show_promo.assert_called_once_with("reddit", diag=diag)
         self.assertIn("# rendered", stdout.getvalue())
 
     def test_main_writes_rendered_output_to_explicit_file(self):
