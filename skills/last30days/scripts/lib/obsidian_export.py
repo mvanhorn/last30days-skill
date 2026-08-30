@@ -25,6 +25,57 @@ DEFAULT_RELATIVE_DASHBOARD = "90_Quellen/obsidian2date/Dashboard.md"
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 _WIKILINK_SAFE_RE = re.compile(r"[\[\]|#^]")
+_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "as",
+        "at",
+        "for",
+        "from",
+        "in",
+        "into",
+        "of",
+        "on",
+        "or",
+        "the",
+        "to",
+        "with",
+        "who",
+        "what",
+        "when",
+        "where",
+        "why",
+        "how",
+        "over",
+        "under",
+        "users",
+        "user",
+        "ai",
+        "ux",
+        "app",
+        "web",
+        "website",
+        "building",
+        "build",
+        "framework",
+        "frameworks",
+        "approachable",
+        "product",
+        "onboarding",
+        "non",
+        "technical",
+        "last",
+        "days",
+        "run",
+        "briefing",
+        "smoke",
+        "test",
+        "obsidian2date",
+        "obsidian",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -219,7 +270,11 @@ def _cluster_summary(report: schema.Report, cluster: schema.Cluster) -> str:
 
 
 def _tokens(text: str) -> set[str]:
-    return {token for token in _SLUG_RE.split((text or "").lower()) if len(token) >= 3}
+    return {
+        token
+        for token in _SLUG_RE.split((text or "").lower())
+        if len(token) >= 4 and token not in _STOPWORDS
+    }
 
 
 def find_related_notes(
