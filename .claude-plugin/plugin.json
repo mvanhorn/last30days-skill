@@ -1,30 +1,25 @@
 {
-  "name": "last30days",
-  "version": "3.21.1",
-  "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and 5+ more sources. AI agent scores by upvotes, likes, and real money - not editors.",
+  "name": "obsidian2date",
+  "version": "0.1.0",
+  "description": "Research any topic across Reddit, X, YouTube, HN, GitHub and more — then write durable Obsidian run notes, briefings, and related-note links. Fork of last30days.",
   "author": {
-    "name": "Matt Van Horn",
-    "email": "mvanhorn@gmail.com",
-    "url": "https://github.com/mvanhorn"
+    "name": "Paul Schwarz",
+    "url": "https://github.com/pauleschwarz"
   },
-  "homepage": "https://github.com/mvanhorn/last30days-skill",
-  "repository": "https://github.com/mvanhorn/last30days-skill",
+  "homepage": "https://github.com/pauleschwarz/obsidian2date",
+  "repository": "https://github.com/pauleschwarz/obsidian2date",
   "license": "MIT",
   "keywords": [
-    "competitor research",
+    "obsidian",
     "research",
+    "briefing",
+    "vault",
     "reddit",
     "twitter",
     "youtube",
-    "tiktok",
-    "instagram",
-    "trends",
-    "prompts",
-    "polymarket",
+    "hacker-news",
     "github",
-    "perplexity",
-    "threads",
-    "pinterest",
-    "hacker-news"
+    "last30days",
+    "multi-source"
   ]
 }

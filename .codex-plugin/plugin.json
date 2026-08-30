@@ -1,50 +1,44 @@
 {
-  "name": "last30days",
-  "version": "3.21.1",
-  "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and the web.",
+  "name": "obsidian2date",
+  "version": "0.1.0",
+  "description": "Research any topic across Reddit, X, YouTube, HN, GitHub and more — then write durable Obsidian notes and briefings. Fork of last30days.",
   "author": {
-    "name": "Matt Van Horn",
-    "email": "mvanhorn@gmail.com",
-    "url": "https://github.com/mvanhorn"
+    "name": "Paul Schwarz",
+    "url": "https://github.com/pauleschwarz"
   },
-  "homepage": "https://github.com/mvanhorn/last30days-skill",
-  "repository": "https://github.com/mvanhorn/last30days-skill",
+  "homepage": "https://github.com/pauleschwarz/obsidian2date",
+  "repository": "https://github.com/pauleschwarz/obsidian2date",
   "license": "MIT",
   "keywords": [
-    "competitor research",
+    "obsidian",
     "research",
+    "briefing",
+    "vault",
     "reddit",
     "twitter",
     "youtube",
-    "tiktok",
-    "instagram",
-    "trends",
-    "prompts",
-    "polymarket",
+    "hacker-news",
     "github",
-    "perplexity",
-    "threads",
-    "pinterest",
-    "hacker-news"
+    "last30days"
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "last30days",
-    "shortDescription": "Research what people are saying about a topic now.",
-    "longDescription": "last30days adds a Codex skill for researching any topic based on recent discussion and engagement signals across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and the web.",
-    "developerName": "Matt Van Horn",
+    "displayName": "obsidian2date",
+    "shortDescription": "Research a topic and land it in Obsidian.",
+    "longDescription": "obsidian2date keeps the last30days multi-source research engine and adds vault-native export: durable run notes, briefings, related wikilinks, index and dashboard.",
+    "developerName": "Paul Schwarz",
     "category": "Research",
     "capabilities": [
       "Interactive",
       "Read",
       "Write"
     ],
-    "websiteURL": "https://github.com/mvanhorn/last30days-skill",
+    "websiteURL": "https://github.com/pauleschwarz/obsidian2date",
     "defaultPrompt": [
-      "TikTok shop trends",
-      "Codex vs Cursor",
-      "best travel credit cards"
+      "local LLM agent frameworks",
+      "obsidian plugins 2026",
+      "rust async runtime"
     ],
-    "brandColor": "#6F42C1"
+    "brandColor": "#0F766E"
   }
 }

@@ -489,6 +489,15 @@ def emit_output(
         return render.render_context(report)
     if emit == "brief":
         return render.render_brief(report)
+    if emit == "obsidian":
+        # Obsidian export is handled by _export_obsidian_and_print after research.
+        # Keep a compact evidence envelope available for hosts that only read stdout.
+        return render.render_compact(
+            report,
+            fun_level=fun_level,
+            save_path=save_path,
+            register=register,
+        )
     raise SystemExit(f"Unsupported emit mode: {emit}")
 
 
@@ -627,7 +636,15 @@ def build_parser() -> argparse.ArgumentParser:
         allow_abbrev=False,
     )
     parser.add_argument("topic", nargs="*", help="Research topic")
-    parser.add_argument("--emit", default="compact", choices=["compact", "json", "context", "md", "html", "brief"])
+    parser.add_argument(
+        "--emit",
+        default="compact",
+        choices=["compact", "json", "context", "md", "html", "brief", "obsidian"],
+        help=(
+            "Output mode. Use 'obsidian' to write a durable vault run note, "
+            "briefing, index, and dashboard under the Obsidian vault."
+        ),
+    )
     parser.add_argument(
         "--register",
         choices=registers.REGISTER_NAMES,
@@ -745,6 +762,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Include matching corpus files older than the research window",
     )
     parser.add_argument("--output", help="Optional exact file path for saving the rendered output")
+    parser.add_argument(
+        "--obsidian-vault",
+        help=(
+            "Obsidian vault root for --emit=obsidian "
+            "(default: OBSIDIAN2DATE_VAULT / LAST30DAYS_OBSIDIAN_VAULT / ~/Desktop/brain-paul)"
+        ),
+    )
     parser.add_argument("--synthesis-file", help="Markdown synthesis to embed in --emit=html output")
     parser.add_argument("--publish-html", action="store_true",
                         help="Publish --emit=html output to ht-ml.app (explicit opt-in; public by default)")
@@ -2501,6 +2525,30 @@ def _render_save_and_print(
         except Exception as exc:
             sys.stderr.write(f"[last30days] HTML publish failed: {exc}\n")
             sys.stderr.flush()
+
+    if args.emit == "obsidian":
+        try:
+            from lib import obsidian_export
+
+            export_report = report
+            if entity_reports:
+                # Comparison runs: keep the leading/merged report as the vault anchor.
+                export_report = report
+            result = obsidian_export.export_report_to_obsidian(
+                export_report,
+                vault_root=getattr(args, "obsidian_vault", None),
+            )
+            rendered = obsidian_export.render_obsidian_stdout(result, export_report)
+            sys.stderr.write(
+                f"[obsidian2date] Wrote run note {result.run_note} and "
+                f"briefing {result.briefing_note}\n"
+            )
+            sys.stderr.flush()
+        except Exception as exc:
+            sys.stderr.write(f"[obsidian2date] Vault export failed: {exc}\n")
+            sys.stderr.flush()
+            return 1
+
     print(rendered)
     return _strict_exit_code(report, entity_reports, config)
 
@@ -2516,7 +2564,7 @@ def _propagate_config_to_environ(config: dict[str, object]) -> None:
     for key in ("OPENAI_BASE_URL", "XAI_BASE_URL", "OPENROUTER_BASE_URL"):
         val = config.get(key)
         if val and not os.environ.get(key):
-            os.environ[key] = val
+            os.environ[key] = str(val)
 
 
 def _setup_allows_browser_cookies(args: argparse.Namespace, extra_argv: list[str]) -> bool:
