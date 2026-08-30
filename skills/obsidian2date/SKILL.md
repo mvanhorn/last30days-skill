@@ -53,6 +53,12 @@ Fork of [last30days](https://github.com/mvanhorn/last30days-skill) focused on **
 The research engine remains upstream-compatible under `skills/last30days/`.
 This skill is the vault-first entrypoint: research a topic, write notes, link related prior runs, and surface a short briefing.
 
+**Vault contract (read when writing to brain-paul):**
+`/Users/paulschwarz/Desktop/brain-paul/90_Quellen/obsidian2date/AGENT-DEKLARATION.md`
+
+Default vault: `/Users/paulschwarz/Desktop/brain-paul`.
+Writes only under `90_Quellen/obsidian2date/{runs,briefings,Index,Dashboard}` — never into `00_Prime/`, `10_Projekte/`, or `70_Archiv/` without an explicit user order.
+
 ## Default command
 
 Resolve `SKILL_DIR` to the directory that contains **this** `SKILL.md`.

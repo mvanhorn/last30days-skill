@@ -291,10 +291,12 @@ def _frontmatter(
     sources: list[str],
     run_note_title: str | None = None,
 ) -> str:
+    # brain-paul convention uses `typ:` + free tags; keep `type:` for exporters.
     lines = [
         "---",
         f"title: {_yaml_scalar(title)}",
         f"topic: {_yaml_scalar(topic)}",
+        f"typ: {_yaml_scalar(note_kind)}",
         f"type: {_yaml_scalar(note_kind)}",
         f"status: complete",
         f"generated_at: {_yaml_scalar(report.generated_at)}",
@@ -450,6 +452,22 @@ def render_run_note(
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _builder_takeaway(report: schema.Report, clusters: list[schema.Cluster]) -> str:
+    """One short paragraph a builder can act on; honest when evidence is thin."""
+    if not clusters:
+        return (
+            "Evidence is thin this window — treat conclusions as hypotheses, "
+            "widen sources or re-run with --deep before locking product decisions."
+        )
+    top = clusters[0]
+    extras = [c.title for c in clusters[1:3]]
+    extra_bit = f" Watch also: {', '.join(extras)}." if extras else ""
+    return (
+        f"Strongest signal right now: **{top.title}** — {_cluster_summary(report, top)}."
+        f"{extra_bit} Prefer patterns that show up in ≥2 sources; discard single-thread hype."
+    )
+
+
 def render_briefing_note(
     report: schema.Report,
     *,
@@ -463,7 +481,7 @@ def render_briefing_note(
     evidence_report = schema.without_sources(report, {"corpus"})
     today = _dt.date.today().isoformat()
     title = f"Briefing: {report.topic} — {today}"
-    tags = ["obsidian2date", "briefing"]
+    tags = ["obsidian2date", "briefing", "research-run"]
     related_titles = [run_note_title, *[item.title for item in related]]
 
     lines = [
@@ -490,15 +508,45 @@ def render_briefing_note(
         lines.append("- Nothing solid in this window.")
     else:
         for cluster in clusters:
+            src = ", ".join(_source_label(s) for s in cluster.sources) or "mixed"
             lines.append(
-                f"- **{cluster.title}** — {_cluster_summary(evidence_report, cluster)}"
+                f"- **{cluster.title}** ({src}) — {_cluster_summary(evidence_report, cluster)}"
             )
     lines.append("")
+    lines.extend(
+        [
+            "## Builder takeaway",
+            "",
+            _builder_takeaway(evidence_report, clusters),
+            "",
+        ]
+    )
 
     if related:
         lines.extend(["## Related vault notes", ""])
         for item in related:
             lines.append(f"- [[{wikilink_title(item.title)}]]")
+        lines.append("")
+
+    thin = len(clusters) < 2 or len(sources) < 2
+    gaps: list[str] = []
+    if thin:
+        gaps.append("Cross-source corroboration is weak — verify before shipping." )
+    if report.warnings:
+        gaps.extend(str(w) for w in report.warnings[:4])
+    missing = [
+        name
+        for name, outcome in sorted(report.source_status.items())
+        if outcome.state not in {"ok", "no-results"} and outcome.attempted
+    ]
+    if missing:
+        gaps.append(
+            "Source issues: "
+            + ", ".join(f"{_source_label(name)}" for name in missing[:6])
+        )
+    if gaps:
+        lines.extend(["## Gaps / honesty", ""])
+        lines.extend(f"- {g}" for g in gaps)
         lines.append("")
 
     lines.extend(
@@ -507,6 +555,7 @@ def render_briefing_note(
             "",
             f"- Window `{report.range_from}` → `{report.range_to}`",
             f"- Sources: {', '.join(_source_label(s) for s in sources) or 'none'}",
+            f"- Clusters: {len(evidence_report.clusters)} · candidates: {len(evidence_report.ranked_candidates)}",
             f"- Generated `{report.generated_at}`",
             "",
             f"_obsidian2date briefing · v{_skill_version()}_",
