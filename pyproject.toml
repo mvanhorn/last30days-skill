@@ -1,7 +1,7 @@
 [project]
 name = "obsidian2date"
 version = "0.1.0"
-description = "last30days research engine with Obsidian-native export (fork)"
+description = "Research engine with Obsidian-native export, based on last30days"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = []

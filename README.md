@@ -1,48 +1,47 @@
 # obsidian2date
 
-**Research the last 30 days. Land it cleanly in Obsidian.**
+**Research the last 30 days. Keep the useful parts in Obsidian.**
 
-`obsidian2date` is a public fork of
-[mvanhorn/last30days-skill](https://github.com/mvanhorn/last30days-skill).
-The upstream multi-source research engine is kept intact. This fork adds a
-vault-native export path so every run becomes:
+[![License: MIT](https://img.shields.io/badge/license-MIT-0f766e.svg)](LICENSE)
+[![Tests](https://github.com/pauleschwarz/obsidian2date/actions/workflows/validate.yml/badge.svg)](https://github.com/pauleschwarz/obsidian2date/actions/workflows/validate.yml)
 
-- a durable **run note** with YAML frontmatter and an evidence index
-- a short **briefing** for daily skimming
-- **wikilinks** to related prior runs
-- an auto-updated **Index** + **Dashboard**
+`obsidian2date` researches Reddit, X, YouTube, HN, GitHub, Polymarket, and the
+web, then turns each run into durable, linked Obsidian notes. It is a public,
+MIT-licensed fork of [last30days-skill](https://github.com/mvanhorn/last30days-skill);
+the upstream research engine stays intact.
 
-MIT licensed. Upstream copyright retained. No tracking.
+Each Obsidian run produces:
 
-## Why this fork
+- a source-backed **run note**
+- a compact **briefing**
+- `[[wikilinks]]` to related runs
+- an updated **Index** and **Dashboard**
 
-last30days is excellent at *finding* what people are saying across Reddit, X,
-YouTube, HN, GitHub, Polymarket, and more. `obsidian2date` is opinionated about
-what happens next: the research should become **linked knowledge in your vault**,
-not a one-off chat dump.
+No tracking.
 
 ## Quick start
+
+Requires Python 3.12+.
 
 ```bash
 git clone https://github.com/pauleschwarz/obsidian2date.git
 cd obsidian2date
 
-# optional: point at your vault
-export OBSIDIAN2DATE_VAULT="$HOME/Desktop/brain-paul"
-
 python3 skills/last30days/scripts/last30days.py \
   "local LLM agent frameworks" \
-  --emit=obsidian
+  --emit=obsidian \
+  --obsidian-vault /path/to/your/vault
 ```
 
-If `OBSIDIAN2DATE_VAULT` / `LAST30DAYS_OBSIDIAN_VAULT` is unset, the exporter
-tries `~/Desktop/brain-paul` when that directory exists. Override anytime:
+Or configure the vault once:
 
 ```bash
-python3 skills/last30days/scripts/last30days.py "topic" \
-  --emit=obsidian \
-  --obsidian-vault /path/to/vault
+export OBSIDIAN2DATE_VAULT=/path/to/your/vault
+python3 skills/last30days/scripts/last30days.py "topic" --emit=obsidian
 ```
+
+The exporter also accepts `LAST30DAYS_OBSIDIAN_VAULT`. Existing notes are never
+overwritten; filename collisions get a numeric suffix.
 
 ## What gets written
 
@@ -60,15 +59,15 @@ Notes never overwrite. Same-day collisions get numeric suffixes.
 Related prior runs are linked via Obsidian `[[wikilinks]]` when token overlap
 is detected.
 
-## Agent skill entrypoints
+## Use it in an agent
 
-| Path | Role |
-| --- | --- |
-| [`skills/obsidian2date/SKILL.md`](skills/obsidian2date/SKILL.md) | Vault-first skill (this fork's default) |
-| [`skills/last30days/SKILL.md`](skills/last30days/SKILL.md) | Full upstream research skill / doctor / setup |
+Load [`skills/obsidian2date/SKILL.md`](skills/obsidian2date/SKILL.md) in your
+Agent Skills-compatible host. The upstream skill remains available at
+[`skills/last30days/SKILL.md`](skills/last30days/SKILL.md) for the original
+workflow and setup.
 
-Install whichever skill your harness loads (Claude Code marketplace, Codex,
-OpenClaw, plain checkout, etc.). For vault work, load `obsidian2date`.
+For a direct scripted run, use the CLI below. For key setup and all available
+backends, see [`CONFIGURATION.md`](CONFIGURATION.md).
 
 ## Upstream modes still work
 

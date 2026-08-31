@@ -1,24 +1,27 @@
 {
-  "name": "last30days-skill",
+  "name": "obsidian2date",
   "owner": {
-    "name": "Matt Van Horn",
-    "url": "https://github.com/mvanhorn"
+    "name": "Paul Schwarz",
+    "url": "https://github.com/pauleschwarz"
   },
-  "description": "Marketplace for the last30days research plugin",
+  "description": "Research current topics, then keep the useful evidence in linked Obsidian notes.",
   "plugins": [
     {
-      "name": "last30days",
-      "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and 5+ more sources. AI agent scores by upvotes, likes, and real money - not editors.",
-      "version": "3.21.1",
-      "category": "productivity",
+      "name": "obsidian2date",
+      "description": "Research any topic from the last 30 days across social sources and the web, then write durable Obsidian run notes, briefings, and related wikilinks.",
+      "version": "0.1.0",
+      "category": "research",
       "source": {
         "source": "url",
-        "url": "https://github.com/mvanhorn/last30days-skill.git"
+        "url": "https://github.com/pauleschwarz/obsidian2date.git"
       },
-      "homepage": "https://github.com/mvanhorn/last30days-skill",
+      "homepage": "https://github.com/pauleschwarz/obsidian2date",
       "keywords": [
-        "last30days",
-        "last 30 days"
+        "obsidian",
+        "research",
+        "briefing",
+        "vault",
+        "last30days"
       ]
     }
   ]

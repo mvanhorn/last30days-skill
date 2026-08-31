@@ -1,18 +1,26 @@
 {
-  "name": "last30days",
-  "version": "3.21.1",
-  "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and 5+ more sources. AI agent scores by upvotes, likes, and real money - not editors.",
+  "name": "obsidian2date",
+  "version": "0.1.0",
+  "description": "Research any topic from the last 30 days, then write durable Obsidian notes, briefings, and related wikilinks.",
   "author": {
-    "name": "Matt Van Horn",
-    "email": "mvanhorn@gmail.com",
-    "url": "https://github.com/mvanhorn"
+    "name": "Paul Schwarz",
+    "url": "https://github.com/pauleschwarz"
   },
-  "homepage": "https://github.com/mvanhorn/last30days-skill",
-  "repository": "https://github.com/mvanhorn/last30days-skill",
+  "homepage": "https://github.com/pauleschwarz/obsidian2date",
+  "repository": "https://github.com/pauleschwarz/obsidian2date",
   "license": "MIT",
   "keywords": [
+    "obsidian",
+    "research",
+    "briefing",
+    "vault",
+    "reddit",
+    "twitter",
+    "youtube",
+    "hacker-news",
+    "github",
     "last30days",
-    "last 30 days"
+    "multi-source"
   ],
   "skills": "./skills/"
 }

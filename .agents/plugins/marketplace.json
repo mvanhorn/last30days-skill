@@ -1,14 +1,14 @@
 {
-  "name": "last30days-skill",
+  "name": "obsidian2date",
   "interface": {
-    "displayName": "last30days"
+    "displayName": "obsidian2date"
   },
   "plugins": [
     {
-      "name": "last30days",
+      "name": "obsidian2date",
       "source": {
         "source": "url",
-        "url": "https://github.com/mvanhorn/last30days-skill.git"
+        "url": "https://github.com/pauleschwarz/obsidian2date.git"
       },
       "policy": {
         "installation": "AVAILABLE",

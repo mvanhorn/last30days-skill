@@ -1,7 +1,7 @@
 {
   "name": "obsidian2date",
   "version": "0.1.0",
-  "description": "Research any topic across Reddit, X, YouTube, HN, GitHub and more — then write durable Obsidian run notes, briefings, and related-note links. Fork of last30days.",
+  "description": "Research any topic from the last 30 days, then write durable Obsidian run notes, briefings, and related-note links.",
   "author": {
     "name": "Paul Schwarz",
     "url": "https://github.com/pauleschwarz"

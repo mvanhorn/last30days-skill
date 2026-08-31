@@ -1,7 +1,7 @@
 {
   "name": "obsidian2date",
   "version": "0.1.0",
-  "description": "Research any topic across Reddit, X, YouTube, HN, GitHub and more — then write durable Obsidian notes and briefings. Fork of last30days.",
+  "description": "Research any topic from the last 30 days, then write durable Obsidian notes and briefings.",
   "author": {
     "name": "Paul Schwarz",
     "url": "https://github.com/pauleschwarz"
@@ -25,7 +25,7 @@
   "interface": {
     "displayName": "obsidian2date",
     "shortDescription": "Research a topic and land it in Obsidian.",
-    "longDescription": "obsidian2date keeps the last30days multi-source research engine and adds vault-native export: durable run notes, briefings, related wikilinks, index and dashboard.",
+    "longDescription": "obsidian2date researches current topics, then adds vault-native export: durable run notes, briefings, related wikilinks, index and dashboard.",
     "developerName": "Paul Schwarz",
     "category": "Research",
     "capabilities": [

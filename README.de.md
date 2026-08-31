@@ -1,38 +1,28 @@
-# /last30days
+# /obsidian2date
 
 [English](README.md) | [Français](README.fr.md) | Deutsch | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
 <p align="center">
-  <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days - an AI agent-led search engine that searches people, not editors" />
+  <img src="media/pr-assets/last30days-ad.gif" width="720" alt="obsidian2date - aktuelle Recherche als verknuepfte Obsidian-Notizen" />
 </p>
 
-<p align="center">
-  <a href="https://github.com/mvanhorn/last30days-skill">
-    <img src="https://img.shields.io/badge/%231-Repository%20Of%20The%20Day-6f42c1?style=for-the-badge&logo=github&label=GITHUB%20TRENDING" alt="GitHub Trending #1 Repository Of The Day" />
-  </a>
-  <br/>
-  <a href="https://trendshift.io/repositories/21997" target="_blank">
-    <img src="https://trendshift.io/api/badge/repositories/21997" alt="mvanhorn/last30days-skill | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
-  </a>
-</p>
+**Recherche der letzten 30 Tage, als verknuepftes Wissen in Obsidian.**
 
-**Eine von einem KI-Agenten gesteuerte Suchmaschine, die nach Upvotes, Likes und echtem Geld gewichtet – nicht nach Redaktionen.**
+Dieses README beschreibt die aktuelle obsidian2date-Pipeline. Die Laufzeitspezifikation der Skill liegt in [skills/obsidian2date/SKILL.md](skills/obsidian2date/SKILL.md) und ist maßgeblich für das aktuelle Verhalten von Befehlen und Setup.
 
-Dieses README beschreibt die aktuelle v3-Pipeline. Die Laufzeitspezifikation der Skill liegt in [skills/last30days/SKILL.md](skills/last30days/SKILL.md) und ist maßgeblich für das aktuelle Verhalten von Befehlen und Setup.
-
-**Claude Code (empfohlen – automatische Updates über den Marketplace):**
+**Claude Code:**
 ```
-/plugin marketplace add mvanhorn/last30days-skill
-/plugin install last30days
+/plugin marketplace add pauleschwarz/obsidian2date
+/plugin install obsidian2date
 ```
 
 **Codex, Cursor, Copilot, Gemini CLI oder einer von 50+ [Agent Skills](https://agentskills.io)-Hosts:**
 ```
-npx skills add mvanhorn/last30days-skill -g
+npx skills add pauleschwarz/obsidian2date -g
 ```
 (`-g` installiert global für deinen Benutzer, also in allen Projekten verfügbar. Lass das Flag weg, wenn du die Installation auf ein Projekt beschränken willst.)
 
-Weitere Installationswege (claude.ai im Browser, OpenClaw, manuell) findest du unten im Abschnitt [Installation](#installation).
+Weitere Installationswege (claude.ai im Browser, OpenClaw, manuell) findest du unten im Abschnitt [Installation](#installation). Für den direkten Start aus einem Checkout siehe das englische [README](README.md).
 
 Null Konfiguration. Reddit, HN, Polymarket und GitHub funktionieren sofort. Führe die Skill einmal aus, und der Setup-Assistent schaltet X, YouTube, TikTok, arXiv, Techmeme und mehr in 30 Sekunden frei.
 

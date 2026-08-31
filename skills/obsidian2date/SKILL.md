@@ -48,29 +48,48 @@ metadata:
 
 # obsidian2date
 
-Fork of [last30days](https://github.com/mvanhorn/last30days-skill) focused on **durable Obsidian capture**.
+Research a topic from the last 30 days and keep the useful evidence in Obsidian.
+This is the vault-first entrypoint for the public
+[obsidian2date](https://github.com/pauleschwarz/obsidian2date) fork of
+[last30days](https://github.com/mvanhorn/last30days-skill).
 
-The research engine remains upstream-compatible under `skills/last30days/`.
-This skill is the vault-first entrypoint: research a topic, write notes, link related prior runs, and surface a short briefing.
+The upstream research engine remains under `skills/last30days/`.
 
-**Vault contract (read when writing to brain-paul):**
-`/Users/paulschwarz/Desktop/brain-paul/90_Quellen/obsidian2date/AGENT-DEKLARATION.md`
+## Run
 
-Default vault: `/Users/paulschwarz/Desktop/brain-paul`.
-Writes only under `90_Quellen/obsidian2date/{runs,briefings,Index,Dashboard}` — never into `00_Prime/`, `10_Projekte/`, or `70_Archiv/` without an explicit user order.
+1. Get the topic from the user's request.
+2. Resolve the vault from `OBSIDIAN2DATE_VAULT`, then
+   `LAST30DAYS_OBSIDIAN_VAULT`. If neither is set, ask the user for the vault
+   path before writing.
+3. Run the existing research engine with `--emit=obsidian` and the resolved
+   vault, preserving the engine's normal source and fallback behavior.
+4. Report the briefing path, run-note path, and any partial or unavailable
+   sources honestly.
 
-## Default command
-
-Resolve `SKILL_DIR` to the directory that contains **this** `SKILL.md`.
-The engine still lives next door:
+Example from the repository root:
 
 ```bash
-ENGINE="$SKILL_DIR/../last30days/scripts/last30days.py"
-python3 "$ENGINE" "<topic>" --emit=obsidian --obsidian-vault "$VAULT"
+python3 skills/last30days/scripts/last30days.py "topic" \
+  --emit=obsidian \
+  --obsidian-vault /path/to/your/vault
 ```
 
-If `OBSIDIAN2DATE_VAULT` (or `LAST30DAYS_OBSIDIAN_VAULT`) is set, `--obsidian-vault` can be omitted.
-If neither is set, the engine tries `~/Desktop/brain-paul` when that directory exists.
+## Vault contract
+
+Write only under `90_Quellen/obsidian2date/`:
+
+- `runs/` contains source-backed research notes.
+- `briefings/` contains compact briefings for daily review.
+- `Index.md` and `Dashboard.md` are maintained by the exporter.
+
+Never overwrite an existing note. The exporter adds a numeric suffix on
+filename collisions and links related prior runs with Obsidian `[[wikilinks]]`.
+Do not write API keys or other sensitive values into notes.
+
+## Upstream mode
+
+Use `skills/last30days/SKILL.md` for the original non-Obsidian workflow. Keep
+changes to the research engine additive and upstream-compatible.
 
 ## What gets written
 
