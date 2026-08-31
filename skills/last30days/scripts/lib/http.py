@@ -1,6 +1,7 @@
 """HTTP utilities for last30days skill (stdlib only)."""
 
 import json
+from collections import OrderedDict
 import math
 import os
 import random
@@ -1027,6 +1028,43 @@ def _sleep_reddit_429_retry() -> None:
     )
 
 
+# Run-scoped memo for keyless Reddit GETs. Subreddit listing partials, listing
+# RSS feeds, arctic supplements, and shreddit comment pages depend only on the
+# subreddit and sort, and the Reddit lane is dispatched with the raw topic for
+# every subquery, so a four-subquery run requested each of them four times.
+# Memoizing successful bodies for the life of one command turns ~184 requests
+# into ~50 on the measured 2026-08-31 run shape. Concurrent requesters for the
+# same URL wait on the first fetch instead of issuing their own (all four
+# subquery streams start at once, so a result-only cache would miss).
+REDDIT_KEYLESS_MEMO_MAX = 512
+_REDDIT_KEYLESS_MEMO: "OrderedDict[str, str]" = OrderedDict()
+_REDDIT_KEYLESS_INFLIGHT: Dict[str, threading.Event] = {}
+_REDDIT_KEYLESS_MEMO_LOCK = threading.Lock()
+
+
+def reset_reddit_keyless_memo() -> None:
+    """Forget memoized keyless Reddit bodies. Called once per command, and by tests."""
+    with _REDDIT_KEYLESS_MEMO_LOCK:
+        _REDDIT_KEYLESS_MEMO.clear()
+        _REDDIT_KEYLESS_INFLIGHT.clear()
+
+
+def _reddit_memo_get(url: str) -> Optional[str]:
+    with _REDDIT_KEYLESS_MEMO_LOCK:
+        text = _REDDIT_KEYLESS_MEMO.get(url)
+        if text is not None:
+            _REDDIT_KEYLESS_MEMO.move_to_end(url)
+        return text
+
+
+def _reddit_memo_put(url: str, text: str) -> None:
+    with _REDDIT_KEYLESS_MEMO_LOCK:
+        _REDDIT_KEYLESS_MEMO[url] = text
+        _REDDIT_KEYLESS_MEMO.move_to_end(url)
+        while len(_REDDIT_KEYLESS_MEMO) > REDDIT_KEYLESS_MEMO_MAX:
+            _REDDIT_KEYLESS_MEMO.popitem(last=False)
+
+
 def reddit_keyless_get_text(
     url: str,
     timeout: int = DEFAULT_TIMEOUT,
@@ -1034,15 +1072,44 @@ def reddit_keyless_get_text(
     accept: str = "*/*",
     headers: Optional[Dict[str, str]] = None,
 ) -> Optional[str]:
-    """get_text for the keyless Reddit tiers, throttled by a shared limiter.
+    """get_text for the keyless Reddit tiers, memoized per run and throttled.
 
-    Same contract as :func:`get_text` (returns None on any failure) but spaces
-    requests via :data:`REDDIT_KEYLESS_LIMITER` so a broad multi-query run does
-    not stampede Reddit's keyless endpoints and trip blocks.
+    Same contract as :func:`get_text` (returns None on any failure) but a URL
+    already fetched this command is served from the run memo without spending
+    a limiter token, concurrent requesters for one URL share the in-flight
+    fetch, and cold fetches are spaced via :data:`REDDIT_KEYLESS_LIMITER` so a
+    broad multi-query run does not stampede Reddit's keyless endpoints.
     """
-    _sync_reddit_keyless_rate()
-    REDDIT_KEYLESS_LIMITER.acquire()
-    return get_text(url, timeout=timeout, retries=retries, accept=accept, headers=headers)
+    cached = _reddit_memo_get(url)
+    if cached is not None:
+        return cached
+    with _REDDIT_KEYLESS_MEMO_LOCK:
+        cached = _REDDIT_KEYLESS_MEMO.get(url)
+        if cached is not None:
+            return cached
+        gate = _REDDIT_KEYLESS_INFLIGHT.get(url)
+        owner = gate is None
+        if owner:
+            gate = threading.Event()
+            _REDDIT_KEYLESS_INFLIGHT[url] = gate
+    if not owner:
+        gate.wait(timeout=timeout * max(1, retries) + 10)
+        cached = _reddit_memo_get(url)
+        if cached is not None:
+            return cached
+        # The owner's fetch failed or timed out; fall through to our own try.
+    try:
+        _sync_reddit_keyless_rate()
+        REDDIT_KEYLESS_LIMITER.acquire()
+        text = get_text(url, timeout=timeout, retries=retries, accept=accept, headers=headers)
+        if text is not None:
+            _reddit_memo_put(url, text)
+        return text
+    finally:
+        if owner:
+            with _REDDIT_KEYLESS_MEMO_LOCK:
+                _REDDIT_KEYLESS_INFLIGHT.pop(url, None)
+            gate.set()
 
 
 def reddit_keyless_get_text_retry_429(

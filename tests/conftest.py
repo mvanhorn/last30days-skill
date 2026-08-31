@@ -46,3 +46,12 @@ def _reset_probe_caches():
     health.clear_dependency_probe_cache()
     xurl_x.clear_availability_cache()
     grok_x.clear_availability_cache()
+
+@pytest.fixture(autouse=True)
+def _reset_reddit_keyless_memo():
+    """The keyless Reddit memo lives for one command; tests are their own commands."""
+    from lib import http as _http
+
+    _http.reset_reddit_keyless_memo()
+    yield
+    _http.reset_reddit_keyless_memo()

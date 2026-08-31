@@ -2914,6 +2914,9 @@ def _main(
         )
         return 2
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
+    # One memo per command: comparison mode runs pipeline.run per entity in
+    # parallel, so the reset must not live inside the pipeline.
+    http.reset_reddit_keyless_memo()
     resolved_corpus_dirs = corpus.resolve_directories(
         args.corpus, config.get("LAST30DAYS_CORPUS_DIRS")
     )
