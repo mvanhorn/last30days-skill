@@ -205,6 +205,11 @@ def _fetch_one_with_status(
         return [], str(e)
 
 
+def _result_timeout(batch_size: int) -> float:
+    """Per-future wait: the fetch's own timeout plus the bucket's queue depth."""
+    return LISTING_TIMEOUT + 5 + http.reddit_keyless_wait_allowance(batch_size)
+
+
 def fetch_listings(
     subreddits: List[str],
     depth: str = "default",
@@ -233,7 +238,7 @@ def fetch_listings(
                    for sub, sort in jobs}
         for future in futures:
             try:
-                all_posts.extend(future.result(timeout=LISTING_TIMEOUT + 5))
+                all_posts.extend(future.result(timeout=_result_timeout(len(jobs))))
             except (Exception, FuturesTimeoutError) as e:
                 _log(f"listing future failed: {e}")
 
@@ -281,7 +286,7 @@ def fetch_discovery_listings(
         }
         for future, (subreddit, sort) in futures.items():
             try:
-                fetched, error = future.result(timeout=LISTING_TIMEOUT + 5)
+                fetched, error = future.result(timeout=_result_timeout(len(jobs)))
             except (Exception, FuturesTimeoutError) as exc:
                 errors.append(f"r/{subreddit} {sort}: {exc}")
                 continue

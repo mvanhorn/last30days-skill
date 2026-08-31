@@ -1,0 +1,1 @@
+Keyless Reddit RSS and listing fetches now size their per-future timeouts from the shared bucket's queue depth instead of a fixed 20 seconds. At 1 req/s with four subquery streams sharing the bucket, the fixed timeout expired while a fetch was still waiting for its token and the feed was silently dropped.

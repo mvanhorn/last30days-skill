@@ -182,6 +182,11 @@ def _fetch_feed(url: str, query: str) -> List[Dict[str, Any]]:
         return []
 
 
+def _result_timeout(batch_size: int) -> float:
+    """Per-future wait: the fetch's own timeout plus the bucket's queue depth."""
+    return FEED_TIMEOUT + 5 + http.reddit_keyless_wait_allowance(batch_size)
+
+
 def search_rss(
     query: str,
     depth: str = "default",
@@ -215,7 +220,7 @@ def search_rss(
         }
         for future in futures:
             try:
-                all_posts.extend(future.result(timeout=FEED_TIMEOUT + 5))
+                all_posts.extend(future.result(timeout=_result_timeout(len(urls))))
             except (Exception, FuturesTimeoutError) as e:
                 _log(f"feed future failed: {e}")
 

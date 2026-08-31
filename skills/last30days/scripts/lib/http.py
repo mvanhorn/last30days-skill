@@ -949,22 +949,40 @@ class RateLimiter:
         self._tokens = float(self.capacity)
         self._last = time.monotonic()
         self._lock = threading.Lock()
+        # Threads currently blocked in acquire(). Callers that wait on a batch
+        # of throttled futures size their timeouts from this queue depth.
+        self._waiting = 0
+
+    @property
+    def waiting(self) -> int:
+        """Threads currently blocked in :meth:`acquire`."""
+        with self._lock:
+            return self._waiting
 
     def acquire(self) -> None:
         """Consume one token, blocking only when the bucket is empty."""
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                # Clamp elapsed to >= 0: a backward clock reading must never
-                # drive tokens negative (which would spin this loop forever).
-                elapsed = max(0.0, now - self._last)
-                self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
-                self._last = now
-                if self._tokens >= 1.0:
-                    self._tokens -= 1.0
-                    return
-                wait = (1.0 - self._tokens) / self.rate
-            time.sleep(wait)
+        queued = False
+        try:
+            while True:
+                with self._lock:
+                    now = time.monotonic()
+                    # Clamp elapsed to >= 0: a backward clock reading must never
+                    # drive tokens negative (which would spin this loop forever).
+                    elapsed = max(0.0, now - self._last)
+                    self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
+                    self._last = now
+                    if self._tokens >= 1.0:
+                        self._tokens -= 1.0
+                        return
+                    if not queued:
+                        self._waiting += 1
+                        queued = True
+                    wait = (1.0 - self._tokens) / self.rate
+                time.sleep(wait)
+        finally:
+            if queued:
+                with self._lock:
+                    self._waiting -= 1
 
 
 # Shared across all keyless Reddit tiers (RSS, listing, shreddit) so their
@@ -1040,6 +1058,28 @@ REDDIT_KEYLESS_MEMO_MAX = 512
 _REDDIT_KEYLESS_MEMO: "OrderedDict[str, str]" = OrderedDict()
 _REDDIT_KEYLESS_INFLIGHT: Dict[str, threading.Event] = {}
 _REDDIT_KEYLESS_MEMO_LOCK = threading.Lock()
+
+
+# Queue depth only counts threads already blocked in acquire(). The other
+# lanes' workers submit their requests as they go, so a batch's last fetch can
+# start well after the depth seen at wait time. This flat allowance covers
+# that (the 2026-08-31 smoke lost three feeds at ~35s with the depth term
+# alone; a full run's ~50 distinct keyless requests take ~50s at 1 req/s).
+REDDIT_KEYLESS_CONTENTION_SECONDS = 45.0
+
+
+def reddit_keyless_wait_allowance(batch_size: int) -> float:
+    """Seconds a batch of *batch_size* throttled fetches may spend waiting for tokens.
+
+    Every keyless Reddit lane in a run shares one bucket, so a lane's futures
+    can sit behind other lanes' requests before their own fetch starts. Size
+    per-future result timeouts as ``base + this`` instead of a fixed number;
+    at 1 req/s a fixed 20-second timeout expired on real runs while the fetch
+    was still queued (issue #985 follow-up).
+    """
+    limiter = REDDIT_KEYLESS_LIMITER
+    rate = limiter.rate if limiter.rate > 0 else 1.0
+    return (limiter.waiting + max(0, batch_size)) / rate + REDDIT_KEYLESS_CONTENTION_SECONDS
 
 
 def reset_reddit_keyless_memo() -> None:
