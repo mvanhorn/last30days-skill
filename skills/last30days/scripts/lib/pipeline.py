@@ -77,7 +77,7 @@ from . import (
     youtube_yt,
 )
 from .cluster import cluster_candidates
-from .fusion import weighted_rrf
+from .fusion import collapse_duplicate_urls, weighted_rrf
 
 DISCOVERY_SOURCES = ("reddit", "hackernews", "digg", "x")
 _DISCOVERY_GENERIC_DOMAIN_TERMS = {
@@ -2990,6 +2990,10 @@ def _finalize_items_by_source(
     finalized = {}
     for source, items in items_by_source_raw.items():
         items = sorted(items, key=lambda item: item.local_rank_score or 0.0, reverse=True)
+        # Same thread from two subquery streams: fold the enriched copy into
+        # the first before the text-similarity dedupe, which would otherwise
+        # keep whichever copy ranked higher and drop its comments.
+        items = collapse_duplicate_urls(items)
         items = dedupe.dedupe_items(items)
         enrichment_request = {
             "source": source,

@@ -47,6 +47,67 @@ def candidate_key(item: schema.SourceItem) -> str:
     return f"{item.source}:{item.item_id}"
 
 
+# Enrichment that one copy of a thread may carry and another may lack. When
+# the same URL arrives from two subquery streams (each stream enriches its own
+# top-N), the copy that won a comment slot must survive de-duplication.
+_ENRICHMENT_KEYS = (
+    "top_comments",
+    "comment_insights",
+    "transcript_highlights",
+    "transcript_snippet",
+    "transcript",
+)
+
+
+def merge_source_items(existing: schema.SourceItem, incoming: schema.SourceItem) -> schema.SourceItem:
+    """Fold ``incoming``'s enrichment and counts into ``existing`` (same thread).
+
+    Keeps the richer value per field: an enrichment list the existing copy
+    lacks (or a longer one), the larger numeric engagement counters, and the
+    longer body/snippet. Mutates and returns ``existing``.
+    """
+    for key in _ENRICHMENT_KEYS:
+        theirs = incoming.metadata.get(key)
+        if not theirs:
+            continue
+        mine = existing.metadata.get(key)
+        if not mine or (isinstance(theirs, list) and isinstance(mine, list) and len(theirs) > len(mine)):
+            existing.metadata[key] = theirs
+    for field_name, value in (incoming.engagement or {}).items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            if existing.engagement.get(field_name) is None and value is not None:
+                existing.engagement[field_name] = value
+            continue
+        current = existing.engagement.get(field_name)
+        if not isinstance(current, (int, float)) or isinstance(current, bool) or value > current:
+            existing.engagement[field_name] = value
+    if len(incoming.body or "") > len(existing.body or ""):
+        existing.body = incoming.body
+    if len(incoming.snippet or "") > len(existing.snippet or ""):
+        existing.snippet = incoming.snippet
+    return existing
+
+
+def collapse_duplicate_urls(items: list[schema.SourceItem]) -> list[schema.SourceItem]:
+    """Collapse same-source, same-URL copies, keeping order and merging enrichment.
+
+    Per-stream item ids (``R1``, ``X1``) collide across subqueries, so identity
+    is the normalized URL, not the id. The first occurrence stays in place and
+    absorbs later copies via :func:`merge_source_items`.
+    """
+    first_by_key: dict[tuple[str, str], schema.SourceItem] = {}
+    kept: list[schema.SourceItem] = []
+    for item in items:
+        key = (item.source, candidate_key(item))
+        existing = first_by_key.get(key)
+        if existing is None:
+            first_by_key[key] = item
+            kept.append(item)
+        else:
+            merge_source_items(existing, item)
+    return kept
+
+
 _DIVERSITY_RELEVANCE_THRESHOLD = 0.25
 
 # Per-author cap: no single author/handle should dominate the pool.
@@ -165,8 +226,10 @@ def weighted_rrf(
     """
     subqueries = {subquery.label: subquery for subquery in plan.subqueries}
     candidates: dict[str, schema.Candidate] = {}
-    # Track (source, item_id) pairs already attached to each candidate for O(1) dedup.
-    seen_source_items: dict[str, set[tuple[str, str]]] = {}
+    # Track source items already attached to each candidate, keyed by
+    # (source, normalized URL): per-stream ids collide across subqueries, and
+    # a repeat copy may carry enrichment the first one lacks.
+    seen_source_items: dict[str, dict[tuple[str, str], schema.SourceItem]] = {}
 
     for (label, source), items in streams.items():
         subquery = subqueries[label]
@@ -210,7 +273,7 @@ def weighted_rrf(
                     source_items=[item],
                     metadata=candidate_metadata,
                 )
-                seen_source_items[key] = {(item.source, item.item_id)}
+                seen_source_items[key] = {(item.source, candidate_key(item)): item}
                 continue
 
             candidate = candidates[key]
@@ -236,10 +299,13 @@ def weighted_rrf(
                 candidate.subquery_labels.append(label)
             if item.source not in candidate.sources:
                 candidate.sources.append(item.source)
-            source_item_key = (item.source, item.item_id)
-            if source_item_key not in seen_source_items[key]:
-                seen_source_items[key].add(source_item_key)
+            source_item_key = (item.source, candidate_key(item))
+            existing_item = seen_source_items[key].get(source_item_key)
+            if existing_item is None:
+                seen_source_items[key][source_item_key] = item
                 candidate.source_items.append(item)
+            else:
+                merge_source_items(existing_item, item)
             candidate.metadata.setdefault("provenance", []).append(
                 {
                     "source": source,

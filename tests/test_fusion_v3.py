@@ -518,3 +518,79 @@ class OutOfWindowSortTests(unittest.TestCase):
 
         ordered = sorted([stale_with_high_confidence, fresh], key=fusion._candidate_sort_key)
         self.assertEqual(["fresh", "stale_high"], [c.candidate_id for c in ordered])
+
+
+def _comments(n: int) -> list[dict]:
+    return [{"score": 100 - i, "author": f"u{i}", "excerpt": f"comment {i}"} for i in range(n)]
+
+
+class FusionEnrichedCopyTests(unittest.TestCase):
+    """Same thread, two subquery streams, per-stream ids collide (R1 / R1):
+    the candidate must keep the copy that carries the enrichment."""
+
+    def _plan(self):
+        return schema.QueryPlan(
+            intent="breaking_news",
+            freshness_mode="strict_recent",
+            cluster_mode="story",
+            raw_topic="kanye west",
+            subqueries=[
+                schema.SubQuery(label="primary", search_query="kanye west", ranking_query="kanye west", sources=["reddit"], weight=1.0),
+                schema.SubQuery(label="russia", search_query="kanye russia", ranking_query="kanye russia", sources=["reddit"], weight=0.8),
+            ],
+            source_weights={},
+        )
+
+    def test_enriched_second_copy_is_kept(self):
+        url = "https://www.reddit.com/r/Music/comments/1vy0ilk/kanye_wests_soldout_russia/"
+        bare = make_item("R1", "reddit", url, "Kanye West's Russia shows canceled", 0.6)
+        rich = make_item("R1", "reddit", url, "Kanye West's Russia shows canceled", 0.3)
+        rich.metadata["top_comments"] = _comments(10)
+        rich.metadata["comment_insights"] = ["Putin doesn't care"]
+        rich.engagement = {"score": 20859, "num_comments": 741}
+        bare.engagement = {"score": 18941, "num_comments": 713}
+        streams = {("primary", "reddit"): [bare], ("russia", "reddit"): [rich]}
+
+        candidates = fusion.weighted_rrf(streams, self._plan(), pool_limit=10)
+
+        self.assertEqual(1, len(candidates))
+        cand = candidates[0]
+        self.assertEqual(1, len(cand.source_items))
+        self.assertEqual(10, len(cand.source_items[0].metadata["top_comments"]))
+        self.assertEqual(["Putin doesn't care"], cand.source_items[0].metadata["comment_insights"])
+        self.assertEqual(20859, cand.source_items[0].engagement["score"])
+        self.assertEqual({"primary:reddit", "russia:reddit"}, set(cand.native_ranks))
+
+    def test_enriched_first_copy_is_retained(self):
+        url = "https://www.reddit.com/r/Music/comments/1vy0ilk/kanye_wests_soldout_russia/"
+        rich = make_item("R1", "reddit", url, "Kanye West's Russia shows canceled", 0.6)
+        rich.metadata["top_comments"] = _comments(4)
+        bare = make_item("R1", "reddit", url, "Kanye West's Russia shows canceled", 0.3)
+        streams = {("primary", "reddit"): [rich], ("russia", "reddit"): [bare]}
+
+        candidates = fusion.weighted_rrf(streams, self._plan(), pool_limit=10)
+
+        self.assertEqual(4, len(candidates[0].source_items[0].metadata["top_comments"]))
+
+    def test_distinct_urls_with_colliding_ids_stay_separate(self):
+        a = make_item("R1", "reddit", "https://www.reddit.com/r/Kanye/comments/aaa/one/", "Thread one", 0.6)
+        b = make_item("R1", "reddit", "https://www.reddit.com/r/Kanye/comments/bbb/two/", "Thread two", 0.5)
+        streams = {("primary", "reddit"): [a], ("russia", "reddit"): [b]}
+
+        candidates = fusion.weighted_rrf(streams, self._plan(), pool_limit=10)
+
+        self.assertEqual(2, len(candidates))
+
+    def test_collapse_duplicate_urls_merges_enrichment(self):
+        url = "https://www.reddit.com/r/Music/comments/1vy0ilk/kanye/"
+        bare = make_item("R1", "reddit", url, "Kanye", 0.6)
+        rich = make_item("R1", "reddit", url, "Kanye", 0.3)
+        rich.metadata["top_comments"] = _comments(3)
+        other = make_item("R2", "reddit", "https://www.reddit.com/r/Kanye/comments/zzz/other/", "Other", 0.4)
+
+        out = fusion.collapse_duplicate_urls([bare, rich, other])
+
+        self.assertEqual(2, len(out))
+        self.assertIs(out[0], bare)
+        self.assertEqual(3, len(out[0].metadata["top_comments"]))
+        self.assertIs(out[1], other)
