@@ -341,6 +341,11 @@ class RetrievalBundle:
     errors_by_source: dict[str, str] = field(default_factory=dict)
     source_status: dict[str, SourceOutcome] = field(default_factory=dict)
     artifacts: dict[str, Any] = field(default_factory=dict)
+    # Swallowed sub-request failures on a source that still delivered items.
+    # These never change the outcome state (the source succeeded); they ride
+    # along as ``SourceOutcome.detail`` so ``doctor --postmortem`` can show
+    # what a healthy-looking run lost without branding the source partial.
+    detail_by_source: dict[str, str] = field(default_factory=dict)
 
     def mark_attempted(self, source: str) -> None:
         """Register a planned source before its first retrieval starts."""
@@ -379,6 +384,24 @@ class RetrievalBundle:
             fix_hint="doctor",
         )
 
+    def record_detail(self, source: str, detail: str) -> None:
+        """Note a swallowed lane failure on a source that still delivered items.
+
+        Unlike :meth:`record_failure`, this never changes the outcome state and
+        sets no ``fix_hint``. The note is merged into the ``ok`` outcome on the
+        next :meth:`add_items` and survives later clean subqueries.
+        """
+        detail = " ".join((detail or "").split())
+        if not detail:
+            return
+        existing = self.detail_by_source.get(source)
+        if existing and detail not in existing:
+            detail = f"{existing}; {detail}"
+        self.detail_by_source[source] = detail
+        current = self.source_status.get(source)
+        if current and current.state == health.OK:
+            current.detail = detail
+
     def add_items(self, label: str, source: str, items: list[SourceItem]) -> None:
         """Atomically append items to both items_by_source_and_query and items_by_source."""
         self.items_by_source_and_query.setdefault((label, source), []).extend(items)
@@ -387,6 +410,12 @@ class RetrievalBundle:
         state: RunOutcomeState = health.OK if items else NO_RESULTS
         detail = None
         fix_hint = None
+        if previous and previous.state == health.OK and not items:
+            # A later empty subquery must not downgrade a source that already
+            # delivered items to no-results.
+            state = health.OK
+        if state == health.OK:
+            detail = self.detail_by_source.get(source)
         if previous and previous.state not in (health.OK, NO_RESULTS):
             # Preserve AUTH_FAILED state even when items are added: it's an
             # actionable signal (re-login needed) that shouldn't be downgraded

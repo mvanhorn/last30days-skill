@@ -2465,6 +2465,9 @@ def run(
                     outcome_note["detail"],
                     attempted=outcome_note.get("attempted", True),
                 )
+            if isinstance(artifact, dict) and artifact.get("_source_outcome_detail"):
+                artifact = dict(artifact)
+                bundle.record_detail(source, artifact.pop("_source_outcome_detail"))
             normalized = _normalize_score_dedupe(
                 source, raw_items, from_date, to_date,
                 freshness_mode=plan.freshness_mode,
@@ -3375,6 +3378,35 @@ def _legacy_artifact_outcome(
     return None
 
 
+def _summarize_lane_failures(failures: list[http.HTTPError]) -> str:
+    """One line naming what a source lost to swallowed sub-request failures.
+
+    ``"3 sub-requests rate-limited (HTTP 429); 1 sub-request blocked (HTTP 403)"``.
+    Used as ``SourceOutcome.detail`` on a source that still delivered items,
+    so the loss is visible to ``doctor --postmortem`` without branding the
+    source partial (issue #985 wording; PR #959 semantics).
+    """
+    counts: dict[tuple[str, int | None], int] = {}
+    for failure in failures:
+        state = getattr(failure, "outcome_state", None) or health.ERROR
+        code = getattr(failure, "status_code", None)
+        counts[(state, code)] = counts.get((state, code), 0) + 1
+    labels = {
+        health.RATE_LIMITED: "rate-limited",
+        health.AUTH_FAILED: "blocked",
+        health.TIMEOUT: "timed out",
+        health.UNREACHABLE: "unreachable",
+        health.SCHEMA_DRIFT: "returned an unexpected shape",
+    }
+    parts = []
+    for (state, code), n in sorted(counts.items(), key=lambda kv: -kv[1]):
+        noun = "sub-request" if n == 1 else "sub-requests"
+        label = labels.get(state, "failed")
+        suffix = f" (HTTP {code})" if code else ""
+        parts.append(f"{n} {noun} {label}{suffix}")
+    return "; ".join(parts)
+
+
 def _resolve_stream_outcome(
     source: str,
     artifact: Any,
@@ -3992,6 +4024,7 @@ def _retry_thin_sources(
             skip_amazon_enrichment=True,
         )
         outcome_note = artifact.get("_source_outcome") if isinstance(artifact, dict) else None
+        detail_note = artifact.get("_source_outcome_detail") if isinstance(artifact, dict) else None
         normalized = _normalize_score_dedupe(
             source,
             raw_items,
@@ -4008,8 +4041,8 @@ def _retry_thin_sources(
             defer_relevance_prune=(source == "x"),
         )
         if source == "jobs":
-            return source, normalized, outcome_note
-        return source, normalized[:settings["per_stream_limit"]], outcome_note
+            return source, normalized, outcome_note, detail_note
+        return source, normalized[:settings["per_stream_limit"]], outcome_note, detail_note
 
     retryable = [s for s in thin_sources if s not in rate_limited_sources]
 
@@ -4019,7 +4052,7 @@ def _retry_thin_sources(
         for future in as_completed(futures):
             source = futures[future]
             try:
-                source, normalized, outcome_note = future.result()
+                source, normalized, outcome_note, detail_note = future.result()
                 if outcome_note:
                     bundle.record_failure(
                         source,
@@ -4027,6 +4060,8 @@ def _retry_thin_sources(
                         outcome_note["detail"],
                         attempted=outcome_note.get("attempted", True),
                     )
+                if detail_note:
+                    bundle.record_detail(source, detail_note)
                 existing_urls = {item.url for item in bundle.items_by_source.get(source, []) if item.url}
                 new_items = [item for item in normalized if item.url not in existing_urls]
 
@@ -4159,10 +4194,22 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
         # or when the impl attached its own explicit outcome artifact (e.g.
         # "primary failed; fallback returned N items"). A swallowed lane
         # failure must not brand a successful source auth-failed/partial.
-        explicit = isinstance(artifact, dict) and bool(artifact.get("_source_outcome"))
+        # An adapter-declared outcome (typed ``_source_outcome`` or a legacy
+        # ``{"error": ...}`` / per-leg artifact) is explicit and always
+        # brands the source, even with items; only failures the adapter
+        # swallowed into the capture sink are demoted to detail.
+        explicit = isinstance(artifact, dict) and (
+            bool(artifact.get("_source_outcome"))
+            or _legacy_artifact_outcome(str(kwargs.get("source") or ""), artifact) is not None
+        )
         if explicit or not items:
             artifact = dict(artifact or {})
             artifact["_source_outcome"] = outcome_note
+        elif failures:
+            # The source delivered items. Keep it ``ok`` but carry what the
+            # swallowed sub-requests lost, so doctor can still show it.
+            artifact = dict(artifact or {})
+            artifact["_source_outcome_detail"] = _summarize_lane_failures(failures)
     if module_backed:
         http.fixture_source_record(fixture_request, [items, artifact])
     return items, artifact

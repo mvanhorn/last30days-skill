@@ -559,3 +559,30 @@ def test_captured_failure_selection_prefers_most_specific():
     for failures in ([auth, rate], [rate, auth]):
         outcome = pipeline._resolve_stream_outcome("x", None, failures)
         assert outcome["state"] == schema.AUTH_FAILED
+
+
+def test_bundle_keeps_ok_with_lane_detail_across_subqueries():
+    """A swallowed lane failure on a source that delivered items stays ``ok``
+    and carries the loss as detail; a later clean subquery keeps that detail."""
+    item = schema.SourceItem(
+        item_id="r1",
+        source="reddit",
+        title="A thread",
+        body="body",
+        url="https://www.reddit.com/r/test/comments/abc/",
+    )
+    bundle = schema.RetrievalBundle()
+    bundle.mark_attempted("reddit")
+    bundle.record_detail("reddit", "3 sub-requests rate-limited (HTTP 429)")
+    bundle.add_items("primary", "reddit", [item])
+
+    outcome = bundle.source_status["reddit"]
+    assert outcome.state == health.OK
+    assert outcome.items_returned == 1
+    assert outcome.detail == "3 sub-requests rate-limited (HTTP 429)"
+    assert outcome.fix_hint is None
+
+    bundle.add_items("secondary", "reddit", [])
+    outcome = bundle.source_status["reddit"]
+    assert outcome.state == health.OK
+    assert outcome.detail == "3 sub-requests rate-limited (HTTP 429)"

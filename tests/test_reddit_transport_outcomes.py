@@ -185,3 +185,69 @@ def test_swallowed_lane_403_still_brands_when_no_items_returned():
 
     assert not items
     assert artifact.get("_source_outcome", {}).get("state") == schema.AUTH_FAILED
+
+
+def test_items_delivered_with_swallowed_lane_failure_carry_detail():
+    """A source that delivered items keeps ``ok`` but records what was lost, so
+    ``doctor --postmortem`` can still show the swallowed sub-request failures."""
+    lane_error = http.HTTPError(
+        "https://www.reddit.com/svc/shreddit/community-more-posts/top/?name=tea",
+        status_code=429,
+        body=b"Too Many Requests",
+    )
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="matcha tea trends",
+        ranking_query="matcha tea trends",
+        sources=["reddit"],
+    )
+    with mock.patch.object(
+        pipeline,
+        "_retrieve_stream_impl",
+        return_value=([{"url": "https://www.reddit.com/r/tea/comments/abc/"}], {}),
+    ), mock.patch.object(http, "capture_failures") as cf, mock.patch.object(
+        http, "fixture_module_capture"
+    ):
+        cf.return_value.__enter__.return_value = [lane_error, lane_error]
+        cf.return_value.__exit__.return_value = False
+        items, artifact = pipeline._retrieve_stream(
+            source="reddit",
+            topic="matcha tea trends",
+            subquery=subquery,
+            config={},
+            depth="quick",
+            date_range=("2026-07-08", "2026-08-08"),
+            runtime=schema.ProviderRuntime("local", "test-planner", "test-reranker"),
+            mock=False,
+            web_backend="auto",
+        )
+
+    assert items
+    assert "_source_outcome" not in artifact
+    detail = artifact.get("_source_outcome_detail") or ""
+    assert "2 sub-requests" in detail
+    assert "429" in detail
+
+
+def test_postmortem_shows_lane_detail_on_succeeded_source():
+    outcome = schema.SourceOutcome(
+        source="reddit",
+        state="ok",
+        items_returned=36,
+        attempted=True,
+        detail="3 sub-requests rate-limited (HTTP 429)",
+    )
+    pm = {
+        "engine_version": "test",
+        "mode": "postmortem",
+        "present": True,
+        "topic": "kanye west",
+        "at": outcome.at,
+        "outcomes": {"reddit": schema.to_dict(outcome)},
+    }
+
+    text = doctor.render_postmortem_text(pm)
+
+    assert "Failed:" not in text
+    assert "Partial:" not in text
+    assert "Succeeded: reddit (36 items; 3 sub-requests rate-limited (HTTP 429))" in text

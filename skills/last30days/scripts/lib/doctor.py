@@ -1410,9 +1410,15 @@ def render_postmortem_text(pm: Dict[str, Any]) -> str:
                 lines.append(f"    fix: {outcome['fix_hint']}")
     if succeeded:
         lines.append("")
-        names = ", ".join(
-            f"{s} ({o.get('items_returned') or 0})" for s, o in succeeded
-        )
+        def _succeeded_label(source: str, outcome: Dict[str, Any]) -> str:
+            count = outcome.get("items_returned") or 0
+            detail = outcome.get("detail")
+            if detail:
+                noun = "item" if count == 1 else "items"
+                return f"{source} ({count} {noun}; {detail})"
+            return f"{source} ({count})"
+
+        names = ", ".join(_succeeded_label(s, o) for s, o in succeeded)
         lines.append(f"Succeeded: {names}")
     if skipped:
         lines.append("")
