@@ -251,3 +251,25 @@ def test_postmortem_shows_lane_detail_on_succeeded_source():
     assert "Failed:" not in text
     assert "Partial:" not in text
     assert "Succeeded: reddit (36 items; 3 sub-requests rate-limited (HTTP 429))" in text
+
+
+def test_swallowed_429s_flag_the_source_as_rate_limited_for_thin_retry():
+    lane_error = http.HTTPError(
+        "https://www.reddit.com/search.rss", status_code=429, body=b"Too Many Requests"
+    )
+    subquery = schema.SubQuery(
+        label="primary", search_query="matcha", ranking_query="matcha", sources=["reddit"],
+    )
+    with mock.patch.object(
+        pipeline, "_retrieve_stream_impl",
+        return_value=([{"url": "https://www.reddit.com/r/tea/comments/abc/"}], {}),
+    ), mock.patch.object(http, "capture_failures") as cf, mock.patch.object(http, "fixture_module_capture"):
+        cf.return_value.__enter__.return_value = [lane_error]
+        cf.return_value.__exit__.return_value = False
+        _items, artifact = pipeline._retrieve_stream(
+            source="reddit", topic="matcha", subquery=subquery, config={}, depth="quick",
+            date_range=("2026-07-08", "2026-08-08"),
+            runtime=schema.ProviderRuntime("local", "test-planner", "test-reranker"),
+            mock=False, web_backend="auto",
+        )
+    assert artifact["_source_outcome_detail_state"] == schema.RATE_LIMITED

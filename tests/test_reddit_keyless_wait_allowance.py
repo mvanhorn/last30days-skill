@@ -34,20 +34,31 @@ def test_limiter_reports_waiting_threads():
     assert limiter.waiting == 0
 
 
-def test_wait_allowance_scales_with_batch_and_queue():
+def test_wait_allowance_scales_with_batch_and_queue(monkeypatch):
     limiter = http.RateLimiter(rate_per_sec=1.0, burst=2)
+    monkeypatch.delenv(http.REDDIT_KEYLESS_RATE_ENV, raising=False)
     with mock.patch.object(http, "REDDIT_KEYLESS_LIMITER", limiter):
         pad = http.REDDIT_KEYLESS_CONTENTION_SECONDS
         assert http.reddit_keyless_wait_allowance(13) == 13.0 + pad
         limiter._waiting = 5
         assert http.reddit_keyless_wait_allowance(13) == 18.0 + pad
-        limiter.rate = 2.0
+        # The allowance syncs the configured rate before computing.
+        monkeypatch.setenv(http.REDDIT_KEYLESS_RATE_ENV, "2")
         assert http.reddit_keyless_wait_allowance(13) == 9.0 + pad
 
 
-def test_rss_and_listing_result_timeouts_include_the_allowance():
+def test_rss_and_listing_result_timeouts_include_the_allowance(monkeypatch):
     limiter = http.RateLimiter(rate_per_sec=1.0, burst=2)
+    monkeypatch.delenv(http.REDDIT_KEYLESS_RATE_ENV, raising=False)
     with mock.patch.object(http, "REDDIT_KEYLESS_LIMITER", limiter):
         pad = http.REDDIT_KEYLESS_CONTENTION_SECONDS
         assert reddit_rss._result_timeout(13) == reddit_rss.FEED_TIMEOUT + 5 + 13.0 + pad
         assert reddit_listing._result_timeout(20) == reddit_listing.LISTING_TIMEOUT + 5 + 20.0 + pad
+
+
+def test_allowance_reflects_a_process_env_rate_override(monkeypatch):
+    limiter = http.RateLimiter(rate_per_sec=1.0, burst=2)
+    with mock.patch.object(http, "REDDIT_KEYLESS_LIMITER", limiter):
+        monkeypatch.setenv(http.REDDIT_KEYLESS_RATE_ENV, "0.5")
+        pad = http.REDDIT_KEYLESS_CONTENTION_SECONDS
+        assert http.reddit_keyless_wait_allowance(10) == 20.0 + pad

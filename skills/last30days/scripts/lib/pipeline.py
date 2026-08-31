@@ -2468,7 +2468,14 @@ def run(
                 )
             if isinstance(artifact, dict) and artifact.get("_source_outcome_detail"):
                 artifact = dict(artifact)
-                bundle.record_detail(source, artifact.pop("_source_outcome_detail"))
+                lane_state = artifact.pop("_source_outcome_detail_state", None)
+                bundle.record_detail(
+                    source, artifact.pop("_source_outcome_detail"), state=lane_state
+                )
+                if lane_state == health.RATE_LIMITED:
+                    # Do not re-fan-out against a host still inside its window.
+                    with rate_limit_lock:
+                        rate_limited_sources.add(source)
             normalized = _normalize_score_dedupe(
                 source, raw_items, from_date, to_date,
                 freshness_mode=plan.freshness_mode,
@@ -2951,13 +2958,17 @@ def _apply_reddit_stream_keepers(
     for keeper in keepers:
         if any(item is keeper for item in kept):
             continue
-        # Displace the lowest-ranked non-keeper so the slice stays at limit.
+        # Displace the lowest-ranked non-keeper so the slice stays at limit;
+        # when the slice is already all keepers there is nothing to trade.
+        displaced = False
         for index in range(len(kept) - 1, -1, -1):
             if id(kept[index]) not in keeper_ids:
                 del kept[index]
+                displaced = True
                 break
-        kept.append(keeper)
-    return kept
+        if displaced or len(kept) < limit:
+            kept.append(keeper)
+    return kept[:limit]
 
 
 def _normalize_score_dedupe(
@@ -3499,7 +3510,7 @@ def _finalize_source_status(
             detail = None
             fix_hint = None
         elif state == health.OK and not count:
-            state = schema.NO_RESULTS
+            state = outcome.lane_failure_state or schema.NO_RESULTS
         elif state == schema.PARTIAL and not count:
             state = http.classify_failure(message=detail or "")
         finalized[source] = schema.SourceOutcome(
@@ -3510,6 +3521,7 @@ def _finalize_source_status(
             detail=detail,
             at=outcome.at,
             fix_hint=fix_hint,
+            lane_failure_state=outcome.lane_failure_state,
         )
     return finalized
 
@@ -4071,6 +4083,7 @@ def _retry_thin_sources(
         )
         outcome_note = artifact.get("_source_outcome") if isinstance(artifact, dict) else None
         detail_note = artifact.get("_source_outcome_detail") if isinstance(artifact, dict) else None
+        detail_state = artifact.get("_source_outcome_detail_state") if isinstance(artifact, dict) else None
         normalized = _normalize_score_dedupe(
             source,
             raw_items,
@@ -4087,11 +4100,11 @@ def _retry_thin_sources(
             defer_relevance_prune=(source == "x"),
         )
         if source == "jobs":
-            return source, normalized, outcome_note, detail_note
+            return source, normalized, outcome_note, (detail_note, detail_state)
         normalized = _apply_reddit_stream_keepers(
             source, normalized, settings["per_stream_limit"], topic
         )
-        return source, normalized, outcome_note, detail_note
+        return source, normalized, outcome_note, (detail_note, detail_state)
 
     retryable = [s for s in thin_sources if s not in rate_limited_sources]
 
@@ -4101,7 +4114,7 @@ def _retry_thin_sources(
         for future in as_completed(futures):
             source = futures[future]
             try:
-                source, normalized, outcome_note, detail_note = future.result()
+                source, normalized, outcome_note, (detail_note, detail_state) = future.result()
                 if outcome_note:
                     bundle.record_failure(
                         source,
@@ -4110,7 +4123,7 @@ def _retry_thin_sources(
                         attempted=outcome_note.get("attempted", True),
                     )
                 if detail_note:
-                    bundle.record_detail(source, detail_note)
+                    bundle.record_detail(source, detail_note, state=detail_state)
                 existing_urls = {item.url for item in bundle.items_by_source.get(source, []) if item.url}
                 new_items = [item for item in normalized if item.url not in existing_urls]
 
@@ -4256,9 +4269,14 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
             artifact["_source_outcome"] = outcome_note
         elif failures:
             # The source delivered items. Keep it ``ok`` but carry what the
-            # swallowed sub-requests lost, so doctor can still show it.
+            # swallowed sub-requests lost, so doctor can still show it, and
+            # the most specific failure state so a later empty filter result
+            # or the thin-source retry can act on it.
             artifact = dict(artifact or {})
             artifact["_source_outcome_detail"] = _summarize_lane_failures(failures)
+            artifact["_source_outcome_detail_state"] = min(
+                failures, key=lambda f: _FAILURE_SPECIFICITY.get(f.outcome_state, 9)
+            ).outcome_state
     if module_backed:
         http.fixture_source_record(fixture_request, [items, artifact])
     return items, artifact

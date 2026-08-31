@@ -238,7 +238,12 @@ def _enrich(posts: List[Dict[str, Any]], depth: str) -> List[Dict[str, Any]]:
                 http.submit_with_context(executor, _enrich_one, post): i
                 for i, post in enumerate(to_enrich)
             }
-            done, not_done = concurrent.futures.wait(futures, timeout=ENRICH_BUDGET)
+            # The budget covers the fetches; the allowance covers the shared
+            # bucket's queue (other lanes, other entities in compare mode).
+            done, not_done = concurrent.futures.wait(
+                futures,
+                timeout=ENRICH_BUDGET + http.reddit_keyless_wait_allowance(len(to_enrich)),
+            )
             for future in done:
                 idx = futures[future]
                 try:

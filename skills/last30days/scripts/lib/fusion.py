@@ -286,10 +286,10 @@ def _diversify_pool(
         if c.local_relevance > current:
             max_relevance[c.source] = c.local_relevance
 
-    pool: list[schema.Candidate] = list(
-        _reddit_engagement_reservation(fused, _reddit_reserve_for(pool_limit), entity)
-    )
-    seen = {c.candidate_id for c in pool}
+    protected = _reddit_engagement_reservation(fused, _reddit_reserve_for(pool_limit), entity)
+    protected_ids = {c.candidate_id for c in protected}
+    pool: list[schema.Candidate] = list(protected)
+    seen = set(protected_ids)
     reserved: dict[str, list[schema.Candidate]] = {}
     remainder: list[schema.Candidate] = []
     for c in fused:
@@ -309,6 +309,20 @@ def _diversify_pool(
         if c.candidate_id not in seen:
             pool.append(c)
     pool.sort(key=_candidate_sort_key)
+    if len(pool) > pool_limit:
+        # The per-source buckets can overfill a small pool. The Reddit
+        # reservation is low-RRF by construction, so a plain slice would cut
+        # exactly the threads it exists to keep: trim unprotected candidates
+        # from the sorted tail instead.
+        keep_unprotected = pool_limit - len(protected_ids)
+        trimmed: list[schema.Candidate] = []
+        for c in pool:
+            if c.candidate_id in protected_ids:
+                trimmed.append(c)
+            elif keep_unprotected > 0:
+                trimmed.append(c)
+                keep_unprotected -= 1
+        pool = trimmed
     return pool[:pool_limit]
 
 

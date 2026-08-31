@@ -586,3 +586,18 @@ def test_bundle_keeps_ok_with_lane_detail_across_subqueries():
     outcome = bundle.source_status["reddit"]
     assert outcome.state == health.OK
     assert outcome.detail == "3 sub-requests rate-limited (HTTP 429)"
+
+
+def test_finalize_turns_an_empty_ok_source_with_lane_failures_into_that_failure():
+    """Zero items after filtering plus swallowed 429s is not 'completed cleanly
+    with zero matches'; it is the rate limit, so ## Partial Coverage fires and
+    doctor does not list the source as succeeded."""
+    bundle = schema.RetrievalBundle()
+    bundle.mark_attempted("polymarket")
+    bundle.record_detail("polymarket", "5 sub-requests rate-limited (HTTP 429)", state=schema.RATE_LIMITED)
+    bundle.add_items("primary", "polymarket", [])
+    finalized = pipeline._finalize_source_status(bundle.source_status, {"polymarket": []})
+    outcome = finalized["polymarket"]
+    assert outcome.state == schema.RATE_LIMITED
+    assert outcome.detail == "5 sub-requests rate-limited (HTTP 429)"
+    assert outcome.items_returned == 0

@@ -91,3 +91,32 @@ def test_retry_helper_goes_through_the_memo():
         body2, err2 = http.reddit_keyless_get_text_retry_429("https://www.reddit.com/r/Kanye/top.rss")
     assert (body, err) == ("<feed/>", None) == (body2, err2)
     assert get_text.call_count == 1
+
+
+def test_waiters_do_not_stampede_when_the_owner_fails():
+    """If the in-flight owner's fetch fails, the waiters elect one new owner
+    and share its fetch instead of each issuing their own."""
+    release = threading.Event()
+    calls = []
+    lock = threading.Lock()
+
+    def get_text(url, **kwargs):
+        with lock:
+            calls.append(url)
+            n = len(calls)
+        release.wait(timeout=5)
+        return None if n == 1 else "<feed/>"
+
+    results = []
+    with mock.patch.object(http, "get_text", side_effect=get_text), \
+         mock.patch.object(http.REDDIT_KEYLESS_LIMITER, "acquire"):
+        url = "https://www.reddit.com/r/Kanye/top.rss?t=month"
+        threads = [threading.Thread(target=lambda: results.append(http.reddit_keyless_get_text(url))) for _ in range(4)]
+        for t in threads:
+            t.start()
+        threading.Event().wait(timeout=0.2)
+        release.set()
+        for t in threads:
+            t.join(timeout=10)
+    assert sorted(results, key=str) == [None, "<feed/>", "<feed/>", "<feed/>"] or results.count("<feed/>") >= 3
+    assert len(calls) <= 2, f"expected the owner's fetch plus one retry, got {len(calls)}"

@@ -49,3 +49,25 @@ class TestRetryDelayFromHeaders:
     def test_skips_unparseable_header_and_reads_the_next(self):
         headers = {"Retry-After": "soon", "x-ratelimit-reset": "42"}
         assert http.retry_delay_from_headers(headers, 3.0) == 42.0
+
+
+class TestRetryDelayBounds:
+    """A reset header must never park a thread for minutes (or, for an epoch
+    timestamp, for years)."""
+
+    def test_epoch_reset_is_converted_to_a_delta_and_capped(self):
+        # GitHub sends x-ratelimit-reset as epoch seconds with no Retry-After.
+        import time
+        epoch = str(int(time.time()) + 30)
+        delay = http.retry_delay_from_headers({"x-ratelimit-reset": epoch}, 3.0)
+        assert 0 < delay <= http.MAX_RETRY_DELAY_SECONDS
+        assert 25 <= delay <= 31
+
+    def test_far_future_epoch_is_capped(self):
+        # 2100-01-01 as epoch seconds: a delta of decades still yields the cap.
+        delay = http.retry_delay_from_headers({"x-ratelimit-reset": "4102444800"}, 3.0)
+        assert delay == http.MAX_RETRY_DELAY_SECONDS
+
+    def test_long_delta_is_capped(self):
+        assert http.retry_delay_from_headers({"x-ratelimit-reset": "540"}, 3.0) == http.MAX_RETRY_DELAY_SECONDS
+        assert http.retry_delay_from_headers({"Retry-After": "600"}, 3.0) == http.MAX_RETRY_DELAY_SECONDS

@@ -35,6 +35,15 @@ MAX_429_RETRIES = 2
 RETRY_DELAY = 2.0
 
 
+# Longest a 429 retry may sleep on any host. Reddit's x-ratelimit-reset can say
+# 540s and GitHub's is an epoch timestamp; neither is worth parking a worker
+# (or the main thread) for. Past this bound the retry is not worth taking, so
+# the caller's own fallback backoff applies and the request fails fast.
+MAX_RETRY_DELAY_SECONDS = 60.0
+# A reset value this large is an absolute epoch timestamp, not delta-seconds.
+_EPOCH_RESET_THRESHOLD = 100_000_000.0
+
+
 def retry_delay_from_headers(headers, fallback):
     """Seconds to wait after a 429, read from whichever header the host sent.
 
@@ -65,8 +74,11 @@ def retry_delay_from_headers(headers, fallback):
             value = float(raw)
         except (TypeError, ValueError):
             continue
+        if value >= _EPOCH_RESET_THRESHOLD:
+            # GitHub-style absolute reset time.
+            value = value - time.time()
         if value > 0:
-            return value
+            return min(value, MAX_RETRY_DELAY_SECONDS)
     return fallback
 
 # DNS resolution failures (gaierror) are transient — typically resolved by a
@@ -1077,6 +1089,7 @@ def reddit_keyless_wait_allowance(batch_size: int) -> float:
     at 1 req/s a fixed 20-second timeout expired on real runs while the fetch
     was still queued (issue #985 follow-up).
     """
+    _sync_reddit_keyless_rate()
     limiter = REDDIT_KEYLESS_LIMITER
     rate = limiter.rate if limiter.rate > 0 else 1.0
     return (limiter.waiting + max(0, batch_size)) / rate + REDDIT_KEYLESS_CONTENTION_SECONDS
@@ -1123,21 +1136,32 @@ def reddit_keyless_get_text(
     cached = _reddit_memo_get(url)
     if cached is not None:
         return cached
-    with _REDDIT_KEYLESS_MEMO_LOCK:
-        cached = _REDDIT_KEYLESS_MEMO.get(url)
-        if cached is not None:
-            return cached
-        gate = _REDDIT_KEYLESS_INFLIGHT.get(url)
-        owner = gate is None
+    # Elect one owner per URL. A waiter whose owner failed re-enters the
+    # election rather than fetching un-gated, so a failed fetch costs one
+    # retry for the whole group, not one per waiter.
+    for _round in range(3):
+        with _REDDIT_KEYLESS_MEMO_LOCK:
+            cached = _REDDIT_KEYLESS_MEMO.get(url)
+            if cached is not None:
+                return cached
+            gate = _REDDIT_KEYLESS_INFLIGHT.get(url)
+            owner = gate is None
+            if owner:
+                gate = threading.Event()
+                _REDDIT_KEYLESS_INFLIGHT[url] = gate
         if owner:
-            gate = threading.Event()
-            _REDDIT_KEYLESS_INFLIGHT[url] = gate
-    if not owner:
-        gate.wait(timeout=timeout * max(1, retries) + 10)
+            break
+        # The owner may itself be queued in the shared bucket; wait for that
+        # queue, not just for one socket timeout.
+        gate.wait(
+            timeout=timeout * max(1, retries) + reddit_keyless_wait_allowance(1)
+        )
         cached = _reddit_memo_get(url)
         if cached is not None:
             return cached
-        # The owner's fetch failed or timed out; fall through to our own try.
+    else:
+        # Three failed owners in a row: give up quietly rather than pile on.
+        return None
     try:
         _sync_reddit_keyless_rate()
         REDDIT_KEYLESS_LIMITER.acquire()
@@ -1146,10 +1170,9 @@ def reddit_keyless_get_text(
             _reddit_memo_put(url, text)
         return text
     finally:
-        if owner:
-            with _REDDIT_KEYLESS_MEMO_LOCK:
-                _REDDIT_KEYLESS_INFLIGHT.pop(url, None)
-            gate.set()
+        with _REDDIT_KEYLESS_MEMO_LOCK:
+            _REDDIT_KEYLESS_INFLIGHT.pop(url, None)
+        gate.set()
 
 
 def reddit_keyless_get_text_retry_429(
@@ -1166,6 +1189,12 @@ def reddit_keyless_get_text_retry_429(
     skipped (``retries=1``) so the in-lane retry is the one that re-acquires
     the bucket.
     """
+    # retries=1 on purpose: letting request() sleep out a 42-60s
+    # x-ratelimit-reset inside a lane worker starves the whole batch (the
+    # 2026-08-31 smoke lost 14 feeds to future timeouts with retries=2 versus
+    # 6 with 1). A keyless 429 fails fast, the lane retries once after a short
+    # jittered pause through the bucket, and the memo keeps the other streams
+    # from re-requesting the same URL.
     kwargs: Dict[str, Any] = {
         "timeout": timeout,
         "retries": 1,

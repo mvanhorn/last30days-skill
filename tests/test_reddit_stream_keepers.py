@@ -136,3 +136,22 @@ class TestPoolReservation:
         assert fusion._reddit_reserve_for(15) == 2
         assert fusion._reddit_reserve_for(40) == 3
         assert fusion._reddit_reserve_for(60) == 4
+
+
+class TestKeeperAndReservationBounds:
+    def test_keepers_never_exceed_the_stream_limit(self):
+        items = [_reddit_item(i, score=1000 - i, ncmt=50, relevance=0.5, rank=0.5 - i * 0.01) for i in range(10)]
+        kept = pipeline._apply_reddit_stream_keepers("reddit", items, 1, "Kanye West")
+        assert len(kept) == 1
+        kept = pipeline._apply_reddit_stream_keepers("reddit", items, 0, "Kanye West")
+        assert kept == []
+
+    def test_reservation_survives_many_qualifying_sources(self):
+        fused = []
+        for source in ("tiktok", "x", "youtube", "hackernews", "grounding", "instagram", "github", "linkedin"):
+            fused += [_cand(i, source, 0.05 - i * 0.0005) for i in range(4)]
+        big = _cand(99, "reddit", 0.0001, relevance=0.19, score=16180, ncmt=1450)
+        fused.append(big)
+        pool = fusion._diversify_pool(fused, 15, entity="kanye west")
+        assert len(pool) == 15
+        assert big in pool
