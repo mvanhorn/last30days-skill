@@ -38,7 +38,11 @@ The research flow available with no API keys: source data is gathered by scrapin
 
 ### Comment-enrichment slots
 
-The small, depth-dependent budget of Reddit posts whose comments get fetched in the Keyless path. Slot selection is relevance-aware: posts that pass Entity grounding claim slots first, so the budget is not spent on high-engagement posts that final ranking will demote anyway.
+The small, depth-dependent budget of Reddit posts whose comments get fetched in the Keyless path (4 / 8 / 12 per subquery at quick / default / deep). Slot selection is relevance-aware and comment-first: posts that pass Entity grounding claim slots first, and within that tier the most-commented threads go first, so the budget is not spent on high-engagement posts that final ranking will demote or on near-empty threads.
+
+### Engagement keeper
+
+A Reddit thread that clears the relevance floor, passes Entity grounding, and ranks in the top three of its stream by upvotes plus comments. Keepers survive per-stream truncation regardless of their local rank score, and the fused candidate pool reserves a few slots (2 / 3 / 4 by depth) for the same class of thread, so the month's most-discussed on-topic threads reach the ranked output even when their title overlap with the query is weak. When the Primary entity's head token is generic ("ai", "new"), the floor rises so viral off-topic threads cannot claim the slots.
 
 ## Discovery
 
