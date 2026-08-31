@@ -77,6 +77,7 @@ from . import (
     youtube_yt,
 )
 from .cluster import cluster_candidates
+from . import fusion
 from .fusion import collapse_duplicate_urls, weighted_rrf
 
 DISCOVERY_SOURCES = ("reddit", "hackernews", "digg", "x")
@@ -2481,7 +2482,9 @@ def run(
             # snapshot of open roles, and truncating it to the default 12 drops
             # strategic postings (the whole point of hiring-signals coverage).
             if source != "jobs":
-                normalized = normalized[: settings["per_stream_limit"]]
+                normalized = _apply_reddit_stream_keepers(
+                    source, normalized, settings["per_stream_limit"], topic
+                )
             bundle.add_items(subquery.label, source, normalized)
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
@@ -2916,6 +2919,45 @@ def _batch_subject_handles(raw_items: list[dict], *, top_n: int = 2) -> set[str]
     if not counts:
         return set()
     return {handle for handle, _ in counts.most_common(top_n)}
+
+
+# Reddit engagement keepers: per stream, the top-N threads by upvotes plus
+# comments that clear the relevance floor and name the primary entity survive
+# per_stream_limit truncation even when their local rank score is low. The
+# stream order is 65% title relevance, so the month's most-discussed on-topic
+# thread (16K upvotes, 0.19 relevance) was otherwise cut behind one-upvote
+# posts with better title overlap.
+REDDIT_STREAM_KEEPERS = 3
+
+
+def _apply_reddit_stream_keepers(
+    source: str,
+    items: list[schema.SourceItem],
+    limit: int,
+    topic: str,
+) -> list[schema.SourceItem]:
+    """Truncate a stream to *limit*, holding slots for Reddit engagement keepers."""
+    kept = list(items[:limit])
+    if source != "reddit" or len(items) <= limit:
+        return kept
+    entity = rerank._primary_entity(topic or "") if topic else ""
+    floor = fusion.relevance_floor_for_entity(entity)
+    keepers = [
+        item
+        for item in sorted(items, key=fusion.raw_engagement, reverse=True)
+        if fusion.reddit_thread_qualifies(item, entity, floor)
+    ][:REDDIT_STREAM_KEEPERS]
+    keeper_ids = {id(item) for item in keepers}
+    for keeper in keepers:
+        if any(item is keeper for item in kept):
+            continue
+        # Displace the lowest-ranked non-keeper so the slice stays at limit.
+        for index in range(len(kept) - 1, -1, -1):
+            if id(kept[index]) not in keeper_ids:
+                del kept[index]
+                break
+        kept.append(keeper)
+    return kept
 
 
 def _normalize_score_dedupe(
@@ -4046,7 +4088,10 @@ def _retry_thin_sources(
         )
         if source == "jobs":
             return source, normalized, outcome_note, detail_note
-        return source, normalized[:settings["per_stream_limit"]], outcome_note, detail_note
+        normalized = _apply_reddit_stream_keepers(
+            source, normalized, settings["per_stream_limit"], topic
+        )
+        return source, normalized, outcome_note, detail_note
 
     retryable = [s for s in thin_sources if s not in rate_limited_sources]
 

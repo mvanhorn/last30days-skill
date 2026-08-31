@@ -110,6 +110,77 @@ def collapse_duplicate_urls(items: list[schema.SourceItem]) -> list[schema.Sourc
 
 _DIVERSITY_RELEVANCE_THRESHOLD = 0.25
 
+# Reddit engagement reservation: pool slots held for the highest-engagement
+# entity-grounded in-window Reddit candidates, scaled by pool size (quick 15
+# -> 2, default 40 -> 3, deep 60 -> 4). The fused order is RRF-first and each
+# stream is relevance-first, so the month's most-discussed on-topic thread can
+# otherwise lose its slot to a one-upvote post with better title overlap.
+_REDDIT_RESERVE_BY_POOL = ((15, 2), (40, 3))
+_REDDIT_RESERVE_MAX = 4
+
+
+def _reddit_reserve_for(pool_limit: int) -> int:
+    for ceiling, reserve in _REDDIT_RESERVE_BY_POOL:
+        if pool_limit <= ceiling:
+            return reserve
+    return _REDDIT_RESERVE_MAX
+
+
+def relevance_floor_for_entity(entity: str) -> float:
+    """Relevance a Reddit thread must clear to earn a reservation or keeper slot.
+
+    Grounding keys on the entity's head token (see ``rerank._entity_grounded``).
+    A generic head ("ai", "x", "new") matches almost anything, so the floor
+    rises to the diversity threshold; a distinctive head keeps the shared
+    ``RELEVANCE_FLOOR``.
+    """
+    from . import relevance
+
+    head = (entity or "").lower().split()[:1]
+    if not head:
+        return relevance.RELEVANCE_FLOOR
+    token = head[0]
+    generic = (
+        len(token) <= 2
+        or token in relevance.STOPWORDS
+        or token in relevance.LOW_SIGNAL_QUERY_TOKENS
+    )
+    return _DIVERSITY_RELEVANCE_THRESHOLD if generic else relevance.RELEVANCE_FLOOR
+
+
+def raw_engagement(item: schema.SourceItem) -> float:
+    """Upvotes plus comments as a plain number, for engagement-first ordering."""
+    eng = item.engagement or {}
+    total = 0.0
+    for key in ("score", "num_comments"):
+        value = eng.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            total += float(value)
+    return total
+
+
+def reddit_thread_qualifies(
+    item: schema.SourceItem,
+    entity: str,
+    floor: float,
+    relevance: float | None = None,
+) -> bool:
+    """On-topic enough for an engagement slot: clears the floor and names the entity.
+
+    ``relevance`` overrides the item's own ``local_relevance`` (a fused
+    candidate carries the max across its copies).
+    """
+    from . import rerank
+
+    score = relevance if relevance is not None else (item.local_relevance or 0.0)
+    if score < floor:
+        return False
+    if raw_engagement(item) <= 0:
+        return False
+    if not entity:
+        return True
+    return rerank._entity_grounded(f"{item.title or ''} {item.body or ''}", entity)
+
 # Per-author cap: no single author/handle should dominate the pool.
 _MAX_ITEMS_PER_AUTHOR = 3
 
@@ -170,15 +241,44 @@ def _apply_per_author_cap(
     return result
 
 
+def _reddit_engagement_reservation(
+    fused: list[schema.Candidate],
+    reserve: int,
+    entity: str,
+) -> list[schema.Candidate]:
+    """The *reserve* highest-engagement Reddit candidates that are in-window
+    and on-topic, in engagement order."""
+    if reserve <= 0:
+        return []
+    floor = relevance_floor_for_entity(entity)
+    eligible = []
+    for c in fused:
+        if c.source != "reddit" or schema.candidate_out_of_window(c):
+            continue
+        reddit_items = [it for it in c.source_items if it.source == "reddit"]
+        if not reddit_items:
+            continue
+        best = max(reddit_items, key=raw_engagement)
+        relevance = max(c.local_relevance or 0.0, best.local_relevance or 0.0)
+        if not reddit_thread_qualifies(best, entity, floor, relevance=relevance):
+            continue
+        eligible.append((raw_engagement(best), c))
+    eligible.sort(key=lambda pair: -pair[0])
+    return [c for _, c in eligible[:reserve]]
+
+
 def _diversify_pool(
     fused: list[schema.Candidate],
     pool_limit: int,
     min_per_source: int = 2,
+    entity: str = "",
 ) -> list[schema.Candidate]:
     """Ensure at least *min_per_source* items per qualifying source survive truncation.
 
     Sources only qualify for reserved slots if their best item exceeds
     the relevance threshold. Low-relevance sources compete on merit only.
+    Reddit additionally gets an engagement reservation (see
+    ``_reddit_reserve_for``) for its most-discussed on-topic threads.
     """
     max_relevance: dict[str, float] = {}
     for c in fused:
@@ -186,16 +286,22 @@ def _diversify_pool(
         if c.local_relevance > current:
             max_relevance[c.source] = c.local_relevance
 
+    pool: list[schema.Candidate] = list(
+        _reddit_engagement_reservation(fused, _reddit_reserve_for(pool_limit), entity)
+    )
+    seen = {c.candidate_id for c in pool}
     reserved: dict[str, list[schema.Candidate]] = {}
     remainder: list[schema.Candidate] = []
     for c in fused:
+        if c.candidate_id in seen:
+            continue
         qualifies = max_relevance.get(c.source, 0.0) >= _DIVERSITY_RELEVANCE_THRESHOLD
         bucket = reserved.setdefault(c.source, [])
         if qualifies and len(bucket) < min_per_source:
             bucket.append(c)
         else:
             remainder.append(c)
-    pool = [c for per_source in reserved.values() for c in per_source]
+    pool.extend(c for per_source in reserved.values() for c in per_source)
     seen = {c.candidate_id for c in pool}
     for c in remainder:
         if len(pool) >= pool_limit:
@@ -324,4 +430,7 @@ def weighted_rrf(
 
     fused = sorted(candidates.values(), key=_candidate_sort_key)
     fused = _apply_per_author_cap(fused, first_party_handles=first_party_handles)
-    return _diversify_pool(fused, pool_limit)
+    from . import rerank
+
+    entity = rerank._primary_entity(plan.raw_topic or "") if plan.raw_topic else ""
+    return _diversify_pool(fused, pool_limit, entity=entity)
