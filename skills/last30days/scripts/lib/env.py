@@ -571,6 +571,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # Backward compatibility for configs written by the original `eli5 on`
         # follow-up command. New writes use LAST30DAYS_REGISTER=eli5.
         ('ELI5_MODE', None),
+        ('YOUTUBE_PROXY', None),
         ('LAST30DAYS_YOUTUBE_SSH_HOST', None),
         ('LAST30DAYS_REPORT_CACHE_TTL_SECONDS', None),
         ('LAST30DAYS_VERIFY_FRESHNESS', None),
