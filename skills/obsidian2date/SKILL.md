@@ -1,8 +1,8 @@
 ---
 name: obsidian2date
 version: "0.1.0"
-description: "Research what people actually say about any topic in the last 30 days, then write a durable Obsidian run note, briefing, index entry, and related-note links into your vault. Built on the last30days research engine."
-argument-hint: 'obsidian2date nvidia earnings reaction | obsidian2date AI video tools | obsidian2date what users want in react'
+description: "Research what people actually say about any topic over any recent window (default 30 days, --days N for anything else), then write a durable Obsidian run note, briefing, index entry, and related-note links into your vault. Built on the last30days research engine."
+argument-hint: 'obsidian2date nvidia earnings reaction | obsidian2date last 7 days of AI video tools | obsidian2date what users want in react over the last 90 days'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
 homepage: https://github.com/pauleschwarz/obsidian2date
 repository: https://github.com/pauleschwarz/obsidian2date
@@ -48,7 +48,7 @@ metadata:
 
 # obsidian2date
 
-Research a topic from the last 30 days and keep the useful evidence in Obsidian.
+Research what people actually said about a topic over any recent window and keep the useful evidence in Obsidian. The window follows the request: say "last week", "the last 7 days", or "over the last 90 days" — the default is 30 days.
 This is the vault-first entrypoint for the public
 [obsidian2date](https://github.com/pauleschwarz/obsidian2date) fork of
 [last30days](https://github.com/mvanhorn/last30days-skill).
@@ -64,9 +64,13 @@ The upstream research engine remains under `skills/last30days/`.
    directories; an explicit missing path is the requested export target. If no
    path resolves, ask the user for one before writing (the CLI otherwise raises
    `No Obsidian vault found. Pass --obsidian-vault or set OBSIDIAN2DATE_VAULT.`).
-3. Run the existing research engine with `--emit=obsidian` and the resolved
-   vault, preserving the engine's normal source and fallback behavior.
-4. Report the briefing path, run-note path, and any partial or unavailable
+3. Derive the time window from the user's request (default 30 days; "last
+   week" or "last 7 days" -> `--days 7`, "last 90 days" -> `--days 90`). The
+   engine accepts `--days N` and `--as-of YYYY-MM-DD`; 30 is only the default.
+4. Run the existing research engine with `--emit=obsidian`, the resolved
+   vault, and the requested window, preserving the engine's normal source and
+   fallback behavior.
+5. Report the briefing path, run-note path, and any partial or unavailable
    sources honestly.
 
 Example from the repository root:
@@ -120,8 +124,12 @@ Related prior runs are linked with Obsidian `[[wikilinks]]` when token overlap i
 ## Quick examples
 
 ```bash
-# Vault-native research
+# Vault-native research, default 30-day window
 python3 "$ENGINE" "local LLM agent frameworks" --emit=obsidian
+
+# Any window: last week, or a 90-day sweep
+python3 "$ENGINE" "AI video tools" --emit=obsidian --days 7
+python3 "$ENGINE" "rust async runtimes" --emit=obsidian --days 90
 
 # Explicit vault
 python3 "$ENGINE" "obsidian plugins 2026" --emit=obsidian \
