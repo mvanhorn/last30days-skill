@@ -172,8 +172,82 @@ def _check_file_permissions(path: Path) -> None:
         sys.stderr.flush()
 
 
+_EXPORT_PREFIX = "export"
+
+
+def _strip_export_prefix(key: str) -> str:
+    """Drop a shell-style ``export `` prefix from an env-file key.
+
+    Writing ``export FOO=bar`` in a file that doubles as a shell snippet is a
+    near-universal habit. Without this the key parses as the literal
+    ``"export FOO"``, so the setting is accepted and then silently never
+    matched. ``hooks/scripts/check-config.sh`` strips the same prefix so both
+    parsers of this file agree. A key named exactly ``export`` (nothing after
+    it) is left alone. See #930.
+    """
+    if not key.startswith(_EXPORT_PREFIX):
+        return key
+    rest = key[len(_EXPORT_PREFIX):]
+    if not rest[:1].isspace():
+        return key
+    return rest.strip()
+
+
+def _strip_inline_comment(value: str) -> str:
+    """Drop a trailing ``# comment`` from an *unquoted* env-file value.
+
+    Mirrors ``check-config.sh``'s ``value="${value%%[[:space:]]#*}"``: only a
+    ``#`` preceded by whitespace opens a comment. A ``#`` that is glued to the
+    value (``abc#def``, URL fragments, keys and passwords containing ``#``)
+    stays data. Quote the value to keep even a whitespace-preceded ``#``.
+    """
+    for index, char in enumerate(value):
+        if char == '#' and index > 0 and value[index - 1].isspace():
+            return value[:index].rstrip()
+    return value
+
+
+def _parse_env_value(raw: str) -> str:
+    """Normalize the right-hand side of an env-file assignment.
+
+    The order is load-bearing:
+
+    1. A value opening with a quote is literal up to its closing quote, so a
+       ``#`` inside it is data. An inline comment may follow the closing quote
+       (``KEY="a b"  # note``).
+    2. Otherwise a leftover matching outer-quote pair is stripped, preserving
+       the pre-#930 behavior for interleaved quotes (``'don't'``).
+    3. An unquoted value has its whitespace-preceded ``#`` comment stripped.
+       The scan runs on ``raw`` (before trimming) so ``KEY=   # note`` is an
+       empty value, not the literal string ``# note``; only a ``#`` sitting
+       directly against the ``=`` (``KEY=#value``) is data.
+    """
+    value = raw.strip()
+    quote = value[:1]
+    if quote in ('"', "'"):
+        end = value.find(quote, 1)
+        if end != -1:
+            trailing = value[end + 1:].lstrip()
+            if not trailing or trailing.startswith('#'):
+                return value[1:end]
+        if len(value) >= 2 and value[-1] == quote:
+            return value[1:-1]
+    return _strip_inline_comment(raw).strip()
+
+
 def load_env_file(path: Path) -> dict[str, str]:
-    """Load environment variables from a file."""
+    """Load environment variables from a file.
+
+    Line format: ``KEY=value``, with optional ``export `` prefix, optional
+    surrounding quotes, and optional trailing ``# comment`` — the shape
+    CONFIGURATION.md documents and ``check-config.sh`` already parsed.
+
+    ``KEY=`` (empty value) means "not set" rather than "set to empty string".
+    ``get_config()`` resolves defaults via ``merged_env.get(key, default)``, so
+    keeping an empty string here would silently erase a documented default
+    (e.g. ``LAST30DAYS_YT_SUB_LANGS``) instead of falling back to it.
+    ``check-config.sh`` drops empty values too.
+    """
     env = {}
     if not path or not path.exists():
         return env
@@ -195,11 +269,8 @@ def load_env_file(path: Path) -> dict[str, str]:
             continue
         if '=' in line:
             key, _, value = line.partition('=')
-            key = key.strip()
-            value = value.strip()
-            # Remove quotes if present
-            if value and value[0] in ('"', "'") and value[-1] == value[0]:
-                value = value[1:-1]
+            key = _strip_export_prefix(key.strip())
+            value = _parse_env_value(value)
             if key and value:
                 env.update({key: value})
     return env

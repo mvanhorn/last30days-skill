@@ -105,6 +105,63 @@ class TestPluginContract(unittest.TestCase):
         self.assertIn("owner", marketplace)
         self.assertIn("plugins", marketplace)
 
+    def test_hooks_json_supports_grok_plugin_root(self) -> None:
+        hooks = _json(ROOT / "hooks" / "hooks.json")
+        session_start = hooks["hooks"]["SessionStart"]
+        self.assertTrue(len(session_start) >= 1)
+        hook_cmd = session_start[0]["hooks"][0]["command"]
+        # Should reference GROK_PLUGIN_ROOT first, then CLAUDE_PLUGIN_ROOT, then extensionPath
+        self.assertIn("GROK_PLUGIN_ROOT", hook_cmd)
+        self.assertIn("CLAUDE_PLUGIN_ROOT", hook_cmd)
+        self.assertIn("extensionPath", hook_cmd)
+        # Order should be GROK first, then CLAUDE, then extensionPath
+        grok_idx = hook_cmd.index("GROK_PLUGIN_ROOT")
+        claude_idx = hook_cmd.index("CLAUDE_PLUGIN_ROOT")
+        ext_idx = hook_cmd.index("extensionPath")
+        self.assertLess(grok_idx, claude_idx)
+        self.assertLess(claude_idx, ext_idx)
+
+    def test_check_config_sh_resolves_grok_plugin_root(self) -> None:
+        check_config = (ROOT / "hooks" / "scripts" / "check-config.sh").read_text(encoding="utf-8")
+        # Should resolve plugin root with Grok priority
+        self.assertIn("GROK_PLUGIN_ROOT", check_config)
+        self.assertIn("CLAUDE_PLUGIN_ROOT", check_config)
+        self.assertIn("extensionPath", check_config)
+        # Order: GROK first
+        grok_idx = check_config.index("GROK_PLUGIN_ROOT")
+        claude_idx = check_config.index("CLAUDE_PLUGIN_ROOT")
+        self.assertLess(grok_idx, claude_idx)
+        # Should use the resolved PLUGIN_ROOT for mkdir
+        self.assertIn("PLUGIN_ROOT", check_config)
+
+    def test_skill_mentions_grok_in_non_modal_prose_flow(self) -> None:
+        skill_md = (ROOT / "skills" / "last30days" / "SKILL.md").read_text(encoding="utf-8")
+        # Non-Modal Prose Flow host list should include Grok (xAI Build CLI)
+        self.assertIn("Grok (xAI Build CLI)", skill_md)
+        # LAW 8 visible-URL host list should include Grok (xAI Build CLI)
+        self.assertIn("Grok (xAI Build CLI)", skill_md)
+        # Platform gate in Step 0.55 should mention Grok
+        self.assertIn("Grok (xAI Build CLI)", skill_md)
+        # Platform split should mention Grok (xAI Build CLI)
+        self.assertIn("Grok (xAI Build CLI)", skill_md)
+
+    def test_skill_has_grok_tool_equivalents(self) -> None:
+        skill_md = (ROOT / "skills" / "last30days" / "SKILL.md").read_text(encoding="utf-8")
+        # Should have Grok Build (xAI) Tool Equivalents section
+        self.assertIn("Grok Build (xAI) Tool Equivalents", skill_md)
+        # Should map Bash to shell tool
+        self.assertIn("`Bash`", skill_md)
+        self.assertIn("`shell` tool", skill_md)
+        # Should map WebSearch to host web search
+        self.assertIn("`WebSearch`", skill_md)
+        self.assertIn("Host web search", skill_md)
+        # Should map AskUserQuestion to host question UI
+        self.assertIn("`AskUserQuestion`", skill_md)
+        self.assertIn("Host question UI", skill_md)
+        # Should recommend XAI_API_KEY for X backend on Grok
+        self.assertIn("XAI_API_KEY", skill_md)
+        self.assertIn("api.x.ai", skill_md)
+
     def test_workflows_do_not_reference_removed_root_scripts_dir(self) -> None:
         # The historical root-level scripts/ directory was removed; workflows must not
         # reference a bare `scripts/` path. Allowed replacements:

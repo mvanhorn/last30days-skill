@@ -8,6 +8,9 @@ set -euo pipefail
 # truthy in the process environment or the global config file — never from the
 # project file itself (it cannot self-grant trust).
 
+# Resolve plugin root: Grok first, then Claude Code, then extensionPath fallback
+PLUGIN_ROOT="${GROK_PLUGIN_ROOT:-${CLAUDE_PLUGIN_ROOT:-${extensionPath:-.}}}"
+
 GLOBAL_ENV="$HOME/.config/last30days/.env"
 if [[ "${LAST30DAYS_CONFIG_DIR+x}" == "x" ]]; then
   if [[ -n "$LAST30DAYS_CONFIG_DIR" ]]; then
@@ -70,6 +73,13 @@ load_env_vars() {
       [[ "$key" =~ ^[[:space:]]*# ]] && continue
       [[ -z "$key" ]] && continue
       key="$(trim_ws "$key")"
+      # Tolerate `export KEY=value` (mirrors lib/env.py::_strip_export_prefix).
+      # Without this the key is the literal `export KEY`, which fails the
+      # identifier gate below and drops the setting silently. Stripping happens
+      # BEFORE that gate, so the gate still vets the real key name.
+      if [[ "$key" == export[[:space:]]* ]]; then
+        key="$(trim_ws "${key#export}")"
+      fi
       # Only plain identifiers may reach `printf -v`. printf -v uses assignment
       # semantics, so a key carrying an array subscript — e.g. `x[$(id)]` — has
       # that subscript arithmetic-evaluated, which runs the command inside it.
@@ -77,10 +87,24 @@ load_env_vars() {
       # as an untrusted repo is opened, so an unvalidated key here is arbitrary
       # code execution at session start.
       [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-      value="$(strip_outer_quotes "$(trim_ws "$value")")"
-      # Strip inline comments (# preceded by whitespace) to prevent
-      # command substitution in backtick-containing comments
-      value="${value%%[[:space:]]#*}"
+      # Inline comments (# preceded by whitespace) are stripped, which also
+      # prevents command substitution in backtick-containing comments.
+      local trimmed
+      trimmed="$(trim_ws "$value")"
+      case "$trimmed" in
+        '"'*|"'"*)
+          # Quoted value: a '#' inside the quotes is data, not a comment
+          # (mirrors lib/env.py::_parse_env_value).
+          value="$(strip_outer_quotes "$trimmed")"
+          ;;
+        *)
+          # Unquoted. Strip from the UNTRIMMED value so `KEY=   # note` reads
+          # as empty — otherwise the leading spaces vanish first and '# note'
+          # survives as a literal value, making this hook report a key as
+          # configured when the user only left themselves a note. See #930.
+          value="$(trim_ws "${value%%[[:space:]]#*}")"
+          ;;
+      esac
       if [[ -n "$key" && -n "$value" ]]; then
         # printf -v writes via assignment semantics (global from inside a
         # function), works on macOS's /bin/bash 3.2 — `declare -g` is 4.2+.

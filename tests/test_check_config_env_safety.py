@@ -404,3 +404,110 @@ def test_rce_path_exercised_on_modern_bash(tmp_path: Path):
     modern = [b for b in _bash_binaries() if _bash_major(b) >= 4]
     assert modern, "expected a bash 4+ binary from _bash_binaries()"
     test_malicious_key_blocked_even_when_project_trusted(modern[0], tmp_path)
+
+
+@pytest.mark.skipif(not _bash_binaries(), reason="bash not on PATH")
+def test_export_prefixed_keys_are_honored(bash_path: str, tmp_path: Path):
+    """`export KEY=value` must parse as KEY (mirrors lib/env.py, see #930).
+
+    Before the fix the key was the literal ``export SCRAPECREATORS_API_KEY``,
+    which failed the identifier gate, so the hook advertised the "add
+    ScrapeCreators" tip to a user who had already configured the key.
+    """
+    project = tmp_path / "repo"
+    env_file = project / ".claude" / "last30days.env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(
+        "export SETUP_COMPLETE=true\n"
+        "export SCRAPECREATORS_API_KEY=scrape-test-key\n",
+        encoding="utf-8",
+    )
+    env_file.chmod(0o644)
+
+    result = _run_hook(
+        bash_path,
+        project,
+        tmp_path,
+        {
+            "LAST30DAYS_TRUST_PROJECT_CONFIG": "1",
+            "LAST30DAYS_CONFIG_DIR": str(tmp_path / "empty-config"),
+            "LAST30DAYS_MEMORY_DIR": str(tmp_path / "memory"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert re.search(r"Ready — \d+ sources active", result.stdout)
+    assert "Tip: Add ScrapeCreators" not in result.stdout
+
+
+@pytest.mark.skipif(not _bash_binaries(), reason="bash not on PATH")
+def test_comment_only_value_counts_as_unset(bash_path: str, tmp_path: Path):
+    """`KEY=   # note` is an unset key, not the literal value `# note` (#930).
+
+    Otherwise a user who left themselves a reminder instead of a key is told
+    the source is configured.
+    """
+    project = tmp_path / "repo"
+    env_file = project / ".claude" / "last30days.env"
+    env_file.parent.mkdir(parents=True)
+    env_file.write_text(
+        "SETUP_COMPLETE=true\n"
+        "SCRAPECREATORS_API_KEY=   # paste the key here after signing up\n",
+        encoding="utf-8",
+    )
+    env_file.chmod(0o644)
+
+    result = _run_hook(
+        bash_path,
+        project,
+        tmp_path,
+        {
+            "LAST30DAYS_TRUST_PROJECT_CONFIG": "1",
+            "LAST30DAYS_CONFIG_DIR": str(tmp_path / "empty-config"),
+            "LAST30DAYS_MEMORY_DIR": str(tmp_path / "memory"),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert re.search(r"Ready — \d+ sources active", result.stdout)
+    assert "Tip: Add ScrapeCreators" in result.stdout
+
+
+@pytest.mark.skipif(not _bash_binaries(), reason="bash not on PATH")
+def test_inline_comment_is_stripped_from_value(bash_path: str, tmp_path: Path):
+    """A documented `KEY=value  # note` line keeps only the value.
+
+    This hook already stripped inline comments; the Python loader did not
+    (#930). The test pins the behavior on this side so the two parsers of the
+    same file cannot drift apart again. Asserted through EXCLUDE_SOURCES, which
+    the banner reflects in its source count: with the comment retained, the
+    trailing `instagram` exclusion no longer matches the comma-delimited test
+    and the count comes out higher.
+    """
+    project = tmp_path / "repo"
+    env_file = project / ".claude" / "last30days.env"
+    env_file.parent.mkdir(parents=True)
+
+    def _count(env_body: str) -> int:
+        env_file.write_text(env_body, encoding="utf-8")
+        env_file.chmod(0o644)
+        result = _run_hook(
+            bash_path,
+            project,
+            tmp_path,
+            {
+                "LAST30DAYS_TRUST_PROJECT_CONFIG": "1",
+                "LAST30DAYS_CONFIG_DIR": str(tmp_path / "empty-config"),
+                "LAST30DAYS_MEMORY_DIR": str(tmp_path / "memory"),
+            },
+        )
+        assert result.returncode == 0, result.stderr
+        match = re.search(r"Ready — (\d+) sources active", result.stdout)
+        assert match, result.stdout
+        return int(match.group(1))
+
+    base = "SETUP_COMPLETE=true\nSCRAPECREATORS_API_KEY=scrape-test-key\n"
+    with_comment = _count(base + "EXCLUDE_SOURCES=tiktok,instagram   # client note\n")
+    without_comment = _count(base + "EXCLUDE_SOURCES=tiktok,instagram\n")
+
+    assert with_comment == without_comment
