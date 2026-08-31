@@ -1,0 +1,1 @@
+`## Top Community Comments` and `## Best Takes` now draw from every cluster that clears the relevance floor, not only the eight clusters shown in `## Ranked Evidence Clusters`, so a top-voted comment on a lower-ranked thread still reaches the brief.

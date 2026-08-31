@@ -180,3 +180,56 @@ class TestTopCommentsRelevanceGate:
         lines = render._render_top_comments(report)
         occurrences = sum(1 for line in lines if "Shared comment body" in line)
         assert occurrences == 1
+
+
+def _cluster(index: int, candidate: schema.Candidate, score: float) -> schema.Cluster:
+    return schema.Cluster(
+        cluster_id=f"cluster-{index}",
+        title=candidate.title,
+        candidate_ids=[candidate.candidate_id],
+        representative_ids=[candidate.candidate_id],
+        sources=[candidate.source],
+        score=score,
+        uncertainty=None,
+    )
+
+
+class TestTopCommentsReadAllFloorClearingClusters:
+    """The comments block is a cross-cutting evidence surface: a strong comment
+    on a thread in cluster eleven must render even though only the top eight
+    clusters are shown in ## Ranked Evidence Clusters."""
+
+    def _report(self):
+        candidates = []
+        clusters = []
+        for i in range(12):
+            comments = None
+            if i == 10:  # cluster 11, below the compact cluster_limit of 8
+                comments = [
+                    {"score": 3293, "author": "u/tableleg7", "excerpt": "Vladimir Putin doesn't care about black people"},
+                    {"score": 1151, "author": "u/stereosalvation", "excerpt": "Someone didn't get paid off yet"},
+                    {"score": 400, "author": "u/third", "excerpt": "third comment body here"},
+                ]
+            cand = _candidate(
+                title=f"Thread {i}",
+                url=f"https://www.reddit.com/r/Kanye/comments/t{i}/",
+                local_relevance=0.6,
+                top_comments=comments if comments else [],
+            )
+            cand.final_score = 60.0 - i
+            candidates.append(cand)
+            clusters.append(_cluster(i + 1, cand, cand.final_score))
+        report = _make_report(*candidates)
+        report.clusters = clusters
+        return report
+
+    def test_comment_from_cluster_eleven_renders_in_compact(self):
+        text = render.render_compact(self._report(), cluster_limit=8)
+        assert "## Top Community Comments" in text
+        assert "Vladimir Putin doesn't care about black people" in text
+
+    def test_entity_miss_cluster_member_still_excluded(self):
+        report = self._report()
+        report.ranked_candidates[10].explanation = "fallback-local-score (entity-miss demotion)"
+        text = render.render_compact(report, cluster_limit=8)
+        assert "Vladimir Putin doesn't care" not in text

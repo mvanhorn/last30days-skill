@@ -432,6 +432,26 @@ def _render_ranked_clusters(
     return lines
 
 
+def _auxiliary_candidate_pool(
+    report: schema.Report,
+    visible_clusters: list[schema.Cluster],
+    solid_clusters: list[schema.Cluster],
+) -> list[schema.Candidate]:
+    """Candidates for Best Takes and Top Community Comments.
+
+    Those sections are cross-cutting evidence surfaces, so they read every
+    cluster that clears the relevance floor, not only the ``cluster_limit``
+    clusters shown in ``## Ranked Evidence Clusters``: a 3,000-vote comment on
+    the thread in cluster eleven is exactly what the brief is for. The
+    nothing-solid gate is unchanged: when the visible set has clusters but
+    none clear the floor, the pool is empty.
+    """
+    if visible_clusters and not solid_clusters:
+        return []
+    all_solid = _clusters_clearing_relevance_floor(report, report.clusters)
+    return _candidates_for_auxiliary_sections(report, report.clusters, all_solid)
+
+
 def _clusters_clearing_relevance_floor(
     report: schema.Report,
     clusters: list[schema.Cluster],
@@ -646,12 +666,13 @@ def _render_registered_sections(
         solid_clusters,
     )
     no_solid_evidence = bool(visible_clusters) and not solid_clusters
+    aux_candidates = _auxiliary_candidate_pool(report, visible_clusters, solid_clusters)
     if no_solid_evidence:
         best_takes: list[str] = []
         top_comments: list[str] = []
     else:
         best_takes = _render_best_takes(
-            visible_candidates,
+            aux_candidates,
             limit=audience.budget_for("best_takes", int(fun_params["limit"])),
             threshold=float(fun_params["threshold"]),
             vote_weight=float(fun_params.get("vote_weight", 18.0)),
@@ -672,7 +693,7 @@ def _render_registered_sections(
         top_comments = _render_top_comments(
             report,
             limit=audience.budget_for("top_comments", 8),
-            candidates=visible_candidates,
+            candidates=aux_candidates,
         )
         if not top_comments:
             top_comments = [
@@ -792,6 +813,9 @@ def render_compact(
         solid_clusters,
     )
     no_solid_evidence = bool(visible_clusters) and not solid_clusters
+    aux_candidates = _auxiliary_candidate_pool(
+        evidence_report, visible_clusters, solid_clusters
+    )
     hiring_block = (
         []
         if no_solid_evidence
@@ -812,7 +836,7 @@ def render_compact(
 
         if not no_solid_evidence:
             best_takes = _render_best_takes(
-                visible_candidates,
+                aux_candidates,
                 limit=fun_params["limit"],
                 threshold=fun_params["threshold"],
                 vote_weight=fun_params.get("vote_weight", 18.0),
@@ -822,7 +846,7 @@ def render_compact(
 
             top_comments = _render_top_comments(
                 evidence_report,
-                candidates=visible_candidates,
+                candidates=aux_candidates,
             )
             if top_comments:
                 lines.extend([""] + top_comments)
