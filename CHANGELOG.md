@@ -9,6 +9,34 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.22.0] - 2026-08-31
+
+### Added
+
+- Telegram public channel source: opt-in via `--telegram-sources=handle1,handle2` or `TELEGRAM_SOURCES` + `INCLUDE_SOURCES=telegram`. Named public channels only (no keyword discovery); fetches recent posts via ScrapeCreators API and scores by views, reactions, and topic relevance. ([#990](https://github.com/mvanhorn/last30days-skill/issues/990))
+- Add an explicit `--web-backend=parallel-mcp` option for anonymous hosted Parallel web search.
+- Reddit threads with the most upvotes and comments now keep their place: each Reddit stream holds slots for its top three on-topic threads by engagement before per-stream truncation, and the fused candidate pool reserves slots (quick 2, default 3, deep 4) for the highest-engagement entity-grounded Reddit candidates. A 16K-upvote thread with weak title overlap was previously cut behind one-upvote posts. Topics whose primary entity starts with a generic word ("ai", "new") require the higher 0.25 relevance floor for these slots.
+
+### Changed
+
+- Keyless Reddit comment enrichment now covers 4 / 8 / 12 threads per subquery at quick / default / deep depth (was 3 / 5 / 8) and keeps up to 12 top comments per thread (was 10), now that repeat fetches are memoized and paced.
+- The emoji-tree footer no longer appends `⚠ partial after N items: HTTP 429 ... (run doctor for fixes)` outcome text to any source line; source lines carry counts and engagement only. `--emit=compact` stdout also drops the `Some sources failed` / `Some sources returned partial results` warning lines and the `## Source Errors` block. The model-facing `## Partial Coverage` note stays, and the saved raw file, `--emit=json`, and `doctor --postmortem` keep full `source_status`, `warnings`, and `errors_by_source`.
+
+### Fixed
+
+- Keyless Reddit comment-enrichment slots now go to the most-commented threads within each entity-priority tier, so a high-discussion thread no longer misses `## Top Community Comments` coverage while near-empty threads consume the scarce slots. ([#906](https://github.com/mvanhorn/last30days-skill/issues/906))
+- Keyless Reddit now paces unauthenticated reddit.com requests at 1 req/sec (configurable via `LAST30DAYS_REDDIT_KEYLESS_RATE`) and retries a 429'd RSS or listing sub-request once, so routine runs no longer drop those lanes as `partial` HTTP 429. ([#985](https://github.com/mvanhorn/last30days-skill/issues/985))
+- A source that delivered items but lost some sub-requests (a swallowed 429 or 403 on one lane) now records `ok` with a detail line such as `3 sub-requests rate-limited (HTTP 429)` instead of `partial`; `doctor --postmortem` shows that detail on the Succeeded line. Adapter-declared leg failures (for example a Perplexity `both` run whose agent leg failed) still brand the source partial.
+- Fusion and report finalize now identify a thread by its normalized URL, not its per-stream item id. When the same Reddit thread arrives from two subquery streams (both labelled `R1`), the candidate keeps the copy that carries `top_comments`, `comment_insights`, and the verified counts instead of discarding it as a duplicate, and `items_by_source` holds one entry per thread. This is what silently emptied `## Top Community Comments` on multi-subquery runs.
+- Keyless Reddit GETs are memoized for the life of one command, and concurrent requesters for the same URL share the in-flight fetch. Subreddit listing partials, listing RSS feeds, arctic supplements, and shreddit comment pages were fetched once per subquery (four times on a typical run) because the Reddit lane is dispatched with the raw topic every time; a four-subquery run now issues roughly 50 reddit.com requests instead of ~184, which is what kept tripping the anonymous rate limit.
+- Keyless Reddit RSS and listing fetches now size their per-future timeouts from the shared bucket's queue depth instead of a fixed 20 seconds. At 1 req/s with four subquery streams sharing the bucket, the fixed timeout expired while a fetch was still waiting for its token and the feed was silently dropped.
+- Keyless Reddit comment scraping now drops bot authors (RemindMeBot, AutoModerator, `WikiTextBot`-style camelCase names, and `-bot`/`_bot` suffixed accounts), so a "I will be messaging you in 3 days" reply can no longer occupy a Top Community Comments slot. Ordinary usernames ending in a lowercase "bot" (Talbot, abbot) are unaffected. Cherry-picked from [#1034](https://github.com/mvanhorn/last30days-skill/pull/1034) (rebase of [#907](https://github.com/mvanhorn/last30days-skill/pull/907)).
+- Rate-limit retries are bounded: a `Retry-After` / `x-ratelimit-reset` wait is capped at 60 seconds and an epoch-style reset (GitHub) is converted to a delta, so a 429 can no longer park a worker or the main thread for minutes. The keyless Reddit memo elects one new owner when an in-flight fetch fails instead of letting every waiter refetch, its gate wait and the comment-enrichment budget account for the shared bucket's queue, the Reddit pool reservation survives a small pool crowded by many sources, stream keepers respect `--max-per-source`, a source whose swallowed sub-requests all 429ed is not retried against the same host and is reported as rate-limited rather than `no-results` when filtering leaves it empty.
+- Reddit 429 backoff now honours `x-ratelimit-reset`, not just `Retry-After`. Reddit's anonymous search/RSS endpoints reply to a 429 with `x-ratelimit-reset: 42` and no `Retry-After`, so the retry fell through to exponential backoff (3s, 5s, 9s) — every step shorter than the window Reddit actually requires. Each retry re-429'd, the budget drained, and Reddit was reported as a dead source when it was only being asked too early. Both `http.fetch_url` and `reddit_public` now read either header through the new `http.retry_delay_from_headers` helper.
+- Sources that return items are no longer branded `auth-failed` / `partial` when a swallowed lane-level HTTP failure (e.g. Reddit shreddit partials 403-ing on datacenter egress) is captured by the pipeline sink. The transport-failure outcome still surfaces when nothing was delivered, so `doctor` prescriptions are unaffected.
+- `## Top Community Comments` and `## Best Takes` now draw from every cluster that clears the relevance floor, not only the eight clusters shown in `## Ranked Evidence Clusters`, so a top-voted comment on a lower-ranked thread still reaches the brief.
+
+
 ## [3.21.1] - 2026-08-18
 
 ### Changed

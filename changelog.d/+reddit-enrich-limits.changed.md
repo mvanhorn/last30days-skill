@@ -1,1 +1,0 @@
-Keyless Reddit comment enrichment now covers 4 / 8 / 12 threads per subquery at quick / default / deep depth (was 3 / 5 / 8) and keeps up to 12 top comments per thread (was 10), now that repeat fetches are memoized and paced.
