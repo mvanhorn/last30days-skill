@@ -13,6 +13,7 @@ These lock the flow against silent re-erosion (the failure mode that orphaned th
 wizard in PR #659 and flattened it before this restoration).
 """
 
+import re
 import unittest
 from pathlib import Path
 
@@ -20,6 +21,14 @@ from lib import setup_wizard
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
+
+
+def _find_regex(text: str, pattern: str) -> int:
+    """Like str.find, but for a regex. Used for invocations like
+    `last30days.py setup` that may be written as `last30days.py" setup`
+    when quoted around a ${SKILL_DIR} substitution."""
+    match = re.search(pattern, text)
+    return match.start() if match else -1
 
 
 class TestOnboardingContract(unittest.TestCase):
@@ -88,7 +97,7 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_modal_cookie_consent_before_setup(self):
         consent = self.modal.find("your browser's x.com cookies")
-        setup = self.modal.find("last30days.py setup")
+        setup = _find_regex(self.modal, r'last30days\.py"?\s+setup')
         self.assertGreater(consent, -1, "no cookie-consent modal in modal flow")
         self.assertGreater(setup, -1, "no setup invocation in modal flow")
         self.assertLess(consent, setup, "cookie consent must precede setup in modal flow")
@@ -105,7 +114,7 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_prose_cookie_consent_before_setup(self):
         consent = self.prose.find("Cookie consent")
-        setup = self.prose.find("last30days.py setup")
+        setup = _find_regex(self.prose, r'last30days\.py"?\s+setup')
         self.assertGreater(consent, -1, "no cookie-consent step in prose flow")
         self.assertGreater(setup, -1, "no setup invocation in prose flow")
         self.assertLess(consent, setup, "cookie consent must precede setup in prose flow")
@@ -246,7 +255,7 @@ class TestOnboardingContract(unittest.TestCase):
         # The modal flow explicitly does NOT run a separate --welcome command.
         self.assertIn("Do NOT run a separate `--welcome`", self.modal)
         # The non-modal flow still uses the engine welcome command.
-        self.assertIn("last30days.py --welcome", self.prose)
+        self.assertRegex(self.prose, r'last30days\.py"?\s+--welcome')
 
     def test_stocktwits_surfaced_as_conditional(self):
         """StockTwits is advertised in the engine welcome as a ticker/crypto-gated
