@@ -305,9 +305,10 @@ class TestSlotPriority:
         assert out[1:] == [known_zero, unknown]
 
     def test_richest_thread_gets_slot_when_score_ranked_low(self):
-        # Issue #906 regression: a 45-comment thread ranked 7th by score must get
-        # an enrichment slot at default depth (limit 5) while a 4-comment thread
-        # above it in score order does not. All posts are in the same entity tier.
+        # Issue #906 regression: a 45-comment thread ranked last by score must
+        # get an enrichment slot at default depth (limit 8) while a 4-comment
+        # thread above it in score order does not. All posts are in the same
+        # entity tier; there are more posts than slots so ordering matters.
         posts = [
             self._titled_nc(1, "openclaw thread one", score=1000, ncmt=4),
             self._titled_nc(2, "openclaw thread two", score=900, ncmt=4),
@@ -316,6 +317,9 @@ class TestSlotPriority:
             self._titled_nc(5, "openclaw thread five", score=600, ncmt=6),
             self._titled_nc(6, "openclaw thread six", score=500, ncmt=5),
             self._titled_nc(7, "openclaw thread seven", score=300, ncmt=4),
+            self._titled_nc(9, "openclaw thread nine", score=250, ncmt=7),
+            self._titled_nc(10, "openclaw thread ten", score=200, ncmt=8),
+            self._titled_nc(11, "openclaw thread eleven", score=150, ncmt=9),
             self._titled_nc(8, "openclaw thread eight", score=77, ncmt=45),
         ]
         enriched_urls = []
@@ -329,15 +333,15 @@ class TestSlotPriority:
                                side_effect=_capture):
             reddit_keyless.search_and_enrich(
                 "openclaw", "2026-05-01", "2026-05-31", depth="default")
-        assert posts[7]["url"] in enriched_urls      # 45-comment thread enriched
-        assert posts[2]["url"] not in enriched_urls   # 4-comment thread above it skipped
+        assert posts[10]["url"] in enriched_urls     # 45-comment thread enriched
+        assert posts[6]["url"] not in enriched_urls   # 4-comment thread above it skipped
         assert len(enriched_urls) == reddit_keyless.ENRICH_LIMITS["default"]
 
     def test_miss_tier_orders_by_comments_for_leftover_slots(self):
         # Review finding #1 (validated): when the entity-match tier is smaller
         # than ENRICH_LIMITS, leftover slots are filled from the miss tier in
-        # comment-count order. 1 match + 4 misses at quick depth (limit 3): the
-        # two most-commented misses get slots, the least-commented miss does not.
+        # comment-count order. 1 match + 4 misses at quick depth (limit 4): the
+        # three most-commented misses get slots, the least-commented miss does not.
         # Score order deliberately differs from comment order so this test
         # discriminates the miss-tier sort from the old score-first order.
         posts = [
@@ -361,7 +365,7 @@ class TestSlotPriority:
         assert posts[0]["url"] in enriched_urls       # entity match always slotted
         assert posts[1]["url"] in enriched_urls       # 30-comment miss (top miss)
         assert posts[2]["url"] in enriched_urls       # 9-comment miss
-        assert posts[3]["url"] not in enriched_urls   # 2-comment miss below the cut
+        assert posts[3]["url"] in enriched_urls       # 2-comment miss takes the last slot
         assert posts[4]["url"] not in enriched_urls   # 1-comment miss below the cut
         assert len(enriched_urls) == reddit_keyless.ENRICH_LIMITS["quick"]
 

@@ -23,15 +23,21 @@ from typing import Any, Dict, List, Optional
 from . import http
 from . import reddit_enrich
 
-# Up to N posts enriched per run, by depth (mirrors reddit_public.ENRICH_LIMITS).
+# Up to N posts enriched per subquery, by depth. Raised from 3/5/8 once the
+# per-command memo (http.reddit_keyless_get_text) collapsed repeat shreddit
+# fetches across subqueries and the 1 req/s bucket stopped the 429s: eight
+# fetches fit inside ENRICH_BUDGET at four workers, and the comments are the
+# lane's headline value.
 ENRICH_LIMITS = {
-    "quick": 3,
-    "default": 5,
-    "deep": 8,
+    "quick": 4,
+    "default": 8,
+    "deep": 12,
 }
 
 # Max comments returned per post (independent of how many posts get enriched).
-MAX_COMMENTS = 10
+# Twelve so a thousand-comment thread feeds more than ten candidates into the
+# cross-platform Top Community Comments block.
+MAX_COMMENTS = 12
 
 SVC_TIMEOUT = 12
 

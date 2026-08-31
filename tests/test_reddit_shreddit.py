@@ -153,3 +153,21 @@ class TestFetchComments:
         with mock.patch.object(rs.http, "get_text", return_value=None):
             out = rs.fetch_comments(url)
         assert out["top_comments"] == [] and out["num_comments"] is None
+
+
+class TestEnrichmentBudget:
+    """Busy topics enrich more threads and carry more comments per thread."""
+
+    def test_enrich_limits_by_depth(self):
+        assert rs.ENRICH_LIMITS == {"quick": 4, "default": 8, "deep": 12}
+
+    def test_parse_comments_returns_up_to_twelve(self):
+        html = "".join(
+            f'<shreddit-comment author="user{i}" thingId="t1_c{i}" score="{100 - i}" '
+            f'permalink="/r/test/comments/1/x/t1_c{i}/"></shreddit-comment>'
+            f'<div id="t1_c{i}-post-rtjson-content"><p>comment number {i} body text</p></div>'
+            for i in range(30)
+        )
+        out = rs.parse_comments(html)
+        assert len(out) == rs.MAX_COMMENTS == 12
+        assert [c["score"] for c in out] == list(range(100, 88, -1))
