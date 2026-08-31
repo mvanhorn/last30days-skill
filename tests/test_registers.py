@@ -155,7 +155,10 @@ def _bullet_count(output: str, heading: str) -> int:
             "creator",
             ["Best Takes", "Top Community Comments", "Stats", "Ranked Evidence Clusters", "Source Coverage"],
             6,
-            6,
+            # The register's own top_comments budget. It used to read 6 only
+            # because the comments pool was limited to the 6 visible clusters;
+            # the pool now spans every floor-clearing cluster.
+            8,
         ),
     ],
 )
@@ -203,9 +206,11 @@ def test_default_register_is_byte_identical_when_omitted(monkeypatch):
 
     assert implicit == explicit
     assert hashlib.sha256(implicit.encode()).hexdigest() == (
-        # Hash includes #886's linked evidence URLs and #890's Hacker News
-        # comment-rendering changes from main.
-        "351089b5c0eae7ef55bcfd35cc23a6eca1008a7f3d8c28e3266fe351a788c985"
+        # Hash includes #886's linked evidence URLs, #890's Hacker News
+        # comment-rendering changes, the quiet footer (no outcome text, no
+        # ## Source Errors in compact), and the comments pool reading every
+        # floor-clearing cluster.
+        "81fdfc85643d124f2c06ff0bac8956c30280c652436bc4a58dbfc37718be71e1"
     )
 
 
