@@ -1,12 +1,18 @@
 {
-  "name": "last30days-skill",
-  "version": "3.21.1",
-  "description": "Research a topic from the last 30 days across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, and the web.",
+  "name": "obsidian2date",
+  "version": "0.1.0",
+  "description": "Research a topic from the last 30 days, then write durable Obsidian run notes and briefings.",
   "settings": [
     {
       "name": "Extension Directory",
       "description": "Extension installation directory (auto-set by Gemini CLI)",
       "envVar": "GEMINI_EXTENSION_DIR",
+      "sensitive": false
+    },
+    {
+      "name": "Obsidian Vault",
+      "description": "Existing Obsidian vault root for --emit=obsidian exports",
+      "envVar": "OBSIDIAN2DATE_VAULT",
       "sensitive": false
     },
     {

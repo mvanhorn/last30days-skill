@@ -150,13 +150,21 @@ def resolve_vault_root(
     2. OBSIDIAN2DATE_VAULT / LAST30DAYS_OBSIDIAN_VAULT
     3. ~/Desktop/brain-paul when present
     """
+    if explicit is not None:
+        return Path(explicit).expanduser().resolve()
+
     env_map: dict[str, str] = dict(env) if env is not None else dict(os.environ)
     candidates: list[Path] = []
-    if explicit:
-        candidates.append(Path(explicit).expanduser())
     for key in ("OBSIDIAN2DATE_VAULT", "LAST30DAYS_OBSIDIAN_VAULT"):
         value = env_map.get(key)
-        if value:
+        if value is not None:
+            # A present blank value deliberately disables implicit vault
+            # discovery instead of falling through to a lower-priority key or
+            # the desktop fallback.
+            if not value.strip():
+                raise FileNotFoundError(
+                    "No Obsidian vault found. Pass --obsidian-vault or set OBSIDIAN2DATE_VAULT."
+                )
             candidates.append(Path(value).expanduser())
     candidates.append(Path.home() / "Desktop" / "brain-paul")
 
@@ -164,8 +172,6 @@ def resolve_vault_root(
         resolved = candidate.resolve()
         if resolved.is_dir():
             return resolved
-    if explicit:
-        return Path(explicit).expanduser().resolve()
     raise FileNotFoundError(
         "No Obsidian vault found. Pass --obsidian-vault or set OBSIDIAN2DATE_VAULT."
     )

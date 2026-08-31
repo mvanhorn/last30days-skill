@@ -1,13 +1,17 @@
 from __future__ import annotations
 
+import importlib
 import re
+import sys
 from pathlib import Path
 from unittest import mock
 
-from lib import env
-
 
 ROOT = Path(__file__).resolve().parents[1]
+SCRIPT_ROOT = ROOT / "skills" / "last30days" / "scripts"
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+env = importlib.import_module("lib.env")
 DOC_PATHS = [
     ROOT / "skills" / "last30days" / "SKILL.md",
     ROOT / "README.md",
@@ -19,7 +23,8 @@ CONFIG_ENV_KEY_RE = re.compile(
     r"BSKY|TRUTHSOCIAL|BRAVE|EXA|SERPER|OPENROUTER|PERPLEXITY|PARALLEL|"
     r"XQUIK|GROQ)_[A-Z0-9_]+|"
     r"OPENAI_API_KEY|AUTH_TOKEN|CT0|FROM_BROWSER|INCLUDE_SOURCES|"
-    r"EXCLUDE_SOURCES|SETUP_COMPLETE|FUN_LEVEL"
+    r"EXCLUDE_SOURCES|SETUP_COMPLETE|FUN_LEVEL|OBSIDIAN2DATE_VAULT|"
+    r"LAST30DAYS_OBSIDIAN_VAULT"
     r")(?![A-Z0-9_])"
 )
 DOC_ONLY_KEYS = {

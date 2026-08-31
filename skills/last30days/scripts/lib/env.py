@@ -490,6 +490,8 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # degraded (neither ok, no-results, nor skipped-unconfigured). #384.
         ('LAST30DAYS_STRICT_EXIT', None),
         ('LAST30DAYS_MEMORY_DIR', None),
+        ('OBSIDIAN2DATE_VAULT', None),
+        ('LAST30DAYS_OBSIDIAN_VAULT', None),
         # Optional local-only evidence source. Paths are separated with the
         # platform path separator (":" on macOS/Linux, ";" on Windows).
         ('LAST30DAYS_CORPUS_DIRS', None),
@@ -585,7 +587,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     ]
 
     for key, default in keys:
-        config[key] = os.environ.get(key) or merged_env.get(key, default)
+        config[key] = os.environ[key] if key in os.environ else merged_env.get(key, default)
 
     # Export debug flag to os.environ so log.py's lazy os.environ.get()
     # picks up .env values. setdefault ensures a shell-exported value is

@@ -58,9 +58,12 @@ The upstream research engine remains under `skills/last30days/`.
 ## Run
 
 1. Get the topic from the user's request.
-2. Resolve the vault from `OBSIDIAN2DATE_VAULT`, then
-   `LAST30DAYS_OBSIDIAN_VAULT`. If neither is set, ask the user for the vault
-   path before writing.
+2. Resolve the vault from an explicit `--obsidian-vault` path, then
+   `OBSIDIAN2DATE_VAULT`, then `LAST30DAYS_OBSIDIAN_VAULT`, then an existing
+   `~/Desktop/brain-paul`. Environment and desktop candidates must already be
+   directories; an explicit missing path is the requested export target. If no
+   path resolves, ask the user for one before writing (the CLI otherwise raises
+   `No Obsidian vault found. Pass --obsidian-vault or set OBSIDIAN2DATE_VAULT.`).
 3. Run the existing research engine with `--emit=obsidian` and the resolved
    vault, preserving the engine's normal source and fallback behavior.
 4. Report the briefing path, run-note path, and any partial or unavailable
@@ -109,7 +112,7 @@ Related prior runs are linked with Obsidian `[[wikilinks]]` when token overlap i
 
 1. **Do not improvise research.** Run the engine. Pass its stdout through.
 2. **Prefer `--emit=obsidian`** for this skill. Use upstream modes (`compact`, `json`, `brief`, …) only when the user explicitly asks.
-3. **Vault path:** ask once if no vault can be resolved; then pin `OBSIDIAN2DATE_VAULT` for the session.
+3. **Vault path:** ask once if no vault can be resolved; then pin `OBSIDIAN2DATE_VAULT` for the session. An empty or whitespace-only vault environment value deliberately disables implicit fallback.
 4. **Keys are optional.** Reddit / HN / Polymarket / GitHub / Web work keyless. X needs browser cookies or a backend; TikTok/IG need ScrapeCreators.
 5. **Synthesis:** the Obsidian notes already contain a structured briefing and evidence index. Do **not** invent citations beyond what the engine returned. You may add a short German prose summary *after* the engine output if the user wants narrative.
 6. **Upstream skill:** for doctor/setup/deep source debugging, fall back to `skills/last30days/SKILL.md`.

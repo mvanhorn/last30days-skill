@@ -1,9 +1,18 @@
+import importlib
 import os
+import sys
 import unittest
 from pathlib import Path
+import tempfile
 from unittest import mock
 
-from lib import bird_x, env
+SCRIPT_ROOT = Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+cli = importlib.import_module("last30days")
+bird_x = importlib.import_module("lib.bird_x")
+env = importlib.import_module("lib.env")
+obsidian_export = importlib.import_module("lib.obsidian_export")
 
 
 class EnvV3Tests(unittest.TestCase):
@@ -37,6 +46,75 @@ class EnvV3Tests(unittest.TestCase):
             bird_x._credentials.clear()
             with mock.patch.dict(os.environ, {}, clear=False):
                 self.assertIsNone(bird_x.is_bird_authenticated())
+
+    def test_file_configured_vault_is_registered_and_propagated_for_export(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = Path(tmp) / ".env"
+            configured = Path(tmp) / "configured"
+            configured.mkdir()
+            config_file.write_text(
+                f"OBSIDIAN2DATE_VAULT={configured}\n",
+                encoding="utf-8",
+            )
+            config_file.chmod(0o600)
+            with (
+                mock.patch.object(env, "CONFIG_FILE", config_file),
+                mock.patch.object(env, "_find_project_env", return_value=None),
+                mock.patch.object(env, "_load_keychain", return_value={}),
+                mock.patch.object(env, "_load_pass", return_value={}),
+                mock.patch.dict(os.environ, {}, clear=False),
+            ):
+                os.environ.pop("OBSIDIAN2DATE_VAULT", None)
+                config = env.get_config()
+                self.assertEqual(str(configured), config["OBSIDIAN2DATE_VAULT"])
+                self.assertNotIn("OBSIDIAN2DATE_VAULT", os.environ)
+                cli._propagate_config_to_environ(config)
+                self.assertEqual(configured.resolve(), obsidian_export.resolve_vault_root())
+
+    def test_process_environment_vault_values_win_including_empty_and_whitespace(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = Path(tmp) / ".env"
+            config_file.write_text(
+                f"OBSIDIAN2DATE_VAULT={tmp}/from-file\n",
+                encoding="utf-8",
+            )
+            config_file.chmod(0o600)
+            for value in ("", "  "):
+                with self.subTest(value=repr(value)):
+                    with (
+                        mock.patch.object(env, "CONFIG_FILE", config_file),
+                        mock.patch.object(env, "_find_project_env", return_value=None),
+                        mock.patch.object(env, "_load_keychain", return_value={}),
+                        mock.patch.object(env, "_load_pass", return_value={}),
+                        mock.patch.dict(os.environ, {"OBSIDIAN2DATE_VAULT": value}, clear=False),
+                    ):
+                        config = env.get_config()
+                        self.assertEqual(value, config["OBSIDIAN2DATE_VAULT"])
+                        cli._propagate_config_to_environ(config)
+                        self.assertEqual(value, os.environ["OBSIDIAN2DATE_VAULT"])
+
+    def test_file_configured_legacy_vault_key_is_registered(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config_file = Path(tmp) / ".env"
+            legacy = Path(tmp) / "legacy"
+            legacy.mkdir()
+            config_file.write_text(
+                f"LAST30DAYS_OBSIDIAN_VAULT={legacy}\n",
+                encoding="utf-8",
+            )
+            with (
+                mock.patch.object(env, "CONFIG_FILE", config_file),
+                mock.patch.object(env, "_find_project_env", return_value=None),
+                mock.patch.object(env, "_load_keychain", return_value={}),
+                mock.patch.object(env, "_load_pass", return_value={}),
+                mock.patch.dict(os.environ, {}, clear=False),
+            ):
+                os.environ.pop("LAST30DAYS_OBSIDIAN_VAULT", None)
+                config = env.get_config()
+                self.assertEqual(f"{tmp}/legacy", config["LAST30DAYS_OBSIDIAN_VAULT"])
+                self.assertNotIn("LAST30DAYS_OBSIDIAN_VAULT", os.environ)
+                cli._propagate_config_to_environ(config)
+                self.assertEqual(f"{tmp}/legacy", os.environ["LAST30DAYS_OBSIDIAN_VAULT"])
 
     def test_file_permission_check_skips_windows_posix_mode_bits(self):
         path = mock.Mock(spec=Path)

@@ -765,8 +765,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--obsidian-vault",
         help=(
-            "Obsidian vault root for --emit=obsidian "
-            "(default: OBSIDIAN2DATE_VAULT / LAST30DAYS_OBSIDIAN_VAULT / ~/Desktop/brain-paul)"
+            "Obsidian vault root for --emit=obsidian (otherwise: "
+            "OBSIDIAN2DATE_VAULT, LAST30DAYS_OBSIDIAN_VAULT, or existing ~/Desktop/brain-paul)"
         ),
     )
     parser.add_argument("--synthesis-file", help="Markdown synthesis to embed in --emit=html output")
@@ -2554,16 +2554,19 @@ def _render_save_and_print(
 
 
 def _propagate_config_to_environ(config: dict[str, object]) -> None:
-    """Push relevant env keys to os.environ so provider modules can read them.
+    """Push file-configured library settings into ``os.environ``.
 
-    The env.get_config() function reads from a .env file, but providers.py
-    reads from os.environ directly. Without this, OPENAI_BASE_URL and
-    XAI_BASE_URL overrides are silently ignored. This is a no-op for
-    keys that are already set in process env.
+    Some provider modules and the Obsidian resolver intentionally read the
+    process environment directly. Process values, including deliberate empty
+    values, always win over lower-priority configuration files.
     """
     for key in ("OPENAI_BASE_URL", "XAI_BASE_URL", "OPENROUTER_BASE_URL"):
         val = config.get(key)
-        if val and not os.environ.get(key):
+        if val and key not in os.environ:
+            os.environ[key] = str(val)
+    for key in ("OBSIDIAN2DATE_VAULT", "LAST30DAYS_OBSIDIAN_VAULT"):
+        val = config.get(key)
+        if val is not None and key not in os.environ:
             os.environ[key] = str(val)
 
 

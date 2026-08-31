@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
+import importlib
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
-import last30days as cli
-from lib import obsidian_export, schema
+SCRIPT_ROOT = Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts"
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+cli = importlib.import_module("last30days")
+obsidian_export = importlib.import_module("lib.obsidian_export")
+schema = importlib.import_module("lib.schema")
 
 
-def make_report(topic: str = "OpenClaw vs NanoClaw") -> schema.Report:
+def make_report(topic: str = "OpenClaw vs NanoClaw"):
     item = schema.SourceItem(
         item_id="i1",
         source="reddit",
@@ -174,6 +181,28 @@ class ObsidianExportTests(unittest.TestCase):
                 env={"OBSIDIAN2DATE_VAULT": str(vault)},
             )
             self.assertEqual(resolved, vault.resolve())
+
+    def test_resolve_vault_root_explicit_missing_path_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            explicit = Path(tmp) / "missing-vault"
+            self.assertEqual(
+                obsidian_export.resolve_vault_root(str(explicit), env={}),
+                explicit.resolve(),
+            )
+
+    def test_resolve_vault_root_blank_environment_blocks_implicit_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / "home"
+            fallback = home / "Desktop" / "brain-paul"
+            fallback.mkdir(parents=True)
+            with mock.patch.object(Path, "home", return_value=home), self.assertRaisesRegex(
+                FileNotFoundError,
+                r"^No Obsidian vault found\. Pass --obsidian-vault or set OBSIDIAN2DATE_VAULT\.$",
+            ):
+                obsidian_export.resolve_vault_root(
+                    None,
+                    env={"OBSIDIAN2DATE_VAULT": "", "LAST30DAYS_OBSIDIAN_VAULT": "  "},
+                )
 
 
 if __name__ == "__main__":

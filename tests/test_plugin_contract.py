@@ -1,12 +1,17 @@
+import importlib
 import json
+import sys
 import tomllib
 import unittest
 from pathlib import Path
 
-from lib.skill_meta import read_skill_version
-
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_ROOT = ROOT / "skills" / "last30days"
+SCRIPT_ROOT = ROOT / "skills" / "last30days" / "scripts"
+if str(SCRIPT_ROOT) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_ROOT))
+read_skill_version = importlib.import_module("lib.skill_meta").read_skill_version
+FORK_SKILL_ROOT = ROOT / "skills" / "obsidian2date"
+FORK_REPOSITORY_URL = "https://github.com/pauleschwarz/obsidian2date.git"
 
 
 def _json(path: Path) -> dict:
@@ -14,7 +19,7 @@ def _json(path: Path) -> dict:
 
 
 def _skill_version() -> str:
-    version = read_skill_version(SKILL_ROOT / "SKILL.md")
+    version = read_skill_version(FORK_SKILL_ROOT / "SKILL.md")
     if not version:
         raise AssertionError("SKILL.md version frontmatter not found")
     return version
@@ -24,30 +29,27 @@ class TestPluginContract(unittest.TestCase):
     def test_codex_plugin_manifest_uses_repo_skill_root(self) -> None:
         manifest = _json(ROOT / ".codex-plugin" / "plugin.json")
 
-        self.assertEqual("last30days", manifest["name"])
+        self.assertEqual("obsidian2date", manifest["name"])
         self.assertEqual("./skills/", manifest["skills"])
-        self.assertEqual("last30days", manifest["interface"]["displayName"])
+        self.assertEqual("obsidian2date", manifest["interface"]["displayName"])
 
     def test_codex_marketplace_points_at_repo_root_plugin(self) -> None:
         marketplace = _json(ROOT / ".agents" / "plugins" / "marketplace.json")
         plugins = marketplace.get("plugins") or []
         plugin_by_name = {plugin["name"]: plugin for plugin in plugins}
 
-        self.assertEqual("last30days-skill", marketplace["name"])
-        self.assertIn("last30days", plugin_by_name)
-        plugin = plugin_by_name["last30days"]
+        self.assertEqual("obsidian2date", marketplace["name"])
+        self.assertIn("obsidian2date", plugin_by_name)
+        plugin = plugin_by_name["obsidian2date"]
         self.assertEqual(
-            {
-                "source": "url",
-                "url": "https://github.com/mvanhorn/last30days-skill.git",
-            },
+            {"source": "url", "url": FORK_REPOSITORY_URL},
             plugin["source"],
         )
 
     def test_grok_plugin_manifest_uses_repo_skill_root(self) -> None:
         manifest = _json(ROOT / ".grok-plugin" / "plugin.json")
 
-        self.assertEqual("last30days", manifest["name"])
+        self.assertEqual("obsidian2date", manifest["name"])
         self.assertEqual("./skills/", manifest["skills"])
 
     def test_grok_marketplace_points_at_repo_root_plugin(self) -> None:
@@ -55,15 +57,12 @@ class TestPluginContract(unittest.TestCase):
         plugins = marketplace.get("plugins") or []
         plugin_by_name = {plugin["name"]: plugin for plugin in plugins}
 
-        self.assertEqual("last30days-skill", marketplace["name"])
-        self.assertIn("last30days", plugin_by_name)
-        plugin = plugin_by_name["last30days"]
-        # Exact dict equality locks the bare Git URL source (anti-self-referential-local).
+        self.assertEqual("obsidian2date", marketplace["name"])
+        self.assertIn("obsidian2date", plugin_by_name)
+        plugin = plugin_by_name["obsidian2date"]
+        # Exact dict equality locks the public repository source.
         self.assertEqual(
-            {
-                "source": "url",
-                "url": "https://github.com/mvanhorn/last30days-skill.git",
-            },
+            {"source": "url", "url": FORK_REPOSITORY_URL},
             plugin["source"],
         )
 

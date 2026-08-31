@@ -40,8 +40,45 @@ export OBSIDIAN2DATE_VAULT=/path/to/your/vault
 python3 skills/last30days/scripts/last30days.py "topic" --emit=obsidian
 ```
 
-The exporter also accepts `LAST30DAYS_OBSIDIAN_VAULT`. Existing notes are never
-overwritten; filename collisions get a numeric suffix.
+### Vault resolution
+
+The export target is resolved in this order:
+
+1. `--obsidian-vault PATH` (an explicit missing path is created for the export)
+2. `OBSIDIAN2DATE_VAULT`
+3. `LAST30DAYS_OBSIDIAN_VAULT`
+4. an existing `~/Desktop/brain-paul`
+
+Environment and desktop candidates must already be directories. A present empty
+or whitespace-only vault environment value intentionally disables implicit
+fallbacks. If nothing resolves, the command stops with:
+
+```text
+No Obsidian vault found. Pass --obsidian-vault or set OBSIDIAN2DATE_VAULT.
+```
+
+Use `~/...` or an absolute path in `.env` files; `$HOME` is not expanded there.
+Existing notes are never overwritten; filename collisions get a numeric suffix.
+
+## Safe diagnostics
+
+Run a permission-only check before research:
+
+```text
+$ python3 skills/last30days/scripts/last30days.py --preflight
+last30days preflight
+Status: Ready to research with safe defaults.
+...
+Local writes:
+- none planned
+```
+
+`--preflight` is safe: it runs **without reading cookies, writing files, or running research**.
+For troubleshooting sources or installed backends, use the health check instead:
+
+```bash
+python3 skills/last30days/scripts/last30days.py doctor
+```
 
 ## What gets written
 
