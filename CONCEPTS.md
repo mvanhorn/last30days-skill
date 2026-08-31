@@ -32,6 +32,14 @@ The check that a candidate item plausibly mentions the Primary entity before fin
 
 An item that fails grounding receives a decisive entity-miss demotion, designed so engagement cannot rescue off-entity content. Because the demotion is decisive, the grounding bar is deliberately conservative: its failure modes degrade toward "no penalty," never toward burying on-entity signal.
 
+### Subquery stream
+
+One source's ranked result list for one planner subquery. A run fans out into several subqueries, and each subquery queries each source separately, so the same thread can appear in several streams. A stream orders and truncates its own items and assigns them positional labels, so a label is only meaningful inside its stream; identity across streams is the item's normalized URL.
+
+### Candidate
+
+The fused unit of evidence that ranking, clustering, and rendering operate on: every copy of one item across all Subquery streams, merged by normalized URL into a single record that carries the copies' combined rank evidence. When copies of the same item differ in what they carry (one stream fetched its comments, another did not), the candidate keeps the richer version rather than the first one seen.
+
 ### Keyless path
 
 The research flow available with no API keys: source data is gathered by scraping and RSS rather than authenticated APIs, and ranking falls back to local scoring instead of LLM-based reranking. This is the free tier of the Skill; lexical quality safeguards like Entity grounding matter most here, because no LLM is available to judge relevance semantically.
