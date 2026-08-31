@@ -124,6 +124,8 @@ Related prior runs are linked with Obsidian `[[wikilinks]]` when token overlap i
 ## Quick examples
 
 ```bash
+ENGINE="skills/last30days/scripts/last30days.py"
+
 # Vault-native research, default 30-day window
 python3 "$ENGINE" "local LLM agent frameworks" --emit=obsidian
 

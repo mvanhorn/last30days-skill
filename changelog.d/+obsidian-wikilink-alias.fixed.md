@@ -1,0 +1,1 @@
+Obsidian export links now target the note filename with the title as alias (`[[YYYY-MM-DD-slug|Title]]`). Previously wikilinks pointed at the frontmatter title, which Obsidian cannot resolve against the `YYYY-MM-DD-<slug>.md` filenames the exporter writes, so every related-note, briefing "Full run", Index, and Dashboard link was broken.

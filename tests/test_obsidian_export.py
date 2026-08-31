@@ -91,6 +91,38 @@ class ObsidianExportTests(unittest.TestCase):
     def test_slugify_and_wikilink(self) -> None:
         self.assertEqual(obsidian_export.slugify_topic("Hello, World!"), "hello-world")
         self.assertEqual(obsidian_export.wikilink_title("A [B] | C"), "A B  C")
+        self.assertEqual(
+            obsidian_export.wikilink_alias("2026-03-16-topic-1", "Topic — 2026-03-16"),
+            "2026-03-16-topic-1|Topic — 2026-03-16",
+        )
+
+    def test_wikilinks_resolve_against_note_filenames(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            vault = Path(tmp)
+            paths = obsidian_export.resolve_paths(vault)
+
+            first = make_report("OpenClaw agents")
+            result1 = obsidian_export.export_report_to_obsidian(first, paths=paths)
+
+            second = make_report("OpenClaw latency")
+            result2 = obsidian_export.export_report_to_obsidian(second, paths=paths)
+
+            run_stem = result1.run_note.stem
+            run2 = result2.run_note.read_text(encoding="utf-8")
+            self.assertIn(f"[[{run_stem}|", run2, "related links must target the note file")
+
+            briefing2 = result2.briefing_note.read_text(encoding="utf-8")
+            self.assertIn(f"[[{result2.run_note.stem}|", briefing2, "briefing must link the run file")
+            self.assertIn(f"[[{run_stem}|", briefing2)
+
+            index = result2.index_path.read_text(encoding="utf-8")
+            self.assertIn(f"[[{run_stem}|", index)
+
+            dashboard = result2.dashboard_path.read_text(encoding="utf-8")
+            self.assertIn(f"[[{result2.briefing_note.stem}|", dashboard)
+
+            stdout = obsidian_export.render_obsidian_stdout(result2, second)
+            self.assertIn(f"[[{run_stem}|", stdout)
 
     def test_render_run_note_has_frontmatter_and_sections(self) -> None:
         body = obsidian_export.render_run_note(make_report())

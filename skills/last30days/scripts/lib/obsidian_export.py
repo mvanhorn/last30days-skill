@@ -138,6 +138,16 @@ def wikilink_title(title: str) -> str:
     return _WIKILINK_SAFE_RE.sub("", (title or "").strip()) or "untitled"
 
 
+def wikilink_alias(stem: str, title: str) -> str:
+    """Link the note file by stem and show the human title as alias.
+
+    Obsidian resolves wikilinks against note filenames, not frontmatter
+    titles. Linking the title directly produces a broken link because the
+    exporter names files ``YYYY-MM-DD-<slug>[.md]``.
+    """
+    return f"{wikilink_title(stem)}|{wikilink_title(title)}"
+
+
 def resolve_vault_root(
     explicit: str | Path | None = None,
     *,
@@ -479,8 +489,7 @@ def render_run_note(
     if related:
         lines.extend(["## Related in vault", ""])
         for item in related:
-            link = wikilink_title(item.title)
-            lines.append(f"- [[{link}]] — {item.reason}")
+            lines.append(f"- [[{wikilink_alias(item.path.stem, item.title)}]] — {item.reason}")
         lines.append("")
 
     lines.extend(
@@ -587,6 +596,7 @@ def render_briefing_note(
     run_note_title: str,
     related: list[RelatedNote] | None = None,
     cluster_limit: int = 5,
+    run_note_target: str | None = None,
 ) -> str:
     """Render a short briefing note meant for daily reading."""
     related = related or []
@@ -597,6 +607,11 @@ def render_briefing_note(
     tags = ["obsidian2date", "briefing", "research-run"]
     related_titles = [run_note_title, *[item.title for item in related]]
 
+    run_link = (
+        wikilink_alias(run_note_target, run_note_title)
+        if run_note_target
+        else wikilink_title(run_note_title)
+    )
     lines = [
         _frontmatter(
             title=title,
@@ -611,7 +626,7 @@ def render_briefing_note(
         "",
         f"# Briefing: {report.topic}",
         "",
-        f"Full run: [[{wikilink_title(run_note_title)}]]",
+        f"Full run: [[{run_link}]]",
         "",
         "## What matters now",
         "",
@@ -639,7 +654,7 @@ def render_briefing_note(
     if related:
         lines.extend(["## Related vault notes", ""])
         for item in related:
-            lines.append(f"- [[{wikilink_title(item.title)}]]")
+            lines.append(f"- [[{wikilink_alias(item.path.stem, item.title)}]]")
         lines.append("")
 
     thin = len(clusters) < 2 or len(sources) < 2
@@ -779,9 +794,16 @@ def _prepend_list_item(path: Path, heading: str, item_line: str, *, max_items: i
     path.write_text(head + rebuilt, encoding="utf-8")
 
 
-def update_index(index_path: Path, *, run_title: str, topic: str, date_str: str) -> None:
+def update_index(
+    index_path: Path,
+    *,
+    run_title: str,
+    topic: str,
+    date_str: str,
+    run_path: Path | None = None,
+) -> None:
     _ensure_index(index_path)
-    link = wikilink_title(run_title)
+    link = wikilink_alias(run_path.stem, run_title) if run_path else wikilink_title(run_title)
     item = f"- {date_str} · [[{link}]] — {topic}"
     _prepend_list_item(index_path, "Runs", item)
 
@@ -792,9 +814,14 @@ def update_dashboard(
     briefing_title: str,
     topic: str,
     date_str: str,
+    briefing_path: Path | None = None,
 ) -> None:
     _ensure_dashboard(dashboard_path)
-    link = wikilink_title(briefing_title)
+    link = (
+        wikilink_alias(briefing_path.stem, briefing_title)
+        if briefing_path
+        else wikilink_title(briefing_title)
+    )
     item = f"- {date_str} · [[{link}]] — {topic}"
     _prepend_list_item(dashboard_path, "Latest briefings", item)
 
@@ -862,6 +889,7 @@ def export_report_to_obsidian(
         report,
         run_note_title=run_title,
         related=related,
+        run_note_target=run_path.stem,
     )
     if briefing_title != f"Briefing: {report.topic} — {today}":
         briefing_body = briefing_body.replace(
@@ -871,12 +899,19 @@ def export_report_to_obsidian(
         )
     briefing_path.write_text(briefing_body, encoding="utf-8")
 
-    update_index(paths.index_path, run_title=run_title, topic=report.topic, date_str=today)
+    update_index(
+        paths.index_path,
+        run_title=run_title,
+        topic=report.topic,
+        date_str=today,
+        run_path=run_path,
+    )
     update_dashboard(
         paths.dashboard_path,
         briefing_title=briefing_title,
         topic=report.topic,
         date_str=today,
+        briefing_path=briefing_path,
     )
 
     return ObsidianExportResult(
@@ -900,7 +935,7 @@ def render_obsidian_stdout(result: ObsidianExportResult, report: schema.Report) 
     if result.related:
         lines.append("- related:")
         for item in result.related:
-            lines.append(f"  - [[{wikilink_title(item.title)}]] ({item.reason})")
+            lines.append(f"  - [[{wikilink_alias(item.path.stem, item.title)}]] ({item.reason})")
     else:
         lines.append("- related: none yet")
     return "\n".join(lines) + "\n"
