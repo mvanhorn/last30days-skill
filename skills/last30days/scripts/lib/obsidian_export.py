@@ -257,16 +257,67 @@ def _engagement_total(candidate: schema.Candidate) -> float:
     return 0.0
 
 
+def _clean_text(text: str) -> str:
+    return " ".join((text or "").split())
+
+
+def _is_title_echo(text: str, title: str) -> bool:
+    return bool(title and text.casefold() == _clean_text(title).casefold())
+
+
+def _is_synthetic_blurb(text: str) -> bool:
+    return text.casefold().startswith("hn story about ")
+
+
+def _item_blurb(item: schema.SourceItem | None) -> str:
+    if item is None:
+        return ""
+    for raw in (item.snippet, item.body, item.why_relevant, item.title):
+        text = _clean_text(str(raw or ""))
+        if not text:
+            continue
+        # Skip pure title echoes and connector-generated HN fallbacks.
+        if _is_title_echo(text, item.title or ""):
+            continue
+        if _is_synthetic_blurb(text):
+            continue
+        return text
+    return ""
+
+
+def _candidate_blurb(candidate: schema.Candidate) -> str:
+    primary = _candidate_primary(candidate)
+    blurb = _item_blurb(primary)
+    if blurb:
+        return blurb
+    for item in candidate.source_items or []:
+        blurb = _item_blurb(item)
+        if blurb:
+            return blurb
+    return ""
+
+
 def _cluster_summary(report: schema.Report, cluster: schema.Cluster) -> str:
     by_id = {c.candidate_id: c for c in report.ranked_candidates}
+    blurbs: list[str] = []
     for candidate_id in list(cluster.representative_ids) + list(cluster.candidate_ids):
         candidate = by_id.get(candidate_id)
         if not candidate:
             continue
-        text = (candidate.snippet or candidate.title or "").strip()
-        if text:
-            return text.replace("\n", " ")
-    return cluster.title
+        blurb = _candidate_blurb(candidate)
+        if not blurb:
+            continue
+        if _is_title_echo(blurb, cluster.title):
+            continue
+        if blurb not in blurbs:
+            blurbs.append(blurb)
+        if len(blurbs) >= 2:
+            break
+    if blurbs:
+        joined = " · ".join(blurbs)
+        return joined if len(joined) <= 360 else joined[:357].rstrip() + "..."
+    sources = ", ".join(_source_label(s) for s in cluster.sources) or "mixed sources"
+    return f"Cluster across {sources}; open the evidence index for links."
 
 
 def _tokens(text: str) -> set[str]:
@@ -487,9 +538,10 @@ def render_run_note(
             f"{index}. [{candidate.title or candidate.url or candidate.candidate_id}]({candidate.url}) "
             f"— {_source_label(candidate.source)} ({host}{eng})"
         )
-        snippet = (candidate.snippet or "").strip()
-        if snippet:
-            lines.append(f"   - {snippet[:280]}")
+        blurb = _candidate_blurb(candidate)
+        title = _clean_text(candidate.title or "")
+        if blurb and not _is_title_echo(blurb, title):
+            lines.append(f"   - {blurb[:280]}")
     lines.append("")
 
     lines.extend(
@@ -564,9 +616,10 @@ def render_briefing_note(
     else:
         for cluster in clusters:
             src = ", ".join(_source_label(s) for s in cluster.sources) or "mixed"
-            lines.append(
-                f"- **{cluster.title}** ({src}) — {_cluster_summary(evidence_report, cluster)}"
-            )
+            summary = _cluster_summary(evidence_report, cluster)
+            if summary.casefold() == cluster.title.casefold():
+                summary = "Evidence is title-only; open the evidence index before drawing conclusions."
+            lines.append(f"- **{cluster.title}** ({src}) — {summary}")
     lines.append("")
     lines.extend(
         [

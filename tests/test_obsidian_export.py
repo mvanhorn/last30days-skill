@@ -93,6 +93,29 @@ class ObsidianExportTests(unittest.TestCase):
         self.assertIn("## Evidence index", body)
         self.assertIn("Latency debate", body)
         self.assertIn("https://reddit.com/r/LocalLLaMA/1", body)
+        self.assertIn("Users compare OpenClaw and NanoClaw on latency.", body)
+
+    def test_blurb_skips_title_only_source_text(self) -> None:
+        report = make_report()
+        item = report.ranked_candidates[0].source_items[0]
+        item.snippet = item.title
+        item.body = item.title
+        item.why_relevant = "HN story about OpenClaw threads explode"
+        report.ranked_candidates[0].snippet = item.title
+        self.assertEqual(obsidian_export._candidate_blurb(report.ranked_candidates[0]), "")
+
+    def test_cluster_summary_uses_evidence_fallback_without_title_echo(self) -> None:
+        report = make_report()
+        cluster = report.clusters[0]
+        candidate = report.ranked_candidates[0]
+        candidate.source_items[0].snippet = candidate.title
+        candidate.source_items[0].body = candidate.title
+        candidate.source_items[0].why_relevant = "HN story about OpenClaw threads explode"
+        candidate.snippet = candidate.title
+        self.assertEqual(
+            obsidian_export._cluster_summary(report, cluster),
+            "Cluster across Reddit; open the evidence index for links.",
+        )
 
     def test_export_writes_notes_index_dashboard_and_links_related(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
