@@ -558,9 +558,14 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # automated contexts (cron/CI/eval). Read by trustpilot._harvest_allowed.
         ('LAST30DAYS_TRUSTPILOT_NO_BROWSER', None),
         ('FROM_BROWSER', None),
-        # agentcookie sidecar: soft-dep X cookie source (lib/agentcookie.py).
-        # Set to "off" to disable it; independent of FROM_BROWSER otherwise.
+        # agentcookie sidecar: soft-dep X cookie source (lib/agentcookie.py),
+        # active only on extra hosts (Linux / Mac mini / Darwin sink) or when
+        # set to "on". "off" disables the sidecar reader.
         ('AGENTCOOKIE', None),
+        # Explicit Chrome DevTools endpoint for the extra-host CDP cookie
+        # lookup (lib/chrome_cdp.py), e.g. http://127.0.0.1:18800. Preferred
+        # over the 18800 / 9222+$DISPLAY defaults when set.
+        ('BROWSER_CDP_URL', None),
         ('LAST30DAYS_TRUST_PROJECT_CONFIG', None),
         ('SETUP_COMPLETE', None),
         ('INCLUDE_SOURCES', ''),
@@ -648,58 +653,150 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     config['_BROWSER_COOKIE_BROWSERS'] = cookie_extraction_browsers(config)
 
     if policy.browser_cookies == "read":
-        # Ordered X cookie discovery (first complete pair wins, no half-pair):
-        #   1. explicit AUTH_TOKEN+CT0 already in config — never overwritten
-        #   2. agentcookie sidecar   (independent of FROM_BROWSER; AGENTCOOKIE=off disables)
-        #   3. live Chrome CDP       (FROM_BROWSER=off skips)
-        #   4. existing browser cookie extract (macOS/Firefox), below
-        if not (config.get("AUTH_TOKEN") and config.get("CT0")):
-            x_creds, x_source = discover_x_credentials(config)
-            if x_creds:
-                config["AUTH_TOKEN"] = x_creds["AUTH_TOKEN"]
-                config["CT0"] = x_creds["CT0"]
-                config["_AUTH_TOKEN_SOURCE"] = x_source
-                config["_CT0_SOURCE"] = x_source
-        # Step 4: legacy browser extraction (X fallback if still missing, plus
-        # non-X cookie domains like truthsocial). Complete-pair enforced inside.
-        browser_creds = extract_browser_credentials(config)
-        for key, value in browser_creds.items():
-            if not config.get(key):
-                config[key] = value
-                config[f"_{key}_SOURCE"] = "browser"
+        _discover_and_apply_x_credentials(config)
 
     return config
 
 
-def discover_x_credentials(config: dict[str, Any]) -> tuple[dict[str, str], str]:
-    """Discover an X ``auth_token``+``ct0`` cookie pair for the bird backend.
+# ---------------------------------------------------------------------------
+# Extra-host X cookie discovery (Linux, Mac mini, Darwin agentcookie sink)
+# ---------------------------------------------------------------------------
 
-    Walks the NEW cookie sources in priority order and returns the first
-    COMPLETE pair (no half-pair merge across sources), as
-    ``({"AUTH_TOKEN": ..., "CT0": ...}, source)`` or ``({}, "")``:
 
-      * ``agentcookie`` — soft-dep sidecar CLI. Runs unless ``AGENTCOOKIE=off``;
-        independent of ``FROM_BROWSER`` (it is not a browser extraction).
-      * ``chrome-cdp`` — a live Chrome debug session over CDP. Skipped when
-        ``FROM_BROWSER=off``.
+def _mac_model() -> str:
+    """Darwin hardware model via ``sysctl -n hw.model``, or "" otherwise.
 
-    The legacy in-process browser extractor (Firefox / macOS Chrome / Safari)
-    is step 4 and is handled separately by ``extract_browser_credentials`` so
-    non-X cookie domains (truthsocial) are covered too. Side effects are the
-    subprocess/socket reads inside each source; callers gate this behind the
-    ``read`` cookie policy. Never raises.
+    Returns "" on non-Darwin and on any sysctl failure (missing binary,
+    non-zero exit, timeout) — the caller treats "" as "not a Mac mini", i.e. a
+    MacBook, which is the conservative default (no extra cookie lookups).
+    """
+    import platform
+    if platform.system() != "Darwin":
+        return ""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["sysctl", "-n", "hw.model"],
+            capture_output=True, text=True, timeout=3,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    if out.returncode != 0:
+        return ""
+    return (out.stdout or "").strip()
+
+
+def _is_mac_mini() -> bool:
+    """True on a Darwin Mac mini (``hw.model`` prefix ``Macmini``).
+
+    sysctl failure yields "" -> False, so an unreadable model is treated as a
+    MacBook (no extras), per the plan.
+    """
+    return _mac_model().startswith("Macmini")
+
+
+def x_extras_enabled(config: dict[str, Any]) -> bool:
+    """Whether the two EXTRA bird cookie lookups (agentcookie sidecar, live
+    Chrome CDP) apply on this host.
+
+    Extras apply when ANY of:
+      * ``AGENTCOOKIE=on`` — explicit per-host opt-in (works on a MacBook too);
+      * platform is Linux;
+      * a Darwin Mac mini (``hw.model`` prefix ``Macmini``);
+      * a Darwin agentcookie **sink** role (parse failure = not sink).
+
+    A plain MacBook (Darwin, source/unknown role, no opt-in) stays on the
+    mainline path — no agentcookie subprocess, no CDP socket. The host is NEVER
+    inferred from the home directory, PATH, or ``HERMES_AGENT``/``OPENCLAW_CLI``
+    env: only the signals above.
+    """
+    import platform
+    raw = (config.get("AGENTCOOKIE") or read_secret_env("AGENTCOOKIE") or "").strip().lower()
+    if raw == "on":
+        return True
+    system = platform.system()
+    if system == "Linux":
+        return True
+    if system == "Darwin":
+        if _is_mac_mini():
+            return True
+        from . import agentcookie
+        return agentcookie.role_is_sink(config)
+    return False
+
+
+def _apply_x_pair(config: dict[str, Any], auth_token: str, ct0: str, source: str) -> None:
+    """Apply a COMPLETE X cookie pair from one source, labeling its origin.
+
+    Atomic on purpose (both keys from the same source) so a half-pair from one
+    source is never merged with a half-pair from another. Never written to the
+    ``.env``; values are never logged.
+    """
+    config["AUTH_TOKEN"] = auth_token
+    config["CT0"] = ct0
+    config["_AUTH_TOKEN_SOURCE"] = source
+    config["_CT0_SOURCE"] = source
+
+
+def _apply_browser_extract(config: dict[str, Any]) -> None:
+    """Run the mainline in-process browser cookie extractor (unchanged from
+    main): fills X (when a browser is opted in via FROM_BROWSER) and non-X
+    cookie domains like truthsocial. Missing keys only; source label ``browser``."""
+    browser_creds = extract_browser_credentials(config)
+    for key, value in browser_creds.items():
+        if not config.get(key):
+            config[key] = value
+            config[f"_{key}_SOURCE"] = "browser"
+
+
+def _discover_and_apply_x_credentials(config: dict[str, Any]) -> None:
+    """Fill AUTH_TOKEN/CT0 for the bird backend, first COMPLETE pair wins.
+
+    Mainline (every host): the in-process browser extractor, gated by
+    FROM_BROWSER exactly as on ``main``. EXTRA lookups (agentcookie sidecar,
+    then live Chrome CDP) run ONLY on extra hosts (``x_extras_enabled``), so a
+    MacBook with FROM_BROWSER unset/off does no agentcookie spawn and no CDP
+    socket. Probe order:
+
+      1. an explicit env AUTH_TOKEN+CT0 already present — never overwritten;
+      2. agentcookie sidecar (extras only);
+      3. live Chrome CDP (extras only);
+      4. the mainline browser extract (all hosts; X only when FROM_BROWSER
+         lists a browser).
+
+    On a Mac mini that has already opted into browser reads (FROM_BROWSER set),
+    the native extract runs BEFORE CDP (R19) — a local Keychain read beats a
+    debug-port scrape. Never persists cookies; values are never logged.
     """
     from . import agentcookie, chrome_cdp
 
-    pair = agentcookie.read_x_cookies(config)
-    if pair:
-        return {"AUTH_TOKEN": pair["auth_token"], "CT0": pair["ct0"]}, "agentcookie"
+    def have_pair() -> bool:
+        return bool(config.get("AUTH_TOKEN") and config.get("CT0"))
 
-    pair = chrome_cdp.read_x_cookies(config)
-    if pair:
-        return {"AUTH_TOKEN": pair["auth_token"], "CT0": pair["ct0"]}, "chrome-cdp"
+    extras = x_extras_enabled(config)
 
-    return {}, ""
+    # (2) agentcookie sidecar — extras only, complete pair only.
+    if extras and not have_pair():
+        pair = agentcookie.read_x_cookies(config)
+        if pair:
+            _apply_x_pair(config, pair["auth_token"], pair["ct0"], "agentcookie")
+
+    # Mac mini + browser opted in: native extract before CDP (R19).
+    mini_extract_first = (
+        extras and _is_mac_mini() and bool(cookie_extraction_browsers(config))
+    )
+    if mini_extract_first and not have_pair():
+        _apply_browser_extract(config)
+
+    # (3) live Chrome CDP — extras only, complete pair only.
+    if extras and not have_pair():
+        pair = chrome_cdp.read_x_cookies(config)
+        if pair:
+            _apply_x_pair(config, pair["auth_token"], pair["ct0"], "chrome cdp")
+
+    # (4) mainline browser extract (unless already run above for the mini case).
+    if not mini_extract_first:
+        _apply_browser_extract(config)
 
 
 # ---------------------------------------------------------------------------
@@ -801,19 +898,11 @@ def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
                 cookies = cookie_extract.extract_cookies(browser, spec["domain"], spec["cookies"])
             except Exception:
                 continue
-            if not cookies:
-                continue
-            # No half-pair: only apply a service's cookies when ALL of its
-            # required cookies were found in this browser. For X that means both
-            # auth_token and ct0 from the same jar (a lone auth_token is not a
-            # usable bird credential); single-cookie services (truthsocial) are
-            # unaffected. Keep scanning the remaining browsers otherwise.
-            if not all(cookie_name in cookies for cookie_name in spec["cookies"]):
-                continue
-            for cookie_name, env_key in spec["mapping"].items():
-                if not config.get(env_key):
-                    extracted[env_key] = cookies[cookie_name]
-            break  # Found a complete cookie set for this service, stop trying browsers
+            if cookies:
+                for cookie_name, env_key in spec["mapping"].items():
+                    if cookie_name in cookies and not config.get(env_key):
+                        extracted[env_key] = cookies[cookie_name]
+                break  # Found cookies for this service, stop trying browsers
     return extracted
 
 
@@ -821,17 +910,13 @@ def get_x_source_with_method(config: dict[str, Any]) -> tuple[str | None, str]:
     """Return (source, method) for X search, where method describes the auth origin.
 
     Order mirrors _X_BACKEND_ORDER: bird first (cookies beat XAI_API_KEY when
-    both are present), then grok (fail-closed: only when signed in with valid
-    credentials), then xai, then xurl.
+    both are present), then xai, then xurl. Grok is opt-in only and is never
+    auto-selected here.
     """
     # Bird first: cookies beat XAI_API_KEY when both are present.
     if config.get("AUTH_TOKEN") and config.get("CT0"):
         method = config.get("_AUTH_TOKEN_SOURCE", "env")
         return "bird", method
-    # grok: fail-closed backup after bird (only when signed in with valid creds).
-    from . import grok_x
-    if grok_x.is_auto_available():
-        return "grok", "grok"
     if config.get("XAI_API_KEY"):
         return "xai", "xai"
     # Fall back to xurl CLI (official X API v2, OAuth2, free developer app)
@@ -867,22 +952,15 @@ def get_reddit_source(config: dict[str, Any]) -> str | None:
 # returns nothing or errors. There is one X source ("x"); these are its
 # interchangeable backends, never run in parallel.
 #   bird  — X GraphQL scrape via the user's browser cookies (AUTH_TOKEN/CT0)
-#   grok  — X search via the signed-in grok CLI, no X credential (fail-closed)
 #   xai   — xAI/Grok live search (XAI_API_KEY)
 #   xurl  — official X API v2 (xurl CLI, OAuth2)
 #   xquik — key-based REST X search (XQUIK_API_KEY)
-#
-# grok sits AFTER bird and is FAIL-CLOSED: it is auto-selected only when the
-# grok CLI is signed in with affirmatively-valid credentials (grok_x.
-# is_auto_available). A leftover ~/.grok/auth.json therefore never steals first
-# place over bird and never blocks the fall-through to xai when grok is dead or
-# expired. (This supersedes the 2026-08-14 grok-pin-only decision on membership
-# only: grok is a fail-closed backup, not first place and not pin-only.)
-_X_BACKEND_ORDER = ("bird", "grok", "xai", "xurl", "xquik")
+_X_BACKEND_ORDER = ("bird", "xai", "xurl", "xquik")
 
 # Opt-in backends: never in the unpinned auto chain; require explicit pin.
-# Currently empty — grok is a fail-closed auto member (see above), not opt-in.
-_X_BACKEND_OPT_IN: tuple[str, ...] = ()
+# grok is here because a leftover ~/.grok/auth.json must never steal the X
+# lane. Pin LAST30DAYS_X_BACKEND=grok to enable it.
+_X_BACKEND_OPT_IN = ("grok",)
 
 # All known backends (auto chain + opt-in): valid values for the pin var.
 _X_BACKEND_KNOWN = _X_BACKEND_ORDER + _X_BACKEND_OPT_IN
@@ -904,7 +982,6 @@ def _x_backend_available(
     config: dict[str, Any],
     has_bird_creds: bool,
     local_only: bool = False,
-    for_pin: bool = False,
 ) -> bool:
     if backend == 'xai':
         return bool(config.get('XAI_API_KEY'))
@@ -912,15 +989,8 @@ def _x_backend_available(
         # Keyless relative to X: needs only an installed, signed-in grok CLI.
         # Both surfaces are filesystem-only (PATH lookup + credential store),
         # so local_only needs no separate branch.
-        #
-        # Fail-closed for the auto chain: only affirmatively-valid credentials
-        # (AUTH_OK) count, so a dead/expired ~/.grok/auth.json never blocks the
-        # fall-through to xai. An explicit pin (for_pin) is more permissive —
-        # it also accepts AUTH_EXPIRED so the run-time refresh gets a chance.
         from . import grok_x
-        if for_pin:
-            return grok_x.has_stored_auth()
-        return grok_x.is_auto_available()
+        return grok_x.has_stored_auth()
     if backend == 'bird':
         from . import bird_x
         return has_bird_creds and bird_x.is_bird_installed()
@@ -944,16 +1014,14 @@ def x_backend_chain(config: dict[str, Any], local_only: bool = False) -> list[st
     exactly one X source — these are its backends, never fetched in parallel.
 
     A ``LAST30DAYS_X_BACKEND`` pin forces a single backend (no failover): the
-    user explicitly chose it. Valid pin values are in ``_X_BACKEND_KNOWN``.
-    Browser-cookie probing is intentionally avoided (automatic Keychain access
-    causes popups); bird counts as available only when AUTH_TOKEN and CT0 are
-    present explicitly.
+    user explicitly chose it. Valid pin values are in ``_X_BACKEND_KNOWN``
+    (the auto chain plus opt-in backends like grok). Browser-cookie probing
+    is intentionally avoided (automatic Keychain access causes popups); bird
+    counts as available only when AUTH_TOKEN and CT0 are present explicitly.
 
-    Unpinned runs walk ``_X_BACKEND_ORDER`` (bird -> grok -> xai -> xurl ->
-    xquik). grok is a FAIL-CLOSED backup after bird: it is auto-selected only
-    when signed in with valid credentials, so a leftover ~/.grok/auth.json
-    never steals first place over bird and never blocks the fall-through to xai
-    when grok is dead or expired.
+    Unpinned runs walk only ``_X_BACKEND_ORDER``: opt-in backends like grok
+    are never auto-selected. A leftover ~/.grok/auth.json must not steal the
+    X lane; pin ``LAST30DAYS_X_BACKEND=grok`` to enable it explicitly.
 
     ``local_only=True`` is the doctor/safe-diagnose flavor: availability is
     answered from local evidence only (no subprocess spawns that reach the
@@ -966,15 +1034,14 @@ def x_backend_chain(config: dict[str, Any], local_only: bool = False) -> list[st
         bird_x.set_credentials(config.get('AUTH_TOKEN'), config.get('CT0'))
 
     preferred = (config.get(X_BACKEND_PIN_VAR) or '').lower()
-    # Pin accepted from _X_BACKEND_KNOWN.
+    # Pin accepted from _X_BACKEND_KNOWN (auto chain + opt-in like grok).
     if preferred in _X_BACKEND_KNOWN:
-        if _x_backend_available(preferred, config, has_bird_creds, local_only, for_pin=True):
+        if _x_backend_available(preferred, config, has_bird_creds, local_only):
             return [preferred]
         return []
 
-    # Unpinned: walk _X_BACKEND_ORDER (bird -> grok -> xai -> xurl -> xquik).
-    # grok is fail-closed (see _x_backend_available): a dead/expired store is
-    # not available, so it never blocks the fall-through to xai.
+    # Unpinned: walk only _X_BACKEND_ORDER (bird -> xai -> xurl -> xquik).
+    # Opt-in backends like grok are never auto-selected.
     return [
         b for b in _X_BACKEND_ORDER
         if _x_backend_available(b, config, has_bird_creds, local_only)
@@ -1002,19 +1069,21 @@ def x_pending_browser_auth(config: dict[str, Any], local_only: bool = False) -> 
     same cookies and authenticate X fine. This predicate reports that
     "available pending browser auth" state without reading a single cookie — it
     keys only on the resolved browser list (``cookie_extraction_browsers``
-    derives it from ``FROM_BROWSER`` alone, no secrets) OR the agentcookie
-    sidecar being on PATH (a plain ``which`` lookup, independent of
-    ``FROM_BROWSER``), bird being installed, and X having a cookie-domain
-    mapping. Side-effect free, so the safe-inspection contract of
-    diagnose/preflight is preserved.
+    derives it from ``FROM_BROWSER`` alone, no secrets) OR — on extra hosts
+    only (``x_extras_enabled``) — the agentcookie sidecar being on PATH (a plain
+    ``which`` lookup), bird being installed, and X having a cookie-domain
+    mapping. A plain MacBook must NOT predict bird from an agentcookie binary on
+    PATH (R18), so the sidecar leg is gated behind ``x_extras_enabled``.
+    Side-effect free, so the safe-inspection contract of diagnose/preflight is
+    preserved.
 
     Returns False whenever X is already available outright (static AUTH_TOKEN/CT0,
     or xAI/xurl/xquik backend), and in ``read`` mode (a real run has already
     extracted creds, so its status must be unchanged — never "pending").
     """
-    # Already available via a static backend (bird creds, grok, xAI, xurl,
-    # xquik). local_only (doctor/safe-diagnose) answers the xurl leg from the
-    # token store instead of the live `xurl whoami` network call.
+    # Already available via a static backend (bird creds, xAI, xurl, xquik).
+    # local_only (doctor/safe-diagnose) answers the xurl leg from the token
+    # store instead of the live `xurl whoami` network call.
     if get_x_source(config, local_only=local_only):
         return False
     # Only meaningful in inspection modes that skip extraction; a real ``read``
@@ -1026,13 +1095,17 @@ def x_pending_browser_auth(config: dict[str, Any], local_only: bool = False) -> 
     from . import bird_x
     if not bird_x.is_bird_installed():
         return False
-    # A run-time cookie source must exist: either FROM_BROWSER browser
-    # extraction, or the agentcookie sidecar (independent of FROM_BROWSER).
-    # Both are side-effect free to probe here — the browser list derives from
-    # FROM_BROWSER alone and agentcookie.is_available is a PATH lookup that
-    # reads no cookie values — so diagnose/preflight stay safe.
-    from . import agentcookie
-    return bool(cookie_extraction_browsers(config) or agentcookie.is_available(config))
+    # A FROM_BROWSER browser is a run-time cookie source on any host.
+    if cookie_extraction_browsers(config):
+        return True
+    # The agentcookie sidecar is a run-time cookie source ONLY on extra hosts
+    # (Linux / Mac mini / Darwin sink / AGENTCOOKIE=on). Gating this keeps a
+    # plain MacBook from predicting bird off a stray agentcookie binary (R18).
+    if x_extras_enabled(config):
+        from . import agentcookie
+        if agentcookie.is_available(config):
+            return True
+    return False
 
 
 def is_ytdlp_available() -> bool:
@@ -1373,19 +1446,18 @@ def get_x_source_status(config: dict[str, Any], probe: bool = False) -> dict[str
 
     # Grok availability is filesystem-only on both paths (PATH lookup plus the
     # credential store), so it is safe to compute here regardless of `probe`.
-    # grok_available (has_stored_auth: OK or expired) drives the display/pin
-    # path; grok_auto_ok (is_auto_available: AUTH_OK only) is the fail-closed
-    # gate for the unpinned auto chain, where grok is a backup after bird.
+    # Grok is opt-in only: it appears in grok_available but never wins the
+    # unpinned source selection.
     from . import grok_x as _grok_x
     grok_available = _grok_x.has_stored_auth()
-    grok_auto_ok = _grok_x.is_auto_available()
 
     # Determine active source. A pin forces a single backend (R4): ANY known
     # pin is exclusive, mirroring x_backend_chain's [] semantics. Pinned
     # backend available → that source. Pinned backend unavailable → None.
     # Otherwise, order mirrors _X_BACKEND_ORDER: bird first (cookies beat
-    # XAI_API_KEY when both are present), then grok (fail-closed backup, only
-    # when signed in with valid creds), then xai, then xurl, then xquik.
+    # XAI_API_KEY when both are present), then xai, then xurl, then xquik.
+    # Grok is opt-in only and never auto-selected; a leftover ~/.grok/auth.json
+    # must not steal the X lane.
     pin = (config.get(X_BACKEND_PIN_VAR) or '').lower()
     if pin and pin in _X_BACKEND_KNOWN:
         # Pin is exclusive: pinned backend if available, else None (no fallback).
@@ -1403,8 +1475,6 @@ def get_x_source_status(config: dict[str, Any], probe: bool = False) -> dict[str
             source = None
     elif bird_status["authenticated"]:
         source = 'bird'
-    elif grok_auto_ok:
-        source = 'grok'
     elif xai_available:
         source = 'xai'
     elif xurl_available:

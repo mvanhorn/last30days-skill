@@ -19,7 +19,7 @@ from lib import chrome_cdp
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 
 
-# --- Unit: port derivation + cookie filtering ------------------------------
+# --- Unit: endpoint derivation + cookie filtering --------------------------
 
 
 def test_display_number_parsing():
@@ -29,13 +29,17 @@ def test_display_number_parsing():
         assert chrome_cdp._display_number() == 10
 
 
-def test_candidate_ports_lead_with_display_then_range():
+def test_candidate_endpoints_default_order_18800_then_display():
     with mock.patch.dict("os.environ", {"DISPLAY": ":7"}, clear=False):
-        ports = chrome_cdp.candidate_ports()
-    assert ports[0] == 9229  # 9222 + display 7
-    assert 9222 in ports
-    # No hardcoded single port: it is a contiguous scan from the base.
-    assert ports.count(9229) == 1
+        # No BROWSER_CDP_URL in env for this check.
+        with mock.patch.dict("os.environ", {"BROWSER_CDP_URL": ""}, clear=False):
+            endpoints = chrome_cdp.candidate_endpoints({})
+    assert endpoints == ["http://127.0.0.1:18800", "http://127.0.0.1:9229"]
+
+
+def test_candidate_endpoints_prefers_browser_cdp_url_exclusively():
+    endpoints = chrome_cdp.candidate_endpoints({"BROWSER_CDP_URL": "http://127.0.0.1:5555"})
+    assert endpoints == ["http://127.0.0.1:5555"]
 
 
 def test_pair_from_cookies_requires_both_and_filters_domain():
@@ -54,9 +58,9 @@ def test_pair_from_cookies_half_pair_is_incomplete():
     assert "ct0" not in pair
 
 
-def test_from_browser_off_skips_scan():
+def test_from_browser_off_skips_endpoints():
     with mock.patch.object(
-        chrome_cdp, "_port_reachable", side_effect=AssertionError("must not scan")
+        chrome_cdp, "candidate_endpoints", side_effect=AssertionError("must not probe")
     ):
         assert chrome_cdp.read_x_cookies({"FROM_BROWSER": "off"}) is None
 
@@ -65,10 +69,11 @@ def test_from_browser_off_skips_scan():
 
 
 class _FakeCDPServer:
-    """Minimal Chrome-debug endpoint: GET /json + a CDP websocket."""
+    """Minimal Chrome-debug endpoint: GET /json/version + /json + a CDP websocket."""
 
-    def __init__(self, cookies):
+    def __init__(self, cookies, browser="Chrome/120.0.0.0"):
         self._cookies = cookies
+        self._browser = browser
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self._sock.bind(("127.0.0.1", 0))
@@ -124,18 +129,24 @@ class _FakeCDPServer:
             self._handle_ws(conn, head, rest)
             return
         request_line = head.splitlines()[0]
-        if request_line.startswith("GET /json"):
+        if request_line.startswith("GET /json/version"):
+            body = json.dumps({"Browser": self._browser, "Protocol-Version": "1.3"}).encode()
+            self._send_http_json(conn, body)
+        elif request_line.startswith("GET /json"):
             body = json.dumps([
                 {
                     "type": "page",
                     "webSocketDebuggerUrl": f"ws://127.0.0.1:{self.port}/devtools/page/ABC",
                 }
             ]).encode()
-            conn.sendall(
-                b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
-                b"Content-Length: " + str(len(body)).encode()
-                + b"\r\nConnection: close\r\n\r\n" + body
-            )
+            self._send_http_json(conn, body)
+
+    def _send_http_json(self, conn, body):
+        conn.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
+            b"Content-Length: " + str(len(body)).encode()
+            + b"\r\nConnection: close\r\n\r\n" + body
+        )
 
     def _handle_ws(self, conn, head, rest):
         key = ""
@@ -229,23 +240,41 @@ def test_read_x_cookies_via_fake_cdp():
         {"name": "guest_id", "value": "irrelevant", "domain": ".x.com"},
     ]
     with _FakeCDPServer(cookies) as server:
-        with mock.patch.object(chrome_cdp, "candidate_ports", return_value=[server.port]):
-            result = chrome_cdp.read_x_cookies({})
+        config = {"BROWSER_CDP_URL": f"http://127.0.0.1:{server.port}"}
+        result = chrome_cdp.read_x_cookies(config)
     assert result == {"auth_token": "test-auth-token", "ct0": "test-ct0"}
 
 
 def test_read_x_cookies_incomplete_pair_returns_none():
     cookies = [{"name": "auth_token", "value": "test-auth-token", "domain": ".x.com"}]
     with _FakeCDPServer(cookies) as server:
-        with mock.patch.object(chrome_cdp, "candidate_ports", return_value=[server.port]):
-            result = chrome_cdp.read_x_cookies({})
+        config = {"BROWSER_CDP_URL": f"http://127.0.0.1:{server.port}"}
+        result = chrome_cdp.read_x_cookies(config)
     assert result is None
 
 
-def test_read_x_cookies_no_reachable_port_returns_none():
-    # A port with nothing listening: reachability fails fast, returns None.
+def test_read_x_cookies_rejects_node_inspector():
+    """A Node --inspect endpoint (Browser=node.js/...) is not Chrome -> None."""
+    cookies = [
+        {"name": "auth_token", "value": "test-auth-token", "domain": ".x.com"},
+        {"name": "ct0", "value": "test-ct0", "domain": ".x.com"},
+    ]
+    with _FakeCDPServer(cookies, browser="node.js/v20.0.0") as server:
+        config = {"BROWSER_CDP_URL": f"http://127.0.0.1:{server.port}"}
+        result = chrome_cdp.read_x_cookies(config)
+    assert result is None
+
+
+def test_read_x_cookies_from_browser_off_opens_no_socket():
+    with mock.patch("socket.create_connection", side_effect=AssertionError("no socket")):
+        with mock.patch("urllib.request.urlopen", side_effect=AssertionError("no http")):
+            assert chrome_cdp.read_x_cookies({"FROM_BROWSER": "off"}) is None
+
+
+def test_read_x_cookies_no_reachable_endpoint_returns_none():
+    # A port with nothing listening: connection refused, returns None.
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         dead_port = s.getsockname()[1]
-    with mock.patch.object(chrome_cdp, "candidate_ports", return_value=[dead_port]):
-        assert chrome_cdp.read_x_cookies({}) is None
+    config = {"BROWSER_CDP_URL": f"http://127.0.0.1:{dead_port}"}
+    assert chrome_cdp.read_x_cookies(config) is None

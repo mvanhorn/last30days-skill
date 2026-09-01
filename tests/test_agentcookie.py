@@ -119,11 +119,29 @@ def test_never_logs_cookie_values():
     assert "test-ct0" not in joined
 
 
-def test_independent_of_from_browser():
-    """agentcookie runs regardless of FROM_BROWSER (only AGENTCOOKIE=off gates it)."""
-    payload = json.dumps({"auth_token": "test-auth-token", "ct0": "test-ct0"})
-    with (
-        mock.patch("shutil.which", return_value="/usr/bin/agentcookie"),
-        mock.patch("subprocess.run", return_value=_run_ok(payload)),
-    ):
-        assert agentcookie.read_x_cookies({"FROM_BROWSER": "off"}) == _DUMMY
+# --- role detection (subprocess-free config read) --------------------------
+
+
+def test_role_is_sink_reads_config_file(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"role": "sink"}))
+    config = {"AGENTCOOKIE_CONFIG": str(cfg)}
+    # No subprocess is spawned to classify the role.
+    with mock.patch("subprocess.run", side_effect=AssertionError("no subprocess for role")):
+        assert agentcookie.role(config) == "sink"
+        assert agentcookie.role_is_sink(config) is True
+
+
+def test_role_source_is_not_sink(tmp_path):
+    cfg = tmp_path / "config.json"
+    cfg.write_text(json.dumps({"role": "source"}))
+    config = {"AGENTCOOKIE_CONFIG": str(cfg)}
+    assert agentcookie.role_is_sink(config) is False
+
+
+def test_role_missing_or_unparsable_is_not_sink(tmp_path):
+    missing = {"AGENTCOOKIE_CONFIG": str(tmp_path / "nope.json")}
+    assert agentcookie.role_is_sink(missing) is False
+    bad = tmp_path / "bad.json"
+    bad.write_text("not json {")
+    assert agentcookie.role_is_sink({"AGENTCOOKIE_CONFIG": str(bad)}) is False

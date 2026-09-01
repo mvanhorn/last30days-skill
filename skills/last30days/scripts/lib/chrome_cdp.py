@@ -1,20 +1,27 @@
 """Live Chrome cookie reader over the DevTools Protocol (CDP).
 
-When a Chrome/Chromium instance is running with a remote-debugging port open
-and the user is signed into x.com in it, that live session holds the
-``auth_token`` + ``ct0`` cookies the bird backend needs — even on Linux, where
-the on-disk cookie store cannot be decrypted by this engine. This module talks
-to that debug port and pulls the pair via ``Network.getAllCookies``.
+An EXTRA-host cookie lookup for the bird backend: when a Chrome/Chromium
+instance is running with a remote-debugging endpoint and the user is signed
+into x.com in it, that live session holds the ``auth_token`` + ``ct0`` cookies
+bird needs — even on Linux, where the on-disk cookie store cannot be decrypted
+here. This module talks to that endpoint and pulls the pair via
+``Network.getAllCookies``.
 
 Deliberate constraints (see docs/plans/2026-08-31 X plan):
 
-* **Port discovery is a scan, not a hardcode.** We derive the usual box-Chrome
-  port (``9222`` + the X display number) and probe a small contiguous range;
-  no specific port (e.g. agentcookie's) is special-cased.
-* **``FROM_BROWSER=off`` skips CDP** (and the in-process browser extractor),
-  matching the browser-read opt-out.
+* **Extras only.** The engine only calls this on extra hosts (Linux, Mac mini,
+  Darwin agentcookie sink, or ``AGENTCOOKIE=on``); the gating lives in
+  ``env.x_extras_enabled``. On a plain MacBook this is never called, so no
+  socket is opened (AE8).
+* **No port scan.** Endpoint resolution is: ``BROWSER_CDP_URL`` if set, else
+  port ``18800`` (the box-Chrome default) if it answers as Chrome, else
+  ``9222`` + the X display number. No 9222..9232 sweep.
+* **Require a Chrome page target.** ``/json/version`` must report a Chrome /
+  Chromium browser (a Node inspector is rejected) and ``/json`` must expose a
+  ``page`` target.
+* **``FROM_BROWSER=off`` skips CDP.**
 * Stdlib only: a tiny RFC 6455 websocket client, no third-party dependency.
-* Cookie **values are never logged** — only counts and ports.
+* Cookie **values are never logged** — only counts and endpoints.
 * First complete pair wins: both ``auth_token`` and ``ct0`` must be present.
 """
 
@@ -33,13 +40,10 @@ from . import log
 
 X_COOKIE_NAMES = ("auth_token", "ct0")
 _BASE_DEBUG_PORT = 9222
-# How far above the base port to scan. A modest window covers the common
-# "9222 + display number" and manual `--remote-debugging-port` choices without
-# hammering a wide range of localhost ports.
-_PORT_SCAN_SPAN = 11
+# The box-Chrome remote-debugging port used by the extra-host launcher.
+_BOX_CHROME_PORT = 18800
 
-_CONNECT_TIMEOUT = 0.3   # TCP reachability probe per port
-_HTTP_TIMEOUT = 1.5      # /json target list fetch
+_HTTP_TIMEOUT = 1.5      # /json and /json/version fetches
 _WS_TIMEOUT = 3.0        # websocket exchange
 
 
@@ -59,34 +63,35 @@ def _display_number() -> Optional[int]:
         return None
 
 
-def candidate_ports() -> List[int]:
-    """Debug ports to try, most-likely first.
+def _normalize_base(url: str) -> str:
+    """Return an ``http://host:port`` base for a user-supplied endpoint."""
+    url = url.strip().rstrip("/")
+    if url.startswith(("http://", "https://", "ws://", "wss://")):
+        return url
+    return f"http://{url}"
 
-    The usual box-Chrome port is ``9222`` plus the display number; we lead with
-    that, then a contiguous range from ``9222`` for manually chosen ports.
+
+def candidate_endpoints(config: Optional[Dict[str, Any]] = None) -> List[str]:
+    """Debug endpoints to try, most-specific first (no port scan).
+
+    Order: an explicit ``BROWSER_CDP_URL`` (used exclusively when set), else the
+    box-Chrome port ``18800``, then ``9222`` + the X display number.
     """
-    ports: List[int] = []
+    explicit = ""
+    if config is not None:
+        explicit = (config.get("BROWSER_CDP_URL") or "").strip()
+    explicit = explicit or (os.environ.get("BROWSER_CDP_URL") or "").strip()
+    if explicit:
+        return [_normalize_base(explicit)]
+
+    endpoints = [f"http://127.0.0.1:{_BOX_CHROME_PORT}"]
     display = _display_number()
-    if display is not None:
-        ports.append(_BASE_DEBUG_PORT + display)
-    for port in range(_BASE_DEBUG_PORT, _BASE_DEBUG_PORT + _PORT_SCAN_SPAN):
-        if port not in ports:
-            ports.append(port)
-    return ports
+    endpoints.append(f"http://127.0.0.1:{_BASE_DEBUG_PORT + (display or 0)}")
+    return endpoints
 
 
-def _port_reachable(port: int) -> bool:
-    """Fast TCP-connect reachability probe so dead ports are skipped cheaply."""
-    try:
-        with socket.create_connection(("127.0.0.1", port), timeout=_CONNECT_TIMEOUT):
-            return True
-    except OSError:
-        return False
-
-
-def _http_get_json(port: int, path: str) -> Optional[Any]:
-    """GET ``http://127.0.0.1:<port><path>`` and parse JSON, or None."""
-    url = f"http://127.0.0.1:{port}{path}"
+def _http_get_json(url: str) -> Optional[Any]:
+    """GET ``url`` and parse JSON, or None (unreachable/non-JSON)."""
     try:
         with urllib.request.urlopen(url, timeout=_HTTP_TIMEOUT) as resp:
             body = resp.read()
@@ -98,21 +103,32 @@ def _http_get_json(port: int, path: str) -> Optional[Any]:
         return None
 
 
-def _page_ws_url(port: int) -> Optional[str]:
-    """Find a page target's webSocketDebuggerUrl on this debug port."""
-    targets = _http_get_json(port, "/json")
+def _is_chrome_endpoint(base: str) -> bool:
+    """True when ``base``/json/version reports a Chrome/Chromium browser.
+
+    Rejects a Node ``--inspect`` endpoint (whose ``Browser`` is ``node.js/...``)
+    so we never mistake an inspector for a browser.
+    """
+    version = _http_get_json(f"{base}/json/version")
+    if not isinstance(version, dict):
+        return False
+    browser = str(version.get("Browser") or "").lower()
+    return "chrome" in browser or "chromium" in browser
+
+
+def _page_ws_url(base: str) -> Optional[str]:
+    """Find a Chrome PAGE target's webSocketDebuggerUrl on ``base``."""
+    targets = _http_get_json(f"{base}/json")
     if not isinstance(targets, list):
         return None
-    # Prefer a real page; fall back to any target that exposes a ws URL.
-    for want_page in (True, False):
-        for target in targets:
-            if not isinstance(target, dict):
-                continue
-            if want_page and target.get("type") != "page":
-                continue
-            ws_url = target.get("webSocketDebuggerUrl")
-            if isinstance(ws_url, str) and ws_url.startswith("ws://"):
-                return ws_url
+    for target in targets:
+        if not isinstance(target, dict):
+            continue
+        if target.get("type") != "page":
+            continue
+        ws_url = target.get("webSocketDebuggerUrl")
+        if isinstance(ws_url, str) and ws_url.startswith("ws://"):
+            return ws_url
     return None
 
 
@@ -137,7 +153,7 @@ class _WSConn:
 
     @classmethod
     def connect(cls, ws_url: str, timeout: float) -> Optional["_WSConn"]:
-        match = re.match(r"ws://([^:/]+):(\d+)(/.*)$", ws_url)
+        match = re.match(r"wss?://([^:/]+):(\d+)(/.*)$", ws_url)
         if not match:
             return None
         host, port, path = match.group(1), int(match.group(2)), match.group(3)
@@ -288,13 +304,17 @@ def _pair_from_cookies(cookies: List[Dict[str, Any]]) -> Dict[str, str]:
 
 
 def read_x_cookies(config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, str]]:
-    """Return the complete X cookie pair from a live Chrome debug session, or None.
+    """Return the complete X cookie pair from a live Chrome session, or None.
 
-    Scans reachable localhost debug ports, and for each opens a CDP websocket
-    and calls ``Network.getAllCookies``. Returns ``{"auth_token", "ct0"}`` only
-    when BOTH cookies are found (no half-pair). ``FROM_BROWSER=off`` skips the
-    whole scan. Any failure returns None so the caller falls through. Never
-    raises.
+    Resolves the debug endpoint (BROWSER_CDP_URL, else 18800 if Chrome, else
+    9222+$DISPLAY), requires a Chrome page target, and calls
+    ``Network.getAllCookies``. Returns ``{"auth_token", "ct0"}`` only when BOTH
+    cookies are found (no half-pair). ``FROM_BROWSER=off`` returns None without
+    opening a socket. Any failure returns None so the caller falls through.
+    Never raises.
+
+    Host gating (extras-only) lives in the caller (``env.x_extras_enabled``);
+    on a plain MacBook this function is never invoked, so no socket is opened.
     """
     from_browser = ""
     if config is not None:
@@ -302,22 +322,27 @@ def read_x_cookies(config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str
     if from_browser == "off":
         return None
 
-    for port in candidate_ports():
-        if not _port_reachable(port):
-            continue
-        ws_url = _page_ws_url(port)
-        if not ws_url:
-            continue
+    for base in candidate_endpoints(config):
+        # ws:// endpoints (rare, explicit) connect directly; http(s) bases are
+        # validated as Chrome and asked for a page target.
+        if base.startswith(("ws://", "wss://")):
+            ws_url = base
+        else:
+            if not _is_chrome_endpoint(base):
+                continue
+            ws_url = _page_ws_url(base)
+            if not ws_url:
+                continue
         cookies = _get_all_cookies(ws_url)
         if not cookies:
             continue
         found = _pair_from_cookies(cookies)
         if all(name in found for name in X_COOKIE_NAMES):
-            _log(f"read a complete X cookie pair from a live Chrome session on port {port}")
+            _log(f"read a complete X cookie pair from a live Chrome session at {base}")
             return {name: found[name] for name in X_COOKIE_NAMES}
         if found:
             _log(
-                f"live Chrome on port {port} had an incomplete pair "
+                f"live Chrome at {base} had an incomplete pair "
                 f"({sorted(found)}); ignoring per no-half-pair rule"
             )
     return None
