@@ -96,9 +96,6 @@ def _x_env(
             None,
         )
         grok_available = False
-    # Fail-closed auto availability: grok is auto-selectable only when signed in
-    # with affirmatively-valid credentials (AUTH_OK) — never expired/dead.
-    grok_auto_ok = grok_installed and grok_authed and not grok_expired
     return (
         mock.patch("lib.bird_x.is_bird_installed", return_value=bird_installed),
         mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None),
@@ -117,11 +114,6 @@ def _x_env(
             return_value=grok_installed and (grok_authed or grok_expired),
         ),
         mock.patch("lib.grok_x.is_available", return_value=grok_available),
-        mock.patch("lib.grok_x.is_auto_available", return_value=grok_auto_ok),
-        mock.patch(
-            "lib.grok_x.binary_path",
-            return_value="/usr/local/bin/grok" if grok_installed else None,
-        ),
         mock.patch("lib.health.probe_dependency", _probe_dep({"node": node_status})),
         mock.patch("lib.xurl_x.stored_auth_status", return_value=stored),
         mock.patch(
@@ -161,23 +153,21 @@ class TestDescriptorRegistry:
     def test_x_chain_comes_from_env_definitions(self):
         d = backends.get_descriptor("x")
         assert d.mode == backends.MODE_ALTERNATIVE
-        # Auto chain order: bird first, then grok (fail-closed backup), then the
-        # rest. grok is a member of the auto chain, not opt-in.
-        assert env.X_BACKEND_ORDER == ("bird", "grok", "xai", "xurl", "xquik")
-        assert env.X_BACKEND_OPT_IN == ()
+        # Auto chain order: bird first, grok excluded (opt-in only).
+        assert env.X_BACKEND_ORDER == ("bird", "xai", "xurl", "xquik")
+        # Grok is opt-in only, not in the auto chain.
+        assert env.X_BACKEND_OPT_IN == ("grok",)
         # All known backends (auto + opt-in) for pin validation.
-        assert env.X_BACKEND_KNOWN == ("bird", "grok", "xai", "xurl", "xquik")
-        # Descriptor includes all backends for doctor visibility.
+        assert env.X_BACKEND_KNOWN == ("bird", "xai", "xurl", "xquik", "grok")
+        # Descriptor includes all backends (auto + opt-in) for doctor visibility.
         assert tuple(s.name for s in d.backends) == env.X_BACKEND_ORDER + env.X_BACKEND_OPT_IN
-        # grok is a fail-closed member, not opt-in.
+        # Grok is marked opt-in in the descriptor.
         grok_spec = next(s for s in d.backends if s.name == "grok")
-        assert grok_spec.opt_in is False
-        assert grok_spec.fail_closed is True
-        # The other backends are neither opt-in nor fail-closed.
-        for name in ("bird", "xai", "xurl", "xquik"):
+        assert grok_spec.opt_in is True
+        # Auto chain backends are NOT marked opt-in.
+        for name in env.X_BACKEND_ORDER:
             spec = next(s for s in d.backends if s.name == name)
             assert spec.opt_in is False
-            assert spec.fail_closed is False
         assert d.pin_var == env.X_BACKEND_PIN_VAR == "LAST30DAYS_X_BACKEND"
 
     def test_env_exposes_reddit_pin_constants(self):
@@ -234,33 +224,16 @@ class TestXPrediction:
         assert res.tier == backends.TIER_OK
         assert "will use: bird" in res.summary
 
-    def test_grok_healthy_is_auto_selected_after_bird_unpinned(self):
-        """Grok is a fail-closed backup after bird: when signed in with valid
-        credentials and no bird/xai/etc, it IS auto-selected unpinned."""
+    def test_grok_is_never_auto_selected_unpinned(self):
+        """Grok is opt-in only: even if grok is the only configured backend, X is unconfigured unpinned."""
         config = {}
         res = _resolve_x(config, grok_installed=True, grok_authed=True)
+        # Grok is available but opt-in - should NOT be auto-selected.
         grok = next(f for f in res.findings if f.name == "grok")
         assert grok.status == health.OK
-        assert res.active_backend == "grok"
-        assert res.tier == backends.TIER_OK
-
-    def test_grok_never_beats_bird_unpinned(self):
-        """grok sits AFTER bird: with cookies present, bird wins even when grok
-        is signed in and healthy."""
-        config = {"AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0"}
-        res = _resolve_x(config, bird_installed=True, grok_installed=True, grok_authed=True)
-        assert res.active_backend == "bird"
-        assert res.tier == backends.TIER_OK
-
-    def test_dead_grok_does_not_block_fallthrough_to_xai(self):
-        """A leftover/expired grok store must not block the fall-through to
-        xai (fail-closed): expired grok is skipped, xai is selected."""
-        config = {"XAI_API_KEY": "dummy-key"}
-        res = _resolve_x(config, grok_installed=True, grok_expired=True)
-        grok = next(f for f in res.findings if f.name == "grok")
-        assert grok.status == health.DEGRADED
-        assert res.active_backend == "xai"
-        assert res.tier == backends.TIER_OK
+        # But it should not be the active backend.
+        assert res.active_backend is None
+        assert res.tier == backends.TIER_ERROR
 
     def test_grok_selected_when_pinned(self):
         """Pin grok to enable it explicitly."""
@@ -366,8 +339,7 @@ class TestXPrediction:
 
     def test_grok_expired_is_degraded_not_ok(self):
         """Expired grok session -> DEGRADED tier (warn), not OK."""
-        # An explicit pin is more permissive than the fail-closed auto gate: it
-        # accepts an expired session so the run-time refresh gets a chance.
+        # Grok is opt-in: needs explicit pin to be selected.
         config = {"LAST30DAYS_X_BACKEND": "grok"}
         res = _resolve_x(config, grok_installed=True, grok_expired=True)
         grok = next(f for f in res.findings if f.name == "grok")
@@ -380,12 +352,11 @@ class TestXPrediction:
         assert res.tier == backends.TIER_WARN
 
     def test_grok_expired_unpinned_not_selected(self):
-        """Expired grok without pin: fail-closed, so grok is not auto-selected
-        and (nothing else configured) X is unconfigured."""
+        """Expired grok without pin: X unconfigured, grok not auto-selected."""
         res = _resolve_x({}, grok_installed=True, grok_expired=True)
         grok = next(f for f in res.findings if f.name == "grok")
         assert grok.status == health.DEGRADED
-        # Fail-closed: a DEGRADED (expired) grok is never auto-selected.
+        # Grok is opt-in, so even though it's usable (degraded), it's not selected.
         assert res.active_backend is None
         assert res.tier == backends.TIER_ERROR
 
@@ -393,7 +364,7 @@ class TestXPrediction:
         """When grok is expired AND a better auto-chain backend is OK, pick the OK one."""
         config = {"AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0"}
         res = _resolve_x(config, grok_installed=True, grok_expired=True, bird_installed=True)
-        # Bird is OK and precedes grok in the auto chain; expired grok is skipped.
+        # Bird is OK and in the auto chain. Grok is not considered (opt-in).
         assert res.active_backend == "bird"
         assert res.tier == backends.TIER_OK
 
@@ -411,14 +382,12 @@ class TestXPrediction:
 
 class TestGrokExpiryStates:
     """Test the three grok auth states from the plan:
-    1. No grok CLI -> MISSING (silent skip)
-    2. CLI installed, never logged in -> MISSING (silent skip)
-    3. CLI installed, WAS logged in, session dead -> DEGRADED with expiry info
+    1. No grok CLI -> silent fallback (opt-in only)
+    2. CLI installed, never logged in -> silent fallback (opt-in only)
+    3. CLI installed, WAS logged in, session dead -> DEGRADED with expiry info (opt-in only)
 
-    grok is a FAIL-CLOSED backup after bird: MISSING and DEGRADED (expired)
-    states are never auto-selected, so a leftover ~/.grok/auth.json never blocks
-    the fall-through to xai. Only an affirmatively-valid (OK) session is
-    auto-selected.
+    Note: Grok is opt-in only. These tests verify the finding status, but grok
+    is never auto-selected unpinned.
     """
 
     def test_no_grok_cli_is_missing(self):
@@ -427,7 +396,8 @@ class TestGrokExpiryStates:
         grok = next(f for f in res.findings if f.name == "grok")
         assert grok.status == health.MISSING
         assert "not found on PATH" in grok.detail
-        # MISSING grok is skipped; nothing else configured -> X unconfigured.
+        # Grok is opt-in, so even MISSING doesn't affect the resolution.
+        # X is unconfigured (no auto-chain backends available).
         assert res.active_backend is None
 
     def test_grok_installed_never_logged_in_is_missing(self):
@@ -437,7 +407,7 @@ class TestGrokExpiryStates:
         assert grok.status == health.MISSING
         assert "not signed in" in grok.detail
         assert "grok login" in grok.prescription
-        # Never-signed-in grok is skipped; nothing else -> X unconfigured.
+        # Grok is opt-in, so X is unconfigured.
         assert res.active_backend is None
 
     def test_grok_session_expired_is_degraded_with_expiry(self):
@@ -448,16 +418,16 @@ class TestGrokExpiryStates:
         assert "expired" in grok.detail.lower()
         # The detail should include the expiry timestamp and hint
         assert "refresh" in grok.detail.lower() or "login" in grok.prescription.lower()
-        # Fail-closed: a DEGRADED (expired) grok is skipped, X unconfigured.
+        # Grok is opt-in, so X is unconfigured even with degraded grok.
         assert res.active_backend is None
 
     def test_grok_healthy_session_is_ok(self):
-        """Non-expired credentials -> OK, and auto-selected (fail-closed backup
-        after bird) when nothing earlier in the chain is available."""
+        """Non-expired credentials -> OK, but still opt-in only."""
         res = _resolve_x({}, grok_installed=True, grok_authed=True)
         grok = next(f for f in res.findings if f.name == "grok")
         assert grok.status == health.OK
-        assert res.active_backend == "grok"
+        # Grok is opt-in, so X is unconfigured unpinned.
+        assert res.active_backend is None
 
 
 # ---------------------------------------------------------------------------
@@ -711,14 +681,9 @@ class TestXParityWithPipeline:
     def test_parity_nothing_configured(self):
         self._assert_parity({})
 
-    def test_parity_grok_only_unpinned_selects_grok(self):
-        """Grok-only (signed in, valid) with no pin: predicted grok, matching
-        env.x_backend_chain (fail-closed backup after bird)."""
+    def test_parity_grok_only_unpinned_is_unconfigured(self):
+        """Grok-only with no pin: X unconfigured (parity with env.x_backend_chain)."""
         self._assert_parity({}, grok_installed=True, grok_authed=True)
-
-    def test_parity_grok_expired_only_unpinned_is_unconfigured(self):
-        """Grok-only but expired: fail-closed skip -> X unconfigured, parity."""
-        self._assert_parity({}, grok_installed=True, grok_expired=True)
 
     def test_parity_grok_pinned(self):
         """Grok pinned: grok is selected (parity with env.x_backend_chain)."""
@@ -760,9 +725,8 @@ class TestGetXSourceStatusGrokPin:
         assert status["source"] == "grok"
         assert status["grok_available"] is True
 
-    def test_unpinned_with_valid_grok_auto_selects_grok_source(self):
-        """Unpinned + valid (AUTH_OK) grok, no bird -> source is 'grok'
-        (fail-closed backup after bird)."""
+    def test_unpinned_with_store_does_not_return_grok_source(self):
+        """Unpinned + valid grok store -> source is NOT 'grok' (opt-in only)."""
         config = {}  # No pin
         bird_status = {
             "installed": False,
@@ -772,31 +736,12 @@ class TestGetXSourceStatusGrokPin:
         }
         with (
             mock.patch("lib.grok_x.has_stored_auth", return_value=True),
-            mock.patch("lib.grok_x.is_auto_available", return_value=True),
             mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
         ):
             status = env.get_x_source_status(config, probe=False)
-        assert status["source"] == "grok"
-        assert status["grok_available"] is True
-
-    def test_unpinned_dead_grok_store_is_not_selected(self):
-        """Unpinned + a leftover but dead/expired grok store -> source is None
-        (fail-closed: is_auto_available is False, so grok is not auto-selected)."""
-        config = {}  # No pin
-        bird_status = {
-            "installed": False,
-            "authenticated": False,
-            "username": "",
-            "can_install": False,
-        }
-        with (
-            mock.patch("lib.grok_x.has_stored_auth", return_value=True),
-            mock.patch("lib.grok_x.is_auto_available", return_value=False),
-            mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
-        ):
-            status = env.get_x_source_status(config, probe=False)
-        # A dead grok store must not steal the lane, and there is nothing else.
-        assert status["source"] is None
+        # Grok is available but NOT the source (opt-in only)
+        assert status["source"] != "grok"
+        assert status["source"] is None  # No other backend configured
         assert status["grok_available"] is True
 
     def test_pin_grok_with_cookies_still_returns_grok(self):
@@ -945,8 +890,7 @@ class TestRuntimeXBackendPin:
         assert resolved is None
 
     def test_unpinned_with_grok_store_and_cookies_returns_bird(self):
-        """Unpinned + valid grok + cookies -> runtime returns bird; grok is a
-        fail-closed backup positioned AFTER bird, never ahead of it."""
+        """Unpinned + grok store + cookies -> runtime returns bird, never grok."""
         from lib import grok_x, providers
 
         config = {
@@ -955,15 +899,14 @@ class TestRuntimeXBackendPin:
         }
         with (
             mock.patch.object(grok_x, "has_stored_auth", return_value=True),
-            mock.patch.object(grok_x, "is_auto_available", return_value=True),
             mock.patch("lib.bird_x.is_bird_installed", return_value=True),
         ):
             chain = env.x_backend_chain(config)
             resolved = providers._resolve_x_backend(config)
-        # Unpinned -> auto-chain: bird first, grok present but after bird.
+        # Unpinned -> auto-chain (bird first), grok never auto-selected
         assert chain[0] == "bird"
+        assert "grok" not in chain
         assert resolved == "bird"
-        assert chain.index("bird") < chain.index("grok")
 
 
 # ---------------------------------------------------------------------------

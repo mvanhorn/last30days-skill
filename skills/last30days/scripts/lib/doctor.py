@@ -419,33 +419,33 @@ def _reddit_record(config):
 def _x_record(config):
     record = _chained_record("x", config)
     # Diagnose/doctor load config in plan_only mode, so browser cookies are not
-    # extracted and bird reads as statically missing. But bird is FIRST in the
-    # chain and authenticates at run time from a cookie source — FROM_BROWSER
-    # browser extraction OR the agentcookie sidecar — so a normal run serves X
-    # fine (this is how the reporting user pulled posts while doctor said
-    # "Off"). x_pending_browser_auth confirms a run will *attempt* that auth
-    # without reading a single cookie value, so the note stays honest and points
-    # at the verified key-backed path.
+    # extracted and every X backend reads as statically missing -> unconfigured.
+    # But if bird is installed and FROM_BROWSER will authenticate X at run time,
+    # a normal run serves X fine (this is how the reporting user pulled 29 posts
+    # while doctor said "Off"). Reuse the existing shared predicate so doctor and
+    # diagnose cannot drift. It reads no cookie *values*, so it confirms a run
+    # will *attempt* browser auth, not that the session is currently valid -
+    # keep the note honest and point at the verified key-backed path.
+    #
+    # This check MUST come before grok normalization: a pending bird path takes
+    # precedence over marking X as unconfigured due to an unused grok store.
+    # Handle both "unconfigured" (all backends missing) and "error" (grok present
+    # but opt-in, no auto-chain backend usable) when pending bird applies.
+    #
+    # HOWEVER: pending bird must NOT replace a record that has a configured
+    # auto-chain backend in ERROR/DEGRADED/BROKEN/TIMEOUT. Same rule as the
+    # grok normalizer: only upgrade when no auto backend is configured-but-broken.
     pending_bird = env.x_pending_browser_auth(config, local_only=True)
-
-    # The non-grok auto-chain backends. grok is treated separately below because
-    # it is a FAIL-CLOSED backup (a dead/expired/broken grok store is an
-    # expected skip, never a problem to surface or a masker of real failures).
-    nongrok_auto = {"bird", "xai", "xurl", "xquik"}
-
-    # (1) Pending bird takes precedence. bird is chain[0], so when it will
-    # authenticate at run time it wins before grok/xai/xurl/xquik — predict
-    # bird. But pending bird is a "maybe" (cookies might not be there), so it
-    # must NOT mask a NON-grok auto backend that is configured-but-broken; only
-    # upgrade when every non-grok auto backend is merely MISSING and nothing
-    # more specific than grok was auto-selected. (grok being OK is moot here —
-    # bird precedes it; grok being dead is a fail-closed non-issue.)
-    if pending_bird and not record.get("pinned"):
+    if pending_bird and record["status"] in ("unconfigured", health.ERROR):
         backends_list = record.get("backends", [])
-        nongrok = [b for b in backends_list if b.get("name") in nongrok_auto]
-        all_nongrok_missing = all(b.get("status") == health.MISSING for b in nongrok)
-        active = record.get("active_backend")
-        if all_nongrok_missing and active in (None, "grok"):
+        auto_chain_names = {"bird", "xai", "xurl", "xquik"}
+        auto_backends = [b for b in backends_list if b.get("name") in auto_chain_names]
+        # Only apply pending-bird upgrade if ALL auto-chain backends are MISSING.
+        # If any auto backend is configured but broken, keep that error.
+        all_auto_missing = all(
+            b.get("status") == health.MISSING for b in auto_backends
+        )
+        if all_auto_missing:
             record["status"] = health.OK
             record["tier"] = TIER_BY_STATUS[health.OK]
             record["note"] = (
@@ -454,14 +454,22 @@ def _x_record(config):
             )
             record["fix"] = ""
             return record
-
-    # (2) Fail-closed grok normalization. grok is a backup after bird, so a
-    # dead/expired/broken grok store is EXPECTED to be skipped — it must never
-    # render X as "NOT WORKING" with a grok prescription. When grok is the only
-    # non-MISSING backend (all non-grok auto backends MISSING) and it is not OK,
-    # report X as unconfigured (COULD BE ON) with an enabling hint instead.
-    # (A grok that is OK is auto-selected by _chained_record as "will use: grok"
-    # and needs no normalization.)
+    #
+    # Grok is opt-in only: a leftover ~/.grok/auth.json must never steal the X
+    # lane. The grok backend appears in the chain findings (for visibility) but
+    # is never auto-selected. Doctor reports it as "available, unused - pin
+    # LAST30DAYS_X_BACKEND=grok to enable" rather than "will use: grok".
+    #
+    # R3/R8: When no auto-chain backend is CONFIGURED (all MISSING) but grok has
+    # any non-MISSING status, X is unconfigured/skipped - NOT broken/auth-failed.
+    # The tier must be "off" (unconfigured), not "error" (NOT WORKING).
+    #
+    # HOWEVER: if an auto-chain backend IS configured but broken (ERROR/DEGRADED),
+    # do NOT normalize to unconfigured. Keep that backend's error and repair
+    # guidance. Unused grok must not swallow a genuine auto-chain failure.
+    #
+    # Do NOT apply this normalization when pending browser auth would make bird
+    # usable — check pending_bird first (handled above via early return).
     if (
         record["tier"] == TIER_ERROR
         and not record.get("pinned")
@@ -469,31 +477,37 @@ def _x_record(config):
         and not pending_bird
     ):
         backends_list = record.get("backends", [])
-        nongrok = [b for b in backends_list if b.get("name") in nongrok_auto]
-        all_nongrok_missing = all(b.get("status") == health.MISSING for b in nongrok)
-        if not all_nongrok_missing:
-            # A non-grok auto backend is configured but broken — keep that error
-            # and its repair guidance. grok must not swallow a real failure.
+        auto_chain_names = {"bird", "xai", "xurl", "xquik"}
+        auto_backends = [b for b in backends_list if b.get("name") in auto_chain_names]
+        # Only normalize if ALL auto-chain backends are MISSING (not configured).
+        # If any auto backend is ERROR/DEGRADED/BROKEN/TIMEOUT, keep that error.
+        all_auto_missing = all(
+            b.get("status") == health.MISSING for b in auto_backends
+        )
+        if not all_auto_missing:
+            # An auto-chain backend is configured but broken — do NOT normalize.
+            # Keep the original error and its repair guidance.
             return record
         grok_finding = next(
             (b for b in backends_list if b.get("name") == "grok"),
             None,
         )
-        grok_status = grok_finding.get("status") if grok_finding else None
-        if grok_status in (health.DEGRADED, health.ERROR):
+        if grok_finding and grok_finding.get("status") in (
+            health.OK,
+            health.DEGRADED,
+            health.ERROR,
+        ):
             record["status"] = "unconfigured"
             record["tier"] = TIER_OFF
-            if grok_status == health.DEGRADED:
+            if grok_finding.get("status") == health.ERROR:
                 record["note"] = (
-                    "X unconfigured; grok CLI is signed in but its session is expired "
-                    "(fail-closed backup, so it is skipped) — run "
-                    "`grok login --device-auth` to enable it, or configure another X backend"
+                    "X unconfigured; grok CLI store is broken but unused (opt-in only) — "
+                    "pin LAST30DAYS_X_BACKEND=grok to enable, then fix the store"
                 )
             else:
                 record["note"] = (
-                    "X unconfigured; grok CLI store is unreadable (fail-closed backup, "
-                    "so it is skipped) — run `grok login` to re-enable it, or configure "
-                    "another X backend"
+                    "X unconfigured; grok CLI available but opt-in only — "
+                    "pin LAST30DAYS_X_BACKEND=grok to enable"
                 )
             record["fix"] = ""
             return record
