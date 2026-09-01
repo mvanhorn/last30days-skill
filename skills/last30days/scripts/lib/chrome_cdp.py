@@ -14,8 +14,14 @@ Deliberate constraints (see docs/plans/2026-08-31 X plan):
   ``env.x_extras_enabled``. On a plain MacBook this is never called, so no
   socket is opened (AE8).
 * **No port scan.** Endpoint resolution is: ``BROWSER_CDP_URL`` if set, else
-  port ``18800`` (the box-Chrome default) if it answers as Chrome, else
-  ``9222`` + the X display number. No 9222..9232 sweep.
+  port ``18800`` if it answers as Chrome, else ``9222`` + the X display number.
+  No 9222..9232 sweep. ``18800`` is NOT box-chrome's built-in default (that is
+  ``9222`` + the display number); it is the last30days extras NUX convention —
+  the agent launches the throwaway login Chrome with
+  ``SAND_CHROME_REMOTE_DEBUG_PORT=18800`` (see SKILL.md), so a leftover daily
+  profile on ``9222``+display is not mistaken for the login session. If ``18800``
+  answers with no complete pair we fall through; if it answers with a stale or
+  wrong pair, pin ``BROWSER_CDP_URL`` after the NUX rather than scanning.
 * **Require a Chrome page target.** ``/json/version`` must report a Chrome /
   Chromium browser (a Node inspector is rejected) and ``/json`` must expose a
   ``page`` target.
@@ -40,7 +46,9 @@ from . import log
 
 X_COOKIE_NAMES = ("auth_token", "ct0")
 _BASE_DEBUG_PORT = 9222
-# The box-Chrome remote-debugging port used by the extra-host launcher.
+# The last30days extras NUX convention port: the agent launches the throwaway
+# login Chrome with SAND_CHROME_REMOTE_DEBUG_PORT=18800 so this lookup finds it.
+# NOT box-chrome's built-in default (which is 9222 + the X display number).
 _BOX_CHROME_PORT = 18800
 
 _HTTP_TIMEOUT = 1.5      # /json and /json/version fetches
@@ -75,7 +83,11 @@ def candidate_endpoints(config: Optional[Dict[str, Any]] = None) -> List[str]:
     """Debug endpoints to try, most-specific first (no port scan).
 
     Order: an explicit ``BROWSER_CDP_URL`` (used exclusively when set), else the
-    box-Chrome port ``18800``, then ``9222`` + the X display number.
+    last30days extras NUX port ``18800`` (where the agent launches the throwaway
+    login Chrome via ``SAND_CHROME_REMOTE_DEBUG_PORT=18800``), then ``9222`` +
+    the X display number (box-chrome's own built-in default). ``18800`` is tried
+    first but read_x_cookies falls through when it yields no complete pair, so a
+    logged-out Chrome there never shadows a logged-in daily profile.
     """
     explicit = ""
     if config is not None:

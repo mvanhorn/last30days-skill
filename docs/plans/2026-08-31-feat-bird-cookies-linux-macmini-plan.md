@@ -48,3 +48,13 @@ Darwin agentcookie sink role still gets extras on non-mini Darwin. Source role o
 - grok, backends, and doctor are unchanged from `main` (grok pin-only; `_X_BACKEND_ORDER = bird, xai, xurl, xquik`; `_X_BACKEND_OPT_IN = grok`).
 
 Copy this plan to `docs/plans/` in the PR. Update the PR title/body: extras on Linux and Mac mini; MacBook last30days unchanged; grok pin-only.
+
+## Delta 2026-09-01 — the login recipe (proven live on Grok Bot)
+
+CDP harvest alone was not enough: on a fresh Grok Bot NUX the Auto path only ran `setup --allow-browser-cookies`, which on Linux tries a sqlite extract, finds nothing, and never opens a login window. Two human logins hours apart proved the working recipe is: the agent launches a throwaway-profile Chrome via the host `box-chrome` wrapper on the last30days extras port, opens `x.com/login`, then **hands the desktop to the human to type** — driving the form itself (computerUse/overlay on the login) plus X rate-limit was the failure mode.
+
+- **Port fact:** `18800` is NOT box-chrome's built-in default. box-chrome uses `SAND_CHROME_REMOTE_DEBUG_PORT` or `9222 + DISPLAY_NUM` (on Grok Bot `DISPLAY=:7` → `9229`). `18800` is the last30days extras NUX convention: the agent launches the throwaway with `SAND_CHROME_REMOTE_DEBUG_PORT=18800` so `chrome_cdp._BOX_CHROME_PORT` finds it. Fixed the `chrome_cdp.py` docstrings/constant comment and SKILL.md that wrongly called 18800 "the box-Chrome default."
+- **Endpoint order unchanged:** `BROWSER_CDP_URL` exclusive if set, else 18800 if Chrome, else 9222+`$DISPLAY`; fall through on empty pair; pin `BROWSER_CDP_URL` after NUX as the guard against a stale session answering on 18800. No port scan.
+- **SKILL.md recipe** added to BOTH the first-run Auto setup (Claude Code Modal Flow and Non-Modal Prose Flow, after "Yes — X cookies") and the "X on Linux / Grok Bot / Mac mini" repair section: `AGENTCOOKIE=off` for the harvest; launch box-chrome throwaway on 18800; do NOT fill/drive the form; hand off to the human; confirm signed in; pin `BROWSER_CDP_URL=http://127.0.0.1:18800` (never `AUTH_TOKEN`/`CT0`); run `setup --allow-browser-cookies`; stop on block/rate-limit. A MacBook skips all of this (Keychain/Firefox/Safari extract). R3 still holds — cookies are never written to `.env`.
+- **Helper:** `skills/last30days/scripts/box_chrome_login.py` prints the exact host-correct launch command (or `--exec` launches it), extras-gated, no-op on a MacBook, reads no cookies and prints no cookie values. Tests lock: MacBook never spawns it; extras + box-chrome on PATH documents 18800; `candidate_endpoints` order unchanged; `FROM_BROWSER=off` still skips CDP.
+- Greptile constraints preserved: same host/path/partition cookie pairing; refuse `wss://`/`https://` CDP bases.
