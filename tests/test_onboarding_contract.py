@@ -64,6 +64,27 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertIn("Offer ONE retry only when no research topic is waiting", self.modal)
         self.assertIn("Offer ONE retry only when no research topic is waiting", self.prose)
 
+    def test_deferred_onboarding_resumes_after_the_findings(self):
+        """Deferral is same-run only: SETUP_COMPLETE=true means later runs skip
+        Step 0, so a skip-X-with-topic run must itself resume the ScrapeCreators
+        offer after the findings or the offer is dropped forever."""
+        self.assertIn("RESUME the deferred onboarding in the SAME run", self.step0)
+        self.assertIn(
+            "this run is the only chance to make the offer", self.step0
+        )
+        # Both flows: Skip-for-now, Skip-X modal option, and the prose no-path
+        # all resume the deferred offer in the same run after the findings.
+        self.assertEqual(
+            2,
+            self.modal.count(
+                "then resume Step 4 (and Step 5 if a key is saved) in the same run"
+            ),
+        )
+        self.assertIn("then resume the deferred onboarding in the same run", self.prose)
+        # The resume never turns back into a second X consent ask.
+        self.assertIn("the resume never re-asks X/browser-cookie consent", self.step0)
+        self.assertIn("Do not re-ask cookie consent as part of the resume", self.prose)
+
     def test_x_handle_resolution_and_plan_follow_active_sources(self):
         self.assertIn("If `ACTIVE_SOURCES_LIST` contains `x`", self.text)
         self.assertIn("every applicable source from `ACTIVE_SOURCES_LIST`", self.text)
