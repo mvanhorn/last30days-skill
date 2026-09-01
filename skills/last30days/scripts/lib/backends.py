@@ -108,7 +108,10 @@ class BackendSpec:
     ``probe`` must be side-effect-free. When ``paid`` is True the probe is
     key-presence only: no subprocess, no network, no credential spend.
     ``opt_in`` marks backends that are never auto-selected and require an
-    explicit pin (grok).
+    explicit pin. ``fail_closed`` marks backends (grok) that are auto-selected
+    only at OK — a DEGRADED finding (e.g. an expired grok session) is never
+    auto-selected, so the chain falls through to the next backend, mirroring
+    ``env._x_backend_available``'s AUTH_OK-only gate for the auto chain.
     """
 
     name: str
@@ -116,6 +119,7 @@ class BackendSpec:
     probe: Callable[[Dict[str, Any]], "BackendFinding"]
     paid: bool = False
     opt_in: bool = False
+    fail_closed: bool = False
 
 
 @dataclass(frozen=True)
@@ -432,6 +436,9 @@ _X_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
 _X_PAID = {"xai", "xquik"}
 # Opt-in backends: never auto-selected; require explicit pin.
 _X_OPT_IN = set(env.X_BACKEND_OPT_IN)
+# Fail-closed backends: auto-selected only at OK (a DEGRADED/expired finding is
+# skipped so the chain falls through). grok is a fail-closed backup after bird.
+_X_FAIL_CLOSED = {"grok"}
 
 _WEB_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "brave": _key_probe("brave", "BRAVE_API_KEY", "BRAVE_API_KEY"),
@@ -455,7 +462,7 @@ _SC_SPEC = BackendSpec(
 # X backend requirements, keyed by name.
 _X_REQUIRES: Dict[str, str] = {
     "xai": "XAI_API_KEY (xAI/Grok live search)",
-    "grok": "grok CLI installed + signed in (opt-in only; pin to enable)",
+    "grok": "grok CLI installed + signed in (fail-closed backup after bird)",
     "bird": "X browser cookies (AUTH_TOKEN/CT0) + node",
     "xurl": "xurl CLI installed + OAuth2 login",
     "xquik": "XQUIK_API_KEY (xquik.com)",
@@ -463,9 +470,10 @@ _X_REQUIRES: Dict[str, str] = {
 
 DESCRIPTORS: Dict[str, ChainDescriptor] = {
     # X: chain order and pin var imported from env.py (single source of truth).
-    # Backends include the auto chain (X_BACKEND_ORDER) plus opt-in entries
-    # (X_BACKEND_OPT_IN) for doctor visibility. Opt-in backends like grok
-    # appear in findings but are never auto-selected; pin to enable.
+    # Backends include the auto chain (X_BACKEND_ORDER) plus any opt-in entries
+    # (X_BACKEND_OPT_IN, currently empty) for doctor visibility. grok is a
+    # fail-closed member after bird: it appears OK-selectable but its DEGRADED
+    # (expired) finding is never auto-selected.
     "x": ChainDescriptor(
         source="x",
         mode=MODE_ALTERNATIVE,
@@ -476,6 +484,7 @@ DESCRIPTORS: Dict[str, ChainDescriptor] = {
                 probe=_X_PROBES[name],
                 paid=name in _X_PAID,
                 opt_in=name in _X_OPT_IN,
+                fail_closed=name in _X_FAIL_CLOSED,
             )
             for name in env.X_BACKEND_ORDER + env.X_BACKEND_OPT_IN
         ),
@@ -587,8 +596,10 @@ def _resolve_alternative(
 ) -> BackendResolution:
     names = [spec.name for spec in descriptor.backends]
     by_name = {f.name: f for f in findings}
-    # Track which backends are opt-in (never auto-selected).
+    # Track which backends are opt-in (never auto-selected) and which are
+    # fail-closed (auto-selected only at OK, never at DEGRADED).
     opt_in_names = {spec.name for spec in descriptor.backends if spec.opt_in}
+    fail_closed_names = {spec.name for spec in descriptor.backends if spec.fail_closed}
     res = BackendResolution(
         source=descriptor.source,
         mode=MODE_ALTERNATIVE,
@@ -633,7 +644,10 @@ def _resolve_alternative(
             res.tier = TIER_OK
             return res
     for finding in auto_findings:
-        if finding.status == health.DEGRADED:
+        # Fail-closed backends (grok) are never auto-selected at DEGRADED: an
+        # expired grok session must not win the chain over a fall-through to
+        # xai. This mirrors env._x_backend_available's AUTH_OK-only auto gate.
+        if finding.status == health.DEGRADED and finding.name not in fail_closed_names:
             res.active_backend = finding.name
             res.tier = TIER_WARN
             return res

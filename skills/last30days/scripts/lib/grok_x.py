@@ -276,6 +276,24 @@ def has_stored_auth() -> bool:
     return status in (AUTH_OK, AUTH_EXPIRED)
 
 
+def is_auto_available() -> bool:
+    """Fail-closed availability for the UNPINNED auto chain (side-effect free).
+
+    grok is a fail-closed backup after bird: it is auto-selected ONLY when the
+    binary is on PATH AND the stored credentials are affirmatively valid
+    (``AUTH_OK``). An expired, broken, or missing store reads as unavailable so
+    a leftover ``~/.grok/auth.json`` never blocks the fall-through to xai when
+    grok is dead or expired.
+
+    Distinct from ``has_stored_auth`` (used for the explicit pin), which also
+    accepts ``AUTH_EXPIRED`` so a user who deliberately pins grok still gets the
+    run-time refresh attempt. Filesystem-only, no subprocess.
+    """
+    if binary_path() is None:
+        return False
+    return stored_auth_status()[0] == AUTH_OK
+
+
 def is_available() -> bool:
     """Research-time availability. May spawn a subprocess; memoized per process."""
     global _availability_cache

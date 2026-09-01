@@ -584,7 +584,7 @@ Options (give each option the description shown):
 - "Skip X - just the CLIs" - description: "No cookie reads. Still installs yt-dlp (YouTube), Digg, arXiv, and Techmeme." Run `FROM_BROWSER=off "${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup`.
 - "xAI API key for X instead" - description: "Use an api.x.ai key for X search (no cookie read), plus install yt-dlp (YouTube), Digg, arXiv, and Techmeme." Ask them to paste it, write `XAI_API_KEY` to `.env`, then run `FROM_BROWSER=off "${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup`.
 
-**Grok CLI is an opt-in backup, not a setup-time recommendation.** Do NOT check for grok first or offer it as a primary option during setup. A leftover `~/.grok/auth.json` must never steal the X lane. If the user mentions having a Grok account, tell them: "You can use the Grok CLI by pinning `LAST30DAYS_X_BACKEND=grok` in your `.env` after running `grok login`. This is opt-in because a leftover grok login should not take over X automatically." Do not call it free — it needs a Grok plan.
+**Grok CLI is a fail-closed backup, not a setup-time recommendation.** Do NOT check for grok first or offer it as a primary option during setup — browser cookies for Bird come first. grok is a fail-closed backup after Bird: if the user is already signed in (`grok login`) it is used automatically only when its session is valid, so a leftover or expired `~/.grok/auth.json` never steals first place over Bird and never blocks the fall-through to xAI. If the user mentions having a Grok account, tell them: "If you run `grok login`, the Grok CLI is used automatically as a backup after browser cookies — no pin needed (you can still set `LAST30DAYS_X_BACKEND=grok` to force it)." Do not call it free — it needs a Grok plan.
 
 The consented `setup --allow-browser-cookies` run extracts cookies (Chrome/Chromium family first via the Keychain with no Full Disk Access, then Firefox and Safari as fallbacks; the winning browser is pinned for future runs only when it is Firefox or Safari, so Chrome never re-triggers the Keychain prompt on later runs) and best-effort installs yt-dlp (YouTube), the free keyless Digg CLI (`digg-pp-cli` via `@mvanhorn/printing-press-library install digg --cli-only`; Digg activates only when the binary is on the **agent subprocess PATH**, typically `$HOME/.local/bin`; setup reports honestly if installed off-PATH; recommend-only if `npx` is unavailable), plus the free keyless arXiv and Techmeme CLIs. Show the user what was found and installed - including whether Digg landed on PATH (active) or off-PATH (installed but not yet active).
 
@@ -676,12 +676,14 @@ Shown when a Claude Code user picks "Manual setup", or for anyone who wants to c
 
 The magic of /last30days is Reddit comments + X posts together - and both are free. Add these to `~/.config/last30days/.env`:
 
-**X/Twitter (pick one - the most important source):**
-- **Grok CLI (no X credential):** install with `curl -fsSL https://x.ai/cli/install.sh | bash`, then `grok login`. No X account, no cookies, no API key. Needs a Grok plan; calls draw on it.
-- `FROM_BROWSER=auto` - free. Reads your x.com login cookies live at search time (Firefox/Safari, never saved to disk).
+**X/Twitter (the most important source). Browser cookies for Bird are best; the engine tries these in order and the first complete cookie pair wins:**
+- **Browser cookies for Bird (free, best).** Bird reads your live x.com cookies (`auth_token`/`ct0`) at search time and never saves them to disk. Any one of these supplies them:
+  - **`agentcookie` sidecar** — if the `agentcookie` CLI is on PATH, the engine reads the cookies from it automatically (this is how to deliver X cookies on Linux, where the on-disk Chrome store can't be decrypted here). It runs regardless of `FROM_BROWSER`; set `AGENTCOOKIE=off` to disable.
+  - **Sign into x.com in Chrome and leave it open** — start Chrome/Chromium with a remote-debugging port and stay logged into x.com; the engine reads the pair over the DevTools Protocol. (`FROM_BROWSER=off` disables this.)
+  - **`FROM_BROWSER=auto`** — read cookies from a local browser profile (Firefox on Linux; Chrome/Firefox/Safari on macOS). Do not assume Firefox: on Chrome-only boxes (e.g. Grok Bot) use `agentcookie` or the live-Chrome path above.
+- **Grok CLI (fail-closed backup, no X credential):** install with `curl -fsSL https://x.ai/cli/install.sh | bash`, then `grok login`. Once signed in it is used automatically as a backup after Bird — no pin needed (`LAST30DAYS_X_BACKEND=grok` forces it exclusively if you want). Needs a Grok plan; calls draw on it, so it is not free.
 - `XAI_API_KEY=xxx` - no browser access needed. Get a key at api.x.ai. Best for servers.
-- `XQUIK_API_KEY=xxx` - keyless-style X via Xquik.
-- `AUTH_TOKEN=xxx` + `CT0=xxx` - paste your X cookies manually (x.com → F12 → Application → Cookies).
+- `AUTH_TOKEN=xxx` + `CT0=xxx` - paste your X cookies manually (x.com → F12 → Application → Cookies) if you can't use the above.
 
 **Reddit (free, works out of the box):**
 - Free keyless discovery (RSS + shreddit listings) gives threads + top comments with upvote counts. No setup required.
@@ -2012,13 +2014,13 @@ If the research output contains a `**🔍 Research Coverage:**` block, render it
 
 **Call AskUserQuestion.** Question: "X/Twitter wasn't searched. Want to unlock it?"
 
-Default options (always presented first — cookie consent and paid keys are the primary X fix):
-- "Scan my browser cookies (free)" - Get consent, run cookie scan, write BROWSER_CONSENT=true + FROM_BROWSER=auto to .env
+Default options (always presented first — browser cookies for Bird and paid keys are the primary X fix):
+- "Scan my browser cookies (free)" - Get consent, run cookie scan, write BROWSER_CONSENT=true + FROM_BROWSER=auto to .env. On a Chrome-only box (e.g. Grok Bot), tell them Bird also reads cookies from the `agentcookie` sidecar if installed, or from a signed-in Chrome left open (via the DevTools port) — do NOT tell them to install Firefox as the default.
 - "I have AUTH_TOKEN and CT0 from my browser" - Ask them to paste each value, then write AUTH_TOKEN=<value>\nCT0=<value> to .env
 - "I have an xAI API key" - Ask them to paste it, write XAI_API_KEY to .env
 - "Skip for now"
 
-**Grok CLI is an opt-in backup, not a default prescription.** After showing the modal, add one line: "If you have a Grok account and prefer to use it: install the Grok CLI (`curl -fsSL https://x.ai/cli/install.sh | bash`), run `grok login`, then set `LAST30DAYS_X_BACKEND=grok` to enable it." Do not describe the Grok path as free — it needs a Grok plan. Do not put grok first or as a primary recommendation; a leftover `~/.grok/auth.json` must never steal the X lane.
+**Grok CLI is a fail-closed backup, not a default prescription.** After showing the modal, add one line: "If you run `grok login`, the Grok CLI is used automatically as a backup after browser cookies (no pin needed; `LAST30DAYS_X_BACKEND=grok` forces it exclusively)." Do not describe the Grok path as free — it needs a Grok plan. Do not put grok first or as a primary recommendation; browser cookies for Bird come first, and a leftover or expired `~/.grok/auth.json` never steals the X lane.
 
 **THEN - Engine footer pass-through (right before invitation):**
 
@@ -2267,7 +2269,7 @@ Want another prompt? Just tell me what you're creating next.
 **What this skill does:**
 - Sends search queries to ScrapeCreators API (`api.scrapecreators.com`) for TikTok and Instagram search, and as a Reddit search backup when the free Reddit path returns no items (requires SCRAPECREATORS_API_KEY; empty-only by default — see `LAST30DAYS_REDDIT_SC_MIN_ITEMS` / `LAST30DAYS_REDDIT_BACKEND`)
 - Legacy: Sends search queries to OpenAI's Responses API (`api.openai.com`) for Reddit discovery (fallback if no SCRAPECREATORS_API_KEY)
-- Sends search queries to X/Twitter via optional user-provided `AUTH_TOKEN`/`CT0` env vars, explicit browser-cookie opt-in (`FROM_BROWSER` or setup consent), xAI's API (`api.x.ai` by default), Xquik's API (`xquik.com` by default), or the official X API v2 via xurl CLI (OAuth2, auto-detected when installed and authenticated)
+- Sends search queries to X/Twitter via optional user-provided `AUTH_TOKEN`/`CT0` env vars, explicit browser-cookie opt-in (`FROM_BROWSER` or setup consent) — which under that opt-in may also read the `auth_token`/`ct0` pair from the `agentcookie` sidecar CLI (unless `AGENTCOOKIE=off`) or from a live signed-in Chrome session over the local DevTools debug port (unless `FROM_BROWSER=off`) — the signed-in Grok CLI (fail-closed backup, no X credential), xAI's API (`api.x.ai` by default), Xquik's API (`xquik.com` by default), or the official X API v2 via xurl CLI (OAuth2, auto-detected when installed and authenticated). Discovered X cookies are held in memory for the run only and are never written to the `.env`.
 - Sends search queries to Algolia HN Search API (`hn.algolia.com`) for Hacker News story and comment discovery (free, no auth)
 - Sends search queries to Polymarket Gamma API (`gamma-api.polymarket.com`) for prediction market discovery (free, no auth)
 - Runs `yt-dlp` locally for YouTube search and transcript extraction (no API key, public data)
@@ -2282,7 +2284,7 @@ Want another prompt? Just tell me what you're creating next.
 
 **What this skill does NOT do:**
 - Does not post, like, or modify content on any platform
-- Does not access browser cookies unless explicitly configured or consented (`FROM_BROWSER`, manual X cookies, or setup with `--allow-browser-cookies`); `--preflight` and `--diagnose` do not read browser-cookie values
+- Does not access browser cookies (including via the `agentcookie` sidecar or a live Chrome DevTools session) unless explicitly configured or consented (`FROM_BROWSER`, manual X cookies, or setup with `--allow-browser-cookies`); `--preflight` and `--diagnose` do not read browser-cookie values, and discovered X cookies are never written to the `.env`
 - Does not use Codex ChatGPT auth as an OpenAI provider credential
 - Does not share API keys between providers
 - Does not log, cache, or write API keys to output files
