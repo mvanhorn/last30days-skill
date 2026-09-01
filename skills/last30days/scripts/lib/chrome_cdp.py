@@ -298,19 +298,51 @@ def _get_all_cookies(ws_url: str) -> Optional[List[Dict[str, Any]]]:
 _ALLOWED_X_HOSTS = ("x.com", "twitter.com")
 
 
-def _pair_from_cookies(cookies: List[Dict[str, Any]]) -> Dict[str, str]:
-    """Extract a complete X cookie pair from ONE registrable X host.
+def _canonical_partition(raw: Any) -> Optional[str]:
+    """Canonicalize a CDP ``partitionKey`` to a hashable scope tag.
 
-    Cookie scopes must not be mixed: ``auth_token`` and ``ct0`` are only a
-    usable pair when they come from the SAME host. We group the cookies by host
-    (exact match against ``_ALLOWED_X_HOSTS`` after stripping a leading dot —
-    never ``endswith``, so ``notx.com`` never counts), then return the pair from
-    the first host that has BOTH cookies, preferring ``x.com`` over
-    ``twitter.com``. A host with only one of the two is skipped. When no host
-    has a complete pair, the same-host partial (x.com-preferred) is returned for
-    the caller's incomplete-pair log — never a cross-host mix.
+    CDP may send ``partitionKey`` as a string, as an object
+    (``{"topLevelSite": ..., "hasCrossSiteAncestor": ...}``), or omit it for an
+    unpartitioned cookie. Returns None for "unpartitioned" (so all unpartitioned
+    cookies share one scope) and a stable string otherwise (so a partitioned
+    cookie never shares a scope with an unpartitioned one, nor with a different
+    partition).
     """
-    per_host: Dict[str, Dict[str, str]] = {host: {} for host in _ALLOWED_X_HOSTS}
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return raw.strip() or None
+    if isinstance(raw, dict):
+        try:
+            return json.dumps(raw, sort_keys=True, separators=(",", ":"))
+        except (TypeError, ValueError):
+            return repr(sorted((str(k), str(v)) for k, v in raw.items()))
+    return str(raw)
+
+
+def _pair_from_cookies(cookies: List[Dict[str, Any]]) -> Dict[str, str]:
+    """Extract a complete X cookie pair from ONE cookie scope.
+
+    ``auth_token`` and ``ct0`` are only a usable pair when they share the SAME
+    cookie scope — same registrable host AND same ``path`` AND same partition.
+    Chrome can hold duplicate names across scopes (different ``path`` or
+    ``partitionKey``), so pairing across the whole host jar could hand Bird a
+    token from one session scope and a ct0 from another, and a valid login would
+    look unauthorized. We therefore group by the full scope key
+    ``(host, path, partition)`` and only ever pair WITHIN one scope.
+
+    Host is matched EXACTLY against ``_ALLOWED_X_HOSTS`` after stripping one
+    leading dot (never ``endswith``, so ``notx.com`` never counts). Missing
+    ``path`` is treated as ``/``; ``partitionKey`` is canonicalized so
+    unpartitioned cookies stay together. Preference order for the returned pair:
+    host ``x.com`` before ``twitter.com``; unpartitioned before partitioned;
+    path ``/`` before other paths. A scope with only one of the two cookies is
+    skipped so a later complete scope still wins. When no scope has a complete
+    pair, a single scope's partial is returned for the caller's incomplete-pair
+    log — never a cross-scope mix.
+    """
+    # scopes[host][(path, partition)] -> {name: value}
+    scopes: Dict[str, Dict[tuple, Dict[str, str]]] = {host: {} for host in _ALLOWED_X_HOSTS}
     for cookie in cookies:
         if not isinstance(cookie, dict):
             continue
@@ -319,17 +351,30 @@ def _pair_from_cookies(cookies: List[Dict[str, Any]]) -> Dict[str, str]:
         if name not in X_COOKIE_NAMES or not (isinstance(value, str) and value):
             continue
         host = str(cookie.get("domain") or "").lstrip(".").lower()
-        if host in per_host:
-            per_host[host].setdefault(name, value)
+        if host not in scopes:
+            continue
+        path = cookie.get("path")
+        if not isinstance(path, str) or not path:
+            path = "/"
+        scope_key = (path, _canonical_partition(cookie.get("partitionKey")))
+        jar = scopes[host].setdefault(scope_key, {})
+        # First value WITHIN this scope only — never across scopes.
+        jar.setdefault(name, value)
+
+    def _scope_rank(item: tuple) -> tuple:
+        (path, partition), _jar = item
+        # unpartitioned (None) before partitioned; path "/" before others.
+        return (partition is not None, path != "/", path)
 
     for host in _ALLOWED_X_HOSTS:
-        jar = per_host[host]
-        if all(name in jar for name in X_COOKIE_NAMES):
-            return {name: jar[name] for name in X_COOKIE_NAMES}
+        for _key, jar in sorted(scopes[host].items(), key=_scope_rank):
+            if all(name in jar for name in X_COOKIE_NAMES):
+                return {name: jar[name] for name in X_COOKIE_NAMES}
 
     for host in _ALLOWED_X_HOSTS:
-        if per_host[host]:
-            return dict(per_host[host])
+        for _key, jar in sorted(scopes[host].items(), key=_scope_rank):
+            if jar:
+                return dict(jar)
     return {}
 
 

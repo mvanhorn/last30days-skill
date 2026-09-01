@@ -94,6 +94,48 @@ def test_pair_from_cookies_skips_partial_host_for_complete_one():
     assert pair == {"auth_token": "test-auth-token", "ct0": "test-ct0"}
 
 
+def test_pair_from_cookies_does_not_mix_across_paths():
+    """auth_token on path / and ct0 on path /i are different scopes -> no pair."""
+    cookies = [
+        {"name": "auth_token", "value": "test-auth-token", "domain": ".x.com", "path": "/"},
+        {"name": "ct0", "value": "test-ct0", "domain": ".x.com", "path": "/i"},
+    ]
+    pair = chrome_cdp._pair_from_cookies(cookies)
+    assert set(pair) != {"auth_token", "ct0"}  # never a cross-path pair
+
+
+def test_pair_from_cookies_does_not_mix_across_partitions():
+    """Same host+path but different partitionKey -> different scopes -> no pair."""
+    cookies = [
+        {"name": "auth_token", "value": "test-auth-token", "domain": ".x.com",
+         "path": "/", "partitionKey": "https://a.example"},
+        {"name": "ct0", "value": "test-ct0", "domain": ".x.com",
+         "path": "/", "partitionKey": "https://b.example"},
+    ]
+    pair = chrome_cdp._pair_from_cookies(cookies)
+    assert set(pair) != {"auth_token", "ct0"}
+
+
+def test_pair_from_cookies_prefers_unpartitioned_root_path_scope():
+    """A complete unpartitioned path-/ pair wins over later partitioned or
+    other-path complete pairs (object-form partitionKey must not crash)."""
+    cookies = [
+        # other-path complete pair
+        {"name": "auth_token", "value": "ipath-token", "domain": ".x.com", "path": "/i"},
+        {"name": "ct0", "value": "ipath-ct0", "domain": ".x.com", "path": "/i"},
+        # partitioned complete pair (object form)
+        {"name": "auth_token", "value": "part-token", "domain": ".x.com", "path": "/",
+         "partitionKey": {"topLevelSite": "https://x.com", "hasCrossSiteAncestor": True}},
+        {"name": "ct0", "value": "part-ct0", "domain": ".x.com", "path": "/",
+         "partitionKey": {"topLevelSite": "https://x.com", "hasCrossSiteAncestor": True}},
+        # the winner: unpartitioned, path /
+        {"name": "auth_token", "value": "test-auth-token", "domain": ".x.com", "path": "/"},
+        {"name": "ct0", "value": "test-ct0", "domain": ".x.com", "path": "/"},
+    ]
+    pair = chrome_cdp._pair_from_cookies(cookies)
+    assert pair == {"auth_token": "test-auth-token", "ct0": "test-ct0"}
+
+
 def test_from_browser_off_skips_endpoints():
     with mock.patch.object(
         chrome_cdp, "candidate_endpoints", side_effect=AssertionError("must not probe")
