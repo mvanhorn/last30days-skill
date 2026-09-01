@@ -55,6 +55,14 @@ class FooterNudgeSuppressionTests(unittest.TestCase):
         # Run from a tmpdir so _find_project_env() can't walk up into any
         # .claude/last30days.env above the repo on the contributor's machine.
         with tempfile.TemporaryDirectory() as tmp:
+            # pass(1) is a FOURTH credential source (_load_pass): a stored
+            # last30days/BRAVE_API_KEY entry leaks in exactly like the
+            # Keychain item sealed above. pass honors PASSWORD_STORE_DIR, so
+            # point it at an empty store inside the tmpdir — every lookup
+            # misses without touching the contributor's real store.
+            empty_pass_store = Path(tmp) / "empty-pass-store"
+            empty_pass_store.mkdir()
+            env["PASSWORD_STORE_DIR"] = str(empty_pass_store)
             return subprocess.run(
                 cmd, capture_output=True, text=True, encoding="utf-8", env=env, cwd=tmp,
             )

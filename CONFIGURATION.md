@@ -353,8 +353,11 @@ Set `LAST30DAYS_SKIP_KEYCHAIN=1` to switch the Keychain source off entirely,
 making the loader a no-op on macOS as well:
 
 ```bash
-LAST30DAYS_SKIP_KEYCHAIN=1 uv run pytest
+LAST30DAYS_SKIP_KEYCHAIN=1 uv run pytest tests/test_footer_nudge_suppression.py
 ```
+
+Scope it to the tests that need a sealed Keychain rather than the whole suite:
+the full run should keep exercising the positive-path Keychain tests.
 
 This exists mainly for tests and reproductions that assert on
 "no credentials configured" behaviour. Clearing `os.environ` and pointing
