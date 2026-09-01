@@ -713,9 +713,13 @@ class TestYtdlpSSHRouting(unittest.TestCase):
         self.assertIsNone(youtube_yt._ytdlp_ssh_host())
 
     def test_wrap_cmd_passthrough_when_unset(self):
-        """_wrap_ytdlp_cmd returns input unchanged when SSH routing is off."""
+        """_wrap_ytdlp_cmd injects player_client but does not SSH-wrap when unset."""
         cmd = ["yt-dlp", "--ignore-config", "ytsearch5:test"]
-        self.assertEqual(youtube_yt._wrap_ytdlp_cmd(cmd), cmd)
+        wrapped = youtube_yt._wrap_ytdlp_cmd(cmd)
+        self.assertEqual(wrapped[0], "yt-dlp")
+        self.assertIn("ytsearch5:test", wrapped)
+        self.assertIn("--extractor-args", wrapped)
+        self.assertIn("youtube:player_client=android", wrapped)
 
     def test_wrap_cmd_prepends_ssh_when_set(self):
         """_wrap_ytdlp_cmd prepends ssh <host> when SSH routing is on."""
@@ -1327,6 +1331,48 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
         bundle.add_items("main", "youtube", [])
         self.assertEqual(bundle.source_status["youtube"].state, health.TIMEOUT)
         self.assertNotEqual(bundle.source_status["youtube"].state, schema.NO_RESULTS)
+
+
+class TestYtdlpPlayerClient(unittest.TestCase):
+    """#1052: merge player_client into a single youtube extractor-args."""
+
+    def setUp(self):
+        self._saved = os.environ.pop("LAST30DAYS_YT_PLAYER_CLIENT", None)
+
+    def tearDown(self):
+        os.environ.pop("LAST30DAYS_YT_PLAYER_CLIENT", None)
+        if self._saved is not None:
+            os.environ["LAST30DAYS_YT_PLAYER_CLIENT"] = self._saved
+
+    def test_default_android_on_search(self):
+        cmd = ["yt-dlp", "--ignore-config", "ytsearch5:test"]
+        out = youtube_yt._inject_youtube_player_client(cmd)
+        self.assertIn("--extractor-args", out)
+        self.assertIn("youtube:player_client=android", out)
+
+    def test_empty_env_disables(self):
+        os.environ["LAST30DAYS_YT_PLAYER_CLIENT"] = ""
+        cmd = ["yt-dlp", "--ignore-config", "ytsearch5:test"]
+        self.assertEqual(youtube_yt._inject_youtube_player_client(cmd), cmd)
+
+    def test_merges_into_existing_youtube_extractor_args(self):
+        cmd = [
+            "yt-dlp",
+            "--extractor-args",
+            "youtube:comment_sort=top;max_comments=5,all,5",
+            "--write-comments",
+            "https://www.youtube.com/watch?v=abc",
+        ]
+        out = youtube_yt._inject_youtube_player_client(cmd)
+        self.assertEqual(out.count("--extractor-args"), 1)
+        spec = out[out.index("--extractor-args") + 1]
+        self.assertTrue(spec.startswith("youtube:"))
+        self.assertIn("comment_sort=top", spec)
+        self.assertIn("player_client=android", spec)
+
+    def test_version_cmd_untouched(self):
+        cmd = ["yt-dlp", "--version"]
+        self.assertEqual(youtube_yt._inject_youtube_player_client(cmd), cmd)
 
 
 if __name__ == "__main__":

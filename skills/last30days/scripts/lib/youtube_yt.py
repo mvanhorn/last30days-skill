@@ -338,6 +338,67 @@ def _ytdlp_ssh_host() -> Optional[str]:
     return host
 
 
+_PLAYER_CLIENT_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _ytdlp_player_client() -> Optional[str]:
+    """Return the yt-dlp YouTube player_client, or None to leave the default.
+
+    Default is ``android``, which bypasses the web bot-gate without cookies.
+    Set ``LAST30DAYS_YT_PLAYER_CLIENT`` empty to disable; any other value is
+    passed through when it is a safe extractor token.
+    """
+    if "LAST30DAYS_YT_PLAYER_CLIENT" in os.environ:
+        raw = os.environ.get("LAST30DAYS_YT_PLAYER_CLIENT", "").strip()
+        if not raw:
+            return None
+    else:
+        raw = "android"
+    if not _PLAYER_CLIENT_RE.match(raw):
+        sys.stderr.write(
+            f"[youtube_yt] WARNING: LAST30DAYS_YT_PLAYER_CLIENT={raw!r} "
+            "is not a plain player-client token; ignoring.\n"
+        )
+        return None
+    return raw
+
+
+def _ytdlp_cmd_needs_player_client(cmd: List[str]) -> bool:
+    blob = " ".join(cmd)
+    return any(
+        marker in blob
+        for marker in (
+            "ytsearch",
+            "youtube.com",
+            "--write-comments",
+            "--write-auto-subs",
+        )
+    )
+
+
+def _inject_youtube_player_client(cmd: List[str]) -> List[str]:
+    """Merge player_client into a single youtube --extractor-args (#1052).
+
+    yt-dlp does not merge two ``--extractor-args`` for the same extractor;
+    the last one wins. Always fold into an existing ``youtube:`` spec.
+    """
+    client = _ytdlp_player_client()
+    if not client or not _ytdlp_cmd_needs_player_client(cmd):
+        return list(cmd)
+    out = list(cmd)
+    needle = f"player_client={client}"
+    for i, arg in enumerate(out):
+        if arg == "--extractor-args" and i + 1 < len(out):
+            spec = out[i + 1]
+            if spec.startswith("youtube:"):
+                if "player_client=" in spec:
+                    return out
+                out[i + 1] = f"{spec};{needle}"
+                return out
+    out.extend(["--extractor-args", f"youtube:{needle}"])
+    return out
+
+
 def _wrap_ytdlp_cmd(cmd: List[str]) -> List[str]:
     """Wrap a yt-dlp command list with `ssh <host>` when SSH routing is set.
 
@@ -346,6 +407,7 @@ def _wrap_ytdlp_cmd(cmd: List[str]) -> List[str]:
     The `--` option terminator prevents an SSH option-injection if
     LAST30DAYS_YOUTUBE_SSH_HOST were ever set to a value starting with `-`.
     """
+    cmd = _inject_youtube_player_client(cmd)
     host = _ytdlp_ssh_host()
     if not host:
         return cmd
@@ -701,10 +763,17 @@ def _fetch_transcript_ytdlp_via_ssh(video_id: str, ssh_host: str) -> Optional[st
     url = f"https://www.youtube.com/watch?v={video_id}"
     quoted_url = shlex.quote(url)
     sub_langs = shlex.quote(_ytdlp_sub_langs())
+    client = _ytdlp_player_client()
+    extractor = (
+        f"--extractor-args {shlex.quote(f'youtube:player_client={client}')} "
+        if client
+        else ""
+    )
     remote_script = (
         "set -e; "
         "TMPD=$(mktemp -d); "
         "yt-dlp --ignore-config --no-cookies-from-browser "
+        f"{extractor}"
         f"--write-auto-subs --sub-lang {sub_langs} --sub-format vtt "
         "--skip-download --no-warnings "
         f'-o "$TMPD/%(id)s" {quoted_url} >/dev/null 2>&1 || true; '
@@ -825,6 +894,7 @@ def _fetch_transcript_ytdlp(
         "-o", f"{temp_dir}/%(id)s",
         f"https://www.youtube.com/watch?v={video_id}",
     ]
+    cmd = _inject_youtube_player_client(cmd)
 
     timeout = _transcript_fast_timeout() if fast_fail else _TRANSCRIPT_TIMEOUT
     attempts = 1 if fast_fail else _TRANSCRIPT_MAX_RETRIES + 1
