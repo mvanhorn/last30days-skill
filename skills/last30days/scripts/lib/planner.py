@@ -374,7 +374,9 @@ def plan_query(
     if provider and model:
         try:
             raw = provider.generate_json(model, prompt)
-            plan = _sanitize_plan(raw, topic, available_sources, requested_sources, depth)
+            plan = _sanitize_plan(
+                raw, topic, available_sources, requested_sources, depth,
+            )
             if plan.subqueries:
                 return plan
         except (ValueError, KeyError, json.JSONDecodeError, OSError, http.HTTPError) as exc:
@@ -466,6 +468,8 @@ def _sanitize_plan(
     available_sources: list[str],
     requested_sources: list[str] | None,
     depth: str,
+    *,
+    honor_plan_sources: bool = False,
 ) -> schema.QueryPlan:
     intent_hint = str(raw.get("intent") or _infer_intent(topic)).strip()
     if intent_hint not in ALLOWED_INTENTS:
@@ -543,6 +547,7 @@ def _sanitize_plan(
                 depth,
                 eligible_sources,
                 requested_sources=requested_sources,
+                honor_plan_sources=honor_plan_sources,
             )
         ),
         source_weights=source_weights,
@@ -578,11 +583,13 @@ def _trim_subqueries_for_depth(
     depth: str,
     available_sources: list[str],
     requested_sources: list[str] | None = None,
+    honor_plan_sources: bool = False,
 ) -> list[schema.SubQuery]:
     # At non-quick depth, expand sources: use capability routing for intents
     # that define it, or all available sources otherwise. The LLM planner may
     # assign narrow source lists; we override to let fusion decide quality.
-    if depth != "quick":
+    # Operator-supplied --plan is a contract: keep per-subquery sources.
+    if depth != "quick" and not honor_plan_sources:
         expanded_sources = _default_sources_for_intent(intent, available_sources)
         return [
             schema.SubQuery(

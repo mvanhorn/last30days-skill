@@ -314,6 +314,20 @@ class TestTrimSubqueriesForDepth(unittest.TestCase):
         # Deep comparison should also use capability expansion, not trim
         self.assertGreaterEqual(len(result[0].sources), 4)
 
+    def test_honor_plan_sources_skips_expansion_at_default_and_deep(self):
+        available = ["reddit", "x", "youtube", "hackernews", "polymarket", "github"]
+        sqs = [self._sq(sources=["reddit", "x", "youtube"])]
+        for depth in ("default", "deep"):
+            with self.subTest(depth=depth):
+                result = planner._trim_subqueries_for_depth(
+                    sqs,
+                    "opinion",
+                    depth,
+                    available,
+                    honor_plan_sources=True,
+                )
+                self.assertEqual(["reddit", "x", "youtube"], result[0].sources)
+
 # ---------------------------------------------------------------------------
 # signals.annotate_stream
 # ---------------------------------------------------------------------------

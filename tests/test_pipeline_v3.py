@@ -66,6 +66,39 @@ class PipelineV3Tests(unittest.TestCase):
                 mock=True,
             )
 
+    def test_external_plan_honors_per_subquery_sources_at_default_depth(self):
+        # Issue #1073: --plan sources are a contract at default/deep.
+        plan = {
+            "intent": "opinion",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "debate",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "late diagnosed autism adults",
+                    "ranking_query": "What are people saying about late diagnosed autism in adults?",
+                    "sources": ["reddit", "x", "youtube"],
+                    "weight": 1.0,
+                }
+            ],
+        }
+        report = pipeline.run(
+            topic="late diagnosed autism adults",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="default",
+            requested_sources=["reddit", "x", "youtube", "hackernews", "polymarket", "github"],
+            mock=True,
+            web_backend="none",
+            external_plan=plan,
+        )
+        self.assertEqual(
+            ["reddit", "x", "youtube"],
+            report.query_plan.subqueries[0].sources,
+        )
+        self.assertNotIn("hackernews", report.items_by_source)
+        self.assertNotIn("polymarket", report.items_by_source)
+        self.assertNotIn("github", report.items_by_source)
+
     def test_planner_trace_always_fires_on_mock_run(self):
         """Unit 5: The unified planner trace emits one summary line plus one
         line per subquery on every run, regardless of --debug. 2026-04-19
