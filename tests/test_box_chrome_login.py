@@ -49,6 +49,19 @@ def test_extras_with_box_chrome_documents_18800():
     assert "BROWSER_CDP_URL=http://127.0.0.1:18800" in rendered
 
 
+def test_helper_launches_via_box_chrome_without_custom_class():
+    """Launch through the box-chrome wrapper (it sets --class=box-chrome); never
+    a raw chrome with a custom --class, which is what failed live."""
+    with (
+        mock.patch("lib.env.x_extras_enabled", return_value=True),
+        mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+    ):
+        recipe = bcl.build_recipe({})
+    assert recipe["command"][0].endswith("box-chrome")
+    assert not any(arg.startswith("--class") for arg in recipe["command"])
+    assert "google-chrome" not in " ".join(recipe["command"])
+
+
 def test_extras_without_box_chrome_guides_pin():
     with (
         mock.patch("lib.env.x_extras_enabled", return_value=True),

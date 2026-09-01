@@ -58,3 +58,13 @@ CDP harvest alone was not enough: on a fresh Grok Bot NUX the Auto path only ran
 - **SKILL.md recipe** added to BOTH the first-run Auto setup (Claude Code Modal Flow and Non-Modal Prose Flow, after "Yes — X cookies") and the "X on Linux / Grok Bot / Mac mini" repair section: `AGENTCOOKIE=off` for the harvest; launch box-chrome throwaway on 18800; do NOT fill/drive the form; hand off to the human; confirm signed in; pin `BROWSER_CDP_URL=http://127.0.0.1:18800` (never `AUTH_TOKEN`/`CT0`); run `setup --allow-browser-cookies`; stop on block/rate-limit. A MacBook skips all of this (Keychain/Firefox/Safari extract). R3 still holds — cookies are never written to `.env`.
 - **Helper:** `skills/last30days/scripts/box_chrome_login.py` prints the exact host-correct launch command (or `--exec` launches it), extras-gated, no-op on a MacBook, reads no cookies and prints no cookie values. Tests lock: MacBook never spawns it; extras + box-chrome on PATH documents 18800; `candidate_endpoints` order unchanged; `FROM_BROWSER=off` still skips CDP.
 - Greptile constraints preserved: same host/path/partition cookie pairing; refuse `wss://`/`https://` CDP bases.
+
+### Delta 2026-09-01b — harvest confirmed; flag delta corrected
+
+A live harvest with exclusive `BROWSER_CDP_URL=http://127.0.0.1:9334` returned a complete same-host `x.com` `auth_token`+`ct0` (path `/`, unpartitioned); doctor reported `bird=ok` and the `~/.config/last30days/.env` sha256 was unchanged (R3 holds — no cookie values persisted).
+
+The working-vs-failing difference was the launcher, not the user-agent:
+- **Working (9334):** launched via `box-chrome` → `--class=box-chrome`, `--enable-unsafe-swiftshader`, no `--ignore-gpu-blocklist`. The `GrokAgent` UA token was NOT in argv (this box has `/tmp/sand-ua-token-disabled`).
+- **Failed (18800 the night before):** a raw Chrome with `--class=l30d-pr1087-chrome` (NOT `box-chrome`), same swiftshader, same absence of the GrokAgent UA.
+
+So: launch via `box-chrome` (class `box-chrome`); do NOT launch raw Chrome with a custom `--class`; do NOT claim the `GrokAgent` UA is required or was present. The human types the login; the agent never drives the form. Pin `BROWSER_CDP_URL` to the debug port the Chrome actually listens on (`18800` for the convention launch, or the real port such as `9334`). `18800` remains the last30days NUX convention, not box-chrome's built-in default. SKILL.md, the helper, and CONFIGURATION.md updated accordingly; a test locks that the helper command goes through `box-chrome` with no custom `--class`.

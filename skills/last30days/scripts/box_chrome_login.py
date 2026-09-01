@@ -15,9 +15,12 @@ Contract, matching the rest of the feature:
 * Launch on the last30days extras NUX port ``18800``
   (``SAND_CHROME_REMOTE_DEBUG_PORT=18800``) so ``chrome_cdp`` finds it. This is
   NOT box-chrome's built-in default (``9222`` + the display number).
-* Uses the host ``box-chrome`` wrapper; never assembles a raw
-  ``google-chrome-stable`` flag soup. If ``box-chrome`` is missing it tells the
-  user to sign into a remote-debugging Chrome and pin ``BROWSER_CDP_URL``.
+* Uses the host ``box-chrome`` wrapper (which sets ``--class=box-chrome``);
+  never assembles a raw ``google-chrome-stable`` flag soup and never launches
+  raw Chrome with a custom ``--class`` (a raw Chrome with ``--class=l30d-…``
+  failed live where ``box-chrome`` succeeded). No special user-agent is
+  required. If ``box-chrome`` is missing it tells the user to sign into a
+  remote-debugging Chrome and pin ``BROWSER_CDP_URL``.
 * Reads NO cookies and prints NO cookie values. It never writes to the ``.env``.
 """
 
@@ -103,9 +106,11 @@ def build_recipe(
         "command": None,
         "note": (
             "box-chrome is not on PATH. Do not assemble a raw google-chrome "
-            "command. Sign into x.com in a Chrome that already exposes a "
-            "remote-debugging port, then pin BROWSER_CDP_URL to that endpoint "
-            "in .env and run `setup --allow-browser-cookies`."
+            "command or launch raw Chrome with a custom --class (that is what "
+            "failed live; box-chrome sets --class=box-chrome). Sign into x.com "
+            "in a Chrome that already exposes a remote-debugging port, then pin "
+            "BROWSER_CDP_URL to that endpoint in .env and run "
+            "`setup --allow-browser-cookies`."
         ),
     }
 
