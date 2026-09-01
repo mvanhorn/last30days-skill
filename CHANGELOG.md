@@ -9,6 +9,23 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.23.0] - 2026-09-01
+
+### Added
+
+- On Linux and Mac mini hosts (and any host that sets `AGENTCOOKIE=on`), X search can now hand Bird a complete `auth_token`+`ct0` pair from two additional sources: the `agentcookie` sidecar CLI and a live signed-in Chrome/Chromium session read over the DevTools Protocol (`Network.getAllCookies`). The first complete pair wins, cookies are never written to the `.env` or logged, and a Node `--inspect` endpoint is never mistaken for Chrome. A MacBook is unchanged — it uses only the existing browser-cookie extract unless `AGENTCOOKIE=on`. The X backend chain and grok's pin-only status are unchanged from `main`.
+
+### Fixed
+
+- Stop listing SCRAPECREATORS_API_KEY as an X backend; the engine has no ScrapeCreators X path (`_X_BACKEND_ORDER` is bird/xai/xurl/xquik). ([#942](https://github.com/mvanhorn/last30days-skill/issues/942))
+- Keep YouTube videos that already had transcripts fetched when the hard date window would otherwise empty the source (#1043). Search already kept out-of-window results when fewer than 3 were recent. ([#1043](https://github.com/mvanhorn/last30days-skill/issues/1043))
+- `tests/test_footer_nudge_suppression.py::test_bare_run_emits_web_promo` failed on macOS for contributors with a `last30days-BRAVE_API_KEY` Keychain item, while passing in Linux CI. The test sealed two credential sources — it stripped the paid web keys from `os.environ` and set `LAST30DAYS_CONFIG_DIR=""` — but macOS Keychain is a third, independent source, so `BRAVE_API_KEY` was still resolved, `native_web_backend` was set, `_missing_sources_for_promo()` returned `None`, and the asserted `BRAVE_API_KEY` nudge was never printed. `_load_keychain()` gains a `LAST30DAYS_SKIP_KEYCHAIN` opt-out (process-environment only, since it gates a source consulted while the config is assembled), and the test now sets it. Engine behaviour is unchanged when the switch is unset. ([#1050](https://github.com/mvanhorn/last30days-skill/issues/1050))
+- Pass `player_client=android` to yt-dlp (overridable via `LAST30DAYS_YT_PLAYER_CLIENT`) so search, transcripts, and comments can clear the web bot-gate without spending ScrapeCreators credits. ([#1052](https://github.com/mvanhorn/last30days-skill/issues/1052))
+- The vendored X-search subprocess no longer receives a copy of the full environment: `bird_x` now passes only the variables the client actually reads (runtime vars, X session cookies, `BIRD_*` flags, injected credentials), so unrelated ambient API keys and tokens cannot reach scan-excluded vendored code ([#1063](https://github.com/mvanhorn/last30days-skill/issues/1063)). ([#1063](https://github.com/mvanhorn/last30days-skill/issues/1063))
+- Windows Firefox `FROM_BROWSER` X auth no longer dies on a UTF-16 `profiles.ini` (`UnicodeDecodeError` used to skip the fallback and kill the only keyless X route). ([#1067](https://github.com/mvanhorn/last30days-skill/issues/1067))
+- Declining or skipping X/browser-cookie access now continues the requested research with available sources, and reports X only as an optional omission after useful results.
+
+
 ## [3.22.0] - 2026-08-31
 
 ### Added
