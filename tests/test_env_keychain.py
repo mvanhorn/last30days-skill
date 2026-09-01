@@ -41,6 +41,45 @@ def _run_result(returncode: int, stdout: str = "") -> subprocess.CompletedProces
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr="")
 
 
+def test_load_keychain_returns_empty_when_disable_switch_set(monkeypatch):
+    """The opt-out must win on Darwin with `security` present and a key stored.
+
+    Deliberately mocked past the platform/binary early-returns above: if the
+    switch were dropped, neither of those would cover this case and this goes red.
+    """
+    monkeypatch.setenv(env.KEYCHAIN_DISABLE_ENV, "1")
+    with mock.patch("platform.system", return_value="Darwin"), \
+         mock.patch("shutil.which", return_value="/usr/bin/security"), \
+         mock.patch("subprocess.run", return_value=_run_result(0, "should-not-be-read")) as run:
+        assert env._load_keychain(["XAI_API_KEY"]) == {}
+    # Proves the opt-out short-circuits BEFORE any lookup, not merely that the
+    # returned dict came back empty.
+    run.assert_not_called()
+
+
+def test_load_keychain_reads_key_when_disable_switch_absent(monkeypatch):
+    """Counterexample for the test above: same mocks, switch off -> the key IS read.
+
+    Without this pair, `_load_keychain(...) == {}` could pass for the wrong
+    reason and nobody would notice.
+    """
+    monkeypatch.delenv(env.KEYCHAIN_DISABLE_ENV, raising=False)
+    with mock.patch("platform.system", return_value="Darwin"), \
+         mock.patch("shutil.which", return_value="/usr/bin/security"), \
+         mock.patch("subprocess.run", return_value=_run_result(0, "xai-secret")):
+        assert env._load_keychain(["XAI_API_KEY"]) == {"XAI_API_KEY": "xai-secret"}
+
+
+def test_load_keychain_disable_switch_ignores_falsy_values(monkeypatch):
+    """`LAST30DAYS_SKIP_KEYCHAIN=0` / empty must NOT disable the source."""
+    for falsy in ("0", "", "false", "no"):
+        monkeypatch.setenv(env.KEYCHAIN_DISABLE_ENV, falsy)
+        with mock.patch("platform.system", return_value="Darwin"), \
+             mock.patch("shutil.which", return_value="/usr/bin/security"), \
+             mock.patch("subprocess.run", return_value=_run_result(0, "xai-secret")):
+            assert env._load_keychain(["XAI_API_KEY"]) == {"XAI_API_KEY": "xai-secret"}, falsy
+
+
 def test_parse_keychain_aliases_accepts_string_and_object_forms():
     raw = (
         '{"XAI_API_KEY":"existing-xai-api-key",'

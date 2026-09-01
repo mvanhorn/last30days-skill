@@ -51,6 +51,13 @@ KEYCHAIN_SERVICE_PREFIX = "last30days-"
 # A string value is shorthand for {"service": "..."} with the current user.
 KEYCHAIN_ALIASES_ENV = "LAST30DAYS_KEYCHAIN_ALIASES"
 
+# Opt-out switch for the Keychain source. Set truthy to make _load_keychain a
+# no-op on Darwin too. Tests that assert on "no credentials configured"
+# behaviour need this: stripping os.environ and pointing LAST30DAYS_CONFIG_DIR
+# at nothing still leaves Keychain as a third source, so on a contributor's Mac
+# a stored key can silently satisfy a lookup the test meant to see fail.
+KEYCHAIN_DISABLE_ENV = "LAST30DAYS_SKIP_KEYCHAIN"
+
 # Single source of truth for which credentials the Keychain loader looks up.
 # The setup-keychain.sh helper mirrors this list and is held in sync via
 # tests/test_env_keychain.py::test_keychain_keys_match_setup_script.
@@ -264,7 +271,16 @@ def _load_keychain(keys: list[str], aliases: dict[str, list[dict[str, str]]] | N
     ``LAST30DAYS_KEYCHAIN_ALIASES``. Lookup failures are silent — Keychain is
     the lowest-priority source and is meant to be additive over `.env` files
     and process environment.
+
+    Set ``LAST30DAYS_SKIP_KEYCHAIN`` truthy to disable the source entirely. It
+    is read from the process environment only, never from a config file: it
+    gates a credential source that is consulted *while* the config is being
+    assembled, so a file-sourced value would be read too late to have any
+    effect.
     """
+    if _truthy(os.environ.get(KEYCHAIN_DISABLE_ENV)):
+        return {}
+
     import platform
     if platform.system() != "Darwin":
         return {}
