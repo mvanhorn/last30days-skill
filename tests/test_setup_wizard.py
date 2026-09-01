@@ -79,6 +79,7 @@ class TestRunAutoSetup:
         assert results["ytdlp_installed"] is True
         assert results["ytdlp_action"] == "already_installed"
         assert results["env_written"] is False
+        assert results["browser_cookie_scan_attempted"] is True
 
     @patch("lib.cookie_extract.extract_cookies_with_source")
     @patch("shutil.which")
@@ -93,6 +94,7 @@ class TestRunAutoSetup:
 
         assert results["cookies_found"] == {}
         mock_extract.assert_not_called()
+        assert results["browser_cookie_scan_attempted"] is False
         assert results["ytdlp_installed"] is False
         assert results["ytdlp_action"] == "no_homebrew"
 
@@ -107,6 +109,7 @@ class TestRunAutoSetup:
         results = setup_wizard.run_auto_setup(config, allow_browser_cookies=True)
 
         assert results["cookies_found"] == {}
+        assert results["browser_cookie_scan_attempted"] is True
 
     @patch("lib.cookie_extract.extract_cookies_with_source")
     @patch("shutil.which")
@@ -687,6 +690,7 @@ class TestGetSetupStatusText:
         """Status text mentions found cookies and yt-dlp."""
         results = {
             "cookies_found": {"x": "chrome"},
+            "browser_cookie_scan_attempted": True,
             "ytdlp_installed": True,
             "ytdlp_action": "already_installed",
             "env_written": True,
@@ -696,17 +700,31 @@ class TestGetSetupStatusText:
         assert "yt-dlp already installed" in text
         assert "Configuration saved" in text
 
-    def test_with_no_cookies_no_ytdlp(self):
-        """Status text shows no cookies and suggests yt-dlp install."""
+    def test_skipped_cookie_scan_does_not_claim_x_is_missing(self):
+        """A consent-safe skip reports setup work without an X unlock nudge."""
         results = {
             "cookies_found": {},
+            "browser_cookie_scan_attempted": False,
             "ytdlp_installed": False,
             "ytdlp_action": "no_homebrew",
             "env_written": False,
         }
         text = setup_wizard.get_setup_status_text(results)
-        assert "No browser cookies found" in text
+        assert "browser cookies" not in text.lower()
+        assert "X/Twitter" not in text
         assert "Install Homebrew first" in text
+
+    def test_consented_scan_with_no_match_stays_non_promotional(self):
+        results = {
+            "cookies_found": {},
+            "browser_cookie_scan_attempted": True,
+            "ytdlp_installed": True,
+            "ytdlp_action": "already_installed",
+            "env_written": False,
+        }
+        text = setup_wizard.get_setup_status_text(results)
+        assert "browser cookies" not in text.lower()
+        assert "X/Twitter" not in text
 
     def test_status_text_installed(self):
         """Status text for freshly installed yt-dlp."""

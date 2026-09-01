@@ -50,6 +50,30 @@ class TestOnboardingContract(unittest.TestCase):
         """The erosion-resistant gate that orphaned the wizard in #659 is restored."""
         self.assertIn("ALWAYS execute Step 0 BEFORE Step 1", self.step0)
 
+    def test_waiting_topic_continues_after_x_decline_or_setup_skip(self):
+        """Declining optional X access must never strand the requested topic."""
+        self.assertIn("RESEARCH CONTINUATION OVERRIDE", self.step0)
+        self.assertIn("declining or skipping X must never stop", self.step0)
+        self.assertIn("immediately research it with `--no-browser-cookies`", self.modal)
+        self.assertIn("immediately research it with `--no-browser-cookies`", self.prose)
+        self.assertIn("a skip or no answer is never consent", self.step0)
+
+    def test_waiting_topic_defers_optional_prompts_and_x_retry(self):
+        self.assertIn("skip the ScrapeCreators offer", self.step0)
+        self.assertIn("Do not ask another X question in the same run", self.step0)
+        self.assertIn("Offer ONE retry only when no research topic is waiting", self.modal)
+        self.assertIn("Offer ONE retry only when no research topic is waiting", self.prose)
+
+    def test_x_handle_resolution_and_plan_follow_active_sources(self):
+        self.assertIn("If `ACTIVE_SOURCES_LIST` contains `x`", self.text)
+        self.assertIn("every applicable source from `ACTIVE_SOURCES_LIST`", self.text)
+        self.assertIn("Preserve X whenever it is active", self.text)
+
+    def test_post_report_x_note_is_non_blocking(self):
+        self.assertNotIn("Just-in-time X unlock", self.text)
+        self.assertIn("Optional X omission", self.text)
+        self.assertIn("finish the useful findings first", self.text)
+
     # --- Modal flow: the restored NUX, stages in order ---
 
     def test_modal_flow_stage_order(self):

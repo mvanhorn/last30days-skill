@@ -1,7 +1,8 @@
 """Tests for post-research quality score and upgrade nudge.
 
-Reddit is always a core source (free public JSON). The 5 core sources are:
-HN, Polymarket, Reddit (always active), X, YouTube.
+Reddit is always a core source (free public JSON). X remains supported when
+active, but its absence is optional and must not lower the quality grade or
+trigger an authentication nudge.
 ScrapeCreators adds TikTok + Instagram as bonus sources, not core.
 """
 
@@ -54,11 +55,11 @@ def _compute(config_overrides=None, result_overrides=None, ytdlp_installed=False
 
 
 class TestBaseline:
-    """HN + Polymarket + Reddit always active (no X, no YT) -> 60%."""
+    """HN + Polymarket + Reddit active; X omitted and YouTube missing."""
 
-    def test_score_60(self):
+    def test_score_75(self):
         q = _compute()
-        assert q["score_pct"] == 60
+        assert q["score_pct"] == 75
 
     def test_active_sources(self):
         q = _compute()
@@ -67,9 +68,10 @@ class TestBaseline:
         assert "reddit" in q["core_active"]
         assert len(q["core_active"]) == 3
 
-    def test_missing_x_and_youtube(self):
+    def test_only_youtube_is_missing(self):
         q = _compute()
-        assert set(q["core_missing"]) == {"x", "youtube"}
+        assert q["core_missing"] == ["youtube"]
+        assert "x" not in q["core_active"]
 
     def test_reddit_not_in_missing(self):
         """Reddit is always active - never appears in missing."""
@@ -77,11 +79,11 @@ class TestBaseline:
         assert "reddit" not in q["core_missing"]
         assert "reddit_comments" not in q["core_missing"]
 
-    def test_nudge_mentions_x_and_youtube(self):
+    def test_nudge_mentions_youtube_not_x(self):
         q = _compute()
         assert q["nudge_text"] is not None
-        assert "X/Twitter" in q["nudge_text"]
         assert "YouTube" in q["nudge_text"]
+        assert "X/Twitter" not in q["nudge_text"]
 
     def test_nudge_does_not_mention_reddit(self):
         """Reddit is free - nudge should not tell user to get SC for it."""
@@ -101,6 +103,10 @@ class TestXCookies:
         assert "YouTube" in q["nudge_text"]
         assert "X/Twitter" not in q["nudge_text"]
 
+    def test_x_remains_active_when_configured(self):
+        q = _compute(config_overrides={"AUTH_TOKEN": "tok123"})
+        assert "x" in q["core_active"]
+
 
 class TestXquikKey:
     """+Xquik key -> 80% without browser-cookie or xAI credentials."""
@@ -114,6 +120,14 @@ class TestXquikKey:
         q = _compute(config_overrides={"XQUIK_API_KEY": "xq_test"})
         assert "YouTube" in q["nudge_text"]
         assert "X/Twitter" not in q["nudge_text"]
+
+
+class TestActiveSourceX:
+    """The runtime active-source list preserves X without legacy credentials."""
+
+    def test_active_x_is_counted(self):
+        q = _compute(result_overrides={"active_sources": ["reddit", "x", "youtube"]})
+        assert "x" in q["core_active"]
 
 
 class TestXPlusYtdlp:
@@ -162,26 +176,24 @@ class TestFullCoverageWithSC:
 class TestSCDoesNotAffectCoreScore:
     """SC key should not change core score - it only adds bonus sources."""
 
-    def test_sc_alone_still_60(self):
-        """SC key without X or yt-dlp is still 60% (3/5 core)."""
+    def test_sc_alone_still_75(self):
+        """SC key without yt-dlp is still 75% of non-optional core."""
         q = _compute(config_overrides={"SCRAPECREATORS_API_KEY": "sc_key"})
-        assert q["score_pct"] == 60
+        assert q["score_pct"] == 75
 
-    def test_sc_plus_ytdlp_is_80(self):
+    def test_sc_plus_ytdlp_is_100(self):
         q = _compute(
             config_overrides={"SCRAPECREATORS_API_KEY": "sc_key"},
             ytdlp_installed=True,
         )
-        assert q["score_pct"] == 80
+        assert q["score_pct"] == 100
 
-    def test_nudge_suggests_browser_cookies(self):
+    def test_no_x_cookie_nudge_after_complete_available_source_run(self):
         q = _compute(
             config_overrides={"SCRAPECREATORS_API_KEY": "sc_key"},
             ytdlp_installed=True,
         )
-        assert q["nudge_text"] is not None
-        assert "x.com" in q["nudge_text"].lower()
-        assert "XQUIK_API_KEY" in q["nudge_text"]
+        assert q["nudge_text"] is None
 
 
 class TestYouTubeFallbackProvider:
@@ -237,7 +249,8 @@ class TestYouTubeFallbackProvider:
         assert "youtube" in q["core_missing"]
         assert "youtube" not in q["core_active"]
         assert "youtube" not in q["core_degraded"]
-        assert "Missing: X/Twitter, YouTube" in q["nudge_text"]
+        assert "Missing: YouTube" in q["nudge_text"]
+        assert "X/Twitter" not in q["nudge_text"]
 
 
 class TestDisclaimerAlwaysPresent:

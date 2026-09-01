@@ -1,6 +1,6 @@
 """Post-research quality score and upgrade nudge.
 
-Computes a quality score based on 5 core sources and builds
+Computes a quality score based on the non-blocking core sources and builds
 a nudge message describing what the user missed and how to fix it.
 
 Fix text comes from ``lib.prescriptions`` (the single remediation
@@ -13,7 +13,9 @@ from typing import List
 from . import prescriptions
 
 
-# The 5 core sources
+# Sources whose absence can justify a post-run quality repair. X remains a
+# supported source, but it is optional: declining cookie access must not turn a
+# successful multi-source run into a setup prompt or a lower quality grade.
 CORE_SOURCES = ["hn", "polymarket", "x", "youtube", "reddit"]
 
 # Labels for display
@@ -28,6 +30,8 @@ SOURCE_LABELS = {
 
 def _is_x_active(config: dict, research_results: dict) -> bool:
     """Check if X source is active (has credentials AND didn't error)."""
+    if "x" in (research_results.get("active_sources") or []):
+        return not bool(research_results.get("x_error"))
     has_creds = _has_x_credentials(config)
     if not has_creds:
         return False
@@ -149,7 +153,7 @@ def _is_instagram_silent_failure(config: dict, research_results: dict) -> bool:
 
 
 def compute_quality_score(config: dict, research_results: dict) -> dict:
-    """Compute research quality score based on 5 core sources.
+    """Compute research quality score from the non-blocking core sources.
 
     Args:
         config: Configuration dict from env.get_config()
@@ -163,9 +167,9 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
 
     Returns:
         {
-            "score_pct": 40-100,
+            "score_pct": 0-100,
             "core_active": ["hn", "polymarket", ...],
-            "core_missing": ["x", "youtube"],
+            "core_missing": ["youtube"],
             "core_errored": [],          # configured but errored at top level
             "core_degraded": [],         # configured and returned items but quality below threshold
             "bonus_errored": [],         # bonus sources (Instagram, etc.) configured but silent
@@ -183,14 +187,11 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
     core_active.append("polymarket")
     core_active.append("reddit")
 
-    # X
-    has_x_creds = _has_x_credentials(config)
+    optional_omitted: List[str] = []
     if _is_x_active(config, research_results):
         core_active.append("x")
     else:
-        core_missing.append("x")
-        if has_x_creds and research_results.get("x_error"):
-            core_errored.append("x")
+        optional_omitted.append("x")
 
     # YouTube
     has_ytdlp = _has_ytdlp()
@@ -225,7 +226,8 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
     if _is_instagram_silent_failure(config, research_results):
         bonus_errored.append("instagram")
 
-    score_pct = int(len(core_active) / 5 * 100)
+    scored_source_count = len(CORE_SOURCES) - len(optional_omitted)
+    score_pct = int(len(core_active) / scored_source_count * 100)
 
     has_sc = bool(config.get("SCRAPECREATORS_API_KEY"))
     active_sources = research_results.get("active_sources") or []
@@ -238,6 +240,7 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
         active_sources=active_sources,
         bonus_errored=bonus_errored,
         has_ytdlp=has_ytdlp,
+        core_total=scored_source_count,
     ) if (core_missing or core_degraded or bonus_errored) else None
 
     return {
@@ -260,6 +263,7 @@ def _build_nudge_text(
     active_sources: list = None,
     bonus_errored: List[str] = None,
     has_ytdlp: bool = False,
+    core_total: int | None = None,
 ) -> str:
     """Build human-readable nudge text describing what was missed or degraded.
 
@@ -280,8 +284,9 @@ def _build_nudge_text(
         else:
             missed_parts.append(label)
 
-    active_count = 5 - len(core_missing)
-    lines.append(f"Research quality: {active_count}/5 core sources.")
+    effective_total = core_total if core_total is not None else len(CORE_SOURCES)
+    active_count = effective_total - len(core_missing)
+    lines.append(f"Research quality: {active_count}/{effective_total} core sources.")
     if missed_parts:
         lines.append(f"Missing: {', '.join(missed_parts)}.")
     if core_degraded:
@@ -294,33 +299,6 @@ def _build_nudge_text(
 
     # Free suggestions
     free_suggestions: List[str] = []
-
-    if "x" in core_missing:
-        if "x" in core_errored:
-            x_fix = prescriptions.get("x", "cookies_expired")
-            free_suggestions.append(f"X/Twitter errored - {x_fix.fix_nl}.")
-        else:
-            x_fix = prescriptions.get("x", "cookies_missing")
-            # Pick by state: telling a user who already installed grok to
-            # install it again is the stale-shim reading the health layer
-            # exists to avoid. Mirrors _probe_grok's three-way split.
-            from . import grok_x as _grok_x
-            grok_key = (
-                "grok_not_authenticated"
-                if _grok_x.binary_path() and not _grok_x.has_stored_auth()
-                else "grok_cli_missing"
-            )
-            grok_fix = prescriptions.get("x", grok_key)
-            # Deliberately not described as free: grok needs no X credential,
-            # but it does need an installed, signed-in grok CLI drawing on a
-            # Grok plan. This block is headed "Free suggestions", so the
-            # precondition has to be stated inline rather than inherited.
-            free_suggestions.append(
-                "X/Twitter: real-time posts with likes and reposts - the fastest "
-                "signal for breaking topics. Easiest path if you have a Grok "
-                f"account: {grok_fix.fix_nl} (no X credential at all). "
-                f"Otherwise: {x_fix.fix_nl}."
-            )
 
     if "youtube" in core_missing:
         if "youtube" in core_errored:
