@@ -153,7 +153,11 @@ class _WSConn:
 
     @classmethod
     def connect(cls, ws_url: str, timeout: float) -> Optional["_WSConn"]:
-        match = re.match(r"wss?://([^:/]+):(\d+)(/.*)$", ws_url)
+        # Plaintext ws:// only. A wss:// URL would need real TLS
+        # (ssl.wrap_socket); this client does not, so refuse it rather than
+        # open a plaintext socket to a TLS endpoint. Defense in depth alongside
+        # the scheme gate in read_x_cookies.
+        match = re.match(r"ws://([^:/]+):(\d+)(/.*)$", ws_url)
         if not match:
             return None
         host, port, path = match.group(1), int(match.group(2)), match.group(3)
@@ -288,19 +292,45 @@ def _get_all_cookies(ws_url: str) -> Optional[List[Dict[str, Any]]]:
         conn.close()
 
 
+# Registrable X hosts we accept cookies from, in preference order. Matched
+# EXACTLY after stripping a single leading dot (never endswith), so a lookalike
+# like ``notx.com`` is not treated as x.com and cannot contribute a cookie.
+_ALLOWED_X_HOSTS = ("x.com", "twitter.com")
+
+
 def _pair_from_cookies(cookies: List[Dict[str, Any]]) -> Dict[str, str]:
-    """Extract the X cookie pair from a CDP cookie list (x.com domain only)."""
-    found: Dict[str, str] = {}
+    """Extract a complete X cookie pair from ONE registrable X host.
+
+    Cookie scopes must not be mixed: ``auth_token`` and ``ct0`` are only a
+    usable pair when they come from the SAME host. We group the cookies by host
+    (exact match against ``_ALLOWED_X_HOSTS`` after stripping a leading dot —
+    never ``endswith``, so ``notx.com`` never counts), then return the pair from
+    the first host that has BOTH cookies, preferring ``x.com`` over
+    ``twitter.com``. A host with only one of the two is skipped. When no host
+    has a complete pair, the same-host partial (x.com-preferred) is returned for
+    the caller's incomplete-pair log — never a cross-host mix.
+    """
+    per_host: Dict[str, Dict[str, str]] = {host: {} for host in _ALLOWED_X_HOSTS}
     for cookie in cookies:
         if not isinstance(cookie, dict):
             continue
         name = cookie.get("name")
         value = cookie.get("value")
-        domain = str(cookie.get("domain") or "").lstrip(".").lower()
-        if name in X_COOKIE_NAMES and isinstance(value, str) and value:
-            if domain.endswith("x.com") or domain.endswith("twitter.com"):
-                found.setdefault(name, value)
-    return found
+        if name not in X_COOKIE_NAMES or not (isinstance(value, str) and value):
+            continue
+        host = str(cookie.get("domain") or "").lstrip(".").lower()
+        if host in per_host:
+            per_host[host].setdefault(name, value)
+
+    for host in _ALLOWED_X_HOSTS:
+        jar = per_host[host]
+        if all(name in jar for name in X_COOKIE_NAMES):
+            return {name: jar[name] for name in X_COOKIE_NAMES}
+
+    for host in _ALLOWED_X_HOSTS:
+        if per_host[host]:
+            return dict(per_host[host])
+    return {}
 
 
 def read_x_cookies(config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, str]]:
@@ -323,9 +353,17 @@ def read_x_cookies(config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str
         return None
 
     for base in candidate_endpoints(config):
-        # ws:// endpoints (rare, explicit) connect directly; http(s) bases are
+        # TLS CDP is NOT supported: the websocket client speaks plaintext only,
+        # so a wss:// endpoint (or an https:// base, which would yield a wss://
+        # page URL) must fail closed rather than be downgraded to a plaintext
+        # connect. Local Chrome CDP is ws://http://.
+        scheme = base.split("://", 1)[0].lower() if "://" in base else "http"
+        if scheme in ("wss", "https"):
+            _log(f"refusing TLS CDP endpoint {base!r}: only ws://http:// is supported (no TLS)")
+            continue
+        # ws:// endpoints (rare, explicit) connect directly; http bases are
         # validated as Chrome and asked for a page target.
-        if base.startswith(("ws://", "wss://")):
+        if base.startswith("ws://"):
             ws_url = base
         else:
             if not _is_chrome_endpoint(base):

@@ -58,6 +58,42 @@ def test_pair_from_cookies_half_pair_is_incomplete():
     assert "ct0" not in pair
 
 
+def test_pair_from_cookies_never_mixes_hosts():
+    """A lookalike host (notx.com) must not contribute; the later same-host
+    x.com pair wins, never a cross-host mix (P1)."""
+    cookies = [
+        {"name": "auth_token", "value": "notx-token", "domain": "notx.com"},
+        {"name": "ct0", "value": "test-ct0", "domain": ".x.com"},
+        {"name": "auth_token", "value": "test-auth-token", "domain": ".x.com"},
+    ]
+    pair = chrome_cdp._pair_from_cookies(cookies)
+    assert pair == {"auth_token": "test-auth-token", "ct0": "test-ct0"}
+    assert pair["auth_token"] != "notx-token"
+
+
+def test_pair_from_cookies_prefers_x_com_over_twitter():
+    cookies = [
+        {"name": "auth_token", "value": "tw-token", "domain": ".twitter.com"},
+        {"name": "ct0", "value": "tw-ct0", "domain": ".twitter.com"},
+        {"name": "auth_token", "value": "test-auth-token", "domain": ".x.com"},
+        {"name": "ct0", "value": "test-ct0", "domain": ".x.com"},
+    ]
+    pair = chrome_cdp._pair_from_cookies(cookies)
+    assert pair == {"auth_token": "test-auth-token", "ct0": "test-ct0"}
+
+
+def test_pair_from_cookies_skips_partial_host_for_complete_one():
+    """x.com has only auth_token; twitter.com has both -> the twitter pair wins
+    (same-host), never x.com's auth_token merged with twitter's ct0."""
+    cookies = [
+        {"name": "auth_token", "value": "x-only-token", "domain": ".x.com"},
+        {"name": "auth_token", "value": "test-auth-token", "domain": ".twitter.com"},
+        {"name": "ct0", "value": "test-ct0", "domain": ".twitter.com"},
+    ]
+    pair = chrome_cdp._pair_from_cookies(cookies)
+    assert pair == {"auth_token": "test-auth-token", "ct0": "test-ct0"}
+
+
 def test_from_browser_off_skips_endpoints():
     with mock.patch.object(
         chrome_cdp, "candidate_endpoints", side_effect=AssertionError("must not probe")
@@ -269,6 +305,28 @@ def test_read_x_cookies_from_browser_off_opens_no_socket():
     with mock.patch("socket.create_connection", side_effect=AssertionError("no socket")):
         with mock.patch("urllib.request.urlopen", side_effect=AssertionError("no http")):
             assert chrome_cdp.read_x_cookies({"FROM_BROWSER": "off"}) is None
+
+
+def test_read_x_cookies_rejects_wss_without_plaintext_connect():
+    """wss:// (TLS) is refused; the plaintext client must not connect (P2)."""
+    with (
+        mock.patch("socket.create_connection", side_effect=AssertionError("no plaintext connect to TLS endpoint")),
+        mock.patch("urllib.request.urlopen", side_effect=AssertionError("no http probe of TLS endpoint")),
+    ):
+        assert chrome_cdp.read_x_cookies({"BROWSER_CDP_URL": "wss://127.0.0.1:9222/devtools/page/ABC"}) is None
+
+
+def test_read_x_cookies_rejects_https_base_without_connect():
+    """An https:// debug base (would yield wss) is refused without probing."""
+    with (
+        mock.patch("socket.create_connection", side_effect=AssertionError("no connect")),
+        mock.patch("urllib.request.urlopen", side_effect=AssertionError("no TLS http probe")),
+    ):
+        assert chrome_cdp.read_x_cookies({"BROWSER_CDP_URL": "https://127.0.0.1:18800"}) is None
+
+
+def test_wsconn_connect_refuses_wss():
+    assert chrome_cdp._WSConn.connect("wss://127.0.0.1:9222/devtools/page/ABC", 1.0) is None
 
 
 def test_read_x_cookies_no_reachable_endpoint_returns_none():
