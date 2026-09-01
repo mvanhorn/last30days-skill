@@ -548,6 +548,11 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # Amazon marketplace the amazon source searches. Non-US users point
         # this at their own storefront (e.g. https://www.amazon.co.uk).
         ('LAST30DAYS_AMAZON_DOMAIN', 'https://www.amazon.com'),
+        # Written by `setup --brightdata` after the user consents and
+        # registration succeeds. Satisfies the request half of the amazon
+        # dual gate so the source is available without editing
+        # INCLUDE_SOURCES; the CLI-and-auth half is unaffected.
+        ('LAST30DAYS_AMAZON_ENABLED', None),
         # Host-native search signal: set by the SKILL.md agent-host path when the
         # invoking runtime has its own (better) web-search tool, so the engine's
         # keyless search floor stays off there. Defaults unset -> floor allowed.

@@ -624,6 +624,23 @@ Options:
 - "TikTok + Instagram + all comments (recommended)" - the default: posts AND top comments (ranked by votes) for TikTok + Instagram, plus YouTube comments. Append `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments` to `~/.config/last30days/.env` (the list must include `tiktok,instagram` so they are not treated as excluded). Confirm: "TikTok, Instagram, and top YouTube/TikTok/Instagram comments are on."
 - "Everything (also Threads + Pinterest)" - everything above plus Threads and Pinterest searches. Most coverage, most credits. Append `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments,threads,pinterest`. Confirm: "Everything's on: posts + comments for TikTok/Instagram/YouTube, plus Threads and Pinterest."
 
+**Step 5.5: Amazon buyer signals (every first run).** Independent of ScrapeCreators - offer this whether or not a key was saved. Skip the whole step when `gh` is not installed (run `command -v gh`); without it the zero-click path cannot work, and offering something the user cannot accept is worse than staying quiet. Show this as plain text, then a modal:
+
+Want buyer reviews too? On shopping topics I can pull Amazon product ratings and recent verified reviews, and show which products are trending up or down *this month* - the signal no product page gives you. It runs on Bright Data's free tier: 5,000 requests a month, and a typical run uses 4.
+
+**Call AskUserQuestion:**
+Question: "Add Amazon buyer signals? Setup uses your GitHub login - no browser, no signup form, no credit card."
+Options:
+- "Yes, set it up (recommended)" - description: "Installs the Bright Data CLI globally (`npm i -g @brightdata/cli`), then creates a free Bright Data account using your GitHub identity (your GitHub numeric id, username, and public email if you have one). It also creates a private gist on your GitHub account for a few seconds to prove the account is yours, then deletes it. No credit card, ever." Run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup --brightdata` in the FOREGROUND **with an explicit 480000 ms Bash timeout** - the npm install alone can take 5 minutes on a slow network, and the host default would kill it mid-install. Parse the JSON:
+   - `"ok": true` **and** `"persisted": true` - confirm "Amazon buyer signals are on. I'll use them when a topic is about products."
+   - `"ok": true` but `"persisted": false` - registration worked but the setting could not be saved. Do NOT say the source is on. Tell the user to add `INCLUDE_SOURCES=amazon` to `~/.config/last30days/.env` manually (relay `persist_error` when present).
+   - `"action": "already_registered"` - they were already set up; confirm without re-registering.
+   - `"blocked_on": "gh_unauthenticated"` - tell them to run `gh auth login`, then offer to retry. Do NOT claim the source is active.
+   - `"blocked_on": "installed_off_path"` - relay the `hint` verbatim; it names the directory to add to PATH.
+   - `"blocked_on": "registration_failed"` - relay the `error` verbatim (it is Bright Data's own message) and say Amazon stays off; everything else still works. Add: "If you want to be thorough, check https://gist.github.com/ - the verification gist is normally deleted automatically, but a failed run can leave one behind."
+   - any other `blocked_on` - relay the `hint`, say Amazon stays off, and move on. Never retry silently.
+- "Not now" - proceed without it. No Amazon buyer signals, no Bright Data account, nothing installed. Every other source is unaffected, and you can turn it on later by re-running `setup --brightdata`.
+
 **Step 6: First-topic picker.** Once `SETUP_COMPLETE=true` is written, **call AskUserQuestion:**
 Question: "What do you want to research first?"
 Options:
@@ -665,6 +682,10 @@ For hosts without interactive modal prompts (OpenClaw, Codex, Cursor, Gemini CLI
 **5b. Source tier (only if a key was saved).** Comments are the default, never opt-in. Your key runs TikTok + Instagram posts AND top comments, plus YouTube comments. Reddit stays on the free keyless path (empty-only ScrapeCreators search backup; comments via shreddit). Ask whether they want the widest net, e.g.: `Recommended is TikTok + Instagram + all comments (posts and top comments for TikTok/Instagram plus YouTube comments). Or Everything - also Threads + Pinterest (more credits). (recommended / everything)` **Wait for the answer.**
    - On **recommended** → append `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments` to `~/.config/last30days/.env` (include `tiktok,instagram` so they are not treated as excluded). Confirm posts + top comments for TikTok/Instagram/YouTube are on.
    - On **everything** → append `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments,threads,pinterest`. Confirm Threads and Pinterest are on too.
+
+**5c. Amazon buyer signals (every first run).** Independent of ScrapeCreators - offer this whether or not a key was saved. Skip the step entirely when `command -v gh` finds nothing; without the GitHub CLI the zero-click path cannot work. Ask, e.g.: `Want Amazon buyer signals? On shopping topics I pull product ratings and recent verified reviews, and show what's trending up or down this month. Setup uses your GitHub login - no browser, no signup form, no credit card. It installs the Bright Data CLI globally (`npm i -g @brightdata/cli`), creates a free Bright Data account from your GitHub identity (numeric id, username, public email if set), and briefly creates a private gist on your GitHub to prove the account is yours, then deletes it. Free tier is 5,000 requests a month; a typical run uses 4. (yes / no)` **Wait for the answer.**
+   - On **yes** → run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup --brightdata` (foreground, with an explicit 480000 ms timeout - the npm install can take 5 minutes) and parse the JSON. `"ok": true` with `"persisted": true` → confirm Amazon buyer signals are on. `"ok": true` with `"persisted": false` → registration worked but the setting could not be saved; do NOT claim the source is on, and have them add `INCLUDE_SOURCES=amazon` to `~/.config/last30days/.env`. `"blocked_on": "gh_unauthenticated"` → tell them to run `gh auth login` and offer to retry. `"blocked_on": "registration_failed"` → relay the `error` verbatim (it is Bright Data's own message), say Amazon stays off, and continue. Any other `blocked_on` → relay the `hint` and continue. Never claim the source is active on a non-`ok` result, and never retry silently.
+   - On **no** → nothing is installed and no account is created. Note they can turn it on later by asking to set up Amazon signals, then continue.
 
 **6. Complete.** Once `SETUP_COMPLETE=true` is written, briefly confirm which sources are now active (read the `setup --github` JSON `persisted` field, re-run `--preflight` for a human permission summary, or re-run safe `--diagnose` for JSON) and proceed to research. For Codex desktop, Cursor, Gemini CLI, and raw folder-mode hosts, hidden `.claude/last30days.env` project config is ignored unless `LAST30DAYS_TRUST_PROJECT_CONFIG=1` is set from the process environment or global config; only report a project file as active when diagnose reports it as the config source.
 
@@ -1406,7 +1427,7 @@ Only show lines for platforms where something was resolved. Skip empty lines. On
 - For how_to: prioritize YouTube (tutorials) and Reddit (guides)
 - Primary subquery weight = 1.0, secondary = 0.6-0.8, peripheral = 0.3-0.5
 
-**Available sources (include ALL in primary subquery):** reddit, x, youtube, tiktok, instagram, hackernews, polymarket. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg clusters - only if `digg-pp-cli` is on PATH), amazon (buyer reviews - only if `brightdata` is on PATH and logged in; see Step 0.5e)
+**Available sources (include ALL in primary subquery):** reddit, x, youtube, tiktok, instagram, hackernews, polymarket. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg clusters - only if `digg-pp-cli` is on PATH), amazon (buyer reviews - available whenever `brightdata` is on PATH and logged in, which first-run setup offers to arrange; see Step 0.5e for when to include it)
 
 **Intent → freshness_mode mapping:**
 - breaking_news, prediction → `strict_recent`

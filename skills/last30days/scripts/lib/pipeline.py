@@ -192,6 +192,18 @@ def _has_perplexity_provider(config: dict[str, Any]) -> bool:
         config.get("PERPLEXITY_API_KEY") or config.get("OPENROUTER_API_KEY")
     )
 
+def _truthy(value: Any) -> bool:
+    """Module-local truthy read, matching the repo convention.
+
+    ``permission_preflight`` and ``trustpilot`` each define their own rather
+    than importing ``env``'s private helper; this is the third instance of that
+    deliberate three-line duplication, not an oversight.
+    """
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 MOCK_AVAILABLE_SOURCES = [
     "reddit",
     "x",
@@ -343,8 +355,17 @@ def available_sources(
     # via INCLUDE_SOURCES=amazon. Never inferred from topic shape: the engine
     # misroutes most shopping phrasings, and auto-firing would spend a CLI
     # owner's credits on runs that have nothing to do with products.
+    # The request half of the dual gate is satisfied three ways: a durable
+    # INCLUDE_SOURCES opt-in, a per-run --search, or the activation key written
+    # when the user consented during first-run setup. The activation key changes
+    # only *availability* -- whether the source exists for this run. It does not
+    # change firing: the model still decides per topic whether buyer sentiment
+    # is relevant (KTD3), which is why a default-on lane does not start spending
+    # credits on topics that have nothing to do with products.
     if brightdata.is_available(config) and (
-        "amazon" in include_sources or (requested_sources and "amazon" in requested_sources)
+        "amazon" in include_sources
+        or (requested_sources and "amazon" in requested_sources)
+        or _truthy(config.get("LAST30DAYS_AMAZON_ENABLED"))
     ):
         available.append("amazon")
     if (

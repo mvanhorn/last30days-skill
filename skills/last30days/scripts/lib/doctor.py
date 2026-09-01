@@ -637,16 +637,32 @@ def _amazon_record(config):
             return _record(status=health.OK, detail=probe.detail, requires=requires)
         return _record(
             status="unconfigured",
-            fix="run `brightdata login` to activate the amazon source",
+            fix="run `brightdata login --github` to activate the amazon source",
             detail="brightdata is installed but has no credentials",
             requires=requires,
         )
     entry = prescriptions.for_dependency_probe(probe)
     fix = _fix_text(entry) if entry else probe.prescription
     if probe.status == health.MISSING and not probe.off_path:
+        # Nothing installed. Which advice is useful depends on whether the
+        # zero-click path is even reachable, so check the prerequisite rather
+        # than telling a user without gh to run a command that will fail.
+        if shutil.which("gh") is None:
+            return _record(
+                status="opt-in",
+                fix=(
+                    "install the GitHub CLI (https://cli.github.com/), run `gh auth login`, "
+                    "then re-run setup to enable Amazon buyer signals"
+                ),
+                detail="brightdata not installed; the zero-click path also needs gh",
+                requires=requires,
+            )
         return _record(
             status="opt-in",
-            fix="npm i -g @brightdata/cli && brightdata login",
+            fix=(
+                "re-run setup and accept the Amazon offer, or install manually: "
+                "npm i -g @brightdata/cli && brightdata login --github"
+            ),
             detail=probe.detail,
             requires=requires,
         )

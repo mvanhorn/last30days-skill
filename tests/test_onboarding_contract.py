@@ -53,13 +53,14 @@ class TestOnboardingContract(unittest.TestCase):
     # --- Modal flow: the restored NUX, stages in order ---
 
     def test_modal_flow_stage_order(self):
-        """Welcome -> setup modal -> cookie consent -> SC offer -> opt-in -> picker."""
+        """Welcome -> setup modal -> cookie consent -> SC offer -> opt-in -> BD offer -> picker."""
         anchors = [
             "Welcome to /last30days!",  # welcome pitch, embedded in the setup modal
             "How would you like to set up?",
             "your browser's x.com cookies",  # cookie-consent modal
             "Want to add TikTok and Instagram?",  # SC offer
             "Which ScrapeCreators sources?",  # source opt-in
+            "Add Amazon buyer signals?",  # Bright Data offer
             "What do you want to research first?",  # topic picker
         ]
         idxs = [self.modal.find(a) for a in anchors]
@@ -318,3 +319,77 @@ class TestOnboardingContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BrightDataOfferContract(unittest.TestCase):
+    """The Amazon/Bright Data offer, locked in both branches.
+
+    Consent copy is the only control on a flow that creates a third-party
+    account from the user's GitHub identity, so its contents are contract,
+    not prose.
+    """
+
+    def setUp(self):
+        text = SKILL_MD.read_text(encoding="utf-8")
+        start = text.index("## Step 0: First-Run Setup Wizard")
+        end = text.index("## CRITICAL: Parse User Intent", start)
+        self.step0 = text[start:end]
+        modal_start = self.step0.index("### Claude Code Modal Flow")
+        prose_start = self.step0.index("### Non-Modal Prose Flow")
+        manual_start = self.step0.index("### Manual Setup Guide")
+        self.modal = self.step0[modal_start:prose_start]
+        self.prose = self.step0[prose_start:manual_start]
+
+    def test_offer_present_in_both_branches(self):
+        self.assertIn("setup --brightdata", self.modal)
+        self.assertIn("setup --brightdata", self.prose)
+
+    def test_third_party_named_explicitly_in_both_branches(self):
+        """'our review provider' would not be informed consent."""
+        for name, branch in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn("Bright Data", branch, f"{name} branch never names Bright Data")
+
+    def test_both_branches_disclose_what_leaves_the_machine(self):
+        for name, branch in (("modal", self.modal), ("prose", self.prose)):
+            lowered = branch.lower()
+            self.assertIn("github", lowered, f"{name} branch omits the GitHub identity")
+            self.assertIn("gist", lowered, f"{name} branch omits the gist disclosure")
+
+    def test_both_branches_state_no_credit_card(self):
+        for name, branch in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn("credit card", branch.lower(), f"{name} branch omits the no-card promise")
+
+    def test_free_tier_figure_is_5000_and_unconflicted(self):
+        self.assertIn("5,000 requests", self.step0)
+        self.assertNotIn("500 requests", self.step0)
+        self.assertNotIn("50,000 requests", self.step0)
+
+    def test_gh_prerequisite_gates_the_offer_in_both_branches(self):
+        """Offering something the user cannot accept is worse than silence."""
+        for name, branch in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn("command -v gh", branch, f"{name} branch does not gate on gh")
+
+    def test_declining_installs_nothing(self):
+        for name, branch in (("modal", self.modal), ("prose", self.prose)):
+            self.assertRegex(
+                branch, r"(?i)(nothing is installed|no Bright Data account)",
+                f"{name} branch does not state the decline path is inert",
+            )
+
+    def test_global_npm_install_is_disclosed_at_acceptance(self):
+        """A global package landing on the machine is part of what is consented to."""
+        for name, branch in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn("npm i -g @brightdata/cli", branch,
+                          f"{name} branch does not disclose the global install")
+
+    def test_persisted_false_has_its_own_branch(self):
+        """Registration succeeding while the setting fails to save is not success."""
+        for name, branch in (("modal", self.modal), ("prose", self.prose)):
+            self.assertIn('"persisted": false', branch,
+                          f"{name} branch has no persisted:false handling")
+
+    def test_failure_states_must_not_claim_the_source_is_active(self):
+        self.assertIn("registration_failed", self.modal)
+        self.assertIn("registration_failed", self.prose)
+        self.assertRegex(self.modal, r"(?i)do not claim the source is active|never claim")
+        self.assertRegex(self.prose, r"(?i)never claim the source is active")

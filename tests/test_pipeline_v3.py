@@ -1,3 +1,4 @@
+import inspect
 import threading
 import unittest
 from unittest.mock import patch
@@ -2264,3 +2265,47 @@ class TestAmazonSourceGating:
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAmazonActivationKey:
+    """U4: the activation key changes availability, never firing."""
+
+    def _available(self, config, requested=None):
+        with patch.object(pipeline.brightdata, "is_available", return_value=True):
+            return pipeline.available_sources(config, requested)
+
+    def test_activation_key_alone_makes_amazon_available(self):
+        assert "amazon" in self._available({"LAST30DAYS_AMAZON_ENABLED": "1"})
+
+    def test_activation_key_respects_the_cli_gate(self):
+        """Registration consent does not conjure an uninstalled CLI."""
+        with patch.object(pipeline.brightdata, "is_available", return_value=False):
+            assert "amazon" not in pipeline.available_sources(
+                {"LAST30DAYS_AMAZON_ENABLED": "1"}, None
+            )
+
+    def test_exclude_sources_still_wins_over_the_activation_key(self):
+        config = {"LAST30DAYS_AMAZON_ENABLED": "1", "EXCLUDE_SOURCES": "amazon"}
+        assert "amazon" not in self._available(config)
+
+    def test_falsy_values_do_not_activate(self):
+        for value in ("0", "false", "no", "off", "", None):
+            assert "amazon" not in self._available({"LAST30DAYS_AMAZON_ENABLED": value}), value
+
+    def test_absent_key_preserves_todays_behavior_exactly(self):
+        assert "amazon" not in self._available({})
+        assert "amazon" in self._available({}, ["amazon"])
+        assert "amazon" in self._available({"INCLUDE_SOURCES": "amazon"})
+
+    def test_activation_does_not_change_planner_firing(self):
+        """Availability is not inference: the model still picks per topic.
+
+        The engine has no auto-fire path for amazon -- the source only enters a
+        run through an explicit --search request the model builds. Making it
+        *available* by default must not change that, or a default-on lane would
+        start spending credits on topics with no product dimension.
+        """
+        from lib import planner
+        assert "amazon" in planner.SOURCE_CAPABILITIES
+        source = inspect.getsource(pipeline._retrieve_stream)
+        assert "_infer_intent" not in source

@@ -2534,6 +2534,7 @@ SETUP_PASSTHROUGH_FLAGS = {
     "--github",
     "--github-start",
     "--github-poll",
+    "--brightdata",
     "--openclaw",
 }
 
@@ -2999,6 +3000,31 @@ def _main(
         from lib import setup_wizard
         if "--openclaw" in extra_argv:
             results = setup_wizard.run_openclaw_setup(config)
+            print(json.dumps(results))
+            return 0
+        if "--brightdata" in extra_argv:
+            # Mechanical only: install the CLI, then register via the local gh
+            # token. Consent was obtained by the model in SKILL.md Step 0 --
+            # this subprocess cannot prompt. On success the activation key
+            # persists so the amazon source is available on the next run
+            # without the user editing INCLUDE_SOURCES.
+            results = setup_wizard.register_brightdata(config)
+            if results.get("registered"):
+                # env.CONFIG_FILE is None in no-config mode
+                # (LAST30DAYS_CONFIG_DIR=""), where write_api_key would raise a
+                # TypeError *after* the CLI is installed and the account is
+                # created. Report honestly instead of crashing past the point
+                # of no return.
+                if env.CONFIG_FILE is None:
+                    results["persisted"] = False
+                    results["persist_error"] = (
+                        "no config file in no-config mode; set INCLUDE_SOURCES=amazon "
+                        "to enable the source"
+                    )
+                else:
+                    results["persisted"] = setup_wizard.set_config_value(
+                        env.CONFIG_FILE, "LAST30DAYS_AMAZON_ENABLED", "1",
+                    )
             print(json.dumps(results))
             return 0
         if any(f in extra_argv for f in ("--github", "--device-auth", "--github-start", "--github-poll")):

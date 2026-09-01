@@ -363,6 +363,258 @@ def _brightdata_off_path_binary() -> Optional[str]:
     return None
 
 
+# The Bright Data CLI ships on npm rather than through the Printing Press
+# catalog, so it gets its own installer rather than a PP_DEFAULT_SOURCES entry.
+BRIGHTDATA_NPM = "@brightdata/cli"
+# Generous: npm resolves and downloads a package tree over the network.
+BRIGHTDATA_INSTALL_TIMEOUT = 300
+
+
+def _run_npm_global_install(package: str) -> Tuple[str, str]:
+    """Resolve ``npm`` and run a global install.
+
+    Returns ``(action, stderr)``: ``action`` is ``"no_npm"``,
+    ``"install_failed"``, or ``""`` when the subprocess ran and returned rc=0.
+
+    Passes the resolved npm path as argv[0] rather than the bare string, which
+    is the Windows PATHEXT fix ``_run_npx_install`` documents: ``shutil.which``
+    resolves ``npm.CMD`` via PATHEXT but ``subprocess.run`` given ``"npm"``
+    does not, and fails with WinError 2.
+    """
+    npm = shutil.which("npm")
+    if npm is None:
+        return "no_npm", ""
+    try:
+        proc = subprocess.run(
+            [npm, "install", "-g", package],
+            capture_output=True, text=True, timeout=BRIGHTDATA_INSTALL_TIMEOUT,
+            # Same reason as the login call: an npm prompt would otherwise
+            # consume the agent session's stdin and stall until the timeout.
+            stdin=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        logger.warning("npm install -g %s exception: %s", package, exc)
+        return "install_failed", str(exc)
+    if proc.returncode != 0:
+        stderr = proc.stderr or f"npm install -g {package} exited {proc.returncode}"
+        logger.warning("npm install -g %s failed (rc=%s): %s", package, proc.returncode, stderr)
+        return "install_failed", stderr
+    return "", (proc.stderr or "")
+
+
+def install_brightdata_cli() -> Tuple[bool, str, str, str]:
+    """Best-effort global install of the Bright Data CLI.
+
+    Structural mirror of ``_install_pp_cli`` with npm in place of the Printing
+    Press catalog installer, and the same action taxonomy (``no_npm`` replaces
+    ``no_npx``). Never raises.
+
+    The post-install re-verification is the point: npm's global prefix varies
+    per machine and per Node version manager, so a successful install whose
+    binary lands outside the agent subprocess PATH is ``installed_off_path``,
+    not ``installed``. Claiming otherwise would tell a Hermes or OpenClaw user
+    the lane is live when the engine gate cannot see the binary.
+
+    Returns ``(engine_active, action, stderr, off_path_binary)``.
+    """
+    if shutil.which(BRIGHTDATA_BIN):
+        return True, "already_installed", "", ""
+    off_path = _brightdata_off_path_binary()
+    if off_path:
+        return False, "installed_off_path", "", off_path
+
+    action, stderr = _run_npm_global_install(BRIGHTDATA_NPM)
+    if action:
+        return False, action, stderr, ""
+
+    if shutil.which(BRIGHTDATA_BIN):
+        return True, "installed", "", ""
+    off_path = _brightdata_off_path_binary()
+    if off_path:
+        combined = stderr.strip()
+        if combined:
+            logger.warning("%s installed off PATH: %s", BRIGHTDATA_BIN, combined)
+        return False, "installed_off_path", combined, off_path
+    stderr_msg = stderr or f"install completed but {BRIGHTDATA_BIN} was not found"
+    logger.warning("npm install %s failed verification: %s", BRIGHTDATA_NPM, stderr_msg)
+    return False, "install_failed", stderr_msg, ""
+
+
+# Vendor output is relayed verbatim to the user, and an auth-failure line is
+# exactly where a CLI is most likely to echo the credential it was handed.
+_SECRET_RE = re.compile(r"(gh[pousr]_[A-Za-z0-9]{20,})|(Bearer\s+\S+)", re.IGNORECASE)
+
+
+def _scrub_secrets(text: str) -> str:
+    return _SECRET_RE.sub("***", text or "")
+
+
+# Markers for a failed login that the CLI nonetheless exits 0 on. Kept broad
+# rather than pinned to one message, since the CLI is young and its wording
+# moves; a false "failed" degrades to today's behavior, while a false
+# "succeeded" would tell the user a dark lane is live.
+_AUTH_FAILURE_RE = re.compile(
+    r"auth failed|verification failed|unauthorized|\b401\b|\b403\b|device flow instead",
+    re.IGNORECASE,
+)
+
+
+def _gh_authenticated() -> bool:
+    """True when the local GitHub CLI holds a usable token.
+
+    Checked with ``gh auth status`` rather than by reading the token: the
+    Bright Data CLI reads it from the local ``gh`` install itself, so this
+    process never needs to see it and must not.
+    """
+    gh = shutil.which("gh")
+    if gh is None:
+        return False
+    try:
+        # --hostname pins github.com: a user authenticated only to a GitHub
+        # Enterprise host would otherwise pass here and fail later at login,
+        # reporting the wrong first-failing prerequisite.
+        proc = subprocess.run(
+            [gh, "auth", "status", "--hostname", "github.com"],
+            capture_output=True, text=True, timeout=20,
+        )
+    except Exception:
+        return False
+    return proc.returncode == 0
+
+
+def _brightdata_login_github(timeout: int = 120, credentialed=None) -> Dict[str, Any]:
+    """Run ``brightdata login --github``. Never raises.
+
+    Returns ``{"ok": bool, "error": str}``. The CLI performs a gist-based
+    proof-of-GitHub-account-control handshake and stores the resulting API key
+    in its own credentials file; nothing about the exchange passes through
+    this process, which is why no token or key appears in the return value.
+    """
+    binary = shutil.which(BRIGHTDATA_BIN)
+    if binary is None:
+        return {"ok": False, "error": f"{BRIGHTDATA_BIN} not on PATH"}
+    try:
+        proc = subprocess.run(
+            [binary, "login", "--github"],
+            capture_output=True, text=True, timeout=timeout,
+            # The CLI offers an interactive "Try device flow instead? [y/N]"
+            # prompt when GitHub auth fails. Closing stdin makes it decline and
+            # exit rather than waiting on input that will never arrive.
+            stdin=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)}
+
+    # Success is a POSITIVE post-condition, never the absence of a failure
+    # marker. Two reasons this matters:
+    #
+    #   1. This CLI exits 0 on a failed GitHub auth -- verified live against
+    #      v0.3.3, where a 403 verification failure returns rc=0 because the
+    #      CLI treats the failure as handled once it has offered the
+    #      device-flow fallback.
+    #   2. Matching failure *wording* is unfixably fragile. Any phrasing the
+    #      pattern misses ("Forbidden", "Bad credentials", "could not verify")
+    #      would be read as success, and the failure direction that matters is
+    #      exactly that one: reporting a registered account for a dark lane.
+    #
+    # So the authority is the credential the CLI is supposed to have written.
+    # If it is not there, registration did not happen, whatever was printed.
+    combined = _scrub_secrets(f"{proc.stdout or ''}\n{proc.stderr or ''}")
+    if credentialed is not None and credentialed():
+        return {"ok": True}
+
+    failure_lines = [
+        ln.strip() for ln in combined.splitlines()
+        if ln.strip() and _AUTH_FAILURE_RE.search(ln)
+    ]
+    if failure_lines:
+        return {"ok": False, "error": failure_lines[0]}
+    lines = [ln.strip() for ln in _scrub_secrets(proc.stderr or "").strip().splitlines() if ln.strip()]
+    if lines:
+        return {"ok": False, "error": lines[-1]}
+    return {
+        "ok": False,
+        "error": f"login exited {proc.returncode} but no Bright Data credentials were written",
+    }
+
+
+# Ordered prerequisite chain. Reporting the *first* failure matters: a user
+# without gh should be told about gh, not about npm they also happen to lack.
+_REGISTRATION_HINTS = {
+    "gh_missing": (
+        "the zero-click path needs the GitHub CLI - install it from https://cli.github.com/ "
+        "then run `gh auth login`"
+    ),
+    "gh_unauthenticated": "run `gh auth login` to authenticate the GitHub CLI",
+    "no_npm": "npm is required to install the Bright Data CLI",
+    "install_failed": "the Bright Data CLI could not be installed",
+    "registration_failed": "Bright Data rejected the GitHub verification",
+}
+
+
+def register_brightdata(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Install the Bright Data CLI and register via GitHub, mechanically.
+
+    Does only mechanical work and returns a structured outcome; the model owns
+    every user-facing sentence, per the established split where the setup
+    subprocess cannot prompt.
+
+    Deliberately has no fallback to Bright Data's ``--device`` flow. That flow
+    works, but it requires visiting a URL and entering a code -- exactly the
+    experience this path exists to remove. When ``gh`` is absent we say so
+    rather than silently delivering the web flow the user was told they would
+    not see.
+
+    Never handles the GitHub token: ``gh`` holds it, the Bright Data CLI reads
+    it, and neither the token nor the resulting API key appears in the return
+    value or in any log line.
+    """
+    def blocked(reason: str, **extra: Any) -> Dict[str, Any]:
+        out = {"ok": False, "registered": False, "blocked_on": reason,
+               "hint": _REGISTRATION_HINTS.get(reason, "")}
+        out.update(extra)
+        return out
+
+    # Already registered? Do nothing. Re-running login would create a gist and
+    # REPLACE an existing credentials file -- a user who had logged into their
+    # employer's paid Bright Data account would silently be swapped onto a new
+    # free one, and later Amazon pulls would bill the wrong account. This also
+    # covers the user who installed and logged in by hand but has no gh: they
+    # still get the activation key without being blocked on a prerequisite the
+    # zero-click path needs and they do not.
+    if brightdata.is_available(config):
+        return {"ok": True, "registered": True, "action": "already_registered"}
+
+    if shutil.which("gh") is None:
+        return blocked("gh_missing")
+    if not _gh_authenticated():
+        return blocked("gh_unauthenticated")
+
+    active, action, stderr, off_path = install_brightdata_cli()
+    if action == "no_npm":
+        return blocked("no_npm")
+    if action == "installed_off_path":
+        hint = (
+            f"the Bright Data CLI is at {off_path} but not on PATH - add "
+            f"{os.path.dirname(os.path.expanduser(off_path))} to PATH and restart "
+            "your agent session/gateway"
+        )
+        return blocked("installed_off_path", path=off_path, hint=hint)
+    if not active:
+        return blocked("install_failed", **({"error": stderr} if stderr else {}))
+
+    try:
+        login = _brightdata_login_github(
+            credentialed=lambda: brightdata.has_credentials(config)
+        )
+    except Exception as exc:  # defensive: the helper already never raises
+        return blocked("registration_failed", error=str(exc))
+    if not login.get("ok"):
+        return blocked("registration_failed", error=login.get("error", ""))
+
+    return {"ok": True, "registered": True, "action": action}
+
+
 def brightdata_status(config: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Report the Bright Data install and auth state honestly.
 
@@ -582,6 +834,48 @@ def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
         return False
 
 
+def set_config_value(env_path: Path, key_name: str, value: str) -> bool:
+    """Upsert ``key_name=value`` in the .env file as a 0o600 secret.
+
+    ``write_api_key`` is deliberately append-if-absent so it never clobbers a
+    key the user set by hand. That is wrong for a toggle: a user who set
+    ``LAST30DAYS_AMAZON_ENABLED=0`` to go back to opt-in, then re-registered,
+    would get ``persisted: true`` while the value stayed ``0`` and the source
+    stayed off. This one replaces an existing value.
+    """
+    try:
+        path = Path(env_path)
+    except TypeError:
+        return False
+    try:
+        existing = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    except OSError:
+        return False
+
+    line = f"{key_name}={value}"
+    out, replaced = [], False
+    for entry in existing:
+        if entry.strip().startswith(f"{key_name}="):
+            if not replaced:
+                out.append(line)
+                replaced = True
+            continue
+        out.append(entry)
+    if not replaced:
+        out.append(line)
+
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with _open_secret_append(path.with_suffix(".tmp")) as handle:
+            handle.write("\n".join(out) + "\n")
+        path.with_suffix(".tmp").replace(path)
+        os.chmod(path, 0o600)
+    except OSError as exc:
+        logger.warning("failed to write %s: %s", key_name, exc)
+        return False
+    return True
+
+
 def write_api_key(env_path: Path, api_key: str, key_name: str = "SCRAPECREATORS_API_KEY") -> bool:
     """Append an API key to the .env file as a 0o600 secret.
 
@@ -762,10 +1056,21 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
             "your agent session/gateway for Amazon buyer signals to activate"
         )
     elif bd_action == "not_installed":
-        lines.append(
-            "  - Amazon buyer signals not installed (optional; 5,000 free "
-            "requests/month). Install with: npm i -g @brightdata/cli && brightdata login"
-        )
+        # Which advice helps depends on whether the zero-click path is even
+        # reachable; telling a user without gh to run a command that will fail
+        # is worse than naming the prerequisite.
+        if shutil.which("gh") is None:
+            lines.append(
+                "  - Amazon buyer signals available but need the GitHub CLI first "
+                "(https://cli.github.com/), then `gh auth login` — optional, "
+                "5,000 free requests/month, no credit card"
+            )
+        else:
+            lines.append(
+                "  - Amazon buyer signals not set up (optional; 5,000 free "
+                "requests/month, no credit card). Ask me to set up Amazon signals "
+                "and I'll register you through your GitHub login"
+            )
 
     env_written = results.get("env_written", False)
     if env_written:

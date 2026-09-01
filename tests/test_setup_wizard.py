@@ -1,5 +1,6 @@
 """Tests for the first-run setup wizard module."""
 
+import json
 import os
 import subprocess
 import tempfile
@@ -916,6 +917,259 @@ class TestBrightDataSetupSurface:
         assert "/Users/x/.npm-global/bin/brightdata" in text
         assert "PATH" in text
 
-    def test_absent_offers_the_install_command_without_running_it(self):
-        text = self._text({"action": "not_installed", "engine_active": False})
-        assert "npm i -g @brightdata/cli" in text
+    def test_absent_without_gh_names_the_prerequisite_first(self):
+        """Telling a user without gh to run a command that fails is worse."""
+        with patch.object(setup_wizard.shutil, "which", lambda n: None):
+            text = self._text({"action": "not_installed", "engine_active": False})
+        assert "cli.github.com" in text
+        assert "gh auth login" in text
+
+    def test_absent_with_gh_offers_the_zero_click_setup(self):
+        with patch.object(setup_wizard.shutil, "which", lambda n: "/usr/bin/gh"):
+            text = self._text({"action": "not_installed", "engine_active": False})
+        assert "set up Amazon signals" in text
+        assert "no credit card" in text
+
+
+class TestBrightDataInstaller:
+    """U1: never claim installed unless the engine gate would resolve it."""
+
+    def test_already_on_path_skips_the_install(self):
+        with patch.object(setup_wizard.shutil, "which", lambda n: "/usr/local/bin/brightdata"), \
+             patch.object(setup_wizard.subprocess, "run") as run:
+            active, action, stderr, off = setup_wizard.install_brightdata_cli()
+        assert (active, action) == (True, "already_installed")
+        run.assert_not_called()
+
+    def test_npm_absent_returns_no_npm_without_spawning(self):
+        with patch.object(setup_wizard.shutil, "which", lambda n: None), \
+             patch.object(setup_wizard, "_brightdata_off_path_binary", return_value=None), \
+             patch.object(setup_wizard.subprocess, "run") as run:
+            active, action, stderr, off = setup_wizard.install_brightdata_cli()
+        assert (active, action) == (False, "no_npm")
+        run.assert_not_called()
+
+    def test_successful_install_that_lands_on_path(self):
+        seen = {"calls": 0}
+
+        def which(name):
+            if name == "npm":
+                return "/usr/bin/npm"
+            seen["calls"] += 1
+            return None if seen["calls"] == 1 else "/usr/local/bin/brightdata"
+
+        with patch.object(setup_wizard.shutil, "which", which), \
+             patch.object(setup_wizard, "_brightdata_off_path_binary", return_value=None), \
+             patch.object(setup_wizard.subprocess, "run",
+                          return_value=MagicMock(returncode=0, stderr="")):
+            active, action, stderr, off = setup_wizard.install_brightdata_cli()
+        assert (active, action) == (True, "installed")
+
+    def test_install_succeeds_but_binary_lands_off_path(self):
+        """npm's global prefix varies; the engine gate is the arbiter."""
+        with patch.object(setup_wizard.shutil, "which",
+                          lambda n: "/usr/bin/npm" if n == "npm" else None), \
+             patch.object(setup_wizard, "_brightdata_off_path_binary",
+                          side_effect=[None, "/Users/x/.npm-global/bin/brightdata"]), \
+             patch.object(setup_wizard.subprocess, "run",
+                          return_value=MagicMock(returncode=0, stderr="")):
+            active, action, stderr, off = setup_wizard.install_brightdata_cli()
+        assert (active, action) == (False, "installed_off_path")
+        assert off == "/Users/x/.npm-global/bin/brightdata"
+
+    def test_nonzero_exit_reports_install_failed_with_stderr(self):
+        with patch.object(setup_wizard.shutil, "which",
+                          lambda n: "/usr/bin/npm" if n == "npm" else None), \
+             patch.object(setup_wizard, "_brightdata_off_path_binary", return_value=None), \
+             patch.object(setup_wizard.subprocess, "run",
+                          return_value=MagicMock(returncode=1, stderr="EACCES: permission denied")):
+            active, action, stderr, off = setup_wizard.install_brightdata_cli()
+        assert (active, action) == (False, "install_failed")
+        assert "EACCES" in stderr
+
+    def test_install_timeout_never_raises(self):
+        with patch.object(setup_wizard.shutil, "which",
+                          lambda n: "/usr/bin/npm" if n == "npm" else None), \
+             patch.object(setup_wizard, "_brightdata_off_path_binary", return_value=None), \
+             patch.object(setup_wizard.subprocess, "run",
+                          side_effect=subprocess.TimeoutExpired("npm", 300)):
+            active, action, stderr, off = setup_wizard.install_brightdata_cli()
+        assert (active, action) == (False, "install_failed")
+
+    def test_npm_path_is_resolved_not_bare(self):
+        """Windows PATHEXT: bare 'npm' as argv[0] fails with WinError 2."""
+        captured = {}
+        with patch.object(setup_wizard.shutil, "which",
+                          lambda n: "/usr/bin/npm" if n == "npm" else None), \
+             patch.object(setup_wizard, "_brightdata_off_path_binary", return_value=None), \
+             patch.object(setup_wizard.subprocess, "run",
+                          side_effect=lambda cmd, **k: captured.update(cmd=cmd) or MagicMock(returncode=0, stderr="")):
+            setup_wizard.install_brightdata_cli()
+        assert captured["cmd"][0] == "/usr/bin/npm"
+        assert captured["cmd"][1:] == ["install", "-g", "@brightdata/cli"]
+
+
+class TestBrightDataRegistration:
+    """U2: prerequisite ordering, honest degradation, no token leakage."""
+
+    def _patch(self, *, gh=True, gh_authed=True, install=("installed", True), login=None):
+        active, action = install[1], install[0]
+        return [
+            patch.object(setup_wizard.brightdata, "is_available", return_value=False),
+            patch.object(setup_wizard.shutil, "which",
+                         lambda n: "/usr/bin/gh" if n == "gh" else "/usr/bin/npm"
+                         if n == "npm" else None) if gh else
+            patch.object(setup_wizard.shutil, "which",
+                         lambda n: None if n == "gh" else "/usr/bin/npm"),
+            patch.object(setup_wizard, "_gh_authenticated", return_value=gh_authed),
+            patch.object(setup_wizard, "install_brightdata_cli",
+                         return_value=(active, action, "", "")),
+            patch.object(setup_wizard, "_brightdata_login_github",
+                         return_value=login or {"ok": True}),
+        ]
+
+    def _run(self, **kw):
+        patches = self._patch(**kw)
+        for p in patches: p.start()
+        try:
+            return setup_wizard.register_brightdata({})
+        finally:
+            for p in patches: p.stop()
+
+    def test_missing_gh_reports_gh_not_npm(self):
+        """The first failing prerequisite wins; do not report a later one."""
+        out = self._run(gh=False)
+        assert out["ok"] is False
+        assert out["blocked_on"] == "gh_missing"
+        assert "gh" in out["hint"]
+        assert "npm" not in out["hint"].lower()
+
+    def test_gh_present_but_unauthenticated_reports_auth(self):
+        out = self._run(gh_authed=False)
+        assert out["ok"] is False
+        assert out["blocked_on"] == "gh_unauthenticated"
+        assert "gh auth login" in out["hint"]
+
+    def test_install_failure_blocks_before_login(self):
+        out = self._run(install=("install_failed", False))
+        assert out["ok"] is False
+        assert out["blocked_on"] == "install_failed"
+
+    def test_off_path_install_blocks_and_names_path(self):
+        patches = self._patch()
+        patches[3] = patch.object(
+            setup_wizard, "install_brightdata_cli",
+            return_value=(False, "installed_off_path", "", "/Users/x/.npm-global/bin/brightdata"),
+        )
+        for p in patches: p.start()
+        try:
+            out = setup_wizard.register_brightdata({})
+        finally:
+            for p in patches: p.stop()
+        assert out["blocked_on"] == "installed_off_path"
+        assert "/Users/x/.npm-global/bin/brightdata" in out["hint"]
+
+    def test_happy_path_reports_registered(self):
+        out = self._run()
+        assert out["ok"] is True
+        assert out["registered"] is True
+
+    def test_login_403_passes_the_cli_message_through_verbatim(self):
+        """Their verification failure is theirs to explain, not ours to reword."""
+        msg = "GitHub verification failed (HTTP 403): verification_failed Gist content does not match expected nonce"
+        out = self._run(login={"ok": False, "error": msg})
+        assert out["ok"] is False
+        assert out["blocked_on"] == "registration_failed"
+        assert out["error"] == msg
+
+    def test_nothing_raises_on_login_exception(self):
+        patches = self._patch()
+        patches[4] = patch.object(setup_wizard, "_brightdata_login_github",
+                                  side_effect=RuntimeError("boom"))
+        for p in patches: p.start()
+        try:
+            out = setup_wizard.register_brightdata({})
+        finally:
+            for p in patches: p.stop()
+        assert out["ok"] is False
+
+    def test_github_token_never_appears_in_the_outcome(self):
+        """The CLI reads the token itself; our code must never carry it."""
+        out = self._run()
+        blob = json.dumps(out)
+        assert "gho_" not in blob and "ghp_" not in blob
+        assert "token" not in blob.lower()
+
+
+class TestBrightDataLoginExitCode:
+    """Regression: the CLI exits 0 on a FAILED GitHub auth (verified v0.3.3)."""
+
+    def _login(self, rc=0, stdout="", stderr="", credentialed=False):
+        with patch.object(setup_wizard.shutil, "which", lambda n: "/usr/local/bin/brightdata"), \
+             patch.object(setup_wizard.subprocess, "run",
+                          return_value=MagicMock(returncode=rc, stdout=stdout, stderr=stderr)):
+            return setup_wizard._brightdata_login_github(
+                credentialed=lambda: credentialed
+            )
+
+    def test_rc_zero_with_403_is_a_failure_not_a_success(self):
+        out = self._login(rc=0, stderr=(
+            "GitHub auth failed: GitHub verification failed (HTTP 403): "
+            "verification_failed Gist content does not match expected nonce"
+        ))
+        assert out["ok"] is False
+        assert "403" in out["error"]
+
+    def test_rc_zero_with_the_device_flow_prompt_is_a_failure(self):
+        """The prompt only appears after auth failed."""
+        assert self._login(rc=0, stdout="Try device flow instead? [y/N]")["ok"] is False
+
+    def test_success_requires_a_credential_not_just_clean_output(self):
+        """Success is a positive post-condition, never absence of a marker."""
+        assert self._login(rc=0, stdout="Logged in.", credentialed=True)["ok"] is True
+
+    def test_clean_output_without_a_credential_is_a_failure(self):
+        """The dangerous direction: unmatched failure wording reading as success."""
+        out = self._login(rc=0, stdout="Could not verify your GitHub account (Forbidden)")
+        assert out["ok"] is False
+        assert "no Bright Data credentials were written" in out["error"] or out["error"]
+
+    def test_nonzero_rc_is_a_failure(self):
+        assert self._login(rc=1, stderr="boom")["ok"] is False
+
+    def test_stdin_is_closed_so_the_prompt_cannot_hang(self):
+        captured = {}
+        with patch.object(setup_wizard.shutil, "which", lambda n: "/usr/local/bin/brightdata"), \
+             patch.object(setup_wizard.subprocess, "run",
+                          side_effect=lambda cmd, **k: captured.update(k) or MagicMock(
+                              returncode=0, stdout="", stderr="")):
+            setup_wizard._brightdata_login_github()
+        assert captured["stdin"] == subprocess.DEVNULL
+
+
+class TestSetConfigValueUpsert:
+    """A toggle must replace, not append-if-absent."""
+
+    def test_replaces_an_existing_value(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text("FOO=1\nLAST30DAYS_AMAZON_ENABLED=0\nBAR=2\n")
+        assert setup_wizard.set_config_value(env, "LAST30DAYS_AMAZON_ENABLED", "1") is True
+        text = env.read_text()
+        assert "LAST30DAYS_AMAZON_ENABLED=1" in text
+        assert "LAST30DAYS_AMAZON_ENABLED=0" not in text
+        assert "FOO=1" in text and "BAR=2" in text
+
+    def test_appends_when_absent(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text("FOO=1\n")
+        assert setup_wizard.set_config_value(env, "LAST30DAYS_AMAZON_ENABLED", "1") is True
+        assert "LAST30DAYS_AMAZON_ENABLED=1" in env.read_text()
+
+    def test_preserves_0600(self, tmp_path):
+        env = tmp_path / ".env"
+        env.write_text("FOO=1\n")
+        setup_wizard.set_config_value(env, "K", "v")
+        assert oct(env.stat().st_mode)[-3:] == "600"
+
+    def test_none_path_returns_false_without_raising(self):
+        assert setup_wizard.set_config_value(None, "K", "v") is False
