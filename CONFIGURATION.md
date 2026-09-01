@@ -336,6 +336,44 @@ Write `LAST30DAYS_KEYCHAIN_ALIASES` as a single-line JSON value in `.env`.
 Multiline JSON formatting is not supported because `.env` files are parsed
 line-by-line.
 
+#### Reusing existing environment-variable names
+
+Managed hosts and secret injectors sometimes expose a credential under an
+organization-owned environment name that cannot be renamed. Configure a
+canonical Last30Days key to read that variable with the non-secret
+`LAST30DAYS_CREDENTIAL_ALIASES` JSON mapping:
+
+```bash
+# The mapping contains names, not credential values.
+export LAST30DAYS_CREDENTIAL_ALIASES='{"AUTH_TOKEN":"TEAM_X_AUTH","CT0":"TEAM_X_CT0","SCRAPECREATORS_API_KEY":"TEAM_SC_KEY"}'
+```
+
+The mapping may also be placed in the user-global Last30Days `.env` file. An
+alias value may come from the process environment, the trusted project file, or
+the global file, in that priority order. A project file cannot define the alias
+mapping itself, preventing a checked-out repository from selecting an unrelated
+ambient process secret even when project config is enabled. Supported canonical
+keys are the credential names handled by the Keychain/`pass(1)` loaders,
+including `OPENAI_API_KEY`, `XAI_API_KEY`, `AUTH_TOKEN`, `CT0`, and
+`SCRAPECREATORS_API_KEY`.
+
+When a configured alias resolves, it overrides that canonical credential in the
+returned Last30Days configuration without exporting or overwriting the
+canonical process environment variable. When it does not resolve, normal
+canonical environment, project/global `.env`, Keychain, `pass(1)`, and browser
+credential discovery remains available.
+
+`AUTH_TOKEN` and `CT0` aliases are an atomic pair. If only one configured alias
+resolves, Last30Days rejects both instead of mixing an organization-owned value
+with a canonical, Keychain, `pass(1)`, or browser-derived cookie. Credential
+aliases do not select an X backend; an explicit `LAST30DAYS_X_BACKEND` remains
+authoritative.
+
+As with Keychain aliases, write `LAST30DAYS_CREDENTIAL_ALIASES` as single-line
+JSON. Alias names must be valid environment identifiers. Invalid JSON produces
+a warning and leaves canonical credential resolution enabled; secret values are
+never included in the warning.
+
 ### Bluesky app-password format and search host
 
 `BSKY_APP_PASSWORD` should be a 19-char app password in `xxxx-xxxx-xxxx-xxxx` format (lowercase alphanumeric, three hyphens). Generate one at <https://bsky.app/settings/app-passwords>. The AT Protocol's `createSession` endpoint also accepts your main account login password, but that's bad hygiene — main passwords have no scope (an app password can be limited to non-DM access) and can't be revoked individually.

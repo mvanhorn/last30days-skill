@@ -6,6 +6,7 @@ import datetime
 import json
 import locale
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +51,12 @@ KEYCHAIN_SERVICE_PREFIX = "last30days-"
 # {"XAI_API_KEY":{"account":"keychain-user","service":"existing-xai-api-key"}}
 # A string value is shorthand for {"service": "..."} with the current user.
 KEYCHAIN_ALIASES_ENV = "LAST30DAYS_KEYCHAIN_ALIASES"
+
+# Optional mapping from canonical credential keys to user-owned environment
+# variable names. The mapping is non-secret JSON; resolved values stay in the
+# returned config and are never copied into canonical process variables.
+CREDENTIAL_ALIASES_ENV = "LAST30DAYS_CREDENTIAL_ALIASES"
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 # Single source of truth for which credentials the Keychain loader looks up.
 # The setup-keychain.sh helper mirrors this list and is held in sync via
@@ -253,6 +260,48 @@ def _parse_keychain_aliases(raw: str | None) -> dict[str, list[dict[str, str]]]:
     return aliases
 
 
+def _parse_credential_aliases(raw: str | None) -> dict[str, str]:
+    """Parse canonical-key to environment-name aliases from non-secret JSON.
+
+    Unknown canonical keys and invalid environment names are ignored. Malformed
+    JSON emits a warning without including any resolved credential value.
+    """
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        sys.stderr.write(
+            f"[last30days] WARNING: {CREDENTIAL_ALIASES_ENV} is not valid JSON; "
+            "ignoring credential aliases while keeping canonical credentials enabled\n"
+        )
+        sys.stderr.flush()
+        return {}
+    if not isinstance(parsed, dict):
+        return {}
+
+    allowed = set(KEYCHAIN_KEYS)
+    return {
+        canonical: alias.strip()
+        for canonical, alias in parsed.items()
+        if canonical in allowed
+        and isinstance(alias, str)
+        and _ENV_NAME_RE.fullmatch(alias.strip())
+    }
+
+
+def _resolve_credential_aliases(
+    aliases: dict[str, str], file_env: dict[str, Any]
+) -> dict[str, str]:
+    """Resolve configured aliases with process environment over file config."""
+    resolved: dict[str, str] = {}
+    for canonical, alias in aliases.items():
+        value = read_secret_env(alias) or file_env.get(alias)
+        if value:
+            resolved[canonical] = str(value)
+    return resolved
+
+
 def _load_keychain(keys: list[str], aliases: dict[str, list[dict[str, str]]] | None = None) -> dict[str, str]:
     """Load credentials from macOS Keychain (no-op on other platforms).
 
@@ -424,6 +473,17 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     # Merge file sources: project > global
     merged_env = {**file_env, **project_env}
 
+    # Resolve user-owned environment aliases before querying lower-priority
+    # stores. Only the process or user-global file may choose ambient variable
+    # names; a trusted project file may provide a mapped value but cannot point
+    # the engine at an unrelated process secret.
+    credential_aliases_raw = (
+        os.environ.get(CREDENTIAL_ALIASES_ENV)
+        or file_env.get(CREDENTIAL_ALIASES_ENV)
+    )
+    credential_aliases = _parse_credential_aliases(credential_aliases_raw)
+    credential_alias_env = _resolve_credential_aliases(credential_aliases, merged_env)
+
     # Keychain is the lowest-priority source (Darwin only; no-op elsewhere).
     # Loaded before openai_auth so OPENAI_API_KEY can come from Keychain too.
     keychain_aliases_raw = os.environ.get(KEYCHAIN_ALIASES_ENV) or merged_env.get(KEYCHAIN_ALIASES_ENV)
@@ -443,7 +503,12 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         or merged_env.get("LAST30DAYS_PASS_PREFIX")
         or DEFAULT_PASS_PATH_PREFIX
     )
-    pass_missing = [k for k in KEYCHAIN_KEYS if k not in os.environ and not merged_env.get(k)]
+    pass_missing = [
+        k for k in KEYCHAIN_KEYS
+        if k not in os.environ
+        and not merged_env.get(k)
+        and not credential_alias_env.get(k)
+    ]
     pass_env = _load_pass(pass_missing, pass_prefix)
     merged_env = {**pass_env, **merged_env}
 
@@ -577,6 +642,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_TRANSCRIPT_TIMEOUT', None),
         ('DEGRADED_TRANSCRIPT_THRESHOLD', None),
         (KEYCHAIN_ALIASES_ENV, None),
+        (CREDENTIAL_ALIASES_ENV, None),
         # Whisper transcription provider for caption-free audio/video. Groq's
         # free tier is preferred; OPENAI_API_KEY is the paid backstop (already
         # resolved above via openai_auth).
@@ -589,6 +655,43 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
 
     for key, default in keys:
         config[key] = os.environ.get(key) or merged_env.get(key, default)
+
+    # Configured aliases override canonical credential values when present. X
+    # cookie aliases are atomic: one resolved alias without the other clears
+    # both values so it cannot silently mix with canonical, Keychain, pass(1),
+    # or browser-derived credentials. With neither alias present, canonical
+    # credential discovery remains unchanged.
+    aliased_auth = credential_alias_env.get("AUTH_TOKEN")
+    aliased_ct0 = credential_alias_env.get("CT0")
+    alias_x_complete = bool(aliased_auth and aliased_ct0)
+    alias_x_partial = bool(aliased_auth) ^ bool(aliased_ct0)
+    for key, value in credential_alias_env.items():
+        if key not in {"AUTH_TOKEN", "CT0"}:
+            config[key] = value
+    if alias_x_complete:
+        config["AUTH_TOKEN"] = aliased_auth
+        config["CT0"] = aliased_ct0
+        config["_AUTH_TOKEN_SOURCE"] = "credential alias"
+    elif alias_x_partial:
+        config["AUTH_TOKEN"] = None
+        config["CT0"] = None
+        config["_AUTH_TOKEN_SOURCE"] = ""
+        sys.stderr.write(
+            "[last30days] WARNING: credential aliases for AUTH_TOKEN and CT0 "
+            "must resolve as a complete pair; ignoring both\n"
+        )
+        sys.stderr.flush()
+    config[CREDENTIAL_ALIASES_ENV] = credential_aliases_raw
+    config["_CREDENTIAL_ALIAS_X_PAIR_PARTIAL"] = alias_x_partial
+
+    # OPENAI_API_KEY has companion status fields because it is resolved before
+    # the generic config loop. Keep those fields consistent when an alias wins.
+    if credential_alias_env.get("OPENAI_API_KEY"):
+        config.update({
+            "OPENAI_API_KEY": credential_alias_env.get("OPENAI_API_KEY"),
+            "OPENAI_AUTH_SOURCE": AUTH_SOURCE_API_KEY,
+            "OPENAI_AUTH_STATUS": AUTH_STATUS_OK,
+        })
 
     # Export debug flag to os.environ so log.py's lazy os.environ.get()
     # picks up .env values. setdefault ensures a shell-exported value is
@@ -647,6 +750,11 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     if policy.browser_cookies == "read":
         browser_creds = extract_browser_credentials(config)
         for key, value in browser_creds.items():
+            if (
+                config.get("_CREDENTIAL_ALIAS_X_PAIR_PARTIAL")
+                and key in {"AUTH_TOKEN", "CT0"}
+            ):
+                continue
             if not config.get(key):
                 config[key] = value
                 config[f"_{key}_SOURCE"] = "browser"
