@@ -130,6 +130,41 @@ class TestActiveSourceX:
         assert "x" in q["core_active"]
 
 
+class TestConfiguredXErrored:
+    """A configured X that errored is a real outage: docked and surfaced,
+    never disguised as an optional omission."""
+
+    def test_errored_x_docks_the_score(self):
+        q = _compute(
+            config_overrides={"AUTH_TOKEN": "tok123"},
+            result_overrides={"x_error": "401 unauthorized"},
+            ytdlp_installed=True,
+        )
+        assert q["score_pct"] == 80  # 4/5 - X stays in the denominator
+        assert q["core_missing"] == ["x"]
+        assert q["core_errored"] == ["x"]
+
+    def test_errored_x_nudge_surfaces_the_repair(self):
+        q = _compute(
+            config_overrides={"AUTH_TOKEN": "tok123"},
+            result_overrides={"x_error": "401 unauthorized"},
+            ytdlp_installed=True,
+        )
+        assert q["nudge_text"] is not None
+        assert "X/Twitter (errored this run)" in q["nudge_text"]
+
+    def test_runtime_active_x_that_errored_is_also_docked(self):
+        q = _compute(
+            result_overrides={
+                "active_sources": ["reddit", "x", "youtube"],
+                "x_error": "429 rate limited",
+            },
+            ytdlp_installed=True,
+        )
+        assert q["core_errored"] == ["x"]
+        assert q["score_pct"] == 80
+
+
 class TestXPlusYtdlp:
     """+X + yt-dlp -> 100%. No SC needed for full core coverage."""
 

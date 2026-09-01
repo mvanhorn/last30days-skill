@@ -187,9 +187,18 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
     core_active.append("polymarket")
     core_active.append("reddit")
 
+    # X splits three ways. Active counts normally. Configured-but-errored is a
+    # real outage: it still docks the score and surfaces a repair, never an
+    # "optional omission". Only unconfigured/declined X leaves the denominator.
     optional_omitted: List[str] = []
+    x_configured = _has_x_credentials(config) or (
+        "x" in (research_results.get("active_sources") or [])
+    )
     if _is_x_active(config, research_results):
         core_active.append("x")
+    elif x_configured and research_results.get("x_error"):
+        core_missing.append("x")
+        core_errored.append("x")
     else:
         optional_omitted.append("x")
 
@@ -299,6 +308,13 @@ def _build_nudge_text(
 
     # Free suggestions
     free_suggestions: List[str] = []
+
+    # A configured X that errored is the only X entry that can reach
+    # core_missing: unconfigured/declined X is an optional omission and never
+    # lands here. Surface the repair instead of hiding the outage.
+    if "x" in core_missing and "x" in core_errored:
+        x_fix = prescriptions.get("x", "cookies_expired")
+        free_suggestions.append(f"X/Twitter errored - {x_fix.fix_nl}.")
 
     if "youtube" in core_missing:
         if "youtube" in core_errored:

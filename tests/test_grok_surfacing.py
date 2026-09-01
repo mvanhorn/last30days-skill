@@ -37,7 +37,11 @@ def test_doctor_mentions_grok_as_opt_in():
 def test_quality_nudge_does_not_turn_optional_x_into_a_grok_prompt():
     src = inspect.getsource(quality_nudge)
     assert "grok_cli_missing" not in src
-    assert 'core_missing.append("x")' not in src
+    # Unconfigured/declined X is an optional omission, never a setup nudge...
+    assert 'optional_omitted.append("x")' in src
+    assert '"cookies_missing"' not in src
+    # ...but a configured X that errored still surfaces its repair.
+    assert '"cookies_expired"' in src
 
 
 def test_configuration_documents_the_grok_path_as_opt_in():

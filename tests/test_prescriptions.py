@@ -149,14 +149,18 @@ def _nudge(config_overrides=None, result_overrides=None, ytdlp_installed=False):
 
 
 class TestSharedWithQualityNudge:
-    def test_x_cookie_expiry_is_an_optional_omission_not_a_nudge(self):
+    def test_x_cookie_expired_nudge_is_built_from_the_registry_entry(self):
+        """Configured X that errored is a real outage, not an optional omission."""
+        entry = prescriptions.get("x", "cookies_expired")
         q = _nudge(
             config_overrides={"AUTH_TOKEN": "tok123"},
             result_overrides={"x_error": "401 unauthorized"},
             ytdlp_installed=True,
         )
-        assert q["nudge_text"] is None
-        assert q["core_missing"] == []
+        assert q["nudge_text"] is not None
+        assert entry.fix_nl in q["nudge_text"]
+        assert q["core_missing"] == ["x"]
+        assert q["core_errored"] == ["x"]
 
     def test_x_cookie_missing_is_an_optional_omission_not_a_nudge(self):
         q = _nudge(ytdlp_installed=True)
