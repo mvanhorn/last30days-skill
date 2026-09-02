@@ -1,7 +1,7 @@
 {
   "name": "obsidian2date",
   "version": "0.1.0",
-  "description": "Research any topic from the last 30 days, then write durable Obsidian notes and briefings.",
+  "description": "Research any topic over any recent window, then write durable Obsidian notes and briefings.",
   "author": {
     "name": "Paul Schwarz",
     "url": "https://github.com/pauleschwarz"

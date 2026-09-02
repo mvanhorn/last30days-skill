@@ -1,7 +1,7 @@
 {
   "name": "obsidian2date",
   "version": "0.1.0",
-  "description": "Research a topic from the last 30 days, then write durable Obsidian run notes and briefings.",
+  "description": "Research a topic over any recent window, then write durable Obsidian run notes and briefings.",
   "settings": [
     {
       "name": "Extension Directory",

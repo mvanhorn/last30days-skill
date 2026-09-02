@@ -8,7 +8,7 @@
   "plugins": [
     {
       "name": "obsidian2date",
-      "description": "Research any topic from the last 30 days across social sources and the web, then write durable Obsidian run notes, briefings, and related wikilinks.",
+      "description": "Research any topic over any recent window across social sources and the web, then write durable Obsidian run notes, briefings, and related wikilinks.",
       "version": "0.1.0",
       "category": "research",
       "source": {
