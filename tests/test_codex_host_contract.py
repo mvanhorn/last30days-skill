@@ -138,6 +138,11 @@ def test_law8_wrap_list_includes_u_name_and_github_repo_first_mentions():
     assert "u/name" in law8
     assert "GitHub repo" in law8
     assert "never guess" in law8.lower()
+    # GitHub evidence can carry an issue/PR URL, not the repo root: the label
+    # must match what the URL opens - never `[owner/repo]` over an item URL,
+    # and never an item URL trimmed to a guessed repo root.
+    assert "a label that matches what that URL opens" in law8
+    assert "never trim an item URL down to a guessed repo root" in law8
 
 
 def test_law8_post_synthesis_self_check_branches_on_both_env_signals():
