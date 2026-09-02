@@ -1,0 +1,1 @@
+Grok Bot / Cursor agent chat now uses inline `[label](url)` citations instead of plain labels. LAW 8 detects hidden-link hosts via `CLAUDECODE` or `CURSOR_AGENT`; Codex, Gemini CLI, and raw CLI remain on the plain-label regime to avoid URL soup.

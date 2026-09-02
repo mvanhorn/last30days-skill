@@ -92,19 +92,30 @@ def test_law8_is_renderer_aware_with_both_regimes():
     # LAW 8 must keep the inline-link default for hidden-link hosts AND carry a
     # plain-label branch for visible-URL hosts. Codex rendered every inline link
     # as `label (https://...)`, so a single-renderer LAW 8 produced URL soup.
+    # Grok Bot / Cursor agent chat is a hidden-link host (not Codex), so it
+    # should inline-link, not print plain labels that produce unclickable cites.
     law8 = _law8_block()
-    assert "Hidden-link hosts (Claude Code)" in law8
+    assert "Hidden-link hosts (Claude Code and Grok Bot" in law8
     assert "Visible-URL hosts (Codex" in law8
     assert "URL soup" in law8
     # Hidden-link default must remain inline `[name](url)` (no Claude Code regression).
     assert "`[name](url)`" in law8
+    # Visible-URL list must NOT name Cursor as a visible-URL host.
+    # Cursor agent chat hides Markdown URLs like Claude Code does.
+    assert "Visible-URL hosts (Codex, Gemini CLI, raw CLI)" in law8
 
 
-def test_law8_host_detection_is_deterministic_via_claudecode():
+def test_law8_host_detection_is_deterministic_via_claudecode_or_cursor_agent():
+    # Detection: hidden-link iff CLAUDECODE or CURSOR_AGENT is set.
+    # Grok Bot / Cursor agent chat sets CURSOR_AGENT but not CLAUDECODE.
+    # Codex sets neither - it is a visible-URL host that would soup with inline links.
     law8 = _law8_block()
     assert "CLAUDECODE" in law8
+    assert "CURSOR_AGENT" in law8
     # The detection must be stated as deterministic, not left to the model guessing.
     assert "do not guess" in law8
+    # The detection is explicitly different from the Step 0 modal/non-modal split.
+    assert "different axis" in law8 or "not the same" in law8.lower()
 
 
 def test_plan_invocation_warns_against_bash_lc_apostrophe_wrapper():
