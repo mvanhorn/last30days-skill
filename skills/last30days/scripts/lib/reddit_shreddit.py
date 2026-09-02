@@ -205,6 +205,17 @@ def _total_comments(html_text: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def _blocked_by_reddit(failures: List[http.HTTPError]) -> bool:
+    """True when the keyless GET was refused by Reddit's block wall (HTTP 403).
+
+    That is the only miss the browser fallback exists for. Any other empty
+    outcome -- 5xx, 429, a timeout, a memo election that gave up, an empty 200
+    body -- is not something a stealthy browser fetch would change, so it must
+    not pay for a browser launch.
+    """
+    return any(f.status_code == 403 for f in failures)
+
+
 def _scrapling_svc_fallback(
     svc_url: str,
     deadline: Optional[float] = None,
@@ -224,9 +235,11 @@ def _scrapling_svc_fallback(
     deadline rather than letting it outlive a cancelled future; when less than
     ``SCRAPLING_MIN_BUDGET`` remains the fallback is skipped entirely.
 
-    Strictly additive: only runs after the HTTP path already returned nothing,
-    and no-ops to ``None`` when the CLI is absent (CI, Cowork), so behavior is
-    unchanged wherever Scrapling is not installed. Returns None on any failure.
+    Strictly additive: the caller only invokes it after the HTTP path was
+    refused with HTTP 403 (see ``_blocked_by_reddit``) -- never on a 5xx, a
+    429, a timeout, or an empty body, none of which a browser would clear --
+    and it no-ops to ``None`` when the CLI is absent (CI, Cowork), so behavior
+    is unchanged wherever Scrapling is not installed. Returns None on any failure.
     """
     if not scrapling_fetch.is_available():
         return None
@@ -271,8 +284,11 @@ def fetch_comments(
     sub, post_id = ref
 
     svc_url = _svc_url(sub, post_id)
-    html_text = http.reddit_keyless_get_text(svc_url, timeout=timeout, accept="text/html")
-    if not html_text:
+    # tee_failures() recovers the status that get_text swallows (it returns None
+    # on any failure) while still forwarding it to the pipeline's sink.
+    with http.tee_failures() as misses:
+        html_text = http.reddit_keyless_get_text(svc_url, timeout=timeout, accept="text/html")
+    if not html_text and _blocked_by_reddit(misses):
         html_text = _scrapling_svc_fallback(svc_url, deadline=deadline)
     if not html_text:
         return {"top_comments": [], "comment_insights": [], "num_comments": None}
