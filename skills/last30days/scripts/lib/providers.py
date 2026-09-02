@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import sys
 from typing import Any
+from urllib.parse import urlsplit
 
 from . import env, http, schema
 
@@ -24,6 +26,49 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # constant is suffix-free. If GEMINI_FLASH_LITE moves to a non-preview stable ID,
 # double-check that OpenRouter's slug still maps to the same upstream model.
 OPENROUTER_DEFAULT = "google/gemini-3.1-flash-lite-preview"
+
+
+def _is_loopback(host: str) -> bool:
+    """True for hosts that never leave the machine."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def base_url_override(key: str, default: str) -> str:
+    """Resolve a provider base-URL override, refusing cleartext remote hosts.
+
+    Every provider resolves its endpoint through here so one guard covers both
+    ways a value arrives: the process environment, and
+    ``_propagate_config_to_environ`` pushing a `.env` value into os.environ.
+
+    A base-URL override redirects the request that carries the provider's bearer
+    token, so an `http://` override to a remote host would put the API key on
+    the wire in cleartext. That is refused and the built-in vendor endpoint is
+    used instead - failing closed protects the credential, and the warning makes
+    the drop visible instead of leaving the user to wonder why their gateway is
+    being bypassed. Loopback is the one legitimate `http://` case (a local
+    LiteLLM/Ollama gateway or an SSH tunnel never leaves the machine), so it is
+    allowed.
+    """
+    raw = (os.environ.get(key) or "").strip()
+    if not raw:
+        return default
+    parts = urlsplit(raw)
+    if parts.scheme == "https":
+        return raw
+    if parts.scheme == "http" and _is_loopback(parts.hostname or ""):
+        return raw
+    sys.stderr.write(
+        f"[last30days] WARNING: ignoring {key}={raw!r} - a provider endpoint override "
+        "must be https:// (http:// is allowed only on localhost), otherwise the API "
+        f"key would be sent in cleartext. Using {default} instead.\n"
+    )
+    sys.stderr.flush()
+    return default
 
 
 class ReasoningClient:
@@ -119,7 +164,7 @@ class OpenAIClient(ReasoningClient):
             "temperature": 0,
         }
         response = http.post(
-            os.environ.get("OPENAI_BASE_URL", OPENAI_RESPONSES_URL),
+            base_url_override("OPENAI_BASE_URL", OPENAI_RESPONSES_URL),
             payload,
             headers={
                 "Authorization": f"Bearer {self.token}",
@@ -150,7 +195,7 @@ class XAIClient(ReasoningClient):
             "input": [{"role": "user", "content": prompt}],
         }
         response = http.post(
-            os.environ.get("XAI_BASE_URL", XAI_RESPONSES_URL),
+            base_url_override("XAI_BASE_URL", XAI_RESPONSES_URL),
             payload,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
@@ -182,7 +227,7 @@ class OpenRouterClient(ReasoningClient):
             "temperature": 0,
         }
         response = http.post(
-            os.environ.get("OPENROUTER_BASE_URL", OPENROUTER_URL),
+            base_url_override("OPENROUTER_BASE_URL", OPENROUTER_URL),
             payload,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
