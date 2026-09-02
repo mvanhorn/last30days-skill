@@ -3013,6 +3013,15 @@ def _main(
     if topic.lower() == "queue cover" or topic.lower().startswith("queue cover "):
         return _run_queue_cover(args, config, topic[len("queue cover") :].strip())
 
+    # Handle momentum subcommand: re-score the saved report cache under a
+    # shorter window (exact topic-word match only, mirroring doctor/setup, so
+    # research topics like "momentum investing" still research normally).
+    # Offline analysis of the last run's artifacts - no sources are contacted.
+    if topic.lower() == "momentum":
+        from lib import momentum
+
+        return momentum.run(args, config)
+
     # Handle setup subcommand
     if topic.lower() == "setup":
         from lib import setup_wizard

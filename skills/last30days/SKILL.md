@@ -280,6 +280,14 @@ Relay the rendered list (uncovered surfaced topics with domain, surface count, a
 
 Normal fresh research runs may include a short `## From your library` block when prior indexed runs overlap the resolved topic/entities. Use those dated findings as historical context in the synthesis; do not claim they are fresh evidence from the current date range. Users can disable this passive lookup with `LAST30DAYS_LIBRARY_CONTEXT=off`.
 
+**MOMENTUM FAST PATH — this overrides every research/setup step below.** If the user asks for a momentum diff, topic velocity, "what's hot vs fading", or to compare the last N days against the longer window of an already-run (or just-run) topic — do not start a fresh sweep or the setup wizard. Run the offline momentum analysis over the saved report cache:
+
+```bash
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" momentum --days 7
+```
+
+Relay the momentum brief it prints. Back-to-back semantics: for the strongest result, run a normal research pass first (`last30days.py "<topic>" --days 30`), then invoke `momentum` immediately — both windows come from the SAME snapshot, so there is no drift, and the short view costs zero additional API calls. `--days` sets the short window (any pair works: 90 to 30, 14 to 3); `--as-of` anchors the window end (defaults to the cached report's own `range_to`); `--emit=json` for machine output. A missing or unreadable cache exits 2 with the remedy on stderr — relay it and suggest a research run first; do not fabricate a diff. Interpretation order: the short-share headline (a steady field sits near the proportional baseline, about 23% for a 7-of-30 split; well above means the topic is moving fast), then Breakouts (rank climbed - this period's news), Fading (rank dropped - often the most informative quadrant), Sustained (top of both windows). State the traps plainly in the relay: engine synthesis items (e.g. Perplexity Sonar briefs) rank #1 in both windows and are not field signal; undated items never decay and only climb relatively (read as "held position", not "gained momentum"); a high short-share with low absolute engagement is usually keyword-collision junk; a source that was partial in the original run means partial coverage here, never "nothing on X". A momentum re-score is a re-lens of what the long sweep captured — for exhaustive short-window coverage, suggest a dedicated short research pass instead.
+
 **STEP 0 - RESOLVE HOST WEB SEARCH FIRST.** Your first action on every `/last30days` invocation is to determine whether this agent session has a usable web-search tool. Most agent harnesses do: it may be built in, exposed as a deferred tool, or provided by an installed connector such as Brave, Firecrawl, Exa, Serper, or another search provider.
 
 Use this capability rule:

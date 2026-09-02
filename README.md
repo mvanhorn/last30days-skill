@@ -335,6 +335,8 @@ Two things you'll likely want to know on day one:
 
 **Search everything you've researched.** Ask `/last30days search my library for MCP servers` or `/last30days have I researched MCP servers before?`. For direct engine use, run `python3 skills/last30days/scripts/last30days.py library search "MCP servers"`. Search is offline and deterministic: it incrementally indexes the same saved briefs used by the library feed, merges matching per-run store sightings, and groups results by topic and date. Fresh runs also surface a compact **From your library** section when prior research overlaps the current topic; set `LAST30DAYS_LIBRARY_CONTEXT=off` to disable that passive context.
 
+**Measure what's moving, not just what's there.** Ask `/last30days momentum` right after any research run, or use `python3 skills/last30days/scripts/last30days.py momentum --days 7` directly. It re-scores the saved report under a shorter window using the engine's own scoring math and diffs the two rankings — offline, zero additional API calls, no drift, because both windows read the same snapshot. Every candidate gets a momentum label (breakout / fading / sustained) plus a short-share headline: how much of the month's engagement landed inside the week. A steady field sits near the proportional baseline (~23% for 7-of-30); well above that means the topic is moving fast. Any window pair works (`--days 3`, `--days 30` over a 90-day run, `--as-of` for retroactive analysis).
+
 Per-client wrapper scripts, custom category-peer subreddits, and the experimental beta channel for in-progress customizations are also documented in [CONFIGURATION.md](CONFIGURATION.md).
 
 ## Showcase: community research feeds
