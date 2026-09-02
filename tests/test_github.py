@@ -673,15 +673,14 @@ class TestSearchGithubQualifiers(unittest.TestCase):
         self.assertNotIn("is:pull-request", q)
 
     @patch.object(github, "_resolve_token", return_value="test-token")
-    def test_qualifier_only_topic_errors_without_network(self, mock_token):
+    def test_qualifier_only_topic_skips_network(self, mock_token):
         with patch.object(github, "_fetch_json") as mock_fetch:
             result = github.search_github(
                 "created:>2025-03-20", "2026-07-01", "2026-07-31",
             )
         mock_fetch.assert_not_called()
         self.assertEqual(result["items"], [])
-        self.assertIn("error", result)
-        self.assertIn("qualifier", result["error"].lower())
+        self.assertNotIn("error", result)
         self.assertEqual(result["context"]["from_date"], "2026-07-01")
 
     @patch.object(github, "_resolve_token", return_value="test-token")
@@ -712,12 +711,12 @@ class TestSearchGithubQualifiers(unittest.TestCase):
         self.assertNotIn("created:>2025-03-20", q)
 
     @patch.object(github, "_resolve_token", return_value="test-token")
-    def test_empty_topic_errors_without_network(self, mock_token):
+    def test_empty_topic_skips_network(self, mock_token):
         with patch.object(github, "_fetch_json") as mock_fetch:
             result = github.search_github("", "2026-07-01", "2026-07-31")
         mock_fetch.assert_not_called()
         self.assertEqual(result["items"], [])
-        self.assertIn("error", result)
+        self.assertNotIn("error", result)
 
     @patch.object(github, "_resolve_token", return_value="test-token")
     def test_glued_term_after_qualifier_value_reaches_query(self, mock_token):
