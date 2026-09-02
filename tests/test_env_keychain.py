@@ -328,3 +328,59 @@ def test_keychain_keys_match_setup_script():
         "lib/env.py::KEYCHAIN_KEYS and scripts/setup-keychain.sh::ALL_KEYS "
         f"have drifted.\n  python: {python_keys}\n  shell:  {shell_keys}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Secret-hygiene guard: setup-keychain.sh must never put a credential on a
+# command line or decrypt one just to test for presence. Both are static
+# properties of the script, so a text assertion is the whole test — there is no
+# runtime path to exercise without writing to the developer's real Keychain.
+# ---------------------------------------------------------------------------
+
+
+def _setup_keychain_code_lines() -> list[str]:
+    """Script lines with comments and blanks stripped, so prose can't satisfy a guard."""
+    lines = []
+    for raw in SETUP_KEYCHAIN_SH.read_text(encoding="utf-8").splitlines():
+        line = re.sub(r"(?<!\\)#.*$", "", raw).strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def test_setup_script_never_passes_a_secret_as_an_argument():
+    """`-w <value>` is visible in `ps` to every local user for the call's lifetime.
+
+    The safe form is `-w` with no argument, fed the value (twice, for the retype
+    prompt) on stdin — which is what `man security` itself recommends.
+    """
+    offenders = [
+        line
+        for line in _setup_keychain_code_lines()
+        # A redirection, pipe, terminator or line continuation after -w means the
+        # value is coming from stdin; anything else is a literal argument.
+        if re.search(r"add-generic-password\b.*(^|\s)-w\s+(?![>|;&\\])\S", line)
+    ]
+    assert offenders == [], (
+        "setup-keychain.sh passes a secret as a command-line argument, which "
+        "leaks it into process listings. Pipe it to `-w` on stdin instead.\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+def test_setup_script_does_not_decrypt_secrets_for_presence_checks():
+    """`find-generic-password -w` returns the plaintext; existence checks don't need it.
+
+    Reading the value into a shell variable (or even into /dev/null) asks Keychain
+    to decrypt a credential the script has no use for, and puts it somewhere a
+    stray `set -x` or error trace can surface it. Exit status is the answer.
+    """
+    offenders = [
+        line
+        for line in _setup_keychain_code_lines()
+        if re.search(r"find-generic-password\b.*(^|\s)-w(\s|$)", line)
+    ]
+    assert offenders == [], (
+        "setup-keychain.sh requests plaintext (-w) for a presence check. Drop "
+        "-w and branch on the exit status instead.\n  " + "\n  ".join(offenders)
+    )
