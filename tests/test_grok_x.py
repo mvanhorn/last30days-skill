@@ -6,6 +6,7 @@ rather than an API client, so the module's job is as much rejecting confident
 fabrication as it is parsing.
 """
 
+import json
 import re
 import subprocess
 
@@ -112,6 +113,44 @@ def test_narration_around_blocks_is_tolerated():
     assert len(grok_x.parse_x_response({"text": text}, "steipete", *WINDOW)) == 1
 
 
+def test_json_array_with_url_fields_is_parsed():
+    """Grok CLI 1.0.5 emits a JSON array of {url, text, likes} instead of
+    the prompted id:/handle: field blocks (#1051)."""
+    text = json.dumps([
+        {
+            "url": "https://x.com/steipete/status/2087568620465607078",
+            "text": "cli was a year ago.",
+            "likes": 2041,
+        }
+    ])
+    items = grok_x.parse_x_response({"text": text}, "steipete", *WINDOW)
+    assert len(items) == 1
+    assert items[0]["author_handle"] == "steipete"
+    assert items[0]["url"].endswith("/2087568620465607078")
+    assert items[0]["engagement"]["likes"] == 2041
+
+
+def test_fenced_json_preamble_is_parsed():
+    """Without --output-format json the CLI narrates, then fences the array."""
+    text = (
+        "I'll search X for Seedance posts from the last 7 days and return "
+        "only the JSON array.\n"
+        "Checking the X search workflow first.\n"
+        "```json\n"
+        + json.dumps([
+            {
+                "url": "https://x.com/steipete/status/2087568620465607078",
+                "text": "cli was a year ago.",
+                "likes": 1462,
+            }
+        ])
+        + "\n```\n"
+    )
+    items = grok_x.parse_x_response({"text": text}, "steipete", *WINDOW)
+    assert len(items) == 1
+    assert items[0]["author_handle"] == "steipete"
+
+
 def test_markdown_decorated_fields_are_parsed():
     text = (
         "- **id:** 2087568620465607078\n"
@@ -150,6 +189,11 @@ def test_invocation_omits_json_schema_and_tools(monkeypatch):
     assert "--json-schema" not in seen["cmd"]
     assert "--tools" not in seen["cmd"]
     assert "--permission-mode" in seen["cmd"]
+    # Grok 1.0.5 narrates before the payload unless stdout is JSON (#1051).
+    # --json-schema is still forbidden: constrained decoding skips the tool.
+    assert "--output-format" in seen["cmd"]
+    fmt_idx = seen["cmd"].index("--output-format")
+    assert seen["cmd"][fmt_idx + 1] == "json"
 
 
 def test_subprocess_runs_in_an_isolated_empty_directory(monkeypatch):
