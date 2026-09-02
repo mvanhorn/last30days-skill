@@ -1,0 +1,1 @@
+Grok Bot / Cursor agent chat is now a hidden-link citation host: LAW 8 detects it via `CURSOR_AGENT` (alongside `CLAUDECODE` for Claude Code) and inline-links every cited r/sub, u/name comment author, @handle, GitHub repo, and creator with URLs copied verbatim from the engine evidence. Codex, Gemini CLI, and raw CLI keep the plain-label regime, so no URL soup returns.
