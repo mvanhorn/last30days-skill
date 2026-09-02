@@ -9,7 +9,10 @@ Requires SCRAPECREATORS_API_KEY environment variable.
 
 from __future__ import annotations
 
+import datetime
+import hashlib
 import re
+import time
 from typing import Any, Dict, List
 
 from . import http, log
@@ -22,9 +25,137 @@ DEPTH_CONFIG: dict[str, dict[str, Any]] = {
     "deep": {"date_posted": "last-month", "max_results": 30},
 }
 
+# The upstream endpoint only accepts these coarse buckets. Anything else is a
+# hard 400, so an arbitrary day count has to be widened to the smallest bucket
+# that still covers it; the caller's real from_date/to_date window is then
+# enforced downstream by normalize.filter_by_date_range().
+DATE_POSTED_BUCKETS: tuple[tuple[int, str], ...] = (
+    (1, "last-day"),
+    (7, "last-week"),
+    (31, "last-month"),
+    (366, "last-year"),
+)
+
+# This endpoint returns HTTP 404 with {"message": "No posts found"} for a query
+# that simply matched nothing. That is an empty result, not a failure: treating
+# it as an error marks a whole run partial and hides a legitimate null behind
+# what looks like an outage.
+EMPTY_RESULT_STATUS = 404
+
+# Each cursor page returns ~10 posts; this bounds a runaway pagination loop.
+MAX_PAGES = 10
+
+# Consecutive all-duplicate pages tolerated before a bucket is abandoned. The
+# covering bucket's first page routinely repeats the narrow bucket's top hits,
+# so breaking on the first zero-add page would skip the older tail the second
+# bucket exists to fetch.
+MAX_EMPTY_ADD_PAGES = 3
+
+# Whole-call wall-clock budget. Pagination bounds the request COUNT, not time:
+# 2 buckets x MAX_PAGES pages x (30s timeout + retry) is ~10 minutes against a
+# slow-but-alive endpoint, with no error to attribute the stall to. Each request
+# is additionally clamped to the remaining budget so the bound actually holds.
+SEARCH_BUDGET_SECONDS = 120.0
+PAGE_TIMEOUT = 30.0
+MIN_PAGE_TIMEOUT = 5.0
+
+# Endpoint-scoped failures. These are properties of the credential or the
+# account, not of one bucket, so retrying the next bucket only wastes a call
+# and — for 429 — deepens the rate limit already being hit.
+FATAL_STATUS_CODES = frozenset({401, 403, 429})
+
 
 def _log(msg: str) -> None:
     log.source_log("LinkedIn", msg, tty_only=False)
+
+
+def _coerce_date(raw: Any) -> datetime.date | None:
+    """Parse a YYYY-MM-DD date, tolerating a full ISO timestamp."""
+    try:
+        return datetime.date.fromisoformat(str(raw)[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _buckets_for_window(
+    from_date: str,
+    to_date: str,
+    fallback: str,
+    today: datetime.date | None = None,
+) -> List[str]:
+    """Buckets to query for a window, narrowest first.
+
+    Two properties of the upstream endpoint drive this:
+
+    1. Buckets are relative to NOW, not to the requested window. So the bucket
+       has to be sized by how OLD the requested window is (today - from_date),
+       never by its span. Sizing by span would send a 31-day window from two
+       years ago to 'last-month', which cannot contain a single matching post.
+    2. Results inside a bucket are relevance-ranked, not recency-ranked, so a
+       widened bucket does NOT contain the narrower one's yield: 'last-year'
+       for a 90-day window returned 30 posts spread across a full year, only 4
+       inside the window. So query the narrow bucket for dense recent coverage
+       AND the covering bucket for the older tail, then union them.
+
+    The caller's exact window is still enforced downstream by
+    filter_by_date_range(); these buckets only have to COVER it.
+    """
+    start = _coerce_date(from_date)
+    end = _coerce_date(to_date)
+    if start is None or end is None:
+        _log(f"Unparseable window ({from_date!r}..{to_date!r}), using {fallback}")
+        return [fallback]
+    if end < start:
+        _log(f"Inverted window ({from_date}..{to_date}), using {fallback}")
+        return [fallback]
+
+    today = today or datetime.date.today()
+    # Age of the OLDEST requested post, which is what the bucket must reach
+    # back to. +1 because the window is inclusive of from_date.
+    age_days = (today - start).days + 1
+    if age_days < 0:
+        _log(f"Window starts in the future ({from_date}), using {fallback}")
+        return [fallback]
+
+    widest_limit, widest_bucket = DATE_POSTED_BUCKETS[-1]
+    covering = widest_bucket
+    for limit, bucket in DATE_POSTED_BUCKETS:
+        if age_days <= limit:
+            covering = bucket
+            break
+    else:
+        _log(
+            f"Window reaches back {age_days}d but the widest bucket is "
+            f"{widest_bucket} ({widest_limit}d) — older results are unreachable"
+        )
+
+    buckets = [covering]
+    # Backfill the dense recent block that the wider bucket skips over.
+    for _, bucket in DATE_POSTED_BUCKETS:
+        if bucket == covering:
+            break
+        if bucket not in buckets:
+            buckets.insert(-1, bucket)
+    # Only the immediately-narrower bucket is worth the extra calls.
+    return buckets[-2:]
+
+
+def _dedupe_key(post: Dict[str, Any]) -> str:
+    """Stable identity for a post.
+
+    Falls back to a content fingerprint when no identifier is present. Without
+    it, keyless posts are never deduped, so the union returns them once per
+    bucket AND a repeating cursor never trips the all-duplicates guard.
+    """
+    for field in ("url", "postUrl", "post_url", "urn", "id", "postId"):
+        val = post.get(field)
+        if val:
+            return str(val)
+    body = str(post.get("description") or post.get("text") or "")
+    author = str(post.get("author") or "")
+    if not body and not author:
+        return ""
+    return "sha1:" + hashlib.sha1(f"{author}\x00{body}".encode()).hexdigest()
 
 
 def search_linkedin(
@@ -38,7 +169,7 @@ def search_linkedin(
 
     Args:
         topic: Search query / topic string.
-        from_date: Window start date (YYYY-MM-DD) — used for depth mapping.
+        from_date: Window start date (YYYY-MM-DD) — sets the date_posted bucket.
         to_date: Window end date (YYYY-MM-DD).
         depth: Retrieval profile — 'quick', 'default', or 'deep'.
         token: ScrapeCreators API key.
@@ -51,30 +182,146 @@ def search_linkedin(
         return {"posts": []}
 
     cfg = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
-    date_posted = cfg["date_posted"]
-
-    _log(f"Searching for '{topic}' (date_posted={date_posted})")
-
-    try:
-        response = http.get(
-            f"{SC_BASE}/search/posts",
-            params={"query": topic, "date_posted": date_posted},
-            headers=http.scrapecreators_headers(token),
-            timeout=30,
-            retries=2,
-        )
-    except http.HTTPError as exc:
-        _log(f"Search failed (HTTP {exc.status_code}): {exc}")
-        return {"posts": [], "error": str(exc)}
-    except Exception as exc:
-        _log(f"Search failed: {type(exc).__name__}: {exc}")
-        return {"posts": [], "error": str(exc)}
-
-    posts = _extract_posts(response)
+    buckets = _buckets_for_window(from_date, to_date, cfg["date_posted"])
     max_results = cfg["max_results"]
-    posts = posts[:max_results]
-    _log(f"Found {len(posts)} posts")
-    return {"posts": posts}
+    query = topic.strip()
+    if not query:
+        _log("Empty query — skipping")
+        return {"posts": []}
+
+    # max_results bounds the RETURNED collection, not each retrieval lane, so
+    # split it across buckets rather than granting each the full budget.
+    quota = max(1, -(-max_results // len(buckets)))
+    deadline = time.monotonic() + SEARCH_BUDGET_SECONDS
+
+    _log(
+        f"Searching for '{query}' (date_posted={','.join(buckets)}, "
+        f"max_results={max_results}, quota/window={quota})"
+    )
+
+    posts: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    errors: List[str] = []
+    fatal = False
+
+    for date_posted in buckets:
+        if fatal or len(posts) >= max_results:
+            break
+
+        bucket_count = 0
+        pages = 0
+        empty_adds = 0
+        cursor: Any = None
+        prev_cursor: Any = None
+        stop = "pages exhausted"
+
+        for _ in range(MAX_PAGES):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                stop = "wall-clock budget exceeded"
+                errors.append(f"{date_posted}: search budget of {SEARCH_BUDGET_SECONDS}s exceeded")
+                break
+
+            # Clamp the request to what is left of the budget, and drop the
+            # retry when there is not room for one. Checking the deadline only
+            # BETWEEN requests does not bound the call: a request starting a
+            # second before the deadline could still run its full
+            # timeout-times-retries budget past it.
+            page_timeout = max(MIN_PAGE_TIMEOUT, min(PAGE_TIMEOUT, remaining))
+            page_retries = 2 if remaining > (page_timeout * 2 + 2) else 1
+
+            params: Dict[str, Any] = {"query": query, "date_posted": date_posted}
+            if cursor:
+                params["cursor"] = cursor
+            try:
+                response = http.get(
+                    f"{SC_BASE}/search/posts",
+                    params=params,
+                    headers=http.scrapecreators_headers(token),
+                    timeout=page_timeout,
+                    retries=page_retries,
+                )
+            except http.HTTPError as exc:
+                if exc.status_code == EMPTY_RESULT_STATUS:
+                    # "No posts found" — a legitimate empty result, not a
+                    # failure. Recording it as an error would mark the whole
+                    # run partial and hide a real null behind a fake outage.
+                    stop = "no posts found"
+                    break
+                _log(f"Search failed (HTTP {exc.status_code}, {date_posted}): {exc}")
+                errors.append(f"{date_posted}: {exc}")
+                stop = f"HTTP {exc.status_code}"
+                if exc.status_code in FATAL_STATUS_CODES:
+                    # Credential- or account-scoped: the next bucket would fail
+                    # identically, and retrying a 429 deepens the rate limit.
+                    fatal = True
+                break
+            except Exception as exc:
+                _log(f"Search failed ({date_posted}): {type(exc).__name__}: {exc}")
+                errors.append(f"{date_posted}: {type(exc).__name__}: {exc}")
+                stop = type(exc).__name__
+                fatal = True
+                break
+
+            pages += 1
+            page = _extract_posts(response)
+            if not page:
+                stop = "empty page"
+                break
+
+            added = 0
+            for post in page:
+                if len(posts) >= max_results:
+                    break
+                key = _dedupe_key(post)
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                posts.append(post)
+                added += 1
+                bucket_count += 1
+
+            if len(posts) >= max_results:
+                stop = "max_results reached"
+                break
+            if bucket_count >= quota:
+                stop = "window quota reached"
+                break
+
+            # An all-duplicate page is expected where buckets overlap; only a
+            # run of them means the cursor has stopped yielding anything new.
+            empty_adds = empty_adds + 1 if added == 0 else 0
+            if empty_adds >= MAX_EMPTY_ADD_PAGES:
+                stop = f"{empty_adds} consecutive all-duplicate pages"
+                break
+
+            raw_cursor = response.get("cursor") if isinstance(response, dict) else None
+            cursor = raw_cursor if isinstance(raw_cursor, (str, int)) else None
+            if not cursor:
+                stop = "no cursor"
+                break
+            if cursor == prev_cursor:
+                stop = "cursor stopped advancing"
+                break
+            prev_cursor = cursor
+
+        _log(f"  {date_posted}: {bucket_count} posts over {pages} page(s), stopped: {stop}")
+
+    if not posts and errors:
+        return {"posts": [], "error": errors[0]}
+
+    result: Dict[str, Any] = {"posts": posts}
+    if errors:
+        # A window that failed after another succeeded must not read as a
+        # complete result — downstream would treat thin coverage as a finding
+        # about LinkedIn rather than about the request that never landed.
+        result["partial"] = True
+        result["error"] = errors[0]
+        _log(f"PARTIAL — {len(errors)} window/page failure(s); first: {errors[0]}")
+
+    _log(f"Found {len(posts)} posts across {len(buckets)} window(s)")
+    return result
 
 
 def _extract_posts(response: Any) -> List[Dict[str, Any]]:
