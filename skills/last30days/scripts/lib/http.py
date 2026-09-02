@@ -88,6 +88,53 @@ def retry_delay_from_headers(headers, fallback):
 MIN_DNS_RETRIES = 3
 USER_AGENT = "last30days-skill/3.0 (Assistant Skill)"
 
+# urllib copies almost all headers across 3xx; strip credentials when origin changes (#1062).
+_CROSS_ORIGIN_AUTH_HEADERS = frozenset(
+    {"authorization", "x-api-key", "x-csrf-token", "x-subscription-token"}
+)
+
+
+def _request_origin(url: str) -> tuple[str, str, int]:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    if parts.port is not None:
+        port = parts.port
+    elif scheme == "https":
+        port = 443
+    elif scheme == "http":
+        port = 80
+    else:
+        port = 0
+    return scheme, host, port
+
+
+class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        if _request_origin(req.full_url) != _request_origin(new.full_url):
+            for store in (new.headers, getattr(new, "unredirected_hdrs", None)):
+                if not store:
+                    continue
+                for name in list(store):
+                    if name.lower() in _CROSS_ORIGIN_AUTH_HEADERS:
+                        del store[name]
+        return new
+
+
+_opener = urllib.request.build_opener(_StripAuthOnCrossOriginRedirect)
+_DEFAULT_URLOPEN = urllib.request.urlopen
+
+
+def _open_request(req, timeout):
+    """Honor test patches of urllib.request.urlopen; otherwise use the strip opener."""
+    current = urllib.request.urlopen
+    if current is not _DEFAULT_URLOPEN:
+        return current(req, timeout=timeout)
+    return _opener.open(req, timeout=timeout)
+
 _failure_sink: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
     "last30days_http_failure_sink",
     default=None,
@@ -706,7 +753,7 @@ def request(
         return True
 
     def open_and_read(request_timeout: float) -> tuple[int, str]:
-        with urllib.request.urlopen(req, timeout=request_timeout) as response:
+        with _open_request(req, request_timeout) as response:
             return response.status, response.read().decode('utf-8')
 
     def open_and_read_before_deadline(
