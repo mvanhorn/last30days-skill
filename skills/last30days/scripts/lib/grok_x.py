@@ -693,6 +693,12 @@ def _invoke(prompt: str, timeout: int) -> Dict[str, Any]:
                 [binary, "-p", prompt, "--permission-mode", "bypassPermissions"],
                 capture_output=True,
                 text=True,
+                # X posts are not cp1252. Without this, text=True decodes the CLI's
+                # stdout with the locale codec and a reader thread dies on the first
+                # emoji or smart quote, which surfaces as "no items parsed" rather
+                # than an error. Matches the auth-store read above.
+                encoding="utf-8",
+                errors="replace",
                 timeout=timeout,
                 cwd=workdir,
                 env=_subprocess_env(child_home),

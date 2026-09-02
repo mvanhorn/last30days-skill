@@ -1,0 +1,1 @@
+The Grok CLI's stdout is now decoded as UTF-8 instead of the OS locale codec. On Windows (cp1252), an emoji or smart quote in an X post's text crashed the decode inside `subprocess.run`, which surfaced as "no items parsed" from the `grok` X backend rather than a real error.

@@ -205,6 +205,24 @@ def test_resolved_binary_path_is_used_not_bare_name(monkeypatch):
     assert seen["cmd"][0] == "/opt/custom/grok"
 
 
+def test_subprocess_decodes_stdout_as_utf8_not_locale(monkeypatch):
+    """text=True with no explicit encoding decodes with the locale codec
+    (cp1252 on Windows). X post text is not cp1252, so a bare emoji or
+    smart quote in the CLI's stdout would otherwise crash the decode and
+    surface as "no items parsed" instead of a real error."""
+    seen = {}
+    monkeypatch.setattr(grok_x, "binary_path", lambda: "/usr/bin/grok")
+
+    def fake_run(cmd, **kwargs):
+        seen["kwargs"] = kwargs
+        return subprocess.CompletedProcess(cmd, 0, _block("2087568620465607078"), "")
+
+    monkeypatch.setattr(grok_x.subprocess, "run", fake_run)
+    grok_x.search_x("steipete", *WINDOW)
+    assert seen["kwargs"].get("encoding") == "utf-8"
+    assert seen["kwargs"].get("errors") == "replace"
+
+
 def test_missing_binary_returns_error_not_raises(monkeypatch):
     monkeypatch.setattr(grok_x, "binary_path", lambda: None)
     result = grok_x.search_x("steipete", *WINDOW)
