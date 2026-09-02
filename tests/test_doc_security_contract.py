@@ -57,6 +57,9 @@ def test_security_copy_avoids_stale_cookie_and_endpoint_claims():
 
 
 def test_scrapecreators_copy_uses_canonical_free_call_count():
+    # ScrapeCreators' real free tier is 100 credits, one-time, no monthly
+    # reset (see issue #367; hooks/scripts/check-config.sh already reflects
+    # this). Keep this canonical across every user-facing copy location.
     text = "\n".join(
         [
             CONFIGURATION.read_text(encoding="utf-8"),
@@ -65,6 +68,6 @@ def test_scrapecreators_copy_uses_canonical_free_call_count():
             UI_PY.read_text(encoding="utf-8"),
         ]
     )
-    assert "10,000 free calls" in text
-    assert "100 free credits" not in text
+    assert "100 free credit" in text
+    assert "10,000 free" not in text
     assert "1,000 free" not in text
