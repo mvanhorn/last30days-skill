@@ -291,7 +291,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 | X / Twitter | Log into x.com in any browser, or set `XQUIK_API_KEY` / `XAI_API_KEY` | Browser cookies are free; keys are provider-specific |
 | YouTube | `brew install yt-dlp` | Free |
 | Bluesky | App password from bsky.app | Free |
-| TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube comments | ScrapeCreators key | 10,000 free calls, then PAYG |
+| TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube comments | ScrapeCreators key | 100 free credits (one-time, no monthly reset), then PAYG |
 | Xiaohongshu (RED) | Run a logged-in x-mcp browser plugin or `xiaohongshu-mcp` service and opt in with `--search xhs` per run or `INCLUDE_SOURCES=xiaohongshu` in `.env`; last30days auto-probes `http://localhost:18060` then `http://host.docker.internal:18060`, or use `XIAOHONGSHU_API_BASE` for a custom URL | No last30days API key; depends on your local browser-session service |
 | DripStack (premium financial newsletters) | Opt-in: `--search dripstack` per run, or `INCLUDE_SOURCES=dripstack` in `.env` | No key; free public search API |
 | Perplexity Agent API / Search API / Deep Research | Perplexity key, or OpenRouter key as Sonar fallback | Pay as you go; a direct key enables Agent API and background Deep Research |

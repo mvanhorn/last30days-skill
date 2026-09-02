@@ -33,7 +33,7 @@ class TestWelcome(unittest.TestCase):
     def test_render_welcome_offers_scrapecreators(self):
         text = setup_wizard.render_welcome()
         self.assertIn("ScrapeCreators", text)
-        self.assertIn("10,000 free calls", text)
+        self.assertIn("100 free credit", text)
 
     def test_welcome_command_prints_and_exits_zero(self):
         proc = subprocess.run(
