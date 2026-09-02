@@ -24,7 +24,7 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import Optional
 
-from . import env, health, subproc
+from . import env, health, http, log, subproc
 
 # Whisper's documented upload ceiling. We compress to stay under it and chunk
 # when a single clip still exceeds it.
@@ -177,7 +177,11 @@ def _transcribe_chunk(
     for name, key in providers:
         try:
             text = _post_audio(name, path, key, timeout=timeout)
-        except Exception:  # noqa: BLE001 - any provider failure -> try the next
+        except Exception as exc:  # noqa: BLE001 - any provider failure -> try the next
+            # Surface the failing provider + error (e.g. Groq's Cloudflare 403,
+            # "error code: 1010") under LAST30DAYS_DEBUG instead of silently
+            # degrading to an empty transcript (#983).
+            log.debug(f"transcribe: provider {name} failed on a chunk: {exc!r}")
             text = None
         if text is not None:
             return text, name
@@ -214,6 +218,10 @@ def _post_audio(provider: str, path: str, api_key: str, timeout: float) -> Optio
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": f"multipart/form-data; boundary={boundary}",
+            # A plain-urllib UA is fingerprinted and 403'd by Cloudflare-style
+            # edges (Groq returns "error code: 1010", #983). Send the skill's
+            # canonical identity instead, same as lib/http.py's get/post.
+            "User-Agent": http.USER_AGENT,
         },
         method="POST",
     )
