@@ -179,6 +179,51 @@ def _check_file_permissions(path: Path) -> None:
         sys.stderr.flush()
 
 
+def _strip_inline_comment(value: str) -> str:
+    """Strip a trailing inline comment, matching the bash-side parser.
+
+    ``hooks/scripts/check-config.sh`` strips with
+    ``${value%%[[:space:]]#*}``: a ``#`` starts a comment only when it is
+    preceded by whitespace. Mirroring that keeps the two parsers of the
+    same file in agreement (issue #930) without mangling values that
+    legitimately contain ``#``: URLs like ``https://x/y#frag`` (no space
+    before ``#``) survive untouched.
+
+    Quotes are respected only where ``load_env_file`` itself treats them
+    as delimiters: a quote at the first non-whitespace position of the
+    value (so ``FOO= "a # b"`` still opens a region). A ``#`` inside such
+    a region is literal; a backslash-escaped quote (``\\"``) does not
+    close it. A quote appearing mid-value (e.g. ``O'Reilly``) is literal,
+    matching bash, so a trailing comment after it still strips.
+    """
+    quote: str | None = None
+    escaped = False
+    seen_non_space = False
+    for i, ch in enumerate(value):
+        if quote:
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == quote:
+                quote = None
+            continue
+        # Only a quote at the first non-whitespace position opens a quoted
+        # region; this mirrors the quote removal in load_env_file
+        # (fully-quoted values only). `FOO= "a # b"` has whitespace after
+        # the '='; the quote still opens the region.
+        if not seen_non_space:
+            if ch.isspace():
+                continue
+            seen_non_space = True
+            if ch in ('"', "'"):
+                quote = ch
+                continue
+        if ch == '#' and i > 0 and value[i - 1].isspace():
+            return value[:i].rstrip()
+    return value
+
+
 def load_env_file(path: Path) -> dict[str, str]:
     """Load environment variables from a file."""
     env = {}
@@ -203,6 +248,11 @@ def load_env_file(path: Path) -> dict[str, str]:
         if '=' in line:
             key, _, value = line.partition('=')
             key = key.strip()
+            # Inline comments (#930): strip before trimming so
+            # `KEY= # comment` collapses to empty exactly like the bash
+            # pattern ${value%%[[:space:]]#*}, and quoted values
+            # containing '#' survive (see _strip_inline_comment).
+            value = _strip_inline_comment(value)
             value = value.strip()
             # Remove quotes if present
             if value and value[0] in ('"', "'") and value[-1] == value[0]:

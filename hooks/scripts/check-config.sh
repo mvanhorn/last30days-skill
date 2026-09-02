@@ -61,6 +61,53 @@ strip_outer_quotes() {
   printf '%s' "$s"
 }
 
+# Mirror lib/env.py::_strip_inline_comment: drop a trailing inline comment
+# (a `#` preceded by whitespace, outside a quoted region). A quote opens a
+# region only at the first non-whitespace position (fully-quoted values
+# only, same as load_env_file); a backslash-escaped quote inside a region
+# does not close it; a mid-value quote (O'Reilly) is literal. Must run
+# before quote removal so `SETUP_COMPLETE="true" # note` parses to `true`
+# on both parsers, not `"true"` (parity, issue #948).
+strip_inline_comment() {
+  local s="$1" out="" q="" ch="" prev=""
+  local i n=${#s} seen=0 esc=0
+  for ((i = 0; i < n; i++)); do
+    ch="${s:i:1}"
+    if [[ -n "$q" ]]; then
+      if (( esc )); then
+        esc=0
+      elif [[ "$ch" == '\' ]]; then
+        esc=1
+      elif [[ "$ch" == "$q" ]]; then
+        q=""
+      fi
+      out+="$ch"
+      prev="$ch"
+      continue
+    fi
+    if (( ! seen )); then
+      if [[ "$ch" == [[:space:]] ]]; then
+        out+="$ch"
+        prev="$ch"
+        continue
+      fi
+      seen=1
+      if [[ "$ch" == '"' || "$ch" == "'" ]]; then
+        q="$ch"
+        out+="$ch"
+        prev="$ch"
+        continue
+      fi
+    fi
+    if [[ "$ch" == '#' && "$prev" == [[:space:]] ]]; then
+      break
+    fi
+    out+="$ch"
+    prev="$ch"
+  done
+  printf '%s' "$out"
+}
+
 # Load env file into variables for inspection (without exporting)
 load_env_vars() {
   local file="$1"
@@ -77,10 +124,14 @@ load_env_vars() {
       # as an untrusted repo is opened, so an unvalidated key here is arbitrary
       # code execution at session start.
       [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
-      value="$(strip_outer_quotes "$(trim_ws "$value")")"
-      # Strip inline comments (# preceded by whitespace) to prevent
-      # command substitution in backtick-containing comments
-      value="${value%%[[:space:]]#*}"
+      # Inline comments (#948): strip before trimming and quote removal,
+      # mirroring lib/env.py::_strip_inline_comment, so quoted values with a
+      # trailing comment parse identically on both parsers (`"true" # note`
+      # yields `true`, not `"true"`). Also prevents command substitution in
+      # backtick-containing comments.
+      value="$(strip_inline_comment "$value")"
+      value="$(trim_ws "$value")"
+      value="$(strip_outer_quotes "$value")"
       if [[ -n "$key" && -n "$value" ]]; then
         # printf -v writes via assignment semantics (global from inside a
         # function), works on macOS's /bin/bash 3.2 — `declare -g` is 4.2+.
