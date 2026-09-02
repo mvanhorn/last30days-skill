@@ -77,6 +77,12 @@ SCRAPLING_TIMEOUT = 75
 # only burn the tail of the budget without returning usable markup.
 SCRAPLING_MIN_BUDGET = 10
 
+# On timeout, subproc.run_with_timeout runs SIGTERM -> wait(5) -> SIGKILL ->
+# wait(5) AFTER the timeout fires, so a subprocess handed the whole remaining
+# budget outlives the deadline by up to this many seconds. The cap reserves it,
+# so timeout + cleanup always fits inside the enrichment budget.
+SCRAPLING_CLEANUP_GRACE = 10
+
 # Match the exact <shreddit-comment> element start tag, not <shreddit-comment-tree>
 # or <shreddit-comment-tree-stats> (lookahead requires whitespace or '>').
 _COMMENT_START = re.compile(r"<shreddit-comment(?=[\s>])[^>]*>")
@@ -230,10 +236,12 @@ def _scrapling_svc_fallback(
     attribute names lowercased by the DOM, which ``_attr`` tolerates.
 
     ``deadline`` is a ``time.monotonic()`` instant (the caller's aggregate
-    enrichment budget). The subprocess timeout is capped to the time remaining,
-    so ``subproc.run_with_timeout`` kills the browser's process group at the
-    deadline rather than letting it outlive a cancelled future; when less than
-    ``SCRAPLING_MIN_BUDGET`` remains the fallback is skipped entirely.
+    enrichment budget). The subprocess timeout is capped to the time remaining
+    minus ``SCRAPLING_CLEANUP_GRACE``, so ``subproc.run_with_timeout``'s
+    SIGTERM/SIGKILL cleanup of the browser's process group also completes
+    before the deadline rather than outliving a cancelled future; when less
+    than ``SCRAPLING_MIN_BUDGET`` would be left for the browser itself the
+    fallback is skipped entirely.
 
     Strictly additive: the caller only invokes it after the HTTP path was
     refused with HTTP 403 (see ``_blocked_by_reddit``) -- never on a 5xx, a
@@ -245,7 +253,9 @@ def _scrapling_svc_fallback(
         return None
     timeout = SCRAPLING_TIMEOUT
     if deadline is not None:
-        remaining = int(deadline - time.monotonic())
+        # Reserve the process-group cleanup window up front: what is left after
+        # that is the most the browser may run.
+        remaining = int(deadline - time.monotonic()) - SCRAPLING_CLEANUP_GRACE
         if remaining < SCRAPLING_MIN_BUDGET:
             _log(f"keyless blocked; {remaining}s left in budget, skipping browser fallback")
             return None

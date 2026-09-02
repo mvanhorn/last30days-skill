@@ -311,10 +311,24 @@ class TestScraplingDeadline:
         return out, sf
 
     def test_timeout_capped_to_remaining_budget(self):
-        # 30s left of a 45s budget -> the 75s default must shrink to 30s.
+        # 30s left of a 45s budget -> the 75s default must shrink to fit, and
+        # it must NOT be handed the whole 30s: run_with_timeout's SIGTERM ->
+        # wait(5) -> SIGKILL -> wait(5) cleanup runs AFTER the timeout fires,
+        # so a subprocess given the full remainder outlives the deadline by up
+        # to ten seconds (Greptile, #976). The cap reserves that grace.
         out, sf = self._fetch(deadline=1030.0)
-        assert sf.call_args.kwargs["timeout"] == 30
+        assert sf.call_args.kwargs["timeout"] < 30
+        assert sf.call_args.kwargs["timeout"] + rs.SCRAPLING_CLEANUP_GRACE <= 30
         assert [c["score"] for c in out["top_comments"]] == [1136, 42]
+
+    def test_skipped_when_only_cleanup_grace_remains(self):
+        # Enough seconds for a browser launch on paper, but not once the
+        # process-group cleanup is reserved: skip rather than overrun.
+        out, sf = self._fetch(
+            deadline=1000.0 + rs.SCRAPLING_MIN_BUDGET + rs.SCRAPLING_CLEANUP_GRACE - 1
+        )
+        sf.assert_not_called()
+        assert out["top_comments"] == [] and out["num_comments"] is None
 
     def test_ample_budget_keeps_default_timeout(self):
         # More time left than the default: never widen beyond SCRAPLING_TIMEOUT.
