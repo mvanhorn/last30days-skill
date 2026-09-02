@@ -100,10 +100,10 @@ class TestDepthConfig(unittest.TestCase):
 
 class TestCreateSession(unittest.TestCase):
     def setUp(self):
-        bluesky._cached_token = None
+        bluesky._reset_session_cache()
 
     def tearDown(self):
-        bluesky._cached_token = None
+        bluesky._reset_session_cache()
 
     @patch("lib.bluesky.http.request")
     def test_returns_token(self, mock_request):
@@ -135,10 +135,10 @@ class TestCreateSession(unittest.TestCase):
 
 class TestSearchBlueskyAuth(unittest.TestCase):
     def setUp(self):
-        bluesky._cached_token = None
+        bluesky._reset_session_cache()
 
     def tearDown(self):
-        bluesky._cached_token = None
+        bluesky._reset_session_cache()
 
     def test_no_config_returns_error(self):
         result = bluesky.search_bluesky("test", "2026-01-01", "2026-03-09")
@@ -193,7 +193,7 @@ class TestSearchBlueskyAuth(unittest.TestCase):
         self.assertEqual(search_call.kwargs.get("headers", {}), {"Authorization": "Bearer tok123"})
 
     @patch("lib.bluesky.http.request")
-    def test_401_search_refreshes_session_once(self, mock_request):
+    def test_401_search_refreshes_session_with_refresh_jwt(self, mock_request):
         from lib.http import HTTPError
 
         mock_request.side_effect = [
@@ -203,10 +203,57 @@ class TestSearchBlueskyAuth(unittest.TestCase):
             {"posts": [{"uri": "at://did/app.bsky.feed.post/abc", "author": {"handle": "u1"}, "record": {"text": "hi"}}]},
         ]
         config = {"BSKY_HANDLE": "user.bsky.social", "BSKY_APP_PASSWORD": "pw"}
+
         result = bluesky.search_bluesky("test", "2026-01-01", "2026-03-09", config=config)
+
         self.assertEqual(len(result["posts"]), 1)
         self.assertEqual(mock_request.call_count, 4)
-        self.assertEqual(mock_request.call_args_list[3].kwargs.get("headers", {}), {"Authorization": "Bearer tok-new"})
+        refresh_call = mock_request.call_args_list[2]
+        self.assertEqual(refresh_call.args[0], "POST")
+        self.assertEqual(refresh_call.args[1], bluesky.BSKY_REFRESH_URL)
+        self.assertEqual(refresh_call.kwargs["json_data"], {"refreshJwt": "ref-old"})
+        search_call = mock_request.call_args_list[3]
+        self.assertEqual(search_call.kwargs["headers"], {"Authorization": "Bearer tok-new"})
+
+    @patch("lib.bluesky.http.request")
+    def test_refresh_and_reauth_401_does_not_loop(self, mock_request):
+        from lib.http import HTTPError
+
+        unauthorized = HTTPError("HTTP 401: Unauthorized", 401, "")
+        mock_request.side_effect = [
+            {"accessJwt": "tok-old", "refreshJwt": "ref-old"},
+            unauthorized,
+            HTTPError("HTTP 401: Unauthorized", 401, ""),
+            {"accessJwt": "tok-new", "refreshJwt": "ref-new"},
+            HTTPError("HTTP 401: Unauthorized", 401, ""),
+        ]
+        config = {"BSKY_HANDLE": "user.bsky.social", "BSKY_APP_PASSWORD": "pw"}
+
+        result = bluesky.search_bluesky("test", "2026-01-01", "2026-03-09", config=config)
+
+        self.assertEqual(result["posts"], [])
+        self.assertEqual(mock_request.call_count, 5)
+        self.assertIn("remained unauthorized", result["error"])
+        self.assertNotEqual(result["error"], "refresh")
+
+    @patch("lib.bluesky.http.request")
+    def test_401_search_refreshes_session_once(self, mock_request):
+        from lib.http import HTTPError
+
+        mock_request.side_effect = [
+            {"accessJwt": "tok-old", "refreshJwt": "ref-old"},
+            HTTPError("HTTP 401: Unauthorized", 401, ""),
+            HTTPError("HTTP 401: Unauthorized", 401, ""),
+            {"accessJwt": "tok-new", "refreshJwt": "ref-new"},
+            {"posts": [{"uri": "at://did/app.bsky.feed.post/abc", "author": {"handle": "u1"}, "record": {"text": "hi"}}]},
+        ]
+        config = {"BSKY_HANDLE": "user.bsky.social", "BSKY_APP_PASSWORD": "pw"}
+        result = bluesky.search_bluesky("test", "2026-01-01", "2026-03-09", config=config)
+        self.assertEqual(len(result["posts"]), 1)
+        self.assertEqual(mock_request.call_count, 5)
+        self.assertEqual(mock_request.call_args_list[2].args[1], bluesky.BSKY_REFRESH_URL)
+        self.assertEqual(mock_request.call_args_list[3].args[1], bluesky.BSKY_SESSION_URL)
+        self.assertEqual(mock_request.call_args_list[4].kwargs.get("headers", {}), {"Authorization": "Bearer tok-new"})
 
 
 class TestSearchEndpointHostResolution(unittest.TestCase):
