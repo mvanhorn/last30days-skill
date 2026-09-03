@@ -45,6 +45,32 @@ class NormalizeV3Tests(unittest.TestCase):
         )
         self.assertEqual([], normalized)
 
+    def test_arxiv_keeps_adapter_valid_items_older_than_report_window(self):
+        items = [
+            {
+                "id": "http://arxiv.org/abs/2509.00001v1",
+                "title": "Reliable Agent Memory",
+                "url": "https://arxiv.org/abs/2509.00001v1",
+                "summary": "A study of memory systems for coding agents.",
+                "author": "Ada Lovelace",
+                "authors": ["Ada Lovelace"],
+                "date": "2025-09-04",
+                "relevance": 0.9,
+            }
+        ]
+
+        normalized = normalize.normalize_source_items(
+            "arxiv",
+            items,
+            "2026-07-06",
+            "2026-08-05",
+        )
+
+        self.assertEqual(1, len(normalized))
+        self.assertEqual("Reliable Agent Memory", normalized[0].title)
+        self.assertEqual("https://arxiv.org/abs/2509.00001v1", normalized[0].url)
+        self.assertEqual("2025-09-04", normalized[0].published_at)
+
     def test_youtube_top_comments_passthrough_with_field_mapping(self):
         """YT comments from enrich_with_comments use likes/text; normalize must
         carry them into metadata as the Reddit-compatible {score, excerpt} shape."""

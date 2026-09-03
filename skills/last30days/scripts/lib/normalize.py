@@ -83,6 +83,10 @@ def normalize_source_items(
         normalizer(source, item, index, from_date, to_date)
         for index, item in enumerate(items)
     ]
+    if source == "arxiv":
+        # The adapter owns arXiv's 365-day recency contract. Applying the
+        # report window again here drops relevant papers the adapter accepted.
+        return normalized
     if source == "jobs":
         # A careers board is a snapshot of CURRENTLY OPEN roles. An open posting
         # is current evidence regardless of when it was posted, so date-windowing
