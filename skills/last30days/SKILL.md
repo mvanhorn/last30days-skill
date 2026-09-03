@@ -197,13 +197,13 @@ The self-evolving loop is the sticky use case. Every 15 tool calls Hermes pauses
 Cron-scheduled autonomous briefings are the most-cited concrete workflow. r/TunisiaTech's "Use cases of OpenClaw, Hermes Agent" thread says it plainly: "Currently I have daily cron jobs for news briefing, but I know there's much more I can do."
 ```
 
-**LAW 7 - YOU ARE THE PLANNER. `--plan` IS MANDATORY ON NAMED-ENTITY TOPICS.** If you are the reasoning model hosting this skill (Claude Code, Codex, Hermes, Gemini, or any agent runtime that invoked `/last30days`), YOU generate the JSON query plan. You do not need an API key, "LLM provider" credentials, or an external planning service - you ARE the LLM. The `--plan` flag exists precisely so a reasoning model generates its own plan upstream and passes it to the engine. The engine's internal planner and deterministic fallback are headless/cron paths only; on any reasoning-model path, bypass them by passing `--plan "$QUERY_PLAN_FILE"` (the path to a tmpfile you wrote via heredoc — see Step 1 for the pattern; never inline `--plan '$JSON'`, and never wrap the whole engine invocation in `bash -lc '...'` or `zsh -lc '...'` - a single-quoted `-lc` argument ends at the first apostrophe in a search or ranking string like `Kanye West's album` and the command dies with `unmatched`. Run the heredoc block directly in your shell tool; apostrophes in search/ranking strings break shell parsing otherwise).
+**LAW 7 - YOU ARE THE PLANNER. `--plan` IS MANDATORY ON NAMED-ENTITY TOPICS.** If you are the reasoning model hosting this skill (Claude Code, Codex, Hermes, Gemini, or any agent runtime that invoked `/last30days`), YOU generate the JSON query plan. You do not need an API key, "LLM provider" credentials, or an external planning service - you ARE the LLM. The `--plan` flag exists precisely so a reasoning model generates its own plan upstream and passes it to the engine. The engine's internal planner and deterministic fallback are headless/cron paths only; on any reasoning-model path, bypass them by passing `--plan -` and feeding the JSON through a quoted heredoc attached to the engine command (see Step 1 for the pattern; never inline `--plan '$JSON'`, and never wrap the whole engine invocation in `bash -lc '...'` or `zsh -lc '...'` - a single-quoted `-lc` argument ends at the first apostrophe in a search or ranking string like `Kanye West's album` and the command dies with `unmatched`. Run the heredoc block directly in your shell tool; apostrophes in search/ranking strings break shell parsing otherwise).
 
-Named-entity topics (capitalized proper nouns, product names, person names, project names, or any topic that would benefit from handle resolution in Step 0.55) REQUIRE `--plan`. Your invocation of `scripts/last30days.py` MUST contain `--plan "$QUERY_PLAN_FILE"` (or any path the engine can read). A bare `python3 scripts/last30days.py "$TOPIC" --emit=compact` on a named-entity topic is a LAW 7 violation. Before you invoke Bash, self-check: does my command contain `--plan`? If no, STOP and generate a plan first (see Step 0.75 for the schema).
+Named-entity topics (capitalized proper nouns, product names, person names, project names, or any topic that would benefit from handle resolution in Step 0.55) REQUIRE `--plan`. Your invocation of `scripts/last30days.py` MUST contain `--plan -` (or a JSON string/file path for direct scripted use). A bare `python3 scripts/last30days.py "$TOPIC" --emit=compact` on a named-entity topic is a LAW 7 violation. Before you invoke Bash, self-check: does my command contain `--plan`? If no, STOP and generate a plan first (see Step 0.75 for the schema).
 
 **Observed LAW 7 violation (2026-04-19, Hermes Agent Use Cases Run 1):** the model called the engine bare with no `--plan`, no pre-flight handle resolution. The engine emitted a stderr warning ("No --plan and no LLM provider configured. Using deterministic fallback...") which the model read as a capability constraint ("I don't have a key, I can't do LLM stuff") instead of as what it actually was: a reminder that the reasoning model skipped its own planning step. The misread came from the word "provider" - the engine uses "provider" to mean "the key for the engine's INTERNAL planner," but the model parsed it as "I need a provider to plan at all." You do not. You ARE the provider. Run 2 of the same topic (2026-04-19, framed as "best workflows") with the same model and same cache generated the plan itself via `--plan` and produced clean results - the delta was this step.
 
-**Self-check before Bash:** re-read your pending `scripts/last30days.py` command. Does it contain `--plan "$QUERY_PLAN_FILE"` (or another path the engine can read)? If no, and the topic is a named entity, STOP. Return to Step 0.75 and generate the plan, then write it to a tmpfile per the Step 1 pattern. Do not interpret the word "provider" in any engine message as "you need credentials" - you are the provider.
+**Self-check before Bash:** re-read your pending `scripts/last30days.py` command. Does it contain `--plan -` (or another supported JSON input)? If no, and the topic is a named entity, STOP. Return to Step 0.75, generate the plan, and attach its quoted heredoc to the engine command per the Step 1 pattern. Do not interpret the word "provider" in any engine message as "you need credentials" - you are the provider.
 
 **LAW 8 - CITE READABLY FOR THE CURRENT HOST. INLINE-LINK ON HIDDEN-LINK HOSTS; PLAIN LABELS ON VISIBLE-URL HOSTS. NEVER A RAW URL STRING. NEVER URL SOUP.** Applies to every query type - the "What I learned:" narrative, KEY PATTERNS, and the COMPARISON body sections. There are two rendering regimes and the host picks which one you use:
 
@@ -232,11 +232,11 @@ The stats footer (emoji-tree block) is engine-emitted per LAW 5 and passes throu
 
 **LAW 10 - FIRST-PARTY POSTS ARE FIRST-CLASS EVIDENCE; READ THE INTERACTION TAG.** On a person topic, the subject's OWN posts (the `from:{handle}` lane) are the single richest vein - they are now surfaced into the EVIDENCE block as ranked evidence, not buried. When the subject has posts in the evidence, quote and weigh them as primary signal; do not lean on third-party coverage (podcasts, articles) for the subject's voice when their own posts are present. An evidence line tagged `interaction:→@handle` is the subject's own post directed at another account (a reply/mention): treat it as a RELATIONSHIP signal worth reading even at near-zero engagement - who someone personally, repeatedly engages is meaningful, and engagement count does not capture it. Surface what the interaction shows about the subject; per LAW 9, never narrate the tag or the mechanism in the deliverable (no "the engine flagged an interaction" / no "scored as first-party") - just read the signal and write the substance.
 
-**LAW 11 - YOU ARE THE JUDGE. THE THREE-COMMAND DISCOVERY PROTOCOL IS MANDATORY ON DISCOVERY/TRENDING RUNS.** If you are the reasoning model hosting this skill (Claude Code, Codex, Hermes, Gemini, or any agent runtime that invoked `/last30days`), then on every discovery/trending run YOU name the topics, flag the junk, score content-worthiness, and write both content angles - via the three-command protocol in the Step 1 DISCOVERY branch: `--discover --nominate-only`, then `--discover --judgments <file>`, then `--discover --finalize [--angles <file>]`. You do not need an API key, "LLM provider" credentials, or an external judging service - you ARE the reasoning model. The engine's deterministic topic-shape heuristics are the headless/cron one-shot path only; on any reasoning-model path, bypass them by running the protocol.
+**LAW 11 - YOU ARE THE JUDGE. THE THREE-COMMAND DISCOVERY PROTOCOL IS MANDATORY ON DISCOVERY/TRENDING RUNS.** If you are the reasoning model hosting this skill (Claude Code, Codex, Hermes, Gemini, or any agent runtime that invoked `/last30days`), then on every discovery/trending run YOU name the topics, flag the junk, score content-worthiness, and write both content angles - via the three-command protocol in the Step 1 DISCOVERY branch: `--discover --nominate-only`, then `--discover --judgments -`, then `--discover --finalize --angles -`. You do not need an API key, "LLM provider" credentials, or an external judging service - you ARE the reasoning model. The engine's deterministic topic-shape heuristics are the headless/cron one-shot path only; on any reasoning-model path, bypass them by running the protocol.
 
 **Anticipated misread (the LAW 7 "provider" trap, discovery edition):** a one-shot `--discover` run prints the note `[Discover] one-shot run: topic names use deterministic heuristics and no content angles are generated...`. That note is a signal that YOU skipped the protocol - never a capability constraint. Do not read it as "judging is unavailable" or "I need a provider to judge": there is no engine judge to unlock, and there never will be a key that adds one. You are the judge. Run the protocol.
 
-**Self-check before ANY `--discover` Bash call:** (1) Am I on the protocol - is my first discovery command `--discover --nominate-only`? (2) Does every leg carry the SAME `--save-dir` value? (3) Are the judgments/angles files written via the mktemp XXXXXX + trap + `cat >|` + quoted-heredoc pattern (Step 1 DISCOVERY branch), never inline JSON on the command line and never wrapped in `bash -lc '...'`? If any answer is no, STOP and fix the command before invoking Bash. (The only exempt calls are the fallback one-shot after two protocol-leg failures and a scripted/cron invocation, per the Step 1 degradation rule.)
+**Self-check before ANY `--discover` Bash call:** (1) Am I on the protocol - is my first discovery command `--discover --nominate-only`? (2) Does every leg carry the SAME `--save-dir` value? (3) Do the judgments/angles legs use `--judgments -` / `--angles -` with a quoted heredoc attached directly to the engine command, never inline JSON on the command line and never wrapped in `bash -lc '...'`? If any answer is no, STOP and fix the command before invoking Bash. (The only exempt calls are the fallback one-shot after two protocol-leg failures and a scripted/cron invocation, per the Step 1 degradation rule.)
 
 End of OUTPUT CONTRACT. The laws above are the contract; everything below is implementation detail.
 
@@ -332,7 +332,7 @@ LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
   - `junk` - `true` for help-me posts, personal musings, and pure promo: shapes that cannot carry a story.
   - `worthiness` - 0-100: would this carry a podcast segment or an X article?
 
-  The judgments file has exactly this shape (field names exactly `id`, `name`, `junk`, `worthiness`; top-level `bundle_id` echoed from the bundle file):
+  The judgments payload has exactly this shape (field names exactly `id`, `name`, `junk`, `worthiness`; top-level `bundle_id` echoed from the bundle file):
 
   ```json
   {
@@ -346,18 +346,14 @@ LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
 
   Judge every row: an omitted or malformed row silently falls back to the engine's deterministic heuristics for that nomination - a safety net, not a shortcut.
 
-  **Leg 2 - research (Bash timeout 600000).** Write the judgments file and run the resume leg in the SAME Bash call, using the established tmpfile pattern (mktemp XXXXXX + trap + `cat >|` + quoted heredoc - same rules as the Step 0.75 plan tmpfile; run the block directly in your shell tool, NEVER wrapped in `bash -lc '...'`):
+  **Leg 2 - research (Bash timeout 600000).** Feed the judgments JSON to the resume leg through stdin in the SAME Bash call, using `--judgments -` plus a quoted heredoc attached directly to the engine command (same rules as the Step 0.75 plan input; run the block directly in your shell tool, NEVER wrapped in `bash -lc '...'`):
 
 ```bash
 LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
-# Trailing XXXXXX (no .json suffix) for BSD/macOS mktemp; >| because mktemp
-# already created the file (a plain > is refused under `set -o noclobber`).
-JUDGMENTS_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-judgments.XXXXXX")
-trap 'rm -f "$JUDGMENTS_FILE"' EXIT
-cat >| "$JUDGMENTS_FILE" <<'JUDGE_EOF'
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" \
+  --discover --judgments - --save-dir="${LAST30DAYS_MEMORY_DIR}" <<'JUDGE_EOF'
 {JUDGMENTS_JSON}
 JUDGE_EOF
-"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --discover --judgments "$JUDGMENTS_FILE" --save-dir="${LAST30DAYS_MEMORY_DIR}"
 ```
 
   This is the protocol's deep research pass: every judged survivor gets a full per-topic research run (Reddit with comments, X, YouTube, Techmeme, arXiv, HN, Polymarket, web). Expect several minutes of wall clock - that is the point, not a hang. `LAST30DAYS_ENRICH_BUDGET_SECONDS` (default 450) widens the deep-tier research budget; keep it under ~500 so the 600000ms Bash timeout outlives the post-budget bookkeeping. Its stdout ends with per-topic angle inputs: a JSON object keyed by surviving nomination id, each entry carrying the applied topic `name`, evidence `titles`, the `top_comment`, and an `engagement` phrase. If zero topics clear the confidence floor, leg 2 prints the nothing-solid brief instead: relay it verbatim and STOP - no leg 3.
@@ -366,7 +362,7 @@ JUDGE_EOF
   - `podcast` - a tension or question that carries a podcast segment.
   - `x_article` - a claim or take that carries an X article.
 
-  The angles file shape (field names exactly `id`, `podcast`, `x_article`; same top-level `bundle_id`):
+  The angles payload shape (field names exactly `id`, `podcast`, `x_article`; same top-level `bundle_id`):
 
   ```json
   {
@@ -379,16 +375,15 @@ JUDGE_EOF
 
   Angles are optional but expected: `--finalize` without `--angles` renders an angle-less brief - a degraded deliverable, not a shortcut.
 
-  **Leg 3 - finalize (Bash timeout 60000).** Second tmpfile (sentinel `ANGLE_EOF`), same pattern, same Bash call as the finalize command:
+  **Leg 3 - finalize (Bash timeout 60000).** Feed the angles JSON through stdin with sentinel `ANGLE_EOF`, in the same Bash call as the finalize command:
 
 ```bash
 LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
-ANGLES_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-angles.XXXXXX")
-trap 'rm -f "$ANGLES_FILE"' EXIT
-cat >| "$ANGLES_FILE" <<'ANGLE_EOF'
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" \
+  --discover --finalize --angles - --emit=compact \
+  --save-dir="${LAST30DAYS_MEMORY_DIR}" <<'ANGLE_EOF'
 {ANGLES_JSON}
 ANGLE_EOF
-"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --discover --finalize --angles "$ANGLES_FILE" --emit=compact --save-dir="${LAST30DAYS_MEMORY_DIR}"
 ```
 
   It applies your angles, renders the final topic-per-section brief, saves artifacts, and records the topic queue - offline, no network. **Relay its stdout verbatim** per the DISCOVERY bullet in the OUTPUT CONTRACT - including a **"Nothing solid this window"** result, which is a valid, honest outcome (the confidence floor found no topic with enough cross-source confirmation or engagement; do NOT retry, work around it, or fabricate topics - relay it and suggest a narrower domain or a direct topic run).
@@ -1139,31 +1134,22 @@ if [ ! -f "$SKILL_DIR/scripts/last30days.py" ]; then
   exit 1
 fi
 
-# Write the per-entity plan to a tmpfile and pass the path to the engine.
-# The engine's parse_competitors_plan() reads file paths transparently. This
-# avoids the inline-single-quoted-JSON apostrophe trap (resolved context
-# strings like "people's choice" or "McDonald's" otherwise close the outer
-# single-quote and break shell parsing before the engine is even invoked).
-# Trailing XXXXXX (no .json suffix) so BSD/macOS mktemp works the same as
-# GNU; BSD only substitutes X's at the end of the template.
-COMPETITORS_PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-competitors.XXXXXX")
-trap 'rm -f "$COMPETITORS_PLAN_FILE"' EXIT
-# >| not >: mktemp already created the file, so a plain > is refused under
-# `set -o noclobber` (leaving the plan empty -> deterministic fallback).
-cat >| "$COMPETITORS_PLAN_FILE" <<'PLAN_EOF'
-{
-  "{TOPIC_B}": {"x_handle":"{TOPIC_B_HANDLE}","subreddits":["{TOPIC_B_SUB_1}","{TOPIC_B_SUB_2}"],"github_user":"{TOPIC_B_GH}","context":"{TOPIC_B_CONTEXT}"},
-  "{TOPIC_C}": {"x_handle":"{TOPIC_C_HANDLE}","subreddits":["{TOPIC_C_SUB_1}"],"github_user":"{TOPIC_C_GH}","context":"{TOPIC_C_CONTEXT}"}
-}
-PLAN_EOF
-
+# Pass the per-entity plan through stdin. This avoids the
+# inline-single-quoted-JSON apostrophe trap (resolved context strings like
+# "people's choice" or "McDonald's" otherwise close the outer single quote)
+# and avoids temporary-file cleanup commands rejected by some agent hosts.
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "{TOPIC_A} vs {TOPIC_B} vs {TOPIC_C}" \
   --emit=compact \
   --save-dir="${LAST30DAYS_MEMORY_DIR}" \
   --save-suffix=v3 \
   --x-handle={TOPIC_A_HANDLE} \
   --subreddits={TOPIC_A_SUBS} \
-  --competitors-plan "$COMPETITORS_PLAN_FILE"
+  --competitors-plan - <<'PLAN_EOF'
+{
+  "{TOPIC_B}": {"x_handle":"{TOPIC_B_HANDLE}","subreddits":["{TOPIC_B_SUB_1}","{TOPIC_B_SUB_2}"],"github_user":"{TOPIC_B_GH}","context":"{TOPIC_B_CONTEXT}"},
+  "{TOPIC_C}": {"x_handle":"{TOPIC_C_HANDLE}","subreddits":["{TOPIC_C_SUB_1}"],"github_user":"{TOPIC_C_GH}","context":"{TOPIC_C_CONTEXT}"}
+}
+PLAN_EOF
 ```
 
 **Keep the heredoc marker quoted as `'PLAN_EOF'`.** Quoting suppresses shell interpolation so apostrophes, `$`, backticks, etc. pass through verbatim. If you ever switch to an unquoted `<<PLAN_EOF`, every variable reference and apostrophe inside the JSON becomes a parse hazard.
@@ -1490,29 +1476,27 @@ fi
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" $ARGUMENTS --emit=compact --save-dir="${LAST30DAYS_MEMORY_DIR}" --save-suffix=v3
 ```
 
-**If you ran Steps 0.55 and 0.75 (agent planning), pass the plan via a tmpfile and add the targeting flags:**
+**If you ran Steps 0.55 and 0.75 (agent planning), pass the plan through stdin and add the targeting flags:**
 
 ```bash
-# Write QUERY_PLAN_JSON to a tmpfile before the engine invocation above.
-# parse_plan() reads file paths transparently; this avoids inline-JSON
-# shell-quoting hazards (apostrophes in search_query / ranking_query
-# strings break single-quoted command-line JSON). Trailing XXXXXX (no
-# .json suffix) for BSD/macOS portability — BSD mktemp only substitutes
-# X's at the end of the template.
-QUERY_PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-plan.XXXXXX")
-trap 'rm -f "$QUERY_PLAN_FILE"' EXIT
-# >| not >: mktemp already created the file, so a plain > is refused under
-# `set -o noclobber` (leaving the plan empty -> deterministic fallback).
-cat >| "$QUERY_PLAN_FILE" <<'PLAN_EOF'
+# Add `--plan -` and the resolved targeting flags to the engine invocation,
+# then attach the quoted heredoc to that same command. Reading the JSON from
+# stdin avoids inline-JSON shell-quoting hazards and temporary-file cleanup
+# commands rejected by some agent hosts.
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" $ARGUMENTS \
+  --emit=compact \
+  --save-dir="${LAST30DAYS_MEMORY_DIR}" \
+  --save-suffix=v3 \
+  --plan - \
+  {RESOLVED_TARGETING_FLAGS} <<'PLAN_EOF'
 {QUERY_PLAN_JSON_FROM_STEP_0.75}
 PLAN_EOF
 ```
 
 **Run this block directly in your shell tool. Do NOT wrap it in `bash -lc '...'` or `zsh -lc '...'`** - the outer single quotes terminate at the first apostrophe inside the heredoc body (a ranking string like `What did Kanye West's album do?`), which aborts the command with a `zsh: unmatched "` error before the engine ever runs. The quoted `<<'PLAN_EOF'` marker already makes the heredoc body apostrophe-safe; the `-lc '...'` wrapper is what breaks it.
 
-Then add to the engine command:
+Replace `{RESOLVED_TARGETING_FLAGS}` with the applicable flags below:
 
-- `--plan "$QUERY_PLAN_FILE"` (path to the file you just wrote)
 - `--x-handle={RESOLVED_HANDLE}` (from Step 0.5)
 - `--subreddits={RESOLVED_SUBREDDITS}` (broad/category subs, from Step 0.55)
 - `--dedicated-subreddits={RESOLVED_DEDICATED_SUBREDDITS}` (entity-home subs, from Step 0.55; pulled in full + floor-exempt)

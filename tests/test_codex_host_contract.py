@@ -186,6 +186,28 @@ def test_plan_invocation_warns_against_bash_lc_apostrophe_wrapper():
     assert "unmatched" in text
 
 
+def test_host_json_invocations_use_stdin_without_forced_cleanup():
+    # Codex rejects the whole shell command before execution when a mandatory
+    # skill template contains an `rm -f` cleanup trap, even if its target came
+    # from mktemp. Keep all host-authored JSON lanes temp-file-free.
+    text = SKILL_MD.read_text(encoding="utf-8")
+    for invocation in (
+        "--plan -",
+        "--competitors-plan -",
+        "--judgments -",
+        "--angles -",
+    ):
+        assert invocation in text
+    assert "trap 'rm -f" not in text
+    for legacy_temp_var in (
+        "QUERY_PLAN_FILE",
+        "COMPETITORS_PLAN_FILE",
+        "JUDGMENTS_FILE",
+        "ANGLES_FILE",
+    ):
+        assert legacy_temp_var not in text
+
+
 def test_step055_documents_dedicated_vs_broad_subreddits():
     # Step 0.55 must instruct the model to split entity-home (dedicated) subs from
     # broad subs and pass them via --dedicated-subreddits, which the engine pulls

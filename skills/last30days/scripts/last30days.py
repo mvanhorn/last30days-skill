@@ -695,8 +695,8 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help=(
             "Leg 2 of the discovery protocol: resume from the nominations "
-            "bundle, applying the host judgments file at PATH. Requires "
-            "--discover"
+            "bundle, applying the host judgments file at PATH. Pass - to "
+            "read JSON from stdin. Requires --discover"
         ),
     )
     parser.add_argument(
@@ -712,8 +712,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--angles",
         metavar="PATH",
         help=(
-            "Optional host angles file for --discover --finalize (omitting it "
-            "ships the brief without angle lines)"
+            "Optional host angles file for --discover --finalize. Pass - to "
+            "read JSON from stdin; omitting it ships the brief without angle "
+            "lines"
         ),
     )
     parser.add_argument("--debug", action="store_true", help="Enable HTTP debug logging")
@@ -763,7 +764,13 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Use at most one Perplexity Deep Research run. Direct PERPLEXITY_API_KEY uses the Agent API background path; OPENROUTER_API_KEY keeps the synchronous Sonar fallback; cannot be combined with competitor or vs-mode.")
     parser.add_argument("--hiring-signals", action="store_true",
                         help="Analyze public jobs/careers postings as evidence-backed company focus signals.")
-    parser.add_argument("--plan", help="JSON query plan (skips internal LLM planner). Can be a JSON string or a file path.")
+    parser.add_argument(
+        "--plan",
+        help=(
+            "JSON query plan (skips internal LLM planner). Accepts a JSON "
+            "string, a file path, or - to read JSON from stdin."
+        ),
+    )
     parser.add_argument("--save-suffix", help="Suffix for saved output filename (e.g., 'gemini' → kanye-west-raw-gemini.md)")
     parser.add_argument("--subreddits", help="Comma-separated broad/category subreddit names to search (e.g., SaaS,Entrepreneur)")
     parser.add_argument("--dedicated-subreddits", help="Comma-separated entity-home subreddit names (e.g., Kanye,WestSubEver). Pulled in full (top+hot+new) and exempt from the relevance floor since the whole sub is the topic.")
@@ -864,32 +871,49 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "JSON mapping of per-entity Step 0.55 targeting for competitor / vs-mode "
             "sub-runs. Schema: {entity_name: {x_handle?, x_related?, subreddits?, "
-            "github_user?, github_repos?, context?}}. Accepts inline JSON or a file "
-            "path. Implies --competitors. Preferred over --competitors-list when the "
-            "hosting model has already resolved per-entity handles and subs."
+            "github_user?, github_repos?, context?}}. Accepts inline JSON, a file "
+            "path, or - to read JSON from stdin. Implies --competitors. Preferred "
+            "over --competitors-list when the hosting model has already resolved "
+            "per-entity handles and subs."
         ),
     )
     return parser
 
 
+def _read_json_argument(raw: str, *, error_prefix: str, file_label: str) -> str:
+    """Return inline, file-backed, or stdin-backed JSON argument text."""
+    if raw == "-":
+        try:
+            return sys.stdin.read()
+        except (OSError, UnicodeError) as exc:
+            sys.stderr.write(f"{error_prefix} Cannot read {file_label} from stdin: {exc}\n")
+            raise SystemExit(2)
+    if os.path.isfile(raw):
+        try:
+            with open(raw, encoding="utf-8") as f:
+                return f.read()
+        except (OSError, UnicodeDecodeError) as exc:
+            sys.stderr.write(f"{error_prefix} Cannot read {file_label} file: {exc}\n")
+            raise SystemExit(2)
+    return raw
+
+
 def parse_competitors_plan(raw: str | None) -> dict[str, dict]:
     """Parse a --competitors-plan argument into a {entity_name_lower: plan_entry} dict.
 
-    Accepts inline JSON or a file path (matches --plan). Returns {} on None/empty.
-    Validation: top-level must be a dict; each value must be a dict. Unknown fields
-    in entry values log a warning but do not abort. Invalid JSON or non-dict shape
-    raises SystemExit(2) with a clear stderr message.
+    Accepts inline JSON, a file path, or ``-`` for stdin (matches --plan).
+    Returns {} on None/empty. Validation: top-level must be a dict; each value
+    must be a dict. Unknown fields in entry values log a warning but do not
+    abort. Invalid JSON or non-dict shape raises SystemExit(2) with a clear
+    stderr message.
     """
     if not raw:
         return {}
-    plan_str = raw
-    if os.path.isfile(plan_str):
-        try:
-            with open(plan_str, encoding="utf-8") as f:
-                plan_str = f.read()
-        except (OSError, UnicodeDecodeError) as exc:
-            sys.stderr.write(f"[CompetitorsPlan] Cannot read plan file: {exc}\n")
-            raise SystemExit(2)
+    plan_str = _read_json_argument(
+        raw,
+        error_prefix="[CompetitorsPlan]",
+        file_label="plan",
+    )
     try:
         parsed = json.loads(plan_str)
     except json.JSONDecodeError as exc:
@@ -3419,14 +3443,11 @@ def _main(
         external_plan = None
         if args.plan:
             import json as _json
-            plan_str = args.plan
-            if os.path.isfile(plan_str):
-                try:
-                    with open(plan_str, encoding="utf-8") as f:
-                        plan_str = f.read()
-                except (OSError, UnicodeDecodeError) as exc:
-                    sys.stderr.write(f"[Planner] Cannot read --plan file: {exc}\n")
-                    raise SystemExit(2)
+            plan_str = _read_json_argument(
+                args.plan,
+                error_prefix="[Planner]",
+                file_label="--plan",
+            )
             try:
                 external_plan = _json.loads(plan_str)
             except _json.JSONDecodeError as exc:
