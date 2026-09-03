@@ -2,7 +2,8 @@
 
 import os
 import unittest
-from unittest.mock import patch, MagicMock
+from urllib.parse import parse_qs, urlparse
+from unittest.mock import patch
 
 from lib import bluesky
 
@@ -191,6 +192,20 @@ class TestSearchBlueskyAuth(unittest.TestCase):
         # Verify the search call included the Bearer token
         search_call = mock_request.call_args_list[1]
         self.assertEqual(search_call.kwargs.get("headers", {}), {"Authorization": "Bearer tok123"})
+
+    @patch("lib.bluesky.http.request")
+    def test_successful_search_passes_inclusive_date_window_to_api(self, mock_request):
+        mock_request.side_effect = [
+            {"accessJwt": "tok123", "refreshJwt": "ref456"},
+            {"posts": []},
+        ]
+        config = {"BSKY_HANDLE": "user.bsky.social", "BSKY_APP_PASSWORD": "pw"}
+        bluesky.search_bluesky("test", "2026-01-01", "2026-03-09", config=config)
+
+        search_url = mock_request.call_args_list[1].args[1]
+        query = parse_qs(urlparse(search_url).query)
+        self.assertEqual(query["since"], ["2026-01-01T00:00:00Z"])
+        self.assertEqual(query["until"], ["2026-03-10T00:00:00Z"])
 
     @patch("lib.bluesky.http.request")
     def test_401_search_refreshes_session_once(self, mock_request):
