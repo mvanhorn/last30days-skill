@@ -1,5 +1,7 @@
 import json
+import os
 import unittest
+from unittest import mock
 from typing import get_args
 
 from lib import env
@@ -137,3 +139,57 @@ class TestExtractGeminiText(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResolveEndpointTests(unittest.TestCase):
+    """``*_BASE_URL`` accepts an API root as well as a full endpoint URL."""
+
+    def _resolve(self, value, env_var="OPENAI_BASE_URL", default=None):
+        default = default or providers.OPENAI_RESPONSES_URL
+        patched = {} if value is None else {env_var: value}
+        with mock.patch.dict(os.environ, patched, clear=True):
+            return providers.resolve_endpoint(env_var, default)
+
+    def test_unset_uses_default_endpoint(self):
+        self.assertEqual(providers.OPENAI_RESPONSES_URL, self._resolve(None))
+
+    def test_blank_value_uses_default_endpoint(self):
+        self.assertEqual(providers.OPENAI_RESPONSES_URL, self._resolve("   "))
+
+    def test_api_root_gets_endpoint_path_appended(self):
+        self.assertEqual(
+            "https://example.test/v1/responses",
+            self._resolve("https://example.test/v1"),
+        )
+
+    def test_trailing_slash_is_normalised(self):
+        self.assertEqual(
+            "https://example.test/v1/responses",
+            self._resolve("https://example.test/v1/"),
+        )
+
+    def test_full_endpoint_url_is_preserved(self):
+        self.assertEqual(
+            "https://example.test/v1/responses",
+            self._resolve("https://example.test/v1/responses"),
+        )
+
+    def test_openrouter_uses_chat_completions_path(self):
+        self.assertEqual(
+            "https://example.test/api/v1/chat/completions",
+            self._resolve(
+                "https://example.test/api/v1",
+                env_var="OPENROUTER_BASE_URL",
+                default=providers.OPENROUTER_URL,
+            ),
+        )
+
+    def test_openrouter_full_endpoint_url_is_preserved(self):
+        self.assertEqual(
+            "https://example.test/api/v1/chat/completions",
+            self._resolve(
+                "https://example.test/api/v1/chat/completions",
+                env_var="OPENROUTER_BASE_URL",
+                default=providers.OPENROUTER_URL,
+            ),
+        )

@@ -1,0 +1,1 @@
+`OPENAI_BASE_URL`, `XAI_BASE_URL`, and `OPENROUTER_BASE_URL` now accept an API root (`https://host/v1`) in addition to a full endpoint URL. Values copied from a provider's setup guide previously POSTed to the API root and failed.
