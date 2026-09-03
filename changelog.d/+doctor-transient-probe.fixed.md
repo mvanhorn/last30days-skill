@@ -1,0 +1,1 @@
+`doctor` no longer reports a rate-limited source as an outage. A probe refused with HTTP 429 is retried once and, if still refused, shown as unverified instead of `NOT WORKING`. Reddit was the visible case: a burst of keyless probes draws a 429 while the research lane, which retries with backoff, serves the same query fine. HTTP 403 still counts as a hard failure.
