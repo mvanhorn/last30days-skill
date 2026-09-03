@@ -241,7 +241,8 @@ def test_get_config_env_var_overrides_keychain(clean_env, monkeypatch):
 
 
 def test_get_config_reports_env_only_when_keychain_empty(clean_env):
-    with mock.patch.object(env, "_load_keychain", return_value={}):
+    with mock.patch.object(env, "_load_keychain", return_value={}), \
+         mock.patch.object(env, "_load_libsecret", return_value={}):
         cfg = env.get_config()
     assert cfg["_CONFIG_SOURCE"] == "env_only"
 
