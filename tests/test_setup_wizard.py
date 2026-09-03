@@ -158,6 +158,29 @@ class TestRunAutoSetup:
         # And it must not route through the silent-first "auto" order.
         assert tried[0] == "chrome"
 
+    @patch("lib.cookie_extract.extract_cookies_with_source")
+    @patch("shutil.which")
+    def test_default_scan_includes_dia(self, mock_which, mock_extract):
+        """The default scan list is hardcoded, so a new browser must be added here too.
+
+        Runtime support alone is not enough: a first-run user whose only X
+        session lives in Dia has no FROM_BROWSER set, so the wizard's own list
+        is the only thing that decides whether Dia is ever probed.
+        """
+        tried = []
+
+        def side_effect(browser, domain, cookie_names):
+            tried.append(browser)
+            return None
+
+        mock_extract.side_effect = side_effect
+        mock_which.return_value = None
+
+        setup_wizard.run_auto_setup({}, allow_browser_cookies=True)
+
+        assert "dia" in tried
+        assert tried.index("dia") < tried.index("safari")
+
 
 class TestYtdlpAutoInstall:
     """Tests for yt-dlp auto-install via Homebrew in run_auto_setup()."""

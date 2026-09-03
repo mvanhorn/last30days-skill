@@ -98,7 +98,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
             # firefox/safari stay as the silent fallbacks. Note: an explicit
             # comma list preserves this order (cookie_extraction_browsers);
             # "auto" would put the silent browsers first, so do not use it here.
-            cookie_config["FROM_BROWSER"] = "chrome,brave,edge,vivaldi,arc,chromium,firefox,safari"
+            cookie_config["FROM_BROWSER"] = "chrome,brave,edge,vivaldi,arc,dia,chromium,firefox,safari"
         browsers = cookie_extraction_browsers(cookie_config)
 
         for source_name, spec in COOKIE_DOMAINS.items():
