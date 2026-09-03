@@ -100,6 +100,19 @@ is_truthy() {
   esac
 }
 
+# Quiet mode: suppress the onboarding welcome and the upsell tips, keeping the
+# one-line status. Same precedence as every other setting: the process
+# environment wins when set, otherwise the global config file is consulted.
+# A project-scoped file reaches this only through the existing trust gate,
+# because ENV_* vars are populated by load_env_vars after that check.
+is_quiet() {
+  if [[ "${LAST30DAYS_QUIET+x}" == "x" ]]; then
+    is_truthy "$LAST30DAYS_QUIET"
+    return $?
+  fi
+  is_truthy "${ENV_LAST30DAYS_QUIET:-}"
+}
+
 # Project config cannot self-grant trust. Process env (including empty/0 deny)
 # wins when set; otherwise the global config file's trust flag is consulted.
 project_config_trusted() {
@@ -243,6 +256,14 @@ fi
 
 # If setup has never been run, show welcome message for new users
 if [[ -z "$SETUP_COMPLETE" && -z "$CONFIG_FILE" && -z "${ENV_OPENAI_API_KEY:-${OPENAI_API_KEY:-}}" && -z "${ENV_SCRAPECREATORS_API_KEY:-${SCRAPECREATORS_API_KEY:-}}" && -z "${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}" && -z "${ENV_XAI_API_KEY:-${XAI_API_KEY:-}}" ]]; then
+  # Nothing is configured, so every line below is onboarding copy. In quiet
+  # mode emit only the last-run status, when there is one, and stop.
+  if is_quiet; then
+    if [[ -n "$LAST_RUN_LINE" ]]; then
+      echo "$LAST_RUN_LINE"
+    fi
+    exit 0
+  fi
   # printf, NOT cat-with-heredoc: see the bash 5.3 heredoc deadlock note above.
   if [[ -n "$HAS_YTDLP" ]]; then
     # YouTube is already working via the on-system yt-dlp binary — don't list
@@ -323,6 +344,10 @@ else
   echo "  Research any topic across social + market + web sources (last 30 days)."
   if [[ -n "$LAST_RUN_LINE" ]]; then
     echo "$LAST_RUN_LINE"
+  fi
+  # Status already printed above; the rest of this branch is an upsell.
+  if is_quiet; then
+    exit 0
   fi
   echo "  Tip: Add ScrapeCreators for Reddit comments + TikTok + Instagram."
   echo "  100 free credits, no credit card — scrapecreators.com"
