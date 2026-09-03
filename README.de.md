@@ -81,6 +81,8 @@ Wenn du dich mit einem CEO triffst: Hast du alle Tweets und YouTube-Transkripte 
 | **Pinterest** | Visuelle Entdeckung. Pins, gespeicherte Beiträge und Kommentare zu Produkten und Ideen. |
 | **Xiaohongshu (RED)** | Chinesische Signale zu Lifestyle, Produkten und Creators. Wird ausdrücklich mit `--search xhs` angefordert, wenn lokal ein eingeloggtes x-mcp-Browser-Plugin oder ein `xiaohongshu-mcp`-Dienst läuft. |
 | **Bluesky** | Die dezentrale soziale Ebene. AT-Protocol-Beiträge aus der Abwanderung nach Twitter. |
+| **V2EX** | Chinesisches Tech-Community-Signal. Beliebte Themen und Node-Listings aus der öffentlichen V2EX-API, nach Relevanz gefiltert. Kostenlos, ohne API-Key. |
+| **Xueqiu (雪球)** | Chinesische Anlegerstimmung. Öffentliche Timeline-Statuse nach Relevanz gefiltert; aktiviert sich automatisch für Ticker/Krypto-Themen, wenn `XUEQIU_COOKIE` gesetzt ist. |
 | **Perplexity** | Gesteuerte Agent-API-Synthese, OpenRouter-Sonar-Fallback, Rohtreffer der Search API und explizite Deep Research. |
 | **Web** | Die redaktionelle Berichterstattung, die Blog-Vergleiche. Ein Signal von vielen, nicht das einzige. |
 

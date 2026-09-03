@@ -81,6 +81,8 @@ Si vous rencontrez un PDG, avez-vous lu tous ses tweets et toutes ses transcript
 | **Pinterest** | La découverte visuelle. Épingles, enregistrements et commentaires sur des produits et des idées. |
 | **Xiaohongshu (RED)** | Les signaux chinois sur le lifestyle, les produits et les créateurs. À demander explicitement avec `--search xhs` quand un plugin de navigateur x-mcp connecté ou un service `xiaohongshu-mcp` tourne en local. |
 | **Bluesky** | La couche sociale décentralisée. Les posts AT Protocol issus de la migration post-Twitter. |
+| **V2EX** | Le signal des communautés tech chinoises. Sujets populaires et listes de nœuds via l'API publique de V2EX, filtrés par pertinence. Gratuit, sans clé API. |
+| **Xueqiu (雪球)** | Le sentiment des investisseurs chinois. Statuts de la timeline publique filtrés par pertinence ; activation automatique pour les sujets ticker/crypto quand `XUEQIU_COOKIE` est configuré. |
 | **Perplexity** | Une synthèse contrôlée avec l’Agent API, un repli Sonar via OpenRouter, les résultats bruts de la Search API et Deep Research explicite. |
 | **Web** | La couverture éditoriale, les comparatifs de blogs. Un signal parmi d'autres, pas le seul. |
 

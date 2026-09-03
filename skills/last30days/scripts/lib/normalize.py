@@ -71,6 +71,8 @@ def normalize_source_items(
         "amazon": _normalize_amazon,
         "grounding": _normalize_grounding,
         "xiaohongshu": _normalize_grounding,
+        "v2ex": _normalize_v2ex,
+        "xueqiu": _normalize_xueqiu,
         "github": _normalize_github,
         "perplexity": _normalize_grounding,
         "jobs": _normalize_jobs,
@@ -930,6 +932,78 @@ def _normalize_grounding(
         url=url,
         author=None,
         container=str(item.get("source_domain") or _domain_from_url(url) or ""),
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=snippet,
+        metadata=item.get("metadata") or {},
+    )
+
+
+def _normalize_v2ex(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for V2EX topics.
+
+    Uses the adapter's normalized web-item shape. Keeps the node title as the
+    container (e.g. "技术") so report grouping reads naturally, and carries the
+    topic id + replies data in metadata.
+    """
+    title = str(item.get("title") or "").strip()
+    snippet = str(item.get("snippet") or "").strip()
+    url = str(item.get("url") or "").strip()
+    container = str(
+        item.get("container") or item.get("node_title") or "V2EX"
+    ).strip()
+    return _source_item(
+        item_id=str(item.get("id") or f"V{index + 1}"),
+        source=source,
+        title=title or container or f"V2EX topic {index + 1}",
+        body="\n".join(part for part in [title, snippet] if part),
+        url=url,
+        author=item.get("author") or None,
+        container=container,
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=snippet,
+        metadata=item.get("metadata") or {},
+    )
+
+
+def _normalize_xueqiu(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for Xueqiu (雪球) statuses.
+
+    Same web-item shape as V2EX; container is the fixed "雪球" label so
+    Chinese-investor results group together in reports. Symbols resolved by
+    the adapter ride along in metadata.
+    """
+    title = str(item.get("title") or "").strip()
+    snippet = str(item.get("snippet") or "").strip()
+    url = str(item.get("url") or "").strip()
+    container = str(item.get("container") or "雪球").strip()
+    return _source_item(
+        item_id=str(item.get("id") or f"XQ{index + 1}"),
+        source=source,
+        title=title or "雪球讨论",
+        body="\n".join(part for part in [title, snippet] if part),
+        url=url,
+        author=item.get("author") or None,
+        container=container,
         published_at=item.get("date"),
         date_confidence=_date_confidence(item, from_date, to_date),
         engagement=item.get("engagement") or {},

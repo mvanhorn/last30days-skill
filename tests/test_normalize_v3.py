@@ -322,6 +322,63 @@ class NormalizeV3Tests(unittest.TestCase):
         )
         self.assertEqual([], normalized)
 
+    def test_v2ex_preserves_node_container(self):
+        items = [
+            {
+                "id": "1",
+                "title": "Python packaging tips",
+                "url": "https://www.v2ex.com/t/1",
+                "snippet": "pyproject discussion",
+                "date": "2026-03-01",
+                "date_confidence": "high",
+                "relevance": 0.8,
+                "why_relevant": "overlap",
+                "engagement": {"replies": 3},
+                "container": "Python",
+                "metadata": {"node_name": "python", "topic_id": 1},
+            }
+        ]
+        normalized = normalize.normalize_source_items(
+            "v2ex", items, "2026-02-15", "2026-03-17",
+        )
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0].container, "Python")
+        self.assertEqual(normalized[0].source, "v2ex")
+        self.assertEqual(normalized[0].engagement, {"replies": 3})
+        self.assertEqual(normalized[0].metadata["topic_id"], 1)
+
+    def test_xueqiu_container_and_symbols(self):
+        items = [
+            {
+                "id": "42",
+                "title": "茅台今日大涨",
+                "url": "https://xueqiu.com/S/600519",
+                "snippet": "茅台 大涨 讨论",
+                "author": "trader",
+                "date": "2026-03-01",
+                "date_confidence": "high",
+                "relevance": 0.9,
+                "why_relevant": "overlap",
+                "engagement": {"likes": 99},
+                "container": "雪球",
+                "metadata": {"symbols": ["SH600519"]},
+            }
+        ]
+        normalized = normalize.normalize_source_items(
+            "xueqiu", items, "2026-02-15", "2026-03-17",
+        )
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0].container, "雪球")
+        self.assertEqual(normalized[0].author, "trader")
+        self.assertEqual(normalized[0].metadata["symbols"], ["SH600519"])
+
+    def test_unsupported_source_still_raises(self):
+        # Guard: new sources must register a normalizer or the pipeline
+        # fails loudly at the shared boundary, not silently.
+        with self.assertRaises(ValueError):
+            normalize.normalize_source_items(
+                "definitely-not-a-source", [], "2026-02-15", "2026-03-17",
+            )
 
 if __name__ == "__main__":
     unittest.main()

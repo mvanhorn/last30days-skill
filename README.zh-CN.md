@@ -84,6 +84,8 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 | **Pinterest** | 视觉发现：围绕产品和创意的 Pin、收藏与评论。 |
 | **小红书（RED）** | 来自中国生活方式、产品和创作者的信号。当本机运行已登录的 x-mcp 浏览器插件或 `xiaohongshu-mcp` 服务时，通过 `--search xhs` 显式启用。 |
 | **Bluesky** | 去中心化的社交内容层，搜索 Twitter 用户迁移后产生的 AT Protocol 帖子。 |
+| **V2EX** | 中文技术社区信号。通过 V2EX 公开 API 拉取热门主题和节点列表，按相关性过滤。免费，无需 API Key。 |
+| **雪球** | 中文投资者情绪。公开时间线动态按相关性过滤；配置 `XUEQIU_COOKIE` 后，股票/加密货币话题自动激活。 |
 | **Perplexity** | 受控 Agent API 综合结果、OpenRouter Sonar 回退、原始 Search API 数据和显式 Deep Research。 |
 | **Web** | 编辑报道和博客对比。它只是众多信号之一，而不是唯一来源。 |
 

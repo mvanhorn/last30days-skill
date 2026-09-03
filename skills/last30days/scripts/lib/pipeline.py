@@ -69,10 +69,12 @@ from . import (
     topic_shape,
     truthsocial,
     trustpilot,
+    v2ex,
     x_judge,
     xai_x,
     xiaohongshu_api,
     xquik,
+    xueqiu,
     xurl_x,
     youtube_yt,
 )
@@ -274,6 +276,14 @@ def available_sources(
     # StockTwits is gated to ticker/crypto topics only (flag set in run()).
     if config.get("_financial_topic"):
         available.append("stocktwits")
+    # Xueqiu (雪球) follows the same financial gate as StockTwits, plus a
+    # cookie requirement. Without the cookie the adapter would error, so the
+    # source is only registered when both hold.
+    if config.get("_financial_topic") and config.get("XUEQIU_COOKIE"):
+        available.append("xueqiu")
+    # V2EX uses the public API (no auth) and is always eligible, mirroring
+    # hackernews/polymarket. Its listing adapter keeps it quiet off-topic.
+    available.append("v2ex")
     # GitHub is reachable via the unauthenticated REST tier too, so it is
     # available even without a token/gh CLI (a token only raises rate limits).
     available.append("github")
@@ -4877,6 +4887,24 @@ def _retrieve_stream_impl(
             env.get_xiaohongshu_api_base(config),
             depth=depth,
         ), {}
+    if source == "v2ex":
+        result = v2ex.search_v2ex(
+            subquery.search_query, from_date, to_date, depth=depth, config=config
+        )
+        relevance_topic = raw_topic or topic or subquery.search_query
+        return (
+            v2ex.parse_v2ex_response(result, query=relevance_topic),
+            _result_outcome_artifact(source, result),
+        )
+    if source == "xueqiu":
+        result = xueqiu.search_xueqiu(
+            subquery.search_query, from_date, to_date, depth=depth, config=config
+        )
+        relevance_topic = raw_topic or topic or subquery.search_query
+        return (
+            xueqiu.parse_xueqiu_response(result, query=relevance_topic),
+            _result_outcome_artifact(source, result),
+        )
     if source == "perplexity":
         return perplexity.search(subquery.search_query, date_range, config, deep=config.get("_deep_research", False))
     raise RuntimeError(f"Unsupported source: {source}")
