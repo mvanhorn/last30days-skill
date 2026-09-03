@@ -264,6 +264,19 @@ def slugify(value: str, max_length: int = 180) -> str:
     return slug or "last30days"
 
 
+def sanitize_suffix(suffix: str) -> str:
+    """Sanitize a user-provided ``--save-suffix`` into a path-safe token.
+
+    The suffix is glued directly into the saved-report filename, so restrict it
+    to the same ``[a-z0-9-]`` class as the topic slug. This neutralizes path
+    separators and parent refs (``/``, ``..``) so a suffix can never escape the
+    save directory, while leaving ordinary values ('v3', 'gemini', a client
+    slug) unchanged. Unlike ``slugify`` there is no fallback token: a suffix
+    that sanitizes to nothing simply drops, yielding no suffix part.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", suffix.lower()).strip("-")
+
+
 def _report_has_private_corpus(report: schema.Report) -> bool:
     items_by_source = getattr(report, "items_by_source", {})
     if isinstance(items_by_source, dict) and items_by_source.get("corpus"):
@@ -310,7 +323,8 @@ def save_output(
     slug = slugify(topic_override or report.topic)
     extension = "json" if emit == "json" else "html" if emit == "html" else "md"
     raw_label = "raw-html" if emit == "html" else "raw"
-    suffix_part = f"-{suffix}" if suffix else ""
+    safe_suffix = sanitize_suffix(suffix)
+    suffix_part = f"-{safe_suffix}" if safe_suffix else ""
     base = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
     date_str = datetime.now().strftime('%Y-%m-%d')
     candidates = [base]
@@ -550,7 +564,8 @@ def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str)
     slug = slugify(topic)
     extension = "json" if emit == "json" else "html" if emit == "html" else "md"
     raw_label = "raw-html" if emit == "html" else "raw"
-    suffix_part = f"-{suffix}" if suffix else ""
+    safe_suffix = sanitize_suffix(suffix)
+    suffix_part = f"-{safe_suffix}" if safe_suffix else ""
     raw = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
     try:
         home = _Path.home().resolve()
@@ -1593,7 +1608,8 @@ def _save_discovery_output(
     directory = Path(save_dir).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True)
     extension = "json" if emit == "json" else "md"
-    suffix_part = f"-{suffix}" if suffix else ""
+    safe_suffix = sanitize_suffix(suffix)
+    suffix_part = f"-{safe_suffix}" if safe_suffix else ""
     stem = f"{slugify(domain)}-discover-raw{suffix_part}"
     date_str = datetime.datetime.now().strftime("%Y-%m-%d")
     candidates = [directory / f"{stem}.{extension}", directory / f"{stem}-{date_str}.{extension}"]
