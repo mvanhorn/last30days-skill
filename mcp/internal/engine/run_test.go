@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -220,10 +221,100 @@ func TestRunTimesOut(t *testing.T) {
 	}
 }
 
+func TestResolvePythonHonorsEnvOverride(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	t.Setenv(PythonEnvOverride, executable)
+	t.Setenv("PATH", "")
+
+	got, err := resolvePython("")
+	if err != nil {
+		t.Fatalf("resolvePython: %v", err)
+	}
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat resolved path %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(executable)
+	if err != nil {
+		t.Fatalf("stat override path %q: %v", executable, err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("resolvePython = %q, want executable %q", got, executable)
+	}
+}
+
+func TestResolvePythonRejectsInvalidEnvOverride(t *testing.T) {
+	t.Run("missing path", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "missing-python")
+		t.Setenv(PythonEnvOverride, missing)
+
+		_, err := resolvePython("")
+		if err == nil {
+			t.Fatal("expected invalid override error")
+		}
+		if !strings.Contains(err.Error(), PythonEnvOverride) || !strings.Contains(err.Error(), strconv.Quote(missing)) {
+			t.Fatalf("error %q does not identify invalid %s path %q", err, PythonEnvOverride, missing)
+		}
+	})
+
+	t.Run("empty value", func(t *testing.T) {
+		t.Setenv(PythonEnvOverride, "")
+
+		_, err := resolvePython("")
+		if err == nil {
+			t.Fatal("expected empty override error")
+		}
+		if !strings.Contains(err.Error(), PythonEnvOverride) || !strings.Contains(err.Error(), "set but empty") {
+			t.Fatalf("error %q does not clearly identify the empty override", err)
+		}
+	})
+}
+
+func TestResolvePythonDefaultsToPython3Lookup(t *testing.T) {
+	dir := t.TempDir()
+	name := DefaultPythonBinary
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+		t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+	}
+	candidate := filepath.Join(dir, name)
+	if err := os.WriteFile(candidate, []byte("stub"), 0o755); err != nil {
+		t.Fatalf("write default python stub: %v", err)
+	}
+	t.Setenv(PythonEnvOverride, "temporarily-set-for-cleanup")
+	if err := os.Unsetenv(PythonEnvOverride); err != nil {
+		t.Fatalf("unset %s: %v", PythonEnvOverride, err)
+	}
+	t.Setenv("PATH", dir)
+
+	got, err := resolvePython("")
+	if err != nil {
+		t.Fatalf("resolvePython: %v", err)
+	}
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat resolved path %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(candidate)
+	if err != nil {
+		t.Fatalf("stat default stub %q: %v", candidate, err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("resolvePython = %q, want python3 lookup result %q", got, candidate)
+	}
+}
+
 func TestRunMissingPython(t *testing.T) {
 	cache := stageCache(t)
 	// Empty PATH guarantees the lookup fails. PythonPath stays unset so Run
 	// falls through to exec.LookPath.
+	t.Setenv(PythonEnvOverride, "temporarily-set-for-cleanup")
+	if err := os.Unsetenv(PythonEnvOverride); err != nil {
+		t.Fatalf("unset %s: %v", PythonEnvOverride, err)
+	}
 	t.Setenv("PATH", "")
 
 	_, err := Run(context.Background(), RunOptions{CacheDir: cache})
