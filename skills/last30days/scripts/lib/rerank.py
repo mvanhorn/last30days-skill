@@ -195,20 +195,23 @@ INTERACTION_FLOOR = 35.0
 # not a win.
 FIRST_PARTY_FLOOR = 25.0
 
-# Intent modifiers to strip before extracting the primary entity so that,
-# for example, "Hermes Agent use cases" yields primary_entity="hermes agent"
-# rather than "hermes agent use cases". Kept in sync with
-# planner._INTENT_MODIFIER_PATTERNS.
-_INTENT_MODIFIER_RE = re.compile(
+# Only strip trailing intent modifiers. A word such as "review" may instead be
+# the subject of a longer topic ("AI code review bottleneck").
+_TRAILING_INTENT_MODIFIER_RE = re.compile(
+    r"(?:\s+(?:and|or|&|,)\s*)?"
     r"\b("
     r"use cases|use case|workflows|workflow|"
     r"examples|example|tutorial|tutorials|"
     r"review|reviews|comparison|applications|"
     r"in practice|production use|production|"
     r"how i use"
-    r")\b",
+    r")\b[\s?.,:;!]*$",
     re.IGNORECASE,
 )
+
+_GENERIC_GROUNDING_MIN_TOKENS = 4
+_GROUNDING_ANCHOR_MIN_LENGTH = 6
+_GROUNDING_LOW_SIGNAL_TOKENS = relevance.LOW_SIGNAL_QUERY_TOKENS | {"still", "work"}
 
 INTENT_SCORING_HINTS: dict[str, str] = {
     "comparison": (
@@ -621,18 +624,33 @@ def _entity_grounded(haystack: str, primary_entity: str) -> bool:
     items that omit the descriptor. Items that never name the brand at all still
     miss the head token and stay demoted.
 
-    Trade-off: a proper noun with a generic head ("New York Times" -> "new")
-    under-demotes rather than over-demotes - the safe direction, since the
-    observed harm was burying real high-engagement signal. Substring (not
-    word-boundary) matching is likewise deliberate: it catches plurals and
-    compounds ("stripes"), and vacuous matches from very short heads ("X",
-    "Go") merely disable the penalty rather than burying good items.
+    Long natural-language topics with a generic head use stronger trailing
+    anchors. Short generic-headed topics remain a safe no-op so entities such as
+    "Go" are not falsely demoted.
     """
     haystack = haystack.lower()
-    tokens = primary_entity.lower().split()
+    tokens = re.findall(r"\w+", primary_entity.lower())
     if not tokens:
         return True
-    return tokens[0] in haystack
+    head = tokens[0]
+    if len(head) > 3 and head not in relevance.LOW_SIGNAL_QUERY_TOKENS:
+        return head in haystack
+
+    # A long natural-language topic headed by "AI", "how", or another generic
+    # word needs a stronger anchor. Short entity-like topics keep the historical
+    # safe no-op rather than risking false demotion.
+    if len(tokens) < _GENERIC_GROUNDING_MIN_TOKENS:
+        return True
+    anchors = [
+        token
+        for token in tokens[1:]
+        if len(token) >= _GROUNDING_ANCHOR_MIN_LENGTH
+        and token not in relevance.STOPWORDS
+        and token not in _GROUNDING_LOW_SIGNAL_TOKENS
+    ]
+    if not anchors:
+        return True
+    return any(re.search(rf"\b{re.escape(token)}", haystack) for token in anchors)
 
 
 def _fallback_tuple(
@@ -689,8 +707,12 @@ def _primary_entity(topic: str) -> str:
     string for topics that are all intent modifier with no entity, so
     callers can skip the grounding check.
     """
-    stripped = _INTENT_MODIFIER_RE.sub(" ", topic)
-    # Also collapse multiple spaces and strip punctuation.
+    stripped = topic
+    while True:
+        shortened = _TRAILING_INTENT_MODIFIER_RE.sub("", stripped, count=1)
+        if shortened == stripped:
+            break
+        stripped = shortened
     stripped = re.sub(r"\s+", " ", stripped).strip(" \t\r\n?.,:;!")
     return stripped
 
