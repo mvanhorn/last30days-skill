@@ -179,7 +179,7 @@ class TestDescriptorRegistry:
         assert tuple(s.name for s in yt.backends) == ("yt-dlp", "scrapecreators")
         web = backends.get_descriptor("web")
         assert tuple(s.name for s in web.backends) == (
-            "brave", "exa", "serper", "parallel", "keyless",
+            "brave", "exa", "serper", "parallel", "keenable", "keyless",
         )
         assert web.pin_flag == "--web-backend"
 
@@ -939,7 +939,7 @@ class TestYouTubeChain:
 
 
 # ---------------------------------------------------------------------------
-# Web search chain: brave -> exa -> serper -> parallel -> keyless floor
+# Web search chain: brave -> exa -> serper -> parallel -> keenable -> keyless floor
 # ---------------------------------------------------------------------------
 
 class TestWebChain:
@@ -950,15 +950,42 @@ class TestWebChain:
         assert res.active_backend == "brave"
         assert res.tier == backends.TIER_OK
 
-    def test_keyless_floor_is_degraded_warn(self):
+    def test_keenable_is_preferred_keyless_default(self):
+        # No paid key, non-native host: keenable (a real keyless API) is picked
+        # over the DDG/SearXNG floor, but as the keyless tier it reports WARN
+        # (degraded) - a free KEENABLE_API_KEY lifts it to the keyed OK tier.
         res = backends.resolve("web", {})
+        assert res.active_backend == "keenable"
+        assert res.tier == backends.TIER_WARN
+
+    def test_keenable_key_promotes_to_ok_tier(self):
+        # KEENABLE_API_KEY set (rate limit lifted): keenable joins the keyed
+        # tier and reports OK, mirroring the other keyed backends.
+        res = backends.resolve("web", {"KEENABLE_API_KEY": "dummy-key"})
+        assert res.active_backend == "keenable"
+        assert res.tier == backends.TIER_OK
+
+    def test_keyless_floor_is_degraded_warn_when_pinned(self):
+        # The DDG/SearXNG floor stays reachable via explicit pin and is degraded.
+        res = backends.resolve("web", {}, pin="keyless")
         assert res.active_backend == "keyless"
         assert res.tier == backends.TIER_WARN
 
-    def test_native_search_suppresses_keyless_floor(self):
+    def test_native_search_suppresses_keyless_backends(self):
         res = backends.resolve("web", {"LAST30DAYS_NATIVE_SEARCH": "1"})
-        keyless = next(f for f in res.findings if f.name == "keyless")
-        assert not keyless.usable
+        for name in ("keenable", "keyless"):
+            finding = next(f for f in res.findings if f.name == name)
+            assert not finding.usable
+        assert res.active_backend is None
+
+    def test_keenable_key_does_not_bypass_native_suppression(self):
+        # Keyless-tier: a KEENABLE_API_KEY must not promote keenable past the
+        # native-search suppression guard.
+        res = backends.resolve(
+            "web", {"KEENABLE_API_KEY": "dummy-key", "LAST30DAYS_NATIVE_SEARCH": "1"},
+        )
+        keenable = next(f for f in res.findings if f.name == "keenable")
+        assert not keenable.usable
         assert res.active_backend is None
 
     def test_pin_via_web_backend_flag(self):
@@ -987,6 +1014,7 @@ class TestWebChain:
                  mock.patch.object(grounding, "exa_search", rec("exa")), \
                  mock.patch.object(grounding, "serper_search", rec("serper")), \
                  mock.patch.object(grounding, "parallel_search", rec("parallel")), \
+                 mock.patch.object(grounding, "keenable_search", rec("keenable")), \
                  mock.patch(
                      "lib.web_search_keyless.keyless_search",
                      lambda q, dr, cfg: (picked.__setitem__("backend", "keyless") or ([], {})),

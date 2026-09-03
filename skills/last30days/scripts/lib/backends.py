@@ -61,7 +61,7 @@ TIER_ERROR = "error"
 # runtime behavior (brave -> exa -> serper -> parallel -> keyless floor);
 # there is no importable constant there, so this declaration is guarded by
 # the grounding-auto parity test rather than an import.
-WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keyless")
+WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keenable", "keyless")
 
 # YouTube backend order (pipeline: yt-dlp first, ScrapeCreators search
 # fallback when yt-dlp is absent or fails — see lib/pipeline.py).
@@ -408,6 +408,46 @@ def _probe_web_keyless(config: Dict[str, Any]) -> BackendFinding:
     )
 
 
+def _probe_keenable(config: Dict[str, Any]) -> BackendFinding:
+    """Keenable: a real web-search API that supports both keyless and keyed use.
+
+    It is engine-side web search, so it is suppressed on native-search hosts
+    (the model's own search serves the run). Off a native host it is key-aware:
+
+    - ``KEENABLE_API_KEY`` set  -> keyed tier (ok): a configured key with lifted
+      rate limits, mirroring the other keyed backends (brave/exa/serper).
+    - no key                    -> keyless floor (degraded/warn): works with no
+      key against the public endpoint, but on the rate-limited free tier; set
+      ``KEENABLE_API_KEY`` (free) to lift the limit and promote it to ok.
+    """
+    requires = "no key against the public endpoint; optional KEENABLE_API_KEY lifts the rate limit; suppressed on native-search hosts"
+    if not env.keyless_web_allowed(config):
+        # Native-search host: engine-side web (keenable included) is off.
+        return BackendFinding(
+            name="keenable",
+            status=health.MISSING,
+            detail="keenable suppressed: host has native web search",
+            prescription="",
+            requires=requires,
+        )
+    if config.get("KEENABLE_API_KEY"):
+        # Keyed tier: a configured key, rate limit lifted -> ok (green).
+        return BackendFinding(
+            name="keenable",
+            status=health.OK,
+            detail="keenable keyed (KEENABLE_API_KEY present; rate limit lifted)",
+            requires=requires,
+        )
+    # Keyless floor: works with no key, but on the rate-limited free tier.
+    return BackendFinding(
+        name="keenable",
+        status=health.DEGRADED,
+        detail="keenable keyless (no key; free rate-limited tier)",
+        prescription="set KEENABLE_API_KEY (free) to lift the rate limit",
+        requires=requires,
+    )
+
+
 def _probe_reddit_public(config: Dict[str, Any]) -> BackendFinding:
     """Public keyless Reddit composite; internal lanes are sub-probe detail."""
     return BackendFinding(
@@ -438,6 +478,7 @@ _WEB_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "exa": _key_probe("exa", "EXA_API_KEY", "EXA_API_KEY"),
     "serper": _key_probe("serper", "SERPER_API_KEY", "SERPER_API_KEY"),
     "parallel": _key_probe("parallel", "PARALLEL_API_KEY", "PARALLEL_API_KEY"),
+    "keenable": _probe_keenable,
     "keyless": _probe_web_keyless,
 }
 _WEB_KEYED = {"brave", "exa", "serper", "parallel"}
@@ -636,6 +677,7 @@ def _resolve_alternative(
         if finding.status == health.DEGRADED:
             res.active_backend = finding.name
             res.tier = TIER_WARN
+            res.prescription = finding.prescription
             return res
     res.tier = TIER_ERROR
     # Prescription comes from the first auto-chain backend, not opt-in.

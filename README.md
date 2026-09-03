@@ -295,7 +295,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 | Xiaohongshu (RED) | Run a logged-in x-mcp browser plugin or `xiaohongshu-mcp` service and opt in with `--search xhs` per run or `INCLUDE_SOURCES=xiaohongshu` in `.env`; last30days auto-probes `http://localhost:18060` then `http://host.docker.internal:18060`, or use `XIAOHONGSHU_API_BASE` for a custom URL | No last30days API key; depends on your local browser-session service |
 | DripStack (premium financial newsletters) | Opt-in: `--search dripstack` per run, or `INCLUDE_SOURCES=dripstack` in `.env` | No key; free public search API |
 | Perplexity Agent API / Search API / Deep Research | Perplexity key, or OpenRouter key as Sonar fallback | Pay as you go; a direct key enables Agent API and background Deep Research |
-| Web search | Brave Search key | 2,000 free queries/month |
+| Web search | Nothing (Keenable is keyless), or a Brave/Exa/Serper/Parallel key | Keenable free & keyless (optional key lifts the rate limit); Brave has 2,000 free queries/month |
 
 ### macOS Keychain (optional)
 

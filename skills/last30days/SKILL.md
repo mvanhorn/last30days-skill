@@ -22,6 +22,7 @@ metadata:
         - PERPLEXITY_API_KEY
         - PARALLEL_API_KEY
         - BRAVE_API_KEY
+        - KEENABLE_API_KEY
         - APIFY_API_TOKEN
         - AUTH_TOKEN
         - CT0
@@ -286,7 +287,7 @@ Use this capability rule:
 
 - **If a web-search tool is available:** use it for Step 0.5 / 0.55 pre-research and Step 2 supplements. If your host requires loading, selecting, or enabling the web-search tool before use, do that using the host's mechanism. Do not fail the skill just because one particular schema lookup or tool name is unavailable; use the web-search capability you actually have.
 
-- **If no web-search tool is available in the agent session:** skip Step 0.55 and Step 0.75, and add `--auto-resolve` to the engine command. The engine will use configured web backends (`BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY`) or the keyless floor when available.
+- **If no web-search tool is available in the agent session:** skip Step 0.55 and Step 0.75, and add `--auto-resolve` to the engine command. The engine will use a configured paid web backend (`BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY`) when set, otherwise the keyless Keenable backend (no key required; `KEENABLE_API_KEY` lifts the rate limit), falling back to the DuckDuckGo/SearXNG floor.
 
 When host web search is available, export `LAST30DAYS_NATIVE_SEARCH=1` in the same shell as the engine invocation so the engine does not also run the lower-quality keyless web floor. Leave it unset when the agent session has no web-search tool.
 
@@ -728,7 +729,8 @@ The magic of /last30days is Reddit comments + X posts together - and both are fr
 - DripStack (premium financial newsletter search) is opt-in only: per run with `--search dripstack`, or persistently via `INCLUDE_SOURCES=dripstack`. Free public search API, no key; never active without the opt-in.
 - Telegram (public channels) is opt-in via `--telegram-sources=handle1,handle2` (auto-activates for that run) or persistently via `TELEGRAM_SOURCES=handles` + `INCLUDE_SOURCES=telegram`. Requires `SCRAPECREATORS_API_KEY`. Named public channels only; no keyword discovery.
 - `BSKY_HANDLE=you.bsky.social` + `BSKY_APP_PASSWORD=xxx` - Bluesky (free app password).
-- `BRAVE_API_KEY=xxx` or `EXA_API_KEY=xxx` - web search backends.
+- `BRAVE_API_KEY=xxx` or `EXA_API_KEY=xxx` - paid web search backends.
+- `KEENABLE_API_KEY=xxx` - optional; Keenable web search is keyless by default, this key only lifts the rate limit.
 
 **CRITICAL: NEVER overwrite an existing `.env`.** Before writing ANY key:
 1. Check if the file exists: `test -f ~/.config/last30days/.env`

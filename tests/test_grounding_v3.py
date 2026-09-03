@@ -172,6 +172,68 @@ class ParallelSearchTests(unittest.TestCase):
             self.assertEqual(0, artifact["resultCount"])
 
 
+class KeenableSearchTests(unittest.TestCase):
+    def test_keenable_search_reads_snippet_and_filters_to_in_range_items(self):
+        mock_response = {
+            "results": [
+                {
+                    "title": "Keenable Result",
+                    "url": "https://example.com/keenable",
+                    "description": "",
+                    "snippet": "line one\n\nline two",
+                    "published_at": "2026-03-15T08:00:00Z",
+                },
+                {
+                    "title": "Old Result",
+                    "url": "https://example.com/old",
+                    "snippet": "Should be filtered",
+                    "published_at": "2026-01-15T08:00:00Z",
+                },
+                {
+                    "title": "No URL",
+                    "snippet": "Should be skipped",
+                    "published_at": "2026-03-15T08:00:00Z",
+                },
+            ]
+        }
+        with patch("lib.grounding.http.request", return_value=mock_response) as mock_req:
+            items, artifact = grounding.keenable_search("test", ("2026-02-25", "2026-03-27"))
+        self.assertEqual(1, len(items))
+        self.assertEqual("line one line two", items[0]["snippet"])
+        self.assertEqual("2026-03-15", items[0]["date"])
+        self.assertEqual("keenable", artifact["label"])
+        self.assertEqual("https://api.keenable.ai/v1/search/public", mock_req.call_args.args[1])
+
+    def test_keenable_search_caps_page_text_and_falls_back_to_description(self):
+        mock_response = {
+            "results": [
+                {
+                    "title": "Long Page",
+                    "url": "https://example.com/long",
+                    "snippet": "word " * 400,
+                    "published_at": "2026-03-15",
+                },
+                {
+                    "title": "Meta Only",
+                    "url": "https://example.com/meta",
+                    "description": "only a meta description",
+                    "published_at": "2026-03-15",
+                },
+            ]
+        }
+        with patch("lib.grounding.http.request", return_value=mock_response):
+            items, _ = grounding.keenable_search("test", ("2026-02-25", "2026-03-27"))
+        self.assertEqual(2, len(items))
+        self.assertEqual(500, len(items[0]["snippet"]))
+        self.assertEqual("only a meta description", items[1]["snippet"])
+
+    def test_keenable_search_uses_the_keyed_endpoint_when_a_key_is_set(self):
+        with patch("lib.grounding.http.request", return_value={"results": []}) as mock_req:
+            grounding.keenable_search("test", ("2026-02-25", "2026-03-27"), "a-key")
+        self.assertEqual("https://api.keenable.ai/v1/search", mock_req.call_args.args[1])
+        self.assertEqual("a-key", mock_req.call_args.kwargs["headers"]["X-API-Key"])
+
+
 class WebSearchDispatchTests(unittest.TestCase):
     def test_auto_selects_brave_when_key_present(self):
         config = {"BRAVE_API_KEY": "test-key"}
@@ -205,12 +267,45 @@ class WebSearchDispatchTests(unittest.TestCase):
         self.assertEqual([], items)
         self.assertEqual({}, artifact)
 
-    def test_auto_falls_to_keyless_when_no_keys_and_no_native_search(self):
-        # No paid key and no native search -> keyless floor is used.
-        with patch("lib.grounding.web_search_keyless.keyless_search",
+    def test_auto_selects_keenable_when_no_keys_and_no_native_search(self):
+        # No paid key and no native search -> keenable (a real keyless API) is
+        # the preferred keyless default over the degraded DDG/SearXNG floor.
+        with patch("lib.grounding.keenable_search",
+                   return_value=([], {"label": "keenable"})) as mock_keenable, \
+             patch("lib.grounding.web_search_keyless.keyless_search",
                    return_value=([], {"label": "keyless"})) as mock_keyless:
             grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="auto")
-        mock_keyless.assert_called_once()
+        mock_keenable.assert_called_once()
+        mock_keyless.assert_not_called()
+
+    def test_auto_selects_keenable_when_keenable_key_present(self):
+        config = {"KEENABLE_API_KEY": "test-key"}
+        with patch("lib.grounding.keenable_search", return_value=([], {})) as mock:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+            mock.assert_called_once()
+
+    def test_auto_suppresses_keenable_on_native_host_even_with_key(self):
+        # Keenable is keyless-tier: a KEENABLE_API_KEY only lifts the rate limit,
+        # it does not promote keenable past the native-search suppression guard.
+        config = {"KEENABLE_API_KEY": "test-key", "LAST30DAYS_NATIVE_SEARCH": "1"}
+        with patch("lib.grounding.keenable_search", return_value=([], {})) as mock_keenable:
+            items, artifact = grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+        mock_keenable.assert_not_called()
+        self.assertEqual([], items)
+        self.assertEqual({}, artifact)
+
+    def test_auto_prefers_parallel_over_keenable(self):
+        config = {"PARALLEL_API_KEY": "parallel-key", "KEENABLE_API_KEY": "keenable-key"}
+        with patch("lib.grounding.parallel_search", return_value=([], {})) as mock_parallel, \
+             patch("lib.grounding.keenable_search", return_value=([], {})) as mock_keenable:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+            mock_parallel.assert_called_once()
+            mock_keenable.assert_not_called()
+
+    def test_explicit_keenable_backend_invokes_keenable(self):
+        with patch("lib.grounding.keenable_search", return_value=([], {})) as mock_keenable:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="keenable")
+        mock_keenable.assert_called_once()
 
     def test_explicit_keyless_backend_invokes_keyless(self):
         with patch("lib.grounding.web_search_keyless.keyless_search",
