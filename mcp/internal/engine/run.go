@@ -121,7 +121,12 @@ func resolvePython(override string) (string, error) {
 		return override, nil
 	}
 	path, err := exec.LookPath(DefaultPythonBinary)
-	if err == nil {
+	// Reject relative results: on older Go runtimes (and PATH entries that
+	// include "."), LookPath can resolve to a file in the current working
+	// directory instead of a trusted install, letting an attacker who
+	// controls the CWD substitute an arbitrary binary for the interpreter
+	// exec.CommandContext then runs. Requiring an absolute path closes that.
+	if err == nil && filepath.IsAbs(path) {
 		return path, nil
 	}
 	return "", fmt.Errorf(
