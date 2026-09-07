@@ -101,7 +101,7 @@ AUDIT_GROUPS = (
 # Sources that need neither credentials nor a CLI: they always serve, so with
 # no run evidence and no probe they are WORKING, not UNVERIFIED.
 KEYLESS_ALWAYS_ON = frozenset(
-    {"reddit", "hackernews", "polymarket", "github", "library"}
+    {"reddit", "hackernews", "polymarket", "taxminator", "github", "library"}
 )
 
 # Fresh-run outcome states -> audit bucket for a tier-ok source. Anything not
@@ -152,6 +152,7 @@ SOURCE_ORDER = (
     "web",
     "hackernews",
     "polymarket",
+    "taxminator",
     "github",
     "digg",
     "techmeme",
@@ -565,6 +566,10 @@ def _polymarket_record(config):
     return _record(status=health.OK, requires="none (public API)")
 
 
+def _taxminator_record(config):
+    return _record(status=health.OK, requires="none (public API)")
+
+
 def _github_record(config):
     authed = bool(config.get("GITHUB_TOKEN") or env.read_secret_env("GITHUB_TOKEN") or shutil.which("gh"))
     detail = (
@@ -867,6 +872,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "web": _web_record,
     "hackernews": _hackernews_record,
     "polymarket": _polymarket_record,
+    "taxminator": _taxminator_record,
     "github": _github_record,
     "digg": _digg_record,
     "techmeme": _techmeme_record,
@@ -1251,7 +1257,7 @@ def _cli_health_lines(report: Dict[str, Any]) -> List[str]:
     return (
         ["CLI health (downloaded binaries):"]
         + rows
-        + ["  · Reddit, Hacker News, Polymarket need no CLI (keyless)"]
+        + ["  · Reddit, Hacker News, Polymarket, Taxminator need no CLI (keyless)"]
     )
 
 
@@ -1640,6 +1646,7 @@ _HTTP_PROBE_URLS = {
     "reddit": "https://www.reddit.com/search.rss?q=test&sort=relevance&t=month",
     "hackernews": "https://hn.algolia.com/api/v1/search?query=test&hitsPerPage=1",
     "polymarket": "https://gamma-api.polymarket.com/events?limit=1",
+    "taxminator": "https://taxminator.uz/api/v1/markets?limit=1",
     "github": "https://api.github.com/rate_limit",
 }
 

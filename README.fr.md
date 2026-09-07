@@ -71,6 +71,7 @@ Si vous rencontrez un PDG, avez-vous lu tous ses tweets et toutes ses transcript
 | **Instagram Reels** | Le regard des influenceurs, avec la transcription de ce qui est dit. Le signal de la culture visuelle. |
 | **Hacker News** | Le consensus des développeurs. 825 points, 899 commentaires. Là où les gens techniques débattent vraiment. |
 | **Polymarket** | Pas des opinions. Des cotes. Adossées à de l'argent réel. 96 % de probabilité sur des ventes d'album. 4 % sur une acquisition. |
+| **Taxminator** | Le marché de prédiction ouzbek. Prévisions collectives sur le football centrasiatique, les échecs, l'esport et l'économie ; trilingue (uz/ru/en). Des points, pas de l'argent : la part des pronostiqueurs, jamais une mise. |
 | **GitHub** | Pour les personnes : rythme des PR, meilleurs dépôts par étoiles, notes de version. Pour les sujets : issues et discussions. |
 | **Digg** | Des groupes d'articles sélectionnés depuis le classement AI 1000 de Digg (environ 1000 comptes IA à fort signal sur X), avec des citations attribuables intégrées (sans authentification X). Activé automatiquement quand `digg-pp-cli` est présent dans le PATH. |
 | **arXiv** | Les articles scientifiques derrière le battage médiatique. La recherche publiée dans la fenêtre, gratuit, sans clé API. Activé automatiquement quand `arxiv-pp-cli` est présent dans le PATH (la configuration initiale l'installe). |
@@ -287,7 +288,7 @@ Ces plateformes n'ont aucune relation entre elles. X ignore ce que pense Reddit.
 
 | Sources | Ce qu'il vous faut | Coût |
 |---------|---------------|------|
-| Reddit (avec les commentaires) + HN + Polymarket + GitHub + StockTwits | Rien | Gratuit |
+| Reddit (avec les commentaires) + HN + Polymarket + Taxminator + GitHub + StockTwits | Rien | Gratuit |
 | arXiv + Techmeme | Des CLI gratuites, installées automatiquement à la configuration initiale | Gratuit |
 | X / Twitter | Connectez-vous à x.com dans n'importe quel navigateur, ou définissez `XQUIK_API_KEY` / `XAI_API_KEY` | Les cookies de navigateur sont gratuits ; les clés dépendent du fournisseur |
 | YouTube | `brew install yt-dlp` | Gratuit |

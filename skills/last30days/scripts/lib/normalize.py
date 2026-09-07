@@ -64,6 +64,7 @@ def normalize_source_items(
         "xquik": _normalize_x,
         "pinterest": _normalize_pinterest,
         "polymarket": _normalize_polymarket,
+        "taxminator": _normalize_taxminator,
         "digg": _normalize_digg,
         "arxiv": _normalize_arxiv,
         "techmeme": _normalize_techmeme,
@@ -872,6 +873,62 @@ def _normalize_polymarket(
             "end_date": item.get("end_date"),
             "outcome_prices": item.get("outcome_prices") or [],
             "outcomes_remaining": item.get("outcomes_remaining"),
+        },
+    )
+
+
+def _normalize_taxminator(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalize a Taxminator market into the shared prediction-market shape.
+
+    Deliberately parallel to ``_normalize_polymarket`` so render and cluster
+    code can treat the two the same, with one difference that must never be
+    smoothed over: ``volume`` here is a count of PREDICTORS, not a dollar
+    amount. Nothing downstream may render it with a currency symbol.
+    """
+    title = str(item.get("title") or "").strip()
+    crowd_note = str(item.get("crowd_note") or "")
+    return _source_item(
+        item_id=str(item.get("market_id") or f"TX{index + 1}"),
+        source=source,
+        title=title or f"Taxminator market {index + 1}",
+        body="\n".join(
+            part
+            for part in [
+                title,
+                " / ".join(
+                    value for value in (item.get("titles") or {}).values() if value
+                ),
+                crowd_note,
+            ]
+            if part
+        ),
+        url=str(item.get("url") or ""),
+        author=None,
+        container="Taxminator",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement={"volume": item.get("predictors") or 0},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=crowd_note,
+        metadata={
+            "market_id": item.get("market_id"),
+            "slug": item.get("slug"),
+            "question": title,
+            "category": item.get("category"),
+            "status": item.get("status"),
+            "end_date": item.get("end_date"),
+            "outcome_prices": item.get("outcome_prices") or [],
+            "outcomes_remaining": item.get("outcomes_remaining"),
+            "crowd_revealed": item.get("crowd_revealed"),
+            "predictors": item.get("predictors"),
+            "titles": item.get("titles") or {},
         },
     )
 

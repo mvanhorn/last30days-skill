@@ -173,9 +173,17 @@ class KeylessEnvironment(unittest.TestCase):
         self.report = _build({})
 
     def test_free_sources_tier_ok(self):
-        for name in ("reddit", "hackernews", "polymarket", "github"):
+        for name in ("reddit", "hackernews", "polymarket", "taxminator", "github"):
             self.assertEqual("ok", self.report["sources"][name]["tier"], name)
             self.assertEqual("ok", self.report["sources"][name]["status"], name)
+
+    def test_taxminator_is_keyless_and_working(self):
+        record = self.report["sources"]["taxminator"]
+        self.assertEqual("none (public API)", record["requires"])
+        self.assertEqual(
+            doctor.AUDIT_WORKING,
+            doctor.audit_state("taxminator", record),
+        )
 
     def test_key_gated_sources_off_with_prescriptions(self):
         for name in ("x", "tiktok", "instagram", "threads", "bluesky", "truthsocial"):
@@ -370,7 +378,7 @@ class JsonShape(unittest.TestCase):
         self.assertIsInstance(self.report["sources"]["reddit"]["backends"], list)
 
     def test_single_backend_sources_have_single_mode(self):
-        for name in ("hackernews", "polymarket", "github", "bluesky"):
+        for name in ("hackernews", "polymarket", "taxminator", "github", "bluesky"):
             record = self.report["sources"][name]
             self.assertEqual("single", record["mode"], name)
             self.assertIsNone(record["backends"], name)
@@ -972,7 +980,7 @@ class LiveProbe(unittest.TestCase):
         for gated in ("x", "tiktok", "instagram", "threads", "linkedin"):
             self.assertNotIn(gated, probeable, gated)
         # free HTTP + keyless CLI sources ARE probeable
-        for free in ("reddit", "hackernews", "polymarket", "github", "youtube"):
+        for free in ("reddit", "hackernews", "polymarket", "taxminator", "github", "youtube"):
             self.assertIn(free, probeable, free)
 
     def test_probe_source_http_reachable(self):
@@ -1252,6 +1260,7 @@ class CliHealth(unittest.TestCase):
     def test_keyless_source_has_no_cli(self):
         report = _build({})
         self.assertNotIn("cli", report["sources"]["polymarket"])
+        self.assertNotIn("cli", report["sources"]["taxminator"])
         self.assertIn("need no CLI", doctor.render_text(report))
 
     def test_digg_off_path_is_not_working(self):

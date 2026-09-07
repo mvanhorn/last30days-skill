@@ -35,6 +35,18 @@ class DetectCategoryHappyPath(unittest.TestCase):
             "prediction_markets",
         )
 
+    def test_taxminator_matches_prediction_markets(self):
+        self.assertEqual(
+            detect_category("Taxminator market resolution"),
+            "prediction_markets",
+        )
+
+    def test_taxmin_matches_prediction_markets(self):
+        self.assertEqual(
+            detect_category("taxmin points scoring"),
+            "prediction_markets",
+        )
+
     def test_sora_matches_video_generation(self):
         self.assertEqual(detect_category("Sora 2 prompts"), "ai_video_generation")
 

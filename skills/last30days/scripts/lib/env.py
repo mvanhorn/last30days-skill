@@ -1281,6 +1281,14 @@ def is_polymarket_available() -> bool:
     return True
 
 
+def is_taxminator_available() -> bool:
+    """Check if the Taxminator source is available.
+
+    Always returns True - the public markets API is free, no key needed.
+    """
+    return True
+
+
 def is_tiktok_available(config: dict[str, Any]) -> bool:
     """Check if TikTok source is available (ScrapeCreators or legacy Apify).
 

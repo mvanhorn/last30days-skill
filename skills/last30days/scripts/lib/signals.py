@@ -25,6 +25,7 @@ SOURCE_QUALITY = {
     "bluesky": 0.66,
     "truthsocial": 0.6,
     "polymarket": 0.5,
+    "taxminator": 0.5,
     "instagram": 0.58,
     "tiktok": 0.58,
     "jobs": 0.72,
@@ -180,6 +181,8 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "bluesky":      [("likes", 0.40), ("reposts", 0.30), ("replies", 0.20), ("quotes", 0.10)],
     "truthsocial":  [("likes", 0.45), ("reposts", 0.30), ("replies", 0.25)],
     "polymarket":   [("volume", 0.60), ("liquidity", 0.40)],
+    # Points-based: crowd size is the only weight this source has.
+    "taxminator":   [("volume", 1.0)],
     "digg":         [("postCount", 0.40), ("uniqueAuthors", 0.30), ("rank_score", 0.30)],
     "trustpilot":   [("reviews", 1.0)],
     "amazon":       [("ratings", 1.0)],

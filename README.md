@@ -71,6 +71,7 @@ If you're meeting with a CEO, have you read all their tweets and YouTube transcr
 | **Instagram Reels** | The influencer perspective with spoken-word transcripts. The visual culture signal. |
 | **Hacker News** | The developer consensus. 825 points, 899 comments. Where technical people actually argue. |
 | **Polymarket** | Not opinions. Odds. Backed by real money. 96% confidence on album sales. 4% on an acquisition. |
+| **Taxminator** | The Uzbek prediction market. Crowd forecasts on Central Asian football, chess, esports, and the economy; trilingual (uz/ru/en). Points, not money — the share of predictors, never a stake. |
 | **GitHub** | For people: PR velocity, top repos by stars, release notes. For topics: issues and discussions. |
 | **Digg** | Curated story clusters from Digg's AI 1000 leaderboard (~1000 high-signal AI accounts on X), with attributable inline quotes (no X auth required). Auto-enabled when `digg-pp-cli` is on PATH. |
 | **arXiv** | The papers behind the hype. New research in the window, free, no API key. Auto-enabled when `arxiv-pp-cli` is on PATH (first-run setup installs it). |
@@ -286,7 +287,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 
 | Sources | What you need | Cost |
 |---------|---------------|------|
-| Reddit (with comments) + HN + Polymarket + GitHub + StockTwits | Nothing | Free |
+| Reddit (with comments) + HN + Polymarket + Taxminator + GitHub + StockTwits | Nothing | Free |
 | arXiv + Techmeme | Free CLIs, auto-installed by first-run setup | Free |
 | X / Twitter | Log into x.com in any browser, or set `XQUIK_API_KEY` / `XAI_API_KEY` | Browser cookies are free; keys are provider-specific |
 | YouTube | `brew install yt-dlp` | Free |

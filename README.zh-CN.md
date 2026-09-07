@@ -74,6 +74,7 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 | **Instagram Reels** | 带口播字幕的影响者视角，反映视觉文化的信号。 |
 | **Hacker News** | 开发者共识：825 分、899 条评论，技术从业者真正交锋的地方。 |
 | **Polymarket** | 不是观点，而是由真金白银支撑的概率：专辑销量 96%，收购概率 4%。 |
+| **Taxminator** | 乌兹别克斯坦的预测市场。围绕中亚足球、国际象棋、电竞和经济的群体预测，支持乌/俄/英三种语言。计分而非真金白银——展示的是预测者的比例，不是赌注。 |
 | **GitHub** | 搜人时查看 PR 速度、按 Star 排名的热门仓库和发行说明；搜主题时查看 Issue 与 Discussion。 |
 | **Digg** | 来自 Digg AI 1000 排行榜（约 1,000 个高信号 X 账号）的精选话题聚类，包含可追溯的行内引用，无需 X 认证。当 PATH 中存在 `digg-pp-cli` 时自动启用。 |
 | **arXiv** | 热点背后的论文。免费查找时间窗口内的新研究，无需 API 密钥。当 PATH 中存在 `arxiv-pp-cli` 时自动启用（首次配置会安装）。 |
@@ -285,7 +286,7 @@ Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置�
 
 | 来源 | 你需要准备什么 | 成本 |
 |------|----------------|------|
-| Reddit（含评论）+ HN + Polymarket + GitHub + StockTwits | 无 | 免费 |
+| Reddit（含评论）+ HN + Polymarket + Taxminator + GitHub + StockTwits | 无 | 免费 |
 | arXiv + Techmeme | 免费 CLI，由首次配置自动安装 | 免费 |
 | X / Twitter | 在任意浏览器中登录 x.com，或设置 `XQUIK_API_KEY` / `XAI_API_KEY` | 浏览器 Cookie 免费；密钥费用取决于服务商 |
 | YouTube | `brew install yt-dlp` | 免费 |

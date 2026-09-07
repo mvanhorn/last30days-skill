@@ -206,6 +206,8 @@ CATEGORY_PEERS: dict[str, _CategoryEntry] = {
     "prediction_markets": {
         "patterns": [
             "polymarket",
+            "taxminator",
+            "taxmin",
             "kalshi",
             "prediction market",
             "event contracts",

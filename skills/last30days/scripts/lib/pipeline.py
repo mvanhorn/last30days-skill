@@ -51,6 +51,7 @@ from . import (
     pinterest,
     planner,
     polymarket,
+    taxminator,
     providers,
     query,
     reddit,
@@ -202,6 +203,7 @@ MOCK_AVAILABLE_SOURCES = [
     "bluesky",
     "truthsocial",
     "polymarket",
+    "taxminator",
     "grounding",
     "xiaohongshu",
     "github",
@@ -270,7 +272,9 @@ def available_sources(
             available.append("x")
     if which("yt-dlp") or env.is_youtube_sc_available(config):
         available.append("youtube")
-    available.extend(["hackernews", "polymarket"])
+    # Taxminator is keyless and always-on, exactly like Polymarket: a public
+    # read API with no credential and no CLI to install.
+    available.extend(["hackernews", "polymarket", "taxminator"])
     # StockTwits is gated to ticker/crypto topics only (flag set in run()).
     if config.get("_financial_topic"):
         available.append("stocktwits")
@@ -3085,6 +3089,10 @@ def _finalize_items_by_source(
             keywords = config.get("_polymarket_keywords") if isinstance(config, dict) else None
             if keywords:
                 items = polymarket.filter_items_against_keywords(items, keywords)
+        if source == "taxminator" and topic:
+            # Same post-merge re-validation as Polymarket: a per-entity
+            # subquery is too narrow to filter against on its own.
+            items = taxminator.filter_items_against_topic(topic, items)
         if source == "digg" and items:
             # Pull top-ranked X posts only for the survivors that will appear
             # in the brief. Spending the enrichment budget here (rather than
@@ -4847,6 +4855,17 @@ def _retrieve_stream_impl(
         relevance_topic = raw_topic or topic or subquery.search_query
         return (
             polymarket.parse_polymarket_response(result, topic=relevance_topic),
+            _result_outcome_artifact(source, result),
+        )
+    if source == "taxminator":
+        result = taxminator.search_taxminator(
+            subquery.search_query, from_date, to_date, depth=depth,
+        )
+        # Relevance keys off the stable original topic, not the per-subquery
+        # search_query (see the Polymarket branch above for why).
+        relevance_topic = raw_topic or topic or subquery.search_query
+        return (
+            taxminator.parse_taxminator_response(result, topic=relevance_topic),
             _result_outcome_artifact(source, result),
         )
     if source == "github":

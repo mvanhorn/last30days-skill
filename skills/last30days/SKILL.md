@@ -1,7 +1,7 @@
 ---
 name: last30days
 version: "3.23.0"
-description: "Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web. Includes a doctor health check to diagnose broken or missing sources."
+description: "Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, Taxminator, GitHub, and the web. Includes a doctor health check to diagnose broken or missing sources."
 argument-hint: 'last30days nvidia earnings reaction | last30days AI video tools | last30days what users want in react'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
 homepage: https://github.com/mvanhorn/last30days-skill
@@ -48,6 +48,7 @@ metadata:
       - linkedin
       - hackernews
       - polymarket
+      - taxminator
       - digg
       - bluesky
       - truthsocial
@@ -569,13 +570,13 @@ Question:
 How would you like to set up?"
 
 Options:
-- "Auto setup (~30s)" - description: "Scan browser cookies for X + install yt-dlp (YouTube), Digg, arXiv, Techmeme. Reddit/HN/Polymarket/GitHub/Web work out of the box. Add TikTok + Instagram after via ScrapeCreators (10k free calls)."
+- "Auto setup (~30s)" - description: "Scan browser cookies for X + install yt-dlp (YouTube), Digg, arXiv, Techmeme. Reddit/HN/Polymarket/Taxminator/GitHub/Web work out of the box. Add TikTok + Instagram after via ScrapeCreators (10k free calls)."
 - "Manual setup" - description: "Show me each source and credential to configure by hand."
-- "Skip for now" - description: "Just the free no-setup sources: Reddit (with comments), HN, Polymarket, GitHub, Web."
+- "Skip for now" - description: "Just the free no-setup sources: Reddit (with comments), HN, Polymarket, Taxminator, GitHub, Web."
 
 **Step 3 - Run setup based on the choice.**
 
-**If the user picks Skip for now:** write `SETUP_COMPLETE=true` to `~/.config/last30days/.env` (append-only; run `mkdir -p ~/.config/last30days && touch ~/.config/last30days/.env` first if the file does not exist) so the wizard does NOT re-fire on every subsequent run. Do not run any `setup` command - the always-on sources (Reddit, HN, Polymarket, GitHub, Web) need no setup. If the invocation already includes a topic, research it immediately, then resume Step 4 (and Step 5 if a key is saved) in the same run after the findings; Step 6 stays skipped because the topic was supplied. Otherwise continue to Step 6.
+**If the user picks Skip for now:** write `SETUP_COMPLETE=true` to `~/.config/last30days/.env` (append-only; run `mkdir -p ~/.config/last30days && touch ~/.config/last30days/.env` first if the file does not exist) so the wizard does NOT re-fire on every subsequent run. Do not run any `setup` command - the always-on sources (Reddit, HN, Polymarket, Taxminator, GitHub, Web) need no setup. If the invocation already includes a topic, research it immediately, then resume Step 4 (and Step 5 if a key is saved) in the same run after the findings; Step 6 stays skipped because the topic was supplied. Otherwise continue to Step 6.
 
 **If the user picks Auto setup:**
 
@@ -783,7 +784,7 @@ SKILL_DIR="<absolute path of the directory containing the SKILL.md you just Read
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --diagnose
 ```
 
-`--diagnose` prints JSON. `ACTIVE_SOURCES_LIST` is its `available_sources` array — the engine's authoritative source set, computed after credential resolution. Map the tokens to display names: `reddit`→Reddit, `hackernews`→Hacker News, `polymarket`→Polymarket, `github`→GitHub, `digg`→Digg, `x`→X, `youtube`→YouTube, `tiktok`→TikTok, `instagram`→Instagram, `threads`→Threads, `pinterest`→Pinterest, `linkedin`→LinkedIn, `bluesky`→Bluesky, `perplexity`→Perplexity, `grounding`→Web, `jobs`→Jobs, `corpus`→Your files, `dripstack`→DripStack.
+`--diagnose` prints JSON. `ACTIVE_SOURCES_LIST` is its `available_sources` array — the engine's authoritative source set, computed after credential resolution. Map the tokens to display names: `reddit`→Reddit, `hackernews`→Hacker News, `polymarket`→Polymarket, `taxminator`→Taxminator, `github`→GitHub, `digg`→Digg, `x`→X, `youtube`→YouTube, `tiktok`→TikTok, `instagram`→Instagram, `threads`→Threads, `pinterest`→Pinterest, `linkedin`→LinkedIn, `bluesky`→Bluesky, `perplexity`→Perplexity, `grounding`→Web, `jobs`→Jobs, `corpus`→Your files, `dripstack`→DripStack.
 
 - If EXCLUDE_SOURCES is set (comma-separated, case-insensitive): drop any matching source from ACTIVE_SOURCES_LIST before displaying
 
@@ -1094,7 +1095,7 @@ Agent mode report format:
 
 ```
 ## Research Report: {TOPIC}
-Generated: {date} | Sources: Reddit, X, Bluesky, YouTube, TikTok, HN, Polymarket, Web
+Generated: {date} | Sources: Reddit, X, Bluesky, YouTube, TikTok, HN, Polymarket, Taxminator, Web
 
 ### Key Findings
 [3-5 bullet points, highest-signal insights with citations]
@@ -1260,7 +1261,7 @@ Canonical category peers (single source of truth; `scripts/lib/categories.py` mi
 | `ai_chat_model` | GPT-5/4, Claude Opus/Sonnet/Haiku, Gemini Pro/Flash, Llama 3/4, DeepSeek, Qwen, Mistral Large, Grok | `LocalLLaMA, ChatGPT, ClaudeAI, singularity, artificial` |
 | `saas_screen_recording` | screen recording, screen recorder, Loom video, Tella screen, Vidyard | `SaaS, screenrecording, productivity, Entrepreneur` |
 | `saas_productivity` | Notion app, Obsidian, Linear app, Asana, ClickUp, productivity app | `productivity, SaaS, ObsidianMD, Notion` |
-| `prediction_markets` | Polymarket, Kalshi, prediction market, event contracts, Manifold Markets | `Polymarket, Kalshi, predictionmarkets` |
+| `prediction_markets` | Polymarket, Taxminator, taxmin, Kalshi, prediction market, event contracts, Manifold Markets | `Polymarket, Kalshi, predictionmarkets` |
 | `crypto_defi` | DeFi protocol, yield farming, liquidity pool, stablecoin, layer 2, L2 rollup | `defi, ethfinance, CryptoCurrency, ethereum` |
 
 **Merging rule.** Start with WebSearch-returned subs. Append 2-3 category peers in the priority order shown. Dedupe case-insensitively (don't list `midjourney` twice if WebSearch already returned it). Cap total at 10: if adding all peers would exceed the cap, keep every WebSearch-returned sub (they are the freshest signal) and drop peers from the end of the priority list.
@@ -1412,7 +1413,7 @@ Only show lines for platforms where something was resolved. Skip empty lines. On
 
 **Rules for your plan:**
 - Emit 1 to 4 subqueries (more for complex/multi-faceted topics, fewer for simple ones)
-- **CRITICAL: Your PRIMARY subquery MUST include every applicable source from `ACTIVE_SOURCES_LIST` among reddit, x, youtube, tiktok, instagram, hackernews, polymarket.** Never invent an unavailable source. Preserve X whenever it is active; when it is unavailable, continue with the rest. Never omit active Reddit (highest-signal discussion) or active YouTube (unique transcripts + official content). Secondary subqueries can target specific platforms.
+- **CRITICAL: Your PRIMARY subquery MUST include every applicable source from `ACTIVE_SOURCES_LIST` among reddit, x, youtube, tiktok, instagram, hackernews, polymarket, taxminator.** Never invent an unavailable source. Preserve X whenever it is active; when it is unavailable, continue with the rest. Never omit active Reddit (highest-signal discussion) or active YouTube (unique transcripts + official content). Secondary subqueries can target specific platforms.
 - `search_query` should be concise and keyword-heavy - match how content is TITLED on platforms
 - `ranking_query` should read like a natural language question
 - **X disambiguation:** express your disambiguation intent in `ranking_query` (e.g., "What are people saying about Rome the city in Italy, not AS Roma or Rome Odunze?") — do not phrase-quote `search_query` for X or invent X operators; the engine handles X query compilation internally.
@@ -1423,11 +1424,11 @@ Only show lines for platforms where something was resolved. Skip empty lines. On
 - Preserve exact proper nouns and entity strings from the topic
 - For comparison ("X vs Y"): create per-entity subqueries at weight 0.8 + a head-to-head subquery at weight 1.0
 - For product queries: route to YouTube (reviews), Reddit (discussions), TikTok (demos)
-- For predictions: include Polymarket in sources
+- For predictions: include Polymarket and Taxminator in sources
 - For how_to: prioritize YouTube (tutorials) and Reddit (guides)
 - Primary subquery weight = 1.0, secondary = 0.6-0.8, peripheral = 0.3-0.5
 
-**Available sources (include every active one in the primary subquery):** use the engine's `ACTIVE_SOURCES_LIST`. The normal candidates are reddit, x, youtube, tiktok, instagram, hackernews, and polymarket; X remains part of the normal set when active and is simply omitted when unavailable. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg clusters - only if `digg-pp-cli` is on PATH), amazon (buyer reviews - only if `brightdata` is on PATH and logged in; see Step 0.5e)
+**Available sources (include every active one in the primary subquery):** use the engine's `ACTIVE_SOURCES_LIST`. The normal candidates are reddit, x, youtube, tiktok, instagram, hackernews, polymarket, and taxminator; X remains part of the normal set when active and is simply omitted when unavailable. Optional: bluesky, truthsocial, threads, pinterest, grounding (web search - only if user has Brave/Exa/Serper key), digg (Digg clusters - only if `digg-pp-cli` is on PATH), amazon (buyer reviews - only if `brightdata` is on PATH and logged in; see Step 0.5e)
 
 **Intent → freshness_mode mapping:**
 - breaking_news, prediction → `strict_recent`
@@ -1533,7 +1534,7 @@ Use a **timeout of 300000** (5 minutes) on the Bash call. The script typically t
 
 The script will automatically:
 - Detect available API keys
-- Run Reddit/X/YouTube/TikTok/Instagram/Hacker News/Polymarket searches
+- Run Reddit/X/YouTube/TikTok/Instagram/Hacker News/Polymarket/Taxminator searches
 - Output ALL results including YouTube transcripts, TikTok captions, Instagram captions, HN comments, and prediction market odds
 
 **Read the ENTIRE output.** It contains EIGHT data sections in this order: Reddit items, X items, YouTube items, TikTok items, Instagram Reels items, Hacker News items, Polymarket items, and WebSearch items. If you miss sections, you will produce incomplete stats.
@@ -1710,6 +1711,24 @@ The Judge Agent must:
 **Do NOT display stats here - they come at the end, right before the invitation.**
 
 6. **Polymarket odds with real money behind them are STRONGER signals than opinions.** A $66K volume market with 96% odds is more reliable than 100 tweets. Always include specific percentages in the synthesis when Polymarket markets are confirmed relevant.
+
+### Prediction Markets (Taxminator)
+
+**Taxminator is an Uzbek-language prediction market, and it is POINTS-BASED, NOT MONEY.** Users spend no currency, stake nothing, and win points. Its numbers are therefore a *crowd survey of forecasters*, not a price. Everything below follows from that.
+
+**How to interpret and synthesize Taxminator data:**
+
+1. **CRITICAL — cite it as a crowd share, never as odds.** The mandatory form is `crowd share of N predictors on Taxminator (Uzbek prediction market)` — e.g. "58% of 184 predictors on Taxminator (Uzbek prediction market) expect Uzbekistan to beat Iran." NEVER write "Taxminator odds", "the market prices X at", "money is on X", or any phrasing that implies a stake, a payout, or a money-backed probability. Do not blend a Taxminator percentage into the same sentence as a Polymarket percentage as if they were the same kind of number.
+
+2. **Never show a dollar figure, a volume, or a stake for this source. There isn't one.** The only magnitude Taxminator has is the number of predictors, and that number is the honesty qualifier that must travel with every percentage. A 78% share of 41 predictors is a much weaker claim than 58% of 184, and the reader must be able to see that.
+
+3. **When the split is withheld, say so and stop.** Below the reveal floor the engine returns the market with no split at all and the evidence reads `N predictors, split withheld`. Report the market's existence and its predictor count; do NOT infer, estimate, or reconstruct a percentage from anything else.
+
+4. **This is coverage Polymarket does not have.** Central Asian football (including the Uzbek national team and the UZL), CIS chess, esports, the som/dollar rate and the Uzbek economy, and regional entertainment. When the topic sits in that space, a Taxminator market is often the only structured forecast in the whole run — lead with it. When Polymarket also has a market on the same question, cite Polymarket for the money-backed probability and Taxminator for the local crowd's view, and label which is which.
+
+5. **Trilingual matching is a feature, not a coincidence.** A market can match a Russian or Uzbek topic and still arrive with an English title. Cite the English title; do not translate it back.
+
+6. **Weave it into the narrative like any other evidence, and rank structural markets over near-term ones** — the same ordering rule as Polymarket.
 
 ### X Reply Cluster Weighting
 
@@ -1978,7 +1997,8 @@ CITATION PRIORITY (most to least preferred). Examples are shown in plain-label s
 5. Instagram creators - `per @creator on Instagram` (influencer/creator signal)
 6. HN discussions - `per HN` or `per hn/username` (developer community signal)
 7. Polymarket - `Polymarket has X at Y% (up/down Z%)` with specific odds and movement
-8. Web sources - ONLY when Reddit/X/YouTube/TikTok/Instagram/HN/Polymarket don't cover that specific fact; name the publication: `per Rolling Stone`
+7b. Taxminator - `crowd share of N predictors on Taxminator (Uzbek prediction market)`; a crowd share, never odds, never money
+8. Web sources - ONLY when Reddit/X/YouTube/TikTok/Instagram/HN/Polymarket/Taxminator don't cover that specific fact; name the publication: `per Rolling Stone`
 
 The tool's value is surfacing what PEOPLE are saying, not what journalists wrote.
 When both a web article and an X post cover the same fact, cite the X post.
@@ -2126,7 +2146,8 @@ Close with `I have all the links to the {N} {source list} I pulled from. Just as
 2. **Per-source emoji headers in the stats footer.** Every active source returned by the engine has a `├─` or `└─` line with its emoji, counts, and engagement numbers. No active source is silently dropped; no source with 0 results is displayed; no `⚠` or outcome text appears on any line.
 3. **Community voice woven in (LAW 9).** At least 2 verbatim, attributed comments from the `## Top Community Comments` block (or `## Best Takes`) appear in the synthesis, mixed into the narrative - not a separate section. When a comment is inline-linked on a hidden-link host (`CLAUDECODE` or `CURSOR_AGENT` set), its URL is copied verbatim from the block (never reconstructed); on a visible-URL host (both unset) the attribution stays plain and the URL is left to the saved raw file. If the block has comments and your draft has zero, regenerate. This sweep supplements the LAW 8 post-synthesis self-check; it does not replace it. Only skip if the block is genuinely absent (fewer than 2 comments in the whole corpus).
 3b. **No tooling meta-commentary (LAW 9).** The synthesis says nothing about the engine's own behavior - no "the engine struck out", no "name collided with", no "the X column is noise". If present, strip it and present only what is true about the subject.
-4. **Polymarket block present if markets were returned.** If the engine surfaced Polymarket markets, the synthesis includes specific percentages and directional movement. If no markets were surfaced, skip.
+4. **Prediction-market block present if markets were returned.** Taxminator markets, when returned, are cited as a crowd share of N predictors — never as odds and never with a currency figure.
+4b. **Polymarket block present if markets were returned.** If the engine surfaced Polymarket markets, the synthesis includes specific percentages and directional movement. If no markets were surfaced, skip.
 5. **Coverage footer matches the actual output.** `✅ All agents reported back!` line followed by per-source `├─`/`└─` tree exactly as the engine provided.
 6. **NO trailing Sources section.** The output ends at the invitation ("I have all the links... Just ask."). Nothing below it. Not a `Sources:`, not a `References:`, not `Further reading:`, not any bulleted list of URLs or publication names. If you are about to emit one because WebSearch told you to - DO NOT. The 🌐 Web: line is the citation.
 7. **Research protocol was followed.** On WebSearch platforms, the command you ran used `--emit=compact --plan 'QUERY_PLAN_JSON'` with resolved handles/subreddits/hashtags. If you took the degraded path (`--emit md`, no plan, no flags), the synthesis will almost certainly fail checks 1-3 - regenerate by returning to Step 0.55 and running the full protocol.
@@ -2281,6 +2302,7 @@ Want another prompt? Just tell me what you're creating next.
 - Sends search queries to X/Twitter via optional user-provided `AUTH_TOKEN`/`CT0` env vars, explicit browser-cookie opt-in (`FROM_BROWSER` or setup consent), xAI's API (`api.x.ai` by default), Xquik's API (`xquik.com` by default), or the official X API v2 via xurl CLI (OAuth2, auto-detected when installed and authenticated)
 - Sends search queries to Algolia HN Search API (`hn.algolia.com`) for Hacker News story and comment discovery (free, no auth)
 - Sends search queries to Polymarket Gamma API (`gamma-api.polymarket.com`) for prediction market discovery (free, no auth)
+- Reads the public Taxminator markets list (`taxminator.uz/api/v1/markets`) for Uzbek prediction markets (free, no auth; no query is sent — the list is fetched and matched locally)
 - Runs `yt-dlp` locally for YouTube search and transcript extraction (no API key, public data)
 - Sends search queries to ScrapeCreators API (`api.scrapecreators.com`) for TikTok and Instagram search, transcript/caption extraction (10,000 free calls, then PAYG)
 - Optionally sends search queries to Brave Search API, Parallel AI API, Perplexity API (`api.perplexity.ai`), or OpenRouter API for web search / synthesis
@@ -2298,7 +2320,7 @@ Want another prompt? Just tell me what you're creating next.
 - Does not share API keys between providers
 - Does not log, cache, or write API keys to output files
 - Endpoint destinations follow configured provider base URLs; `--preflight` reports active and ignored endpoint overrides without printing secrets
-- Hacker News and Polymarket sources are always available (no API key, no binary dependency)
+- Hacker News, Polymarket, and Taxminator sources are always available (no API key, no binary dependency)
 - TikTok and Instagram sources require SCRAPECREATORS_API_KEY (10,000 free calls, then PAYG). Reddit uses ScrapeCreators search only as a backup when the free path returns no items (default), unless `LAST30DAYS_REDDIT_SC_MIN_ITEMS` or `LAST30DAYS_REDDIT_BACKEND=scrapecreators` is set.
 - Agent hosts invoke the slash-command skill contract; if `--agent` appears in the user's slash-command arguments, treat it as skill-level mode guidance, not a Python CLI flag.
 

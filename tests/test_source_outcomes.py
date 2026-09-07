@@ -601,3 +601,18 @@ def test_finalize_turns_an_empty_ok_source_with_lane_failures_into_that_failure(
     assert outcome.state == schema.RATE_LIMITED
     assert outcome.detail == "5 sub-requests rate-limited (HTTP 429)"
     assert outcome.items_returned == 0
+
+
+def test_taxminator_network_failure_is_an_attempted_source_failure():
+    """A keyless source that could not reach its API must report the failure,
+    not read as 'completed cleanly with zero matches'."""
+    artifact = pipeline._result_outcome_artifact(
+        "taxminator", {"markets": [], "error": "connection reset"}
+    )
+    outcome = artifact["_source_outcome"]
+    assert outcome["detail"] == "connection reset"
+    assert outcome["attempted"] is True
+
+
+def test_taxminator_clean_empty_result_carries_no_failure_artifact():
+    assert pipeline._result_outcome_artifact("taxminator", {"markets": []}) == {}

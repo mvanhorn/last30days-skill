@@ -45,6 +45,7 @@ KNOWN_SOURCE_NAMES = {
     "truthsocial", "polymarket", "grounding", "xiaohongshu", "github",
     "perplexity", "threads", "pinterest", "digg", "jobs", "linkedin",
     "arxiv", "techmeme", "stocktwits", "trustpilot", "dripstack",
+    "taxminator",
 }
 
 # ---------------------------------------------------------------------------
@@ -211,7 +212,7 @@ class DiagnoseShapeCompat(unittest.TestCase):
             self.assertIsInstance(name, str)
             self.assertIn(name, KNOWN_SOURCE_NAMES)
         # Free sources are always present even in a keyless environment.
-        for free in ("reddit", "hackernews", "polymarket", "github"):
+        for free in ("reddit", "hackernews", "polymarket", "taxminator", "github"):
             self.assertIn(free, sources)
 
 

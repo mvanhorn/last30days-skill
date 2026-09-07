@@ -101,8 +101,8 @@ QUICK_SOURCE_PRIORITY = {
     "opinion": ["reddit", "x", "xquik", "youtube", "hackernews"],
     "how_to": ["youtube", "reddit", "x", "xquik", "hackernews"],
     "comparison": ["reddit", "x", "xquik", "hackernews", "youtube"],
-    "breaking_news": ["x", "xquik", "reddit", "hackernews", "youtube", "polymarket"],
-    "prediction": ["polymarket", "x", "xquik", "hackernews", "reddit", "youtube"],
+    "breaking_news": ["x", "xquik", "reddit", "hackernews", "youtube", "polymarket", "taxminator"],
+    "prediction": ["polymarket", "taxminator", "x", "xquik", "hackernews", "reddit", "youtube"],
 }
 SOURCE_PRIORITY = {
     "factual": ["hackernews", "reddit", "x", "youtube"],
@@ -111,8 +111,8 @@ SOURCE_PRIORITY = {
     "opinion": ["reddit", "x", "stocktwits", "dripstack", "youtube", "hackernews"],
     "how_to": ["youtube", "reddit", "x", "hackernews"],
     "comparison": ["reddit", "x", "hackernews", "youtube"],
-    "breaking_news": ["x", "stocktwits", "reddit", "hackernews", "youtube", "polymarket"],
-    "prediction": ["polymarket", "stocktwits", "dripstack", "x", "hackernews", "reddit", "youtube"],
+    "breaking_news": ["x", "stocktwits", "reddit", "hackernews", "youtube", "polymarket", "taxminator"],
+    "prediction": ["polymarket", "taxminator", "stocktwits", "dripstack", "x", "hackernews", "reddit", "youtube"],
 }
 SOURCE_LIMITS = {
     "quick": {
@@ -130,8 +130,8 @@ SOURCE_LIMITS = {
     # uses tight budgets above for latency.
 }
 INTENT_SOURCE_EXCLUSIONS: dict[str, set[str]] = {
-    "concept": {"polymarket"},
-    "how_to": {"polymarket"},
+    "concept": {"polymarket", "taxminator"},
+    "how_to": {"polymarket", "taxminator"},
 }
 SOURCE_CAPABILITIES = {
     "reddit": {"discussion", "social"},
@@ -144,6 +144,7 @@ SOURCE_CAPABILITIES = {
     "bluesky": {"discussion", "social"},
     "truthsocial": {"discussion", "social"},
     "polymarket": {"market"},
+    "taxminator": {"market"},
     "stocktwits": {"social", "market", "finance_social"},
     "dripstack": {"reference", "analysis", "link"},
     "digg": {"discussion", "social", "link"},
@@ -694,7 +695,7 @@ def _fallback_plan(
                 label="odds",
                 search_query=f"{base_search} odds forecast",
                 ranking_query=f"What are the current odds, forecasts, or market signals about {topic}?",
-                sources=[source for source in source_weights if source in {"polymarket", "grounding", "x", "reddit"}] or list(source_weights),
+                sources=[source for source in source_weights if source in {"polymarket", "taxminator", "grounding", "x", "reddit"}] or list(source_weights),
                 weight=0.7,
             )
         )
@@ -795,7 +796,7 @@ def _default_cluster_mode(intent: str) -> str:
 def _default_source_weights(intent: str, sources: list[str]) -> dict[str, float]:
     base = {source: 1.0 for source in sources}
     if intent == "prediction":
-        for source, bonus in {"polymarket": 2.5, "x": 1.3}.items():
+        for source, bonus in {"polymarket": 2.5, "taxminator": 1.5, "x": 1.3}.items():
             if source in base:
                 base[source] += bonus
     elif intent == "breaking_news":

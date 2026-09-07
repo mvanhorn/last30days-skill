@@ -178,8 +178,9 @@ def _merge_entity_clusters(
             # clusters. Prediction markets about "Sam Altman equity" should not
             # merge into a news cluster about "Sam Altman rivalry" just because
             # both mention the same entity.
-            poly_i = "polymarket" in sources_i
-            poly_j = "polymarket" in sources_j
+            market_sources = {"polymarket", "taxminator"}
+            poly_i = bool(sources_i & market_sources)
+            poly_j = bool(sources_j & market_sources)
             if poly_i != poly_j:
                 continue
 

@@ -232,6 +232,7 @@ SOURCE_LABELS = {
     "perplexity": "Perplexity",
     "jobs": "Jobs",
     "corpus": "Your files",
+    "taxminator": "Taxminator",
 }
 
 PRIVATE_CORPUS_START = "<!-- LAST30DAYS_PRIVATE_CORPUS_START -->"
@@ -1816,6 +1817,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         "bluesky",
         "truthsocial",
         "polymarket",
+        "taxminator",
         "grounding",
         "xiaohongshu",
         "github",
@@ -1907,7 +1909,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
                 lines.append("  </details>")
             # Polymarket outcome prices and market details
             outcome_prices = item.metadata.get("outcome_prices") or []
-            if outcome_prices and item.source == "polymarket":
+            if outcome_prices and item.source in ("polymarket", "taxminator"):
                 question = item.metadata.get("question") or ""
                 if question and question != item.title:
                     lines.append(f"  Question: {question}")
@@ -2454,9 +2456,15 @@ def _shorten_polymarket_title(title: str) -> str:
 def _polymarket_top_markets(
     items: list[schema.SourceItem], limit: int = 3
 ) -> list[str]:
-    """Build short summary strings for the top Polymarket markets by volume.
+    """Build short summary strings for the top prediction markets by volume.
 
     Returns list like: ['UK visit 5.5%', 'Israel visit 8%', 'blocked from entering 36%']
+
+    Shared by Polymarket and Taxminator: both normalize to the same
+    ``metadata['outcome_prices']`` pairs and an ``engagement['volume']``
+    magnitude, and neither renders that magnitude here — so the helper stays
+    honest about Taxminator's volume being a predictor count, not money.
+    ``_market_top_summaries`` is the name to use for non-Polymarket callers.
     """
     # Sort by volume descending
     sorted_items = sorted(
@@ -2504,6 +2512,11 @@ def _polymarket_top_markets(
             summaries.append(f"{descriptor}: {label} {pct}")
 
     return summaries
+
+
+# Source-neutral name for the helper above. Both prediction-market sources
+# share it; the historical name is kept for existing callers and tests.
+_market_top_summaries = _polymarket_top_markets
 
 
 # Warnings that only restate a per-source outcome. The compact (model-facing)
@@ -2871,6 +2884,20 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
             line = f"📊 Polymarket: {count_str} {plural}"
         out.append(line)
 
+    # Taxminator (same shape as Polymarket; crowd share, never money).
+    taxminator_items = report.items_by_source.get("taxminator") or []
+    if taxminator_items:
+        shares = _market_top_summaries(taxminator_items, limit=3)
+        shares_str = ", ".join(shares) if shares else ""
+        count = len(taxminator_items)
+        count_str = f"{count:,}" if count >= 1000 else str(count)
+        plural = "markets" if count != 1 else "market"
+        if shares_str:
+            line = f"\U0001F1FA\U0001F1FF Taxminator: {count_str} {plural} \u2502 {shares_str}"
+        else:
+            line = f"\U0001F1FA\U0001F1FF Taxminator: {count_str} {plural}"
+        out.append(line)
+
     amazon_line = _amazon_footer_line(report)
     if amazon_line:
         out.append(amazon_line)
@@ -3104,9 +3131,9 @@ def _render_stats(report: schema.Report) -> list[str]:
     if top_voices:
         lines.append(f"- Top voices: {', '.join(top_voices)}")
     for source, items in non_empty_sources.items():
-        if source == "polymarket":
-            # Polymarket gets a richer stats line with top market odds
-            market_summaries = _polymarket_top_markets(items)
+        if source in ("polymarket", "taxminator"):
+            # Prediction markets get a richer stats line with top market shares
+            market_summaries = _market_top_summaries(items)
             if market_summaries:
                 label = f"{len(items)} market{'s' if len(items) != 1 else ''}"
                 parts_str = f"{label} | " + " | ".join(market_summaries)
@@ -3174,7 +3201,7 @@ def _format_actor(item: schema.SourceItem | None) -> str | None:
         return f"@{item.author.lstrip('@')}"
     if item.source == "youtube" and item.author:
         return item.author
-    if item.container and item.container != "Polymarket":
+    if item.container and item.container not in ("Polymarket", "Taxminator"):
         return item.container
     if item.author:
         return item.author
@@ -3195,6 +3222,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "truthsocial": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "linkedin": [("likes", "likes"), ("comments", "cmt")],
     "polymarket": [],
+    "taxminator": [("volume", " predictors")],
     "github": [
         ("stars", "stars"),
         ("merged_prs", "merged"),
@@ -3304,7 +3332,7 @@ def _stats_actor(item: schema.SourceItem) -> str | None:
         return f"@{item.author.lstrip('@')}"
     if item.source == "youtube" and item.author:
         return item.author
-    if item.container and item.container != "Polymarket":
+    if item.container and item.container not in ("Polymarket", "Taxminator"):
         return item.container
     if item.author:
         return item.author

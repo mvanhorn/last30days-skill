@@ -1,0 +1,237 @@
+{
+  "version": 1,
+  "generatedAt": "2026-09-07T12:00:00.000Z",
+  "count": 5,
+  "markets": [
+    {
+      "id": "cmtq71spd005rid04wavhrp4g",
+      "slug": "uzbekistan-iran-wcq-2026-09-10",
+      "url": "https://taxminator.uz/markets/uzbekistan-iran-wcq-2026-09-10",
+      "category": "FOOTBALL",
+      "status": "OPEN",
+      "title": {
+        "uz": "Özbekiston Eron bilan bo'ladigan saralaş öyinida ğalaba qozonadimi?",
+        "ru": "Узбекистан обыграет Иран в отборочном матче?",
+        "en": "Will Uzbekistan beat Iran in the World Cup qualifier?"
+      },
+      "group": {
+        "key": "wcq-2026-asia",
+        "title": {
+          "uz": "2026 Jahon chempionati saralaşi",
+          "ru": "Отбор ЧМ-2026",
+          "en": "2026 World Cup qualifying"
+        }
+      },
+      "opensAt": "2026-08-28T09:00:00.000Z",
+      "closesAt": "2026-09-10T14:00:00.000Z",
+      "resolveAt": "2026-09-10T20:00:00.000Z",
+      "resolvedAt": null,
+      "updatedAt": "2026-09-06T18:22:04.118Z",
+      "createdAt": "2026-08-28T09:00:00.000Z",
+      "pointsForCorrect": 15,
+      "totalPredictions": 184,
+      "crowdRevealed": true,
+      "outcomes": [
+        {
+          "id": "o-uzb-win",
+          "label": { "uz": "Özbekiston ğalabasi", "ru": "Победа Узбекистана", "en": "Uzbekistan win" },
+          "emoji": "🇺🇿",
+          "isWinner": false,
+          "votes": 106,
+          "votePercent": 58
+        },
+        {
+          "id": "o-draw",
+          "label": { "uz": "Durang", "ru": "Ничья", "en": "Draw" },
+          "emoji": "🤝",
+          "isWinner": false,
+          "votes": 44,
+          "votePercent": 24
+        },
+        {
+          "id": "o-irn-win",
+          "label": { "uz": "Eron ğalabasi", "ru": "Победа Ирана", "en": "Iran win" },
+          "emoji": "🇮🇷",
+          "isWinner": false,
+          "votes": 34,
+          "votePercent": 18
+        }
+      ]
+    },
+    {
+      "id": "cmtq71spd005rid04wavhrp4h",
+      "slug": "abdusattorov-grand-swiss-top3",
+      "url": "https://taxminator.uz/markets/abdusattorov-grand-swiss-top3",
+      "category": "CHESS",
+      "status": "OPEN",
+      "title": {
+        "uz": "Nodirbek Abdusattorov Grand Swiss turnirida uçlikka kiradimi?",
+        "ru": "Нодирбек Абдусатторов войдёт в тройку на Grand Swiss?",
+        "en": "Will Nodirbek Abdusattorov finish top three at the Grand Swiss?"
+      },
+      "group": null,
+      "opensAt": "2026-08-20T10:00:00.000Z",
+      "closesAt": "2026-09-19T09:00:00.000Z",
+      "resolveAt": "2026-09-20T09:00:00.000Z",
+      "resolvedAt": null,
+      "updatedAt": "2026-09-05T07:41:12.902Z",
+      "createdAt": "2026-08-20T10:00:00.000Z",
+      "pointsForCorrect": 20,
+      "totalPredictions": 63,
+      "crowdRevealed": true,
+      "outcomes": [
+        {
+          "id": "o-yes",
+          "label": { "uz": "Ha", "ru": "Да", "en": "Yes" },
+          "emoji": "✅",
+          "isWinner": false,
+          "votes": 27,
+          "votePercent": 43
+        },
+        {
+          "id": "o-no",
+          "label": { "uz": "Yöq", "ru": "Нет", "en": "No" },
+          "emoji": "❌",
+          "isWinner": false,
+          "votes": 36,
+          "votePercent": 57
+        }
+      ]
+    },
+    {
+      "id": "cmtq71spd005rid04wavhrp4i",
+      "slug": "som-usd-rate-october-2026",
+      "url": "https://taxminator.uz/markets/som-usd-rate-october-2026",
+      "category": "ECONOMY",
+      "status": "OPEN",
+      "title": {
+        "uz": "Oktabr oxirida dollar kursi 13 500 so'mdan oşadimi?",
+        "ru": "Курс доллара превысит 13 500 сумов к концу октября?",
+        "en": "Will the som-dollar rate pass 13,500 by the end of October?"
+      },
+      "group": null,
+      "opensAt": "2026-09-01T05:00:00.000Z",
+      "closesAt": "2026-10-31T18:00:00.000Z",
+      "resolveAt": "2026-11-01T06:00:00.000Z",
+      "resolvedAt": null,
+      "updatedAt": "2026-09-07T05:15:00.000Z",
+      "createdAt": "2026-09-01T05:00:00.000Z",
+      "pointsForCorrect": 10,
+      "totalPredictions": 3,
+      "crowdRevealed": false,
+      "outcomes": [
+        {
+          "id": "o-above",
+          "label": { "uz": "Ha, oşadi", "ru": "Да, превысит", "en": "Yes, above" },
+          "emoji": "📈",
+          "isWinner": false,
+          "votes": null,
+          "votePercent": null
+        },
+        {
+          "id": "o-below",
+          "label": { "uz": "Yöq, oşmaydi", "ru": "Нет, не превысит", "en": "No, below" },
+          "emoji": "📉",
+          "isWinner": false,
+          "votes": null,
+          "votePercent": null
+        }
+      ]
+    },
+    {
+      "id": "cmtq71spd005rid04wavhrp4j",
+      "slug": "ewc-2026-dota2-champion",
+      "url": "https://taxminator.uz/markets/ewc-2026-dota2-champion",
+      "category": "ESPORTS",
+      "status": "RESOLVED",
+      "title": {
+        "uz": "Esports World Cup 2026 Dota 2 çempioni kim böladi?",
+        "ru": "Кто станет чемпионом Esports World Cup 2026 по Dota 2?",
+        "en": "Who wins the Esports World Cup 2026 Dota 2 title?"
+      },
+      "group": {
+        "key": "ewc-2026",
+        "title": {
+          "uz": "Esports World Cup 2026",
+          "ru": "Esports World Cup 2026",
+          "en": "Esports World Cup 2026"
+        }
+      },
+      "opensAt": "2026-08-01T09:00:00.000Z",
+      "closesAt": "2026-08-29T12:00:00.000Z",
+      "resolveAt": "2026-08-30T12:00:00.000Z",
+      "resolvedAt": "2026-08-30T13:04:55.221Z",
+      "updatedAt": "2026-08-30T13:04:55.221Z",
+      "createdAt": "2026-08-01T09:00:00.000Z",
+      "pointsForCorrect": 25,
+      "totalPredictions": 97,
+      "crowdRevealed": true,
+      "outcomes": [
+        {
+          "id": "o-teamfalcons",
+          "label": { "uz": "Team Falcons", "ru": "Team Falcons", "en": "Team Falcons" },
+          "emoji": "🦅",
+          "isWinner": true,
+          "votes": 52,
+          "votePercent": 54
+        },
+        {
+          "id": "o-tundra",
+          "label": { "uz": "Tundra Esports", "ru": "Tundra Esports", "en": "Tundra Esports" },
+          "emoji": "🧊",
+          "isWinner": false,
+          "votes": 28,
+          "votePercent": 29
+        },
+        {
+          "id": "o-other",
+          "label": { "uz": "Boşqa jamoa", "ru": "Другая команда", "en": "Another team" },
+          "emoji": "❓",
+          "isWinner": false,
+          "votes": 17,
+          "votePercent": 17
+        }
+      ]
+    },
+    {
+      "id": "cmtq71spd005rid04wavhrp4k",
+      "slug": "eurovision-2026-uzbekistan-debut",
+      "url": "https://taxminator.uz/markets/eurovision-2026-uzbekistan-debut",
+      "category": "ENTERTAINMENT",
+      "status": "CLOSED",
+      "title": {
+        "uz": "Özbekiston 2026 yilgi Evrovidenieda qatnaşadimi?",
+        "ru": "Узбекистан выступит на Евровидении-2026?",
+        "en": "Will Uzbekistan take part in Eurovision 2026?"
+      },
+      "group": null,
+      "opensAt": "2026-07-15T08:00:00.000Z",
+      "closesAt": "2026-09-01T08:00:00.000Z",
+      "resolveAt": "2026-09-15T08:00:00.000Z",
+      "resolvedAt": null,
+      "updatedAt": "2026-09-01T08:00:00.000Z",
+      "createdAt": "2026-07-15T08:00:00.000Z",
+      "pointsForCorrect": 10,
+      "totalPredictions": 41,
+      "crowdRevealed": true,
+      "outcomes": [
+        {
+          "id": "o-yes",
+          "label": { "uz": "Ha", "ru": "Да", "en": "Yes" },
+          "emoji": "✅",
+          "isWinner": false,
+          "votes": 9,
+          "votePercent": 22
+        },
+        {
+          "id": "o-no",
+          "label": { "uz": "Yöq", "ru": "Нет", "en": "No" },
+          "emoji": "❌",
+          "isWinner": false,
+          "votes": 32,
+          "votePercent": 78
+        }
+      ]
+    }
+  ]
+}

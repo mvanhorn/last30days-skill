@@ -320,3 +320,75 @@ def test_raw_results_only_footer_includes_freshness_line():
     assert "🕒" in text
     assert "no usable dated evidence" in text
     assert "Raw results saved to /tmp/l30d-scratch/topic-raw.md" in text
+
+
+def _taxminator_item(item_id="tx1", outcome_prices=None, predictors=184):
+    return schema.SourceItem(
+        item_id=item_id,
+        source="taxminator",
+        title="Will Uzbekistan beat Iran in the World Cup qualifier?",
+        body="body",
+        url="https://taxminator.uz/markets/uzb-iran?utm_source=last30days&utm_medium=skill",
+        container="Taxminator",
+        engagement={"volume": predictors},
+        snippet=f"{predictors} predictors",
+        metadata={
+            "question": "Will Uzbekistan beat Iran in the World Cup qualifier?",
+            "outcome_prices": outcome_prices if outcome_prices is not None else [("Uzbekistan win", 0.58)],
+            "crowd_revealed": True,
+            "predictors": predictors,
+        },
+    )
+
+
+def test_footer_renders_taxminator_with_its_crowd_share():
+    report = _report(
+        items_by_source={"taxminator": [_taxminator_item()]},
+        source_status={
+            "taxminator": schema.SourceOutcome(
+                source="taxminator", state=health.OK, items_returned=1
+            ),
+        },
+    )
+
+    text = render.render_compact(report)
+
+    assert "\U0001F1FA\U0001F1FF Taxminator: 1 market" in text
+    assert "58%" in text
+    # Points, not money: no currency ever reaches the footer for this source.
+    assert "$" not in text.split("Taxminator")[1].split("\n")[0]
+
+
+def test_footer_taxminator_line_survives_a_withheld_crowd_split():
+    """Below the reveal floor there is no split - the count still shows."""
+    report = _report(
+        items_by_source={
+            "taxminator": [_taxminator_item(outcome_prices=[], predictors=3)]
+        },
+        source_status={
+            "taxminator": schema.SourceOutcome(
+                source="taxminator", state=health.OK, items_returned=1
+            ),
+        },
+    )
+
+    text = render.render_compact(report)
+
+    assert "\U0001F1FA\U0001F1FF Taxminator: 1 market" in text
+
+
+def test_footer_omits_taxminator_when_it_returned_nothing():
+    report = _report(
+        items_by_source={"reddit": [_reddit_item()]},
+        source_status={
+            "reddit": schema.SourceOutcome(source="reddit", state=health.OK, items_returned=1),
+            "taxminator": schema.SourceOutcome(
+                source="taxminator", state=schema.NO_RESULTS
+            ),
+        },
+    )
+
+    text = render.render_compact(report)
+    # No emoji-tree line; the zero-result signal stays in the evidence block.
+    assert "\U0001F1FA\U0001F1FF Taxminator" not in text
+    assert "Taxminator: 0 items (no results)" in text

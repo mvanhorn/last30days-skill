@@ -1182,7 +1182,7 @@ def findings_from_report(
     supplement_sources = (
         list(report.items_by_source)
         if not report.ranked_candidates
-        else ["hackernews", "polymarket"]
+        else ["hackernews", "polymarket", "taxminator"]
     )
     for source_name in supplement_sources:
         if source_name not in report.items_by_source:

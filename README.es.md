@@ -71,6 +71,7 @@ Si te vas a reunir con un CEO, ¿te has leído todos sus tuits y todas sus trans
 | **Instagram Reels** | La mirada de los influencers, con transcripción de lo que dicen. La señal de la cultura visual. |
 | **Hacker News** | El consenso de los desarrolladores. 825 puntos, 899 comentarios. Donde la gente técnica discute de verdad. |
 | **Polymarket** | No son opiniones. Son cuotas. Respaldadas por dinero real. 96 % de probabilidad en ventas de un álbum. 4 % en una adquisición. |
+| **Taxminator** | El mercado de predicciones uzbeko. Pronósticos colectivos sobre fútbol centroasiático, ajedrez, esports y economía; trilingüe (uz/ru/en). Puntos, no dinero: es el porcentaje de pronosticadores, no una apuesta. |
 | **GitHub** | Para personas: ritmo de PR, mejores repositorios por estrellas, notas de versión. Para temas: issues y discusiones. |
 | **Digg** | Grupos de noticias seleccionados del ranking AI 1000 de Digg (unas 1000 cuentas de IA con mucha señal en X), con citas atribuibles integradas y sin necesidad de autenticarte en X. Se activa solo cuando `digg-pp-cli` está en el PATH. |
 | **arXiv** | Los artículos científicos que hay detrás del ruido. Investigación nueva dentro de la ventana, gratis y sin clave de API. Se activa solo cuando `arxiv-pp-cli` está en el PATH (la configuración inicial lo instala). |
@@ -287,7 +288,7 @@ Estas plataformas no tienen ninguna relación entre sí. X no sabe lo que piensa
 
 | Fuentes | Lo que necesitas | Coste |
 |---------|---------------|------|
-| Reddit (con comentarios) + HN + Polymarket + GitHub + StockTwits | Nada | Gratis |
+| Reddit (con comentarios) + HN + Polymarket + Taxminator + GitHub + StockTwits | Nada | Gratis |
 | arXiv + Techmeme | CLI gratuitas, instaladas automáticamente por la configuración inicial | Gratis |
 | X / Twitter | Inicia sesión en x.com en cualquier navegador, o define `XQUIK_API_KEY` / `XAI_API_KEY` | Las cookies del navegador son gratis; las claves dependen del proveedor |
 | YouTube | `brew install yt-dlp` | Gratis |
