@@ -467,5 +467,141 @@ def test_filter_items_against_topic_is_a_noop_without_a_topic():
     assert taxminator.filter_items_against_topic("", items) is items
 
 
+# === Cache lifetime ===
+
+
+def _one_percent_market(percent):
+    return make_market(
+        outcomes=[
+            {
+                "id": "o-yes",
+                "label": {"uz": "Ha", "ru": "Да", "en": "Yes"},
+                "votes": 30,
+                "votePercent": percent,
+            },
+            {
+                "id": "o-no",
+                "label": {"uz": "Yöq", "ru": "Нет", "en": "No"},
+                "votes": 20,
+                "votePercent": 40,
+            },
+        ]
+    )
+
+
+def test_cache_entry_expires_after_its_ttl(monkeypatch):
+    """A long-lived host must not serve one snapshot past the TTL."""
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(taxminator.time, "monotonic", lambda: clock["now"])
+    market = make_market()
+    with patch.object(http, "request", return_value={"markets": [market]}) as request:
+        taxminator.search_taxminator("Uzbekistan", "2026-08-08", "2026-09-07")
+        clock["now"] += taxminator._FETCH_CACHE_TTL_SECONDS + 1
+        taxminator.search_taxminator("Uzbekistan", "2026-08-08", "2026-09-07")
+    assert request.call_count == 4  # the expired entry was refetched
+
+
+def test_cache_entry_survives_inside_its_ttl(monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr(taxminator.time, "monotonic", lambda: clock["now"])
+    market = make_market()
+    with patch.object(http, "request", return_value={"markets": [market]}) as request:
+        taxminator.search_taxminator("Uzbekistan", "2026-08-08", "2026-09-07")
+        clock["now"] += taxminator._FETCH_CACHE_TTL_SECONDS - 1
+        taxminator.search_taxminator("Uzbekistan", "2026-08-08", "2026-09-07")
+    assert request.call_count == 2
+
+
+def test_clear_cache_forces_a_refetch():
+    market = make_market()
+    with patch.object(http, "request", return_value={"markets": [market]}) as request:
+        taxminator.search_taxminator("Uzbekistan", "2026-08-08", "2026-09-07")
+        taxminator.clear_cache()
+        taxminator.search_taxminator("Uzbekistan", "2026-08-08", "2026-09-07")
+    assert request.call_count == 4
+
+
+def test_two_top_level_runs_refetch():
+    """A second top-level pipeline run must not inherit the first run's snapshot."""
+    from lib import pipeline
+
+    def _top_level_run():
+        pipeline.run(
+            topic="uzbekistan football",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="quick",
+            requested_sources=["reddit"],
+            mock=True,
+        )
+
+    market = make_market()
+    with patch.object(http, "request", return_value={"markets": [market]}) as request:
+        _top_level_run()
+        taxminator.search_taxminator("Uzbekistan", "2026-08-08", "2026-09-07")
+        _top_level_run()
+        taxminator.search_taxminator("Uzbekistan", "2026-08-08", "2026-09-07")
+    assert request.call_count == 4
+
+
+def test_fanout_clears_the_market_snapshot():
+    from lib import fanout, schema
+
+    taxminator._FETCH_CACHE[("2026-08-08", 500)] = (taxminator.time.monotonic(), {"markets": []})
+
+    def _report(label):
+        return schema.Report(topic=label)
+
+    fanout.run_competitor_fanout(
+        main_topic="Uzbekistan",
+        main_runner=lambda: _report("Uzbekistan"),
+        competitors=["Iran"],
+        competitor_runner=lambda entity: _report(entity),
+    )
+    assert taxminator._FETCH_CACHE == {}
+
+
+# === Malformed vote percentages ===
+
+
+@pytest.mark.parametrize(
+    "percent",
+    [150, -5, float("nan"), float("inf"), float("-inf"), "abc", None, {"pct": 60}],
+)
+def test_invalid_vote_percent_is_dropped(percent):
+    """A share that is not a finite 0..100 number never reaches the renderer."""
+    items = parse([_one_percent_market(percent)], topic="Uzbekistan")
+    assert len(items) == 1
+    shares = items[0]["outcome_prices"]
+    assert [name for name, _ in shares] == ["No"]
+    assert shares[0][1] == 0.4
+
+
+def test_valid_boundary_percentages_are_kept():
+    for percent in (0, 100, "60"):
+        items = parse([_one_percent_market(percent)], topic="Uzbekistan")
+        shares = dict(items[0]["outcome_prices"])
+        assert "Yes" in shares
+
+
+def test_all_invalid_percentages_leave_the_split_empty():
+    market = make_market(
+        outcomes=[
+            {"id": "o-yes", "label": {"en": "Yes"}, "votePercent": 150},
+            {"id": "o-no", "label": {"en": "No"}, "votePercent": float("nan")},
+        ]
+    )
+    items = parse([market], topic="Uzbekistan")
+    assert items[0]["outcome_prices"] == []
+
+
+def test_invalid_percentage_logs_once_per_market():
+    logged = []
+    with patch.object(taxminator.log, "source_log", side_effect=lambda *a, **k: logged.append((a, k))):
+        parse([_one_percent_market(150)], topic="Uzbekistan")
+    drops = [entry for entry in logged if "invalid vote percentage" in entry[0][1]]
+    assert len(drops) == 1
+    assert drops[0][1].get("tty_only") is False
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

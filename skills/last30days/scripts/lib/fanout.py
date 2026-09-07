@@ -16,7 +16,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Callable
 
-from . import log, schema, youtube_yt
+from . import log, schema, taxminator, youtube_yt
 
 # Sub-runs hit the same upstream APIs as the main topic. Cap parallelism so a
 # 6-way fan-out does not stampede a single backend's rate limit.
@@ -52,8 +52,10 @@ def run_competitor_fanout(
         return [(main_topic, report)]
 
     # One clear for the whole comparison so entity sub-runs share the YouTube
-    # search cache without inheriting a prior run's results in this process.
+    # search cache and the Taxminator market snapshot without inheriting a
+    # prior run's results in this process.
     youtube_yt.reset_search_cache()
+    taxminator.clear_cache()
 
     workers = min(len(competitors) + 1, MAX_PARALLEL_SUBRUNS)
 

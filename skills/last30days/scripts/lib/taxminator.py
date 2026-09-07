@@ -20,6 +20,7 @@ cannot drift apart on what counts as on-topic.
 
 import math
 import re
+import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote
 
@@ -55,7 +56,14 @@ _LANGS = ("en", "uz", "ru")
 
 # Per-process fetch cache. The markets list is topic-independent, so a run that
 # fans out into several subqueries must not re-download it once per subquery.
-_FETCH_CACHE: Dict[tuple, Dict[str, Any]] = {}
+#
+# Two things bound its staleness. Entries expire after
+# ``_FETCH_CACHE_TTL_SECONDS`` (matching the endpoint's own ``s-maxage``), and
+# ``clear_cache()`` is called at every top-level run boundary. Without both, a
+# long-lived host (MCP server, watchlist daemon) would serve one process's first
+# snapshot forever. Values are ``(monotonic stamp, payload)``.
+_FETCH_CACHE_TTL_SECONDS = 300
+_FETCH_CACHE: Dict[tuple, tuple] = {}
 
 
 def _log(msg: str):
@@ -63,7 +71,13 @@ def _log(msg: str):
 
 
 def clear_cache() -> None:
-    """Drop the in-process fetch cache (tests, and long-lived hosts)."""
+    """Drop the in-process fetch cache.
+
+    Call at the start of each top-level research run (the pipeline does) so a
+    long-lived process does not reuse one run's market snapshot in the next.
+    Within a single run the cache stays hot, so a comparison fan-out still
+    downloads the list once.
+    """
     _FETCH_CACHE.clear()
 
 
@@ -185,7 +199,10 @@ def _fetch_all(from_date: str, limit: int) -> Dict[str, Any]:
     cache_key = (from_date, limit)
     cached = _FETCH_CACHE.get(cache_key)
     if cached is not None:
-        return cached
+        stored_at, payload = cached
+        if time.monotonic() - stored_at < _FETCH_CACHE_TTL_SECONDS:
+            return payload
+        del _FETCH_CACHE[cache_key]
 
     open_result = _fetch("open", since=None, limit=limit)
     resolved_result = _fetch("resolved", since=from_date or None, limit=limit)
@@ -202,7 +219,7 @@ def _fetch_all(from_date: str, limit: int) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"markets": list(merged.values())}
     if errors and not payload["markets"]:
         payload["error"] = "; ".join(errors[:2])
-    _FETCH_CACHE[cache_key] = payload
+    _FETCH_CACHE[cache_key] = (time.monotonic(), payload)
     return payload
 
 
@@ -300,10 +317,16 @@ def _outcome_shares(market: Dict[str, Any]) -> List[tuple]:
 
     Empty when the crowd split is withheld (below the reveal floor), which is
     a real state of the product, not an error.
+
+    A percentage that is not a finite number in [0, 100] is dropped rather than
+    rendered: the alternative is a brief that shows "150%", "-5%" or "nan%" as
+    crowd evidence. A dropped outcome is simply absent, i.e. withheld for that
+    outcome, and the market keeps whatever shares did validate.
     """
     if not market.get("crowdRevealed"):
         return []
     pairs = []
+    invalid = 0
     for outcome in market.get("outcomes") or []:
         if not isinstance(outcome, dict):
             continue
@@ -311,9 +334,14 @@ def _outcome_shares(market: Dict[str, Any]) -> List[tuple]:
         if percent is None:
             continue
         try:
-            share = float(percent) / 100.0
+            numeric_percent = float(percent)
         except (TypeError, ValueError):
+            invalid += 1
             continue
+        if not math.isfinite(numeric_percent) or not 0.0 <= numeric_percent <= 100.0:
+            invalid += 1
+            continue
+        share = numeric_percent / 100.0
         label = outcome.get("label") or {}
         if isinstance(label, dict):
             name = str(
@@ -322,6 +350,12 @@ def _outcome_shares(market: Dict[str, Any]) -> List[tuple]:
         else:
             name = str(label).strip()
         pairs.append((name or "Outcome", share))
+    if invalid:
+        market_id = str(market.get("id") or market.get("slug") or "?").strip() or "?"
+        _log(
+            f"Dropped {invalid} invalid vote percentage(s) on market {market_id} "
+            f"(not a finite number in 0..100)"
+        )
     pairs.sort(key=lambda pair: pair[1], reverse=True)
     return pairs
 
