@@ -29,7 +29,7 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 - Documented that the SessionStart config hook ships only with the Claude Code plugin install; on npx and other hookless installs there is no hook and the engine creates the memory directory itself on first save. ([#1100](https://github.com/mvanhorn/last30days-skill/issues/1100))
 - Posts fetched via `--ig-creators` or TikTok `--creators` now reach the report: named creator accounts count as first-party provenance in the relevance prune, scoped to each flag's own platform so a same-name account elsewhere still faces the floor, and prune drops are logged per stream with the dropped count and floor. ([#1101](https://github.com/mvanhorn/last30days-skill/issues/1101))
 - Corrected the stated LAW count in the SKILL.md formatting-authority note to match the eleven LAWs defined below it. ([#1102](https://github.com/mvanhorn/last30days-skill/issues/1102))
-- Use Bluesky refresh tokens to recover expired search sessions before falling back to a new login, while keeping unauthorized retries bounded. ([#6034](https://github.com/mvanhorn/last30days-skill/issues/6034))
+- Use Bluesky refresh tokens to recover expired search sessions before falling back to a new login, while keeping unauthorized retries bounded. ([#1065](https://github.com/mvanhorn/last30days-skill/pull/1065))
 
 
 ## [3.23.0] - 2026-09-01
