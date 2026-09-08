@@ -72,7 +72,8 @@ case "$ACTION" in
   list)
     echo "Stored last30days-* keychain items:"
     for key in "${ALL_KEYS[@]}"; do
-      if security find-generic-password -a "$USER" -s "${PREFIX}${key}" -w >/dev/null 2>&1; then
+      # Existence checks do not need to decrypt or return the password.
+      if security find-generic-password -a "$USER" -s "${PREFIX}${key}" >/dev/null 2>&1; then
         echo "  $key"
       fi
     done
@@ -99,8 +100,12 @@ fi
 
 added=0; skipped=0; replaced=0
 for key in "${TARGETS[@]}"; do
-  existing="$(security find-generic-password -a "$USER" -s "${PREFIX}${key}" -w 2>/dev/null || true)"
-  if [[ -n "$existing" && "$REPLACE" -eq 0 ]]; then
+  if security find-generic-password -a "$USER" -s "${PREFIX}${key}" >/dev/null 2>&1; then
+    existed=1
+  else
+    existed=0
+  fi
+  if [[ "$existed" -eq 1 && "$REPLACE" -eq 0 ]]; then
     printf "  %-28s (set, skipping — use --replace to overwrite)\n" "$key"
     skipped=$((skipped + 1))
     continue
@@ -113,7 +118,7 @@ for key in "${TARGETS[@]}"; do
     continue
   fi
   security add-generic-password -U -a "$USER" -s "${PREFIX}${key}" -w "$value"
-  if [[ -n "$existing" ]]; then
+  if [[ "$existed" -eq 1 ]]; then
     replaced=$((replaced + 1))
   else
     added=$((added + 1))

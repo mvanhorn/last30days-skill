@@ -10,7 +10,9 @@ Covers:
 
 from __future__ import annotations
 
+import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from unittest import mock
@@ -20,6 +22,66 @@ import pytest
 from lib import env
 
 SETUP_KEYCHAIN_SH = Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts" / "setup-keychain.sh"
+
+
+def _plaintext_presence_checks(script: str) -> list[str]:
+    # Join shell continuations before tokenizing so a split -w cannot hide.
+    logical = re.sub(r"\\\r?\n", " ", script)
+    offenders = []
+    for line in logical.splitlines():
+        code = " ".join(shlex.split(line, comments=True))
+        if re.search(r"find-generic-password\b.*\s-[wg](?=\s|[;>|&]|$)", code):
+            offenders.append(line)
+    return offenders
+
+
+def test_setup_presence_checks_do_not_request_plaintext():
+    assert not _plaintext_presence_checks(SETUP_KEYCHAIN_SH.read_text(encoding="utf-8"))
+
+
+def test_presence_guard_detects_multiline_password_flags():
+    script = (
+        "security find-generic-password \\\n"
+        '    -a "$USER" \\\n'
+        "    -w >/dev/null"
+    )
+    assert _plaintext_presence_checks(script)
+    assert not _plaintext_presence_checks('# security find-generic-password -w\n')
+
+
+@pytest.mark.parametrize("existed,replace,value,summary", [
+    (True, False, "", "added=0 replaced=0 skipped=1"),
+    (False, False, "DUMMY-VALUE\n", "added=1 replaced=0 skipped=0"),
+    (True, True, "DUMMY-VALUE\n", "added=0 replaced=1 skipped=0"),
+])
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell fixture")
+def test_setup_presence_and_counters_use_stub_security(tmp_path, existed, replace, value, summary):
+    stub = tmp_path / "security"
+    stub.write_text(
+        '#!/bin/sh\n'
+        'printf "%s\\n" "$1" >> "$STUB_LOG"\n'
+        'case "$1" in\n'
+        '  find-generic-password) exit "$STUB_STATUS" ;;\n'
+        '  add-generic-password) exit 0 ;;\n'
+        '  *) exit 99 ;;\n'
+        'esac\n', encoding="utf-8",
+    )
+    stub.chmod(0o755)
+    log_path = tmp_path / "calls"
+    command = ["/bin/bash", str(SETUP_KEYCHAIN_SH)]
+    if replace:
+        command.append("--replace")
+    command.append("OPENAI_API_KEY")
+    result = subprocess.run(
+        command, input=value, text=True, capture_output=True, timeout=5,
+        env={"PATH": str(tmp_path), "USER": "fixture-user", "OSTYPE": "darwin",
+             "STUB_LOG": str(log_path), "STUB_STATUS": "0" if existed else "44"},
+    )
+    assert result.returncode == 0, result.stderr
+    assert summary in result.stdout
+    assert "DUMMY-VALUE" not in result.stdout + result.stderr
+    calls = log_path.read_text().splitlines()
+    assert calls == ["find-generic-password"] + ([] if existed and not replace else ["add-generic-password"])
 
 # ---------------------------------------------------------------------------
 # _load_keychain unit tests
