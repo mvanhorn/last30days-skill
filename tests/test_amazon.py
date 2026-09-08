@@ -45,7 +45,10 @@ def search_record(**over):
 
 
 def review_record(days_ago: int, rating: int, **over):
-    posted = (TODAY - timedelta(days=days_ago)).strftime("%B %-d, %Y")
+    review_date = TODAY - timedelta(days=days_ago)
+    # ``%-d`` is POSIX-only and raises on Windows.  Build the day component
+    # from the datetime so this fixture exercises the same payload everywhere.
+    posted = f"{review_date.strftime('%B')} {review_date.day}, {review_date.year}"
     base = {
         "review_id": f"R{days_ago}{rating}",
         # Live shape: the date is doubled and prose-wrapped.
@@ -616,7 +619,9 @@ class _Item:
 
 
 class TestSourceItemEnrichment:
-    def test_reviews_and_stats_land_on_item_metadata(self):
+    def test_reviews_and_stats_land_on_item_metadata(self, monkeypatch):
+        # Review records are relative to the fixture date, not the wall clock.
+        monkeypatch.setattr(amazon, "_today", lambda: TODAY)
         items = [_Item("B000000001"), _Item("B000000002")]
         amazon.enrich_source_items(
             items, depth="default", keyword="bentgo lunch box",

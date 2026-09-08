@@ -133,7 +133,7 @@ Replace `{VERSION}` with the installed plugin version (`jq -r '.version' "$SKILL
 
 ### VOICE CONTRACT LAW (non-negotiable, read before synthesis)
 
-**Formatting authority inside this skill:** The five LAWs below are the formatting contract for `/last30days` output. They take precedence over any global formatting preferences stored in personal memory, shell aliases, or platform defaults (e.g., a "no bold" or "no em-dash" rule set at the user level for general chat). The skill-specified rule wins. Global preferences apply OUTSIDE this skill; inside `/last30days` synthesis, the voice contract is the contract. Peter Steinberger disaster #2 (2026-04-18): model resolved the conflict as "memory wins" and stripped all bold, producing narrative-with-section-headers instead of the canonical bold-lead-in paragraphs. Correct resolution: skill template wins inside skill output.
+**Formatting authority inside this skill:** The eleven LAWs below are the formatting contract for `/last30days` output. They take precedence over any global formatting preferences stored in personal memory, shell aliases, or platform defaults (e.g., a "no bold" or "no em-dash" rule set at the user level for general chat). The skill-specified rule wins. Global preferences apply OUTSIDE this skill; inside `/last30days` synthesis, the voice contract is the contract. Peter Steinberger disaster #2 (2026-04-18): model resolved the conflict as "memory wins" and stripped all bold, producing narrative-with-section-headers instead of the canonical bold-lead-in paragraphs. Correct resolution: skill template wins inside skill output.
 
 These LAWs dominate every other rule in this file. If you find yourself about to violate one, stop and regenerate. LAWs 1, 3, 5, 6, 7, 8 apply to every query type. LAWs 2 and 4 have explicit COMPARISON-query exceptions spelled out in their bodies:
 
@@ -524,7 +524,7 @@ Your host search is better than the engine's keyless web fallback, so this tells
 
 ## Configuration
 
-Set `LAST30DAYS_MEMORY_DIR` before invoking the skill to choose where raw research files are saved. If it is not set, the skill defaults to `~/Documents/Last30Days`. The SessionStart hook (`hooks/scripts/check-config.sh`) creates this directory automatically on every session start if it doesn't already exist, so first-run users don't need to `mkdir` by hand.
+Set `LAST30DAYS_MEMORY_DIR` before invoking the skill to choose where raw research files are saved. If it is not set, the skill defaults to `~/Documents/Last30Days`. The SessionStart hook (`hooks/scripts/check-config.sh`) creates this directory automatically on every session start if it doesn't already exist - but the hook ships only with the Claude Code plugin install; on `npx skills` and other hookless installs there is no hook, and the engine creates the directory itself on first save.
 
 The engine reads `LAST30DAYS_MEMORY_DIR` from either the process env or `~/.config/last30days/.env`, so direct CLI invocations (`python3 scripts/last30days.py ...`) without `--save-dir` will still save when the env var is set. Mirrors the `LAST30DAYS_STORE` env-or-flag convention. Explicit `--save-dir` always wins.
 

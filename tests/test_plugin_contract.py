@@ -126,5 +126,16 @@ class TestPluginContract(unittest.TestCase):
 
         self.assertEqual([], offenders)
 
+    def test_session_start_hook_uses_bare_claude_plugin_root(self) -> None:
+        # Claude Code's missing-plugin-root guard matches the exact literal
+        # ${CLAUDE_PLUGIN_ROOT}. Defaults like ${CLAUDE_PLUGIN_ROOT:-.} slip past
+        # that check and resolve relative to the session cwd (issue #1074).
+        hooks = _json(ROOT / "hooks" / "hooks.json")
+        command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
+        self.assertIn("${CLAUDE_PLUGIN_ROOT}", command)
+        self.assertNotIn(":-", command)
+        self.assertNotIn("extensionPath", command)
+        self.assertNotIn(":-.}", command)
+
 if __name__ == "__main__":
     unittest.main()
