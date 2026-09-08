@@ -3814,6 +3814,40 @@ def _run_supplemental_searches(
     # with the user's browser cookies; xquik runs the same lanes over its REST
     # API. All items land under the single "x" slug.
     x_slug = "x"
+
+    def _record_handle_lane_failures(lane: str, failures: list[str]) -> bool:
+        """Surface handle-lane failures the adapter would otherwise swallow.
+
+        bird and xquik report a per-handle failure by returning no items, so an
+        empty lane is indistinguishable from a subject who simply did not post.
+        Left unrecorded, the run reports the X source as a clean zero and the
+        report states as fact that nothing was posted.
+
+        Returns True when the failure is auth-shaped, so the caller's existing
+        AUTH_FAILED branch owns the message and the fix hint. Everything else
+        (timeout, spawn failure, non-zero exit, bad JSON) is recorded here.
+        ``record_failure`` keeps already-returned items as partial.
+        """
+        if not failures:
+            return False
+        detail = "; ".join(failures[:3])
+        if len(failures) > 3:
+            detail += f" (+{len(failures) - 3} more)"
+        # Only xquik reports an auth-shaped handle-lane failure; bird's are all
+        # transport (timeout / spawn / exit / JSON). Match the two phrases
+        # xquik._execute_search actually emits rather than adding a fifth
+        # copy of this repo's auth-marker vocabulary.
+        lowered = detail.lower()
+        if "auth failed" in lowered or "key unpaid" in lowered:
+            return True
+        bundle.record_failure(
+            x_slug,
+            health.UNREACHABLE,
+            f"Phase 2 {lane}-lane: {detail}",
+            attempted=True,
+        )
+        return False
+
     chain = env.x_backend_chain(config)
     # Trust an explicit runtime backend as the head of the chain.
     pinned = runtime.x_search_backend
@@ -3862,19 +3896,37 @@ def _run_supplemental_searches(
     elif primary == "bird":
         def _from_lane(hs: list, count: int, and_topic: bool = False) -> tuple[list, bool]:
             # bird_x.search_handles doesn't support and_topic yet
-            return bird_x.search_handles(hs, topic, from_date, count_per=count), False
+            failures: list[str] = []
+            items = bird_x.search_handles(
+                hs, topic, from_date, count_per=count, failure_out=failures,
+            )
+            return items, _record_handle_lane_failures("FROM", failures)
 
         def _about_lane(hs: list, count: int) -> tuple[list, bool]:
-            return bird_x.search_mentions(hs, from_date, count_per=count), False
+            failures: list[str] = []
+            items = bird_x.search_mentions(
+                hs, from_date, count_per=count, failure_out=failures,
+            )
+            return items, _record_handle_lane_failures("ABOUT", failures)
     elif primary == "xquik":
         xquik_token = env.get_xquik_token(config)
 
         def _from_lane(hs: list, count: int, and_topic: bool = False) -> tuple[list, bool]:
             # xquik.search_handles doesn't support and_topic yet
-            return xquik.search_handles(hs, topic, from_date, to_date, count_per=count, token=xquik_token), False
+            failures: list[str] = []
+            items = xquik.search_handles(
+                hs, topic, from_date, to_date, count_per=count, token=xquik_token,
+                failure_out=failures,
+            )
+            return items, _record_handle_lane_failures("FROM", failures)
 
         def _about_lane(hs: list, count: int) -> tuple[list, bool]:
-            return xquik.search_mentions(hs, from_date, to_date, topic=topic, count_per=count, token=xquik_token), False
+            failures: list[str] = []
+            items = xquik.search_mentions(
+                hs, from_date, to_date, topic=topic, count_per=count,
+                token=xquik_token, failure_out=failures,
+            )
+            return items, _record_handle_lane_failures("ABOUT", failures)
     else:
         return  # primary X backend has no handle-lane support (xai/xurl) or none configured
 
@@ -3933,7 +3985,7 @@ def _run_supplemental_searches(
                     any_revoked = True
                     bundle.record_failure(
                         x_slug, schema.AUTH_FAILED,
-                        "Phase 2 FROM-lane (explicit): grok session expired or was revoked",
+                        f"Phase 2 FROM-lane (explicit): {primary} authentication failed (session expired, revoked, or key unpaid)",
                         attempted=True,
                     )
             except Exception as exc:
@@ -3952,7 +4004,7 @@ def _run_supplemental_searches(
                     any_revoked = True
                     bundle.record_failure(
                         x_slug, schema.AUTH_FAILED,
-                        "Phase 2 FROM-lane (extracted): grok session expired or was revoked",
+                        f"Phase 2 FROM-lane (extracted): {primary} authentication failed (session expired, revoked, or key unpaid)",
                         attempted=True,
                     )
             except Exception as exc:
@@ -3970,7 +4022,7 @@ def _run_supplemental_searches(
                 any_revoked = True
                 bundle.record_failure(
                     x_slug, schema.AUTH_FAILED,
-                    "Phase 2 ABOUT-lane: grok session expired or was revoked",
+                    f"Phase 2 ABOUT-lane: {primary} authentication failed (session expired, revoked, or key unpaid)",
                     attempted=True,
                 )
         except Exception as exc:
@@ -3990,7 +4042,7 @@ def _run_supplemental_searches(
                     any_revoked = True
                     bundle.record_failure(
                         x_slug, schema.AUTH_FAILED,
-                        "Phase 2 NAME-lane: grok session expired or was revoked",
+                        f"Phase 2 NAME-lane: {primary} authentication failed (session expired, revoked, or key unpaid)",
                         attempted=True,
                     )
             except Exception as exc:
@@ -4056,7 +4108,7 @@ def _run_supplemental_searches(
                 any_revoked = True
                 bundle.record_failure(
                     x_slug, schema.AUTH_FAILED,
-                    "Phase 2 related handle search: grok session expired or was revoked",
+                    f"Phase 2 related handle search: {primary} authentication failed (session expired, revoked, or key unpaid)",
                     attempted=True,
                 )
         except Exception as exc:

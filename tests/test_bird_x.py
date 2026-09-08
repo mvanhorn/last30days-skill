@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from lib import bird_x
 from lib.bird_x import parse_bird_response
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -696,3 +697,40 @@ class LeadingMentionsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CredentialScrubInFailureDetailTests(unittest.TestCase):
+    """A handle-lane failure reason is recorded in the run's source_status and
+    rendered in the report, so subprocess stderr must not carry the X session
+    cookies into user-facing output."""
+
+    def tearDown(self):
+        bird_x._credentials.clear()
+
+    def test_injected_cookie_values_are_redacted_from_notes(self):
+        bird_x.set_credentials("auth-token-sentinel-value", "ct0-sentinel-value")
+        failures: list[str] = []
+        proc = mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr="rejected cookie auth_token=auth-token-sentinel-value ct0=ct0-sentinel-value",
+        )
+        with mock.patch.object(bird_x.subproc, "run_with_timeout", return_value=proc):
+            bird_x.search_handles(
+                ["someone"], "topic", "2026-05-19", count_per=1,
+                failure_out=failures,
+            )
+        joined = " ".join(failures)
+        assert failures, "a non-zero exit must be reported"
+        self.assertNotIn("auth-token-sentinel-value", joined)
+        self.assertNotIn("ct0-sentinel-value", joined)
+        self.assertIn("<redacted>", joined)
+        # The actionable part of the reason survives.
+        self.assertIn("exited 1", joined)
+
+    def test_scrub_leaves_ordinary_stderr_intact(self):
+        bird_x.set_credentials("auth-token-sentinel-value", "ct0-sentinel-value")
+        self.assertEqual(
+            "connect ETIMEDOUT 104.244.42.1:443",
+            bird_x._scrub_credentials("connect ETIMEDOUT 104.244.42.1:443"),
+        )

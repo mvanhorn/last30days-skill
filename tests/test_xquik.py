@@ -331,6 +331,78 @@ class TestFromLane(unittest.TestCase):
         self.assertEqual(len(ids), len(set(ids)))
 
 
+class TestHandleLaneNonFatalFailures(unittest.TestCase):
+    """A 429/5xx, a network error, or a junk payload emptied the lane without
+    appending anything to failure_out, so the pipeline recorded a genuine
+    no-results and the report said the subject posted nothing."""
+
+    def test_rate_limit_is_reported_not_silent(self):
+        from lib import http as http_mod
+        from lib import xquik
+        failures: list[str] = []
+        with patch("lib.xquik.http.get",
+                   side_effect=http_mod.HTTPError("HTTP 429: Too Many Requests", status_code=429)):
+            items = xquik.search_handles(["h1"], "topic", "2026-05-19", "2026-06-18",
+                                         token="k", failure_out=failures)
+        self.assertEqual([], items)
+        self.assertEqual(1, len(failures))
+        self.assertIn("from:h1", failures[0])
+        self.assertIn("429", failures[0])
+
+    def test_network_error_is_reported_not_silent(self):
+        from lib import xquik
+        failures: list[str] = []
+        with patch("lib.xquik.http.get", side_effect=OSError("connection reset")):
+            items = xquik.search_mentions(["h1"], "2026-05-19", "2026-06-18",
+                                          topic="topic", token="k", failure_out=failures)
+        self.assertEqual([], items)
+        self.assertEqual(1, len(failures))
+        self.assertIn("@h1", failures[0])
+        self.assertIn("connection reset", failures[0])
+
+    def test_unparseable_payload_is_reported_not_silent(self):
+        from lib import xquik
+        failures: list[str] = []
+        with patch("lib.xquik.http.get", return_value={"tweets": "not-a-list"}):
+            items = xquik.search_handles(["h1"], "topic", "2026-05-19", "2026-06-18",
+                                         token="k", failure_out=failures)
+        self.assertEqual([], items)
+        self.assertEqual(1, len(failures))
+        self.assertIn("from:h1", failures[0])
+
+    def test_one_bad_handle_does_not_stop_the_next(self):
+        # Non-fatal failures must be noted without aborting the lane, or a
+        # transient error on the first handle would discard the second's items.
+        from lib import http as http_mod
+        from lib import xquik
+        failures: list[str] = []
+        responses = [
+            http_mod.HTTPError("HTTP 503: Service Unavailable", status_code=503),
+            {"tweets": [{"id": "2", "text": "b", "createdAt": "2026-06-15T12:00:00Z",
+                         "author": {"username": "h2"}}]},
+        ]
+        with patch("lib.xquik.http.get", side_effect=responses):
+            items = xquik.search_handles(["h1", "h2"], "topic", "2026-05-19",
+                                         "2026-06-18", token="k", failure_out=failures)
+        self.assertEqual(1, len(items))
+        self.assertEqual(1, len(failures))
+        self.assertIn("from:h1", failures[0])
+
+    def test_fatal_auth_failure_still_stops_the_lane(self):
+        # The pre-existing fatal path must keep its break semantics: an unpaid
+        # key is not worth retrying per handle.
+        from lib import http as http_mod
+        from lib import xquik
+        failures: list[str] = []
+        with patch("lib.xquik.http.get",
+                   side_effect=http_mod.HTTPError("Payment Required", status_code=402)) as m:
+            items = xquik.search_handles(["h1", "h2"], "topic", "2026-05-19",
+                                         "2026-06-18", token="k", failure_out=failures)
+        self.assertEqual([], items)
+        self.assertEqual(1, m.call_count)
+        self.assertEqual(["Xquik key unpaid (402)"], failures)
+
+
 class TestAboutLane(unittest.TestCase):
     def test_mentions_drop_own_tweets(self):
         from lib import xquik

@@ -127,12 +127,18 @@ def _execute_search(
     seen_ids: set[str],
     relevance_query: str,
     index_offset: int = 0,
+    failure_out: Optional[List[str]] = None,
 ) -> tuple[List[Dict[str, Any]], str | None]:
     """Run one Xquik search call and parse its tweets.
 
     Returns ``(items, auth_error)``. ``auth_error`` is a non-empty string only
     on a fatal auth/payment failure (401/403); transient/HTTP errors log and
     return ``([], None)`` so one bad lane never discards another's results.
+
+    Non-fatal failures (429, 5xx, network error, unparseable payload) append a
+    reason to ``failure_out`` instead. They stay out of the return value
+    because the caller must keep going to the next handle, but a caller that
+    stopped there would report the lane as empty rather than as failed.
     ``relevance_query`` (the topic) is what items are scored against — for the
     handle lanes that differs from the search query (``from:handle``).
     ``index_offset`` keeps item ids unique across multiple calls that share an
@@ -153,13 +159,22 @@ def _execute_search(
         if status in (401, 403):
             return [], f"Xquik auth failed ({status})"
         _log(f"HTTP error for '{label}': {exc}")
+        if failure_out is not None:
+            failure_out.append(f"Xquik HTTP error for '{label}': {exc}")
         return [], None
     except Exception as exc:
         _log(f"Error for '{label}': {exc}")
+        if failure_out is not None:
+            failure_out.append(f"Xquik request failed for '{label}': {exc}")
         return [], None
 
     tweets = response.get("tweets", [])
     if not isinstance(tweets, list):
+        if failure_out is not None:
+            failure_out.append(
+                f"Xquik returned no tweets array for '{label}' "
+                f"(got {type(tweets).__name__})"
+            )
         return [], None
     items: List[Dict[str, Any]] = []
     for tweet in tweets:
@@ -194,12 +209,18 @@ def search_handles(
     *,
     count_per: int = 8,
     token: str = "",
+    failure_out: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """FROM lane: tweets authored BY each handle (their own timeline).
 
     The topic is NOT AND'd into the query (that was the from:-AND bug, #610) —
     we pull the raw timeline and use ``topic`` for relevance ranking only.
     Returns a flat list of item dicts (mirrors ``bird_x.search_handles``).
+
+    When ``failure_out`` is provided, any failure reason is appended — the
+    fatal auth/payment one that stops the lane, and the per-handle transient
+    ones (429, 5xx, network, unparseable payload) that do not — so the caller
+    can distinguish a failed request from a handle that posted nothing.
     """
     if not token or not handles:
         return []
@@ -215,9 +236,15 @@ def search_handles(
             label=f"from:{handle}", id_prefix="XF",
             seen_ids=seen_ids, relevance_query=topic,
             index_offset=len(items),
+            failure_out=failure_out,
         )
         if auth_error:
-            break  # fatal auth/payment failure — stop, keep what we have
+            # Fatal auth/payment failure — stop, keep what we have. Surface the
+            # reason: an empty FROM lane is otherwise indistinguishable from a
+            # subject who simply did not post.
+            if failure_out is not None:
+                failure_out.append(auth_error)
+            break
         items.extend(got)
     return items
 
@@ -230,11 +257,17 @@ def search_mentions(
     topic: str = "",
     count_per: int = 5,
     token: str = "",
+    failure_out: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """ABOUT lane: tweets mentioning each handle, authored by OTHERS.
 
     Queries ``@handle`` then drops the handle's own tweets (``_is_own``) so only
     third-party mentions remain. Returns a flat list of item dicts.
+
+    When ``failure_out`` is provided, any failure reason is appended — the
+    fatal auth/payment one that stops the lane, and the per-handle transient
+    ones (429, 5xx, network, unparseable payload) that do not — so the caller
+    can distinguish a failed request from a handle nobody mentioned.
     """
     if not token or not handles:
         return []
@@ -250,8 +283,11 @@ def search_mentions(
             label=f"@{handle}", id_prefix="XA",
             seen_ids=seen_ids, relevance_query=topic,
             index_offset=len(items),
+            failure_out=failure_out,
         )
         if auth_error:
+            if failure_out is not None:
+                failure_out.append(auth_error)
             break
         items.extend(it for it in got if not _is_own(it.get("url", ""), handle))
     return items

@@ -7,6 +7,7 @@ from lib import fanout
 from lib import http
 from lib import pipeline
 from lib import schema
+from lib import subproc
 
 
 class DepthSettingsOverrideTests(unittest.TestCase):
@@ -1349,6 +1350,113 @@ class TestSupplementalSearches(unittest.TestCase):
         mock_xq_handles.assert_called_once()
         x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
         self.assertIn("https://x.com/analyst1/status/888", x_urls)
+
+    @patch("lib.env.get_xquik_token", return_value="k")
+    @patch("lib.env.x_backend_chain", return_value=["xquik"])
+    @patch("lib.xquik._execute_search", return_value=([], "Xquik key unpaid (402)"))
+    @patch("lib.entity_extract.extract_entities")
+    def test_xquik_handle_lane_auth_failure_reaches_source_status(
+        self, mock_extract, _mock_exec, *_patches
+    ):
+        """An unpaid xquik key produced an empty FROM lane and no outcome, so
+        the run reported X as a clean zero and the report stated as fact that
+        the subject posted nothing."""
+        mock_extract.return_value = {
+            "x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": [],
+        }
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1",
+                              author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2",
+                              author="analyst1", body="AI safety research"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime(None), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+
+        outcome = bundle.source_status.get("x")
+        self.assertIsNotNone(outcome, "x outcome must exist, not a silent zero")
+        self.assertEqual(schema.AUTH_FAILED, outcome.state)
+        self.assertTrue(outcome.attempted)
+
+    @patch("lib.env.get_xquik_token", return_value="k")
+    @patch("lib.env.x_backend_chain", return_value=["xquik"])
+    @patch("lib.xquik.http.get")
+    @patch("lib.entity_extract.extract_entities")
+    def test_xquik_handle_lane_rate_limit_reaches_source_status(
+        self, mock_extract, mock_get, *_patches
+    ):
+        """A 429 is not an auth failure, so it took the non-fatal path inside
+        _execute_search and reported nothing at all: the lane came back empty
+        with no outcome and the run called it genuine silence."""
+        mock_extract.return_value = {
+            "x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": [],
+        }
+        mock_get.side_effect = http.HTTPError(
+            "HTTP 429: Too Many Requests", status_code=429,
+        )
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1",
+                              author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2",
+                              author="analyst1", body="AI safety research"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime(None), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+
+        outcome = bundle.source_status.get("x")
+        self.assertIsNotNone(outcome, "x outcome must exist, not a silent zero")
+        # PARTIAL rather than AUTH_FAILED: a 429 is transient, and Phase 1
+        # items survived, so record_failure keeps them and marks the source.
+        self.assertEqual(schema.PARTIAL, outcome.state)
+        self.assertIn("429", outcome.detail)
+
+    @patch("lib.env.x_backend_chain", return_value=["bird"])
+    @patch("lib.bird_x.search_mentions", return_value=[])
+    @patch("lib.bird_x.subproc.run_with_timeout")
+    @patch("lib.entity_extract.extract_entities")
+    def test_bird_handle_lane_transport_failure_reaches_source_status(
+        self, mock_extract, mock_run, *_patches
+    ):
+        """Same defect on the bird path: a bird-search timeout returned no
+        items and no outcome, so an unreachable lane looked like silence."""
+        mock_extract.return_value = {
+            "x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": [],
+        }
+        mock_run.side_effect = subproc.SubprocTimeout("timed out")
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1",
+                              author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2",
+                              author="analyst1", body="AI safety research"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime(None), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+
+        outcome = bundle.source_status.get("x")
+        self.assertIsNotNone(outcome, "x outcome must exist, not a silent zero")
+        # PARTIAL, not UNREACHABLE: X delivered Phase 1 items and only the
+        # Phase 2 handle lane failed, which is what record_failure encodes.
+        self.assertEqual(schema.PARTIAL, outcome.state)
+        self.assertIn("timed out", outcome.detail)
+        self.assertIn("@analyst1", outcome.detail)
 
     @patch("lib.bird_x.search_handles")
     @patch("lib.entity_extract.extract_entities")
