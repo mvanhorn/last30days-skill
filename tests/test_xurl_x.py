@@ -229,6 +229,30 @@ class TestStoredAuth(unittest.TestCase):
         finally:
             self.store.chmod(0o700)
 
+    def test_permission_denied_grandparent_stat_reports_error_not_missing(self):
+        # Regression: distinct from the parent-chmod case above, which denies
+        # traversal INTO the store (raising on the per-candidate _is_file scan).
+        # Chmod-000 on the store's own PARENT directory instead blocks stat()
+        # on the store path itself, raising during the _is_dir(base) call that
+        # builds the candidate list -- a separate except-OSError branch that
+        # the parent-chmod case never reaches.
+        import os
+
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root bypasses permission checks")
+        self.store.mkdir(exist_ok=True)
+        (self.store / "auth.yml").write_text(
+            "access_token: dummy-not-real\n", encoding="utf-8"
+        )
+        grandparent = self.store.parent
+        grandparent.chmod(0)
+        try:
+            status, detail = self._status()
+            self.assertEqual(xurl_x.AUTH_ERROR, status)
+            self.assertIn("PermissionError", detail)
+        finally:
+            grandparent.chmod(0o700)
+
     def test_directory_layout_has_stored_auth_with_binary(self):
         self.store.mkdir(exist_ok=True)
         (self.store / "auth.yml").write_text(
