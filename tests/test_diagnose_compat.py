@@ -244,7 +244,14 @@ class DiagnoseXurlAuthWiring(unittest.TestCase):
     not just at the `has_stored_auth()` unit level (test_xurl_x.py) or a
     mocked wiring level (test_env_v3.py). Neither of those proves the two
     compose correctly through `pipeline.diagnose()` into the exact
-    `available_sources` array SKILL.md reads."""
+    `available_sources` array SKILL.md reads.
+
+    Scope: this covers the AUTH_OK / AUTH_MISSING distinction only.
+    `has_stored_auth()` collapses AUTH_ERROR (permission-denied store) to
+    the same `False` as AUTH_MISSING, so a permission-denied store is not
+    separately observable through `--diagnose`/`available_sources` -- only
+    `doctor`'s `backends._probe_xurl` surfaces the typed AUTH_ERROR. Not
+    covered here; that distinction is doctor-only by the current design."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
@@ -267,7 +274,15 @@ class DiagnoseXurlAuthWiring(unittest.TestCase):
         `token_store_path()` -- is what's faked, so this exercises
         `token_store_path()`'s own directory-layout logic instead of
         bypassing it; a pre-fix `token_store_path()` returning the bare
-        `~/.xurl` directory would make this fail exactly as it did for #978."""
+        `~/.xurl` directory would make this fail exactly as it did for #978.
+
+        `Path.home` is a shared class attribute, so this patch also redirects
+        any other lib module's `Path.home()` call for the duration of the
+        CLI invocation (e.g. `brightdata.gate_status`). That's inert today:
+        the paired `shutil.which` patch below makes `brightdata.is_installed()`
+        return False, short-circuiting `has_credentials()` before it would
+        reach `Path.home()`. If that short-circuit is ever removed, re-check
+        whether another module's home-relative lookup needs isolating too."""
         if auth_yml_content is not None:
             self.store.mkdir(exist_ok=True)
             (self.store / "auth.yml").write_text(auth_yml_content, encoding="utf-8")
