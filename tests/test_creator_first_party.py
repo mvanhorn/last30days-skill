@@ -12,6 +12,10 @@ fails, and no drop was logged.
 
 import contextlib
 import io
+from datetime import datetime, timezone
+from unittest.mock import patch
+
+import pytest
 
 from lib import pipeline, schema, signals
 
@@ -237,3 +241,37 @@ def test_topic_token_alone_is_not_x_provenance():
     # topic mention of "linkuptv" without an @ or X flag: not in real_x_handles
     creator_only = pipeline._creator_only_handles(creators, {"someone_else"})
     assert creator_only == {"linkuptv"}
+
+
+@pytest.mark.parametrize("depth", ["quick", "default"])
+def test_creator_provenance_survives_pipeline_ranking(depth):
+    raw = [
+        _raw_ig("creator", "linkuptv", "an unrelated caption", 400),
+        _raw_ig("keyword", "other", "fly.io deploy guide walkthrough", 5000),
+    ]
+    for item in raw:
+        item["date"] = datetime.now(timezone.utc).date().isoformat()
+    with patch.object(pipeline, "_retrieve_stream", return_value=(raw, {})), \
+         patch.object(pipeline, "_normalize_score_dedupe", wraps=pipeline._normalize_score_dedupe) as normalize:
+        report = pipeline.run(
+            topic="fly.io deploy guide",
+            config={},
+            requested_sources=["instagram"],
+            ig_creators=["linkuptv"],
+            depth=depth,
+            mock=True,
+            web_backend="none",
+        )
+    assert normalize.call_args_list
+    if depth == "default":
+        assert len(normalize.call_args_list) >= 2, "thin retry must also carry the source map"
+    assert all(
+        call.kwargs["first_party_by_source"]["instagram"] == {"linkuptv"}
+        for call in normalize.call_args_list
+    )
+    assert any(item.author == "linkuptv" for item in report.items_by_source["instagram"])
+    assert any(
+        item.author == "linkuptv"
+        for candidate in report.ranked_candidates
+        for item in candidate.source_items
+    )
