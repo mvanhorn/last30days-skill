@@ -92,7 +92,7 @@ _TITLE_WEIGHT_MAX = 30
 
 
 def _log(msg: str) -> None:
-    log.source_log("Diffbot", msg)
+    log.source_log("Diffbot", msg, tty_only=False)
 
 
 def _escape(value: str) -> str:
