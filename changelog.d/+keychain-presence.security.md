@@ -1,1 +1,0 @@
-Keychain setup and listing now check existence without requesting plaintext passwords, and count existing entries by exit status. Selectively retains the safe presence-check changes from #1061; the existing credential writer is unchanged and its command-line exposure remains a separate follow-up.

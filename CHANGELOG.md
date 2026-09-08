@@ -9,6 +9,29 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.23.1] - 2026-09-08
+
+### Security
+
+- Drop Authorization, x-api-key, x-csrf-token, and x-subscription-token when urllib follows a 3xx that changes scheme or host (stdlib otherwise copies them). ([#1062](https://github.com/mvanhorn/last30days-skill/issues/1062))
+- Require an absolute path for automatically discovered MCP Python interpreters,
+  including when Go's built-in relative-path protection is explicitly disabled.
+  Explicit interpreter overrides retain their existing behavior. ([#1109](https://github.com/mvanhorn/last30days-skill/issues/1109))
+- Keychain setup and listing now check existence without requesting plaintext passwords, and count existing entries by exit status. Selectively retains the safe presence-check changes from #1061; the existing credential writer is unchanged and its command-line exposure remains a separate follow-up.
+
+### Fixed
+
+- Operator-supplied `--plan` now keeps each subquery's `sources` instead of silently replacing them with the full available list. Unavailable-only subqueries are visibly skipped; if none remain, the run fails before retrieval with configuration guidance. Engine-internal LLM plans retain their fallback and expansion behavior. ([#1073](https://github.com/mvanhorn/last30days-skill/issues/1073))
+- SessionStart hook must use the bare ${CLAUDE_PLUGIN_ROOT} form so Claude Code's
+  missing-plugin-root guard can match it. A default of `.` resolves relative to the
+  session cwd and can execute a decoy check-config.sh from the user's project. ([#1074](https://github.com/mvanhorn/last30days-skill/issues/1074))
+- Grok Bot / Cursor agent chat is now a hidden-link citation host: LAW 8 detects it via `CURSOR_AGENT` (alongside `CLAUDECODE` for Claude Code) and inline-links every cited r/sub, u/name comment author, @handle, GitHub repo, and creator with URLs copied verbatim from the engine evidence. Codex, Gemini CLI, and raw CLI keep the plain-label regime, so no URL soup returns. ([#1095](https://github.com/mvanhorn/last30days-skill/issues/1095))
+- Documented that the SessionStart config hook ships only with the Claude Code plugin install; on npx and other hookless installs there is no hook and the engine creates the memory directory itself on first save. ([#1100](https://github.com/mvanhorn/last30days-skill/issues/1100))
+- Posts fetched via `--ig-creators` or TikTok `--creators` now reach the report: named creator accounts count as first-party provenance in the relevance prune, scoped to each flag's own platform so a same-name account elsewhere still faces the floor, and prune drops are logged per stream with the dropped count and floor. ([#1101](https://github.com/mvanhorn/last30days-skill/issues/1101))
+- Corrected the stated LAW count in the SKILL.md formatting-authority note to match the eleven LAWs defined below it. ([#1102](https://github.com/mvanhorn/last30days-skill/issues/1102))
+- Use Bluesky refresh tokens to recover expired search sessions before falling back to a new login, while keeping unauthorized retries bounded. ([#6034](https://github.com/mvanhorn/last30days-skill/issues/6034))
+
+
 ## [3.23.0] - 2026-09-01
 
 ### Added
