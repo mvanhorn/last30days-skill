@@ -86,6 +86,7 @@ Si te vas a reunir con un CEO, ¿te has leído todos sus tuits y todas sus trans
 | **Xiaohongshu (RED)** | Señales chinas sobre estilo de vida, productos y creadores. Se pide de forma explícita con `--search xhs` cuando tienes corriendo en local un plugin de navegador x-mcp con sesión iniciada o un servicio `xiaohongshu-mcp`. |
 | **Bluesky** | La capa social descentralizada. Publicaciones de AT Protocol surgidas de la migración posterior a Twitter. |
 | **Perplexity** | Síntesis controlada con la Agent API, alternativa Sonar mediante OpenRouter, resultados en bruto de la Search API y Deep Research explícita. |
+| **Diffbot** | El índice de noticias y artículos. Artículos acotados por fecha del Knowledge Graph de Diffbot, ordenados por relevancia y frescura. Se activa automáticamente cuando está definido `DIFFBOT_API_KEY`. |
 | **Web** | La cobertura editorial, las comparativas de los blogs. Una señal entre muchas, no la única. |
 
 La comunidad no para de sumar fuentes. Truth Social y otras fuentes de nicho ya están en el motor, y vienen más.
@@ -300,6 +301,7 @@ Estas plataformas no tienen ninguna relación entre sí. X no sabe lo que piensa
 | Xiaohongshu (RED) | Ten corriendo un plugin de navegador x-mcp con sesión iniciada o un servicio `xiaohongshu-mcp`, y activa la fuente con `--search xhs` por ejecución o con `INCLUDE_SOURCES=xiaohongshu` en `.env`; last30days prueba automáticamente `http://localhost:18060` y después `http://host.docker.internal:18060`, o usa `XIAOHONGSHU_API_BASE` para una URL propia | No hace falta clave de API de last30days; depende de tu servicio local de sesión de navegador |
 | DripStack (boletines financieros premium) | Opcional: `--search dripstack` por ejecución, o `INCLUDE_SOURCES=dripstack` en `.env` | Sin clave; API de búsqueda pública y gratuita |
 | Perplexity Agent API / Search API / Deep Research | Una clave de Perplexity, o una clave de OpenRouter como alternativa para Sonar | Pago por uso; una clave directa habilita la Agent API y Deep Research en segundo plano |
+| Diffbot (noticias/artículos) | Token de API de Diffbot (`DIFFBOT_API_KEY`) | Nivel gratuito, luego pago por uso |
 | Búsqueda web | Una clave de Brave Search | 2.000 consultas gratis al mes |
 
 ### Llavero de macOS (opcional)
