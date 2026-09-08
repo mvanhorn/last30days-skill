@@ -33,8 +33,10 @@ changes them.
 import io
 import json
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 import last30days as cli
@@ -213,6 +215,85 @@ class DiagnoseShapeCompat(unittest.TestCase):
         # Free sources are always present even in a keyless environment.
         for free in ("reddit", "hackernews", "polymarket", "github"):
             self.assertIn(free, sources)
+
+
+class DiagnoseXurlAuthWiring(unittest.TestCase):
+    """Regression for #978 / PR #1027: prove `--diagnose`'s `x_backend` and
+    `available_sources` reflect xurl_x.stored_auth_status()'s corrected
+    directory-layout detection end-to-end through the real CLI entrypoint,
+    not just at the `has_stored_auth()` unit level (test_xurl_x.py) or a
+    mocked wiring level (test_env_v3.py). Neither of those proves the two
+    compose correctly through `pipeline.diagnose()` into the exact
+    `available_sources` array SKILL.md reads."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.fake_home = Path(self._tmp.name)
+        self.store = self.fake_home / ".xurl"
+        boom = mock.patch(
+            "subprocess.run",
+            side_effect=AssertionError(
+                "--diagnose is a safe path and must not spawn any subprocess"
+            ),
+        )
+        boom.start()
+        self.addCleanup(boom.stop)
+
+    def _diagnose_with_store(self, auth_yml_content: str | None) -> dict:
+        """Run `--diagnose` with `Path.home()` pointed at a fake home dir
+        holding a real `~/.xurl/auth.yml` (current directory layout);
+        `auth_yml_content=None` leaves no store at all. `Path.home()` -- not
+        `token_store_path()` -- is what's faked, so this exercises
+        `token_store_path()`'s own directory-layout logic instead of
+        bypassing it; a pre-fix `token_store_path()` returning the bare
+        `~/.xurl` directory would make this fail exactly as it did for #978."""
+        if auth_yml_content is not None:
+            self.store.mkdir(exist_ok=True)
+            (self.store / "auth.yml").write_text(auth_yml_content, encoding="utf-8")
+        bird_status = {
+            "installed": False,
+            "authenticated": False,
+            "username": None,
+            "can_install": True,
+        }
+        with mock.patch.object(cli.env, "get_config", return_value=dict(FAKE_KEYLESS_CONFIG)), \
+             mock.patch("lib.bird_x.get_bird_status", return_value=bird_status), \
+             mock.patch("lib.bird_x.is_bird_installed", return_value=False), \
+             mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None), \
+             mock.patch(
+                 "lib.xurl_x.is_available",
+                 side_effect=AssertionError(
+                     "--diagnose is a safe path and must not run the live "
+                     "`xurl whoami` network check"
+                 ),
+             ), \
+             mock.patch("lib.xurl_x.Path.home", return_value=self.fake_home), \
+             mock.patch(
+                 "lib.xurl_x.shutil.which",
+                 side_effect=lambda name: "/usr/local/bin/xurl" if name == "xurl" else None,
+             ), \
+             mock.patch.object(sys, "argv", ["last30days.py", "--diagnose"]):
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                rc = cli.main()
+        self.assertEqual(0, rc)
+        return json.loads(stdout.getvalue())
+
+    def test_new_layout_auth_yml_makes_xurl_the_reported_backend(self):
+        payload = self._diagnose_with_store("access_token: dummy-not-real\n")
+        self.assertEqual("xurl", payload["x_backend"])
+        self.assertIn("x", payload["available_sources"])
+
+    def test_no_store_leaves_xurl_unreported(self):
+        payload = self._diagnose_with_store(None)
+        self.assertNotEqual("xurl", payload["x_backend"])
+        self.assertFalse(
+            payload["x_pending_browser_auth"],
+            "no browser-cookie config in this test, so pending-auth must be False",
+        )
+        self.assertNotIn("x", payload["available_sources"])
 
 
 class PreflightShapeCompat(unittest.TestCase):
