@@ -61,7 +61,7 @@ jobs:
       - name: Run TruffleHog OSS secret scan
         uses: trufflesecurity/trufflehog@20652fbbdefffcdaa493a5bf57ab2ac6b1db715b # v3.97.1
         with:
-          version: 3.95.5
+          version: 3.97.1
           extra_args: --results=verified
 
   sast-scan:
