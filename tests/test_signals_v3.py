@@ -254,6 +254,47 @@ class SignalsV3Tests(unittest.TestCase):
         pruned = signals.prune_low_relevance([weak], minimum=0.1)
         self.assertEqual(["weak"], [item.item_id for item in pruned])
 
+    def test_prune_drops_all_weak_x_batch(self):
+        """An all-off-topic X batch is not rescued back into the ranking."""
+        spam = [
+            schema.SourceItem(
+                item_id=f"spam-{i}",
+                source="x",
+                title=title,
+                body=title,
+                url=f"https://x.com/spam/{i}",
+                local_relevance=0.04,
+                engagement_score=68.0,
+            )
+            for i, title in enumerate([
+                "CNPYNetwork is why developers keep watching this chain",
+                "why $ZOZO has been on my radar for developers",
+                "Airdrop season for developers, don't miss it",
+            ])
+        ]
+        self.assertEqual([], signals.prune_low_relevance(spam, minimum=0.15))
+
+    def test_prune_rescues_weak_x_batch_when_mixed_with_other_sources(self):
+        """The no-rescue rule is scoped to batches that are only un-gated social."""
+        spam = schema.SourceItem(
+            item_id="spam",
+            source="x",
+            title="Airdrop season for developers",
+            body="Airdrop season for developers",
+            url="https://x.com/spam/1",
+            local_relevance=0.04,
+        )
+        weak_article = schema.SourceItem(
+            item_id="article",
+            source="grounding",
+            title="Unrelated article",
+            body="Unrelated body",
+            url="https://example.com/a",
+            local_relevance=0.04,
+        )
+        ids = [i.item_id for i in signals.prune_low_relevance([spam, weak_article], minimum=0.15)]
+        self.assertEqual(["spam", "article"], ids)
+
     # -- Iteration 1: HN engagement bug --
 
     def test_hackernews_parse_emits_comments_key(self):

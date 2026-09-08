@@ -309,6 +309,11 @@ def annotate_stream(
 
 _SOCIAL_SOURCES = {"reddit", "x", "tiktok", "instagram", "bluesky", "truthsocial"}
 
+# Social sources with no relevance gate of their own upstream. An all-off-topic
+# batch from these is not rescued when it fails the floor wholesale — see
+# prune_low_relevance.
+_RESCUE_EXEMPT_SOURCES = _SOCIAL_SOURCES - {"reddit"}
+
 # Minimum view count for short-video platforms. Items below this floor
 # are typically spam reposts or low-effort clips that add no unique signal.
 _VIDEO_ENGAGEMENT_FLOOR_SOURCES = {"tiktok", "instagram"}
@@ -335,6 +340,8 @@ def prune_low_relevance(
     items: list[schema.SourceItem],
     minimum: float = 0.15,
     first_party_handles: Iterable[str] | None = None,
+    *,
+    rescue_ungated_social: bool = False,
 ) -> list[schema.SourceItem]:
     """Drop weak lexical matches when stronger evidence exists.
 
@@ -351,6 +358,11 @@ def prune_low_relevance(
     scores it at or near zero no matter how on-topic it is. Without the
     exemption a mixed batch loses them silently, because the ``filtered or
     items`` rescue below only fires when *every* item fails.
+
+    ``rescue_ungated_social`` re-enables the all-weak rescue for batches that
+    are only un-gated social sources. Set it for pinned lanes (an explicit
+    handle, hashtag, or creator), where the user asked for that account's
+    posts and low lexical overlap is expected rather than a noise signal.
     """
     sources_present = {item.source for item in items}
     first_party = {
@@ -390,4 +402,21 @@ def prune_low_relevance(
         return True
 
     filtered = [item for item in items if passes(item)]
-    return filtered or items
+    if filtered:
+        return filtered
+    # Nothing cleared the floor. Handing the batch back unpruned is a safety
+    # net so a source is never zeroed out by title-only scoring — but on
+    # engagement-ranked social sources it is also how promo spam reaches a
+    # ranked report. When an entire X batch is off-topic crypto promo that
+    # matched one generic query token, every item is rescued here and the
+    # freshness/engagement terms then float it above genuinely on-topic
+    # evidence from other sources. Reddit keeps the net because its own
+    # relevance floor runs earlier (reddit.py / reddit_keyless.py); the
+    # sources with no such gate do not.
+    if (
+        not rescue_ungated_social
+        and sources_present
+        and sources_present <= _RESCUE_EXEMPT_SOURCES
+    ):
+        return []
+    return items
