@@ -162,6 +162,7 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | Bluesky | `BSKY_HANDLE` + `BSKY_APP_PASSWORD` | Bluesky items | yes (app password at bsky.app) |
 | TruthSocial | `TRUTHSOCIAL_TOKEN` | TruthSocial items | yes |
 | Web search | one of: `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY` | `--auto-resolve` and Step 2 supplements | Brave has a free tier; native WebSearch on Claude Code / Codex / Gemini works as a fallback |
+| Diffbot (KG Articles) | `DIFFBOT_API_KEY` (this is your Diffbot **token** — Diffbot's dashboard labels the credential "token") | Article/news items from the Diffbot Knowledge Graph | yes — Diffbot offers a free tier ([sign up](https://app.diffbot.com/account/)); runs automatically when set, suppress via `EXCLUDE_SOURCES=diffbot` |
 | Perplexity Agent API / Search API / Deep Research | `PERPLEXITY_API_KEY` (preferred) or `OPENROUTER_API_KEY` (Sonar fallback) | `INCLUDE_SOURCES=perplexity`; `--deep-research` uses background Agent API with a direct key or synchronous Sonar through OpenRouter | no |
 | Caption-free transcription | `GROQ_API_KEY` (free tier, preferred) or `OPENAI_API_KEY` (paid backstop); requires `ffmpeg` | Whisper transcription for audio/video without captions (groundwork: module shipped, not yet auto-invoked by the engine) | Groq free tier is generous; needs ffmpeg installed |
 | Jobs / careers pages | none for public ATS pages; web backend improves fallback discovery | `--hiring-signals` and strong Hiring Signals in standard company reports | yes |
@@ -211,6 +212,11 @@ INCLUDE_SOURCES=tiktok,instagram
 # LAST30DAYS_PERPLEXITY_AGENT_MODEL=perplexity/sonar
 # LAST30DAYS_PERPLEXITY_AGENT_MAX_STEPS=5
 # LAST30DAYS_PERPLEXITY_AGENT_MAX_OUTPUT_TOKENS=4096  # required for anthropic/*
+
+# Diffbot KG Articles — paste your Diffbot account "token" here (Diffbot
+# labels the credential "token"; Diffbot offers a free tier).
+# Default-on once set; suppress with EXCLUDE_SOURCES=diffbot.
+# DIFFBOT_API_KEY=<your-diffbot-token>
 
 # X authentication (one option only)
 AUTH_TOKEN=<your-auth-token>

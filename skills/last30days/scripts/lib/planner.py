@@ -95,23 +95,23 @@ ALLOWED_INTENTS = {
 ALLOWED_CLUSTER_MODES = {"none", "story", "workflow", "market", "debate"}
 
 QUICK_SOURCE_PRIORITY = {
-    "factual": ["hackernews", "reddit", "x", "xquik", "youtube"],
+    "factual": ["hackernews", "diffbot", "reddit", "x", "xquik", "youtube"],
     "product": ["jobs", "youtube", "reddit", "x", "xquik", "tiktok"],
     "concept": ["hackernews", "reddit", "x", "xquik", "youtube"],
     "opinion": ["reddit", "x", "xquik", "youtube", "hackernews"],
     "how_to": ["youtube", "reddit", "x", "xquik", "hackernews"],
     "comparison": ["reddit", "x", "xquik", "hackernews", "youtube"],
-    "breaking_news": ["x", "xquik", "reddit", "hackernews", "youtube", "polymarket"],
+    "breaking_news": ["x", "xquik", "reddit", "hackernews", "diffbot", "youtube", "polymarket"],
     "prediction": ["polymarket", "x", "xquik", "hackernews", "reddit", "youtube"],
 }
 SOURCE_PRIORITY = {
-    "factual": ["hackernews", "reddit", "x", "youtube"],
+    "factual": ["hackernews", "diffbot", "reddit", "x", "youtube"],
     "product": ["jobs", "youtube", "reddit", "x", "tiktok", "hackernews"],
     "concept": ["hackernews", "reddit", "x", "youtube"],
     "opinion": ["reddit", "x", "stocktwits", "dripstack", "youtube", "hackernews"],
     "how_to": ["youtube", "reddit", "x", "hackernews"],
     "comparison": ["reddit", "x", "hackernews", "youtube"],
-    "breaking_news": ["x", "stocktwits", "reddit", "hackernews", "youtube", "polymarket"],
+    "breaking_news": ["x", "stocktwits", "reddit", "hackernews", "diffbot", "youtube", "polymarket"],
     "prediction": ["polymarket", "stocktwits", "dripstack", "x", "hackernews", "reddit", "youtube"],
 }
 SOURCE_LIMITS = {
@@ -155,6 +155,7 @@ SOURCE_CAPABILITIES = {
     "telegram": {"discussion", "social"},
     "github": {"discussion", "link"},
     "grounding": {"web", "reference", "link"},
+    "diffbot": {"web", "reference", "link"},
     "perplexity": {"web", "reference", "analysis"},
     "jobs": {"jobs", "company_signal", "link"},
     "corpus": {"reference", "analysis"},
@@ -529,6 +530,9 @@ def _sanitize_plan(
                 ranking_query=ranking_query,
                 sources=sources,
                 weight=max(0.05, float(subquery.get("weight") or 1.0)),
+                term_specificity=schema._coerce_term_specificity(
+                    subquery.get("term_specificity")
+                ),
             )
         )
     if depth == "quick" and subqueries:
@@ -578,6 +582,7 @@ def _normalize_subquery_weights(subqueries: list[schema.SubQuery]) -> list[schem
             ranking_query=subquery.ranking_query,
             sources=subquery.sources,
             weight=subquery.weight / total,
+            term_specificity=subquery.term_specificity,
         )
         for subquery in subqueries
     ]
@@ -612,6 +617,7 @@ def _trim_subqueries_for_depth(
                 ranking_query=subquery.ranking_query,
                 sources=expanded_sources,
                 weight=subquery.weight,
+                term_specificity=subquery.term_specificity,
             )
             for subquery in subqueries
         ]
@@ -661,6 +667,7 @@ def _trim_subqueries_for_depth(
                 ranking_query=subquery.ranking_query,
                 sources=preferred_sources,
                 weight=subquery.weight,
+                term_specificity=subquery.term_specificity,
             )
         )
     return trimmed
@@ -725,7 +732,7 @@ def _fallback_plan(
                 label="reaction",
                 search_query=f"{base_search} reaction update",
                 ranking_query=f"What new reactions or follow-up reporting from the last 30 days matter for {topic}?",
-                sources=[source for source in source_weights if source in {"x", "reddit", "grounding", "hackernews"}] or list(source_weights),
+                sources=[source for source in source_weights if source in {"x", "reddit", "grounding", "hackernews", "diffbot"}] or list(source_weights),
                 weight=0.7,
             )
         )
