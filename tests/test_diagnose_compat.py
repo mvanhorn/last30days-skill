@@ -30,6 +30,7 @@ otherwise stay frozen; re-record only when a committed baseline legitimately
 changes them.
 """
 
+import contextlib
 import io
 import json
 import sys
@@ -125,27 +126,46 @@ FAKE_KEYED_CONFIG = {
 }
 
 
-def _run_cli(argv: list[str], config: dict) -> tuple[int, str]:
-    """Run cli.main() in-process with a controlled config; return (rc, stdout)."""
-    bird_status = {
-        "installed": False,
-        "authenticated": False,
-        "username": None,
-        "can_install": True,
-    }
-    with mock.patch.object(cli.env, "get_config", return_value=dict(config)), \
-         mock.patch("lib.bird_x.get_bird_status", return_value=bird_status), \
-         mock.patch("lib.bird_x.is_bird_installed", return_value=False), \
-         mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None), \
-         mock.patch(
-             "lib.xurl_x.is_available",
-             side_effect=AssertionError(
-                 "--diagnose/--preflight are safe paths and must not run the "
-                 "live `xurl whoami` network check"
-             ),
-         ), \
-         mock.patch("lib.xurl_x.has_stored_auth", return_value=False), \
-         mock.patch.object(sys, "argv", ["last30days.py"] + argv):
+_BIRD_STATUS_KEYLESS = {
+    "installed": False,
+    "authenticated": False,
+    "username": None,
+    "can_install": True,
+}
+
+
+def _run_cli(
+    argv: list[str],
+    config: dict,
+    *,
+    extra_patches: tuple = (),
+    patch_has_stored_auth: bool = True,
+) -> tuple[int, str]:
+    """Run cli.main() in-process with a controlled config; return (rc, stdout).
+
+    `extra_patches` are additional `mock.patch(...)` context managers layered
+    on top of the common safe-path mock stack (e.g. to fake xurl's on-disk
+    token store instead of stubbing `has_stored_auth` directly).
+    `patch_has_stored_auth=False` omits the default `has_stored_auth` stub so
+    a caller-supplied patch (or the real function) can take its place.
+    """
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(cli.env, "get_config", return_value=dict(config)))
+        stack.enter_context(mock.patch("lib.bird_x.get_bird_status", return_value=_BIRD_STATUS_KEYLESS))
+        stack.enter_context(mock.patch("lib.bird_x.is_bird_installed", return_value=False))
+        stack.enter_context(mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None))
+        stack.enter_context(mock.patch(
+            "lib.xurl_x.is_available",
+            side_effect=AssertionError(
+                "--diagnose/--preflight are safe paths and must not run the "
+                "live `xurl whoami` network check"
+            ),
+        ))
+        if patch_has_stored_auth:
+            stack.enter_context(mock.patch("lib.xurl_x.has_stored_auth", return_value=False))
+        for patch in extra_patches:
+            stack.enter_context(patch)
+        stack.enter_context(mock.patch.object(sys, "argv", ["last30days.py"] + argv))
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -251,35 +271,20 @@ class DiagnoseXurlAuthWiring(unittest.TestCase):
         if auth_yml_content is not None:
             self.store.mkdir(exist_ok=True)
             (self.store / "auth.yml").write_text(auth_yml_content, encoding="utf-8")
-        bird_status = {
-            "installed": False,
-            "authenticated": False,
-            "username": None,
-            "can_install": True,
-        }
-        with mock.patch.object(cli.env, "get_config", return_value=dict(FAKE_KEYLESS_CONFIG)), \
-             mock.patch("lib.bird_x.get_bird_status", return_value=bird_status), \
-             mock.patch("lib.bird_x.is_bird_installed", return_value=False), \
-             mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None), \
-             mock.patch(
-                 "lib.xurl_x.is_available",
-                 side_effect=AssertionError(
-                     "--diagnose is a safe path and must not run the live "
-                     "`xurl whoami` network check"
-                 ),
-             ), \
-             mock.patch("lib.xurl_x.Path.home", return_value=self.fake_home), \
-             mock.patch(
-                 "lib.xurl_x.shutil.which",
-                 side_effect=lambda name: "/usr/local/bin/xurl" if name == "xurl" else None,
-             ), \
-             mock.patch.object(sys, "argv", ["last30days.py", "--diagnose"]):
-            stdout = io.StringIO()
-            stderr = io.StringIO()
-            with redirect_stdout(stdout), redirect_stderr(stderr):
-                rc = cli.main()
+        rc, out = _run_cli(
+            ["--diagnose"],
+            FAKE_KEYLESS_CONFIG,
+            patch_has_stored_auth=False,
+            extra_patches=(
+                mock.patch("lib.xurl_x.Path.home", return_value=self.fake_home),
+                mock.patch(
+                    "lib.xurl_x.shutil.which",
+                    side_effect=lambda name: "/usr/local/bin/xurl" if name == "xurl" else None,
+                ),
+            ),
+        )
         self.assertEqual(0, rc)
-        return json.loads(stdout.getvalue())
+        return json.loads(out)
 
     def test_new_layout_auth_yml_makes_xurl_the_reported_backend(self):
         payload = self._diagnose_with_store("access_token: dummy-not-real\n")
