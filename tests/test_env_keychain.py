@@ -277,7 +277,7 @@ def clean_env(monkeypatch, tmp_path):
         "SCRAPECREATORS_API_KEY", "APIFY_API_TOKEN", "BSKY_HANDLE",
         "BSKY_APP_PASSWORD", "TRUTHSOCIAL_TOKEN", "EXA_API_KEY",
         "SERPER_API_KEY", "OPENROUTER_API_KEY", "PERPLEXITY_API_KEY", "PARALLEL_API_KEY",
-        "XQUIK_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
+        "XQUIK_API_KEY", "DIFFBOT_API_KEY", "GOOGLE_API_KEY", "GEMINI_API_KEY",
         "GOOGLE_GENAI_API_KEY", "INCLUDE_SOURCES", "FROM_BROWSER",
     ]:
         monkeypatch.delenv(var, raising=False)
