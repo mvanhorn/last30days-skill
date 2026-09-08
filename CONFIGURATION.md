@@ -159,6 +159,8 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | Telegram | `SCRAPECREATORS_API_KEY` + (`--telegram-sources=<handles>` **or** `TELEGRAM_SOURCES=<handles>` + `INCLUDE_SOURCES` contains `telegram`) | **opt-in, off by default**; public channel posts only (no keyword discovery). `--telegram-sources=aipost,durov` (or `TELEGRAM_SOURCES` env) auto-activates for that run like `--trustpilot-domain`. Accepts bare handle, `@handle`, `t.me/URL`, or `t.me/s/URL`; rejects joinchat links and numeric -100 IDs. `INCLUDE_SOURCES=telegram` or `--search telegram` without a channel list does not fetch. `EXCLUDE_SOURCES=telegram` wins. `TELEGRAM_MAX_PAGES` overrides page cap (quick=1, default=3, deep=6). Never on Recommended onboarding tier. | 1 credit per live posts page; 10K free calls |
 | Xiaohongshu (RED) | logged-in x-mcp browser plugin or `xiaohongshu-mcp` service; optional `XIAOHONGSHU_API_BASE` for custom URLs | requested-only via `--search xhs` or `--search xiaohongshu`; auto-probes `http://localhost:18060` then `http://host.docker.internal:18060` | no last30days API key; depends on your local browser-session service |
 | Bluesky | `BSKY_HANDLE` + `BSKY_APP_PASSWORD` | Bluesky items | yes (app password at bsky.app) |
+| V2EX | none (public API) | V2EX hot topics + node listings, relevance-filtered | no; always eligible, disable with `EXCLUDE_SOURCES=v2ex` |
+| Xueqiu (雪球) | `XUEQIU_COOKIE` | Chinese investor sentiment statuses, relevance-filtered | yes (browser session cookie); auto-activates with StockTwits for ticker/crypto topics |
 | TruthSocial | `TRUTHSOCIAL_TOKEN` | TruthSocial items | yes |
 | Web search | one of: `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY` | `--auto-resolve` and Step 2 supplements | Brave has a free tier; native WebSearch on Claude Code / Codex / Gemini works as a fallback |
 | Perplexity Agent API / Search API / Deep Research | `PERPLEXITY_API_KEY` (preferred) or `OPENROUTER_API_KEY` (Sonar fallback) | `INCLUDE_SOURCES=perplexity`; `--deep-research` uses background Agent API with a direct key or synchronous Sonar through OpenRouter | no |
@@ -229,6 +231,11 @@ CT0=<your-ct0-token>
 # Bluesky
 BSKY_HANDLE=<your-handle>.bsky.social
 BSKY_APP_PASSWORD=<your-app-password>
+
+# Xueqiu (雪球): cookie from your logged-in browser session (Cookie-Editor
+# export, same pattern as X cookies). Auto-activates for ticker/crypto topics
+# together with StockTwits; without it the source is not registered.
+# XUEQIU_COOKIE=xq_a_token=...; xqat=...
 ```
 
 After editing: `chmod 600 ~/.config/last30days/.env` (or `chmod 600 .claude/last30days.env` if using the project-scoped variant).

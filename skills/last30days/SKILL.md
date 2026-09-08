@@ -53,6 +53,8 @@ metadata:
       - truthsocial
       - xiaohongshu
       - rednote
+      - v2ex
+      - xueqiu
       - trends
       - recency
       - news
@@ -725,6 +727,8 @@ The magic of /last30days is Reddit comments + X posts together - and both are fr
 **Other optional sources (add anytime):**
 - `PERPLEXITY_API_KEY=xxx` - preferred Agent/Search API path with citations; set `INCLUDE_SOURCES=perplexity`. Existing `OPENROUTER_API_KEY` installs keep the synchronous Sonar fallback.
 - `XIAOHONGSHU_API_BASE=http://localhost:18060` - Xiaohongshu/RED via a logged-in x-mcp browser plugin or `xiaohongshu-mcp` service; optional unless the local service runs on a custom URL. Opt in per run with `--search xhs`, or persistently via `INCLUDE_SOURCES=xiaohongshu`.
+- `XUEQIU_COOKIE="xq_a_token=...; xqat=..."` - Xueqiu (雪球) Cookie from your logged-in browser session (Cookie-Editor export, same pattern as X cookies). Auto-activates for ticker/crypto topics together with StockTwits; without it the source is not registered.
+- V2EX needs no configuration - the public API is always eligible (disable with `EXCLUDE_SOURCES=v2ex`).
 - DripStack (premium financial newsletter search) is opt-in only: per run with `--search dripstack`, or persistently via `INCLUDE_SOURCES=dripstack`. Free public search API, no key; never active without the opt-in.
 - Telegram (public channels) is opt-in via `--telegram-sources=handle1,handle2` (auto-activates for that run) or persistently via `TELEGRAM_SOURCES=handles` + `INCLUDE_SOURCES=telegram`. Requires `SCRAPECREATORS_API_KEY`. Named public channels only; no keyword discovery.
 - `BSKY_HANDLE=you.bsky.social` + `BSKY_APP_PASSWORD=xxx` - Bluesky (free app password).
