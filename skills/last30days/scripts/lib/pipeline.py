@@ -70,6 +70,7 @@ from . import (
     truthsocial,
     trustpilot,
     x_api,
+    x_envelope,
     x_judge,
     xai_x,
     xiaohongshu_api,
@@ -1811,7 +1812,11 @@ def diagnose(
     requested_sources: list[str] | None = None,
     *,
     safe: bool = False,
+    x_envelope: bool = False,
 ) -> dict[str, Any]:
+    # ``x_envelope`` is True when a validated --x-posts envelope is present for
+    # this invocation, so available_sources lists x even without a backend
+    # (KTD11) and the optional-source omission note does not fire.
     requested_sources = normalize_requested_sources(requested_sources)
     google_key = _google_key(config)
     x_status = env.get_x_source_status(config, probe=not safe)
@@ -1891,7 +1896,8 @@ def diagnose(
         # answer X availability from local evidence only. x_pending is
         # precomputed by diagnose() to avoid double evaluation.
         "available_sources": available_sources(
-            config, requested_sources, x_pending=x_pending, local_only=safe
+            config, requested_sources, x_pending=x_pending, local_only=safe,
+            x_envelope=x_envelope,
         ),
         "safe": safe,
         "config_source": config.get("_CONFIG_SOURCE"),
@@ -2030,10 +2036,13 @@ def run(
     save_dir: Path | str | None = None,
     corpus_dirs: list[str] | None = None,
     corpus_all_time: bool = False,
+    x_posts: x_envelope.Envelope | None = None,
 ) -> schema.Report:
     # ``suppress_x_host_lane`` is distinct from ``internal_subrun``: comparison
     # entities share the latter and must still honor the connector lane;
     # only discovery enrichment passes set the former.
+    # ``x_posts`` is a validated ``--x-posts`` envelope (KTD5): when present
+    # it replaces the engine's X fetch for this run and is served once.
     # Standalone runs (not competitor/discover sub-runs) own the YouTube
     # search-cache lifecycle. Comparison fan-out clears once before submit so
     # parallel entity sub-runs can still share in-run hits.
@@ -2060,6 +2069,35 @@ def run(
     if corpus_enabled and requested_sources and "corpus" not in requested_sources:
         requested_sources = [*requested_sources, "corpus"]
 
+    # Host-fetched X lane (KTD5). EXCLUDE_SOURCES=x or a --search list without
+    # x wins: the envelope is ignored with a receipt line and stays unconsumed.
+    envelope = x_posts
+    if envelope is not None and (
+        "x" in excluded_sources
+        or (requested_sources and "x" not in requested_sources)
+    ):
+        log.source_log(
+            "x", "host-fetched X: envelope ignored (x is excluded from this run)",
+            tty_only=False,
+        )
+        envelope = None
+    # The lane signal without an envelope is a broken handoff, not a reason to
+    # spend a backup backend: X records the fixed not-passed outcome (R12).
+    x_lane_missing = (
+        envelope is None
+        and not mock
+        and not suppress_x_host_lane
+        and env.x_host_lane_declared(config)
+    )
+    if envelope is not None or x_lane_missing:
+        # Ride the config dict (the _polymarket_keywords idiom) so the stream
+        # workers and the handle-lane section see it without widening their
+        # signatures. Copy first: comparison entities shallow-copy the shared
+        # config and must never inherit another entity's envelope.
+        config = dict(config)
+        config["_x_envelope"] = envelope
+        config["_x_lane_missing"] = x_lane_missing
+
     # Gate StockTwits to ticker/crypto topics. Single chokepoint: when False,
     # available_sources() never registers stocktwits, so the planner can't
     # assign it (eligible_sources = available ∩ capabilities).
@@ -2078,7 +2116,9 @@ def run(
     else:
         runtime, reasoning_provider = providers.resolve_runtime(config, depth)
         available = available_sources(
-            config, requested_sources, suppress_x_host_lane=suppress_x_host_lane
+            config, requested_sources,
+            suppress_x_host_lane=suppress_x_host_lane,
+            x_envelope=envelope is not None,
         )
         if requested_sources:
             available = [source for source in available if source in requested_sources]
@@ -2195,6 +2235,9 @@ def run(
         print("[Planner]   (no subqueries in plan)", file=sys.stderr)
 
     bundle = schema.RetrievalBundle(artifacts={"grounding": []})
+    if envelope is not None:
+        # The footer's X provenance reads "via X connector" (render._render_stats).
+        bundle.artifacts["x_provenance"] = "connector"
     # Handles the user named explicitly. Available before any retrieval, unlike
     # the entity-extracted set, so Phase 1 and quick-depth runs get first-party
     # protection too. Without this the exemption reached only the Phase 2
@@ -3839,6 +3882,20 @@ def _run_supplemental_searches(
                 resolved_handles_out.append(clean)
                 seen.add(clean)
 
+    # Host-fetched X lane (KTD5): the envelope's lane calls replace the backend
+    # lanes, before the chain is recomputed. Extracted-handle promotion is
+    # skipped on envelope runs; a declared lane without an envelope runs no
+    # lane at all (the topic stream already recorded the not-passed outcome).
+    if config.get("_x_lane_missing"):
+        return
+    envelope = config.get("_x_envelope")
+    if envelope is not None:
+        _serve_envelope_lanes(
+            envelope, bundle=bundle, plan=plan, x_handle=x_handle, x_related=x_related,
+            from_date=from_date, to_date=to_date,
+        )
+        return
+
     if not handles and not related_handles:
         return
 
@@ -4451,6 +4508,122 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
     return items, artifact
 
 
+def _serve_envelope_topic(envelope: x_envelope.Envelope) -> tuple[list[dict], dict]:
+    """Serve the envelope's topic-lane rows once (KTD5).
+
+    The first X subquery takes the rows and the envelope-status outcome;
+    every later call (a second planner subquery, judge-retry, thin-retry)
+    gets no items and no error, and no backend is ever consulted.
+    """
+    items = envelope.take_topic()
+    if items is None:
+        return [], {}
+    artifact: dict[str, Any] = {}
+    if envelope.warnings:
+        # A narrower host window is a receipt (report.warnings), not a failure.
+        artifact["x_receipts"] = [f"X: {warning}" for warning in envelope.warnings]
+    outcome = envelope.outcome()
+    if outcome is not None:
+        state, detail = outcome
+        artifact.update(_outcome_artifact(state, detail))
+    return items, artifact
+
+
+def _serve_envelope_lanes(
+    envelope: x_envelope.Envelope,
+    *,
+    bundle: schema.RetrievalBundle,
+    plan: schema.QueryPlan,
+    x_handle: str | None,
+    x_related: list[str] | None,
+    from_date: str,
+    to_date: str,
+) -> None:
+    """Serve the envelope's from/mention/related calls into the lane merge.
+
+    Mirrors the backend lanes: primary-handle rows (from + mention) join the
+    primary subquery with first-party handling for the explicit handle and
+    the per-handle lane counts; related rows join ``supplemental-related``
+    at the 0.3 weight. Lane claims were already validated at read time.
+    """
+    calls = envelope.take_lanes()
+    if not calls:
+        return
+    x_slug = "x"
+    existing_urls = {
+        item.url
+        for items in bundle.items_by_source.values()
+        for item in items
+        if item.url
+    }
+    ranking_query = plan.subqueries[0].ranking_query if plan.subqueries else ""
+    primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
+    primary_handles = sorted(
+        {x_handle.lstrip("@").strip().lower()} if x_handle and x_handle.strip() else set()
+    )
+    related_handles = [
+        h.lstrip("@").strip().lower()
+        for h in (x_related or [])
+        if h.strip() and h.lstrip("@").strip().lower() not in primary_handles
+    ]
+
+    def _cap_per_author(posts: list[dict], cap: int) -> list[dict]:
+        seen: Counter[str] = Counter()
+        kept: list[dict] = []
+        for post in posts:
+            author = str(post.get("author_handle") or "").lower()
+            if seen[author] >= cap:
+                continue
+            seen[author] += 1
+            kept.append(post)
+        return kept
+
+    primary_items: list[dict] = []
+    related_items: list[dict] = []
+    for call in calls:
+        if call.lane == "from":
+            primary_items.extend(_cap_per_author(call.posts, FROM_LANE_COUNT_PER))
+        elif call.lane == "mention":
+            primary_items.extend(
+                call.posts[: MENTION_LANE_COUNT_PER * max(1, len(call.handles))]
+            )
+        elif call.lane == "related":
+            related_items.extend(_cap_per_author(call.posts, RELATED_HANDLE_COUNT_PER))
+
+    if primary_items:
+        normalized = _normalize_score_dedupe(
+            x_slug, primary_items, from_date, to_date,
+            freshness_mode=plan.freshness_mode,
+            ranking_query=ranking_query,
+            first_party_handles=primary_handles,
+        )
+        normalized = [item for item in normalized if item.url not in existing_urls]
+        if normalized:
+            bundle.add_items(primary_label, x_slug, normalized)
+            existing_urls.update(item.url for item in normalized if item.url)
+
+    if related_items:
+        normalized = _normalize_score_dedupe(
+            x_slug, related_items, from_date, to_date,
+            freshness_mode=plan.freshness_mode,
+            ranking_query=ranking_query,
+            first_party_handles=related_handles,
+        )
+        normalized = [item for item in normalized if item.url not in existing_urls]
+        if normalized:
+            bundle.add_items("supplemental-related", x_slug, normalized)
+            if not any(sq.label == "supplemental-related" for sq in plan.subqueries):
+                plan.subqueries.append(
+                    schema.SubQuery(
+                        label="supplemental-related",
+                        search_query=", ".join(related_handles),
+                        ranking_query=ranking_query,
+                        sources=[x_slug],
+                        weight=0.3,
+                    )
+                )
+
+
 def _retrieve_stream_impl(
     *,
     topic: str,
@@ -4621,6 +4794,15 @@ def _retrieve_stream_impl(
             )
         return merged, {}
     if source == "x":
+        if config.get("_x_lane_missing"):
+            # The model declared the connector lane but passed no envelope.
+            return [], _outcome_artifact(health.ERROR, x_envelope.DETAIL_NOT_PASSED)
+        envelope = config.get("_x_envelope")
+        if envelope is not None:
+            # Host-fetched lane: the envelope replaces the backend chain and
+            # is single-serve, so no backend runs and no judge-retry follows.
+            return _serve_envelope_topic(envelope)
+
         # Compile X query from raw_topic (like Reddit/YouTube), not planner's
         # search_query which may contain operator strings like "Rome Italy".
         x_query = raw_topic or topic or subquery.search_query

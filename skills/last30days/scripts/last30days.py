@@ -51,7 +51,7 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, freshness, html_render, http, permission_preflight, pipeline, registers, render, schema, ui
+from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, freshness, html_render, http, permission_preflight, pipeline, registers, render, schema, ui, x_envelope
 
 _child_pids: set[int] = set()
 _child_pids_lock = threading.Lock()
@@ -755,6 +755,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--store", action="store_true", help="Persist ranked findings to the SQLite research store")
     parser.add_argument("--x-handle", help="X handle for targeted supplemental search")
     parser.add_argument("--x-related", help="Comma-separated related X handles (searched with lower weight)")
+    parser.add_argument(
+        "--x-posts",
+        dest="x_posts",
+        metavar="PATH",
+        help=(
+            "Path to a last30days-x-posts/1 JSON envelope of posts the hosting "
+            "model fetched through its X connector; replaces the engine's X "
+            "fetch for this run. A file path only (never inline JSON); on a "
+            "comparison run use the per-entity x_posts field of --competitors-plan."
+        ),
+    )
     parser.add_argument("--web-backend", default="auto",
                         choices=["auto", "brave", "exa", "serper", "parallel", "parallel-mcp", "keyless", "none"],
                         help="Web search backend (default: auto; parallel-mcp explicitly opts into the "
@@ -904,6 +915,7 @@ def parse_competitors_plan(raw: str | None) -> dict[str, dict]:
     known_fields = {
         "x_handle", "x_related", "subreddits",
         "github_user", "github_repos", "trustpilot_domain", "context",
+        "x_posts",
     }
     normalized: dict[str, dict] = {}
     for entity, entry in parsed.items():
@@ -1242,7 +1254,11 @@ def _write_last_run(
     topic: str,
     report: "schema.Report",
     entity_reports: list[tuple[str, schema.Report]] | None = None,
+    *,
+    x_envelope_sha256: str | None = None,
 ) -> bool:
+    # ``x_envelope_sha256`` binds the cached report to the --x-posts file it
+    # was built from; _load_last_report_cache misses on any mismatch (KTD5).
     try:
         if env.CONFIG_DIR is None:
             return False
@@ -1268,6 +1284,7 @@ def _write_last_run(
             "topic": topic,
             "timestamp": payload["timestamp"],
             "comparison": bool(entity_reports),
+            "x_envelope_sha256": x_envelope_sha256 or None,
             "reports": [
                 {"entity": label, "report": schema.to_dict(cached_report)}
                 for label, cached_report in cached_reports
@@ -1288,6 +1305,8 @@ def _write_last_run(
 def _load_last_report_cache(
     topic: str | None,
     ttl_seconds: int = DEFAULT_REPORT_CACHE_TTL_SECONDS,
+    *,
+    x_envelope_sha256: str | None = None,
 ) -> tuple[schema.Report, list[tuple[str, schema.Report]] | None, Path] | None:
     cache_path = _last_report_cache_path()
     if cache_path is None or not cache_path.exists():
@@ -1299,6 +1318,12 @@ def _load_last_report_cache(
         if payload.get("schema") != REPORT_CACHE_VERSION:
             return None
         if not _is_report_cache_fresh(payload.get("timestamp"), ttl_seconds):
+            return None
+        # A report built from a --x-posts envelope is only reusable with the
+        # same envelope content; a digest on either side that does not match
+        # the other is a miss (KTD5).
+        cached_digest = payload.get("x_envelope_sha256") or None
+        if (cached_digest or x_envelope_sha256) and cached_digest != x_envelope_sha256:
             return None
         cached_topic = str(payload.get("topic") or "").strip().lower()
         if topic is not None and cached_topic != topic.strip().lower():
@@ -2640,6 +2665,86 @@ DOCTOR_PASSTHROUGH_FLAGS = {
 }
 
 
+def _looks_inline_json(value: str) -> bool:
+    """True when a --x-posts argument is JSON text rather than a path (R9)."""
+    stripped = value.strip()
+    return stripped.startswith(("{", "[")) or "\n" in value
+
+
+def _comparison_requested(args: argparse.Namespace, topic: str) -> bool:
+    """Whether this invocation is a comparison run (vs-topic or competitor flags)."""
+    from lib import planner as _planner
+
+    return any(
+        value is not None
+        for value in (args.competitors, args.competitors_list, args.competitors_plan)
+    ) or len(_planner._comparison_entities(topic, uncapped=True)) >= 2
+
+
+def _read_x_envelope(
+    path: str,
+    topic: str,
+    args: argparse.Namespace,
+    *,
+    x_handle: str | None,
+    x_related: list[str] | None,
+) -> x_envelope.Envelope:
+    """Validate a host-fetched X envelope against this run's window and topic."""
+    from_date, to_date = dates.get_date_range(
+        args.lookback_days or 30, as_of_date=args.as_of_date
+    )
+    return x_envelope.read(
+        path,
+        (from_date, to_date),
+        topic,
+        handles=[x_handle] if x_handle else [],
+        related=[h for h in (x_related or []) if h and h.strip()],
+    )
+
+
+def _attach_entity_envelopes(comp_plan: dict[str, dict], args: argparse.Namespace) -> None:
+    """Validate every per-entity ``x_posts`` path in a --competitors-plan.
+
+    Each envelope is checked against its own entity (topic) and that entry's
+    ``x_handle``/``x_related`` handles, and stored on the entry as
+    ``_x_envelope`` for the entity sub-run. Raises EnvelopeContractError.
+    """
+    for entry in comp_plan.values():
+        raw = entry.get("x_posts")
+        if not raw:
+            continue
+        if not isinstance(raw, str) or _looks_inline_json(raw):
+            raise x_envelope.EnvelopeContractError(
+                f"--competitors-plan entry {entry.get('_name', '')!r}: x_posts must "
+                "be a file path to a last30days-x-posts/1 envelope, never inline JSON. "
+                "Rewrite the plan entry, or drop its x_posts field."
+            )
+        related = entry.get("x_related") if isinstance(entry.get("x_related"), list) else None
+        entry["_x_envelope"] = _read_x_envelope(
+            raw, str(entry.get("_name") or ""), args,
+            x_handle=entry.get("x_handle") if isinstance(entry.get("x_handle"), str) else None,
+            x_related=[str(h) for h in related] if related else None,
+        )
+
+
+def _x_envelope_digest(
+    main: x_envelope.Envelope | None, comp_plan: dict[str, dict] | None
+) -> str | None:
+    """One digest binding the last-report cache to every envelope this run used."""
+    parts: list[str] = []
+    if main is not None:
+        parts.append(main.sha256)
+    for name in sorted(comp_plan or {}):
+        entity_envelope = (comp_plan or {})[name].get("_x_envelope")
+        if entity_envelope is not None:
+            parts.append(f"{name}:{entity_envelope.sha256}")
+    if not parts:
+        return None
+    if len(parts) == 1 and main is not None:
+        return main.sha256
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
 def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv: list[str]) -> None:
     if not extra_argv:
         return
@@ -2998,6 +3103,12 @@ def _main(
     topic = " ".join(args.topic).strip()
     original_topic = topic
     _validate_extra_argv(parser, topic, extra_argv)
+    if args.x_posts is not None and _looks_inline_json(args.x_posts):
+        sys.stderr.write(
+            "[last30days] --x-posts accepts a file path only (inline JSON is not "
+            "accepted); write the envelope to a .json file and pass its path.\n"
+        )
+        return 2
     if args.publish and topic.lower() != "library feed":
         sys.stderr.write(
             "[last30days] --publish is only supported by the 'library feed' command.\n"
@@ -3363,6 +3474,14 @@ def _main(
                 "the remote API backend only supports --json-profile=raw.\n"
             )
             return 2
+        if args.x_posts is not None:
+            # The envelope is a local-engine contract; the remote API has no
+            # lane to receive it (KTD5).
+            sys.stderr.write(
+                "[last30days] --x-posts is not supported by the hosted backend; "
+                "run locally or omit --x-posts.\n"
+            )
+            return 2
         from lib import hosted
         depth = "deep" if args.deep else "quick" if args.quick else "default"
         try:
@@ -3406,7 +3525,33 @@ def _main(
             requested_sources,
             channels=cli_telegram_sources,
         )
-    diag = pipeline.diagnose(config, requested_sources, safe=args.diagnose)
+    # Host-fetched X envelope (KTD5): validated before diagnose so a present
+    # envelope plans X in (available_sources) and a bad one fails closed here.
+    x_posts_envelope: x_envelope.Envelope | None = None
+    if args.x_posts is not None:
+        if not topic:
+            sys.stderr.write("[last30days] --x-posts requires a research topic.\n")
+            return 2
+        if _comparison_requested(args, topic):
+            sys.stderr.write(
+                "[last30days] --x-posts applies to a single-topic run; on a "
+                "comparison run pass each entity's envelope through the "
+                "x_posts field of its --competitors-plan entry.\n"
+            )
+            return 2
+        try:
+            x_posts_envelope = _read_x_envelope(
+                args.x_posts, topic, args,
+                x_handle=args.x_handle,
+                x_related=args.x_related.split(",") if args.x_related else None,
+            )
+        except x_envelope.EnvelopeContractError as exc:
+            sys.stderr.write(f"[last30days] {exc.message}\n")
+            return 2
+    diag = pipeline.diagnose(
+        config, requested_sources, safe=args.diagnose,
+        x_envelope=x_posts_envelope is not None,
+    )
 
     if args.diagnose:
         print(json.dumps(diag, indent=2, sort_keys=True))
@@ -3446,6 +3591,7 @@ def _main(
         cached = _load_last_report_cache(
             topic,
             ttl_seconds=_report_cache_ttl_seconds(config),
+            x_envelope_sha256=x_posts_envelope.sha256 if x_posts_envelope else None,
         )
         if cached is not None:
             cached_report, cached_entity_reports, cache_path = cached
@@ -3587,6 +3733,15 @@ def _main(
 
         comp_enabled, comp_count, comp_explicit = resolve_competitors_args(args)
         comp_plan = parse_competitors_plan(args.competitors_plan)
+        # Per-entity host-fetched X envelopes are validated up front, on the
+        # main thread, so a bad one fails closed (exit 2) instead of silently
+        # dropping that entity inside the fan-out.
+        try:
+            _attach_entity_envelopes(comp_plan, args)
+        except x_envelope.EnvelopeContractError as exc:
+            progress.end_processing()
+            sys.stderr.write(f"[last30days] {exc.message}\n")
+            return 2
 
         # Plan-level trustpilot_domain pins are the same user intent as the CLI
         # flag (already activated above). Auto-resolve hints must not activate.
@@ -3706,6 +3861,10 @@ def _main(
                 save_dir=args.save_dir,
                 corpus_dirs=args.corpus,
                 corpus_all_time=args.corpus_all_time,
+                x_posts=(
+                    comp_plan.get(topic.strip().lower(), {}).get("_x_envelope")
+                    if comp_enabled else x_posts_envelope
+                ),
             )
             r.artifacts["resolved"] = {
                 "entity": topic,
@@ -3853,6 +4012,7 @@ def _main(
                     save_dir=args.save_dir,
                     corpus_dirs=args.corpus,
                     corpus_all_time=args.corpus_all_time,
+                    x_posts=plan_entry.get("_x_envelope"),
                 )
                 report.artifacts["resolved"] = resolved_effective
                 return report
@@ -3886,7 +4046,10 @@ def _main(
         report, progress, diag,
         suppress_web_promo=bool(external_plan or comp_plan),
     )
-    _write_last_run(original_topic, report, entity_reports=entity_reports)
+    _write_last_run(
+        original_topic, report, entity_reports=entity_reports,
+        x_envelope_sha256=_x_envelope_digest(x_posts_envelope, comp_plan),
+    )
     # LAST30DAYS_STORE env var = persistence default-on. Read both os.environ
     # (for shell-exported users) and config (for users who set it in
     # ~/.config/last30days/.env, which env.py loads but does not propagate
