@@ -9,6 +9,17 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.24.0] - 2026-09-09
+
+### Added
+
+- New `xapi` X backend: the official X API v2 with an app-only `X_BEARER_TOKEN`, trying full-archive search first and falling back to recent search (about the last seven days, reported as "window truncated to 7 days"), serving the topic lane and the from/mention/related handle lanes; it is the first rung on Grok Bot and opt-in elsewhere (`LAST30DAYS_X_BACKEND=xapi`). New `--x-posts <path>` flag ingests a `last30days-x-posts/1` envelope of posts the hosting model fetched through its X connector (per-entity `x_posts` in `--competitors-plan`), and `LAST30DAYS_X_HOST_LANE=1` marks X as available for planning while a connector is in the session. New `setup --store-key <NAME>` persists one credential from stdin without echoing it. New `payment-required` source outcome, exported under agent JSON schema `1.3`.
+
+### Changed
+
+- On a Grok Bot host (`LAST30DAYS_HOST=grok-bot`) X search now runs through the bot's X connector first, with the official X API (`X_BEARER_TOKEN`) and xAI's licensed X search (`XAI_API_KEY`) as backups; onboarding, doctor, and repair hints there name only those paths. Credit-exhaustion responses from any source (HTTP 402 or an explicit "insufficient credits" message) now classify as the `payment-required` outcome instead of `error` or `auth-failed`, and `LAST30DAYS_STRICT_EXIT` treats it as degraded (exit `3`).
+
+
 ## [3.23.1] - 2026-09-08
 
 ### Security
