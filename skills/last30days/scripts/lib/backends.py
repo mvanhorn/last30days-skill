@@ -29,15 +29,18 @@ say the next run will try" — rendered as "will use". It is not an
 observation of what served a past run, and runtime failover can still
 diverge mid-run (a present-but-expired paid key passes a presence probe).
 
-Paid lanes (xai, xquik, serper, and every other API-key backend, including
-ScrapeCreators) probe KEY PRESENCE ONLY: a dict lookup, never a network
-call or credential spend. Binary-backed lanes reuse the U1 dependency
+Paid lanes (xai, xapi, xquik, serper, and every other API-key backend,
+including ScrapeCreators) probe KEY PRESENCE ONLY: a dict lookup, never a
+network call or credential spend. Binary-backed lanes reuse the U1 dependency
 probe layer (``health.probe_dependency``) so a stale shim reads as BROKEN,
 not available (#692).
 
 This module observes and predicts only. It must never alter which backend
 the pipeline actually uses; parity with the pipeline's pre-failover
-selection is asserted in ``tests/test_backend_descriptors.py``.
+selection is asserted in ``tests/test_backend_descriptors.py``. The X chain
+is shaped by ``env.x_policy``: on an official-only host the findings and
+the chain carry only the policy's backends (plus a pinned one), so doctor
+JSON never names a non-official backend there unless it is pinned.
 """
 
 from __future__ import annotations
@@ -428,8 +431,10 @@ _X_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "bird": _probe_bird,
     "xurl": _probe_xurl,
     "xquik": _key_probe("xquik", "XQUIK_API_KEY", "XQUIK_API_KEY (xquik.com)"),
+    # Direct X API v2 with an app-only bearer: key presence only, no network.
+    "xapi": _key_probe("xapi", "X_BEARER_TOKEN", "X_BEARER_TOKEN (X API v2)"),
 }
-_X_PAID = {"xai", "xquik"}
+_X_PAID = {"xai", "xquik", "xapi"}
 # Opt-in backends: never auto-selected; require explicit pin.
 _X_OPT_IN = set(env.X_BACKEND_OPT_IN)
 
@@ -459,6 +464,7 @@ _X_REQUIRES: Dict[str, str] = {
     "bird": "X browser cookies (AUTH_TOKEN/CT0) + node",
     "xurl": "xurl CLI installed + OAuth2 login",
     "xquik": "XQUIK_API_KEY (xquik.com)",
+    "xapi": "X_BEARER_TOKEN (X API v2)",
 }
 
 DESCRIPTORS: Dict[str, ChainDescriptor] = {
@@ -555,12 +561,41 @@ def resolve(
     multiple binaries are simultaneously hung.
     """
     descriptor = get_descriptor(source)
-    findings = [
-        _run_probe(spec, config) for spec in descriptor.backends
-    ]
+    specs, auto_names = _specs_for_policy(descriptor, config)
+    findings = [_run_probe(spec, config) for spec in specs]
     if descriptor.mode == MODE_CONDITIONAL:
         return _resolve_conditional(descriptor, config, findings)
-    return _resolve_alternative(descriptor, config, findings, pin)
+    return _resolve_alternative(descriptor, config, findings, pin, auto_names)
+
+
+def _specs_for_policy(
+    descriptor: ChainDescriptor,
+    config: Dict[str, Any],
+) -> Tuple[List[BackendSpec], set]:
+    """The backends to probe for this host, and which of them auto-select.
+
+    Every source except X keeps its declared backends; auto-selection is the
+    non-opt-in set. For X the answer comes from ``env.x_policy``: on a
+    default host the declared chain (auto order plus opt-in entries for
+    doctor visibility) is unchanged; on an official-only host the findings
+    are the policy's chain in its order, plus the pinned backend when the
+    pin names something outside it, so neither doctor JSON nor the chain
+    string carries a non-official backend unless it is pinned. Observation
+    only: this mirrors ``env.x_backend_chain``, it never alters it.
+    """
+    specs = list(descriptor.backends)
+    if descriptor.source != "x":
+        return specs, {spec.name for spec in specs if not spec.opt_in}
+    policy = env.x_policy(config)
+    auto_names = set(policy.auto_chain)
+    if not policy.official_only:
+        return specs, auto_names
+    by_name = {spec.name: spec for spec in specs}
+    ordered = [by_name[name] for name in policy.auto_chain if name in by_name]
+    pin = env.x_backend_pin(config)
+    if pin in by_name and pin not in auto_names:
+        ordered.append(by_name[pin])
+    return ordered, auto_names
 
 
 def _run_probe(spec: BackendSpec, config: Dict[str, Any]) -> BackendFinding:
@@ -584,11 +619,14 @@ def _resolve_alternative(
     config: Dict[str, Any],
     findings: List[BackendFinding],
     pin: Optional[str],
+    auto_names: Optional[set] = None,
 ) -> BackendResolution:
-    names = [spec.name for spec in descriptor.backends]
+    names = [f.name for f in findings]
     by_name = {f.name: f for f in findings}
-    # Track which backends are opt-in (never auto-selected).
-    opt_in_names = {spec.name for spec in descriptor.backends if spec.opt_in}
+    if auto_names is None:
+        auto_names = {spec.name for spec in descriptor.backends if not spec.opt_in}
+    # Backends outside the auto set are opt-in here (never auto-selected).
+    opt_in_names = {name for name in names if name not in auto_names}
     res = BackendResolution(
         source=descriptor.source,
         mode=MODE_ALTERNATIVE,

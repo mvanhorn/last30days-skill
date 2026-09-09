@@ -191,3 +191,113 @@ def test_cdp_used_when_agentcookie_empty_on_extra_host():
         env._discover_and_apply_x_credentials(config)
     assert config["AUTH_TOKEN"] == "test-auth-token"
     assert config["_AUTH_TOKEN_SOURCE"] == "chrome cdp"
+
+
+# --- AE1: Grok Bot host, cookies present, no pin ---------------------------
+
+
+def test_ae1_grok_bot_blocks_scraper_xquik_and_every_cookie_leg():
+    """LAST30DAYS_HOST=grok-bot on Linux with every cookie source armed: the
+    chain has neither bird nor xquik, no sidecar / CDP / browser-store read
+    is made for any cookie domain, and the scraper is never primed."""
+    config = {
+        "LAST30DAYS_HOST": "grok-bot",
+        "FROM_BROWSER": "firefox",
+        "AGENTCOOKIE": "on",
+        "BROWSER_CDP_URL": "http://127.0.0.1:18800",
+        "AUTH_TOKEN": "test-auth-token",
+        "CT0": "test-ct0",
+        "XQUIK_API_KEY": "dummy-xquik-key",
+    }
+    with (
+        mock.patch("platform.system", return_value="Linux"),
+        mock.patch("shutil.which", return_value="/usr/local/bin/agentcookie"),
+        mock.patch("lib.agentcookie.read_x_cookies", side_effect=AssertionError("no sidecar on grok-bot")),
+        mock.patch("lib.chrome_cdp.read_x_cookies", side_effect=AssertionError("no CDP on grok-bot")),
+        mock.patch("lib.cookie_extract.extract_cookies", side_effect=AssertionError("no browser store read on grok-bot")),
+        mock.patch("lib.bird_x.set_credentials", side_effect=AssertionError("scraper must not be primed on grok-bot")),
+        mock.patch("lib.bird_x.is_bird_installed", return_value=True),
+        mock.patch("lib.xurl_x.is_available", return_value=False),
+        mock.patch("lib.xurl_x.has_stored_auth", return_value=False),
+    ):
+        env._discover_and_apply_x_credentials(config)
+        assert env.cookie_extraction_browsers(config) == []
+        chain = env.x_backend_chain(config)
+        assert "bird" not in chain
+        assert "xquik" not in chain
+        assert chain == []
+        assert env.get_x_source(config) is None
+        # Preflight reports browser cookies off: no browser resolves.
+        config["_BROWSER_COOKIE_MODE"] = "plan_only"
+        assert env.x_pending_browser_auth(config) is False
+        # X becomes available only through an official path.
+        assert env.x_backend_chain({**config, "X_BEARER_TOKEN": "dummy-bearer"}) == ["xapi"]
+        assert env.x_backend_chain({**config, "XAI_API_KEY": "dummy-xai-key"}) == ["xai"]
+
+
+def test_ae1_get_config_read_mode_on_grok_bot_reports_no_browsers(tmp_path, monkeypatch):
+    """The resolved config's _BROWSER_COOKIE_BROWSERS is empty on a Grok Bot
+    host even with FROM_BROWSER set, and read mode performs no cookie leg."""
+    monkeypatch.setenv("LAST30DAYS_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setattr(env, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(env, "CONFIG_FILE", tmp_path / "does-not-exist.env")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("LAST30DAYS_HOST", "grok-bot")
+    monkeypatch.setenv("FROM_BROWSER", "firefox")
+    monkeypatch.setenv("AGENTCOOKIE", "on")
+    monkeypatch.delenv("LAST30DAYS_X_BACKEND", raising=False)
+    with (
+        mock.patch.object(env, "_load_keychain", return_value={}),
+        mock.patch.object(env, "_load_pass", return_value={}),
+        mock.patch.object(env, "_find_project_env", return_value=None),
+        mock.patch("platform.system", return_value="Linux"),
+        mock.patch("lib.agentcookie.read_x_cookies", side_effect=AssertionError("no sidecar on grok-bot")),
+        mock.patch("lib.chrome_cdp.read_x_cookies", side_effect=AssertionError("no CDP on grok-bot")),
+        mock.patch("lib.cookie_extract.extract_cookies", side_effect=AssertionError("no browser store read on grok-bot")),
+    ):
+        config = env.get_config(env.ConfigLoadPolicy(browser_cookies="read"))
+    assert config["_BROWSER_COOKIE_BROWSERS"] == []
+    assert config["_BROWSER_COOKIE_MODE"] == "read"
+    assert config.get("_AUTH_TOKEN_SOURCE") is None
+
+
+# --- AE7a: ambient bearer on a non-Grok host never reaches xapi ------------
+
+
+def test_ae7a_non_grok_host_ambient_bearer_never_reaches_xapi():
+    config = {
+        "AUTH_TOKEN": "test-auth-token",
+        "CT0": "test-ct0",
+        "X_BEARER_TOKEN": "dummy-bearer",
+    }
+    with (
+        mock.patch("platform.system", return_value="Linux"),
+        mock.patch("lib.http.get", side_effect=AssertionError("no X API request off Grok Bot")),
+        _stub_backends(),
+    ):
+        chain = env.x_backend_chain(config)
+    # The X loop fails over only along this chain: bird returning nothing
+    # leaves no next rung, so no X API request is possible.
+    assert chain == ["bird"]
+    assert "xapi" not in chain
+    with _stub_backends():
+        assert env.x_backend_chain({**config, "LAST30DAYS_X_BACKEND": "xapi"}) == ["xapi"]
+
+
+# --- AE8: Cursor agent chat without the host key is unchanged --------------
+
+
+def test_ae8_cursor_agent_without_host_key_is_unchanged():
+    config = {"AGENTCOOKIE": "on"}
+    with (
+        mock.patch.dict("os.environ", {"CURSOR_AGENT": "1"}, clear=False),
+        mock.patch("platform.system", return_value="Linux"),
+        mock.patch("lib.agentcookie.read_x_cookies", return_value=dict(_PAIR)) as sidecar,
+        mock.patch("lib.chrome_cdp.read_x_cookies", return_value=None),
+        _no_extract(),
+    ):
+        env._discover_and_apply_x_credentials(config)
+    assert sidecar.called
+    assert config["_AUTH_TOKEN_SOURCE"] == "agentcookie"
+    with _stub_backends():
+        assert env.x_backend_chain(config) == ["bird"]

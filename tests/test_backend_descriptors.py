@@ -155,15 +155,19 @@ class TestDescriptorRegistry:
         assert d.mode == backends.MODE_ALTERNATIVE
         # Auto chain order: bird first, grok excluded (opt-in only).
         assert env.X_BACKEND_ORDER == ("bird", "xai", "xurl", "xquik")
-        # Grok is opt-in only, not in the auto chain.
-        assert env.X_BACKEND_OPT_IN == ("grok",)
+        # Grok and xapi are opt-in only off Grok Bot, not in the auto chain.
+        assert env.X_BACKEND_OPT_IN == ("grok", "xapi")
         # All known backends (auto + opt-in) for pin validation.
-        assert env.X_BACKEND_KNOWN == ("bird", "xai", "xurl", "xquik", "grok")
+        assert env.X_BACKEND_KNOWN == ("bird", "xai", "xurl", "xquik", "grok", "xapi")
         # Descriptor includes all backends (auto + opt-in) for doctor visibility.
         assert tuple(s.name for s in d.backends) == env.X_BACKEND_ORDER + env.X_BACKEND_OPT_IN
-        # Grok is marked opt-in in the descriptor.
+        # Grok and xapi are marked opt-in in the descriptor.
         grok_spec = next(s for s in d.backends if s.name == "grok")
         assert grok_spec.opt_in is True
+        xapi_spec = next(s for s in d.backends if s.name == "xapi")
+        assert xapi_spec.opt_in is True
+        assert xapi_spec.paid is True
+        assert xapi_spec.requires == "X_BEARER_TOKEN (X API v2)"
         # Auto chain backends are NOT marked opt-in.
         for name in env.X_BACKEND_ORDER:
             spec = next(s for s in d.backends if s.name == name)
@@ -699,6 +703,58 @@ class TestXParityWithPipeline:
             {"AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0", "XAI_API_KEY": "dummy-key"},
             bird_installed=True,
         )
+
+    # Host rows (U1): the policy shapes both sides identically.
+
+    def test_parity_grok_bot_bearer(self):
+        self._assert_parity(
+            {"LAST30DAYS_HOST": "grok-bot", "X_BEARER_TOKEN": "dummy-bearer",
+             "AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0"},
+            bird_installed=True,
+        )
+
+    def test_parity_grok_bot_xai_key(self):
+        self._assert_parity(
+            {"LAST30DAYS_HOST": "grok-bot", "XAI_API_KEY": "dummy-key",
+             "AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0"},
+            bird_installed=True,
+        )
+
+    def test_parity_grok_bot_cookies_only_unpinned(self):
+        self._assert_parity(
+            {"LAST30DAYS_HOST": "grok-bot", "AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0",
+             "XQUIK_API_KEY": "dummy-key"},
+            bird_installed=True,
+        )
+
+    def test_parity_grok_bot_bird_pin(self):
+        self._assert_parity(
+            {"LAST30DAYS_HOST": "grok-bot", "LAST30DAYS_X_BACKEND": "bird",
+             "AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0"},
+            bird_installed=True,
+        )
+
+    def test_parity_grok_bot_grok_pin(self):
+        self._assert_parity(
+            {"LAST30DAYS_HOST": "grok-bot", "LAST30DAYS_X_BACKEND": "grok"},
+            grok_installed=True,
+            grok_authed=True,
+        )
+
+    def test_parity_non_grok_linux_cookies_and_bearer(self):
+        with mock.patch("platform.system", return_value="Linux"):
+            self._assert_parity(
+                {"AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0",
+                 "X_BEARER_TOKEN": "dummy-bearer"},
+                bird_installed=True,
+            )
+
+    def test_parity_macbook_xai_key(self):
+        with (
+            mock.patch("platform.system", return_value="Darwin"),
+            mock.patch.object(env, "_mac_model", return_value="MacBookPro18,2"),
+        ):
+            self._assert_parity({"XAI_API_KEY": "dummy-key"})
 
 
 # ---------------------------------------------------------------------------

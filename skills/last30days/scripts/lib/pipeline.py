@@ -240,6 +240,8 @@ def available_sources(
     *,
     x_pending: bool | None = None,
     local_only: bool = False,
+    x_envelope: bool = False,
+    suppress_x_host_lane: bool = False,
 ) -> list[str]:
     """List the sources the next run can serve.
 
@@ -247,6 +249,13 @@ def available_sources(
     block): availability is answered from local evidence only, so the X
     check never spawns xurl's live ``whoami`` network call. Research-time
     callers keep the default live semantics.
+
+    X is listed when an engine backend is available, or browser auth is
+    pending, or the hosting model declared the X connector lane
+    (``env.x_host_lane_declared``), or a validated ``--x-posts`` envelope is
+    present for this run (``x_envelope``), in every cookie mode (KTD11).
+    ``suppress_x_host_lane`` turns only the lane branch off (discovery
+    enrichment passes); an envelope still counts.
     """
     available: list[str] = []
     # reddit_public needs no API key - always available
@@ -258,6 +267,12 @@ def available_sources(
     if config.get("SCRAPECREATORS_API_KEY"):
         available.extend(["tiktok", "instagram"])
     if env.get_x_source(config, local_only=local_only):
+        available.append("x")
+    elif x_envelope or (
+        not suppress_x_host_lane and env.x_host_lane_declared(config)
+    ):
+        # Host-fetched X lane: the model passes connector results through
+        # --x-posts, so X is served without an engine backend (R12, R13).
         available.append("x")
     else:
         # Safe inspection (--diagnose/--preflight) skips browser-cookie
@@ -965,6 +980,10 @@ def enrich_nominations(
             lookback_days=lookback_days,
             as_of_date=as_of_date,
             internal_subrun=True,
+            # Enrichment passes never carry a connector envelope, so the
+            # per-session lane signal must not plan X in and record a
+            # spurious X error on every nominated topic (R12).
+            suppress_x_host_lane=True,
         )
 
     # Daemon threads + a semaphore instead of ThreadPoolExecutor: executor
@@ -1849,7 +1868,11 @@ def diagnose(
         "providers": providers_status,
         "local_mode": not reasoning_provider_available,
         "reasoning_provider": (config.get("LAST30DAYS_REASONING_PROVIDER") or "auto").lower(),
-        "x_backend": x_status["source"],
+        # The host-fetched connector lane serves X when no engine backend
+        # exists and the model declared the lane (KTD11).
+        "x_backend": x_status["source"] or (
+            "connector" if env.x_host_lane_declared(config) else None
+        ),
         "bird_installed": x_status["bird_installed"],
         "bird_authenticated": x_status["bird_authenticated"],
         "bird_username": x_status["bird_username"],
@@ -2002,10 +2025,14 @@ def run(
     trustpilot_domain_is_hint: bool = False,
     hiring_signals_mode: bool = False,
     internal_subrun: bool = False,
+    suppress_x_host_lane: bool = False,
     save_dir: Path | str | None = None,
     corpus_dirs: list[str] | None = None,
     corpus_all_time: bool = False,
 ) -> schema.Report:
+    # ``suppress_x_host_lane`` is distinct from ``internal_subrun``: comparison
+    # entities share the latter and must still honor the connector lane;
+    # only discovery enrichment passes set the former.
     # Standalone runs (not competitor/discover sub-runs) own the YouTube
     # search-cache lifecycle. Comparison fan-out clears once before submit so
     # parallel entity sub-runs can still share in-run hits.
@@ -2049,7 +2076,9 @@ def run(
             available = [source for source in available if source != "jobs"]
     else:
         runtime, reasoning_provider = providers.resolve_runtime(config, depth)
-        available = available_sources(config, requested_sources)
+        available = available_sources(
+            config, requested_sources, suppress_x_host_lane=suppress_x_host_lane
+        )
         if requested_sources:
             available = [source for source in available if source in requested_sources]
     # Keep an explicitly requested but unconfigured corpus in the plan long
