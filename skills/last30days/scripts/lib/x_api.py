@@ -445,8 +445,16 @@ def _failure_for(exc: http.HTTPError) -> _XApiFailure:
     return _XApiFailure("xapi: request failed (HTTPError)")
 
 
-def _get(token: str, url: str, params: Dict[str, Any]) -> Dict[str, Any]:
-    """One authenticated GET; every failure surfaces as ``_XApiFailure``."""
+def _get(
+    token: str, url: str, params: Dict[str, Any], deadline: Optional[float] = None,
+) -> Dict[str, Any]:
+    """One authenticated GET; every failure surfaces as ``_XApiFailure``.
+
+    ``deadline`` is handed to the transport as its wall deadline, so a
+    request started just before it cannot keep the full per-request timeout
+    and retry cycle: the socket wait and every backoff sleep stop at the
+    deadline (``http.DeadlineExceeded`` -> ``ERR_TIMED_OUT``).
+    """
     try:
         response = http.get(
             url,
@@ -454,6 +462,7 @@ def _get(token: str, url: str, params: Dict[str, Any]) -> Dict[str, Any]:
             params=params,
             timeout=TIMEOUT_SECONDS,
             retries=RETRIES,
+            deadline_monotonic=deadline,
         )
     except http.HTTPError as exc:
         raise _failure_for(exc) from None
@@ -493,7 +502,15 @@ def _search_pages(
             break
         # A fresh dict per page: the transport must never see a later
         # page's next_token on an earlier request.
-        response = _get(token, url, dict(page_params))
+        try:
+            response = _get(token, url, dict(page_params), deadline)
+        except _XApiFailure as exc:
+            if data and str(exc) == ERR_TIMED_OUT:
+                # The budget ran out mid-walk: the pages already collected
+                # are the result, not a failure.
+                _log(f"search deadline reached mid-walk; keeping {len(data)} posts")
+                break
+            raise
         page = response.get("data") or []
         if isinstance(page, list):
             data.extend(t for t in page if isinstance(t, dict))

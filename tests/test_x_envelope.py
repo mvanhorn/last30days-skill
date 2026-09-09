@@ -1055,26 +1055,39 @@ class TestCli:
         assert rc == 2
         assert acme in err and "topic" in err
 
-    def test_comparison_cache_lookup_digest_matches_the_write_digest(self, tmp_path):
-        """Per-entity envelopes: the pre-parse lookup must reproduce the digest
-        the write side stored, or a valid comparison cache is never reused."""
+    def test_comparison_cache_is_reused_only_with_validated_entity_envelopes(self, tmp_path):
+        """The lookup digest is built from the validated per-entity envelopes
+        (same fold as the write side), and a stale entity envelope fails the
+        run closed (exit 2) before any cached output is served."""
         acme = _write(tmp_path, _envelope([_call("topic", posts=[_row(0, "a", "acme news")])], topic="acme"), "acme.json")
         globex = _write(tmp_path, _envelope([_call("topic", posts=[_row(1, "b", "globex news")])], topic="globex"), "globex.json")
         plan = json.dumps({"acme": {"x_posts": acme}, "globex": {"x_posts": globex}})
         comp_plan = cli.parse_competitors_plan(plan)
-        args = mock.Mock(lookback_days=30, as_of_date=None)
-        cli._attach_entity_envelopes(comp_plan, args)
-        written = cli._x_envelope_digest(None, comp_plan)
-        assert written and written not in (comp_plan["acme"]["_x_envelope"].sha256,)
-        assert cli._planned_envelope_digest(None, plan) == written
-        plan_file = tmp_path / "plan.json"
-        plan_file.write_text(plan)
-        assert cli._planned_envelope_digest(None, str(plan_file)) == written
-        # A missing file or inline JSON leaves that entity out; no crash.
-        assert cli._planned_envelope_digest(None, json.dumps({"acme": {"x_posts": str(tmp_path / "nope.json")}})) is None
-        assert cli._planned_envelope_digest(None, "{not json") is None
+        cli._attach_entity_envelopes(comp_plan, mock.Mock(lookback_days=30, as_of_date=None))
+        digest = cli._x_envelope_digest(None, comp_plan)
+        assert digest and digest != comp_plan["acme"]["_x_envelope"].sha256
+        synth = tmp_path / "synth.md"
+        synth.write_text("# synthesis\n")
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir(exist_ok=True)
+        entity_reports = [("acme", _fake_report("acme")), ("globex", _fake_report("globex"))]
+        with mock.patch.object(cli.env, "CONFIG_DIR", cfg_dir):
+            assert cli._write_last_run("acme vs globex", entity_reports[0][1], entity_reports, x_envelope_sha256=digest)
+        argv = ["acme vs globex", "--competitors-plan", plan, "--emit", "html", "--synthesis-file", str(synth)]
+        with mock.patch.object(cli, "_render_save_and_print", return_value=0) as render:
+            rc, _, err = _cli(argv, tmp_path)
+        assert rc == 0, err
+        assert "Reusing cached report data" in err
+        render.assert_called_once()
+        # Same plan, but acme's envelope went stale: fail closed before the cache.
+        stale = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
+        _write(tmp_path, _envelope([_call("topic", posts=[_row(0, "a", "acme news")])], topic="acme", generated_at=stale), "acme.json")
+        with mock.patch.object(cli, "_render_save_and_print", side_effect=AssertionError("must not render")):
+            rc, _, err = _cli(argv, tmp_path)
+        assert rc == 2
+        assert "generated_at" in err and "Reusing cached" not in err
         main = _read(_basic(tmp_path))
-        assert cli._planned_envelope_digest(main, None) == main.sha256 == cli._x_envelope_digest(main, None)
+        assert cli._x_envelope_digest(main, None) == main.sha256
 
     def test_last_report_cache_misses_on_digest_mismatch(self, tmp_path):
         path = _basic(tmp_path)

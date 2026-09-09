@@ -281,6 +281,24 @@ class TestRequestShape:
         assert len(result["items"]) == 20
         assert "error" not in result
 
+    def test_deadline_reaches_the_transport_and_keeps_pages_collected_before_it(self, get_mock, fixed_now, monkeypatch):
+        """The lane deadline is the transport's wall deadline (no full 30s
+        timeout plus retries past it), and a deadline hit mid-walk returns
+        the pages already collected."""
+        page = lambda start, n, nxt: _v2(
+            [_tweet(str(1000 + start + i), f"post {i}") for i in range(n)], next_token=nxt,
+        )
+        monkeypatch.setattr(x_api.time, "monotonic", lambda: 100.0)
+        get_mock.side_effect = [page(0, 20, "p2"), http.DeadlineExceeded()]
+        result = x_api.search_handles(["steipete"], "t", FROM, TO, count_per=60, token=DUMMY_TOKEN, deadline=130.0)
+        assert get_mock.call_count == 2
+        for call in get_mock.call_args_list:
+            assert call.kwargs["deadline_monotonic"] == 130.0
+        assert len(result) == 20 and "error" not in result[0]
+        get_mock.reset_mock()
+        get_mock.side_effect = [http.DeadlineExceeded()]
+        assert x_api.search_x(DUMMY_TOKEN, "topic", FROM, TO, depth="quick")["error"] == x_api.ERR_TIMED_OUT
+
     def test_pagination_stops_without_next_token(self, get_mock, fixed_now):
         get_mock.return_value = _v2([_tweet("1", "only one")])
         result = x_api.search_x(DUMMY_TOKEN, "topic", FROM, TO, depth="deep")

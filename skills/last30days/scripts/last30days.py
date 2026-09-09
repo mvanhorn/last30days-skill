@@ -9,8 +9,6 @@ import argparse
 import atexit
 import datetime
 import hashlib
-import io
-import contextlib
 import json
 import os
 import re
@@ -2770,35 +2768,6 @@ def _x_envelope_digest(
     return _combine_envelope_digests(main.sha256 if main is not None else None, entity_sha256)
 
 
-def _planned_envelope_digest(
-    main: x_envelope.Envelope | None, competitors_plan: str | None
-) -> str | None:
-    """Digest of the envelopes a run WILL use, before the plan is validated.
-
-    The last-report lookup runs before ``parse_competitors_plan`` and
-    ``_attach_entity_envelopes``; hashing each planned ``x_posts`` file here
-    reproduces the digest the write side stored. An unreadable or inline
-    ``x_posts`` value is left out: the later validation fails closed anyway,
-    and a partial digest merely misses the cache.
-    """
-    entity_sha256: dict[str, str] = {}
-    if competitors_plan:
-        try:
-            with contextlib.redirect_stderr(io.StringIO()):
-                comp_plan = parse_competitors_plan(competitors_plan)
-        except SystemExit:
-            comp_plan = {}
-        for name, entry in comp_plan.items():
-            raw = entry.get("x_posts")
-            if not isinstance(raw, str) or not raw or _looks_inline_json(raw):
-                continue
-            try:
-                entity_sha256[name] = hashlib.sha256(Path(raw).read_bytes()).hexdigest()
-            except OSError:
-                continue
-    return _combine_envelope_digests(main.sha256 if main is not None else None, entity_sha256)
-
-
 def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv: list[str]) -> None:
     if not extra_argv:
         return
@@ -3616,6 +3585,17 @@ def _main(
     # this runtime-only object out of the safe diagnose configuration contract.
     config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget()
 
+    # Per-entity host-fetched X envelopes are validated here, on the main
+    # thread and BEFORE the report-cache lookup, so a bad or stale one fails
+    # closed (exit 2) instead of silently dropping that entity inside the
+    # fan-out or being served from a cache built while it was still valid.
+    comp_plan = parse_competitors_plan(args.competitors_plan)
+    try:
+        _attach_entity_envelopes(comp_plan, args)
+    except x_envelope.EnvelopeContractError as exc:
+        sys.stderr.write(f"[last30days] {exc.message}\n")
+        return 2
+
     if not topic:
         parser.print_usage(sys.stderr)
         return 2
@@ -3645,7 +3625,7 @@ def _main(
         cached = _load_last_report_cache(
             topic,
             ttl_seconds=_report_cache_ttl_seconds(config),
-            x_envelope_sha256=_planned_envelope_digest(x_posts_envelope, args.competitors_plan),
+            x_envelope_sha256=_x_envelope_digest(x_posts_envelope, comp_plan),
         )
         if cached is not None:
             cached_report, cached_entity_reports, cache_path = cached
@@ -3786,16 +3766,8 @@ def _main(
         trustpilot_domain = args.trustpilot_domain.strip() if args.trustpilot_domain else None
 
         comp_enabled, comp_count, comp_explicit = resolve_competitors_args(args)
-        comp_plan = parse_competitors_plan(args.competitors_plan)
-        # Per-entity host-fetched X envelopes are validated up front, on the
-        # main thread, so a bad one fails closed (exit 2) instead of silently
-        # dropping that entity inside the fan-out.
-        try:
-            _attach_entity_envelopes(comp_plan, args)
-        except x_envelope.EnvelopeContractError as exc:
-            progress.end_processing()
-            sys.stderr.write(f"[last30days] {exc.message}\n")
-            return 2
+        # comp_plan was parsed, and its per-entity envelopes validated, before
+        # the report-cache lookup above.
 
         # Plan-level trustpilot_domain pins are the same user intent as the CLI
         # flag (already activated above). Auto-resolve hints must not activate.
