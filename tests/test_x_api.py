@@ -269,6 +269,18 @@ class TestRequestShape:
         assert _params(get_mock.call_args_list[1])["next_token"] == "p2"
         assert len({i["id"] for i in result["items"]}) == 30
 
+    def test_pagination_stops_at_the_wall_clock_deadline(self, get_mock, fixed_now, monkeypatch):
+        page = lambda start, n, nxt: _v2(
+            [_tweet(str(1000 + start + i), f"post {i}") for i in range(n)], next_token=nxt,
+        )
+        get_mock.side_effect = [page(0, 20, "p2"), page(20, 20, "p3"), page(40, 20, "p4")]
+        clock = iter([0.0, x_api.DEADLINE_SECONDS + 1.0, x_api.DEADLINE_SECONDS + 2.0, x_api.DEADLINE_SECONDS + 3.0])
+        monkeypatch.setattr(x_api.time, "monotonic", lambda: next(clock))
+        result = x_api.search_x(DUMMY_TOKEN, "topic", FROM, TO, depth="deep")
+        assert get_mock.call_count == 1, "the first page always runs; the second is skipped past the deadline"
+        assert len(result["items"]) == 20
+        assert "error" not in result
+
     def test_pagination_stops_without_next_token(self, get_mock, fixed_now):
         get_mock.return_value = _v2([_tweet("1", "only one")])
         result = x_api.search_x(DUMMY_TOKEN, "topic", FROM, TO, depth="deep")
@@ -350,6 +362,14 @@ class TestEnrollmentFallback:
         assert result["items"] == []
         assert result["error"] == x_api.ERR_FORBIDDEN
         assert http.classify_failure(message=result["error"]) == health.AUTH_FAILED
+
+    def test_enrollment_fallback_with_window_before_the_floor_sends_no_request(self, get_mock, fixed_now):
+        """A window that ends before now-7d cannot be served by recent search:
+        no second request with start_time after end_time."""
+        get_mock.side_effect = [_http_error(403, body="client-not-enrolled")]
+        result = x_api.search_x(DUMMY_TOKEN, "topic", "2026-08-01", "2026-08-20", depth="quick")
+        assert get_mock.call_count == 1
+        assert result == {"items": [], "warning": x_api.TRUNCATION_DETAIL}
 
     def test_second_403_on_recent_is_a_fixed_forbidden_error(self, get_mock, fixed_now):
         get_mock.side_effect = [
@@ -647,6 +667,31 @@ class TestPipelineWiring:
         xquik_lane.assert_not_called()
         x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
         assert "https://x.com/analyst1/status/777" in x_urls
+
+    def test_all_backends_failed_keeps_the_payment_required_state(self):
+        """xapi's 402 must not be masked by a later backend's generic failure:
+        the outcome that reaches doctor says top up, not re-authenticate."""
+        plan = {
+            "intent": "general", "freshness_mode": "balanced_recent", "cluster_mode": "story",
+            "subqueries": [{
+                "label": "primary", "search_query": "topic",
+                "ranking_query": "What are people saying about topic?", "sources": ["x"],
+            }],
+            "source_weights": {"x": 1.0},
+        }
+        answers = iter([
+            ([], x_api.ERR_PAYMENT_REQUIRED),
+            ([], "request failed (HTTPError)"),
+        ])
+        with mock.patch("lib.env.x_backend_chain", return_value=["xapi", "xai"]), \
+             mock.patch("lib.pipeline._fetch_x_backend", side_effect=lambda *a, **k: next(answers)):
+            report = pipeline.run(
+                topic="topic", config={"X_BEARER_TOKEN": DUMMY_TOKEN, "XAI_API_KEY": "dummy-xai"},
+                depth="quick", requested_sources=["x"], mock=False,
+                external_plan=plan, web_backend="none", save_dir="",
+            )
+        assert report.source_status["x"].state == health.PAYMENT_REQUIRED
+        assert "payment required" in report.source_status["x"].detail
 
     def test_fetch_x_backend_registers_xapi(self, get_mock, fixed_now):
         get_mock.return_value = _v2([_tweet("1", "hello topic")], users=_users(("u1", "a")))

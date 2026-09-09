@@ -1521,6 +1521,17 @@ class GrokBotHostDoctor(unittest.TestCase):
         self.assertEqual("LAST30DAYS_X_BACKEND", rec["pin_var"])
         self.assertIn("no auth path armed", rec["backups"][0]["note"])
 
+    def test_bearer_without_pin_on_default_host_names_the_xapi_pin(self):
+        """xapi is opt-in off Grok Bot: a bare bearer is an unconfigured X
+        with a one-line enable, never a broken X with a cookie fix."""
+        rec = _build({"X_BEARER_TOKEN": "dummy-x-bearer-secret-000"})["sources"]["x"]
+        self.assertEqual("unconfigured", rec["status"])
+        self.assertEqual("off", rec["tier"])
+        self.assertIsNone(rec["active_backend"])
+        self.assertIn("LAST30DAYS_X_BACKEND=xapi", rec["note"])
+        self.assertEqual("", rec["fix"])
+        self.assertNotIn("dummy-x-bearer", json.dumps(rec))
+
     def test_xapi_pin_on_default_host_carries_the_caveat(self):
         rec = _build({"LAST30DAYS_X_BACKEND": "xapi", "X_BEARER_TOKEN": "dummy-x-bearer-secret-000"})["sources"]["x"]
         self.assertEqual("xapi", rec["active_backend"])

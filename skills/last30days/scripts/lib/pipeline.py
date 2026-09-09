@@ -3798,10 +3798,26 @@ def _run_supplemental_searches(
     resolved_handles_out: list[str] | None = None,
 ) -> None:
     """Phase 2: extract entities from Phase 1 results, run targeted supplemental searches."""
-    if depth == "quick" or mock:
+    from_date, to_date = date_range
+
+    # Host-fetched X lane: the envelope's lane calls replace the backend
+    # lanes and are served at every depth (the host already paid for them),
+    # before the quick/mock return and before the chain is recomputed.
+    # Extracted-handle promotion is skipped on envelope runs; a declared lane
+    # without an envelope runs no lane at all (the topic stream already
+    # recorded the not-passed outcome).
+    if config.get("_x_lane_missing"):
+        return
+    envelope = config.get("_x_envelope")
+    if envelope is not None:
+        _serve_envelope_lanes(
+            envelope, bundle=bundle, plan=plan, x_handle=x_handle, x_related=x_related,
+            from_date=from_date, to_date=to_date,
+        )
         return
 
-    from_date, to_date = date_range
+    if depth == "quick" or mock:
+        return
 
     # Convert SourceItems to dicts for entity_extract. All X items (whatever
     # backend fetched them — bird, xai, xurl, xquik) land under the single "x"
@@ -3881,20 +3897,6 @@ def _run_supplemental_searches(
             if corroborated:
                 resolved_handles_out.append(clean)
                 seen.add(clean)
-
-    # Host-fetched X lane: the envelope's lane calls replace the backend
-    # lanes, before the chain is recomputed. Extracted-handle promotion is
-    # skipped on envelope runs; a declared lane without an envelope runs no
-    # lane at all (the topic stream already recorded the not-passed outcome).
-    if config.get("_x_lane_missing"):
-        return
-    envelope = config.get("_x_envelope")
-    if envelope is not None:
-        _serve_envelope_lanes(
-            envelope, bundle=bundle, plan=plan, x_handle=x_handle, x_related=x_related,
-            from_date=from_date, to_date=to_date,
-        )
-        return
 
     if not handles and not related_handles:
         return
@@ -4821,6 +4823,7 @@ def _retrieve_stream_impl(
         if not chain:
             raise RuntimeError("No X backend is available.")
         last_error = ""
+        chain_errors: list[str] = []
         items = []
         used_backend = None
         x_warnings: list[str] = []
@@ -4876,9 +4879,17 @@ def _retrieve_stream_impl(
                 break
             if err:
                 last_error = f"{backend}: {err}"
+                chain_errors.append(last_error)
                 print(f"[X] backend '{backend}' failed ({err}); trying next", file=sys.stderr)
 
         if not items and last_error:
+            # A credit-exhaustion failure earlier in the chain is the most
+            # specific outcome (top up, not re-authenticate); a later
+            # backend's generic failure must not mask it.
+            for candidate in chain_errors:
+                if http.classify_failure(message=candidate) == health.PAYMENT_REQUIRED:
+                    last_error = candidate
+                    break
             state = (
                 bird_x.classify_run_failure(last_error)
                 if last_error.startswith("bird:")

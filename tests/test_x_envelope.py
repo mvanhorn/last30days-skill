@@ -203,6 +203,25 @@ class TestIngestion:
         assert report.source_status["x"].state == health.OK
         assert "x" not in report.errors_by_source
 
+    def test_lane_calls_are_served_on_quick_runs(self, tmp_path):
+        """The host already paid for the lanes: --quick must not drop them."""
+        envelope = _read(_basic(tmp_path))
+        report = _run(envelope, x_handle=SUBJECT, depth="quick")
+        by_author = {item.author: item for item in report.items_by_source["x"]}
+        assert SUBJECT in by_author, "from-lane row must land under x on a quick run"
+        assert len(report.items_by_source["x"]) == 3
+
+    def test_mention_lane_rows_reach_the_report(self, tmp_path):
+        envelope = _read(_write(tmp_path, _envelope([
+            _call("topic", posts=[_row(0, "alice", "ai agents review")]),
+            _call("mention", handles=[SUBJECT], posts=[_row(4, "fan", f"@{SUBJECT} love the agent work")]),
+        ])))
+        assert envelope.lane_counts["mention"] == 1
+        report = _run(envelope, x_handle=SUBJECT)
+        by_author = {item.author: item for item in report.items_by_source["x"]}
+        assert "fan" in by_author, "mention-lane row must land under x"
+        assert len(report.items_by_source["x"]) == 2
+
     def test_from_row_gets_first_party_handling(self, tmp_path):
         # A subject post that never repeats the topic must survive the
         # relevance floor: that is what first-party handling means.
@@ -551,6 +570,14 @@ class TestMalformedEnvelope:
         _assert_contract(_write(tmp_path, "{not json SECRETVALUE", "a.json"), must_not_contain=["SECRETVALUE"])
         _assert_contract(_write(tmp_path, '["SECRETVALUE"]', "b.json"), must_not_contain=["SECRETVALUE"])
 
+    def test_future_generated_at_exits_2(self, tmp_path):
+        """A stamp ahead of the clock must not outlive the freshness gate."""
+        ahead = (datetime.now(timezone.utc) + timedelta(hours=2)).isoformat()
+        message = _assert_contract(_write(tmp_path, _envelope([_call("topic", posts=[_row(0)])], generated_at=ahead)))
+        assert "future" in message and ahead not in message
+        skew = (datetime.now(timezone.utc) + timedelta(minutes=2)).isoformat()
+        assert _read(_write(tmp_path, _envelope([_call("topic", posts=[_row(0)])], generated_at=skew), "ok.json")).accepted == 1
+
     def test_stale_generated_at_exits_2(self, tmp_path):
         stale = (datetime.now(timezone.utc) - timedelta(hours=7)).isoformat()
         message = _assert_contract(_write(tmp_path, _envelope([_call("topic", posts=[_row(0)])], generated_at=stale)))
@@ -666,6 +693,22 @@ class TestLanes:
         ])))
         assert envelope.counters["lane-mismatch"] == 1
         assert envelope.lane_counts["from"] == 1
+
+    def test_related_lane_claiming_the_primary_handle_is_served_as_topic(self, tmp_path):
+        """The related lane is narrowed to --x-related: a --x-handle handle is
+        allowed for from/mention but not for related."""
+        envelope = _read(
+            _write(tmp_path, _envelope([_call("related", handles=[SUBJECT], posts=[_row(0, SUBJECT, "x")])])),
+            handles=[SUBJECT], related=[RELATED],
+        )
+        assert envelope.lane_counts["related"] == 0
+        assert envelope.lane_counts["topic"] == 1
+        assert envelope.counters["lane-mismatch"] == 1
+        ok = _read(
+            _write(tmp_path, _envelope([_call("related", handles=[RELATED], posts=[_row(0, RELATED, "x")])]), "ok.json"),
+            handles=[SUBJECT], related=[RELATED],
+        )
+        assert ok.lane_counts["related"] == 1
 
     def test_related_handle_absent_from_x_related_is_served_as_topic(self, tmp_path):
         envelope, stderr = _capture(lambda: _read(

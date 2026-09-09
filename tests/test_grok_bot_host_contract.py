@@ -242,6 +242,17 @@ class TestConnectorRecipe(unittest.TestCase):
             ):
                 self.fail(f"a shell write of the envelope: {line.strip()!r}")
 
+    def test_recipe_heredoc_sentinel_is_per_run_and_json_is_one_line(self):
+        """Post text is attacker-controlled: a fixed public sentinel could be
+        echoed by a post to close the heredoc early. The recipe demands a
+        per-run nonce in both sentinel lines and single-line JSON."""
+        delims = HEREDOC_RE.findall(self.recipe)
+        self.assertTrue(any("X_POSTS_EOF_{X_POSTS_NONCE}" in d for d in delims), delims)
+        self.assertNotIn("<<'X_POSTS_EOF'", self.recipe)
+        self.assertIn("\nX_POSTS_EOF_{X_POSTS_NONCE}\n", self.recipe)
+        self.assertIn("ONE line", self.recipe)
+        self.assertIn("random", self.recipe)
+
     def test_recipe_has_no_r4_vocabulary(self):
         self.assertEqual([], _forbidden_hits(self.recipe))
 

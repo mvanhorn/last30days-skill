@@ -21,6 +21,7 @@ the research window is always carried by request parameters.
 from __future__ import annotations
 
 import re
+import time
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
@@ -50,6 +51,10 @@ RECENT_WINDOW_DAYS = 7
 END_TIME_SAFETY_SECONDS = 30
 TIMEOUT_SECONDS = 30
 RETRIES = 2
+# Wall-clock budget for one search (all pages, including the recent-search
+# fallback). A throttled or slow walk returns what it has instead of holding
+# the whole run; the source's per-request timeout still bounds each page.
+DEADLINE_SECONDS = 90
 
 TRUNCATION_DETAIL = "window truncated to 7 days"
 
@@ -459,15 +464,29 @@ def _page_size(count: int) -> int:
     return max(MIN_PAGE_RESULTS, min(MAX_PAGE_RESULTS, int(count)))
 
 
-def _search_pages(token: str, url: str, params: Dict[str, Any], count: int) -> Dict[str, Any]:
-    """Follow ``next_token`` until ``count`` posts are collected."""
+def _search_pages(
+    token: str,
+    url: str,
+    params: Dict[str, Any],
+    count: int,
+    deadline: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Follow ``next_token`` until ``count`` posts are collected.
+
+    ``deadline`` is a ``time.monotonic()`` instant: the first page always
+    runs; a later page is skipped once the deadline has passed and the
+    posts collected so far are returned.
+    """
     data: List[Dict[str, Any]] = []
     users: Dict[str, Dict[str, Any]] = {}
     page_params = dict(params)
     page_params["max_results"] = _page_size(count)
     # Bound the walk even when every page carries a next_token.
     max_pages = max(1, -(-count // MIN_PAGE_RESULTS))
-    for _ in range(max_pages):
+    for page_index in range(max_pages):
+        if page_index and deadline is not None and time.monotonic() >= deadline:
+            _log(f"search deadline ({DEADLINE_SECONDS}s) reached; keeping {len(data)} posts")
+            break
         # A fresh dict per page: the transport must never see a later
         # page's next_token on an earlier request.
         response = _get(token, url, dict(page_params))
@@ -512,16 +531,23 @@ def _run_search(
     }
     _log(f"Searching: {label}")
     warning = None
+    deadline = time.monotonic() + DEADLINE_SECONDS
     try:
-        response = _search_pages(token, _SEARCH_ALL_URL, params, count)
+        response = _search_pages(token, _SEARCH_ALL_URL, params, count, deadline)
     except _XApiFailure as exc:
         if not exc.enrollment:
             _log(f"{label}: {exc}")
             return {"items": [], "error": str(exc)}
         _log(f"{label}: full-archive search not enrolled; retrying recent search ({TRUNCATION_DETAIL})")
-        params["start_time"] = max(start, _recent_floor())
+        floor = _recent_floor()
+        if floor >= end:
+            # The whole window predates what recent search can reach: an
+            # empty, truncated result, never a start_time after end_time.
+            _log(f"{label}: window ends before the recent-search floor; nothing to fetch")
+            return {"items": [], "warning": TRUNCATION_DETAIL}
+        params["start_time"] = max(start, floor)
         try:
-            response = _search_pages(token, _SEARCH_RECENT_URL, params, count)
+            response = _search_pages(token, _SEARCH_RECENT_URL, params, count, deadline)
         except _XApiFailure as exc2:
             _log(f"{label}: {exc2}")
             return {"items": [], "error": str(exc2)}

@@ -213,8 +213,11 @@ def search_x(
 
         if result.returncode != 0:
             error_text = result.stderr.strip() or result.stdout.strip()
-            log.debug(f"xurl exit {result.returncode}: {error_text[:200]}")
-            return {"error": _classify_cli_failure(error_text)}
+            classified = _classify_cli_failure(error_text)
+            # The raw CLI output can echo the bearer; only the fixed string
+            # and its size reach the debug log.
+            log.debug(f"xurl exit {result.returncode}: {classified} ({len(error_text)} chars)")
+            return {"error": classified}
 
         return json.loads(result.stdout)
 

@@ -86,17 +86,43 @@ def test_store_key_reads_exactly_one_line(tmp_path):
     assert "second-line" not in env_path.read_text()
 
 
-def test_store_key_is_idempotent_and_keeps_existing_value(tmp_path):
+def test_store_key_replaces_an_existing_value_in_place(tmp_path):
+    """A second store-key rotates the credential: a rejected token must not
+    survive a 'persisted: true' receipt (review finding)."""
     env_path = tmp_path / ".env"
-    assert _run(["setup", "--store-key", "X_BEARER_TOKEN"], DUMMY + "\n", env_path)[0] == 0
-    rc, out, err = _run(["setup", "--store-key", "X_BEARER_TOKEN"], "other-dummy-value-not-real\n", env_path)
+    env_path.write_text("SETUP_COMPLETE=true\n# note\nX_BEARER_TOKEN=old-dummy\nXAI_API_KEY=other\n")
+    os.chmod(env_path, 0o600)
+    rotated = "rotated-dummy-value-not-real"
+    rc, out, err = _run(["setup", "--store-key", "X_BEARER_TOKEN"], rotated + "\n", env_path)
     assert rc == 0
     assert json.loads(out.strip().splitlines()[-1]) == {"persisted": True, "key": "X_BEARER_TOKEN"}
     content = env_path.read_text()
     assert content.count("X_BEARER_TOKEN=") == 1
-    assert env.load_env_file(env_path)["X_BEARER_TOKEN"] == DUMMY
-    assert "other-dummy-value" not in content
+    assert "old-dummy" not in content
+    loaded = env.load_env_file(env_path)
+    assert loaded["X_BEARER_TOKEN"] == rotated
+    assert loaded["XAI_API_KEY"] == "other"
+    assert loaded["SETUP_COMPLETE"] == "true"
+    assert "# note" in content
     assert _mode(env_path) == 0o600
+    assert not (tmp_path / ".env.tmp").exists()
+    assert rotated not in out and rotated not in err
+
+
+def test_write_api_key_default_still_keeps_an_existing_value(tmp_path):
+    from lib import setup_wizard
+    env_path = tmp_path / ".env"
+    assert setup_wizard.write_api_key(env_path, DUMMY, key_name="X_BEARER_TOKEN")
+    assert setup_wizard.write_api_key(env_path, "other-dummy", key_name="X_BEARER_TOKEN")
+    assert env.load_env_file(env_path)["X_BEARER_TOKEN"] == DUMMY
+
+
+def test_store_key_reads_a_bounded_line(tmp_path):
+    env_path = tmp_path / ".env"
+    huge = "a" * (cli.STORE_KEY_MAX_BYTES * 2)
+    rc, out, err = _run(["setup", "--store-key", "X_BEARER_TOKEN"], huge + "\n", env_path)
+    assert rc == 0
+    assert len(env.load_env_file(env_path)["X_BEARER_TOKEN"]) == cli.STORE_KEY_MAX_BYTES
 
 
 def test_store_key_tightens_a_loose_existing_file(tmp_path):
@@ -163,7 +189,7 @@ def test_store_key_reports_persist_failure_as_false(tmp_path):
     with mock.patch("lib.setup_wizard.write_api_key", return_value=False) as w:
         rc, out, err = _run(["setup", "--store-key", "X_BEARER_TOKEN"], DUMMY + "\n", env_path)
     assert rc == 1
-    w.assert_called_once_with(env_path, DUMMY, key_name="X_BEARER_TOKEN")
+    w.assert_called_once_with(env_path, DUMMY, key_name="X_BEARER_TOKEN", replace=True)
     lines = out.strip().splitlines()
     assert lines[0] == "X_BEARER_TOKEN=****"
     assert json.loads(lines[-1]) == {"persisted": False, "key": "X_BEARER_TOKEN"}

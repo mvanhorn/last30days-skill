@@ -10,7 +10,7 @@ logic and the message framing live here.
 
 from typing import List, Optional
 
-from . import env, health, http, prescriptions
+from . import env, health, http, prescriptions, x_envelope
 
 
 # Sources whose absence can justify a post-run quality repair. X remains a
@@ -68,9 +68,13 @@ def _x_error_prescription(config: dict, research_results: dict) -> prescriptions
     the connector (``cookies_expired`` maps to ``bearer_invalid`` there);
     elsewhere the entry is today's ``cookies_expired``.
     """
+    message = str(research_results.get("x_error") or "")
+    if message.startswith(x_envelope.DETAIL_NOT_PASSED):
+        # The model declared the X connector lane and passed no envelope:
+        # the fix is the connector, on any host.
+        return prescriptions.for_x(config, "connector_missing")
     failure = "cookies_expired"
     if env.x_policy(config).hint_namespace == "official":
-        message = str(research_results.get("x_error") or "")
         if http.classify_failure(message=message) == health.PAYMENT_REQUIRED:
             failure = "payment_required"
     return prescriptions.for_x(config, failure)

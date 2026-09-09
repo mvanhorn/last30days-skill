@@ -526,6 +526,42 @@ def _open_secret_append(path: Path):
     return os.fdopen(fd, "a", encoding="utf-8")
 
 
+def _replace_env_line(env_path: Path, content: str, key_name: str, value: str) -> bool:
+    """Rewrite every ``key_name=`` line of ``content`` with ``value`` as a 0o600 secret.
+
+    The new file is written to a sibling temp path opened at 0o600 and moved
+    over the original, so the secret never has a readable window and a
+    crash mid-write leaves the old file intact.
+    """
+    new_line = f"{key_name}={_format_env_value(value)}"
+    lines = []
+    replaced = False
+    for line in content.splitlines():
+        stripped = line.strip()
+        is_key = (
+            stripped and not stripped.startswith("#") and "=" in stripped
+            and stripped.split("=", 1)[0].strip() == key_name
+        )
+        if is_key:
+            if not replaced:
+                lines.append(new_line)
+                replaced = True
+            continue
+        lines.append(line)
+    if not replaced:
+        lines.append(new_line)
+    tmp_path = env_path.with_name(env_path.name + ".tmp")
+    fd = os.open(tmp_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp_path, env_path)
+    try:
+        os.chmod(env_path, 0o600)
+    except OSError:
+        pass
+    return True
+
+
 def _format_env_value(value: str) -> str:
     """Quote a value so it round-trips through env.load_env_file.
 
@@ -605,19 +641,28 @@ def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
         return False
 
 
-def write_api_key(env_path: Path, api_key: str, key_name: str = "SCRAPECREATORS_API_KEY") -> bool:
+def write_api_key(
+    env_path: Path,
+    api_key: str,
+    key_name: str = "SCRAPECREATORS_API_KEY",
+    *,
+    replace: bool = False,
+) -> bool:
     """Append an API key to the .env file as a 0o600 secret.
 
     Reuses the same secret-safe write path as ``write_setup_config`` so the
     value lands with restrictive permissions and round-trips through
-    ``env.load_env_file``. Idempotent: if ``key_name`` is already present in
-    the file, nothing is written and the existing value is preserved (we never
-    clobber a key the user may have set by hand).
+    ``env.load_env_file``. Idempotent by default: if ``key_name`` is already
+    present in the file, nothing is written and the existing value is
+    preserved (we never clobber a key the user may have set by hand). With
+    ``replace=True`` an existing line is rewritten in place instead, so an
+    explicit ``setup --store-key`` can rotate a rejected credential.
 
     Args:
         env_path: Path to the .env file (e.g. ~/.config/last30days/.env).
         api_key: The raw key value to persist.
         key_name: The env var name to write (default SCRAPECREATORS_API_KEY).
+        replace: Rewrite an existing ``key_name`` line instead of keeping it.
 
     Returns:
         True if the key was written or already present, False on error or when
@@ -636,6 +681,8 @@ def write_api_key(env_path: Path, api_key: str, key_name: str = "SCRAPECREATORS_
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#") and "=" in stripped:
                     if stripped.split("=", 1)[0].strip() == key_name:
+                        if replace:
+                            return _replace_env_line(env_path, existing_content, key_name, api_key)
                         return True  # Already configured; do not duplicate
 
         line = f"{key_name}={_format_env_value(api_key)}\n"

@@ -474,7 +474,7 @@ python3 skills/last30days/scripts/last30days.py "<topic>" --x-posts /tmp/x-posts
 
 ### `setup --store-key`
 
-`setup --store-key <NAME>` persists one credential to the global `.env` (mode `600`) from a single line on stdin, without echoing it: stdout shows `NAME=****` plus a JSON line `{"persisted": true, "key": "NAME"}`. `NAME` must be one of the credential names the engine loads from `.env` (for example `X_BEARER_TOKEN`, `XAI_API_KEY`, `SCRAPECREATORS_API_KEY`); an unknown name or an empty value exits `2`. An existing key is kept, never overwritten.
+`setup --store-key <NAME>` persists one credential to the global `.env` (mode `600`) from a single line on stdin, without echoing it: stdout shows `NAME=****` plus a JSON line `{"persisted": true, "key": "NAME"}`. `NAME` must be one of the credential names the engine loads from `.env` (for example `X_BEARER_TOKEN`, `XAI_API_KEY`, `SCRAPECREATORS_API_KEY`); an unknown name or an empty value exits `2`. Running it again with a new value replaces the stored one (rotating a rejected credential); other lines in the file are untouched.
 
 ```bash
 printf '%s\n' "$TOKEN" | python3 skills/last30days/scripts/last30days.py setup --store-key X_BEARER_TOKEN

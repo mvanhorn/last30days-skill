@@ -370,6 +370,23 @@ def _clean_handles(value: Any) -> list[str] | None:
 # ---------------------------------------------------------------------------
 
 
+# Clock skew a host may legitimately show; anything further ahead is a
+# stamp chosen to outlive the six-hour freshness gate.
+FUTURE_SKEW_SECONDS = 5 * 60
+
+
+def _generated_in_future(value: Any) -> bool:
+    """True when ``generated_at`` is more than ``FUTURE_SKEW_SECONDS`` ahead of now."""
+    try:
+        stamp = datetime.fromisoformat(str(value))
+    except (TypeError, ValueError):
+        return False
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=timezone.utc)
+    ahead = stamp.astimezone(timezone.utc) - datetime.now(timezone.utc)
+    return ahead.total_seconds() > FUTURE_SKEW_SECONDS
+
+
 def read(
     path: str | os.PathLike[str],
     window: tuple[str, str],
@@ -433,6 +450,8 @@ def read(
             'has a "generated_at" field that is missing, malformed, or older than '
             f"{MAX_AGE_SECONDS // 3600} hours"
         )
+    if _generated_in_future(payload.get("generated_at")):
+        raise fail('has a "generated_at" field in the future')
     if _normalize_topic(payload.get("topic")) != _normalize_topic(topic) or not _normalize_topic(topic):
         raise fail('has a "topic" field that does not match this run\'s topic')
 

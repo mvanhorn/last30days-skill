@@ -574,6 +574,21 @@ def _x_record(config):
                 )
             record["fix"] = ""
             return record
+        xapi_finding = next(
+            (b for b in backends_list if b.get("name") == "xapi"),
+            None,
+        )
+        if xapi_finding and xapi_finding.get("status") in (health.OK, health.DEGRADED):
+            # Same shape as the grok note: a configured opt-in backend is not
+            # a broken X, it is an unconfigured X with a one-line enable.
+            record["status"] = "unconfigured"
+            record["tier"] = TIER_OFF
+            record["note"] = (
+                "X unconfigured; X_BEARER_TOKEN is set but the X API backend is opt-in "
+                "on this host — pin LAST30DAYS_X_BACKEND=xapi to enable"
+            )
+            record["fix"] = ""
+            return record
     return record
 
 

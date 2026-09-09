@@ -2616,15 +2616,22 @@ def _split_store_key(extra_argv: list[str]) -> tuple[bool, str, list[str]]:
     return present, name, remaining
 
 
+# One credential line: longer than any real token, short enough that a
+# misdirected stream on stdin cannot grow memory.
+STORE_KEY_MAX_BYTES = 64 * 1024
+
+
 def _run_store_key(name: str) -> int:
     """``setup --store-key <NAME>``: persist one allowlisted credential from stdin.
 
-    Reads exactly one line from stdin, strips whitespace, and appends it to
-    the global ``.env`` as a 0o600 secret through ``setup_wizard.write_api_key``
-    (idempotent: an existing key is kept, never clobbered). The value never
-    reaches stdout or stderr: stdout carries ``NAME=****`` plus a JSON line
-    ``{"persisted": bool, "key": NAME}``. A name outside ``env.KEYCHAIN_KEYS``
-    or an empty value exits 2 without echoing anything.
+    Reads exactly one line from stdin (bounded to ``STORE_KEY_MAX_BYTES``),
+    strips whitespace, and writes it to the global ``.env`` as a 0o600 secret
+    through ``setup_wizard.write_api_key``. An existing line for the same
+    name is replaced, so a rejected credential can be rotated by running the
+    command again. The value never reaches stdout or stderr: stdout carries
+    ``NAME=****`` plus a JSON line ``{"persisted": bool, "key": NAME}``. A
+    name outside ``env.KEYCHAIN_KEYS`` or an empty value exits 2 without
+    echoing anything.
     """
     from lib import setup_wizard
 
@@ -2637,14 +2644,16 @@ def _run_store_key(name: str) -> int:
             "see CONFIGURATION.md).\n"
         )
         return 2
-    value = sys.stdin.readline().strip()
+    value = sys.stdin.readline(STORE_KEY_MAX_BYTES).strip()
     if not value:
         sys.stderr.write(
             f"[last30days] setup --store-key {name}: empty value on stdin; "
             "pipe the credential as a single line.\n"
         )
         return 2
-    persisted = bool(setup_wizard.write_api_key(env.CONFIG_FILE, value, key_name=name))
+    persisted = bool(
+        setup_wizard.write_api_key(env.CONFIG_FILE, value, key_name=name, replace=True)
+    )
     print(f"{name}=****")
     print(json.dumps({"persisted": persisted, "key": name}))
     return 0 if persisted else 1

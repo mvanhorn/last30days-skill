@@ -797,6 +797,20 @@ class TestBearerCredential:
         for word in ("x.com", "cookie", "bird", "auth_token", "ct0", "xquik", "grok cli", "grok login"):
             assert word not in text, word
 
+    def test_declared_lane_without_envelope_prescribes_the_connector(self):
+        from lib import x_envelope
+        q = _compute(
+            config_overrides={"LAST30DAYS_HOST": "grok-bot"},
+            result_overrides={"x_error": x_envelope.DETAIL_NOT_PASSED, "active_sources": ["x"]},
+            ytdlp_installed=True,
+        )
+        assert q["core_errored"] == ["x"]
+        text = q["nudge_text"].lower()
+        assert "connector" in text
+        assert "--x-posts" in text
+        for word in ("x.com", "cookie", "bird", "auth_token", "ct0"):
+            assert word not in text, word
+
     def test_grok_bot_credit_error_nudge_says_top_up(self):
         q = _compute(
             config_overrides={"LAST30DAYS_HOST": "grok-bot", "X_BEARER_TOKEN": "dummy-bearer"},

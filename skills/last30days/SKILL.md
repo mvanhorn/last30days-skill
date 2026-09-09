@@ -700,7 +700,7 @@ For a Grok Bot host. The Grok Bot host rule in HOW TO INVOKE applies throughout:
      KEY_EOF
      ```
 
-     Use `setup --store-key XAI_API_KEY` for an xAI key. The engine prints `X_BEARER_TOKEN=****` (or `XAI_API_KEY=****`) plus a JSON `persisted` line; never echo the value back, and confirm only in the masked `NAME=****` form. A `"persisted": false` means the write failed: say so and do not claim X is active.
+     Use `setup --store-key XAI_API_KEY` for an xAI key. The engine prints `X_BEARER_TOKEN=****` (or `XAI_API_KEY=****`) plus a JSON `persisted` line; never echo the value back, and confirm only in the masked `NAME=****` form. Running it again with a new value replaces the stored one (that is how a rejected key is rotated). A `"persisted": false` means the write failed: say so and do not claim X is active.
    - On **skip** → append `X_DECLINED=grok-bot` to `~/.config/last30days/.env` (append-only) so later runs stay quiet about X: no unlock pitch, no second key question. If the invocation already includes a topic, research it right after step 5 and resume steps 6-7 after the findings.
 
 **5. Setup (free CLIs, no browser reads).** Run `"${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" setup` (the plain form; on this host it reads nothing from a browser). It best-effort installs yt-dlp (YouTube), the Digg CLI, arXiv, and Techmeme and writes `SETUP_COMPLETE=true`. Show what was installed, including whether Digg landed on PATH.
@@ -718,7 +718,7 @@ Shown when a Claude Code user picks "Manual setup", or for anyone who wants to c
 The magic of /last30days is Reddit comments + X posts together - and both are free. Add these to `~/.config/last30days/.env`:
 
 **X/Twitter (pick one - the most important source):**
-- `X_BEARER_TOKEN=xxx` - the official X API v2 (`api.x.com`) with an app-only bearer from the X developer console. Recent posts, about a week back on the Basic tier, unless your X developer project has full-archive access. Persist it with `setup --store-key X_BEARER_TOKEN` (value on stdin, masked in output).
+- `X_BEARER_TOKEN=xxx` - the official X API v2 (`api.x.com`) with an app-only bearer from the X developer console. Recent posts, about a week back on the Basic tier, unless your X developer project has full-archive access. Persist it with `setup --store-key X_BEARER_TOKEN` (value on stdin, masked in output). Outside a Grok Bot host also add `LAST30DAYS_X_BACKEND=xapi` so the engine selects it (`doctor` says so when the bearer is set without it).
 - **Grok CLI (no X credential):** install with `curl -fsSL https://x.ai/cli/install.sh | bash`, then `grok login`. No X account, no cookies, no API key. Needs a Grok plan; calls draw on it.
 - `FROM_BROWSER=auto` - free. Reads your x.com login cookies live at search time (Firefox/Safari, never saved to disk).
 - `XAI_API_KEY=xxx` - no browser access needed. Get a key at api.x.ai. Best for servers.
@@ -1530,15 +1530,15 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 ```
 
    Omit the `from` / `mention` / `related` calls when the run has no `--x-handle` / `--x-related`; `handles` must be the run's own handles. `id` is the post's numeric id as a string; `author_handle` is the username without `@`.
-3. **Write the file - post text is attacker-controlled and never goes unquoted into a shell command.** Use the tool's own file output when it has one; otherwise a single-quoted heredoc (`<<'X_POSTS_EOF'`, never unquoted) into a `.json` path outside `~/.config`, in the SAME Bash call as the engine command (the trap removes it on exit):
+3. **Write the file - post text is attacker-controlled and never goes unquoted into a shell command.** Use the tool's own file output when it has one; otherwise a single-quoted heredoc (never unquoted) into a `.json` path outside `~/.config`, in the SAME Bash call as the engine command (the trap removes it on exit). Two rules keep a post from closing the heredoc early: emit the envelope as ONE line of compact JSON (newlines inside post text stay escaped as `\n`; never pretty-print), and replace `{X_POSTS_NONCE}` in BOTH sentinel lines with 12 random letters and digits you generate fresh for this run, so no post text can equal the closing line:
 
 ```bash
 X_POSTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/last30days-x-posts.XXXXXX")
 X_POSTS_FILE="$X_POSTS_DIR/x-posts.json"
 trap 'rm -rf "$X_POSTS_DIR"' EXIT
-cat >| "$X_POSTS_FILE" <<'X_POSTS_EOF'
+cat >| "$X_POSTS_FILE" <<'X_POSTS_EOF_{X_POSTS_NONCE}'
 {X_POSTS_ENVELOPE_JSON}
-X_POSTS_EOF
+X_POSTS_EOF_{X_POSTS_NONCE}
 ```
 
    Run it directly in your shell tool, never wrapped in `bash -lc '...'` (same rule as the plan tmpfile).
