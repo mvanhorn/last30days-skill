@@ -716,6 +716,12 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     if policy.browser_cookies == "read":
         _discover_and_apply_x_credentials(config)
 
+    # Fixture recording (--record-fixtures) must redact a credential that
+    # came from a file, Keychain, or pass, not only one exported in the
+    # shell. No-op outside a recording session.
+    from . import http as _http
+    _http.add_fixture_redactions(_http.config_secret_values(config))
+
     return config
 
 

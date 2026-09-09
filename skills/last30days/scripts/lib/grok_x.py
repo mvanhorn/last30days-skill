@@ -39,6 +39,18 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import log
 from .relevance import token_overlap_relevance as _compute_relevance
+# One copy of the snowflake, handle-grammar, and generated-sequence helpers
+# lives in x_api (KTD3); grok_x keeps its private names for its callers and
+# tests. Model-reported handles are interpolated into post URLs and into the
+# NEXT child prompt, so anything outside the X handle charset is rejected
+# rather than passed through (entity_extract applies the same rule).
+from .x_api import (  # noqa: F401 - re-exported under the same names
+    _HANDLE_RE,
+    _SNOWFLAKE_EPOCH_MS,
+    _clean_handle,
+    _decode_snowflake,
+    _looks_generated,
+)
 
 
 def _log(msg: str) -> None:
@@ -130,9 +142,6 @@ DEPTH_CONFIG = {
 # unexpected interactive prompt would otherwise hang indefinitely, and a
 # non-daemon worker can outlive a wall-clock budget.
 _TIMEOUT_SECONDS = {"quick": 120, "default": 240, "deep": 360}
-
-# Twitter/X snowflake epoch (2010-11-04T01:42:54.657Z) in milliseconds.
-_SNOWFLAKE_EPOCH_MS = 1288834974657
 
 _AUTH_STORE = Path.home() / ".grok" / "auth.json"
 
@@ -348,49 +357,6 @@ def _stage_child_home(workdir: str) -> str:
     return home
 
 
-def _decode_snowflake(post_id: str) -> Optional[datetime]:
-    """Recover a post's creation time from its id, with no network call."""
-    try:
-        value = int(str(post_id).strip())
-    except (TypeError, ValueError):
-        return None
-    if value <= 0:
-        return None
-    try:
-        return datetime.fromtimestamp(
-            ((value >> 22) + _SNOWFLAKE_EPOCH_MS) / 1000, tz=timezone.utc
-        )
-    except (OverflowError, OSError, ValueError):
-        return None
-
-
-def _looks_generated(ids: List[str]) -> bool:
-    """True when ids form a near-uniform arithmetic run.
-
-    Real ranked results are not evenly spaced in time. A fabricated set often
-    is, because the model interpolates a plausible-looking id sequence. Four
-    ids is the minimum used here: three gaps are needed before a near-uniform
-    step reads as generated rather than coincidental.
-    """
-    numeric = []
-    for pid in ids:
-        try:
-            numeric.append(int(pid))
-        except (TypeError, ValueError):
-            return False
-    if len(numeric) < 4:
-        return False
-    numeric.sort()
-    gaps = [b - a for a, b in zip(numeric, numeric[1:])]
-    if any(g <= 0 for g in gaps):
-        return False
-    mean = sum(gaps) / len(gaps)
-    if mean <= 0:
-        return False
-    # Every gap within 5% of the mean is not something real timelines do.
-    return all(abs(g - mean) / mean < 0.05 for g in gaps)
-
-
 # Why the most recent parse returned nothing. Lets _run_query distinguish a
 # clean empty window (common, and not worth a second LLM call) from a suspect
 # response (fabricated ids, a generated sequence, a self-reported
@@ -404,19 +370,6 @@ _RETRYABLE_REJECTIONS = (
 )
 
 _PLACEHOLDER_HANDLES = {"unknown", "n/a", "none", "null", "example", "user", ""}
-
-# X's real handle grammar. Model-reported handles are interpolated into post
-# URLs and into the NEXT child prompt, so anything outside this charset is
-# rejected rather than passed through: a poisoned post that steers the child
-# into emitting a crafted handle line would otherwise reach a prompt slot it
-# can close. entity_extract applies the same rule to @mentions.
-_HANDLE_RE = re.compile(r"[A-Za-z0-9_]{1,15}")
-
-
-def _clean_handle(value: str) -> str:
-    """Return a grammar-valid handle, or '' when the value is not one."""
-    candidate = str(value or "").strip().lstrip("@")
-    return candidate if _HANDLE_RE.fullmatch(candidate) else ""
 
 _NON_EXECUTION_MARKERS = (
     "was not executed",

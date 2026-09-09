@@ -19,11 +19,24 @@ def _supplements_source():
 
 def test_grok_is_handle_lane_capable():
     src = _supplements_source()
-    assert '("grok", "bird", "xquik")' in src, (
+    assert '("grok", "bird", "xapi", "xquik")' in src, (
         "grok supports from:/@ natively; leaving it out of the capable set "
         "silently drops all of Phase 2 for grok users, as it already does for "
-        "xai and xurl"
+        "xai and xurl. xapi (X API v2 bearer) runs the same lanes, after "
+        "bird and before xquik (R7)."
     )
+
+
+def test_xapi_lane_branch_sits_between_bird_and_xquik():
+    src = _supplements_source()
+    grok = src.index('if primary == "grok":')
+    bird = src.index('elif primary == "bird":')
+    xapi = src.index('elif primary == "xapi":')
+    xquik = src.index('elif primary == "xquik":')
+    assert grok < bird < xapi < xquik
+    xapi_block = src[xapi:xquik]
+    assert "x_api.search_handles" in xapi_block
+    assert "x_api.search_mentions" in xapi_block
 
 
 def test_all_three_lanes_are_defined_for_grok():

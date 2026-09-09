@@ -19,7 +19,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from . import log
-from .relevance import token_overlap_relevance as _compute_relevance
+from . import x_api
+# One X API v2 depth table and one parser (KTD3): xurl_x re-imports both.
+from .x_api import DEPTH_CONFIG
 
 # xurl auth status marks a configured app-only bearer as "bearer: ✓".
 # Search uses --auth app, so availability must require this — oauth1 alone
@@ -30,13 +32,6 @@ _BEARER_CONFIGURED_RE = re.compile(r"bearer:\s*✓")
 def _log(msg: str) -> None:
     log.source_log("xurl", msg, tty_only=False)
 
-
-# Depth configurations: number of results to request
-DEPTH_CONFIG = {
-    "quick": 10,
-    "default": 30,
-    "deep": 60,
-}
 
 
 # Memoized availability, mirroring health.py's per-process dependency-probe
@@ -155,6 +150,34 @@ def has_stored_auth() -> bool:
     return shutil.which("xurl") is not None and stored_auth_status()[0] == AUTH_OK
 
 
+# Engine-authored fixed error strings (the same rule as x_api, R8): xurl's
+# stderr can echo the request, the bearer, or an account id, so it never
+# reaches the outcome detail. Each string carries a marker that
+# http.classify_failure recognizes.
+ERR_PAYMENT_REQUIRED = "xurl: payment required (X API credits exhausted)"
+ERR_UNAUTHORIZED = "xurl: unauthorized (bearer token rejected)"
+ERR_FORBIDDEN = "xurl: forbidden (bearer token lacks access)"
+ERR_RATE_LIMITED = "xurl: rate limit exceeded (X API)"
+ERR_FAILED = "xurl: search failed"
+ERR_INVALID_JSON = "xurl: invalid JSON from xurl"
+ERR_NOT_FOUND = "xurl not found in PATH"
+ERR_TIMED_OUT = "xurl search timed out (30s)"
+
+
+def _classify_cli_failure(output: str) -> str:
+    """Map xurl's stderr/stdout to a fixed string by status marker only."""
+    text = (output or "").lower()
+    if "402" in text or "payment required" in text or "credits" in text:
+        return ERR_PAYMENT_REQUIRED
+    if "401" in text or "unauthorized" in text:
+        return ERR_UNAUTHORIZED
+    if "403" in text or "forbidden" in text:
+        return ERR_FORBIDDEN
+    if "429" in text or "rate limit" in text or "too many requests" in text:
+        return ERR_RATE_LIMITED
+    return ERR_FAILED
+
+
 def search_x(
     query: str,
     depth: str = "default",
@@ -167,7 +190,8 @@ def search_x(
 
     Returns:
         Raw JSON response from X API v2 tweets/search/recent, or a dict
-        with an "error" key on failure.
+        with an "error" key holding a fixed string on failure. The CLI's
+        own output reaches only the debug log, never the error.
     """
     max_results = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     # X API v2 search/recent requires max_results in 10–100 range
@@ -186,28 +210,29 @@ def search_x(
 
         if result.returncode != 0:
             error_text = result.stderr.strip() or result.stdout.strip()
-            return {"error": f"xurl search failed: {error_text}"}
+            log.debug(f"xurl exit {result.returncode}: {error_text[:200]}")
+            return {"error": _classify_cli_failure(error_text)}
 
         return json.loads(result.stdout)
 
     except FileNotFoundError:
-        return {"error": "xurl not found in PATH"}
+        return {"error": ERR_NOT_FOUND}
     except subprocess.TimeoutExpired:
-        return {"error": "xurl search timed out (30s)"}
-    except json.JSONDecodeError as exc:
-        return {"error": f"Invalid JSON from xurl: {exc}"}
+        return {"error": ERR_TIMED_OUT}
+    except json.JSONDecodeError:
+        return {"error": ERR_INVALID_JSON}
     except Exception as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        return {"error": f"xurl: {type(exc).__name__}"}
 
 
 def parse_x_response(
     response: Dict[str, Any],
     topic: str = "",
 ) -> List[Dict[str, Any]]:
-    """Parse xurl search response into normalized item dicts.
+    """Parse an xurl search response into normalized item dicts.
 
-    Output format matches the existing XItem schema used by xai_x and bird_x:
-    id, text, url, author_handle, date, engagement, why_relevant, relevance.
+    Delegates to the shared X API v2 parser (``x_api.parse_v2_response``)
+    so xurl and xapi never drift; only the id prefix differs.
 
     Args:
         response: Raw X API v2 response dict from search_x()
@@ -216,62 +241,7 @@ def parse_x_response(
     Returns:
         List of item dicts.  Empty list on error or no results.
     """
-    items: List[Dict[str, Any]] = []
-
-    if "error" in response:
+    if isinstance(response, dict) and "error" in response:
         _log(f"Error in response: {response['error']}")
-        return items
-
-    data = response.get("data") or []
-    if not data:
-        return items
-
-    # Build author lookup from includes.users
-    authors: Dict[str, Dict[str, Any]] = {}
-    for user in (response.get("includes") or {}).get("users") or []:
-        authors[user["id"]] = user
-
-    for i, tweet in enumerate(data):
-        author_id = tweet.get("author_id", "")
-        author = authors.get(author_id, {})
-        username = author.get("username", "")
-
-        tweet_id = tweet.get("id", "")
-        url = f"https://x.com/{username}/status/{tweet_id}" if username else ""
-
-        # Parse public_metrics
-        engagement: Optional[Dict[str, Any]] = None
-        metrics = tweet.get("public_metrics") or {}
-        if metrics:
-            engagement = {
-                "likes": metrics.get("like_count", 0),
-                "reposts": metrics.get("retweet_count", 0),
-                "replies": metrics.get("reply_count", 0),
-                "quotes": metrics.get("quote_count", 0),
-            }
-
-        # Parse ISO 8601 date → YYYY-MM-DD
-        date: Optional[str] = None
-        created = tweet.get("created_at", "")
-        if created:
-            m = re.match(r"(\d{4}-\d{2}-\d{2})", created)
-            if m:
-                date = m.group(1)
-
-        text = tweet.get("text", "").strip()
-
-        # Relevance score via shared token-overlap function
-        relevance = _compute_relevance(topic, text) if topic else 0.5
-
-        items.append({
-            "id": f"XURL{i + 1}",
-            "text": text[:500],
-            "url": url,
-            "author_handle": username,
-            "date": date,
-            "engagement": engagement,
-            "why_relevant": "",
-            "relevance": relevance,
-        })
-
-    return items
+        return []
+    return x_api.parse_v2_response(response, topic, None, id_prefix="XURL")

@@ -192,19 +192,26 @@ class TestSearchX(unittest.TestCase):
             result = xurl_x.search_x("hello world")
         self.assertEqual(result["data"][0]["id"], "1")
 
-    def test_returns_error_on_non_zero_exit(self):
-        completed = mock.Mock(returncode=1, stdout="", stderr="rate limit exceeded")
+    def test_returns_fixed_error_on_non_zero_exit(self):
+        # xurl's stderr may echo the request or the bearer; only an
+        # engine-authored fixed string (with a classifier marker) survives.
+        completed = mock.Mock(
+            returncode=1, stdout="",
+            stderr="rate limit exceeded for dummy-x-bearer-secret-000",
+        )
         with mock.patch("subprocess.run", return_value=completed):
             result = xurl_x.search_x("test")
-        self.assertIn("error", result)
-        self.assertIn("rate limit exceeded", result["error"])
+        self.assertEqual(xurl_x.ERR_RATE_LIMITED, result["error"])
+        self.assertIn("rate limit", result["error"])
+        self.assertNotIn("dummy-x-bearer-secret-000", result["error"])
 
-    def test_returns_error_on_invalid_json(self):
-        completed = mock.Mock(returncode=0, stdout="NOT JSON")
+    def test_returns_fixed_error_on_invalid_json(self):
+        completed = mock.Mock(returncode=0, stdout="NOT JSON dummy-x-bearer-secret-000")
         with mock.patch("subprocess.run", return_value=completed):
             result = xurl_x.search_x("test")
-        self.assertIn("error", result)
-        self.assertIn("Invalid JSON", result["error"])
+        self.assertEqual(xurl_x.ERR_INVALID_JSON, result["error"])
+        self.assertIn("invalid JSON", result["error"])
+        self.assertNotIn("dummy-x-bearer-secret-000", result["error"])
 
     def test_returns_error_when_not_installed(self):
         with mock.patch("subprocess.run", side_effect=FileNotFoundError):
@@ -345,11 +352,14 @@ class TestParseXResponse(unittest.TestCase):
         items = xurl_x.parse_x_response(resp)
         self.assertEqual(items[0]["relevance"], 0.5)
 
-    def test_url_empty_when_no_username(self):
-        # author_id not in includes.users → username=""
+    def test_url_falls_back_to_i_status_when_no_username(self):
+        # author_id not in includes.users → username="" but the post is
+        # kept with the id-only citation form (shared x_api parser).
         resp = _make_api_response(tweets=[self._tweet("999", "text", "unknown_uid")])
         items = xurl_x.parse_x_response(resp)
-        self.assertEqual(items[0]["url"], "")
+        self.assertEqual(items[0]["url"], "https://x.com/i/status/999")
+        self.assertEqual(items[0]["author_handle"], "")
+        self.assertEqual(items[0]["post_id"], "999")
 
     def test_multiple_tweets_parsed(self):
         tweets = [self._tweet(str(i), f"tweet {i}", "u1") for i in range(5)]
@@ -376,6 +386,10 @@ class TestDepthConfig(unittest.TestCase):
     def test_all_standard_depths_present(self):
         for depth in ("quick", "default", "deep"):
             self.assertIn(depth, xurl_x.DEPTH_CONFIG)
+
+    def test_depth_config_is_shared_with_x_api(self):
+        from lib import x_api
+        self.assertIs(x_api.DEPTH_CONFIG, xurl_x.DEPTH_CONFIG)
 
     def test_deep_greater_than_quick(self):
         self.assertGreater(

@@ -69,6 +69,7 @@ from . import (
     topic_shape,
     truthsocial,
     trustpilot,
+    x_api,
     x_judge,
     xai_x,
     xiaohongshu_api,
@@ -2770,6 +2771,10 @@ def run(
     # marking the source PARTIAL would trip LAST30DAYS_STRICT_EXIT on runs that
     # returned good X results.
     warnings.extend(bundle.artifacts.get("x_partial_coverage", []))
+    # Backend receipts that are not failures (xapi's truncated window).
+    for stream_artifact in bundle.artifacts.get("grounding", []):
+        if isinstance(stream_artifact, dict):
+            warnings.extend(stream_artifact.get("x_receipts", []))
     library_context, library_warning = _load_library_context(
         topic=topic,
         config=config,
@@ -3838,7 +3843,7 @@ def _run_supplemental_searches(
         return
 
     # Pick the X handle-search backend: the first handle-capable backend in the
-    # chain (bird or xquik). These supplemental from:/mentions lanes are
+    # chain (grok, bird, xapi, or xquik). These supplemental from:/mentions lanes are
     # complementary to the topic search, so when the topic primary can't run
     # them (xai/xurl have no handle-lane implementation) but a capable backend
     # is available, use it rather than skipping Phase 2. bird scrapes X GraphQL
@@ -3850,7 +3855,7 @@ def _run_supplemental_searches(
     pinned = runtime.x_search_backend
     if pinned:
         chain = [pinned] + [b for b in chain if b != pinned]
-    primary = next((b for b in chain if b in ("grok", "bird", "xquik")), None)
+    primary = next((b for b in chain if b in ("grok", "bird", "xapi", "xquik")), None)
 
     # Name lane (posts naming the subject in plain text, no @-mention) is
     # grok-only for now: it needs phrase-quoting and negation operators the
@@ -3897,6 +3902,17 @@ def _run_supplemental_searches(
 
         def _about_lane(hs: list, count: int) -> tuple[list, bool]:
             return bird_x.search_mentions(hs, from_date, count_per=count), False
+    elif primary == "xapi":
+        # Direct X API v2 with the app-only bearer: from:/@ lanes run over
+        # search/all with the recent-search fallback (KTD4).
+        xapi_token = config.get("X_BEARER_TOKEN") or ""
+
+        def _from_lane(hs: list, count: int, and_topic: bool = False) -> tuple[list, bool]:
+            # x_api.search_handles doesn't support and_topic; topic ranks only
+            return x_api.search_handles(hs, topic, from_date, to_date, count_per=count, token=xapi_token), False
+
+        def _about_lane(hs: list, count: int) -> tuple[list, bool]:
+            return x_api.search_mentions(hs, from_date, to_date, topic=topic, count_per=count, token=xapi_token), False
     elif primary == "xquik":
         xquik_token = env.get_xquik_token(config)
 
@@ -4282,8 +4298,12 @@ def _retry_thin_sources(
                 )
 
 
-def _fetch_x_backend(backend, query, from_date, to_date, depth, config):
+def _fetch_x_backend(backend, query, from_date, to_date, depth, config, warnings=None):
     """Fetch X items from a single backend. Returns (items, error_str).
+
+    ``warnings``, when given, collects backend receipts that are not
+    failures (xapi's "window truncated to 7 days" after the recent-search
+    fallback) so the X branch can surface them as run artifacts.
 
     Backends are tried in priority order by the caller (env.x_backend_chain);
     a non-empty error_str signals a hard failure (auth/payment/etc.) so the
@@ -4316,6 +4336,14 @@ def _fetch_x_backend(backend, query, from_date, to_date, depth, config):
     elif backend == "xquik":
         result = xquik.search_xquik(query, from_date, to_date, depth=depth, token=env.get_xquik_token(config))
         items = xquik.parse_xquik_response(result)
+    elif backend == "xapi":
+        result = x_api.search_x(config.get("X_BEARER_TOKEN") or "", query, from_date, to_date, depth=depth)
+        items = result.get("items", []) if isinstance(result, dict) else []
+        warning = result.get("warning") if isinstance(result, dict) else None
+        if warning:
+            print(f"[X] xapi: {warning}", file=sys.stderr)
+            if warnings is not None:
+                warnings.append(f"X: xapi {warning}")
     else:
         return [], f"unknown X backend: {backend}"
     err = result.get("error") if isinstance(result, dict) else ""
@@ -4611,11 +4639,19 @@ def _retrieve_stream_impl(
         last_error = ""
         items = []
         used_backend = None
+        x_warnings: list[str] = []
         for i, backend in enumerate(chain):
-            items, err = _fetch_x_backend(backend, x_query, from_date, to_date, depth, config)
+            items, err = _fetch_x_backend(
+                backend, x_query, from_date, to_date, depth, config, warnings=x_warnings,
+            )
             if items:
                 if i > 0:
-                    print(f"[X] primary backend(s) returned nothing; used fallback '{backend}'", file=sys.stderr)
+                    # xapi is metered: name the spend when it served as a backup.
+                    spend = " (spends X API credits)" if backend == "xapi" else ""
+                    print(
+                        f"[X] primary backend(s) returned nothing; used fallback '{backend}'{spend}",
+                        file=sys.stderr,
+                    )
                 # Check for auth errors before proceeding to judge-retry
                 if last_error:
                     # Fallback succeeded after earlier backend failed. Classify
@@ -4669,6 +4705,11 @@ def _retrieve_stream_impl(
         # Retrieve-judge-retry: judge corpus and retry if off-topic flood.
         # Skip retry on quick/mock (same as Phase 2).
         artifact = {}
+        if x_warnings:
+            # e.g. xapi's "window truncated to 7 days": a receipt that reaches
+            # report.warnings (see the grounding artifacts walk in
+            # _build_report), never a source failure.
+            artifact["x_receipts"] = list(x_warnings)
         if items and depth != "quick" and not mock:
             items_for_judge = [
                 {"author_handle": it.get("author_handle", ""), "text": it.get("text", "")}
