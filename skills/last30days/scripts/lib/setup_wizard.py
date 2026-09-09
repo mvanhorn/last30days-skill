@@ -63,7 +63,7 @@ def render_welcome() -> str:
 
 # Neutral note recorded on an official-only host instead of a cookie scan.
 # Deliberately names no cookie mechanism beyond the fact that none is used
-# (R4 vocabulary rule for Grok Bot onboarding output).
+# (the vocabulary rule for Grok Bot onboarding output).
 OFFICIAL_HOST_COOKIE_NOTE = "browser sessions are not read on this host"
 
 
@@ -97,11 +97,11 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
     cookies_found: Dict[str, str] = {}
     cookie_note: Optional[str] = None
 
-    # Official-only host (LAST30DAYS_HOST=grok-bot, R5/KTD2): the consented
+    # Official-only host (LAST30DAYS_HOST=grok-bot): the consented
     # cookie scan is skipped for EVERY domain (X and Truth Social alike) and
     # recorded as not attempted, with a neutral note the caller can relay.
     # The free CLI installs below still run. A LAST30DAYS_X_BACKEND=bird pin
-    # is the one path that re-enables discovery (KTD7), via x_policy.
+    # is the one path that re-enables discovery, via x_policy.
     if allow_browser_cookies and not x_policy(config).cookie_discovery:
         allow_browser_cookies = False
         cookie_note = OFFICIAL_HOST_COOKIE_NOTE
@@ -183,7 +183,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         # (arxiv, techmeme, trustpilot): {source: {installed, action, ...}}.
         "pp_sources": pp_sources,
         # Reported, never installed: this CLI spends the user's own metered
-        # credits, so acquiring it stays their decision (U5/R11). Passing
+        # credits, so acquiring it stays their decision. Passing
         # config matters: a user whose key lives in a .env file or the
         # keychain (rather than a `brightdata login` credentials file) is
         # active in the engine, and setup must not tell them otherwise.
@@ -791,7 +791,7 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
     cookie_note = results.get("cookie_note")
     if cookie_note:
         # Official-only host: relay the neutral note; say nothing about
-        # browsers (R4). The scan was not attempted, so nothing is "found".
+        # browsers. The scan was not attempted, so nothing is "found".
         lines.append(f"  - {cookie_note}")
 
     env_written = results.get("env_written", False)

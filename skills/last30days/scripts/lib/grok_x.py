@@ -40,7 +40,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import log
 from .relevance import token_overlap_relevance as _compute_relevance
 # One copy of the snowflake, handle-grammar, and generated-sequence helpers
-# lives in x_api (KTD3); grok_x keeps its private names for its callers and
+# lives in x_api; grok_x keeps its private names for its callers and
 # tests. Model-reported handles are interpolated into post URLs and into the
 # NEXT child prompt, so anything outside the X handle charset is rejected
 # rather than passed through (entity_extract applies the same rule).

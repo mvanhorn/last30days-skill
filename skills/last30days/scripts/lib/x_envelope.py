@@ -1,11 +1,11 @@
-"""Host-fetched X envelope: the ``--x-posts`` lane (KTD5).
+"""Host-fetched X envelope: the ``--x-posts`` lane.
 
 The hosting model fetches posts through its own X connector and writes them
 to a ``.json`` file of flat rows. The engine ingests that file as its X
 source for one run: strict at the envelope level (a malformed, stale, or
 off-topic file fails closed with an exit-2 contract error), lenient per row
 (a bad row is dropped and counted), and trusting nothing a row asserts about
-itself beyond a numeric id and a grammar-valid handle (R10).
+itself beyond a numeric id and a grammar-valid handle.
 
 Shape (``schema: "last30days-x-posts/1"``)::
 
@@ -50,13 +50,13 @@ from typing import Any
 
 from . import env, health, log, schema
 from .relevance import token_overlap_relevance as _compute_relevance
-from .x_api import _clean_handle, _decode_snowflake, _looks_generated
-from .xquik import _is_own
+from .query import leading_mentions
+from .x_api import _clean_handle, _decode_snowflake, _looks_generated, is_own_post
 
 SCHEMA = "last30days-x-posts/1"
 ID_PREFIX = "XHOST"
 
-# Input bounds (KTD5). Named so the recipe and the receipts can quote them.
+# Input bounds. Named so the recipe and the receipts can quote them.
 MAX_BYTES = 8 * 1024 * 1024
 MAX_CALLS = 20
 MAX_ROWS_PER_CALL = 500
@@ -82,7 +82,7 @@ COUNTERS = (
     "extra-fields",
 )
 
-# Engine-authored fixed outcome details (R11). The envelope's own error text
+# Engine-authored fixed outcome details. The envelope's own error text
 # never becomes a detail string.
 DETAIL_CREDITS = "X connector reported no credits"
 DETAIL_NOT_CONNECTED = "X connector not connected"
@@ -382,7 +382,7 @@ def read(
     ``window`` is the engine's ``(from_date, to_date)``; ``topic`` is the run
     topic (or comparison entity); ``handles`` are the run's ``--x-handle``
     handles and ``related`` its ``--x-related`` handles, which together bound
-    what a call's ``handles`` may claim (R11).
+    what a call's ``handles`` may claim.
 
     Raises ``EnvelopeContractError`` (exit 2) for every fail-closed case.
     """
@@ -543,7 +543,7 @@ def read(
                     continue
             elif lane == "mention":
                 if author in call_handles or any(
-                    _is_own(item["url"], handle) for handle in call_handles
+                    is_own_post(item["url"], handle) for handle in call_handles
                 ):
                     counters["lane-mismatch"] += 1
                     seen_ids.discard(item["post_id"])
@@ -668,8 +668,6 @@ def _ingest_row(
     else:
         counters["uncitable"] += 1
         url = f"https://x.com/i/status/{post_id}"
-
-    from .query import leading_mentions
 
     return {
         "id": "",

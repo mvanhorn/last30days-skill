@@ -69,7 +69,7 @@ def build_recipe(
     # Official-only host (LAST30DAYS_HOST=grok-bot): the same no-launch
     # recipe as a MacBook, checked BEFORE the extras signals so a Linux or
     # Mac mini Grok Bot computer never gets a launch command. The note is
-    # neutral on purpose (R4). A LAST30DAYS_X_BACKEND=bird pin re-enables
+    # neutral on purpose. A LAST30DAYS_X_BACKEND=bird pin re-enables
     # discovery through env.x_policy, and with it this helper.
     if not env.x_policy(config).cookie_discovery:
         return {

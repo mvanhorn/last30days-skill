@@ -53,7 +53,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, brightdata, env, health, http, prescriptions
+from . import backends, brightdata, env, health, http, prescriptions, x_api
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -417,11 +417,9 @@ def _reddit_record(config):
     return _chained_record("reddit", config)
 
 
-# Official-path wording (R6, KTD11). The bearer path is never described as
+# Official-path wording. The bearer path is never described as
 # parity with the connector lane.
-X_BEARER_CAVEAT = (
-    "recent posts, about the last week, unless the project has full-archive access"
-)
+X_BEARER_CAVEAT = x_api.BEARER_COVERAGE_NOTE
 X_CONNECTOR_NOTE = "will use: X connector (host-fetched at run time)"
 X_CONNECTOR_ARMED = "X connector lane armed"
 
@@ -430,8 +428,8 @@ def _x_will_use_note(record: Dict[str, Any], policy: env.XPolicy) -> str:
     """The will-use line for a predicted X backend, shaped by the policy.
 
     On an official-only host a pinned backend renders as ``will use: <name>
-    (pinned)`` and nothing else names it (R4 carve-out; the pin variable is
-    not advertised, KTD7). Off it the backends summary is kept verbatim.
+    (pinned)`` and nothing else names it (the pin variable is not
+    advertised). Off it the backends summary is kept verbatim.
     The bearer prediction carries the about-a-week caveat on every host.
     """
     name = record["active_backend"]
@@ -454,15 +452,15 @@ def _x_record(config):
     record = _chained_record("x", config)
     policy = env.x_policy(config)
     if policy.official_only and not record.get("pinned"):
-        # KTD7: the pin is documented in CONFIGURATION.md only; doctor never
+        # The pin is documented in CONFIGURATION.md only; doctor never
         # advertises the knob on an official-only host.
         record["pin_var"] = None
     if record.get("active_backend"):
         record["note"] = _x_will_use_note(record, policy)
         return record
-    # KTD11: the declared X connector lane serves X when no engine backend is
+    # The declared X connector lane serves X when no engine backend is
     # predicted (the same precedence as diagnose.x_backend). Host-independent:
-    # the envelope is accepted anywhere (R13).
+    # the envelope is accepted anywhere.
     if env.x_host_lane_declared(config):
         record["status"] = health.OK
         record["tier"] = TIER_BY_STATUS[health.OK]
@@ -480,7 +478,7 @@ def _x_record(config):
     # will *attempt* browser auth, not that the session is currently valid -
     # keep the note honest and point at the verified key-backed path.
     #
-    # Policy-gated (KTD2): on an official-only host no run-time cookie source
+    # Policy-gated: on an official-only host no run-time cookie source
     # exists unless bird is pinned, and then the note names only the pin.
     #
     # This check MUST come before grok normalization: a pending bird path takes
@@ -521,9 +519,9 @@ def _x_record(config):
     # is never auto-selected. Doctor reports it as "available, unused - pin
     # LAST30DAYS_X_BACKEND=grok to enable" rather than "will use: grok".
     #
-    # Policy-gated (KTD2): on an official-only host the CLI is not probed
+    # Policy-gated: on an official-only host the CLI is not probed
     # unless pinned and is never offered, so this branch does not run there
-    # (R4: no "pin LAST30DAYS_X_BACKEND=grok" note on a Grok Bot host).
+    # (no "pin LAST30DAYS_X_BACKEND=grok" note on a Grok Bot host).
     #
     # R3/R8: When no auto-chain backend is CONFIGURED (all MISSING) but grok has
     # any non-MISSING status, X is unconfigured/skipped - NOT broken/auth-failed.
@@ -1047,11 +1045,11 @@ def load_run_evidence(
 # ---------------------------------------------------------------------------
 
 def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
-    """The "X auth path" sub-lane, routed through the X policy (R4).
+    """The "X auth path" sub-lane, routed through the X policy.
 
     Off an official-only host the wording is unchanged (key-backed, cookie
     path, or nothing armed). On one it names only the official path: the
-    connector lane when declared (KTD11), else the bearer (with the R6
+    connector lane when declared, else the bearer (with the about-a-week
     caveat), the xAI key, or xurl; a pinned non-official backend is named
     once, on the will-use line, never here.
     """
@@ -1225,9 +1223,9 @@ def build_report(config: Dict[str, Any]) -> Dict[str, Any]:
         "config": {
             "global_env": str(env.CONFIG_FILE) if env.CONFIG_FILE else None,
             "config_source": config.get("_CONFIG_SOURCE"),
-            # KTD1: the resolved host value, so a missing export is visible.
+            # The resolved host value, so a missing export is visible.
             "host": env.x_policy(config).host or None,
-            # KTD10: a .env line cannot declare the X connector lane.
+            # A .env line cannot declare the X connector lane.
             "host_lane_file_ignored": bool(config.get("_X_HOST_LANE_FILE_IGNORED")),
         },
         "setup": _setup_block(config),
@@ -1594,7 +1592,7 @@ _SECRET_CONFIG_VARS = KEY_PRESENCE_VARS + (
 
 # Backend pin vars folded into the config fingerprint. Pin values are
 # backend names (e.g. "bird"), never secrets. The host key and the X
-# connector lane signal join them (KTD1): both are non-secret switches that
+# connector lane signal join them: both are non-secret switches that
 # change every X conclusion, so a cached report must not outlive them.
 _FINGERPRINT_PIN_VARS = (
     env.X_BACKEND_PIN_VAR,

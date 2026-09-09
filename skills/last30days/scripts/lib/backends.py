@@ -80,7 +80,7 @@ _SC_PRESCRIPTION = (
 
 
 def _x_cookies_prescription(config: Dict[str, Any]) -> str:
-    """Bird's unconfigured fix, routed through the X policy (R4).
+    """Bird's unconfigured fix, routed through the X policy.
 
     Off an official-only host this is the cookie-consent command; on one
     the same lookup yields the official-path entry (connector lane, bearer,
@@ -344,9 +344,9 @@ def _probe_grok(config: Dict[str, Any]) -> BackendFinding:
 def _probe_xapi(config: Dict[str, Any]) -> BackendFinding:
     """xapi = direct X API v2 with an app-only bearer. KEY PRESENCE ONLY.
 
-    Never a network call (R8). The unconfigured fix is the official-path
+    Never a network call. The unconfigured fix is the official-path
     prescription on an official-only host (connector lane, bearer, xAI key,
-    with the about-a-week caveat from R6); elsewhere the plain key hint,
+    with the about-a-week caveat); elsewhere the plain key hint,
     since xapi runs there only under an explicit pin.
     """
     requires = "X_BEARER_TOKEN (X API v2)"

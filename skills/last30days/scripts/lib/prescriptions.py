@@ -32,6 +32,7 @@ from dataclasses import dataclass, replace
 from typing import Dict, Optional, Tuple
 
 from . import env, health
+from .x_api import BEARER_COVERAGE_NOTE
 
 # Direct engine invocation prefix (scripting fallback; the slash-command UX
 # is "ask the agent to run setup ...", which is the natural-language form).
@@ -109,10 +110,9 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
     ),
     # Official X path (an official-only host per env.x_policy, or an explicit
     # xapi pin). Copy is limited to the connector lane, X_BEARER_TOKEN,
-    # XAI_API_KEY, and X API credits (R4); the bearer path is described as
-    # about a week, never as parity with the connector (R6). Anchors point
-    # at the API keys section for now; U8 adds a CONFIGURATION.md Grok Bot
-    # subsection (slug grok-bot), which these entries now anchor to.
+    # XAI_API_KEY, and X API credits; the bearer path is described as
+    # about a week, never as parity with the connector. Anchors point at
+    # the CONFIGURATION.md Grok Bot subsection (slug grok-bot).
     _entry(
         "x", "bearer_missing",
         cause=(
@@ -121,9 +121,8 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         ),
         fix_nl=(
             "connect X in Grok Bot settings (full 30-day coverage), or set "
-            "X_BEARER_TOKEN from the X developer console (recent posts, about "
-            "the last week, unless your project has full-archive access), or "
-            "set XAI_API_KEY from console.x.ai"
+            f"X_BEARER_TOKEN from the X developer console ({BEARER_COVERAGE_NOTE}), "
+            "or set XAI_API_KEY from console.x.ai"
         ),
         fix_cli="X_BEARER_TOKEN=<your-x-api-bearer-token>",
         anchor="grok-bot",
@@ -132,9 +131,9 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         "x", "bearer_invalid",
         cause="the X API rejected X_BEARER_TOKEN (401/403)",
         fix_nl=(
-            "set a valid X_BEARER_TOKEN from the X developer console (recent "
-            "posts, about the last week, unless your project has full-archive "
-            "access), or connect X in Grok Bot settings (full 30-day coverage)"
+            "set a valid X_BEARER_TOKEN from the X developer console "
+            f"({BEARER_COVERAGE_NOTE}), or connect X in Grok Bot settings "
+            "(full 30-day coverage)"
         ),
         fix_cli="X_BEARER_TOKEN=<your-x-api-bearer-token>",
         anchor="grok-bot",
@@ -158,8 +157,7 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         fix_nl=(
             "connect X in Grok Bot settings (full 30-day coverage) and pass the "
             "connector's posts with --x-posts, or set X_BEARER_TOKEN from the X "
-            "developer console (recent posts, about the last week, unless your "
-            "project has full-archive access)"
+            f"developer console ({BEARER_COVERAGE_NOTE})"
         ),
         fix_cli=f'{ENGINE_CLI} "<topic>" --x-posts <path-to-x-posts.json>',
         anchor="grok-bot",
@@ -301,7 +299,7 @@ def lookup(source: str, failure: str) -> Optional[Prescription]:
 
 # Failure names remapped on an official-only host (env.x_policy): every
 # cookie or Grok CLI failure has an official-path counterpart, so no fix
-# line there names cookies, the scraper, or the CLI (R4). Official names
+# line there names cookies, the scraper, or the CLI. Official names
 # pass through unchanged on every host.
 _OFFICIAL_X_FAILURES: Dict[str, str] = {
     "cookies_missing": "bearer_missing",
@@ -312,7 +310,7 @@ _OFFICIAL_X_FAILURES: Dict[str, str] = {
 
 
 def for_x(config: dict, failure: str) -> Prescription:
-    """Policy-aware X prescription (KTD2).
+    """Policy-aware X prescription.
 
     On an official-only host (``env.x_policy(config).hint_namespace ==
     "official"``) a default-namespace failure resolves to its official

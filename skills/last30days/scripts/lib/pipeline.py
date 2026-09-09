@@ -255,7 +255,7 @@ def available_sources(
     X is listed when an engine backend is available, or browser auth is
     pending, or the hosting model declared the X connector lane
     (``env.x_host_lane_declared``), or a validated ``--x-posts`` envelope is
-    present for this run (``x_envelope``), in every cookie mode (KTD11).
+    present for this run (``x_envelope``), in every cookie mode.
     ``suppress_x_host_lane`` turns only the lane branch off (discovery
     enrichment passes); an envelope still counts.
     """
@@ -274,7 +274,7 @@ def available_sources(
         not suppress_x_host_lane and env.x_host_lane_declared(config)
     ):
         # Host-fetched X lane: the model passes connector results through
-        # --x-posts, so X is served without an engine backend (R12, R13).
+        # --x-posts, so X is served without an engine backend.
         available.append("x")
     else:
         # Safe inspection (--diagnose/--preflight) skips browser-cookie
@@ -984,7 +984,7 @@ def enrich_nominations(
             internal_subrun=True,
             # Enrichment passes never carry a connector envelope, so the
             # per-session lane signal must not plan X in and record a
-            # spurious X error on every nominated topic (R12).
+            # spurious X error on every nominated topic.
             suppress_x_host_lane=True,
         )
 
@@ -1816,7 +1816,7 @@ def diagnose(
 ) -> dict[str, Any]:
     # ``x_envelope`` is True when a validated --x-posts envelope is present for
     # this invocation, so available_sources lists x even without a backend
-    # (KTD11) and the optional-source omission note does not fire.
+    # and the optional-source omission note does not fire.
     requested_sources = normalize_requested_sources(requested_sources)
     google_key = _google_key(config)
     x_status = env.get_x_source_status(config, probe=not safe)
@@ -1875,7 +1875,7 @@ def diagnose(
         "local_mode": not reasoning_provider_available,
         "reasoning_provider": (config.get("LAST30DAYS_REASONING_PROVIDER") or "auto").lower(),
         # The host-fetched connector lane serves X when no engine backend
-        # exists and the model declared the lane (KTD11).
+        # exists and the model declared the lane.
         "x_backend": x_status["source"] or (
             "connector" if env.x_host_lane_declared(config) else None
         ),
@@ -2041,7 +2041,7 @@ def run(
     # ``suppress_x_host_lane`` is distinct from ``internal_subrun``: comparison
     # entities share the latter and must still honor the connector lane;
     # only discovery enrichment passes set the former.
-    # ``x_posts`` is a validated ``--x-posts`` envelope (KTD5): when present
+    # ``x_posts`` is a validated ``--x-posts`` envelope: when present
     # it replaces the engine's X fetch for this run and is served once.
     # Standalone runs (not competitor/discover sub-runs) own the YouTube
     # search-cache lifecycle. Comparison fan-out clears once before submit so
@@ -2069,7 +2069,7 @@ def run(
     if corpus_enabled and requested_sources and "corpus" not in requested_sources:
         requested_sources = [*requested_sources, "corpus"]
 
-    # Host-fetched X lane (KTD5). EXCLUDE_SOURCES=x or a --search list without
+    # Host-fetched X lane. EXCLUDE_SOURCES=x or a --search list without
     # x wins: the envelope is ignored with a receipt line and stays unconsumed.
     envelope = x_posts
     if envelope is not None and (
@@ -2082,7 +2082,7 @@ def run(
         )
         envelope = None
     # The lane signal without an envelope is a broken handoff, not a reason to
-    # spend a backup backend: X records the fixed not-passed outcome (R12).
+    # spend a backup backend: X records the fixed not-passed outcome.
     x_lane_missing = (
         envelope is None
         and not mock
@@ -3621,7 +3621,7 @@ def _legacy_artifact_outcome(
     return None
 
 
-def _summarize_lane_failures(failures: list[http.HTTPError]) -> str:
+def _summarize_lane_failures(failures: list[http.HTTPError], source: str = "") -> str:
     """One line naming what a source lost to swallowed sub-request failures.
 
     ``"3 sub-requests rate-limited (HTTP 429); 1 sub-request blocked (HTTP 403)"``.
@@ -3637,7 +3637,7 @@ def _summarize_lane_failures(failures: list[http.HTTPError]) -> str:
     labels = {
         health.RATE_LIMITED: "rate-limited",
         health.AUTH_FAILED: "blocked",
-        health.PAYMENT_REQUIRED: "credits exhausted",
+        health.PAYMENT_REQUIRED: health.credits_exhausted_label(source),
         health.TIMEOUT: "timed out",
         health.UNREACHABLE: "unreachable",
         health.SCHEMA_DRIFT: "returned an unexpected shape",
@@ -3882,7 +3882,7 @@ def _run_supplemental_searches(
                 resolved_handles_out.append(clean)
                 seen.add(clean)
 
-    # Host-fetched X lane (KTD5): the envelope's lane calls replace the backend
+    # Host-fetched X lane: the envelope's lane calls replace the backend
     # lanes, before the chain is recomputed. Extracted-handle promotion is
     # skipped on envelope runs; a declared lane without an envelope runs no
     # lane at all (the topic stream already recorded the not-passed outcome).
@@ -3961,7 +3961,7 @@ def _run_supplemental_searches(
             return bird_x.search_mentions(hs, from_date, count_per=count), False
     elif primary == "xapi":
         # Direct X API v2 with the app-only bearer: from:/@ lanes run over
-        # search/all with the recent-search fallback (KTD4).
+        # search/all with the recent-search fallback.
         xapi_token = config.get("X_BEARER_TOKEN") or ""
 
         def _from_lane(hs: list, count: int, and_topic: bool = False) -> tuple[list, bool]:
@@ -4499,7 +4499,9 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
             # the most specific failure state so a later empty filter result
             # or the thin-source retry can act on it.
             artifact = dict(artifact or {})
-            artifact["_source_outcome_detail"] = _summarize_lane_failures(failures)
+            artifact["_source_outcome_detail"] = _summarize_lane_failures(
+                failures, str(kwargs.get("source") or "")
+            )
             artifact["_source_outcome_detail_state"] = min(
                 failures, key=lambda f: _FAILURE_SPECIFICITY.get(f.outcome_state, 9)
             ).outcome_state
@@ -4509,7 +4511,7 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
 
 
 def _serve_envelope_topic(envelope: x_envelope.Envelope) -> tuple[list[dict], dict]:
-    """Serve the envelope's topic-lane rows once (KTD5).
+    """Serve the envelope's topic-lane rows once.
 
     The first X subquery takes the rows and the envelope-status outcome;
     every later call (a second planner subquery, judge-retry, thin-retry)

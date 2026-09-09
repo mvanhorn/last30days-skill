@@ -1297,7 +1297,8 @@ GROK_BOT_FORBIDDEN = (
     "grok login", "grok cli",
 )
 BEARER_CAVEAT = (
-    "recent posts, about the last week, unless the project has full-archive access"
+    "recent posts, about the last week, unless your X developer project has "
+    "full-archive access"
 )
 
 

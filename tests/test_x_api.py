@@ -519,13 +519,30 @@ class TestHandleLanes:
         assert len(ids) == len(set(ids)) == 2
 
     def test_fatal_auth_failure_stops_remaining_handles(self, get_mock, fixed_now):
-        get_mock.side_effect = [_http_error(401, body=_LEAKY_BODY)]
+        # Handles fan out on a bounded pool (five in flight), so the handles
+        # already scheduled beside the failing one may still be called; the
+        # ones beyond the pool window are not, and nothing leaks.
+        handles = [f"h{i}" for i in range(1, 8)]
+        get_mock.side_effect = _http_error(401, body=_LEAKY_BODY)
         items, stderr = _run_capturing_stderr(
-            lambda: x_api.search_handles(["h1", "h2"], "topic", FROM, TO, token=DUMMY_TOKEN)
+            lambda: x_api.search_handles(handles, "topic", FROM, TO, token=DUMMY_TOKEN)
         )
         assert items == []
-        assert get_mock.call_count == 1
+        assert 1 <= get_mock.call_count <= x_api._MAX_LANE_WORKERS
+        called = {_params(c)["query"] for c in get_mock.call_args_list}
+        assert called <= {f"from:{h} -is:retweet" for h in handles}
         assert DUMMY_TOKEN not in stderr and ACCOUNT_ID not in stderr
+
+    def test_handle_results_merge_in_handle_order(self, get_mock, fixed_now):
+        def _by_query(url, headers=None, params=None, **kwargs):
+            handle = params["query"].split(":")[1].split(" ")[0]
+            return _v2([_tweet(str(ord(handle[-1])), handle)], users=_users(("u1", handle)))
+
+        get_mock.side_effect = _by_query
+        handles = ["h3", "h1", "h2"]
+        items = x_api.search_handles(handles, "topic", FROM, TO, token=DUMMY_TOKEN)
+        assert [i["author_handle"] for i in items] == handles
+        assert [i["id"] for i in items] == ["XF1", "XF2", "XF3"]
 
     def test_transient_failure_continues_to_next_handle(self, get_mock, fixed_now):
         get_mock.side_effect = [_http_error(500), _v2([_tweet("2", "b")], users=_users(("u1", "h2")))]

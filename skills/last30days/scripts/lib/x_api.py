@@ -4,13 +4,13 @@
 (``X_BEARER_TOKEN``). Full-archive search is tried first; when the developer
 project is not enrolled for it (HTTP 403 with an enrollment marker), the
 search retries once against recent search with the window clamped to the
-last seven days and the truncation named in the result (KTD4).
+last seven days and the truncation named in the result.
 
 This module also owns the one X API v2 parser (``parse_v2_response``) that
 ``xurl_x`` delegates to, plus the snowflake, handle-grammar, and
-generated-sequence helpers that ``grok_x`` imports back (KTD3).
+generated-sequence helpers that ``grok_x`` imports back.
 
-Security contract (R8, R8a): the bearer travels only in the Authorization
+Security contract: the bearer travels only in the Authorization
 header; every failure becomes an engine-authored fixed string chosen by
 status code plus a marker match on the body, and the response body, reason
 phrase, and headers never enter an error string, a log line, or an
@@ -21,8 +21,9 @@ the research window is always carried by request parameters.
 from __future__ import annotations
 
 import re
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import health, http, log
 from .relevance import token_overlap_relevance as _compute_relevance
@@ -52,9 +53,17 @@ RETRIES = 2
 
 TRUNCATION_DETAIL = "window truncated to 7 days"
 
+# The one description of what an app-only bearer can reach. Doctor and the
+# prescriptions quote it; the bearer path is never described as parity with
+# the connector lane.
+BEARER_COVERAGE_NOTE = (
+    "recent posts, about the last week, unless your X developer project has "
+    "full-archive access"
+)
+
 # Engine-authored fixed error strings. Each carries a marker that
 # http.classify_failure recognizes, because the X retrieval branch classifies
-# by message text only (KTD6).
+# by message text only.
 ERR_PAYMENT_REQUIRED = "xapi: payment required (X API credits exhausted)"
 ERR_UNAUTHORIZED = "xapi: unauthorized (bearer token rejected)"
 ERR_FORBIDDEN = "xapi: forbidden (bearer token lacks access)"
@@ -77,16 +86,10 @@ _ENROLLMENT_MARKERS = (
     "access level",
     "subset of",
 )
-# Body markers for credit exhaustion, matched on any status: X reports a
-# depleted pay-per-use balance under more than one code.
-_CREDIT_MARKERS = (
-    "payment required",
-    "insufficient credits",
-    "does not have any credits",
-    "out of credits",
-    "creditsdepleted",
-    "credits depleted",
-)
+# X-specific body markers for credit exhaustion, matched on any status on
+# top of http.classify_failure's shared payment-required markers: X reports
+# a depleted pay-per-use balance under more than one code and title.
+_X_CREDIT_MARKERS = ("creditsdepleted", "credits depleted")
 
 # Twitter/X snowflake epoch (2010-11-04T01:42:54.657Z) in milliseconds.
 _SNOWFLAKE_EPOCH_MS = 1288834974657
@@ -295,7 +298,7 @@ def parse_v2_response(
 
 
 # ---------------------------------------------------------------------------
-# Query compilation (R8a)
+# Query compilation
 # ---------------------------------------------------------------------------
 
 
@@ -410,7 +413,11 @@ class _XApiFailure(Exception):
 def _failure_for(exc: http.HTTPError) -> _XApiFailure:
     status = getattr(exc, "status_code", None)
     body = str(getattr(exc, "body", "") or "").lower()
-    if status == 402 or any(marker in body for marker in _CREDIT_MARKERS):
+    if (
+        status == 402
+        or http.classify_failure(message=body) == health.PAYMENT_REQUIRED
+        or any(marker in body for marker in _X_CREDIT_MARKERS)
+    ):
         return _XApiFailure(ERR_PAYMENT_REQUIRED)
     if status == 401:
         return _XApiFailure(ERR_UNAUTHORIZED)
@@ -487,10 +494,8 @@ def _run_search(
     topic: str,
     id_prefix: str,
     label: str,
-    index_offset: int = 0,
-    seen_ids: Optional[set[str]] = None,
 ) -> Dict[str, Any]:
-    """Full-archive search with the recent-search fallback (KTD4).
+    """Full-archive search with the recent-search fallback.
 
     Returns ``{"items": [...]}`` (plus ``"warning"`` when the window was
     truncated) or ``{"items": [], "error": <fixed string>}``.
@@ -521,10 +526,7 @@ def _run_search(
             _log(f"{label}: {exc2}")
             return {"items": [], "error": str(exc2)}
         warning = TRUNCATION_DETAIL
-    items = parse_v2_response(
-        response, topic, (from_date, to_date),
-        id_prefix=id_prefix, index_offset=index_offset, seen_ids=seen_ids,
-    )
+    items = parse_v2_response(response, topic, (from_date, to_date), id_prefix=id_prefix)
     result: Dict[str, Any] = {"items": items}
     if warning:
         result["warning"] = warning
@@ -562,10 +564,17 @@ def search_x(
     )
 
 
-def _is_own(url: str, handle: str) -> bool:
-    """True when a post URL is authored by ``handle`` (their own post)."""
-    from .xquik import _is_own as _xquik_is_own
-    return _xquik_is_own(url, handle)
+def is_own_post(url: str, handle: str) -> bool:
+    """True when a post URL is authored by ``handle`` (their own post).
+
+    The ABOUT lanes (here, xquik, the host envelope) drop the subject's own
+    posts so only mentions *by others* remain. Handles both x.com and
+    twitter.com permalinks.
+    """
+    u = (url or "").lower()
+    h = handle.lower().lstrip("@").strip()
+    return bool(h) and (f"x.com/{h}/status" in u or f"twitter.com/{h}/status" in u)
+
 
 
 def _lane_handle(raw: str, lane: str) -> str:
@@ -573,6 +582,60 @@ def _lane_handle(raw: str, lane: str) -> str:
     if not handle:
         _log(f"skipping {lane} lane for a handle outside the X handle grammar")
     return handle
+
+
+_MAX_LANE_WORKERS = 5
+
+
+def _run_handle_lanes(
+    handles: List[str],
+    search_one: Callable[[str], Dict[str, Any]],
+    *,
+    id_prefix: str,
+    keep: Optional[Callable[[Dict[str, Any], str], bool]] = None,
+) -> List[Dict[str, Any]]:
+    """Run one search per handle on a bounded pool and merge in handle order.
+
+    Mirrors ``bird_x.search_handles``: at most five handles in flight. A
+    fatal auth/payment result stops further handles from being scheduled;
+    whatever was already fetched is kept. Results are merged on the calling
+    thread in ``handles`` order, deduped by post id across handles, and
+    renumbered ``<id_prefix><n>`` so the output is deterministic regardless
+    of completion order. ``keep(item, handle)`` filters a handle's items
+    after the post id is recorded, so a dropped post still dedupes later.
+    """
+    results: List[Optional[Dict[str, Any]]] = [None] * len(handles)
+    if handles:
+        max_workers = min(_MAX_LANE_WORKERS, len(handles))
+        fatal = False
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            pending: Dict[Any, int] = {}
+            next_index = 0
+            while pending or (next_index < len(handles) and not fatal):
+                while next_index < len(handles) and not fatal and len(pending) < max_workers:
+                    pending[pool.submit(search_one, handles[next_index])] = next_index
+                    next_index += 1
+                done, _ = wait(list(pending), return_when=FIRST_COMPLETED)
+                for future in done:
+                    index = pending.pop(future)
+                    result = future.result()
+                    results[index] = result
+                    if result.get("error") in _FATAL_ERRORS:
+                        fatal = True  # the key itself failed; keep what we have
+
+    items: List[Dict[str, Any]] = []
+    seen_ids: set[str] = set()
+    for handle, result in zip(handles, results):
+        for item in (result or {}).get("items", []):
+            post_id = item.get("post_id", "")
+            if post_id in seen_ids:
+                continue
+            seen_ids.add(post_id)
+            if keep is not None and not keep(item, handle):
+                continue
+            item["id"] = f"{id_prefix}{len(items) + 1}"
+            items.append(item)
+    return items
 
 
 def search_handles(
@@ -592,21 +655,15 @@ def search_handles(
     """
     if not token or not handles:
         return []
-    items: List[Dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for raw in handles:
-        handle = _lane_handle(raw, "from:")
-        if not handle:
-            continue
-        result = _run_search(
+    clean = [h for h in (_lane_handle(raw, "from:") for raw in handles) if h]
+
+    def _search_one(handle: str) -> Dict[str, Any]:
+        return _run_search(
             token, f"from:{handle} -is:retweet", from_date, to_date, count_per,
             topic=topic, id_prefix="XF", label=f"from:{handle}",
-            index_offset=len(items), seen_ids=seen_ids,
         )
-        if result.get("error") in _FATAL_ERRORS:
-            break  # the key itself failed; keep what we have
-        items.extend(result.get("items", []))
-    return items
+
+    return _run_handle_lanes(clean, _search_one, id_prefix="XF")
 
 
 def search_mentions(
@@ -621,25 +678,20 @@ def search_mentions(
     """ABOUT lane: posts mentioning each handle, authored by OTHERS.
 
     The query is ``@handle -from:handle`` and the handle's own posts are
-    dropped again client-side (``_is_own``) so only third-party mentions
+    dropped again client-side (``is_own_post``) so only third-party mentions
     remain.
     """
     if not token or not handles:
         return []
-    items: List[Dict[str, Any]] = []
-    seen_ids: set[str] = set()
-    for raw in handles:
-        handle = _lane_handle(raw, "mention")
-        if not handle:
-            continue
-        result = _run_search(
+    clean = [h for h in (_lane_handle(raw, "mention") for raw in handles) if h]
+
+    def _search_one(handle: str) -> Dict[str, Any]:
+        return _run_search(
             token, f"@{handle} -from:{handle} -is:retweet", from_date, to_date, count_per,
             topic=topic, id_prefix="XA", label=f"@{handle}",
-            index_offset=len(items), seen_ids=seen_ids,
         )
-        if result.get("error") in _FATAL_ERRORS:
-            break
-        items.extend(
-            it for it in result.get("items", []) if not _is_own(it.get("url", ""), handle)
-        )
-    return items
+
+    return _run_handle_lanes(
+        clean, _search_one, id_prefix="XA",
+        keep=lambda item, handle: not is_own_post(item.get("url", ""), handle),
+    )

@@ -47,7 +47,7 @@ def _has_x_credentials(config: dict) -> bool:
     ``X_BEARER_TOKEN`` counts where the xapi backend can actually run: an
     official-only host (it heads the auto chain there) or an explicit xapi
     pin. An ambient bearer on any other host is not a configured X source,
-    so nothing changes there (R14).
+    so nothing changes there.
     """
     if (
         config.get("AUTH_TOKEN")

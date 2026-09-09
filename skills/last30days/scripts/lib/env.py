@@ -615,14 +615,14 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT', None),
         ('LAST30DAYS_YT_SEARCH_TIMEOUT', None),
         ('GITHUB_TOKEN', None),
-        # Host self-identification (KTD1). `grok-bot` switches the X policy
+        # Host self-identification. `grok-bot` switches the X policy
         # to official-only (see x_policy); the engine never sniffs the host
         # any other way. Persisted by first-run setup and exported per
         # invocation by the SKILL.md rule.
         (X_HOST_VAR, None),
         # App-only bearer token for the direct X API v2 backend (`xapi`).
         ('X_BEARER_TOKEN', None),
-        # Per-session X connector lane signal (KTD10). Read from the process
+        # Per-session X connector lane signal. Read from the process
         # environment ONLY: a .env line is deliberately ignored (a removed
         # connector must never leave a stale declaration), so it is handled
         # in the loop below rather than via merged_env.
@@ -631,7 +631,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
 
     for key, default in keys:
         if key == X_HOST_LANE_VAR:
-            # Process env only (KTD10); the .env value never reaches config.
+            # Process env only; the .env value never reaches config.
             config[key] = os.environ.get(key) or default
             continue
         if key == 'LAST30DAYS_YT_PLAYER_CLIENT':
@@ -706,7 +706,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         config['_IGNORED_PROJECT_CONFIG'] = str(ignored_project_env_path)
         config['_IGNORED_PROJECT_CONFIG_KEYS'] = ignored_project_keys
     config['_BROWSER_COOKIE_MODE'] = policy.browser_cookies
-    # A LAST30DAYS_X_HOST_LANE line in a config file is ignored (KTD10);
+    # A LAST30DAYS_X_HOST_LANE line in a config file is ignored;
     # remember that it was there so doctor can say so.
     config['_X_HOST_LANE_FILE_IGNORED'] = bool(merged_env.get(X_HOST_LANE_VAR))
     # Evaluated after the host and pin keys are merged: on an official-only
@@ -983,6 +983,16 @@ def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
     return extracted
 
 
+# Auth-origin label per X backend for ``get_x_source_with_method`` (bird's
+# label is the cookie source recorded in ``_AUTH_TOKEN_SOURCE``).
+_X_METHOD_LABELS = {
+    "xai": "xai",
+    "xurl": "oauth2",  # xurl CLI (official X API v2, OAuth2, free developer app)
+    "xapi": "bearer",
+    "xquik": "api_key",
+}
+
+
 def get_x_source_with_method(config: dict[str, Any]) -> tuple[str | None, str]:
     """Return (source, method) for X search, where method describes the auth origin.
 
@@ -991,20 +1001,19 @@ def get_x_source_with_method(config: dict[str, Any]) -> tuple[str | None, str]:
     xai, xurl, xquik; on an official-only host xapi, xai, xurl. Opt-in
     backends (grok, and xapi off Grok Bot) are never auto-selected here.
     """
+    has_bird_creds = bool(config.get("AUTH_TOKEN") and config.get("CT0"))
     for backend in x_auto_chain(config):
-        if backend == "bird" and config.get("AUTH_TOKEN") and config.get("CT0"):
+        if backend == "bird":
+            # Cookie presence only: the scraper install is not consulted
+            # here (unlike ``x_backend_chain``), so a fresh cookie-bearing
+            # config reports bird before the binary is checked.
+            if not has_bird_creds:
+                continue
+        elif not _x_backend_available(backend, config, has_bird_creds):
+            continue
+        if backend == "bird":
             return "bird", config.get("_AUTH_TOKEN_SOURCE", "env")
-        if backend == "xai" and config.get("XAI_API_KEY"):
-            return "xai", "xai"
-        if backend == "xurl":
-            # xurl CLI (official X API v2, OAuth2, free developer app)
-            from . import xurl_x
-            if xurl_x.is_available():
-                return "xurl", "oauth2"
-        if backend == "xapi" and config.get("X_BEARER_TOKEN"):
-            return "xapi", "bearer"
-        if backend == "xquik" and is_xquik_available(config):
-            return "xquik", "api_key"
+        return backend, _X_METHOD_LABELS.get(backend, "none")
     return None, "none"
 
 
@@ -1043,7 +1052,7 @@ _X_BACKEND_ORDER = ("bird", "xai", "xurl", "xquik")
 # explicit pin. grok is here because a leftover ~/.grok/auth.json must never
 # steal the X lane. xapi (direct X API v2 with X_BEARER_TOKEN) is here so an
 # ambient bearer exported for some other tool never spends X API credits
-# every time the cookie scraper comes back empty (KTD9); on an official-only
+# every time the cookie scraper comes back empty; on an official-only
 # host it is the first rung of the auto chain instead (see _X_OFFICIAL).
 _X_BACKEND_OPT_IN = ("grok", "xapi")
 
@@ -1051,16 +1060,16 @@ _X_BACKEND_OPT_IN = ("grok", "xapi")
 _X_BACKEND_KNOWN = _X_BACKEND_ORDER + _X_BACKEND_OPT_IN
 
 # Licensed / official backends: the unpinned auto chain on an official-only
-# host (KTD3). xapi = X API v2 with an app-only bearer, xai = xAI's licensed
+# host. xapi = X API v2 with an app-only bearer, xai = xAI's licensed
 # X search, xurl = the X API through X's own CLI.
 _X_OFFICIAL = ("xapi", "xai", "xurl")
 
-# Host self-identification key (KTD1) and the one value that switches the X
+# Host self-identification key and the one value that switches the X
 # policy. The engine trusts this key alone: it never infers the host from
 # the home directory, PATH, platform, or agent env vars.
 X_HOST_VAR = 'LAST30DAYS_HOST'
 GROK_BOT_HOST = 'grok-bot'
-# Per-session X connector lane signal (KTD10): process env only.
+# Per-session X connector lane signal: process env only.
 X_HOST_LANE_VAR = 'LAST30DAYS_X_HOST_LANE'
 
 # Public routing definitions for the doctor/backend-descriptor layer
@@ -1078,21 +1087,25 @@ REDDIT_SC_MIN_ITEMS_VAR = 'LAST30DAYS_REDDIT_SC_MIN_ITEMS'
 
 @dataclass(frozen=True)
 class XPolicy:
-    """The host-conditional X routing rule (KTD2), resolved once per config.
+    """The host-conditional X routing rule, resolved once per config.
 
     ``host`` is the normalized ``LAST30DAYS_HOST`` value; ``official_only``
     is true on a Grok Bot host; ``auto_chain`` is the unpinned chain
     (``_X_OFFICIAL`` when official-only, else ``_X_BACKEND_ORDER``);
     ``cookie_discovery`` is false when official-only unless the pin is
-    ``bird``; ``hint_namespace`` (``official`` or ``default``) is a plain
-    string so this module never imports ``prescriptions``.
+    ``bird``; ``hint_namespace`` (``official`` or ``default``) is derived
+    from ``official_only`` as a plain string so this module never imports
+    ``prescriptions``.
     """
 
     host: str
     official_only: bool
     auto_chain: tuple[str, ...]
     cookie_discovery: bool
-    hint_namespace: str
+
+    @property
+    def hint_namespace(self) -> str:
+        return 'official' if self.official_only else 'default'
 
 
 def x_backend_pin(config: dict[str, Any]) -> str:
@@ -1101,7 +1114,7 @@ def x_backend_pin(config: dict[str, Any]) -> str:
 
 
 def x_policy(config: dict[str, Any]) -> XPolicy:
-    """Resolve the X policy from ``LAST30DAYS_HOST`` and the pin (KTD2).
+    """Resolve the X policy from ``LAST30DAYS_HOST`` and the pin.
 
     This is the ONLY place the Grok Bot host string is compared. It reads
     just the host key, the pin, and the config dict: no platform, PATH, home
@@ -1118,7 +1131,6 @@ def x_policy(config: dict[str, Any]) -> XPolicy:
         official_only=official_only,
         auto_chain=_X_OFFICIAL if official_only else _X_BACKEND_ORDER,
         cookie_discovery=(not official_only) or pin == 'bird',
-        hint_namespace='official' if official_only else 'default',
     )
 
 
@@ -1128,13 +1140,13 @@ def x_auto_chain(config: dict[str, Any]) -> list[str]:
 
 
 def x_host_lane_declared(config: dict[str, Any]) -> bool:
-    """True when the hosting model declared the X connector lane (KTD11).
+    """True when the hosting model declared the X connector lane.
 
     ``get_config`` fills ``LAST30DAYS_X_HOST_LANE`` from the process
-    environment only, so a ``.env`` line never declares the lane (KTD10).
+    environment only, so a ``.env`` line never declares the lane.
     Deliberately NOT ``x_pending_browser_auth``: that predicate is false in
     cookie-read mode by contract, which would leave the envelope path dead at
-    research time. Host-independent: the envelope is accepted anywhere (R13).
+    research time. Host-independent: the envelope is accepted anywhere.
     """
     return _truthy(config.get(X_HOST_LANE_VAR))
 
@@ -1586,7 +1598,7 @@ def get_x_source_status(config: dict[str, Any], probe: bool = False) -> dict[str
     # Backends this host may run: the policy's auto chain plus a known pin.
     # Bird is primed/probed and xquik is probed only when they are in that
     # set, so an official-only host never touches the scraper or the
-    # third-party API unless the backend is pinned (R2).
+    # third-party API unless the backend is pinned.
     policy = x_policy(config)
     pin = x_backend_pin(config)
     considered = set(policy.auto_chain)

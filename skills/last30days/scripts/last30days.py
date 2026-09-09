@@ -1258,7 +1258,7 @@ def _write_last_run(
     x_envelope_sha256: str | None = None,
 ) -> bool:
     # ``x_envelope_sha256`` binds the cached report to the --x-posts file it
-    # was built from; _load_last_report_cache misses on any mismatch (KTD5).
+    # was built from; _load_last_report_cache misses on any mismatch.
     try:
         if env.CONFIG_DIR is None:
             return False
@@ -1321,7 +1321,7 @@ def _load_last_report_cache(
             return None
         # A report built from a --x-posts envelope is only reusable with the
         # same envelope content; a digest on either side that does not match
-        # the other is a miss (KTD5).
+        # the other is a miss.
         cached_digest = payload.get("x_envelope_sha256") or None
         if (cached_digest or x_envelope_sha256) and cached_digest != x_envelope_sha256:
             return None
@@ -2630,7 +2630,7 @@ def _run_store_key(name: str) -> int:
 
     if name not in env.KEYCHAIN_KEYS:
         # Do not enumerate the allowlist here: on an official-only host a
-        # failure hint must not name the legacy credential keys (R4).
+        # failure hint must not name the legacy credential keys.
         sys.stderr.write(
             "[last30days] setup --store-key: unknown or missing key name "
             "(must be a credential name the engine loads from its .env; "
@@ -2666,7 +2666,7 @@ DOCTOR_PASSTHROUGH_FLAGS = {
 
 
 def _looks_inline_json(value: str) -> bool:
-    """True when a --x-posts argument is JSON text rather than a path (R9)."""
+    """True when a --x-posts argument is JSON text rather than a path."""
     stripped = value.strip()
     return stripped.startswith(("{", "[")) or "\n" in value
 
@@ -3476,7 +3476,7 @@ def _main(
             return 2
         if args.x_posts is not None:
             # The envelope is a local-engine contract; the remote API has no
-            # lane to receive it (KTD5).
+            # lane to receive it.
             sys.stderr.write(
                 "[last30days] --x-posts is not supported by the hosted backend; "
                 "run locally or omit --x-posts.\n"
@@ -3525,7 +3525,7 @@ def _main(
             requested_sources,
             channels=cli_telegram_sources,
         )
-    # Host-fetched X envelope (KTD5): validated before diagnose so a present
+    # Host-fetched X envelope: validated before diagnose so a present
     # envelope plans X in (available_sources) and a bad one fails closed here.
     x_posts_envelope: x_envelope.Envelope | None = None
     if args.x_posts is not None:

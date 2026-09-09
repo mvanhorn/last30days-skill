@@ -18,9 +18,9 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import log
+from . import health, http, log
 from . import x_api
-# One X API v2 depth table and one parser (KTD3): xurl_x re-imports both.
+# One X API v2 depth table and one parser: xurl_x re-imports both.
 from .x_api import DEPTH_CONFIG
 
 # xurl auth status marks a configured app-only bearer as "bearer: ✓".
@@ -150,7 +150,7 @@ def has_stored_auth() -> bool:
     return shutil.which("xurl") is not None and stored_auth_status()[0] == AUTH_OK
 
 
-# Engine-authored fixed error strings (the same rule as x_api, R8): xurl's
+# Engine-authored fixed error strings (the same rule as x_api): xurl's
 # stderr can echo the request, the bearer, or an account id, so it never
 # reaches the outcome detail. Each string carries a marker that
 # http.classify_failure recognizes.
@@ -165,15 +165,18 @@ ERR_TIMED_OUT = "xurl search timed out (30s)"
 
 
 def _classify_cli_failure(output: str) -> str:
-    """Map xurl's stderr/stdout to a fixed string by status marker only."""
-    text = (output or "").lower()
-    if "402" in text or "payment required" in text or "credits" in text:
+    """Map xurl's stderr/stdout to a fixed string via the shared classifier."""
+    text = output or ""
+    state = http.classify_failure(message=text)
+    if state == health.PAYMENT_REQUIRED:
         return ERR_PAYMENT_REQUIRED
-    if "401" in text or "unauthorized" in text:
-        return ERR_UNAUTHORIZED
-    if "403" in text or "forbidden" in text:
+    if state == health.AUTH_FAILED:
+        # The shared vocabulary has one auth state; split the wording only.
+        lowered = text.lower()
+        if "401" in lowered or "unauthorized" in lowered:
+            return ERR_UNAUTHORIZED
         return ERR_FORBIDDEN
-    if "429" in text or "rate limit" in text or "too many requests" in text:
+    if state == health.RATE_LIMITED:
         return ERR_RATE_LIMITED
     return ERR_FAILED
 
