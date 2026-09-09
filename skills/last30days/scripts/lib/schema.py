@@ -149,6 +149,7 @@ RunOutcomeState = Literal[
     "partial",
     "rate-limited",
     "auth-failed",
+    "payment-required",
     "unreachable",
     "timeout",
     "schema-drift",
@@ -167,6 +168,7 @@ NO_RESULTS = health.NO_RESULTS
 PARTIAL = health.PARTIAL
 RATE_LIMITED = health.RATE_LIMITED
 AUTH_FAILED = health.AUTH_FAILED
+PAYMENT_REQUIRED = health.PAYMENT_REQUIRED
 UNREACHABLE = health.UNREACHABLE
 SCHEMA_DRIFT = health.SCHEMA_DRIFT
 SKIPPED_UNCONFIGURED = health.SKIPPED_UNCONFIGURED
@@ -207,6 +209,7 @@ class SourceOutcome:
             PARTIAL,
             RATE_LIMITED,
             AUTH_FAILED,
+            PAYMENT_REQUIRED,
             UNREACHABLE,
             SCHEMA_DRIFT,
             SKIPPED_UNCONFIGURED,
@@ -689,7 +692,7 @@ def candidate_primary_item(candidate: Candidate) -> SourceItem | None:
     return candidate.source_items[0]
 
 
-AGENT_EXPORT_SCHEMA_VERSION = "1.2"
+AGENT_EXPORT_SCHEMA_VERSION = "1.3"
 
 
 def without_sources(report: Report, excluded_sources: set[str]) -> Report:

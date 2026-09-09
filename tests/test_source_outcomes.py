@@ -58,7 +58,7 @@ def _report(*, source_status=None, items_by_source=None, errors_by_source=None):
     [
         (http.HTTPError("HTTP 429", status_code=429), schema.RATE_LIMITED),
         (http.HTTPError("HTTP 401", status_code=401), schema.AUTH_FAILED),
-        (http.HTTPError("HTTP 402", status_code=402), schema.AUTH_FAILED),
+        (http.HTTPError("HTTP 402", status_code=402), schema.PAYMENT_REQUIRED),
         (http.HTTPError("HTTP 403", status_code=403), schema.AUTH_FAILED),
         (http.HTTPError("Invalid JSON response"), schema.SCHEMA_DRIFT),
         (http.HTTPError("Connection error: reset"), schema.UNREACHABLE),
@@ -524,6 +524,17 @@ def test_strict_exit_returns_3_for_degraded_run(capsys):
     assert "strict-exit: degraded sources: x" in capsys.readouterr().err
 
 
+def test_strict_exit_treats_payment_required_as_degraded(capsys):
+    report = _report(
+        source_status={
+            "x": _outcome("x", schema.PAYMENT_REQUIRED, detail="xapi: payment required")
+        }
+    )
+    rc = cli._strict_exit_code(report, None, {"LAST30DAYS_STRICT_EXIT": "1"})
+    assert rc == 3
+    assert "strict-exit: degraded sources: x" in capsys.readouterr().err
+
+
 def test_strict_exit_clean_states_return_0():
     report = _report(
         source_status={
@@ -601,3 +612,139 @@ def test_finalize_turns_an_empty_ok_source_with_lane_failures_into_that_failure(
     assert outcome.state == schema.RATE_LIMITED
     assert outcome.detail == "5 sub-requests rate-limited (HTTP 429)"
     assert outcome.items_returned == 0
+
+
+# --- payment-required: credit exhaustion is not an auth failure (KTD6) ---
+
+
+def test_classify_failure_402_status_is_payment_required():
+    assert http.classify_failure(status_code=402) == schema.PAYMENT_REQUIRED
+    # A 402 with a non-JSON / empty body still classifies by status alone.
+    err = http.HTTPError("HTTP 402: Payment Required", 402, "<html>upgrade</html>")
+    assert err.outcome_state == schema.PAYMENT_REQUIRED
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "Your enrolled account does not have any credits",
+        "insufficient credits",
+        "ScrapeCreators: Insufficient credits remaining",
+        "xapi: payment required (X API credits exhausted)",
+        "Xquik key unpaid: payment required (402)",
+        "You are out of credits for this billing period",
+    ],
+)
+def test_classify_failure_credit_exhaustion_markers(message):
+    assert http.classify_failure(message=message) == schema.PAYMENT_REQUIRED
+
+
+def test_classify_failure_bare_word_credits_is_not_a_marker():
+    # The onboarding copy mentions "10,000 free credits"; a message that merely
+    # contains the word must not be branded as credit exhaustion.
+    state = http.classify_failure(message="Sign up for 10,000 free credits")
+    assert state != schema.PAYMENT_REQUIRED
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_classify_failure_401_403_stay_auth_failed(status):
+    assert http.classify_failure(status_code=status) == schema.AUTH_FAILED
+    assert http.classify_failure(message=f"HTTP {status}: nope") == schema.AUTH_FAILED
+
+
+def test_payment_required_wins_over_auth_marker_in_same_message():
+    # A credit-exhaustion message that also carries an auth word is about
+    # money, not identity: the payment branch runs before the 401/403 branch.
+    state = http.classify_failure(
+        status_code=403,
+        message="Forbidden: your enrolled account does not have any credits",
+    )
+    assert state == schema.PAYMENT_REQUIRED
+
+
+def test_cross_source_insufficient_credits_reclassifies_from_error():
+    # ScrapeCreators-backed sources surface credit exhaustion as a plain
+    # legacy error string; the shared classifier now types it.
+    artifact = pipeline._result_outcome_artifact(
+        "tiktok", {"items": [], "error": "ScrapeCreators: insufficient credits"}
+    )
+    assert artifact["_source_outcome"]["state"] == schema.PAYMENT_REQUIRED
+    state, attempted = pipeline._classify_source_failure(
+        http.HTTPError("HTTP 402: insufficient credits", status_code=402)
+    )
+    assert (state, attempted) == (schema.PAYMENT_REQUIRED, True)
+
+
+def test_captured_failure_selection_ranks_payment_required_above_rate_limit():
+    pay = http.HTTPError("HTTP 402: Payment Required", status_code=402)
+    rate = http.HTTPError("HTTP 429: Too Many Requests", status_code=429)
+    for failures in ([pay, rate], [rate, pay]):
+        outcome = pipeline._resolve_stream_outcome("x", None, failures)
+        assert outcome["state"] == schema.PAYMENT_REQUIRED
+
+
+def test_lane_failure_summary_names_credit_exhaustion():
+    text = pipeline._summarize_lane_failures(
+        [http.HTTPError("HTTP 402: Payment Required", status_code=402)]
+    )
+    assert text == "1 sub-request credits exhausted (HTTP 402)"
+
+
+def test_render_summary_labels_payment_required_per_source():
+    x_outcome = schema.SourceOutcome(
+        source="x", state=schema.PAYMENT_REQUIRED, detail="xapi: payment required"
+    )
+    other = schema.SourceOutcome(
+        source="tiktok", state=schema.PAYMENT_REQUIRED, detail="insufficient credits"
+    )
+    x_text = render._format_outcome(x_outcome)
+    assert x_text.startswith("X API credits exhausted")
+    assert "xapi: payment required" in x_text
+    assert render._format_outcome(other).startswith("credits exhausted")
+    # The Partial Coverage note carries the label too.
+    report = _report(source_status={"x": x_outcome, "tiktok": other})
+    note = "\n".join(render._render_source_outcome_note(report))
+    assert "X API credits exhausted" in note
+    assert "credits exhausted" in note
+
+
+def test_postmortem_labels_payment_required():
+    from lib import doctor
+
+    pm = {
+        "engine_version": "test",
+        "mode": "postmortem",
+        "present": True,
+        "topic": "t",
+        "at": "2026-07-10T18:22:03Z",
+        "outcomes": {
+            "x": schema.to_dict(
+                schema.SourceOutcome(
+                    source="x",
+                    state=schema.PAYMENT_REQUIRED,
+                    detail="xapi: payment required (X API credits exhausted)",
+                )
+            ),
+            "tiktok": schema.to_dict(
+                schema.SourceOutcome(
+                    source="tiktok",
+                    state=schema.PAYMENT_REQUIRED,
+                    detail="insufficient credits",
+                )
+            ),
+        },
+    }
+    text = doctor.render_postmortem_text(pm)
+    assert "Failed:" in text
+    assert "x — X API credits exhausted" in text
+    assert "tiktok — credits exhausted" in text
+    assert "auth-failed" not in text
+
+
+def test_json_export_carries_payment_required():
+    report = _report(
+        source_status={"x": _outcome("x", schema.PAYMENT_REQUIRED, detail="402")}
+    )
+    assert schema.to_agent_export(report)["source_status"]["x"] == "payment-required"
+    restored = schema.report_from_dict(schema.to_dict(report))
+    assert restored.source_status["x"].state == schema.PAYMENT_REQUIRED

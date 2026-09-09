@@ -600,14 +600,28 @@ def classify_failure(*, status_code: Optional[int] = None, message: str = "") ->
         marker in text for marker in ("http 429", "status 429", "rate limit", "too many requests")
     ):
         return health.RATE_LIMITED
-    if status_code in (401, 402, 403) or any(
+    # Credit exhaustion is checked before the auth branch: a 402 (or a body
+    # saying the account has no credits) asks the user to top up, not to
+    # re-authenticate. Markers stay narrow on purpose: the bare word "credits"
+    # is not one ("10,000 free credits" is onboarding copy, not a failure).
+    if status_code == 402 or any(
+        marker in text
+        for marker in (
+            "http 402",
+            "status 402",
+            "payment required",
+            "insufficient credits",
+            "does not have any credits",
+            "out of credits",
+        )
+    ):
+        return health.PAYMENT_REQUIRED
+    if status_code in (401, 403) or any(
         marker in text
         for marker in (
             "http 401",
-            "http 402",
             "http 403",
             "status 401",
-            "status 402",
             "status 403",
             "unauthorized",
             "forbidden",

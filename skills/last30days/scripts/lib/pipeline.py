@@ -114,11 +114,12 @@ MAX_SOURCE_FETCHES: dict[str, int] = {
 
 _FAILURE_SPECIFICITY = {
     health.AUTH_FAILED: 0,
-    health.RATE_LIMITED: 1,
-    health.SCHEMA_DRIFT: 2,
-    health.TIMEOUT: 3,
-    health.UNREACHABLE: 4,
-    health.ERROR: 5,
+    health.PAYMENT_REQUIRED: 1,
+    health.RATE_LIMITED: 2,
+    health.SCHEMA_DRIFT: 3,
+    health.TIMEOUT: 4,
+    health.UNREACHABLE: 5,
+    health.ERROR: 6,
 }
 
 
@@ -3559,6 +3560,7 @@ def _summarize_lane_failures(failures: list[http.HTTPError]) -> str:
     labels = {
         health.RATE_LIMITED: "rate-limited",
         health.AUTH_FAILED: "blocked",
+        health.PAYMENT_REQUIRED: "credits exhausted",
         health.TIMEOUT: "timed out",
         health.UNREACHABLE: "unreachable",
         health.SCHEMA_DRIFT: "returned an unexpected shape",

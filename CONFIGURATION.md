@@ -491,7 +491,7 @@ By default a research run exits `0` even when a source failed mid-run (rate-limi
 
 | Var | Effect |
 | --- | --- |
-| `LAST30DAYS_STRICT_EXIT` | Truthy (`1`/`true`/`yes`/`on`): the engine exits `3` when any source outcome is neither `ok`, `no-results`, nor `skipped-unconfigured`. A one-line `strict-exit: degraded sources: ...` note goes to stderr. Default (unset): exit `0`, unchanged behavior. |
+| `LAST30DAYS_STRICT_EXIT` | Truthy (`1`/`true`/`yes`/`on`): the engine exits `3` when any source outcome is neither `ok`, `no-results`, nor `skipped-unconfigured` (so `partial`, `auth-failed`, `payment-required` for exhausted credits, `rate-limited`, and the other failure states all count as degraded). A one-line `strict-exit: degraded sources: ...` note goes to stderr. Default (unset): exit `0`, unchanged behavior. |
 
 Exit codes with the flag on: `0` clean run, `3` completed-but-degraded (report was produced), non-zero others unchanged (hard failures). Same hybrid pattern as `LAST30DAYS_DEBUG` — works shell-exported or in `.env`.
 

@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.2",
+  "schema_version": "1.3",
   "query": "AI coding agents",
   "generated_at": "2026-07-10T00:00:00Z",
   "window_days": 30,
@@ -9,6 +9,7 @@
     "grounding": "unreachable",
     "hackernews": "no-results",
     "reddit": "ok",
+    "tiktok": "payment-required",
     "x": "ok",
     "youtube": "rate-limited"
   },

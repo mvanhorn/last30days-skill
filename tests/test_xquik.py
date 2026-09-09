@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch
 
+from lib import health
 from lib.xquik import (
     DEPTH_CONFIG,
     _parse_tweet,
@@ -248,6 +249,34 @@ class TestSearchXquik(unittest.TestCase):
         result = search_xquik("test", "2026-01-01", "2026-03-01", token="unpaid-key")
         self.assertEqual(result["items"], [])
         self.assertIn("unpaid", result.get("error", "").lower())
+        # The X retrieval branch classifies by message text only, so the fixed
+        # detail must carry a payment-required classifier marker (KTD6).
+        self.assertEqual("Xquik key unpaid: payment required (402)", result["error"])
+        self.assertEqual(
+            http_mod.classify_failure(message=result["error"]), health.PAYMENT_REQUIRED
+        )
+
+    @patch("lib.env.x_backend_chain", return_value=["xquik"])
+    @patch("lib.xquik.http.get")
+    def test_unpaid_402_yields_payment_required_source_outcome(self, mock_get, _chain):
+        # End to end through the X backend loop: a 402 from xquik as the sole
+        # backend settles the x source as payment-required, not auth-failed.
+        from lib import http as http_mod, pipeline, schema
+        mock_get.side_effect = http_mod.HTTPError("Payment Required", status_code=402)
+        sq = schema.SubQuery(label="primary", search_query="q", ranking_query="q?", sources=["x"])
+        runtime = schema.ProviderRuntime(
+            reasoning_provider="mock", planner_model="mock", rerank_model="mock",
+            x_search_backend=None,
+        )
+        with self.assertRaises(pipeline.SourceRunError) as ctx:
+            pipeline._retrieve_stream(
+                topic="q", subquery=sq, source="x", config={"XQUIK_API_KEY": "k"},
+                depth="default", date_range=("2026-05-19", "2026-06-18"),
+                runtime=runtime, mock=False,
+            )
+        self.assertEqual(health.PAYMENT_REQUIRED, ctx.exception.outcome_state)
+        state, attempted = pipeline._classify_source_failure(ctx.exception)
+        self.assertEqual((health.PAYMENT_REQUIRED, True), (state, attempted))
 
     @patch("lib.xquik.http.get")
     def test_empty_tweets_list(self, mock_get):

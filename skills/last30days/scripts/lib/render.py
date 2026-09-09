@@ -2590,6 +2590,8 @@ def _format_outcome(outcome: schema.SourceOutcome) -> str:
             summary += ", some requests rate-limited"
     elif state == schema.NO_RESULTS:
         summary = "no results"
+    elif state == schema.PAYMENT_REQUIRED:
+        summary = health.credits_exhausted_label(outcome.source)
     else:
         summary = state
     if detail:

@@ -324,3 +324,43 @@ class TestWindowsPrintingPressCandidates:
         for candidate in candidates:
             if candidate.parent != pp_dir:
                 assert candidate.name == "digg-pp-cli"
+
+
+class TestRunOutcomeTaxonomy:
+    """The per-run outcome vocabulary must stay enumerated in lockstep across
+    ``health`` (constants), ``schema.RunOutcomeState`` (the export Literal),
+    ``SourceOutcome`` validation, and the pipeline's failure-specificity
+    ladder. ``payment-required`` (credit exhaustion, HTTP 402) is its own
+    state, distinct from ``auth-failed``: "top up credits" is a different
+    user action from "re-authenticate".
+    """
+
+    def test_payment_required_constant_and_alias(self):
+        from lib import schema
+
+        assert health.PAYMENT_REQUIRED == "payment-required"
+        assert schema.PAYMENT_REQUIRED == health.PAYMENT_REQUIRED
+
+    def test_literal_and_validation_enumerate_every_run_state(self):
+        import typing
+
+        from lib import schema
+
+        literal_states = set(typing.get_args(schema.RunOutcomeState))
+        assert "payment-required" in literal_states
+        # Every Literal member constructs; the Literal is the export contract.
+        for state in literal_states:
+            schema.SourceOutcome(source="x", state=state)
+        with pytest.raises(ValueError):
+            schema.SourceOutcome(source="x", state="not-a-state")
+
+    def test_payment_required_is_a_failure_state_next_to_auth_failed(self):
+        from lib import pipeline
+
+        ladder = pipeline._FAILURE_SPECIFICITY
+        assert health.PAYMENT_REQUIRED in ladder
+        assert ladder[health.AUTH_FAILED] < ladder[health.PAYMENT_REQUIRED] < ladder[health.RATE_LIMITED]
+
+    def test_credits_exhausted_label_is_source_aware(self):
+        assert health.credits_exhausted_label("x") == "X API credits exhausted"
+        assert health.credits_exhausted_label("reddit") == "credits exhausted"

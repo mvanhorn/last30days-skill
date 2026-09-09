@@ -1365,6 +1365,19 @@ def build_postmortem(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _postmortem_state_label(source: str, outcome: Dict[str, Any]) -> str:
+    """State label for a failed post-mortem line.
+
+    ``payment-required`` reads as "credits exhausted" ("X API credits
+    exhausted" for X) so the fix is obvious at a glance: top up, not re-login.
+    Every other state prints as its raw name.
+    """
+    state = str(outcome.get("state") or "")
+    if state == health.PAYMENT_REQUIRED:
+        return health.credits_exhausted_label(source)
+    return state
+
+
 def render_postmortem_text(pm: Dict[str, Any]) -> str:
     lines = [f"last30days post-mortem — engine v{pm['engine_version']}"]
     if not pm.get("present"):
@@ -1395,7 +1408,7 @@ def render_postmortem_text(pm: Dict[str, Any]) -> str:
         lines.append("Failed:")
         for source, outcome in failed:
             detail = outcome.get("detail") or outcome.get("state")
-            lines.append(f"  ✕ {source} — {outcome.get('state')}: {detail}")
+            lines.append(f"  ✕ {source} — {_postmortem_state_label(source, outcome)}: {detail}")
             if outcome.get("fix_hint"):
                 lines.append(f"    fix: {outcome['fix_hint']}")
     if partial:

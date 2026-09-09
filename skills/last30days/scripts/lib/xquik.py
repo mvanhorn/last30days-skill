@@ -148,8 +148,10 @@ def _execute_search(
         if status == 402:
             # Unpaid key — fatal for the source, and surfaced on the real search
             # path (not just --diagnose) so a live run reports it instead of
-            # settling silently empty.
-            return [], "Xquik key unpaid (402)"
+            # settling silently empty. The X retrieval branch classifies by
+            # message text only, so the detail carries the "payment required"
+            # marker that http.classify_failure maps to PAYMENT_REQUIRED.
+            return [], "Xquik key unpaid: payment required (402)"
         if status in (401, 403):
             return [], f"Xquik auth failed ({status})"
         _log(f"HTTP error for '{label}': {exc}")
@@ -286,7 +288,7 @@ def probe_works(token: str, timeout: int = 8) -> Optional[bool]:
     except http.HTTPError as exc:
         status = getattr(exc, "status_code", None)
         if status == 402:
-            _probe_cache = (False, "xquik key unpaid (402)")
+            _probe_cache = (False, "xquik key unpaid: payment required (402)")
         elif status in (401, 403):
             _probe_cache = (False, f"xquik auth failed ({status})")
         else:

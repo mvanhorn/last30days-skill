@@ -34,9 +34,20 @@ NO_RESULTS = "no-results"
 PARTIAL = "partial"
 RATE_LIMITED = "rate-limited"
 AUTH_FAILED = "auth-failed"
+PAYMENT_REQUIRED = "payment-required"  # HTTP 402 / credits exhausted: top up, not re-login
 UNREACHABLE = "unreachable"
 SCHEMA_DRIFT = "schema-drift"
 SKIPPED_UNCONFIGURED = "skipped-unconfigured"
+
+
+def credits_exhausted_label(source: str) -> str:
+    """Human label for a ``PAYMENT_REQUIRED`` outcome on ``source``.
+
+    The X source names the API whose credits ran out; every other source
+    gets the generic phrasing so the same label serves render summaries and
+    the doctor post-mortem without each surface hand-writing its own.
+    """
+    return "X API credits exhausted" if source == "x" else "credits exhausted"
 
 
 @dataclass
