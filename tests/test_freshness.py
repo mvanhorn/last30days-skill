@@ -647,7 +647,7 @@ def test_agent_export_includes_typed_claim_metadata():
 
     exported = schema.to_agent_export(report)
 
-    assert exported["schema_version"] == "1.2"
+    assert exported["schema_version"] == "1.3"
     assert exported["freshness_verdicts"][0]["verdict"] == "unsupported"
     assert exported["freshness_verdicts"][0]["source_item_id"] == item.item_id
 
