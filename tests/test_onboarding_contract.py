@@ -1,9 +1,10 @@
 """Contract tests for the restored first-run NUX wizard in SKILL.md.
 
-Step 0 has two branches: a **Claude Code Modal Flow** (AskUserQuestion-driven,
-the restored v3.0.0 NUX) and a **Non-Modal Prose Flow** for hosts without modals
-(OpenClaw, Codex, Cursor, Gemini CLI). These tests assert the structural
-guarantees of both branches, plus the cross-cutting copy rules: the hard
+Step 0 has three branches: a **Claude Code Modal Flow** (AskUserQuestion-driven,
+the restored v3.0.0 NUX), a **Non-Modal Prose Flow** for hosts without modals
+(OpenClaw, Codex, Cursor, Gemini CLI), and a **Grok Bot Prose Flow** (the X
+connector lane first, keys written only through the engine, no browser-session
+reads). These tests assert the structural guarantees of the branches, plus the cross-cutting copy rules: the hard
 "Step 0 before Step 1" gate, Digg threaded alongside yt-dlp, the 10,000-free-calls
 credit count, and Threads/Pinterest kept out of the onboarding offers. They read
 SKILL.md as text - the model's runtime contract - matching
@@ -20,6 +21,7 @@ from lib import setup_wizard
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
+AGENTS_MD = ROOT / "AGENTS.md"
 
 
 class TestOnboardingContract(unittest.TestCase):
@@ -33,18 +35,42 @@ class TestOnboardingContract(unittest.TestCase):
         # Branch slices.
         modal_start = self.step0.index("### Claude Code Modal Flow")
         prose_start = self.step0.index("### Non-Modal Prose Flow")
+        grok_start = self.step0.index("### Grok Bot Prose Flow")
         manual_start = self.step0.index("### Manual Setup Guide")
         self.modal = self.step0[modal_start:prose_start]
-        self.prose = self.step0[prose_start:manual_start]
+        self.prose = self.step0[prose_start:grok_start]
+        self.grok = self.step0[grok_start:manual_start]
         self.manual = self.step0[manual_start:]
 
     # --- Platform split + hard gate ---
 
     def test_platform_split_present(self):
-        """Step 0 routes modal-capable hosts and prose hosts to distinct flows."""
+        """Step 0 routes modal-capable hosts, prose hosts, and Grok Bot to
+        three distinct flows, in that order."""
         self.assertIn("Platform split", self.step0)
         self.assertIn("### Claude Code Modal Flow", self.step0)
         self.assertIn("### Non-Modal Prose Flow", self.step0)
+        self.assertIn("### Grok Bot Prose Flow", self.step0)
+        split = self.step0[self.step0.index("Platform split"):self.step0.index("### Claude Code Modal Flow")]
+        self.assertIn("Grok Bot Prose Flow", split)
+        self.assertEqual(3, len([h for h in ("### Claude Code Modal Flow", "### Non-Modal Prose Flow", "### Grok Bot Prose Flow") if h in self.step0]))
+        self.assertLess(self.step0.index("### Non-Modal Prose Flow"), self.step0.index("### Grok Bot Prose Flow"))
+
+    def test_agents_md_names_three_step0_branches(self):
+        """AGENTS.md's onboarding rule and this contract move together."""
+        agents = AGENTS_MD.read_text(encoding="utf-8")
+        self.assertIn("Step 0 has THREE branches", agents)
+        self.assertNotIn("Step 0 has TWO branches", agents)
+        for name in ("Claude Code Modal Flow", "Non-Modal Prose Flow", "Grok Bot Prose Flow"):
+            self.assertIn(name, agents, name)
+
+    def test_grok_flow_is_prose_and_connector_first(self):
+        """The third branch has no modals, leads with the X connector, and
+        never routes through a browser-session step."""
+        self.assertNotIn("AskUserQuestion", self.grok)
+        self.assertNotIn("cookie", self.grok.lower())
+        self.assertLess(self.grok.index("search_posts_all"), self.grok.index("X_BEARER_TOKEN"))
+        self.assertIn("setup --store-key", self.grok)
 
     def test_hard_gate_step0_before_step1(self):
         """The erosion-resistant gate that orphaned the wizard in #659 is restored."""

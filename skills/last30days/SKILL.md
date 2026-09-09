@@ -18,6 +18,7 @@ metadata:
         - SCRAPECREATORS_API_KEY
         - OPENAI_API_KEY
         - XAI_API_KEY
+        - X_BEARER_TOKEN
         - OPENROUTER_API_KEY
         - PERPLEXITY_API_KEY
         - PARALLEL_API_KEY
@@ -294,6 +295,8 @@ Resolving this correctly prevents the second-most-common failure mode of this sk
 
 After resolving host web search, run the first-run gate below before anything else.
 
+**GROK BOT HOST RULE (every invocation, including installs that already have `SETUP_COMPLETE=true`).** If you are running as a Grok Bot (xAI's Grok Bot; do not key this on `CURSOR_AGENT` alone, which Cursor agent chat also sets), export `LAST30DAYS_HOST=grok-bot` in every shell that runs `last30days.py`, the way `LAST30DAYS_NATIVE_SEARCH` is exported. If this session also exposes the X connector's post-search tool (`search_posts_all`), export `LAST30DAYS_X_HOST_LANE=1` in that same shell and follow the X connector recipe in Research Execution (you fetch X through the connector; the engine ingests it via `--x-posts <file>`). On a Grok Bot never run any browser-cookie step, and never place post text unquoted in a shell command: the envelope is written only through a single-quoted heredoc delimiter (`<<'EOF'`) or the tool's own file output. A Grok Bot first run takes the **Grok Bot Prose Flow** in Step 0.
+
 **FIRST-RUN GATE — run this Bash command immediately after resolving host web search, before reading the topic or doing any research:**
 
 ```bash
@@ -414,7 +417,7 @@ If your Bash call to `last30days.py` does NOT include the FULL pre-flight checkl
 
 # last30days v3.23.1: Research Any Topic from the Last 30 Days
 
-> **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`). X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars). Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). On hosts with `uv` and no Python 3.12+, the preflight may install a uv-managed CPython 3.12 (one-time ~28MB download, announced on stderr). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
+> **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/Last30Days`). X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars), an X API v2 app-only bearer (X_BEARER_TOKEN, sent only to api.x.com), or a host-provided `--x-posts` envelope the hosting model fetched through its own X connector. Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). On hosts with `uv` and no Python 3.12+, the preflight may install a uv-managed CPython 3.12 (one-time ~28MB download, announced on stderr). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
 
 Research ANY topic across Reddit, X, YouTube, and other sources. Surface what people are actually discussing, recommending, betting on, and debating right now.
 
@@ -552,6 +555,7 @@ When both `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` are set, the engine run
 **Platform split - run exactly ONE branch:**
 - **If you HAVE WebSearch and AskUserQuestion (Claude Code):** run the **Claude Code Modal Flow** immediately below.
 - **If you do NOT (OpenClaw, Codex, Cursor, Gemini CLI, raw CLI):** run the **Non-Modal Prose Flow** further down. It does the same work conversationally, without modals.
+- **If you are running as a Grok Bot** (the Grok Bot host rule in HOW TO INVOKE): run the **Grok Bot Prose Flow**, the third branch, below the Non-Modal flow. The X connector comes first, any backup key is written only through the engine, and no browser session is read. Cursor stays in the Non-Modal Prose Flow.
 
 ---
 
@@ -590,7 +594,7 @@ Options (give each option the description shown):
 
 The consented `setup --allow-browser-cookies` run extracts cookies (Chrome/Chromium family first via the Keychain with no Full Disk Access, then Firefox and Safari as fallbacks; the winning browser is pinned for future runs only when it is Firefox or Safari, so Chrome never re-triggers the Keychain prompt on later runs) and best-effort installs yt-dlp (YouTube), the free keyless Digg CLI (`digg-pp-cli` via `@mvanhorn/printing-press-library install digg --cli-only`; Digg activates only when the binary is on the **agent subprocess PATH**, typically `$HOME/.local/bin`; setup reports honestly if installed off-PATH; recommend-only if `npx` is unavailable), plus the free keyless arXiv and Techmeme CLIs. Show the user what was found and installed - including whether Digg landed on PATH (active) or off-PATH (installed but not yet active).
 
-**Extras-host X login (Linux / Grok Bot / Mac mini / Darwin agentcookie sink — a MacBook SKIPS this).** On a MacBook the Keychain/Firefox/Safari extract above is all X needs. On an extras host the local Chrome store can't be decrypted, so that extract finds nothing and X stays empty unless you also capture a LIVE login over CDP. After the cookie-consent setup run: run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/box_chrome_login.py` — it prints the exact host-correct command (or launches it with `--exec`), and on a MacBook it prints "no launch needed" and spawns nothing. When `box-chrome` is on PATH it launches a throwaway profile on the last30days extras port **18800** (the last30days convention `SAND_CHROME_REMOTE_DEBUG_PORT=18800`, not box-chrome's default): `CHROME_USER_DATA_DIR=/tmp/last30days-x-chrome SAND_CHROME_REMOTE_DEBUG_PORT=18800 box-chrome --new-window https://x.com/login`. Wait for the x.com login page, then HAND THE DESKTOP to the human to type — do NOT fill or drive the form. After they sign in, append `BROWSER_CDP_URL=http://127.0.0.1:18800` to `.env` (never `AUTH_TOKEN`/`CT0`; keep `AGENTCOOKIE=off` during the harvest), then re-run `setup --allow-browser-cookies` so extras CDP reads the live pair. Full steps and the block/rate-limit stop rule are in **X on Linux / Grok Bot / Mac mini** below. This extras-host login only runs on the consented "Yes - X cookies" path; the Research Continuation Override never skips it when the user said yes to X.
+**Extras-host X login (Linux / Mac mini / Darwin agentcookie sink — a MacBook SKIPS this, and so does a `LAST30DAYS_HOST=grok-bot` host, which never runs it).** On a MacBook the Keychain/Firefox/Safari extract above is all X needs. On an extras host the local Chrome store can't be decrypted, so that extract finds nothing and X stays empty unless you also capture a LIVE login over CDP. After the cookie-consent setup run: run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/box_chrome_login.py` — it prints the exact host-correct command (or launches it with `--exec`), and on a MacBook it prints "no launch needed" and spawns nothing. When `box-chrome` is on PATH it launches a throwaway profile on the last30days extras port **18800** (the last30days convention `SAND_CHROME_REMOTE_DEBUG_PORT=18800`, not box-chrome's default): `CHROME_USER_DATA_DIR=/tmp/last30days-x-chrome SAND_CHROME_REMOTE_DEBUG_PORT=18800 box-chrome --new-window https://x.com/login`. Wait for the x.com login page, then HAND THE DESKTOP to the human to type — do NOT fill or drive the form. After they sign in, append `BROWSER_CDP_URL=http://127.0.0.1:18800` to `.env` (never `AUTH_TOKEN`/`CT0`; keep `AGENTCOOKIE=off` during the harvest), then re-run `setup --allow-browser-cookies` so extras CDP reads the live pair. Full steps and the block/rate-limit stop rule are in **X on Linux / Mac mini** below. This extras-host login only runs on the consented "Yes - X cookies" path; the Research Continuation Override never skips it when the user said yes to X.
 
 **macOS Full Disk Access remediation (Safari fallback only).** Chrome and Firefox need no Full Disk Access; only the Safari fallback does. After the `setup` run, inspect its stderr. If it contains `Permission denied reading Cookies.binarycookies` and the platform is macOS, the OS blocked the Safari read - surface the fix instead of swallowing it: `macOS blocked the Safari cookie read. If your x.com login is in Chrome, you don't need this. To use Safari: System Settings > Privacy & Security > Full Disk Access > enable your terminal (or the Claude app), then I can retry.` Offer ONE retry only when no research topic is waiting. If a topic is already waiting or the user skips, continue immediately with available sources.
 
@@ -655,7 +659,7 @@ For hosts without interactive modal prompts (OpenClaw, Codex, Cursor, Gemini CLI
 
 **3. Cookie consent (ask BEFORE reading anything).** First check if `BROWSER_CONSENT=true` already exists in `~/.config/last30days/.env` (e.g. granted in a prior Claude Code session); if so, skip this prompt and run `setup --allow-browser-cookies` directly. Otherwise ask. Example: `I can read your browser cookies to unlock X/Twitter and other logged-in sources - I check Chrome first (a one-time macOS Keychain prompt may appear; click Always Allow), then Firefox and Safari. Want me to? (yes / no)` **Wait for the answer.**
    - On **yes** → run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup --allow-browser-cookies` (and append `BROWSER_CONSENT=true` to `.env` after it completes). Extracts cookies (Chrome/Chromium family first via the Keychain with no Full Disk Access, then Firefox and Safari; only a Firefox/Safari winner is pinned for later runs, so Chrome never re-prompts) and best-effort installs yt-dlp (YouTube), the free keyless Digg CLI (`digg-pp-cli` via `@mvanhorn/printing-press-library install digg --cli-only`; activates only when on the agent subprocess PATH, typically `$HOME/.local/bin`; reports honestly if off-PATH; recommend-only if `npx` is unavailable), plus the free keyless arXiv and Techmeme CLIs.
-     - **Extras hosts (Linux / Grok Bot / Mac mini / Darwin agentcookie sink) — a MacBook SKIPS this.** On these hosts the Chrome cookie store can't be decrypted, so the extract above finds nothing and X stays empty unless you capture a LIVE login over CDP. Run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/box_chrome_login.py` (prints the host-correct command; `--exec` launches it; a MacBook prints "no launch needed" and spawns nothing). When `box-chrome` is on PATH it launches a throwaway profile on the last30days extras port **18800** (`SAND_CHROME_REMOTE_DEBUG_PORT=18800`, not box-chrome's default): `CHROME_USER_DATA_DIR=/tmp/last30days-x-chrome SAND_CHROME_REMOTE_DEBUG_PORT=18800 box-chrome --new-window https://x.com/login`. Wait for the x.com login page, then HAND THE DESKTOP to the human to type — do NOT drive the form. After they sign in, append `BROWSER_CDP_URL=http://127.0.0.1:18800` to `.env` (never `AUTH_TOKEN`/`CT0`; keep `AGENTCOOKIE=off` during the harvest) and re-run `setup --allow-browser-cookies`. Full steps and the block/rate-limit stop rule: **X on Linux / Grok Bot / Mac mini** below. This extras-host login only runs on the consented **yes** path; a waiting topic never skips it when the user said yes to X.
+     - **Extras hosts (Linux / Mac mini / Darwin agentcookie sink) — a MacBook SKIPS this, and so does a `LAST30DAYS_HOST=grok-bot` host.** On these hosts the Chrome cookie store can't be decrypted, so the extract above finds nothing and X stays empty unless you capture a LIVE login over CDP. Run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/box_chrome_login.py` (prints the host-correct command; `--exec` launches it; a MacBook prints "no launch needed" and spawns nothing). When `box-chrome` is on PATH it launches a throwaway profile on the last30days extras port **18800** (`SAND_CHROME_REMOTE_DEBUG_PORT=18800`, not box-chrome's default): `CHROME_USER_DATA_DIR=/tmp/last30days-x-chrome SAND_CHROME_REMOTE_DEBUG_PORT=18800 box-chrome --new-window https://x.com/login`. Wait for the x.com login page, then HAND THE DESKTOP to the human to type — do NOT drive the form. After they sign in, append `BROWSER_CDP_URL=http://127.0.0.1:18800` to `.env` (never `AUTH_TOKEN`/`CT0`; keep `AGENTCOOKIE=off` during the harvest) and re-run `setup --allow-browser-cookies`. Full steps and the block/rate-limit stop rule: **X on Linux / Mac mini** below. This extras-host login only runs on the consented **yes** path; a waiting topic never skips it when the user said yes to X.
    - On **no** → run `FROM_BROWSER=off "${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/last30days.py setup`. Skips all cookie reads; still installs yt-dlp (YouTube), Digg, arXiv, and Techmeme, still writes `SETUP_COMPLETE`. If the invocation already includes a topic, immediately research it with `--no-browser-cookies`, then resume the deferred onboarding in the same run after the findings: the ScrapeCreators offer (step 5) and source tier (step 5b) if a key is saved. Do not re-ask cookie consent as part of the resume.
 
 **4. Full Disk Access remediation (macOS only).** After `setup`, inspect stderr. If it contains `Permission denied reading Cookies.binarycookies` on macOS, surface: `macOS blocked the cookie read. To enable X/Twitter: System Settings > Privacy & Security > Full Disk Access > enable your terminal (or the Claude app), then I can retry.` Offer ONE retry only when no research topic is waiting. If a topic is already waiting or the user skips, continue immediately with available sources.
@@ -675,6 +679,38 @@ For hosts without interactive modal prompts (OpenClaw, Codex, Cursor, Gemini CLI
 
 ---
 
+### Grok Bot Prose Flow
+
+For a Grok Bot host. The Grok Bot host rule in HOW TO INVOKE applies throughout: `LAST30DAYS_HOST=grok-bot` is exported in every shell that runs the engine, including every command below. Same conversational shape as the Non-Modal Prose Flow, no modals, and the X connector comes first: on this host the engine never reads a browser session and X runs only through official access. Run in order; wait where it says to wait.
+
+**1. Host key + welcome.** Persist the host signal so later runs and `doctor` see it: if `~/.config/last30days/.env` is missing, `mkdir -p ~/.config/last30days && touch ~/.config/last30days/.env`; then append one line `LAST30DAYS_HOST=grok-bot` (append-only with `>>`; never `>`). Then run `"${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" --welcome` and show its stdout VERBATIM.
+
+**2. Permission preflight.** Run `"${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" --preflight` and summarize the human-readable result (config source, planned writes, optional commands). It reads nothing from a browser and runs no research.
+
+**3. X connector (primary - check this BEFORE offering any key).** Look for the X connector's post-search tool (`search_posts_all`) in this session.
+   - **Present** → tell the user: `X search runs through your X connector on the credits included with Grok Bot, with full 30-day coverage - nothing to configure.` Export `LAST30DAYS_X_HOST_LANE=1` next to `LAST30DAYS_HOST=grok-bot` in every engine shell for this session, and on every research run follow the X connector recipe in Research Execution: one `topic` call sized 10 / 30 / 60 by depth (`--quick` / default / `--deep`) with `-is:retweet` and the window; per `--x-handle`, a `from` call of 8 and a `mention` call of 5; per `--x-related` handle, a `related` call of 3; written to a `last30days-x-posts/1` envelope (`generated_at`, `topic`, `window`, `status`, `calls` tagged `topic` / `from` / `mention` / `related`, each post exactly `id`, `author_handle`, `created_at`, `text`, `likes`, `reposts`, `replies`, `quotes` and nothing else); if the tool rejects the window or count parameters, omit them and write `status: partial` with `error: window-unsupported`; pass the file as `--x-posts <file>`. Skip step 4.
+   - **Absent** → continue to step 4.
+
+**4. Backup key (only when the connector is absent).** Say, then WAIT: `This session has no X connector, so X needs a key. Best fix: connect X inside Grok Bot (it may also provision an X developer account). Otherwise paste an X_BEARER_TOKEN from the X developer console - recent posts, about the last week, unless your X developer project has full-archive access - or an XAI_API_KEY from console.x.ai. Or skip X for now. (bearer / xai / skip)`
+   - On a pasted key → persist it ONLY through the engine's key-write path, feeding stdin from a single-quoted heredoc. Never an ad-hoc shell write of the value, never interpolate it into a command line:
+
+     ```bash
+     "${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" setup --store-key X_BEARER_TOKEN <<'KEY_EOF'
+     {PASTED_VALUE}
+     KEY_EOF
+     ```
+
+     Use `setup --store-key XAI_API_KEY` for an xAI key. The engine prints `X_BEARER_TOKEN=****` (or `XAI_API_KEY=****`) plus a JSON `persisted` line; never echo the value back, and confirm only in the masked `NAME=****` form. A `"persisted": false` means the write failed: say so and do not claim X is active.
+   - On **skip** → append `X_DECLINED=grok-bot` to `~/.config/last30days/.env` (append-only) so later runs stay quiet about X: no unlock pitch, no second key question. If the invocation already includes a topic, research it right after step 5 and resume steps 6-7 after the findings.
+
+**5. Setup (free CLIs, no browser reads).** Run `"${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" setup` (the plain form; on this host it reads nothing from a browser). It best-effort installs yt-dlp (YouTube), the Digg CLI, arXiv, and Techmeme and writes `SETUP_COMPLETE=true`. Show what was installed, including whether Digg landed on PATH.
+
+**6. ScrapeCreators offer and source tier.** Run steps 5 and 5b of the Non-Modal Prose Flow exactly as written there (GitHub device-code signup with `setup --github-start` then `setup --github-poll`; the engine persists the key and masks it).
+
+**7. Complete.** Confirm `SETUP_COMPLETE=true` is in `~/.config/last30days/.env` (append it if `setup` did not run), briefly confirm which sources are active (re-run `--preflight`, or safe `--diagnose`, with the host signal and, when the connector is present, `LAST30DAYS_X_HOST_LANE=1` exported; `--diagnose` then lists `x` as served by the connector), and proceed to research.
+
+---
+
 ### Manual Setup Guide
 
 Shown when a Claude Code user picks "Manual setup", or for anyone who wants to configure by hand. Present as plain text (not blockquoted).
@@ -682,15 +718,18 @@ Shown when a Claude Code user picks "Manual setup", or for anyone who wants to c
 The magic of /last30days is Reddit comments + X posts together - and both are free. Add these to `~/.config/last30days/.env`:
 
 **X/Twitter (pick one - the most important source):**
+- `X_BEARER_TOKEN=xxx` - the official X API v2 (`api.x.com`) with an app-only bearer from the X developer console. Recent posts, about a week back on the Basic tier, unless your X developer project has full-archive access. Persist it with `setup --store-key X_BEARER_TOKEN` (value on stdin, masked in output).
 - **Grok CLI (no X credential):** install with `curl -fsSL https://x.ai/cli/install.sh | bash`, then `grok login`. No X account, no cookies, no API key. Needs a Grok plan; calls draw on it.
 - `FROM_BROWSER=auto` - free. Reads your x.com login cookies live at search time (Firefox/Safari, never saved to disk).
 - `XAI_API_KEY=xxx` - no browser access needed. Get a key at api.x.ai. Best for servers.
 - `XQUIK_API_KEY=xxx` - keyless-style X via Xquik.
 - `AUTH_TOKEN=xxx` + `CT0=xxx` - paste your X cookies manually (x.com → F12 → Application → Cookies).
 
-**X on Linux / Grok Bot / Mac mini (repair).** These hosts can't decrypt a local Chrome cookie store, so if X returns nothing there, feed bird a cookie pair one of these ways (a MacBook does NOT do any of this — it uses its Keychain / Firefox / Safari extract; do not launch box-chrome on a MacBook):
+**X on a Grok Bot (repair).** On a `LAST30DAYS_HOST=grok-bot` host X runs only through official access, so if X returns nothing there: connect X inside Grok Bot (the X connector lane; full 30-day coverage on the included credits), or add `X_BEARER_TOKEN` (recent posts, about the last week, unless your X developer project has full-archive access) or `XAI_API_KEY` from console.x.ai through `setup --store-key <NAME>`, or, when the footer reports X API credits exhausted (`payment-required`), top up credits in the X developer console. Nothing in the Linux / Mac mini repair section below applies on a Grok Bot.
+
+**X on Linux / Mac mini (repair).** These hosts (never a `LAST30DAYS_HOST=grok-bot` host) can't decrypt a local Chrome cookie store, so if X returns nothing there, feed bird a cookie pair one of these ways (a MacBook does NOT do any of this — it uses its Keychain / Firefox / Safari extract; do not launch box-chrome on a MacBook):
 - **agentcookie sidecar:** install the `agentcookie` CLI so the engine can read your `auth_token`/`ct0` from it automatically. Nothing to configure; `AGENTCOOKIE=off` disables it.
-- **Live Chrome login over CDP (the proven Grok Bot path).** The engine reads a live signed-in Chrome over the DevTools Protocol, but you must LAUNCH that Chrome on the extras port and log in first — `setup --allow-browser-cookies` alone opens no window. Steps (a MacBook skips all of this):
+- **Live Chrome login over CDP (the proven extras-host path).** The engine reads a live signed-in Chrome over the DevTools Protocol, but you must LAUNCH that Chrome on the extras port and log in first — `setup --allow-browser-cookies` alone opens no window. Steps (a MacBook skips all of this):
   1. Set `AGENTCOOKIE=off` for this harvest so a sidecar can't mix in a different pair (leave it unset again after success).
   2. Launch a throwaway login Chrome on the last30days extras port **18800** — this port is the last30days convention (`SAND_CHROME_REMOTE_DEBUG_PORT=18800`), NOT box-chrome's built-in default (`9222` + the display number). **Launch via the host `box-chrome` wrapper** (which sets `--class=box-chrome`); do NOT launch raw `google-chrome-stable`, and in particular do NOT launch raw Chrome with a custom `--class` — a raw Chrome with `--class=l30d-…` failed where `box-chrome` (class `box-chrome`) succeeded. Do NOT rely on any `GrokAgent` user-agent token: it is not required and may be disabled on the host (`/tmp/sand-ua-token-disabled`), so never tell users it must be present. Run `"${LAST30DAYS_PYTHON:-python3}" skills/last30days/scripts/box_chrome_login.py` to print the exact host-correct command (add `--exec` to launch it); on a MacBook it prints "no launch needed" and spawns nothing. When `box-chrome` is on PATH the command is:
      ```
@@ -1461,6 +1500,51 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 
 ---
 
+**Grok Bot X connector recipe (only when `LAST30DAYS_X_HOST_LANE=1` is exported - see the Grok Bot host rule in HOW TO INVOKE).** On a Grok Bot with the X connector, YOU fetch X through the connector before the engine command and hand the engine the file; the engine then calls no X backend, plans `x` in, and the footer's X provenance reads "X via X connector". Do this before the Step 1 command below.
+
+1. **Calls (`search_posts_all`).** Window = the engine's date range (`--days`, default 30: `from` is today minus the day count, `to` is today). Depth count = 10 (`--quick`) / 30 (default) / 60 (`--deep`).
+   - One `topic` call: the topic query plus `-is:retweet`, the window, and the depth count.
+   - Per `--x-handle` handle: one `from` call (`from:<handle> -is:retweet`, 8 posts) and one `mention` call (`@<handle> -is:retweet`, 5 posts).
+   - Per `--x-related` handle: one `related` call (`from:<handle> -is:retweet`, 3 posts).
+   - If the tool rejects the window or count parameters, omit them, keep at most the depth count per call, and write `"status": "partial"` with `"error": "window-unsupported"`.
+   - If the connector itself fails, write `"status": "error"` with `"calls": []` and a short category in `error`: `credits`, `not-connected`, or `unavailable` - never raw tool output, never an account or app id.
+2. **Envelope.** Exactly these top-level fields; every post carries the eight flat fields and nothing else (no URLs, media, or author objects); at most the depth count per call. A fresh `generated_at` (the engine rejects an envelope older than 6 hours) and a `topic` identical to the engine's topic string:
+
+```json
+{
+  "schema": "last30days-x-posts/1",
+  "generated_at": "{ISO_8601_UTC_NOW}",
+  "topic": "{TOPIC}",
+  "window": {"from": "{YYYY-MM-DD}", "to": "{YYYY-MM-DD}"},
+  "provider": "x-connector",
+  "status": "ok",
+  "calls": [
+    {"lane": "topic", "handles": [], "posts": [
+      {"id": "1963000000000000000", "author_handle": "someone", "created_at": "2026-09-07T10:00:00Z", "text": "post text", "likes": 12, "reposts": 3, "replies": 1, "quotes": 0}
+    ]},
+    {"lane": "from", "handles": ["{RESOLVED_HANDLE}"], "posts": []},
+    {"lane": "mention", "handles": ["{RESOLVED_HANDLE}"], "posts": []},
+    {"lane": "related", "handles": ["{RELATED_HANDLE}"], "posts": []}
+  ]
+}
+```
+
+   Omit the `from` / `mention` / `related` calls when the run has no `--x-handle` / `--x-related`; `handles` must be the run's own handles. `id` is the post's numeric id as a string; `author_handle` is the username without `@`.
+3. **Write the file - post text is attacker-controlled and never goes unquoted into a shell command.** Use the tool's own file output when it has one; otherwise a single-quoted heredoc (`<<'X_POSTS_EOF'`, never unquoted) into a `.json` path outside `~/.config`, in the SAME Bash call as the engine command (the trap removes it on exit):
+
+```bash
+X_POSTS_DIR=$(mktemp -d "${TMPDIR:-/tmp}/last30days-x-posts.XXXXXX")
+X_POSTS_FILE="$X_POSTS_DIR/x-posts.json"
+trap 'rm -rf "$X_POSTS_DIR"' EXIT
+cat >| "$X_POSTS_FILE" <<'X_POSTS_EOF'
+{X_POSTS_ENVELOPE_JSON}
+X_POSTS_EOF
+```
+
+   Run it directly in your shell tool, never wrapped in `bash -lc '...'` (same rule as the plan tmpfile).
+4. **Engine.** Add `--x-posts "$X_POSTS_FILE"` to the Step 1 command (the file path only, never inline JSON); every other flag stays as usual. Comparison runs: write one envelope per entity (its `topic` is that entity's name) and put the path in that entity's `--competitors-plan` entry as `"x_posts": "/abs/path/x-posts.json"`; a bare `--x-posts` on a comparison run exits 2. If the engine exits 2 naming the envelope, fix the file it names or re-run without `--x-posts`; X is then absent for that run.
+5. **After the run.** The stats line reads "X via X connector". The engine's one receipt line (accepted / dropped counts, on stderr) is diagnostics only: never narrate it in the deliverable (LAW 9).
+
 **Step 1: Run the research script WITH your query plan (FOREGROUND)**
 
 **CRITICAL: Run this command in the FOREGROUND with a 5-minute timeout. Do NOT use run_in_background. The full output contains Reddit, X, AND YouTube data that you need to read completely.**
@@ -2029,7 +2113,7 @@ Headlines should be specific and newsy ("BULLY dropped and it's dominating", "Eu
 
 If the research output contains a `**🔍 Research Coverage:**` block, render it verbatim right before the stats block. This tells the user which core sources are missing and how to unlock them. Do NOT render this block if it is absent from the output (100% coverage = no nudge).
 
-**Optional X omission:** If X was unavailable because no X authentication was configured, finish the useful findings first. The engine emits one short, non-blocking note: `Optional source omitted: X/Twitter was not enabled; research continued with the available sources.` Render that note once if present. Do not repeat it. Do not open a modal, ask another question, recommend a login, or provide cookie/API setup instructions unless the user explicitly asks to enable X.
+**Optional X omission:** If X was unavailable because no X authentication was configured, finish the useful findings first. The engine emits one short, non-blocking note: `Optional source omitted: X/Twitter was not enabled; research continued with the available sources.` Render that note once if present. Do not repeat it. Do not open a modal, ask another question, recommend a login, or provide cookie/API setup instructions unless the user explicitly asks to enable X. On a Grok Bot host the engine's own X hint (connect X inside Grok Bot, a bearer token, or a credit top-up) is the only guidance; relay it once, unchanged, and the note does not fire at all when the X connector lane served the run.
 
 **THEN - Engine footer pass-through (right before invitation):**
 
@@ -2278,7 +2362,8 @@ Want another prompt? Just tell me what you're creating next.
 **What this skill does:**
 - Sends search queries to ScrapeCreators API (`api.scrapecreators.com`) for TikTok and Instagram search, and as a Reddit search backup when the free Reddit path returns no items (requires SCRAPECREATORS_API_KEY; empty-only by default — see `LAST30DAYS_REDDIT_SC_MIN_ITEMS` / `LAST30DAYS_REDDIT_BACKEND`)
 - Legacy: Sends search queries to OpenAI's Responses API (`api.openai.com`) for Reddit discovery (fallback if no SCRAPECREATORS_API_KEY)
-- Sends search queries to X/Twitter via optional user-provided `AUTH_TOKEN`/`CT0` env vars, explicit browser-cookie opt-in (`FROM_BROWSER` or setup consent), xAI's API (`api.x.ai` by default), Xquik's API (`xquik.com` by default), or the official X API v2 via xurl CLI (OAuth2, auto-detected when installed and authenticated)
+- Sends search queries to X/Twitter via the official X API v2 (`api.x.com`, app-only bearer from `X_BEARER_TOKEN`, sent only in the Authorization header; the engine's default X path on a Grok Bot host next to xAI's API), optional user-provided `AUTH_TOKEN`/`CT0` env vars, explicit browser-cookie opt-in (`FROM_BROWSER` or setup consent), xAI's API (`api.x.ai` by default), Xquik's API (`xquik.com` by default), or the official X API v2 via xurl CLI (OAuth2, auto-detected when installed and authenticated)
+- Accepts a host-provided `--x-posts` envelope (a `.json` file of posts the hosting model fetched through its own X connector) as untrusted input: it replaces the engine's X fetch for that run, every row is validated and its citation URL rebuilt from the post id, and no X backend is called
 - Sends search queries to Algolia HN Search API (`hn.algolia.com`) for Hacker News story and comment discovery (free, no auth)
 - Sends search queries to Polymarket Gamma API (`gamma-api.polymarket.com`) for prediction market discovery (free, no auth)
 - Runs `yt-dlp` locally for YouTube search and transcript extraction (no API key, public data)

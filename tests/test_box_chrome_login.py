@@ -181,7 +181,10 @@ def test_skill_md_references_helper_in_flows_and_repair():
 def test_skill_md_documents_18800_launch_and_macbook_skip():
     text = _skill()
     assert "SAND_CHROME_REMOTE_DEBUG_PORT=18800" in text
-    assert "X on Linux / Grok Bot / Mac mini" in text
+    assert "X on Linux / Mac mini (repair)" in text
+    # The repair recipe is rescoped off Grok Bot (R15): that host has its own
+    # official-only flow and never launches box-chrome.
+    assert "X on Linux / Grok Bot / Mac mini" not in text
     # MacBook must be told to skip the box-chrome path.
     assert "MacBook SKIPS" in text or "MacBook does NOT" in text
 

@@ -12,7 +12,9 @@ SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
 def _prose_flow() -> str:
     text = SKILL_MD.read_text(encoding="utf-8")
     start_marker = "### Non-Modal Prose Flow"
-    end_marker = "### Manual Setup Guide"
+    # The Grok Bot Prose Flow (third Step 0 branch) sits between the prose
+    # flow and the Manual Setup Guide; slice the prose flow alone.
+    end_marker = "### Grok Bot Prose Flow"
     start = text.find(start_marker)
     assert start != -1, f"missing section marker: {start_marker}"
     end = text.find(end_marker, start)

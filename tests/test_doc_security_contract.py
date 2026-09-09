@@ -56,6 +56,19 @@ def test_security_copy_avoids_stale_cookie_and_endpoint_claims():
     assert "do not read browser-cookie values" in skill
 
 
+def test_security_copy_names_official_x_api_and_host_envelope():
+    """The official X API v2 host and the host-provided --x-posts envelope are
+    named in the Security section and the permissions overview."""
+    skill = SKILL_MD.read_text(encoding="utf-8")
+    security = skill[skill.index("## Security & Permissions"):]
+    assert "api.x.com" in security
+    assert "X_BEARER_TOKEN" in security
+    assert "--x-posts" in security
+    overview = skill[skill.index("**Permissions overview:**"):]
+    overview = overview[: overview.index("\n")]
+    assert "api.x.com" in overview
+
+
 def test_scrapecreators_copy_uses_canonical_free_call_count():
     text = "\n".join(
         [
