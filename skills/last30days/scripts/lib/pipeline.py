@@ -3969,18 +3969,34 @@ def _run_supplemental_searches(
         xapi_token = config.get("X_BEARER_TOKEN") or ""
         xapi_deadline = time.monotonic() + x_api.LANE_BUDGET_SECONDS
 
+        def _xapi_lane_receipt(lane_warnings: list[str]) -> None:
+            # A deadline stop is incomplete coverage, reported in
+            # report.warnings (the x_partial_coverage artifact), never a
+            # healthy-looking silence and never a source failure.
+            sink = bundle.artifacts.setdefault("x_partial_coverage", [])
+            for note in lane_warnings:
+                line = f"X handle lanes: {note}"
+                if line not in sink:
+                    sink.append(line)
+
         def _from_lane(hs: list, count: int, and_topic: bool = False) -> tuple[list, bool]:
             # x_api.search_handles doesn't support and_topic; topic ranks only
-            return x_api.search_handles(
+            lane_warnings: list[str] = []
+            items = x_api.search_handles(
                 hs, topic, from_date, to_date, count_per=count, token=xapi_token,
-                deadline=xapi_deadline,
-            ), False
+                deadline=xapi_deadline, warnings=lane_warnings,
+            )
+            _xapi_lane_receipt(lane_warnings)
+            return items, False
 
         def _about_lane(hs: list, count: int) -> tuple[list, bool]:
-            return x_api.search_mentions(
+            lane_warnings: list[str] = []
+            items = x_api.search_mentions(
                 hs, from_date, to_date, topic=topic, count_per=count, token=xapi_token,
-                deadline=xapi_deadline,
-            ), False
+                deadline=xapi_deadline, warnings=lane_warnings,
+            )
+            _xapi_lane_receipt(lane_warnings)
+            return items, False
     elif primary == "xquik":
         xquik_token = env.get_xquik_token(config)
 

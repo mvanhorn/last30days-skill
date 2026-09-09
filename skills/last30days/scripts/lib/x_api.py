@@ -61,6 +61,9 @@ DEADLINE_SECONDS = 90
 LANE_BUDGET_SECONDS = 150.0
 
 TRUNCATION_DETAIL = "window truncated to 7 days"
+# Receipt when the lane budget stopped a search before ``count`` posts were
+# collected: the posts kept are real, the coverage is not complete.
+DEADLINE_DETAIL = "search stopped at the lane deadline; results may be incomplete"
 
 # The one description of what an app-only bearer can reach. Doctor and the
 # prescriptions quote it; the bearer path is never described as parity with
@@ -488,10 +491,12 @@ def _search_pages(
 
     ``deadline`` is a ``time.monotonic()`` instant: the first page always
     runs; a later page is skipped once the deadline has passed and the
-    posts collected so far are returned.
+    posts collected so far are returned with ``"truncated": True`` so the
+    caller can report the incomplete coverage.
     """
     data: List[Dict[str, Any]] = []
     users: Dict[str, Dict[str, Any]] = {}
+    truncated = False
     page_params = dict(params)
     page_params["max_results"] = _page_size(count)
     # Bound the walk even when every page carries a next_token.
@@ -499,6 +504,7 @@ def _search_pages(
     for page_index in range(max_pages):
         if page_index and deadline is not None and time.monotonic() >= deadline:
             _log(f"search deadline ({DEADLINE_SECONDS}s) reached; keeping {len(data)} posts")
+            truncated = True
             break
         # A fresh dict per page: the transport must never see a later
         # page's next_token on an earlier request.
@@ -507,8 +513,9 @@ def _search_pages(
         except _XApiFailure as exc:
             if data and str(exc) == ERR_TIMED_OUT:
                 # The budget ran out mid-walk: the pages already collected
-                # are the result, not a failure.
+                # are the result, reported as truncated, not a failure.
                 _log(f"search deadline reached mid-walk; keeping {len(data)} posts")
+                truncated = True
                 break
             raise
         page = response.get("data") or []
@@ -521,7 +528,11 @@ def _search_pages(
         if not next_token or len(data) >= count:
             break
         page_params["next_token"] = next_token
-    return {"data": data[:count], "includes": {"users": list(users.values())}}
+    return {
+        "data": data[:count],
+        "includes": {"users": list(users.values())},
+        "truncated": truncated,
+    }
 
 
 def _run_search(
@@ -543,7 +554,8 @@ def _run_search(
     A shared deadline that has already passed sends no request at all.
 
     Returns ``{"items": [...]}`` (plus ``"warning"`` when the window was
-    truncated) or ``{"items": [], "error": <fixed string>}``.
+    truncated or the deadline stopped the walk early) or ``{"items": [],
+    "error": <fixed string>}``.
     """
     start, end = _window(from_date, to_date)
     params = {
@@ -557,9 +569,9 @@ def _run_search(
     }
     if deadline is not None and time.monotonic() >= deadline:
         _log(f"{label}: lane budget ({LANE_BUDGET_SECONDS:.0f}s) exhausted before the search started")
-        return {"items": []}
+        return {"items": [], "warning": DEADLINE_DETAIL}
     _log(f"Searching: {label}")
-    warning = None
+    warnings: List[str] = []
     if deadline is None:
         deadline = time.monotonic() + DEADLINE_SECONDS
     try:
@@ -581,11 +593,13 @@ def _run_search(
         except _XApiFailure as exc2:
             _log(f"{label}: {exc2}")
             return {"items": [], "error": str(exc2)}
-        warning = TRUNCATION_DETAIL
+        warnings.append(TRUNCATION_DETAIL)
+    if response.get("truncated"):
+        warnings.append(DEADLINE_DETAIL)
     items = parse_v2_response(response, topic, (from_date, to_date), id_prefix=id_prefix)
     result: Dict[str, Any] = {"items": items}
-    if warning:
-        result["warning"] = warning
+    if warnings:
+        result["warning"] = "; ".join(warnings)
     return result
 
 
@@ -649,8 +663,13 @@ def _run_handle_lanes(
     *,
     id_prefix: str,
     keep: Optional[Callable[[Dict[str, Any], str], bool]] = None,
+    warnings: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """Run one search per handle on a bounded pool and merge in handle order.
+
+    Per-handle receipts (``"warning"`` on a result, e.g. a deadline stop)
+    are appended to ``warnings`` once each, so the caller can report
+    incomplete lane coverage instead of presenting it as complete.
 
     Mirrors ``bird_x.search_handles``: at most five handles in flight. A
     fatal auth/payment result stops further handles from being scheduled;
@@ -682,6 +701,9 @@ def _run_handle_lanes(
     items: List[Dict[str, Any]] = []
     seen_ids: set[str] = set()
     for handle, result in zip(handles, results):
+        note = (result or {}).get("warning")
+        if note and warnings is not None and note not in warnings:
+            warnings.append(note)
         for item in (result or {}).get("items", []):
             post_id = item.get("post_id", "")
             if post_id in seen_ids:
@@ -703,6 +725,7 @@ def search_handles(
     count_per: int = 8,
     token: str = "",
     deadline: Optional[float] = None,
+    warnings: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """FROM lane: posts authored BY each handle (their own timeline).
 
@@ -720,7 +743,7 @@ def search_handles(
             topic=topic, id_prefix="XF", label=f"from:{handle}", deadline=deadline,
         )
 
-    return _run_handle_lanes(clean, _search_one, id_prefix="XF")
+    return _run_handle_lanes(clean, _search_one, id_prefix="XF", warnings=warnings)
 
 
 def search_mentions(
@@ -732,6 +755,7 @@ def search_mentions(
     count_per: int = 5,
     token: str = "",
     deadline: Optional[float] = None,
+    warnings: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """ABOUT lane: posts mentioning each handle, authored by OTHERS.
 
@@ -752,4 +776,5 @@ def search_mentions(
     return _run_handle_lanes(
         clean, _search_one, id_prefix="XA",
         keep=lambda item, handle: not is_own_post(item.get("url", ""), handle),
+        warnings=warnings,
     )

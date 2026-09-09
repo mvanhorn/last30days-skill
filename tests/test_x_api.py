@@ -280,6 +280,7 @@ class TestRequestShape:
         assert get_mock.call_count == 1, "the first page always runs; the second is skipped past the deadline"
         assert len(result["items"]) == 20
         assert "error" not in result
+        assert result["warning"] == x_api.DEADLINE_DETAIL
 
     def test_deadline_reaches_the_transport_and_keeps_pages_collected_before_it(self, get_mock, fixed_now, monkeypatch):
         """The lane deadline is the transport's wall deadline (no full 30s
@@ -295,6 +296,13 @@ class TestRequestShape:
         for call in get_mock.call_args_list:
             assert call.kwargs["deadline_monotonic"] == 130.0
         assert len(result) == 20 and "error" not in result[0]
+        get_mock.reset_mock()
+        # The same stop on the topic search is a warning receipt, never a
+        # healthy-looking complete result.
+        get_mock.side_effect = [page(0, 20, "p2"), http.DeadlineExceeded()]
+        topic = x_api.search_x(DUMMY_TOKEN, "topic", FROM, TO, depth="deep")
+        assert len(topic["items"]) == 20
+        assert topic["warning"] == x_api.DEADLINE_DETAIL
         get_mock.reset_mock()
         get_mock.side_effect = [http.DeadlineExceeded()]
         assert x_api.search_x(DUMMY_TOKEN, "topic", FROM, TO, depth="quick")["error"] == x_api.ERR_TIMED_OUT
@@ -713,11 +721,43 @@ class TestPipelineWiring:
         deadlines = {c.kwargs.get("deadline") for c in calls}
         assert len(deadlines) == 1 and None not in deadlines, deadlines
 
+    def test_xapi_lane_deadline_stop_reaches_report_warnings(self):
+        """A lane cut short by the deadline is reported as partial coverage,
+        not presented as complete (review finding)."""
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="AI safety analysis"),
+        ]
+        runtime = schema.ProviderRuntime(
+            reasoning_provider="mock", planner_model="mock", rerank_model="mock", x_search_backend=None,
+        )
+
+        def cut_short(*args, **kwargs):
+            kwargs["warnings"].append(x_api.DEADLINE_DETAIL)
+            return []
+
+        with mock.patch("lib.env.x_backend_chain", return_value=["xapi"]), \
+             mock.patch("lib.entity_extract.extract_entities",
+                        return_value={"x_handles": [], "x_hashtags": [], "reddit_subreddits": []}), \
+             mock.patch("lib.x_api.search_handles", side_effect=cut_short), \
+             mock.patch("lib.x_api.search_mentions", side_effect=cut_short):
+            pipeline._run_supplemental_searches(
+                topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"),
+                config={"X_BEARER_TOKEN": DUMMY_TOKEN}, depth="default",
+                date_range=("2026-02-15", "2026-03-17"), runtime=runtime, mock=False,
+                rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+                x_handle="steipete",
+            )
+        receipts = [w for w in bundle.artifacts.get("x_partial_coverage", []) if x_api.DEADLINE_DETAIL in w]
+        assert receipts == [f"X handle lanes: {x_api.DEADLINE_DETAIL}"], bundle.artifacts.get("x_partial_coverage")
+
     def test_lane_search_past_a_shared_deadline_sends_no_request(self, get_mock, fixed_now, monkeypatch):
         monkeypatch.setattr(x_api.time, "monotonic", lambda: 1000.0)
-        assert x_api.search_handles(["steipete"], "t", FROM, TO, token=DUMMY_TOKEN, deadline=999.0) == []
-        assert x_api.search_mentions(["steipete"], FROM, TO, token=DUMMY_TOKEN, deadline=999.0) == []
+        notes: list[str] = []
+        assert x_api.search_handles(["steipete", "peer1"], "t", FROM, TO, token=DUMMY_TOKEN, deadline=999.0, warnings=notes) == []
+        assert x_api.search_mentions(["steipete"], FROM, TO, token=DUMMY_TOKEN, deadline=999.0, warnings=notes) == []
         get_mock.assert_not_called()
+        assert notes == [x_api.DEADLINE_DETAIL], "one receipt per lane call, deduped across handles"
         get_mock.return_value = _v2([_tweet("1", "hi")], users=_users(("u1", "steipete")))
         assert len(x_api.search_handles(["steipete"], "t", FROM, TO, token=DUMMY_TOKEN, deadline=1001.0)) == 1
 
