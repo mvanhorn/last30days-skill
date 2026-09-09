@@ -147,6 +147,15 @@ class TestGrokBotProseFlow(unittest.TestCase):
         for field in ROW_FIELDS:
             self.assertIn(f"`{field}`", self.flow, field)
 
+    def test_flow_names_the_x_for_grok_bot_plugin(self):
+        """The connector is the marketplace "X for Grok Bot" plugin: the flow
+        names it and keys the lane on its post-search tools, not on one
+        tool name alone (search_posts_all stays as the example)."""
+        self.assertIn('"X for Grok Bot"', self.flow)
+        self.assertIn("search_posts_all", self.flow)
+        rule = _text()[: _text().index("## Step 0")]
+        self.assertIn('"X for Grok Bot"', rule)
+
     def test_connector_step_precedes_bearer_offer(self):
         connector = self.flow.index("search_posts_all")
         bearer = self.flow.index("X_BEARER_TOKEN")

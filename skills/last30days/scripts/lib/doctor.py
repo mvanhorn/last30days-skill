@@ -1095,7 +1095,7 @@ def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
         note = "explicit backend pin"
     else:
         note = (
-            "no official X path armed (connect X in Grok Bot settings, or set "
+            "no official X path armed (add the X for Grok Bot plugin and connect X in Grok Bot settings, or set "
             "X_BEARER_TOKEN or XAI_API_KEY)"
         )
     return {"name": "X auth path", "armed": bool(source), "note": note}

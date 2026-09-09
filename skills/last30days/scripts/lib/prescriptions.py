@@ -120,7 +120,7 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
             "or XAI_API_KEY)"
         ),
         fix_nl=(
-            "connect X in Grok Bot settings (full 30-day coverage), or set "
+            "add the X for Grok Bot plugin and connect X in Grok Bot settings (full 30-day coverage), or set "
             f"X_BEARER_TOKEN from the X developer console ({BEARER_COVERAGE_NOTE}), "
             "or set XAI_API_KEY from console.x.ai"
         ),
@@ -132,7 +132,7 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         cause="the X API rejected X_BEARER_TOKEN (401/403)",
         fix_nl=(
             "set a valid X_BEARER_TOKEN from the X developer console "
-            f"({BEARER_COVERAGE_NOTE}), or connect X in Grok Bot settings "
+            f"({BEARER_COVERAGE_NOTE}), or add the X for Grok Bot plugin and connect X in Grok Bot settings "
             "(full 30-day coverage)"
         ),
         fix_cli="X_BEARER_TOKEN=<your-x-api-bearer-token>",
@@ -155,7 +155,7 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
             "passed to the engine"
         ),
         fix_nl=(
-            "connect X in Grok Bot settings (full 30-day coverage) and pass the "
+            "add the X for Grok Bot plugin and connect X in Grok Bot settings (full 30-day coverage) and pass the "
             "connector's posts with --x-posts, or set X_BEARER_TOKEN from the X "
             f"developer console ({BEARER_COVERAGE_NOTE})"
         ),
