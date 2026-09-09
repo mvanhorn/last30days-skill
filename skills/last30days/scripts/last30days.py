@@ -9,6 +9,8 @@ import argparse
 import atexit
 import datetime
 import hashlib
+import io
+import contextlib
 import json
 import os
 import re
@@ -2736,22 +2738,65 @@ def _attach_entity_envelopes(comp_plan: dict[str, dict], args: argparse.Namespac
         )
 
 
+def _combine_envelope_digests(main_sha256: str | None, entity_sha256: dict[str, str]) -> str | None:
+    """One digest binding the last-report cache to every envelope a run uses.
+
+    A single top-level envelope is bound by its own file digest; per-entity
+    comparison envelopes are folded, name-sorted, into one digest. Both the
+    cache write (validated envelopes) and the cache lookup (planned paths)
+    must go through here so a comparison cache can be reused.
+    """
+    parts: list[str] = []
+    if main_sha256:
+        parts.append(main_sha256)
+    for name in sorted(entity_sha256):
+        parts.append(f"{name}:{entity_sha256[name]}")
+    if not parts:
+        return None
+    if len(parts) == 1 and main_sha256:
+        return main_sha256
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
 def _x_envelope_digest(
     main: x_envelope.Envelope | None, comp_plan: dict[str, dict] | None
 ) -> str | None:
-    """One digest binding the last-report cache to every envelope this run used."""
-    parts: list[str] = []
-    if main is not None:
-        parts.append(main.sha256)
-    for name in sorted(comp_plan or {}):
-        entity_envelope = (comp_plan or {})[name].get("_x_envelope")
-        if entity_envelope is not None:
-            parts.append(f"{name}:{entity_envelope.sha256}")
-    if not parts:
-        return None
-    if len(parts) == 1 and main is not None:
-        return main.sha256
-    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+    """Digest of the validated envelopes this run used (cache write side)."""
+    entity_sha256 = {
+        name: entry["_x_envelope"].sha256
+        for name, entry in (comp_plan or {}).items()
+        if entry.get("_x_envelope") is not None
+    }
+    return _combine_envelope_digests(main.sha256 if main is not None else None, entity_sha256)
+
+
+def _planned_envelope_digest(
+    main: x_envelope.Envelope | None, competitors_plan: str | None
+) -> str | None:
+    """Digest of the envelopes a run WILL use, before the plan is validated.
+
+    The last-report lookup runs before ``parse_competitors_plan`` and
+    ``_attach_entity_envelopes``; hashing each planned ``x_posts`` file here
+    reproduces the digest the write side stored. An unreadable or inline
+    ``x_posts`` value is left out: the later validation fails closed anyway,
+    and a partial digest merely misses the cache.
+    """
+    entity_sha256: dict[str, str] = {}
+    if competitors_plan:
+        try:
+            with contextlib.redirect_stderr(io.StringIO()):
+                comp_plan = parse_competitors_plan(competitors_plan)
+        except SystemExit:
+            comp_plan = {}
+        for name, entry in comp_plan.items():
+            raw = entry.get("x_posts")
+            if not isinstance(raw, str) or not raw or _looks_inline_json(raw):
+                continue
+            try:
+                entity_sha256[name] = hashlib.sha256(Path(raw).read_bytes()).hexdigest()
+            except OSError:
+                continue
+    return _combine_envelope_digests(main.sha256 if main is not None else None, entity_sha256)
 
 
 def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv: list[str]) -> None:
@@ -3600,7 +3645,7 @@ def _main(
         cached = _load_last_report_cache(
             topic,
             ttl_seconds=_report_cache_ttl_seconds(config),
-            x_envelope_sha256=x_posts_envelope.sha256 if x_posts_envelope else None,
+            x_envelope_sha256=_planned_envelope_digest(x_posts_envelope, args.competitors_plan),
         )
         if cached is not None:
             cached_report, cached_entity_reports, cache_path = cached

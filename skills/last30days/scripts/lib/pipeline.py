@@ -3963,15 +3963,24 @@ def _run_supplemental_searches(
             return bird_x.search_mentions(hs, from_date, count_per=count), False
     elif primary == "xapi":
         # Direct X API v2 with the app-only bearer: from:/@ lanes run over
-        # search/all with the recent-search fallback.
+        # search/all with the recent-search fallback. One budget shared by
+        # every lane below (same shape as the grok lanes): a slow key bounds
+        # the whole supplemental phase, not each call.
         xapi_token = config.get("X_BEARER_TOKEN") or ""
+        xapi_deadline = time.monotonic() + x_api.LANE_BUDGET_SECONDS
 
         def _from_lane(hs: list, count: int, and_topic: bool = False) -> tuple[list, bool]:
             # x_api.search_handles doesn't support and_topic; topic ranks only
-            return x_api.search_handles(hs, topic, from_date, to_date, count_per=count, token=xapi_token), False
+            return x_api.search_handles(
+                hs, topic, from_date, to_date, count_per=count, token=xapi_token,
+                deadline=xapi_deadline,
+            ), False
 
         def _about_lane(hs: list, count: int) -> tuple[list, bool]:
-            return x_api.search_mentions(hs, from_date, to_date, topic=topic, count_per=count, token=xapi_token), False
+            return x_api.search_mentions(
+                hs, from_date, to_date, topic=topic, count_per=count, token=xapi_token,
+                deadline=xapi_deadline,
+            ), False
     elif primary == "xquik":
         xquik_token = env.get_xquik_token(config)
 

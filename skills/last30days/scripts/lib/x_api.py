@@ -55,6 +55,10 @@ RETRIES = 2
 # fallback). A throttled or slow walk returns what it has instead of holding
 # the whole run; the source's per-request timeout still bounds each page.
 DEADLINE_SECONDS = 90
+# One budget shared by every supplemental handle lane of a run (explicit
+# from, extracted from, about, related), started once by the caller: the
+# point is to bound the total, not each part.
+LANE_BUDGET_SECONDS = 150.0
 
 TRUNCATION_DETAIL = "window truncated to 7 days"
 
@@ -513,8 +517,13 @@ def _run_search(
     topic: str,
     id_prefix: str,
     label: str,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Full-archive search with the recent-search fallback.
+
+    ``deadline`` (a ``time.monotonic()`` instant) is shared with the caller's
+    other lanes; without one the search gets its own ``DEADLINE_SECONDS``.
+    A shared deadline that has already passed sends no request at all.
 
     Returns ``{"items": [...]}`` (plus ``"warning"`` when the window was
     truncated) or ``{"items": [], "error": <fixed string>}``.
@@ -529,9 +538,13 @@ def _run_search(
         "tweet.fields": "created_at,public_metrics,note_tweet,entities",
         "user.fields": "username",
     }
+    if deadline is not None and time.monotonic() >= deadline:
+        _log(f"{label}: lane budget ({LANE_BUDGET_SECONDS:.0f}s) exhausted before the search started")
+        return {"items": []}
     _log(f"Searching: {label}")
     warning = None
-    deadline = time.monotonic() + DEADLINE_SECONDS
+    if deadline is None:
+        deadline = time.monotonic() + DEADLINE_SECONDS
     try:
         response = _search_pages(token, _SEARCH_ALL_URL, params, count, deadline)
     except _XApiFailure as exc:
@@ -672,6 +685,7 @@ def search_handles(
     *,
     count_per: int = 8,
     token: str = "",
+    deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """FROM lane: posts authored BY each handle (their own timeline).
 
@@ -686,7 +700,7 @@ def search_handles(
     def _search_one(handle: str) -> Dict[str, Any]:
         return _run_search(
             token, f"from:{handle} -is:retweet", from_date, to_date, count_per,
-            topic=topic, id_prefix="XF", label=f"from:{handle}",
+            topic=topic, id_prefix="XF", label=f"from:{handle}", deadline=deadline,
         )
 
     return _run_handle_lanes(clean, _search_one, id_prefix="XF")
@@ -700,6 +714,7 @@ def search_mentions(
     topic: str = "",
     count_per: int = 5,
     token: str = "",
+    deadline: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """ABOUT lane: posts mentioning each handle, authored by OTHERS.
 
@@ -714,7 +729,7 @@ def search_mentions(
     def _search_one(handle: str) -> Dict[str, Any]:
         return _run_search(
             token, f"@{handle} -from:{handle} -is:retweet", from_date, to_date, count_per,
-            topic=topic, id_prefix="XA", label=f"@{handle}",
+            topic=topic, id_prefix="XA", label=f"@{handle}", deadline=deadline,
         )
 
     return _run_handle_lanes(

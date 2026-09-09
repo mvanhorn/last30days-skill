@@ -1055,6 +1055,27 @@ class TestCli:
         assert rc == 2
         assert acme in err and "topic" in err
 
+    def test_comparison_cache_lookup_digest_matches_the_write_digest(self, tmp_path):
+        """Per-entity envelopes: the pre-parse lookup must reproduce the digest
+        the write side stored, or a valid comparison cache is never reused."""
+        acme = _write(tmp_path, _envelope([_call("topic", posts=[_row(0, "a", "acme news")])], topic="acme"), "acme.json")
+        globex = _write(tmp_path, _envelope([_call("topic", posts=[_row(1, "b", "globex news")])], topic="globex"), "globex.json")
+        plan = json.dumps({"acme": {"x_posts": acme}, "globex": {"x_posts": globex}})
+        comp_plan = cli.parse_competitors_plan(plan)
+        args = mock.Mock(lookback_days=30, as_of_date=None)
+        cli._attach_entity_envelopes(comp_plan, args)
+        written = cli._x_envelope_digest(None, comp_plan)
+        assert written and written not in (comp_plan["acme"]["_x_envelope"].sha256,)
+        assert cli._planned_envelope_digest(None, plan) == written
+        plan_file = tmp_path / "plan.json"
+        plan_file.write_text(plan)
+        assert cli._planned_envelope_digest(None, str(plan_file)) == written
+        # A missing file or inline JSON leaves that entity out; no crash.
+        assert cli._planned_envelope_digest(None, json.dumps({"acme": {"x_posts": str(tmp_path / "nope.json")}})) is None
+        assert cli._planned_envelope_digest(None, "{not json") is None
+        main = _read(_basic(tmp_path))
+        assert cli._planned_envelope_digest(main, None) == main.sha256 == cli._x_envelope_digest(main, None)
+
     def test_last_report_cache_misses_on_digest_mismatch(self, tmp_path):
         path = _basic(tmp_path)
         envelope = _read(path)

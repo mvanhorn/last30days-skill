@@ -668,6 +668,41 @@ class TestPipelineWiring:
         x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
         assert "https://x.com/analyst1/status/777" in x_urls
 
+    def test_xapi_lanes_share_one_deadline(self):
+        """Explicit-from, extracted-from, about, and related lanes must draw
+        on one wall-clock budget, never a fresh 90s each (review finding)."""
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1", author="analyst1", body="AI safety analysis"),
+        ]
+        runtime = schema.ProviderRuntime(
+            reasoning_provider="mock", planner_model="mock", rerank_model="mock", x_search_backend=None,
+        )
+        with mock.patch("lib.env.x_backend_chain", return_value=["xapi"]), \
+             mock.patch("lib.entity_extract.extract_entities",
+                        return_value={"x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": []}), \
+             mock.patch("lib.x_api.search_handles", return_value=[]) as from_lane, \
+             mock.patch("lib.x_api.search_mentions", return_value=[]) as about_lane:
+            pipeline._run_supplemental_searches(
+                topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"),
+                config={"X_BEARER_TOKEN": DUMMY_TOKEN}, depth="default",
+                date_range=("2026-02-15", "2026-03-17"), runtime=runtime, mock=False,
+                rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+                x_handle="steipete", x_related=["peer1"],
+            )
+        calls = from_lane.call_args_list + about_lane.call_args_list
+        assert len(calls) >= 3, "explicit from, extracted from, about, related"
+        deadlines = {c.kwargs.get("deadline") for c in calls}
+        assert len(deadlines) == 1 and None not in deadlines, deadlines
+
+    def test_lane_search_past_a_shared_deadline_sends_no_request(self, get_mock, fixed_now, monkeypatch):
+        monkeypatch.setattr(x_api.time, "monotonic", lambda: 1000.0)
+        assert x_api.search_handles(["steipete"], "t", FROM, TO, token=DUMMY_TOKEN, deadline=999.0) == []
+        assert x_api.search_mentions(["steipete"], FROM, TO, token=DUMMY_TOKEN, deadline=999.0) == []
+        get_mock.assert_not_called()
+        get_mock.return_value = _v2([_tweet("1", "hi")], users=_users(("u1", "steipete")))
+        assert len(x_api.search_handles(["steipete"], "t", FROM, TO, token=DUMMY_TOKEN, deadline=1001.0)) == 1
+
     def test_all_backends_failed_keeps_the_payment_required_state(self):
         """xapi's 402 must not be masked by a later backend's generic failure:
         the outcome that reaches doctor says top up, not re-authenticate."""
