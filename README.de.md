@@ -198,7 +198,7 @@ grok plugin marketplace add mvanhorn/last30days-skill
 grok plugin install last30days
 ```
 
-Mit `--trust` überspringst du die Installationsbestätigung. Aktualisieren kannst du mit `grok plugin update last30days`. Grok liest aus Kompatibilitätsgründen auch die Claude-Code-Manifeste; das native `.grok-plugin/`-Paar ist der bevorzugte Weg – und genau darauf verweist ein offizieller Eintrag im [xAI-Marketplace](https://github.com/xai-org/plugin-marketplace). `npx skills add` bleibt ein gültiger Fallback über alle Hosts hinweg.
+Mit `--trust` überspringst du die Installationsbestätigung. Aktualisieren kannst du mit `grok plugin update last30days`. Grok liest aus Kompatibilitätsgründen auch die Claude-Code-Manifeste; das native `.grok-plugin/`-Paar ist der bevorzugte Weg – und genau darauf verweist ein offizieller Eintrag im [xAI-Marketplace](https://github.com/xai-org/plugin-marketplace). `npx skills add` bleibt ein gültiger Fallback über alle Hosts hinweg. Auf Grok Bot läuft die X-Suche über den X-Connector des Bots, mit der offiziellen X-API (`X_BEARER_TOKEN`) als Fallback.
 
 ### Codex, Cursor, Copilot, Gemini CLI und weitere Agent-Skills-Hosts
 
@@ -293,7 +293,7 @@ Diese Plattformen haben nichts miteinander zu tun. X weiß nicht, was Reddit den
 |---------|---------------|------|
 | Reddit (mit Kommentaren) + HN + Polymarket + GitHub + StockTwits | Nichts | Kostenlos |
 | arXiv + Techmeme | Kostenlose CLIs, die das Erst-Setup automatisch installiert | Kostenlos |
-| X / Twitter | In einem beliebigen Browser bei x.com anmelden, oder `XQUIK_API_KEY` / `XAI_API_KEY` setzen | Browser-Cookies sind kostenlos; Schlüssel hängen vom Anbieter ab |
+| X / Twitter | `X_BEARER_TOKEN` für die offizielle X-API setzen (aktuelle Posts, etwa die letzte Woche, sofern dein X-Entwicklerprojekt keinen Vollarchiv-Zugang hat; Standard auf Grok Bot, anderswo per Opt-in mit `LAST30DAYS_X_BACKEND=xapi`), oder in einem beliebigen Browser bei x.com anmelden, oder `XQUIK_API_KEY` / `XAI_API_KEY` setzen | X-API-Guthaben stammt aus deinem X-Entwicklerprojekt; Browser-Cookies sind kostenlos; andere Schlüssel hängen vom Anbieter ab |
 | YouTube | `brew install yt-dlp` | Kostenlos |
 | Bluesky | App-Passwort von bsky.app | Kostenlos |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube-Kommentare | Ein ScrapeCreators-Schlüssel | 10.000 kostenlose Aufrufe, danach nutzungsabhängig |

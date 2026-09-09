@@ -112,7 +112,7 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
     # XAI_API_KEY, and X API credits (R4); the bearer path is described as
     # about a week, never as parity with the connector (R6). Anchors point
     # at the API keys section for now; U8 adds a CONFIGURATION.md Grok Bot
-    # subsection and may repoint them there.
+    # subsection (slug grok-bot), which these entries now anchor to.
     _entry(
         "x", "bearer_missing",
         cause=(
@@ -126,7 +126,7 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
             "set XAI_API_KEY from console.x.ai"
         ),
         fix_cli="X_BEARER_TOKEN=<your-x-api-bearer-token>",
-        anchor="api-keys-env",
+        anchor="grok-bot",
     ),
     _entry(
         "x", "bearer_invalid",
@@ -137,7 +137,7 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
             "access), or connect X in Grok Bot settings (full 30-day coverage)"
         ),
         fix_cli="X_BEARER_TOKEN=<your-x-api-bearer-token>",
-        anchor="api-keys-env",
+        anchor="grok-bot",
     ),
     _entry(
         "x", "payment_required",
@@ -147,7 +147,7 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
             "Grok Bot settings (full 30-day coverage)"
         ),
         fix_cli="X_BEARER_TOKEN=<bearer-from-a-project-with-credits>",
-        anchor="api-keys-env",
+        anchor="grok-bot",
     ),
     _entry(
         "x", "connector_missing",
@@ -162,7 +162,7 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
             "project has full-archive access)"
         ),
         fix_cli=f'{ENGINE_CLI} "<topic>" --x-posts <path-to-x-posts.json>',
-        anchor="api-keys-env",
+        anchor="grok-bot",
     ),
     _entry(
         "scrapecreators", "key_missing",

@@ -198,7 +198,7 @@ grok plugin marketplace add mvanhorn/last30days-skill
 grok plugin install last30days
 ```
 
-Añade `--trust` para saltarte la confirmación de instalación. Actualiza con `grok plugin update last30days`. Grok también lee los manifiestos de Claude Code por compatibilidad; el par nativo `.grok-plugin/` es la vía principal, y es a lo que apunta una entrada oficial en el [marketplace de xAI](https://github.com/xai-org/plugin-marketplace). `npx skills add` sigue siendo una alternativa válida para cualquier host.
+Añade `--trust` para saltarte la confirmación de instalación. Actualiza con `grok plugin update last30days`. Grok también lee los manifiestos de Claude Code por compatibilidad; el par nativo `.grok-plugin/` es la vía principal, y es a lo que apunta una entrada oficial en el [marketplace de xAI](https://github.com/xai-org/plugin-marketplace). `npx skills add` sigue siendo una alternativa válida para cualquier host. En Grok Bot, la búsqueda en X pasa por el conector de X del bot, con la API oficial de X (`X_BEARER_TOKEN`) como respaldo.
 
 ### Codex, Cursor, Copilot, Gemini CLI y otros hosts de Agent Skills
 
@@ -293,7 +293,7 @@ Estas plataformas no tienen ninguna relación entre sí. X no sabe lo que piensa
 |---------|---------------|------|
 | Reddit (con comentarios) + HN + Polymarket + GitHub + StockTwits | Nada | Gratis |
 | arXiv + Techmeme | CLI gratuitas, instaladas automáticamente por la configuración inicial | Gratis |
-| X / Twitter | Inicia sesión en x.com en cualquier navegador, o define `XQUIK_API_KEY` / `XAI_API_KEY` | Las cookies del navegador son gratis; las claves dependen del proveedor |
+| X / Twitter | Define `X_BEARER_TOKEN` para la API oficial de X (posts recientes, aproximadamente la última semana, salvo que tu proyecto de desarrollador de X tenga acceso al archivo completo; es el valor por defecto en Grok Bot y opcional en otros hosts con `LAST30DAYS_X_BACKEND=xapi`), o inicia sesión en x.com en cualquier navegador, o define `XQUIK_API_KEY` / `XAI_API_KEY` | Los créditos de la API de X salen de tu proyecto de desarrollador de X; las cookies del navegador son gratis; las demás claves dependen del proveedor |
 | YouTube | `brew install yt-dlp` | Gratis |
 | Bluesky | Una contraseña de aplicación de bsky.app | Gratis |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + comentarios de YouTube | Una clave de ScrapeCreators | 10.000 llamadas gratis y luego pago por uso |

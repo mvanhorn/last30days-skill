@@ -198,7 +198,7 @@ grok plugin marketplace add mvanhorn/last30days-skill
 grok plugin install last30days
 ```
 
-インストール時の確認を省きたい場合は `--trust` を付けてください。更新は `grok plugin update last30days` です。Grok は互換性のために Claude Code のマニフェストも読みますが、第一の経路はネイティブの `.grok-plugin/` のペアで、[xAI のマーケットプレイス](https://github.com/xai-org/plugin-marketplace)への公式掲載もこちらを指しています。`npx skills add` は、どのホストでも使える代替手段として引き続き有効です。
+インストール時の確認を省きたい場合は `--trust` を付けてください。更新は `grok plugin update last30days` です。Grok は互換性のために Claude Code のマニフェストも読みますが、第一の経路はネイティブの `.grok-plugin/` のペアで、[xAI のマーケットプレイス](https://github.com/xai-org/plugin-marketplace)への公式掲載もこちらを指しています。`npx skills add` は、どのホストでも使える代替手段として引き続き有効です。Grok Bot では、X 検索はボットの X コネクタを通じて実行され、公式 X API（`X_BEARER_TOKEN`）がバックアップになります。
 
 ### Codex、Cursor、Copilot、Gemini CLI、その他の Agent Skills ホスト
 
@@ -292,7 +292,7 @@ Reddit(コメント込み)、Hacker News、Polymarket、GitHub はすぐに使�
 |---------|---------------|------|
 | Reddit(コメント込み)+ HN + Polymarket + GitHub + StockTwits | 不要 | 無料 |
 | arXiv + Techmeme | 無料のCLI。初回セットアップが自動でインストールします | 無料 |
-| X / Twitter | 任意のブラウザで x.com にログインするか、`XQUIK_API_KEY` / `XAI_API_KEY` を設定 | ブラウザのクッキーは無料。キーの料金は提供元によります |
+| X / Twitter | 公式 X API 用に `X_BEARER_TOKEN` を設定（最近の投稿、およそ直近 1 週間分。X 開発者プロジェクトにフルアーカイブ検索のアクセスがある場合を除く。Grok Bot では既定、それ以外のホストでは `LAST30DAYS_X_BACKEND=xapi` でオプトイン）するか、任意のブラウザで x.com にログインするか、`XQUIK_API_KEY` / `XAI_API_KEY` を設定 | X API のクレジットはご自身の X 開発者プロジェクトから消費。ブラウザのクッキーは無料。その他のキーの料金は提供元によります |
 | YouTube | `brew install yt-dlp` | 無料 |
 | Bluesky | bsky.app のアプリパスワード | 無料 |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube のコメント | ScrapeCreators のキー | 1万リクエストまで無料、以降は従量課金 |

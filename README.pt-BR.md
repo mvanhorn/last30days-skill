@@ -198,7 +198,7 @@ grok plugin marketplace add mvanhorn/last30days-skill
 grok plugin install last30days
 ```
 
-Acrescente `--trust` para pular a confirmação de instalação. Atualize com `grok plugin update last30days`. O Grok também lê os manifestos do Claude Code por compatibilidade; o par nativo `.grok-plugin/` é o caminho principal — e é para ele que aponta um registro oficial no [marketplace da xAI](https://github.com/xai-org/plugin-marketplace). O `npx skills add` continua sendo uma alternativa válida em qualquer host.
+Acrescente `--trust` para pular a confirmação de instalação. Atualize com `grok plugin update last30days`. O Grok também lê os manifestos do Claude Code por compatibilidade; o par nativo `.grok-plugin/` é o caminho principal — e é para ele que aponta um registro oficial no [marketplace da xAI](https://github.com/xai-org/plugin-marketplace). O `npx skills add` continua sendo uma alternativa válida em qualquer host. No Grok Bot, a busca no X passa pelo conector de X do bot, com a API oficial do X (`X_BEARER_TOKEN`) como reserva.
 
 ### Codex, Cursor, Copilot, Gemini CLI e outros hosts do Agent Skills
 
@@ -293,7 +293,7 @@ Essas plataformas não têm relação nenhuma entre si. O X não sabe o que o Re
 |---------|---------------|------|
 | Reddit (com comentários) + HN + Polymarket + GitHub + StockTwits | Nada | De graça |
 | arXiv + Techmeme | CLIs gratuitas, instaladas automaticamente pela configuração inicial | De graça |
-| X / Twitter | Faça login em x.com em qualquer navegador, ou defina `XQUIK_API_KEY` / `XAI_API_KEY` | Os cookies do navegador são gratuitos; as chaves dependem do provedor |
+| X / Twitter | Defina `X_BEARER_TOKEN` para a API oficial do X (posts recentes, cerca da última semana, a menos que seu projeto de desenvolvedor do X tenha acesso ao arquivo completo; é o padrão no Grok Bot e opcional em outros hosts com `LAST30DAYS_X_BACKEND=xapi`), ou faça login em x.com em qualquer navegador, ou defina `XQUIK_API_KEY` / `XAI_API_KEY` | Os créditos da API do X vêm do seu projeto de desenvolvedor do X; os cookies do navegador são gratuitos; as demais chaves dependem do provedor |
 | YouTube | `brew install yt-dlp` | De graça |
 | Bluesky | Uma senha de aplicativo do bsky.app | De graça |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + comentários do YouTube | Uma chave do ScrapeCreators | 10.000 chamadas gratuitas e depois pagamento por uso |

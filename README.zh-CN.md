@@ -201,7 +201,7 @@ grok plugin marketplace add mvanhorn/last30days-skill
 grok plugin install last30days
 ```
 
-加入 `--trust` 可跳过安装确认；使用 `grok plugin update last30days` 更新。为兼容旧机制，Grok 也会读取 Claude Code 的清单文件；原生 `.grok-plugin/` 文件是首选通路，也是 [xAI marketplace](https://github.com/xai-org/plugin-marketplace) 官方目录条目指向的对象。`npx skills add` 仍是有效的跨宿主备用方案。
+加入 `--trust` 可跳过安装确认；使用 `grok plugin update last30days` 更新。为兼容旧机制，Grok 也会读取 Claude Code 的清单文件；原生 `.grok-plugin/` 文件是首选通路，也是 [xAI marketplace](https://github.com/xai-org/plugin-marketplace) 官方目录条目指向的对象。`npx skills add` 仍是有效的跨宿主备用方案。在 Grok Bot 上，X 搜索通过机器人的 X 连接器执行，并以官方 X API（`X_BEARER_TOKEN`）作为备用。
 
 ### Codex、Cursor、Copilot、Gemini CLI 与其他 Agent Skills 宿主
 
@@ -291,7 +291,7 @@ Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置�
 |------|----------------|------|
 | Reddit（含评论）+ HN + Polymarket + GitHub + StockTwits | 无 | 免费 |
 | arXiv + Techmeme | 免费 CLI，由首次配置自动安装 | 免费 |
-| X / Twitter | 在任意浏览器中登录 x.com，或设置 `XQUIK_API_KEY` / `XAI_API_KEY` | 浏览器 Cookie 免费；密钥费用取决于服务商 |
+| X / Twitter | 设置 `X_BEARER_TOKEN` 使用官方 X API（近期帖子，大约最近一周；除非你的 X 开发者项目拥有完整归档访问权限。Grok Bot 上为默认方式，其他宿主需通过 `LAST30DAYS_X_BACKEND=xapi` 选择启用），或在任意浏览器中登录 x.com，或设置 `XQUIK_API_KEY` / `XAI_API_KEY` | X API 额度来自你自己的 X 开发者项目；浏览器 Cookie 免费；其他密钥费用取决于服务商 |
 | YouTube | `brew install yt-dlp` | 免费 |
 | Bluesky | 来自 bsky.app 的应用密码 | 免费 |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube 评论 | ScrapeCreators 密钥 | 前 10,000 次调用免费，之后按量付费 |

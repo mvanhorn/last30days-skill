@@ -52,11 +52,11 @@ def test_configuration_documents_the_grok_path_as_opt_in():
     assert "LAST30DAYS_X_BACKEND=grok" in text
 
 
-def test_configuration_pin_row_lists_grok_last():
-    """Pin row shows all backends with grok last (opt-in)."""
+def test_configuration_pin_row_lists_opt_ins_last():
+    """Pin row shows all backends with the opt-ins (grok, xapi) last."""
     text = (REPO / "CONFIGURATION.md").read_text()
-    # New order: bird first, grok last (opt-in).
-    assert "`bird` / `xai` / `xurl` / `xquik` / `grok`" in text
+    # Auto-chain order first, then the opt-in backends.
+    assert "`bird` / `xai` / `xurl` / `xquik` / `grok` / `xapi`" in text
 
 
 def test_configuration_does_not_claim_grok_is_free():
@@ -71,6 +71,19 @@ def test_configuration_documents_bird_first_chain():
     assert "bird first" in text.lower() or "bird (browser cookies) → xai" in text.lower()
 
 
+def test_configuration_chain_paragraph_keeps_bird_first_and_adds_grok_bot_exception():
+    """Ordinary hosts keep bird first; the Grok Bot exception is the official chain."""
+    text = (REPO / "CONFIGURATION.md").read_text()
+    start = text.index("**X backend priority (bird first).**")
+    paragraph = text[start:text.index("\n", start)]
+    assert "bird (browser cookies) → xai (API key) → xurl (OAuth2 CLI) → xquik (API key)" in paragraph
+    assert "Grok Bot" in paragraph
+    assert "xapi" in paragraph and "xai" in paragraph and "xurl" in paragraph
+    assert "X connector" in paragraph
+    # Grok CLI stays an opt-in backup on every host.
+    assert "leftover grok login never steals the X lane" in paragraph
+
+
 def test_changelog_fragments_exist_and_changelog_is_untouched():
     frags = list((REPO / "changelog.d").glob("*grok*")) + \
         list((REPO / "changelog.d").glob("*bird*"))
@@ -81,6 +94,30 @@ def test_changelog_fragments_exist_and_changelog_is_untouched():
         assert "X search now works with no X credential" in changelog or "bird first" in changelog.lower()
         return
     assert frags, "feature PRs add a changelog.d fragment"
+
+
+def test_official_x_api_fragments_exist_and_changelog_is_untouched():
+    """U8: two orphan fragments carry the change; CHANGELOG.md is release-owned."""
+    changed = REPO / "changelog.d" / "+grok-bot-official-x-api.changed.md"
+    added = REPO / "changelog.d" / "+x-api-backend-and-host-lane.added.md"
+    changelog = (REPO / "CHANGELOG.md").read_text()
+    if not changed.exists() and not added.exists():
+        # A release consumed the fragments into CHANGELOG.md via towncrier.
+        assert "X connector" in changelog and "xapi" in changelog
+        return
+    assert changed.exists() and added.exists(), "both U8 fragments must ship together"
+    changed_text = changed.read_text().strip()
+    added_text = added.read_text().strip()
+    assert changed_text and added_text
+    # Fragment bodies are not pasted into CHANGELOG.md by hand.
+    assert changed_text.splitlines()[0] not in changelog
+    assert added_text.splitlines()[0] not in changelog
+    for text in (changed_text, added_text):
+        lowered = text.lower()
+        # R20/R21: the fragments never name the legacy backends, cookies,
+        # a pin as an override path, or why the feature exists.
+        for banned in ("bird", "xquik", "grok cli", "cookie", "override", "xai's request", "marketplace"):
+            assert banned not in lowered, f"fragment names {banned!r}"
 
 
 # --- SKILL.md unlock surfaces ---------------------------------------------
