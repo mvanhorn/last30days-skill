@@ -17,8 +17,10 @@ Covers the plan's U4 scenarios:
 
 import datetime
 import io
+import itertools
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -28,7 +30,7 @@ from pathlib import Path
 from unittest import mock
 
 import last30days as cli
-from lib import backends, doctor, health, http, prescriptions
+from lib import backends, doctor, env, grok_x, health, http, prescriptions
 
 BIRD_STATUS_OFF = {
     "installed": False,
@@ -49,6 +51,7 @@ FAKE_SECRETS = {
     "BSKY_APP_PASSWORD": "dummy-bsky-secret-000",
     "TRUTHSOCIAL_TOKEN": "dummy-truth-secret-000",
     "GITHUB_TOKEN": "dummy-github-secret-000",
+    "X_BEARER_TOKEN": "dummy-x-bearer-secret-000",
 }
 
 VALID_TIERS = {"ok", "warn", "off", "error"}
@@ -1282,6 +1285,324 @@ class CliHealth(unittest.TestCase):
         self.assertEqual(doctor.AUDIT_WORKING, gh["audit_state"])
         self.assertTrue(gh["cli"]["optional"])
 
+
+# ---------------------------------------------------------------------------
+# Grok Bot host (official-only X policy): doctor names only the official path
+# ---------------------------------------------------------------------------
+
+# R4 vocabulary that must never appear in an X status or fix line on a Grok
+# Bot host (the pinned backend's own name is the one carve-out).
+GROK_BOT_FORBIDDEN = (
+    "cookie", "cdp", "box-chrome", "bird", "auth_token", "ct0", "xquik",
+    "grok login", "grok cli",
+)
+BEARER_CAVEAT = (
+    "recent posts, about the last week, unless the project has full-archive access"
+)
+
+
+def _grok_bot(**over):
+    cfg = {"LAST30DAYS_HOST": "grok-bot"}
+    cfg.update(over)
+    return cfg
+
+
+def _x_text_lines(text):
+    """The X source line plus its indented sub-lane lines from doctor text."""
+    lines = text.splitlines()
+    out = []
+    for i, line in enumerate(lines):
+        if not re.match(r"^\s*\S+\s+x(?:\s|$)", line):
+            continue
+        out.append(line)
+        for follow in lines[i + 1:]:
+            if follow.startswith("      "):
+                out.append(follow)
+            else:
+                break
+        break
+    return out
+
+
+def _grok_signed_in():
+    """A signed-in Grok CLI as the doctor probes see it (filesystem only)."""
+    return [
+        mock.patch("lib.backends.which", lambda n: "/usr/bin/grok" if n == "grok" else None),
+        mock.patch("lib.grok_x.has_stored_auth", return_value=True),
+        mock.patch(
+            "lib.grok_x.stored_auth_status",
+            return_value=(grok_x.AUTH_OK, "signed in", None),
+        ),
+    ]
+
+
+def _build_with(config, patches, **kwargs):
+    with _Hermetic(**kwargs):
+        for p in patches:
+            p.start()
+        try:
+            return doctor.build_report(dict(config))
+        finally:
+            for p in reversed(patches):
+                p.stop()
+
+
+class GrokBotHostDoctor(unittest.TestCase):
+    """AE2, AE2a, AE3: on a Grok Bot host every X line names only the
+    official path (connector lane, X_BEARER_TOKEN, XAI_API_KEY, xurl)."""
+
+    def _assert_official_vocabulary(self, report, allow=()):
+        blob = json.dumps(report["sources"]["x"]).lower()
+        text = "\n".join(_x_text_lines(doctor.render_text(report))).lower()
+        self.assertTrue(text, "doctor text has no X line")
+        for word in GROK_BOT_FORBIDDEN:
+            if word in allow:
+                continue
+            self.assertNotIn(word, blob, f"{word!r} in X JSON record")
+            self.assertNotIn(word, text, f"{word!r} in X text lines")
+
+    def test_nothing_configured_prescribes_bearer_and_names_no_cookie_path(self):
+        config = _grok_bot(
+            AUTH_TOKEN="dummy-auth-token-secret-000",
+            CT0="dummy-ct0-secret-000",
+            XQUIK_API_KEY="dummy-xquik-secret-000",
+            FROM_BROWSER="firefox",
+            AGENTCOOKIE="on",
+            BROWSER_CDP_URL="http://127.0.0.1:9222",
+        )
+        report = _build(config)
+        rec = report["sources"]["x"]
+        self.assertEqual("off", rec["tier"])
+        self.assertEqual("unconfigured", rec["status"])
+        self.assertIsNone(rec["active_backend"])
+        self.assertEqual(["xapi", "xai", "xurl"], [b["name"] for b in rec["backends"]])
+        entry = prescriptions.for_x(config, "cookies_missing")
+        self.assertEqual("bearer_missing", entry.failure)
+        self.assertIn(entry.fix_nl, rec["fix"])
+        self.assertIsNone(rec["pin_var"])
+        self.assertFalse(rec["backups"][0]["armed"])
+        self._assert_official_vocabulary(report)
+        self.assertNotIn("LAST30DAYS_X_BACKEND", json.dumps(rec))
+
+    def test_signed_in_grok_cli_names_neither_cli_nor_pin_variable(self):
+        report = _build_with(_grok_bot(), _grok_signed_in())
+        rec = report["sources"]["x"]
+        self.assertEqual("unconfigured", rec["status"])
+        self.assertEqual("off", rec["tier"])
+        self.assertNotIn("grok", [b["name"] for b in rec["backends"]])
+        blob = json.dumps(rec)
+        x_text = "\n".join(_x_text_lines(doctor.render_text(report)))
+        for surface in (blob, x_text):
+            # "Grok Bot settings" (the connector copy) and "xAI/Grok live
+            # search" (the licensed xai product) are official vocabulary;
+            # the CLI, its login, its store, and the pin knob must be absent.
+            lowered = surface.lower()
+            for word in ("grok cli", "grok login", "~/.grok", "grok binary", "grok --"):
+                self.assertNotIn(word, lowered, word)
+            self.assertNotIn("LAST30DAYS_X_BACKEND", surface)
+        self._assert_official_vocabulary(report)
+
+    def test_bearer_predicts_xapi_with_week_caveat_and_no_network(self):
+        secret = "dummy-x-bearer-secret-000"
+        config = _grok_bot(X_BEARER_TOKEN=secret, AUTH_TOKEN="dummy-auth-token-secret-000",
+                           CT0="dummy-ct0-secret-000")
+        patches = [
+            mock.patch("lib.http.get", side_effect=AssertionError("doctor made a network call")),
+            mock.patch("subprocess.run", side_effect=AssertionError("doctor spawned a subprocess")),
+            mock.patch("subprocess.Popen", side_effect=AssertionError("doctor spawned a subprocess")),
+        ]
+        report = _build_with(config, patches)
+        rec = report["sources"]["x"]
+        self.assertEqual("ok", rec["status"])
+        self.assertEqual("xapi", rec["active_backend"])
+        self.assertEqual(f"will use: xapi ({BEARER_CAVEAT})", rec["note"])
+        text = doctor.render_text(report)
+        self.assertIn(f"will use: xapi ({BEARER_CAVEAT})", text)
+        self.assertNotIn(secret, text)
+        self.assertNotIn(secret, doctor.render_json(report))
+        backup = rec["backups"][0]
+        self.assertEqual("X auth path", backup["name"])
+        self.assertTrue(backup["armed"])
+        self.assertIn("X_BEARER_TOKEN", backup["note"])
+        self.assertIn("about the last week", backup["note"])
+        self.assertTrue(report["setup"]["keys_present"]["X_BEARER_TOKEN"])
+        self._assert_official_vocabulary(report)
+
+    def test_xai_key_predicts_xai(self):
+        report = _build(_grok_bot(XAI_API_KEY="dummy-xai-secret-000"))
+        rec = report["sources"]["x"]
+        self.assertEqual("xai", rec["active_backend"])
+        self.assertTrue(rec["note"].startswith("will use: xai"))
+        self.assertIn("XAI_API_KEY", rec["backups"][0]["note"])
+        self._assert_official_vocabulary(report)
+
+    def test_lane_signal_predicts_connector(self):
+        report = _build(_grok_bot(LAST30DAYS_X_HOST_LANE="1"))
+        rec = report["sources"]["x"]
+        self.assertEqual("ok", rec["status"])
+        self.assertEqual("ok", rec["tier"])
+        self.assertEqual("connector", rec["active_backend"])
+        self.assertEqual("will use: X connector (host-fetched at run time)", rec["note"])
+        self.assertEqual("", rec["fix"])
+        backup = rec["backups"][0]
+        self.assertTrue(backup["armed"])
+        self.assertEqual("X connector lane armed", backup["note"])
+        text = "\n".join(_x_text_lines(doctor.render_text(report)))
+        self.assertIn("will use: X connector (host-fetched at run time)", text)
+        self.assertIn("X connector lane armed", text)
+        self._assert_official_vocabulary(report)
+
+    def test_lane_with_bearer_keeps_backend_prediction_and_lane_armed(self):
+        report = _build(_grok_bot(LAST30DAYS_X_HOST_LANE="1", X_BEARER_TOKEN="dummy-x-bearer-secret-000"))
+        rec = report["sources"]["x"]
+        self.assertEqual("xapi", rec["active_backend"])
+        self.assertEqual("X connector lane armed", rec["backups"][0]["note"])
+
+    def test_bird_pin_names_bird_once_as_pinned(self):
+        config = _grok_bot(
+            LAST30DAYS_X_BACKEND="bird",
+            AUTH_TOKEN="dummy-auth-token-secret-000",
+            CT0="dummy-ct0-secret-000",
+        )
+        report = _build_with(
+            config,
+            [mock.patch("lib.bird_x.is_bird_installed", return_value=True)],
+            probe_map={"node": health.OK},
+        )
+        rec = report["sources"]["x"]
+        self.assertEqual("bird", rec["active_backend"])
+        self.assertEqual("will use: bird (pinned)", rec["note"])
+        x_text = "\n".join(_x_text_lines(doctor.render_text(report))).lower()
+        self.assertEqual(1, x_text.count("bird"), x_text)
+        for word in GROK_BOT_FORBIDDEN:
+            if word != "bird":
+                self.assertNotIn(word, x_text, word)
+        self.assertNotIn("LAST30DAYS_X_BACKEND", x_text.upper())
+
+    def test_grok_pin_names_grok_once_as_pinned(self):
+        report = _build_with(_grok_bot(LAST30DAYS_X_BACKEND="grok"), _grok_signed_in())
+        rec = report["sources"]["x"]
+        self.assertEqual("grok", rec["active_backend"])
+        self.assertEqual("will use: grok (pinned)", rec["note"])
+        x_text = "\n".join(_x_text_lines(doctor.render_text(report))).lower()
+        self.assertEqual(1, x_text.count("grok"), x_text)
+        for word in GROK_BOT_FORBIDDEN:
+            self.assertNotIn(word, x_text, word)
+        self.assertNotIn("LAST30DAYS_X_BACKEND", x_text.upper())
+
+    def test_bird_pin_without_cookies_prescribes_only_the_official_path(self):
+        report = _build(_grok_bot(LAST30DAYS_X_BACKEND="bird"))
+        rec = report["sources"]["x"]
+        self.assertIsNone(rec["active_backend"])
+        self.assertIn("X_BEARER_TOKEN", rec["fix"])
+        self.assertNotIn("cookie", rec["fix"].lower())
+        self.assertNotIn("--allow-browser-cookies", rec["fix"])
+
+    def test_host_line_prints_resolved_host(self):
+        text = doctor.render_text(_build(_grok_bot()))
+        self.assertIn("host: grok-bot", text)
+        default = _build({})
+        self.assertIsNone(default["config"]["host"])
+        self.assertIn("host: not set", doctor.render_text(default))
+
+    def test_lane_file_line_is_reported_as_ignored(self):
+        report = _build(_grok_bot(_X_HOST_LANE_FILE_IGNORED=True))
+        text = doctor.render_text(report)
+        self.assertIn("LAST30DAYS_X_HOST_LANE", text)
+        self.assertIn("ignored", text)
+        self.assertEqual("unconfigured", report["sources"]["x"]["status"])
+        self.assertNotIn("LAST30DAYS_X_HOST_LANE", doctor.render_text(_build(_grok_bot())))
+
+    def test_non_grok_host_prescription_unchanged(self):
+        rec = _build({})["sources"]["x"]
+        self.assertIs(prescriptions.get("x", "cookies_missing"), prescriptions.for_x({}, "cookies_missing"))
+        self.assertIn("cookie", rec["fix"].lower())
+        self.assertEqual("LAST30DAYS_X_BACKEND", rec["pin_var"])
+        self.assertIn("no auth path armed", rec["backups"][0]["note"])
+
+    def test_xapi_pin_on_default_host_carries_the_caveat(self):
+        rec = _build({"LAST30DAYS_X_BACKEND": "xapi", "X_BEARER_TOKEN": "dummy-x-bearer-secret-000"})["sources"]["x"]
+        self.assertEqual("xapi", rec["active_backend"])
+        self.assertIn("about the last week", rec["note"])
+
+
+class HostFingerprintAndCache(unittest.TestCase):
+    """The host key, lane signal, and bearer presence all invalidate a cached
+    report; the bearer value never lands in the cache file."""
+
+    def test_host_and_lane_keys_change_the_fingerprint(self):
+        base = doctor._config_fingerprint({})
+        self.assertNotEqual(base, doctor._config_fingerprint({"LAST30DAYS_HOST": "grok-bot"}))
+        self.assertNotEqual(base, doctor._config_fingerprint({"LAST30DAYS_X_HOST_LANE": "1"}))
+        self.assertNotEqual(base, doctor._config_fingerprint({"X_BEARER_TOKEN": "dummy-x-bearer-secret-000"}))
+        self.assertIn("X_BEARER_TOKEN", doctor.KEY_PRESENCE_VARS)
+        self.assertIn("X_BEARER_TOKEN", doctor._SECRET_CONFIG_VARS)
+
+    def test_cache_file_never_contains_the_bearer(self):
+        secret = "dummy-x-bearer-secret-000"
+        config = _grok_bot(X_BEARER_TOKEN=secret)
+        tmp = Path(tempfile.mkdtemp()) / "doctor-cache.json"
+        with _Hermetic(), mock.patch("lib.doctor.cache_path", return_value=tmp):
+            report = doctor.build_report(dict(config))
+            report["generated_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            report["from_cache"] = False
+            self.assertTrue(doctor._write_cache(report, config))
+            served = doctor.read_cached_report(config)
+        self.assertNotIn(secret, tmp.read_text(encoding="utf-8"))
+        self.assertIsNotNone(served)
+        self.assertEqual("xapi", served["sources"]["x"]["active_backend"])
+        # A bearer that was tampered into a fake report is refused.
+        report["sources"]["x"]["detail"] = secret
+        with mock.patch("lib.doctor.cache_path", return_value=tmp):
+            self.assertFalse(doctor._write_cache(report, config))
+
+
+class GrokBotParityTable(unittest.TestCase):
+    """host x bearer x lane x pin: doctor's prediction equals the pipeline's
+    pre-failover selection, and Grok Bot output carries no R4 vocabulary."""
+
+    def test_doctor_prediction_matches_pipeline_selection(self):
+        cases = itertools.product(
+            ("", "grok-bot"), (False, True), (False, True), (None, "bird", "grok", "xapi")
+        )
+        for host, bearer, lane, pin in cases:
+            config = {}
+            if host:
+                config["LAST30DAYS_HOST"] = host
+            if bearer:
+                config["X_BEARER_TOKEN"] = "dummy-x-bearer-secret-000"
+            if lane:
+                config["LAST30DAYS_X_HOST_LANE"] = "1"
+            if pin:
+                config["LAST30DAYS_X_BACKEND"] = pin
+            with self.subTest(host=host or "default", bearer=bearer, lane=lane, pin=pin):
+                patches = _grok_signed_in()
+                with _Hermetic():
+                    for p in patches:
+                        p.start()
+                    try:
+                        chain = env.x_backend_chain(dict(config), local_only=True)
+                        report = doctor.build_report(dict(config))
+                    finally:
+                        for p in reversed(patches):
+                            p.stop()
+                expected = chain[0] if chain else ("connector" if lane else None)
+                rec = report["sources"]["x"]
+                self.assertEqual(expected, rec["active_backend"])
+                if host != "grok-bot":
+                    continue
+                x_text = "\n".join(_x_text_lines(doctor.render_text(report))).lower()
+                blob = json.dumps(rec).lower()
+                allow = {pin} if pin in ("bird", "grok") else set()
+                for word in GROK_BOT_FORBIDDEN:
+                    if word in allow:
+                        continue
+                    self.assertNotIn(word, x_text, word)
+                    if not allow:
+                        self.assertNotIn(word, blob, word)
+                if allow and expected == pin:
+                    self.assertLessEqual(x_text.count(pin), 1, x_text)
+                self.assertNotIn("last30days_x_backend", x_text)
 
 if __name__ == "__main__":
     unittest.main()

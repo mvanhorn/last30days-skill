@@ -8,9 +8,9 @@ vocabulary shared with the doctor command, KTD 7); only the trigger
 logic and the message framing live here.
 """
 
-from typing import List
+from typing import List, Optional
 
-from . import prescriptions
+from . import env, health, http, prescriptions
 
 
 # Sources whose absence can justify a post-run quality repair. X remains a
@@ -42,12 +42,38 @@ def _is_x_active(config: dict, research_results: dict) -> bool:
 
 
 def _has_x_credentials(config: dict) -> bool:
-    """Return True when any X/Twitter source credential is configured."""
-    return bool(
+    """Return True when any X/Twitter source credential is configured.
+
+    ``X_BEARER_TOKEN`` counts where the xapi backend can actually run: an
+    official-only host (it heads the auto chain there) or an explicit xapi
+    pin. An ambient bearer on any other host is not a configured X source,
+    so nothing changes there (R14).
+    """
+    if (
         config.get("AUTH_TOKEN")
         or config.get("XAI_API_KEY")
         or config.get("XQUIK_API_KEY")
-    )
+    ):
+        return True
+    if config.get("X_BEARER_TOKEN"):
+        return "xapi" in env.x_auto_chain(config) or env.x_backend_pin(config) == "xapi"
+    return False
+
+
+def _x_error_prescription(config: dict, research_results: dict) -> prescriptions.Prescription:
+    """The fix for a configured X that errored, routed through the X policy.
+
+    On an official-only host a credit-exhaustion error asks for a top-up
+    (``payment_required``) and every other error asks for a valid bearer or
+    the connector (``cookies_expired`` maps to ``bearer_invalid`` there);
+    elsewhere the entry is today's ``cookies_expired``.
+    """
+    failure = "cookies_expired"
+    if env.x_policy(config).hint_namespace == "official":
+        message = str(research_results.get("x_error") or "")
+        if http.classify_failure(message=message) == health.PAYMENT_REQUIRED:
+            failure = "payment_required"
+    return prescriptions.for_x(config, failure)
 
 
 def _has_ytdlp() -> bool:
@@ -240,6 +266,7 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
 
     has_sc = bool(config.get("SCRAPECREATORS_API_KEY"))
     active_sources = research_results.get("active_sources") or []
+    x_fix = _x_error_prescription(config, research_results) if "x" in core_errored else None
     nudge_text = _build_nudge_text(
         core_missing,
         core_errored,
@@ -250,6 +277,7 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
         bonus_errored=bonus_errored,
         has_ytdlp=has_ytdlp,
         core_total=scored_source_count,
+        x_fix=x_fix,
     ) if (core_missing or core_degraded or bonus_errored) else None
 
     return {
@@ -273,6 +301,7 @@ def _build_nudge_text(
     bonus_errored: List[str] = None,
     has_ytdlp: bool = False,
     core_total: int | None = None,
+    x_fix: Optional[prescriptions.Prescription] = None,
 ) -> str:
     """Build human-readable nudge text describing what was missed or degraded.
 
@@ -313,7 +342,8 @@ def _build_nudge_text(
     # core_missing: unconfigured/declined X is an optional omission and never
     # lands here. Surface the repair instead of hiding the outage.
     if "x" in core_missing and "x" in core_errored:
-        x_fix = prescriptions.get("x", "cookies_expired")
+        if x_fix is None:
+            x_fix = prescriptions.get("x", "cookies_expired")
         free_suggestions.append(f"X/Twitter errored - {x_fix.fix_nl}.")
 
     if "youtube" in core_missing:

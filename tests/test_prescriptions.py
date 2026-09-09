@@ -42,7 +42,22 @@ SEED_INVENTORY = {
     ("youtube", "ytdlp_broken"),
     ("truthsocial", "token_missing"),
     ("xiaohongshu", "service_unreachable"),
+    # Official X path (Grok Bot host): connector lane, bearer, credits.
+    ("x", "bearer_missing"),
+    ("x", "bearer_invalid"),
+    ("x", "payment_required"),
+    ("x", "connector_missing"),
 }
+
+OFFICIAL_X_FAILURES = (
+    "bearer_missing", "bearer_invalid", "payment_required", "connector_missing",
+)
+# R4 vocabulary the official entries must never carry.
+GROK_BOT_FORBIDDEN = (
+    "cookie", "cdp", "box-chrome", "bird", "auth_token", "ct0", "xquik",
+    "grok login", "grok cli", "x.com",
+)
+GROK_BOT = {"LAST30DAYS_HOST": "grok-bot"}
 
 
 def _configuration_md_slugs():
@@ -167,6 +182,44 @@ class TestSharedWithQualityNudge:
         assert q["nudge_text"] is None
         assert q["core_missing"] == []
 
+    def test_x_error_nudge_on_grok_bot_names_bearer_never_x_login(self):
+        """R4: the nudge after an X error on a Grok Bot host routes through
+        the policy-aware lookup and never says to log into x.com."""
+        config = dict(GROK_BOT, X_BEARER_TOKEN="dummy-bearer")
+        entry = prescriptions.for_x(config, "cookies_expired")
+        assert entry.failure == "bearer_invalid"
+        q = _nudge(
+            config_overrides=config,
+            result_overrides={"x_error": "401 unauthorized"},
+            ytdlp_installed=True,
+        )
+        assert q["core_errored"] == ["x"]
+        assert entry.fix_nl in q["nudge_text"]
+        lowered = q["nudge_text"].lower()
+        for word in GROK_BOT_FORBIDDEN:
+            assert word not in lowered, word
+
+    def test_x_credits_nudge_on_grok_bot_says_top_up(self):
+        config = dict(GROK_BOT, X_BEARER_TOKEN="dummy-bearer")
+        entry = prescriptions.for_x(config, "payment_required")
+        q = _nudge(
+            config_overrides=config,
+            result_overrides={"x_error": "xapi: payment required (X API credits exhausted)"},
+            ytdlp_installed=True,
+        )
+        assert entry.fix_nl in q["nudge_text"]
+        assert "top up" in q["nudge_text"].lower()
+        assert "x.com" not in q["nudge_text"].lower()
+
+    def test_x_error_nudge_off_grok_bot_is_unchanged(self):
+        entry = prescriptions.get("x", "cookies_expired")
+        q = _nudge(
+            config_overrides={"AUTH_TOKEN": "tok123"},
+            result_overrides={"x_error": "xquik: payment required (402)"},
+            ytdlp_installed=True,
+        )
+        assert entry.fix_nl in q["nudge_text"]
+
     def test_ytdlp_missing_nudge_uses_registry_cli(self):
         entry = prescriptions.get("youtube", "ytdlp_missing")
         q = _nudge(config_overrides={"AUTH_TOKEN": "tok123"}, ytdlp_installed=False)
@@ -199,6 +252,57 @@ class TestSharedWithQualityNudge:
         assert "api.x.ai" not in source
         assert "log into x.com" not in source
         assert "yt-dlp: brew" not in source
+
+
+# ---------------------------------------------------------------------------
+# Policy-aware X lookup (Grok Bot host names only the official path)
+# ---------------------------------------------------------------------------
+
+class TestPolicyAwareXLookup:
+    def test_default_host_returns_todays_entries(self):
+        assert prescriptions.for_x({}, "cookies_missing") is prescriptions.get("x", "cookies_missing")
+        assert prescriptions.for_x({}, "cookies_expired") is prescriptions.get("x", "cookies_expired")
+        assert prescriptions.for_x({"LAST30DAYS_HOST": "codex"}, "cookies_missing").failure == "cookies_missing"
+
+    def test_grok_bot_maps_cookie_and_grok_failures_to_official_entries(self):
+        assert prescriptions.for_x(GROK_BOT, "cookies_missing").failure == "bearer_missing"
+        assert prescriptions.for_x(GROK_BOT, "cookies_expired").failure == "bearer_invalid"
+        assert prescriptions.for_x(GROK_BOT, "grok_cli_missing").failure == "bearer_missing"
+        assert prescriptions.for_x(GROK_BOT, "grok_not_authenticated").failure == "bearer_missing"
+
+    def test_official_entries_pass_through_on_every_host(self):
+        for failure in OFFICIAL_X_FAILURES:
+            for config in ({}, GROK_BOT):
+                assert prescriptions.for_x(config, failure).failure == failure
+
+    def test_unknown_failure_falls_back_generically_on_grok_bot(self):
+        entry = prescriptions.for_x(GROK_BOT, "flux_capacitor_missing")
+        assert entry.fix_nl == prescriptions.GENERIC_FIX_NL
+
+    def test_official_entries_use_only_official_vocabulary(self):
+        for failure in OFFICIAL_X_FAILURES:
+            entry = prescriptions.get("x", failure)
+            blob = " ".join((entry.cause, entry.fix_nl, entry.fix_cli, *entry.alt_cli)).lower()
+            for word in GROK_BOT_FORBIDDEN:
+                assert word not in blob, (failure, word)
+
+    def test_bearer_copy_carries_the_week_caveat_not_parity(self):
+        for failure in ("bearer_missing", "bearer_invalid", "connector_missing"):
+            nl = prescriptions.get("x", failure).fix_nl
+            assert "X_BEARER_TOKEN" in nl, failure
+            assert "about the last week" in nl, failure
+            assert "full-archive" in nl, failure
+
+    def test_bearer_missing_offers_the_connector_first(self):
+        nl = prescriptions.get("x", "bearer_missing").fix_nl
+        assert nl.index("Grok Bot settings") < nl.index("X_BEARER_TOKEN")
+        assert "30-day" in nl
+        assert "XAI_API_KEY" in nl and "console.x.ai" in nl
+
+    def test_payment_required_says_top_up(self):
+        entry = prescriptions.get("x", "payment_required")
+        assert "top up" in entry.fix_nl.lower()
+        assert "credits" in entry.fix_nl.lower()
 
 
 # ---------------------------------------------------------------------------

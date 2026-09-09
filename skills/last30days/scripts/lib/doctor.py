@@ -195,6 +195,7 @@ KEY_PRESENCE_VARS = (
     "SCRAPECREATORS_API_KEY",
     "XAI_API_KEY",
     "XQUIK_API_KEY",
+    "X_BEARER_TOKEN",
     "BRAVE_API_KEY",
     "EXA_API_KEY",
     "SERPER_API_KEY",
@@ -416,8 +417,60 @@ def _reddit_record(config):
     return _chained_record("reddit", config)
 
 
+# Official-path wording (R6, KTD11). The bearer path is never described as
+# parity with the connector lane.
+X_BEARER_CAVEAT = (
+    "recent posts, about the last week, unless the project has full-archive access"
+)
+X_CONNECTOR_NOTE = "will use: X connector (host-fetched at run time)"
+X_CONNECTOR_ARMED = "X connector lane armed"
+
+
+def _x_will_use_note(record: Dict[str, Any], policy: env.XPolicy) -> str:
+    """The will-use line for a predicted X backend, shaped by the policy.
+
+    On an official-only host a pinned backend renders as ``will use: <name>
+    (pinned)`` and nothing else names it (R4 carve-out; the pin variable is
+    not advertised, KTD7). Off it the backends summary is kept verbatim.
+    The bearer prediction carries the about-a-week caveat on every host.
+    """
+    name = record["active_backend"]
+    if policy.official_only:
+        qualifiers: List[str] = []
+        if record.get("pinned"):
+            qualifiers.append("pinned")
+        if name == "xapi":
+            qualifiers.append(X_BEARER_CAVEAT)
+        return f"will use: {name}" + (f" ({'; '.join(qualifiers)})" if qualifiers else "")
+    note = record.get("note") or f"will use: {name}"
+    if name == "xapi":
+        if note.endswith(")"):
+            return f"{note[:-1]}; {X_BEARER_CAVEAT})"
+        return f"{note} ({X_BEARER_CAVEAT})"
+    return note
+
+
 def _x_record(config):
     record = _chained_record("x", config)
+    policy = env.x_policy(config)
+    if policy.official_only and not record.get("pinned"):
+        # KTD7: the pin is documented in CONFIGURATION.md only; doctor never
+        # advertises the knob on an official-only host.
+        record["pin_var"] = None
+    if record.get("active_backend"):
+        record["note"] = _x_will_use_note(record, policy)
+        return record
+    # KTD11: the declared X connector lane serves X when no engine backend is
+    # predicted (the same precedence as diagnose.x_backend). Host-independent:
+    # the envelope is accepted anywhere (R13).
+    if env.x_host_lane_declared(config):
+        record["status"] = health.OK
+        record["tier"] = TIER_BY_STATUS[health.OK]
+        record["active_backend"] = "connector"
+        record["note"] = X_CONNECTOR_NOTE
+        record["detail"] = ""
+        record["fix"] = ""
+        return record
     # Diagnose/doctor load config in plan_only mode, so browser cookies are not
     # extracted and every X backend reads as statically missing -> unconfigured.
     # But if bird is installed and FROM_BROWSER will authenticate X at run time,
@@ -427,6 +480,9 @@ def _x_record(config):
     # will *attempt* browser auth, not that the session is currently valid -
     # keep the note honest and point at the verified key-backed path.
     #
+    # Policy-gated (KTD2): on an official-only host no run-time cookie source
+    # exists unless bird is pinned, and then the note names only the pin.
+    #
     # This check MUST come before grok normalization: a pending bird path takes
     # precedence over marking X as unconfigured due to an unused grok store.
     # Handle both "unconfigured" (all backends missing) and "error" (grok present
@@ -435,10 +491,12 @@ def _x_record(config):
     # HOWEVER: pending bird must NOT replace a record that has a configured
     # auto-chain backend in ERROR/DEGRADED/BROKEN/TIMEOUT. Same rule as the
     # grok normalizer: only upgrade when no auto backend is configured-but-broken.
-    pending_bird = env.x_pending_browser_auth(config, local_only=True)
+    auto_chain_names = set(env.x_auto_chain(config))
+    pending_bird = policy.cookie_discovery and env.x_pending_browser_auth(
+        config, local_only=True
+    )
     if pending_bird and record["status"] in ("unconfigured", health.ERROR):
         backends_list = record.get("backends", [])
-        auto_chain_names = {"bird", "xai", "xurl", "xquik"}
         auto_backends = [b for b in backends_list if b.get("name") in auto_chain_names]
         # Only apply pending-bird upgrade if ALL auto-chain backends are MISSING.
         # If any auto backend is configured but broken, keep that error.
@@ -448,10 +506,13 @@ def _x_record(config):
         if all_auto_missing:
             record["status"] = health.OK
             record["tier"] = TIER_BY_STATUS[health.OK]
-            record["note"] = (
-                "will use: bird (browser cookies; session not verified until a run "
-                "- add XAI_API_KEY for a verified, cookie-free path)"
-            )
+            if policy.official_only:
+                record["note"] = "will use: bird (pinned)"
+            else:
+                record["note"] = (
+                    "will use: bird (browser cookies; session not verified until a run "
+                    "- add XAI_API_KEY for a verified, cookie-free path)"
+                )
             record["fix"] = ""
             return record
     #
@@ -459,6 +520,10 @@ def _x_record(config):
     # lane. The grok backend appears in the chain findings (for visibility) but
     # is never auto-selected. Doctor reports it as "available, unused - pin
     # LAST30DAYS_X_BACKEND=grok to enable" rather than "will use: grok".
+    #
+    # Policy-gated (KTD2): on an official-only host the CLI is not probed
+    # unless pinned and is never offered, so this branch does not run there
+    # (R4: no "pin LAST30DAYS_X_BACKEND=grok" note on a Grok Bot host).
     #
     # R3/R8: When no auto-chain backend is CONFIGURED (all MISSING) but grok has
     # any non-MISSING status, X is unconfigured/skipped - NOT broken/auth-failed.
@@ -471,13 +536,13 @@ def _x_record(config):
     # Do NOT apply this normalization when pending browser auth would make bird
     # usable — check pending_bird first (handled above via early return).
     if (
-        record["tier"] == TIER_ERROR
+        not policy.official_only
+        and record["tier"] == TIER_ERROR
         and not record.get("pinned")
         and record.get("active_backend") is None
         and not pending_bird
     ):
         backends_list = record.get("backends", [])
-        auto_chain_names = {"bird", "xai", "xurl", "xquik"}
         auto_backends = [b for b in backends_list if b.get("name") in auto_chain_names]
         # Only normalize if ALL auto-chain backends are MISSING (not configured).
         # If any auto backend is ERROR/DEGRADED/BROKEN/TIMEOUT, keep that error.
@@ -981,6 +1046,48 @@ def load_run_evidence(
 # is answerable at a glance without inventing fake sources.
 # ---------------------------------------------------------------------------
 
+def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
+    """The "X auth path" sub-lane, routed through the X policy (R4).
+
+    Off an official-only host the wording is unchanged (key-backed, cookie
+    path, or nothing armed). On one it names only the official path: the
+    connector lane when declared (KTD11), else the bearer (with the R6
+    caveat), the xAI key, or xurl; a pinned non-official backend is named
+    once, on the will-use line, never here.
+    """
+    policy = env.x_policy(config)
+    if not policy.official_only:
+        has_key = bool(config.get("XAI_API_KEY") or config.get("XQUIK_API_KEY"))
+        cookie = bool(env.x_pending_browser_auth(config, local_only=True))
+        if has_key:
+            note = "XAI_API_KEY key-backed path (verified, cookie-free)"
+        elif cookie:
+            note = (
+                "browser-cookie path primary; add XAI_API_KEY for a verified "
+                "cookie-free backup"
+            )
+        else:
+            note = "no auth path armed"
+        return {"name": "X auth path", "armed": has_key or cookie, "note": note}
+    if env.x_host_lane_declared(config):
+        return {"name": "X auth path", "armed": True, "note": X_CONNECTOR_ARMED}
+    source = env.get_x_source(config, local_only=True)
+    if source == "xapi":
+        note = f"X_BEARER_TOKEN path ({X_BEARER_CAVEAT})"
+    elif source == "xai":
+        note = "XAI_API_KEY licensed path (console.x.ai)"
+    elif source == "xurl":
+        note = "X API through the xurl CLI (stored OAuth2 login)"
+    elif source:
+        note = "explicit backend pin"
+    else:
+        note = (
+            "no official X path armed (connect X in Grok Bot settings, or set "
+            "X_BEARER_TOKEN or XAI_API_KEY)"
+        )
+    return {"name": "X auth path", "armed": bool(source), "note": note}
+
+
 def _sub_lanes_for(source: str, config: Dict[str, Any]):
     """Return (backups, comments) metadata for a source, or ([], None)."""
     backups: List[Dict[str, Any]] = []
@@ -998,18 +1105,7 @@ def _sub_lanes_for(source: str, config: Dict[str, Any]):
         })
         comments = {"enabled": bool(env.is_youtube_comments_available(config))}
     elif source == "x":
-        has_key = bool(config.get("XAI_API_KEY") or config.get("XQUIK_API_KEY"))
-        cookie = bool(env.x_pending_browser_auth(config, local_only=True))
-        if has_key:
-            note = "XAI_API_KEY key-backed path (verified, cookie-free)"
-        elif cookie:
-            note = (
-                "browser-cookie path primary; add XAI_API_KEY for a verified "
-                "cookie-free backup"
-            )
-        else:
-            note = "no auth path armed"
-        backups.append({"name": "X auth path", "armed": has_key or cookie, "note": note})
+        backups.append(_x_auth_path(config))
     elif source == "tiktok":
         comments = {"enabled": bool(env.is_tiktok_comments_available(config))}
     elif source == "instagram":
@@ -1129,6 +1225,10 @@ def build_report(config: Dict[str, Any]) -> Dict[str, Any]:
         "config": {
             "global_env": str(env.CONFIG_FILE) if env.CONFIG_FILE else None,
             "config_source": config.get("_CONFIG_SOURCE"),
+            # KTD1: the resolved host value, so a missing export is visible.
+            "host": env.x_policy(config).host or None,
+            # KTD10: a .env line cannot declare the X connector lane.
+            "host_lane_file_ignored": bool(config.get("_X_HOST_LANE_FILE_IGNORED")),
         },
         "setup": _setup_block(config),
         "permissions": permissions,
@@ -1263,6 +1363,17 @@ def render_text(report: Dict[str, Any]) -> str:
         if config_block.get("config_source"):
             line += f" (source: {config_block['config_source']})"
         lines.append(line)
+    host = config_block.get("host")
+    if host:
+        lines.append(f"host: {host} ({env.X_HOST_VAR})")
+    else:
+        lines.append(f"host: not set ({env.X_HOST_VAR} unset; default X policy)")
+    if config_block.get("host_lane_file_ignored"):
+        lines.append(
+            f"note: a {env.X_HOST_LANE_VAR} line in .env cannot declare the X "
+            "connector lane (ignored); export it in the process environment "
+            "for the session instead"
+        )
 
     setup = report.get("setup") or {}
     present = sorted(
@@ -1482,8 +1593,15 @@ _SECRET_CONFIG_VARS = KEY_PRESENCE_VARS + (
 )
 
 # Backend pin vars folded into the config fingerprint. Pin values are
-# backend names (e.g. "bird"), never secrets.
-_FINGERPRINT_PIN_VARS = (env.X_BACKEND_PIN_VAR, env.REDDIT_BACKEND_PIN_VAR)
+# backend names (e.g. "bird"), never secrets. The host key and the X
+# connector lane signal join them (KTD1): both are non-secret switches that
+# change every X conclusion, so a cached report must not outlive them.
+_FINGERPRINT_PIN_VARS = (
+    env.X_BACKEND_PIN_VAR,
+    env.REDDIT_BACKEND_PIN_VAR,
+    env.X_HOST_VAR,
+    env.X_HOST_LANE_VAR,
+)
 
 # Top-level report keys the renderers read unguarded; a cached report
 # missing any of them is treated as corrupt (absent), never rendered.

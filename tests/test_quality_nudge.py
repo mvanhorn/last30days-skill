@@ -757,3 +757,51 @@ class TestInstagramSilentFailure:
             result_overrides={"instagram_items_count": 0},
         )
         assert "instagram" in q["bonus_errored"]
+
+
+class TestBearerCredential:
+    """X_BEARER_TOKEN counts as an X credential where the xapi backend can
+    run (a Grok Bot host, or an explicit xapi pin); an ambient bearer on a
+    plain host stays what it is today: not a configured X source."""
+
+    def test_bearer_counts_on_grok_bot(self):
+        q = _compute(
+            config_overrides={"LAST30DAYS_HOST": "grok-bot", "X_BEARER_TOKEN": "dummy-bearer"},
+            ytdlp_installed=True,
+        )
+        assert "x" in q["core_active"]
+        assert q["score_pct"] == 100
+
+    def test_bearer_counts_when_xapi_is_pinned(self):
+        q = _compute(
+            config_overrides={"X_BEARER_TOKEN": "dummy-bearer", "LAST30DAYS_X_BACKEND": "xapi"},
+            ytdlp_installed=True,
+        )
+        assert "x" in q["core_active"]
+
+    def test_ambient_bearer_on_plain_host_is_an_optional_omission(self):
+        q = _compute(config_overrides={"X_BEARER_TOKEN": "dummy-bearer"}, ytdlp_installed=True)
+        assert "x" not in q["core_active"]
+        assert q["core_missing"] == []
+        assert q["nudge_text"] is None
+
+    def test_grok_bot_x_error_nudge_names_bearer_never_x_login(self):
+        q = _compute(
+            config_overrides={"LAST30DAYS_HOST": "grok-bot", "X_BEARER_TOKEN": "dummy-bearer"},
+            result_overrides={"x_error": "401 unauthorized"},
+            ytdlp_installed=True,
+        )
+        assert q["core_errored"] == ["x"]
+        text = q["nudge_text"].lower()
+        assert "x_bearer_token" in text
+        for word in ("x.com", "cookie", "bird", "auth_token", "ct0", "xquik", "grok cli", "grok login"):
+            assert word not in text, word
+
+    def test_grok_bot_credit_error_nudge_says_top_up(self):
+        q = _compute(
+            config_overrides={"LAST30DAYS_HOST": "grok-bot", "X_BEARER_TOKEN": "dummy-bearer"},
+            result_overrides={"x_error": "xapi: payment required (X API credits exhausted)"},
+            ytdlp_installed=True,
+        )
+        assert "top up" in q["nudge_text"].lower()
+        assert "x.com" not in q["nudge_text"].lower()

@@ -77,10 +77,20 @@ _SC_PRESCRIPTION = (
     "set SCRAPECREATORS_API_KEY (free 10,000-call signup: "
     f"{prescriptions.get('scrapecreators', 'key_missing').fix_cli})"
 )
-_X_COOKIES_PRESCRIPTION = (
-    "run setup with browser-cookie consent: "
-    f"{prescriptions.get('x', 'cookies_missing').fix_cli}"
-)
+
+
+def _x_cookies_prescription(config: Dict[str, Any]) -> str:
+    """Bird's unconfigured fix, routed through the X policy (R4).
+
+    Off an official-only host this is the cookie-consent command; on one
+    the same lookup yields the official-path entry (connector lane, bearer,
+    xAI key), so a pinned-but-unconfigured scraper never prescribes a
+    cookie read there.
+    """
+    entry = prescriptions.for_x(config, "cookies_missing")
+    if entry.failure == "cookies_missing":
+        return f"run setup with browser-cookie consent: {entry.fix_cli}"
+    return f"{entry.fix_nl} (cli: {entry.fix_cli})"
 
 
 @dataclass
@@ -218,7 +228,7 @@ def _probe_bird(config: Dict[str, Any]) -> BackendFinding:
             name="bird",
             status=health.MISSING,
             detail="X browser cookies (AUTH_TOKEN/CT0) not configured",
-            prescription=_X_COOKIES_PRESCRIPTION,
+            prescription=_x_cookies_prescription(config),
             requires=requires,
         )
     if not bird_x.is_bird_installed():
@@ -331,6 +341,36 @@ def _probe_grok(config: Dict[str, Any]) -> BackendFinding:
     )
 
 
+def _probe_xapi(config: Dict[str, Any]) -> BackendFinding:
+    """xapi = direct X API v2 with an app-only bearer. KEY PRESENCE ONLY.
+
+    Never a network call (R8). The unconfigured fix is the official-path
+    prescription on an official-only host (connector lane, bearer, xAI key,
+    with the about-a-week caveat from R6); elsewhere the plain key hint,
+    since xapi runs there only under an explicit pin.
+    """
+    requires = "X_BEARER_TOKEN (X API v2)"
+    if config.get("X_BEARER_TOKEN"):
+        return BackendFinding(
+            name="xapi",
+            status=health.OK,
+            detail="X_BEARER_TOKEN present",
+            requires=requires,
+        )
+    if env.x_policy(config).official_only:
+        entry = prescriptions.get("x", "bearer_missing")
+        prescription = f"{entry.fix_nl} (cli: {entry.fix_cli})"
+    else:
+        prescription = "set X_BEARER_TOKEN in ~/.config/last30days/.env"
+    return BackendFinding(
+        name="xapi",
+        status=health.MISSING,
+        detail="X_BEARER_TOKEN not set",
+        prescription=prescription,
+        requires=requires,
+    )
+
+
 def _probe_xurl(config: Dict[str, Any]) -> BackendFinding:
     """xurl = official X API v2 CLI (OAuth2). Free lane; LOCAL-ONLY probe.
 
@@ -432,7 +472,7 @@ _X_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "xurl": _probe_xurl,
     "xquik": _key_probe("xquik", "XQUIK_API_KEY", "XQUIK_API_KEY (xquik.com)"),
     # Direct X API v2 with an app-only bearer: key presence only, no network.
-    "xapi": _key_probe("xapi", "X_BEARER_TOKEN", "X_BEARER_TOKEN (X API v2)"),
+    "xapi": _probe_xapi,
 }
 _X_PAID = {"xai", "xquik", "xapi"}
 # Opt-in backends: never auto-selected; require explicit pin.
