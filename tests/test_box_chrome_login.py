@@ -119,6 +119,51 @@ def test_default_run_prints_but_does_not_spawn():
         assert bcl.main([]) == 0
 
 
+# --- Official-only host (LAST30DAYS_HOST=grok-bot) --------------------------
+
+GROK_BOT_CONFIG = {"LAST30DAYS_HOST": "grok-bot"}
+
+
+def test_grok_bot_host_gets_no_launch_command_even_when_extras_apply():
+    """U6: an official-only host gets the same no-launch recipe as a MacBook
+    even when the extras signals (Linux / box-chrome on PATH) are present."""
+    with (
+        mock.patch("lib.env.x_extras_enabled", return_value=True),
+        mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+    ):
+        recipe = bcl.build_recipe(dict(GROK_BOT_CONFIG))
+    assert recipe["applies"] is False
+    assert recipe["command"] is None
+    assert recipe["env"] is None
+    rendered = bcl.render_recipe(recipe).lower()
+    assert "no launch needed" in rendered
+    # R4: nothing in the Grok Bot output names the cookie machinery.
+    for banned in ("cookie", "cdp", "bird", "auth_token", "ct0", "keychain"):
+        assert banned not in rendered, f"{banned!r} leaked into Grok Bot output"
+
+
+def test_main_exec_never_spawns_on_grok_bot_host():
+    with (
+        mock.patch("lib.env.x_extras_enabled", return_value=True),
+        mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+        mock.patch.object(bcl.env, "get_config", return_value=dict(GROK_BOT_CONFIG)),
+        mock.patch("os.makedirs", side_effect=AssertionError("no profile dir on Grok Bot")),
+        mock.patch("subprocess.Popen", side_effect=AssertionError("no spawn on Grok Bot")),
+    ):
+        assert bcl.main(["--exec"]) == 0
+
+
+def test_linux_and_mac_mini_recipe_unchanged_without_host_signal():
+    """R14/R15: without LAST30DAYS_HOST the extras recipe is what it was."""
+    with (
+        mock.patch("lib.env.x_extras_enabled", return_value=True),
+        mock.patch("shutil.which", return_value="/usr/local/bin/box-chrome"),
+    ):
+        recipe = bcl.build_recipe({})
+    assert recipe["applies"] is True
+    assert recipe["command"] == ["/usr/local/bin/box-chrome", "--new-window", "https://x.com/login"]
+
+
 # --- SKILL.md recipe contract ---------------------------------------------
 
 

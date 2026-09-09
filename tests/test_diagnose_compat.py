@@ -106,6 +106,10 @@ PREFLIGHT_PROJECT_CONFIG_KEYS = {"status", "trusted", "ignored_path", "ignored_k
 PREFLIGHT_BROWSER_COOKIES_KEYS = {"status", "mode", "browsers", "reads_values"}
 PREFLIGHT_CREDENTIALS_KEYS = {
     "google", "openai", "xai", "openrouter", "perplexity", "scrapecreators", "github",
+    # X API bearer (X_BEARER_TOKEN): computed inside permission_preflight from
+    # config, never surfaced through diagnose.providers (whose key set above
+    # stays frozen).
+    "x_bearer",
 }
 PREFLIGHT_NETWORK_KEYS = {
     "available_sources", "native_search", "endpoint_overrides", "ignored_endpoint_overrides",

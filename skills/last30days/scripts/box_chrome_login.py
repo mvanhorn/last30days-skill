@@ -11,7 +11,9 @@ Firefox / Safari extract path).
 
 Contract, matching the rest of the feature:
 * **Extras only.** On a MacBook (and any non-extras host) it prints "no launch
-  needed" and never spawns a browser, even with ``--exec``.
+  needed" and never spawns a browser, even with ``--exec``. An official-only
+  host (``LAST30DAYS_HOST=grok-bot``, see ``env.x_policy``) gets the same
+  no-launch recipe with a neutral note, even on Linux or a Mac mini.
 * Launch on the last30days extras NUX port ``18800``
   (``SAND_CHROME_REMOTE_DEBUG_PORT=18800``) so ``chrome_cdp`` finds it. This is
   NOT box-chrome's built-in default (``9222`` + the display number).
@@ -44,6 +46,12 @@ EXTRAS_CDP_PORT = chrome_cdp._BOX_CHROME_PORT
 DEFAULT_PROFILE_DIR = "/tmp/last30days-x-chrome"
 LOGIN_URL = "https://x.com/login"
 BOX_CHROME_BIN = "box-chrome"
+# Printed on an official-only host instead of the MacBook note. Names no
+# cookie mechanism: this host searches X through official access only.
+OFFICIAL_HOST_NOTE = (
+    "No launch needed: this host searches X through official access and "
+    "does not use a browser login window."
+)
 
 
 def build_recipe(
@@ -58,6 +66,23 @@ def build_recipe(
     ``profile_dir``, ``url``, ``env`` (launch env overrides or None),
     ``command`` (argv or None), ``note`` (human guidance).
     """
+    # Official-only host (LAST30DAYS_HOST=grok-bot): the same no-launch
+    # recipe as a MacBook, checked BEFORE the extras signals so a Linux or
+    # Mac mini Grok Bot computer never gets a launch command. The note is
+    # neutral on purpose (R4). A LAST30DAYS_X_BACKEND=bird pin re-enables
+    # discovery through env.x_policy, and with it this helper.
+    if not env.x_policy(config).cookie_discovery:
+        return {
+            "applies": False,
+            "box_chrome": None,
+            "port": EXTRAS_CDP_PORT,
+            "profile_dir": profile_dir,
+            "url": url,
+            "env": None,
+            "command": None,
+            "note": OFFICIAL_HOST_NOTE,
+        }
+
     if not env.x_extras_enabled(config):
         return {
             "applies": False,
@@ -119,7 +144,10 @@ def render_recipe(recipe: Dict[str, Any]) -> str:
     """Human-readable recipe. Contains no cookie values (none are read)."""
     lines: List[str] = []
     if not recipe["applies"]:
-        lines.append("[box-chrome login] Not an extras host.")
+        if recipe["note"] == OFFICIAL_HOST_NOTE:
+            lines.append("[login helper] No launch needed on this host.")
+        else:
+            lines.append("[box-chrome login] Not an extras host.")
         lines.append(recipe["note"])
         return "\n".join(lines)
 

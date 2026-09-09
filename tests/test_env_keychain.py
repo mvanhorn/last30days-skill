@@ -390,3 +390,10 @@ def test_keychain_keys_match_setup_script():
         "lib/env.py::KEYCHAIN_KEYS and scripts/setup-keychain.sh::ALL_KEYS "
         f"have drifted.\n  python: {python_keys}\n  shell:  {shell_keys}"
     )
+
+
+def test_x_bearer_token_is_a_keychain_key():
+    """U6/R17: the X API bearer is loadable from the Keychain and listed by
+    the setup-keychain.sh helper (parity is enforced above)."""
+    assert "X_BEARER_TOKEN" in env.KEYCHAIN_KEYS
+    assert _parse_all_keys_from_shell(SETUP_KEYCHAIN_SH).count("X_BEARER_TOKEN") == 1

@@ -175,7 +175,7 @@ load_keychain_presence() {
   fi
   [[ -n "$user" ]] || return 0
 
-  for key in SETUP_COMPLETE OPENAI_API_KEY SCRAPECREATORS_API_KEY AUTH_TOKEN CT0 XAI_API_KEY BSKY_HANDLE EXA_API_KEY; do
+  for key in SETUP_COMPLETE OPENAI_API_KEY SCRAPECREATORS_API_KEY AUTH_TOKEN CT0 XAI_API_KEY X_BEARER_TOKEN BSKY_HANDLE EXA_API_KEY; do
     env_var="ENV_${key}"
     current="${!env_var:-}"
     if [[ -z "$current" ]]; then
@@ -272,6 +272,11 @@ fi
 HAS_SCRAPECREATORS="${ENV_SCRAPECREATORS_API_KEY:-${SCRAPECREATORS_API_KEY:-}}"
 HAS_X=""
 if [[ -n "${ENV_AUTH_TOKEN:-${AUTH_TOKEN:-}}" && -n "${ENV_CT0:-${CT0:-}}" ]]; then
+  HAS_X="yes"
+fi
+# X API v2 bearer (official X API backend) is a third way to have X; read the
+# same way XAI_API_KEY is (file first, then process env), presence only.
+if [[ -n "${ENV_X_BEARER_TOKEN:-${X_BEARER_TOKEN:-}}" ]]; then
   HAS_X="yes"
 fi
 HAS_XAI="${ENV_XAI_API_KEY:-${XAI_API_KEY:-}}"

@@ -267,3 +267,31 @@ def test_cli_preflight_json_returns_structured_contract(monkeypatch):
     assert payload["local_reads"]["browser_cookies"]["status"] == "off"
     assert payload["conditional_writes"] == []
     assert payload["safe"] is True
+
+
+DUMMY_X_BEARER = "dummy-x-bearer-token-not-real-000"
+
+
+def test_preflight_reports_x_bearer_presence_as_boolean_without_value():
+    """U6: the X API bearer row is computed from config inside preflight (not
+    through diagnose.providers) and never carries the value."""
+    diag = _diag()  # providers dict has no x_bearer entry on purpose
+    present = permission_preflight.build({"X_BEARER_TOKEN": DUMMY_X_BEARER}, diag)
+    absent = permission_preflight.build({}, diag)
+
+    assert present["credentials"]["x_bearer"] == {
+        "present": True,
+        "label": permission_preflight.PROVIDER_CREDENTIALS["x_bearer"],
+    }
+    assert absent["credentials"]["x_bearer"]["present"] is False
+    assert DUMMY_X_BEARER not in json.dumps(present)
+
+    text = permission_preflight.render_text(present)
+    assert permission_preflight.PROVIDER_CREDENTIALS["x_bearer"] in text
+    assert DUMMY_X_BEARER not in text
+    assert "Values are not printed or written by preflight" in text
+
+
+def test_preflight_x_bearer_ignores_whitespace_only_value():
+    diag = _diag()
+    assert permission_preflight.build({"X_BEARER_TOKEN": "   "}, diag)["credentials"]["x_bearer"]["present"] is False

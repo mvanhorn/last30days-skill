@@ -137,5 +137,48 @@ class TestPluginContract(unittest.TestCase):
         self.assertNotIn("extensionPath", command)
         self.assertNotIn(":-.}", command)
 
+    def test_mcp_manifest_credential_entries_are_sensitive(self) -> None:
+        # Every user_config entry that names a credential (title ends in _KEY
+        # or _TOKEN, or _PASSWORD) must be marked sensitive so Claude Desktop
+        # stores it in the OS keychain instead of plain config.
+        manifest = _json(ROOT / "mcp" / "manifest.json")
+        user_config = manifest["user_config"]
+        self.assertTrue(user_config)
+        offenders = [
+            key
+            for key, entry in user_config.items()
+            if str(entry.get("title", "")).endswith(("_KEY", "_TOKEN", "_PASSWORD"))
+            and entry.get("sensitive") is not True
+        ]
+        self.assertEqual([], offenders)
+
+    def test_mcp_manifest_declares_x_bearer_token(self) -> None:
+        # U6/R17: the X API bearer is installable through the MCP bundle like
+        # every other credential, wired user_config -> env under the
+        # lowercased-env-var convention mcp/internal/manifest enforces.
+        manifest = _json(ROOT / "mcp" / "manifest.json")
+        entry = manifest["user_config"]["x_bearer_token"]
+        self.assertEqual("X_BEARER_TOKEN", entry["title"])
+        self.assertEqual("string", entry["type"])
+        self.assertIs(True, entry["sensitive"])
+        self.assertIs(False, entry["required"])
+        self.assertIn("X API v2", entry["description"])
+        self.assertIn("bearer", entry["description"].lower())
+        self.assertIn("developer.x.com", entry["description"])
+        env_map = manifest["server"]["mcp_config"]["env"]
+        self.assertEqual("${user_config.x_bearer_token}", env_map["X_BEARER_TOKEN"])
+
+    def test_mcp_manifest_env_and_user_config_cross_reference(self) -> None:
+        # Python-side mirror of mcp/internal/manifest/manifest_test.go so the
+        # invariant is checked by `uv run pytest` too.
+        manifest = _json(ROOT / "mcp" / "manifest.json")
+        env_map = manifest["server"]["mcp_config"]["env"]
+        user_config = manifest["user_config"]
+        for env_name, value in env_map.items():
+            self.assertEqual(f"${{user_config.{env_name.lower()}}}", value)
+            self.assertIn(env_name.lower(), user_config)
+        for key in user_config:
+            self.assertIn(key.upper(), env_map)
+
 if __name__ == "__main__":
     unittest.main()

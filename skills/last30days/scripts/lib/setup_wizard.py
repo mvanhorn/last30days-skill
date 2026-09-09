@@ -61,6 +61,12 @@ def render_welcome() -> str:
     return _WELCOME_TEXT
 
 
+# Neutral note recorded on an official-only host instead of a cookie scan.
+# Deliberately names no cookie mechanism beyond the fact that none is used
+# (R4 vocabulary rule for Grok Bot onboarding output).
+OFFICIAL_HOST_COOKIE_NOTE = "browser sessions are not read on this host"
+
+
 def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = False) -> Dict[str, Any]:
     """Perform the auto-setup actions.
 
@@ -73,7 +79,10 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
     Returns:
         Dict with keys:
           cookies_found: {source_name: browser_name} for each source where cookies were found
-          browser_cookie_scan_attempted: bool (True only after explicit consent)
+          browser_cookie_scan_attempted: bool (True only after explicit consent
+              AND on a host whose X policy permits cookie discovery)
+          cookie_note: present only on an official-only host, where the scan
+              is skipped for every domain (neutral, relayable text)
           ytdlp_installed: bool
           ytdlp_action: already_installed | installed | install_failed | no_homebrew
           digg_installed: bool (True when the engine can resolve digg-pp-cli on PATH)
@@ -83,9 +92,19 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
           digg_stderr: present when digg_action is install_failed
           digg_path: present when digg_action is installed_off_path (binary on disk, not on PATH)
     """
-    from .env import COOKIE_DOMAINS, cookie_extraction_browsers
+    from .env import COOKIE_DOMAINS, cookie_extraction_browsers, x_policy
 
     cookies_found: Dict[str, str] = {}
+    cookie_note: Optional[str] = None
+
+    # Official-only host (LAST30DAYS_HOST=grok-bot, R5/KTD2): the consented
+    # cookie scan is skipped for EVERY domain (X and Truth Social alike) and
+    # recorded as not attempted, with a neutral note the caller can relay.
+    # The free CLI installs below still run. A LAST30DAYS_X_BACKEND=bird pin
+    # is the one path that re-enables discovery (KTD7), via x_policy.
+    if allow_browser_cookies and not x_policy(config).cookie_discovery:
+        allow_browser_cookies = False
+        cookie_note = OFFICIAL_HOST_COOKIE_NOTE
 
     if allow_browser_cookies:
         from . import cookie_extract
@@ -171,6 +190,8 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         "brightdata": brightdata_status(config),
         "env_written": False,
     }
+    if cookie_note:
+        results["cookie_note"] = cookie_note
     if ytdlp_action == "install_failed":
         results["ytdlp_stderr"] = brew_stderr
     if digg_action == "install_failed":
@@ -767,10 +788,19 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
             "requests/month). Install with: npm i -g @brightdata/cli && brightdata login"
         )
 
+    cookie_note = results.get("cookie_note")
+    if cookie_note:
+        # Official-only host: relay the neutral note; say nothing about
+        # browsers (R4). The scan was not attempted, so nothing is "found".
+        lines.append(f"  - {cookie_note}")
+
     env_written = results.get("env_written", False)
     if env_written:
         lines.append("")
-        lines.append("Configuration saved. Future runs will auto-detect your browsers.")
+        if cookie_note:
+            lines.append("Configuration saved.")
+        else:
+            lines.append("Configuration saved. Future runs will auto-detect your browsers.")
 
     return "\n".join(lines)
 

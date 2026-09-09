@@ -2554,7 +2554,75 @@ SETUP_PASSTHROUGH_FLAGS = {
     "--github-start",
     "--github-poll",
     "--openclaw",
+    "--store-key",
 }
+
+STORE_KEY_FLAG = "--store-key"
+
+
+def _split_store_key(extra_argv: list[str]) -> tuple[bool, str, list[str]]:
+    """Pull ``--store-key <NAME>`` / ``--store-key=<NAME>`` out of ``extra_argv``.
+
+    Returns ``(present, name, remaining)``. ``name`` is "" when the flag has
+    no value; ``remaining`` is every other passthrough token, so the regular
+    allowlist check still applies to them.
+    """
+    present = False
+    name = ""
+    remaining: list[str] = []
+    i = 0
+    while i < len(extra_argv):
+        arg = extra_argv[i]
+        if arg == STORE_KEY_FLAG:
+            present = True
+            if i + 1 < len(extra_argv) and not extra_argv[i + 1].startswith("-"):
+                name = extra_argv[i + 1]
+                i += 2
+                continue
+            i += 1
+            continue
+        if arg.startswith(STORE_KEY_FLAG + "="):
+            present = True
+            name = arg[len(STORE_KEY_FLAG) + 1:]
+            i += 1
+            continue
+        remaining.append(arg)
+        i += 1
+    return present, name, remaining
+
+
+def _run_store_key(name: str) -> int:
+    """``setup --store-key <NAME>``: persist one allowlisted credential from stdin.
+
+    Reads exactly one line from stdin, strips whitespace, and appends it to
+    the global ``.env`` as a 0o600 secret through ``setup_wizard.write_api_key``
+    (idempotent: an existing key is kept, never clobbered). The value never
+    reaches stdout or stderr: stdout carries ``NAME=****`` plus a JSON line
+    ``{"persisted": bool, "key": NAME}``. A name outside ``env.KEYCHAIN_KEYS``
+    or an empty value exits 2 without echoing anything.
+    """
+    from lib import setup_wizard
+
+    if name not in env.KEYCHAIN_KEYS:
+        # Do not enumerate the allowlist here: on an official-only host a
+        # failure hint must not name the legacy credential keys (R4).
+        sys.stderr.write(
+            "[last30days] setup --store-key: unknown or missing key name "
+            "(must be a credential name the engine loads from its .env; "
+            "see CONFIGURATION.md).\n"
+        )
+        return 2
+    value = sys.stdin.readline().strip()
+    if not value:
+        sys.stderr.write(
+            f"[last30days] setup --store-key {name}: empty value on stdin; "
+            "pipe the credential as a single line.\n"
+        )
+        return 2
+    persisted = bool(setup_wizard.write_api_key(env.CONFIG_FILE, value, key_name=name))
+    print(f"{name}=****")
+    print(json.dumps({"persisted": persisted, "key": name}))
+    return 0 if persisted else 1
 
 SKILL_ONLY_FLAGS = {
     "--agent",
@@ -2576,6 +2644,9 @@ def _validate_extra_argv(parser: argparse.ArgumentParser, topic: str, extra_argv
     if not extra_argv:
         return
     if topic.lower() == "setup":
+        # --store-key carries a value token; the name itself is allowlisted
+        # later in _run_store_key, not here.
+        _, _, extra_argv = _split_store_key(extra_argv)
         unsupported = [arg for arg in extra_argv if arg not in SETUP_PASSTHROUGH_FLAGS]
         if unsupported:
             parser.error(
@@ -2932,6 +3003,13 @@ def _main(
             "[last30days] --publish is only supported by the 'library feed' command.\n"
         )
         return 2
+    if topic.lower() == "setup":
+        # Persisting a credential needs no config load (no Keychain / pass
+        # probes, no cookie policy), so it dispatches before get_config.
+        store_key_present, store_key_name, _ = _split_store_key(extra_argv)
+        if store_key_present:
+            return _run_store_key(store_key_name)
+
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
     # One memo per command: comparison mode runs pipeline.run per entity in
     # parallel, so the reset must not live inside the pipeline.

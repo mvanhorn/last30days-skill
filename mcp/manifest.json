@@ -44,7 +44,8 @@
         "BSKY_APP_PASSWORD": "${user_config.bsky_app_password}",
         "PARALLEL_API_KEY": "${user_config.parallel_api_key}",
         "SCRAPECREATORS_API_KEY": "${user_config.scrapecreators_api_key}",
-        "OPENROUTER_API_KEY": "${user_config.openrouter_api_key}"
+        "OPENROUTER_API_KEY": "${user_config.openrouter_api_key}",
+        "X_BEARER_TOKEN": "${user_config.x_bearer_token}"
       }
     }
   },
@@ -137,6 +138,13 @@
       "type": "string",
       "title": "OPENROUTER_API_KEY",
       "description": "OpenRouter API key. Alternative LLM provider gateway for synthesis. Get one at https://openrouter.ai/keys.",
+      "sensitive": true,
+      "required": false
+    },
+    "x_bearer_token": {
+      "type": "string",
+      "title": "X_BEARER_TOKEN",
+      "description": "X API v2 app-only bearer token. Searches X through the official X API (recent posts, about the last week, unless your X developer project has full-archive access). Create an app in the X developer console at https://developer.x.com/ and copy its bearer token.",
       "sensitive": true,
       "required": false
     }

@@ -22,6 +22,10 @@ PROVIDER_CREDENTIALS = {
     "perplexity": "Perplexity API key",
     "scrapecreators": "ScrapeCreators API key",
     "github": "GitHub token or gh auth",
+    # X API v2 app-only bearer (X_BEARER_TOKEN). Presence is computed from
+    # config inside build(), never through diagnose.providers, whose key set
+    # is frozen by tests/test_diagnose_compat.py.
+    "x_bearer": "X API bearer token",
 }
 
 
@@ -100,6 +104,10 @@ def build(
             "label": PROVIDER_CREDENTIALS["scrapecreators"],
         },
         "github": {"present": bool(diagnose.get("has_github")), "label": PROVIDER_CREDENTIALS["github"]},
+        "x_bearer": {
+            "present": bool(str(config.get("X_BEARER_TOKEN") or "").strip()),
+            "label": PROVIDER_CREDENTIALS["x_bearer"],
+        },
     }
 
     active_endpoint_overrides = sorted(
