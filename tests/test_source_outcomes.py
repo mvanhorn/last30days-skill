@@ -384,11 +384,18 @@ def test_pipeline_records_both_mode_semantic_leg_failure_as_partial():
                 "PERPLEXITY_API_KEY": "pplx-test",
             },
             depth="quick",
+            # Pin both ends of the window. The fixture item is dated 2026-08-10,
+            # so an unpinned window drops it once the wall clock moves 30 days
+            # past that date and the failure then records as ERROR, not PARTIAL.
+            lookback_days=30,
+            as_of_date="2026-08-20",
             requested_sources=["perplexity"],
             mock=True,
             external_plan=_perplexity_plan(),
         )
 
+    assert report.range_from == "2026-07-21"
+    assert report.range_to == "2026-08-20"
     outcome = report.source_status["perplexity"]
     assert outcome.state == schema.PARTIAL
     assert outcome.items_returned == 1
