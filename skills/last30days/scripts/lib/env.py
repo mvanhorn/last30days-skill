@@ -151,6 +151,17 @@ def is_unsubstituted_template(value: Any) -> bool:
     return bool(_UNSUBSTITUTED_TEMPLATE.match(value.strip()))
 
 
+def templated_config_keys(config: dict[str, Any]) -> list[str]:
+    """Public view of the keys ``get_config()`` rejected as unsubstituted templates.
+
+    Thin reader so diagnostics report the templated state without re-deriving
+    the record key, in the same spirit as ``include_sources`` and
+    ``is_setup_complete``. Sorted here too: these call sites also see hand-built
+    configs, and the order is user-visible in both diagnostics.
+    """
+    return sorted(config.get(TEMPLATE_CONFIG_KEYS) or [])
+
+
 def is_timestamp_fresh(timestamp_value: Any, ttl_seconds: int) -> bool:
     """True when ``timestamp_value`` (ISO-8601 string) is within ``ttl_seconds``.
 

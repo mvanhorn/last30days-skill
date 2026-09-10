@@ -1158,9 +1158,7 @@ def _setup_block(config: Dict[str, Any]) -> Dict[str, Any]:
         # keys_present already reads them as absent. Carrying the names here is
         # what lets the text renderer say *why* they are absent instead of
         # leaving the user to read "credentials present: none".
-        "unsubstituted_templates": sorted(
-            config.get(env.TEMPLATE_CONFIG_KEYS) or []
-        ),
+        "unsubstituted_templates": env.templated_config_keys(config),
     }
 
 
@@ -1405,7 +1403,7 @@ def render_text(report: Dict[str, Any]) -> str:
         + (", ".join(present) if present else "none")
         + " (values never shown)"
     )
-    templated = list(setup.get("unsubstituted_templates") or [])
+    templated = setup.get("unsubstituted_templates") or []
     if templated:
         lines.append(
             "note: unsubstituted config template(s), counted as unset: "

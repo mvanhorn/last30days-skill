@@ -36,7 +36,8 @@ def _isolate(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     for key in _KEYS:
         monkeypatch.delenv(key, raising=False)
-    # SETUP_COMPLETE has no default and would otherwise be absent from config.
+    # Drop any ambient SETUP_COMPLETE so a truthy value on the machine running
+    # the suite cannot leak into the config under test.
     monkeypatch.delenv("SETUP_COMPLETE", raising=False)
 
 
@@ -47,7 +48,7 @@ def test_whole_value_template_is_emptied_and_recorded(monkeypatch, tmp_path):
     config = env.get_config()
 
     assert config["SCRAPECREATORS_API_KEY"] == ""
-    assert "SCRAPECREATORS_API_KEY" in config["_TEMPLATE_CONFIG_KEYS"]
+    assert "SCRAPECREATORS_API_KEY" in config[env.TEMPLATE_CONFIG_KEYS]
 
 
 def test_template_is_removed_from_the_process_environment(monkeypatch, tmp_path):
@@ -68,7 +69,7 @@ def test_real_credential_is_untouched_and_stays_in_the_environment(monkeypatch, 
     config = env.get_config()
 
     assert config["SCRAPECREATORS_API_KEY"] == "sc_abc123"
-    assert config["_TEMPLATE_CONFIG_KEYS"] == []
+    assert config[env.TEMPLATE_CONFIG_KEYS] == []
     assert env.read_secret_env("SCRAPECREATORS_API_KEY") == "sc_abc123"
 
 
@@ -79,7 +80,7 @@ def test_placeholder_alongside_other_text_is_kept(monkeypatch, tmp_path):
     config = env.get_config()
 
     assert config["SCRAPECREATORS_API_KEY"] == "prefix-${user_config.x}-suffix"
-    assert config["_TEMPLATE_CONFIG_KEYS"] == []
+    assert config[env.TEMPLATE_CONFIG_KEYS] == []
 
 
 def test_shell_default_syntax_is_not_a_template(monkeypatch, tmp_path):
@@ -91,7 +92,7 @@ def test_shell_default_syntax_is_not_a_template(monkeypatch, tmp_path):
     config = env.get_config()
 
     assert config["LAST30DAYS_MEMORY_DIR"] == shell_default
-    assert config["_TEMPLATE_CONFIG_KEYS"] == []
+    assert config[env.TEMPLATE_CONFIG_KEYS] == []
 
 
 def test_key_assembled_before_the_registered_key_loop_is_covered(monkeypatch, tmp_path):
@@ -102,7 +103,7 @@ def test_key_assembled_before_the_registered_key_loop_is_covered(monkeypatch, tm
     config = env.get_config()
 
     assert config["OPENAI_API_KEY"] == ""
-    assert "OPENAI_API_KEY" in config["_TEMPLATE_CONFIG_KEYS"]
+    assert "OPENAI_API_KEY" in config[env.TEMPLATE_CONFIG_KEYS]
 
 
 def test_templated_legacy_spelling_does_not_repopulate_the_canonical_key(
@@ -134,12 +135,24 @@ def test_templated_credential_reads_as_absent_to_diagnose(monkeypatch, tmp_path)
     assert diag["providers"]["google"] is False
 
 
+def test_key_the_earlier_export_loop_pushed_out_is_cleared_too(monkeypatch, tmp_path):
+    # The YT knob export loop runs before the sweep and passes this key through
+    # on `is not None`, so the sweep has to clear what that loop just exported.
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setenv("LAST30DAYS_YT_PLAYER_CLIENT", "${user_config.player_client}")
+
+    config = env.get_config()
+
+    assert config["LAST30DAYS_YT_PLAYER_CLIENT"] == ""
+    assert env.read_secret_env("LAST30DAYS_YT_PLAYER_CLIENT") is None
+
+
 def test_no_templates_leaves_an_empty_record(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
 
     config = env.get_config()
 
-    assert config["_TEMPLATE_CONFIG_KEYS"] == []
+    assert config[env.TEMPLATE_CONFIG_KEYS] == []
 
 
 def test_is_unsubstituted_template_matches_only_the_whole_placeholder():

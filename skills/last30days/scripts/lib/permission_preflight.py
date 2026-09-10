@@ -127,11 +127,11 @@ def build(
     # get_config() already emptied these, so the provider flags above read them
     # as absent. Name them anyway: the user's setup is broken in a way the
     # presence booleans alone describe as "nothing configured".
-    templated_keys = sorted(config.get(env.TEMPLATE_CONFIG_KEYS) or [])
+    templated_keys = env.templated_config_keys(config)
     if templated_keys:
         action_items.append(
             "Unsubstituted config template(s) count as unset: "
-            + ", ".join(templated_keys)
+            + _format_names(templated_keys)
             + ". Replace each with a real value or remove it."
         )
 
