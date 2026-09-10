@@ -1,5 +1,6 @@
 import socket
 import urllib.error
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -362,7 +363,9 @@ def test_pipeline_records_both_mode_semantic_leg_failure_as_partial():
         "title": "Search result",
         "url": "https://example.com/result",
         "snippet": "Raw search evidence",
-        "date": "2026-08-10",
+        # Relative so the item stays inside the run window; a fixed date fell out
+        # of the 30-day window and turned PARTIAL into ERROR once the calendar moved.
+        "date": (datetime.now(timezone.utc) - timedelta(days=5)).date().isoformat(),
         "relevance": 0.8,
         "why_relevant": "Perplexity Search result",
         "engagement": {},
