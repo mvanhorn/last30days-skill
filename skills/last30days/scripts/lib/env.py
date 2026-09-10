@@ -755,26 +755,41 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     # Reject unsubstituted extension placeholders last among the value-producing
     # steps, so the legacy ScrapeCreators spelling, the multi-key rotation, and
     # the OpenAI auth fields assembled above are all covered by one sweep rather
-    # than by a predicate repeated at each presence check. The process
-    # environment is cleared too: doctor's GitHub record, the GitHub backend
-    # token, bird_x's subprocess environment, and anything else the engine
-    # spawns read the variable directly and would otherwise still see the
-    # placeholder. Every consumer of a rejected config key therefore agrees the
-    # credential is unset, and the rejected names are published for the
-    # diagnostics to report. The sweep is bounded by the keys get_config
-    # registers: a credential read straight from the environment under a name it
-    # does not register - LAST30DAYS_API_KEY, or a bare SCRAPE_CREATORS_API_KEY
-    # spelling left behind after the canonical key resolved - keeps its
-    # placeholder.
+    # than by a predicate repeated at each presence check. Rejection means
+    # "absent", not "empty": the placeholder is removed from the process
+    # environment and the key is then re-resolved from the lower-priority
+    # sources exactly as it would be had the host never written it, so a real
+    # .env, Keychain, or pass credential it was shadowing is not discarded.
+    # Every consumer of a rejected config key therefore agrees the credential is
+    # unset, and the keys left genuinely unset are published for the diagnostics
+    # to report. The sweep is bounded by the keys get_config registers: a
+    # credential read straight from the environment under a name it does not
+    # register - LAST30DAYS_API_KEY, or a bare SCRAPE_CREATORS_API_KEY spelling
+    # left behind after the canonical key resolved - keeps its placeholder.
+    declared_defaults = {key: default for key, default in keys}
     templated_keys = sorted(
         key
         for key, value in config.items()
         if not key.startswith('_') and is_unsubstituted_template(value)
     )
     for key in templated_keys:
-        config[key] = ''
         os.environ.pop(key, None)
-    config[TEMPLATE_CONFIG_KEYS] = templated_keys
+        fallback = merged_env.get(key)
+        # A lower-priority value that is itself a placeholder is not a credential.
+        if is_unsubstituted_template(fallback):
+            fallback = None
+        resolved = fallback if fallback is not None else declared_defaults.get(key)
+        config[key] = resolved if resolved is not None else ''
+    # Report only the keys still leaving the credential unset. A placeholder that
+    # fell through to a real lower-priority credential (or to a usable default)
+    # is handled, and reporting it would nag about a setup that works.
+    config[TEMPLATE_CONFIG_KEYS] = [
+        key for key in templated_keys if not config.get(key)
+    ]
+    if 'OPENAI_API_KEY' in templated_keys and not config.get('OPENAI_API_KEY'):
+        # Keep the derived auth record consistent with the token it describes.
+        config['OPENAI_AUTH_SOURCE'] = AUTH_SOURCE_NONE
+        config['OPENAI_AUTH_STATUS'] = AUTH_STATUS_MISSING
 
     if policy.browser_cookies == "read":
         _discover_and_apply_x_credentials(config)

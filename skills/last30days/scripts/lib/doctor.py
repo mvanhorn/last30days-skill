@@ -1154,10 +1154,12 @@ def _setup_block(config: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "setup_complete": env.is_setup_complete(config),
         "keys_present": keys_present,
-        # get_config() emptied these values before any presence check ran, so
+        # get_config() rejected these before any presence check ran, so
         # keys_present already reads them as absent. Carrying the names here is
         # what lets the text renderer say *why* they are absent instead of
-        # leaving the user to read "credentials present: none".
+        # leaving the user to read "credentials present: none". Only keys left
+        # unset are listed: one whose placeholder fell through to a real
+        # lower-priority credential is configured and does not appear.
         "unsubstituted_templates": env.templated_config_keys(config),
     }
 

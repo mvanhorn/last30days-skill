@@ -41,6 +41,59 @@ def _isolate(monkeypatch, tmp_path):
     monkeypatch.delenv("SETUP_COMPLETE", raising=False)
 
 
+def _isolate_with_env_file(monkeypatch, tmp_path, contents):
+    """Like ``_isolate``, but the global .env holds real values."""
+    _isolate(monkeypatch, tmp_path)
+    config_file = tmp_path / ".env"
+    config_file.write_text(contents, encoding="utf-8")
+    config_file.chmod(0o600)
+    monkeypatch.setattr(env, "CONFIG_FILE", config_file)
+
+
+def test_placeholder_falls_through_to_a_real_lower_priority_credential(monkeypatch, tmp_path):
+    # The host's placeholder occupies the highest-priority source. It must read
+    # as absent, not as an empty override, or the credential the user already
+    # configured in .env (or Keychain, or pass) is silently discarded and the
+    # run degrades despite having a valid key.
+    _isolate_with_env_file(
+        monkeypatch, tmp_path, "SCRAPECREATORS_API_KEY=sc_real_from_dotenv\n"
+    )
+    monkeypatch.setenv("SCRAPECREATORS_API_KEY", TEMPLATE)
+
+    config = env.get_config()
+
+    assert config["SCRAPECREATORS_API_KEY"] == "sc_real_from_dotenv"
+    # A credential that resolved is configured, so it is not reported as unset.
+    assert "SCRAPECREATORS_API_KEY" not in config[env.TEMPLATE_CONFIG_KEYS]
+    # The placeholder itself still leaves the process environment.
+    assert env.read_secret_env("SCRAPECREATORS_API_KEY") is None
+
+
+def test_a_lower_priority_placeholder_is_not_a_fallback(monkeypatch, tmp_path):
+    # A placeholder in .env is no more a credential than one in the environment.
+    _isolate_with_env_file(
+        monkeypatch, tmp_path, f"SCRAPECREATORS_API_KEY={TEMPLATE}\n"
+    )
+    monkeypatch.setenv("SCRAPECREATORS_API_KEY", TEMPLATE)
+
+    config = env.get_config()
+
+    assert config["SCRAPECREATORS_API_KEY"] == ""
+    assert "SCRAPECREATORS_API_KEY" in config[env.TEMPLATE_CONFIG_KEYS]
+
+
+def test_templated_openai_key_clears_the_derived_auth_record(monkeypatch, tmp_path):
+    _isolate(monkeypatch, tmp_path)
+    monkeypatch.setenv("OPENAI_API_KEY", "${user_config.openai_api_key}")
+
+    config = env.get_config()
+
+    assert config["OPENAI_API_KEY"] == ""
+    assert config["OPENAI_AUTH_STATUS"] == env.AUTH_STATUS_MISSING
+    assert config["OPENAI_AUTH_SOURCE"] == env.AUTH_SOURCE_NONE
+    assert "OPENAI_API_KEY" in config[env.TEMPLATE_CONFIG_KEYS]
+
+
 def test_whole_value_template_is_emptied_and_recorded(monkeypatch, tmp_path):
     _isolate(monkeypatch, tmp_path)
     monkeypatch.setenv("SCRAPECREATORS_API_KEY", TEMPLATE)
