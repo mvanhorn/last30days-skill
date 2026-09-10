@@ -69,6 +69,21 @@ def test_placeholder_falls_through_to_a_real_lower_priority_credential(monkeypat
     assert env.read_secret_env("SCRAPECREATORS_API_KEY") is None
 
 
+def test_a_restored_key_list_is_still_rotated_to_a_single_key(monkeypatch, tmp_path):
+    # The rotation runs before the sweep, so a list restored from a lower-priority
+    # source must be rotated again - otherwise the backend receives "k1,k2" as one
+    # credential and authentication fails despite valid fallback keys existing.
+    _isolate_with_env_file(
+        monkeypatch, tmp_path, "SCRAPECREATORS_API_KEY=sc_one,sc_two\n"
+    )
+    monkeypatch.setenv("SCRAPECREATORS_API_KEY", TEMPLATE)
+
+    config = env.get_config()
+
+    assert config["SCRAPECREATORS_API_KEY"] in {"sc_one", "sc_two"}
+    assert "," not in config["SCRAPECREATORS_API_KEY"]
+
+
 def test_a_lower_priority_placeholder_is_not_a_fallback(monkeypatch, tmp_path):
     # A placeholder in .env is no more a credential than one in the environment.
     _isolate_with_env_file(

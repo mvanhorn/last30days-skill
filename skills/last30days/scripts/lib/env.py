@@ -165,6 +165,22 @@ def templated_config_keys(config: dict[str, Any]) -> list[str]:
     return sorted(config.get(TEMPLATE_CONFIG_KEYS) or [])
 
 
+def _rotate_scrapecreators_key(config: dict[str, Any]) -> None:
+    """Round-robin a comma-separated SCRAPECREATORS_API_KEY to one key per run.
+
+    Extracted so the placeholder sweep can reapply it: the sweep may restore a
+    value from a lower-priority source after the ordinary rotation already ran,
+    and a comma-separated list handed to a backend whole fails authentication.
+    A second call on an already-rotated value is a no-op (no comma remains).
+    """
+    raw = config.get('SCRAPECREATORS_API_KEY') or ''
+    if ',' not in raw:
+        return
+    import random
+    sc_keys = [k.strip() for k in raw.split(',') if k.strip()]
+    config['SCRAPECREATORS_API_KEY'] = random.choice(sc_keys) if sc_keys else ''
+
+
 def is_timestamp_fresh(timestamp_value: Any, ttl_seconds: int) -> bool:
     """True when ``timestamp_value`` (ISO-8601 string) is within ``ttl_seconds``.
 
@@ -723,11 +739,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     # Multi-key rotation: comma-separated SCRAPECREATORS_API_KEY round-robins
     # via random.choice per run. Originally added in #268, accidentally dropped
     # in v3.0.6, restored here.
-    sc_key_raw = config.get('SCRAPECREATORS_API_KEY') or ''
-    if ',' in sc_key_raw:
-        import random
-        sc_keys = [k.strip() for k in sc_key_raw.split(',') if k.strip()]
-        config['SCRAPECREATORS_API_KEY'] = random.choice(sc_keys) if sc_keys else ''
+    _rotate_scrapecreators_key(config)
 
     # Track which config source was used (highest-priority file source wins
     # the label; keychain is only reported when nothing else is configured).
@@ -780,6 +792,12 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
             fallback = None
         resolved = fallback if fallback is not None else declared_defaults.get(key)
         config[key] = resolved if resolved is not None else ''
+    # The rotation ran before this sweep, so a fallback restored from a
+    # comma-separated list would otherwise reach a backend whole. Reapply it,
+    # then reject the picked key if it is itself a placeholder.
+    _rotate_scrapecreators_key(config)
+    if is_unsubstituted_template(config.get('SCRAPECREATORS_API_KEY')):
+        config['SCRAPECREATORS_API_KEY'] = ''
     # Report only the keys still leaving the credential unset. A placeholder that
     # fell through to a real lower-priority credential (or to a usable default)
     # is handled, and reporting it would nag about a setup that works.
