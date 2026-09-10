@@ -6,6 +6,7 @@ import datetime
 import json
 import locale
 import os
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -124,6 +125,30 @@ def _truthy(value: Any) -> bool:
     if value is None:
         return False
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+# A Claude Desktop extension maps every unset field in its config modal to the
+# literal string ``${user_config.<field>}`` in the engine's environment. The
+# placeholder is non-empty, so a presence check reads it as a real credential:
+# doctor reports the source healthy, preflight returns ready, and the backend
+# sends the literal placeholder upstream and surfaces the vendor's 401 instead
+# of falling back. Anchoring to the whole trimmed value is what keeps a real
+# credential (which may contain ``$`` or braces) and shell-default syntax a
+# user can legitimately paste into ``.env`` (``${VAR:-default}``) out of scope;
+# only the extension namespace, as issue #1081's own suggested fix names, is
+# rejected.
+_UNSUBSTITUTED_TEMPLATE = re.compile(r"^\$\{user_config\.[^{}]*\}$")
+
+# Config-record key holding the names of values rejected above, so diagnostics
+# report the templated state instead of silently counting the key absent.
+TEMPLATE_CONFIG_KEYS = "_TEMPLATE_CONFIG_KEYS"
+
+
+def is_unsubstituted_template(value: Any) -> bool:
+    """True when ``value`` is a whole, unexpanded ``${user_config.*}`` placeholder."""
+    if not isinstance(value, str):
+        return False
+    return bool(_UNSUBSTITUTED_TEMPLATE.match(value.strip()))
 
 
 def is_timestamp_fresh(timestamp_value: Any, ttl_seconds: int) -> bool:
@@ -712,6 +737,25 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     # Evaluated after the host and pin keys are merged: on an official-only
     # host the browser list is empty unless bird is pinned (x_policy).
     config['_BROWSER_COOKIE_BROWSERS'] = cookie_extraction_browsers(config)
+
+    # Reject unsubstituted extension placeholders last among the value-producing
+    # steps, so the legacy ScrapeCreators spelling, the multi-key rotation, and
+    # the OpenAI auth fields assembled above are all covered by one sweep rather
+    # than by a predicate repeated at each presence check. The process
+    # environment is cleared too: doctor's GitHub record, the GitHub backend
+    # token, bird_x's subprocess environment, and anything else the engine
+    # spawns read the variable directly and would otherwise still see the
+    # placeholder. Every consumer therefore agrees the credential is unset, and
+    # the rejected names are published for the diagnostics to report.
+    templated_keys = sorted(
+        key
+        for key, value in config.items()
+        if not key.startswith('_') and is_unsubstituted_template(value)
+    )
+    for key in templated_keys:
+        config[key] = ''
+        os.environ.pop(key, None)
+    config[TEMPLATE_CONFIG_KEYS] = templated_keys
 
     if policy.browser_cookies == "read":
         _discover_and_apply_x_credentials(config)
