@@ -164,3 +164,12 @@ def test_is_unsubstituted_template_matches_only_the_whole_placeholder():
     assert env.is_unsubstituted_template("") is False
     assert env.is_unsubstituted_template(None) is False
     assert env.is_unsubstituted_template(1234) is False
+
+
+def test_shell_default_in_the_extension_namespace_is_not_a_template():
+    # `${user_config.x:-default}` is shell-default syntax, not an unexpanded
+    # placeholder: the field name is not the bare identifier the manifest emits.
+    assert env.is_unsubstituted_template("${user_config.x:-default}") is False
+    assert env.is_unsubstituted_template("${user_config.}") is False
+    assert env.is_unsubstituted_template("${user_config.a}${user_config.b}") is False
+    assert env.is_unsubstituted_template("${user_config.x y}") is False

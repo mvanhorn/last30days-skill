@@ -132,12 +132,15 @@ def _truthy(value: Any) -> bool:
 # placeholder is non-empty, so a presence check reads it as a real credential:
 # doctor reports the source healthy, preflight returns ready, and the backend
 # sends the literal placeholder upstream and surfaces the vendor's 401 instead
-# of falling back. Anchoring to the whole trimmed value is what keeps a real
-# credential (which may contain ``$`` or braces) and shell-default syntax a
-# user can legitimately paste into ``.env`` (``${VAR:-default}``) out of scope;
-# only the extension namespace, as issue #1081's own suggested fix names, is
-# rejected.
-_UNSUBSTITUTED_TEMPLATE = re.compile(r"^\$\{user_config\.[^{}]*\}$")
+# of falling back. Two constraints keep legitimate values out of scope. The
+# match is anchored to the whole trimmed value, so a real credential containing
+# ``$`` or braces is untouched. And the field name is restricted to the
+# identifier charset the manifest uses, so shell-default syntax is not mistaken
+# for a placeholder - both the generic form a user may paste into ``.env``
+# (``${VAR:-default}``) and the namespaced form with a default
+# (``${user_config.x:-default}``). Only the extension namespace, as issue
+# #1081's own suggested fix names, is rejected.
+_UNSUBSTITUTED_TEMPLATE = re.compile(r"^\$\{user_config\.[A-Za-z0-9_]+\}$")
 
 # Config-record key holding the names of values rejected above, so diagnostics
 # report the templated state instead of silently counting the key absent.
@@ -756,8 +759,13 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     # environment is cleared too: doctor's GitHub record, the GitHub backend
     # token, bird_x's subprocess environment, and anything else the engine
     # spawns read the variable directly and would otherwise still see the
-    # placeholder. Every consumer therefore agrees the credential is unset, and
-    # the rejected names are published for the diagnostics to report.
+    # placeholder. Every consumer of a rejected config key therefore agrees the
+    # credential is unset, and the rejected names are published for the
+    # diagnostics to report. The sweep is bounded by the keys get_config
+    # registers: a credential read straight from the environment under a name it
+    # does not register - LAST30DAYS_API_KEY, or a bare SCRAPE_CREATORS_API_KEY
+    # spelling left behind after the canonical key resolved - keeps its
+    # placeholder.
     templated_keys = sorted(
         key
         for key, value in config.items()
