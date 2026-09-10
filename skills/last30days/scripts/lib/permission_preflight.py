@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import env
+
 
 ENDPOINT_OVERRIDE_KEYS = {
     "BSKY_SEARCH_HOST",
@@ -122,6 +124,16 @@ def build(
     action_items: list[str] = []
     if ignored_project_config:
         action_items.append("Project config was ignored; set LAST30DAYS_TRUST_PROJECT_CONFIG=1 to trust it.")
+    # get_config() already emptied these, so the provider flags above read them
+    # as absent. Name them anyway: the user's setup is broken in a way the
+    # presence booleans alone describe as "nothing configured".
+    templated_keys = sorted(config.get(env.TEMPLATE_CONFIG_KEYS) or [])
+    if templated_keys:
+        action_items.append(
+            "Unsubstituted config template(s) count as unset: "
+            + ", ".join(templated_keys)
+            + ". Replace each with a real value or remove it."
+        )
 
     return {
         "status": "action_needed" if action_items else "ready",

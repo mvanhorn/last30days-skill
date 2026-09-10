@@ -1616,5 +1616,35 @@ class GrokBotParityTable(unittest.TestCase):
                     self.assertLessEqual(x_text.count(pin), 1, x_text)
                 self.assertNotIn("last30days_x_backend", x_text)
 
+
+class UnsubstitutedTemplateReporting(unittest.TestCase):
+    """Issue #1081 defect 2: a rejected `${user_config.*}` placeholder is named
+    as unsubstituted instead of reading as "nothing configured"."""
+
+    def test_setup_block_carries_the_rejected_key_names(self):
+        block = doctor._setup_block({env.TEMPLATE_CONFIG_KEYS: ["GEMINI_API_KEY"]})
+
+        self.assertEqual(["GEMINI_API_KEY"], block["unsubstituted_templates"])
+        self.assertFalse(block["keys_present"]["GEMINI_API_KEY"])
+
+    def test_setup_block_defaults_to_an_empty_list(self):
+        self.assertEqual([], doctor._setup_block({})["unsubstituted_templates"])
+
+    def test_render_names_the_template_without_listing_it_as_present(self):
+        report = _build({env.TEMPLATE_CONFIG_KEYS: ["GEMINI_API_KEY"]})
+
+        text = doctor.render_text(report)
+
+        self.assertIn(
+            "unsubstituted config template(s), counted as unset: GEMINI_API_KEY", text
+        )
+        self.assertNotIn("credentials present: GEMINI_API_KEY", text)
+
+    def test_render_is_unchanged_without_templates(self):
+        self.assertNotIn(
+            "unsubstituted config template(s)", doctor.render_text(_build({}))
+        )
+
+
 if __name__ == "__main__":
     unittest.main()
