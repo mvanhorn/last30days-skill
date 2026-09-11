@@ -1,3 +1,4 @@
+import os
 import sys
 from pathlib import Path
 from unittest import mock
@@ -55,3 +56,20 @@ def _reset_reddit_keyless_memo():
     _http.reset_reddit_keyless_memo()
     yield
     _http.reset_reddit_keyless_memo()
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_credentials(monkeypatch):
+    """Strip credential-shaped variables from the process environment.
+
+    ``env.get_config()`` reads API keys and cookies straight from os.environ, so
+    a developer machine with real credentials exported resolves config the CI
+    box never would (upstream CI is a clean Linux runner). Tests that need a
+    credential set it themselves; nothing should depend on the ambient one.
+    """
+    suffixes = ("_API_KEY", "_TOKEN", "_KEY", "_SECRET", "_PASSWORD", "_COOKIE")
+    exact = {"AUTH_TOKEN", "CT0", "SESSION_ID"}
+    for name in list(os.environ):
+        if name in exact or name.endswith(suffixes):
+            monkeypatch.delenv(name, raising=False)
+    yield
