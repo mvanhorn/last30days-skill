@@ -20,6 +20,11 @@ type Config struct {
 	Version string
 }
 
+// BrowserCookiesEnvOverride is an explicit MCP-layer opt-in. It only removes
+// the default-deny CLI flag; the engine still enforces its own recorded
+// browser-cookie consent and configuration.
+const BrowserCookiesEnvOverride = "LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES"
+
 // Register adds every tool this server exposes to s. The caller supplies a
 // Config so test harnesses can pin a version without touching globals.
 func Register(s *server.MCPServer, cfg Config) {
@@ -87,11 +92,22 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 }
 
 func researchRunArgs(topic, emit string, save bool) []string {
-	runArgs := []string{topic, "--emit=" + emit, "--no-browser-cookies"}
+	runArgs := []string{topic, "--emit=" + emit}
+	if !browserCookiesAllowed() {
+		runArgs = append(runArgs, "--no-browser-cookies")
+	}
 	if save {
 		runArgs = append(runArgs, "--save-dir", mcpSaveDir())
 	}
 	return runArgs
+}
+
+func browserCookiesAllowed() bool {
+	raw := os.Getenv(BrowserCookiesEnvOverride)
+	return raw == "1" ||
+		strings.EqualFold(raw, "true") ||
+		strings.EqualFold(raw, "yes") ||
+		strings.EqualFold(raw, "on")
 }
 
 func mcpSaveDir() string {

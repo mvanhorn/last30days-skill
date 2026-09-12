@@ -29,7 +29,9 @@ The output `.mcpb` lands at `build/last30days-pp-mcp-<os>-<arch>.mcpb`. Drag it 
 
 ## Runtime requirements
 
-End users need Python 3.12+ on PATH. The bundle ships the engine source but relies on the host interpreter.
+End users need Python 3.12+. The bundle ships the engine source but relies on the host interpreter and does not install Python. By default the server looks up `python3` on `PATH`; set `LAST30DAYS_PYTHON` to an explicit Python executable when the default lookup is not suitable.
+
+MCP research denies browser-cookie access by default by passing `--no-browser-cookies`. Set `LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES` to `1`, `true`, `yes`, or `on` (case-insensitive) to remove that MCP-layer denial. Empty, false, unset, and unrecognized values keep the denial in place. Enabling this variable does not create consent: browser-cookie use still requires the engine's separately recorded consent and configuration.
 
 ## Versioning
 
