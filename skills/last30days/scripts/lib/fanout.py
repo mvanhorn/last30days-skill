@@ -46,6 +46,12 @@ def run_competitor_fanout(
         Ordered list of (entity_name, Report) tuples for runs that succeeded.
         Empty list if every run raised; the caller decides how to surface
         partial-failure modes.
+
+        ``main_topic`` is NOT guaranteed to be present: a main run that raised
+        is dropped like any other. Since the render treats element 0 as the
+        comparison's subject, a caller must verify ``main_topic`` survived
+        before using the list, or it will silently head the report with a
+        competitor.
     """
     if not competitors:
         report = main_runner()

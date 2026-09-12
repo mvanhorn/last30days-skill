@@ -1643,6 +1643,19 @@ def render_comparison_multi_context(
     if resolved_block:
         lines.extend(resolved_block)
         lines.append("")
+    # render_context surfaces warnings for a single-entity run; omitting them
+    # here left context mode the one supported output where a dropped entity
+    # or a failed source is invisible. Placed above the per-entity sections so
+    # it survives tail truncation, matching render_comparison_multi.
+    aggregated_warnings = [
+        f"[{label}] {warning}"
+        for label, report in entity_reports
+        for warning in report.warnings
+    ]
+    if aggregated_warnings:
+        lines.append("Warnings:")
+        lines.extend(f"- {warning}" for warning in aggregated_warnings)
+        lines.append("")
     for label, report in entity_reports:
         evidence_report = schema.without_sources(report, {"corpus"})
         requested_clusters = evidence_report.clusters[:cluster_limit]
