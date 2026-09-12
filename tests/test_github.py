@@ -806,14 +806,26 @@ class TestSearchGithubQualifiers(unittest.TestCase):
     def test_paren_wrapped_qualifier_builds_single_created_query(self, mock_token):
         # Wrapped qualifier (issue #952) must not survive into the query to
         # collide with the adapter's own created: window (issue #949 class).
+        # Authenticated search emits is:issue / is:pull-request partitions
+        # (GitHub 422s without one); assert the subject per sub-query.
         captured = {}
         with patch.object(github, "_fetch_json", side_effect=self._capturing_fetch(captured)):
             github.search_github(
                 "open source ai (created:>2025-03-20)", "2026-07-01", "2026-07-31",
             )
-        q = self._query(captured["url"])
-        self.assertEqual(q, "open source ai created:>2026-07-01")
-        self.assertEqual(q.count("created:"), 1)
+        queries = [self._query(u) for u in captured["urls"]]
+        self.assertEqual(len(queries), 2)
+        for q in queries:
+            self.assertTrue(q.startswith("open source ai created:>2026-07-01"))
+            self.assertEqual(q.count("created:"), 1)
+            self.assertIn("created:>2026-07-01", q)
+            self.assertNotIn("created:>2025-03-20", q)
+            self.assertIn("open source", q)
+            self.assertIn("ai", q)
+        self.assertEqual(
+            {q.rsplit(" ", 1)[-1] for q in queries},
+            {"is:issue", "is:pull-request"},
+        )
 
     @patch.object(github, "_resolve_token", return_value="test-token")
     def test_quote_wrapped_qualifier_only_topic_skips_network(self, mock_token):

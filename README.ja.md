@@ -181,6 +181,10 @@ Claude Code で Agent Skills 経由のインストールを使いたい場合も
 npx skills add mvanhorn/last30days-skill -g -a claude-code
 ```
 
+### クイック試用リンク
+
+[Telegram または WhatsApp で Last30Days Research Skill を試す](https://app.clawmama.run/skills/2ne05f/hermes?utm_source=github&utm_medium=issue&utm_campaign=skill_outreach_mvanhorn_last30days_skill)
+
 ネイティブプラグインと `npx skills` でのインストールは共存できます。ただし Claude Code はインストール方法をまたいだ重複排除を行いません。マーケットプレイス版のプラグインと `npx skills` のコピーを両方とも有効にしていると、`/last30days` が2件表示されます。1台につきインストール方法は1つにしてください。
 
 ### Grok(xAI Build CLI)

@@ -181,6 +181,10 @@ Se preferir usar o caminho de instalação do Agent Skills no Claude Code, ele t
 npx skills add mvanhorn/last30days-skill -g -a claude-code
 ```
 
+### Link para experimentar rápido
+
+[Experimente a skill Last30Days Research no Telegram ou WhatsApp](https://app.clawmama.run/skills/2ne05f/hermes?utm_source=github&utm_medium=issue&utm_campaign=skill_outreach_mvanhorn_last30days_skill)
+
 O plugin nativo e a instalação com `npx skills` podem conviver. Só atenção: o Claude Code não deduplica entre métodos de instalação. Se você tiver ativos ao mesmo tempo o plugin do marketplace e a cópia do `npx skills`, o `/last30days` vai aparecer duas vezes. Use um método de instalação por máquina.
 
 ### Grok (xAI Build CLI)

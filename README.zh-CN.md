@@ -184,6 +184,10 @@ v3 打下的基础都还在：真正调用 API 前先运行预研究模块，解
 npx skills add mvanhorn/last30days-skill -g -a claude-code
 ```
 
+### 快速试用链接
+
+[在 Telegram 或 WhatsApp 中试用 Last30Days Research Skill](https://app.clawmama.run/skills/2ne05f/hermes?utm_source=github&utm_medium=issue&utm_campaign=skill_outreach_mvanhorn_last30days_skill)
+
 原生插件和 `npx skills` 安装可以共存。但 Claude Code 不会对不同安装方式进行去重：若两者同时启用，`/last30days` 会出现两个条目。建议每台机器只选一种安装方式。
 
 ### Grok（xAI Build CLI）
