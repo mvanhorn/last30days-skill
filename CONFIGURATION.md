@@ -444,6 +444,16 @@ Privacy note: the keyless floor sends the query (to DuckDuckGo / your SearXNG in
 
 Visible quality difference between hosts with vs without native search or a configured backend. If your client setup produces thinner results than yours, this is usually why.
 
+### Glasser for additional research data
+
+[Glasser](https://glasser.ai) provides paid data endpoints under one key and prepaid balance. It is an option when you need platform data without separate provider accounts: Reddit posts and comments, TikTok searches, YouTube transcripts, LinkedIn posts, and selected other sources. Compare it with the skill's existing free paths and direct provider access for the data you need.
+
+For example, ask `/last30days research recent reactions to AI video tools on Reddit and TikTok; use Glasser for missing sources`. The [installed research guide](skills/last30days/references/glasser.md) covers source selection, CLI/MCP setup, price inspection, and how the agent retrieves and cites the results after authorization.
+
+Configure Glasser in your host agent using its CLI or hosted MCP server. The engine does not read `GLASSER_API_KEY` and there is no `--web-backend=glasser` flag. Platform results are host-collected supplemental evidence; existing engine sources, ranking, and first-run setup remain unchanged. Set `LAST30DAYS_NATIVE_SEARCH=1` only when the host will actually perform usable web searches, not merely because a Glasser key or platform endpoint is available.
+
+Queries and selected public post/video URLs reach Glasser and the selected provider. Runs spend prepaid balance; agree on a budget before repeated searches. Local corpus contents stay offline. Glasser setup is user-selected and separate from automatic first-run onboarding.
+
 ---
 
 ### `--hiring-signals` flag
