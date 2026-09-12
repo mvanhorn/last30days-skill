@@ -68,7 +68,7 @@ KEYCHAIN_KEYS = (
     "AUTH_TOKEN", "CT0", "BSKY_HANDLE", "BSKY_APP_PASSWORD",
     "TRUTHSOCIAL_TOKEN", "BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY",
     "OPENROUTER_API_KEY", "PERPLEXITY_API_KEY", "PARALLEL_API_KEY", "XQUIK_API_KEY",
-    "XIAOHONGSHU_API_BASE", "GITHUB_TOKEN", "BRIGHTDATA_API_KEY",
+    "DIFFBOT_API_KEY", "XIAOHONGSHU_API_BASE", "GITHUB_TOKEN", "BRIGHTDATA_API_KEY",
     "X_BEARER_TOKEN",
 )
 
@@ -639,6 +639,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_PERPLEXITY_DEEP_TIMEOUT_SECONDS', '600'),
         ('PARALLEL_API_KEY', None),
         ('XQUIK_API_KEY', None),
+        ('DIFFBOT_API_KEY', None),
         # Bright Data CLI. Optional: the CLI normally owns its own auth via
         # `brightdata login`, so this only matters for users who prefer an
         # explicit key in a `.env` file or the keychain. Registered here so
@@ -1841,3 +1842,18 @@ def is_xquik_available(config: dict[str, Any]) -> bool:
 def get_xquik_token(config: dict[str, Any]) -> str:
     """Get Xquik API key."""
     return config.get('XQUIK_API_KEY') or ''
+
+
+# Diffbot
+def is_diffbot_available(config: dict[str, Any]) -> bool:
+    """Check if Diffbot Knowledge Graph Article search is available.
+
+    Requires DIFFBOT_API_KEY. Runs automatically when set; suppress via
+    EXCLUDE_SOURCES=diffbot.
+    """
+    return bool(config.get('DIFFBOT_API_KEY'))
+
+
+def get_diffbot_token(config: dict[str, Any]) -> str:
+    """Get the Diffbot API key (passed to the DQL endpoint as the ``token`` param)."""
+    return config.get('DIFFBOT_API_KEY') or ''

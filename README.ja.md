@@ -86,6 +86,7 @@ CEOと会うとして、直近30日間のツイートと YouTube の文字起こ
 | **Xiaohongshu(RED)** | 中国のライフスタイル・プロダクト・クリエイターのシグナル。ログイン済みの x-mcp ブラウザプラグイン、または `xiaohongshu-mcp` サービスがローカルで動いているときに、`--search xhs` で明示的に指定して使います。 |
 | **Bluesky** | 分散型のソーシャル層。Twitter 以後の移住で生まれた AT Protocol の投稿です。 |
 | **Perplexity** | 制御された Agent API の統合、OpenRouter の Sonar フォールバック、Search API の生の結果、明示的な Deep Research。 |
+| **Diffbot** | ニュースと記事のインデックス。Diffbot Knowledge Graph の日付範囲付き記事を、関連度と新しさで並べます。`DIFFBOT_API_KEY` を設定すると自動で有効になります。 |
 | **Web** | 編集記事や、ブログの比較記事。数あるシグナルの1つであって、唯一のものではありません。 |
 
 コミュニティが今も情報源を増やし続けています。Truth Social をはじめとするニッチな情報源もすでにエンジンに入っていて、さらに追加予定です。
@@ -299,6 +300,7 @@ Reddit(コメント込み)、Hacker News、Polymarket、GitHub はすぐに使�
 | Xiaohongshu(RED) | ログイン済みの x-mcp ブラウザプラグインか `xiaohongshu-mcp` サービスを動かしたうえで、実行ごとに `--search xhs` を付けるか `.env` に `INCLUDE_SOURCES=xiaohongshu` を設定して有効化します。last30days は `http://localhost:18060`、次に `http://host.docker.internal:18060` の順に自動で接続を試し、独自のURLを使う場合は `XIAOHONGSHU_API_BASE` を指定します | last30days 側のAPIキーは不要。ローカルのブラウザセッションのサービス次第です |
 | DripStack(有料の金融ニュースレター) | 任意で有効化: 実行ごとに `--search dripstack`、または `.env` に `INCLUDE_SOURCES=dripstack` | キー不要。無料の公開検索APIを使います |
 | Perplexity Agent API / Search API / Deep Research | Perplexity のキー、または Sonar の代替として OpenRouter のキー | 従量課金。直接キーで Agent API とバックグラウンド Deep Research が有効になります |
+| Diffbot（ニュース/記事） | Diffbot API トークン（`DIFFBOT_API_KEY`） | 無料枠あり、以降は従量課金 |
 | ウェブ検索 | Brave Search のキー | 月2,000クエリまで無料 |
 
 ### macOS のキーチェーン(任意)

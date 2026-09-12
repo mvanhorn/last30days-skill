@@ -89,6 +89,7 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 | **小红书（RED）** | 来自中国生活方式、产品和创作者的信号。当本机运行已登录的 x-mcp 浏览器插件或 `xiaohongshu-mcp` 服务时，通过 `--search xhs` 显式启用。 |
 | **Bluesky** | 去中心化的社交内容层，搜索 Twitter 用户迁移后产生的 AT Protocol 帖子。 |
 | **Perplexity** | 受控 Agent API 综合结果、OpenRouter Sonar 回退、原始 Search API 数据和显式 Deep Research。 |
+| **Diffbot** | 新闻与文章索引。来自 Diffbot Knowledge Graph、按日期窗口筛选的文章，按相关性和新鲜度排序。设置 `DIFFBOT_API_KEY` 后自动启用。 |
 | **Web** | 编辑报道和博客对比。它只是众多信号之一，而不是唯一来源。 |
 
 社区贡献者仍在不断加入更多平台。Truth Social 等垂直来源已经进入引擎，更多来源也在路上。
@@ -298,6 +299,7 @@ Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置�
 | 小红书（RED） | 运行已登录的 x-mcp 浏览器插件或 `xiaohongshu-mcp` 服务，并在单次运行中通过 `--search xhs` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=xiaohongshu`；last30days 会依次自动探测 `http://localhost:18060` 和 `http://host.docker.internal:18060`，也可通过 `XIAOHONGSHU_API_BASE` 指定自定义地址 | last30days 不需要 API 密钥；依赖本地浏览器会话服务 |
 | DripStack（付费金融通讯） | 每次运行通过 `--search dripstack` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=dripstack` | 无需密钥；公共搜索 API 免费 |
 | Perplexity Agent API / Search API / Deep Research | Perplexity 密钥，或作为 Sonar 回退方案的 OpenRouter 密钥 | 按量付费；直接密钥启用 Agent API 和后台 Deep Research |
+| Diffbot（新闻/文章） | Diffbot API token（`DIFFBOT_API_KEY`） | 有免费额度，之后按量付费 |
 | Web 搜索 | Brave Search 密钥 | 每月 2,000 次免费查询 |
 
 ### macOS Keychain（可选）

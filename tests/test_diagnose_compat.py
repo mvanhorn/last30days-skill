@@ -44,7 +44,7 @@ KNOWN_SOURCE_NAMES = {
     "reddit", "x", "youtube", "tiktok", "instagram", "hackernews", "bluesky",
     "truthsocial", "polymarket", "grounding", "xiaohongshu", "github",
     "perplexity", "threads", "pinterest", "digg", "jobs", "linkedin",
-    "arxiv", "techmeme", "stocktwits", "trustpilot", "dripstack",
+    "arxiv", "techmeme", "stocktwits", "trustpilot", "dripstack", "diffbot",
 }
 
 # ---------------------------------------------------------------------------
