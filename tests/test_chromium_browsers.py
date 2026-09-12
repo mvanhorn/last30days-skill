@@ -20,7 +20,7 @@ from lib.chrome_cookies import (
 )
 
 # The Chromium-based browsers added on top of the original Chrome support.
-NEW_CHROMIUM_BROWSERS = ["brave", "edge", "vivaldi", "opera", "arc", "chromium"]
+NEW_CHROMIUM_BROWSERS = ["brave", "edge", "vivaldi", "opera", "arc", "dia", "chromium"]
 ALL_AUTO_BROWSERS = ["firefox", "safari", "chrome", *NEW_CHROMIUM_BROWSERS]
 
 
@@ -133,7 +133,7 @@ class TestEnvBrowserSelection:
 
 
 class TestCookieExtractRouting:
-    @pytest.mark.parametrize("browser", ["edge", "vivaldi", "opera", "arc", "chromium"])
+    @pytest.mark.parametrize("browser", ["edge", "vivaldi", "opera", "arc", "dia", "chromium"])
     def test_routes_to_registry(self, browser):
         with (
             patch("lib.cookie_extract.platform.system", return_value="Darwin"),
@@ -148,7 +148,7 @@ class TestCookieExtractRouting:
         # The browser key is threaded through to the macOS extractor.
         assert mock_macos.call_args[0][0] == browser
 
-    @pytest.mark.parametrize("browser", ["edge", "vivaldi", "opera", "arc", "chromium"])
+    @pytest.mark.parametrize("browser", ["edge", "vivaldi", "opera", "arc", "dia", "chromium"])
     def test_non_macos_returns_none(self, browser):
         with patch("lib.cookie_extract.platform.system", return_value="Linux"):
             assert extract_cookies(browser, ".x.com", ["auth_token"]) is None
@@ -164,13 +164,14 @@ class TestCookieExtractRouting:
             patch("lib.cookie_extract.extract_vivaldi_cookies", return_value=None) as m_viv,
             patch("lib.cookie_extract.extract_opera_cookies", return_value=None) as m_opera,
             patch("lib.cookie_extract.extract_arc_cookies", return_value=None) as m_arc,
+            patch("lib.cookie_extract.extract_dia_cookies", return_value=None) as m_dia,
             patch("lib.cookie_extract.extract_chromium_cookies", return_value=None) as m_chr,
             patch("lib.cookie_extract.extract_safari_cookies", return_value=None),
         ):
             result = extract_cookies("auto", ".x.com", ["auth_token"])
 
         assert result is None
-        for mock_fn in (m_chrome, m_brave, m_edge, m_viv, m_opera, m_arc, m_chr):
+        for mock_fn in (m_chrome, m_brave, m_edge, m_viv, m_opera, m_arc, m_dia, m_chr):
             mock_fn.assert_called_once_with(".x.com", ["auth_token"])
 
 
@@ -181,7 +182,7 @@ class TestCookieExtractRouting:
 
 class TestChromiumRegistry:
     def test_registry_has_expected_browsers(self):
-        assert set(CHROMIUM_BROWSER_PROFILES) == {"edge", "vivaldi", "opera", "arc", "chromium"}
+        assert set(CHROMIUM_BROWSER_PROFILES) == {"edge", "vivaldi", "opera", "arc", "dia", "chromium"}
         for base_dir, service in CHROMIUM_BROWSER_PROFILES.values():
             assert service.endswith("Safe Storage")
             assert base_dir is not None
