@@ -1,4 +1,4 @@
-"""Web search retrieval via Brave Search, Exa, Serper, Parallel, or a keyless floor."""
+"""Web search retrieval via Brave Search, Exa, Serper, Parallel, Keenable, or a keyless floor."""
 
 from __future__ import annotations
 
@@ -203,6 +203,61 @@ def parallel_search(
     return items, artifact
 
 
+# ---------------------------------------------------------------------------
+# Keenable Search (keyless-by-default; optional key lifts the rate limit)
+# ---------------------------------------------------------------------------
+
+def keenable_search(
+    query: str, date_range: tuple[str, str], api_key: str | None = None, count: int = 5,
+) -> tuple[list[dict], dict]:
+    """Keenable web search. Keyless against the public endpoint by default; an
+    optional KEENABLE_API_KEY only lifts the rate limit (never required)."""
+    headers = {"Content-Type": "application/json", "X-Keenable-Title": "last30days"}
+    if api_key:
+        url = "https://api.keenable.ai/v1/search"
+        headers["X-API-Key"] = api_key
+    else:
+        url = "https://api.keenable.ai/v1/search/public"
+    data = http.request(
+        "POST", url,
+        headers=headers,
+        json_data={
+            "query": query,
+            "mode": "pro",
+            "published_after": date_range[0],
+            "published_before": date_range[1],
+        },
+        timeout=15,
+    )
+    items = []
+    for i, r in enumerate((data.get("results", []))[:count]):
+        if not isinstance(r, dict):
+            continue
+        url_r = r.get("url", "")
+        if not url_r:
+            continue
+        raw_date = r.get("published_at") or ""
+        pub_date = _normalize_date(raw_date.split("T")[0] if "T" in raw_date else raw_date[:10]) if raw_date else None
+        if not _in_date_range(pub_date, date_range):
+            continue
+        items.append({
+            "id": f"WK{i + 1}",
+            "title": r.get("title", ""),
+            "url": url_r,
+            "source_domain": _domain(url_r),
+            # Keenable returns both `snippet` (the page text) and `description`
+            # (the page's meta description, usually empty), and it returns whole
+            # pages rather than a snippet-sized excerpt, so collapse and cap it
+            # to the length the other backends here produce.
+            "snippet": " ".join(str(r.get("snippet") or r.get("description") or "").split())[:500],
+            "date": pub_date,
+            "relevance": 0.8,
+            "why_relevant": "Keenable web search",
+        })
+    artifact = {"label": "keenable", "webSearchQueries": [query], "resultCount": len(items)}
+    return items, artifact
+
+
 def _parse_serper_date(raw: str) -> str | None:
     if not raw:
         return None
@@ -240,10 +295,14 @@ def web_search(
         elif config.get("PARALLEL_API_KEY"):
             backend = "parallel"
         elif env.keyless_web_allowed(config):
-            # No paid key and the host has no native search -> use the keyless
-            # floor. On a native-search host this branch is skipped (the model
-            # supplies web results itself), so the engine returns nothing here.
-            backend = "keyless"
+            # No paid key and the host has no native search. Keenable is a real
+            # keyless search API (better than the DDG/SearXNG floor), so it is
+            # the preferred keyless default; the floor stays reachable via
+            # --web-backend keyless. Keenable is keyless-tier: an optional
+            # KEENABLE_API_KEY only lifts the rate limit, it does not promote
+            # keenable to the paid tier, so this stays behind the native-search
+            # suppression guard (on a native-search host the model searches).
+            backend = "keenable"
         else:
             return [], {}
     items: list[dict] = []
@@ -272,6 +331,9 @@ def web_search(
         items, artifact = parallel_mcp.search(
             query, date_range, config.get("PARALLEL_API_KEY")
         )
+    elif backend == "keenable":
+        # Keyless by default; the optional key only lifts the rate limit.
+        items, artifact = keenable_search(query, date_range, config.get("KEENABLE_API_KEY"))
     elif backend == "keyless":
         items, artifact = web_search_keyless.keyless_search(query, date_range, config)
     elif backend != "none":
