@@ -146,7 +146,17 @@ _expected_miss_statuses: ContextVar[frozenset[int]] = ContextVar(
 
 _FIXTURE_FORMAT = "last30days-http-fixture/v1"
 _FIXTURE_SECRET_KEYS = frozenset(
-    {"api_key", "apikey", "authorization", "cookie", "key", "secret", "token"}
+    {
+        "api_key", "apikey", "authorization", "cookie", "key", "secret", "token",
+        "password", "passwd", "passphrase", "credential", "bearer", "jwt",
+    }
+)
+# Suffixes are matched on the normalized key, where camelCase collapses without
+# a separator ("accessJwt" -> "accessjwt"), so these are bare rather than
+# underscore-prefixed. "key" is deliberately absent: it would redact "monkey".
+_FIXTURE_SECRET_KEY_SUFFIXES = (
+    "_api_key", "apikey", "_authorization", "_cookie", "_secret", "_token",
+    "password", "passwd", "passphrase", "credential", "jwt",
 )
 _fixture_lock = threading.Lock()
 _fixture_state: Optional[dict[str, Any]] = None
@@ -161,7 +171,7 @@ def _is_secret_key(value: object) -> bool:
     key = re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
     return (
         key in _FIXTURE_SECRET_KEYS
-        or key.endswith(("_api_key", "_authorization", "_cookie", "_secret", "_token"))
+        or key.endswith(_FIXTURE_SECRET_KEY_SUFFIXES)
     )
 
 
@@ -361,13 +371,26 @@ def recording_requests(path: str | Path):
                 "exchanges": state["exchanges"],
                 "source_exchanges": state["source_exchanges"],
             }
+            # A recorded exchange is credential-adjacent by construction:
+            # redaction is key-name driven, so an unrecognized key name leaves
+            # a real value on disk. Create the temp file 0600 at open time
+            # rather than chmod-ing after the write, or the credentials sit in
+            # a world-readable file for the length of the write (the parent
+            # directory is caller-supplied and not guaranteed private).
+            # Mirrors last30days.save_output. Unlink first so a stale or
+            # pre-planted temp file cannot be reused with its own wider mode --
+            # O_CREAT does not alter the mode of an existing file.
             temporary = target.with_name(f".{target.name}.tmp")
-            temporary.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
+            temporary.unlink(missing_ok=True)
+            fd = os.open(
+                temporary,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
             )
-            if os.name != "nt":
-                temporary.chmod(0o644)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+                )
             temporary.replace(target)
 
 
@@ -456,6 +479,12 @@ def _fixture_record(
         state = _fixture_state
         if state is None or state["mode"] != "record":
             return
+        # Union the session's env-derived secret VALUES in, so a credential
+        # echoed back inside an ordinary response field is scrubbed on this
+        # path too, not only on the source-record path. Response scrubbing does
+        # not feed _fixture_key, so this cannot make a replay key
+        # machine-dependent.
+        redactions = redactions | (state.get("redactions") or frozenset())
         response: dict[str, Any]
         if error is None:
             response = {"value": _scrub_fixture_value(value, redactions=redactions)}
