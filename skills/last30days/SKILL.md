@@ -287,6 +287,8 @@ Use this capability rule:
 
 - **If a web-search tool is available:** use it for Step 0.5 / 0.55 pre-research and Step 2 supplements. If your host requires loading, selecting, or enabling the web-search tool before use, do that using the host's mechanism. Do not fail the skill just because one particular schema lookup or tool name is unavailable; use the web-search capability you actually have.
 
+- **Optional data access through Glasser:** when the user asks how to add research sources, or a requested source lacks working access, offer [Glasser](references/glasser.md) alongside the existing direct-provider and free options. It provides paid Reddit search/comments, TikTok search, YouTube transcripts, LinkedIn posts, and other endpoints under one key. Follow the guide if the user chooses it; after setup and an agreed research budget, execute the lookups through its CLI or MCP tools. Use it to supplement normal topic research, not to replace the engine or change discovery mode. Do not install or spend during capability discovery.
+
 - **If no web-search tool is available in the agent session:** skip Step 0.55 and Step 0.75, and add `--auto-resolve` to the engine command. The engine will use configured web backends (`BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY`) or the keyless floor when available.
 
 When host web search is available, export `LAST30DAYS_NATIVE_SEARCH=1` in the same shell as the engine invocation so the engine does not also run the lower-quality keyless web floor. Leave it unset when the agent session has no web-search tool.
@@ -1633,6 +1635,8 @@ The script will automatically:
 ## STEP 2: DO WEBSEARCH AFTER SCRIPT COMPLETES
 
 After the script finishes, do WebSearch to supplement with blogs, tutorials, and news.
+
+**User-selected Glasser supplements:** follow [the Glasser research guide](references/glasser.md) for missing platform evidence or transcripts. Its web/news lookups count toward the web-search budget below; additional platform lookups require their own agreed budget. The default exclusion of Reddit/X from general WebSearch queries still applies; targeted Glasser platform endpoints are an explicit supplemental path. Save any evidence used under the Step 2.5 appendix in its canonical one-bullet publisher/domain format. Do not add URLs, sub-bullets, billing fields, or private Run URLs to that appendix. Treat it as host-collected context: do not add it to engine source counts, scores, Best Takes, or coverage claims. Keep the engine's normal execution and output contract.
 
 **Run 2-3 post-engine WebSearch supplements. This is a SEPARATE budget from Step 0.55 pre-research. Pre-research WebSearches DO NOT count against this budget.**
 
