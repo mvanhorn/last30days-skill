@@ -10,6 +10,7 @@ and the host-facing digest.
 """
 
 import inspect
+import io
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -281,6 +282,17 @@ def test_judgments_apply_by_id_with_per_row_leniency(tmp_path, capsys):
     assert handoff.ROW_ABSENT.name is None
     assert handoff.ROW_ABSENT.junk is None
     assert handoff.ROW_ABSENT.worthiness is None
+
+
+def test_judgments_read_from_stdin(tmp_path, monkeypatch):
+    bundle = _write(tmp_path)
+    monkeypatch.setattr(handoff.sys, "stdin", io.StringIO(json.dumps({
+        "bundle_id": bundle.bundle_id,
+        "judgments": [{"id": "n1", "name": "Agent Runtime", "junk": False}],
+    })))
+    judgments = handoff.read_judgments("-", bundle)
+    assert judgments["n1"].name == "Agent Runtime"
+    assert judgments["n1"].junk is False
 
 
 def test_judgments_worthiness_clamped_to_0_100_integers(tmp_path):
@@ -696,6 +708,16 @@ def test_angles_apply_truncate_and_none_path_returns_empty(tmp_path):
     assert len(x_article) <= 200
     assert set(x_article.split()) == {"angle"}  # word-boundary truncation
     assert "n9" not in angles  # unknown ids ignored
+
+
+def test_angles_read_from_stdin(tmp_path, monkeypatch):
+    bundle = _write(tmp_path)
+    monkeypatch.setattr(handoff.sys, "stdin", io.StringIO(json.dumps({
+        "bundle_id": bundle.bundle_id,
+        "angles": [{"id": "n1", "podcast": "Why agent runtimes diverge"}],
+    })))
+    angles = handoff.read_angles("-", bundle)
+    assert angles["n1"].podcast == "Why agent runtimes diverge"
 
 
 # --- Scenario 7: digest ----------------------------------------------------------

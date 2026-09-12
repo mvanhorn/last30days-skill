@@ -27,6 +27,13 @@ class ParseCompetitorsPlanTests(unittest.TestCase):
         self.assertEqual(out["drake"]["x_handle"], "Drake")
         self.assertEqual(out["drake"]["subreddits"], ["Drizzy"])
 
+    def test_stdin_json_parsed(self):
+        raw = '{"Drake": {"x_handle": "Drake", "subreddits": ["Drizzy"]}}'
+        with mock.patch.object(cli.sys, "stdin", io.StringIO(raw)):
+            out = cli.parse_competitors_plan("-")
+        self.assertEqual(out["drake"]["x_handle"], "Drake")
+        self.assertEqual(out["drake"]["subreddits"], ["Drizzy"])
+
     def test_file_path_accepted(self):
         with tempfile.NamedTemporaryFile(
             mode="w", suffix=".json", delete=False,
