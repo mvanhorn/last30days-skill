@@ -314,12 +314,34 @@ def _intent_hint_block(plan: schema.QueryPlan) -> str:
     return ""
 
 
+_UNTRUSTED_CLOSE_TAG_RE = re.compile(r"</\s*untrusted_content\s*>", re.IGNORECASE)
+
+
+def _defang_fence_sentinel(value: str) -> str:
+    """Source content must not be able to terminate the untrusted fence.
+
+    A scraped title or snippet carrying the literal closing tag would
+    otherwise close the envelope early, leaving the rest of that field
+    outside the fence where the judge reads it as trusted prompt text.
+    Mirrors ``render._defang_corpus_sentinels``. Matched case-insensitively
+    and tolerant of inner whitespace, so near-miss spellings a model would
+    still honor cannot slip through.
+
+    The replacement is HTML-escaped rather than a look-alike tag: a substitute
+    that still reads as markup (``</untrusted-content>``) is close enough to
+    the real delimiter that a model could treat it as one, which would leave
+    the original hazard in place. Escaping keeps the text legible to the judge
+    while making it unmistakably data rather than structure.
+    """
+    return _UNTRUSTED_CLOSE_TAG_RE.sub("&lt;/untrusted_content&gt;", value)
+
+
 def _fenced_untrusted_content(candidate_block: str) -> str:
     return (
         f"{UNTRUSTED_CONTENT_NOTICE}\n\n"
         "Candidates:\n"
         "<untrusted_content>\n"
-        f"{candidate_block}\n"
+        f"{_defang_fence_sentinel(candidate_block)}\n"
         "</untrusted_content>"
     )
 
