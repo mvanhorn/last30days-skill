@@ -369,6 +369,35 @@ class HtmlCliIntegrationTests(unittest.TestCase):
         with self.subTest("suffix"):
             path = cli.compute_save_path_display("/tmp", report.topic, "v3", "html")
             self.assertTrue(path.endswith("/ai-agent-frameworks-raw-html-v3.html"))
+        with self.subTest("suffix_traversal_sanitized"):
+            # A suffix carrying path separators / parent refs must be sanitized
+            # to a flat token so it can never escape the save directory.
+            path = cli.compute_save_path_display("/tmp", report.topic, "../../etc", "html")
+            self.assertNotIn("..", path)
+            self.assertTrue(path.endswith("/ai-agent-frameworks-raw-html-etc.html"))
+
+    def test_save_suffix_cannot_escape_save_directory(self):
+        report = _report("AI Agent Frameworks", [])
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = cli.save_output(report, "md", tmpdir, suffix="../../ESCAPED")
+            # The written file stays inside the intended directory, and the
+            # traversal fragment never lands in the filename.
+            self.assertEqual(Path(tmpdir).resolve(), out.parent)
+            self.assertNotIn("..", out.name)
+            self.assertTrue(out.name.startswith("ai-agent-frameworks-raw"))
+
+    def test_discover_save_suffix_cannot_escape_save_directory(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            out = cli._save_discovery_output(
+                "# discovery\n",
+                domain="AI agents",
+                emit="md",
+                save_dir=tmpdir,
+                suffix="../../ESCAPED",
+            )
+            self.assertEqual(Path(tmpdir).resolve(), out.parent)
+            self.assertNotIn("..", out.name)
+            self.assertTrue(out.name.startswith("ai-agents-discover-raw"))
 
     def test_save_output_can_persist_comparison_html(self):
         reports = [
