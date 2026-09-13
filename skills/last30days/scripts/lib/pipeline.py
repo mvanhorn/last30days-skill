@@ -28,6 +28,7 @@ from . import (
     corpus,
     dates,
     dedupe,
+    diffbot,
     digg,
     dripstack,
     entity_extract,
@@ -101,6 +102,7 @@ SEARCH_ALIAS = {
     "web": "grounding",
     "xhs": "xiaohongshu",
     "xquik": "x",  # xquik is a backend of the single "x" source, not its own source
+    "db": "diffbot",
 }
 
 # trustpilot is capped at 1: every subquery would use the identical company
@@ -215,6 +217,7 @@ MOCK_AVAILABLE_SOURCES = [
     "digg",
     "arxiv",
     "techmeme",
+    "diffbot",
     "trustpilot",
     "amazon",
     "jobs",
@@ -320,6 +323,11 @@ def available_sources(
     # local sync before each run's first search).
     if which("techmeme-pp-cli"):
         available.append("techmeme")
+    # Diffbot KG Article search: additive news corpus, default-on when
+    # DIFFBOT_API_KEY is set (same pattern as grounding + BRAVE_API_KEY).
+    # Suppress via EXCLUDE_SOURCES=diffbot.
+    if env.is_diffbot_available(config):
+        available.append("diffbot")
     if env.is_bluesky_available(config):
         available.append("bluesky")
     if env.is_truthsocial_available(config):
@@ -4476,6 +4484,7 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
         "digg",
         "arxiv",
         "techmeme",
+        "diffbot",
         "trustpilot",
         "github",
     }
@@ -5161,6 +5170,17 @@ def _retrieve_stream_impl(
             techmeme.parse_techmeme_response(result, query=relevance_topic),
             _result_outcome_artifact(source, result),
         )
+    if source == "diffbot":
+        result = diffbot.search_diffbot(
+            subquery.search_query, from_date, to_date,
+            depth=depth,
+            token=env.get_diffbot_token(config),
+            title_specificity=subquery.term_specificity,
+        )
+        return (
+            diffbot.parse_diffbot_response(result, from_date, to_date),
+            _result_outcome_artifact(source, result),
+        )
     if source == "trustpilot":
         # Brand-shape gate keys off the stable research topic, not the narrowed
         # per-subquery search_query, so the company is detected consistently.
@@ -5398,6 +5418,28 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
                 "engagement": {},
                 "relevance": 0.83,
                 "why_relevant": "Mock Techmeme headline",
+            },
+        ],
+        "diffbot": [
+            {
+                "id": "DB1",
+                "title": f"{subquery.search_query}: what the latest reporting says",
+                "url": "https://example.com/diffbot-article",
+                "source_domain": "example.com",
+                "snippet": f"Structured news coverage of {subquery.search_query} from the Diffbot Knowledge Graph.",
+                "date": dates.get_date_range(4)[0],
+                "relevance": 0.8,
+                "why_relevant": "Diffbot KG Article search",
+            },
+            {
+                "id": "DB2",
+                "title": f"Analysis: {subquery.search_query} in context",
+                "url": "https://example.org/diffbot-analysis",
+                "source_domain": "example.org",
+                "snippet": f"A second Diffbot-indexed article covering {subquery.search_query}.",
+                "date": dates.get_date_range(9)[0],
+                "relevance": 0.8,
+                "why_relevant": "Diffbot KG Article search",
             },
         ],
         "dripstack": [

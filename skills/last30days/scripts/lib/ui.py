@@ -129,6 +129,7 @@ SOURCE_COMPLETION_ORDER = [
     "digg",
     "arxiv",
     "techmeme",
+    "diffbot",
     "trustpilot",
     "amazon",
 ]
@@ -148,6 +149,7 @@ SOURCE_COMPLETION_META = {
     "digg": ("Digg", "cluster", "clusters", Colors.YELLOW),
     "arxiv": ("arXiv", "paper", "papers", Colors.RED),
     "techmeme": ("Techmeme", "headline", "headlines", Colors.CYAN),
+    "diffbot": ("Diffbot", "article", "articles", Colors.GREEN),
     "trustpilot": ("Trustpilot", "review", "reviews", Colors.GREEN),
     "amazon": ("Amazon", "product", "products", Colors.YELLOW),
 }
@@ -512,6 +514,7 @@ def show_diagnostic_banner(diag: dict):
     has_youtube = "youtube" in available_sources
     has_web = "grounding" in available_sources
     has_xiaohongshu = "xiaohongshu" in available_sources
+    has_diffbot = "diffbot" in available_sources
     x_backend = diag.get("x_backend")
     native_web_backend = diag.get("native_web_backend")
 
@@ -565,6 +568,10 @@ def show_diagnostic_banner(diag: dict):
         else:
             lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.YELLOW}⚡ Web{Colors.RESET}       — Add BRAVE_API_KEY or SERPER_API_KEY {Colors.DIM}│{Colors.RESET}")
 
+        # Diffbot (default-on, optional — only show when configured)
+        if has_diffbot:
+            lines.append(f"{Colors.DIM}│{Colors.RESET}  {Colors.GREEN}✅ Diffbot{Colors.RESET}   — KG Articles                         {Colors.DIM}│{Colors.RESET}")
+
         lines.append(f"{Colors.DIM}│{Colors.RESET}                                                     {Colors.DIM}│{Colors.RESET}")
         lines.append(f"{Colors.DIM}│{Colors.RESET}  Config: {Colors.BOLD}~/.config/last30days/.env{Colors.RESET}                  {Colors.DIM}│{Colors.RESET}")
         lines.append(f"{Colors.DIM}└─────────────────────────────────────────────────────┘{Colors.RESET}")
@@ -605,6 +612,9 @@ def show_diagnostic_banner(diag: dict):
             lines.append(f"│  ✅ Web       — {backend} API available{' ' * max(0, 13 - len(backend))}│")
         else:
             lines.append("│  ⚡ Web       — Add BRAVE_API_KEY or SERPER_API_KEY │")
+
+        if has_diffbot:
+            lines.append("│  ✅ Diffbot   — KG Articles                         │")
 
         lines.append("│                                                     │")
         lines.append("│  Config: ~/.config/last30days/.env                  │")

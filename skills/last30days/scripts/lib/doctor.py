@@ -164,6 +164,7 @@ SOURCE_ORDER = (
     "digg",
     "techmeme",
     "arxiv",
+    "diffbot",
     "trustpilot",
     "amazon",
     "tiktok",
@@ -204,6 +205,7 @@ KEY_PRESENCE_VARS = (
     "XAI_API_KEY",
     "XQUIK_API_KEY",
     "X_BEARER_TOKEN",
+    "DIFFBOT_API_KEY",
     "BRAVE_API_KEY",
     "EXA_API_KEY",
     "SERPER_API_KEY",
@@ -702,6 +704,25 @@ def _arxiv_record(config):
     return _cli_gated_record(config, "arxiv-pp-cli", "arxiv")
 
 
+def _diffbot_record(config):
+    requires = "DIFFBOT_API_KEY"
+    if env.is_diffbot_available(config):
+        return _record(
+            status=health.OK,
+            requires=requires,
+            detail="KG Articles via DQL",
+        )
+    return _record(
+        status="unconfigured",
+        requires=requires,
+        fix=(
+            "set DIFFBOT_API_KEY in ~/.config/last30days/.env "
+            "(token from https://app.diffbot.com/account/); "
+            "suppress with EXCLUDE_SOURCES=diffbot"
+        ),
+    )
+
+
 def _trustpilot_record(config):
     return _cli_gated_record(config, "trustpilot-pp-cli", "trustpilot")
 
@@ -957,6 +978,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "digg": _digg_record,
     "techmeme": _techmeme_record,
     "arxiv": _arxiv_record,
+    "diffbot": _diffbot_record,
     "trustpilot": _trustpilot_record,
     "amazon": _amazon_record,
     "tiktok": _tiktok_record,
