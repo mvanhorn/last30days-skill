@@ -92,21 +92,16 @@ def _law8_block() -> str:
 
 
 def test_law8_is_renderer_aware_with_both_regimes():
-    # LAW 8 must keep the inline-link default for hidden-link hosts AND carry a
-    # plain-label branch for visible-URL hosts. Codex rendered every inline link
-    # as `label (https://...)`, so a single-renderer LAW 8 produced URL soup.
+    # Desktop clients and plain-text terminal renderers need different citation
+    # presentation. A generic Codex label must not suppress desktop links.
     law8 = _law8_block()
-    # Hidden-link hosts are Claude Code AND Grok Bot / Cursor agent chat: the
-    # 2026-09-01 Grok Bot brief showed Cursor agent chat hides markdown URLs
-    # like Claude Code, so lumping it with Codex produced unclickable cites.
-    assert "Hidden-link hosts (Claude Code; Grok Bot / Cursor agent chat)" in law8
-    assert "Visible-URL hosts (Codex" in law8
-    assert "URL soup" in law8
+    assert "Hidden-link hosts (Codex desktop; Claude Code; Grok Bot / Cursor agent chat)" in law8
+    assert "Visible-URL hosts (plain-text terminal renderers)" in law8
     # Hidden-link default must remain inline `[name](url)` (no Claude Code regression).
     assert "`[name](url)`" in law8
 
 
-def test_law8_host_detection_is_deterministic_via_claudecode():
+def test_law8_missing_host_variables_do_not_imply_plain_text():
     law8 = _law8_block()
     assert "CLAUDECODE" in law8
     # CURSOR_AGENT is the second deterministic hidden-link signal (Grok Bot /
@@ -115,6 +110,7 @@ def test_law8_host_detection_is_deterministic_via_claudecode():
     assert "Grok Bot" in law8
     # The detection must be stated as deterministic, not left to the model guessing.
     assert "do not guess" in law8
+    assert "their absence does not establish a plain-text renderer" in law8
 
 
 def test_law8_visible_url_hosts_exclude_cursor_and_split_from_step0():
@@ -125,11 +121,11 @@ def test_law8_visible_url_hosts_exclude_cursor_and_split_from_step0():
     text = SKILL_MD.read_text(encoding="utf-8")
     visible_lists = re.findall(r"[Vv]isible-URL hosts? \(([^)]*)\)", text)
     assert visible_lists, "no visible-URL host list found"
-    assert any("Codex" in hosts for hosts in visible_lists)
     for hosts in visible_lists:
         assert "Cursor" not in hosts, f"Cursor named as visible-URL host: {hosts!r}"
+        assert "Codex" not in hosts, f"Codex grouped as a plain-text renderer: {hosts!r}"
     law8 = _law8_block()
-    assert "Gemini CLI, raw CLI" in law8
+    assert "Gemini CLI, and raw CLI" in law8
     assert "is the same split" not in law8
 
 
@@ -147,36 +143,33 @@ def test_law8_wrap_list_includes_u_name_and_github_repo_first_mentions():
     assert "never trim an item URL down to a guessed repo root" in law8
 
 
-def test_law8_post_synthesis_self_check_branches_on_both_env_signals():
-    # The post-synthesis self-check is the env-branching gate; it must branch
-    # on CLAUDECODE or CURSOR_AGENT, and PRE-PRESENT is a supplemental sweep.
+def test_law8_post_synthesis_self_check_uses_renderer_capability():
     law8 = _law8_block()
     start = law8.index("Post-synthesis self-check")
     self_check = law8[start:]
-    assert "`CLAUDECODE` or `CURSOR_AGENT` set" in self_check
-    assert "both `CLAUDECODE` and `CURSOR_AGENT` unset" in self_check
+    assert "Codex desktop and other Markdown-capable clients" in self_check
+    assert "confirmed plain-text renderer" in self_check
     assert "not a substitute" in self_check
 
 
 def test_citation_renderer_host_list_is_mirrored_outside_law8():
     # LAW 9, FUN CONTENT, CITATION PRIORITY, and the PRE-PRESENT sweep must
-    # carry the same renderer split - Grok Bot / Cursor agent chat hidden-link,
-    # Codex/Gemini CLI/raw CLI visible-URL - so a chunked read of any one
-    # section cannot resurrect "Cursor is visible-URL".
+    # carry the same renderer split so a chunked read cannot resurrect a blanket
+    # "Codex/Cursor is visible-URL" assumption.
     text = SKILL_MD.read_text(encoding="utf-8")
     law9_start = text.index("**LAW 9 -")
     law9 = text[law9_start : text.index("**LAW 10 -", law9_start)]
-    assert "hidden-link host (Claude Code; Grok Bot / Cursor agent chat)" in law9
+    assert "hidden-link host (Codex desktop; Claude Code; Grok Bot / Cursor agent chat)" in law9
     fun_start = text.index("**FUN CONTENT")
     fun = text[fun_start : fun_start + 2000]
     assert "Grok Bot / Cursor agent chat" in fun
     citation_start = text.index("**URL formatting is governed by LAW 8**")
     citation = text[citation_start : citation_start + 1500]
-    assert "hidden-link hosts (Claude Code; Grok Bot / Cursor agent chat)" in citation
-    assert "Codex/Gemini CLI/raw CLI" in citation
+    assert "hidden-link hosts (Codex desktop; Claude Code; Grok Bot / Cursor agent chat)" in citation
+    assert "confirmed plain-text terminal renderers" in citation
     pre_present_start = text.index("## PRE-PRESENT SELF-CHECK")
     pre_present = text[pre_present_start:]
-    assert "`CLAUDECODE` or `CURSOR_AGENT` set" in pre_present
+    assert "Codex desktop, or `CLAUDECODE` / `CURSOR_AGENT` set" in pre_present
 
 
 def test_plan_invocation_warns_against_bash_lc_apostrophe_wrapper():
