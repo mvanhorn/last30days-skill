@@ -31,6 +31,32 @@ class ReasoningClient:
 
     name: str
 
+    # TROVR: accumulates real token usage across every generate_text/
+    # generate_json call made on this instance for the whole run (planner +
+    # rerank share one instance, resolved once in resolve_runtime() below) —
+    # the engine never surfaced this to callers before. A concrete subclass
+    # calls record_usage() after each real HTTP call, with whatever usage
+    # shape its own API returns; total_usage is what pipeline.py reads at the
+    # end to attach to the report's `artifacts["usage"]` for the JSON export.
+    def __init__(self) -> None:
+        self._usage_calls = 0
+        self._usage_prompt_tokens = 0
+        self._usage_completion_tokens = 0
+
+    def record_usage(self, prompt_tokens: int, completion_tokens: int) -> None:
+        self._usage_calls += 1
+        self._usage_prompt_tokens += prompt_tokens
+        self._usage_completion_tokens += completion_tokens
+
+    @property
+    def total_usage(self) -> dict[str, int]:
+        return {
+            "calls": self._usage_calls,
+            "promptTokens": self._usage_prompt_tokens,
+            "completionTokens": self._usage_completion_tokens,
+            "totalTokens": self._usage_prompt_tokens + self._usage_completion_tokens,
+        }
+
     def generate_text(
         self,
         model: str,
@@ -56,6 +82,7 @@ class GeminiClient(ReasoningClient):
     name = "gemini"
 
     def __init__(self, api_key: str):
+        super().__init__()
         self.api_key = api_key
 
     def _generate_content(
@@ -95,12 +122,18 @@ class GeminiClient(ReasoningClient):
             tools=tools,
             response_mime_type=response_mime_type,
         )
+        usage = payload.get("usageMetadata") or {}
+        self.record_usage(
+            usage.get("promptTokenCount", 0),
+            usage.get("candidatesTokenCount", 0),
+        )
         return extract_gemini_text(payload)
 
 class OpenAIClient(ReasoningClient):
     name = "openai"
 
     def __init__(self, token: str):
+        super().__init__()
         self.token = token
 
     def generate_text(
@@ -134,6 +167,7 @@ class XAIClient(ReasoningClient):
     name = "xai"
 
     def __init__(self, api_key: str):
+        super().__init__()
         self.api_key = api_key
 
     def generate_text(
@@ -165,6 +199,7 @@ class OpenRouterClient(ReasoningClient):
     name = "openrouter"
 
     def __init__(self, api_key: str):
+        super().__init__()
         self.api_key = api_key
 
     def generate_text(
