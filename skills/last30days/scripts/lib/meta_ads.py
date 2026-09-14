@@ -19,7 +19,8 @@ Two-stage shape, following the Amazon buyer-signal lane:
 Metering: one credit per request regardless of records returned, so the caps
 below bound paid *requests*, not records. A default-depth run is 1 discovery
 + at most 1 company search + up to 2 enrichment pages + up to 3 transcripts,
-so at most 7 credits.
+so at most 7 credits. Every cap here counts requests issued, never results
+obtained: an upstream that returns nothing still bills for being asked.
 
 Two live-verified quirks drive the code:
 
@@ -136,24 +137,57 @@ def _compact(text: str) -> str:
     return "".join(_tokens(text))
 
 
-def names_match(topic: str, name: str) -> bool:
-    """True when an advertiser page name plausibly belongs to the topic.
+# How an advertiser page name matched the topic, strongest first. Resolution
+# prefers a whole tier over ad volume: volume measures how much a page is
+# spending, never whether it is the right company.
+MATCH_EXACT = "exact"
+MATCH_TOKEN = "token"
+MATCH_CONTAINED = "contained"
+MATCH_NONE = ""
 
-    A shared long token, or a long token of one contained in the compacted
-    form of the other. Containment in both directions is what lets a brand
-    whose pages carry product names resolve from its umbrella topic.
+
+def match_strength(topic: str, name: str) -> str:
+    """How strongly an advertiser page name belongs to the topic.
+
+    Three tiers, because they are not equally trustworthy:
+
+    * ``exact`` -- the normalized names are the same string. Unambiguous.
+    * ``token`` -- they share a whole word of at least ``MIN_MATCH_TOKEN``.
+    * ``contained`` -- a whole word of one appears inside the other's
+      normalized form. This is what lets an umbrella topic find a brand
+      advertising under product-line page names, and it is also the weakest
+      signal: substring containment cannot distinguish a product line from a
+      coincidence, so a short brand can be found inside an unrelated longer
+      word. It is accepted only when no stronger tier matched, and the footer
+      says when resolution rested on it.
+
+    A topic whose every word is shorter than the token floor (an initialism
+    brand) has no usable tokens at all, so it can only ever match exactly.
+    Returning False for it outright would make such a brand unresolvable even
+    against its own identically-named page.
     """
+    topic_compact = _compact(topic)
+    name_compact = _compact(name)
+    if not topic_compact or not name_compact:
+        return MATCH_NONE
+    if topic_compact == name_compact:
+        return MATCH_EXACT
     topic_tokens = _match_tokens(topic)
     name_tokens = _match_tokens(name)
     if not topic_tokens or not name_tokens:
-        return False
+        return MATCH_NONE
     if topic_tokens & name_tokens:
-        return True
-    topic_compact = _compact(topic)
-    name_compact = _compact(name)
+        return MATCH_TOKEN
     if any(tok in name_compact for tok in topic_tokens):
-        return True
-    return any(tok in topic_compact for tok in name_tokens)
+        return MATCH_CONTAINED
+    if any(tok in topic_compact for tok in name_tokens):
+        return MATCH_CONTAINED
+    return MATCH_NONE
+
+
+def names_match(topic: str, name: str) -> bool:
+    """True when an advertiser page name plausibly belongs to the topic."""
+    return match_strength(topic, name) != MATCH_NONE
 
 
 def _group_advertisers(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -177,28 +211,38 @@ def _group_advertisers(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 def resolve_page(
     topic: str, rows: List[Dict[str, Any]]
-) -> Tuple[Optional[Dict[str, Any]], List[str], str]:
-    """Pick the advertiser page for a topic from discovery rows.
+) -> Tuple[Optional[Dict[str, Any]], List[str], str, str]:
+    """Pick the advertiser page for a topic from a list of ad rows.
 
-    Two tiers, because ad volume measures delivery, not identity: a page whose
-    normalized name *equals* the topic wins outright, and only when none does
-    is the busiest partial match taken. Without that, a reseller or outlet page
-    running more ads than the brand itself would claim the brand's own topic.
+    Strength decides before volume. Ad count only breaks ties *inside* the
+    strongest tier that matched, because volume measures how much a page is
+    spending and says nothing about whether it is the right company: a reseller
+    or outlet page running more ads than the brand it resells would otherwise
+    claim the brand's own topic.
 
-    Returns ``(page, runner_up_names, top_unmatched_name)``. ``page`` is None
-    when nothing matched; ``top_unmatched_name`` is empty when no rows at all
-    came back, which is what separates "wrong advertiser" from "nothing there".
+    Returns ``(page, runner_up_names, top_unmatched_name, strength)``. ``page``
+    is None when nothing matched, and ``top_unmatched_name`` is empty only when
+    no rows came back at all, which is what separates "wrong advertiser" from
+    "nothing there". ``strength`` is the tier that won, so the caller can tell
+    the reader when resolution rested on the weakest one.
     """
     ordered = _group_advertisers(rows)
-    matches = [g for g in ordered if names_match(topic, g["name"])]
-    topic_compact = _compact(topic)
-    exact = [g for g in matches if _compact(g["name"]) == topic_compact]
-    tier = exact or matches
-    if not tier:
-        return None, [], (ordered[0]["name"] if ordered else "")
-    winner = tier[0]
-    runner_ups = [g["name"] for g in matches if g["id"] != winner["id"]][:2]
-    return winner, runner_ups, ""
+    scored = [(match_strength(topic, g["name"]), g) for g in ordered]
+    for tier in (MATCH_EXACT, MATCH_TOKEN, MATCH_CONTAINED):
+        group = [g for strength, g in scored if strength == tier]
+        if not group:
+            continue
+        winner = group[0]
+        # Runner-ups come from every tier that matched at all: a weaker
+        # same-name-family page is exactly what a reader checking a
+        # questionable resolution wants to see.
+        runner_ups = [
+            g["name"]
+            for strength, g in scored
+            if strength != MATCH_NONE and g["id"] != winner["id"]
+        ][:2]
+        return winner, runner_ups, "", tier
+    return None, [], (ordered[0]["name"] if ordered else ""), MATCH_NONE
 
 
 # ----------------------------------------------------------- ad row fields
@@ -444,8 +488,11 @@ def _call(
 
 def _discover(
     topic: str, country: str, token: str, budget: _Budget
-) -> Tuple[Optional[Dict[str, Any]], List[str], str, str]:
-    """Resolve the advertiser page. Returns (page, runner_ups, top, state)."""
+) -> Tuple[Optional[Dict[str, Any]], List[str], str, str, str]:
+    """Resolve the advertiser page.
+
+    Returns ``(page, runner_ups, top_unmatched, state, strength)``.
+    """
     response = _call(
         SEARCH_ADS_URL,
         {
@@ -459,35 +506,42 @@ def _discover(
         budget,
     )
     rows = _envelope_rows(response)
-    page, runner_ups, top = resolve_page(topic, rows)
+    page, runner_ups, top, strength = resolve_page(topic, rows)
     if page:
-        _log(f"Resolved advertiser '{page['name']}' (page {page['id']}) from ad search")
-        return page, runner_ups, "", RESOLVED
+        _log(
+            f"Resolved advertiser '{page['name']}' (page {page['id']}) "
+            f"from ad search by {strength} name match"
+        )
+        return page, runner_ups, "", RESOLVED, strength
 
     companies = _call(SEARCH_COMPANIES_URL, {"query": topic}, token, budget)
-    company_rows = _envelope_rows(companies)
-    named = [
-        {
-            "id": str(row.get("page_id") or "").strip(),
-            "name": str(row.get("name") or "").strip(),
-        }
-        for row in company_rows
+    # Reshape company rows into the same shape resolve_page reads, so the
+    # fallback gets the identical exact-before-partial tiering. Taking the
+    # first name that merely matched would let this path resolve a lookalike
+    # the primary path would have rejected.
+    company_rows = [
+        {"page_id": str(row.get("page_id") or "").strip(),
+         "page_name": str(row.get("name") or "").strip()}
+        for row in _envelope_rows(companies)
         if str(row.get("page_id") or "").strip()
     ]
-    for candidate in named:
-        if names_match(topic, candidate["name"]):
-            _log(
-                f"Resolved advertiser '{candidate['name']}' "
-                f"(page {candidate['id']}) from company search"
-            )
-            return candidate, [], "", RESOLVED
+    company_page, company_runner_ups, company_top, company_strength = resolve_page(
+        topic, company_rows
+    )
+    if company_page:
+        _log(
+            f"Resolved advertiser '{company_page['name']}' "
+            f"(page {company_page['id']}) from company search by "
+            f"{company_strength} name match"
+        )
+        return company_page, company_runner_ups, "", RESOLVED, company_strength
 
-    fallback_top = top or (named[0]["name"] if named else "")
-    if not rows and not named:
+    fallback_top = top or company_top
+    if not rows and not company_rows:
         _log("No advertiser candidates returned by either search")
-        return None, [], "", NO_CANDIDATES
+        return None, [], "", NO_CANDIDATES, MATCH_NONE
     _log(f"No advertiser matched '{topic}'; closest was '{fallback_top}'")
-    return None, [], fallback_top, UNRESOLVED
+    return None, [], fallback_top, UNRESOLVED, MATCH_NONE
 
 
 def _fetch_window(
@@ -529,7 +583,10 @@ def _fetch_window(
             params["cursor"] = cursor
         try:
             response = _call(COMPANY_ADS_URL, params, token, budget)
-        except _StopFetching as exc:
+        except (_Fatal, _StopFetching) as exc:
+            # Whatever the reason, the creatives already fetched were paid for
+            # and are valid: a rate limit or expired credential says "stop
+            # calling", not "the pages that already returned 200 were wrong".
             stop = str(exc)
             interruption = str(exc)
             more = True
@@ -597,11 +654,13 @@ def _add_transcripts(
     if cap <= 0:
         return 0, ""
     transcribed = 0
-    for item in items:
-        if transcribed >= cap:
-            break
-        if not item.get("has_video"):
-            continue
+    # The cap bounds paid REQUESTS, not successes. Counting only successes
+    # would keep calling for every remaining video creative whenever the
+    # upstream has no transcript available -- each of those still costs a
+    # credit, so a page of silent video ads would blow through the run's whole
+    # documented credit ceiling while the tally still read zero.
+    candidates = [item for item in items if item.get("has_video")][:cap]
+    for item in candidates:
         try:
             response = _call(
                 AD_TRANSCRIPT_URL,
@@ -610,7 +669,7 @@ def _add_transcripts(
                 budget,
                 ceiling=TRANSCRIPT_TIMEOUT,
             )
-        except _StopFetching as exc:
+        except (_Fatal, _StopFetching) as exc:
             return transcribed, str(exc)
         if not response.get("transcript_available"):
             continue
@@ -638,6 +697,7 @@ def _empty_tally(state: str, **extra: Any) -> Dict[str, Any]:
         "page_id": "",
         "top_candidate": "",
         "runner_ups": [],
+        "match_strength": MATCH_NONE,
     }
     tally.update(extra)
     return tally
@@ -680,9 +740,10 @@ def search_meta_ads(
             runner_ups: List[str] = []
             top_candidate = ""
             state = RESOLVED
+            strength = MATCH_EXACT
             _log(f"Using page override {page_override}")
         else:
-            page, runner_ups, top_candidate, state = _discover(
+            page, runner_ups, top_candidate, state, strength = _discover(
                 topic, country, token, budget
             )
 
@@ -736,6 +797,7 @@ def search_meta_ads(
         advertiser=page.get("name") or "",
         page_id=page.get("id") or "",
         runner_ups=runner_ups,
+        match_strength=strength,
     )
 
     result: Dict[str, Any] = {"ads": items, "page": page, "tally": tally}

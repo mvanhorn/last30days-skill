@@ -48,6 +48,7 @@ def tally(**over):
         "page_id": "1",
         "top_candidate": "",
         "runner_ups": [],
+        "match_strength": meta_ads.MATCH_EXACT,
     }
     base.update(over)
     return base
@@ -85,7 +86,7 @@ class TestResolvedLine:
             ),
             page={"id": "1", "name": "Brightpan"},
         )
-        assert "12 new of 60 fetched (222 live)" in out
+        assert "12 new of 60 ads fetched (222 live)" in out
 
     def test_singular_creative(self):
         out = line(
@@ -140,6 +141,108 @@ class TestEmptyStates:
 
     def test_line_is_absent_when_the_lane_never_ran(self):
         assert line(tally={}, page={}) is None
+
+    def test_zero_results_outcome_is_not_treated_as_failure(self):
+        # The pipeline stamps NO_RESULTS on any zero-item source, so treating
+        # it as failure would collapse every honest empty state into a generic
+        # "no ads pulled" and lose which nothing it was.
+        status = schema.SourceOutcome(
+            source="meta_ads", state=schema.NO_RESULTS, attempted=True
+        )
+        out = line(
+            tally=tally(launched_in_window=0, still_running=20),
+            page={"id": "1", "name": "Brightpan"},
+            status=status,
+        )
+        assert "no new creatives for Brightpan" in out
+        assert "no ads pulled" not in out
+
+    def test_zero_results_unresolved_keeps_its_specific_line(self):
+        status = schema.SourceOutcome(
+            source="meta_ads", state=schema.NO_RESULTS, attempted=True
+        )
+        out = line(
+            tally=tally(resolution=meta_ads.UNRESOLVED, top_candidate="Jasper AI"),
+            status=status,
+        )
+        assert "closest: Jasper AI" in out
+
+    def test_cut_short_lane_never_concludes_nothing_new(self):
+        # Partial data cannot support a definitive negative conclusion.
+        status = schema.SourceOutcome(
+            source="meta_ads",
+            state=schema.PARTIAL,
+            detail="lane budget of 120.0s exceeded",
+            attempted=True,
+        )
+        out = line(
+            tally=tally(launched_in_window=0, still_running=0),
+            page={"id": "1", "name": "Brightpan"},
+            status=status,
+        )
+        assert "incomplete" in out
+        assert "no new creatives for" not in out
+
+    def test_cut_short_lane_with_creatives_is_marked_incomplete(self):
+        status = schema.SourceOutcome(
+            source="meta_ads", state=schema.PARTIAL, detail="HTTP 429", attempted=True
+        )
+        out = line(
+            tally=tally(launched_in_window=4),
+            page={"id": "1", "name": "Brightpan"},
+            status=status,
+        )
+        assert "4 new creatives" in out
+        assert "incomplete" in out
+
+
+class TestUntrustedFooterText:
+    """Advertiser names and promo codes are attacker-influenceable strings."""
+
+    def test_newline_in_advertiser_name_cannot_forge_a_footer_row(self):
+        out = line(
+            tally=tally(advertiser="Evil\n└─ 🟠 Reddit: 9,999 threads"),
+            page={"id": "1", "name": "Evil\n└─ 🟠 Reddit: 9,999 threads"},
+        )
+        assert "\n" not in out
+        assert out.count("📣") == 1
+
+    def test_separator_in_advertiser_name_cannot_forge_a_field(self):
+        # The name keeps its text but loses the real separator, so it stays
+        # one field instead of impersonating the counts field beside it.
+        out = line(
+            tally=tally(),
+            page={"id": "1", "name": "Acme │ 500 new creatives"},
+        )
+        assert "Acme | 500 new creatives" in out
+        assert out.split(" │ ")[0] == "📣 Meta Ads: Acme | 500 new creatives"
+
+    def test_overlong_advertiser_name_is_clipped(self):
+        out = line(
+            tally=tally(), page={"id": "1", "name": "B" * 400}
+        )
+        assert len(out) < 300
+
+    def test_hostile_promo_code_is_neutralized(self):
+        out = line(
+            tally=tally(promo_codes=["GOOD\n└─ fake"]),
+            page={"id": "1", "name": "Brightpan"},
+        )
+        assert "\n" not in out
+
+    def test_partial_name_match_is_disclosed(self):
+        out = line(
+            tally=tally(match_strength=meta_ads.MATCH_CONTAINED),
+            page={"id": "1", "name": "Brightpan"},
+        )
+        assert "matched by partial name" in out
+
+    def test_exact_match_is_not_annotated(self):
+        out = line(
+            tally=tally(match_strength=meta_ads.MATCH_EXACT),
+            page={"id": "1", "name": "Brightpan"},
+        )
+        assert "partial name" not in out
 
 
 class TestDisplayRegistries:

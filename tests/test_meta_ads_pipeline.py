@@ -143,3 +143,112 @@ class TestArtifactLift:
         bundle = _FakeBundle({})
         pipeline._lift_stream_artifacts(bundle)
         assert bundle.artifacts == {}
+
+
+class TestRetrievalBranch:
+    """The dispatch branch itself: brand resolution, config threading, outcome."""
+
+    def _run(self, result, config=None, raw_topic="Brightpan", search_query="kettle reviews"):
+        from lib import schema
+
+        subquery = schema.SubQuery(
+            label="primary",
+            search_query=search_query,
+            ranking_query="q",
+            sources=["meta_ads"],
+        )
+        cfg = {"SCRAPECREATORS_API_KEY": "fake-key"}
+        cfg.update(config or {})
+        captured = {}
+
+        def fake_search(topic, from_date, to_date, **kwargs):
+            captured["topic"] = topic
+            captured["from_date"] = from_date
+            captured["to_date"] = to_date
+            captured.update(kwargs)
+            return result
+
+        with patch.object(pipeline.meta_ads, "search_meta_ads", side_effect=fake_search):
+            items, artifact = pipeline._retrieve_stream_impl(
+                topic="Brightpan",
+                subquery=subquery,
+                source="meta_ads",
+                config=cfg,
+                depth="default",
+                date_range=("2026-08-15", "2026-09-14"),
+                runtime=schema.ProviderRuntime(
+                    reasoning_provider="none",
+                    planner_model="none",
+                    rerank_model="none",
+                ),
+                mock=False,
+                raw_topic=raw_topic,
+            )
+        return items, artifact or {}, captured
+
+    def _result(self, **over):
+        base = {
+            "ads": [{"id": "1"}],
+            "page": {"id": "300", "name": "Brightpan"},
+            "tally": {"launched_in_window": 1, "resolution": "resolved"},
+        }
+        base.update(over)
+        return base
+
+    def test_advertiser_resolves_from_the_research_topic_not_the_subquery(self):
+        # A subquery like "kettle reviews" would resolve a different company
+        # than the brand the run is actually about.
+        _items, _artifact, captured = self._run(self._result())
+        assert captured["topic"] == "Brightpan"
+
+    def test_config_is_threaded_into_the_lane(self):
+        _items, _artifact, captured = self._run(
+            self._result(),
+            config={
+                "LAST30DAYS_META_ADS_COUNTRY": "GB",
+                "_meta_ads_page": "123456789012345",
+            },
+        )
+        assert captured["token"] == "fake-key"
+        assert captured["country"] == "GB"
+        assert captured["page_override"] == "123456789012345"
+
+    def test_country_defaults_when_unset(self):
+        _items, _artifact, captured = self._run(self._result())
+        assert captured["country"] == pipeline.meta_ads.DEFAULT_COUNTRY
+
+    def test_footer_inputs_ride_on_the_stream_artifact(self):
+        _items, artifact, _captured = self._run(self._result())
+        assert artifact["meta_ads_page"]["name"] == "Brightpan"
+        assert artifact["meta_ads_tally"]["launched_in_window"] == 1
+
+    def test_partial_result_forces_a_partial_outcome(self):
+        from lib import schema
+
+        _items, artifact, _captured = self._run(
+            self._result(partial=True, error="lane budget of 120.0s exceeded")
+        )
+        assert artifact["_source_outcome"]["state"] == schema.PARTIAL
+        assert "budget" in artifact["_source_outcome"]["detail"]
+
+    def test_items_come_back_as_the_stream(self):
+        items, _artifact, _captured = self._run(self._result())
+        assert items == [{"id": "1"}]
+
+    def test_zero_item_run_still_carries_the_advertiser(self):
+        _items, artifact, _captured = self._run(
+            self._result(ads=[], tally={"launched_in_window": 0, "resolution": "resolved"})
+        )
+        assert artifact["meta_ads_page"]["name"] == "Brightpan"
+
+
+class TestCompetitorIsolation:
+    def test_page_override_is_dropped_for_competitor_sub_runs(self):
+        # Left in place, one brand's advertiser page would be fetched for
+        # every peer in a comparison and rendered as that peer's ads.
+        import inspect
+
+        import last30days as engine
+
+        source = inspect.getsource(engine)
+        assert 'entity_config.pop("_meta_ads_page", None)' in source

@@ -116,7 +116,7 @@ class TestResolvePage:
             + [ad_row(page_id="3", page_name="Brightpan Home") for _ in range(4)]
             + [ad_row(page_id="9", page_name="Unrelated Deals Co") for _ in range(20)]
         )
-        page, runner_ups, top = resolve_page("BrightpanCo", rows)
+        page, runner_ups, top, _strength = resolve_page("BrightpanCo", rows)
         assert page["name"] == "Brightpan Kitchen"
         assert page["id"] == "1"
         assert runner_ups == ["Brightpan Beauty", "Brightpan Home"]
@@ -127,25 +127,26 @@ class TestResolvePage:
         rows = [ad_row(page_id="1", page_name="Brightpan") for _ in range(11)] + [
             ad_row(page_id="2", page_name="Brightpan Outlet") for _ in range(18)
         ]
-        page, _runner_ups, _top = resolve_page("Brightpan", rows)
+        page, _runner_ups, _top, strength = resolve_page("Brightpan", rows)
         assert page["name"] == "Brightpan"
         assert page["id"] == "1"
+        assert strength == meta_ads.MATCH_EXACT
 
     def test_no_match_returns_top_unmatched_candidate(self):
         rows = [ad_row(page_id="9", page_name="Jasper AI") for _ in range(30)]
-        page, runner_ups, top = resolve_page("Vantage AI", rows)
+        page, runner_ups, top, _strength = resolve_page("Vantage AI", rows)
         assert page is None
         assert runner_ups == []
         assert top == "Jasper AI"
 
     def test_no_rows_returns_no_candidate_name(self):
-        page, runner_ups, top = resolve_page("Brightpan", [])
+        page, runner_ups, top, _strength = resolve_page("Brightpan", [])
         assert page is None
         assert runner_ups == []
         assert top == ""
 
     def test_rows_without_page_id_are_ignored(self):
-        page, _runner_ups, top = resolve_page(
+        page, _runner_ups, top, _strength = resolve_page(
             "Brightpan", [ad_row(page_id="", page_name="Brightpan")]
         )
         assert page is None
@@ -553,10 +554,112 @@ class TestTransientVersusFatal:
         assert len(result["ads"]) == 1
         assert result.get("partial") is True
 
-    def test_fatal_status_still_discards(self):
+    def test_fatal_status_mid_enrichment_keeps_paid_creatives(self):
+        # A rate limit or expired credential means "stop calling", not "the
+        # pages that already returned 200 were wrong". Discarding them throws
+        # away evidence the user already paid for.
         page_one = envelope([ad_row()], key="results", cursor="more")
         boom = meta_ads.http.HTTPError("rate limited", status_code=429)
         result = self._drive([envelope([ad_row()]), page_one, boom], depth="deep")
+        assert len(result["ads"]) == 1
+        assert result["page"]["name"] == "Brightpan"
+        assert result.get("partial") is True
+        assert "429" in result["error"]
+
+    def test_fatal_status_during_discovery_has_nothing_to_keep(self):
+        boom = meta_ads.http.HTTPError("rate limited", status_code=429)
+        result = self._drive([boom])
         assert result["ads"] == []
         assert result["page"] is None
         assert "429" in result["error"]
+
+
+class TestShortBrandNames:
+    """A brand whose every word is under the token floor must still resolve.
+
+    The floor exists to stop a shared short word ("AI") from matching every
+    advertiser that carries it. Applied without an exact-identity escape it
+    also makes an initialism brand unresolvable against its own page, which
+    fails the feature silently for a whole class of well-known names.
+    """
+
+    def test_initialism_brand_matches_its_own_page_exactly(self):
+        assert names_match("KLM", "KLM")
+        assert names_match("BMW", "bmw")
+
+    def test_initialism_brand_still_rejects_an_unrelated_page(self):
+        assert not names_match("KLM", "Kitchen Lighting Market")
+
+    def test_initialism_resolves_through_the_exact_tier(self):
+        rows = [ad_row(page_id="1", page_name="KLM") for _ in range(2)] + [
+            ad_row(page_id="2", page_name="Unrelated Deals Co") for _ in range(30)
+        ]
+        page, _runner_ups, _top, strength = resolve_page("KLM", rows)
+        assert page["name"] == "KLM"
+        assert strength == meta_ads.MATCH_EXACT
+
+
+class TestResolutionStrength:
+    def test_shared_whole_token_outranks_mere_containment(self):
+        # "Brightpan Kitchen" shares the whole token; the containment-only
+        # page must not win on ad volume alone.
+        rows = [ad_row(page_id="1", page_name="Brightpan Kitchen") for _ in range(2)] + [
+            ad_row(page_id="2", page_name="Superbrightpanel Co") for _ in range(40)
+        ]
+        page, _runner_ups, _top, strength = resolve_page("Brightpan Supply", rows)
+        assert page["name"] == "Brightpan Kitchen"
+        assert strength == meta_ads.MATCH_TOKEN
+
+    def test_containment_tier_is_reported_as_such(self):
+        rows = [ad_row(page_id="1", page_name="Brightpan Kitchen") for _ in range(3)]
+        _page, _runner_ups, _top, strength = resolve_page("BrightpanCo", rows)
+        assert strength == meta_ads.MATCH_CONTAINED
+
+    def test_transcript_cap_bounds_paid_requests_not_successes(self):
+        # Every transcript call costs a credit whether or not one comes back,
+        # so an upstream with no transcripts must not keep the lane calling.
+        videos = []
+        for i in range(10):
+            row = ad_row(ad_archive_id=str(i), collation_id=f"c{i}")
+            row["snapshot"]["videos"] = [{"video_hd_url": "https://cdn.example/v.mp4"}]
+            videos.append(row)
+        unavailable = {"transcript_available": False, "transcript": None}
+        responses = [envelope([ad_row()]), envelope(videos, key="results")] + [
+            unavailable
+        ] * 10
+        calls = []
+
+        def fake_get(url, **kwargs):
+            calls.append(url)
+            return responses.pop(0)
+
+        with mock.patch("lib.meta_ads.http.get", side_effect=fake_get):
+            result = search_meta_ads(
+                "Brightpan", FROM_DATE, TO_DATE, token=TOKEN, depth="default"
+            )
+        transcript_calls = [c for c in calls if c == meta_ads.AD_TRANSCRIPT_URL]
+        assert len(transcript_calls) == 3  # the default-depth cap, not 10
+        assert result["tally"]["transcribed"] == 0
+
+    def test_default_depth_run_stays_inside_its_documented_credit_ceiling(self):
+        videos = []
+        for i in range(10):
+            row = ad_row(ad_archive_id=str(i), collation_id=f"c{i}")
+            row["snapshot"]["videos"] = [{"video_hd_url": "https://cdn.example/v.mp4"}]
+            videos.append(row)
+        responses = [
+            envelope([ad_row(page_id="9", page_name="Unrelated Deals Co")]),
+            envelope([company_row("55", "Brightpan")], key="results"),
+            envelope(videos, key="results", cursor="more"),
+            envelope(videos, key="results", cursor="more"),
+        ] + [{"transcript_available": True, "transcript": "hello"}] * 5
+        calls = []
+
+        def fake_get(url, **kwargs):
+            calls.append(url)
+            return responses.pop(0)
+
+        with mock.patch("lib.meta_ads.http.get", side_effect=fake_get):
+            search_meta_ads("Brightpan", FROM_DATE, TO_DATE, token=TOKEN, depth="default")
+        # 1 discovery + 1 company fallback + 2 pages + 3 transcripts = 7
+        assert len(calls) <= 7
