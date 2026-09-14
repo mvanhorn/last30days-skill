@@ -151,6 +151,7 @@ SOURCE_CAPABILITIES = {
     "techmeme": {"discussion", "link", "reference"},
     "trustpilot": {"reference", "company_signal", "social"},
     "amazon": {"reference", "company_signal", "product_signal"},
+    "meta_ads": {"reference", "company_signal", "product_signal"},
     "xiaohongshu": {"video", "video_shortform", "social"},
     "telegram": {"discussion", "social"},
     "github": {"discussion", "link"},

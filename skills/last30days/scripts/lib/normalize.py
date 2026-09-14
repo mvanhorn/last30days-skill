@@ -69,6 +69,7 @@ def normalize_source_items(
         "techmeme": _normalize_techmeme,
         "trustpilot": _normalize_trustpilot,
         "amazon": _normalize_amazon,
+        "meta_ads": _normalize_meta_ads,
         "grounding": _normalize_grounding,
         "xiaohongshu": _normalize_grounding,
         "github": _normalize_github,
@@ -714,6 +715,84 @@ def _normalize_techmeme(
         snippet=title[:400],
         metadata={
             "publication": source_name,
+        },
+    )
+
+
+def _normalize_meta_ads(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for Meta Ad Library creatives.
+
+    One item per distinct creative launched inside the window. Identity is the
+    Ad Library permalink, never the landing URL: many creatives for one product
+    share a landing page, and fusion merges by normalized URL, so keying on the
+    landing page would collapse a whole campaign into one candidate and lose
+    every transcript but the first.
+
+    Grounding-exempt on the Amazon precedent. Ad copy is written to sell, not
+    to name the brand -- "Stop making boring drinks" never repeats the topic --
+    and the advertiser page was already resolved by name before any of these
+    were created, so they are on-entity by construction.
+    """
+    body = str(item.get("text") or "").strip()
+    transcript = str(item.get("transcript") or "").strip()
+    advertiser = str(item.get("advertiser") or "").strip()
+    cta = str(item.get("cta") or "").strip()
+    landing = str(item.get("landing_url") or "").strip()
+    placements = [str(p) for p in (item.get("placements") or [])]
+    promo = str(item.get("promo_code") or "").strip()
+
+    # The spoken script is usually the sharper version of the pitch, so it
+    # leads the evidence snippet when present.
+    snippet_parts = [part for part in [body, transcript] if part]
+    default_why = (
+        f"Active paid creative from {advertiser}"
+        if advertiser
+        else "Active paid creative"
+    )
+    context = " │ ".join(
+        part
+        for part in [
+            cta or "",
+            f"code {promo}" if promo else "",
+            landing,
+        ]
+        if part
+    )
+    return _source_item(
+        item_id=str(item.get("id") or f"MA{index + 1}"),
+        source=source,
+        title=str(item.get("title") or "").strip() or body[:140] or f"Meta ad {index + 1}",
+        body=body,
+        url=str(item.get("url") or "").strip(),
+        author=advertiser,
+        container="Meta Ad Library",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement={"variants": int(item.get("variants") or 1)},
+        relevance_hint=0.8,
+        why_relevant=str(item.get("why_relevant") or "") or default_why,
+        snippet=" ".join(snippet_parts)[:400],
+        metadata={
+            "grounding_exempt": True,
+            "advertiser": advertiser,
+            "page_id": str(item.get("page_id") or ""),
+            "is_active": bool(item.get("is_active")),
+            "ended_on": item.get("ended_on"),
+            "display_format": str(item.get("display_format") or ""),
+            "placements": placements,
+            "cta": cta,
+            "landing_url": landing,
+            "promo_code": promo,
+            "variants": int(item.get("variants") or 1),
+            "has_video": bool(item.get("has_video")),
+            "transcript_snippet": transcript[:400],
+            "ad_context": context,
         },
     )
 

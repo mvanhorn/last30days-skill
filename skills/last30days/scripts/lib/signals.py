@@ -20,6 +20,10 @@ SOURCE_QUALITY = {
     # Verified-purchase reviews on a live aggregate rating: high-quality
     # buyer evidence, a notch above Trustpilot's open review model.
     "amazon": 0.8,
+    # Paid creative is first-party marketing copy: a reliable statement of
+    # what the brand is pushing, but not independent evidence about it, so it
+    # sits below the review-backed sources and above open social.
+    "meta_ads": 0.72,
     "reddit": 0.6,
     "x": 0.68,
     "bluesky": 0.66,
@@ -183,6 +187,11 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "digg":         [("postCount", 0.40), ("uniqueAuthors", 0.30), ("rank_score", 0.30)],
     "trustpilot":   [("reviews", 1.0)],
     "amazon":       [("ratings", 1.0)],
+    # Meta publishes reach and spend only for political and issue ads, so a
+    # commercial creative has no audience signal at all. How many variants a
+    # brand cut of one creative is the closest honest proxy for how hard it is
+    # pushing that message.
+    "meta_ads":     [("variants", 1.0)],
 }
 
 
