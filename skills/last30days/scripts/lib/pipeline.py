@@ -5284,20 +5284,24 @@ def _retrieve_stream_impl(
             ),
             page_override=str((config or {}).get("_meta_ads_page") or "").strip(),
         )
-        artifact = _result_outcome_artifact(source, result) or {}
-        artifact = dict(artifact)
+        if result.get("partial"):
+            # A partial lane carries `error` too, so the generic classifier
+            # would run and have its verdict overwritten here regardless.
+            artifact = {
+                "_source_outcome": {
+                    "state": schema.PARTIAL,
+                    "detail": str(result.get("error") or "partial"),
+                    "attempted": True,
+                }
+            }
+        else:
+            artifact = dict(_result_outcome_artifact(source, result) or {})
         # The footer needs the resolved advertiser and the pre-truncation
         # counts even on a run that produced zero items, and stream artifacts
         # only reach the report through the grounding list, so they ride here
         # and are lifted to top-level artifacts after retrieval.
         artifact["meta_ads_page"] = result.get("page") or {}
         artifact["meta_ads_tally"] = result.get("tally") or {}
-        if result.get("partial"):
-            artifact["_source_outcome"] = {
-                "state": schema.PARTIAL,
-                "detail": str(result.get("error") or "partial"),
-                "attempted": True,
-            }
         return result.get("ads") or [], artifact
     if source == "bluesky":
         result = bluesky.search_bluesky(subquery.search_query, from_date, to_date, depth=depth, config=config)
