@@ -132,7 +132,7 @@ def _match_tokens(text: str) -> set[str]:
 
 
 def _compact(text: str) -> str:
-    """Normalized form for exact-identity comparison ("CHEF iQ" -> "chefiq")."""
+    """Normalized form for exact-identity comparison ("Bright iQ" -> "brightiq")."""
     return "".join(_tokens(text))
 
 

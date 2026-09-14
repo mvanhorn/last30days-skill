@@ -856,7 +856,7 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Meta Ad Library page id for the topic's advertiser, when the meta_ads "
             "source is active. Skips name-based page resolution and its discovery "
-            "credit. Accepts a bare numeric page id (e.g. 300411646810133) or an Ad "
+            "credit. Accepts a bare numeric page id (e.g. 123456789012345) or an Ad "
             "Library URL carrying view_all_page_id. A facebook.com vanity URL is not "
             "a page id and is rejected. Use it when a brand advertises under product "
             "names, or when resolution picked the wrong company."

@@ -105,7 +105,7 @@ class TestNameMatching:
         assert not names_match("Brightpan", "Coastal Realty Group")
 
     def test_case_and_spacing_are_normalized(self):
-        assert names_match("CHEF iQ", "chefiq")
+        assert names_match("Bright iQ", "brightiq")
 
 
 class TestResolvePage:

@@ -67,14 +67,14 @@ class TestSearchFlag:
 
 class TestPageOverrideParsing:
     def test_bare_numeric_page_id(self):
-        assert last30days.parse_meta_ads_page("300411646810133") == "300411646810133"
+        assert last30days.parse_meta_ads_page("123456789012345") == "123456789012345"
 
     def test_ad_library_url(self):
         url = (
             "https://www.facebook.com/ads/library/"
-            "?active_status=all&view_all_page_id=300411646810133"
+            "?active_status=all&view_all_page_id=123456789012345"
         )
-        assert last30days.parse_meta_ads_page(url) == "300411646810133"
+        assert last30days.parse_meta_ads_page(url) == "123456789012345"
 
     def test_vanity_url_is_rejected(self):
         # A vanity handle is not a page id: one live check resolved a
