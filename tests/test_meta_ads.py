@@ -515,3 +515,48 @@ class TestWindowBoundaries:
             result = search_meta_ads("Brightpan", FROM_DATE, TO_DATE, token=TOKEN)
         assert result["ads"] == []
         assert result["tally"]["still_running"] == 1
+
+
+class TestTransientVersusFatal:
+    """R11: only credential/account statuses discard the lane's work."""
+
+    def _drive(self, responses, depth="default"):
+        def fake_get(url, **kwargs):
+            nxt = responses.pop(0)
+            if isinstance(nxt, Exception):
+                raise nxt
+            return nxt
+
+        with mock.patch("lib.meta_ads.http.get", side_effect=fake_get):
+            return search_meta_ads(
+                "Brightpan", FROM_DATE, TO_DATE, token=TOKEN, depth=depth
+            )
+
+    def test_transient_error_mid_pagination_keeps_fetched_creatives(self):
+        # A 500 on page two must not throw away page one: those creatives were
+        # already paid for and are real evidence.
+        page_one = envelope([ad_row()], key="results", cursor="more")
+        boom = meta_ads.http.HTTPError("upstream hiccup", status_code=500)
+        result = self._drive([envelope([ad_row()]), page_one, boom], depth="deep")
+        assert len(result["ads"]) == 1
+        assert result["page"]["name"] == "Brightpan"
+        assert result.get("partial") is True
+        assert "500" in result["error"]
+
+    def test_transient_error_during_transcripts_keeps_creatives(self):
+        video = ad_row()
+        video["snapshot"]["videos"] = [{"video_hd_url": "https://cdn.example/a.mp4"}]
+        boom = meta_ads.http.HTTPError("transcoder down", status_code=503)
+        result = self._drive(
+            [envelope([ad_row()]), envelope([video], key="results"), boom]
+        )
+        assert len(result["ads"]) == 1
+        assert result.get("partial") is True
+
+    def test_fatal_status_still_discards(self):
+        page_one = envelope([ad_row()], key="results", cursor="more")
+        boom = meta_ads.http.HTTPError("rate limited", status_code=429)
+        result = self._drive([envelope([ad_row()]), page_one, boom], depth="deep")
+        assert result["ads"] == []
+        assert result["page"] is None
+        assert "429" in result["error"]

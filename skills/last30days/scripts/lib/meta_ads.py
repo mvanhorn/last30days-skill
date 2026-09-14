@@ -44,7 +44,7 @@ import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import http, log
+from . import dates, http, log
 
 SC_BASE = "https://api.scrapecreators.com/v1/facebook/adLibrary"
 
@@ -262,11 +262,7 @@ def launch_date(row: Dict[str, Any]) -> Optional[str]:
         pass
     epoch = row.get("start_date")
     if isinstance(epoch, (int, float)) and epoch > 0:
-        return (
-            datetime.datetime.fromtimestamp(epoch, datetime.timezone.utc)
-            .date()
-            .isoformat()
-        )
+        return dates.timestamp_to_date(epoch)
     return None
 
 
@@ -391,13 +387,14 @@ class _Fatal(Exception):
         self.status = status
 
 
-class _BudgetOut(Exception):
-    """The wall clock ran out.
+class _StopFetching(Exception):
+    """Stop making calls, but keep whatever already came back.
 
-    Distinct from ``_Fatal`` on purpose: a credential failure invalidates the
-    whole lane, but running out of time only ends the *fetching*. Whatever
-    already came back is real evidence and is reported as a partial result
-    rather than discarded.
+    Distinct from ``_Fatal`` on purpose. A credential or account failure
+    invalidates the lane itself, so its output is discarded. Running out of
+    wall clock, or a transient upstream failure partway through pagination,
+    only ends the *fetching*: the creatives already in hand are real evidence
+    and are reported as a partial result rather than thrown away.
     """
 
 
@@ -415,7 +412,7 @@ def _call(
     limit and spends the lane budget sleeping between attempts.
     """
     if budget.exhausted():
-        raise _BudgetOut("lane budget exhausted")
+        raise _StopFetching("lane budget exhausted")
     try:
         response = http.get(
             url,
@@ -430,9 +427,14 @@ def _call(
         status = exc.status_code
         message = f"HTTP {status}: {exc}" if status else str(exc)
         if status in FATAL_STATUS_CODES:
+            # Credential- or account-scoped: every later call fails the same
+            # way, so the lane ends and keeps nothing.
             raise _Fatal(message, status) from exc
-        raise _Fatal(message, status) from exc
-    except Exception as exc:  # noqa: BLE001 - any transport failure ends the lane
+        # Anything else (a 5xx, a bad gateway partway through pagination) is
+        # about this one request. Stop fetching, but keep the creatives
+        # already retrieved rather than discarding paid-for work.
+        raise _StopFetching(message) from exc
+    except Exception as exc:  # noqa: BLE001 - an unclassifiable transport failure
         raise _Fatal(f"{type(exc).__name__}: {exc}") from exc
     return response if isinstance(response, dict) else {}
 
@@ -496,17 +498,22 @@ def _fetch_window(
     max_pages: int,
     token: str,
     budget: _Budget,
-) -> Tuple[List[Dict[str, Any]], int, bool, bool]:
+) -> Tuple[List[Dict[str, Any]], int, bool, str]:
     """Cursor-paginate the page's window ads.
 
-    Returns ``(rows, endpoint_total, more_available, ran_out_of_time)``.
+    Returns ``(rows, endpoint_total, more_available, interruption)``, where
+    ``interruption`` is the reason fetching stopped early (empty when it ran
+    to its natural end). It is carried verbatim rather than summarized: a
+    transient upstream failure and an exhausted clock produce the same partial
+    shape, and reporting one as the other sends the reader to fix the wrong
+    thing.
     """
     rows: List[Dict[str, Any]] = []
     total = 0
     cursor: Optional[str] = None
     prev_cursor: Optional[str] = None
     more = False
-    timed_out = False
+    interruption = ""
     pages = min(max_pages, MAX_PAGES_HARD)
     stop = "page cap reached"
 
@@ -522,9 +529,9 @@ def _fetch_window(
             params["cursor"] = cursor
         try:
             response = _call(COMPANY_ADS_URL, params, token, budget)
-        except _BudgetOut:
-            stop = "wall-clock budget exceeded"
-            timed_out = True
+        except _StopFetching as exc:
+            stop = str(exc)
+            interruption = str(exc)
             more = True
             break
         page_rows = _envelope_rows(response)
@@ -545,7 +552,7 @@ def _fetch_window(
         more = bool(cursor)
 
     _log(f"  fetched {len(rows)} ad rows of {total or len(rows)}, stopped: {stop}")
-    return rows, total, more, timed_out
+    return rows, total, more, interruption
 
 
 def _classify(
@@ -580,15 +587,15 @@ def _classify(
 
 def _add_transcripts(
     items: List[Dict[str, Any]], cap: int, token: str, budget: _Budget
-) -> Tuple[int, bool]:
+) -> Tuple[int, str]:
     """Transcribe the newest video creatives.
 
     Candidates are chosen from the whole fetched set, after every page is in,
     so a newer creative on page two is not passed over for an older one on
-    page one. Returns ``(transcribed, ran_out_of_time)``.
+    page one. Returns ``(transcribed, interruption)``.
     """
     if cap <= 0:
-        return 0, False
+        return 0, ""
     transcribed = 0
     for item in items:
         if transcribed >= cap:
@@ -603,8 +610,8 @@ def _add_transcripts(
                 budget,
                 ceiling=TRANSCRIPT_TIMEOUT,
             )
-        except _BudgetOut:
-            return transcribed, True
+        except _StopFetching as exc:
+            return transcribed, str(exc)
         if not response.get("transcript_available"):
             continue
         text = str(response.get("transcript") or "").strip()
@@ -612,7 +619,7 @@ def _add_transcripts(
             continue
         item["transcript"] = text
         transcribed += 1
-    return transcribed, False
+    return transcribed, ""
 
 
 def _empty_tally(state: str, **extra: Any) -> Dict[str, Any]:
@@ -686,15 +693,15 @@ def search_meta_ads(
                 "tally": _empty_tally(state, top_candidate=top_candidate),
             }
 
-        rows, endpoint_total, more, fetch_timed_out = _fetch_window(
+        rows, endpoint_total, more, interruption = _fetch_window(
             page, country, from_date, to_date, cfg["pages"], token, budget
         )
         items, still_running = _classify(rows, page, from_date, to_date)
-        transcribed, transcript_timed_out = _add_transcripts(
+        transcribed, transcript_interruption = _add_transcripts(
             items, cfg["transcripts"], token, budget
         )
-        timed_out = fetch_timed_out or transcript_timed_out
-    except (_Fatal, _BudgetOut) as exc:
+        interruption = interruption or transcript_interruption
+    except (_Fatal, _StopFetching) as exc:
         # Nothing was salvageable: either a credential/account failure, or the
         # clock ran out before the advertiser was even resolved.
         _log(f"Lane stopped: {exc}")
@@ -732,11 +739,12 @@ def search_meta_ads(
     )
 
     result: Dict[str, Any] = {"ads": items, "page": page, "tally": tally}
-    if timed_out:
-        # Keep what came back. Thin coverage caused by our own clock must not
-        # read as a finding about how much the advertiser is running.
+    if interruption:
+        # Keep what came back. Thin coverage caused by our own clock or one
+        # failed request must not read as a finding about how much the
+        # advertiser is running.
         result["partial"] = True
-        result["error"] = f"lane budget of {LANE_BUDGET_SECONDS}s exceeded"
+        result["error"] = interruption
 
     _log(
         f"{len(items)} creative(s) launched in window for '{page['name']}' "
