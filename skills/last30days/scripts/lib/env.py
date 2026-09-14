@@ -647,6 +647,12 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # Amazon marketplace the amazon source searches. Non-US users point
         # this at their own storefront (e.g. https://www.amazon.co.uk).
         ('LAST30DAYS_AMAZON_DOMAIN', 'https://www.amazon.com'),
+        # Ad Library country for the meta_ads source, as a two-letter code. The
+        # endpoint takes exactly one country per call. There is deliberately no
+        # durable env form of the advertiser-page override: a page id is
+        # per-topic state, and env keys ride through the competitor runner's
+        # config copy, which would attach one brand's ads to every peer.
+        ('LAST30DAYS_META_ADS_COUNTRY', 'US'),
         # Host-native search signal: set by the SKILL.md agent-host path when the
         # invoking runtime has its own (better) web-search tool, so the engine's
         # keyless search floor stays off there. Defaults unset -> floor allowed.

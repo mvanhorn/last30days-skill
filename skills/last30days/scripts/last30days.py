@@ -83,6 +83,23 @@ def _cleanup_children() -> None:
 atexit.register(_cleanup_children)
 
 
+def parse_meta_ads_page(raw: str) -> str:
+    """Extract an Ad Library page id from a flag value, or "" if there is none.
+
+    Accepts a bare numeric id or any Ad Library URL carrying
+    ``view_all_page_id``. A ``facebook.com/<vanity>`` URL is deliberately
+    rejected rather than guessed at: a vanity handle is not a page id, and one
+    live check resolved a brand-looking handle to a private person's profile.
+    """
+    value = str(raw or "").strip()
+    if not value:
+        return ""
+    if re.fullmatch(r"\d{5,20}", value):
+        return value
+    match = re.search(r"view_all_page_id=(\d{5,20})", value)
+    return match.group(1) if match else ""
+
+
 def parse_search_flag(raw: str, flag_name: str = "--search") -> list[str]:
     sources = []
     for source in raw.split(","):
@@ -832,6 +849,17 @@ def build_parser() -> argparse.ArgumentParser:
             "(--amazon-query='Weber grill', not 'Weber' -- a bare brand keyword lands "
             "on an ad-heavy page that can miss the brand's own bestsellers). "
             "Requires the brightdata CLI on PATH and logged in."
+        ),
+    )
+    parser.add_argument(
+        "--meta-ads-page",
+        help=(
+            "Meta Ad Library page id for the topic's advertiser, when the meta_ads "
+            "source is active. Skips name-based page resolution and its discovery "
+            "credit. Accepts a bare numeric page id (e.g. 300411646810133) or an Ad "
+            "Library URL carrying view_all_page_id. A facebook.com vanity URL is not "
+            "a page id and is rejected. Use it when a brand advertises under product "
+            "names, or when resolution picked the wrong company."
         ),
     )
     parser.add_argument(
@@ -3825,6 +3853,31 @@ def _main(
                     "or set INCLUDE_SOURCES=amazon. Ignoring the keyword.\n"
                 )
 
+        # Advertiser page override for the meta_ads source. Same shape as
+        # --amazon-query (config-carried, warn-not-activate) and for the same
+        # reason: the lane spends metered credits per call.
+        if getattr(args, "meta_ads_page", None):
+            page_id = parse_meta_ads_page(args.meta_ads_page)
+            if not page_id:
+                sys.stderr.write(
+                    "[Meta Ads] --meta-ads-page must be a numeric Ad Library page id "
+                    "or an Ad Library URL containing view_all_page_id; a facebook.com "
+                    "vanity URL is not a page id. Ignoring the override.\n"
+                )
+            else:
+                config["_meta_ads_page"] = page_id
+                _meta_ads_requested = (
+                    (requested_sources and "meta_ads" in requested_sources)
+                    or "meta_ads" in str(config.get("INCLUDE_SOURCES") or "").lower()
+                )
+                if not _meta_ads_requested:
+                    sys.stderr.write(
+                        "[Meta Ads] --meta-ads-page was set but the meta_ads source "
+                        "was not requested; add it to --search (e.g. --search "
+                        "reddit,x,meta_ads) or set INCLUDE_SOURCES=meta_ads. "
+                        "Ignoring the page.\n"
+                    )
+
         # vs-mode / plan routing: split a vs-topic into main + peers unless
         # discover-N or an explicit --competitors-list already decided who runs.
         topic, comp_enabled, comp_count, comp_explicit = apply_vs_competitor_routing(
@@ -3961,6 +4014,9 @@ def _main(
                 # so each peer derives its own keyword from its own topic; a
                 # per-entity keyword can ride in the --competitors-plan entry.
                 entity_config.pop("_amazon_query", None)
+                # An advertiser page is per-entity state by definition: left in
+                # place it would render one brand's ads as every peer's.
+                entity_config.pop("_meta_ads_page", None)
                 plan_entry = comp_plan.get(entity.strip().lower(), {})
                 resolved = {
                     "entity": entity,

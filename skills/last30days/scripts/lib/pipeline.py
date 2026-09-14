@@ -45,6 +45,7 @@ from . import (
     library,
     library_index,
     log,
+    meta_ads,
     normalize,
     permission_preflight,
     perplexity,
@@ -100,6 +101,8 @@ SEARCH_ALIAS = {
     "truth": "truthsocial",
     "web": "grounding",
     "xhs": "xiaohongshu",
+    "meta": "meta_ads",
+    "meta-ads": "meta_ads",
     "xquik": "x",  # xquik is a backend of the single "x" source, not its own source
 }
 
@@ -109,10 +112,42 @@ SEARCH_ALIAS = {
 # amazon is capped at 1 for the same reason as trustpilot: the model supplies
 # one product keyword for the run, so every subquery would issue the identical
 # product search. Extra streams would be pure redundancy at one credit each.
+# meta_ads is capped at 1 for the same reason as amazon: one advertiser page is
+# resolved per run, so every subquery would issue the identical page fetch.
 MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
-    "telegram": 1,
+    "telegram": 1, "meta_ads": 1,
 }
+
+# Sources whose thin result is their normal success state, so the "<3 items"
+# retry would re-fetch them after every success -- bypassing
+# MAX_SOURCE_FETCHES and, for the resolved-entity sources, re-resolving
+# WITHOUT the caller's override (a lookalike-misattribution path).
+#   trustpilot returns at most ONE item by design.
+#   perplexity answers once per run.
+#   meta_ads resolves one advertiser page per run, so a brand that genuinely
+#   ran two creatives this month is complete; a retry would re-resolve the
+#   page and re-spend the discovery credit.
+THIN_RETRY_EXEMPT: frozenset[str] = frozenset({"trustpilot", "perplexity", "meta_ads"})
+
+# Stream-artifact keys promoted to named top-level report artifacts. A stream
+# artifact only ever reaches the report as an anonymous entry in the grounding
+# list, so anything the renderer needs by name has to be lifted out of it --
+# most importantly on a zero-item run, which is exactly when naming the
+# resolved advertiser and its counts matters most.
+STREAM_ARTIFACT_LIFT_KEYS: tuple[str, ...] = ("meta_ads_page", "meta_ads_tally")
+
+
+def _lift_stream_artifacts(bundle) -> None:
+    """Promote per-stream artifacts the renderer reads by name."""
+    for stream_artifact in bundle.artifacts.get("grounding", []):
+        if not isinstance(stream_artifact, dict):
+            continue
+        for key in STREAM_ARTIFACT_LIFT_KEYS:
+            value = stream_artifact.get(key)
+            if value:
+                bundle.artifacts[key] = value
+
 
 _FAILURE_SPECIFICITY = {
     health.AUTH_FAILED: 0,
@@ -217,6 +252,7 @@ MOCK_AVAILABLE_SOURCES = [
     "techmeme",
     "trustpilot",
     "amazon",
+    "meta_ads",
     "jobs",
     "linkedin",
     "corpus",
@@ -366,6 +402,17 @@ def available_sources(
         "amazon" in include_sources or (requested_sources and "amazon" in requested_sources)
     ):
         available.append("amazon")
+    # Meta Ads: opt-in additive source on the Amazon precedent. The
+    # ScrapeCreators key must be present AND the run must ask for it -- the
+    # model per-run via --search, or the user durably via
+    # INCLUDE_SOURCES=meta_ads. Never inferred from topic shape: keyword ad
+    # search on a non-brand topic returns a wrong-entity advertiser, and
+    # auto-firing would spend credits resolving it.
+    if config.get("SCRAPECREATORS_API_KEY") and (
+        "meta_ads" in include_sources
+        or (requested_sources and "meta_ads" in requested_sources)
+    ):
+        available.append("meta_ads")
     if (
         "xiaohongshu" in include_sources
         or (requested_sources and "xiaohongshu" in requested_sources)
@@ -2814,10 +2861,16 @@ def run(
     # marking the source PARTIAL would trip LAST30DAYS_STRICT_EXIT on runs that
     # returned good X results.
     warnings.extend(bundle.artifacts.get("x_partial_coverage", []))
-    # Backend receipts that are not failures (xapi's truncated window).
+    # Backend receipts that are not failures (xapi's truncated window), and
+    # the Meta Ads footer inputs. A stream artifact only ever reaches the
+    # report as an anonymous entry in this list, so the advertiser and the
+    # pre-truncation counts have to be lifted to named top-level artifacts or
+    # the footer cannot render them -- least of all on a zero-item run, which
+    # is exactly when naming the advertiser matters most.
     for stream_artifact in bundle.artifacts.get("grounding", []):
         if isinstance(stream_artifact, dict):
             warnings.extend(stream_artifact.get("x_receipts", []))
+    _lift_stream_artifacts(bundle)
     library_context, library_warning = _load_library_context(
         topic=topic,
         config=config,
@@ -4259,12 +4312,7 @@ def _retry_thin_sources(
         for source in subquery.sources:
             if source not in planned_sources:
                 planned_sources.append(source)
-    # trustpilot returns at most ONE item by design, so the "<3 items" rule
-    # would re-fetch it after every successful lookup -- bypassing
-    # MAX_SOURCE_FETCHES and re-resolving WITHOUT the caller's
-    # --trustpilot-domain (a lookalike-misattribution path). Its thin result
-    # is its normal success state; never retry it here.
-    _skip = (skip_sources or set()) | {"trustpilot", "perplexity"}
+    _skip = (skip_sources or set()) | THIN_RETRY_EXEMPT
     thin_sources = [
         source
         for source in planned_sources
@@ -5219,6 +5267,38 @@ def _retrieve_stream_impl(
             }
 
         return enriched, artifact
+    if source == "meta_ads":
+        # The advertiser is resolved from the stable research topic, not the
+        # narrowed per-subquery search_query: a subquery like "kettle reviews"
+        # would resolve a different page than the brand the run is about.
+        brand = raw_topic or topic or subquery.search_query
+        result = meta_ads.search_meta_ads(
+            brand,
+            from_date,
+            to_date,
+            depth=depth,
+            token=(config or {}).get("SCRAPECREATORS_API_KEY") or "",
+            country=str(
+                (config or {}).get("LAST30DAYS_META_ADS_COUNTRY")
+                or meta_ads.DEFAULT_COUNTRY
+            ),
+            page_override=str((config or {}).get("_meta_ads_page") or "").strip(),
+        )
+        artifact = _result_outcome_artifact(source, result) or {}
+        artifact = dict(artifact)
+        # The footer needs the resolved advertiser and the pre-truncation
+        # counts even on a run that produced zero items, and stream artifacts
+        # only reach the report through the grounding list, so they ride here
+        # and are lifted to top-level artifacts after retrieval.
+        artifact["meta_ads_page"] = result.get("page") or {}
+        artifact["meta_ads_tally"] = result.get("tally") or {}
+        if result.get("partial"):
+            artifact["_source_outcome"] = {
+                "state": schema.PARTIAL,
+                "detail": str(result.get("error") or "partial"),
+                "attempted": True,
+            }
+        return result.get("ads") or [], artifact
     if source == "bluesky":
         result = bluesky.search_bluesky(subquery.search_query, from_date, to_date, depth=depth, config=config)
         return bluesky.parse_bluesky_response(result), _result_outcome_artifact(source, result)
