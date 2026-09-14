@@ -166,6 +166,7 @@ SOURCE_ORDER = (
     "arxiv",
     "trustpilot",
     "amazon",
+    "meta_ads",
     "tiktok",
     "instagram",
     "threads",
@@ -837,6 +838,10 @@ def _perplexity_record(config):
     )
 
 
+def _meta_ads_record(config):
+    return _sc_optin_record(config, "meta_ads", "Meta Ad Library")
+
+
 def _linkedin_record(config):
     requires = "SCRAPECREATORS_API_KEY + INCLUDE_SOURCES=linkedin"
     if not config.get("SCRAPECREATORS_API_KEY"):
@@ -959,6 +964,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "arxiv": _arxiv_record,
     "trustpilot": _trustpilot_record,
     "amazon": _amazon_record,
+    "meta_ads": _meta_ads_record,
     "tiktok": _tiktok_record,
     "instagram": _instagram_record,
     "threads": _threads_record,

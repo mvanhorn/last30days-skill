@@ -15,6 +15,7 @@ from . import (
     health,
     hiring_signals,
     library_index,
+    meta_ads,
     registers,
     relevance,
     rerank,
@@ -229,6 +230,7 @@ SOURCE_LABELS = {
     "techmeme": "Techmeme",
     "trustpilot": "Trustpilot",
     "amazon": "Amazon",
+    "meta_ads": "Meta Ads",
     "perplexity": "Perplexity",
     "jobs": "Jobs",
     "corpus": "Your files",
@@ -2877,6 +2879,10 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
     if amazon_line:
         out.append(amazon_line)
 
+    meta_ads_line = _meta_ads_footer_line(report)
+    if meta_ads_line:
+        out.append(meta_ads_line)
+
     # Web (sources from grounding)
     web_items = report.items_by_source.get("grounding") or []
     if web_items:
@@ -2990,6 +2996,96 @@ def _amazon_footer_line(report: schema.Report) -> str | None:
     entries = [amazon.footer_entry(s) for s in stats]
     line = f"📦 Amazon: {count} {plural} │ {', '.join(entries)}"
     return line
+
+
+_PLACEMENT_SHORT = {
+    "FACEBOOK": "FB",
+    "INSTAGRAM": "IG",
+    "THREADS": "Threads",
+    "MESSENGER": "Messenger",
+    "WHATSAPP": "WhatsApp",
+    "AUDIENCE_NETWORK": "Audience",
+}
+
+
+def _meta_ads_footer_line(report: schema.Report) -> str | None:
+    """Build the 📣 Meta Ads emoji-footer line.
+
+    Every count comes from the adapter's tally, never from ``items_by_source``.
+    The pipeline truncates each source's stream to a per-depth limit (12 at
+    default) before rendering, so counting surviving items would report 12
+    creatives for a page that ran thirty, and would under-count the video and
+    transcript work that was actually paid for.
+
+    Four shapes, because an empty line is never the right answer here -- if the
+    lane ran and found nothing, the reader needs to know which nothing it was:
+
+    * **Resolved with creatives** -- advertiser, what launched this window, and
+      the paid-media detail (placements, promo codes, transcripts).
+    * **Resolved, nothing new** -- name the advertiser and how much it is still
+      running from before, so "no ads" is not confused with "not advertising".
+    * **Unresolved** -- name the closest candidate and point at the override.
+    * **Failed** -- name the outcome rather than implying an empty Ad Library.
+    """
+    tally = (report.artifacts or {}).get("meta_ads_tally") or {}
+    page = (report.artifacts or {}).get("meta_ads_page") or {}
+    outcome = report.source_status.get("meta_ads")
+    if not tally and not page and outcome is None:
+        return None
+
+    failed = bool(outcome and outcome.state not in (health.OK, schema.PARTIAL))
+    if failed:
+        detail = str(getattr(outcome, "detail", "") or "").strip()
+        return f"📣 Meta Ads: no ads pulled ({detail})" if detail else "📣 Meta Ads: no ads pulled"
+
+    resolution = str(tally.get("resolution") or "")
+    if resolution == meta_ads.NO_CANDIDATES:
+        return "📣 Meta Ads: no advertiser candidates returned │ pass --meta-ads-page to target one"
+    if resolution == meta_ads.UNRESOLVED or not page:
+        candidate = str(tally.get("top_candidate") or "").strip()
+        if candidate:
+            return (
+                f"📣 Meta Ads: no advertiser matched │ closest: {candidate} "
+                f"│ pass --meta-ads-page to target one"
+            )
+        return "📣 Meta Ads: no advertiser matched │ pass --meta-ads-page to target one"
+
+    advertiser = str(page.get("name") or tally.get("advertiser") or "").strip()
+    launched = int(tally.get("launched_in_window") or 0)
+    still = int(tally.get("still_running") or 0)
+
+    if not launched:
+        parts = [f"📣 Meta Ads: no new creatives for {advertiser}".rstrip()]
+        if still:
+            parts.append(f"{still} still running from before")
+        return " │ ".join(parts)
+
+    fetched = int(tally.get("fetched") or 0)
+    total = int(tally.get("endpoint_total") or 0)
+    # A page bigger than the depth cap is a sample, and saying so is the
+    # difference between "this brand launched 12 things" and "we looked at 60
+    # of its 222 live ads and 12 of those were new".
+    if tally.get("cursor_remaining") and total > fetched > 0:
+        head = f"{launched} new of {fetched} fetched ({total:,} live)"
+    else:
+        head = f"{launched} new {'creative' if launched == 1 else 'creatives'}"
+
+    parts = [f"📣 Meta Ads: {advertiser} │ {head}"] if advertiser else [f"📣 Meta Ads: {head}"]
+    if still:
+        parts.append(f"{still} running from before")
+    placements = [
+        _PLACEMENT_SHORT.get(str(p).upper(), str(p).title())
+        for p in (tally.get("placements") or [])
+    ]
+    if placements:
+        parts.append(", ".join(placements))
+    codes = [str(c) for c in (tally.get("promo_codes") or []) if c]
+    if codes:
+        parts.append(f"code {', '.join(codes)}")
+    transcribed = int(tally.get("transcribed") or 0)
+    if transcribed:
+        parts.append(f"{transcribed} transcribed")
+    return " │ ".join(parts)
 
 
 def _top_voices_footer_line(report: schema.Report) -> str | None:
@@ -3210,6 +3306,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "digg": [("postCount", "posts"), ("uniqueAuthors", "auth")],
     "trustpilot": [("reviews", "reviews")],
     "amazon": [("ratings", "ratings")],
+    "meta_ads": [("variants", "variants")],
 }
 
 
