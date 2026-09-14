@@ -80,6 +80,7 @@ Si te vas a reunir con un CEO, ¿te has leído todos sus tuits y todas sus trans
 | **arXiv** | Los artículos científicos que hay detrás del ruido. Investigación nueva dentro de la ventana, gratis y sin clave de API. Se activa solo cuando `arxiv-pp-cli` está en el PATH (la configuración inicial lo instala). |
 | **Techmeme** | La capa editorial de la actualidad tecnológica, acotada a tu ventana de 30 días. Gratis y sin clave de API. Se activa solo cuando `techmeme-pp-cli` está en el PATH (la configuración inicial lo instala). |
 | **LinkedIn** | La señal profesional. Publicaciones y artículos, con los artículos ponderados como señal fuerte. |
+| **Meta Ads** | Lo que una marca paga por decir. Creatividades publicitarias de Meta lanzadas este mes, con texto, códigos promocionales y transcripciones. |
 | **StockTwits** | El sentimiento de los traders. Se activa automáticamente cuando tu tema es un ticker o una criptomoneda. |
 | **Threads** | La capa de texto posterior a Twitter. Conversaciones de creadores y marcas. |
 | **Pinterest** | Descubrimiento visual. Pines, guardados y comentarios sobre productos e ideas. |

@@ -80,6 +80,7 @@ Wenn du dich mit einem CEO triffst: Hast du alle Tweets und YouTube-Transkripte 
 | **arXiv** | Die Fachartikel hinter dem Hype. Neue Forschung im Zeitfenster, kostenlos, ohne API-Schlüssel. Wird automatisch aktiv, sobald `arxiv-pp-cli` im PATH liegt (das Erst-Setup installiert es). |
 | **Techmeme** | Die redaktionelle Ebene der Tech-News, begrenzt auf dein 30-Tage-Fenster. Kostenlos, ohne API-Schlüssel. Wird automatisch aktiv, sobald `techmeme-pp-cli` im PATH liegt (das Erst-Setup installiert es). |
 | **LinkedIn** | Das berufliche Signal. Beiträge und Artikel, wobei Artikel als starkes Signal gewichtet werden. |
+| **Meta Ads** | Wofür eine Marke bezahlt. Diesen Monat gestartete Meta-Werbemittel mit Anzeigentext, Gutscheincodes und Transkripten. |
 | **StockTwits** | Die Stimmung der Trader. Aktiviert sich automatisch, wenn dein Thema ein Ticker oder eine Kryptowährung ist. |
 | **Threads** | Die Textebene nach Twitter. Gespräche von Creators und Marken. |
 | **Pinterest** | Visuelle Entdeckung. Pins, gespeicherte Beiträge und Kommentare zu Produkten und Ideen. |

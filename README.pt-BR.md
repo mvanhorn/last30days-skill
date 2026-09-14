@@ -80,6 +80,7 @@ Se você vai se reunir com um CEO, já leu todos os tweets e todas as transcriç
 | **arXiv** | Os artigos científicos por trás do hype. Pesquisa nova dentro da janela, de graça e sem chave de API. Ativa sozinho quando `arxiv-pp-cli` está no PATH (a configuração inicial instala). |
 | **Techmeme** | A camada editorial do noticiário de tecnologia, limitada à sua janela de 30 dias. De graça e sem chave de API. Ativa sozinho quando `techmeme-pp-cli` está no PATH (a configuração inicial instala). |
 | **LinkedIn** | O sinal profissional. Publicações e artigos, com os artigos ponderados como sinal forte. |
+| **Meta Ads** | O que uma marca paga para dizer. Criativos de anúncios da Meta lançados neste mês, com texto, códigos promocionais e transcrições. |
 | **StockTwits** | O humor dos traders. Ativa automaticamente quando seu assunto é um ticker ou uma cripto. |
 | **Threads** | A camada de texto do pós-Twitter. Conversas de criadores e marcas. |
 | **Pinterest** | Descoberta visual. Pins, itens salvos e comentários sobre produtos e ideias. |

@@ -80,6 +80,7 @@ Si vous rencontrez un PDG, avez-vous lu tous ses tweets et toutes ses transcript
 | **arXiv** | Les articles scientifiques derrière le battage médiatique. La recherche publiée dans la fenêtre, gratuit, sans clé API. Activé automatiquement quand `arxiv-pp-cli` est présent dans le PATH (la configuration initiale l'installe). |
 | **Techmeme** | La couche éditoriale de l'actu tech, restreinte à votre fenêtre de 30 jours. Gratuit, sans clé API. Activé automatiquement quand `techmeme-pp-cli` est présent dans le PATH (la configuration initiale l'installe). |
 | **LinkedIn** | Le signal professionnel. Posts et articles, les articles étant pondérés comme signal fort. |
+| **Meta Ads** | Ce qu'une marque paie pour dire. Les créations publicitaires Meta lancées ce mois-ci, avec le texte, les codes promo et les transcriptions. |
 | **StockTwits** | Le sentiment des traders. S'active automatiquement quand votre sujet est un ticker ou une crypto. |
 | **Threads** | La couche texte de l'après-Twitter. Les conversations des créateurs et des marques. |
 | **Pinterest** | La découverte visuelle. Épingles, enregistrements et commentaires sur des produits et des idées. |
