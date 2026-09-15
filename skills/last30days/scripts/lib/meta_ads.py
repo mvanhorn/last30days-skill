@@ -302,60 +302,56 @@ def _head_token(topic: str) -> str:
 def _name_covered_by_topic(topic: str, name: str) -> bool:
     """True when the topic spells out this advertiser's whole name.
 
-    Two conditions, and the second is what keeps a fragment from passing as a
-    name. Every word of the page name must appear in the topic, *and* the part
-    of the topic it accounts for must be more than a single word unless it
-    accounts for the topic entirely. Without that, a page named only "Kitchen"
-    would be trivially covered by "Acme Kitchen" and claim the brand's topic on
-    the strength of the category word alone -- the same misattribution the head
-    word exists to stop, arriving through the shortcut instead.
+    Whole means whole. Every word of the page name must appear in the topic as
+    a word, short ones included and without dissolving word boundaries: an
+    advertiser called "Acme AI" is not named by a topic about "Acme Kitchen"
+    just because the two share "acme", and "Cart Wheel" is not named by "Acme
+    Cartwheel" just because its letters appear inside a longer word. Ignoring
+    either would let a fragment of one company's name stand in for another's.
+
+    The name must also account for more than a single word of the topic, unless
+    it accounts for the topic entirely, so a page called just "Kitchen" cannot
+    claim a topic about "Acme Kitchen" on the category word alone.
     """
+    topic_words = set(_tokens(topic))
+    name_words = set(_tokens(name))
+    if not topic_words or not name_words:
+        return False
+    if not name_words <= topic_words:
+        return False
     topic_tokens = _match_tokens(topic)
-    name_tokens = _match_tokens(name)
-    if not topic_tokens or not name_tokens:
-        return False
-    topic_compact = _compact(topic)
-    if not all(
-        token in topic_tokens or token in topic_compact for token in name_tokens
-    ):
-        return False
-    name_compact = _compact(name)
-    covered = {
-        token
-        for token in topic_tokens
-        if token in name_tokens or token in name_compact
-    }
-    return len(covered) >= 2 or covered == topic_tokens
+    covered = topic_tokens & name_words
+    return len(covered) >= 2 or (bool(covered) and covered == topic_tokens)
 
 
 def _is_category_only(topic: str, name: str, spread: Dict[str, int]) -> bool:
-    """True when this page matched the topic's category but not its brand.
+    """True when this page shares some of the topic's words but is not its brand.
 
-    A multi-word topic carries its identity in the head word, so a page that
-    matches only the trailing word has matched what the brand *sells* rather
-    than who it is: for "Acme Kitchen", "Kitchen World" shares the category and
-    none of the name, and attributing its ads to Acme would name the wrong
-    company. Requiring the head word holds whether the result set contains one
-    lookalike or twenty, which a rule counting how many advertisers share a
-    word does not -- a single unrelated page makes any word look distinctive.
+    A single-word topic is its own identity, so any page carrying that word --
+    including an umbrella brand's product-line page -- is the brand.
 
-    A single-word topic has nothing to strip, so its whole name is the head and
-    an umbrella brand still resolves to its product-line pages.
+    A multi-word topic has to be matched as a name, not by one of its words. The
+    page qualifies when the topic spells its name out, or when it carries every
+    identifying word of the topic. Sharing only one of them is what a category
+    lookalike and a same-word different-company both look like, and neither
+    should have another firm's paid creatives attributed to it.
     """
     matched = _matched_tokens(topic, name)
     if not matched:
         return True
-    # When the topic spells out this company's whole name, it is naming the
-    # company, wherever in the phrase that name sits. "Kitchen by Crate &
-    # Barrel" leads with a category and still names its advertiser exactly, so
-    # position cannot be the only test. A lookalike fails this: "Kitchen World"
-    # carries "world", which a topic about "Acme Kitchen" never mentions.
+    topic_tokens = _match_tokens(topic)
+    if len(topic_tokens) <= 1:
+        return False
     if _name_covered_by_topic(topic, name):
         return False
-    head = _head_token(topic)
-    if not head:
-        return False
-    return head not in matched
+    name_words = set(_tokens(name))
+    name_compact = _compact(name)
+    covered = {
+        token
+        for token in topic_tokens
+        if token in name_words or token in name_compact
+    }
+    return covered != topic_tokens
 
 
 def resolve_page(

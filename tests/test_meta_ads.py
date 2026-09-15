@@ -606,7 +606,7 @@ class TestResolutionStrength:
         rows = [ad_row(page_id="1", page_name="Brightpan Kitchen") for _ in range(2)] + [
             ad_row(page_id="2", page_name="Superbrightpanel Co") for _ in range(40)
         ]
-        page, _runner_ups, _top, strength = resolve_page("Brightpan Supply", rows)
+        page, _runner_ups, _top, strength = resolve_page("Brightpan", rows)
         assert page["name"] == "Brightpan Kitchen"
         assert strength == meta_ads.MATCH_TOKEN
 
@@ -681,7 +681,7 @@ class TestGenericTokens:
         rows = [ad_row(page_id="1", page_name="Brightpan Supply") for _ in range(2)] + [
             ad_row(page_id="2", page_name="Unrelated Deals Co") for _ in range(40)
         ]
-        page, _runner_ups, _top, strength = resolve_page("Brightpan Holdings", rows)
+        page, _runner_ups, _top, strength = resolve_page("Brightpan Supply news", rows)
         assert page["name"] == "Brightpan Supply"
         assert strength == meta_ads.MATCH_TOKEN
 
@@ -714,10 +714,15 @@ class TestHeadTokenIdentity:
         page, _runner_ups, _top, _strength = resolve_page("Acme Kitchen", rows)
         assert page["name"] == "Acme Kitchen"
 
-    def test_another_page_of_the_same_brand_still_resolves(self):
+    def test_a_page_sharing_only_the_brand_word_fails_closed(self):
+        # "Acme Supply" may or may not belong to the brand behind "Acme
+        # Kitchen"; the name alone cannot say. Resolving it would risk
+        # attributing another firm's ads, so the lane declines and names the
+        # candidate instead, which the page override recovers in one flag.
         rows = [ad_row(page_id="1", page_name="Acme Supply") for _ in range(3)]
-        page, _runner_ups, _top, _strength = resolve_page("Acme Kitchen", rows)
-        assert page["name"] == "Acme Supply"
+        page, _runner_ups, top, _strength = resolve_page("Acme Kitchen", rows)
+        assert page is None
+        assert top == "Acme Supply"
 
     def test_single_word_topic_keeps_its_umbrella_reach(self):
         # Nothing to strip, so the whole name is the head and product-line
@@ -736,12 +741,17 @@ class TestDescriptorLeadingTopics:
         assert page["name"] == "Acme Grills"
 
     @pytest.mark.parametrize(
-        "topic", ["best Acme grills", "latest Acme cookware", "top Acme deals"]
+        "topic,page_name",
+        [
+            ("best Acme grills", "Acme Grills"),
+            ("latest Acme cookware", "Acme Cookware"),
+            ("top Acme deals", "Acme Deals"),
+        ],
     )
-    def test_common_descriptors_do_not_become_the_identity(self, topic):
-        rows = [ad_row(page_id="1", page_name="Acme Supply") for _ in range(5)]
+    def test_common_descriptors_do_not_become_the_identity(self, topic, page_name):
+        rows = [ad_row(page_id="1", page_name=page_name) for _ in range(5)]
         page, _runner_ups, _top, _strength = resolve_page(topic, rows)
-        assert page["name"] == "Acme Supply"
+        assert page["name"] == page_name
 
     def test_a_category_lookalike_is_still_rejected_under_a_descriptor(self):
         # "grill" appears inside "grills", but it is the category word, not
@@ -807,3 +817,28 @@ class TestCoverageBeatsVolume:
         ]
         page, _runner_ups, _top, _strength = resolve_page("Acme Kitchen", rows)
         assert page["name"] == "Acme Kitchen Co"
+
+
+class TestWholeNameRequired:
+    """Greptile round 7: a partial name must not stand in for a whole one."""
+
+    def test_a_page_with_a_word_the_topic_never_mentions_is_rejected(self):
+        # "Acme AI" and the brand behind "Acme Kitchen" share one word and
+        # nothing else; "ai" appears nowhere in the topic.
+        rows = [ad_row(page_id="9", page_name="Acme AI") for _ in range(80)]
+        page, _runner_ups, _top, _strength = resolve_page("Acme Kitchen", rows)
+        assert page is None
+
+    def test_short_words_of_the_page_name_are_counted(self):
+        # The page name's short word is part of its identity, so ignoring it
+        # would let the name look fully covered when it is not.
+        rows = [ad_row(page_id="9", page_name="Acme AI") for _ in range(5)]
+        page, _runner_ups, _top, _strength = resolve_page("Acme AI", rows)
+        assert page["name"] == "Acme AI"
+
+    def test_word_boundaries_are_respected_in_coverage(self):
+        # "Cart Wheel" is not named by "Acme Cartwheel" merely because its
+        # letters appear inside a longer word.
+        rows = [ad_row(page_id="9", page_name="Cart Wheel") for _ in range(30)]
+        page, _runner_ups, _top, _strength = resolve_page("Acme Cartwheel", rows)
+        assert page is None
