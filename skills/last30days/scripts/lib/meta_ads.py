@@ -390,10 +390,18 @@ def resolve_page(
         ]
         if not group:
             continue
-        # Within a tier, the most distinctive matched word wins before ad
-        # volume does. Volume is the last tiebreak, never the first signal.
+        # Within a tier: the most distinctive matched word first, then the
+        # page accounting for the most of the topic, and only then ad volume.
+        # Two pages can share a brand word while one also matches the rest of
+        # the topic, and that one is the better answer however much the other
+        # is spending.
         group.sort(
-            key=lambda g: (_match_rarity(topic, g["name"], spread), -g["ads"], g["id"])
+            key=lambda g: (
+                _match_rarity(topic, g["name"], spread),
+                -len(_matched_tokens(topic, g["name"])),
+                -g["ads"],
+                g["id"],
+            )
         )
         winner = group[0]
         # Runner-ups come from every tier that matched at all: a weaker

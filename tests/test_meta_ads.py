@@ -796,3 +796,14 @@ class TestPartialNamesCannotClaimATopic:
         rows = [ad_row(page_id="9", page_name="Grills") for _ in range(30)]
         page, _runner_ups, _top, _strength = resolve_page("best Acme grills", rows)
         assert page is None
+
+
+class TestCoverageBeatsVolume:
+    def test_the_page_matching_more_of_the_topic_wins(self):
+        # Two pages share the brand word; the one that also matches the rest
+        # of the topic is the better answer however much the other spends.
+        rows = [ad_row(page_id="1", page_name="Acme Kitchen Co") for _ in range(2)] + [
+            ad_row(page_id="9", page_name="Acme AI") for _ in range(80)
+        ]
+        page, _runner_ups, _top, _strength = resolve_page("Acme Kitchen", rows)
+        assert page["name"] == "Acme Kitchen Co"
