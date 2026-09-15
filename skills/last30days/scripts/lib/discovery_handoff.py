@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -613,23 +614,33 @@ def _parse_pending_file(path: Path) -> PendingReport:
 
 
 def _load_host_file(path: str | Path, label: str) -> dict[str, Any]:
-    """Load a host-authored handoff file with strict top-level checks."""
-    file_path = Path(path).expanduser()
-    try:
-        raw = file_path.read_text(encoding="utf-8")
-    except OSError as exc:
-        raise HandoffContractError(
-            f"Could not read {label} file {file_path}: {exc}"
-        ) from exc
+    """Load a host-authored handoff file or stdin with strict checks."""
+    if str(path) == "-":
+        source = "standard input"
+        try:
+            raw = sys.stdin.read()
+        except (OSError, UnicodeError) as exc:
+            raise HandoffContractError(
+                f"Could not read {label} from {source}: {exc}"
+            ) from exc
+    else:
+        file_path = Path(path).expanduser()
+        source = f"file {file_path}"
+        try:
+            raw = file_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            raise HandoffContractError(
+                f"Could not read {label} {source}: {exc}"
+            ) from exc
     try:
         payload = json.loads(raw)
     except json.JSONDecodeError as exc:
         raise HandoffContractError(
-            f"{label.capitalize()} file {file_path} is not valid JSON: {exc}"
+            f"{label.capitalize()} {source} is not valid JSON: {exc}"
         ) from exc
     if not isinstance(payload, dict):
         raise HandoffContractError(
-            f"{label.capitalize()} file {file_path} must be a top-level JSON "
+            f"{label.capitalize()} {source} must be a top-level JSON "
             f"object, got {type(payload).__name__}."
         )
     return payload

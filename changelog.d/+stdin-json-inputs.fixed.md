@@ -1,0 +1,1 @@
+Host-authored plans, comparison targeting, discovery judgments, and discovery angles can now be read from stdin with `-`, avoiding temporary-file cleanup commands that some agent hosts reject before execution.

@@ -1233,11 +1233,16 @@ def test_discovery_exits_when_configured_sources_have_no_discovery_feed(monkeypa
 # --- U2: three-command protocol CLI surface (flags, scoping, dispatch) ---
 
 
-def _run_protocol_cli(argv: list[str], env_overrides: dict[str, str] | None = None):
+def _run_protocol_cli(
+    argv: list[str],
+    env_overrides: dict[str, str] | None = None,
+    input_text: str | None = None,
+):
     """Run the real CLI entry point; env overrides layer onto the test env."""
     return subprocess.run(
         [sys.executable, "skills/last30days/scripts/last30days.py", *argv],
         cwd=REPO_ROOT,
+        input=input_text,
         capture_output=True,
         text=True,
         check=False,
@@ -1711,8 +1716,7 @@ def test_discovery_cli_resume_full_mock_offline_is_deterministic(tmp_path):
     rows = bundle_payload["nominations"]
     keep = [row["id"] for row in rows if not row["heuristic_junk"]][:2]
     assert keep, "mock sweep should nominate at least one non-junk topic"
-    judgments_path = tmp_path / "judgments.json"
-    judgments_path.write_text(json.dumps({
+    judgments_payload = json.dumps({
         "bundle_id": bundle_payload["bundle_id"],
         "judgments": [
             {"id": keep[0], "name": "Renamed Mock Topic", "junk": False,
@@ -1722,16 +1726,17 @@ def test_discovery_cli_resume_full_mock_offline_is_deterministic(tmp_path):
                 for row in rows if row["id"] not in keep
             ],
         ],
-    }), encoding="utf-8")
+    })
 
     def run_leg2():
         return _run_protocol_cli(
             [
                 "--discover", "AI agents", "--mock",
                 "--save-dir", str(tmp_path),
-                "--judgments", str(judgments_path),
+                "--judgments", "-",
             ],
             env_overrides={"LAST30DAYS_DEFAULT_SEARCH": ""},
+            input_text=judgments_payload,
         )
 
     first = run_leg2()
@@ -2491,8 +2496,7 @@ def test_discovery_cli_full_mock_protocol_three_legs_end_to_end(tmp_path):
     rows = bundle_payload["nominations"]
     keep = [row["id"] for row in rows if not row["heuristic_junk"]][:1]
     assert keep, "mock sweep should nominate at least one non-junk topic"
-    judgments_path = tmp_path / "judgments.json"
-    judgments_path.write_text(json.dumps({
+    judgments_payload = json.dumps({
         "bundle_id": bundle_payload["bundle_id"],
         "judgments": [
             {"id": keep[0], "name": "Renamed Mock Topic", "junk": False,
@@ -2502,13 +2506,14 @@ def test_discovery_cli_full_mock_protocol_three_legs_end_to_end(tmp_path):
                 for row in rows if row["id"] not in keep
             ],
         ],
-    }), encoding="utf-8")
+    })
     leg2 = _run_protocol_cli(
         [
             "--discover", "AI agents", "--mock", "--save-dir", str(tmp_path),
-            "--judgments", str(judgments_path),
+            "--judgments", "-",
         ],
         env_overrides={"LAST30DAYS_DEFAULT_SEARCH": ""},
+        input_text=judgments_payload,
     )
     assert leg2.returncode == 0, leg2.stderr
     pending_payload = json.loads(
@@ -2516,17 +2521,25 @@ def test_discovery_cli_full_mock_protocol_three_legs_end_to_end(tmp_path):
             encoding="utf-8"
         )
     )
-    angles_path = _write_angles_file(tmp_path, pending_payload["bundle_id"], [
-        {"id": keep[0],
-         "podcast": "A mock podcast hook for the renamed topic",
-         "x_article": "A mock X-article hook for the renamed topic"},
-    ])
+    angles_payload = json.dumps({
+        "bundle_id": pending_payload["bundle_id"],
+        "angles": [
+            {
+                "id": keep[0],
+                "podcast": "A mock podcast hook for the renamed topic",
+                "x_article": "A mock X-article hook for the renamed topic",
+            },
+        ],
+    })
 
     def run_leg3():
-        return _run_protocol_cli([
-            "--discover", "AI agents", "--mock", "--save-dir", str(tmp_path),
-            "--finalize", "--angles", str(angles_path),
-        ])
+        return _run_protocol_cli(
+            [
+                "--discover", "AI agents", "--mock", "--save-dir", str(tmp_path),
+                "--finalize", "--angles", "-",
+            ],
+            input_text=angles_payload,
+        )
 
     first = run_leg3()
     assert first.returncode == 0, first.stderr
