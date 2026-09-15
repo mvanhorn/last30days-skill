@@ -300,15 +300,32 @@ def _head_token(topic: str) -> str:
 
 
 def _name_covered_by_topic(topic: str, name: str) -> bool:
-    """True when every word of the advertiser's name appears in the topic."""
+    """True when the topic spells out this advertiser's whole name.
+
+    Two conditions, and the second is what keeps a fragment from passing as a
+    name. Every word of the page name must appear in the topic, *and* the part
+    of the topic it accounts for must be more than a single word unless it
+    accounts for the topic entirely. Without that, a page named only "Kitchen"
+    would be trivially covered by "Acme Kitchen" and claim the brand's topic on
+    the strength of the category word alone -- the same misattribution the head
+    word exists to stop, arriving through the shortcut instead.
+    """
     topic_tokens = _match_tokens(topic)
     name_tokens = _match_tokens(name)
-    if not name_tokens:
+    if not topic_tokens or not name_tokens:
         return False
     topic_compact = _compact(topic)
-    return all(
+    if not all(
         token in topic_tokens or token in topic_compact for token in name_tokens
-    )
+    ):
+        return False
+    name_compact = _compact(name)
+    covered = {
+        token
+        for token in topic_tokens
+        if token in name_tokens or token in name_compact
+    }
+    return len(covered) >= 2 or covered == topic_tokens
 
 
 def _is_category_only(topic: str, name: str, spread: Dict[str, int]) -> bool:

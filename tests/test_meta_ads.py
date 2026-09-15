@@ -775,3 +775,24 @@ class TestBrandPositionIndependence:
         rows = [ad_row(page_id="9", page_name="Kitchen World") for _ in range(30)]
         page, _runner_ups, _top, _strength = resolve_page("Acme Kitchen", rows)
         assert page is None
+
+
+class TestPartialNamesCannotClaimATopic:
+    """A fragment of the topic is not an advertiser's whole name."""
+
+    def test_a_page_named_only_the_category_word_is_rejected(self):
+        # Trivially "covered" by the topic, but it accounts for one word of it
+        # and none of the brand.
+        rows = [ad_row(page_id="9", page_name="Kitchen") for _ in range(30)]
+        page, _runner_ups, _top, _strength = resolve_page("Acme Kitchen", rows)
+        assert page is None
+
+    def test_a_page_named_the_whole_single_word_topic_still_resolves(self):
+        rows = [ad_row(page_id="1", page_name="Acme Co") for _ in range(4)]
+        page, _runner_ups, _top, _strength = resolve_page("Acme", rows)
+        assert page["name"] == "Acme Co"
+
+    def test_coverage_needs_more_than_one_topic_word(self):
+        rows = [ad_row(page_id="9", page_name="Grills") for _ in range(30)]
+        page, _runner_ups, _top, _strength = resolve_page("best Acme grills", rows)
+        assert page is None
