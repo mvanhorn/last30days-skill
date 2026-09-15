@@ -17,11 +17,13 @@ cannot be recovered keylessly here (ScrapeCreators backup still provides it).
 import html as _html
 import re
 import sys
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from . import http
 from . import reddit_enrich
+from . import scrapling_fetch
 
 # Up to N posts enriched per subquery, by depth. Raised from 3/5/8 once the
 # per-command memo (http.reddit_keyless_get_text) collapsed repeat shreddit
@@ -63,6 +65,23 @@ _BOT_SUFFIXES = ("-bot", "_bot")
 
 # CamelCase catches WikiTextBot without swallowing names such as Talbot.
 _CAMEL_BOT = re.compile(r"[a-z0-9]Bot\d*$")
+# Browser fallback is slower than the HTTP path: a stealthy-fetch launches a real
+# browser to clear Reddit's block, so it gets a wider window. When the caller
+# passes a ``deadline`` (the enrichment budget in reddit_keyless._enrich), the
+# effective timeout is capped to the time remaining so the browser subprocess is
+# killed by the deadline instead of outliving a cancelled future.
+SCRAPLING_TIMEOUT = 75
+
+# Below this many remaining seconds the fallback is skipped outright: launching
+# a stealthy browser takes several seconds by itself, so a tighter window can
+# only burn the tail of the budget without returning usable markup.
+SCRAPLING_MIN_BUDGET = 10
+
+# On timeout, subproc.run_with_timeout runs SIGTERM -> wait(5) -> SIGKILL ->
+# wait(5) AFTER the timeout fires, so a subprocess handed the whole remaining
+# budget outlives the deadline by up to this many seconds. The cap reserves it,
+# so timeout + cleanup always fits inside the enrichment budget.
+SCRAPLING_CLEANUP_GRACE = 10
 
 # Match the exact <shreddit-comment> element start tag, not <shreddit-comment-tree>
 # or <shreddit-comment-tree-stats> (lookahead requires whitespace or '>').
@@ -98,7 +117,13 @@ def _svc_url(subreddit: str, post_id: str) -> str:
 
 
 def _attr(tag: str, name: str) -> str:
-    m = re.search(rf'\b{name}="([^"]*)"', tag)
+    # Case-insensitive on the attribute NAME: the server partial emits the
+    # custom-element attribute as ``thingId`` (camelCase), but when the same
+    # markup is fetched through a real browser (the Scrapling fallback below),
+    # the DOM lowercases every attribute name to ``thingid``. HTML attribute
+    # names are case-insensitive, so matching either shape keeps both fetch
+    # paths feeding the one parser. Attribute values stay case-sensitive.
+    m = re.search(rf'\b{name}="([^"]*)"', tag, re.IGNORECASE)
     return _html.unescape(m.group(1)) if m else ""
 
 
@@ -186,15 +211,77 @@ def _total_comments(html_text: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def _blocked_by_reddit(failures: List[http.HTTPError]) -> bool:
+    """True when the keyless GET was refused by Reddit's block wall (HTTP 403).
+
+    That is the only miss the browser fallback exists for. Any other empty
+    outcome -- 5xx, 429, a timeout, a memo election that gave up, an empty 200
+    body -- is not something a stealthy browser fetch would change, so it must
+    not pay for a browser launch.
+    """
+    return any(f.status_code == 403 for f in failures)
+
+
+def _scrapling_svc_fallback(
+    svc_url: str,
+    deadline: Optional[float] = None,
+) -> Optional[str]:
+    """Browser fallback for the shreddit partial when the keyless HTTP path is
+    blocked.
+
+    Reddit now 403s the keyless GET from many contexts. When the Scrapling CLI
+    is installed, a stealthy-fetch renders the same URL in a real browser, clears
+    the block (Reddit's own "network security" wall, not Cloudflare, so no
+    challenge-solve is needed), and returns the same shreddit markup -- with
+    attribute names lowercased by the DOM, which ``_attr`` tolerates.
+
+    ``deadline`` is a ``time.monotonic()`` instant (the caller's aggregate
+    enrichment budget). The subprocess timeout is capped to the time remaining
+    minus ``SCRAPLING_CLEANUP_GRACE``, so ``subproc.run_with_timeout``'s
+    SIGTERM/SIGKILL cleanup of the browser's process group also completes
+    before the deadline rather than outliving a cancelled future; when less
+    than ``SCRAPLING_MIN_BUDGET`` would be left for the browser itself the
+    fallback is skipped entirely.
+
+    Strictly additive: the caller only invokes it after the HTTP path was
+    refused with HTTP 403 (see ``_blocked_by_reddit``) -- never on a 5xx, a
+    429, a timeout, or an empty body, none of which a browser would clear --
+    and it no-ops to ``None`` when the CLI is absent (CI, Cowork), so behavior
+    is unchanged wherever Scrapling is not installed. Returns None on any failure.
+    """
+    if not scrapling_fetch.is_available():
+        return None
+    timeout = SCRAPLING_TIMEOUT
+    if deadline is not None:
+        # Reserve the process-group cleanup window up front: what is left after
+        # that is the most the browser may run.
+        remaining = int(deadline - time.monotonic()) - SCRAPLING_CLEANUP_GRACE
+        if remaining < SCRAPLING_MIN_BUDGET:
+            _log(f"keyless blocked; {remaining}s left in budget, skipping browser fallback")
+            return None
+        timeout = min(timeout, remaining)
+    _log("keyless blocked; trying Scrapling browser fallback")
+    return scrapling_fetch.fetch(
+        svc_url,
+        mode=scrapling_fetch.MODE_STEALTHY,
+        fmt="html",
+        timeout=timeout,
+    )
+
+
 def fetch_comments(
     post_url: str,
     timeout: int = SVC_TIMEOUT,
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Fetch and parse top comments for a Reddit post via the shreddit endpoint.
 
     Args:
         post_url: Reddit thread URL (…/r/{sub}/comments/{id}/…)
         timeout: HTTP timeout in seconds
+        deadline: optional ``time.monotonic()`` instant bounding the browser
+            fallback (see ``_scrapling_svc_fallback``); the HTTP path keeps
+            its own short ``timeout`` regardless
 
     Returns:
         Dict with 'top_comments' (list, reddit_enrich shape), 'comment_insights'
@@ -206,7 +293,13 @@ def fetch_comments(
         return {"top_comments": [], "comment_insights": [], "num_comments": None}
     sub, post_id = ref
 
-    html_text = http.reddit_keyless_get_text(_svc_url(sub, post_id), timeout=timeout, accept="text/html")
+    svc_url = _svc_url(sub, post_id)
+    # tee_failures() recovers the status that get_text swallows (it returns None
+    # on any failure) while still forwarding it to the pipeline's sink.
+    with http.tee_failures() as misses:
+        html_text = http.reddit_keyless_get_text(svc_url, timeout=timeout, accept="text/html")
+    if not html_text and _blocked_by_reddit(misses):
+        html_text = _scrapling_svc_fallback(svc_url, deadline=deadline)
     if not html_text:
         return {"top_comments": [], "comment_insights": [], "num_comments": None}
 
