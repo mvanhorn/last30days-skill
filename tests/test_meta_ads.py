@@ -692,3 +692,36 @@ class TestGenericTokens:
         page, _runner_ups, top, _strength = resolve_page("Acme Kitchen", rows)
         assert page is None
         assert top == "Kitchen World"
+
+
+class TestHeadTokenIdentity:
+    """A multi-word topic carries its identity in the leading word.
+
+    Counting how many advertisers share a word cannot carry this: a result set
+    holding one lookalike makes its category word look perfectly distinctive.
+    """
+
+    def test_lone_category_lookalike_resolves_nothing(self):
+        rows = [ad_row(page_id="9", page_name="Kitchen World") for _ in range(30)]
+        page, _runner_ups, top, _strength = resolve_page("Acme Kitchen", rows)
+        assert page is None
+        assert top == "Kitchen World"
+
+    def test_brand_page_wins_over_a_busier_category_lookalike(self):
+        rows = [ad_row(page_id="1", page_name="Acme Kitchen") for _ in range(3)] + [
+            ad_row(page_id="9", page_name="Kitchen World") for _ in range(40)
+        ]
+        page, _runner_ups, _top, _strength = resolve_page("Acme Kitchen", rows)
+        assert page["name"] == "Acme Kitchen"
+
+    def test_another_page_of_the_same_brand_still_resolves(self):
+        rows = [ad_row(page_id="1", page_name="Acme Supply") for _ in range(3)]
+        page, _runner_ups, _top, _strength = resolve_page("Acme Kitchen", rows)
+        assert page["name"] == "Acme Supply"
+
+    def test_single_word_topic_keeps_its_umbrella_reach(self):
+        # Nothing to strip, so the whole name is the head and product-line
+        # pages still resolve.
+        rows = [ad_row(page_id="1", page_name="Brightpan Kitchen") for _ in range(14)]
+        page, _runner_ups, _top, _strength = resolve_page("BrightpanCo", rows)
+        assert page["name"] == "Brightpan Kitchen"

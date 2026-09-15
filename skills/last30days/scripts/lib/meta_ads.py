@@ -91,11 +91,6 @@ FATAL_STATUS_CODES = frozenset({401, 402, 403, 429})
 # probe returned 1,467 unrelated advertisers for one such topic.
 MIN_MATCH_TOKEN = 4
 
-# How many distinct advertisers must carry a word before it reads as a category
-# rather than a name. Two is deliberate: a word already shared by two different
-# companies in one result set is not identifying either of them.
-GENERIC_SPREAD = 2
-
 # Absolute pagination bound, independent of the depth cap.
 MAX_PAGES_HARD = 10
 
@@ -267,25 +262,41 @@ def _matched_tokens(topic: str, name: str) -> set[str]:
     }
 
 
-def _is_category_only(topic: str, name: str, spread: Dict[str, int]) -> bool:
-    """True when the only thing this page shares with the topic is a category.
+def _head_token(topic: str) -> str:
+    """The topic's leading match-eligible word.
 
-    Two conditions together, because either alone is wrong. The match must rest
-    entirely on words several advertisers carry, *and* a word of the topic that
-    no candidate carries at all must have gone unmatched. That second half is
-    what separates a real umbrella brand from a category: when a topic resolves
-    through its own name, that name is what took part in the match, so nothing
-    distinctive is left over. When "Acme Kitchen" meets only "Kitchen World",
-    "acme" appears nowhere in the results and the match is pure category, so
-    attributing those ads to Acme would name the wrong company.
+    Brand names lead and category words trail: in "Acme Kitchen" the brand is
+    "acme" and "kitchen" says what it sells. This mirrors the entity-grounding
+    rule the engine already applies elsewhere, where grounding keys on the head
+    token of the primary entity because trailing words are usually descriptors.
+    """
+    for token in _tokens(topic):
+        if len(token) >= MIN_MATCH_TOKEN:
+            return token
+    return ""
+
+
+def _is_category_only(topic: str, name: str, spread: Dict[str, int]) -> bool:
+    """True when this page matched the topic's category but not its brand.
+
+    A multi-word topic carries its identity in the head word, so a page that
+    matches only the trailing word has matched what the brand *sells* rather
+    than who it is: for "Acme Kitchen", "Kitchen World" shares the category and
+    none of the name, and attributing its ads to Acme would name the wrong
+    company. Requiring the head word holds whether the result set contains one
+    lookalike or twenty, which a rule counting how many advertisers share a
+    word does not -- a single unrelated page makes any word look distinctive.
+
+    A single-word topic has nothing to strip, so its whole name is the head and
+    an umbrella brand still resolves to its product-line pages.
     """
     matched = _matched_tokens(topic, name)
     if not matched:
         return True
-    if any(spread.get(tok, 0) < GENERIC_SPREAD for tok in matched):
+    head = _head_token(topic)
+    if not head:
         return False
-    unmatched = _match_tokens(topic) - matched
-    return any(spread.get(tok, 0) == 0 for tok in unmatched)
+    return head not in matched
 
 
 def resolve_page(
