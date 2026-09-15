@@ -249,7 +249,13 @@ def _match_rarity(topic: str, name: str, spread: Dict[str, int]) -> int:
 
 
 def _matched_tokens(topic: str, name: str) -> set[str]:
-    """Topic words that actually took part in the match."""
+    """Topic words that actually took part in the match.
+
+    For a containment match the participating topic word has to be identified,
+    not assumed: crediting every topic word whenever any page word appears
+    somewhere in the topic would let "Grill World" claim "best Acme grills" on
+    the strength of "grill", carrying the brand word along with it.
+    """
     topic_tokens = _match_tokens(topic)
     name_tokens = _match_tokens(name)
     shared = topic_tokens & name_tokens
@@ -257,23 +263,40 @@ def _matched_tokens(topic: str, name: str) -> set[str]:
         return shared
     name_compact = _compact(name)
     topic_compact = _compact(topic)
-    return {tok for tok in topic_tokens if tok in name_compact} | {
-        tok for tok in topic_tokens if any(n in topic_compact for n in name_tokens)
-    }
+    matched = {tok for tok in topic_tokens if tok in name_compact}
+    for name_token in name_tokens:
+        if name_token in topic_compact:
+            matched |= {
+                tok
+                for tok in topic_tokens
+                if name_token in tok or tok in name_token
+            }
+    return matched
 
 
 def _head_token(topic: str) -> str:
-    """The topic's leading match-eligible word.
+    """The leading word of the topic's primary entity.
 
     Brand names lead and category words trail: in "Acme Kitchen" the brand is
     "acme" and "kitchen" says what it sells. This mirrors the entity-grounding
     rule the engine already applies elsewhere, where grounding keys on the head
     token of the primary entity because trailing words are usually descriptors.
+
+    A research topic does not always open with the brand, though: "best Acme
+    grills" leads with an intent modifier, and treating "best" as the identity
+    would reject the brand's own page. So the head is taken from the primary
+    entity rather than the raw phrase, skipping the same descriptor vocabulary
+    the engine's other adapters strip before searching.
     """
-    for token in _tokens(topic):
-        if len(token) >= MIN_MATCH_TOKEN:
+    from .query import NOISE_WORDS
+
+    eligible = [tok for tok in _tokens(topic) if len(tok) >= MIN_MATCH_TOKEN]
+    for token in eligible:
+        if token not in NOISE_WORDS:
             return token
-    return ""
+    # Every word was a descriptor, so there is no identity to key on; fall
+    # back to the leading word rather than matching anything at all.
+    return eligible[0] if eligible else ""
 
 
 def _is_category_only(topic: str, name: str, spread: Dict[str, int]) -> bool:

@@ -725,3 +725,27 @@ class TestHeadTokenIdentity:
         rows = [ad_row(page_id="1", page_name="Brightpan Kitchen") for _ in range(14)]
         page, _runner_ups, _top, _strength = resolve_page("BrightpanCo", rows)
         assert page["name"] == "Brightpan Kitchen"
+
+
+class TestDescriptorLeadingTopics:
+    """A research topic does not always open with the brand."""
+
+    def test_intent_modifier_before_the_brand_still_resolves_it(self):
+        rows = [ad_row(page_id="1", page_name="Acme Grills") for _ in range(5)]
+        page, _runner_ups, _top, _strength = resolve_page("best Acme grills", rows)
+        assert page["name"] == "Acme Grills"
+
+    @pytest.mark.parametrize(
+        "topic", ["best Acme grills", "latest Acme cookware", "top Acme deals"]
+    )
+    def test_common_descriptors_do_not_become_the_identity(self, topic):
+        rows = [ad_row(page_id="1", page_name="Acme Supply") for _ in range(5)]
+        page, _runner_ups, _top, _strength = resolve_page(topic, rows)
+        assert page["name"] == "Acme Supply"
+
+    def test_a_category_lookalike_is_still_rejected_under_a_descriptor(self):
+        # "grill" appears inside "grills", but it is the category word, not
+        # the brand, so it must not carry the whole topic with it.
+        rows = [ad_row(page_id="9", page_name="Grill World") for _ in range(50)]
+        page, _runner_ups, _top, _strength = resolve_page("best Acme grills", rows)
+        assert page is None
