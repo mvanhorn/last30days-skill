@@ -299,6 +299,18 @@ def _head_token(topic: str) -> str:
     return eligible[0] if eligible else ""
 
 
+def _name_covered_by_topic(topic: str, name: str) -> bool:
+    """True when every word of the advertiser's name appears in the topic."""
+    topic_tokens = _match_tokens(topic)
+    name_tokens = _match_tokens(name)
+    if not name_tokens:
+        return False
+    topic_compact = _compact(topic)
+    return all(
+        token in topic_tokens or token in topic_compact for token in name_tokens
+    )
+
+
 def _is_category_only(topic: str, name: str, spread: Dict[str, int]) -> bool:
     """True when this page matched the topic's category but not its brand.
 
@@ -316,6 +328,13 @@ def _is_category_only(topic: str, name: str, spread: Dict[str, int]) -> bool:
     matched = _matched_tokens(topic, name)
     if not matched:
         return True
+    # When the topic spells out this company's whole name, it is naming the
+    # company, wherever in the phrase that name sits. "Kitchen by Crate &
+    # Barrel" leads with a category and still names its advertiser exactly, so
+    # position cannot be the only test. A lookalike fails this: "Kitchen World"
+    # carries "world", which a topic about "Acme Kitchen" never mentions.
+    if _name_covered_by_topic(topic, name):
+        return False
     head = _head_token(topic)
     if not head:
         return False

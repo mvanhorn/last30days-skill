@@ -749,3 +749,29 @@ class TestDescriptorLeadingTopics:
         rows = [ad_row(page_id="9", page_name="Grill World") for _ in range(50)]
         page, _runner_ups, _top, _strength = resolve_page("best Acme grills", rows)
         assert page is None
+
+
+class TestBrandPositionIndependence:
+    """The brand does not always lead the topic."""
+
+    @pytest.mark.parametrize(
+        "topic,page",
+        [
+            ("Kitchen by Crate and Barrel", "Crate and Barrel"),
+            ("smart home Acme", "Acme Home"),
+            ("cookware from Acme Supply", "Acme Supply"),
+        ],
+    )
+    def test_a_topic_that_spells_out_the_name_resolves_it(self, topic, page):
+        # The topic names the company outright, so where in the phrase that
+        # name sits cannot decide the match.
+        rows = [ad_row(page_id="1", page_name=page) for _ in range(6)]
+        resolved, _runner_ups, _top, _strength = resolve_page(topic, rows)
+        assert resolved["name"] == page
+
+    def test_a_lookalike_is_still_rejected_because_the_topic_omits_a_word(self):
+        # "Kitchen World" carries "world", which a topic about "Acme Kitchen"
+        # never mentions, so the topic is not naming this company.
+        rows = [ad_row(page_id="9", page_name="Kitchen World") for _ in range(30)]
+        page, _runner_ups, _top, _strength = resolve_page("Acme Kitchen", rows)
+        assert page is None
