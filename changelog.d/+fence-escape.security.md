@@ -1,0 +1,1 @@
+Scraped content can no longer close the `<untrusted_content>` fence that wraps it. A post title carrying the literal closing tag previously ended the block early, placing the rest of that title outside the fence in both the rerank judge prompt and the `--discover` host digest — the latter being the engine stdout that becomes the host agent's tool result.
