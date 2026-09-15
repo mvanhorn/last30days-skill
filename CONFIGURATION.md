@@ -618,6 +618,8 @@ The schedule field stored on each topic is metadata - the actual cron / Task Sch
 
 The skill is built to flex around different client environments. Four patterns that compose well:
 
+**Codex desktop runtime and citations:** When Python on the agent subprocess PATH is missing, too old, or blocked by a macOS developer-tool license gate, use the host runtime-discovery tool (`load_workspace_dependencies`, when available) and set `LAST30DAYS_PYTHON` to the returned Python 3.12+ executable for the invocation. Validate it before recommending a new installation; do not hard-code a local cache path. Codex desktop supports clickable Markdown citations. Plain-text terminal formatting, setup modals, and web-search availability are independent capabilities; the absence of Claude/Cursor environment variables does not select a plain-text renderer.
+
 **Codex note:** the repository includes `.codex-plugin/plugin.json` so Codex can treat the existing
 `skills/last30days/SKILL.md` tree as plugin metadata without maintaining a separate Codex copy.
 The Codex marketplace catalog points at the repository root URL: Codex clones the repo, reads the
