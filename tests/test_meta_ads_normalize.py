@@ -80,7 +80,7 @@ class TestNormalizer:
         assert items == []
 
     def test_missing_advertiser_still_yields_a_reason(self):
-        assert normalize_one(advertiser="").why_relevant == "Active paid creative"
+        assert normalize_one(advertiser="").why_relevant == "Running paid creative"
 
 
 class TestIdentityThroughFusion:
@@ -132,3 +132,26 @@ class TestRankingRegistries:
             "company_signal",
             "product_signal",
         }
+
+
+class TestActivityWording:
+    """Ended-in-window creatives are kept on purpose, so say so accurately."""
+
+    def test_running_creative_reads_as_running(self):
+        assert normalize_one(is_active=True).why_relevant.startswith(
+            "Running paid creative"
+        )
+
+    def test_ended_creative_is_not_called_active(self):
+        item = normalize_one(is_active=False, ended_on="2026-09-05")
+        assert "Running" not in item.why_relevant
+        assert "2026-09-05" in item.why_relevant
+
+    def test_ended_creative_without_a_date_still_reads_as_ended(self):
+        item = normalize_one(is_active=False, ended_on=None)
+        assert "since ended" in item.why_relevant
+
+    def test_activity_state_is_preserved_in_metadata(self):
+        meta = normalize_one(is_active=False, ended_on="2026-09-05").metadata
+        assert meta["is_active"] is False
+        assert meta["ended_on"] == "2026-09-05"

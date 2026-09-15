@@ -91,6 +91,11 @@ FATAL_STATUS_CODES = frozenset({401, 402, 403, 429})
 # probe returned 1,467 unrelated advertisers for one such topic.
 MIN_MATCH_TOKEN = 4
 
+# How many distinct advertisers must carry a word before it reads as a category
+# rather than a name. Two is deliberate: a word already shared by two different
+# companies in one result set is not identifying either of them.
+GENERIC_SPREAD = 2
+
 # Absolute pagination bound, independent of the depth cap.
 MAX_PAGES_HARD = 10
 
@@ -209,6 +214,80 @@ def _group_advertisers(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     )
 
 
+def _token_spread(pages: List[Dict[str, Any]]) -> Dict[str, int]:
+    """How many distinct advertisers in this result set carry each word."""
+    spread: Dict[str, int] = {}
+    for page in pages:
+        for token in _match_tokens(page["name"]):
+            spread[token] = spread.get(token, 0) + 1
+    return spread
+
+
+def _match_rarity(topic: str, name: str, spread: Dict[str, int]) -> int:
+    """How distinctive the word this page matched on is. Lower is better.
+
+    A word carried by many advertisers in the same result set is a category,
+    not an identity: "kitchen" sits in every kitchen brand's name, so matching
+    on it resolves whoever is advertising hardest rather than the right
+    company. A word carried by one advertiser names that advertiser.
+
+    Rarity is measured against the candidates themselves rather than a fixed
+    stopword list, because the same word can be a category in one search and
+    the brand's own name in another. Counting alone would not separate those:
+    an umbrella brand's name also appears across several of its product-line
+    pages. What distinguishes them is that a *rarer* alternative exists --
+    "Acme Kitchen" carries "acme" as well, while "Kitchen World" carries only
+    the shared word -- so the best available word decides, not the fact of
+    sharing.
+    """
+    topic_tokens = _match_tokens(topic)
+    name_tokens = _match_tokens(name)
+    shared = topic_tokens & name_tokens
+    if not shared:
+        # Containment match: score the word that did the containing.
+        shared = {
+            tok for tok in topic_tokens if tok in _compact(name)
+        } | {tok for tok in name_tokens if tok in _compact(topic)}
+    if not shared:
+        return 0
+    return min(spread.get(tok, 1) for tok in shared)
+
+
+def _matched_tokens(topic: str, name: str) -> set[str]:
+    """Topic words that actually took part in the match."""
+    topic_tokens = _match_tokens(topic)
+    name_tokens = _match_tokens(name)
+    shared = topic_tokens & name_tokens
+    if shared:
+        return shared
+    name_compact = _compact(name)
+    topic_compact = _compact(topic)
+    return {tok for tok in topic_tokens if tok in name_compact} | {
+        tok for tok in topic_tokens if any(n in topic_compact for n in name_tokens)
+    }
+
+
+def _is_category_only(topic: str, name: str, spread: Dict[str, int]) -> bool:
+    """True when the only thing this page shares with the topic is a category.
+
+    Two conditions together, because either alone is wrong. The match must rest
+    entirely on words several advertisers carry, *and* a word of the topic that
+    no candidate carries at all must have gone unmatched. That second half is
+    what separates a real umbrella brand from a category: when a topic resolves
+    through its own name, that name is what took part in the match, so nothing
+    distinctive is left over. When "Acme Kitchen" meets only "Kitchen World",
+    "acme" appears nowhere in the results and the match is pure category, so
+    attributing those ads to Acme would name the wrong company.
+    """
+    matched = _matched_tokens(topic, name)
+    if not matched:
+        return True
+    if any(spread.get(tok, 0) < GENERIC_SPREAD for tok in matched):
+        return False
+    unmatched = _match_tokens(topic) - matched
+    return any(spread.get(tok, 0) == 0 for tok in unmatched)
+
+
 def resolve_page(
     topic: str, rows: List[Dict[str, Any]]
 ) -> Tuple[Optional[Dict[str, Any]], List[str], str, str]:
@@ -227,11 +306,25 @@ def resolve_page(
     the reader when resolution rested on the weakest one.
     """
     ordered = _group_advertisers(rows)
+    spread = _token_spread(ordered)
     scored = [(match_strength(topic, g["name"]), g) for g in ordered]
     for tier in (MATCH_EXACT, MATCH_TOKEN, MATCH_CONTAINED):
-        group = [g for strength, g in scored if strength == tier]
+        group = [
+            g
+            for strength, g in scored
+            if strength == tier
+            # An exact normalized-name match is unambiguous, so it is never
+            # second-guessed: the guard below exists for the weaker tiers,
+            # where a shared word is the only thing holding the match up.
+            and (tier == MATCH_EXACT or not _is_category_only(topic, g["name"], spread))
+        ]
         if not group:
             continue
+        # Within a tier, the most distinctive matched word wins before ad
+        # volume does. Volume is the last tiebreak, never the first signal.
+        group.sort(
+            key=lambda g: (_match_rarity(topic, g["name"], spread), -g["ads"], g["id"])
+        )
         winner = group[0]
         # Runner-ups come from every tier that matched at all: a weaker
         # same-name-family page is exactly what a reader checking a

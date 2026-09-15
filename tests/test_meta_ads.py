@@ -663,3 +663,32 @@ class TestResolutionStrength:
             search_meta_ads("Brightpan", FROM_DATE, TO_DATE, token=TOKEN, depth="default")
         # 1 discovery + 1 company fallback + 2 pages + 3 transcripts = 7
         assert len(calls) <= 7
+
+
+class TestGenericTokens:
+    """A word several advertisers share is a category, not an identity."""
+
+    def test_category_word_does_not_resolve_an_unrelated_advertiser(self):
+        rows = (
+            [ad_row(page_id="1", page_name="Acme Kitchen") for _ in range(3)]
+            + [ad_row(page_id="2", page_name="Kitchen World") for _ in range(40)]
+            + [ad_row(page_id="3", page_name="Kitchen Depot") for _ in range(20)]
+        )
+        page, _runner_ups, _top, _strength = resolve_page("Acme Kitchen", rows)
+        assert page["name"] == "Acme Kitchen"
+
+    def test_a_word_only_one_advertiser_uses_still_identifies(self):
+        rows = [ad_row(page_id="1", page_name="Brightpan Supply") for _ in range(2)] + [
+            ad_row(page_id="2", page_name="Unrelated Deals Co") for _ in range(40)
+        ]
+        page, _runner_ups, _top, strength = resolve_page("Brightpan Holdings", rows)
+        assert page["name"] == "Brightpan Supply"
+        assert strength == meta_ads.MATCH_TOKEN
+
+    def test_shared_category_alone_resolves_nothing(self):
+        rows = [ad_row(page_id="1", page_name="Kitchen World") for _ in range(30)] + [
+            ad_row(page_id="2", page_name="Kitchen Depot") for _ in range(20)
+        ]
+        page, _runner_ups, top, _strength = resolve_page("Acme Kitchen", rows)
+        assert page is None
+        assert top == "Kitchen World"

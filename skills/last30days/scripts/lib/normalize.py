@@ -750,11 +750,19 @@ def _normalize_meta_ads(
     # The spoken script is usually the sharper version of the pitch, so it
     # leads the evidence snippet when present.
     snippet_parts = [part for part in [body, transcript] if part]
-    default_why = (
-        f"Active paid creative from {advertiser}"
-        if advertiser
-        else "Active paid creative"
-    )
+    # The adapter deliberately keeps creatives that launched inside the window
+    # and have since ended -- a one-week promo push is exactly the signal this
+    # source exists for -- so the wording has to follow the stored state rather
+    # than calling every creative active.
+    running = bool(item.get("is_active"))
+    ended_on = str(item.get("ended_on") or "").strip()
+    if running:
+        state_word = "Running paid creative"
+    elif ended_on:
+        state_word = f"Paid creative that ran until {ended_on}"
+    else:
+        state_word = "Paid creative that has since ended"
+    default_why = f"{state_word} from {advertiser}" if advertiser else state_word
     context = " │ ".join(
         part
         for part in [
