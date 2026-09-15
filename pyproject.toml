@@ -11,7 +11,7 @@ dev = [
   "pytest>=9.1.1,<10",
   "pytest-cov>=7,<8",
   "pyyaml>=6.0.2,<7",
-  "towncrier>=25.8.0,<26",
+  "towncrier>=25.8.0,<27",
 ]
 
 [tool.towncrier]
