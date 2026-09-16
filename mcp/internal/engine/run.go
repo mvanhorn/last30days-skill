@@ -8,15 +8,12 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
 )
 
-// DefaultPythonBinary is the interpreter we look up unless RunOptions
-// overrides it. Windows installs may expose only "python"; we surface a
-// clear error in that case rather than silently picking the wrong binary.
+// DefaultPythonBinary is preferred when its version meets MinPythonVersion.
 const DefaultPythonBinary = "python3"
 
 // MinPythonVersion mirrors the engine's MIN_PYTHON constant in
@@ -69,7 +66,7 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	if opts.CacheDir == "" {
 		return nil, errors.New("engine: CacheDir is required")
 	}
-	pythonPath, err := resolvePython(opts.PythonPath)
+	pythonPath, err := resolvePythonContext(ctx, opts.PythonPath)
 	if err != nil {
 		return nil, err
 	}
@@ -111,25 +108,6 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		return res, fmt.Errorf("engine: subprocess exited with code %d", res.ExitCode)
 	}
 	return res, fmt.Errorf("engine: subprocess failed to start: %w", err)
-}
-
-// resolvePython returns an absolute path to the interpreter or an error
-// naming the install URL. If the caller supplied a path we trust it - tests
-// rely on this to inject a stub. Otherwise we look up python3 on PATH.
-func resolvePython(override string) (string, error) {
-	if override != "" {
-		return override, nil
-	}
-	path, err := exec.LookPath(DefaultPythonBinary)
-	// Go normally rejects relative results with ErrDot. Keep this invariant
-	// even when that protection is disabled with GODEBUG=execerrdot=0.
-	if err == nil && filepath.IsAbs(path) {
-		return path, nil
-	}
-	return "", fmt.Errorf(
-		"engine: %s not found on PATH (need Python %s+, install from %s; current GOOS=%s)",
-		DefaultPythonBinary, MinPythonVersion, PythonInstallURL, runtime.GOOS,
-	)
 }
 
 func resolveTimeout(explicit time.Duration) time.Duration {
