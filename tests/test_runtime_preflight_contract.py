@@ -1,5 +1,6 @@
 """Contract tests for the SKILL.md runtime preflight snippet."""
 
+import re
 import unittest
 from pathlib import Path
 
@@ -30,6 +31,15 @@ class RuntimePreflightContractTests(unittest.TestCase):
     def test_preflight_allows_explicit_interpreter_override(self) -> None:
         self.assertIn('if [ -z "${LAST30DAYS_PYTHON:-}" ]; then', self.skill_md)
         self.assertIn('ERROR: LAST30DAYS_PYTHON must point to Python 3.12+.', self.skill_md)
+
+    def test_code_has_no_bare_positional_parameters(self) -> None:
+        # Claude Code replaces $<digit> in a skill body with words from the
+        # invocation arguments before the model reads it (anthropics/claude-code#94709),
+        # so shell/awk code in SKILL.md spells positional parameters as ${1} / $(2).
+        fenced = re.findall(r"```.*?```", self.skill_md, re.S)
+        inline = re.findall(r"`[^`\n]+`", re.sub(r"```.*?```", "", self.skill_md, flags=re.S))
+        hits = [m.group(0) for block in fenced + inline for m in re.finditer(r"\$\d+(?![A-Za-z0-9_])", block)]
+        self.assertEqual(hits, [])
 
 
 if __name__ == "__main__":

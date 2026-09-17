@@ -1,0 +1,1 @@
+Fixed the runtime preflight failing with "requires Python 3.12+" when `/last30days` is invoked in Claude Code with a multi-word topic: positional parameters in the `SKILL.md` preflight are now written as `${1}` / `$(2)`, which Claude Code's `$<digit>` argument substitution leaves alone.
