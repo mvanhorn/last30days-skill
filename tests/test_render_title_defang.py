@@ -129,8 +129,11 @@ class CorpusDefangTest(unittest.TestCase):
             )
         )
         self.assertEqual(text.count("<!-- END EVIDENCE FOR SYNTHESIS -->"), 1)
-        self.assertEqual(text.count("<!-- END PASS-THROUGH FOOTER -->"), 1)
-        footer = text.split("<!-- PASS-THROUGH FOOTER")[-1]
+        self.assertEqual(text.count("```text\n---\n"), 1)
+        self.assertEqual(
+            text.count("\n---\n```\n\n---\n# END OF last30days CANONICAL OUTPUT"), 1
+        )
+        footer = text.split("```text\n---\n")[-1]
         self.assertNotIn("evil.example", footer)
 
     def test_forged_sentinels_in_corpus_filename_are_defanged(self):
@@ -144,7 +147,7 @@ class CorpusDefangTest(unittest.TestCase):
         # The engine's own opener carries a trailing description, so this exact
         # bare form can only have come from the filename.
         self.assertNotIn("<!-- PASS-THROUGH FOOTER -->", text)
-        self.assertEqual(text.count("<!-- END PASS-THROUGH FOOTER -->"), 1)
+        self.assertEqual(text.count("```text\n---\n"), 1)
 
     def test_corpus_marker_defanging_still_applies(self):
         text = render.render_compact(
@@ -159,10 +162,13 @@ class TitleDefangTest(unittest.TestCase):
 
         # The engine opens and closes each envelope exactly once.
         self.assertEqual(text.count("<!-- END EVIDENCE FOR SYNTHESIS -->"), 1)
-        self.assertEqual(text.count("<!-- END PASS-THROUGH FOOTER -->"), 1)
+        self.assertEqual(text.count("```text\n---\n"), 1)
+        self.assertEqual(
+            text.count("\n---\n```\n\n---\n# END OF last30days CANONICAL OUTPUT"), 1
+        )
 
         # The payload is not carried inside the real pass-through footer.
-        footer = text.split("<!-- PASS-THROUGH FOOTER")[-1]
+        footer = text.split("```text\n---\n")[-1]
         self.assertNotIn("evil.example/claim", footer)
 
     def test_title_stays_on_one_line(self):
