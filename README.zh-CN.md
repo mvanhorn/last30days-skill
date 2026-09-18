@@ -218,7 +218,7 @@ npx skills add mvanhorn/last30days-skill -g
 
 `-g`（全局）参数会把 Skill 安装到用户目录，因此所有项目均可使用。不加 `-g` 时，`npx skills` 会安装到当前项目的 `./.skills/` 中，并随仓库提交。对于一个用于研究整个世界的工具，全局安装通常更合适。
 
-Codex 桌面版和其他以文件夹为工作区的宿主，不仅能在 Git 仓库中运行，也能在普通文件夹中工作。第一次研究前，请让宿主智能体从已加载的 Skill 目录运行随附的 `scripts/last30days.py --preflight`；若在源码仓库中，则运行等价命令 `python3 skills/last30days/scripts/last30days.py --preflight`。该命令会展示配置来源、浏览器 Cookie 方案、计划写入的文件、可选命令和被忽略的项目配置，但不会读取 Cookie、写入文件或执行研究。
+Codex 桌面版和其他以文件夹为工作区的宿主，不仅能在 Git 仓库中运行，也能在普通文件夹中工作。若要在不启动研究的情况下检查一次运行会读取和写入什么，请从已加载的 Skill 目录运行随附的 `scripts/last30days.py --preflight`；若在源码仓库中，则运行等价命令 `python3 skills/last30days/scripts/last30days.py --preflight`。该命令会展示配置来源、浏览器 Cookie 方案、计划写入的文件、可选命令和被忽略的项目配置，但不会读取 Cookie、写入文件或执行研究。首次设置并不要求运行它。
 
 默认情况下，`npx skills` 会安装到它自动检测到的宿主。若要指定一个或多个宿主：
 
@@ -331,7 +331,7 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 第一天使用时，你大概最想知道以下两件事：
 
-**研究文件保存在哪里。** `LAST30DAYS_MEMORY_DIR` 默认指向 `~/Documents/Last30Days/`（Windows：`C:\Users\<you>\Documents\Last30Days\`）。可以在 shell 中把该环境变量设为任意路径，也可以为单次运行传入 `--save-dir <path>`。若需要把渲染结果精确写入某个路径，请使用 `--output <file>`；文件格式由 `--emit` 决定。使用 `--save-suffix=<name>` 可分别保存同一主题的多个版本（例如按客户区分）。每次使用 `--save-dir` 都会生成 `<slug>-raw[-suffix].md`。研究前运行 `python3 skills/last30days/scripts/last30days.py --preflight`，可预览计划写入的内容。
+**研究文件保存在哪里。** `LAST30DAYS_MEMORY_DIR` 默认指向 `~/Documents/Last30Days/`（Windows：`C:\Users\<you>\Documents\Last30Days\`）。可以在 shell 中把该环境变量设为任意路径，也可以为单次运行传入 `--save-dir <path>`。若需要把渲染结果精确写入某个路径，请使用 `--output <file>`；文件格式由 `--emit` 决定。使用 `--save-suffix=<name>` 可分别保存同一主题的多个版本（例如按客户区分）。每次使用 `--save-dir` 都会生成 `<slug>-raw[-suffix].md`。可选运行 `python3 skills/last30days/scripts/last30days.py --preflight`，在不启动研究的情况下预览计划写入的内容。
 
 **面向智能体和工作流的结构化输出。** 让 `/last30days` 输出机器可读的 JSON，即可获得稳定且带版本号的 agent profile。若在脚本或开发中直接调用引擎，可运行 `python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json`；只有确实需要未版本化的内部 `Report` 转储时，才添加 `--json-profile=raw`。详见 [JSON 导出字段参考与版本策略](docs/reference/json-export.md)。
 

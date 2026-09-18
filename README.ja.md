@@ -215,7 +215,7 @@ npx skills add mvanhorn/last30days-skill -g
 
 `-g`(グローバル)フラグを付けるとユーザーディレクトリにインストールされ、スキルをすべてのプロジェクトで使えます。`-g` を付けない場合、`npx skills` はプロジェクト内の `./.skills/` にインストールし、リポジトリと一緒にコミットされます。世界中を調べるためのツールなので、通常はグローバルが向いています。
 
-Codex のデスクトップ版など、フォルダ単位で動くホストは、Git リポジトリでも普通のフォルダでも動作します。最初の調査を始める前に、読み込み済みのスキルディレクトリから同梱の `scripts/last30days.py --preflight` を実行するようホストのエージェントに頼んでください。ソースをチェックアウトしている場合、同等のコマンドは `python3 skills/last30days/scripts/last30days.py --preflight` です。設定の取得元、ブラウザのクッキーをどう扱う予定か、どのファイルを書き込む予定か、任意で使えるコマンド、無視されるプロジェクト設定を表示します。クッキーの読み取りもファイルの書き込みも調査の実行もしません。
+Codex のデスクトップ版など、フォルダ単位で動くホストは、Git リポジトリでも普通のフォルダでも動作します。調査を始めずに読み書き予定を確認するには、読み込み済みのスキルディレクトリから同梱の `scripts/last30days.py --preflight` を実行してください。ソースをチェックアウトしている場合、同等のコマンドは `python3 skills/last30days/scripts/last30days.py --preflight` です。設定の取得元、ブラウザのクッキーをどう扱う予定か、どのファイルを書き込む予定か、任意で使えるコマンド、無視されるプロジェクト設定を表示します。クッキーの読み取りもファイルの書き込みも調査の実行もしません。初回セットアップでは必須ではありません。
 
 既定では、`npx skills` が検出したホスト向けにインストールされます。特定のホスト(または複数)を指定するには次のようにします。
 
@@ -332,7 +332,7 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 初日に知っておくとよいことが2つあります。
 
-**調査ファイルの保存先。** `LAST30DAYS_MEMORY_DIR` の既定値は `~/Documents/Last30Days/` です(Windows では `C:\Users\<you>\Documents\Last30Days\`)。変更したい場合は、シェルでこの環境変数に任意のパスを設定するか、実行ごとに `--save-dir <path>` を指定します。レンダリング結果を特定のパスに出力したいときは `--output <file>` を使い、形式は `--emit` で選びます。同じトピックの複数のバリエーションを分けて残したいときは `--save-suffix=<name>` を使ってください(クライアントごとに分ける場合など)。`--save-dir` を付けた実行では `<slug>-raw[-suffix].md` が生成されます。調査を走らせる前に書き込み予定を確認するには `python3 skills/last30days/scripts/last30days.py --preflight` を実行してください。
+**調査ファイルの保存先。** `LAST30DAYS_MEMORY_DIR` の既定値は `~/Documents/Last30Days/` です(Windows では `C:\Users\<you>\Documents\Last30Days\`)。変更したい場合は、シェルでこの環境変数に任意のパスを設定するか、実行ごとに `--save-dir <path>` を指定します。レンダリング結果を特定のパスに出力したいときは `--output <file>` を使い、形式は `--emit` で選びます。同じトピックの複数のバリエーションを分けて残したいときは `--save-suffix=<name>` を使ってください(クライアントごとに分ける場合など)。`--save-dir` を付けた実行では `<slug>-raw[-suffix].md` が生成されます。調査を走らせずに書き込み予定を確認するには、任意で `python3 skills/last30days/scripts/last30days.py --preflight` を実行してください。
 
 **エージェントやワークフロー向けの構造化出力。** `/last30days` に機械可読なJSONを求めると、安定したバージョン付きのエージェント向けプロファイルが返ります。スクリプトや開発でエンジンを直接使う場合は `python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json` を実行してください。バージョン管理されていない内部の `Report` のダンプが必要なときだけ `--json-profile=raw` を追加します。[JSONエクスポートのフィールド一覧とバージョニング方針](docs/reference/json-export.md)も参照してください。
 

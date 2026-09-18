@@ -37,19 +37,15 @@ def test_non_modal_cookie_consent_uses_engine_allow_flag():
     assert consent < decline
 
 
-def test_non_modal_preflight_runs_before_cookie_consent():
+def test_non_modal_does_not_require_preflight_before_cookie_consent():
     prose = _prose_flow()
-    preflight = prose.index("--preflight")
     consent = prose.index("Cookie consent")
-    assert preflight < consent
-    assert "does not read browser-cookie values" in prose
-    assert "does not write setup/config/report files" in prose
-    assert "does not run research" in prose
+    assert "--preflight" not in prose
+    assert consent > prose.index("Welcome")
 
 
-def test_non_modal_completion_mentions_safe_diagnose_and_project_trust():
+def test_non_modal_completion_mentions_project_trust():
     prose = _prose_flow()
-    assert "safe `--diagnose`" in prose
     assert "LAST30DAYS_TRUST_PROJECT_CONFIG=1" in prose
     assert "Codex desktop" in prose
 

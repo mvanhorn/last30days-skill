@@ -20,8 +20,7 @@ The two real consumers, each with an explicit test:
    authoritative source list). Asserted: the key exists, is a list of
    source-name strings.
 
-hooks/scripts/check-config.sh is NOT a JSON consumer (it reads env files and
-last-run.json, never engine JSON) — deliberately no compat test for it.
+There is no SessionStart hook; last-run.json is not consumed at session start.
 
 NOTE: snapshots re-recorded against the committed v3.10.0 baseline
 (origin/main a5b3ca1, post-v3.9.x source wave: arxiv/techmeme/stocktwits/

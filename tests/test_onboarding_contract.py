@@ -72,6 +72,15 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertLess(self.grok.index("search_posts_all"), self.grok.index("X_BEARER_TOKEN"))
         self.assertIn("setup --store-key", self.grok)
 
+    def test_first_run_flows_do_not_invoke_preflight(self):
+        """Status and permission inspection are not a required first-run beat.
+        `--preflight` stays an opt-in inspector; Step 0 must not dump `.env`."""
+        self.assertNotIn("--preflight", self.modal)
+        self.assertNotIn("--preflight", self.prose)
+        self.assertNotIn("--preflight", self.grok)
+        self.assertIn("Do not run it as a required first-run step", self.step0)
+        self.assertIn("Do not print `.env` contents or credential values", self.step0)
+
     def test_hard_gate_step0_before_step1(self):
         """The erosion-resistant gate that orphaned the wizard in #659 is restored."""
         self.assertIn("ALWAYS execute Step 0 BEFORE Step 1", self.step0)
