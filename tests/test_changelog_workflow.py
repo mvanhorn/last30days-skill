@@ -178,17 +178,43 @@ class TestChangelogWorkflow(unittest.TestCase):
         mcp/* is an engine path, so gomod bumps fail the fragment gate unless
         the author is exempted. Label-only exemption is not enough: Dependabot
         cannot reliably apply skip-changelog (custom labels replace defaults
-        and missing repo labels are dropped).
+        and missing repo labels are dropped). SKIP_CHANGELOG=1 from the
+        Dependabot author check must precede the fragment gate and must not
+        be reset afterwards.
         """
         text = (ROOT / ".github" / "workflows" / "changelog-guard.yml").read_text(
             encoding="utf-8"
         )
         self.assertIn("PR_AUTHOR: ${{ github.event.pull_request.user.login }}", text)
-        self.assertIn('dependabot[bot]', text)
-        self.assertRegex(
-            text,
+        self.assertIn("dependabot[bot]", text)
+        dependabot_assign = re.search(
             r'if \[ "\$\{PR_AUTHOR\}" = "dependabot\[bot\]" \]; then\n'
             r"\s+SKIP_CHANGELOG=1",
+            text,
+        )
+        self.assertIsNotNone(
+            dependabot_assign,
+            "Dependabot must set SKIP_CHANGELOG=1 from PR_AUTHOR",
+        )
+        fragment_gate = (
+            'if [ "${touches_engine}" -eq 1 ] && [ "${has_fragment}" -eq 0 ]'
+            ' && [ "${SKIP_CHANGELOG}" -eq 0 ]; then'
+        )
+        gate_at = text.find(fragment_gate)
+        self.assertNotEqual(
+            gate_at,
+            -1,
+            "Fragment gate must still consult SKIP_CHANGELOG",
+        )
+        self.assertLess(
+            dependabot_assign.start(),
+            gate_at,
+            "Dependabot SKIP_CHANGELOG=1 must precede the fragment gate",
+        )
+        self.assertNotIn(
+            "SKIP_CHANGELOG=0",
+            text[dependabot_assign.end() :],
+            "SKIP_CHANGELOG must not be reset after the Dependabot assignment",
         )
 
     def test_run_block_indent_checker_rejects_column_zero(self) -> None:
