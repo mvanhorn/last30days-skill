@@ -303,10 +303,10 @@ After resolving host web search, run the first-run gate below before anything el
 grep -q "SETUP_COMPLETE=true" ~/.config/last30days/.env 2>/dev/null && echo "1" || echo "FIRST_RUN_DETECTED"
 ```
 
-This emits exactly one token: `1` or `FIRST_RUN_DETECTED`, never both.
+This emits exactly one token: `1` or `FIRST_RUN_DETECTED`, never both. The grep only sees `SETUP_COMPLETE` in the global `.env`; it does not see process env, project config, Keychain, pass, or host-provided auth.
 
 - Output is `1` → setup is complete. Continue to the branching rule below.
-- Output is `FIRST_RUN_DETECTED` → this is a first run. Jump immediately to `## Step 0: First-Run Setup Wizard` and complete it **before doing any topic research**. Do NOT proceed to Step 0.5, do NOT load WebSearch supplements, do NOT synthesize anything. The wizard installs yt-dlp (YouTube), the Digg CLI (via `npx`), and extracts browser cookies for X/Twitter and other sources. Skipping it produces a degraded WebSearch-only result that misrepresents the skill's capability to the user.
+- Output is `FIRST_RUN_DETECTED` → global `SETUP_COMPLETE` is unset. Jump immediately to `## Step 0: First-Run Setup Wizard`. That section decides first-run from every credential source without dumping files. A missing `.env` alone is not a first run. If Step 0 skips, continue to the branching rule. If Step 0 runs, complete it **before doing any topic research**. Do NOT proceed to Step 0.5, do NOT load WebSearch supplements, do NOT synthesize anything. The wizard installs yt-dlp (YouTube), the Digg CLI (via `npx`), and extracts browser cookies for X/Twitter and other sources. Skipping a true first run produces a degraded WebSearch-only result that misrepresents the skill's capability to the user.
 
 **Named failure mode (2026-06-22, first-run setup skip - Fredy Montero run):** Model read "proceed to Step 0.5" in the branching rule and jumped there directly, bypassing `## Step 0: First-Run Setup Wizard` at line ~339. Result: no browser cookie extraction, no yt-dlp, no Digg CLI install, WebSearch-only synthesis with no X/YouTube/TikTok data. Root cause: the branching rule named Step 0.5 as the next step without mentioning the wizard. Fix: this gate and the updated branching rule below.
 
@@ -677,7 +677,7 @@ For hosts without interactive modal prompts (OpenClaw, Codex, Cursor, Gemini CLI
    - On **recommended** → append `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments` to `~/.config/last30days/.env` (include `tiktok,instagram` so they are not treated as excluded). Confirm posts + top comments for TikTok/Instagram/YouTube are on.
    - On **everything** → append `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments,threads,pinterest`. Confirm Threads and Pinterest are on too.
 
-**5. Complete.** Once `SETUP_COMPLETE=true` is written, briefly confirm which sources are now active from the setup output (or the `setup --github` JSON `persisted` field) and proceed to research. For Codex desktop, Cursor, Gemini CLI, and raw folder-mode hosts, hidden `.claude/last30days.env` project config is ignored unless `LAST30DAYS_TRUST_PROJECT_CONFIG=1` is set from the process environment or global config; only report a project file as active when the engine reports it as the config source.
+**5. Complete.** Once `SETUP_COMPLETE=true` is written, proceed to research. Setup stdout is what this run installed, not the runtime source list; the engine diagnostic at research confirmation is authoritative. For Codex desktop, Cursor, Gemini CLI, and raw folder-mode hosts, hidden `.claude/last30days.env` project config is ignored unless `LAST30DAYS_TRUST_PROJECT_CONFIG=1` is set from the process environment or global config; only report a project file as active when the engine reports it as the config source.
 
 ---
 
@@ -707,7 +707,7 @@ For a Grok Bot host. The Grok Bot host rule in HOW TO INVOKE applies throughout:
 
 **5. ScrapeCreators offer and source tier.** Run steps 4 and 4b of the Non-Modal Prose Flow exactly as written there (GitHub device-code signup with `setup --github-start` then `setup --github-poll`; the engine persists the key and masks it).
 
-**6. Complete.** Confirm `SETUP_COMPLETE=true` is in `~/.config/last30days/.env` (append it if `setup` did not run), briefly confirm which sources are active from the setup output (with the host signal and, when the connector is present, `LAST30DAYS_X_HOST_LANE=1` exported), and proceed to research.
+**6. Complete.** Confirm `SETUP_COMPLETE=true` is in `~/.config/last30days/.env` (append it if `setup` did not run) and proceed to research (with the host signal and, when the connector is present, `LAST30DAYS_X_HOST_LANE=1` exported). Setup stdout is what this run installed, not the runtime source list; the engine diagnostic at research confirmation is authoritative.
 
 ---
 
