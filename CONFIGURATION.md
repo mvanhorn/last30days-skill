@@ -725,3 +725,11 @@ This is the right home for client-specific changes you don't intend to upstream 
 - The skill contract (voice, LAWs, pre-flight protocol): [`skills/last30days/SKILL.md`](skills/last30days/SKILL.md)
 - Shared package vocabulary and engine/harness terminology: [`CONCEPTS.md`](CONCEPTS.md)
 - Contributor guidance: [`CONTRIBUTORS.md`](CONTRIBUTORS.md)
+
+### MCP Python interpreter
+
+The MCP server requires Python 3.12 or newer within Python 3. It checks executable candidates in absolute `PATH` directories, in directory order: `python3`, versioned `python3.N` names from newest to oldest, then `python`. Windows `.exe` names are supported. Each candidate is version-probed before research starts; an old or unusable default does not hide a compatible interpreter later on `PATH`. Relative and empty `PATH` entries are ignored.
+
+Set `LAST30DAYS_PYTHON` in the MCP server process environment to pin a compatible executable, including one outside `PATH`, for example `/absolute/path/to/python3.12`. It accepts an absolute path or a command name resolving through `PATH` to an absolute executable. A missing, old, or invalid explicit choice produces an error without automatic fallback. This variable is read by the Go launcher, so setting it only in the Python engine's `.env` file cannot select the launcher interpreter.
+
+Discovery has a five-second total budget and a two-second limit per version probe. The research timeout is separate. Embedded Go callers retain the trusted `RunOptions.PythonPath` override for custom interpreters and test doubles. This selection does not add Python 3.9 support or install Python automatically.

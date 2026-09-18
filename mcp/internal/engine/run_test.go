@@ -221,6 +221,7 @@ func TestRunTimesOut(t *testing.T) {
 }
 
 func TestRunMissingPython(t *testing.T) {
+	t.Setenv(PythonEnvOverride, "")
 	cache := stageCache(t)
 	// Empty PATH guarantees the lookup fails. PythonPath stays unset so Run
 	// falls through to exec.LookPath.
@@ -239,6 +240,7 @@ func TestRunMissingPython(t *testing.T) {
 }
 
 func TestResolvePythonRejectsRelativePATH(t *testing.T) {
+	t.Setenv(PythonEnvOverride, "")
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX executable fixture")
 	}
@@ -255,12 +257,13 @@ func TestResolvePythonRejectsRelativePATH(t *testing.T) {
 }
 
 func TestResolvePythonAcceptsAbsolutePATH(t *testing.T) {
+	t.Setenv(PythonEnvOverride, "")
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX executable fixture")
 	}
 	dir := t.TempDir()
 	want := filepath.Join(dir, DefaultPythonBinary)
-	if err := os.WriteFile(want, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := os.WriteFile(want, []byte("#!/bin/sh\nprintf '3.12\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
