@@ -595,17 +595,20 @@ def _defang_corpus_sentinels(value: str) -> str:
 def _defang_engine_sentinels(value: str) -> str:
     """Source content must not be able to forge the engine's own block markers.
 
-    The EVIDENCE FOR SYNTHESIS and PASS-THROUGH FOOTER envelopes are HTML
-    comments, and LAW 5 tells the host model to emit the footer block
-    verbatim. Scraped text carrying those markers could therefore close the
-    evidence envelope early or open a footer the model relays to the user
-    unmodified. Breaking the comment delimiters is what actually neutralizes
-    them; the phrase substitutions are defense in depth for a model that
-    pattern-matches on the wording rather than the comment syntax.
+    The EVIDENCE FOR SYNTHESIS envelope is an HTML comment pair and the engine
+    footer is a fenced ``text`` code block, which LAW 5 tells the host model to
+    emit verbatim. Scraped text carrying those markers could therefore close
+    the evidence envelope early or open a footer the model relays to the user
+    unmodified. Breaking the comment delimiters and the code-fence runs
+    (backtick and tilde, the two CommonMark fence characters) is what actually
+    neutralizes them; the phrase substitutions are defense in depth for a model
+    that pattern-matches on the wording rather than the syntax.
     """
     return (
         value.replace("<!--", "<!- -")
         .replace("-->", "- ->")
+        .replace("```", "'''")
+        .replace("~~~", "~ ~ ~")
         .replace("PASS-THROUGH FOOTER", "PASS-THROUGH-FOOTER")
         .replace("EVIDENCE FOR SYNTHESIS", "EVIDENCE-FOR-SYNTHESIS")
     )
@@ -842,8 +845,8 @@ def render_compact(
     # evidence for the model to READ, not output to emit. LAW 6 in SKILL.md
     # names the failure mode: 2026-04-19 Hermes Agent runs dumped this block
     # verbatim as user output. The envelope comments give the model an
-    # unambiguous scope for "pass through verbatim" (the PASS-THROUGH FOOTER
-    # block below) vs "synthesize from" (this block).
+    # unambiguous scope for "pass through verbatim" (the fenced footer block
+    # below) vs "synthesize from" (this block).
     lines.append(
         "<!-- EVIDENCE FOR SYNTHESIS: read this, do not emit verbatim. Transform into `What I learned:` prose per LAW 2. -->"
     )
@@ -933,13 +936,7 @@ def render_compact(
         lines.extend(comparison_scaffold)
 
     footer = _render_emoji_footer(report, save_path)
-    if footer:
-        lines.append("")
-        lines.append(
-            "<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->"
-        )
-        lines.extend(footer)
-        lines.append("<!-- END PASS-THROUGH FOOTER -->")
+    _append_pass_through_footer(lines, footer)
 
     lines.extend(_render_canonical_boundary())
 
@@ -1165,12 +1162,24 @@ def _append_html_footer(
     lines: list[str], report: schema.Report, save_path: str | None
 ) -> None:
     footer = _render_emoji_footer(report, save_path)
+    _append_pass_through_footer(lines, footer)
+
+
+def _append_pass_through_footer(lines: list[str], footer: list[str]) -> None:
+    """Emit the emoji footer inside the fenced ``text`` block LAW 5 relays.
+
+    Footer rows interpolate source-controlled values (handles, subreddits,
+    market questions, advertiser names). A value carrying a newline plus a
+    fence run would close the trusted block early and leave the rest of the
+    row outside it, so every row is flattened to one line and defanged here,
+    at the one place all footer paths share.
+    """
+    if not footer:
+        return
     lines.append("")
-    lines.append(
-        "<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->"
-    )
-    lines.extend(footer)
-    lines.append("<!-- END PASS-THROUGH FOOTER -->")
+    lines.append("```text")
+    lines.extend(_defang_engine_sentinels(" ".join(row.splitlines())) for row in footer)
+    lines.append("```")
 
 
 def _render_synthesis_directive() -> list[str]:
@@ -1196,7 +1205,7 @@ def _render_synthesis_directive() -> list[str]:
         "> READ, not text to emit. Transform it into `What I learned:` prose paragraphs",
         "> per LAW 2. Do NOT pass the `### N.` evidence clusters or the stats and",
         "> source-coverage blocks through verbatim. The ONLY block you emit verbatim is",
-        "> the PASS-THROUGH FOOTER (the emoji tree) lower down. The full contract repeats",
+        "> the fenced `text` footer block (the emoji tree) lower down. The full contract repeats",
         "> at the end-of-output boundary near the bottom; if your captured output was",
         "> truncated and never reached it, this contract still binds.",
         "",
@@ -1216,7 +1225,7 @@ def _render_canonical_boundary() -> list[str]:
     "Pass through the lines ABOVE this boundary verbatim" phrasing was
     ambiguous about scope and led two consecutive runs to dump the
     `## Ranked Evidence Clusters` scratchpad as user output. The current
-    phrasing scopes pass-through to the PASS-THROUGH FOOTER block only and
+    phrasing scopes pass-through to the fenced footer block only and
     gives the model a concrete self-check string (`### 1.` + score tuple).
     """
     return [
@@ -1224,7 +1233,9 @@ def _render_canonical_boundary() -> list[str]:
         "---",
         "# END OF last30days CANONICAL OUTPUT",
         "",
-        "Pass through ONLY the PASS-THROUGH FOOTER block verbatim (emoji-tree stats).",
+        "Pass through ONLY the fenced `text` footer block above (emoji-tree stats).",
+        "Keep the code fence, so Markdown does not turn `---` into horizontal",
+        "rules or distort the tree.",
         "The EVIDENCE FOR SYNTHESIS block above it is raw evidence for your synthesis,",
         "not output. Transform it into `What I learned:` prose paragraphs per LAW 2.",
         "",
@@ -1523,13 +1534,7 @@ def render_comparison_multi(
     lines.extend(scaffold)
 
     footer = _render_emoji_footer(main_report, save_path)
-    if footer:
-        lines.append("")
-        lines.append(
-            "<!-- PASS-THROUGH FOOTER: emit verbatim in the model response per LAW 5. -->"
-        )
-        lines.extend(footer)
-        lines.append("<!-- END PASS-THROUGH FOOTER -->")
+    _append_pass_through_footer(lines, footer)
 
     lines.extend(_render_canonical_boundary())
 
@@ -3376,17 +3381,7 @@ def _format_date(item: schema.SourceItem | None) -> str:
 def _format_actor(item: schema.SourceItem | None) -> str | None:
     if not item:
         return None
-    if item.source == "reddit" and item.container:
-        return f"r/{item.container}"
-    if item.source in {"x", "bluesky", "truthsocial"} and item.author:
-        return f"@{item.author.lstrip('@')}"
-    if item.source == "youtube" and item.author:
-        return item.author
-    if item.container and item.container != "Polymarket":
-        return item.container
-    if item.author:
-        return item.author
-    return None
+    return _stats_actor(item)
 
 
 # Per-source engagement display fields: list of (field_name, label) tuples.
@@ -3507,6 +3502,17 @@ def _top_voices_overall(
 
 
 def _stats_actor(item: schema.SourceItem) -> str | None:
+    """The handle, subreddit or channel an item is attributed to, on one line.
+
+    Author and container come from the source, and the result is interpolated
+    into evidence rows, ``## Stats`` and the pass-through footer, so it gets the
+    same flattening and sentinel defanging as a scraped title.
+    """
+    actor = _raw_actor(item)
+    return _safe_title(actor) if actor else None
+
+
+def _raw_actor(item: schema.SourceItem) -> str | None:
     if item.source == "reddit" and item.container:
         return f"r/{item.container}"
     if item.source in {"x", "bluesky", "truthsocial"} and item.author:
