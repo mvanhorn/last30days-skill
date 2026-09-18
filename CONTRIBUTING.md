@@ -28,7 +28,7 @@ That installs pytest/coverage and **towncrier** into the project env. You do **n
 3. Fill out [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md) — Summary (“what does this PR do”), Testing, Changelog, Agent disclosure, Relationship.
 4. Do **not** edit `CHANGELOG.md` and do **not** bump version strings in `pyproject.toml`, `SKILL.md`, plugin/marketplace JSON, or `uv.lock`. CI enforces that.
 
-Chores with nothing for the release notes: check Skip changelog in the template and add the `skip-changelog` label.
+Chores with nothing for the release notes: check Skip changelog in the template and add the `skip-changelog` label. Dependabot PRs skip that requirement automatically.
 
 Fragments are plain Markdown files. **towncrier is only used when cutting a release** (locally via `uv run` or in GitHub Actions) — contributors never run it for a feature PR.
 

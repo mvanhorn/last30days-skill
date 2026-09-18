@@ -172,6 +172,25 @@ class TestChangelogWorkflow(unittest.TestCase):
             label=str(path),
         )
 
+    def test_changelog_guard_skips_dependabot_without_fragment(self) -> None:
+        """Dependabot PRs must not need skip-changelog or a fragment.
+
+        mcp/* is an engine path, so gomod bumps fail the fragment gate unless
+        the author is exempted. Label-only exemption is not enough: Dependabot
+        cannot reliably apply skip-changelog (custom labels replace defaults
+        and missing repo labels are dropped).
+        """
+        text = (ROOT / ".github" / "workflows" / "changelog-guard.yml").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("PR_AUTHOR: ${{ github.event.pull_request.user.login }}", text)
+        self.assertIn('dependabot[bot]', text)
+        self.assertRegex(
+            text,
+            r'if \[ "\$\{PR_AUTHOR\}" = "dependabot\[bot\]" \]; then\n'
+            r"\s+SKIP_CHANGELOG=1",
+        )
+
     def test_run_block_indent_checker_rejects_column_zero(self) -> None:
         malformed = (
             "jobs:\n"
