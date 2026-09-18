@@ -206,7 +206,10 @@ def test_default_register_is_byte_identical_when_omitted(monkeypatch):
 
     assert implicit == explicit
     assert hashlib.sha256(implicit.encode()).hexdigest() == (
-        # Hash includes current main's rendering plus the fenced text footer.
+        # Hash includes #886's linked evidence URLs, #890's Hacker News
+        # comment-rendering changes, the quiet footer (no outcome text, no
+        # ## Source Errors in compact), the comments pool reading every
+        # floor-clearing cluster, and #706's fenced text footer.
         "e00edc0a241c23fd9ebd49c2dfb9af452da85dada19cb8896bf5c76fcdc30c45"
     )
 

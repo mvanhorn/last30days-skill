@@ -21,8 +21,8 @@ INVITATION_PATTERN = re.compile(r"^---\nI'm now an expert.*?Just ask\.$", re.MUL
 EVIDENCE_BLOCK_PATTERN = re.compile(r"<!-- EVIDENCE FOR SYNTHESIS.*?<!-- END EVIDENCE FOR SYNTHESIS -->", re.DOTALL)
 PASS_THROUGH_FOOTER_PATTERN = re.compile(r"<!-- PASS-THROUGH FOOTER.*?-->\n(.*?)<!-- END PASS-THROUGH FOOTER -->", re.DOTALL)
 FENCED_ENGINE_FOOTER_PATTERN = re.compile(
-    r"```text\n(---\n.*?All agents reported back!.*?\n---)\n```",
-    re.DOTALL,
+    r"^```text\n(---\n.*?All agents reported back!.*?\n---)\n```$",
+    re.MULTILINE | re.DOTALL,
 )
 CANONICAL_BOUNDARY_PATTERN = re.compile(r"\n?---\n# END OF last30days CANONICAL OUTPUT.*$", re.DOTALL)
 # render_for_html emits metadata as <!-- META: ... --> so it survives the

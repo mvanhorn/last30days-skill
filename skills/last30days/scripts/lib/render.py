@@ -595,17 +595,20 @@ def _defang_corpus_sentinels(value: str) -> str:
 def _defang_engine_sentinels(value: str) -> str:
     """Source content must not be able to forge the engine's own block markers.
 
-    The EVIDENCE FOR SYNTHESIS and PASS-THROUGH FOOTER envelopes are HTML
-    comments, and LAW 5 tells the host model to emit the footer block
-    verbatim. Scraped text carrying those markers could therefore close the
-    evidence envelope early or open a footer the model relays to the user
-    unmodified. Breaking the comment delimiters is what actually neutralizes
-    them; the phrase substitutions are defense in depth for a model that
-    pattern-matches on the wording rather than the comment syntax.
+    The EVIDENCE FOR SYNTHESIS envelope is an HTML comment pair and the engine
+    footer is a fenced ``text`` code block, which LAW 5 tells the host model to
+    emit verbatim. Scraped text carrying those markers could therefore close
+    the evidence envelope early or open a footer the model relays to the user
+    unmodified. Breaking the comment delimiters and the code-fence runs
+    (backtick and tilde, the two CommonMark fence characters) is what actually
+    neutralizes them; the phrase substitutions are defense in depth for a model
+    that pattern-matches on the wording rather than the syntax.
     """
     return (
         value.replace("<!--", "<!- -")
         .replace("-->", "- ->")
+        .replace("```", "'''")
+        .replace("~~~", "~ ~ ~")
         .replace("PASS-THROUGH FOOTER", "PASS-THROUGH-FOOTER")
         .replace("EVIDENCE FOR SYNTHESIS", "EVIDENCE-FOR-SYNTHESIS")
     )
