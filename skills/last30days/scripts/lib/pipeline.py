@@ -2340,6 +2340,10 @@ def run(
     # (source=deterministic AND no pre-research flags). LAW 7 backstop.
     bundle.artifacts["plan_source"] = plan_source
     bundle.artifacts["corpus_in_export"] = bool(config.get("_CORPUS_IN_EXPORT"))
+    # TROVR: real token usage across every planner/rerank call this run made,
+    # accumulated on the single ReasoningClient instance resolve_runtime()
+    # returned above. None when running mock/local (no reasoning_provider).
+    bundle.artifacts["usage"] = reasoning_provider.total_usage if reasoning_provider else None
     # Hiring-signals is deliberately jobs-only with no multi-source --plan, so
     # the LAW 7 degraded-run and Step 0.55 pre-research banners do not apply -
     # they would contradict the documented jobs-scoped flow. Suppress them.
