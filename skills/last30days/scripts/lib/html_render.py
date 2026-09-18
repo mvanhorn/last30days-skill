@@ -20,9 +20,17 @@ PROSE_LABELS = [
 INVITATION_PATTERN = re.compile(r"^---\nI'm now an expert.*?Just ask\.$", re.MULTILINE | re.DOTALL)
 EVIDENCE_BLOCK_PATTERN = re.compile(r"<!-- EVIDENCE FOR SYNTHESIS.*?<!-- END EVIDENCE FOR SYNTHESIS -->", re.DOTALL)
 PASS_THROUGH_FOOTER_PATTERN = re.compile(r"<!-- PASS-THROUGH FOOTER.*?-->\n(.*?)<!-- END PASS-THROUGH FOOTER -->", re.DOTALL)
+# Line-by-line on purpose: no row inside the match may itself open or close a
+# fence, so an earlier ordinary ```text block cannot be stitched to the real
+# footer with the prose between them swallowed into the footer box.
+_FOOTER_ROWS = r"(?:(?!```)[^\n]*\n)*?"
 FENCED_ENGINE_FOOTER_PATTERN = re.compile(
-    r"^```text\n(---\n.*?All agents reported back!.*?\n---)\n```$",
-    re.MULTILINE | re.DOTALL,
+    r"^```text\n(---\n"
+    + _FOOTER_ROWS
+    + r"[^\n]*All agents reported back![^\n]*\n"
+    + _FOOTER_ROWS
+    + r"---)\n```$",
+    re.MULTILINE,
 )
 CANONICAL_BOUNDARY_PATTERN = re.compile(r"\n?---\n# END OF last30days CANONICAL OUTPUT.*$", re.DOTALL)
 # render_for_html emits metadata as <!-- META: ... --> so it survives the

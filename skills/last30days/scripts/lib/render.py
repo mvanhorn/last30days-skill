@@ -1166,11 +1166,19 @@ def _append_html_footer(
 
 
 def _append_pass_through_footer(lines: list[str], footer: list[str]) -> None:
+    """Emit the emoji footer inside the fenced ``text`` block LAW 5 relays.
+
+    Footer rows interpolate source-controlled values (handles, subreddits,
+    market questions, advertiser names). A value carrying a newline plus a
+    fence run would close the trusted block early and leave the rest of the
+    row outside it, so every row is flattened to one line and defanged here,
+    at the one place all footer paths share.
+    """
     if not footer:
         return
     lines.append("")
     lines.append("```text")
-    lines.extend(footer)
+    lines.extend(_defang_engine_sentinels(" ".join(row.splitlines())) for row in footer)
     lines.append("```")
 
 
@@ -3373,17 +3381,7 @@ def _format_date(item: schema.SourceItem | None) -> str:
 def _format_actor(item: schema.SourceItem | None) -> str | None:
     if not item:
         return None
-    if item.source == "reddit" and item.container:
-        return f"r/{item.container}"
-    if item.source in {"x", "bluesky", "truthsocial"} and item.author:
-        return f"@{item.author.lstrip('@')}"
-    if item.source == "youtube" and item.author:
-        return item.author
-    if item.container and item.container != "Polymarket":
-        return item.container
-    if item.author:
-        return item.author
-    return None
+    return _stats_actor(item)
 
 
 # Per-source engagement display fields: list of (field_name, label) tuples.
@@ -3504,6 +3502,17 @@ def _top_voices_overall(
 
 
 def _stats_actor(item: schema.SourceItem) -> str | None:
+    """The handle, subreddit or channel an item is attributed to, on one line.
+
+    Author and container come from the source, and the result is interpolated
+    into evidence rows, ``## Stats`` and the pass-through footer, so it gets the
+    same flattening and sentinel defanging as a scraped title.
+    """
+    actor = _raw_actor(item)
+    return _safe_title(actor) if actor else None
+
+
+def _raw_actor(item: schema.SourceItem) -> str | None:
     if item.source == "reddit" and item.container:
         return f"r/{item.container}"
     if item.source in {"x", "bluesky", "truthsocial"} and item.author:

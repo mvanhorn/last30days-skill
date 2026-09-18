@@ -190,6 +190,21 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
         self.assertIn("├─ 🔵 X: 2 posts", body)
         self.assertIn("└─ 🌐 Web: 1 result", body)
 
+    def test_fenced_footer_match_does_not_swallow_an_earlier_text_block(self):
+        md = (
+            "```text\n---\nquoted by the synthesis\n---\n```\n\n"
+            "Prose between the blocks.\n\n"
+            "```text\n---\n✅ All agents reported back!\n└─ 🌐 Web: 1 result\n---\n```"
+        )
+        matches = list(html_render.FENCED_ENGINE_FOOTER_PATTERN.finditer(md))
+        self.assertEqual(len(matches), 1)
+        self.assertNotIn("Prose between the blocks.", matches[0].group(0))
+        self.assertNotIn("quoted by the synthesis", matches[0].group(0))
+
+        protected, footers = html_render._protect_engine_footers(md)
+        self.assertIn("Prose between the blocks.", protected)
+        self.assertEqual(len(footers), 1)
+
     def test_colophon_contains_topic_and_rerun_command(self):
         rendered = html_render.render_html(_report("AI agent frameworks", []))
         self.assertIn("topic: AI agent frameworks", rendered)
