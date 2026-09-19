@@ -2051,6 +2051,26 @@ class TestExcludeSources(unittest.TestCase):
         self.assertIn("reddit", sources)
 
 
+class TestDiffbotAvailability(unittest.TestCase):
+    """Diffbot is a default-on additive source gated by DIFFBOT_API_KEY."""
+
+    def test_absent_without_key(self):
+        sources = pipeline.available_sources({})
+        self.assertNotIn("diffbot", sources)
+
+    def test_present_with_api_key(self):
+        sources = pipeline.available_sources({"DIFFBOT_API_KEY": "key-123"})
+        self.assertIn("diffbot", sources)
+
+    def test_exclude_sources_suppresses_diffbot(self):
+        config = {"DIFFBOT_API_KEY": "key-123", "EXCLUDE_SOURCES": "diffbot"}
+        sources = pipeline.available_sources(config)
+        self.assertNotIn("diffbot", sources)
+
+    def test_registered_in_mock_available_sources(self):
+        self.assertIn("diffbot", pipeline.MOCK_AVAILABLE_SOURCES)
+
+
 class TestPerplexityAvailability(unittest.TestCase):
     def test_agent_background_failure_uses_safe_provider_detail(self):
         outcome = pipeline._legacy_artifact_outcome(
