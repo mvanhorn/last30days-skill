@@ -453,9 +453,9 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
     boundary = context.get("enrichment_source_boundary")
     requested = context.get("requested_sources")
     try:
-        lookback_days = int(context.get("lookback_days") or 30)
+        lookback_days = int(context.get("lookback_days") or 7)
     except (TypeError, ValueError):
-        lookback_days = 30
+        lookback_days = 7
 
     rows_raw = payload.get("nominations")
     if not isinstance(rows_raw, list):

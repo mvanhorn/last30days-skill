@@ -676,6 +676,8 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('INCLUDE_SOURCES', ''),
         ('EXCLUDE_SOURCES', ''),
         ('LAST30DAYS_DEFAULT_SEARCH', ''),
+        # nfl30: 'off' disables the curated beat-writer X lane.
+        ('NFL30_BEAT_WRITERS', ''),
         # Resolve the user-facing default in nfl30.py so an absent value
         # stays distinguishable from an explicit `default`. That distinction
         # lets the new key override legacy ELI5_MODE=true configurations.

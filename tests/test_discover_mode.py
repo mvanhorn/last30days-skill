@@ -1356,11 +1356,11 @@ def test_discovery_cli_nominate_only_writes_bundle_and_digest(tmp_path):
     assert payload["domain"] == "AI agents"
     assert payload["tier"] == "deep"
     # Leg-1 invocation context rides along for leg 2.
-    assert payload["context"]["lookback_days"] == 30
+    assert payload["context"]["lookback_days"] == 7  # nfl30 default: one game week
     assert payload["context"]["requested_sources"] is None
     assert payload["context"]["enrichment_source_boundary"] is None
     # Momentum window matches the sweep dates (computed the same day).
-    assert (payload["from_date"], payload["to_date"]) == dates.get_date_range(30)
+    assert (payload["from_date"], payload["to_date"]) == dates.get_date_range(7)
     assert payload["nominations"]
     for row in payload["nominations"]:
         # Heuristic fallbacks: no provider ran, so the nomination's own

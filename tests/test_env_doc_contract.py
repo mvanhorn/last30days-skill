@@ -35,6 +35,9 @@ DOC_ONLY_KEYS = {
     "LAST30DAYS_CONFIG_DIR",
     "LAST30DAYS_PASS_PREFIX",
     "LAST30DAYS_SKIP_KEYCHAIN",
+    # Read by the Go MCP layer (mcp/internal/tools/research.go), never by
+    # get_config.
+    "LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES",
 }
 
 

@@ -1,0 +1,1 @@
+Forked last30days into `/nfl30`, an NFL-focused skill. The skill, engine script, plugin manifests, and config paths are renamed (`skills/nfl30`, `nfl30.py`, `~/.config/nfl30`); `LAST30DAYS_*` environment variable names are unchanged. The default lookback window is now 7 days (one game week; `--days` still overrides).

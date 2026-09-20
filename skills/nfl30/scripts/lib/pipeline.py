@@ -79,6 +79,7 @@ from . import (
     xurl_x,
     youtube_yt,
 )
+from . import nfl
 from .cluster import cluster_candidates
 from . import fusion
 from . import render
@@ -2150,6 +2151,31 @@ def run(
     # assign it (eligible_sources = available ∩ capabilities).
     config["_financial_topic"] = stocktwits.is_financial_topic(topic)
 
+    # nfl30: resolve the topic to one NFL entity first. A resolved team or
+    # player seeds the beat-writer roster, the NFL subreddits, and (later
+    # phases) the team-official and NFL-market lanes. Static tables only.
+    nfl_entity = nfl.resolve(
+        topic, explicit_team=config.get("_team"), explicit_player=config.get("_player"),
+    )
+    config["_nfl"] = nfl_entity.as_dict() if nfl_entity else None
+    beat_roster: list[str] = []
+    if nfl_entity and nfl.beat_writers_enabled(config):
+        beat_roster = nfl.beat_handles(nfl_entity, depth=depth)
+    config["_beat_writer_handles"] = beat_roster
+    config["_beat_writer_meta"] = nfl.beat_writer_meta(beat_roster) if beat_roster else {}
+    if nfl_entity:
+        log.source_log(
+            "NFL",
+            f"resolved {nfl_entity.kind}: {nfl_entity.label} (via {nfl_entity.how}); "
+            f"beat writers: {len(beat_roster)}",
+            tty_only=False,
+        )
+        broad_subs, dedicated_subs = nfl.default_subreddits(nfl_entity)
+        if not subreddits:
+            subreddits = broad_subs
+        if dedicated_subs and not config.get("_dedicated_subreddits"):
+            config["_dedicated_subreddits"] = dedicated_subs
+
     if mock:
         runtime = providers.mock_runtime(config, depth)
         reasoning_provider = None
@@ -2293,7 +2319,7 @@ def run(
     # the evidence loss this change exists to prevent.
     explicit_first_party = {
         h.lstrip("@").strip().lower()
-        for h in ([x_handle, github_user, *(x_related or [])])
+        for h in ([x_handle, github_user, *(x_related or []), *_beat_handles(config)])
         if h and h.strip()
     }
     # Creator accounts named via --ig-creators / --creators carry the same
@@ -2312,7 +2338,7 @@ def run(
     # report beats losing the subject's evidence).
     explicit_x_handles = {
         h.lstrip("@").strip().lower()
-        for h in ([x_handle, *(x_related or [])])
+        for h in ([x_handle, *(x_related or []), *_beat_handles(config)])
         if h and h.strip()
     } | _topic_handle_mentions(topic)
     # Plus handle-shaped tokens from the topic. Phase 1 and quick-depth runs
@@ -3834,6 +3860,34 @@ def _name_lane_subject(topic: str) -> str:
     return topic.strip()
 
 
+def _beat_handles(config: dict[str, Any] | None) -> list[str]:
+    """Curated beat-writer handles this run resolved (nfl30), or []."""
+    if not isinstance(config, dict):
+        return []
+    return [str(h) for h in (config.get("_beat_writer_handles") or []) if str(h).strip()]
+
+
+def x_slug_for(config: dict[str, Any] | None) -> str:
+    """All X backends land under the single ``x`` slug."""
+    return "x"
+
+
+def _tag_beat_writers(items: list[schema.SourceItem], config: dict[str, Any] | None) -> None:
+    """Stamp ``metadata['beat_writer']`` on X items authored by the roster."""
+    meta = (config or {}).get("_beat_writer_meta") if isinstance(config, dict) else None
+    if not meta:
+        return
+    for item in items:
+        if getattr(item, "source", None) != "x":
+            continue
+        handle = str(item.author or "").lstrip("@").lower()
+        info = meta.get(handle)
+        if info and "beat_writer" not in (item.metadata or {}):
+            if item.metadata is None:
+                item.metadata = {}
+            item.metadata["beat_writer"] = dict(info)
+
+
 def _run_supplemental_searches(
     *,
     topic: str,
@@ -3869,8 +3923,14 @@ def _run_supplemental_searches(
         )
         return
 
-    if depth == "quick" or mock:
+    # nfl30: the curated beat-writer roster rides the explicit FROM lane at
+    # every depth (a quick run still wants the beat), while entity extraction
+    # and the ABOUT/NAME lanes stay off in quick mode.
+    beat_handles = [] if mock else _beat_handles(config)
+    _tag_beat_writers(bundle.items_by_source.get(x_slug_for(config), []), config)
+    if mock or (depth == "quick" and not beat_handles):
         return
+    quick_beat_only = depth == "quick"
 
     # Convert SourceItems to dicts for entity_extract. All X items (whatever
     # backend fetched them — bird, xai, xurl, xquik) land under the single "x"
@@ -3892,7 +3952,7 @@ def _run_supplemental_searches(
         for item in bundle.items_by_source.get("reddit", [])
     ]
 
-    if not x_dicts and not reddit_dicts and not x_handle and not x_related:
+    if not x_dicts and not reddit_dicts and not x_handle and not x_related and not beat_handles:
         return
 
     entities = entity_extract.extract_entities(
@@ -3901,6 +3961,8 @@ def _run_supplemental_searches(
     )
 
     handles = entities.get("x_handles", [])
+    if quick_beat_only:
+        handles = []
 
     # Add explicit --x-handle if provided
     if x_handle:
@@ -4230,6 +4292,50 @@ def _run_supplemental_searches(
                 for item in normalized:
                     if item.url:
                         existing_urls.add(item.url)
+
+    # nfl30 beat-writer lane: curated handles, FROM without AND topic (a beat
+    # writer's practice report rarely repeats the team name), full weight on
+    # the primary label, exempt from the relevance floor like other explicit
+    # first-party handles. Skips handles already covered above.
+    covered = {h.lower().lstrip("@") for h in [*primary_explicit, *handles, *related_handles] if h}
+    beat_run = [h for h in beat_handles if h.lower().lstrip("@") not in covered]
+    if beat_run:
+        beat_items: list = []
+        try:
+            beat_items, beat_revoked = _from_lane(beat_run, FROM_LANE_COUNT_PER, and_topic=False)
+            if beat_revoked:
+                bundle.record_failure(
+                    x_slug, schema.AUTH_FAILED,
+                    "Phase 2 beat-writer lane: session expired or was revoked",
+                    attempted=True,
+                )
+        except Exception as exc:
+            print(f"[Pipeline] Phase 2 beat-writer lane failed: {exc}", file=sys.stderr)
+            state, attempted = _classify_source_failure(exc)
+            bundle.record_failure(
+                x_slug, state, f"Phase 2 beat-writer lane: {exc}", attempted=attempted,
+            )
+            beat_items = []
+        kept = 0
+        if beat_items:
+            normalized = _normalize_score_dedupe(
+                x_slug, beat_items, from_date, to_date,
+                freshness_mode=plan.freshness_mode,
+                ranking_query=ranking_query,
+                first_party_handles=[h.lower().lstrip("@") for h in beat_run],
+            )
+            normalized = [item for item in normalized if item.url not in existing_urls]
+            _tag_beat_writers(normalized, config)
+            if normalized:
+                bundle.add_items(primary_label, x_slug, normalized)
+                for item in normalized:
+                    if item.url:
+                        existing_urls.add(item.url)
+            kept = len(normalized)
+        log.source_log(
+            "x", f"beat-writer lane: {len(beat_run)} handles -> {len(beat_items)} posts, {kept} kept",
+            tty_only=False,
+        )
 
     # Search related handles with lower weight (0.3)
     # Related handles are explicit (--x-related), so FROM without AND topic.

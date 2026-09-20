@@ -203,6 +203,22 @@ CATEGORY_PEERS: dict[str, _CategoryEntry] = {
             "Notion",
         ],
     },
+    "nfl": {
+        "patterns": [
+            "nfl",
+            "super bowl",
+            "quarterback",
+            "fantasy football",
+            "nfl draft",
+            "pro bowl",
+        ],
+        "peer_subs": [
+            "nfl",
+            "fantasyfootball",
+            "NFLv2",
+            "sportsbook",
+        ],
+    },
     "prediction_markets": {
         "patterns": [
             "polymarket",

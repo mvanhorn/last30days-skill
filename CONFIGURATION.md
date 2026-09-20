@@ -485,6 +485,35 @@ Limits: 8 MiB, strict UTF-8, at most 20 calls, 500 rows per call, 1,000 rows in 
 python3 skills/nfl30/scripts/nfl30.py "<topic>" --x-posts /tmp/x-posts.json
 ```
 
+### `--team`, `--player`, `--beat-writers`, and the 7-day window
+
+nfl30 assumes every topic is about the NFL. The default lookback is **7 days** (one game week: last game's pressers through this week's injury report); `--days N` still overrides it.
+
+`--team KC` (an abbreviation or a nickname such as `Chiefs`) pins the team. When omitted the engine resolves one from the topic: an abbreviation (`KC injury report`), a nickname or alias (`niners`, `Kansas City Chiefs`), a city plus NFL vocabulary (`Chicago quarterback`), a game (`Packers vs Lions`, `Chiefs at Bills`, `KC-BUF`), or a player/coach from the built-in map (`Mahomes injury`). Cities shared by two franchises (`New York`, `Los Angeles`) never resolve alone, and league topics (`NFL MVP odds`, `week 3 power rankings`) resolve to the league with no team. `--player "Patrick Mahomes"` names the person explicitly; their team comes from `lib/data/nfl_players.json` when listed.
+
+A resolved entity turns on the NFL lanes:
+
+| Lane | Source | Trigger | Off switch |
+| --- | --- | --- | --- |
+| Beat writers | X (existing backend chain or `--x-posts`) | team, player, game, or league resolved | `--beat-writers off` or `NFL30_BEAT_WRITERS=off` |
+| Subreddit seeding | Reddit | team or game resolved and no `--subreddits` passed | pass `--subreddits` / `--dedicated-subreddits` yourself |
+
+**Beat writers.** The engine ships a roster at `skills/nfl30/scripts/lib/data/nfl_beat_writers.json`: per-team beat reporters plus national insiders, seeded from public knowledge and not verified handle by handle. Each run searches the first N team writers and M national insiders as full-weight `from:handle` lanes (quick 2+2, default 6+4, deep 10+6; a game run splits the team budget across both teams; a league run uses insiders only). Their posts are exempt from the topic-relevance floor, like any explicit `--x-handle`, and render as `@handle (Outlet)`. Override the roster at `~/.config/nfl30/beat_writers.json` (same shape): a team list there **replaces** the built-in list for that team, `national` entries are **added**, and a top-level `"remove": ["handle", ...]` drops handles everywhere. Order matters: the first entries per team are the ones searched at lower depths.
+
+```json
+{
+  "teams": {"KC": [{"handle": "adamteicher", "name": "Adam Teicher", "outlet": "ESPN", "role": "beat"}]},
+  "national": [{"handle": "NewInsider", "name": "New Insider", "outlet": "Podcast", "role": "insider"}],
+  "remove": ["StaleHandle"]
+}
+```
+
+```bash
+python3 skills/nfl30/scripts/nfl30.py "Chiefs injury report" --team KC
+python3 skills/nfl30/scripts/nfl30.py "Packers vs Lions" --days 3
+python3 skills/nfl30/scripts/nfl30.py "Mahomes" --beat-writers off
+```
+
 ### `setup --store-key`
 
 `setup --store-key <NAME>` persists one credential to the global `.env` (mode `600`) from a single line on stdin, without echoing it: stdout shows `NAME=****` plus a JSON line `{"persisted": true, "key": "NAME"}`. `NAME` must be one of the credential names the engine loads from `.env` (for example `X_BEARER_TOKEN`, `XAI_API_KEY`, `SCRAPECREATORS_API_KEY`); an unknown name or an empty value exits `2`. Running it again with a new value replaces the stored one (rotating a rejected credential); other lines in the file are untouched.

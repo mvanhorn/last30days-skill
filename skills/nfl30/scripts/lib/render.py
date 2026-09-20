@@ -3373,13 +3373,22 @@ def _format_date(item: schema.SourceItem | None) -> str:
     return f"{item.published_at} [date:{item.date_confidence}]"
 
 
+def _x_author_label(item: schema.SourceItem) -> str:
+    """``@handle``, with the outlet appended for curated beat writers."""
+    handle = str(item.author or "").lstrip("@")
+    meta = (item.metadata or {}).get("beat_writer")
+    if isinstance(meta, dict) and meta.get("outlet"):
+        return f"@{handle} ({meta['outlet']})"
+    return f"@{handle}"
+
+
 def _format_actor(item: schema.SourceItem | None) -> str | None:
     if not item:
         return None
     if item.source == "reddit" and item.container:
         return f"r/{item.container}"
     if item.source in {"x", "bluesky", "truthsocial"} and item.author:
-        return f"@{item.author.lstrip('@')}"
+        return _x_author_label(item)
     if item.source == "youtube" and item.author:
         return item.author
     if item.container and item.container != "Polymarket":
@@ -3510,7 +3519,7 @@ def _stats_actor(item: schema.SourceItem) -> str | None:
     if item.source == "reddit" and item.container:
         return f"r/{item.container}"
     if item.source in {"x", "bluesky", "truthsocial"} and item.author:
-        return f"@{item.author.lstrip('@')}"
+        return _x_author_label(item)
     if item.source == "youtube" and item.author:
         return item.author
     if item.container and item.container != "Polymarket":

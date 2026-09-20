@@ -1,0 +1,270 @@
+{
+  "_note": "Seeded beat-writer roster for nfl30. Handles are X usernames without the @. Seeded from public knowledge as of 2026-09 and NOT verified per handle; correct or replace per team in ~/.config/nfl30/beat_writers.json (a team list there replaces this one; 'national' is unioned; 'remove' drops handles). Order matters: the first N per team are used at each depth.",
+  "as_of": "2026-09",
+  "version": 1,
+  "national": [
+    {"handle": "AdamSchefter", "name": "Adam Schefter", "outlet": "ESPN", "role": "insider"},
+    {"handle": "RapSheet", "name": "Ian Rapoport", "outlet": "NFL Network", "role": "insider"},
+    {"handle": "TomPelissero", "name": "Tom Pelissero", "outlet": "NFL Network", "role": "insider"},
+    {"handle": "MikeGarafolo", "name": "Mike Garafolo", "outlet": "NFL Network", "role": "insider"},
+    {"handle": "JayGlazer", "name": "Jay Glazer", "outlet": "FOX Sports", "role": "insider"},
+    {"handle": "AlbertBreer", "name": "Albert Breer", "outlet": "Sports Illustrated", "role": "insider"},
+    {"handle": "DiannaESPN", "name": "Dianna Russini", "outlet": "The Athletic", "role": "insider"},
+    {"handle": "JFowlerESPN", "name": "Jeremy Fowler", "outlet": "ESPN", "role": "insider"},
+    {"handle": "FieldYates", "name": "Field Yates", "outlet": "ESPN", "role": "insider"},
+    {"handle": "JosinaAnderson", "name": "Josina Anderson", "outlet": "CBS Sports", "role": "insider"}
+  ],
+  "teams": {
+    "ARI": [
+      {"handle": "joshweinfuss", "name": "Josh Weinfuss", "outlet": "ESPN", "role": "beat"},
+      {"handle": "Cardschatter", "name": "Darren Urban", "outlet": "azcardinals.com", "role": "team"},
+      {"handle": "HBalzer721", "name": "Howard Balzer", "outlet": "Cardinals on SI", "role": "beat"},
+      {"handle": "Tdrake4sports", "name": "Tyler Drake", "outlet": "Arizona Sports", "role": "beat"},
+      {"handle": "BoBrack", "name": "Bo Brack", "outlet": "PHNX Sports", "role": "beat"}
+    ],
+    "ATL": [
+      {"handle": "mikerothstein", "name": "Michael Rothstein", "outlet": "ESPN", "role": "beat"},
+      {"handle": "JoshTheAthletic", "name": "Josh Kendall", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "DOrlandoAJC", "name": "D. Orlando Ledbetter", "outlet": "Atlanta Journal-Constitution", "role": "beat"},
+      {"handle": "tori_mcelhaney", "name": "Tori McElhaney", "outlet": "atlantafalcons.com", "role": "team"},
+      {"handle": "TerrinWaack", "name": "Terrin Waack", "outlet": "atlantafalcons.com", "role": "team"}
+    ],
+    "BAL": [
+      {"handle": "jamisonhensley", "name": "Jamison Hensley", "outlet": "ESPN", "role": "beat"},
+      {"handle": "jeffzrebiec", "name": "Jeff Zrebiec", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "jonas_shaffer", "name": "Jonas Shaffer", "outlet": "The Baltimore Banner", "role": "beat"},
+      {"handle": "ryanmink", "name": "Ryan Mink", "outlet": "baltimoreravens.com", "role": "team"},
+      {"handle": "gdowning14", "name": "Garrett Downing", "outlet": "baltimoreravens.com", "role": "team"}
+    ],
+    "BUF": [
+      {"handle": "JoeBuscaglia", "name": "Joe Buscaglia", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "agetzenberg", "name": "Alaina Getzenberg", "outlet": "ESPN", "role": "beat"},
+      {"handle": "MattParrino", "name": "Matt Parrino", "outlet": "NYUP.com", "role": "beat"},
+      {"handle": "ryanohalloran", "name": "Ryan O'Halloran", "outlet": "The Buffalo News", "role": "beat"},
+      {"handle": "kfitz134", "name": "Katherine Fitzgerald", "outlet": "The Buffalo News", "role": "beat"},
+      {"handle": "MaddyGlab", "name": "Maddy Glab", "outlet": "buffalobills.com", "role": "team"}
+    ],
+    "CAR": [
+      {"handle": "DNewtonespn", "name": "David Newton", "outlet": "ESPN", "role": "beat"},
+      {"handle": "josephperson", "name": "Joseph Person", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "mike_e_kaye", "name": "Mike Kaye", "outlet": "The Charlotte Observer", "role": "beat"},
+      {"handle": "daringantt", "name": "Darin Gantt", "outlet": "panthers.com", "role": "team"},
+      {"handle": "Sheena_Marie3", "name": "Sheena Quick", "outlet": "FOX Sports Radio", "role": "beat"}
+    ],
+    "CHI": [
+      {"handle": "CourtneyRCronin", "name": "Courtney Cronin", "outlet": "ESPN", "role": "beat"},
+      {"handle": "adamjahns", "name": "Adam Jahns", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "kfishbain", "name": "Kevin Fishbain", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "BradBiggs", "name": "Brad Biggs", "outlet": "Chicago Tribune", "role": "beat"},
+      {"handle": "JasonLieser", "name": "Jason Lieser", "outlet": "Chicago Sun-Times", "role": "beat"},
+      {"handle": "LarryMayer", "name": "Larry Mayer", "outlet": "chicagobears.com", "role": "team"}
+    ],
+    "CIN": [
+      {"handle": "Ben_Baby", "name": "Ben Baby", "outlet": "ESPN", "role": "beat"},
+      {"handle": "pauldehnerjr", "name": "Paul Dehner Jr.", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "KelseyLConway", "name": "Kelsey Conway", "outlet": "Cincinnati Enquirer", "role": "beat"},
+      {"handle": "CharlieG__", "name": "Charlie Goldsmith", "outlet": "Cincinnati Enquirer", "role": "beat"},
+      {"handle": "GeoffHobsonCin", "name": "Geoff Hobson", "outlet": "bengals.com", "role": "team"}
+    ],
+    "CLE": [
+      {"handle": "DanielOyefusi", "name": "Daniel Oyefusi", "outlet": "ESPN", "role": "beat"},
+      {"handle": "AkronJackson", "name": "Zac Jackson", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "MaryKayCabot", "name": "Mary Kay Cabot", "outlet": "cleveland.com", "role": "beat"},
+      {"handle": "AshleyBastock42", "name": "Ashley Bastock", "outlet": "cleveland.com", "role": "beat"},
+      {"handle": "TonyGrossi", "name": "Tony Grossi", "outlet": "The Land On Demand", "role": "beat"},
+      {"handle": "Andrew_Gribble", "name": "Andrew Gribble", "outlet": "clevelandbrowns.com", "role": "team"}
+    ],
+    "DAL": [
+      {"handle": "toddarcher", "name": "Todd Archer", "outlet": "ESPN", "role": "beat"},
+      {"handle": "jonmachota", "name": "Jon Machota", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "clarencehilljr", "name": "Clarence Hill Jr.", "outlet": "ALLCITY DLLS", "role": "beat"},
+      {"handle": "GehlkenNFL", "name": "Michael Gehlken", "outlet": "The Dallas Morning News", "role": "beat"},
+      {"handle": "NickHarrisFWST", "name": "Nick Harris", "outlet": "Fort Worth Star-Telegram", "role": "beat"},
+      {"handle": "SlaterNFL", "name": "Jane Slater", "outlet": "NFL Network", "role": "beat"},
+      {"handle": "VoiceOfTheStar", "name": "Patrik Walker", "outlet": "dallascowboys.com", "role": "team"}
+    ],
+    "DEN": [
+      {"handle": "Jeff_Legwold", "name": "Jeff Legwold", "outlet": "ESPN", "role": "beat"},
+      {"handle": "NickKosmider", "name": "Nick Kosmider", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "TroyRenck", "name": "Troy Renck", "outlet": "The Denver Post", "role": "beat"},
+      {"handle": "ParkerJGabriel", "name": "Parker Gabriel", "outlet": "The Denver Post", "role": "beat"},
+      {"handle": "MaseDenver", "name": "Andrew Mason", "outlet": "DNVR", "role": "beat"},
+      {"handle": "AricDiLalla", "name": "Aric DiLalla", "outlet": "denverbroncos.com", "role": "team"}
+    ],
+    "DET": [
+      {"handle": "E_Woodyard", "name": "Eric Woodyard", "outlet": "ESPN", "role": "beat"},
+      {"handle": "colton_pouncy", "name": "Colton Pouncy", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "davebirkett", "name": "Dave Birkett", "outlet": "Detroit Free Press", "role": "beat"},
+      {"handle": "Justin_Rogers", "name": "Justin Rogers", "outlet": "Detroit Football Network", "role": "beat"},
+      {"handle": "kmeinke", "name": "Kyle Meinke", "outlet": "MLive", "role": "beat"},
+      {"handle": "ttwentyman", "name": "Tim Twentyman", "outlet": "detroitlions.com", "role": "team"}
+    ],
+    "GB": [
+      {"handle": "RobDemovsky", "name": "Rob Demovsky", "outlet": "ESPN", "role": "beat"},
+      {"handle": "mattschneidman", "name": "Matt Schneidman", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "TomSilverstein", "name": "Tom Silverstein", "outlet": "Milwaukee Journal Sentinel", "role": "beat"},
+      {"handle": "ByRyanWood", "name": "Ryan Wood", "outlet": "Green Bay Press-Gazette", "role": "beat"},
+      {"handle": "BillHuberNFL", "name": "Bill Huber", "outlet": "Packers on SI", "role": "beat"},
+      {"handle": "WesHod", "name": "Wes Hodkiewicz", "outlet": "packers.com", "role": "team"}
+    ],
+    "HOU": [
+      {"handle": "Djbienaime", "name": "DJ Bien-Aime", "outlet": "ESPN", "role": "beat"},
+      {"handle": "jonmalexander", "name": "Jonathan M. Alexander", "outlet": "Houston Chronicle", "role": "beat"},
+      {"handle": "AaronWilson_NFL", "name": "Aaron Wilson", "outlet": "KPRC 2", "role": "beat"},
+      {"handle": "McClain_on_NFL", "name": "John McClain", "outlet": "Gallery Sports", "role": "beat"},
+      {"handle": "DeepSlant", "name": "Deepi Sidhu", "outlet": "houstontexans.com", "role": "team"}
+    ],
+    "IND": [
+      {"handle": "HolderStephen", "name": "Stephen Holder", "outlet": "ESPN", "role": "beat"},
+      {"handle": "RomeovilleKid", "name": "James Boyd", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "JoelAErickson", "name": "Joel A. Erickson", "outlet": "The Indianapolis Star", "role": "beat"},
+      {"handle": "NateAtkins_", "name": "Nate Atkins", "outlet": "The Indianapolis Star", "role": "beat"},
+      {"handle": "mchappell51", "name": "Mike Chappell", "outlet": "FOX59/CBS4", "role": "beat"},
+      {"handle": "JJStankevitz", "name": "JJ Stankevitz", "outlet": "colts.com", "role": "team"}
+    ],
+    "JAX": [
+      {"handle": "ESPNdirocco", "name": "Michael DiRocco", "outlet": "ESPN", "role": "beat"},
+      {"handle": "Demetrius82", "name": "Demetrius Harvey", "outlet": "The Florida Times-Union", "role": "beat"},
+      {"handle": "MiaOBrienTV", "name": "Mia O'Brien", "outlet": "1010XL", "role": "beat"},
+      {"handle": "_John_Shipley", "name": "John Shipley", "outlet": "Jaguars on SI", "role": "beat"},
+      {"handle": "johnoehser", "name": "John Oehser", "outlet": "jaguars.com", "role": "team"}
+    ],
+    "KC": [
+      {"handle": "adamteicher", "name": "Adam Teicher", "outlet": "ESPN", "role": "beat"},
+      {"handle": "ByNateTaylor", "name": "Nate Taylor", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "mattderrick", "name": "Matt Derrick", "outlet": "Chiefs Digest", "role": "beat"},
+      {"handle": "jessenewell", "name": "Jesse Newell", "outlet": "The Kansas City Star", "role": "beat"},
+      {"handle": "pgsween", "name": "Pete Sweeney", "outlet": "Arrowhead Pride", "role": "beat"},
+      {"handle": "goldmctNFL", "name": "Charles Goldman", "outlet": "A to Z Sports", "role": "beat"},
+      {"handle": "KCChiefs_Matt", "name": "Matt McMullen", "outlet": "chiefs.com", "role": "team"}
+    ],
+    "LV": [
+      {"handle": "ryanmcfadden_", "name": "Ryan McFadden", "outlet": "ESPN", "role": "beat"},
+      {"handle": "tashanreed", "name": "Tashan Reed", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "VinnyBonsignore", "name": "Vincent Bonsignore", "outlet": "Las Vegas Review-Journal", "role": "beat"},
+      {"handle": "PGutierrezESPN", "name": "Paul Gutierrez", "outlet": "ESPN", "role": "beat"},
+      {"handle": "theleviedwards", "name": "Levi Edwards", "outlet": "raiders.com", "role": "team"}
+    ],
+    "LAC": [
+      {"handle": "krisrhim1", "name": "Kris Rhim", "outlet": "ESPN", "role": "beat"},
+      {"handle": "danielrpopper", "name": "Daniel Popper", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "JeffMillerLAT", "name": "Jeff Miller", "outlet": "Los Angeles Times", "role": "beat"},
+      {"handle": "RealFRamirez", "name": "Fernando Ramirez", "outlet": "Chargers Report", "role": "beat"},
+      {"handle": "Eric_L_Smith", "name": "Eric Smith", "outlet": "chargers.com", "role": "team"}
+    ],
+    "LAR": [
+      {"handle": "sarahbarshop", "name": "Sarah Barshop", "outlet": "ESPN", "role": "beat"},
+      {"handle": "JourdanRodrigue", "name": "Jourdan Rodrigue", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "LATimesklein", "name": "Gary Klein", "outlet": "Los Angeles Times", "role": "beat"},
+      {"handle": "AdamGrosbard", "name": "Adam Grosbard", "outlet": "Orange County Register", "role": "beat"},
+      {"handle": "camdasilva", "name": "Cameron DaSilva", "outlet": "Rams Wire", "role": "beat"},
+      {"handle": "StuJRams", "name": "Stu Jackson", "outlet": "therams.com", "role": "team"}
+    ],
+    "MIA": [
+      {"handle": "Marcel_LJ", "name": "Marcel Louis-Jacques", "outlet": "ESPN", "role": "beat"},
+      {"handle": "flasportsbuzz", "name": "Barry Jackson", "outlet": "Miami Herald", "role": "beat"},
+      {"handle": "OmarKelly", "name": "Omar Kelly", "outlet": "Miami Herald", "role": "beat"},
+      {"handle": "DavidFurones_", "name": "David Furones", "outlet": "South Florida Sun Sentinel", "role": "beat"},
+      {"handle": "WingfieldNFL", "name": "Travis Wingfield", "outlet": "miamidolphins.com", "role": "team"}
+    ],
+    "MIN": [
+      {"handle": "SeifertESPN", "name": "Kevin Seifert", "outlet": "ESPN", "role": "beat"},
+      {"handle": "alec_lewis", "name": "Alec Lewis", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "GoesslingStrib", "name": "Ben Goessling", "outlet": "Minnesota Star Tribune", "role": "beat"},
+      {"handle": "Andrew_Krammer", "name": "Andrew Krammer", "outlet": "Minnesota Star Tribune", "role": "beat"},
+      {"handle": "christomasson", "name": "Chris Tomasson", "outlet": "Vikings on SI", "role": "beat"},
+      {"handle": "SamEkstrom", "name": "Sam Ekstrom", "outlet": "SKOR North", "role": "beat"}
+    ],
+    "NE": [
+      {"handle": "MikeReiss", "name": "Mike Reiss", "outlet": "ESPN", "role": "beat"},
+      {"handle": "ChadGraff", "name": "Chad Graff", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "kguregian", "name": "Karen Guregian", "outlet": "MassLive", "role": "beat"},
+      {"handle": "MarkDanielsMH", "name": "Mark Daniels", "outlet": "MassLive", "role": "beat"},
+      {"handle": "DougKyed", "name": "Doug Kyed", "outlet": "Boston Herald", "role": "beat"},
+      {"handle": "_AndrewCallahan", "name": "Andrew Callahan", "outlet": "Boston Herald", "role": "beat"},
+      {"handle": "ezlazar", "name": "Evan Lazar", "outlet": "patriots.com", "role": "team"}
+    ],
+    "NO": [
+      {"handle": "Kat_Terrell", "name": "Katherine Terrell", "outlet": "ESPN", "role": "beat"},
+      {"handle": "LarryHolder", "name": "Larry Holder", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "nick_underhill", "name": "Nick Underhill", "outlet": "NewOrleans.Football", "role": "beat"},
+      {"handle": "Matthew_Paras", "name": "Matthew Paras", "outlet": "The Times-Picayune", "role": "beat"},
+      {"handle": "ByLukeJohnson", "name": "Luke Johnson", "outlet": "The Times-Picayune", "role": "beat"},
+      {"handle": "JohnDeShazier", "name": "John DeShazier", "outlet": "neworleanssaints.com", "role": "team"}
+    ],
+    "NYG": [
+      {"handle": "JordanRaanan", "name": "Jordan Raanan", "outlet": "ESPN", "role": "beat"},
+      {"handle": "DDuggan21", "name": "Dan Duggan", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "art_stapleton", "name": "Art Stapleton", "outlet": "NorthJersey.com", "role": "beat"},
+      {"handle": "rydunleavy", "name": "Ryan Dunleavy", "outlet": "New York Post", "role": "beat"},
+      {"handle": "PLeonardNYDN", "name": "Pat Leonard", "outlet": "New York Daily News", "role": "beat"},
+      {"handle": "Schmeelk", "name": "John Schmeelk", "outlet": "giants.com", "role": "team"}
+    ],
+    "NYJ": [
+      {"handle": "RichCimini", "name": "Rich Cimini", "outlet": "ESPN", "role": "beat"},
+      {"handle": "ZackBlatt", "name": "Zack Rosenblatt", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "Connor_J_Hughes", "name": "Connor Hughes", "outlet": "SNY", "role": "beat"},
+      {"handle": "BrianCoz", "name": "Brian Costello", "outlet": "New York Post", "role": "beat"},
+      {"handle": "andy_vasquez", "name": "Andy Vasquez", "outlet": "NorthJersey.com", "role": "beat"},
+      {"handle": "eallenjets", "name": "Eric Allen", "outlet": "newyorkjets.com", "role": "team"}
+    ],
+    "PHI": [
+      {"handle": "Tim_McManus", "name": "Tim McManus", "outlet": "ESPN", "role": "beat"},
+      {"handle": "ZBerm", "name": "Zach Berman", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "Jeff_McLane", "name": "Jeff McLane", "outlet": "The Philadelphia Inquirer", "role": "beat"},
+      {"handle": "DZangaroNBCS", "name": "Dave Zangaro", "outlet": "NBC Sports Philadelphia", "role": "beat"},
+      {"handle": "EliotShorrParks", "name": "Eliot Shorr-Parks", "outlet": "94WIP", "role": "beat"},
+      {"handle": "EJSmith94", "name": "EJ Smith", "outlet": "The Philadelphia Inquirer", "role": "beat"},
+      {"handle": "DaveSpadaro", "name": "Dave Spadaro", "outlet": "philadelphiaeagles.com", "role": "team"}
+    ],
+    "PIT": [
+      {"handle": "bepryor", "name": "Brooke Pryor", "outlet": "ESPN", "role": "beat"},
+      {"handle": "MikeDeFabo", "name": "Mike DeFabo", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "MarkKaboly", "name": "Mark Kaboly", "outlet": "The Pat McAfee Show", "role": "beat"},
+      {"handle": "rayfitt1", "name": "Ray Fittipaldo", "outlet": "Pittsburgh Post-Gazette", "role": "beat"},
+      {"handle": "gerrydulac", "name": "Gerry Dulac", "outlet": "Pittsburgh Post-Gazette", "role": "beat"},
+      {"handle": "BrianBatko", "name": "Brian Batko", "outlet": "Pittsburgh Post-Gazette", "role": "beat"},
+      {"handle": "BobLabriola", "name": "Bob Labriola", "outlet": "steelers.com", "role": "team"}
+    ],
+    "SF": [
+      {"handle": "nwagoner", "name": "Nick Wagoner", "outlet": "ESPN", "role": "beat"},
+      {"handle": "mattbarrows", "name": "Matt Barrows", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "LombardiHimself", "name": "David Lombardi", "outlet": "The San Francisco Standard", "role": "beat"},
+      {"handle": "MaioccoNBCS", "name": "Matt Maiocco", "outlet": "NBC Sports Bay Area", "role": "beat"},
+      {"handle": "CamInman", "name": "Cam Inman", "outlet": "Bay Area News Group", "role": "beat"},
+      {"handle": "jenniferleechan", "name": "Jennifer Lee Chan", "outlet": "NBC Sports Bay Area", "role": "beat"},
+      {"handle": "Eric_Branch", "name": "Eric Branch", "outlet": "San Francisco Chronicle", "role": "beat"}
+    ],
+    "SEA": [
+      {"handle": "BradyHenderson", "name": "Brady Henderson", "outlet": "ESPN", "role": "beat"},
+      {"handle": "MikeDugar", "name": "Michael-Shawn Dugar", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "bcondotta", "name": "Bob Condotta", "outlet": "The Seattle Times", "role": "beat"},
+      {"handle": "gbellseattle", "name": "Gregg Bell", "outlet": "The News Tribune", "role": "beat"},
+      {"handle": "A_Jude", "name": "Adam Jude", "outlet": "The Seattle Times", "role": "beat"},
+      {"handle": "johnpboyle", "name": "John Boyle", "outlet": "seahawks.com", "role": "team"}
+    ],
+    "TB": [
+      {"handle": "JennaLaineESPN", "name": "Jenna Laine", "outlet": "ESPN", "role": "beat"},
+      {"handle": "NFLSTROUD", "name": "Rick Stroud", "outlet": "Tampa Bay Times", "role": "beat"},
+      {"handle": "gregauman", "name": "Greg Auman", "outlet": "FOX Sports", "role": "beat"},
+      {"handle": "ScottSBucs", "name": "Scott Smith", "outlet": "buccaneers.com", "role": "team"},
+      {"handle": "BriannaDixNFL", "name": "Brianna Dix", "outlet": "buccaneers.com", "role": "team"}
+    ],
+    "TEN": [
+      {"handle": "TDavenport_NFL", "name": "Turron Davenport", "outlet": "ESPN", "role": "beat"},
+      {"handle": "joerexrode", "name": "Joe Rexrode", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "PaulKuharskyNFL", "name": "Paul Kuharsky", "outlet": "PaulKuharsky.com", "role": "beat"},
+      {"handle": "nicksuss", "name": "Nick Suss", "outlet": "The Tennessean", "role": "beat"},
+      {"handle": "BuckReising", "name": "Buck Reising", "outlet": "A to Z Sports", "role": "beat"},
+      {"handle": "jwyattsports", "name": "Jim Wyatt", "outlet": "tennesseetitans.com", "role": "team"}
+    ],
+    "WAS": [
+      {"handle": "john_keim", "name": "John Keim", "outlet": "ESPN", "role": "beat"},
+      {"handle": "BenStandig", "name": "Ben Standig", "outlet": "The Athletic", "role": "beat"},
+      {"handle": "NickiJhabvala", "name": "Nicki Jhabvala", "outlet": "The Washington Post", "role": "beat"},
+      {"handle": "Sam4TR", "name": "Sam Fortier", "outlet": "The Washington Post", "role": "beat"},
+      {"handle": "JPFinlayNBCS", "name": "JP Finlay", "outlet": "NBC Sports Washington", "role": "beat"},
+      {"handle": "ZachSelbyWC", "name": "Zach Selby", "outlet": "commanders.com", "role": "team"}
+    ]
+  }
+}

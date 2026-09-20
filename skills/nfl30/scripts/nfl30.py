@@ -5,6 +5,9 @@
 
 from __future__ import annotations
 
+# One NFL game week: last game's pressers through this week's injury report.
+DEFAULT_LOOKBACK_DAYS = 7
+
 import argparse
 import atexit
 import datetime
@@ -799,6 +802,28 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--x-handle", help="X handle for targeted supplemental search")
     parser.add_argument("--x-related", help="Comma-separated related X handles (searched with lower weight)")
     parser.add_argument(
+        "--team",
+        dest="team",
+        help=(
+            "NFL team for the topic (abbreviation like KC, or a nickname like Chiefs). "
+            "Resolved by the model in SKILL.md Step 0.5; when omitted the engine resolves "
+            "it from the topic (abbreviation, nickname, city, player, or 'X vs Y'). "
+            "Turns on the beat-writer, team-official, and NFL-market lanes."
+        ),
+    )
+    parser.add_argument(
+        "--player",
+        dest="player",
+        help="NFL player or coach the topic is about (full name). Resolves their team when known.",
+    )
+    parser.add_argument(
+        "--beat-writers",
+        dest="beat_writers",
+        choices=["on", "off"],
+        default=None,
+        help="Search the curated beat-writer roster on X for the resolved team (default: on; NFL30_BEAT_WRITERS=off in .env also disables).",
+    )
+    parser.add_argument(
         "--x-posts",
         dest="x_posts",
         metavar="PATH",
@@ -830,7 +855,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="lookback_days",
         type=int,
         default=None,
-        help="Number of days to look back for research (default: 30, watchlist uses 90)",
+        help=f"Number of days to look back for research (default: {DEFAULT_LOOKBACK_DAYS} — one NFL game week; watchlist uses 90)",
     )
     parser.add_argument(
         "--as-of",
@@ -2044,7 +2069,7 @@ def _run_discover(args: argparse.Namespace, config: dict[str, object]) -> int:
             requested_sources=requested_sources,
             mock=args.mock,
             subreddits=subreddits,
-            lookback_days=args.lookback_days or 30,
+            lookback_days=args.lookback_days or DEFAULT_LOOKBACK_DAYS,
             as_of_date=args.as_of_date,
             enrich=not args.discover_shallow,
             enrich_requested_sources=enrich_requested_sources,
@@ -2090,7 +2115,7 @@ def _run_discover_nominate(args: argparse.Namespace, config: dict[str, object]) 
     if boundary is None:
         return 2
     requested_sources, enrich_requested_sources = boundary
-    lookback_days = args.lookback_days or 30
+    lookback_days = args.lookback_days or DEFAULT_LOOKBACK_DAYS
     try:
         result = pipeline.run_discover_nominate(
             domain=domain,
@@ -2755,7 +2780,7 @@ def _read_x_envelope(
 ) -> x_envelope.Envelope:
     """Validate a host-fetched X envelope against this run's window and topic."""
     from_date, to_date = dates.get_date_range(
-        args.lookback_days or 30, as_of_date=args.as_of_date
+        args.lookback_days or DEFAULT_LOOKBACK_DAYS, as_of_date=args.as_of_date
     )
     return x_envelope.read(
         path,
@@ -3454,6 +3479,12 @@ def _main(
                 for value in args.dedicated_subreddits.split(",")
                 if value.strip()
             ]
+        if getattr(args, "team", None):
+            config["_team"] = args.team.strip()
+        if getattr(args, "player", None):
+            config["_player"] = args.player.strip()
+        if getattr(args, "beat_writers", None):
+            config["_beat_writers"] = args.beat_writers
         if args.polymarket_keywords:
             config["_polymarket_keywords"] = [
                 value.strip().lower()
@@ -3849,6 +3880,12 @@ def _main(
 
         # Polymarket disambiguation: if user passed --polymarket-keywords,
         # store on config so the polymarket adapter can filter matches.
+        if getattr(args, "team", None):
+            config["_team"] = args.team.strip()
+        if getattr(args, "player", None):
+            config["_player"] = args.player.strip()
+        if getattr(args, "beat_writers", None):
+            config["_beat_writers"] = args.beat_writers
         if args.polymarket_keywords:
             keywords = [
                 k.strip().lower()
