@@ -497,6 +497,7 @@ A resolved entity turns on the NFL lanes:
 | --- | --- | --- | --- |
 | Beat writers | X (existing backend chain or `--x-posts`) | team, player, game, or league resolved | `--beat-writers off` or `NFL30_BEAT_WRITERS=off` |
 | Subreddit seeding | Reddit | team or game resolved and no `--subreddits` passed | pass `--subreddits` / `--dedicated-subreddits` yourself |
+| Team official | Team-site RSS + official YouTube channel (yt-dlp) | team or game resolved | `EXCLUDE_SOURCES=team_official` |
 
 **Beat writers.** The engine ships a roster at `skills/nfl30/scripts/lib/data/nfl_beat_writers.json`: per-team beat reporters plus national insiders, seeded from public knowledge and not verified handle by handle. Each run searches the first N team writers and M national insiders as full-weight `from:handle` lanes (quick 2+2, default 6+4, deep 10+6; a game run splits the team budget across both teams; a league run uses insiders only). Their posts are exempt from the topic-relevance floor, like any explicit `--x-handle`, and render as `@handle (Outlet)`. Override the roster at `~/.config/nfl30/beat_writers.json` (same shape): a team list there **replaces** the built-in list for that team, `national` entries are **added**, and a top-level `"remove": ["handle", ...]` drops handles everywhere. Order matters: the first entries per team are the ones searched at lower depths.
 
@@ -507,6 +508,8 @@ A resolved entity turns on the NFL lanes:
   "remove": ["StaleHandle"]
 }
 ```
+
+**Team official.** For each resolved team the `team_official` source reads the team site's `/rss/news` feed (keyless; all 32 feeds verified 2026-09-20) windowed to the run, and falls back to a `site:<domain>` web search if a feed disappears. It then lists the team's official YouTube channel with `yt-dlp --flat-playlist`, keeps uploads whose titles look like press conferences (`press conference`, `postgame`, `media availability`, ...), and fetches their captions so the report can quote the coach or player. Team sites post pressers as video pages rather than transcripts, so **`yt-dlp` on PATH is required for pressers** (news works without it; `doctor` reports which half is active). Depth caps: quick 8 news / 2 pressers, default 20 / 4, deep 40 / 8; a game run splits the budget across both teams. Items render under "Team official" and carry `official: true` in their metadata so the synthesis can separate club statements from reporting. Team RSS URLs and YouTube handles live in `lib/data/nfl_teams.json`.
 
 ```bash
 python3 skills/nfl30/scripts/nfl30.py "Chiefs injury report" --team KC

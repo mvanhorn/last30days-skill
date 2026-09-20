@@ -102,7 +102,7 @@ AUDIT_GROUPS = (
 # Sources that need neither credentials nor a CLI: they always serve, so with
 # no run evidence and no probe they are WORKING, not UNVERIFIED.
 KEYLESS_ALWAYS_ON = frozenset(
-    {"reddit", "hackernews", "polymarket", "github", "library"}
+    {"reddit", "hackernews", "polymarket", "github", "library", "team_official"}
 )
 
 # Fresh-run outcome states -> audit bucket for a tier-ok source. Anything not
@@ -157,6 +157,7 @@ SOURCE_ORDER = (
     "reddit",
     "x",
     "youtube",
+    "team_official",
     "web",
     "hackernews",
     "polymarket",
@@ -695,6 +696,18 @@ def _cli_gated_record(config, cli_name: str, purpose: str):
     return _record(status=probe.status, fix=fix, detail=probe.detail, requires=requires)
 
 
+def _team_official_record(config):
+    """nfl30 official team news (keyless RSS) + pressers (yt-dlp transcripts)."""
+    requires = "none for news (team RSS / site: search); yt-dlp on PATH for pressers"
+    if shutil.which("yt-dlp"):
+        return _record(status=health.OK, detail="news + pressers; active when a team resolves", requires=requires)
+    return _record(
+        status=health.OK,
+        detail="news only: yt-dlp missing, so press conferences are skipped",
+        requires=requires,
+    )
+
+
 def _techmeme_record(config):
     return _cli_gated_record(config, "techmeme-pp-cli", "techmeme")
 
@@ -955,6 +968,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "reddit": _reddit_record,
     "x": _x_record,
     "youtube": _youtube_record,
+    "team_official": _team_official_record,
     "web": _web_record,
     "hackernews": _hackernews_record,
     "polymarket": _polymarket_record,
@@ -1812,6 +1826,7 @@ _HTTP_PROBE_URLS = {
     "reddit": "https://www.reddit.com/search.rss?q=test&sort=relevance&t=month",
     "hackernews": "https://hn.algolia.com/api/v1/search?query=test&hitsPerPage=1",
     "polymarket": "https://gamma-api.polymarket.com/events?limit=1",
+    "team_official": "https://www.packers.com/rss/news",
     "github": "https://api.github.com/rate_limit",
 }
 

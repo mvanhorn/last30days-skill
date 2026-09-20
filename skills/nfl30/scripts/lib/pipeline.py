@@ -79,7 +79,7 @@ from . import (
     xurl_x,
     youtube_yt,
 )
-from . import nfl
+from . import nfl, team_official
 from .cluster import cluster_candidates
 from . import fusion
 from . import render
@@ -97,6 +97,9 @@ DEPTH_SETTINGS = {
 }
 
 SEARCH_ALIAS = {
+    "official": "team_official",
+    "team": "team_official",
+    "pressers": "team_official",
     "hn": "hackernews",
     "bsky": "bluesky",
     "truth": "truthsocial",
@@ -118,6 +121,8 @@ SEARCH_ALIAS = {
 MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
     "telegram": 1, "meta_ads": 1,
+    # nfl30: keyed off the resolved team, not the subquery text.
+    "team_official": 1,
 }
 
 # Sources whose thin result is their normal success state, so the "<3 items"
@@ -129,7 +134,7 @@ MAX_SOURCE_FETCHES: dict[str, int] = {
 #   meta_ads resolves one advertiser page per run, so a brand that genuinely
 #   ran two creatives this month is complete; a retry would re-resolve the
 #   page and re-spend the discovery credit.
-THIN_RETRY_EXEMPT: frozenset[str] = frozenset({"trustpilot", "perplexity", "meta_ads"})
+THIN_RETRY_EXEMPT: frozenset[str] = frozenset({"trustpilot", "perplexity", "meta_ads", "team_official"})
 
 # Stream-artifact keys promoted to named top-level report artifacts. A stream
 # artifact only ever reaches the report as an anonymous entry in the grounding
@@ -234,6 +239,7 @@ def _has_perplexity_provider(config: dict[str, Any]) -> bool:
 
 MOCK_AVAILABLE_SOURCES = [
     "reddit",
+    "team_official",
     "x",
     "youtube",
     "tiktok",
@@ -327,6 +333,10 @@ def available_sources(
     if which("yt-dlp") or env.is_youtube_sc_available(config):
         available.append("youtube")
     available.extend(["hackernews", "polymarket"])
+    # nfl30: official team news + pressers are keyed off the resolved team
+    # (set in run(), or by --team on --diagnose); no team, no lane.
+    if _nfl_team(config):
+        available.append("team_official")
     # StockTwits is gated to ticker/crypto topics only (flag set in run()).
     if config.get("_financial_topic"):
         available.append("stocktwits")
@@ -2265,6 +2275,7 @@ def run(
         # Drill plans re-fetch only the sources that contributed to the matched
         # cluster; the company-topic jobs injection must not widen that set.
         _ensure_jobs_in_plan(plan, available, explicit=hiring_signals_mode, topic=topic)
+        _ensure_nfl_lanes_in_plan(plan, available, config)
     if "corpus" in available and plan.subqueries:
         # Corpus is deterministic and user-registered, so it always gets one
         # bounded stream even when a quick/LLM plan omits it. Reuse the primary
@@ -3441,6 +3452,43 @@ def _ensure_jobs_in_plan(
     for subquery in plan.subqueries:
         if "jobs" not in subquery.sources:
             subquery.sources.append("jobs")
+
+
+NFL_LANES: tuple[str, ...] = ("team_official",)
+
+
+def _nfl_team(config: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The resolved NFL team dict on this run, or None."""
+    if not isinstance(config, dict):
+        return None
+    ent = config.get("_nfl")
+    if isinstance(ent, dict) and isinstance(ent.get("team"), dict):
+        return ent["team"]
+    return None
+
+
+def _ensure_nfl_lanes_in_plan(
+    plan: schema.QueryPlan,
+    available: list[str],
+    config: dict[str, Any],
+) -> None:
+    """Force the team-keyed lanes onto the primary subquery.
+
+    Official news/pressers cost one request each and are keyed off the
+    resolved team, not the subquery text, so they never compete for a
+    quick-mode source slot or depend on the planner's intent guess.
+    (Mirrors marketvalue180's _ensure_stock_lanes_in_plan.)
+    """
+    if not _nfl_team(config) or not plan.subqueries:
+        return
+    primary = plan.subqueries[0]
+    for lane in NFL_LANES:
+        if lane not in available:
+            continue
+        if lane not in plan.source_weights:
+            plan.source_weights[lane] = 1.0
+        if lane not in primary.sources:
+            primary.sources.append(lane)
 
 
 def _ensure_perplexity_in_plan(
@@ -4624,6 +4672,7 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
     }
     module_backed = source in {
         "reddit",
+        "team_official",
         "x",
         "youtube",
         "stocktwits",
@@ -5308,6 +5357,19 @@ def _retrieve_stream_impl(
             arxiv.parse_arxiv_response(result, query=relevance_topic),
             _result_outcome_artifact(source, result),
         )
+    if source == "team_official":
+        ent = config.get("_nfl") if isinstance(config, dict) else None
+        if not _nfl_team(config):
+            return [], _outcome_artifact(schema.SKIPPED_UNCONFIGURED, "no team resolved", attempted=False)
+        relevance_topic = raw_topic or topic or subquery.search_query
+        result = team_official.search_team_official(
+            ent, relevance_topic, from_date, to_date, depth=depth,
+            config=config, web_backend=web_backend,
+        )
+        return (
+            team_official.parse_team_official_response(result, query=relevance_topic),
+            _result_outcome_artifact(source, result),
+        )
     if source == "techmeme":
         result = techmeme.search_techmeme(subquery.search_query, from_date, to_date, depth=depth)
         relevance_topic = raw_topic or topic or subquery.search_query
@@ -5500,6 +5562,39 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
                 "relevance": 0.82,
                 "why_relevant": "Mock Reddit result",
             }
+        ],
+        "team_official": [
+            {
+                "id": f"TO-{slug}-1",
+                "kind": "news",
+                "title": f"{subquery.search_query}: official injury report",
+                "url": f"https://www.example-team.com/news/{slug}-injury-report",
+                "date": dates.get_date_range(2)[0],
+                "text": f"Official update on {subquery.search_query}.",
+                "team": "KC",
+                "team_name": "Mock Team",
+                "author": "Mock Team (official)",
+                "engagement": {},
+                "relevance": 0.8,
+                "why_relevant": "Official team site news",
+            },
+            {
+                "id": f"TO-YT-{slug}",
+                "kind": "presser",
+                "title": f"Head Coach Postgame Press Conference | {subquery.search_query}",
+                "url": f"https://www.youtube.com/watch?v={slug}",
+                "date": dates.get_date_range(1)[0],
+                "text": f"We talked about {subquery.search_query} in the locker room.",
+                "transcript_snippet": f"We talked about {subquery.search_query} in the locker room.",
+                "transcript_highlights": [f"We talked about {subquery.search_query}."],
+                "speaker": "Head Coach",
+                "team": "KC",
+                "team_name": "Mock Team",
+                "author": "Head Coach",
+                "engagement": {"views": 12000},
+                "relevance": 0.85,
+                "why_relevant": "Official team press conference",
+            },
         ],
         "x": [
             {

@@ -67,6 +67,7 @@ def normalize_source_items(
         "digg": _normalize_digg,
         "arxiv": _normalize_arxiv,
         "techmeme": _normalize_techmeme,
+        "team_official": _normalize_team_official,
         "trustpilot": _normalize_trustpilot,
         "amazon": _normalize_amazon,
         "meta_ads": _normalize_meta_ads,
@@ -681,6 +682,47 @@ def _normalize_arxiv(
             "authors": authors,
             "summary": summary,
         },
+    )
+
+
+def _normalize_team_official(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for nfl30 official team news and press-conference video."""
+    kind = str(item.get("kind") or "news")
+    title = str(item.get("title") or "").strip()
+    text = str(item.get("text") or "").strip()
+    team_name = str(item.get("team_name") or item.get("team") or "Team").strip()
+    metadata: dict[str, Any] = {
+        "kind": kind,
+        "team": item.get("team"),
+        "official": True,
+    }
+    if kind == "presser":
+        metadata["speaker"] = str(item.get("speaker") or "")
+        if item.get("transcript_snippet"):
+            metadata["transcript_snippet"] = str(item["transcript_snippet"])
+        if item.get("transcript_highlights"):
+            metadata["transcript_highlights"] = list(item["transcript_highlights"])
+    return _source_item(
+        item_id=str(item.get("id") or f"TO{index + 1}"),
+        source=source,
+        title=title or f"{team_name} official update {index + 1}",
+        body="\n".join(part for part in [title, text] if part),
+        url=str(item.get("url") or ""),
+        author=str(item.get("author") or f"{team_name} (official)"),
+        container=f"{team_name} (official)",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="med"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.6),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=(text or title)[:400],
+        metadata=metadata,
     )
 
 

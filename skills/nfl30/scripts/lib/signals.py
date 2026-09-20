@@ -16,6 +16,8 @@ SOURCE_QUALITY = {
     "digg": 0.85,
     "arxiv": 0.9,
     "techmeme": 0.85,
+    # nfl30: first-party team statements and pressers are primary sources.
+    "team_official": 0.85,
     "trustpilot": 0.78,
     # Verified-purchase reviews on a live aggregate rating: high-quality
     # buyer evidence, a notch above Trustpilot's open review model.
@@ -184,6 +186,7 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "bluesky":      [("likes", 0.40), ("reposts", 0.30), ("replies", 0.20), ("quotes", 0.10)],
     "truthsocial":  [("likes", 0.45), ("reposts", 0.30), ("replies", 0.25)],
     "polymarket":   [("volume", 0.60), ("liquidity", 0.40)],
+    "team_official": [("views", 0.70), ("likes", 0.20), ("comments", 0.10)],
     "digg":         [("postCount", 0.40), ("uniqueAuthors", 0.30), ("rank_score", 0.30)],
     "trustpilot":   [("reviews", 1.0)],
     "amazon":       [("ratings", 1.0)],

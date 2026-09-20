@@ -149,6 +149,7 @@ SOURCE_CAPABILITIES = {
     "digg": {"discussion", "social", "link"},
     "arxiv": {"reference", "analysis", "link"},
     "techmeme": {"discussion", "link", "reference"},
+    "team_official": {"reference", "link", "video"},
     "trustpilot": {"reference", "company_signal", "social"},
     "amazon": {"reference", "company_signal", "product_signal"},
     "meta_ads": {"reference", "company_signal", "product_signal"},

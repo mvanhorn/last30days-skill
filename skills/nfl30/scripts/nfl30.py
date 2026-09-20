@@ -3657,6 +3657,12 @@ def _main(
         except x_envelope.EnvelopeContractError as exc:
             sys.stderr.write(f"[nfl30] {exc.message}\n")
             return 2
+    # --diagnose/--preflight --team X: preview the NFL lanes the research
+    # run would activate (pipeline.run resolves the entity itself).
+    if getattr(args, "team", None):
+        from lib import nfl as _nfl
+        _ent = _nfl.resolve("", explicit_team=args.team.strip())
+        config["_nfl"] = _ent.as_dict() if _ent else None
     diag = pipeline.diagnose(
         config, requested_sources, safe=args.diagnose,
         x_envelope=x_posts_envelope is not None,

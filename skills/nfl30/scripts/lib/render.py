@@ -228,6 +228,7 @@ SOURCE_LABELS = {
     "digg": "Digg",
     "arxiv": "arXiv",
     "techmeme": "Techmeme",
+    "team_official": "Team official",
     "trustpilot": "Trustpilot",
     "amazon": "Amazon",
     "meta_ads": "Meta Ads",
@@ -1872,6 +1873,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         "instagram",
         "threads",
         "pinterest",
+        "team_official",
         "hackernews",
         "bluesky",
         "truthsocial",
@@ -3412,6 +3414,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "truthsocial": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "linkedin": [("likes", "likes"), ("comments", "cmt")],
     "polymarket": [],
+    "team_official": [("views", "views")],
     "github": [
         ("stars", "stars"),
         ("merged_prs", "merged"),

@@ -1,0 +1,1 @@
+New `team_official` source: official team-site news (RSS, with a `site:` search fallback) and press-conference / postgame video from each team's official YouTube channel, with captions fetched so the report can quote coaches and players. Active whenever a team or game resolves; needs `yt-dlp` for the press-conference half. `--search official` selects it.
