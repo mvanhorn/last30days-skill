@@ -6,7 +6,7 @@ import sys
 
 import pytest
 
-import last30days as cli
+import nfl30 as cli
 from lib import env, html_render, registers, render, schema
 
 
@@ -209,8 +209,8 @@ def test_default_register_is_byte_identical_when_omitted(monkeypatch):
         # Hash includes #886's linked evidence URLs, #890's Hacker News
         # comment-rendering changes, the quiet footer (no outcome text, no
         # ## Source Errors in compact), and the comments pool reading every
-        # floor-clearing cluster.
-        "81fdfc85643d124f2c06ff0bac8956c30280c652436bc4a58dbfc37718be71e1"
+        # floor-clearing cluster. Re-hashed for the nfl30 rename (H1 text).
+        "9f1c9ed767952b080c9a3376b49a07221c601e5e54392040afab5a09d64434f8"
     )
 
 
@@ -239,7 +239,7 @@ def test_cli_and_env_register_resolution():
     ).name == "default"
 
 
-def test_last30days_register_round_trips_from_process_env(monkeypatch, tmp_path):
+def test_nfl30_register_round_trips_from_process_env(monkeypatch, tmp_path):
     monkeypatch.setenv("LAST30DAYS_CONFIG_DIR", str(tmp_path))
     monkeypatch.setenv("LAST30DAYS_REGISTER", "dev")
     monkeypatch.setattr(env, "CONFIG_DIR", tmp_path)
@@ -325,7 +325,7 @@ def test_unknown_configured_register_fails_before_retrieval(monkeypatch, capsys)
         "diagnose",
         lambda *_args, **_kwargs: pytest.fail("retrieval preflight should not run"),
     )
-    monkeypatch.setattr(sys, "argv", ["last30days.py", "test topic"])
+    monkeypatch.setattr(sys, "argv", ["nfl30.py", "test topic"])
 
     assert cli.main() == 2
     assert "unknown audience register 'board'" in capsys.readouterr().err

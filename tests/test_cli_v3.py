@@ -14,7 +14,7 @@ from datetime import datetime
 from pathlib import Path
 from unittest import mock
 
-import last30days as cli
+import nfl30 as cli
 from lib import schema
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -55,7 +55,7 @@ class CliV3Tests(unittest.TestCase):
 
     def test_mock_json_cli(self):
         result = subprocess.run(
-            [sys.executable, "skills/last30days/scripts/last30days.py", "test topic", "--mock", "--emit=json"],
+            [sys.executable, "skills/nfl30/scripts/nfl30.py", "test topic", "--mock", "--emit=json"],
             cwd=REPO_ROOT,
             capture_output=True,
             text=True,
@@ -76,7 +76,7 @@ class CliV3Tests(unittest.TestCase):
         result = subprocess.run(
             [
                 sys.executable,
-                "skills/last30days/scripts/last30days.py",
+                "skills/nfl30/scripts/nfl30.py",
                 "test topic",
                 "--mock",
                 "--emit=json",
@@ -96,7 +96,7 @@ class CliV3Tests(unittest.TestCase):
         result = subprocess.run(
             [
                 sys.executable,
-                "skills/last30days/scripts/last30days.py",
+                "skills/nfl30/scripts/nfl30.py",
                 "test topic",
                 "--mock",
                 "--emit=json",
@@ -240,8 +240,8 @@ class CliV3Tests(unittest.TestCase):
 
     def test_deep_research_rejects_modes_without_a_positional_topic(self):
         for argv in (
-            ["last30days.py", "--discover", "agents", "--deep-research"],
-            ["last30days.py", "--drill", "cluster-1", "--deep-research"],
+            ["nfl30.py", "--discover", "agents", "--deep-research"],
+            ["nfl30.py", "--drill", "cluster-1", "--deep-research"],
         ):
             with self.subTest(argv=argv), mock.patch.object(
                 cli.env,
@@ -296,7 +296,7 @@ class CliV3Tests(unittest.TestCase):
             sys,
             "argv",
             [
-                "last30days.py",
+                "nfl30.py",
                 "Alpha",
                 "vs",
                 "Beta",
@@ -364,7 +364,7 @@ class CliV3Tests(unittest.TestCase):
             sys,
             "argv",
             [
-                "last30days.py",
+                "nfl30.py",
                 "why",
                 "AI",
                 "safety",
@@ -426,7 +426,7 @@ class CliV3Tests(unittest.TestCase):
     def test_research_unknown_flag_fails_before_config_load(self):
         with mock.patch.object(
             cli.env, "get_config", side_effect=AssertionError("config should not load")
-        ), mock.patch.object(sys, "argv", ["last30days.py", "topic", "--save"]):
+        ), mock.patch.object(sys, "argv", ["nfl30.py", "topic", "--save"]):
             stderr = io.StringIO()
             with redirect_stderr(stderr), self.assertRaises(SystemExit) as exc:
                 cli.main()
@@ -436,7 +436,7 @@ class CliV3Tests(unittest.TestCase):
     def test_agent_is_skill_argument_not_python_cli_flag(self):
         with mock.patch.object(
             cli.env, "get_config", side_effect=AssertionError("config should not load")
-        ), mock.patch.object(sys, "argv", ["last30days.py", "topic", "--agent"]):
+        ), mock.patch.object(sys, "argv", ["nfl30.py", "topic", "--agent"]):
             stderr = io.StringIO()
             with redirect_stderr(stderr), self.assertRaises(SystemExit) as exc:
                 cli.main()
@@ -446,7 +446,7 @@ class CliV3Tests(unittest.TestCase):
     def test_agent_error_includes_other_unknown_flags(self):
         with mock.patch.object(
             cli.env, "get_config", side_effect=AssertionError("config should not load")
-        ), mock.patch.object(sys, "argv", ["last30days.py", "topic", "--agent", "--save"]):
+        ), mock.patch.object(sys, "argv", ["nfl30.py", "topic", "--agent", "--save"]):
             stderr = io.StringIO()
             with redirect_stderr(stderr), self.assertRaises(SystemExit) as exc:
                 cli.main()
@@ -458,7 +458,7 @@ class CliV3Tests(unittest.TestCase):
     def test_setup_passthrough_flags_remain_scoped_to_setup(self):
         with mock.patch.object(cli.env, "get_config", return_value={}), \
              mock.patch("lib.setup_wizard.run_github_auth", return_value={"status": "cancelled"}), \
-             mock.patch.object(sys, "argv", ["last30days.py", "setup", "--github"]):
+             mock.patch.object(sys, "argv", ["nfl30.py", "setup", "--github"]):
             stdout = io.StringIO()
             stderr = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -468,7 +468,7 @@ class CliV3Tests(unittest.TestCase):
     def test_setup_rejects_unknown_passthrough_flag_before_config_load(self):
         with mock.patch.object(
             cli.env, "get_config", side_effect=AssertionError("config should not load")
-        ), mock.patch.object(sys, "argv", ["last30days.py", "setup", "--bad"]):
+        ), mock.patch.object(sys, "argv", ["nfl30.py", "setup", "--bad"]):
             stderr = io.StringIO()
             with redirect_stderr(stderr), self.assertRaises(SystemExit) as exc:
                 cli.main()
@@ -482,7 +482,7 @@ class CliV3Tests(unittest.TestCase):
                 cli.ensure_supported_python((3, 9, 6))
         self.assertEqual(1, exc.exception.code)
         message = stderr.getvalue()
-        self.assertIn("last30days v3 requires Python 3.12+", message)
+        self.assertIn("nfl30 v3 requires Python 3.12+", message)
         self.assertIn("Detected Python 3.9.6", message)
         self.assertIn("python3.12", message)
 
@@ -540,14 +540,14 @@ class CliV3Tests(unittest.TestCase):
     def test_slugify_and_emit_output_cover_supported_modes(self):
         report = self.make_report()
         self.assertEqual("openclaw-vs-nanoclaw", cli.slugify(report.topic))
-        self.assertEqual("last30days CLI.", cli.__doc__)
+        self.assertEqual("nfl30 CLI.", cli.__doc__)
 
         compact = cli.emit_output(report, "compact")
         json_output = cli.emit_output(report, "json")
         context = cli.emit_output(report, "context")
         brief = cli.emit_output(report, "brief")
 
-        self.assertIn("# last30days v", compact)
+        self.assertIn("# nfl30 v", compact)
         self.assertIn('"query": "OpenClaw vs NanoClaw"', json_output)
         self.assertIsInstance(context, str)
         self.assertIn("# Production Brief:", brief)
@@ -572,7 +572,7 @@ class CliV3Tests(unittest.TestCase):
             result = subprocess.run(
                 [
                     sys.executable,
-                    "skills/last30days/scripts/last30days.py",
+                    "skills/nfl30/scripts/nfl30.py",
                     "compact save probe",
                     "--mock",
                     "--emit=compact",
@@ -705,7 +705,7 @@ class CliV3Tests(unittest.TestCase):
 
     def test_compute_save_path_display_uses_posix_slashes_under_home(self):
         # Regression: f"~/{relative}" stringified pathlib.Path with the
-        # OS-native separator, producing "~/Documents\\Last30Days\\..." on
+        # OS-native separator, producing "~/Documents\\NFL30\\..." on
         # Windows that no shell or File Explorer could open. The fix is
         # f"~/{relative.as_posix()}" which forces forward slashes regardless
         # of host OS. On POSIX hosts this asserts the contract for
@@ -713,7 +713,7 @@ class CliV3Tests(unittest.TestCase):
         real_home = Path.home()
         tmp_under_home = Path(tempfile.mkdtemp(prefix="l30d_save_path_", dir=str(real_home)))
         try:
-            save_dir = tmp_under_home / "Documents" / "Last30Days"
+            save_dir = tmp_under_home / "Documents" / "NFL30"
             save_dir.mkdir(parents=True, exist_ok=True)
             display = cli.compute_save_path_display(
                 str(save_dir), "british airways middle east", "v3", "compact"
@@ -731,11 +731,11 @@ class CliV3Tests(unittest.TestCase):
         real_home = Path.home()
         tmp_under_home = Path(tempfile.mkdtemp(prefix="l30d_output_path_", dir=str(real_home)))
         try:
-            output_path = tmp_under_home / "Documents" / "Last30Days" / "run.json"
+            output_path = tmp_under_home / "Documents" / "NFL30" / "run.json"
             display = cli.compute_output_path_display(str(output_path))
             self.assertTrue(display.startswith("~/"), f"Expected '~/' prefix, got: {display}")
             self.assertNotIn("\\", display, f"Backslash leaked into display: {display}")
-            self.assertTrue(display.endswith("Documents/Last30Days/run.json"), display)
+            self.assertTrue(display.endswith("Documents/NFL30/run.json"), display)
         finally:
             shutil.rmtree(tmp_under_home, ignore_errors=True)
 
@@ -796,7 +796,7 @@ class CliV3Tests(unittest.TestCase):
              mock.patch.object(cli.ui, "show_diagnostic_banner") as banner, \
              mock.patch.object(cli.ui, "ProgressDisplay", return_value=fake_progress) as progress_cls, \
              mock.patch.object(cli, "emit_output", return_value="# rendered"), \
-             mock.patch.object(sys, "argv", ["last30days.py", "test", "topic"]):
+             mock.patch.object(sys, "argv", ["nfl30.py", "test", "topic"]):
             stdout = io.StringIO()
             stderr = io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -831,7 +831,7 @@ class CliV3Tests(unittest.TestCase):
                  mock.patch.object(cli.pipeline, "run", return_value=report), \
                  mock.patch.object(cli, "emit_output", return_value='{"rendered": true}') as emit, \
                  mock.patch.object(sys, "argv", [
-                     "last30days.py",
+                     "nfl30.py",
                      "test",
                      "topic",
                      "--emit=json",
@@ -846,7 +846,7 @@ class CliV3Tests(unittest.TestCase):
             emit.assert_called_once()
             self.assertEqual('{"rendered": true}\n', stdout.getvalue())
             self.assertEqual('{"rendered": true}', output_path.read_text(encoding="utf-8"))
-            self.assertIn(f"[last30days] Saved output to {output_path.resolve()}", stderr.getvalue())
+            self.assertIn(f"[nfl30] Saved output to {output_path.resolve()}", stderr.getvalue())
 
     def test_main_combines_output_and_save_dir_for_comparison_html(self):
         diag = {
@@ -875,7 +875,7 @@ class CliV3Tests(unittest.TestCase):
                  ) as emit_comparison, \
                  mock.patch.object(cli, "emit_output", return_value="<html>peer</html>"), \
                  mock.patch.object(sys, "argv", [
-                     "last30days.py",
+                     "nfl30.py",
                      "Alpha",
                      "vs",
                      "Beta",
@@ -908,11 +908,11 @@ class CliV3Tests(unittest.TestCase):
             )
             peer_saved = save_dir / "beta-raw-html.html"
             self.assertEqual("<html>peer</html>", peer_saved.read_text(encoding="utf-8"))
-            self.assertIn(f"[last30days] Saved output to {output_path.resolve()}", stderr.getvalue())
-            self.assertIn(f"[last30days] Saved output to {comparison_saved.resolve()}", stderr.getvalue())
-            self.assertIn(f"[last30days] Saved output to {peer_saved.resolve()}", stderr.getvalue())
+            self.assertIn(f"[nfl30] Saved output to {output_path.resolve()}", stderr.getvalue())
+            self.assertIn(f"[nfl30] Saved output to {comparison_saved.resolve()}", stderr.getvalue())
+            self.assertIn(f"[nfl30] Saved output to {peer_saved.resolve()}", stderr.getvalue())
             self.assertIn(
-                f"[last30days] Comparison artifact set: main={comparison_saved.resolve()}; "
+                f"[nfl30] Comparison artifact set: main={comparison_saved.resolve()}; "
                 f"peers={peer_saved.resolve()}",
                 stderr.getvalue(),
             )
@@ -933,7 +933,7 @@ class CliV3Tests(unittest.TestCase):
              mock.patch.object(cli.pipeline, "run", return_value=report) as run_mock, \
              mock.patch.object(cli, "emit_output", return_value="# rendered"), \
              mock.patch.object(sys, "argv", [
-                 "last30days.py",
+                 "nfl30.py",
                  "claude",
                  "code",
                  "vs",
@@ -980,7 +980,7 @@ class CliV3Tests(unittest.TestCase):
              mock.patch.object(cli.pipeline, "run", return_value=report) as run_mock, \
              mock.patch.object(cli, "emit_output", return_value="# rendered"), \
              mock.patch.object(sys, "argv", [
-                 "last30days.py",
+                 "nfl30.py",
                  "ThriftBooks",
                  "--trustpilot-domain",
                  "www.thriftbooks.com",
@@ -1021,7 +1021,7 @@ class CliV3Tests(unittest.TestCase):
              mock.patch.object(cli.pipeline, "run", return_value=report) as run_mock, \
              mock.patch.object(cli, "emit_output", return_value="# rendered"), \
              mock.patch.object(sys, "argv", [
-                 "last30days.py",
+                 "nfl30.py",
                  "Weber grills",
                  "--trustpilot-domain",
                  "weber.co.uk",
@@ -1055,7 +1055,7 @@ class CliV3Tests(unittest.TestCase):
              mock.patch.object(cli.pipeline, "run", return_value=report) as run_mock, \
              mock.patch.object(cli, "emit_output", return_value="# rendered"), \
              mock.patch.object(sys, "argv", [
-                 "last30days.py",
+                 "nfl30.py",
                  "Weber grills",
                  "--search",
                  "tiktok,instagram",

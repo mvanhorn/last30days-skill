@@ -21,7 +21,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 
-SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
+SKILL_MD = ROOT / "skills" / "nfl30" / "SKILL.md"
 PYPROJECT = ROOT / "pyproject.toml"
 UV_LOCK = ROOT / "uv.lock"
 
@@ -46,10 +46,10 @@ _SKILL_FRONTMATTER_VERSION_RE = re.compile(
     r'^(version:\s*")([^"]+)(")\s*$', re.MULTILINE
 )
 _SKILL_HEADER_RE = re.compile(
-    r"^(# last30days v)(\d+\.\d+\.\d+)(:)", re.MULTILINE
+    r"^(# nfl30 v)(\d+\.\d+\.\d+)(:)", re.MULTILINE
 )
 _UV_LOCK_PACKAGE_RE = re.compile(
-    r'(?ms)^(\[\[package\]\]\nname = "last30days-skill"\nversion = ")([^"]+)(")'
+    r'(?ms)^(\[\[package\]\]\nname = "nfl30-skill"\nversion = ")([^"]+)(")'
 )
 
 
@@ -130,7 +130,7 @@ def bump_uv_lock(version: str) -> None:
     text = UV_LOCK.read_text(encoding="utf-8")
     updated, count = _UV_LOCK_PACKAGE_RE.subn(rf"\g<1>{version}\g<3>", text, count=1)
     if count != 1:
-        raise SystemExit(f"uv.lock: expected one last30days-skill package stanza, found {count}")
+        raise SystemExit(f"uv.lock: expected one nfl30-skill package stanza, found {count}")
     UV_LOCK.write_text(updated, encoding="utf-8")
 
 

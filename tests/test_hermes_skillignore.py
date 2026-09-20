@@ -1,7 +1,7 @@
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_ROOT = ROOT / "skills" / "last30days"
+SKILL_ROOT = ROOT / "skills" / "nfl30"
 
 
 def _skillignore_entries() -> set[str]:
@@ -40,7 +40,7 @@ def test_hermes_skillignore_keeps_runtime_contract_scannable() -> None:
         "references",
         "references/",
         "references/save-html-brief.md",
-        "scripts/last30days.py",
+        "scripts/nfl30.py",
         "scripts/lib/",
     }
 

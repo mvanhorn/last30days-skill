@@ -137,7 +137,7 @@ HELP_TITLE = "I need help starting to learn about AI agents"
 
 def test_names_are_short_distilled_topics_not_raw_titles():
     """The nomination's name IS the enrichment search query and the
-    /last30days handoff - anecdote/question scaffolding must not leak into it."""
+    /nfl30 handoff - anecdote/question scaffolding must not leak into it."""
     items = [
         _item("story1", "hackernews", ANECDOTE_TITLE,
               engagement={"points": 400, "comments": 100}),

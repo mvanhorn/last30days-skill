@@ -1,14 +1,14 @@
 {
-  "name": "last30days-skill",
+  "name": "nfl30-skill",
   "interface": {
-    "displayName": "last30days"
+    "displayName": "nfl30"
   },
   "plugins": [
     {
-      "name": "last30days",
+      "name": "nfl30",
       "source": {
         "source": "url",
-        "url": "https://github.com/mvanhorn/last30days-skill.git"
+        "url": "https://github.com/cmdashc/last30days-nfl.git"
       },
       "policy": {
         "installation": "AVAILABLE",

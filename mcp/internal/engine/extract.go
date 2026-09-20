@@ -17,14 +17,14 @@ const SentinelFilename = ".version"
 
 // cacheSubdir namespaces our cache under the OS user cache directory so
 // multiple printing-press-style bundles can coexist.
-const cacheSubdir = "last30days-pp-mcp"
+const cacheSubdir = "nfl30-pp-mcp"
 
 // CacheEnvOverride lets users redirect the cache directory when the default
 // OS cache location is read-only (locked-down corp images, ephemeral CI
 // containers). Pointed at by extract errors via the documented escape hatch.
 const CacheEnvOverride = "LAST30DAYS_CACHE_DIR"
 
-// Ensure extracts src into baseDir/last30days-pp-mcp/<version> and returns
+// Ensure extracts src into baseDir/nfl30-pp-mcp/<version> and returns
 // the cache path. If the sentinel file already records the same version the
 // directory is reused without rewriting. version must be non-empty so the
 // cache layout always namespaces by version.

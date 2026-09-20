@@ -9,7 +9,7 @@ from unittest import mock
 
 import pytest
 
-import last30days as cli
+import nfl30 as cli
 from lib import env, http, pipeline, xiaohongshu_api
 
 

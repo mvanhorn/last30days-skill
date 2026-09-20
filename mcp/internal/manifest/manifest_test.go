@@ -68,8 +68,8 @@ func TestManifestRequiredFields(t *testing.T) {
 	if m.ManifestVersion != "0.3" {
 		t.Errorf("manifest_version = %q, want 0.3", m.ManifestVersion)
 	}
-	if m.Name != "last30days-pp-mcp" {
-		t.Errorf("name = %q, want last30days-pp-mcp", m.Name)
+	if m.Name != "nfl30-pp-mcp" {
+		t.Errorf("name = %q, want nfl30-pp-mcp", m.Name)
 	}
 	if m.Version == "" {
 		t.Error("version is empty")
@@ -77,8 +77,8 @@ func TestManifestRequiredFields(t *testing.T) {
 	if m.Server.Type != "binary" {
 		t.Errorf("server.type = %q, want binary", m.Server.Type)
 	}
-	if m.Server.EntryPoint != "bin/last30days-pp-mcp" {
-		t.Errorf("server.entry_point = %q, want bin/last30days-pp-mcp", m.Server.EntryPoint)
+	if m.Server.EntryPoint != "bin/nfl30-pp-mcp" {
+		t.Errorf("server.entry_point = %q, want bin/nfl30-pp-mcp", m.Server.EntryPoint)
 	}
 	if m.Compatibility.ClaudeDesktop == "" {
 		t.Error("compatibility.claude_desktop is empty")

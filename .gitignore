@@ -34,7 +34,7 @@ htmlcov/
 /dist/
 
 # Go MCP bundle build outputs - source of truth for vendored/ stays under
-# skills/last30days/scripts/; build/ holds cross-compiled binaries + .mcpb files.
+# skills/nfl30/scripts/; build/ holds cross-compiled binaries + .mcpb files.
 # vendored/ lives inside the engine package because //go:embed cannot reach
 # outside its own package directory; the .gitkeep anchor stays tracked so
 # the embed pattern always finds a match even before sync-engine runs.

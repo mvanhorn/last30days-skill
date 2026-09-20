@@ -1,7 +1,7 @@
 """Extras-host box-chrome X login helper (skills/.../scripts/box_chrome_login.py).
 
 Locks: a MacBook never gets a launch command and never spawns box-chrome (even
-with --exec); an extras host with box-chrome on PATH documents the last30days
+with --exec); an extras host with box-chrome on PATH documents the nfl30
 extras port 18800; and the SKILL.md recipe is present in the Auto flow and the
 repair section with the MacBook-skip and no-.env-cookie rules. No cookie values
 are ever produced (the helper reads none).
@@ -14,7 +14,7 @@ import box_chrome_login as bcl
 from lib import chrome_cdp
 
 REPO = Path(__file__).resolve().parent.parent
-SKILL = REPO / "skills" / "last30days" / "SKILL.md"
+SKILL = REPO / "skills" / "nfl30" / "SKILL.md"
 
 
 def test_extras_port_is_18800_and_matches_chrome_cdp():

@@ -28,11 +28,11 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _engine_path() -> Path:
-    return REPO_ROOT / "skills" / "last30days" / "scripts" / "last30days.py"
+    return REPO_ROOT / "skills" / "nfl30" / "scripts" / "nfl30.py"
 
 
 def _load_engine_module():
-    spec = importlib.util.spec_from_file_location("last30days_engine", _engine_path())
+    spec = importlib.util.spec_from_file_location("nfl30_engine", _engine_path())
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     try:

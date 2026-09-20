@@ -10,7 +10,7 @@ from unittest import mock
 from lib.bird_x import parse_bird_response
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-VENDORED_BIRD = REPO_ROOT / "skills" / "last30days" / "scripts" / "lib" / "vendor" / "bird-search" / "bird-search.mjs"
+VENDORED_BIRD = REPO_ROOT / "skills" / "nfl30" / "scripts" / "lib" / "vendor" / "bird-search" / "bird-search.mjs"
 
 
 class TestSubprocessEnv(unittest.TestCase):
@@ -96,7 +96,7 @@ class TestSubprocessEnv(unittest.TestCase):
 
         from lib import bird_x
 
-        vendor_dir = REPO_ROOT / "skills" / "last30days" / "scripts" / "lib" / "vendor" / "bird-search"
+        vendor_dir = REPO_ROOT / "skills" / "nfl30" / "scripts" / "lib" / "vendor" / "bird-search"
         reads = set()
         for path in list(vendor_dir.rglob("*.js")) + list(vendor_dir.rglob("*.mjs")):
             text = path.read_text(encoding="utf-8")
@@ -181,7 +181,7 @@ class TestVendoredBirdRuntime(unittest.TestCase):
         sweet_cookie_dir = (
             REPO_ROOT
             / "skills"
-            / "last30days"
+            / "nfl30"
             / "scripts"
             / "lib"
             / "vendor"
@@ -235,7 +235,7 @@ class TestVendoredBirdRuntime(unittest.TestCase):
                           extractCookiesFromSafari,
                           extractCookiesFromChrome,
                           extractCookiesFromFirefox,
-                        } from "./skills/last30days/scripts/lib/vendor/bird-search/lib/cookies.js";
+                        } from "./skills/nfl30/scripts/lib/vendor/bird-search/lib/cookies.js";
 
                         const payload = await Promise.all([
                           extractCookiesFromSafari(),

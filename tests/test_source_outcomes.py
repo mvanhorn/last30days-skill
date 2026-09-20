@@ -508,7 +508,7 @@ def test_report_source_status_round_trips_through_schema_serialization():
 
 # --- strict exit (LAST30DAYS_STRICT_EXIT, issue #384) ---
 
-import last30days as cli
+import nfl30 as cli
 
 
 def _outcome(source, state, **kwargs):

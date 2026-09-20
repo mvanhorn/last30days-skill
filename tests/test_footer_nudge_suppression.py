@@ -13,7 +13,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _engine() -> Path:
-    return REPO_ROOT / "skills" / "last30days" / "scripts" / "last30days.py"
+    return REPO_ROOT / "skills" / "nfl30" / "scripts" / "nfl30.py"
 
 
 class FooterNudgeSuppressionTests(unittest.TestCase):
@@ -29,13 +29,13 @@ class FooterNudgeSuppressionTests(unittest.TestCase):
         env = {
             **os.environ,
             "LAST30DAYS_SKIP_PREFLIGHT": "1",
-            # Skip ~/.config/last30days/.env so a contributor's saved
+            # Skip ~/.config/nfl30/.env so a contributor's saved
             # BRAVE/EXA/SERPER/PARALLEL key doesn't make grounding "available"
             # and suppress the promo we're checking for.
             "LAST30DAYS_CONFIG_DIR": "",
             # Keychain is a THIRD credential source, independent of the env
             # stripping below and of LAST30DAYS_CONFIG_DIR. On a contributor's
-            # Mac a stored `last30days-BRAVE_API_KEY` item sets
+            # Mac a stored `nfl30-BRAVE_API_KEY` item sets
             # native_web_backend, _missing_sources_for_promo returns None, and
             # this test fails for a reason that has nothing to do with promo
             # selection. Seal that source too.
@@ -53,10 +53,10 @@ class FooterNudgeSuppressionTests(unittest.TestCase):
                     "AUTH_TOKEN", "CT0", "LAST30DAYS_X_BACKEND"):
             env.pop(key, None)
         # Run from a tmpdir so _find_project_env() can't walk up into any
-        # .claude/last30days.env above the repo on the contributor's machine.
+        # .claude/nfl30.env above the repo on the contributor's machine.
         with tempfile.TemporaryDirectory() as tmp:
             # pass(1) is a FOURTH credential source (_load_pass): a stored
-            # last30days/BRAVE_API_KEY entry leaks in exactly like the
+            # nfl30/BRAVE_API_KEY entry leaks in exactly like the
             # Keychain item sealed above. pass honors PASSWORD_STORE_DIR, so
             # point it at an empty store inside the tmpdir — every lookup
             # misses without touching the contributor's real store.

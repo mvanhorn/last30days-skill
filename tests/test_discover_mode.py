@@ -11,7 +11,7 @@ from unittest import mock
 
 import pytest
 
-import last30days as cli
+import nfl30 as cli
 from lib import dates, discovery_handoff, pipeline, planner, reddit_listing, render, rerank, schema
 
 
@@ -228,7 +228,7 @@ def test_discovery_renderer_snapshot():
                 "reddit": {"score": 120, "num_comments": 30},
                 "hackernews": {"points": 80},
             },
-            command='/last30days "Agent memory protocols"',
+            command='/nfl30 "Agent memory protocols"',
         )],
     )
 
@@ -245,7 +245,7 @@ def test_discovery_renderer_snapshot():
         "**Momentum:** New this week · velocity 123.45\n\n"
         "Two independent listing items accelerated this week.\n\n"
         "**Evidence:** Reddit: score 120, num comments 30 · Hacker News: points 80\n\n"
-        "**Research next:** `/last30days \"Agent memory protocols\"`\n"
+        "**Research next:** `/nfl30 \"Agent memory protocols\"`\n"
     )
 
 
@@ -266,7 +266,7 @@ def test_keyless_discovery_degrades_without_digg():
     assert report.source_status["hackernews"].state == "ok"
     assert report.source_status["digg"].state == "skipped-unconfigured"
     assert report.source_status["x"].state == "skipped-unconfigured"
-    assert all(topic.command.startswith('/last30days "') for topic in report.topics)
+    assert all(topic.command.startswith('/nfl30 "') for topic in report.topics)
 
 
 def test_discovery_drops_zero_velocity_clusters():
@@ -442,7 +442,7 @@ def test_discovery_cli_json_contract_and_mutual_exclusion():
     result = subprocess.run(
         [
             sys.executable,
-            "skills/last30days/scripts/last30days.py",
+            "skills/nfl30/scripts/nfl30.py",
             "--discover",
             "AI agents",
             "--mock",
@@ -458,7 +458,7 @@ def test_discovery_cli_json_contract_and_mutual_exclusion():
     assert payload["schema_version"] == "1.1"
     assert payload["kind"] == "discovery"
     assert 5 <= len(payload["results"]) <= 10
-    assert payload["results"][0]["command"].startswith('/last30days "')
+    assert payload["results"][0]["command"].startswith('/nfl30 "')
     # 1.1 fields ship in every result, with defaults when nothing set them.
     for topic in payload["results"]:
         assert topic["podcast_angle"] is None
@@ -470,7 +470,7 @@ def test_discovery_cli_json_contract_and_mutual_exclusion():
     invalid = subprocess.run(
         [
             sys.executable,
-            "skills/last30days/scripts/last30days.py",
+            "skills/nfl30/scripts/nfl30.py",
             "topic",
             "--discover",
             "AI agents",
@@ -487,7 +487,7 @@ def test_discovery_cli_json_contract_and_mutual_exclusion():
     drill_conflict = subprocess.run(
         [
             sys.executable,
-            "skills/last30days/scripts/last30days.py",
+            "skills/nfl30/scripts/nfl30.py",
             "--discover",
             "AI agents",
             "--drill",
@@ -529,7 +529,7 @@ def test_discovery_export_round_trips_angles_and_queue_annotations():
         velocity_score=123.45,
         sources=["hackernews", "reddit"],
         engagement_by_source={"reddit": {"score": 120, "num_comments": 30}},
-        command='/last30days "Agent memory protocols"',
+        command='/nfl30 "Agent memory protocols"',
         podcast_angle="Why agent memory is the next context-window fight",
         x_article_angle="Agent memory protocols, explained through this week's launches",
         previously_surfaced_count=2,
@@ -558,7 +558,7 @@ def test_discovery_topic_constructs_with_only_pre_existing_fields():
         velocity_score=10.0,
         sources=["reddit"],
         engagement_by_source={"reddit": {"score": 120}},
-        command='/last30days "Agent memory protocols"',
+        command='/nfl30 "Agent memory protocols"',
     )
 
     assert topic.podcast_angle is None
@@ -583,7 +583,7 @@ def test_discovery_cli_mock_render_has_no_angle_or_pipeline_lines():
         return subprocess.run(
             [
                 sys.executable,
-                "skills/last30days/scripts/last30days.py",
+                "skills/nfl30/scripts/nfl30.py",
                 "--discover",
                 "AI agents",
                 "--mock",
@@ -608,7 +608,7 @@ def test_discovery_cli_bare_discover_is_global_trending():
     result = subprocess.run(
         [
             sys.executable,
-            "skills/last30days/scripts/last30days.py",
+            "skills/nfl30/scripts/nfl30.py",
             "--discover",
             "--mock",
             "--emit=json",
@@ -630,7 +630,7 @@ def test_discovery_cli_shallow_skips_enrichment():
     result = subprocess.run(
         [
             sys.executable,
-            "skills/last30days/scripts/last30days.py",
+            "skills/nfl30/scripts/nfl30.py",
             "--discover", "AI agents",
             "--discover-shallow",
             "--mock",
@@ -655,7 +655,7 @@ def test_discovery_cli_rejects_shallow_without_discover():
     result = subprocess.run(
         [
             sys.executable,
-            "skills/last30days/scripts/last30days.py",
+            "skills/nfl30/scripts/nfl30.py",
             "AI agents",
             "--discover-shallow",
             "--mock",
@@ -673,7 +673,7 @@ def test_discovery_cli_rejects_historical_as_of():
     result = subprocess.run(
         [
             sys.executable,
-            "skills/last30days/scripts/last30days.py",
+            "skills/nfl30/scripts/nfl30.py",
             "--discover",
             "AI agents",
             "--as-of",
@@ -695,7 +695,7 @@ def test_discovery_filters_incompatible_default_sources_but_rejects_explicit_onl
     default_result = subprocess.run(
         [
             sys.executable,
-            "skills/last30days/scripts/last30days.py",
+            "skills/nfl30/scripts/nfl30.py",
             "--discover",
             "AI agents",
             "--mock",
@@ -712,7 +712,7 @@ def test_discovery_filters_incompatible_default_sources_but_rejects_explicit_onl
     explicit_result = subprocess.run(
         [
             sys.executable,
-            "skills/last30days/scripts/last30days.py",
+            "skills/nfl30/scripts/nfl30.py",
             "--discover",
             "AI agents",
             "--search=youtube",
@@ -892,7 +892,7 @@ def _queue_topic(rank: int, name: str) -> schema.DiscoveryTopic:
         velocity_score=42.5,
         sources=["reddit"],
         engagement_by_source={"reddit": {"score": 120}},
-        command=f'/last30days "{name}"',
+        command=f'/nfl30 "{name}"',
     )
 
 
@@ -1048,7 +1048,7 @@ def test_discovery_queue_failure_never_crashes_a_finished_run(tmp_path, monkeypa
     captured = capsys.readouterr()
     assert "## 1. Gemma 4 chat templates" in captured.out
     assert "**Pipeline:**" not in captured.out
-    assert "[last30days] Warning:" in captured.err
+    assert "[nfl30] Warning:" in captured.err
     assert "database is locked" in captured.err
 
 
@@ -1082,7 +1082,7 @@ def test_discovery_mock_run_writes_no_research_db(tmp_path):
     result = subprocess.run(
         [
             sys.executable,
-            "skills/last30days/scripts/last30days.py",
+            "skills/nfl30/scripts/nfl30.py",
             "--discover",
             "AI agents",
             "--mock",
@@ -1114,7 +1114,7 @@ def test_queue_list_shows_uncovered_only_by_default(tmp_path, monkeypatch, capsy
 
     monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
     monkeypatch.setattr(
-        sys, "argv", ["last30days.py", "queue", "list", "--save-dir", str(save_dir)]
+        sys, "argv", ["nfl30.py", "queue", "list", "--save-dir", str(save_dir)]
     )
     assert cli.main() == 0
     out = capsys.readouterr().out
@@ -1135,7 +1135,7 @@ def test_queue_list_empty_db_reports_no_recorded_runs(tmp_path, monkeypatch, cap
 
     monkeypatch.setattr(cli.env, "get_config", lambda **_kwargs: {})
     monkeypatch.setattr(
-        sys, "argv", ["last30days.py", "queue", "list", "--save-dir", str(save_dir)]
+        sys, "argv", ["nfl30.py", "queue", "list", "--save-dir", str(save_dir)]
     )
     assert cli.main() == 0
     out = capsys.readouterr().out
@@ -1159,7 +1159,7 @@ def test_queue_cover_marks_topic_covered(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["last30days.py", "queue", "cover", "Gemma 4 chat templates", "--save-dir", str(save_dir)],
+        ["nfl30.py", "queue", "cover", "Gemma 4 chat templates", "--save-dir", str(save_dir)],
     )
     assert cli.main() == 0
 
@@ -1187,7 +1187,7 @@ def test_queue_cover_unknown_name_exits_2_with_stderr(tmp_path, monkeypatch, cap
     monkeypatch.setattr(
         sys,
         "argv",
-        ["last30days.py", "queue", "cover", "No Such Topic", "--save-dir", str(save_dir)],
+        ["nfl30.py", "queue", "cover", "No Such Topic", "--save-dir", str(save_dir)],
     )
     assert cli.main() == 2
     err = capsys.readouterr().err
@@ -1198,7 +1198,7 @@ def test_queue_cover_cli_unknown_name_subprocess_exit_code(tmp_path):
     result = subprocess.run(
         [
             sys.executable,
-            "skills/last30days/scripts/last30days.py",
+            "skills/nfl30/scripts/nfl30.py",
             "queue",
             "cover",
             "No Such Topic",
@@ -1220,7 +1220,7 @@ def test_discovery_exits_when_configured_sources_have_no_discovery_feed(monkeypa
     monkeypatch.setattr(
         cli.env, "get_config", lambda **_kwargs: {"LAST30DAYS_DEFAULT_SEARCH": "youtube"}
     )
-    monkeypatch.setattr(sys, "argv", ["last30days.py", "--discover", "AI agents", "--mock"])
+    monkeypatch.setattr(sys, "argv", ["nfl30.py", "--discover", "AI agents", "--mock"])
     with mock.patch.object(pipeline, "run_discover") as run:
         assert cli.main() == 2
 
@@ -1236,7 +1236,7 @@ def test_discovery_exits_when_configured_sources_have_no_discovery_feed(monkeypa
 def _run_protocol_cli(argv: list[str], env_overrides: dict[str, str] | None = None):
     """Run the real CLI entry point; env overrides layer onto the test env."""
     return subprocess.run(
-        [sys.executable, "skills/last30days/scripts/last30days.py", *argv],
+        [sys.executable, "skills/nfl30/scripts/nfl30.py", *argv],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -2020,7 +2020,7 @@ def test_discovery_cli_finalize_queue_failure_degrades_to_warning(tmp_path, monk
     captured = capsys.readouterr()
     assert "## 1. Gemma 4 chat templates" in captured.out
     assert "**Pipeline:**" not in captured.out
-    assert "[last30days] Warning:" in captured.err
+    assert "[nfl30] Warning:" in captured.err
     assert "database is locked" in captured.err
 
 
@@ -2540,7 +2540,7 @@ def test_discovery_cli_full_mock_protocol_three_legs_end_to_end(tmp_path):
         "**X article angle:** A mock X-article hook for the renamed topic"
         in first.stdout
     )
-    assert '**Research next:** `/last30days "Renamed Mock Topic"`' in first.stdout
+    assert '**Research next:** `/nfl30 "Renamed Mock Topic"`' in first.stdout
     # Mock stays queue-free and deterministic.
     assert not (tmp_path / "research.db").exists()
     second = run_leg3()
@@ -2629,7 +2629,7 @@ def test_no_engine_judge_references_remain_anywhere():
     skills/ or tests/ references it by name."""
     needle = "discovery" + "_judge"  # split so this pin never matches itself
     assert not (
-        REPO_ROOT / "skills" / "last30days" / "scripts" / "lib" / f"{needle}.py"
+        REPO_ROOT / "skills" / "nfl30" / "scripts" / "lib" / f"{needle}.py"
     ).exists()
     offenders = [
         str(path)

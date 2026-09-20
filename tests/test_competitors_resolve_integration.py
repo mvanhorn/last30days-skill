@@ -265,7 +265,7 @@ class PerEntityResolveTests(unittest.TestCase):
     # --- test helpers -----------------------------------------------------
 
     def _run_competitor_closure(self, *, config, competitors, mock_flag):
-        """Replicate the competitor_runner closure from last30days.main() and
+        """Replicate the competitor_runner closure from nfl30.main() and
         call it against each competitor. Returns the list of Reports."""
         from lib import pipeline, resolve as resolve_mod
 

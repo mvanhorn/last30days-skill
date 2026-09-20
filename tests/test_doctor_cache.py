@@ -25,11 +25,11 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-import last30days as cli
+import nfl30 as cli
 from lib import doctor, health
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
+SKILL_MD = ROOT / "skills" / "nfl30" / "SKILL.md"
 
 BIRD_STATUS_OFF = {
     "installed": False,
@@ -209,7 +209,7 @@ class FreshCacheServed(_CacheDirCase):
         self.write_cache(seconds_ago=1)
         rc, out, probe_spy = self.run_doctor(cached=True, emit_json=False)
         self.assertEqual(0, rc)
-        self.assertIn("last30days doctor", out)
+        self.assertIn("nfl30 doctor", out)
         self.assertFalse(probe_spy.called)
 
 
@@ -357,7 +357,7 @@ class DriftedCacheShapes(_CacheDirCase):
         rc, out, probe_spy = self.run_doctor(cached=True, emit_json=False)
         self.assertEqual(0, rc, "drifted cache must never crash")
         self.assertTrue(probe_spy.called, "drifted cache must fall through live")
-        self.assertIn("last30days doctor", out)
+        self.assertIn("nfl30 doctor", out)
 
     def test_fresh_drifted_report_pre_schema_envelope_no_crash(self):
         # The original repro shape (no schema stamp at all).
@@ -409,14 +409,14 @@ class DriftedCacheShapes(_CacheDirCase):
             rc, out, probe_spy = self.run_doctor(cached=True, emit_json=False)
         self.assertEqual(0, rc)
         self.assertTrue(probe_spy.called)
-        self.assertIn("last30days doctor", out)
+        self.assertIn("nfl30 doctor", out)
 
 
 class SchemaStamp(_CacheDirCase):
     """F8: payloads without the current schema stamp are treated as absent."""
 
     def test_schema_mismatch_runs_live(self):
-        self.write_cache(seconds_ago=1, schema="last30days-doctor-cache/v0")
+        self.write_cache(seconds_ago=1, schema="nfl30-doctor-cache/v0")
         rc, out, probe_spy = self.run_doctor(cached=True)
         self.assertEqual(0, rc)
         self.assertNotIn("cached-sentinel-report", out)
@@ -570,7 +570,7 @@ class CliCachedPassthrough(_CacheDirCase):
     def _cli(self, argv):
         with mock.patch("lib.doctor.run", return_value=0) as run, \
              mock.patch.object(cli.env, "get_config", return_value={}), \
-             mock.patch.object(sys, "argv", ["last30days.py"] + argv):
+             mock.patch.object(sys, "argv", ["nfl30.py"] + argv):
             stdout, stderr = io.StringIO(), io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 rc = cli.main()
@@ -593,7 +593,7 @@ class CliCachedPassthrough(_CacheDirCase):
         self.assertFalse(run.call_args.kwargs.get("cached"))
 
     def test_cached_rejected_for_research_topics(self):
-        with mock.patch.object(sys, "argv", ["last30days.py", "some", "topic", "--cached"]):
+        with mock.patch.object(sys, "argv", ["nfl30.py", "some", "topic", "--cached"]):
             stderr = io.StringIO()
             with redirect_stderr(stderr), self.assertRaises(SystemExit) as exc:
                 cli.main()
@@ -635,7 +635,7 @@ class DoctorSkillContract(unittest.TestCase):
         self.assertIn("**MANDATORY standing rule.**", self.text)
 
     def test_frontmatter_description_carries_health_check_keywords(self):
-        # Cold-start prompts like "is my last30days X search broken?" can
+        # Cold-start prompts like "is my nfl30 X search broken?" can
         # only load the skill if the machine-parsed frontmatter description
         # mentions the health surface (F16a). It must stay ONE line.
         lines = self.text.splitlines()

@@ -6,7 +6,7 @@ import ast
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-LAST30DAYS = ROOT / "skills" / "last30days" / "scripts" / "last30days.py"
+LAST30DAYS = ROOT / "skills" / "nfl30" / "scripts" / "nfl30.py"
 
 
 class BareOpenReadFinder(ast.NodeVisitor):
@@ -26,7 +26,7 @@ class BareOpenReadFinder(ast.NodeVisitor):
         self.generic_visit(node)
 
 
-def test_last30days_does_not_call_read_directly_on_open():
+def test_nfl30_does_not_call_read_directly_on_open():
     tree = ast.parse(LAST30DAYS.read_text(encoding="utf-8"), filename=str(LAST30DAYS))
     finder = BareOpenReadFinder()
     finder.visit(tree)

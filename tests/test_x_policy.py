@@ -24,7 +24,7 @@ import pytest
 from lib import backends, env, health, pipeline
 
 ROOT = Path(__file__).resolve().parents[1]
-LIB_DIR = ROOT / "skills" / "last30days" / "scripts" / "lib"
+LIB_DIR = ROOT / "skills" / "nfl30" / "scripts" / "lib"
 
 _PAIR = {"auth_token": "test-auth-token", "ct0": "test-ct0"}
 _COOKIES = {"AUTH_TOKEN": "test-auth-token", "CT0": "test-ct0"}

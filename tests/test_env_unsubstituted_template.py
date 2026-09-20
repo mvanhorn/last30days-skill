@@ -154,7 +154,7 @@ def test_placeholder_alongside_other_text_is_kept(monkeypatch, tmp_path):
 def test_shell_default_syntax_is_not_a_template(monkeypatch, tmp_path):
     # SKILL.md itself ships this shape as a .env example.
     _isolate(monkeypatch, tmp_path)
-    shell_default = "${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"
+    shell_default = "${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/NFL30}"
     monkeypatch.setenv("LAST30DAYS_MEMORY_DIR", shell_default)
 
     config = env.get_config()

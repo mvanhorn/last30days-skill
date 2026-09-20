@@ -20,7 +20,7 @@ from pathlib import Path
 from lib import setup_wizard
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
+SKILL_MD = ROOT / "skills" / "nfl30" / "SKILL.md"
 AGENTS_MD = ROOT / "AGENTS.md"
 
 
@@ -154,7 +154,7 @@ class TestOnboardingContract(unittest.TestCase):
     def test_modal_flow_stage_order(self):
         """Welcome -> setup modal -> cookie consent -> SC offer -> opt-in -> picker."""
         anchors = [
-            "Welcome to /last30days!",  # welcome pitch, embedded in the setup modal
+            "Welcome to /nfl30!",  # welcome pitch, embedded in the setup modal
             "How would you like to set up?",
             "your browser's x.com cookies",  # cookie-consent modal
             "Want to add TikTok and Instagram?",  # SC offer
@@ -187,7 +187,7 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_modal_cookie_consent_before_setup(self):
         consent = self.modal.find("your browser's x.com cookies")
-        setup = self.modal.find("last30days.py setup")
+        setup = self.modal.find("nfl30.py setup")
         self.assertGreater(consent, -1, "no cookie-consent modal in modal flow")
         self.assertGreater(setup, -1, "no setup invocation in modal flow")
         self.assertLess(consent, setup, "cookie consent must precede setup in modal flow")
@@ -204,7 +204,7 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_prose_cookie_consent_before_setup(self):
         consent = self.prose.find("Cookie consent")
-        setup = self.prose.find("last30days.py setup")
+        setup = self.prose.find("nfl30.py setup")
         self.assertGreater(consent, -1, "no cookie-consent step in prose flow")
         self.assertGreater(setup, -1, "no setup invocation in prose flow")
         self.assertLess(consent, setup, "cookie consent must precede setup in prose flow")
@@ -340,12 +340,12 @@ class TestOnboardingContract(unittest.TestCase):
         surface), not as a separate message/command that Claude Code folds away.
         The engine --welcome command is kept for the non-modal prose flow."""
         # Pitch is in the modal question.
-        self.assertIn("Welcome to /last30days!", self.modal)
+        self.assertIn("Welcome to /nfl30!", self.modal)
         self.assertIn("How would you like to set up?", self.modal)
         # The modal flow explicitly does NOT run a separate --welcome command.
         self.assertIn("Do NOT run a separate `--welcome`", self.modal)
         # The non-modal flow still uses the engine welcome command.
-        self.assertIn("last30days.py --welcome", self.prose)
+        self.assertIn("nfl30.py --welcome", self.prose)
 
     def test_stocktwits_surfaced_as_conditional(self):
         """StockTwits is advertised in the engine welcome as a ticker/crypto-gated

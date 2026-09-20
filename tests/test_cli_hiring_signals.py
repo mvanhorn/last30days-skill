@@ -1,6 +1,6 @@
 import unittest
 
-import last30days as cli
+import nfl30 as cli
 
 
 def _parse(*argv: str):

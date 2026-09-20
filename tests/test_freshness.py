@@ -1,6 +1,6 @@
 import json
 
-import last30days as cli
+import nfl30 as cli
 from lib import freshness, github, health, hosted, http, planner, polymarket, render, schema, stocktwits
 
 

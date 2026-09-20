@@ -129,7 +129,7 @@ wheels = [
 ]
 
 [[package]]
-name = "last30days-skill"
+name = "nfl30-skill"
 version = "3.25.0"
 source = { virtual = "." }
 

@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-import last30days as cli
+import nfl30 as cli
 import store
 from lib import corpus, env, health, html_render, library, library_index, pipeline, render, schema
 
@@ -509,7 +509,7 @@ def test_publish_html_sends_sanitized_report_not_local_corpus(monkeypatch):
     monkeypatch.setattr(
         sys,
         "argv",
-        ["last30days.py", "MCP servers", "--emit=html", "--publish-html"],
+        ["nfl30.py", "MCP servers", "--emit=html", "--publish-html"],
     )
 
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
@@ -533,7 +533,7 @@ def test_configured_corpus_bypasses_hosted_backend(tmp_path, monkeypatch):
     monkeypatch.setenv("LAST30DAYS_API_KEY", "test-hosted-key")
     monkeypatch.setenv("LAST30DAYS_API_BASE", "https://example.invalid")
     monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
-    monkeypatch.setattr(sys, "argv", ["last30days.py", "MCP servers", "--emit=compact"])
+    monkeypatch.setattr(sys, "argv", ["nfl30.py", "MCP servers", "--emit=compact"])
 
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
         assert cli.main() == 0
@@ -552,7 +552,7 @@ def test_library_publish_strips_marked_corpus_but_local_page_keeps_it(tmp_path, 
     monkeypatch.setattr(
         sys,
         "argv",
-        ["last30days.py", "library", "feed", "--save-dir", str(tmp_path), "--publish"],
+        ["nfl30.py", "library", "feed", "--save-dir", str(tmp_path), "--publish"],
     )
 
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
@@ -636,7 +636,7 @@ def test_private_corpus_cannot_escape_via_library_search_and_feed_publish(tmp_pa
     monkeypatch.setattr(
         sys,
         "argv",
-        ["last30days.py", "library", "feed", "--save-dir", str(memory), "--publish"],
+        ["nfl30.py", "library", "feed", "--save-dir", str(memory), "--publish"],
     )
 
     with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
@@ -749,7 +749,7 @@ def test_cli_saves_every_corpus_bearing_format_owner_only(tmp_path, monkeypatch)
             sys,
             "argv",
             [
-                "last30days.py",
+                "nfl30.py",
                 "MCP servers",
                 f"--emit={emit}",
                 "--json-profile=raw",

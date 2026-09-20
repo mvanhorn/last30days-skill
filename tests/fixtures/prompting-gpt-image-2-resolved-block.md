@@ -11,7 +11,7 @@ running pytest.
 
 ## Failing run (2026-04-22, pre-fix)
 
-User ran `/last30days Prompting GPT Image 2`. Step 0.55 WebSearch returned
+User ran `/nfl30 Prompting GPT Image 2`. Step 0.55 WebSearch returned
 OpenAI-brand communities. The model resolved exactly those.
 
 ```

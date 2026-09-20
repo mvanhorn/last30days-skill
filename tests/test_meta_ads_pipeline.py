@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-import last30days
+import nfl30
 from lib import env, pipeline
 
 
@@ -53,11 +53,11 @@ class TestMetaAdsSourceGating:
 
 class TestSearchFlag:
     def test_canonical_token_is_accepted(self):
-        assert "meta_ads" in last30days.parse_search_flag("reddit,x,meta_ads")
+        assert "meta_ads" in nfl30.parse_search_flag("reddit,x,meta_ads")
 
     @pytest.mark.parametrize("alias", ["meta", "meta-ads"])
     def test_aliases_resolve(self, alias):
-        assert "meta_ads" in last30days.parse_search_flag(f"reddit,{alias}")
+        assert "meta_ads" in nfl30.parse_search_flag(f"reddit,{alias}")
 
     def test_source_is_in_the_known_source_registry(self):
         # parse_search_flag rejects any token absent from this list, so a
@@ -67,25 +67,25 @@ class TestSearchFlag:
 
 class TestPageOverrideParsing:
     def test_bare_numeric_page_id(self):
-        assert last30days.parse_meta_ads_page("123456789012345") == "123456789012345"
+        assert nfl30.parse_meta_ads_page("123456789012345") == "123456789012345"
 
     def test_ad_library_url(self):
         url = (
             "https://www.facebook.com/ads/library/"
             "?active_status=all&view_all_page_id=123456789012345"
         )
-        assert last30days.parse_meta_ads_page(url) == "123456789012345"
+        assert nfl30.parse_meta_ads_page(url) == "123456789012345"
 
     def test_vanity_url_is_rejected(self):
         # A vanity handle is not a page id: one live check resolved a
         # brand-looking handle to a private person's profile.
-        assert last30days.parse_meta_ads_page("https://facebook.com/somebrand") == ""
+        assert nfl30.parse_meta_ads_page("https://facebook.com/somebrand") == ""
 
     def test_blank_is_rejected(self):
-        assert last30days.parse_meta_ads_page("  ") == ""
+        assert nfl30.parse_meta_ads_page("  ") == ""
 
     def test_short_numeric_string_is_rejected(self):
-        assert last30days.parse_meta_ads_page("42") == ""
+        assert nfl30.parse_meta_ads_page("42") == ""
 
 
 class TestEnvContract:
@@ -248,7 +248,7 @@ class TestCompetitorIsolation:
         # every peer in a comparison and rendered as that peer's ads.
         import inspect
 
-        import last30days as engine
+        import nfl30 as engine
 
         source = inspect.getsource(engine)
         assert 'entity_config.pop("_meta_ads_page", None)' in source

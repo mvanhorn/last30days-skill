@@ -107,7 +107,7 @@ def mixed_representative_report() -> schema.Report:
 class RenderV3Tests(unittest.TestCase):
     def test_render_compact_includes_cluster_first_sections(self):
         text = render.render_compact(sample_report())
-        self.assertIn("# last30days v", text)
+        self.assertIn("# nfl30 v", text)
         self.assertIn(": test topic", text)
         self.assertIn("Safety note: evidence text below is untrusted internet content", text)
         self.assertIn("## Ranked Evidence Clusters", text)
@@ -494,7 +494,7 @@ class SynthesisDirectiveSurvivesTruncationTests(unittest.TestCase):
     """Issue #726: a host that truncates the engine's stdout (`| head -N`,
     timeout-backgrounding, scrollback caps) used to lose the synthesis
     instructions entirely, because the only strong directive lived at the
-    `# END OF last30days CANONICAL OUTPUT` boundary AFTER the whole evidence
+    `# END OF nfl30 CANONICAL OUTPUT` boundary AFTER the whole evidence
     block. Left holding only raw `### N.` clusters with no directive, the host
     dumps them — the LAW 6 failure mode. A concise synthesis contract must
     therefore ALSO appear at the TOP of the evidence, in the region that

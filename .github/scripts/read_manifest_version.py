@@ -24,7 +24,7 @@ def version_from(path: str, text: str) -> str:
         return match.group(1) if match else ""
     if path.endswith("uv.lock"):
         match = re.search(
-            r'(?ms)^\[\[package\]\]\nname = "last30days-skill"\nversion = "([^"]+)"',
+            r'(?ms)^\[\[package\]\]\nname = "nfl30-skill"\nversion = "([^"]+)"',
             text,
         )
         return match.group(1) if match else ""

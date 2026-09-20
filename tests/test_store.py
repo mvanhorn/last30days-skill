@@ -1271,7 +1271,7 @@ def test_scoped_db_with_none_is_a_no_op(tmp_path):
 
 
 def test_persist_report_with_scoped_store_writes_inside_save_dir(tmp_path, sample_report):
-    import last30days as cli
+    import nfl30 as cli
 
     shared = tmp_path / "shared.db"
     scoped = tmp_path / "client" / "research.db"

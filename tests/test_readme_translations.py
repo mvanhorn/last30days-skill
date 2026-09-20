@@ -65,7 +65,7 @@ def test_readme_translations_preserve_structure_and_commands() -> None:
     for label, path in READMES.items():
         text = path.read_text(encoding="utf-8")
         lines = text.splitlines()
-        assert lines[0] == "# /last30days"
+        assert lines[0] == "# /nfl30"
         assert lines[2] == _navigation(label)
         assert text.count("```") == expected_code_fences
         assert _code_commands(text) == expected_code_commands

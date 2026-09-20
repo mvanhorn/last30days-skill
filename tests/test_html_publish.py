@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 from urllib.error import HTTPError
 
-import last30days as cli
+import nfl30 as cli
 from lib import html_publish, schema
 
 
@@ -147,7 +147,7 @@ class HtmlPublishModuleTests(unittest.TestCase):
 class HtmlPublishCliTests(unittest.TestCase):
     def test_publish_requires_html_emit(self):
         with mock.patch.object(sys, "argv", [
-            "last30days.py",
+            "nfl30.py",
             "OpenClaw",
             "--emit=md",
             "--publish-html",
@@ -173,7 +173,7 @@ class HtmlPublishCliTests(unittest.TestCase):
                      "update_key": "secret-update-key",
                  }), \
                  mock.patch.object(sys, "argv", [
-                     "last30days.py",
+                     "nfl30.py",
                      "OpenClaw",
                      "--emit=html",
                      "--output",
@@ -207,7 +207,7 @@ class HtmlPublishCliTests(unittest.TestCase):
                      "url": "https://site.ht-ml.app",
                  }) as publish_mock, \
                  mock.patch.object(sys, "argv", [
-                     "last30days.py",
+                     "nfl30.py",
                      "OpenClaw",
                      "--emit=html",
                      "--output",
@@ -239,7 +239,7 @@ class HtmlPublishCliTests(unittest.TestCase):
                  }), \
                  mock.patch.object(cli, "_write_publish_metadata", side_effect=PermissionError("denied")), \
                  mock.patch.object(sys, "argv", [
-                     "last30days.py",
+                     "nfl30.py",
                      "OpenClaw",
                      "--emit=html",
                      "--output",
@@ -265,7 +265,7 @@ class HtmlPublishCliTests(unittest.TestCase):
                  mock.patch.object(cli, "emit_output", return_value="<html>brief</html>"), \
                  mock.patch("lib.html_publish.publish_html", side_effect=html_publish.HtmlPublishError("timeout")), \
                  mock.patch.object(sys, "argv", [
-                     "last30days.py",
+                     "nfl30.py",
                      "OpenClaw",
                      "--emit=html",
                      "--output",

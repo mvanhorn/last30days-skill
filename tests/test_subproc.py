@@ -81,7 +81,7 @@ class TestRunWithTimeout(unittest.TestCase):
         some filesystems if a same-named junk file exists)."""
         with self.assertRaises(OSError):
             subproc.run_with_timeout(
-                ["/nonexistent-path/last30days-test-no-such-bin"],
+                ["/nonexistent-path/nfl30-test-no-such-bin"],
                 timeout=5,
             )
 

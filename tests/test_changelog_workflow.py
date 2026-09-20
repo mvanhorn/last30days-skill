@@ -242,13 +242,13 @@ class TestChangelogWorkflow(unittest.TestCase):
             "3.18.1",
         )
         self.assertEqual(
-            mod.version_from("skills/last30days/SKILL.md", 'version: "3.18.1"\n'),
+            mod.version_from("skills/nfl30/SKILL.md", 'version: "3.18.1"\n'),
             "3.18.1",
         )
         self.assertEqual(
             mod.version_from(
                 "uv.lock",
-                '[[package]]\nname = "last30days-skill"\nversion = "3.18.1"\n',
+                '[[package]]\nname = "nfl30-skill"\nversion = "3.18.1"\n',
             ),
             "3.18.1",
         )
@@ -297,7 +297,7 @@ class TestChangelogWorkflow(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             (tmp_path / "pyproject.toml").write_text(
-                '[project]\nname = "last30days-skill"\nversion = "3.18.1"\n',
+                '[project]\nname = "nfl30-skill"\nversion = "3.18.1"\n',
                 encoding="utf-8",
             )
             mod.ROOT = tmp_path
@@ -367,18 +367,18 @@ class TestChangelogWorkflow(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             # Minimal fixtures mirroring the lockstep layout.
-            (tmp_path / "skills" / "last30days").mkdir(parents=True)
+            (tmp_path / "skills" / "nfl30").mkdir(parents=True)
             (tmp_path / ".claude-plugin").mkdir()
             (tmp_path / ".codex-plugin").mkdir()
             (tmp_path / ".grok-plugin").mkdir()
             (tmp_path / "mcp").mkdir()
 
             (tmp_path / "pyproject.toml").write_text(
-                '[project]\nname = "last30days-skill"\nversion = "3.18.1"\n',
+                '[project]\nname = "nfl30-skill"\nversion = "3.18.1"\n',
                 encoding="utf-8",
             )
-            (tmp_path / "skills" / "last30days" / "SKILL.md").write_text(
-                '---\nversion: "3.18.1"\n---\n\n# last30days v3.18.1: Title\n',
+            (tmp_path / "skills" / "nfl30" / "SKILL.md").write_text(
+                '---\nversion: "3.18.1"\n---\n\n# nfl30 v3.18.1: Title\n',
                 encoding="utf-8",
             )
             for rel in (
@@ -389,7 +389,7 @@ class TestChangelogWorkflow(unittest.TestCase):
                 "mcp/manifest.json",
             ):
                 (tmp_path / rel).write_text(
-                    json.dumps({"name": "last30days", "version": "3.18.1"}, indent=2)
+                    json.dumps({"name": "nfl30", "version": "3.18.1"}, indent=2)
                     + "\n",
                     encoding="utf-8",
                 )
@@ -400,8 +400,8 @@ class TestChangelogWorkflow(unittest.TestCase):
                 (tmp_path / rel).write_text(
                     json.dumps(
                         {
-                            "name": "last30days-skill",
-                            "plugins": [{"name": "last30days", "version": "3.18.1"}],
+                            "name": "nfl30-skill",
+                            "plugins": [{"name": "nfl30", "version": "3.18.1"}],
                         },
                         indent=2,
                     )
@@ -409,14 +409,14 @@ class TestChangelogWorkflow(unittest.TestCase):
                     encoding="utf-8",
                 )
             (tmp_path / "uv.lock").write_text(
-                'version = 1\n\n[[package]]\nname = "last30days-skill"\n'
+                'version = 1\n\n[[package]]\nname = "nfl30-skill"\n'
                 'version = "3.18.1"\nsource = { virtual = "." }\n',
                 encoding="utf-8",
             )
 
             # Point module paths at the temp tree.
             mod.ROOT = tmp_path
-            mod.SKILL_MD = tmp_path / "skills" / "last30days" / "SKILL.md"
+            mod.SKILL_MD = tmp_path / "skills" / "nfl30" / "SKILL.md"
             mod.PYPROJECT = tmp_path / "pyproject.toml"
             mod.UV_LOCK = tmp_path / "uv.lock"
             mod.JSON_VERSION_FILES = (
@@ -437,11 +437,11 @@ class TestChangelogWorkflow(unittest.TestCase):
             pyproject = (tmp_path / "pyproject.toml").read_text(encoding="utf-8")
             self.assertIn('version = "9.9.9"', pyproject)
 
-            skill = (tmp_path / "skills" / "last30days" / "SKILL.md").read_text(
+            skill = (tmp_path / "skills" / "nfl30" / "SKILL.md").read_text(
                 encoding="utf-8"
             )
             self.assertIn('version: "9.9.9"', skill)
-            self.assertIn("# last30days v9.9.9:", skill)
+            self.assertIn("# nfl30 v9.9.9:", skill)
 
             for rel in (
                 ".claude-plugin/plugin.json",
@@ -464,7 +464,7 @@ class TestChangelogWorkflow(unittest.TestCase):
             self.assertRegex(
                 uv_lock,
                 re.compile(
-                    r'(?ms)^\[\[package\]\]\nname = "last30days-skill"\nversion = "9\.9\.9"',
+                    r'(?ms)^\[\[package\]\]\nname = "nfl30-skill"\nversion = "9\.9\.9"',
                 ),
             )
 

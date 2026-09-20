@@ -1,5 +1,5 @@
 [project]
-name = "last30days-skill"
+name = "nfl30-skill"
 version = "3.25.0"
 description = "Multi-source last-30-days research skill"
 readme = "README.md"
@@ -15,13 +15,13 @@ dev = [
 ]
 
 [tool.towncrier]
-name = "last30days-skill"
+name = "nfl30-skill"
 directory = "changelog.d"
 filename = "CHANGELOG.md"
 start_string = "<!-- towncrier release notes start -->\n"
 underlines = ["", "", ""]
 title_format = "## [{version}] - {project_date}"
-issue_format = "[#{issue}](https://github.com/mvanhorn/last30days-skill/issues/{issue})"
+issue_format = "[#{issue}](https://github.com/cmdashc/last30days-nfl/issues/{issue})"
 
 [[tool.towncrier.type]]
 directory = "security"
@@ -63,9 +63,9 @@ addopts = [
 
 [tool.coverage.run]
 branch = true
-source = ["skills/last30days/scripts", "tests"]
+source = ["skills/nfl30/scripts", "tests"]
 omit = [
-  "skills/last30days/scripts/lib/vendor/*",
+  "skills/nfl30/scripts/lib/vendor/*",
   "dist/*",
 ]
 
@@ -78,6 +78,6 @@ show_missing = true
 # Do not lower without documenting why in the PR (see AGENTS.md Rules).
 fail_under = 84
 omit = [
-  "skills/last30days/scripts/lib/vendor/*",
+  "skills/nfl30/scripts/lib/vendor/*",
   "dist/*",
 ]

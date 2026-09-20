@@ -8,14 +8,14 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/mvanhorn/last30days-skill/mcp/internal/engine"
+	"github.com/cmdashc/last30days-nfl/mcp/internal/engine"
 )
 
 func registerPreflightTool(s *server.MCPServer, cfg Config) {
 	s.AddTool(
 		mcplib.NewTool("preflight",
 			mcplib.WithDescription(
-				"Safely summarize what last30days would read, write, execute, and contact "+
+				"Safely summarize what nfl30 would read, write, execute, and contact "+
 					"without running research, saving files, or reading browser cookies.",
 			),
 			mcplib.WithString("format", mcplib.Description("Output shape: 'text' (default) for a concise summary or 'json' for structured details.")),

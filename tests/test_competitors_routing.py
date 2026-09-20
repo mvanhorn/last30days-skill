@@ -11,7 +11,7 @@ import json
 import unittest
 from contextlib import redirect_stderr
 
-import last30days as cli
+import nfl30 as cli
 from lib import competitors, planner, render
 
 

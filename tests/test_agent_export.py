@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-import last30days as cli
+import nfl30 as cli
 from lib import health, schema
 
 

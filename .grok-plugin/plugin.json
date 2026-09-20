@@ -1,5 +1,5 @@
 {
-  "name": "last30days",
+  "name": "nfl30",
   "version": "3.25.0",
   "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and 5+ more sources. AI agent scores by upvotes, likes, and real money - not editors.",
   "author": {
@@ -7,11 +7,11 @@
     "email": "mvanhorn@gmail.com",
     "url": "https://github.com/mvanhorn"
   },
-  "homepage": "https://github.com/mvanhorn/last30days-skill",
-  "repository": "https://github.com/mvanhorn/last30days-skill",
+  "homepage": "https://github.com/cmdashc/last30days-nfl",
+  "repository": "https://github.com/cmdashc/last30days-nfl",
   "license": "MIT",
   "keywords": [
-    "last30days",
+    "nfl30",
     "last 30 days"
   ],
   "skills": "./skills/"

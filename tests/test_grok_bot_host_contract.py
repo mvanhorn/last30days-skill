@@ -17,7 +17,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
+SKILL_MD = ROOT / "skills" / "nfl30" / "SKILL.md"
 CONFIGURATION = ROOT / "CONFIGURATION.md"
 AGENTS_MD = ROOT / "AGENTS.md"
 
@@ -37,7 +37,7 @@ FORBIDDEN = (
     "xquik",
     "grok login",
     "from_browser",
-    "last30days_x_backend",
+    "nfl30_x_backend",
     "askuserquestion",
 )
 

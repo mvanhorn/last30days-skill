@@ -20,7 +20,7 @@ from unittest import mock
 
 import pytest
 
-import last30days as cli
+import nfl30 as cli
 from lib import env
 
 DUMMY = "dummy-x-bearer-token-not-real-0123456789"
@@ -32,7 +32,7 @@ def _run(argv: list[str], stdin_text: str, env_path: Path) -> tuple[int, str, st
         mock.patch.object(cli.env, "CONFIG_FILE", env_path),
         mock.patch.object(cli.env, "get_config", side_effect=AssertionError("store-key must not load config")),
         mock.patch.object(sys, "stdin", io.StringIO(stdin_text)),
-        mock.patch.object(sys, "argv", ["last30days.py"] + argv),
+        mock.patch.object(sys, "argv", ["nfl30.py"] + argv),
     ):
         with redirect_stdout(stdout), redirect_stderr(stderr):
             try:

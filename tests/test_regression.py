@@ -12,7 +12,7 @@ def run_mock_json(topic: str) -> dict:
     result = subprocess.run(
         [
             sys.executable,
-            "skills/last30days/scripts/last30days.py",
+            "skills/nfl30/scripts/nfl30.py",
             topic,
             "--mock",
             "--emit=json",

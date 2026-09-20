@@ -22,7 +22,7 @@ import pytest
 
 from lib import env
 
-SETUP_PASS_SH = Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts" / "setup-pass.sh"
+SETUP_PASS_SH = Path(__file__).resolve().parents[1] / "skills" / "nfl30" / "scripts" / "setup-pass.sh"
 
 # ---------------------------------------------------------------------------
 # _load_pass unit tests
@@ -35,21 +35,21 @@ def _run_result(returncode: int, stdout: str = "") -> subprocess.CompletedProces
 
 def test_load_pass_returns_empty_when_pass_missing():
     with mock.patch("shutil.which", return_value=None):
-        assert env._load_pass(["XAI_API_KEY"], "last30days/") == {}
+        assert env._load_pass(["XAI_API_KEY"], "nfl30/") == {}
 
 
 def test_load_pass_loads_present_keys_skips_missing():
     def fake_run(cmd, **kwargs):
         path = cmd[-1]  # [pass_bin, "show", "<prefix><key>"]
-        if path == "last30days/XAI_API_KEY":
+        if path == "nfl30/XAI_API_KEY":
             return _run_result(0, "xai-abc\n")
-        if path == "last30days/BRAVE_API_KEY":
+        if path == "nfl30/BRAVE_API_KEY":
             return _run_result(0, "brv-xyz\n")
         return _run_result(1)  # pass exits non-zero for a missing entry
 
     with mock.patch("shutil.which", return_value="/usr/bin/pass"), \
          mock.patch("subprocess.run", side_effect=fake_run):
-        result = env._load_pass(["XAI_API_KEY", "BRAVE_API_KEY", "OPENAI_API_KEY"], "last30days/")
+        result = env._load_pass(["XAI_API_KEY", "BRAVE_API_KEY", "OPENAI_API_KEY"], "nfl30/")
 
     assert result == {"XAI_API_KEY": "xai-abc", "BRAVE_API_KEY": "brv-xyz"}
 
@@ -58,19 +58,19 @@ def test_load_pass_takes_first_line_only():
     # pass entries keep the secret on line 1; metadata may follow.
     with mock.patch("shutil.which", return_value="/usr/bin/pass"), \
          mock.patch("subprocess.run", return_value=_run_result(0, "sk-secret\nurl: https://x\nuser: bob\n")):
-        assert env._load_pass(["OPENAI_API_KEY"], "last30days/") == {"OPENAI_API_KEY": "sk-secret"}
+        assert env._load_pass(["OPENAI_API_KEY"], "nfl30/") == {"OPENAI_API_KEY": "sk-secret"}
 
 
 def test_load_pass_strips_whitespace():
     with mock.patch("shutil.which", return_value="/usr/bin/pass"), \
          mock.patch("subprocess.run", return_value=_run_result(0, "  hello-key  \n")):
-        assert env._load_pass(["FOO"], "last30days/") == {"FOO": "hello-key"}
+        assert env._load_pass(["FOO"], "nfl30/") == {"FOO": "hello-key"}
 
 
 def test_load_pass_skips_empty_and_whitespace_only_stdout():
     with mock.patch("shutil.which", return_value="/usr/bin/pass"), \
          mock.patch("subprocess.run", return_value=_run_result(0, "   \n")):
-        assert env._load_pass(["XAI_API_KEY"], "last30days/") == {}
+        assert env._load_pass(["XAI_API_KEY"], "nfl30/") == {}
 
 
 def test_load_pass_swallows_timeout():
@@ -79,13 +79,13 @@ def test_load_pass_swallows_timeout():
 
     with mock.patch("shutil.which", return_value="/usr/bin/pass"), \
          mock.patch("subprocess.run", side_effect=fake_run):
-        assert env._load_pass(["XAI_API_KEY"], "last30days/") == {}
+        assert env._load_pass(["XAI_API_KEY"], "nfl30/") == {}
 
 
 def test_load_pass_swallows_oserror():
     with mock.patch("shutil.which", return_value="/usr/bin/pass"), \
          mock.patch("subprocess.run", side_effect=OSError("boom")):
-        assert env._load_pass(["XAI_API_KEY"], "last30days/") == {}
+        assert env._load_pass(["XAI_API_KEY"], "nfl30/") == {}
 
 
 def test_load_pass_stops_probing_after_timeout():
@@ -99,7 +99,7 @@ def test_load_pass_stops_probing_after_timeout():
 
     with mock.patch("shutil.which", return_value="/usr/bin/pass"), \
          mock.patch("subprocess.run", side_effect=fake_run):
-        result = env._load_pass(["XAI_API_KEY", "BRAVE_API_KEY", "OPENAI_API_KEY"], "last30days/")
+        result = env._load_pass(["XAI_API_KEY", "BRAVE_API_KEY", "OPENAI_API_KEY"], "nfl30/")
 
     assert result == {}
     assert calls["n"] == 1  # stopped after the first timeout, didn't probe the rest

@@ -1,6 +1,6 @@
 # Exclude non-runtime files from `git archive` output.
-# Used by skills/last30days/scripts/build-skill.sh to produce a
-# claude.ai-upload-ready .skill file from the canonical skills/last30days tree.
+# Used by skills/nfl30/scripts/build-skill.sh to produce a
+# claude.ai-upload-ready .skill file from the canonical skills/nfl30 tree.
 # See docs/plans/2026-04-14-001-fix-skill-upload-200-file-limit-plan.md.
 
 # Anthropic canonical skill-packaging excludes

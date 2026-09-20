@@ -10,7 +10,7 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-import last30days as cli
+import nfl30 as cli
 from lib import env
 
 
@@ -32,7 +32,7 @@ def test_diagnose_uses_plan_only_cookie_policy_and_safe_pipeline(monkeypatch):
 
     with mock.patch.object(cli.env, "get_config", side_effect=fake_get_config), \
          mock.patch.object(cli.pipeline, "diagnose", return_value={"ok": True}) as diagnose, \
-         mock.patch.object(sys, "argv", ["last30days.py", "--diagnose"]):
+         mock.patch.object(sys, "argv", ["nfl30.py", "--diagnose"]):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -53,7 +53,7 @@ def test_setup_without_cookie_flag_disables_browser_cookie_setup(monkeypatch):
          mock.patch("lib.setup_wizard.run_auto_setup", return_value={"cookies_found": {}}) as setup, \
          mock.patch("lib.setup_wizard.write_setup_config", return_value=True), \
          mock.patch("lib.setup_wizard.get_setup_status_text", return_value="ok"), \
-         mock.patch.object(sys, "argv", ["last30days.py", "setup"]):
+         mock.patch.object(sys, "argv", ["nfl30.py", "setup"]):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -67,7 +67,7 @@ def test_setup_cookie_flag_allows_browser_cookie_setup(monkeypatch):
          mock.patch("lib.setup_wizard.run_auto_setup", return_value={"cookies_found": {}}) as setup, \
          mock.patch("lib.setup_wizard.write_setup_config", return_value=True), \
          mock.patch("lib.setup_wizard.get_setup_status_text", return_value="ok"), \
-         mock.patch.object(sys, "argv", ["last30days.py", "setup", "--allow-browser-cookies"]):
+         mock.patch.object(sys, "argv", ["nfl30.py", "setup", "--allow-browser-cookies"]):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -90,7 +90,7 @@ def test_no_browser_cookies_overrides_setup_cookie_flag(monkeypatch):
          mock.patch.object(
              sys,
              "argv",
-             ["last30days.py", "--no-browser-cookies", "setup", "--allow-browser-cookies"],
+             ["nfl30.py", "--no-browser-cookies", "setup", "--allow-browser-cookies"],
          ):
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -115,7 +115,7 @@ def test_diagnose_overrides_setup_cookie_flag(monkeypatch):
          mock.patch.object(
              sys,
              "argv",
-             ["last30days.py", "--diagnose", "setup", "--allow-browser-cookies"],
+             ["nfl30.py", "--diagnose", "setup", "--allow-browser-cookies"],
          ):
         stdout = io.StringIO()
         stderr = io.StringIO()
@@ -157,7 +157,7 @@ def test_watchlist_subprocess_disables_browser_cookies():
 
 
 def test_project_config_ignored_by_default_and_cannot_self_trust(tmp_path, monkeypatch):
-    project_env = tmp_path / ".claude" / "last30days.env"
+    project_env = tmp_path / ".claude" / "nfl30.env"
     project_env.parent.mkdir()
     project_env.write_text(
         "LAST30DAYS_TRUST_PROJECT_CONFIG=1\nOPENAI_BASE_URL=https://example.invalid\n",
@@ -177,7 +177,7 @@ def test_project_config_ignored_by_default_and_cannot_self_trust(tmp_path, monke
 
 
 def test_project_config_loads_with_process_trust_signal(tmp_path, monkeypatch):
-    project_env = tmp_path / ".claude" / "last30days.env"
+    project_env = tmp_path / ".claude" / "nfl30.env"
     project_env.parent.mkdir()
     project_env.write_text("OPENAI_BASE_URL=https://trusted.example\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)

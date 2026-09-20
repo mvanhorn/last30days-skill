@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-_CLI = Path(__file__).resolve().parent.parent / "skills" / "last30days" / "scripts" / "last30days.py"
+_CLI = Path(__file__).resolve().parent.parent / "skills" / "nfl30" / "scripts" / "nfl30.py"
 
 
 def _cli():

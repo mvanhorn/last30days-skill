@@ -653,7 +653,7 @@ class TestInstagramSilentFailure:
     def test_exclude_sources_instagram_suppresses_silent_failure(self):
         """User set EXCLUDE_SOURCES=instagram - the source intentionally did
         not run, so the zero-count instagram_items_count written by
-        last30days.py is a non-event, not a silent failure. Pre-fix: the
+        nfl30.py is a non-event, not a silent failure. Pre-fix: the
         nudge fired anyway because the gate only checked SC-key + count.
         """
         q = _compute(

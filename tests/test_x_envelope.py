@@ -24,7 +24,7 @@ from unittest import mock
 
 import pytest
 
-import last30days as cli
+import nfl30 as cli
 from lib import dates, env, health, html_render, pipeline, render, schema, x_api, x_envelope
 
 TOPIC = "ai agents"
@@ -546,7 +546,7 @@ class TestInputBounds:
 class TestMalformedEnvelope:
     @pytest.mark.parametrize("mutation", [
         {"schema": None},
-        {"schema": "last30days-x-posts/2"},
+        {"schema": "nfl30-x-posts/2"},
         {"status": "great"},
         {"calls": {"lane": "topic"}},
         {"calls": []},
@@ -562,7 +562,7 @@ class TestMalformedEnvelope:
             else:
                 payload[key] = value
         path = _write(tmp_path, payload)
-        message = _assert_contract(path, must_not_contain=["great", "last30days-x-posts/2"])
+        message = _assert_contract(path, must_not_contain=["great", "nfl30-x-posts/2"])
         assert "rewrite" in message.lower()
         assert "--x-posts" in message
 
@@ -957,7 +957,7 @@ def _cli(argv, tmp_path, *, config=None, run=None, environ=None, real_run=False)
         stack.enter_context(mock.patch.dict(
             os.environ, {"LAST30DAYS_SKIP_PREFLIGHT": "1", **(environ or {})}, clear=False,
         ))
-        stack.enter_context(mock.patch.object(sys, "argv", ["last30days.py", *argv]))
+        stack.enter_context(mock.patch.object(sys, "argv", ["nfl30.py", *argv]))
         if real_run:
             stack.enter_context(_no_backend())
         else:

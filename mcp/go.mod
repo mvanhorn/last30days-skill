@@ -1,4 +1,4 @@
-module github.com/mvanhorn/last30days-skill/mcp
+module github.com/cmdashc/last30days-nfl/mcp
 
 go 1.25.5
 

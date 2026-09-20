@@ -15,7 +15,7 @@ def _neutral_secret_sources():
 
 
 def test_untrusted_project_config_is_ignored_by_default(tmp_path, monkeypatch):
-    project_env = tmp_path / ".claude" / "last30days.env"
+    project_env = tmp_path / ".claude" / "nfl30.env"
     project_env.parent.mkdir()
     project_env.write_text("XAI_API_KEY=xai-project\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -34,7 +34,7 @@ def test_project_config_loads_with_global_trust_signal(tmp_path, monkeypatch):
     global_env = tmp_path / "global.env"
     global_env.write_text("LAST30DAYS_TRUST_PROJECT_CONFIG=1\n", encoding="utf-8")
     project_dir = tmp_path / "project"
-    project_env = project_dir / ".claude" / "last30days.env"
+    project_env = project_dir / ".claude" / "nfl30.env"
     project_env.parent.mkdir(parents=True)
     project_env.write_text("XAI_API_KEY=xai-project\n", encoding="utf-8")
     monkeypatch.chdir(project_dir)
@@ -53,7 +53,7 @@ def test_empty_process_trust_signal_overrides_global_trust_signal(tmp_path, monk
     global_env = tmp_path / "global.env"
     global_env.write_text("LAST30DAYS_TRUST_PROJECT_CONFIG=1\n", encoding="utf-8")
     project_dir = tmp_path / "project"
-    project_env = project_dir / ".claude" / "last30days.env"
+    project_env = project_dir / ".claude" / "nfl30.env"
     project_env.parent.mkdir(parents=True)
     project_env.write_text("XAI_API_KEY=xai-project\n", encoding="utf-8")
     monkeypatch.chdir(project_dir)
@@ -73,7 +73,7 @@ def test_explicit_zero_process_trust_signal_overrides_global_trust_signal(tmp_pa
     global_env = tmp_path / "global.env"
     global_env.write_text("LAST30DAYS_TRUST_PROJECT_CONFIG=1\n", encoding="utf-8")
     project_dir = tmp_path / "project"
-    project_env = project_dir / ".claude" / "last30days.env"
+    project_env = project_dir / ".claude" / "nfl30.env"
     project_env.parent.mkdir(parents=True)
     project_env.write_text("XAI_API_KEY=xai-project\n", encoding="utf-8")
     monkeypatch.chdir(project_dir)
@@ -89,7 +89,7 @@ def test_explicit_zero_process_trust_signal_overrides_global_trust_signal(tmp_pa
 
 
 def test_project_config_discovery_stops_at_git_root(tmp_path, monkeypatch):
-    outside_env = tmp_path / ".claude" / "last30days.env"
+    outside_env = tmp_path / ".claude" / "nfl30.env"
     outside_env.parent.mkdir()
     outside_env.write_text("XAI_API_KEY=outside\n", encoding="utf-8")
     repo = tmp_path / "repo"
@@ -112,7 +112,7 @@ def test_global_config_loads_when_project_config_is_untrusted(tmp_path, monkeypa
     global_env = tmp_path / "global.env"
     global_env.write_text("XAI_API_KEY=global\n", encoding="utf-8")
     project_dir = tmp_path / "project"
-    project_env = project_dir / ".claude" / "last30days.env"
+    project_env = project_dir / ".claude" / "nfl30.env"
     project_env.parent.mkdir(parents=True)
     project_env.write_text("XAI_API_KEY=project\n", encoding="utf-8")
     monkeypatch.chdir(project_dir)
@@ -128,7 +128,7 @@ def test_global_config_loads_when_project_config_is_untrusted(tmp_path, monkeypa
 
 
 def test_config_exists_ignores_untrusted_project_config(tmp_path, monkeypatch):
-    project_env = tmp_path / ".claude" / "last30days.env"
+    project_env = tmp_path / ".claude" / "nfl30.env"
     project_env.parent.mkdir()
     project_env.write_text("XAI_API_KEY=xai-project\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -139,7 +139,7 @@ def test_config_exists_ignores_untrusted_project_config(tmp_path, monkeypatch):
 
 
 def test_config_exists_reports_trusted_project_config(tmp_path, monkeypatch):
-    project_env = tmp_path / ".claude" / "last30days.env"
+    project_env = tmp_path / ".claude" / "nfl30.env"
     project_env.parent.mkdir()
     project_env.write_text("XAI_API_KEY=xai-project\n", encoding="utf-8")
     monkeypatch.chdir(tmp_path)
@@ -159,7 +159,7 @@ def test_config_exists_reports_global_config(tmp_path, monkeypatch):
 
 
 def test_diagnose_reports_ignored_untrusted_endpoint_override(tmp_path, monkeypatch):
-    project_env = tmp_path / ".claude" / "last30days.env"
+    project_env = tmp_path / ".claude" / "nfl30.env"
     project_env.parent.mkdir()
     project_env.write_text(
         "BSKY_SEARCH_HOST=https://bsky-attacker.example\n"

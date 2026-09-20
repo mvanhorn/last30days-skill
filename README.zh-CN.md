@@ -1,40 +1,40 @@
-# /last30days
+# /nfl30
 
 [English](README.md) | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | 简体中文
 
 <p align="center">
-  <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days——由 AI 智能体驱动、搜索真实用户而非编辑内容的搜索引擎" />
+  <img src="media/pr-assets/nfl30-ad.gif" width="720" alt="nfl30——由 AI 智能体驱动、搜索真实用户而非编辑内容的搜索引擎" />
 </p>
 
 <p align="center">
-  <a href="https://github.com/mvanhorn/last30days-skill">
+  <a href="https://github.com/cmdashc/last30days-nfl">
     <img src="https://img.shields.io/badge/%231-Repository%20Of%20The%20Day-6f42c1?style=for-the-badge&logo=github&label=GITHUB%20TRENDING" alt="GitHub Trending 单日排名第一的仓库" />
   </a>
   <br/>
   <a href="https://trendshift.io/repositories/21997" target="_blank">
-    <img src="https://trendshift.io/api/badge/repositories/21997" alt="mvanhorn/last30days-skill | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
+    <img src="https://trendshift.io/api/badge/repositories/21997" alt="cmdashc/last30days-nfl | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
   <br/>
-  <a href="https://github.com/mvanhorn/last30days-skill/actions/workflows/validate.yml">
-    <img src="https://github.com/mvanhorn/last30days-skill/actions/workflows/validate.yml/badge.svg" alt="Validate status" />
+  <a href="https://github.com/cmdashc/last30days-nfl/actions/workflows/validate.yml">
+    <img src="https://github.com/cmdashc/last30days-nfl/actions/workflows/validate.yml/badge.svg" alt="Validate status" />
   </a>
 </p>
 
 **一个由 AI 智能体驱动的搜索引擎：按赞同票、点赞和真金白银评分，而不是由编辑决定。**
 
-本文档对应当前的 v3 流水线。运行时 Skill 规范位于 [skills/last30days/SKILL.md](skills/last30days/SKILL.md)，最新命令与配置行为以该文件为准。
+本文档对应当前的 v3 流水线。运行时 Skill 规范位于 [skills/nfl30/SKILL.md](skills/nfl30/SKILL.md)，最新命令与配置行为以该文件为准。
 
 **Claude Code（推荐——通过 marketplace 自动更新）：**
 
 ```
-/plugin marketplace add mvanhorn/last30days-skill
-/plugin install last30days
+/plugin marketplace add cmdashc/last30days-nfl
+/plugin install nfl30
 ```
 
 **Codex、Cursor、Copilot、Gemini CLI，或其他 50 多个支持 [Agent Skills](https://agentskills.io) 的宿主：**
 
 ```
-npx skills add mvanhorn/last30days-skill -g
+npx skills add cmdashc/last30days-nfl -g
 ```
 
 （`-g` 会安装到当前用户的全局环境，所有项目均可使用；去掉该参数则仅安装到当前项目。）
@@ -45,19 +45,19 @@ npx skills add mvanhorn/last30days-skill -g
 
 ---
 
-Reddit 的赞同票、X 的点赞、YouTube 的完整字幕、TikTok 的互动数据，以及由真金白银和内幕信息支撑的 Polymarket 概率——每天都有数百万人用注意力和钱包投票。`/last30days` 会并行搜索这些平台，按照真实用户的参与度评分，再由 AI 智能体裁判综合成一份简报。
+Reddit 的赞同票、X 的点赞、YouTube 的完整字幕、TikTok 的互动数据，以及由真金白银和内幕信息支撑的 Polymarket 概率——每天都有数百万人用注意力和钱包投票。`/nfl30` 会并行搜索这些平台，按照真实用户的参与度评分，再由 AI 智能体裁判综合成一份简报。
 
-Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
+Google 聚合编辑选出的内容，`/nfl30` 搜索真实的人。
 
 你无法从别的单一搜索产品获得这些结果，因为没有哪个 AI 天生能访问所有平台。Google 搜不到 Reddit 评论和 X 帖子；ChatGPT 虽然与 Reddit 合作，却无法搜索 X 或 TikTok；Gemini 能访问 YouTube，却没有 Reddit；Claude 原生不具备这些能力。每个平台都是一座围墙花园，有自己的 API、令牌和认证机制。但只要接入你自己的密钥和浏览器会话，AI 智能体就能同时搜索所有平台、横向比较信号，并告诉你真正值得关注的内容。
 
 这才是关键：不是再造一个更好的搜索引擎，而是让一个智能体把十几个彼此割裂的平台连接起来。
 
 ```
-/last30days Peter Steinberger
+/nfl30 Peter Steinberger
 ```
 
-假设你明天要和一个人开会。用 Google 搜他，你看到的可能还是 2023 年的 LinkedIn 页面；`/last30days` 告诉你的则是他这个月真正做了什么：加入 OpenAI 参与 Codex、反对 Anthropic 禁止第三方智能体、提交 23 个 PR 且合并率达到 85%、打造用于跨设备智能体控制的 “LobsterOS”，以及 r/ClaudeCode 上一场获得 569 个赞同票的争论——他究竟是英雄，还是“令人难以忍受”。这些信息散落在 X 帖子、Reddit 讨论、YouTube 字幕和 GitHub 提交中，Google 上根本没有。
+假设你明天要和一个人开会。用 Google 搜他，你看到的可能还是 2023 年的 LinkedIn 页面；`/nfl30` 告诉你的则是他这个月真正做了什么：加入 OpenAI 参与 Codex、反对 Anthropic 禁止第三方智能体、提交 23 个 PR 且合并率达到 85%、打造用于跨设备智能体控制的 “LobsterOS”，以及 r/ClaudeCode 上一场获得 569 个赞同票的争论——他究竟是英雄，还是“令人难以忍受”。这些信息散落在 X 帖子、Reddit 讨论、YouTube 字幕和 GitHub 提交中，Google 上根本没有。
 
 ## 为什么要做这个项目
 
@@ -100,21 +100,21 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 
 ## 大家实际上怎么用它
 
-**开会之前。** `/last30days Peter Steinberger`——加入 OpenAI Codex 团队、反对 Anthropic 禁止第三方智能体、GitHub 上合并了 23 个 PR 且合并率达 85%、正在开发跨设备智能体控制系统 LobsterOS。r/ClaudeCode 上的一条评论说：“自从 OpenClaw 发布之后，大家就知道，只要你不是通过 API 运行它，迟早会被封。”（227 个赞同票）。这些不会出现在 LinkedIn 上。
+**开会之前。** `/nfl30 Peter Steinberger`——加入 OpenAI Codex 团队、反对 Anthropic 禁止第三方智能体、GitHub 上合并了 23 个 PR 且合并率达 85%、正在开发跨设备智能体控制系统 LobsterOS。r/ClaudeCode 上的一条评论说：“自从 OpenClaw 发布之后，大家就知道，只要你不是通过 API 运行它，迟早会被封。”（227 个赞同票）。这些不会出现在 LinkedIn 上。
 
-**判断招聘信号。** `/last30days Listen Labs --hiring-signals`——把最新职位和招聘页面变成有引用依据的证据，从中判断公司是否正转向企业安全、客户成功、基础设施或产品扩张。报告只解释招聘看起来释放了什么信号，不会武断预测路线图一定会交付什么。
+**判断招聘信号。** `/nfl30 Listen Labs --hiring-signals`——把最新职位和招聘页面变成有引用依据的证据，从中判断公司是否正转向企业安全、客户成功、基础设施或产品扩张。报告只解释招聘看起来释放了什么信号，不会武断预测路线图一定会交付什么。
 
-**在话题爆发前发现它。** 输入 `/last30days what's exploding in AI agents?`，Skill 会切换到发现模式：引擎扫描 Reddit 分类列表、Hacker News 的 front/best 故事、Digg AI 1000 信息流，以及认证后的 X；随后由你的智能体评审候选主题（命名、过滤垃圾、判断内容价值），并写出播客或 X 长文的切入角度；最终给出 5–10 个按增长速度排序的话题。每条结果都包含跨平台数据、势头标签，以及可直接运行的 `/last30days "<topic>"` 后续命令。
+**在话题爆发前发现它。** 输入 `/nfl30 what's exploding in AI agents?`，Skill 会切换到发现模式：引擎扫描 Reddit 分类列表、Hacker News 的 front/best 故事、Digg AI 1000 信息流，以及认证后的 X；随后由你的智能体评审候选主题（命名、过滤垃圾、判断内容价值），并写出播客或 X 长文的切入角度；最终给出 5–10 个按增长速度排序的话题。每条结果都包含跨平台数据、势头标签，以及可直接运行的 `/nfl30 "<topic>"` 后续命令。
 
-**突发事件发生时。** `/last30days Kanye West`——英国拒绝其签证，Wireless Festival 取消演出，赞助商纷纷离场；但《BULLY》首周登上 Billboard 第二名。Fantano 结束自己的 “Yay sabbatical” 回归评测（65.3 万次观看）；SoFi Homecoming 请来 Lauryn Hill 和 Travis Scott，共演出 44 首歌。Polymarket：“Kanye 还会再发推吗？”86% 认为会。共找到 23 个 Reddit 主题、17 个 YouTube 视频和 8.6 万次赞同。
+**突发事件发生时。** `/nfl30 Kanye West`——英国拒绝其签证，Wireless Festival 取消演出，赞助商纷纷离场；但《BULLY》首周登上 Billboard 第二名。Fantano 结束自己的 “Yay sabbatical” 回归评测（65.3 万次观看）；SoFi Homecoming 请来 Lauryn Hill 和 Travis Scott，共演出 44 首歌。Polymarket：“Kanye 还会再发推吗？”86% 认为会。共找到 23 个 Reddit 主题、17 个 YouTube 视频和 8.6 万次赞同。
 
-**比较工具。** `/last30days OpenClaw vs Hermes vs Paperclip`——“它们并非竞品，而是处于不同层次。”OpenClaw 是执行层（GitHub 35.1 万 Star，已上线），Hermes 是会自我改进的大脑（3.1 万 Star），Paperclip 是组织结构图（4.9 万 Star）。Star 数来自 GitHub API 的实时数据，不是过期博客。报告会提供架构、记忆、安全性和适用场景的横向表格。正如 @IMJustinBrooke 所说：“OpenClaw = 小火龙，Hermes = 喷火龙。”
+**比较工具。** `/nfl30 OpenClaw vs Hermes vs Paperclip`——“它们并非竞品，而是处于不同层次。”OpenClaw 是执行层（GitHub 35.1 万 Star，已上线），Hermes 是会自我改进的大脑（3.1 万 Star），Paperclip 是组织结构图（4.9 万 Star）。Star 数来自 GitHub API 的实时数据，不是过期博客。报告会提供架构、记忆、安全性和适用场景的横向表格。正如 @IMJustinBrooke 所说：“OpenClaw = 小火龙，Hermes = 喷火龙。”
 
-**理解世界。** `/last30days Iran vs USA`——战争进入第 38 天。特朗普要求伊朗在周二的最后期限前重新开放霍尔木兹海峡；两架美国战机被击落；油价涨至每桶 126 美元。IEA 称之为“全球石油市场史上最大规模的供应中断”。Polymarket 认为 12 月 31 日前停火的概率为 74%。共找到 27 条 X 帖子、10 个 YouTube 视频和 20 个预测市场。
+**理解世界。** `/nfl30 Iran vs USA`——战争进入第 38 天。特朗普要求伊朗在周二的最后期限前重新开放霍尔木兹海峡；两架美国战机被击落；油价涨至每桶 126 美元。IEA 称之为“全球石油市场史上最大规模的供应中断”。Polymarket 认为 12 月 31 日前停火的概率为 74%。共找到 27 条 X 帖子、10 个 YouTube 视频和 20 个预测市场。
 
-**旅行之前。** `/last30days Universal Epic Universe`——扩建工程已经开工，“Project 680” 许可已提交；基础设施证实将有烟花表演，但官方尚未公布。Mine-Cart Madness 平均排队 148 分钟；年票仍未推出，当地居民对此不满；Stardust Racers 将停运翻修至 4 月 5 日。
+**旅行之前。** `/nfl30 Universal Epic Universe`——扩建工程已经开工，“Project 680” 许可已提交；基础设施证实将有烟花表演，但官方尚未公布。Mine-Cart Madness 平均排队 148 分钟；年票仍未推出，当地居民对此不满；Stardust Racers 将停运翻修至 4 月 5 日。
 
-**快速学习。** `/last30days Nano Banana Pro prompting`——JSON 结构化提示词正在取代标签堆砌；@pictsbyai 的嵌套格式能避免“概念串色”；以编辑为先的工作流优于反复重新生成。随后，它会严格依据社区验证有效的方法，为你写出一条可用于生产的提示词。
+**快速学习。** `/nfl30 Nano Banana Pro prompting`——JSON 结构化提示词正在取代标签堆砌；@pictsbyai 的嵌套格式能避免“概念串色”；以编辑为先的工作流优于反复重新生成。随后，它会严格依据社区验证有效的方法，为你写出一条可用于生产的提示词。
 
 ## 最近更新
 
@@ -122,7 +122,7 @@ Google 聚合编辑选出的内容，`/last30days` 搜索真实的人。
 
 ### 正式支持 OpenAI Codex
 
-`/last30days` 现在是带引导式配置的原生 Codex 插件——不是简单移植，而是一等公民。针对不同渲染器优化的引用格式，让 Codex 输出读起来像简报，而不是一团 URL（#694）。同一套引擎也运行在 Claude Code、Cursor、Copilot、Gemini CLI、Claude Desktop、OpenClaw 以及 50 多个 Agent Skills 宿主上。Codex 插件清单由 [@rfoust](https://github.com/rfoust) 贡献（#686），Codex 认证修复由 [@tmchow](https://github.com/tmchow) 贡献（#698）。
+`/nfl30` 现在是带引导式配置的原生 Codex 插件——不是简单移植，而是一等公民。针对不同渲染器优化的引用格式，让 Codex 输出读起来像简报，而不是一团 URL（#694）。同一套引擎也运行在 Claude Code、Cursor、Copilot、Gemini CLI、Claude Desktop、OpenClaw 以及 50 多个 Agent Skills 宿主上。Codex 插件清单由 [@rfoust](https://github.com/rfoust) 贡献（#686），Codex 认证修复由 [@tmchow](https://github.com/tmchow) 贡献（#698）。
 
 ### arXiv、Techmeme 与 Digg——免费，无需 API 密钥
 
@@ -164,75 +164,75 @@ v3 打下的基础都还在：真正调用 API 前先运行预研究模块，解
 
 | 使用环境 | 安装方式 | 更新方式 |
 |---------|---------|---------|
-| **Claude Code**（推荐） | `/plugin marketplace add mvanhorn/last30days-skill` | 通过 marketplace 自动更新，或运行 `claude plugin update last30days@last30days-skill` |
-| **Grok**（xAI Build CLI） | 先运行 `grok plugin marketplace add mvanhorn/last30days-skill`，再运行 `grok plugin install last30days` | `grok plugin update last30days` |
-| **Codex、Cursor、Copilot、Gemini CLI，或其他 50 多个支持 [Agent Skills](https://agentskills.io) 的宿主** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
-| **claude.ai**（网页） | [下载 `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill)，然后在 claude.ai 中依次进入 Customize > Skills > + > Create skill > Upload a skill 上传 | 重新下载并上传 |
-| **Claude Desktop** | 从[最新版本](https://github.com/mvanhorn/last30days-skill/releases/latest)下载适用于你的平台的 `.mcpb`，拖入 Settings > Extensions | 重新下载新包并拖入 |
-| **OpenClaw** | `clawhub install last30days-official` | `clawhub update last30days-official` |
+| **Claude Code**（推荐） | `/plugin marketplace add cmdashc/last30days-nfl` | 通过 marketplace 自动更新，或运行 `claude plugin update nfl30@nfl30-skill` |
+| **Grok**（xAI Build CLI） | 先运行 `grok plugin marketplace add cmdashc/last30days-nfl`，再运行 `grok plugin install nfl30` | `grok plugin update nfl30` |
+| **Codex、Cursor、Copilot、Gemini CLI，或其他 50 多个支持 [Agent Skills](https://agentskills.io) 的宿主** | `npx skills add cmdashc/last30days-nfl -g` | `npx skills update nfl30 -g` |
+| **claude.ai**（网页） | [下载 `nfl30.skill`](https://github.com/cmdashc/last30days-nfl/releases/latest/download/nfl30.skill)，然后在 claude.ai 中依次进入 Customize > Skills > + > Create skill > Upload a skill 上传 | 重新下载并上传 |
+| **Claude Desktop** | 从[最新版本](https://github.com/cmdashc/last30days-nfl/releases/latest)下载适用于你的平台的 `.mcpb`，拖入 Settings > Extensions | 重新下载新包并拖入 |
+| **OpenClaw** | `clawhub install nfl30-official` | `clawhub update nfl30-official` |
 
 ### Claude Code（推荐）
 
 ```
-/plugin marketplace add mvanhorn/last30days-skill
+/plugin marketplace add cmdashc/last30days-nfl
 ```
 
-推荐这种方式，是因为 Claude Code marketplace 会替你处理更新：插件缓存按版本管理，每次发布新版本都会自动刷新。要强制检查更新，请运行 `claude plugin update last30days@last30days-skill`。
+推荐这种方式，是因为 Claude Code marketplace 会替你处理更新：插件缓存按版本管理，每次发布新版本都会自动刷新。要强制检查更新，请运行 `claude plugin update nfl30@nfl30-skill`。
 
 如果你更愿意在 Claude Code 中使用 Agent Skills 的安装方式，同样支持：
 
 ```
-npx skills add mvanhorn/last30days-skill -g -a claude-code
+npx skills add cmdashc/last30days-nfl -g -a claude-code
 ```
 
 ### 快速试用链接
 
-[在 Telegram 或 WhatsApp 中试用 Last30Days Research Skill](https://app.clawmama.run/skills/2ne05f/hermes?utm_source=github&utm_medium=issue&utm_campaign=skill_outreach_mvanhorn_last30days_skill)
+[在 Telegram 或 WhatsApp 中试用 NFL30 Research Skill](https://app.clawmama.run/skills/2ne05f/hermes?utm_source=github&utm_medium=issue&utm_campaign=skill_outreach_mvanhorn_nfl30_skill)
 
-原生插件和 `npx skills` 安装可以共存。但 Claude Code 不会对不同安装方式进行去重：若两者同时启用，`/last30days` 会出现两个条目。建议每台机器只选一种安装方式。
+原生插件和 `npx skills` 安装可以共存。但 Claude Code 不会对不同安装方式进行去重：若两者同时启用，`/nfl30` 会出现两个条目。建议每台机器只选一种安装方式。
 
 ### Grok（xAI Build CLI）
 
-[Grok Build](https://docs.x.ai/build/features/skills-plugins-marketplaces)（`grok`）可以将 last30days 安装为原生插件。直接安装会跟踪仓库更新：
+[Grok Build](https://docs.x.ai/build/features/skills-plugins-marketplaces)（`grok`）可以将 nfl30 安装为原生插件。直接安装会跟踪仓库更新：
 
 ```bash
-grok plugin install mvanhorn/last30days-skill
+grok plugin install cmdashc/last30days-nfl
 ```
 
 也可以先把本仓库添加为 marketplace 来源，再按插件名安装：
 
 ```bash
-grok plugin marketplace add mvanhorn/last30days-skill
-grok plugin install last30days
+grok plugin marketplace add cmdashc/last30days-nfl
+grok plugin install nfl30
 ```
 
-加入 `--trust` 可跳过安装确认；使用 `grok plugin update last30days` 更新。为兼容旧机制，Grok 也会读取 Claude Code 的清单文件；原生 `.grok-plugin/` 文件是首选通路，也是 [xAI marketplace](https://github.com/xai-org/plugin-marketplace) 官方目录条目指向的对象。`npx skills add` 仍是有效的跨宿主备用方案。在 Grok Bot 上，X 搜索通过机器人的 X 连接器执行，并以官方 X API（`X_BEARER_TOKEN`）作为备用。
+加入 `--trust` 可跳过安装确认；使用 `grok plugin update nfl30` 更新。为兼容旧机制，Grok 也会读取 Claude Code 的清单文件；原生 `.grok-plugin/` 文件是首选通路，也是 [xAI marketplace](https://github.com/xai-org/plugin-marketplace) 官方目录条目指向的对象。`npx skills add` 仍是有效的跨宿主备用方案。在 Grok Bot 上，X 搜索通过机器人的 X 连接器执行，并以官方 X API（`X_BEARER_TOKEN`）作为备用。
 
 ### Codex、Cursor、Copilot、Gemini CLI 与其他 Agent Skills 宿主
 
 通过开放的 [Agent Skills](https://agentskills.io) CLI 安装。它支持 50 多种运行环境，包括 `codex`、`cursor`、`github-copilot`、`gemini-cli`、`claude-code`、`windsurf`、`cline`、`continue`、`roo`、`aider-desk`、`opencode`、`goose` 等（完整列表见 [vercel-labs/skills 仓库](https://github.com/vercel-labs/skills)）。
 
 ```bash
-npx skills add mvanhorn/last30days-skill -g
+npx skills add cmdashc/last30days-nfl -g
 ```
 
 `-g`（全局）参数会把 Skill 安装到用户目录，因此所有项目均可使用。不加 `-g` 时，`npx skills` 会安装到当前项目的 `./.skills/` 中，并随仓库提交。对于一个用于研究整个世界的工具，全局安装通常更合适。
 
-Codex 桌面版和其他以文件夹为工作区的宿主，不仅能在 Git 仓库中运行，也能在普通文件夹中工作。若要在不启动研究的情况下检查一次运行会读取和写入什么，请从已加载的 Skill 目录运行随附的 `scripts/last30days.py --preflight`；若在源码仓库中，则运行等价命令 `python3 skills/last30days/scripts/last30days.py --preflight`。该命令会展示配置来源、浏览器 Cookie 方案、计划写入的文件、可选命令和被忽略的项目配置，但不会读取 Cookie、写入文件或执行研究。首次设置并不要求运行它。
+Codex 桌面版和其他以文件夹为工作区的宿主，不仅能在 Git 仓库中运行，也能在普通文件夹中工作。若要在不启动研究的情况下检查一次运行会读取和写入什么，请从已加载的 Skill 目录运行随附的 `scripts/nfl30.py --preflight`；若在源码仓库中，则运行等价命令 `python3 skills/nfl30/scripts/nfl30.py --preflight`。该命令会展示配置来源、浏览器 Cookie 方案、计划写入的文件、可选命令和被忽略的项目配置，但不会读取 Cookie、写入文件或执行研究。首次设置并不要求运行它。
 
 默认情况下，`npx skills` 会安装到它自动检测到的宿主。若要指定一个或多个宿主：
 
 ```bash
-npx skills add mvanhorn/last30days-skill -g -a codex
-npx skills add mvanhorn/last30days-skill -g -a cursor
-npx skills add mvanhorn/last30days-skill -g -a gemini-cli
-npx skills add mvanhorn/last30days-skill -g -a codex -a cursor
+npx skills add cmdashc/last30days-nfl -g -a codex
+npx skills add cmdashc/last30days-nfl -g -a cursor
+npx skills add cmdashc/last30days-nfl -g -a gemini-cli
+npx skills add cmdashc/last30days-nfl -g -a codex -a cursor
 ```
 
 日后可通过以下命令更新：
 
 ```bash
-npx skills update last30days -g
+npx skills update nfl30 -g
 ```
 
 也可以一次更新所有通过 `npx skills` 全局安装的 Skill：
@@ -241,11 +241,11 @@ npx skills update last30days -g
 npx skills update -g
 ```
 
-使用 `npx skills list -g` 查看列表，使用 `npx skills remove last30days -g` 卸载。
+使用 `npx skills list -g` 查看列表，使用 `npx skills remove nfl30 -g` 卸载。
 
 ### claude.ai（网页）
 
-1. 从最新版本[下载 `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill)
+1. 从最新版本[下载 `nfl30.skill`](https://github.com/cmdashc/last30days-nfl/releases/latest/download/nfl30.skill)
 2. 打开 [claude.ai > Customize > Skills](https://claude.ai/customize/skills)
 3. 在 Skills 面板点击 `+`，再选择 `Create skill` > `Upload a skill`，浏览或拖入文件
 
@@ -253,40 +253,40 @@ npx skills update -g
 
 ### Claude Desktop
 
-Claude Desktop 通过 `.mcpb` 包（一种一键式 Model Context Protocol 软件包）将 `/last30days` 安装为 MCP 服务器。
+Claude Desktop 通过 `.mcpb` 包（一种一键式 Model Context Protocol 软件包）将 `/nfl30` 安装为 MCP 服务器。
 
-1. 打开[最新版本](https://github.com/mvanhorn/last30days-skill/releases/latest)，下载适用于你的平台的 `.mcpb`：
-   - macOS Apple Silicon：`last30days-pp-mcp-darwin-arm64.mcpb`
-   - macOS Intel：`last30days-pp-mcp-darwin-amd64.mcpb`
-   - Linux x86_64：`last30days-pp-mcp-linux-amd64.mcpb`
+1. 打开[最新版本](https://github.com/cmdashc/last30days-nfl/releases/latest)，下载适用于你的平台的 `.mcpb`：
+   - macOS Apple Silicon：`nfl30-pp-mcp-darwin-arm64.mcpb`
+   - macOS Intel：`nfl30-pp-mcp-darwin-amd64.mcpb`
+   - Linux x86_64：`nfl30-pp-mcp-linux-amd64.mcpb`
 2. 打开 Claude Desktop，进入 Settings > Extensions，将文件拖入。
 3. 出现提示时，粘贴你想启用的数据源所需的 API 密钥。所有字段均可留空——如果全部跳过，引擎会降级为纯 Web 模式。密钥存储在操作系统的钥匙串中。
 4. 重启 Claude Desktop。让 Claude “research Peter Steinberger” 或研究任意主题，它就会调用 `research` 工具。
 
 **宿主要求：** PATH 中需要 Python 3.12+。软件包自带引擎源码，但使用本地 Python 解释器。Windows 用户可从 [python.org](https://www.python.org/downloads/) 安装；macOS 和大多数 Linux 发行版通常已提供兼容版本。
 
-**密钥不会与 Code Skill 同步。** Claude Desktop 与 Claude Code 采用彼此独立的凭据存储，这是有意的设计。即使你已为 Code Skill 配置 `~/.config/last30days/.env`，仍需在这里重新输入一次相同的密钥。
+**密钥不会与 Code Skill 同步。** Claude Desktop 与 Claude Code 采用彼此独立的凭据存储，这是有意的设计。即使你已为 Code Skill 配置 `~/.config/nfl30/.env`，仍需在这里重新输入一次相同的密钥。
 
 Windows 支持需要等各平台的清单入口点确定后再实现，请关注后续 Issue。
 
 ### OpenClaw
 
 ```bash
-clawhub install last30days-official
+clawhub install nfl30-official
 ```
 
-如果你需要在 `/last30days` 研究之外执行 X/Twitter 操作，例如发布推文或回复、导出关注者、处理媒体、监控账号或抽奖，可使用 [TweetClaw](https://github.com/Xquik-dev/tweetclaw) 作为配套 OpenClaw 插件。TweetClaw 由 Xquik-dev 维护，这里仅将其列为可选配套方案；它不是 last30days 的依赖，也不代表本项目为其背书。
+如果你需要在 `/nfl30` 研究之外执行 X/Twitter 操作，例如发布推文或回复、导出关注者、处理媒体、监控账号或抽奖，可使用 [TweetClaw](https://github.com/Xquik-dev/tweetclaw) 作为配套 OpenClaw 插件。TweetClaw 由 Xquik-dev 维护，这里仅将其列为可选配套方案；它不是 nfl30 的依赖，也不代表本项目为其背书。
 
 ### 手动安装（开发者）
 
 ```bash
-git clone https://github.com/mvanhorn/last30days-skill.git
-ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.claude/skills/last30days
+git clone https://github.com/cmdashc/last30days-nfl.git
+ln -s "$(pwd)/nfl30-skill/skills/nfl30" ~/.claude/skills/nfl30
 ```
 
-这个符号链接会让安装内容随工作区代码实时同步，无需重复复制。若用于 `claude.ai`，可从源码构建 `.skill` 文件：运行 `bash skills/last30days/scripts/build-skill.sh`，产物位于 `dist/last30days.skill`。
+这个符号链接会让安装内容随工作区代码实时同步，无需重复复制。若用于 `claude.ai`，可从源码构建 `.skill` 文件：运行 `bash skills/nfl30/scripts/build-skill.sh`，产物位于 `dist/nfl30.skill`。
 
-Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置即可使用。首次运行 `/last30days` 后，配置向导会在 30 秒内解锁更多来源，包括免费的 arXiv 与 Techmeme CLI。
+Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置即可使用。首次运行 `/nfl30` 后，配置向导会在 30 秒内解锁更多来源，包括免费的 arXiv 与 Techmeme CLI。
 
 ## 使用你自己的密钥
 
@@ -300,7 +300,7 @@ Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置�
 | YouTube | `brew install yt-dlp` | 免费 |
 | Bluesky | 来自 bsky.app 的应用密码 | 免费 |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube 评论 | ScrapeCreators 密钥 | 前 10,000 次调用免费，之后按量付费 |
-| 小红书（RED） | 运行已登录的 x-mcp 浏览器插件或 `xiaohongshu-mcp` 服务，并在单次运行中通过 `--search xhs` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=xiaohongshu`；last30days 会依次自动探测 `http://localhost:18060` 和 `http://host.docker.internal:18060`，也可通过 `XIAOHONGSHU_API_BASE` 指定自定义地址 | last30days 不需要 API 密钥；依赖本地浏览器会话服务 |
+| 小红书（RED） | 运行已登录的 x-mcp 浏览器插件或 `xiaohongshu-mcp` 服务，并在单次运行中通过 `--search xhs` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=xiaohongshu`；nfl30 会依次自动探测 `http://localhost:18060` 和 `http://host.docker.internal:18060`，也可通过 `XIAOHONGSHU_API_BASE` 指定自定义地址 | nfl30 不需要 API 密钥；依赖本地浏览器会话服务 |
 | DripStack（付费金融通讯） | 每次运行通过 `--search dripstack` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=dripstack` | 无需密钥；公共搜索 API 免费 |
 | Perplexity Agent API / Search API / Deep Research | Perplexity 密钥，或作为 Sonar 回退方案的 OpenRouter 密钥 | 按量付费；直接密钥启用 Agent API 和后台 Deep Research |
 | Web 搜索 | Brave Search 密钥 | 每月 2,000 次免费查询 |
@@ -311,17 +311,17 @@ Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置�
 
 ```bash
 # 交互式配置——逐个询问已知密钥，留空即可跳过
-skills/last30days/scripts/setup-keychain.sh
+skills/nfl30/scripts/setup-keychain.sh
 
 # 也可以手动存入单个密钥
-security add-generic-password -a "$USER" -s last30days-XAI_API_KEY -w "xai-..."
+security add-generic-password -a "$USER" -s nfl30-XAI_API_KEY -w "xai-..."
 
 # 查看 / 清理
-skills/last30days/scripts/setup-keychain.sh --list
-skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
+skills/nfl30/scripts/setup-keychain.sh --list
+skills/nfl30/scripts/setup-keychain.sh --delete XAI_API_KEY
 ```
 
-密钥项以 `last30days-<KEY>` 作为服务名称，归当前用户所有。在非 Darwin 平台上，加载器不会执行任何操作，因此 Linux/Windows 用户的行为不受影响。
+密钥项以 `nfl30-<KEY>` 作为服务名称，归当前用户所有。在非 Darwin 平台上，加载器不会执行任何操作，因此 Linux/Windows 用户的行为不受影响。
 
 如果已有密钥使用其他 Keychain 服务名称，可按 [CONFIGURATION.md](CONFIGURATION.md#reusing-existing-macos-keychain-items) 中的说明设置不含秘密的 `LAST30DAYS_KEYCHAIN_ALIASES` 映射，无需复制密钥。
 
@@ -331,23 +331,23 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 第一天使用时，你大概最想知道以下两件事：
 
-**研究文件保存在哪里。** `LAST30DAYS_MEMORY_DIR` 默认指向 `~/Documents/Last30Days/`（Windows：`C:\Users\<you>\Documents\Last30Days\`）。可以在 shell 中把该环境变量设为任意路径，也可以为单次运行传入 `--save-dir <path>`。若需要把渲染结果精确写入某个路径，请使用 `--output <file>`；文件格式由 `--emit` 决定。使用 `--save-suffix=<name>` 可分别保存同一主题的多个版本（例如按客户区分）。每次使用 `--save-dir` 都会生成 `<slug>-raw[-suffix].md`。可选运行 `python3 skills/last30days/scripts/last30days.py --preflight`，在不启动研究的情况下预览计划写入的内容。
+**研究文件保存在哪里。** `LAST30DAYS_MEMORY_DIR` 默认指向 `~/Documents/NFL30/`（Windows：`C:\Users\<you>\Documents\NFL30\`）。可以在 shell 中把该环境变量设为任意路径，也可以为单次运行传入 `--save-dir <path>`。若需要把渲染结果精确写入某个路径，请使用 `--output <file>`；文件格式由 `--emit` 决定。使用 `--save-suffix=<name>` 可分别保存同一主题的多个版本（例如按客户区分）。每次使用 `--save-dir` 都会生成 `<slug>-raw[-suffix].md`。可选运行 `python3 skills/nfl30/scripts/nfl30.py --preflight`，在不启动研究的情况下预览计划写入的内容。
 
-**面向智能体和工作流的结构化输出。** 让 `/last30days` 输出机器可读的 JSON，即可获得稳定且带版本号的 agent profile。若在脚本或开发中直接调用引擎，可运行 `python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json`；只有确实需要未版本化的内部 `Report` 转储时，才添加 `--json-profile=raw`。详见 [JSON 导出字段参考与版本策略](docs/reference/json-export.md)。
+**面向智能体和工作流的结构化输出。** 让 `/nfl30` 输出机器可读的 JSON，即可获得稳定且带版本号的 agent profile。若在脚本或开发中直接调用引擎，可运行 `python3 skills/nfl30/scripts/nfl30.py "AI coding agents" --emit=json`；只有确实需要未版本化的内部 `Report` 转储时，才添加 `--json-profile=raw`。详见 [JSON 导出字段参考与版本策略](docs/reference/json-export.md)。
 
-**无指定主题的趋势发现。** 输入 `/last30days what's trending in AI agents?`，会得到按排名整理的发现简报，而不是研究一个你已经知道的主题。在智能体宿主上，它会执行由宿主模型评审的三段式流程：模型命名主题、过滤垃圾、判断内容价值并撰写切入角度。在脚本或定时任务中直接调用引擎时，可运行 `python3 skills/last30days/scripts/last30days.py --discover "AI agents"`（单次执行：主题名称由确定性逻辑生成，不含内容角度）；加入 `--emit=json` 可获得带版本号的发现数据契约。发现模式不能与位置参数主题或 `--drill` 同时使用。
+**无指定主题的趋势发现。** 输入 `/nfl30 what's trending in AI agents?`，会得到按排名整理的发现简报，而不是研究一个你已经知道的主题。在智能体宿主上，它会执行由宿主模型评审的三段式流程：模型命名主题、过滤垃圾、判断内容价值并撰写切入角度。在脚本或定时任务中直接调用引擎时，可运行 `python3 skills/nfl30/scripts/nfl30.py --discover "AI agents"`（单次执行：主题名称由确定性逻辑生成，不含内容角度）；加入 `--emit=json` 可获得带版本号的发现数据契约。发现模式不能与位置参数主题或 `--drill` 同时使用。
 
-**跨运行趋势监控。** 默认模式每次运行都会生成新的 Markdown 快照。若要长期积累结果，可添加 `--store` 写入 SQLite 数据库；随后使用 [`scripts/watchlist.py`](skills/last30days/scripts/watchlist.py) 定时运行（发现新内容时可发送到 Slack 或 Webhook），使用 [`scripts/briefing.py`](skills/last30days/scripts/briefing.py) 生成日报或周报。完整的周期配置见 [CONFIGURATION.md](CONFIGURATION.md#trend-monitoring-store--watchlist--briefings)。
+**跨运行趋势监控。** 默认模式每次运行都会生成新的 Markdown 快照。若要长期积累结果，可添加 `--store` 写入 SQLite 数据库；随后使用 [`scripts/watchlist.py`](skills/nfl30/scripts/watchlist.py) 定时运行（发现新内容时可发送到 Slack 或 Webhook），使用 [`scripts/briefing.py`](skills/nfl30/scripts/briefing.py) 生成日报或周报。完整的周期配置见 [CONFIGURATION.md](CONFIGURATION.md#trend-monitoring-store--watchlist--briefings)。
 
-**可订阅的研究资料库。** 让 `/last30days` 构建你的资料库信息流；在脚本和开发中也可以直接运行 `python3 skills/last30days/scripts/last30days.py library feed`。该命令会把已保存的简报整理成 `index.html`、本地 Atom `feed.xml` 和便于阅读的简报页面。仅在确实想托管 HTML 索引和简报页面时添加 `--publish`；发布必须显式开启，且默认公开。若要让 Atom 信息流可订阅，请将生成目录托管到 GitHub Pages 等静态站点服务。
+**可订阅的研究资料库。** 让 `/nfl30` 构建你的资料库信息流；在脚本和开发中也可以直接运行 `python3 skills/nfl30/scripts/nfl30.py library feed`。该命令会把已保存的简报整理成 `index.html`、本地 Atom `feed.xml` 和便于阅读的简报页面。仅在确实想托管 HTML 索引和简报页面时添加 `--publish`；发布必须显式开启，且默认公开。若要让 Atom 信息流可订阅，请将生成目录托管到 GitHub Pages 等静态站点服务。
 
-**搜索你做过的所有研究。** 输入 `/last30days search my library for MCP servers` 或 `/last30days have I researched MCP servers before?`。直接调用引擎时，运行 `python3 skills/last30days/scripts/last30days.py library search "MCP servers"`。搜索完全离线且结果确定：它增量索引资料库信息流使用的同一批简报，合并每次运行存储的匹配记录，并按主题和日期分组。新的研究若与历史内容重叠，还会显示精简的 **From your library** 章节；设置 `LAST30DAYS_LIBRARY_CONTEXT=off` 可关闭这种被动上下文。
+**搜索你做过的所有研究。** 输入 `/nfl30 search my library for MCP servers` 或 `/nfl30 have I researched MCP servers before?`。直接调用引擎时，运行 `python3 skills/nfl30/scripts/nfl30.py library search "MCP servers"`。搜索完全离线且结果确定：它增量索引资料库信息流使用的同一批简报，合并每次运行存储的匹配记录，并按主题和日期分组。新的研究若与历史内容重叠，还会显示精简的 **From your library** 章节；设置 `LAST30DAYS_LIBRARY_CONTEXT=off` 可关闭这种被动上下文。
 
 各客户端包装脚本、自定义分类同类 subreddit，以及用于试验进行中定制功能的 beta 通道，也都记录在 [CONFIGURATION.md](CONFIGURATION.md) 中。
 
 ## 展示：社区研究信息流
 
-你是否用 last30days 发布了定期 AI 动态、市场观察，或某个小众到可爱的长期专题？欢迎在[社区展示帖](https://github.com/mvanhorn/last30days-skill/issues/532)分享公开资料库 URL；若已将 `feed.xml` 托管到静态站点，也可分享 Atom URL。社区成员提交后，我们会在这里陆续添加链接；在此之前，该讨论帖就是统一的收集入口。
+你是否用 nfl30 发布了定期 AI 动态、市场观察，或某个小众到可爱的长期专题？欢迎在[社区展示帖](https://github.com/cmdashc/last30days-nfl/issues/532)分享公开资料库 URL；若已将 `feed.xml` 托管到静态站点，也可分享 Atom URL。社区成员提交后，我们会在这里陆续添加链接；在此之前，该讨论帖就是统一的收集入口。
 
 ## 工作原理
 
@@ -365,7 +365,7 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 > “仅仅这一个 Skill，就取代了我的整套研究工作流。给它一个主题，它会抓取 Reddit、X 和 Web 上人们真正在谈论的内容。不是陈旧的博客，而是过去 30 天里真实发生的讨论。” ——@itswilsoncharles
 
-> “今天 GitHub 的 10 个趋势仓库中，有 5 个是 Claude 工具。第一名：mvanhorn/last30days-skill。” ——@yieldhunter95
+> “今天 GitHub 的 10 个趋势仓库中，有 5 个是 Claude 工具。第一名：cmdashc/last30days-nfl。” ——@yieldhunter95
 
 ## 开源
 
@@ -377,14 +377,14 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 ## Star 历史
 
-<a href="https://star-history.dera.page/#mvanhorn/last30days-skill&Date">
+<a href="https://star-history.dera.page/#cmdashc/last30days-nfl&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
-    <img alt="Star 历史图" src="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=cmdashc/last30days-nfl&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=cmdashc/last30days-nfl&type=Date" />
+    <img alt="Star 历史图" src="https://star-history.dera.page/svg?repos=cmdashc/last30days-nfl&type=Date" />
   </picture>
 </a>
 
 ---
 
-**@slashlast30days** · [github.com/mvanhorn/last30days-skill](https://github.com/mvanhorn/last30days-skill)
+**@slashnfl30** · [github.com/cmdashc/last30days-nfl](https://github.com/cmdashc/last30days-nfl)

@@ -646,7 +646,7 @@ def test_from_lane_preserves_items_collected_before_revocation(monkeypatch):
 
 def test_child_home_is_not_the_users_home(monkeypatch, tmp_path):
     """Stripping credential env vars is not enough: the engine writes those same
-    credentials to $HOME/.config/last30days/.env, and an empty cwd is no
+    credentials to $HOME/.config/nfl30/.env, and an empty cwd is no
     boundary for a filesystem-capable child (cwd bounds relative paths, not
     $HOME/... reads)."""
     seen = {}

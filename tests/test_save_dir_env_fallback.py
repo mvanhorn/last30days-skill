@@ -8,7 +8,7 @@ making the failure invisible. These tests pin the fix: an unset `--save-dir`
 now defaults to `LAST30DAYS_MEMORY_DIR` from either os.environ or the user's
 .env file, mirroring the LAST30DAYS_STORE pattern.
 
-Issue: https://github.com/dzivkovi/last30days-skill/issues/8
+Issue: https://github.com/dzivkovi/nfl30-skill/issues/8
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _engine_path() -> Path:
-    return REPO_ROOT / "skills" / "last30days" / "scripts" / "last30days.py"
+    return REPO_ROOT / "skills" / "nfl30" / "scripts" / "nfl30.py"
 
 
 def _run_engine(
@@ -65,7 +65,7 @@ class SaveDirEnvFallbackTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp(prefix="l30d-savedir-env-"))
         self.config_dir = self.tmp / "config"
         self.config_dir.mkdir()
-        self.save_target = self.tmp / "Last30Days"
+        self.save_target = self.tmp / "NFL30"
         self.save_target.mkdir()
 
     def tearDown(self) -> None:

@@ -9,7 +9,7 @@ from pathlib import Path
 from lib import setup_wizard
 
 ROOT = Path(__file__).resolve().parents[1]
-ENGINE = ROOT / "skills" / "last30days" / "scripts" / "last30days.py"
+ENGINE = ROOT / "skills" / "nfl30" / "scripts" / "nfl30.py"
 
 
 class TestWelcome(unittest.TestCase):
@@ -43,7 +43,7 @@ class TestWelcome(unittest.TestCase):
             timeout=30,
         )
         self.assertEqual(proc.returncode, 0)
-        self.assertIn("Welcome to /last30days!", proc.stdout)
+        self.assertIn("Welcome to /nfl30!", proc.stdout)
         # The command output is exactly the engine welcome (model relays verbatim).
         self.assertEqual(proc.stdout.strip(), setup_wizard.render_welcome().strip())
 

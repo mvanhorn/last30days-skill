@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import unittest
 
-import last30days as cli
+import nfl30 as cli
 from lib import render, schema
 
 
@@ -108,7 +108,7 @@ class RenderComparisonMultiTests(unittest.TestCase):
         self.assertIn("never from memory", rendered)
         # Envelope scaffolding present
         self.assertIn("EVIDENCE FOR SYNTHESIS", rendered)
-        self.assertIn("END OF last30days CANONICAL OUTPUT", rendered)
+        self.assertIn("END OF nfl30 CANONICAL OUTPUT", rendered)
 
     def test_two_entity_table_has_two_columns(self):
         reports = [

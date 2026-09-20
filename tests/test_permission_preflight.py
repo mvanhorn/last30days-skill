@@ -8,10 +8,10 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
-import last30days as cli
+import nfl30 as cli
 from lib import env, permission_preflight, pipeline
 
-DEFAULT_SAVE_DIR = "~" + "/Documents/Last30Days"
+DEFAULT_SAVE_DIR = "~" + "/Documents/NFL30"
 
 
 def _diag(**overrides):
@@ -131,7 +131,7 @@ def test_preflight_project_config_not_active_is_not_trusted_with_trust_env():
 
 
 def test_preflight_reports_ignored_project_config_without_secret_values(tmp_path, monkeypatch):
-    project_env = tmp_path / ".claude" / "last30days.env"
+    project_env = tmp_path / ".claude" / "nfl30.env"
     project_env.parent.mkdir()
     project_env.write_text(
         "OPENAI_BASE_URL=https://attacker.example\nOPENAI_API_KEY=sk-not-reported\n",
@@ -190,7 +190,7 @@ def test_cli_preflight_uses_plan_only_policy_and_does_not_run_research(monkeypat
     with mock.patch.object(cli.env, "get_config", side_effect=fake_get_config), \
          mock.patch.object(cli.pipeline, "diagnose", return_value=_diag_with_preflight()) as diagnose, \
          mock.patch.object(cli.pipeline, "run", side_effect=AssertionError("research should not run")), \
-         mock.patch.object(sys, "argv", ["last30days.py", "--preflight"]):
+         mock.patch.object(sys, "argv", ["nfl30.py", "--preflight"]):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -199,7 +199,7 @@ def test_cli_preflight_uses_plan_only_policy_and_does_not_run_research(monkeypat
     assert seen["policy"].browser_cookies == "plan_only"
     assert seen["policy"].inspect_ignored_project_config is True
     diagnose.assert_called_once()
-    assert "last30days preflight" in stdout.getvalue()
+    assert "nfl30 preflight" in stdout.getvalue()
     assert "Local writes:" in stdout.getvalue()
 
 
@@ -209,7 +209,7 @@ def test_cli_preflight_reuses_embedded_preflight_without_save_overrides(monkeypa
     with mock.patch.object(cli.env, "get_config", return_value={}), \
          mock.patch.object(cli.pipeline, "diagnose", return_value=diag), \
          mock.patch.object(cli.permission_preflight, "build", side_effect=AssertionError("should reuse embedded preflight")), \
-         mock.patch.object(sys, "argv", ["last30days.py", "--preflight", "--emit=json"]):
+         mock.patch.object(sys, "argv", ["nfl30.py", "--preflight", "--emit=json"]):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -223,7 +223,7 @@ def test_cli_preflight_reports_explicit_save_dir(monkeypatch, tmp_path):
     save_dir = tmp_path / "reports"
     with mock.patch.object(cli.env, "get_config", return_value={}), \
          mock.patch.object(cli.pipeline, "diagnose", return_value=_diag_with_preflight()), \
-         mock.patch.object(sys, "argv", ["last30days.py", "--preflight", "--save-dir", str(save_dir)]):
+         mock.patch.object(sys, "argv", ["nfl30.py", "--preflight", "--save-dir", str(save_dir)]):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -240,7 +240,7 @@ def test_cli_preflight_reports_conditional_save_dir(monkeypatch):
              sys,
              "argv",
              [
-                 "last30days.py",
+                 "nfl30.py",
                  "--preflight",
                  "--preflight-report-on-save-dir",
                  DEFAULT_SAVE_DIR,
@@ -257,7 +257,7 @@ def test_cli_preflight_reports_conditional_save_dir(monkeypatch):
 def test_cli_preflight_json_returns_structured_contract(monkeypatch):
     with mock.patch.object(cli.env, "get_config", return_value={}), \
          mock.patch.object(cli.pipeline, "diagnose", return_value=_diag_with_preflight()), \
-         mock.patch.object(sys, "argv", ["last30days.py", "--preflight", "--emit=json"]):
+         mock.patch.object(sys, "argv", ["nfl30.py", "--preflight", "--emit=json"]):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):

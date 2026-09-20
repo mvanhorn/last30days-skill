@@ -20,7 +20,7 @@ import (
 const DefaultPythonBinary = "python3"
 
 // MinPythonVersion mirrors the engine's MIN_PYTHON constant in
-// last30days.py. Surfaced in errors so users know what they're missing.
+// nfl30.py. Surfaced in errors so users know what they're missing.
 const MinPythonVersion = "3.12"
 
 // PythonInstallURL is included in the missing-interpreter error so users
@@ -46,7 +46,7 @@ const PythonEnvOverride = "LAST30DAYS_PYTHON"
 type RunOptions struct {
 	PythonPath string        // resolved test/caller override; empty honors PythonEnvOverride, then DefaultPythonBinary
 	CacheDir   string        // engine.Ensure result; lib/ here is added to PYTHONPATH
-	Args       []string      // arguments after last30days.py (topic, --emit=..., etc.)
+	Args       []string      // arguments after nfl30.py (topic, --emit=..., etc.)
 	ExtraEnv   []string      // appended to os.Environ() for the child process
 	Timeout    time.Duration // zero means DefaultTimeout or TimeoutEnvOverride
 }
@@ -61,7 +61,7 @@ type RunResult struct {
 	TimedOut bool
 }
 
-// Run shells out to python3 with last30days.py inside cacheDir. The child
+// Run shells out to python3 with nfl30.py inside cacheDir. The child
 // receives the parent environment (so MCPB user_config env-injection
 // reaches the engine) plus ExtraEnv and a PYTHONPATH that points at the
 // cache so the engine's `from lib import ...` statements resolve.
@@ -78,9 +78,9 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 		return nil, err
 	}
 
-	scriptPath := filepath.Join(opts.CacheDir, "last30days.py")
+	scriptPath := filepath.Join(opts.CacheDir, "nfl30.py")
 	if _, err := os.Stat(scriptPath); err != nil {
-		return nil, fmt.Errorf("engine: last30days.py not found in cache %s: %w", opts.CacheDir, err)
+		return nil, fmt.Errorf("engine: nfl30.py not found in cache %s: %w", opts.CacheDir, err)
 	}
 
 	timeout := resolveTimeout(opts.Timeout)

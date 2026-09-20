@@ -17,12 +17,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _engine_path() -> Path:
-    return REPO_ROOT / "skills" / "last30days" / "scripts" / "last30days.py"
+    return REPO_ROOT / "skills" / "nfl30" / "scripts" / "nfl30.py"
 
 
 class PerEntitySaveFilesTests(unittest.TestCase):
     def _run(self, *argv: str, topic: str) -> tuple[subprocess.CompletedProcess, Path]:
-        save_dir = Path(tempfile.mkdtemp(prefix="last30days-test-"))
+        save_dir = Path(tempfile.mkdtemp(prefix="nfl30-test-"))
         cmd = [
             sys.executable,
             str(_engine_path()),
@@ -52,7 +52,7 @@ class PerEntitySaveFilesTests(unittest.TestCase):
         expected_main = (save_dir / "kanye-west-raw.md").resolve()
         expected_peer = (save_dir / "drake-raw.md").resolve()
         self.assertIn(
-            f"[last30days] Comparison artifact set: main={expected_main}; "
+            f"[nfl30] Comparison artifact set: main={expected_main}; "
             f"peers={expected_peer}",
             result.stderr,
         )

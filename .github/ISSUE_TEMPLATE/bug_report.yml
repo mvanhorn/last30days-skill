@@ -16,7 +16,7 @@ body:
       label: Steps to Reproduce
       description: How can we reproduce this?
       placeholder: |
-        1. Run `python3 skills/last30days/scripts/last30days.py "topic" --emit=compact`
+        1. Run `python3 skills/nfl30/scripts/nfl30.py "topic" --emit=compact`
         2. ...
     validations:
       required: true

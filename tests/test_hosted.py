@@ -18,7 +18,7 @@ from unittest import mock
 
 import pytest
 
-import last30days as cli
+import nfl30 as cli
 from lib import hosted, http, schema
 
 TEST_KEY = "sk_live_DUMMY_TEST_KEY_00000"
@@ -98,7 +98,7 @@ def make_report(topic: str = "test topic") -> schema.Report:
 
 def run_main(argv):
     stdout, stderr = io.StringIO(), io.StringIO()
-    with mock.patch.object(sys, "argv", ["last30days.py", *argv]):
+    with mock.patch.object(sys, "argv", ["nfl30.py", *argv]):
         with redirect_stdout(stdout), redirect_stderr(stderr):
             rc = cli.main()
     return rc, stdout.getvalue(), stderr.getvalue()

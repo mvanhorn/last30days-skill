@@ -21,7 +21,7 @@ CONFIGURATION_MD = REPO_ROOT / "CONFIGURATION.md"
 # A CLI fix must start with a runnable token: the engine invocation, an env
 # assignment (optionally exported), or a documented binary name.
 RUNNABLE = re.compile(
-    r"^(?:python3 \S*last30days\.py\b"
+    r"^(?:python3 \S*nfl30\.py\b"
     r"|[A-Z][A-Z0-9_]*="
     r"|export [A-Z][A-Z0-9_]*="
     r"|(?:brew|pipx|pip|scoop|npx|npm|xurl|yt-dlp|docker|grok) )"
@@ -122,13 +122,13 @@ class TestCompletenessLint:
 
 class TestDocumentedCliForms:
     def test_x_cookie_fixes_use_setup_with_browser_cookie_consent(self):
-        expected = "python3 skills/last30days/scripts/last30days.py setup --allow-browser-cookies"
+        expected = "python3 skills/nfl30/scripts/nfl30.py setup --allow-browser-cookies"
         assert prescriptions.get("x", "cookies_missing").fix_cli == expected
         assert prescriptions.get("x", "cookies_expired").fix_cli == expected
 
     def test_scrapecreators_fix_is_the_github_device_flow(self):
         entry = prescriptions.get("scrapecreators", "key_missing")
-        assert entry.fix_cli == "python3 skills/last30days/scripts/last30days.py setup --github"
+        assert entry.fix_cli == "python3 skills/nfl30/scripts/nfl30.py setup --github"
 
     def test_ytdlp_install_and_reinstall_reference_u1_health_strings(self):
         """Binary-class fixes reference U1's tables instead of restating them."""
@@ -246,7 +246,7 @@ class TestSharedWithQualityNudge:
         ``config.get("XAI_API_KEY")``); this guards the FIX text.
         """
         source = (
-            REPO_ROOT / "skills/last30days/scripts/lib/quality_nudge.py"
+            REPO_ROOT / "skills/nfl30/scripts/lib/quality_nudge.py"
         ).read_text(encoding="utf-8")
         assert "brew " not in source
         assert "api.x.ai" not in source

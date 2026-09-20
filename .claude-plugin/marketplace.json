@@ -1,15 +1,15 @@
 {
-  "name": "last30days-skill",
+  "name": "nfl30-skill",
   "owner": {
     "name": "Matt Van Horn",
     "url": "https://github.com/mvanhorn"
   },
   "metadata": {
-    "description": "Marketplace hosting the last30days research plugin."
+    "description": "Marketplace hosting the nfl30 research plugin."
   },
   "plugins": [
     {
-      "name": "last30days",
+      "name": "nfl30",
       "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and 5+ more sources. AI agent scores by upvotes, likes, and real money - not editors.",
       "version": "3.25.0",
       "author": {
@@ -18,7 +18,7 @@
       },
       "source": "./",
       "category": "productivity",
-      "homepage": "https://github.com/mvanhorn/last30days-skill"
+      "homepage": "https://github.com/cmdashc/last30days-nfl"
     }
   ]
 }

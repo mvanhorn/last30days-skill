@@ -77,7 +77,7 @@ class SkillVersionFallbackTests(unittest.TestCase):
 
     def test_manifest_empty_version_string_falls_back_to_skill_md_frontmatter(self):
         # Manifest version present but empty — treat as missing so the badge
-        # doesn't emit a useless "🌐 last30days v · synced ..." line.
+        # doesn't emit a useless "🌐 nfl30 v · synced ..." line.
         skill_dir = self.tmp_path / "skill_root"
         fake_render = self._make_render_at(skill_dir)
         (skill_dir / ".claude-plugin").mkdir()

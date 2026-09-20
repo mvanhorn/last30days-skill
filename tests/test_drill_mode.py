@@ -7,7 +7,7 @@ from unittest import mock
 
 import pytest
 
-import last30days as cli
+import nfl30 as cli
 from lib import pipeline, planner, render, schema
 
 
@@ -301,7 +301,7 @@ def test_expired_cache_exits_cleanly_with_research_guidance(tmp_path: Path):
     with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
          mock.patch.object(cli.env, "get_config", return_value={}), \
          mock.patch.object(cli.pipeline, "run", side_effect=AssertionError("pipeline should not run")), \
-         mock.patch.object(cli.sys, "argv", ["last30days.py", "--drill", "cluster 1"]):
+         mock.patch.object(cli.sys, "argv", ["nfl30.py", "--drill", "cluster 1"]):
         stderr = io.StringIO()
         with redirect_stderr(stderr):
             rc = cli.main()
@@ -500,7 +500,7 @@ def test_merge_collapses_exact_url_rediscoveries():
 
 
 def test_write_last_run_returns_false_on_failure(monkeypatch, capsys):
-    import last30days as cli
+    import nfl30 as cli
     from lib import env
 
     class ExplodingPath:
@@ -518,7 +518,7 @@ def test_drill_gates_subreddit_context_on_source_allowlist(monkeypatch):
     import io
     from contextlib import redirect_stdout, redirect_stderr
     from unittest import mock
-    import last30days as cli
+    import nfl30 as cli
     from lib import schema
 
     report = _report()

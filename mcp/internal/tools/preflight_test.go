@@ -11,7 +11,7 @@ func TestPreflightRunArgsDefaultTextIsSafe(t *testing.T) {
 	want := []string{
 		"--preflight",
 		"--preflight-report-on-save-dir",
-		"~/Documents/Last30Days",
+		"~/Documents/NFL30",
 	}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
@@ -19,12 +19,12 @@ func TestPreflightRunArgsDefaultTextIsSafe(t *testing.T) {
 }
 
 func TestPreflightRunArgsJSONIsSafeAndStructured(t *testing.T) {
-	t.Setenv("LAST30DAYS_MEMORY_DIR", "/tmp/last30days-reports")
+	t.Setenv("LAST30DAYS_MEMORY_DIR", "/tmp/nfl30-reports")
 	args := preflightRunArgs("json")
 	want := []string{
 		"--preflight",
 		"--preflight-report-on-save-dir",
-		"/tmp/last30days-reports",
+		"/tmp/nfl30-reports",
 		"--emit=json",
 	}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {

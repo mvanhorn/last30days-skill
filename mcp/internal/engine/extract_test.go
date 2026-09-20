@@ -10,7 +10,7 @@ import (
 
 func newTestFS() fstest.MapFS {
 	return fstest.MapFS{
-		"last30days.py":  &fstest.MapFile{Data: []byte("# last30days entry\n"), Mode: 0o644},
+		"nfl30.py":  &fstest.MapFile{Data: []byte("# nfl30 entry\n"), Mode: 0o644},
 		"lib/__init__.py": &fstest.MapFile{Data: []byte(""), Mode: 0o644},
 		"lib/env.py":      &fstest.MapFile{Data: []byte("# env helpers\n"), Mode: 0o644},
 	}
@@ -27,7 +27,7 @@ func TestEnsureExtractsEngine(t *testing.T) {
 	if cacheDir != filepath.Join(base, cacheSubdir, "v1") {
 		t.Fatalf("cacheDir = %q, want %q", cacheDir, filepath.Join(base, cacheSubdir, "v1"))
 	}
-	mustReadFile(t, filepath.Join(cacheDir, "last30days.py"), "# last30days entry\n")
+	mustReadFile(t, filepath.Join(cacheDir, "nfl30.py"), "# nfl30 entry\n")
 	mustReadFile(t, filepath.Join(cacheDir, "lib/env.py"), "# env helpers\n")
 	mustReadFile(t, filepath.Join(cacheDir, SentinelFilename), "v1")
 }
@@ -40,7 +40,7 @@ func TestEnsureSkipsWhenSentinelMatches(t *testing.T) {
 	if err != nil {
 		t.Fatalf("first Ensure: %v", err)
 	}
-	target := filepath.Join(cacheDir, "last30days.py")
+	target := filepath.Join(cacheDir, "nfl30.py")
 	info1, err := os.Stat(target)
 	if err != nil {
 		t.Fatalf("stat: %v", err)
@@ -65,10 +65,10 @@ func TestEnsureSkipsWhenSentinelMatches(t *testing.T) {
 
 func TestEnsureReExtractsOnVersionChange(t *testing.T) {
 	v1 := fstest.MapFS{
-		"last30days.py": &fstest.MapFile{Data: []byte("v1\n"), Mode: 0o644},
+		"nfl30.py": &fstest.MapFile{Data: []byte("v1\n"), Mode: 0o644},
 	}
 	v2 := fstest.MapFS{
-		"last30days.py": &fstest.MapFile{Data: []byte("v2\n"), Mode: 0o644},
+		"nfl30.py": &fstest.MapFile{Data: []byte("v2\n"), Mode: 0o644},
 	}
 	base := t.TempDir()
 
@@ -83,8 +83,8 @@ func TestEnsureReExtractsOnVersionChange(t *testing.T) {
 	if cache1 == cache2 {
 		t.Fatalf("expected distinct cache dirs per version, got %q == %q", cache1, cache2)
 	}
-	mustReadFile(t, filepath.Join(cache1, "last30days.py"), "v1\n")
-	mustReadFile(t, filepath.Join(cache2, "last30days.py"), "v2\n")
+	mustReadFile(t, filepath.Join(cache1, "nfl30.py"), "v1\n")
+	mustReadFile(t, filepath.Join(cache2, "nfl30.py"), "v2\n")
 }
 
 func TestEnsureConcurrentFirstCall(t *testing.T) {
@@ -115,7 +115,7 @@ func TestEnsureConcurrentFirstCall(t *testing.T) {
 			t.Fatalf("goroutine 0 saw %q, goroutine %d saw %q", results[0], i, results[i])
 		}
 	}
-	mustReadFile(t, filepath.Join(results[0], "last30days.py"), "# last30days entry\n")
+	mustReadFile(t, filepath.Join(results[0], "nfl30.py"), "# nfl30 entry\n")
 }
 
 func TestEnsureRejectsEmptyVersion(t *testing.T) {
@@ -152,7 +152,7 @@ func TestEnsureUserCacheHonorsOverride(t *testing.T) {
 	if cacheDir != want {
 		t.Fatalf("cacheDir = %q, want %q", cacheDir, want)
 	}
-	mustReadFile(t, filepath.Join(cacheDir, "last30days.py"), "# last30days entry\n")
+	mustReadFile(t, filepath.Join(cacheDir, "nfl30.py"), "# nfl30 entry\n")
 }
 
 func mustReadFile(t *testing.T, path, want string) {

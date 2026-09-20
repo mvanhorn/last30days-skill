@@ -5,7 +5,7 @@ from unittest import mock
 
 
 def load_verify_module():
-    path = Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts" / "verify_v3.py"
+    path = Path(__file__).resolve().parents[1] / "skills" / "nfl30" / "scripts" / "verify_v3.py"
     spec = importlib.util.spec_from_file_location("verify_v3_module", path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
@@ -38,7 +38,7 @@ class VerifyV3Tests(unittest.TestCase):
 
     def test_unit_stage_invokes_pytest_runner(self):
         module = load_verify_module()
-        rg_files = mock.Mock(stdout="skills/last30days/scripts/verify_v3.py\n")
+        rg_files = mock.Mock(stdout="skills/nfl30/scripts/verify_v3.py\n")
         with mock.patch.object(module, "run_command") as run, mock.patch.object(
             module.subprocess, "run", return_value=rg_files
         ):

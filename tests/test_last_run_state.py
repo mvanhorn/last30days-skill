@@ -9,15 +9,15 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-import last30days as cli
+import nfl30 as cli
 from lib import schema
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LAST30DAYS_SCRIPT = REPO_ROOT / "skills" / "last30days" / "scripts" / "last30days.py"
-SKILL_MD = REPO_ROOT / "skills" / "last30days" / "SKILL.md"
+LAST30DAYS_SCRIPT = REPO_ROOT / "skills" / "nfl30" / "scripts" / "nfl30.py"
+SKILL_MD = REPO_ROOT / "skills" / "nfl30" / "SKILL.md"
 
 
-def run_last30days(topic: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+def run_nfl30(topic: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(LAST30DAYS_SCRIPT), topic, "--mock", "--emit=json"],
         cwd=REPO_ROOT,
@@ -82,10 +82,10 @@ class LastRunStateTests(unittest.TestCase):
             env["HOME"] = str(home)
             env["LAST30DAYS_CONFIG_DIR"] = ""
 
-            result = run_last30days("synthetic eval query", env)
+            result = run_nfl30("synthetic eval query", env)
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertFalse((home / ".config" / "last30days" / "last-run.json").exists())
+            self.assertFalse((home / ".config" / "nfl30" / "last-run.json").exists())
 
     def test_custom_config_override_writes_last_run_to_custom_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -94,7 +94,7 @@ class LastRunStateTests(unittest.TestCase):
             env["HOME"] = str(Path(tmp) / "home")
             env["LAST30DAYS_CONFIG_DIR"] = str(config_dir)
 
-            result = run_last30days("custom config query", env)
+            result = run_nfl30("custom config query", env)
 
             self.assertEqual(result.returncode, 0, result.stderr)
             payload = json.loads((config_dir / "last-run.json").read_text())
@@ -166,7 +166,7 @@ class LastRunStateTests(unittest.TestCase):
                  mock.patch.object(cli.pipeline, "diagnose", return_value=_diag()), \
                  mock.patch.object(cli.pipeline, "run", side_effect=AssertionError("pipeline should not run")), \
                  mock.patch.object(sys, "argv", [
-                     "last30days.py",
+                     "nfl30.py",
                      "OpenClaw",
                      "--emit=html",
                      "--synthesis-file",
@@ -199,7 +199,7 @@ class LastRunStateTests(unittest.TestCase):
                  mock.patch.object(cli.ui, "ProgressDisplay"), \
                  mock.patch.object(cli, "_load_last_report_cache") as cache_mock, \
                  mock.patch.object(sys, "argv", [
-                     "last30days.py",
+                     "nfl30.py",
                      "OpenClaw",
                      "--deep-research",
                      "--emit=html",
@@ -236,7 +236,7 @@ class LastRunStateTests(unittest.TestCase):
                  mock.patch.object(cli.pipeline, "diagnose", return_value=_diag()), \
                  mock.patch.object(cli.pipeline, "run", side_effect=AssertionError("pipeline should not run")), \
                  mock.patch.object(sys, "argv", [
-                     "last30days.py",
+                     "nfl30.py",
                      "Alpha",
                      "vs",
                      "Beta",
@@ -252,7 +252,7 @@ class LastRunStateTests(unittest.TestCase):
 
             self.assertEqual(0, rc)
             self.assertIn("Cached comparison body.", stdout.getvalue())
-            self.assertIn("last30days · Alpha vs Beta", stdout.getvalue())
+            self.assertIn("nfl30 · Alpha vs Beta", stdout.getvalue())
             self.assertIn("Reusing cached report data", stderr.getvalue())
 
     def test_html_synthesis_warns_and_falls_back_when_cache_topic_misses(self):
@@ -270,7 +270,7 @@ class LastRunStateTests(unittest.TestCase):
                  mock.patch.object(cli.pipeline, "run", return_value=fresh_report) as run_mock, \
                  mock.patch.object(cli.ui, "ProgressDisplay"), \
                  mock.patch.object(sys, "argv", [
-                     "last30days.py",
+                     "nfl30.py",
                      "Different",
                      "Topic",
                      "--emit=html",
@@ -307,7 +307,7 @@ class LastRunStateTests(unittest.TestCase):
                  mock.patch.object(cli.pipeline, "run", return_value=fresh_report) as run_mock, \
                  mock.patch.object(cli.ui, "ProgressDisplay"), \
                  mock.patch.object(sys, "argv", [
-                     "last30days.py",
+                     "nfl30.py",
                      "OpenClaw",
                      "--emit=html",
                      "--synthesis-file",
@@ -338,7 +338,7 @@ class TestSkillMdFirstRunReference(unittest.TestCase):
     def test_skill_md_references_setup_command(self):
         content = SKILL_MD.read_text(encoding="utf-8")
         self.assertIn(
-            "last30days.py setup", content,
+            "nfl30.py setup", content,
             "SKILL.md should reference the Python setup subcommand",
         )
 
@@ -348,7 +348,7 @@ class TestSkillMdFirstRunReference(unittest.TestCase):
              mock.patch("lib.setup_wizard.run_auto_setup", return_value={"cookies_found": {}}) as mock_setup, \
              mock.patch("lib.setup_wizard.write_setup_config") as mock_write, \
              mock.patch("lib.setup_wizard.get_setup_status_text", return_value="ok"), \
-             mock.patch.object(sys, "argv", ["last30days.py", "setup"]):
+             mock.patch.object(sys, "argv", ["nfl30.py", "setup"]):
             stderr = io.StringIO()
             with redirect_stderr(stderr):
                 rc = cli.main()

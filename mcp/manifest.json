@@ -1,16 +1,16 @@
 {
   "manifest_version": "0.3",
-  "name": "last30days-pp-mcp",
-  "display_name": "Last30Days",
+  "name": "nfl30-pp-mcp",
+  "display_name": "NFL30",
   "version": "3.25.0",
   "description": "Research any topic across Reddit, X, YouTube, Hacker News, Polymarket, GitHub, and the web - last 30 days, scored by upvotes, likes, and real-money prediction-market odds.",
   "author": {
     "name": "Matt Van Horn",
-    "url": "https://github.com/mvanhorn/last30days-skill"
+    "url": "https://github.com/cmdashc/last30days-nfl"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/mvanhorn/last30days-skill"
+    "url": "https://github.com/cmdashc/last30days-nfl"
   },
   "license": "MIT",
   "keywords": [
@@ -27,9 +27,9 @@
   ],
   "server": {
     "type": "binary",
-    "entry_point": "bin/last30days-pp-mcp",
+    "entry_point": "bin/nfl30-pp-mcp",
     "mcp_config": {
-      "command": "${__dirname}/bin/last30days-pp-mcp",
+      "command": "${__dirname}/bin/nfl30-pp-mcp",
       "args": [],
       "env": {
         "OPENAI_API_KEY": "${user_config.openai_api_key}",

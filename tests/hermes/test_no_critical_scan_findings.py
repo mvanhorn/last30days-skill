@@ -20,7 +20,7 @@ from pathlib import Path
 
 # scan root == the skill directory (where SKILL.md lives), matching how Hermes
 # resolves owner/repo -> skills/<name>/.
-SKILL_ROOT = Path(__file__).resolve().parents[2] / "skills" / "last30days"
+SKILL_ROOT = Path(__file__).resolve().parents[2] / "skills" / "nfl30"
 
 # CRITICAL-severity exfiltration/injection rules from skills_guard.py, verbatim.
 CRITICAL_RULES = [
@@ -34,7 +34,7 @@ CRITICAL_RULES = [
 ]
 
 # Scan-root .skillignore excludes (directory prefixes + explicit files). Mirrors
-# skills/last30days/.skillignore so this test scans exactly what Hermes scans.
+# skills/nfl30/.skillignore so this test scans exactly what Hermes scans.
 IGNORE_DIRS = ("assets/", "agents/", "scripts/lib/vendor/")
 IGNORE_FILES = {
     "scripts/build-skill.sh", "scripts/compare.sh", "scripts/evaluate_search_quality.py",

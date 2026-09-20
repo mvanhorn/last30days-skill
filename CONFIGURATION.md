@@ -1,6 +1,6 @@
 # Configuration
 
-Everything you can tune in `/last30days` without editing the engine source.
+Everything you can tune in `/nfl30` without editing the engine source.
 Three layers, in order of how often you'll touch them:
 
 1. **Per-run flags** - what you pass on the command line.
@@ -13,7 +13,7 @@ Per-client patterns and the experimental beta channel are at the bottom.
 
 ## Why this document exists
 
-This is a focused **configuration reference** maintained alongside the engine. The runtime contract (the voice rules, the planner protocol, the LAWs the synthesizing model follows) lives in [`skills/last30days/SKILL.md`](skills/last30days/SKILL.md) - that file is authoritative when the two ever differ. This file's job is narrower: surface every knob a user or operator can turn, in one place, kept current with the code so client-facing setups stay reliable. New configuration knobs added to the engine should be reflected here in the same PR.
+This is a focused **configuration reference** maintained alongside the engine. The runtime contract (the voice rules, the planner protocol, the LAWs the synthesizing model follows) lives in [`skills/nfl30/SKILL.md`](skills/nfl30/SKILL.md) - that file is authoritative when the two ever differ. This file's job is narrower: surface every knob a user or operator can turn, in one place, kept current with the code so client-facing setups stay reliable. New configuration knobs added to the engine should be reflected here in the same PR.
 
 ---
 
@@ -21,20 +21,20 @@ This is a focused **configuration reference** maintained alongside the engine. T
 
 | Platform | Default path | Override |
 |---|---|---|
-| Linux / macOS | `LAST30DAYS_MEMORY_DIR` defaults to `~/Documents/Last30Days/` | set `LAST30DAYS_MEMORY_DIR=/path` |
-| Windows | `LAST30DAYS_MEMORY_DIR` defaults to `C:\Users\<you>\Documents\Last30Days\` | set `LAST30DAYS_MEMORY_DIR=C:\path` |
+| Linux / macOS | `LAST30DAYS_MEMORY_DIR` defaults to `~/Documents/NFL30/` | set `LAST30DAYS_MEMORY_DIR=/path` |
+| Windows | `LAST30DAYS_MEMORY_DIR` defaults to `C:\Users\<you>\Documents\NFL30\` | set `LAST30DAYS_MEMORY_DIR=C:\path` |
 
 Each run produces one file per topic, slug-named:
 `<slug>-raw[-suffix].md`. Same topic + same suffix on the same day overwrites; same topic + same suffix on different days appends a date stamp.
 
 ### Recommended `.env` entry
 
-`.env` files don't travel between machines or harnesses, so set `LAST30DAYS_MEMORY_DIR` explicitly in `~/.config/last30days/.env` once per host. The `/last30days` slash command works without it (the SKILL.md wrapper has its own default), but **bare engine invocations** — `python3 scripts/last30days.py ...` from cron jobs, scripts, or agents that bypass the wrapper — silently no-op the file save unless the engine sees the env var. Mirrors the `LAST30DAYS_STORE` env-or-flag convention.
+`.env` files don't travel between machines or harnesses, so set `LAST30DAYS_MEMORY_DIR` explicitly in `~/.config/nfl30/.env` once per host. The `/nfl30` slash command works without it (the SKILL.md wrapper has its own default), but **bare engine invocations** — `python3 scripts/nfl30.py ...` from cron jobs, scripts, or agents that bypass the wrapper — silently no-op the file save unless the engine sees the env var. Mirrors the `LAST30DAYS_STORE` env-or-flag convention.
 
 ```bash
-# ~/.config/last30days/.env  (pick ONE — uncomment the line that matches your OS)
-LAST30DAYS_MEMORY_DIR=~/Documents/Last30Days                      # POSIX — defaults to this path when unset
-# LAST30DAYS_MEMORY_DIR=C:\Users\<user>\Documents\Last30Days      # Windows
+# ~/.config/nfl30/.env  (pick ONE — uncomment the line that matches your OS)
+LAST30DAYS_MEMORY_DIR=~/Documents/NFL30                      # POSIX — defaults to this path when unset
+# LAST30DAYS_MEMORY_DIR=C:\Users\<user>\Documents\NFL30      # Windows
 # LAST30DAYS_LIBRARY_OWNER=Your Name                              # Optional Atom feed author
 # LAST30DAYS_LIBRARY_CONTEXT=off                                  # Disable prior-run context (default: on)
 ```
@@ -54,16 +54,16 @@ The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path(
 - `--nominate-only` - leg 1 of the three-command host-judged discovery protocol (agent hosts; SKILL.md drives it - one-shot `--discover` stays the scripting/cron form with deterministic topic names and no angles). With `--discover [domain]`: sweep the listings, write the nominations bundle (`discover-nominations.json` in the save dir, TTL one hour) for host judgment, print a judging digest, and stop - no enrichment, no queue writes. A zero-nomination sweep prints the nothing-solid brief directly.
 - `--judgments <path>` - leg 2: resume from the nominations bundle, applying the host judgments file (`{"bundle_id": "...", "judgments": [{"id", "name", "junk", "worthiness"}, ...]}`, bound to the bundle by `bundle_id`). Runs the per-topic research passes (deep tier by default; budget tunable via `LAST30DAYS_ENRICH_BUDGET_SECONDS` below), writes the pending report (`discover-pending.json`), and prints per-topic angle inputs. Requires `--discover`.
 - `--finalize` - leg 3: apply optional host angles to the pending report, render the final discovery brief, save artifacts, and record the topic queue (retries are idempotent - the pending file stays in place within its TTL). Offline; requires `--discover`.
-- `--angles <path>` - optional host angles file for `--discover --finalize` (`{"bundle_id": "...", "angles": [{"id", "podcast", "x_article"}, ...]}`, sentences capped at 200 chars); omitting it ships the brief without angle lines. All three protocol legs must share one `--save-dir` (handoff files live there, else in `~/.config/last30days/`); contract failures (missing/stale/unbound handoff files) exit 2 with the remedy on stderr, and `--mock` protocol legs require `--save-dir` to stay side-effect-free.
-- `--drill <target>` - deep follow-up over the fresh `~/.config/last30days/last-report.json` cache. Accepts a 1-based index (`--drill "cluster 3"` or `--drill "3"`) or a fuzzy cluster title/entity description. It re-fetches only sources that contributed to the matched cluster, enables their deep comment/transcript enrichment paths, merges/dedupes the evidence, and replaces the cache so drills can chain. Run it without a positional topic; if the cache is absent or expired, run a normal research pass first.
+- `--angles <path>` - optional host angles file for `--discover --finalize` (`{"bundle_id": "...", "angles": [{"id", "podcast", "x_article"}, ...]}`, sentences capped at 200 chars); omitting it ships the brief without angle lines. All three protocol legs must share one `--save-dir` (handoff files live there, else in `~/.config/nfl30/`); contract failures (missing/stale/unbound handoff files) exit 2 with the remedy on stderr, and `--mock` protocol legs require `--save-dir` to stay side-effect-free.
+- `--drill <target>` - deep follow-up over the fresh `~/.config/nfl30/last-report.json` cache. Accepts a 1-based index (`--drill "cluster 3"` or `--drill "3"`) or a fuzzy cluster title/entity description. It re-fetches only sources that contributed to the matched cluster, enables their deep comment/transcript enrichment paths, merges/dedupes the evidence, and replaces the cache so drills can chain. Run it without a positional topic; if the cache is absent or expired, run a normal research pass first.
 - `--verify-freshness` - opt into an act-time verification pass for conservatively extracted, source-grounded claims (Polymarket odds/end dates, GitHub stars, StockTwits sentiment ratios, and explicit status assertions). With a topic, verification runs after research; without a topic, it re-verifies the fresh `last-report.json` cache without repeating research. Verdicts are `current`, `stale`, `contradicted`, or `unsupported` and include evidence timestamps. Set `LAST30DAYS_VERIFY_FRESHNESS=on` in `.env` to make the pass default for normal research runs.
 - `--save-suffix <name>` - distinguish runs of the same topic (e.g. per client: `--save-suffix=acme`).
 - `--no-browser-cookies` - hard-disable browser-cookie extraction for this run, even when `FROM_BROWSER` is configured. MCP and folder-mode hosts use this for safe defaults.
 - `--publish-html` - with `--emit=html`, publish the rendered HTML to `ht-ml.app` after local output/save-dir writes. This is explicit opt-in only; pages are public by default.
-- `library feed` - scan `LAST30DAYS_MEMORY_DIR` plus `~/.local/share/last30days/briefs/`, then write a self-contained `index.html`, valid Atom `feed.xml`, and browser-ready pages under `briefs/`. The index is reverse-chronological and grouped by topic. For direct engine use: `python3 skills/last30days/scripts/last30days.py library feed`; use `--save-dir <path>` to scan and write another library directory.
+- `library feed` - scan `LAST30DAYS_MEMORY_DIR` plus `~/.local/share/nfl30/briefs/`, then write a self-contained `index.html`, valid Atom `feed.xml`, and browser-ready pages under `briefs/`. The index is reverse-chronological and grouped by topic. For direct engine use: `python3 skills/nfl30/scripts/nfl30.py library feed`; use `--save-dir <path>` to scan and write another library directory.
 - `library feed --publish` - publish each rendered brief and the HTML index through `ht-ml.app`. The generated `feed.xml` remains a first-class local artifact because this HTML host does not serve Atom with an XML content type. Host the output directory on any static host (for example, GitHub Pages) to make `feed.xml` subscribable. Publishing is explicit opt-in and pages are public by default; public pages may be crawled or indexed.
-- `library search "<query>"` - incrementally sync `LAST30DAYS_MEMORY_DIR` and `~/.local/share/last30days/briefs/` through the shared library scanner, then run offline SQLite FTS5 across those briefs plus dated per-run sightings in `~/.local/share/last30days/research.db`. Results are grouped by topic run. The sibling search index lives at `~/.local/share/last30days/library.db`; hand edits, renames, and deletes are picked up on sync, and a corrupt index is rebuilt automatically.
-- `LAST30DAYS_LIBRARY_OWNER=<name>` - optional feed-level Atom author. Defaults to `last30days research library`.
+- `library search "<query>"` - incrementally sync `LAST30DAYS_MEMORY_DIR` and `~/.local/share/nfl30/briefs/` through the shared library scanner, then run offline SQLite FTS5 across those briefs plus dated per-run sightings in `~/.local/share/nfl30/research.db`. Results are grouped by topic run. The sibling search index lives at `~/.local/share/nfl30/library.db`; hand edits, renames, and deletes are picked up on sync, and a corrupt index is rebuilt automatically.
+- `LAST30DAYS_LIBRARY_OWNER=<name>` - optional feed-level Atom author. Defaults to `nfl30 research library`.
 - `LAST30DAYS_LIBRARY_CONTEXT=on|off` - controls passive prior-run context on fresh research reports. It defaults to `on`; matching saved research appears in a short `From your library` section. Set `off` to skip the local index read and leave reports unchanged. Mock runs, eval replays, and internal fan-out subruns do not load library context, keeping fixtures deterministic.
 - `--publish-password <password>` - optional shared password for `--publish-html` or `library feed --publish`. Prefer `LAST30DAYS_PUBLISH_PASSWORD=<password>` instead so the password is not visible in the process list or shell history. Use a unique non-personal password; never reuse the user's own password. The provider's update key is treated as secret and is not written to stdout, HTML, raw output, or `.publish.json` metadata.
 - `--preflight` - optional permission inspector. It reports config source, project config trust/ignore state, browser-cookie plan, planned writes, optional commands, source availability, and endpoint overrides without reading browser cookies, writing setup/config/report files, or running research. First-run setup does not require it. Add `--emit=json` for the separate machine-readable preflight contract (`--json-profile` does not change it); use `--diagnose` when you need the full source diagnostic JSON. `doctor` is the health surface.
@@ -71,7 +71,7 @@ The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path(
 - `--record-fixtures <dir>` - developer-only, hidden flag that records scrubbed source responses for the offline research-quality eval harness. It writes `<dir>/http.json`; see the [eval reference](docs/reference/eval.md) before recording or committing fixtures.
 - `setup --github-start` / `setup --github-poll` - the two-command ScrapeCreators GitHub device-auth split. `--github-start` submits the device flow, copies the code to the clipboard, opens the browser, and returns the code immediately (foreground); `--github-poll` waits for you to authorize and persists the key. `setup --github` still runs both in one shot for back-compat.
 
-The footer line `📎 Raw results saved to ${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}/<slug>-raw.md` is the canonical pointer; if it shows backslashes on Windows update past v3.1.1.
+The footer line `📎 Raw results saved to ${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/NFL30}/<slug>-raw.md` is the canonical pointer; if it shows backslashes on Windows update past v3.1.1.
 
 Every completed research pass writes a structured `last-report.json` cache beside `last-run.json`. HTML follow-up renders use it so `--emit=html --synthesis-file` can reuse report metadata/footer without fetching sources again; `--drill <target>` uses it as the grounded starting point for targeted re-research; bare `--verify-freshness` updates only the cached report's claim verdicts. Reuse is intentionally short-lived: `LAST30DAYS_REPORT_CACHE_TTL_SECONDS` defaults to `3600` (one hour). Set it to another integer number of seconds to tune the window, or `0` to disable report-cache reuse and post-run follow-ups.
 
@@ -79,7 +79,7 @@ Every completed research pass writes a structured `last-report.json` cache besid
 
 ## First-run onboarding
 
-On the very first `/last30days` run (no `~/.config/last30days/.env`, or `SETUP_COMPLETE` not set), the skill runs a consent-driven onboarding the model drives in chat. It takes one of three forms depending on the host:
+On the very first `/nfl30` run (no `~/.config/nfl30/.env`, or `SETUP_COMPLETE` not set), the skill runs a consent-driven onboarding the model drives in chat. It takes one of three forms depending on the host:
 
 - **Claude Code Modal Flow** - the restored v3.0.0 guided NUX, used on hosts with `AskUserQuestion` (Claude Code). A welcome message, then modals for Auto/Manual/Skip setup, cookie consent, the ScrapeCreators signup offer, a TikTok/Instagram `INCLUDE_SOURCES` opt-in, and a first-topic picker.
 - **Non-Modal Prose Flow** - the same work done conversationally on hosts without modals (OpenClaw, Codex, Cursor, Gemini CLI, Grok, raw CLI).
@@ -91,7 +91,7 @@ The Modal and Non-Modal flows share the same consent points:
 2. **Full Disk Access (macOS)** - if a cookie read is permission-denied, the model surfaces the System Settings > Privacy & Security > Full Disk Access fix and offers one retry.
 3. **ScrapeCreators GitHub signup** - offered on every first run (10,000 free calls). On consent it runs `setup --github`, which opens a browser for GitHub device-auth (or registers instantly via the `gh` CLI when installed) and, on success, **persists `SCRAPECREATORS_API_KEY` automatically** (0o600, masked in output) so TikTok, Instagram, empty-path Reddit search backup, and the YouTube transcript fallback activate on the next run. Decline anytime; you can run it later by asking to set up ScrapeCreators. The Step 5 opt-in has two tiers, both comment-enabled: **Recommended** (TikTok + Instagram posts AND top comments, plus YouTube comments — `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments`) and **Everything**, which also adds Threads + Pinterest. Comments are on by default; Threads and Pinterest are the only opt-in extras.
 
-Re-run onboarding by deleting `~/.config/last30days/.env`. The mechanical work lives in `scripts/lib/setup_wizard.py`; the consent conversation and both host flows are specified in `skills/last30days/SKILL.md` Step 0. The original v3.0.0 wizard is captured at `docs/reference/old-nux-wizard-v3.0.0.md`.
+Re-run onboarding by deleting `~/.config/nfl30/.env`. The mechanical work lives in `scripts/lib/setup_wizard.py`; the consent conversation and both host flows are specified in `skills/nfl30/SKILL.md` Step 0. The original v3.0.0 wizard is captured at `docs/reference/old-nux-wizard-v3.0.0.md`.
 
 ---
 
@@ -108,14 +108,14 @@ These variables configure the local Go MCP server and are read from its process 
 
 The skill reads keys from a `.env` file. Two locations are supported:
 
-1. **`~/.config/last30days/.env`** at the user level (global default) - loaded by default.
-2. **`.claude/last30days.env`** in the current project directory (project-scoped) - loaded only when trusted by setting `LAST30DAYS_TRUST_PROJECT_CONFIG=1` in the process environment or global config.
+1. **`~/.config/nfl30/.env`** at the user level (global default) - loaded by default.
+2. **`.claude/nfl30.env`** in the current project directory (project-scoped) - loaded only when trusted by setting `LAST30DAYS_TRUST_PROJECT_CONFIG=1` in the process environment or global config.
 
 Override the global location with `LAST30DAYS_CONFIG_DIR=/path` (or `LAST30DAYS_CONFIG_DIR=""` for no-config mode). File permissions should be `600` on POSIX hosts - the engine warns on every run if they aren't.
 
 **File syntax.** One `KEY=value` per line; whitespace around the key and value is trimmed. A line starting with `#` is a comment, and a `#` preceded by whitespace after an unquoted value starts a trailing comment (`RATE=1  # req/sec` stores `1`). A `#` glued to the value is literal (`TOKEN=abc#123` stores `abc#123`). Wrap a value in matching `"` or `'` to keep spaces or a `#` verbatim (`NAME="Jane # Doe"` stores `Jane # Doe`); no backslash escapes or `$VAR` expansion are processed. An empty value is ignored (the one exception is `LAST30DAYS_YT_PLAYER_CLIENT=`, where empty is a deliberate disable), so a secret can never be set to `""`.
 
-The project-scoped file is useful for **intentional per-client setups**: drop a `.claude/last30days.env` into each client folder (`SCRAPECREATORS_API_KEY`, `INCLUDE_SOURCES`, `LAST30DAYS_MEMORY_DIR`, `BSKY_HANDLE`, etc), then opt in with `LAST30DAYS_TRUST_PROJECT_CONFIG=1` from your shell or `~/.config/last30days/.env`. Folder-mode hosts such as Codex desktop do not trust hidden project config by default, and discovery stops at the git root so unrelated parent folders cannot silently influence runs. An untrusted repo's `.claude/last30days.env` is not read.
+The project-scoped file is useful for **intentional per-client setups**: drop a `.claude/nfl30.env` into each client folder (`SCRAPECREATORS_API_KEY`, `INCLUDE_SOURCES`, `LAST30DAYS_MEMORY_DIR`, `BSKY_HANDLE`, etc), then opt in with `LAST30DAYS_TRUST_PROJECT_CONFIG=1` from your shell or `~/.config/nfl30/.env`. Folder-mode hosts such as Codex desktop do not trust hidden project config by default, and discovery stops at the git root so unrelated parent folders cannot silently influence runs. An untrusted repo's `.claude/nfl30.env` is not read.
 
 **`LAST30DAYS_API_KEY`** + **`LAST30DAYS_API_BASE`** - optional remote-API backend. Set BOTH to route research through a remote API endpoint instead of running the local sources: `LAST30DAYS_API_BASE` is the endpoint (there is no built-in default), and `LAST30DAYS_API_KEY` is the bearer key for it. When both are set (and `--mock` is not passed), the engine submits the topic to that endpoint, polls with progress on stderr, and prints the server's report; none of the per-source keys below are used for that run. A configured local corpus is the privacy exception: the engine bypasses the hosted backend and runs locally rather than forwarding file-derived input. Non-default `--register` selections are forwarded with the request so server-side synthesis uses the same audience preset. Leave either unset to run local sources exactly as normal. Unlike the other keys here, these two are read only from the **process environment** (export them in your shell or host config) - they are deliberately not loaded from the `.env` files above, so a project-scoped `.env` can never silently redirect research to a remote endpoint. The remote endpoint does not return the local `Report` needed for the versioned agent JSON profile; use `--emit=json --json-profile=raw` for its existing server-response JSON contract.
 
@@ -130,19 +130,19 @@ The project-scoped file is useful for **intentional per-client setups**: drop a 
 Register persistent directories with `LAST30DAYS_CORPUS_DIRS`. Separate paths with `:` on macOS/Linux (the platform path separator is `;` on Windows):
 
 ```bash
-# ~/.config/last30days/.env
+# ~/.config/nfl30/.env
 LAST30DAYS_CORPUS_DIRS=~/notes:~/meeting-transcripts
 # LAST30DAYS_CORPUS_IN_EXPORT=1  # explicit agent-JSON opt-in; off by default
 ```
 
-The slash-command experience remains primary: ask `/last30days` to include your registered notes. For direct engine scripting or development, the equivalent one-off invocation is:
+The slash-command experience remains primary: ask `/nfl30` to include your registered notes. For direct engine scripting or development, the equivalent one-off invocation is:
 
 ```bash
-python3 skills/last30days/scripts/last30days.py "MCP servers" \
+python3 skills/nfl30/scripts/nfl30.py "MCP servers" \
   --corpus ~/notes --corpus ~/meeting-transcripts
 ```
 
-**Privacy:** corpus files are read locally, never sent through a source HTTP client, never forwarded to `LAST30DAYS_API_BASE`, never included in remote reranker/fun-scoring prompts, and do not consume network-source concurrency or retry budget. Matches appear in a badged **From your files** section. Corpus candidates are removed from `--publish-html`, `library feed --publish`, and the versioned agent JSON export by default, including corpus-derived cluster titles and source outcomes. Set `LAST30DAYS_CORPUS_IN_EXPORT=1` only when you intentionally want corpus results in the agent JSON written to local stdout/files. The unversioned `--json-profile=raw` debug dump remains a full local report and can contain corpus text; do not redirect it to an external system unless that is intentional. Extracted text is cached by file mtime in `~/.config/last30days/corpus-cache.json` with mode `0600`; a corpus-bearing `last-report.json` cache is also tightened to `0600`. Delete either cache at any time to clear it.
+**Privacy:** corpus files are read locally, never sent through a source HTTP client, never forwarded to `LAST30DAYS_API_BASE`, never included in remote reranker/fun-scoring prompts, and do not consume network-source concurrency or retry budget. Matches appear in a badged **From your files** section. Corpus candidates are removed from `--publish-html`, `library feed --publish`, and the versioned agent JSON export by default, including corpus-derived cluster titles and source outcomes. Set `LAST30DAYS_CORPUS_IN_EXPORT=1` only when you intentionally want corpus results in the agent JSON written to local stdout/files. The unversioned `--json-profile=raw` debug dump remains a full local report and can contain corpus text; do not redirect it to an external system unless that is intentional. Extracted text is cached by file mtime in `~/.config/nfl30/corpus-cache.json` with mode `0600`; a corpus-bearing `last-report.json` cache is also tightened to `0600`. Delete either cache at any time to clear it.
 
 **Source-by-source** - what each key unlocks:
 
@@ -172,7 +172,7 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 | LinkedIn | `SCRAPECREATORS_API_KEY` + `INCLUDE_SOURCES` contains `linkedin` | LinkedIn posts + articles (articles rank as high signal on person topics) | 10K free calls; power-user opt-in, not offered during first-run onboarding |
 | Meta Ads | `SCRAPECREATORS_API_KEY` + (`INCLUDE_SOURCES` contains `meta_ads` **or** `--search` includes `meta_ads`) | **opt-in, off by default**; a brand's live Meta Ad Library creatives that *launched* inside the window, with ad copy, launch date, placements, CTA, landing product, any promo code, and spoken transcripts for the newest video ads. The 📣 footer names the advertiser page that was resolved, plus how much the brand is still running from before. Paid message only, never audience reaction: Meta publishes reach and spend for political ads alone, so commercial creatives carry no engagement. `--meta-ads-page=<page_id>` skips name-based resolution when it picks the wrong company or the brand advertises under product-line page names; `LAST30DAYS_META_ADS_COUNTRY` selects a non-US Ad Library (one country per call). `EXCLUDE_SOURCES=meta_ads` wins. Never auto-fires and never inferred from topic shape: on a non-brand topic, resolution returns unrelated advertisers | 10K free calls; a default run spends at most 7 (1 resolve, plus 1 more only when the first search finds no name match, + up to 2 creative pages + up to 3 transcripts), billed per request. Power-user opt-in, not offered during first-run onboarding |
 | Telegram | `SCRAPECREATORS_API_KEY` + (`--telegram-sources=<handles>` **or** `TELEGRAM_SOURCES=<handles>` + `INCLUDE_SOURCES` contains `telegram`) | **opt-in, off by default**; public channel posts only (no keyword discovery). `--telegram-sources=aipost,durov` (or `TELEGRAM_SOURCES` env) auto-activates for that run like `--trustpilot-domain`. Accepts bare handle, `@handle`, `t.me/URL`, or `t.me/s/URL`; rejects joinchat links and numeric -100 IDs. `INCLUDE_SOURCES=telegram` or `--search telegram` without a channel list does not fetch. `EXCLUDE_SOURCES=telegram` wins. `TELEGRAM_MAX_PAGES` overrides page cap (quick=1, default=3, deep=6). Never on Recommended onboarding tier. | 1 credit per live posts page; 10K free calls |
-| Xiaohongshu (RED) | logged-in x-mcp browser plugin or `xiaohongshu-mcp` service; optional `XIAOHONGSHU_API_BASE` for custom URLs | requested-only via `--search xhs` or `--search xiaohongshu`; auto-probes `http://localhost:18060` then `http://host.docker.internal:18060` | no last30days API key; depends on your local browser-session service |
+| Xiaohongshu (RED) | logged-in x-mcp browser plugin or `xiaohongshu-mcp` service; optional `XIAOHONGSHU_API_BASE` for custom URLs | requested-only via `--search xhs` or `--search xiaohongshu`; auto-probes `http://localhost:18060` then `http://host.docker.internal:18060` | no nfl30 API key; depends on your local browser-session service |
 | Bluesky | `BSKY_HANDLE` + `BSKY_APP_PASSWORD` | Bluesky items | yes (app password at bsky.app) |
 | TruthSocial | `TRUTHSOCIAL_TOKEN` | TruthSocial items | yes |
 | Web search | one of: `BRAVE_API_KEY`, `EXA_API_KEY`, `SERPER_API_KEY`, `PARALLEL_API_KEY` | `--auto-resolve` and Step 2 supplements | Brave has a free tier; native WebSearch on Claude Code / Codex / Gemini works as a fallback |
@@ -200,7 +200,7 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 
 A host counts as an "extra host" when ANY of these hold: `AGENTCOOKIE=on` (explicit opt-in, any OS); the platform is Linux; a Darwin **Mac mini** (`sysctl -n hw.model` prefix `Macmini`); or a Darwin **agentcookie sink** role. The host is never inferred from the home directory, PATH, or Hermes/OpenClaw env — only those signals. A plain MacBook does no agentcookie spawn and opens no CDP socket unless `AGENTCOOKIE=on`.
 
-CDP endpoint resolution (extra hosts only, no port scan): `BROWSER_CDP_URL` if set, else port `18800` when it answers as Chrome, else `9222` + the X display number. Port `18800` is the last30days extras **NUX convention** — the agent launches a throwaway login Chrome with `SAND_CHROME_REMOTE_DEBUG_PORT=18800` (see SKILL.md's "X on Linux / Mac mini"), so it is not confused with a daily Chrome profile on `9222`+display (box-chrome's own built-in default). `18800` is tried first but falls through when it yields no complete pair, so a logged-out Chrome there never shadows a logged-in profile; pin `BROWSER_CDP_URL` if a stale session answers there. A Node `--inspect` endpoint is rejected; a Chrome page target is required.
+CDP endpoint resolution (extra hosts only, no port scan): `BROWSER_CDP_URL` if set, else port `18800` when it answers as Chrome, else `9222` + the X display number. Port `18800` is the nfl30 extras **NUX convention** — the agent launches a throwaway login Chrome with `SAND_CHROME_REMOTE_DEBUG_PORT=18800` (see SKILL.md's "X on Linux / Mac mini"), so it is not confused with a daily Chrome profile on `9222`+display (box-chrome's own built-in default). `18800` is tried first but falls through when it yields no complete pair, so a logged-out Chrome there never shadows a logged-in profile; pin `BROWSER_CDP_URL` if a stale session answers there. A Node `--inspect` endpoint is rejected; a Chrome page target is required.
 
 **Example `.env` skeleton** (placeholders only - replace with your own values):
 
@@ -250,9 +250,9 @@ BSKY_HANDLE=<your-handle>.bsky.social
 BSKY_APP_PASSWORD=<your-app-password>
 ```
 
-After editing: `chmod 600 ~/.config/last30days/.env` (or `chmod 600 .claude/last30days.env` if using the project-scoped variant).
+After editing: `chmod 600 ~/.config/nfl30/.env` (or `chmod 600 .claude/nfl30.env` if using the project-scoped variant).
 
-**Troubleshooting:** if a source you expected to see isn't appearing in results, run `python3 scripts/last30days.py --preflight` for a human permission summary or `python3 scripts/last30days.py --diagnose` for full JSON diagnostics. Both are safe: they report source availability, config source, browser-cookie plan, external command availability, write destinations, and ignored untrusted project config without reading browser cookies or running live provider probes.
+**Troubleshooting:** if a source you expected to see isn't appearing in results, run `python3 scripts/nfl30.py --preflight` for a human permission summary or `python3 scripts/nfl30.py --diagnose` for full JSON diagnostics. Both are safe: they report source availability, config source, browser-cookie plan, external command availability, write destinations, and ignored untrusted project config without reading browser cookies or running live provider probes.
 
 ### Perplexity source modes
 
@@ -262,12 +262,12 @@ Perplexity is a paid opt-in source. A direct `PERPLEXITY_API_KEY` enables the Ag
 
 | Value | Behavior | Calls |
 |---|---|---|
-| `agent` (default) | Direct key: controlled Agent API synthesis with required `web_search`. OpenRouter-only: synchronous Sonar fallback. | at most one paid synthesis call per last30days run |
-| `sonar` | Direct key: deprecated alias for `agent`. OpenRouter-only: synchronous Sonar fallback. | at most one paid synthesis call per last30days run |
-| `search` | Direct key: raw ranked Search API rows. OpenRouter-only: falls back to synchronous Sonar. | at most one paid call per last30days run |
+| `agent` (default) | Direct key: controlled Agent API synthesis with required `web_search`. OpenRouter-only: synchronous Sonar fallback. | at most one paid synthesis call per nfl30 run |
+| `sonar` | Direct key: deprecated alias for `agent`. OpenRouter-only: synchronous Sonar fallback. | at most one paid synthesis call per nfl30 run |
+| `search` | Direct key: raw ranked Search API rows. OpenRouter-only: falls back to synchronous Sonar. | at most one paid call per nfl30 run |
 | `both` | Direct key: Agent synthesis plus Search rows. OpenRouter-only: falls back to synchronous Sonar. | direct: at most two paid calls; OpenRouter: at most one |
 
-With a direct key, normal `agent` mode uses the controlled `last30days-controlled-web-search/v1` profile: `perplexity/sonar`, a bounded `max_steps`, a local instruction, and only the configured `web_search` tool. It forces that tool for citation-critical grounding. It does not enable sandbox, file, finance, MCP, or function tools. OpenRouter fallback keeps the older OpenAI-compatible Sonar request and does not claim Agent API controls.
+With a direct key, normal `agent` mode uses the controlled `nfl30-controlled-web-search/v1` profile: `perplexity/sonar`, a bounded `max_steps`, a local instruction, and only the configured `web_search` tool. It forces that tool for citation-critical grounding. It does not enable sandbox, file, finance, MCP, or function tools. OpenRouter fallback keeps the older OpenAI-compatible Sonar request and does not claim Agent API controls.
 
 The engine routes every normal Perplexity mode through one whole-topic planner subquery per command, including competitor fanout, and does not repeat it during thin-source retries. A generic source-fetch override cannot raise this paid-call cap.
 
@@ -281,8 +281,8 @@ Perplexity-specific env vars:
 |---|---|---|---|
 | `LAST30DAYS_PERPLEXITY_MODE` | `agent` | normal Perplexity source runs | `agent`, `search`, or `both`; `sonar` remains a deprecated alias for `agent`. |
 | `LAST30DAYS_PERPLEXITY_AGENT_MODEL` | `perplexity/sonar` | controlled Agent profile | Explicit Agent model for normal synthesis. |
-| `LAST30DAYS_PERPLEXITY_AGENT_MAX_STEPS` | `5` | controlled Agent profile | Clamped to the last30days safety range 1..15. |
-| `LAST30DAYS_PERPLEXITY_AGENT_MAX_OUTPUT_TOKENS` | `4096` for `anthropic/*` models | controlled Agent profile | Required for explicit Anthropic models; clamped to the last30days safety range 1..32768. |
+| `LAST30DAYS_PERPLEXITY_AGENT_MAX_STEPS` | `5` | controlled Agent profile | Clamped to the nfl30 safety range 1..15. |
+| `LAST30DAYS_PERPLEXITY_AGENT_MAX_OUTPUT_TOKENS` | `4096` for `anthropic/*` models | controlled Agent profile | Required for explicit Anthropic models; clamped to the nfl30 safety range 1..32768. |
 | `LAST30DAYS_PERPLEXITY_AGENT_TIMEOUT_SECONDS` | `120` | controlled Agent profile | Synchronous request timeout, clamped to 1..600 seconds. |
 | `LAST30DAYS_PERPLEXITY_AGENT_PRESET` | unset | normal Agent runs | Explicit mutable preset only: `fast`, `low`, `medium`, or `high`. It replaces the controlled profile for that run. |
 | `LAST30DAYS_PERPLEXITY_MAX_RESULTS` | `10` | Search API and all Agent `web_search` requests | Clamped to 1..20. |
@@ -306,15 +306,15 @@ sources, so a box that merely has `pass` installed pays no decrypt cost when
 everything is already in `.env`.
 
 Effective credential priority is: process env > trusted project config
-(`.claude/last30days.env`) > global config (`~/.config/last30days/.env`) >
+(`.claude/nfl30.env`) > global config (`~/.config/nfl30/.env`) >
 macOS Keychain > `pass`(1). A Keychain-only setup still counts as configured:
-the engine resolves `last30days-<KEY>` at runtime. First-run in SKILL.md
+the engine resolves `nfl30-<KEY>` at runtime. First-run in SKILL.md
 Step 0 must not treat a missing `.env` as unconfigured.
 
 | Platform | Source | Store keys with | Lookup convention |
 |---|---|---|---|
-| macOS | Keychain | `scripts/setup-keychain.sh` | service name `last30days-<KEY>` |
-| Linux / Unix (anywhere `pass` exists, incl. macOS) | [`pass`(1)](https://www.passwordstore.org/) | `scripts/setup-pass.sh` | pass path `last30days/<KEY>` |
+| macOS | Keychain | `scripts/setup-keychain.sh` | service name `nfl30-<KEY>` |
+| Linux / Unix (anywhere `pass` exists, incl. macOS) | [`pass`(1)](https://www.passwordstore.org/) | `scripts/setup-pass.sh` | pass path `nfl30/<KEY>` |
 
 ```bash
 # macOS Keychain
@@ -331,7 +331,7 @@ under a different prefix, point the loader at it with `LAST30DAYS_PASS_PREFIX`
 The prefix is used verbatim, so keep the trailing separator:
 
 ```bash
-export LAST30DAYS_PASS_PREFIX="secrets/last30days/"   # default: last30days/
+export LAST30DAYS_PASS_PREFIX="secrets/nfl30/"   # default: nfl30/
 ```
 
 Both sources cover the same key set as the `.env` skeleton above.
@@ -341,10 +341,10 @@ Both sources cover the same key set as the `.env` skeleton above.
 If you already have keys stored under another Keychain naming convention, you
 can reference them without copying the secret by setting non-secret alias
 metadata in `LAST30DAYS_KEYCHAIN_ALIASES`. The loader still checks
-`last30days-<KEY>` first; aliases are fallback lookups only.
+`nfl30-<KEY>` first; aliases are fallback lookups only.
 
 ```bash
-# ~/.config/last30days/.env
+# ~/.config/nfl30/.env
 LAST30DAYS_KEYCHAIN_ALIASES={"XAI_API_KEY":{"account":"keychain-user","service":"existing-xai-api-key"},"BRAVE_API_KEY":"existing-brave-api-key"}
 ```
 
@@ -380,7 +380,7 @@ the full run should keep exercising the positive-path Keychain tests.
 This exists mainly for tests and reproductions that assert on
 "no credentials configured" behaviour. Clearing `os.environ` and pointing
 `LAST30DAYS_CONFIG_DIR` at nothing is not sufficient on a machine with items
-stored under `last30days-<KEY>`: Keychain is a third, independent source, so a
+stored under `nfl30-<KEY>`: Keychain is a third, independent source, so a
 stored key can quietly satisfy a lookup the test expected to fail — and the
 test then fails on a contributor's Mac while passing in Linux CI, where the
 loader already no-ops.
@@ -424,7 +424,7 @@ An explicit `--register` wins over `LAST30DAYS_REGISTER`; the environment/config
 
 ## Reasoning provider priority
 
-`/last30days` needs one reasoning model for planning + reranking when you don't pass `--plan` yourself. Auto-detect priority (set `LAST30DAYS_REASONING_PROVIDER=<name>` to pin one):
+`/nfl30` needs one reasoning model for planning + reranking when you don't pass `--plan` yourself. Auto-detect priority (set `LAST30DAYS_REASONING_PROVIDER=<name>` to pin one):
 
 1. **Gemini** - `GOOGLE_API_KEY` / `GEMINI_API_KEY` / `GOOGLE_GENAI_API_KEY`
 2. **OpenAI** - `OPENAI_API_KEY` only. Codex ChatGPT auth at `~/.codex/auth.json` is intentionally not used as an OpenAI provider credential.
@@ -432,7 +432,7 @@ An explicit `--register` wins over `LAST30DAYS_REGISTER`; the environment/config
 4. **OpenRouter** - `OPENROUTER_API_KEY` (reasoning provider, auto-resolve, and synchronous Sonar fallback for the Perplexity source)
 5. **Local / deterministic** - always available, lowest quality
 
-When you invoke `/last30days` from Claude Code, Codex, or Gemini, the host model **is** the reasoning provider for plan + synthesis - you don't need any of the keys above unless you also run the script headlessly (cron, CI, watchlist).
+When you invoke `/nfl30` from Claude Code, Codex, or Gemini, the host model **is** the reasoning provider for plan + synthesis - you don't need any of the keys above unless you also run the script headlessly (cron, CI, watchlist).
 
 ---
 
@@ -464,7 +464,7 @@ Visible quality difference between hosts with vs without native search or a conf
 Use `--hiring-signals` for a focused company hiring-signal report:
 
 ```bash
-python3 skills/last30days/scripts/last30days.py "Listen Labs" --hiring-signals
+python3 skills/nfl30/scripts/nfl30.py "Listen Labs" --hiring-signals
 ```
 
 The engine treats public jobs/careers postings as evidence of focus or priority shifts, not exact roadmap predictions. Standard company runs may include Hiring Signals automatically when multiple current roles support the same interpretation; weak or unavailable hiring evidence is omitted.
@@ -482,7 +482,7 @@ The engine treats public jobs/careers postings as evidence of focus or priority 
 Limits: 8 MiB, strict UTF-8, at most 20 calls, 500 rows per call, 1,000 rows in total, 10,000 characters of text per row. Rows are rebuilt from validated parts: the citation is always `https://x.com/<handle>/status/<id>` (a row-supplied URL is never used), rows without an id or text, outside the window, or whose date disagrees with the id are dropped and counted, and an id sequence that looks generated rejects the whole file. The envelope is single-serve for the run. The hosted backend (`LAST30DAYS_API_BASE`) rejects the flag with exit `2`. Comparison runs take the per-entity `x_posts` field of `--competitors-plan` instead; a bare `--x-posts` on a comparison run exits `2`.
 
 ```bash
-python3 skills/last30days/scripts/last30days.py "<topic>" --x-posts /tmp/x-posts.json
+python3 skills/nfl30/scripts/nfl30.py "<topic>" --x-posts /tmp/x-posts.json
 ```
 
 ### `setup --store-key`
@@ -490,7 +490,7 @@ python3 skills/last30days/scripts/last30days.py "<topic>" --x-posts /tmp/x-posts
 `setup --store-key <NAME>` persists one credential to the global `.env` (mode `600`) from a single line on stdin, without echoing it: stdout shows `NAME=****` plus a JSON line `{"persisted": true, "key": "NAME"}`. `NAME` must be one of the credential names the engine loads from `.env` (for example `X_BEARER_TOKEN`, `XAI_API_KEY`, `SCRAPECREATORS_API_KEY`); an unknown name or an empty value exits `2`. Running it again with a new value replaces the stored one (rotating a rejected credential); other lines in the file are untouched.
 
 ```bash
-printf '%s\n' "$TOKEN" | python3 skills/last30days/scripts/last30days.py setup --store-key X_BEARER_TOKEN
+printf '%s\n' "$TOKEN" | python3 skills/nfl30/scripts/nfl30.py setup --store-key X_BEARER_TOKEN
 ```
 
 ---
@@ -500,20 +500,20 @@ printf '%s\n' "$TOKEN" | python3 skills/last30days/scripts/last30days.py setup -
 One command answers "what could be on, what's turned on, what's working, and what isn't" — a four-state audit (WORKING / TURNED ON - UNVERIFIED / NOT WORKING / COULD BE ON), one line per source, with a CLI-health block for sources that need a downloaded binary, indented backup/comment sub-lanes, the backend the next run will use (for chained sources), and an exact fix on anything that isn't working:
 
 ```bash
-python3 skills/last30days/scripts/last30days.py doctor              # four-state audit (text)
-python3 skills/last30days/scripts/last30days.py doctor --json       # machine contract
-python3 skills/last30days/scripts/last30days.py doctor --cached     # serve the cached report while fresh
-python3 skills/last30days/scripts/last30days.py doctor --postmortem # what actually broke on the last run
-python3 skills/last30days/scripts/last30days.py doctor --probe      # bounded live test (free/CLI sources)
+python3 skills/nfl30/scripts/nfl30.py doctor              # four-state audit (text)
+python3 skills/nfl30/scripts/nfl30.py doctor --json       # machine contract
+python3 skills/nfl30/scripts/nfl30.py doctor --cached     # serve the cached report while fresh
+python3 skills/nfl30/scripts/nfl30.py doctor --postmortem # what actually broke on the last run
+python3 skills/nfl30/scripts/nfl30.py doctor --probe      # bounded live test (free/CLI sources)
 ```
 
-Slash-command form: `/last30days doctor`. Reporting problems is a successful run — the exit code is always 0, no browser cookies are read, and no secret values appear anywhere (key presence is booleans only). Backends within a chained source are probed sequentially with a 5-second budget per binary probe, so a chained source's worst-case check time is additive across its backends (only reached when several binaries hang at once).
+Slash-command form: `/nfl30 doctor`. Reporting problems is a successful run — the exit code is always 0, no browser cookies are read, and no secret values appear anywhere (key presence is booleans only). Backends within a chained source are probed sequentially with a 5-second budget per binary probe, so a chained source's worst-case check time is additive across its backends (only reached when several binaries hang at once).
 
 `doctor --postmortem` reads the last run's `last-report.json` (any age, labeled) and reports what actually happened per source — Failed / Partial / Succeeded / Skipped, with details and fix hints — so a run that returned less than expected can be diagnosed after the fact. It makes no network calls.
 
 **Network note:** plain `doctor` with a fresh run, `--cached`, and `--json` make **no** network calls. `doctor --probe` — and a plain `doctor` when there is **no** fresh run to learn from — run a **bounded** live test to verify WORKING instead of guessing. The probe is scoped to free HTTP endpoints (Reddit, Hacker News, Polymarket, GitHub) plus keyless CLIs; credit-gated sources (X, TikTok, Instagram, Threads, …) are never probed, so no ScrapeCreators credits are spent and no auth rate limits are tripped. Each source is probed concurrently under a per-source deadline so a slow source can never hang the command.
 
-Every live run writes its JSON result to `~/.config/last30days/doctor-cache.json` (beside `last-run.json`; honors `LAST30DAYS_CONFIG_DIR`). `doctor --cached` returns that stored report when it is younger than the TTL, and falls through to a live run — rewriting the cache — when it is stale, absent, or corrupt. The cache also self-invalidates on configuration change: the payload carries a schema stamp plus a fingerprint of non-secret config signals (which credentials are present as booleans, the `LAST30DAYS_X_BACKEND` / `LAST30DAYS_REDDIT_BACKEND` pin values, and `INCLUDE_SOURCES`), so adding or removing a key, changing a pin, or toggling an opt-in source makes the next `--cached` call run live — no raw secret ever enters the fingerprint or the file. Every report also carries `from_cache` (true/false) and `generated_at` (when the report was built), in the `--json` top level and as a final `generated: … (cached|live)` text line, so you can always tell how old a cached answer is. A failed cache write is never fatal — doctor prints a one-line stderr warning and continues. An explicit `doctor` without `--cached` always runs live and refreshes the cache.
+Every live run writes its JSON result to `~/.config/nfl30/doctor-cache.json` (beside `last-run.json`; honors `LAST30DAYS_CONFIG_DIR`). `doctor --cached` returns that stored report when it is younger than the TTL, and falls through to a live run — rewriting the cache — when it is stale, absent, or corrupt. The cache also self-invalidates on configuration change: the payload carries a schema stamp plus a fingerprint of non-secret config signals (which credentials are present as booleans, the `LAST30DAYS_X_BACKEND` / `LAST30DAYS_REDDIT_BACKEND` pin values, and `INCLUDE_SOURCES`), so adding or removing a key, changing a pin, or toggling an opt-in source makes the next `--cached` call run live — no raw secret ever enters the fingerprint or the file. Every report also carries `from_cache` (true/false) and `generated_at` (when the report was built), in the `--json` top level and as a final `generated: … (cached|live)` text line, so you can always tell how old a cached answer is. A failed cache write is never fatal — doctor prints a one-line stderr warning and continues. An explicit `doctor` without `--cached` always runs live and refreshes the cache.
 
 | Var | Effect |
 | --- | --- |
@@ -556,11 +556,11 @@ The default behavior - one slug-named file per topic, overwritten on rerun - is 
 
 ### `--store` flag
 
-Adding `--store` to any run persists every finding to a SQLite database (default at `~/.local/share/last30days/research.db`). Findings dedupe on the `source_url` column (UNIQUE constraint), so the same URL across runs updates the existing row instead of creating a duplicate. The markdown file still saves; the SQLite is the time-series substrate.
+Adding `--store` to any run persists every finding to a SQLite database (default at `~/.local/share/nfl30/research.db`). Findings dedupe on the `source_url` column (UNIQUE constraint), so the same URL across runs updates the existing row instead of creating a duplicate. The markdown file still saves; the SQLite is the time-series substrate.
 
 **Always-on alternative:** set `LAST30DAYS_STORE=1` in your `.env` instead of remembering `--store` on every invocation. The flag still works as before; the env var is purely additive. Same hybrid pattern as `LAST30DAYS_DEBUG` — works whether shell-exported or in `.env`.
 
-Relevant tables: `topics`, `research_runs`, `findings`, `settings`. Schema: [`scripts/store.py`](skills/last30days/scripts/store.py).
+Relevant tables: `topics`, `research_runs`, `findings`, `settings`. Schema: [`scripts/store.py`](skills/nfl30/scripts/store.py).
 
 ### Discovery topic queue (`LAST30DAYS_DISCOVERY_QUEUE`)
 
@@ -575,18 +575,18 @@ Manage the queue from the engine CLI:
 
 ```bash
 # Uncovered surfaced topics (name, domain, surface_count, last_surfaced, status)
-python3 skills/last30days/scripts/last30days.py queue list
+python3 skills/nfl30/scripts/nfl30.py queue list
 
 # Mark a topic done after you record the episode / publish the article.
 # Requires the exact topic name; unknown names exit 2 instead of no-opping.
-python3 skills/last30days/scripts/last30days.py queue cover "Gemma 4 chat templates"
+python3 skills/nfl30/scripts/nfl30.py queue cover "Gemma 4 chat templates"
 ```
 
 Both respect `--save-dir` scoping.
 
 ### `watchlist.py` - recurring topics
 
-[`scripts/watchlist.py`](skills/last30days/scripts/watchlist.py) manages topics that should be researched on a schedule. Subcommands: `add`, `remove`, `list`, `run-one`, `run-all`, `config`. Built-in delivery to Slack incoming webhooks (`hooks.slack.com/...`) or any HTTPS endpoint, fired only when new findings appear.
+[`scripts/watchlist.py`](skills/nfl30/scripts/watchlist.py) manages topics that should be researched on a schedule. Subcommands: `add`, `remove`, `list`, `run-one`, `run-all`, `config`. Built-in delivery to Slack incoming webhooks (`hooks.slack.com/...`) or any HTTPS endpoint, fired only when new findings appear.
 
 Two-step flow (the watchlist holds the topic; an external scheduler invokes the run):
 
@@ -609,13 +609,13 @@ The schedule field stored on each topic is metadata - the actual cron / Task Sch
 
 ### `briefing.py` - daily / weekly digests
 
-[`scripts/briefing.py`](skills/last30days/scripts/briefing.py) reads the SQLite store and emits structured data the agent then synthesizes into prose. Modes: `generate` (daily), `generate --weekly`, `show [--date DATE]` (display a saved briefing). Briefs save to `~/.local/share/last30days/briefs/`.
+[`scripts/briefing.py`](skills/nfl30/scripts/briefing.py) reads the SQLite store and emits structured data the agent then synthesizes into prose. Modes: `generate` (daily), `generate --weekly`, `show [--date DATE]` (display a saved briefing). Briefs save to `~/.local/share/nfl30/briefs/`.
 
 ### Recommended cadence pattern
 
 | Step | Cadence | Command |
 |---|---|---|
-| Baseline | one-time per topic | `/last30days "<topic>" --days=30 --store` |
+| Baseline | one-time per topic | `/nfl30 "<topic>" --days=30 --store` |
 | Add to watchlist | one-time per topic | `python3 scripts/watchlist.py add "<topic>" --weekly` |
 | Recurring run | daily or weekly (external scheduler) | `python3 scripts/watchlist.py run-all` |
 | Digest | weekly | `python3 scripts/briefing.py generate --weekly` |
@@ -627,30 +627,30 @@ The schedule field stored on each topic is metadata - the actual cron / Task Sch
 The skill is built to flex around different client environments. Four patterns that compose well:
 
 **Codex note:** the repository includes `.codex-plugin/plugin.json` so Codex can treat the existing
-`skills/last30days/SKILL.md` tree as plugin metadata without maintaining a separate Codex copy.
+`skills/nfl30/SKILL.md` tree as plugin metadata without maintaining a separate Codex copy.
 The Codex marketplace catalog points at the repository root URL: Codex clones the repo, reads the
 root `.codex-plugin/plugin.json`, and loads skills from `./skills/`. The Agent Skills install
 command documented in the README remains the broadest cross-host path.
 
 **Grok note:** the repository includes `.grok-plugin/plugin.json` and `.grok-plugin/marketplace.json`
-so xAI's Grok Build CLI (`grok`) can install last30days as a native plugin. Grok also reads the
+so xAI's Grok Build CLI (`grok`) can install nfl30 as a native plugin. Grok also reads the
 Claude Code manifests for compatibility; the native pair is the first-class lane. The Grok
 marketplace catalog uses a bare Git URL source (no commit pin) so `grok plugin marketplace add
-mvanhorn/last30days-skill` tracks HEAD — the same pattern as the Codex catalog. `npx skills add`
+cmdashc/last30days-nfl` tracks HEAD — the same pattern as the Codex catalog. `npx skills add`
 remains a valid cross-host fallback.
 
-### 1. Trusted per-client `.claude/last30days.env`
+### 1. Trusted per-client `.claude/nfl30.env`
 
-When each client has its own working directory, drop a `.claude/last30days.env` into the client folder and opt in with `LAST30DAYS_TRUST_PROJECT_CONFIG=1` from your shell or global `~/.config/last30days/.env`. The skill loads the project file only after that trust signal. Typical contents:
+When each client has its own working directory, drop a `.claude/nfl30.env` into the client folder and opt in with `LAST30DAYS_TRUST_PROJECT_CONFIG=1` from your shell or global `~/.config/nfl30/.env`. The skill loads the project file only after that trust signal. Typical contents:
 
 ```bash
-LAST30DAYS_MEMORY_DIR=C:\Users\<you>\Clients\acme\Research\Last30Days
+LAST30DAYS_MEMORY_DIR=C:\Users\<you>\Clients\acme\Research\NFL30
 SCRAPECREATORS_API_KEY=<acme-scoped-key-or-shared>
 INCLUDE_SOURCES=tiktok,instagram
 BSKY_HANDLE=<acme-bluesky-handle>.bsky.social
 ```
 
-`cd` into the client folder, run `/last30days <topic>` as normal, no wrappers. Combine with `--save-suffix=<client-slug>` per run if you also need to differentiate filenames within that folder.
+`cd` into the client folder, run `/nfl30 <topic>` as normal, no wrappers. Combine with `--save-suffix=<client-slug>` per run if you also need to differentiate filenames within that folder.
 
 ### 2. Per-client save dir + suffix wrapper
 
@@ -661,8 +661,8 @@ PowerShell example:
 ```powershell
 function Run-L30D-Client {
     param([string]$ClientSlug, [Parameter(ValueFromRemainingArguments=$true)]$Args)
-    $env:LAST30DAYS_MEMORY_DIR = "C:\Users\$env:USERNAME\Clients\$ClientSlug\Research\Last30Days"
-    /last30days @Args --save-suffix=$ClientSlug
+    $env:LAST30DAYS_MEMORY_DIR = "C:\Users\$env:USERNAME\Clients\$ClientSlug\Research\NFL30"
+    /nfl30 @Args --save-suffix=$ClientSlug
 }
 # Usage: Run-L30D-Client acme "british airways middle east"
 ```
@@ -672,15 +672,15 @@ Bash example:
 ```bash
 l30d-client() {
     local client=$1; shift
-    LAST30DAYS_MEMORY_DIR="$HOME/Clients/$client/Research/Last30Days" \
-        /last30days "$@" --save-suffix="$client"
+    LAST30DAYS_MEMORY_DIR="$HOME/Clients/$client/Research/NFL30" \
+        /nfl30 "$@" --save-suffix="$client"
 }
 # Usage: l30d-client acme "british airways middle east"
 ```
 
 ### 3. Custom category-peer subreddits
 
-[`scripts/lib/categories.py`](skills/last30days/scripts/lib/categories.py) holds a table of `(category_id, trigger_keywords, peer_subreddits)`. If a client lives in a vertical that isn't covered (legal-tech, real-estate-tech, B2B HR SaaS), add a row. Pure data, no logic.
+[`scripts/lib/categories.py`](skills/nfl30/scripts/lib/categories.py) holds a table of `(category_id, trigger_keywords, peer_subreddits)`. If a client lives in a vertical that isn't covered (legal-tech, real-estate-tech, B2B HR SaaS), add a row. Pure data, no logic.
 
 Section 2a of `SKILL.md` documents the merging rule the skill applies when your topic matches a category.
 
@@ -713,7 +713,7 @@ On a Grok Bot host the bot exports `LAST30DAYS_HOST=grok-bot` on every engine ca
 Persist either key without echoing it:
 
 ```bash
-printf '%s\n' "$TOKEN" | python3 skills/last30days/scripts/last30days.py setup --store-key X_BEARER_TOKEN
+printf '%s\n' "$TOKEN" | python3 skills/nfl30/scripts/nfl30.py setup --store-key X_BEARER_TOKEN
 ```
 
 Browser sessions are not read on this host, and no login window is opened; `setup` still installs the free CLIs. Doctor prints the resolved host value, so a missing `LAST30DAYS_HOST` export is visible at a glance.
@@ -722,7 +722,7 @@ Browser sessions are not read on this host, and no login window is opened; `setu
 
 ## Beta channel
 
-Experimental customizations live on a private companion repo (`mvanhorn/last30days-skill-private`) installed as `/last30days-beta`. Never ship beta-only changes to the public marketplace without a review PR against the public repo. Workflow guide: `BETA.md` in the private repo.
+Experimental customizations live on a private companion repo (`cmdashc/last30days-nfl-private`) installed as `/nfl30-beta`. Never ship beta-only changes to the public marketplace without a review PR against the public repo. Workflow guide: `BETA.md` in the private repo.
 
 This is the right home for client-specific changes you don't intend to upstream - custom category rows, internal subreddit lists, per-vertical plan templates.
 
@@ -730,7 +730,7 @@ This is the right home for client-specific changes you don't intend to upstream 
 
 ## Cross-references
 
-- The CLI flag surface: `python3 scripts/last30days.py --help`
-- The skill contract (voice, LAWs, pre-flight protocol): [`skills/last30days/SKILL.md`](skills/last30days/SKILL.md)
+- The CLI flag surface: `python3 scripts/nfl30.py --help`
+- The skill contract (voice, LAWs, pre-flight protocol): [`skills/nfl30/SKILL.md`](skills/nfl30/SKILL.md)
 - Shared package vocabulary and engine/harness terminology: [`CONCEPTS.md`](CONCEPTS.md)
 - Contributor guidance: [`CONTRIBUTORS.md`](CONTRIBUTORS.md)

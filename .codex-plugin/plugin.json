@@ -1,5 +1,5 @@
 {
-  "name": "last30days",
+  "name": "nfl30",
   "version": "3.25.0",
   "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and the web.",
   "author": {
@@ -7,8 +7,8 @@
     "email": "mvanhorn@gmail.com",
     "url": "https://github.com/mvanhorn"
   },
-  "homepage": "https://github.com/mvanhorn/last30days-skill",
-  "repository": "https://github.com/mvanhorn/last30days-skill",
+  "homepage": "https://github.com/cmdashc/last30days-nfl",
+  "repository": "https://github.com/cmdashc/last30days-nfl",
   "license": "MIT",
   "keywords": [
     "competitor research",
@@ -29,9 +29,9 @@
   ],
   "skills": "./skills/",
   "interface": {
-    "displayName": "last30days",
+    "displayName": "nfl30",
     "shortDescription": "Research what people are saying about a topic now.",
-    "longDescription": "last30days adds a Codex skill for researching any topic based on recent discussion and engagement signals across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and the web.",
+    "longDescription": "nfl30 adds a Codex skill for researching any topic based on recent discussion and engagement signals across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and the web.",
     "developerName": "Matt Van Horn",
     "category": "Research",
     "capabilities": [
@@ -39,7 +39,7 @@
       "Read",
       "Write"
     ],
-    "websiteURL": "https://github.com/mvanhorn/last30days-skill",
+    "websiteURL": "https://github.com/cmdashc/last30days-nfl",
     "defaultPrompt": [
       "TikTok shop trends",
       "Codex vs Cursor",

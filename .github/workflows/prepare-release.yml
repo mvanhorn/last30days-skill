@@ -85,7 +85,7 @@ jobs:
             changelog.d \
             pyproject.toml \
             uv.lock \
-            skills/last30days/SKILL.md \
+            skills/nfl30/SKILL.md \
             .claude-plugin/plugin.json \
             .claude-plugin/marketplace.json \
             .codex-plugin/plugin.json \

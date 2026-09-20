@@ -15,7 +15,7 @@ def _topic(rank: int, name: str, **overrides) -> schema.DiscoveryTopic:
         velocity_score=42.5,
         sources=["hackernews", "reddit"],
         engagement_by_source={"hackernews": {"points": 500}},
-        command=f'/last30days "{name}"',
+        command=f'/nfl30 "{name}"',
         evidence_urls=[f"https://example.com/{rank}"],
     )
     fields.update(overrides)

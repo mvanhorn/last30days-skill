@@ -11,7 +11,7 @@ from unittest import mock
 
 import pytest
 
-import last30days as cli
+import nfl30 as cli
 import store
 from lib import library, library_index, pipeline, render, schema
 
@@ -27,7 +27,7 @@ def _write_report(
 ) -> Path:
     path = directory / name
     path.write_text(
-        f"""# last30days v3.11.1: {topic}
+        f"""# nfl30 v3.11.1: {topic}
 
 - Date range: 2026-06-10 to {date}
 
@@ -211,7 +211,7 @@ def test_library_search_cli_reuses_library_word_dispatch(tmp_path, monkeypatch, 
     monkeypatch.setattr(
         sys,
         "argv",
-        ["last30days.py", "library", "search", "MCP", "servers", "--save-dir", str(memory)],
+        ["nfl30.py", "library", "search", "MCP", "servers", "--save-dir", str(memory)],
     )
 
     assert cli.main() == 0
@@ -465,7 +465,7 @@ def test_passive_context_uses_effective_save_dir(tmp_path):
             github_repos=None,
         )
     assert sync.call_args.kwargs["db_path"] == (
-        effective_memory / ".last30days-library.db"
+        effective_memory / ".nfl30-library.db"
     ).resolve()
 
 
@@ -575,7 +575,7 @@ def test_search_render_carries_safety_note(tmp_path):
 
 
 def test_library_search_rejects_output_flag(tmp_path, capsys):
-    import last30days as cli
+    import nfl30 as cli
     from unittest import mock
     import io
     from contextlib import redirect_stdout, redirect_stderr
@@ -583,7 +583,7 @@ def test_library_search_rejects_output_flag(tmp_path, capsys):
     err = io.StringIO()
     with mock.patch.object(
         cli.sys, "argv",
-        ["last30days.py", "library", "search", "agents", "--output", str(tmp_path / "x.md")],
+        ["nfl30.py", "library", "search", "agents", "--output", str(tmp_path / "x.md")],
     ), redirect_stdout(io.StringIO()), redirect_stderr(err):
         rc = cli.main()
     assert rc == 2
@@ -596,7 +596,7 @@ def test_sync_repopulates_after_fts_table_loss(tmp_path):
 
     memory = tmp_path / "mem"
     memory.mkdir()
-    (memory / "topic-raw.md").write_text("# last30days v3: Topic\n\n- Date range: 2026-06-10 to 2026-07-10\n\nFinding about quantum widgets.\n")
+    (memory / "topic-raw.md").write_text("# nfl30 v3: Topic\n\n- Date range: 2026-06-10 to 2026-07-10\n\nFinding about quantum widgets.\n")
     db = tmp_path / "library.db"
     matches, _ = library_index.sync_and_search(
         "quantum", memory_dir=memory, briefs_dir=tmp_path / "none",
@@ -619,13 +619,13 @@ def test_scoped_search_uses_per_library_db(tmp_path, monkeypatch):
     import io
     from contextlib import redirect_stdout, redirect_stderr
     from unittest import mock
-    import last30days as cli
+    import nfl30 as cli
     from lib import library_index
 
     scoped = tmp_path / "client-a"
     scoped.mkdir()
     (scoped / "topic-raw.md").write_text(
-        "# last30days v3: Topic\n\n- Date range: 2026-06-10 to 2026-07-10\n\nquantum widgets finding.\n",
+        "# nfl30 v3: Topic\n\n- Date range: 2026-06-10 to 2026-07-10\n\nquantum widgets finding.\n",
         encoding="utf-8",
     )
     captured = {}
@@ -638,7 +638,7 @@ def test_scoped_search_uses_per_library_db(tmp_path, monkeypatch):
     with mock.patch.object(cli.library_index if hasattr(cli, "library_index") else library_index,
                            "sync_and_search", side_effect=spy), \
          mock.patch.object(cli.sys, "argv",
-        ["last30days.py", "library", "search", "quantum", "--save-dir", str(scoped)]), \
+        ["nfl30.py", "library", "search", "quantum", "--save-dir", str(scoped)]), \
          mock.patch.object(cli.env, "get_config", lambda **_k: {}), \
          redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
         cli.main()
@@ -660,7 +660,7 @@ def test_scoped_library_search_does_not_read_the_global_store(tmp_path, monkeypa
     monkeypatch.setattr(
         sys,
         "argv",
-        ["last30days.py", "library", "search", "MCP", "--save-dir", str(memory)],
+        ["nfl30.py", "library", "search", "MCP", "--save-dir", str(memory)],
     )
 
     assert cli.main() == 0
@@ -708,5 +708,5 @@ def test_markdown_save_to_scoped_dir_syncs_a_scoped_index(tmp_path):
     sync.assert_called_once_with(
         scoped_root,
         scoped_root / "briefings",
-        db_path=scoped_root / ".last30days-library.db",
+        db_path=scoped_root / ".nfl30-library.db",
     )

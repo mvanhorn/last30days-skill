@@ -7,8 +7,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 CONFIGURATION = ROOT / "CONFIGURATION.md"
 README = ROOT / "README.md"
-SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
-UI_PY = ROOT / "skills" / "last30days" / "scripts" / "lib" / "ui.py"
+SKILL_MD = ROOT / "skills" / "nfl30" / "SKILL.md"
+UI_PY = ROOT / "skills" / "nfl30" / "scripts" / "lib" / "ui.py"
 
 
 def test_cookie_setup_requires_explicit_allow_flag_in_docs():

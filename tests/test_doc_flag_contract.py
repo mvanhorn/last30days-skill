@@ -4,12 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import last30days as cli
+import nfl30 as cli
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIGURATION = ROOT / "CONFIGURATION.md"
-SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
-HTML_REFERENCE = ROOT / "skills" / "last30days" / "references" / "save-html-brief.md"
+SKILL_MD = ROOT / "skills" / "nfl30" / "SKILL.md"
+HTML_REFERENCE = ROOT / "skills" / "nfl30" / "references" / "save-html-brief.md"
 
 
 def _parser_flags() -> set[str]:
@@ -94,7 +94,7 @@ def test_agent_is_documented_as_skill_argument_not_python_flag():
 
 def test_html_reference_documents_structured_cache_reuse():
     text = HTML_REFERENCE.read_text(encoding="utf-8")
-    assert "~/.config/last30days/last-report.json" in text
+    assert "~/.config/nfl30/last-report.json" in text
     assert "without re-running source fetchers" in text
     assert "No matching cached report data" in text
     assert "LAST30DAYS_REPORT_CACHE_TTL_SECONDS" in text
@@ -113,7 +113,7 @@ def test_comparison_artifact_contract_documents_actual_paths():
     comparison_start = text.index("\n## If QUERY_TYPE = COMPARISON\n")
     comparison_section = text[comparison_start:comparison_start + 5000]
     assert "there is no separate merged Markdown raw file" in comparison_section
-    assert "[last30days] Comparison artifact set: main={path}; peers={path, ...}" in comparison_section
+    assert "[nfl30] Comparison artifact set: main={path}; peers={path, ...}" in comparison_section
     assert "Treat that log line as authoritative" in comparison_section
 
     step_start = text.index("## Step 2.5: Append WebSearch Results to Saved Raw File")

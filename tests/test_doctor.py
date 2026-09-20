@@ -29,7 +29,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-import last30days as cli
+import nfl30 as cli
 from lib import backends, doctor, env, grok_x, health, http, prescriptions
 
 BIRD_STATUS_OFF = {
@@ -161,7 +161,7 @@ def _build(config, **kwargs):
 def _run_cli_doctor(argv, config):
     with _Hermetic(), \
          mock.patch.object(cli.env, "get_config", return_value=dict(config)), \
-         mock.patch.object(sys, "argv", ["last30days.py"] + argv):
+         mock.patch.object(sys, "argv", ["nfl30.py"] + argv):
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -202,7 +202,7 @@ class KeylessEnvironment(unittest.TestCase):
     def test_cli_exit_code_zero_even_with_problems(self):
         rc, out = _run_cli_doctor(["doctor"], {})
         self.assertEqual(0, rc)
-        self.assertIn("last30days doctor", out)
+        self.assertIn("nfl30 doctor", out)
 
 
 class PerplexityKeyBoundary(unittest.TestCase):
@@ -501,7 +501,7 @@ class TopicWordDispatch(unittest.TestCase):
     def test_doctor_topic_triggers_report(self):
         with mock.patch("lib.doctor.run", return_value=0) as run, \
              mock.patch.object(cli.env, "get_config", return_value={}), \
-             mock.patch.object(sys, "argv", ["last30days.py", "doctor"]):
+             mock.patch.object(sys, "argv", ["nfl30.py", "doctor"]):
             stdout, stderr = io.StringIO(), io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 rc = cli.main()
@@ -511,7 +511,7 @@ class TopicWordDispatch(unittest.TestCase):
     def test_doctor_json_flag_passes_through(self):
         with mock.patch("lib.doctor.run", return_value=0) as run, \
              mock.patch.object(cli.env, "get_config", return_value={}), \
-             mock.patch.object(sys, "argv", ["last30days.py", "doctor", "--json"]):
+             mock.patch.object(sys, "argv", ["nfl30.py", "doctor", "--json"]):
             stdout, stderr = io.StringIO(), io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 rc = cli.main()
@@ -532,7 +532,7 @@ class TopicWordDispatch(unittest.TestCase):
              mock.patch.object(
                  cli.pipeline, "diagnose", side_effect=RuntimeError("research path reached")
              ), \
-             mock.patch.object(sys, "argv", ["last30days.py", "doctor", "who", "reviews"]):
+             mock.patch.object(sys, "argv", ["nfl30.py", "doctor", "who", "reviews"]):
             stdout, stderr = io.StringIO(), io.StringIO()
             with redirect_stdout(stdout), redirect_stderr(stderr):
                 with self.assertRaises(RuntimeError):
@@ -541,7 +541,7 @@ class TopicWordDispatch(unittest.TestCase):
     def test_json_flag_rejected_for_research_topics(self):
         with mock.patch.object(
             cli.env, "get_config", side_effect=AssertionError("config should not load")
-        ), mock.patch.object(sys, "argv", ["last30days.py", "some", "topic", "--json"]):
+        ), mock.patch.object(sys, "argv", ["nfl30.py", "some", "topic", "--json"]):
             stderr = io.StringIO()
             with redirect_stderr(stderr), self.assertRaises(SystemExit) as exc:
                 cli.main()
@@ -733,7 +733,7 @@ class TextReport(unittest.TestCase):
     def test_groups_and_lines(self):
         report = _build({}, probe_map={"yt-dlp": health.BROKEN})
         text = doctor.render_text(report)
-        self.assertIn("last30days doctor", text)
+        self.assertIn("nfl30 doctor", text)
         for header in (
             "WORKING",
             "TURNED ON - UNVERIFIED",
@@ -1685,7 +1685,7 @@ class GrokBotParityTable(unittest.TestCase):
                         self.assertNotIn(word, blob, word)
                 if allow and expected == pin:
                     self.assertLessEqual(x_text.count(pin), 1, x_text)
-                self.assertNotIn("last30days_x_backend", x_text)
+                self.assertNotIn("nfl30_x_backend", x_text)
 
 
 class UnsubstitutedTemplateReporting(unittest.TestCase):

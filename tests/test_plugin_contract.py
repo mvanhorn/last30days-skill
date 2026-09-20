@@ -6,7 +6,7 @@ from pathlib import Path
 from lib.skill_meta import read_skill_version
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_ROOT = ROOT / "skills" / "last30days"
+SKILL_ROOT = ROOT / "skills" / "nfl30"
 
 
 def _json(path: Path) -> dict:
@@ -24,22 +24,22 @@ class TestPluginContract(unittest.TestCase):
     def test_codex_plugin_manifest_uses_repo_skill_root(self) -> None:
         manifest = _json(ROOT / ".codex-plugin" / "plugin.json")
 
-        self.assertEqual("last30days", manifest["name"])
+        self.assertEqual("nfl30", manifest["name"])
         self.assertEqual("./skills/", manifest["skills"])
-        self.assertEqual("last30days", manifest["interface"]["displayName"])
+        self.assertEqual("nfl30", manifest["interface"]["displayName"])
 
     def test_codex_marketplace_points_at_repo_root_plugin(self) -> None:
         marketplace = _json(ROOT / ".agents" / "plugins" / "marketplace.json")
         plugins = marketplace.get("plugins") or []
         plugin_by_name = {plugin["name"]: plugin for plugin in plugins}
 
-        self.assertEqual("last30days-skill", marketplace["name"])
-        self.assertIn("last30days", plugin_by_name)
-        plugin = plugin_by_name["last30days"]
+        self.assertEqual("nfl30-skill", marketplace["name"])
+        self.assertIn("nfl30", plugin_by_name)
+        plugin = plugin_by_name["nfl30"]
         self.assertEqual(
             {
                 "source": "url",
-                "url": "https://github.com/mvanhorn/last30days-skill.git",
+                "url": "https://github.com/cmdashc/last30days-nfl.git",
             },
             plugin["source"],
         )
@@ -47,7 +47,7 @@ class TestPluginContract(unittest.TestCase):
     def test_grok_plugin_manifest_uses_repo_skill_root(self) -> None:
         manifest = _json(ROOT / ".grok-plugin" / "plugin.json")
 
-        self.assertEqual("last30days", manifest["name"])
+        self.assertEqual("nfl30", manifest["name"])
         self.assertEqual("./skills/", manifest["skills"])
 
     def test_grok_marketplace_points_at_repo_root_plugin(self) -> None:
@@ -55,14 +55,14 @@ class TestPluginContract(unittest.TestCase):
         plugins = marketplace.get("plugins") or []
         plugin_by_name = {plugin["name"]: plugin for plugin in plugins}
 
-        self.assertEqual("last30days-skill", marketplace["name"])
-        self.assertIn("last30days", plugin_by_name)
-        plugin = plugin_by_name["last30days"]
+        self.assertEqual("nfl30-skill", marketplace["name"])
+        self.assertIn("nfl30", plugin_by_name)
+        plugin = plugin_by_name["nfl30"]
         # Exact dict equality locks the bare Git URL source (anti-self-referential-local).
         self.assertEqual(
             {
                 "source": "url",
-                "url": "https://github.com/mvanhorn/last30days-skill.git",
+                "url": "https://github.com/cmdashc/last30days-nfl.git",
             },
             plugin["source"],
         )
@@ -125,10 +125,10 @@ class TestPluginContract(unittest.TestCase):
     def test_workflows_do_not_reference_removed_root_scripts_dir(self) -> None:
         # The historical root-level scripts/ directory was removed; workflows must not
         # reference a bare `scripts/` path. Allowed replacements:
-        # skills/last30days/scripts/ (engine), mcp/scripts/ (.mcpb), .github/scripts/
+        # skills/nfl30/scripts/ (engine), mcp/scripts/ (.mcpb), .github/scripts/
         # (release automation).
         allowed_prefixes = (
-            "skills/last30days/scripts/",
+            "skills/nfl30/scripts/",
             "mcp/scripts/",
             ".github/scripts/",
         )
@@ -145,7 +145,7 @@ class TestPluginContract(unittest.TestCase):
 
     def test_plugin_ships_no_session_start_hook(self) -> None:
         # SessionStart ran in every Claude Code / Grok session whether or not
-        # /last30days was invoked. First-run NUX lives in SKILL.md Step 0.
+        # /nfl30 was invoked. First-run NUX lives in SKILL.md Step 0.
         self.assertFalse((ROOT / "hooks" / "hooks.json").exists())
         self.assertFalse((ROOT / "hooks" / "scripts" / "check-config.sh").exists())
 

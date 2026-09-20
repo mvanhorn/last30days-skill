@@ -39,19 +39,19 @@ jobs:
 
       - name: Build .skill artifact
         run: |
-          bash skills/last30days/scripts/build-skill.sh
-          test -f dist/last30days.skill
+          bash skills/nfl30/scripts/build-skill.sh
+          test -f dist/nfl30.skill
 
       - name: Attest .skill artifact provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
-          subject-path: dist/last30days.skill
+          subject-path: dist/nfl30.skill
 
       - name: Upload skill artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: last30days-skill
-          path: dist/last30days.skill
+          name: nfl30-skill
+          path: dist/nfl30.skill
 
   # Cross-compile the Go MCP server for each Claude Desktop platform and
   # package each as a .mcpb. MCPB v0.3 is a ZIP containing the checked-in
@@ -63,7 +63,7 @@ jobs:
       id-token: write
       attestations: write
     env:
-      MCPB_OUTPUT: mcp/build/last30days-pp-mcp-${{ matrix.goos }}-${{ matrix.goarch }}.mcpb
+      MCPB_OUTPUT: mcp/build/nfl30-pp-mcp-${{ matrix.goos }}-${{ matrix.goarch }}.mcpb
     strategy:
       fail-fast: false
       matrix:
@@ -103,8 +103,8 @@ jobs:
           mkdir -p mcp/build
           go -C mcp build \
             -ldflags "-X main.Version=${RELEASE_VERSION}" \
-            -o build/last30days-pp-mcp \
-            ./cmd/last30days-pp-mcp
+            -o build/nfl30-pp-mcp \
+            ./cmd/nfl30-pp-mcp
 
       - name: Bundle .mcpb
         # Keep this equivalent to printing-press's bundle layout without
@@ -113,13 +113,13 @@ jobs:
         run: |
           set -euo pipefail
           entry_point="$(jq -er '.server.entry_point' mcp/manifest.json)"
-          test "${entry_point}" = "bin/last30days-pp-mcp"
+          test "${entry_point}" = "bin/nfl30-pp-mcp"
 
-          staging="${RUNNER_TEMP}/last30days-mcpb"
+          staging="${RUNNER_TEMP}/nfl30-mcpb"
           output="${GITHUB_WORKSPACE}/${MCPB_OUTPUT}"
           mkdir -p "${staging}/bin" "$(dirname "${output}")"
           cp mcp/manifest.json "${staging}/manifest.json"
-          cp mcp/build/last30days-pp-mcp "${staging}/${entry_point}"
+          cp mcp/build/nfl30-pp-mcp "${staging}/${entry_point}"
           chmod 0755 "${staging}/${entry_point}"
 
           (
@@ -170,7 +170,7 @@ jobs:
           RELEASE_TAG: ${{ env.RELEASE_TAG }}
         run: |
           gh release create "${RELEASE_TAG}" \
-            dist/last30days.skill \
-            dist/last30days-pp-mcp-*.mcpb \
+            dist/nfl30.skill \
+            dist/nfl30-pp-mcp-*.mcpb \
             --generate-notes \
             --verify-tag

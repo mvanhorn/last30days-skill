@@ -1,4 +1,4 @@
-# Hermes scan baseline — skills/last30days/ (real skills_guard.py, community source)
+# Hermes scan baseline — skills/nfl30/ (real skills_guard.py, community source)
 
 Measured 2026-07-06 against `fix/hermes-scan-safe-verdict` (off origin/main @ 3.11.0).
 Verdict: **dangerous** — BLOCKED (community + dangerous; --force powerless).
@@ -12,7 +12,7 @@ Totals: 14 CRITICAL, 36 HIGH, 25 MEDIUM, 1 LOW (76 findings).
 
 ## HIGH (36) — includes an UNAVOIDABLE structural finding
 - 26 exfiltration  python_os_environ           any `os.environ` substring incl comments (env boundary; blocks SAFE)
-- 4  priv-esc      sudo_usage                  SKILL.md:374, last30days.py:34, env.py:247, health.py:148 ("sudo")
+- 4  priv-esc      sudo_usage                  SKILL.md:374, nfl30.py:34, env.py:247, health.py:148 ("sudo")
 - 2  exfiltration  node_process_env            vendored bird-search JS (vendor exclude)
 - 1  structural    oversized_skill             1615KB > 1024KB limit  ← BLOCKS SAFE (skill is legitimately ~1.5MB runtime)
 - 1  exfiltration  dump_all_env                SKILL.md:327  "printenv ..." shell snippet

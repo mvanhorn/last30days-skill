@@ -21,7 +21,7 @@ import pytest
 
 from lib import env
 
-SETUP_KEYCHAIN_SH = Path(__file__).resolve().parents[1] / "skills" / "last30days" / "scripts" / "setup-keychain.sh"
+SETUP_KEYCHAIN_SH = Path(__file__).resolve().parents[1] / "skills" / "nfl30" / "scripts" / "setup-keychain.sh"
 
 
 def _plaintext_presence_checks(script: str) -> list[str]:
@@ -176,9 +176,9 @@ def test_parse_keychain_aliases_warns_on_invalid_json_and_ignores_unknown_keys(c
 def test_load_keychain_loads_present_keys_skips_missing():
     def fake_run(cmd, **kwargs):
         service = cmd[cmd.index("-s") + 1]
-        if service == "last30days-XAI_API_KEY":
+        if service == "nfl30-XAI_API_KEY":
             return _run_result(0, "xai-abc\n")
-        if service == "last30days-BRAVE_API_KEY":
+        if service == "nfl30-BRAVE_API_KEY":
             return _run_result(0, "brv-xyz\n")
         return _run_result(44)  # security's "not found" exit code
 
@@ -210,7 +210,7 @@ def test_load_keychain_uses_alias_when_canonical_missing():
 
     assert result == {"XAI_API_KEY": "xai-alias"}
     assert calls == [
-        ("mortimer", "last30days-XAI_API_KEY"),
+        ("mortimer", "nfl30-XAI_API_KEY"),
         ("keychain-user", "existing-xai-api-key"),
     ]
 
@@ -218,7 +218,7 @@ def test_load_keychain_uses_alias_when_canonical_missing():
 def test_load_keychain_canonical_wins_over_alias():
     def fake_run(cmd, **kwargs):
         service = cmd[cmd.index("-s") + 1]
-        if service == "last30days-XAI_API_KEY":
+        if service == "nfl30-XAI_API_KEY":
             return _run_result(0, "xai-canonical\n")
         if service == "existing-xai-api-key":
             return _run_result(0, "xai-alias\n")

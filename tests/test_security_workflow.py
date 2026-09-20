@@ -61,5 +61,5 @@ def test_agent_guidance_mentions_secret_hygiene() -> None:
 
     assert "Security hygiene" in text
     assert "Never commit real API keys" in text
-    assert "skills/last30days/scripts/lib/env.py" in text
+    assert "skills/nfl30/scripts/lib/env.py" in text
     assert "fixtures" in text

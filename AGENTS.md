@@ -1,12 +1,12 @@
-# last30days Skill
+# nfl30 Skill
 
 Agent Skills package for researching any topic across Reddit, X, YouTube, and web. Installable across Claude Code (most common host), Codex, Cursor, GitHub Copilot, Gemini CLI, Grok (xAI), and 50+ other [Agent Skills](https://agentskills.io) hosts. Python scripts with multi-source search aggregation.
 
 ## Structure
-- `skills/last30days/SKILL.md` — canonical skill definition / runtime spec the model reads when the slash command fires
-- `skills/last30days/scripts/last30days.py` — main research engine
-- `skills/last30days/scripts/lib/` — search, enrichment, rendering modules
-- `skills/last30days/scripts/lib/vendor/bird-search/` — vendored X search client
+- `skills/nfl30/SKILL.md` — canonical skill definition / runtime spec the model reads when the slash command fires
+- `skills/nfl30/scripts/nfl30.py` — main research engine
+- `skills/nfl30/scripts/lib/` — search, enrichment, rendering modules
+- `skills/nfl30/scripts/lib/vendor/bird-search/` — vendored X search client
 - `docs/solutions/` — documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`)
 - `CONCEPTS.md` — shared domain vocabulary (Skill, Engine, Harness, Beta channel) — relevant when orienting to the codebase or discussing project terminology
 - `CONFIGURATION.md` — user-facing knobs (env vars, flags, per-host install patterns); keep in sync per the rules below
@@ -17,17 +17,17 @@ Agent Skills package for researching any topic across Reddit, X, YouTube, and we
 - `HERMES_SETUP.md` — install instructions for the Hermes harness specifically
 
 ## Orientation
-- This is an Agent Skills package, not a CLI tool. The product is the slash-command-invoked skill (`/last30days <topic>` in most harnesses); `scripts/last30days.py` is implementation. Claude Code is the most common host but not the only one — features must work across every harness the skill installs into.
+- This is an Agent Skills package, not a CLI tool. The product is the slash-command-invoked skill (`/nfl30 <topic>` in most harnesses); `scripts/nfl30.py` is implementation. Claude Code is the most common host but not the only one — features must work across every harness the skill installs into.
 - Feature design starts from the slash-command UX. A new engine flag with no SKILL.md integration is incomplete — the model invoking the skill won't know the flag exists.
-- README and PR examples show `/last30days <topic>` first. Direct CLI invocation (`python3 scripts/last30days.py ...`) is a fallback for scripting, cron, and dev-time engine testing; label it as such, never as the primary path.
-- Slash commands don't pass shell mechanics through. `/last30days OpenClaw --emit=html | pbcopy` is invalid in any harness — either use the slash form (no flags or pipes; let the model translate user intent into engine flags) or use the direct CLI form (full `python3 ...` with explicit flags and a real shell).
+- README and PR examples show `/nfl30 <topic>` first. Direct CLI invocation (`python3 scripts/nfl30.py ...`) is a fallback for scripting, cron, and dev-time engine testing; label it as such, never as the primary path.
+- Slash commands don't pass shell mechanics through. `/nfl30 OpenClaw --emit=html | pbcopy` is invalid in any harness — either use the slash form (no flags or pipes; let the model translate user intent into engine flags) or use the direct CLI form (full `python3 ...` with explicit flags and a real shell).
 
 ## Commands
 ```bash
 # Dev/fallback: direct engine invocation (scripting, cron, or engine testing only).
-# Saves to $LAST30DAYS_MEMORY_DIR when set in shell or ~/.config/last30days/.env;
+# Saves to $LAST30DAYS_MEMORY_DIR when set in shell or ~/.config/nfl30/.env;
 # add --save-dir <path> for a one-off override. Mirrors LAST30DAYS_STORE convention.
-python3 skills/last30days/scripts/last30days.py "test query" --emit=compact
+python3 skills/nfl30/scripts/nfl30.py "test query" --emit=compact
 npx skills add . -g -y   # copies skill into ~/.agents/skills/<name>/ (frozen at install time); re-run to sync working-tree edits — see Rules below
 
 # Tests (pytest, ~89 files under tests/, configured in pyproject.toml)
@@ -55,16 +55,16 @@ Agents open most PRs. Follow this so `CHANGELOG.md` stops conflicting and versio
 
 ## Rules
 - `lib/__init__.py` must be bare package marker (comment only, NO eager imports)
-- One-time setup: `npx skills add . -g -y` copies the skill into `~/.agents/skills/<name>/` (real directory) and, for harnesses that support symlinked skill dirs, drops a per-host symlink pointing at that copy. **Working-tree edits do NOT propagate automatically** — the `~/.agents/skills/<name>/` copy is frozen at install time. To sync after edits, re-run `npx skills add . -g -y`. For live-edit on a dev machine, replace the install copy with a symlink to the working tree: `ln -sfn "$PWD/skills/last30days" ~/.agents/skills/last30days` (run from the repo root).
-- Git remote: origin = public (`mvanhorn/last30days-skill`)
+- One-time setup: `npx skills add . -g -y` copies the skill into `~/.agents/skills/<name>/` (real directory) and, for harnesses that support symlinked skill dirs, drops a per-host symlink pointing at that copy. **Working-tree edits do NOT propagate automatically** — the `~/.agents/skills/<name>/` copy is frozen at install time. To sync after edits, re-run `npx skills add . -g -y`. For live-edit on a dev machine, replace the install copy with a symlink to the working tree: `ln -sfn "$PWD/skills/nfl30" ~/.agents/skills/nfl30` (run from the repo root).
+- Git remote: origin = public (`cmdashc/last30days-nfl`)
 - Do not reduce `fail_under` in `pyproject.toml` (`[tool.coverage.report]`) without documenting why in the PR. The coverage gate is a floor meant to rise over time, not to be relaxed when new code is under-tested.
 - Every `lib/*.py` call to `log.source_log(...)` must pass `tty_only=False`. The default is `True`, which silently drops every line when stderr isn't a TTY (Claude Code, Codex, CI, captured output) — turning source observability into invisible failure. Enforced by `tests/test_source_log_visibility.py`.
 - **CLI-gated optional sources** (Digg via `digg-pp-cli`, YouTube via `yt-dlp`) activate only when `shutil.which` resolves the binary on the **agent subprocess PATH** — not merely when the file exists on disk. First-run setup installs Digg through `@mvanhorn/printing-press-library` (default `$HOME/.local/bin`); Hermes/OpenClaw gateways often need that directory on PATH. Setup must distinguish PATH-visible installs from off-PATH binaries and must not claim "now active" unless the engine gate would pass. See `docs/solutions/integration-issues/digg-cli-agent-path-setup-wizard.md`.
-- **First-run onboarding is consent-driven, model-led, and host-split.** The setup subprocess does only mechanical work (cookie reads, tool installs, GitHub device-auth, and emitting the engine-owned welcome via `--welcome`) — it cannot prompt, so consent lives in `SKILL.md` Step 0. Two flows avoid model-authored prose that Claude Code folds or the model skips: in the **Modal Flow** the welcome pitch is embedded in the setup modal's question (the AskUserQuestion modal is the only always-fully-visible surface — a separate welcome message or `--welcome` Bash run gets buried behind "ctrl+o to expand"); the **Non-Modal Prose Flow** still uses `last30days.py --welcome` (relayed verbatim) since it has no modal. The GitHub device code is surfaced by a two-command split — `setup --github-start` returns the code fast (foreground, copies to clipboard) and `setup --github-poll` waits for authorization (`setup --github` still chains both for back-compat). Step 0 has THREE branches: a **Claude Code Modal Flow** (the restored v3.0.0 `AskUserQuestion`-driven NUX — welcome, Auto/Manual/Skip, cookie consent, ScrapeCreators offer, `INCLUDE_SOURCES` opt-in, first-topic picker) for hosts with modals, a **Non-Modal Prose Flow** for hosts without (OpenClaw, Codex, Cursor, Gemini CLI, Grok CLI), and a **Grok Bot Prose Flow** for the Grok Bot host (`LAST30DAYS_HOST=grok-bot`), which leads with the bot's X connector lane (`LAST30DAYS_X_HOST_LANE=1` plus a `--x-posts` envelope the model fetches itself), persists any backup key (`X_BEARER_TOKEN` / `XAI_API_KEY`) only through the engine's `setup --store-key` path, and never reads a browser session. The first two ask before reading cookies and surface the macOS Full Disk Access fix on permission-denied; all three offer the ScrapeCreators GitHub signup (10,000 free calls) on every first run. A successful `setup --github` persists `SCRAPECREATORS_API_KEY` automatically (via `setup_wizard.write_api_key`, 0o600) and masks the key in stdout. Do NOT collapse the modal flow back into a bare silent `setup` call or flatten it to prose-only — the guided modals are the feature (they eroded once and were restored). The onboarding contract is locked by `tests/test_onboarding_contract.py`. The Step 5 source opt-in is two tiers, both comment-enabled: **Recommended** (TikTok + Instagram posts AND top comments, plus YouTube comments — `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments`) and **Everything** (also Threads + Pinterest). Comments are on by default (posts on → comments on for all three platforms); **Threads and Pinterest are the only opt-in extras**, appearing only in the Step 5 Everything option, never in the welcome or the Step 4 offer. Instagram comments are fetched via ScrapeCreators (`/v2/instagram/post/comments`, ranked by `comment_like_count`) with full vote-weighting parity to YouTube/TikTok (a dedicated `_instagram_engagement` carve-out, the `_VOTE_LOG_REFERENCE`/label/threshold entries). The cross-platform "Top Community Comments" list (`render._render_top_comments`) selects **round-robin by within-platform rank** (every platform's #1, then #2, then #3) so a viral platform can't crowd out a smaller one, and drops the per-platform absolute floor so a less-watched video's killer low-vote comment still surfaces.
+- **First-run onboarding is consent-driven, model-led, and host-split.** The setup subprocess does only mechanical work (cookie reads, tool installs, GitHub device-auth, and emitting the engine-owned welcome via `--welcome`) — it cannot prompt, so consent lives in `SKILL.md` Step 0. Two flows avoid model-authored prose that Claude Code folds or the model skips: in the **Modal Flow** the welcome pitch is embedded in the setup modal's question (the AskUserQuestion modal is the only always-fully-visible surface — a separate welcome message or `--welcome` Bash run gets buried behind "ctrl+o to expand"); the **Non-Modal Prose Flow** still uses `nfl30.py --welcome` (relayed verbatim) since it has no modal. The GitHub device code is surfaced by a two-command split — `setup --github-start` returns the code fast (foreground, copies to clipboard) and `setup --github-poll` waits for authorization (`setup --github` still chains both for back-compat). Step 0 has THREE branches: a **Claude Code Modal Flow** (the restored v3.0.0 `AskUserQuestion`-driven NUX — welcome, Auto/Manual/Skip, cookie consent, ScrapeCreators offer, `INCLUDE_SOURCES` opt-in, first-topic picker) for hosts with modals, a **Non-Modal Prose Flow** for hosts without (OpenClaw, Codex, Cursor, Gemini CLI, Grok CLI), and a **Grok Bot Prose Flow** for the Grok Bot host (`LAST30DAYS_HOST=grok-bot`), which leads with the bot's X connector lane (`LAST30DAYS_X_HOST_LANE=1` plus a `--x-posts` envelope the model fetches itself), persists any backup key (`X_BEARER_TOKEN` / `XAI_API_KEY`) only through the engine's `setup --store-key` path, and never reads a browser session. The first two ask before reading cookies and surface the macOS Full Disk Access fix on permission-denied; all three offer the ScrapeCreators GitHub signup (10,000 free calls) on every first run. A successful `setup --github` persists `SCRAPECREATORS_API_KEY` automatically (via `setup_wizard.write_api_key`, 0o600) and masks the key in stdout. Do NOT collapse the modal flow back into a bare silent `setup` call or flatten it to prose-only — the guided modals are the feature (they eroded once and were restored). The onboarding contract is locked by `tests/test_onboarding_contract.py`. The Step 5 source opt-in is two tiers, both comment-enabled: **Recommended** (TikTok + Instagram posts AND top comments, plus YouTube comments — `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments`) and **Everything** (also Threads + Pinterest). Comments are on by default (posts on → comments on for all three platforms); **Threads and Pinterest are the only opt-in extras**, appearing only in the Step 5 Everything option, never in the welcome or the Step 4 offer. Instagram comments are fetched via ScrapeCreators (`/v2/instagram/post/comments`, ranked by `comment_like_count`) with full vote-weighting parity to YouTube/TikTok (a dedicated `_instagram_engagement` carve-out, the `_VOTE_LOG_REFERENCE`/label/threshold entries). The cross-platform "Top Community Comments" list (`render._render_top_comments`) selects **round-robin by within-platform rank** (every platform's #1, then #2, then #3) so a viral platform can't crowd out a smaller one, and drops the per-platform absolute floor so a less-watched video's killer low-vote comment still surfaces.
 
 ## Security hygiene
 - Never commit real API keys, browser cookies, auth tokens, app passwords, access tokens, or `.env` contents.
-- Use the env-based auth patterns in `skills/last30days/scripts/lib/env.py`; tests and fixtures must use obvious dummy values only.
+- Use the env-based auth patterns in `skills/nfl30/scripts/lib/env.py`; tests and fixtures must use obvious dummy values only.
 - Keep examples safe by redacting secrets and avoiding copy/pasteable live credentials in docs, fixtures, and test data.
 - Do not weaken or disable the advisory security workflow (`.github/workflows/security.yml`) without explaining why in the PR description or review thread.
 
@@ -90,30 +90,30 @@ When a new config concept lands in `SKILL.md` or `AGENTS.md`, mirror the user-fa
 
 ## Plugin manifests (Grok)
 
-The repo doubles as a native Grok Build plugin via `.grok-plugin/plugin.json` + `.grok-plugin/marketplace.json`. Grok also reads `.claude-plugin/*` for compatibility; the native pair is the first-class lane and what an official xAI marketplace listing points at. The self-hosted catalog uses a bare Git URL source (`{"source":"url","url":"https://github.com/mvanhorn/last30days-skill.git"}`) so `grok plugin marketplace add mvanhorn/last30days-skill` tracks HEAD — not a self-referential local `path: "."` (Grok does not enumerate those). Version lockstep with Claude/Codex/Gemini manifests is enforced by `tests/test_plugin_contract.py`. Validate with `grok plugin validate .`.
+The repo doubles as a native Grok Build plugin via `.grok-plugin/plugin.json` + `.grok-plugin/marketplace.json`. Grok also reads `.claude-plugin/*` for compatibility; the native pair is the first-class lane and what an official xAI marketplace listing points at. The self-hosted catalog uses a bare Git URL source (`{"source":"url","url":"https://github.com/cmdashc/last30days-nfl.git"}`) so `grok plugin marketplace add cmdashc/last30days-nfl` tracks HEAD — not a self-referential local `path: "."` (Grok does not enumerate those). Version lockstep with Claude/Codex/Gemini manifests is enforced by `tests/test_plugin_contract.py`. Validate with `grok plugin validate .`.
 
 ## Submitting to the xAI plugin marketplace
 
-Getting last30days into xAI's official catalog (`xai-org/plugin-marketplace`) is an outbound PR to *their* repo — an index that only points at our source, so nothing of last30days is vendored there. Do this **after** the change you want to ship has merged to `main`: the entry pins a commit that must already exist.
+Getting nfl30 into xAI's official catalog (`xai-org/plugin-marketplace`) is an outbound PR to *their* repo — an index that only points at our source, so nothing of nfl30 is vendored there. Do this **after** the change you want to ship has merged to `main`: the entry pins a commit that must already exist.
 
 1. Fork `xai-org/plugin-marketplace` and branch from `main`.
 2. Get the commit to pin — a full 40-char lowercase SHA; a branch, tag, or short SHA is rejected by their validator:
    ```bash
-   git ls-remote https://github.com/mvanhorn/last30days-skill.git HEAD
+   git ls-remote https://github.com/cmdashc/last30days-nfl.git HEAD
    ```
 3. Add one entry to their `.grok-plugin/marketplace.json` under `plugins[]`, a remote source pinned to that SHA:
    ```json
    {
-     "name": "last30days",
+     "name": "nfl30",
      "description": "Research any topic across Reddit, X, YouTube, TikTok, Instagram, Hacker News, Polymarket, GitHub, and 5+ more sources. AI agent scores by upvotes, likes, and real money - not editors.",
      "category": "productivity",
      "source": {
        "source": "url",
-       "url": "https://github.com/mvanhorn/last30days-skill.git",
+       "url": "https://github.com/cmdashc/last30days-nfl.git",
        "sha": "<full-40-char-sha-from-step-2>"
      },
-     "homepage": "https://github.com/mvanhorn/last30days-skill",
-     "keywords": ["last30days", "last 30 days"]
+     "homepage": "https://github.com/cmdashc/last30days-nfl",
+     "keywords": ["nfl30", "last 30 days"]
    }
    ```
 4. Regenerate their component index (never hand-edit it) and validate exactly as their CI does:
@@ -126,8 +126,8 @@ Getting last30days into xAI's official catalog (`xai-org/plugin-marketplace`) is
 
 To roll out a later update in their catalog, bump the pinned `sha` in the existing entry — never open a second, parallel entry.
 
-Do not confuse this with our own `.grok-plugin/marketplace.json`: that file makes this repo directly addable as a Grok marketplace (`grok plugin marketplace add mvanhorn/last30days-skill`) and uses a **bare URL** source (no SHA) so it tracks HEAD; the xAI entry above lives in *their* repo and uses a **remote** source pinned to a SHA.
+Do not confuse this with our own `.grok-plugin/marketplace.json`: that file makes this repo directly addable as a Grok marketplace (`grok plugin marketplace add cmdashc/last30days-nfl`) and uses a **bare URL** source (no SHA) so it tracks HEAD; the xAI entry above lives in *their* repo and uses a **remote** source pinned to a SHA.
 
 ## Beta channel
 
-Experimental changes get tested on `mvanhorn/last30days-skill-private`, which installs as a parallel `/last30days-beta` slash command. Beta-only changes never ship to public without a review PR here. Workflow guide lives at `BETA.md` in the private repo. Plan that established this setup: `docs/plans/2026-04-17-005-feat-beta-skill-from-private-repo-plan.md`.
+Experimental changes get tested on `cmdashc/last30days-nfl-private`, which installs as a parallel `/nfl30-beta` slash command. Beta-only changes never ship to public without a review PR here. Workflow guide lives at `BETA.md` in the private repo. Plan that established this setup: `docs/plans/2026-04-17-005-feat-beta-skill-from-private-repo-plan.md`.

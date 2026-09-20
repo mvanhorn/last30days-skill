@@ -33,7 +33,7 @@ class SubRunIsolationTests(unittest.TestCase):
     """
 
     def _run_closure(self, main_flags, competitors, config=None, mock_flag=False):
-        """Replicate _competitor_runner closure from last30days.py main().
+        """Replicate _competitor_runner closure from nfl30.py main().
 
         main_flags: dict of {x_handle, x_related, subreddits, tiktok_hashtags,
                     tiktok_creators, ig_creators, github_user, github_repos}

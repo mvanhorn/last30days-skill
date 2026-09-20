@@ -10,7 +10,7 @@ from unittest.mock import patch, MagicMock, call
 
 import pytest
 
-import last30days as cli
+import nfl30 as cli
 from lib import setup_wizard
 
 
@@ -78,7 +78,7 @@ class TestRunOpenclawSetup:
 
     def test_openclaw_metadata_keeps_scrapecreators_optional(self):
         """OpenClaw metadata should not hard-require the ScrapeCreators key."""
-        skill_md = Path(__file__).parent.parent / "skills" / "last30days" / "SKILL.md"
+        skill_md = Path(__file__).parent.parent / "skills" / "nfl30" / "SKILL.md"
         text = skill_md.read_text(encoding="utf-8")
         assert "SCRAPECREATORS_API_KEY" in text
         expected = (
@@ -569,7 +569,7 @@ class TestSetupGithubCliWiring:
         """Invoke `setup --github` in-process, return (parsed_json, env_path)."""
         env_path = tmp_path / ".env"
         monkeypatch.setattr(cli.env, "CONFIG_FILE", env_path)
-        monkeypatch.setattr(sys, "argv", ["last30days", "setup", "--github"])
+        monkeypatch.setattr(sys, "argv", ["nfl30", "setup", "--github"])
         buf = io.StringIO()
         with redirect_stdout(buf):
             rc = cli.main()

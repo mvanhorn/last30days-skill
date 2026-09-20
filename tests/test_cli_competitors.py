@@ -8,7 +8,7 @@ import unittest
 from contextlib import redirect_stderr
 from unittest import mock
 
-import last30days as cli
+import nfl30 as cli
 from lib import fanout
 
 
@@ -151,12 +151,12 @@ class CompetitorMainTopicFailureTests(unittest.TestCase):
     def _run(self, surviving_labels):
         surviving = [(label, _fake_report(label)) for label in surviving_labels]
         argv = [
-            "last30days", "OpenAI",
+            "nfl30", "OpenAI",
             "--competitors-list", "Anthropic,xAI",
             "--mock", "--emit=json",
         ]
         err = io.StringIO()
-        # last30days imports fanout locally inside _main, so patch the
+        # nfl30 imports fanout locally inside _main, so patch the
         # source module rather than an attribute on the CLI module.
         with mock.patch.object(
             fanout, "run_competitor_fanout", return_value=surviving
@@ -187,7 +187,7 @@ class CompetitorDuplicateLabelTests(unittest.TestCase):
             return [(kwargs["main_topic"], _fake_report(kwargs["main_topic"]))]
 
         argv = [
-            "last30days", "OpenAI",
+            "nfl30", "OpenAI",
             "--competitors-list", peers,
             "--mock", "--emit=json",
         ]

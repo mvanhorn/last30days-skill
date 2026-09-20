@@ -1740,7 +1740,7 @@ class TestXHandleFlag(unittest.TestCase):
 
     def test_cli_accepts_x_handle_flag(self):
         """build_parser() should accept --x-handle."""
-        import last30days as cli
+        import nfl30 as cli
 
         parser = cli.build_parser()
         args = parser.parse_args(["test topic", "--x-handle", "elonmusk"])
@@ -1748,7 +1748,7 @@ class TestXHandleFlag(unittest.TestCase):
 
     def test_cli_x_handle_default_is_none(self):
         """--x-handle should default to None."""
-        import last30days as cli
+        import nfl30 as cli
 
         parser = cli.build_parser()
         args = parser.parse_args(["test topic"])
@@ -2287,8 +2287,8 @@ class TestAmazonSourceGating:
         assert "amazon" in available
 
     def test_search_flag_accepts_the_amazon_token(self):
-        import last30days
-        assert "amazon" in last30days.parse_search_flag("reddit,x,amazon")
+        import nfl30
+        assert "amazon" in nfl30.parse_search_flag("reddit,x,amazon")
 
     def test_capped_at_one_fetch_per_run(self):
         """One model-supplied keyword per run: extra streams are pure cost."""

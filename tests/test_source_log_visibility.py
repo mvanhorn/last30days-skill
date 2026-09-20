@@ -8,7 +8,7 @@ query heartbeats, and success signals all disappear.
 
 Ten source modules quietly shipped with this bug. This test prevents the
 eleventh. Every `log.source_log(...)` call site under
-`skills/last30days/scripts/lib/` must pass `tty_only=False` explicitly.
+`skills/nfl30/scripts/lib/` must pass `tty_only=False` explicitly.
 The cost is one kwarg per call; the value is that source observability
 never goes silent again, even when the next contributor copies an old
 `_log` template without thinking.
@@ -29,7 +29,7 @@ from unittest.mock import patch
 from lib import bluesky, perplexity
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
-LIB_DIR = REPO_ROOT / "skills" / "last30days" / "scripts" / "lib"
+LIB_DIR = REPO_ROOT / "skills" / "nfl30" / "scripts" / "lib"
 
 
 class _SourceLogCallFinder(ast.NodeVisitor):

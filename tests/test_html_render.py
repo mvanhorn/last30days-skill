@@ -7,7 +7,7 @@ import unittest
 from html.parser import HTMLParser
 from pathlib import Path
 
-import last30days as cli
+import nfl30 as cli
 from lib import html_render, schema
 
 
@@ -106,22 +106,22 @@ class HtmlRenderSnapshotTests(unittest.TestCase):
         )
         snapshot_markers = [
             "<!DOCTYPE html>",
-            "<title>last30days · AI agent frameworks</title>",
-            '<div class="badge"><span class="accent">🌐</span> last30days v',
+            "<title>nfl30 · AI agent frameworks</title>",
+            '<div class="badge"><span class="accent">🌐</span> nfl30 v',
             '<div class="meta">2026-03-30 to 2026-04-29',
             '<div class="engine-footer"><pre>---\n✅ All agents reported back!',
-            'Generated 2026-04-29 by /last30days v',
-            '<span class="rerun">/last30days AI agent frameworks</span>',
+            'Generated 2026-04-29 by /nfl30 v',
+            '<span class="rerun">/nfl30 AI agent frameworks</span>',
         ]
         for marker in snapshot_markers:
             self.assertIn(marker, rendered)
         self.assertNotIn("EVIDENCE FOR SYNTHESIS", rendered)
-        self.assertNotIn("END OF last30days CANONICAL OUTPUT", rendered)
+        self.assertNotIn("END OF nfl30 CANONICAL OUTPUT", rendered)
 
     def test_thin_cluster_fixture_snapshot(self):
         rendered = html_render.render_html(_report("obscure topic", []))
         snapshot_markers = [
-            "<title>last30days · obscure topic</title>",
+            "<title>nfl30 · obscure topic</title>",
             "no active sources",
             "topic: obscure topic",
         ]
@@ -135,10 +135,10 @@ class HtmlRenderSnapshotTests(unittest.TestCase):
         ]
         rendered = html_render.render_html_comparison(reports)
         snapshot_markers = [
-            "<title>last30days · OpenClaw vs Hermes</title>",
+            "<title>nfl30 · OpenClaw vs Hermes</title>",
             'comparing 2: OpenClaw, Hermes</div>',
             '<div class="meta">2026-03-30 to 2026-04-29',
-            '<span class="rerun">/last30days OpenClaw vs Hermes</span>',
+            '<span class="rerun">/nfl30 OpenClaw vs Hermes</span>',
         ]
         for marker in snapshot_markers:
             self.assertIn(marker, rendered)
@@ -178,7 +178,7 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
     def test_colophon_contains_topic_and_rerun_command(self):
         rendered = html_render.render_html(_report("AI agent frameworks", []))
         self.assertIn("topic: AI agent frameworks", rendered)
-        self.assertIn("/last30days AI agent frameworks", rendered)
+        self.assertIn("/nfl30 AI agent frameworks", rendered)
 
     def test_parseability(self):
         _assert_parses(self, html_render.render_html(_report("parse me", ["One"])))
@@ -289,7 +289,7 @@ class HtmlRenderBehaviorTests(unittest.TestCase):
 
     def test_no_file_header_h1(self):
         rendered = html_render.render_html(_report("AI agent frameworks", ["One"]))
-        self.assertNotIn("<h1>last30days v", rendered)
+        self.assertNotIn("<h1>nfl30 v", rendered)
 
     def test_no_safety_note(self):
         rendered = html_render.render_html(_report("AI agent frameworks", ["One"]))
@@ -415,9 +415,9 @@ class HtmlCliIntegrationTests(unittest.TestCase):
             )
             self.assertEqual("openclaw-vs-hermes-raw-html.html", path.name)
             saved = path.read_text(encoding="utf-8")
-        self.assertIn("last30days · OpenClaw vs Hermes", saved)
+        self.assertIn("nfl30 · OpenClaw vs Hermes", saved)
         self.assertIn("comparing 2: OpenClaw, Hermes", saved)
-        self.assertNotIn("last30days · OpenClaw</title>", saved)
+        self.assertNotIn("nfl30 · OpenClaw</title>", saved)
 
 if __name__ == "__main__":
     unittest.main()

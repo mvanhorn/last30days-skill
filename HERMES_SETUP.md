@@ -1,6 +1,6 @@
-# Hermes Setup Guide for last30days
+# Hermes Setup Guide for nfl30
 
-This guide covers installing last30days on Hermes AI Agent.
+This guide covers installing nfl30 on Hermes AI Agent.
 
 ## Prerequisites
 
@@ -11,30 +11,30 @@ This guide covers installing last30days on Hermes AI Agent.
 ## Installation
 
 ```bash
-git clone https://github.com/mvanhorn/last30days-skill.git
+git clone https://github.com/cmdashc/last30days-nfl.git
 mkdir -p ~/.hermes/skills/research
-cp -r last30days-skill/skills/last30days ~/.hermes/skills/research/
+cp -r nfl30-skill/skills/nfl30 ~/.hermes/skills/research/
 ```
 
-That deploys the skill straight from this repo's current default branch to `~/.hermes/skills/research/last30days` (with named profiles the skills root is `~/.hermes/profiles/<name>/skills/`). Run `hermes skills list` to confirm it shows up; a session already open needs `/reload-skills` (or a new session) to pick it up.
+That deploys the skill straight from this repo's current default branch to `~/.hermes/skills/research/nfl30` (with named profiles the skills root is `~/.hermes/profiles/<name>/skills/`). Run `hermes skills list` to confirm it shows up; a session already open needs `/reload-skills` (or a new session) to pick it up.
 
 > **Why not `hermes skills install`?** The installer is currently blocked for this skill. Hermes's install-time security scanner flags benign patterns here — reading your own API keys from the environment (`os.environ.get("XAI_API_KEY")` etc.) and calling `subprocess` to run `yt-dlp`/`bird` — and returns a `dangerous` verdict (19 findings). `--force` only overrides a `caution` verdict; for community sources a `dangerous` verdict is a hard block that `--force` cannot bypass:
 >
 > ```bash
-> hermes skills install mvanhorn/last30days-skill/skills/last30days --force
+> hermes skills install cmdashc/last30days-nfl/skills/nfl30 --force
 > # → Installation blocked: Blocked (community source + dangerous verdict, 19 findings)
 > ```
 >
-> The `git clone` + `cp` path above sidesteps the installer and is the supported workaround until the scanner rules or this skill's flagged patterns change. (The shorter `hermes skills install mvanhorn/last30days-skill` additionally resolves through the skills.sh index, which was serving a stale snapshot — tracked in [vercel-labs/skills#1602](https://github.com/vercel-labs/skills/issues/1602).)
+> The `git clone` + `cp` path above sidesteps the installer and is the supported workaround until the scanner rules or this skill's flagged patterns change. (The shorter `hermes skills install cmdashc/last30days-nfl` additionally resolves through the skills.sh index, which was serving a stale snapshot — tracked in [vercel-labs/skills#1602](https://github.com/vercel-labs/skills/issues/1602).)
 
 ### Developer / live-edit alternative
 
 If you're hacking on the skill locally and want edits to propagate to Hermes without re-copying, symlink your working tree instead of `cp`:
 
 ```bash
-git clone https://github.com/mvanhorn/last30days-skill.git
+git clone https://github.com/cmdashc/last30days-nfl.git
 mkdir -p ~/.hermes/skills/research
-ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.hermes/skills/research/last30days
+ln -s "$(pwd)/nfl30-skill/skills/nfl30" ~/.hermes/skills/research/nfl30
 ```
 
 ## Usage
@@ -42,13 +42,13 @@ ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.hermes/skills/research/last
 In Hermes, invoke with:
 
 ```
-last30days "your research topic"
+nfl30 "your research topic"
 ```
 
 Or with options:
 ```
-last30days "best mechanical keyboards 2025" --search=reddit,youtube
-last30days "AI news" --days=7 --deep
+nfl30 "best mechanical keyboards 2025" --search=reddit,youtube
+nfl30 "AI news" --days=7 --deep
 ```
 
 ## First Run Setup
@@ -105,8 +105,8 @@ pip install yt-dlp
 
 ### Check what's configured
 ```bash
-cd ~/.hermes/skills/research/last30days
-python3.12 scripts/last30days.py --diagnose
+cd ~/.hermes/skills/research/nfl30
+python3.12 scripts/nfl30.py --diagnose
 ```
 
 ## Updating
@@ -114,14 +114,14 @@ python3.12 scripts/last30days.py --diagnose
 If you symlinked your working tree (developer alternative above), just `git pull` in the repo — edits propagate live, no re-install step. With a `cp` install, pull and re-copy:
 
 ```bash
-cd last30days-skill && git pull
-cp -r skills/last30days ~/.hermes/skills/research/
+cd nfl30-skill && git pull
+cp -r skills/nfl30 ~/.hermes/skills/research/
 ```
 
-`hermes skills install mvanhorn/last30days-skill --force` remains blocked by the scanner verdict above; retry it occasionally in case the flagged patterns or scanner rules change.
+`hermes skills install cmdashc/last30days-nfl --force` remains blocked by the scanner verdict above; retry it occasionally in case the flagged patterns or scanner rules change.
 
 ## Support
 
-- Original repo: https://github.com/mvanhorn/last30days-skill
+- Original repo: https://github.com/cmdashc/last30days-nfl
 - Hermes: https://github.com/mercurial-tf/hermes
 - Issues: Please report in the original repo

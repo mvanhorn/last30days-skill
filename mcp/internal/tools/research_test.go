@@ -9,7 +9,7 @@ import (
 
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 
-	"github.com/mvanhorn/last30days-skill/mcp/internal/engine"
+	"github.com/cmdashc/last30days-nfl/mcp/internal/engine"
 )
 
 func newCallToolRequest(args map[string]any) mcplib.CallToolRequest {
@@ -148,7 +148,7 @@ func TestResearchRunArgsSaveUsesSupportedSaveDir(t *testing.T) {
 	if strings.Contains(got, "--save\x00") || strings.HasSuffix(got, "--save") {
 		t.Fatalf("args still include unsupported --save: %#v", args)
 	}
-	want := []string{"OpenAI", "--emit=html", "--no-browser-cookies", "--save-dir", "~/Documents/Last30Days"}
+	want := []string{"OpenAI", "--emit=html", "--no-browser-cookies", "--save-dir", "~/Documents/NFL30"}
 	if got != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
@@ -156,9 +156,9 @@ func TestResearchRunArgsSaveUsesSupportedSaveDir(t *testing.T) {
 
 func TestResearchRunArgsSaveUsesMemoryDirEnvOverride(t *testing.T) {
 	t.Setenv(BrowserCookiesEnvOverride, "")
-	t.Setenv("LAST30DAYS_MEMORY_DIR", "/tmp/last30days-reports")
+	t.Setenv("LAST30DAYS_MEMORY_DIR", "/tmp/nfl30-reports")
 	args := researchRunArgs("OpenAI", "html", true)
-	want := []string{"OpenAI", "--emit=html", "--no-browser-cookies", "--save-dir", "/tmp/last30days-reports"}
+	want := []string{"OpenAI", "--emit=html", "--no-browser-cookies", "--save-dir", "/tmp/nfl30-reports"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}

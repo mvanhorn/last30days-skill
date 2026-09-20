@@ -1,38 +1,38 @@
-# /last30days
+# /nfl30
 
 English | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](README.es.md) | [Português (Brasil)](README.pt-BR.md) | [日本語](README.ja.md) | [简体中文](README.zh-CN.md)
 
 <p align="center">
-  <img src="media/pr-assets/last30days-ad.gif" width="720" alt="last30days - an AI agent-led search engine that searches people, not editors" />
+  <img src="media/pr-assets/nfl30-ad.gif" width="720" alt="nfl30 - an AI agent-led search engine that searches people, not editors" />
 </p>
 
 <p align="center">
-  <a href="https://github.com/mvanhorn/last30days-skill">
+  <a href="https://github.com/cmdashc/last30days-nfl">
     <img src="https://img.shields.io/badge/%231-Repository%20Of%20The%20Day-6f42c1?style=for-the-badge&logo=github&label=GITHUB%20TRENDING" alt="GitHub Trending #1 Repository Of The Day" />
   </a>
   <br/>
   <a href="https://trendshift.io/repositories/21997" target="_blank">
-    <img src="https://trendshift.io/api/badge/repositories/21997" alt="mvanhorn/last30days-skill | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
+    <img src="https://trendshift.io/api/badge/repositories/21997" alt="cmdashc/last30days-nfl | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
   <br/>
-  <a href="https://github.com/mvanhorn/last30days-skill/actions/workflows/validate.yml">
-    <img src="https://github.com/mvanhorn/last30days-skill/actions/workflows/validate.yml/badge.svg" alt="Validate status" />
+  <a href="https://github.com/cmdashc/last30days-nfl/actions/workflows/validate.yml">
+    <img src="https://github.com/cmdashc/last30days-nfl/actions/workflows/validate.yml/badge.svg" alt="Validate status" />
   </a>
 </p>
 
 **An AI agent-led search engine scored by upvotes, likes, and real money - not editors.**
 
-This README tracks the current v3 pipeline. The runtime skill spec lives in [skills/last30days/SKILL.md](skills/last30days/SKILL.md), which is the source of truth for the latest command and setup behavior.
+This README tracks the current v3 pipeline. The runtime skill spec lives in [skills/nfl30/SKILL.md](skills/nfl30/SKILL.md), which is the source of truth for the latest command and setup behavior.
 
 **Claude Code (recommended — auto-updates via marketplace):**
 ```
-/plugin marketplace add mvanhorn/last30days-skill
-/plugin install last30days
+/plugin marketplace add cmdashc/last30days-nfl
+/plugin install nfl30
 ```
 
 **Codex, Cursor, Copilot, Gemini CLI, or any of 50+ [Agent Skills](https://agentskills.io) hosts:**
 ```
-npx skills add mvanhorn/last30days-skill -g
+npx skills add cmdashc/last30days-nfl -g
 ```
 (`-g` installs globally for your user, available across all projects. Drop it to scope per-project.)
 
@@ -42,19 +42,19 @@ Zero config. Reddit, HN, Polymarket, and GitHub work immediately. Run it once an
 
 ---
 
-Reddit upvotes. X likes. YouTube transcripts. TikTok engagement. Polymarket odds backed by real money and insider information. That's millions of people voting with their attention and their wallets every day. /last30days searches all of it in parallel, scores it by what real people actually engage with, and an AI agent judge synthesizes it into one brief.
+Reddit upvotes. X likes. YouTube transcripts. TikTok engagement. Polymarket odds backed by real money and insider information. That's millions of people voting with their attention and their wallets every day. /nfl30 searches all of it in parallel, scores it by what real people actually engage with, and an AI agent judge synthesizes it into one brief.
 
-Google aggregates editors. /last30days searches people.
+Google aggregates editors. /nfl30 searches people.
 
 You can't get this search anywhere else because no single AI has access to all of it. Google search doesn't touch Reddit comments or X posts. ChatGPT has a deal with Reddit but can't search X or TikTok. Gemini has YouTube but not Reddit. Claude has none of them natively. Each platform is a walled garden with its own API, its own tokens, its own auth. But you can bring your own keys and browser sessions, and suddenly an AI agent can search all of them at once, score them against each other, and tell you what actually matters.
 
 That's the unlock. Not one better search engine. A dozen disconnected platforms, bridged by an agent.
 
 ```
-/last30days Peter Steinberger
+/nfl30 Peter Steinberger
 ```
 
-You have a meeting tomorrow. You Google them. You get their LinkedIn from 2023. /last30days gives you what they're actually doing this month: joined OpenAI to work on Codex, fighting Anthropic's ban on third-party agents, shipping 23 PRs at 85% merge rate, building "LobsterOS" for cross-device agent control, and r/ClaudeCode hit 569 upvotes debating whether he's a hero or "insufferable." Scattered across X posts, Reddit threads, YouTube transcripts, and GitHub commits. None of it was on Google.
+You have a meeting tomorrow. You Google them. You get their LinkedIn from 2023. /nfl30 gives you what they're actually doing this month: joined OpenAI to work on Codex, fighting Anthropic's ban on third-party agents, shipping 23 PRs at 85% merge rate, building "LobsterOS" for cross-device agent control, and r/ClaudeCode hit 569 upvotes debating whether he's a hero or "insufferable." Scattered across X posts, Reddit threads, YouTube transcripts, and GitHub commits. None of it was on Google.
 
 ## Why this exists
 
@@ -97,21 +97,21 @@ The synthesis ranks by what real people actually engaged with. Social relevancy,
 
 ## What people actually use it for
 
-**Before a meeting.** `/last30days Peter Steinberger` - joined OpenAI's Codex team, fighting Anthropic's ban on third-party agents, 23 PRs merged at 85% merge rate on GitHub, building LobsterOS for cross-device agent control. r/ClaudeCode: "Ever since OpenClaw released, it was widely known that if you run it through anything other than the API, you were gonna get banned eventually" (227 upvotes). That's not on LinkedIn.
+**Before a meeting.** `/nfl30 Peter Steinberger` - joined OpenAI's Codex team, fighting Anthropic's ban on third-party agents, 23 PRs merged at 85% merge rate on GitHub, building LobsterOS for cross-device agent control. r/ClaudeCode: "Ever since OpenClaw released, it was widely known that if you run it through anything other than the API, you were gonna get banned eventually" (227 upvotes). That's not on LinkedIn.
 
-**To read hiring signals.** `/last30days Listen Labs --hiring-signals` - current jobs and careers pages become cited evidence for focus shifts: hiring into enterprise security, customer success, infrastructure, or product expansion. The report says what the hiring appears to signal, not what the roadmap will ship.
+**To read hiring signals.** `/nfl30 Listen Labs --hiring-signals` - current jobs and careers pages become cited evidence for focus shifts: hiring into enterprise security, customer success, infrastructure, or product expansion. The report says what the hiring appears to signal, not what the roadmap will ship.
 
-**To find the topic before it peaks.** Ask `/last30days what's exploding in AI agents?` and the skill switches to discovery mode: the engine sweeps Reddit category listings, Hacker News front/best stories, Digg's AI 1000 feed, and X when authenticated; your agent judges the nominations (names, junk filtering, content-worthiness) and writes podcast / X-article angles; then you get 5-10 velocity-ranked topics. Every result includes cross-source numbers, a momentum label, and a ready-to-run `/last30days "<topic>"` follow-up.
+**To find the topic before it peaks.** Ask `/nfl30 what's exploding in AI agents?` and the skill switches to discovery mode: the engine sweeps Reddit category listings, Hacker News front/best stories, Digg's AI 1000 feed, and X when authenticated; your agent judges the nominations (names, junk filtering, content-worthiness) and writes podcast / X-article angles; then you get 5-10 velocity-ranked topics. Every result includes cross-source numbers, a momentum label, and a ready-to-run `/nfl30 "<topic>"` follow-up.
 
-**When something drops.** `/last30days Kanye West` - UK blocked his visa, Wireless Festival canceled, sponsors fled. But BULLY debuted #2 on Billboard. Fantano came back from his "Yay sabbatical" to review it (653K views). SoFi Homecoming brought out Lauryn Hill and Travis Scott for 44 songs. Polymarket: "Will Kanye tweet again?" 86% Yes. 23 Reddit threads, 17 YouTube videos, 86K upvotes.
+**When something drops.** `/nfl30 Kanye West` - UK blocked his visa, Wireless Festival canceled, sponsors fled. But BULLY debuted #2 on Billboard. Fantano came back from his "Yay sabbatical" to review it (653K views). SoFi Homecoming brought out Lauryn Hill and Travis Scott for 44 songs. Polymarket: "Will Kanye tweet again?" 86% Yes. 23 Reddit threads, 17 YouTube videos, 86K upvotes.
 
-**To compare tools.** `/last30days OpenClaw vs Hermes vs Paperclip` - "These aren't competitors, they're layers." OpenClaw is the executor (351K GitHub stars, live), Hermes is the self-improving brain (31K stars), Paperclip is the org chart (49K stars). Star counts pulled live from the GitHub API, not stale blog posts. Side-by-side table with architecture, memory, security, best-for. Per @IMJustinBrooke: "OpenClaw = Charmander, Hermes = Charizard."
+**To compare tools.** `/nfl30 OpenClaw vs Hermes vs Paperclip` - "These aren't competitors, they're layers." OpenClaw is the executor (351K GitHub stars, live), Hermes is the self-improving brain (31K stars), Paperclip is the org chart (49K stars). Star counts pulled live from the GitHub API, not stale blog posts. Side-by-side table with architecture, memory, security, best-for. Per @IMJustinBrooke: "OpenClaw = Charmander, Hermes = Charizard."
 
-**To understand the world.** `/last30days Iran vs USA` - Day 38 of the war. Trump's Tuesday deadline for Iran to reopen the Strait of Hormuz. Two US warplanes downed. Oil at $126/barrel. The IEA called it "the largest supply disruption in the history of the global oil market." Polymarket: ceasefire by Dec 31 at 74%. 27 X posts, 10 YouTube videos, 20 prediction markets.
+**To understand the world.** `/nfl30 Iran vs USA` - Day 38 of the war. Trump's Tuesday deadline for Iran to reopen the Strait of Hormuz. Two US warplanes downed. Oil at $126/barrel. The IEA called it "the largest supply disruption in the history of the global oil market." Polymarket: ceasefire by Dec 31 at 74%. 27 X posts, 10 YouTube videos, 20 prediction markets.
 
-**Before a trip.** `/last30days Universal Epic Universe` - Expansion already under construction. "Project 680" permit filed. Fireworks show confirmed by infrastructure but unannounced. Wait times: Mine-Cart Madness averaging 148 minutes. No annual pass yet, and locals are frustrated. Stardust Racers down for refurbishment through April 5.
+**Before a trip.** `/nfl30 Universal Epic Universe` - Expansion already under construction. "Project 680" permit filed. Fireworks show confirmed by infrastructure but unannounced. Wait times: Mine-Cart Madness averaging 148 minutes. No annual pass yet, and locals are frustrated. Stardust Racers down for refurbishment through April 5.
 
-**To learn something fast.** `/last30days Nano Banana Pro prompting` - JSON-structured prompts are replacing tag soup. @pictsbyai's nested format prevents "concept bleeding." Edit-first workflow beats regeneration. Then it writes you a production prompt using exactly what the community said works.
+**To learn something fast.** `/nfl30 Nano Banana Pro prompting` - JSON-structured prompts are replacing tag soup. @pictsbyai's nested format prevents "concept bleeding." Edit-first workflow beats regeneration. Then it writes you a production prompt using exactly what the community said works.
 
 ## What's new
 
@@ -119,7 +119,7 @@ Since the v3.3 announcement in May, as of v3.11.1 (July 2026): 175 merged PRs - 
 
 ### First-class on OpenAI Codex
 
-/last30days is now a native Codex plugin with guided setup - not a port, a first-class citizen. Renderer-aware citations mean Codex output reads like a brief instead of URL soup (#694), and the same engine runs on Claude Code, Cursor, Copilot, Gemini CLI, Claude Desktop, OpenClaw, and 50+ Agent Skills hosts. Codex plugin manifest by [@rfoust](https://github.com/rfoust) (#686), Codex auth fix by [@tmchow](https://github.com/tmchow) (#698).
+/nfl30 is now a native Codex plugin with guided setup - not a port, a first-class citizen. Renderer-aware citations mean Codex output reads like a brief instead of URL soup (#694), and the same engine runs on Claude Code, Cursor, Copilot, Gemini CLI, Claude Desktop, OpenClaw, and 50+ Agent Skills hosts. Codex plugin manifest by [@rfoust](https://github.com/rfoust) (#686), Codex auth fix by [@tmchow](https://github.com/tmchow) (#698).
 
 ### arXiv, Techmeme, and Digg - free, no API keys
 
@@ -161,75 +161,75 @@ The v3 foundations are all still here: the pre-research brain that resolves the 
 
 | Surface | Install | Updates |
 |---------|---------|---------|
-| **Claude Code** (recommended) | `/plugin marketplace add mvanhorn/last30days-skill` | Auto via marketplace, or `claude plugin update last30days@last30days-skill` |
-| **Grok** (xAI Build CLI) | `grok plugin marketplace add mvanhorn/last30days-skill` then `grok plugin install last30days` | `grok plugin update last30days` |
-| **Codex, Cursor, Copilot, Gemini CLI, or any of 50+ [Agent Skills](https://agentskills.io) hosts** | `npx skills add mvanhorn/last30days-skill -g` | `npx skills update last30days -g` |
-| **claude.ai** (web) | [Download `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) and upload via claude.ai > Customize > Skills > + > Create skill > Upload a skill | Re-download and re-upload |
-| **Claude Desktop** | [Download the `.mcpb` for your platform](https://github.com/mvanhorn/last30days-skill/releases/latest) and drag into Settings > Extensions | Re-download and drag the new bundle in |
-| **OpenClaw** | `clawhub install last30days-official` | `clawhub update last30days-official` |
+| **Claude Code** (recommended) | `/plugin marketplace add cmdashc/last30days-nfl` | Auto via marketplace, or `claude plugin update nfl30@nfl30-skill` |
+| **Grok** (xAI Build CLI) | `grok plugin marketplace add cmdashc/last30days-nfl` then `grok plugin install nfl30` | `grok plugin update nfl30` |
+| **Codex, Cursor, Copilot, Gemini CLI, or any of 50+ [Agent Skills](https://agentskills.io) hosts** | `npx skills add cmdashc/last30days-nfl -g` | `npx skills update nfl30 -g` |
+| **claude.ai** (web) | [Download `nfl30.skill`](https://github.com/cmdashc/last30days-nfl/releases/latest/download/nfl30.skill) and upload via claude.ai > Customize > Skills > + > Create skill > Upload a skill | Re-download and re-upload |
+| **Claude Desktop** | [Download the `.mcpb` for your platform](https://github.com/cmdashc/last30days-nfl/releases/latest) and drag into Settings > Extensions | Re-download and drag the new bundle in |
+| **OpenClaw** | `clawhub install nfl30-official` | `clawhub update nfl30-official` |
 
 ### Claude Code (recommended)
 
 ```
-/plugin marketplace add mvanhorn/last30days-skill
+/plugin marketplace add cmdashc/last30days-nfl
 ```
 
-Recommended because the Claude Code marketplace handles updates for you — the plugin cache is versioned and auto-refreshes when a new release publishes. Run `claude plugin update last30days@last30days-skill` to force a check.
+Recommended because the Claude Code marketplace handles updates for you — the plugin cache is versioned and auto-refreshes when a new release publishes. Run `claude plugin update nfl30@nfl30-skill` to force a check.
 
 If you'd rather use the agent-skills install path on Claude Code, that's also supported:
 
 ```
-npx skills add mvanhorn/last30days-skill -g -a claude-code
+npx skills add cmdashc/last30days-nfl -g -a claude-code
 ```
 
 ### Quick Try-Link
 
-[Try Last30Days Research Skill in Telegram or WhatsApp](https://app.clawmama.run/skills/2ne05f/hermes?utm_source=github&utm_medium=issue&utm_campaign=skill_outreach_mvanhorn_last30days_skill)
+[Try NFL30 Research Skill in Telegram or WhatsApp](https://app.clawmama.run/skills/2ne05f/hermes?utm_source=github&utm_medium=issue&utm_campaign=skill_outreach_mvanhorn_nfl30_skill)
 
-The native plugin and the `npx skills` install can coexist. Note that Claude Code does not dedupe across install methods: if you have both the marketplace plugin and the `npx skills` copy active, `/last30days` will show two entries. Use one install method per machine.
+The native plugin and the `npx skills` install can coexist. Note that Claude Code does not dedupe across install methods: if you have both the marketplace plugin and the `npx skills` copy active, `/nfl30` will show two entries. Use one install method per machine.
 
 ### Grok (xAI Build CLI)
 
-[Grok Build](https://docs.x.ai/build/features/skills-plugins-marketplaces) (`grok`) installs last30days as a native plugin. Direct install tracks the repository:
+[Grok Build](https://docs.x.ai/build/features/skills-plugins-marketplaces) (`grok`) installs nfl30 as a native plugin. Direct install tracks the repository:
 
 ```bash
-grok plugin install mvanhorn/last30days-skill
+grok plugin install cmdashc/last30days-nfl
 ```
 
 Or add this repo as a marketplace source, then install by plugin name:
 
 ```bash
-grok plugin marketplace add mvanhorn/last30days-skill
-grok plugin install last30days
+grok plugin marketplace add cmdashc/last30days-nfl
+grok plugin install nfl30
 ```
 
-Add `--trust` to skip the install confirmation. Update with `grok plugin update last30days`. Grok also reads the Claude Code manifests for compatibility; the native `.grok-plugin/` pair is the first-class lane (and what an official [xAI marketplace](https://github.com/xai-org/plugin-marketplace) listing points at). `npx skills add` remains a valid cross-host fallback. On Grok Bot, X search runs through the bot's X connector, with the official X API (`X_BEARER_TOKEN`) as backup.
+Add `--trust` to skip the install confirmation. Update with `grok plugin update nfl30`. Grok also reads the Claude Code manifests for compatibility; the native `.grok-plugin/` pair is the first-class lane (and what an official [xAI marketplace](https://github.com/xai-org/plugin-marketplace) listing points at). `npx skills add` remains a valid cross-host fallback. On Grok Bot, X search runs through the bot's X connector, with the official X API (`X_BEARER_TOKEN`) as backup.
 
 ### Codex, Cursor, Copilot, Gemini CLI, and other Agent Skills hosts
 
 Install via the open [Agent Skills](https://agentskills.io) CLI — supports 50+ harnesses including `codex`, `cursor`, `github-copilot`, `gemini-cli`, `claude-code`, `windsurf`, `cline`, `continue`, `roo`, `aider-desk`, `opencode`, `goose`, and more (full list on the [vercel-labs/skills repo](https://github.com/vercel-labs/skills)).
 
 ```bash
-npx skills add mvanhorn/last30days-skill -g
+npx skills add cmdashc/last30days-nfl -g
 ```
 
 The `-g` (global) flag installs to your user directory so the skill is available across all projects. Without `-g`, `npx skills` installs project-locally into `./.skills/` (committed with the repo). For a research-the-world tool, global is what you want.
 
-Codex desktop and other folder-mode hosts can work in ordinary folders as well as Git repos. To inspect what a run would read and write without starting research, run the bundled `scripts/last30days.py --preflight` from the loaded skill directory; in a source checkout, the equivalent command is `python3 skills/last30days/scripts/last30days.py --preflight`. It shows the config source, browser-cookie plan, planned writes, optional commands, and ignored project config without reading cookies, writing files, or running research. First-run setup does not require it.
+Codex desktop and other folder-mode hosts can work in ordinary folders as well as Git repos. To inspect what a run would read and write without starting research, run the bundled `scripts/nfl30.py --preflight` from the loaded skill directory; in a source checkout, the equivalent command is `python3 skills/nfl30/scripts/nfl30.py --preflight`. It shows the config source, browser-cookie plan, planned writes, optional commands, and ignored project config without reading cookies, writing files, or running research. First-run setup does not require it.
 
 By default this installs for whichever harness `npx skills` detects. To target a specific one (or multiple):
 
 ```bash
-npx skills add mvanhorn/last30days-skill -g -a codex
-npx skills add mvanhorn/last30days-skill -g -a cursor
-npx skills add mvanhorn/last30days-skill -g -a gemini-cli
-npx skills add mvanhorn/last30days-skill -g -a codex -a cursor
+npx skills add cmdashc/last30days-nfl -g -a codex
+npx skills add cmdashc/last30days-nfl -g -a cursor
+npx skills add cmdashc/last30days-nfl -g -a gemini-cli
+npx skills add cmdashc/last30days-nfl -g -a codex -a cursor
 ```
 
 Update later with:
 
 ```bash
-npx skills update last30days -g
+npx skills update nfl30 -g
 ```
 
 Or update everything you've installed globally via `npx skills`:
@@ -238,11 +238,11 @@ Or update everything you've installed globally via `npx skills`:
 npx skills update -g
 ```
 
-List and remove with `npx skills list -g` and `npx skills remove last30days -g`.
+List and remove with `npx skills list -g` and `npx skills remove nfl30 -g`.
 
 ### claude.ai (web)
 
-1. [Download `last30days.skill`](https://github.com/mvanhorn/last30days-skill/releases/latest/download/last30days.skill) from the latest release
+1. [Download `nfl30.skill`](https://github.com/cmdashc/last30days-nfl/releases/latest/download/nfl30.skill) from the latest release
 2. Go to [claude.ai > Customize > Skills](https://claude.ai/customize/skills)
 3. Click the `+` button in the Skills panel > click on `Create skill` > `Upload a skill` and browse/drop the file in
 
@@ -250,44 +250,44 @@ Enable "Code execution and file creation" under Capabilities first — skills wo
 
 ### Claude Desktop
 
-Claude Desktop installs `/last30days` as an MCP server via a `.mcpb` bundle (a one-click Model Context Protocol package).
+Claude Desktop installs `/nfl30` as an MCP server via a `.mcpb` bundle (a one-click Model Context Protocol package).
 
-1. Go to the [latest release](https://github.com/mvanhorn/last30days-skill/releases/latest) and download the `.mcpb` for your platform:
-   - macOS Apple Silicon: `last30days-pp-mcp-darwin-arm64.mcpb`
-   - macOS Intel: `last30days-pp-mcp-darwin-amd64.mcpb`
-   - Linux x86_64: `last30days-pp-mcp-linux-amd64.mcpb`
+1. Go to the [latest release](https://github.com/cmdashc/last30days-nfl/releases/latest) and download the `.mcpb` for your platform:
+   - macOS Apple Silicon: `nfl30-pp-mcp-darwin-arm64.mcpb`
+   - macOS Intel: `nfl30-pp-mcp-darwin-amd64.mcpb`
+   - Linux x86_64: `nfl30-pp-mcp-linux-amd64.mcpb`
 2. Open Claude Desktop, go to Settings > Extensions, and drag the file in.
 3. When prompted, paste API keys for the sources you want to enable. Every field is optional — the engine degrades to web-only mode if you skip them all. Keys are stored in your OS keychain.
 4. Restart Claude Desktop. Ask Claude to "research Peter Steinberger" or any topic and it will call the `research` tool.
 
 **Host requirement:** Python 3.12+ on PATH. The bundle ships the engine source but uses your local Python interpreter. Install from [python.org](https://www.python.org/downloads/) on Windows; macOS and most Linux distros ship a compatible version.
 
-**Keys don't sync with the Code skill.** Claude Desktop and Claude Code maintain separate credential stores by design. If you already configured `~/.config/last30days/.env` for the Code skill, you'll re-enter the same keys here once.
+**Keys don't sync with the Code skill.** Claude Desktop and Claude Code maintain separate credential stores by design. If you already configured `~/.config/nfl30/.env` for the Code skill, you'll re-enter the same keys here once.
 
 Windows support is deferred until per-platform manifest entry points are sorted out; track in a follow-up issue.
 
 ### OpenClaw
 
 ```bash
-clawhub install last30days-official
+clawhub install nfl30-official
 ```
 
-For X/Twitter action workflows outside `/last30days` research, such as posting
+For X/Twitter action workflows outside `/nfl30` research, such as posting
 tweets or replies, follower export, media handling, monitors, and giveaway
 draws, use [TweetClaw](https://github.com/Xquik-dev/tweetclaw) as the companion
 OpenClaw plugin. TweetClaw is maintained by Xquik-dev and is listed only as an
-optional companion path, not a last30days dependency or endorsement.
+optional companion path, not a nfl30 dependency or endorsement.
 
 ### Manual (developer)
 
 ```bash
-git clone https://github.com/mvanhorn/last30days-skill.git
-ln -s "$(pwd)/last30days-skill/skills/last30days" ~/.claude/skills/last30days
+git clone https://github.com/cmdashc/last30days-nfl.git
+ln -s "$(pwd)/nfl30-skill/skills/nfl30" ~/.claude/skills/nfl30
 ```
 
-The symlink keeps the install in sync with your working tree as you edit — no re-copy needed. For `claude.ai`, build the `.skill` file from source: `bash skills/last30days/scripts/build-skill.sh` produces `dist/last30days.skill`.
+The symlink keeps the install in sync with your working tree as you edit — no re-copy needed. For `claude.ai`, build the `.skill` file from source: `bash skills/nfl30/scripts/build-skill.sh` produces `dist/nfl30.skill`.
 
-Reddit (with comments), Hacker News, Polymarket, and GitHub work immediately. Zero configuration. Run `/last30days` once and the setup wizard unlocks more sources in 30 seconds, including the free arXiv and Techmeme CLIs.
+Reddit (with comments), Hacker News, Polymarket, and GitHub work immediately. Zero configuration. Run `/nfl30` once and the setup wizard unlocks more sources in 30 seconds, including the free arXiv and Techmeme CLIs.
 
 ## Bring your own keys
 
@@ -301,7 +301,7 @@ These platforms don't have relationships with each other. X doesn't know what Re
 | YouTube | `brew install yt-dlp` | Free |
 | Bluesky | App password from bsky.app | Free |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube comments | ScrapeCreators key | 10,000 free calls, then PAYG |
-| Xiaohongshu (RED) | Run a logged-in x-mcp browser plugin or `xiaohongshu-mcp` service and opt in with `--search xhs` per run or `INCLUDE_SOURCES=xiaohongshu` in `.env`; last30days auto-probes `http://localhost:18060` then `http://host.docker.internal:18060`, or use `XIAOHONGSHU_API_BASE` for a custom URL | No last30days API key; depends on your local browser-session service |
+| Xiaohongshu (RED) | Run a logged-in x-mcp browser plugin or `xiaohongshu-mcp` service and opt in with `--search xhs` per run or `INCLUDE_SOURCES=xiaohongshu` in `.env`; nfl30 auto-probes `http://localhost:18060` then `http://host.docker.internal:18060`, or use `XIAOHONGSHU_API_BASE` for a custom URL | No nfl30 API key; depends on your local browser-session service |
 | DripStack (premium financial newsletters) | Opt-in: `--search dripstack` per run, or `INCLUDE_SOURCES=dripstack` in `.env` | No key; free public search API |
 | Perplexity Agent API / Search API / Deep Research | Perplexity key, or OpenRouter key as Sonar fallback | Pay as you go; a direct key enables Agent API and background Deep Research |
 | Web search | Brave Search key | 2,000 free queries/month |
@@ -312,17 +312,17 @@ On macOS you can store keys in the system Keychain instead of a `.env` file. The
 
 ```bash
 # Interactive setup — prompts for each known key, skip with empty input
-skills/last30days/scripts/setup-keychain.sh
+skills/nfl30/scripts/setup-keychain.sh
 
 # Or store a single key by hand
-security add-generic-password -a "$USER" -s last30days-XAI_API_KEY -w "xai-..."
+security add-generic-password -a "$USER" -s nfl30-XAI_API_KEY -w "xai-..."
 
 # Inspect / clean up
-skills/last30days/scripts/setup-keychain.sh --list
-skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
+skills/nfl30/scripts/setup-keychain.sh --list
+skills/nfl30/scripts/setup-keychain.sh --delete XAI_API_KEY
 ```
 
-Items are stored under service name `last30days-<KEY>` for the current user. On non-Darwin platforms the loader is a no-op, so there is no behaviour change for Linux/Windows users.
+Items are stored under service name `nfl30-<KEY>` for the current user. On non-Darwin platforms the loader is a no-op, so there is no behaviour change for Linux/Windows users.
 
 Already have keys under different Keychain service names? Set the non-secret `LAST30DAYS_KEYCHAIN_ALIASES` mapping described in [CONFIGURATION.md](CONFIGURATION.md#reusing-existing-macos-keychain-items) instead of copying secrets.
 
@@ -332,23 +332,23 @@ See [CONFIGURATION.md](CONFIGURATION.md) for the full per-source key matrix, rea
 
 Two things you'll likely want to know on day one:
 
-**Where research files are saved.** `LAST30DAYS_MEMORY_DIR` defaults to `~/Documents/Last30Days/` (Windows: `C:\Users\<you>\Documents\Last30Days\`). Override by setting that env var to any path in your shell, or `--save-dir <path>` per run. Use `--output <file>` when you need the rendered result at an exact path, using the format selected by `--emit`. Use `--save-suffix=<name>` to keep multiple variations of the same topic separate (e.g. per client). Each `--save-dir` run produces `<slug>-raw[-suffix].md`. Optionally run `python3 skills/last30days/scripts/last30days.py --preflight` to review planned writes without starting research.
+**Where research files are saved.** `LAST30DAYS_MEMORY_DIR` defaults to `~/Documents/NFL30/` (Windows: `C:\Users\<you>\Documents\NFL30\`). Override by setting that env var to any path in your shell, or `--save-dir <path>` per run. Use `--output <file>` when you need the rendered result at an exact path, using the format selected by `--emit`. Use `--save-suffix=<name>` to keep multiple variations of the same topic separate (e.g. per client). Each `--save-dir` run produces `<slug>-raw[-suffix].md`. Optionally run `python3 skills/nfl30/scripts/nfl30.py --preflight` to review planned writes without starting research.
 
-**Structured output for agents and workflows.** Ask `/last30days` for machine-readable JSON to receive the stable, versioned agent profile. For direct engine use in scripts or development, run `python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json`; add `--json-profile=raw` only when you need the unversioned internal `Report` dump. See the [JSON export field reference and versioning policy](docs/reference/json-export.md).
+**Structured output for agents and workflows.** Ask `/nfl30` for machine-readable JSON to receive the stable, versioned agent profile. For direct engine use in scripts or development, run `python3 skills/nfl30/scripts/nfl30.py "AI coding agents" --emit=json`; add `--json-profile=raw` only when you need the unversioned internal `Report` dump. See the [JSON export field reference and versioning policy](docs/reference/json-export.md).
 
-**Topic-less discovery.** Ask `/last30days what's trending in AI agents?` to get a ranked discovery brief instead of researching a topic you already know - on an agent host this runs the three-command host-judged protocol (the model names topics, filters junk, scores worthiness, and writes the content angles). For direct engine use in scripts or cron, run `python3 skills/last30days/scripts/last30days.py --discover "AI agents"` (one-shot: deterministic topic names, no angles); add `--emit=json` for the versioned discovery contract. Discovery is mutually exclusive with a positional topic and `--drill`.
+**Topic-less discovery.** Ask `/nfl30 what's trending in AI agents?` to get a ranked discovery brief instead of researching a topic you already know - on an agent host this runs the three-command host-judged protocol (the model names topics, filters junk, scores worthiness, and writes the content angles). For direct engine use in scripts or cron, run `python3 skills/nfl30/scripts/nfl30.py --discover "AI agents"` (one-shot: deterministic topic names, no angles); add `--emit=json` for the versioned discovery contract. Discovery is mutually exclusive with a positional topic and `--drill`.
 
-**Trend monitoring across runs.** The default mode produces a fresh markdown snapshot per run. To accumulate findings over time, add `--store` to persist into a SQLite database, then use [`scripts/watchlist.py`](skills/last30days/scripts/watchlist.py) for scheduled runs (with optional Slack / webhook delivery on new findings) and [`scripts/briefing.py`](skills/last30days/scripts/briefing.py) for daily / weekly digests. The full cadence pattern is in [CONFIGURATION.md](CONFIGURATION.md#trend-monitoring-store--watchlist--briefings).
+**Trend monitoring across runs.** The default mode produces a fresh markdown snapshot per run. To accumulate findings over time, add `--store` to persist into a SQLite database, then use [`scripts/watchlist.py`](skills/nfl30/scripts/watchlist.py) for scheduled runs (with optional Slack / webhook delivery on new findings) and [`scripts/briefing.py`](skills/nfl30/scripts/briefing.py) for daily / weekly digests. The full cadence pattern is in [CONFIGURATION.md](CONFIGURATION.md#trend-monitoring-store--watchlist--briefings).
 
-**A subscribable research library.** Ask `/last30days` to build your library feed, or use `python3 skills/last30days/scripts/last30days.py library feed` directly for scripting and development. It turns saved briefs into `index.html`, a local Atom `feed.xml`, and readable brief pages. Add `--publish` only when you want the HTML index and brief pages hosted; publishing is explicit opt-in and public by default. To make the Atom feed subscribable, host the generated output directory on a static host such as GitHub Pages.
+**A subscribable research library.** Ask `/nfl30` to build your library feed, or use `python3 skills/nfl30/scripts/nfl30.py library feed` directly for scripting and development. It turns saved briefs into `index.html`, a local Atom `feed.xml`, and readable brief pages. Add `--publish` only when you want the HTML index and brief pages hosted; publishing is explicit opt-in and public by default. To make the Atom feed subscribable, host the generated output directory on a static host such as GitHub Pages.
 
-**Search everything you've researched.** Ask `/last30days search my library for MCP servers` or `/last30days have I researched MCP servers before?`. For direct engine use, run `python3 skills/last30days/scripts/last30days.py library search "MCP servers"`. Search is offline and deterministic: it incrementally indexes the same saved briefs used by the library feed, merges matching per-run store sightings, and groups results by topic and date. Fresh runs also surface a compact **From your library** section when prior research overlaps the current topic; set `LAST30DAYS_LIBRARY_CONTEXT=off` to disable that passive context.
+**Search everything you've researched.** Ask `/nfl30 search my library for MCP servers` or `/nfl30 have I researched MCP servers before?`. For direct engine use, run `python3 skills/nfl30/scripts/nfl30.py library search "MCP servers"`. Search is offline and deterministic: it incrementally indexes the same saved briefs used by the library feed, merges matching per-run store sightings, and groups results by topic and date. Fresh runs also surface a compact **From your library** section when prior research overlaps the current topic; set `LAST30DAYS_LIBRARY_CONTEXT=off` to disable that passive context.
 
 Per-client wrapper scripts, custom category-peer subreddits, and the experimental beta channel for in-progress customizations are also documented in [CONFIGURATION.md](CONFIGURATION.md).
 
 ## Showcase: community research feeds
 
-Published a recurring AI update, market watch, or wonderfully narrow obsession with last30days? Share the public library URL—or the Atom URL after hosting `feed.xml` on a static host—in [the community showcase thread](https://github.com/mvanhorn/last30days-skill/issues/532). Community feeds will be linked here as their owners submit them; the thread is the collection point in the meantime.
+Published a recurring AI update, market watch, or wonderfully narrow obsession with nfl30? Share the public library URL—or the Atom URL after hosting `feed.xml` on a static host—in [the community showcase thread](https://github.com/cmdashc/last30days-nfl/issues/532). Community feeds will be linked here as their owners submit them; the thread is the collection point in the meantime.
 
 ## How it works
 
@@ -366,7 +366,7 @@ Published a recurring AI update, market watch, or wonderfully narrow obsession w
 
 > "This one skill replaced my entire research workflow. You give it a topic, it scrapes Reddit, X, and the web for what people are actually talking about. Not old blog posts. Real conversations from the last 30 days." -@itswilsoncharles
 
-> "5 of the 10 trending repos on GitHub today are Claude tools. #1: mvanhorn/last30days-skill" -@yieldhunter95
+> "5 of the 10 trending repos on GitHub today are Claude tools. #1: cmdashc/last30days-nfl" -@yieldhunter95
 
 ## Open source
 
@@ -378,14 +378,14 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) to open a PR, [CONTRIBUTORS.md](CONTRIBUT
 
 ## Star History
 
-<a href="https://star-history.dera.page/#mvanhorn/last30days-skill&Date">
+<a href="https://star-history.dera.page/#cmdashc/last30days-nfl&Date">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date&theme=dark" />
-    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
-    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=mvanhorn/last30days-skill&type=Date" />
+    <source media="(prefers-color-scheme: dark)" srcset="https://star-history.dera.page/svg?repos=cmdashc/last30days-nfl&type=Date&theme=dark" />
+    <source media="(prefers-color-scheme: light)" srcset="https://star-history.dera.page/svg?repos=cmdashc/last30days-nfl&type=Date" />
+    <img alt="Star History Chart" src="https://star-history.dera.page/svg?repos=cmdashc/last30days-nfl&type=Date" />
   </picture>
 </a>
 
 ---
 
-**@slashlast30days** · [github.com/mvanhorn/last30days-skill](https://github.com/mvanhorn/last30days-skill)
+**@slashnfl30** · [github.com/cmdashc/last30days-nfl](https://github.com/cmdashc/last30days-nfl)

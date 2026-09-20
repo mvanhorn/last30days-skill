@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
+SKILL_MD = ROOT / "skills" / "nfl30" / "SKILL.md"
 
 
 class RuntimePreflightContractTests(unittest.TestCase):
@@ -24,7 +24,7 @@ class RuntimePreflightContractTests(unittest.TestCase):
         self.assertLess(self.skill_md.index(scan_command), self.skill_md.index("python3.14"))
 
     def test_candidate_selection_accepts_any_python_3_12_or_newer(self) -> None:
-        self.assertIn("try_last30days_python()", self.skill_md)
+        self.assertIn("try_nfl30_python()", self.skill_md)
         self.assertIn("sys.version_info >= (3, 12)", self.skill_md)
 
     def test_preflight_allows_explicit_interpreter_override(self) -> None:

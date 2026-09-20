@@ -2,7 +2,7 @@
 
 import pytest
 
-from skills.last30days.scripts.lib import x_judge
+from skills.nfl30.scripts.lib import x_judge
 
 
 class TestJudgeXCorpus:

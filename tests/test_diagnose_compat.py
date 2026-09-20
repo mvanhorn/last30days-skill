@@ -39,7 +39,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest import mock
 
-import last30days as cli
+import nfl30 as cli
 
 # Source names the engine can emit in available_sources today (v3.10.0).
 KNOWN_SOURCE_NAMES = {
@@ -168,7 +168,7 @@ def _run_cli(
             stack.enter_context(mock.patch("lib.xurl_x.has_stored_auth", return_value=False))
         for patch in extra_patches:
             stack.enter_context(patch)
-        stack.enter_context(mock.patch.object(sys, "argv", ["last30days.py"] + argv))
+        stack.enter_context(mock.patch.object(sys, "argv", ["nfl30.py"] + argv))
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -322,7 +322,7 @@ class DiagnoseXurlAuthWiring(unittest.TestCase):
 class PreflightShapeCompat(unittest.TestCase):
     """Freeze the --preflight JSON shape (snapshot: pre-v3.9.0 baseline)."""
 
-    MCP_SAVE_DIR = "/tmp/last30days-mcp-save-dir"
+    MCP_SAVE_DIR = "/tmp/nfl30-mcp-save-dir"
 
     def _preflight_mcp_invocation(self, config: dict) -> tuple[str, dict]:
         # Consumer (a): mcp/internal/tools/preflight.go builds exactly

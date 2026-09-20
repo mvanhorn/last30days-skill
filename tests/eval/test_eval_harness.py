@@ -142,7 +142,7 @@ def test_coherence_allows_singletons_for_sparse_fixtures():
 
 def test_enrichment_replay_merges_metadata_without_replacing_items():
     import sys
-    sys.path.insert(0, "skills/last30days/scripts")
+    sys.path.insert(0, "skills/nfl30/scripts")
     from lib import pipeline, schema
 
     fresh = schema.SourceItem(
@@ -171,15 +171,15 @@ def test_enrichment_replay_merges_metadata_without_replacing_items():
 
 def test_star_enrichment_apply_map_offline():
     import sys
-    sys.path.insert(0, "skills/last30days/scripts")
+    sys.path.insert(0, "skills/nfl30/scripts")
     from lib import github, schema
 
     candidate = schema.Candidate(
         candidate_id="c-gh",
         item_id="gh-1",
         source="github",
-        title="repo mvanhorn/last30days-skill discussion",
-        url="https://github.com/mvanhorn/last30days-skill",
+        title="repo cmdashc/last30days-nfl discussion",
+        url="https://github.com/cmdashc/last30days-nfl",
         snippet="s",
         subquery_labels=["primary"],
         native_ranks={"primary:github": 1},
@@ -194,7 +194,7 @@ def test_star_enrichment_apply_map_offline():
         metadata={},
     )
     enriched = github.apply_star_map(
-        [candidate], {"mvanhorn/last30days-skill": 51436}
+        [candidate], {"cmdashc/last30days-nfl": 51436}
     )
     assert enriched == 1
-    assert candidate.metadata["github_stars"]["mvanhorn/last30days-skill"] == 51436
+    assert candidate.metadata["github_stars"]["cmdashc/last30days-nfl"] == 51436

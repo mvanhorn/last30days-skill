@@ -1,4 +1,4 @@
-// Package tools owns the MCP tool surface for last30days.
+// Package tools owns the MCP tool surface for nfl30.
 package tools
 
 import (
@@ -11,7 +11,7 @@ import (
 	mcplib "github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
-	"github.com/mvanhorn/last30days-skill/mcp/internal/engine"
+	"github.com/cmdashc/last30days-nfl/mcp/internal/engine"
 )
 
 // Config carries the version string used to namespace the per-user cache.
@@ -39,7 +39,7 @@ func Register(s *server.MCPServer, cfg Config) {
 			),
 			mcplib.WithString("topic", mcplib.Required(), mcplib.Description("The subject to research (a person, company, product, event, or general topic).")),
 			mcplib.WithString("emit", mcplib.Description("Output shape: 'compact' (default) for inline synthesis or 'html' to save a shareable brief alongside the response.")),
-			mcplib.WithBoolean("save", mcplib.Description("Persist the synthesis as a markdown report under ~/Documents/Last30Days/ (or LAST30DAYS_MEMORY_DIR if set).")),
+			mcplib.WithBoolean("save", mcplib.Description("Persist the synthesis as a markdown report under ~/Documents/NFL30/ (or LAST30DAYS_MEMORY_DIR if set).")),
 			mcplib.WithReadOnlyHintAnnotation(false),
 			mcplib.WithDestructiveHintAnnotation(false),
 			mcplib.WithOpenWorldHintAnnotation(true),
@@ -113,7 +113,7 @@ func browserCookiesAllowed() bool {
 func mcpSaveDir() string {
 	saveDir := os.Getenv("LAST30DAYS_MEMORY_DIR")
 	if saveDir == "" {
-		return "~/Documents/Last30Days"
+		return "~/Documents/NFL30"
 	}
 	return saveDir
 }

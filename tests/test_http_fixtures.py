@@ -6,7 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import last30days as cli
+import nfl30 as cli
 from lib import http, pipeline, schema
 
 

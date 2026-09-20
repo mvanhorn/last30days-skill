@@ -1,10 +1,10 @@
-"""Contract tests for the /last30days HTML save handoff."""
+"""Contract tests for the /nfl30 HTML save handoff."""
 
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
-SAVE_HTML = ROOT / "skills" / "last30days" / "references" / "save-html-brief.md"
+SKILL_MD = ROOT / "skills" / "nfl30" / "SKILL.md"
+SAVE_HTML = ROOT / "skills" / "nfl30" / "references" / "save-html-brief.md"
 
 
 def test_skill_routes_html_to_reference_and_artifact_handoff():
