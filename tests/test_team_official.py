@@ -39,18 +39,86 @@ def test_fetch_rss_none_on_failure_or_non_feed():
         assert len(to.fetch_rss("u")) == 2
 
 
-def test_select_pressers_filters_titles_and_window():
+# Real Packers channel titles (2026-09-20). Team channels rarely say "press
+# conference"; they lead with the speaker's name.
+PACKERS = nfl.resolve("Packers").as_dict()["team"]
+CLIP_TITLES = [
+    ("Matt LaFleur: Zaire Franklin is 'earning the respect of his teammates by his actions'", "Matt LaFleur"),
+    ("Evan Williams: 'He's a tone-setter'", "Evan Williams"),
+    ("Devonte Wyatt on facing the Jets: 'We want to come out hungrier'", "Devonte Wyatt"),
+    ("Zaire Franklin says focus is on 'going 1-0' heading into Week 2", "Zaire Franklin"),
+    ("Cam Achord on having both Bo Melton and Skyy Moore: 'Tremendous advantage'", "Cam Achord"),
+    ("Matt LaFleur 1-on-1: 'We didn't capitalize on opportunities'", "Matt LaFleur"),
+    ("Jordan Love after loss to the Vikings: 'We'll get back to work'", "Jordan Love"),
+    ("Matt LaFleur speaks about loss to the Vikings on the road", "Matt LaFleur"),
+    ("Trey Smack is 'excited' for NFL debut in Minnesota Sunday", "Trey Smack"),
+]
+SHOW_TITLES = [
+    "Final Thoughts: Packers at Jets", "Trailer: Packers at Jets", "Packers Daily: Scouting the Jets",
+    "Rock Report: Pack Attack!", "Packers Unscripted: Next up, Jets in Jersey", "Mic'd Up: Jayden Reed",
+    "Memorable Moments: Brett Favre leads Packers to win over Jets in '94", "Total Packers: 1-on-1 with Keisean Nixon",
+    "Three Things: Explosive plays, TE Tucker Kraft, Larry's 'rules of the road'",
+    "Christian Watson expects a competitive, physical secondary vs. Jets",
+    "Packers host football outreach camp at Syble Hopp School for Special Education",
+    "Washington Commanders VS Philaldelphia Eagles | WEEK 1 Highlights",
+]
+
+
+def test_classify_title_recognizes_speaker_led_clips():
+    for title, speaker in CLIP_TITLES:
+        assert to.classify_title(title, PACKERS) == ("clip", speaker), title
+
+
+def test_classify_title_rejects_team_shows_and_generic_titles():
+    for title in SHOW_TITLES:
+        assert to.classify_title(title, PACKERS) is None, title
+    assert to.classify_title("", PACKERS) is None
+
+
+def test_classify_title_explicit_press_conference_wins_even_over_show_words():
+    assert to.classify_title("Andy Reid Postgame Press Conference | Week 3") == ("presser", "Andy Reid")
+    assert to.classify_title("Postgame Press Conference Highlights") == ("presser", "")
+
+
+def test_select_pressers_ranks_presser_tier_first_and_applies_window():
     rows = [
-        {"id": "a", "title": "Andy Reid Postgame Press Conference | Week 1", "date": "2026-09-14"},
-        {"id": "b", "title": "Highlights: Chiefs vs Bills", "date": "2026-09-14"},
-        {"id": "c", "title": "Patrick Mahomes Media Availability", "date": "2026-09-16"},
-        {"id": "d", "title": "Old Press Conference", "date": "2026-05-01"},
-        {"id": "e", "title": "Undated Presser", "date": None},
-        {"id": "f", "title": "Future Press Conference", "date": "2026-12-01"},
+        {"id": "a", "title": "Jordan Love: 'Back to work'", "date": "2026-09-15"},
+        {"id": "b", "title": "Highlights: Packers vs Vikings", "date": "2026-09-14"},
+        {"id": "c", "title": "Matt LaFleur Postgame Press Conference", "date": "2026-09-14"},
+        {"id": "d", "title": "Old Coach: 'Ancient quote'", "date": "2026-05-01"},
+        {"id": "e", "title": "Undated Player: 'Some quote'", "date": None},
+        {"id": "f", "title": "Future Player: 'Time traveler'", "date": "2026-12-01"},
     ]
-    kept = to.select_pressers(rows, "2026-09-13", "2026-09-20", cap=10)
-    assert [r["id"] for r in kept] == ["a", "c", "e"]
-    assert [r["id"] for r in to.select_pressers(rows, "2026-09-13", "2026-09-20", cap=1)] == ["a"]
+    kept = to.select_pressers(rows, "2026-09-13", "2026-09-20", cap=10, team=PACKERS)
+    assert [r["id"] for r in kept] == ["c", "a", "e"]  # presser tier first, then clips in channel order
+    assert [r["kind"] for r in kept] == ["presser", "clip", "clip"]
+    assert kept[0]["speaker"] == "Matt LaFleur" and kept[1]["speaker"] == "Jordan Love"
+    assert [r["id"] for r in to.select_pressers(rows, "2026-09-13", "2026-09-20", cap=1, team=PACKERS)] == ["c"]
+
+
+def test_select_pressers_resolves_missing_dates_before_windowing():
+    rows = [{"id": "old", "title": "Alex Old: 'Old news'", "date": None},
+            {"id": "new", "title": "Blake Fresh: 'Fresh news'", "date": None}]
+    lookup = mock.Mock(return_value={"old": "2026-05-01", "new": "2026-09-18"})
+    kept = to.select_pressers(rows, "2026-09-13", "2026-09-20", cap=5, resolve_dates=lookup)
+    lookup.assert_called_once_with(["old", "new"])
+    assert [r["id"] for r in kept] == ["new"] and kept[0]["date"] == "2026-09-18"
+    # A failed lookup keeps the clip: the listing is newest-first, so unknown is not old.
+    kept = to.select_pressers(rows, "2026-09-13", "2026-09-20", cap=5, resolve_dates=lambda ids: {})
+    assert [r["id"] for r in kept] == ["old", "new"]
+
+
+def test_fetch_upload_dates_parses_yt_dlp_print_output():
+    def fake_run(cmd, timeout):
+        url = next(a for a in cmd if a.startswith("https://www.youtube.com/watch?v="))  # wrapper appends flags after the URL
+        vid = url.rsplit("=", 1)[-1]
+        out = {"v1": "20260918\n", "v2": "NA\n"}.get(vid, "")
+        return subproc.SubprocResult(returncode=0, stdout=out, stderr="")
+    with mock.patch.object(to.subproc, "run_with_timeout", side_effect=fake_run):
+        assert to.fetch_upload_dates(["v1", "v2", "v3"]) == {"v1": "2026-09-18", "v2": None, "v3": None}
+    assert to.fetch_upload_dates([]) == {}
+    with mock.patch.object(to.subproc, "run_with_timeout", side_effect=subproc.SubprocTimeout("t")):
+        assert to.fetch_upload_dates(["v1"]) == {"v1": None}
 
 
 def test_speaker_from_title():
@@ -105,9 +173,9 @@ def test_search_full_lane_with_transcripts():
     kinds = {i["kind"] for i in items}
     assert kinds == {"news", "presser"}
     presser = next(i for i in items if i["kind"] == "presser")
-    assert presser["speaker"] == "Reid" or presser["speaker"]
+    assert presser["speaker"] == "Reid"
     assert presser["engagement"] == {"views": 9}
-    assert to.format_summary_line(items) == "🏟️ Team official: 1 news │ 1 presser (1 transcribed)"
+    assert to.format_summary_line(items) == "🏟️ Team official: 1 news │ 1 presser/clip (1 transcribed)"
 
 
 def test_game_entity_covers_both_teams():
@@ -176,3 +244,13 @@ def test_normalizer_renders_official_item():
     out = normalize.normalize_source_items("team_official", raw, "2026-09-13", "2026-09-20", "strict_recent")
     assert out[0].metadata["official"] is True and out[0].metadata["speaker"] == "Reid"
     assert out[0].container == "Kansas City Chiefs (official)"
+
+
+def test_clean_transcript_unescapes_and_drops_speaker_markers():
+    raw = "&gt;&gt; I feel a little old because &amp; the Jets.  &gt;&gt; Next question"
+    assert to.clean_transcript(raw) == "I feel a little old because & the Jets. Next question"
+    assert to.clean_transcript("") == ""
+
+
+def test_speaker_from_title_drops_possessive():
+    assert to.speaker_from_title("Andy Reid's Locker Room Speech After Chiefs Monday Night Football Win") == "Andy Reid"

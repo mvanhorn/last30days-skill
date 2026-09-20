@@ -2770,6 +2770,30 @@ def _comparison_requested(args: argparse.Namespace, topic: str) -> bool:
     ) or len(_planner._comparison_entities(topic, uncapped=True)) >= 2
 
 
+def _nfl_beat_handles_for_run(
+    args: argparse.Namespace, topic: str, config: dict[str, Any] | None = None
+) -> list[str]:
+    """The curated beat-writer handles this run would search (nfl30), or [].
+
+    Shared by the host-connector path: the model fetches these through its own
+    X connector, and the envelope validator must accept them as run handles.
+    """
+    from lib import nfl as _nfl
+
+    cfg = dict(config or {})
+    if getattr(args, "beat_writers", None):
+        cfg["_beat_writers"] = args.beat_writers
+    if not _nfl.beat_writers_enabled(cfg):
+        return []
+    entity = _nfl.resolve(
+        topic,
+        explicit_team=getattr(args, "team", None),
+        explicit_player=getattr(args, "player", None),
+    )
+    depth = "deep" if args.deep else "quick" if args.quick else "default"
+    return _nfl.beat_handles(entity, depth=depth)
+
+
 def _read_x_envelope(
     path: str,
     topic: str,
@@ -2777,6 +2801,7 @@ def _read_x_envelope(
     *,
     x_handle: str | None,
     x_related: list[str] | None,
+    beat_handles: list[str] | None = None,
 ) -> x_envelope.Envelope:
     """Validate a host-fetched X envelope against this run's window and topic."""
     from_date, to_date = dates.get_date_range(
@@ -2786,7 +2811,7 @@ def _read_x_envelope(
         path,
         (from_date, to_date),
         topic,
-        handles=[x_handle] if x_handle else [],
+        handles=([x_handle] if x_handle else []) + list(beat_handles or []),
         related=[h for h in (x_related or []) if h and h.strip()],
     )
 
@@ -3497,7 +3522,7 @@ def _main(
         return _run_cached_freshness(args, config)
 
     if args.lookback_days is None:
-        args.lookback_days = 30
+        args.lookback_days = DEFAULT_LOOKBACK_DAYS
 
     if args.deep_research and not args.diagnose:
         from lib import planner as _planner
@@ -3653,6 +3678,7 @@ def _main(
                 args.x_posts, topic, args,
                 x_handle=args.x_handle,
                 x_related=args.x_related.split(",") if args.x_related else None,
+                beat_handles=_nfl_beat_handles_for_run(args, topic, config),
             )
         except x_envelope.EnvelopeContractError as exc:
             sys.stderr.write(f"[nfl30] {exc.message}\n")
@@ -3669,6 +3695,13 @@ def _main(
     )
 
     if args.diagnose:
+        if getattr(args, "team", None) or getattr(args, "player", None):
+            # nfl30: a host that fetches X through its own connector needs the
+            # roster it should ask for; run with `--diagnose --team KC`.
+            diag["nfl"] = {
+                "entity": (config.get("_nfl") or {}).get("label"),
+                "beat_handles": _nfl_beat_handles_for_run(args, topic or "", config),
+            }
         print(json.dumps(diag, indent=2, sort_keys=True))
         return 0
 

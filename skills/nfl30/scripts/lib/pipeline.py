@@ -2212,6 +2212,8 @@ def run(
         )
         if requested_sources:
             available = [source for source in available if source in requested_sources]
+        else:
+            available = _apply_nfl_source_defaults(available, nfl_entity)
     # Keep an explicitly requested but unconfigured corpus in the plan long
     # enough to record its skipped-unconfigured source outcome. It is never
     # submitted to the network executor below.
@@ -2223,7 +2225,7 @@ def run(
         available.append("grounding")
     if (
         hiring_signals_mode
-        or (not requested_sources and _company_topic_likely(topic))
+        or (not requested_sources and not nfl_entity and _company_topic_likely(topic))
     ) and "jobs" not in available:
         available.append("jobs")
     if hiring_signals_mode:
@@ -3463,6 +3465,23 @@ def _ensure_jobs_in_plan(
 
 NFL_LANES: tuple[str, ...] = ("team_official", "nfl_polymarket")
 
+# Default-on sources that only add noise to a football topic. A resolved NFL
+# entity drops them unless the caller names sources explicitly (`--search`, or
+# LAST30DAYS_DEFAULT_SEARCH): Hacker News/GitHub/arXiv/Techmeme/Digg carry tech
+# news, generic Polymarket duplicates the NFL markets lane, and careers boards
+# treat a team name like a company.
+NFL_DEFAULT_OFF_SOURCES: frozenset[str] = frozenset({
+    "hackernews", "github", "arxiv", "techmeme", "digg", "polymarket",
+    "truthsocial", "xiaohongshu", "stocktwits", "jobs", "linkedin", "dripstack",
+})
+
+
+def _apply_nfl_source_defaults(available: list[str], nfl_entity: Any) -> list[str]:
+    """Drop the tech/finance default-on sources for a resolved NFL entity."""
+    if not nfl_entity:
+        return available
+    return [source for source in available if source not in NFL_DEFAULT_OFF_SOURCES]
+
 
 def _nfl_entity(config: dict[str, Any] | None) -> dict[str, Any] | None:
     """The resolved NFL entity dict on this run (team, player, game, league), or None."""
@@ -3982,8 +4001,9 @@ def _run_supplemental_searches(
     if envelope is not None:
         _serve_envelope_lanes(
             envelope, bundle=bundle, plan=plan, x_handle=x_handle, x_related=x_related,
-            from_date=from_date, to_date=to_date,
+            from_date=from_date, to_date=to_date, beat_handles=_beat_handles(config),
         )
+        _tag_beat_writers(bundle.items_by_source.get("x", []), config)
         return
 
     # nfl30: the curated beat-writer roster rides the explicit FROM lane at
@@ -4077,7 +4097,9 @@ def _run_supplemental_searches(
                 seen.add(clean)
 
     if not handles and not related_handles:
-        return
+        # nfl30: the curated beat-writer roster needs no extracted handle to run.
+        if not beat_handles:
+            return
 
     # Pick the X handle-search backend: the first handle-capable backend in the
     # chain (grok, bird, xapi, or xquik). These supplemental from:/mentions lanes are
@@ -4185,6 +4207,12 @@ def _run_supplemental_searches(
         def _about_lane(hs: list, count: int) -> tuple[list, bool]:
             return xquik.search_mentions(hs, from_date, to_date, topic=topic, count_per=count, token=xquik_token), False
     else:
+        if beat_handles:
+            log.source_log(
+                "x", f"beat-writer lane skipped: the X backend has no handle lane "
+                f"({len(beat_handles)} handles unsearched; bird, grok, xapi, or xquik can)",
+                tty_only=False,
+            )
         return  # primary X backend has no handle-lane support (xai/xurl) or none configured
 
     # Skip if the X source is rate-limited.
@@ -4786,6 +4814,7 @@ def _serve_envelope_lanes(
     x_related: list[str] | None,
     from_date: str,
     to_date: str,
+    beat_handles: list[str] | None = None,
 ) -> None:
     """Serve the envelope's from/mention/related calls into the lane merge.
 
@@ -4807,7 +4836,8 @@ def _serve_envelope_lanes(
     ranking_query = plan.subqueries[0].ranking_query if plan.subqueries else ""
     primary_label = plan.subqueries[0].label if plan.subqueries else "primary"
     primary_handles = sorted(
-        {x_handle.lstrip("@").strip().lower()} if x_handle and x_handle.strip() else set()
+        ({x_handle.lstrip("@").strip().lower()} if x_handle and x_handle.strip() else set())
+        | {h.lstrip("@").strip().lower() for h in (beat_handles or []) if h and h.strip()}
     )
     related_handles = [
         h.lstrip("@").strip().lower()

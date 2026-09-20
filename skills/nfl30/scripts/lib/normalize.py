@@ -740,7 +740,7 @@ def _normalize_team_official(
         "team": item.get("team"),
         "official": True,
     }
-    if kind == "presser":
+    if kind in ("presser", "clip"):
         metadata["speaker"] = str(item.get("speaker") or "")
         if item.get("transcript_snippet"):
             metadata["transcript_snippet"] = str(item["transcript_snippet"])

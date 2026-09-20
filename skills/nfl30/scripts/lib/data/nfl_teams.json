@@ -1,5 +1,5 @@
 {
-  "_note": "Static 32-team table for nfl30. pm_abbr is the token Polymarket uses in game slugs (nfl-{away}-{home}-{date}); rss is null where the team CMS has no /rss/news feed. Verify handles/RSS after each season. All 32 rss URLs and youtube handles were verified live on 2026-09-20. Polymarket abbreviates the Rams as 'la' in game slugs (verified 2026-09-20).",
+  "_note": "Static 32-team table for nfl30. pm_abbr is the token Polymarket uses in game slugs (nfl-{away}-{home}-{date}); rss is null where the team CMS has no /rss/news feed. Verify handles/RSS after each season. All 32 rss URLs verified live 2026-09-20. All 32 youtube handles verified 2026-09-20 by channel TITLE and follower count (not just that the handle resolves: @Chiefs is an unrelated 2006 channel, @TheRams has 34 followers). Polymarket abbreviates the Rams as 'la' in game slugs (verified 2026-09-20).",
   "as_of": "2026-09",
   "teams": {
     "ARI": {
@@ -156,7 +156,7 @@
       "division": "NFC North",
       "subreddit": "detroitlions",
       "x_handle": "Lions",
-      "youtube_handle": "Lions",
+      "youtube_handle": "DetroitLionsNFL",
       "domain": "detroitlions.com",
       "rss": "https://www.detroitlions.com/rss/news",
       "aliases": [
@@ -229,7 +229,7 @@
       "division": "AFC West",
       "subreddit": "KansasCityChiefs",
       "x_handle": "Chiefs",
-      "youtube_handle": "Chiefs",
+      "youtube_handle": "KansasCityChiefs",
       "domain": "chiefs.com",
       "rss": "https://www.chiefs.com/rss/news",
       "aliases": [
@@ -274,7 +274,7 @@
       "division": "NFC West",
       "subreddit": "LosAngelesRams",
       "x_handle": "RamsNFL",
-      "youtube_handle": "TheRams",
+      "youtube_handle": "LARams",
       "domain": "therams.com",
       "rss": "https://www.therams.com/rss/news",
       "aliases": [

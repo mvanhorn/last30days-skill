@@ -20,6 +20,7 @@ pipeline records ``SKIPPED_UNCONFIGURED`` when there is none.
 
 from __future__ import annotations
 
+import html
 import json
 import re
 import shutil
@@ -166,6 +167,13 @@ def _web_fallback(
 # ---------------------------------------------------------------------------
 
 
+def clean_transcript(text: str) -> str:
+    """Un-escape entities and drop the ``>>`` speaker-change markers YouTube captions carry."""
+    text = html.unescape(text or "")
+    text = re.sub(r"\s*>>\s*", " ", text)
+    return re.sub(r"[ \t]+", " ", text).strip()
+
+
 def is_ytdlp_installed() -> bool:
     return shutil.which("yt-dlp") is not None
 
@@ -236,29 +244,134 @@ def speaker_from_title(title: str) -> str:
     head = re.split(r"[:|\-–—(]", title, maxsplit=1)[0]
     head = PRESSER_RE.split(head)[0]
     head = re.sub(r"\b(HC|QB|Coach|Head Coach|OC|DC|GM)\b\.?", "", head, flags=re.IGNORECASE)
+    head = re.sub(r"(['\u2019]s)\b", "", head)  # "Andy Reid's Locker Room Speech" -> "Andy Reid"
     head = re.sub(r"\s+", " ", head).strip(" :-|")
     return head[:60]
 
 
+# Team channels almost never write "press conference" in a title. Live titles
+# (Packers, 2026-09) look like "Matt LaFleur: 'He's a pro's pro'", "Jordan Love
+# after loss to the Vikings: 'We'll get back to work'", "Matt LaFleur speaks
+# about loss to the Vikings on the road". So a clip is recognized by SHAPE: a
+# person's name leading a colon or a speaking verb, minus the team's own shows.
+SHOW_RE = re.compile(
+    r"mic'?d up|trailer|final thoughts|three things|rock report|memorable moments|"
+    r"highlights?\b|hype\b|unscripted|\bdaily\b|top \d+|best (?:of|plays|moments)|"
+    r"all-access|inside the|day in the life|behind the scenes|throwback|rewind|"
+    r"schedule release|draft (?:class|recap|pick)|hall of fame|countdown|podcast|"
+    r"game ?day|preview\b|recap\b|cheerleader|full game|\bvs\.? .* \|",
+    re.IGNORECASE,
+)
+_NAME = r"[A-Z][A-Za-z.'’\-]+(?:\s+[A-Z][A-Za-z.'’\-]+){0,3}"
+QUOTE_RES = (
+    # "Name: ..." / "Name on X: ..." / "Name after loss to Y: ..." / "Name 1-on-1: ..."
+    re.compile(rf"^(?P<who>{_NAME})(?:\s+1-on-1)?(?:\s+(?:on|after|about)\b[^:]{{0,70}})?:\s*\S"),
+    # "Name speaks about ...", "Name says ..."
+    re.compile(rf"^(?P<who>{_NAME})\s+(?:says|speaks|talks|addresses|discusses|explains|reacts|"
+               rf"previews|breaks down|meets)\b"),
+    # "Name is 'excited' for ..."
+    re.compile(rf"^(?P<who>{_NAME})\s+(?:is|are|was|were)\s+['‘\"“]"),
+)
+
+
+def _mentions_team(text: str, team: Optional[Dict[str, Any]]) -> bool:
+    if not team:
+        return False
+    low = text.lower()
+    return any(
+        str(team.get(k) or "").lower() and str(team.get(k)).lower() in low
+        for k in ("nickname", "city", "name")
+    )
+
+
+def classify_title(title: str, team: Optional[Dict[str, Any]] = None) -> Optional[tuple[str, str]]:
+    """``("presser" | "clip", speaker)`` for a team-channel title, else None."""
+    title = (title or "").strip()
+    if PRESSER_RE.search(title):
+        return "presser", speaker_from_title(title)
+    if not title or SHOW_RE.search(title):
+        return None
+    for rx in QUOTE_RES:
+        match = rx.match(title)
+        if not match:
+            continue
+        who = match.group("who").strip()
+        if _mentions_team(who, team):
+            return None  # "Packers Daily:", "Total Packers:" are the team's own shows
+        return "clip", who
+    return None
+
+
+def fetch_upload_dates(video_ids: List[str], *, workers: int = 6) -> Dict[str, Optional[str]]:
+    """Real ``YYYY-MM-DD`` upload dates for videos the flat listing left undated."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from . import youtube_yt
+
+    def _one(vid: str) -> tuple[str, Optional[str]]:
+        cmd = youtube_yt._wrap_ytdlp_cmd([
+            "yt-dlp", "--ignore-config", "--skip-download", "--no-warnings",
+            "--print", "%(upload_date)s", f"https://www.youtube.com/watch?v={vid}",
+        ])
+        try:
+            out = subproc.run_with_timeout(cmd, timeout=40).stdout.strip().splitlines()
+        except (subproc.SubprocTimeout, FileNotFoundError, OSError):
+            return vid, None
+        raw = out[-1].strip() if out else ""
+        if len(raw) == 8 and raw.isdigit():
+            return vid, f"{raw[:4]}-{raw[4:6]}-{raw[6:]}"
+        return vid, None
+
+    if not video_ids:
+        return {}
+    with ThreadPoolExecutor(max_workers=max(1, min(workers, len(video_ids)))) as executor:
+        futures = [http.submit_with_context(executor, _one, vid) for vid in video_ids]
+        return dict(f.result() for f in futures)
+
+
+def _in_window_loose(date: Optional[str], from_date: str, to_date: str) -> bool:
+    """Window check tolerant of approximate dates; an unknown date is kept."""
+    if not date:
+        return True
+    if date > to_date:
+        return False
+    if date < from_date:
+        return (datetime.fromisoformat(from_date) - datetime.fromisoformat(date)).days <= 2
+    return True
+
+
 def select_pressers(
-    rows: List[Dict[str, Any]], from_date: str, to_date: str, cap: int
+    rows: List[Dict[str, Any]],
+    from_date: str,
+    to_date: str,
+    cap: int,
+    team: Optional[Dict[str, Any]] = None,
+    resolve_dates: Optional[Callable[[List[str]], Dict[str, Optional[str]]]] = None,
 ) -> List[Dict[str, Any]]:
-    """Title-filter to pressers, drop clearly-old uploads, keep the newest ``cap``."""
-    kept: List[Dict[str, Any]] = []
-    for row in rows:
-        if not PRESSER_RE.search(row.get("title") or ""):
+    """Pick press conferences and player/coach clips from a channel listing.
+
+    Explicit press conferences rank ahead of quote-style clips; within a tier the
+    channel's newest-first order is kept. Candidates the listing left undated get
+    real dates from ``resolve_dates`` before the window check, so an old clip is
+    not mistaken for this week's.
+    """
+    ranked: List[tuple[int, int, Dict[str, Any]]] = []
+    for idx, row in enumerate(rows):
+        hit = classify_title(row.get("title") or "", team)
+        if not hit:
             continue
-        date = row.get("date")
-        # Approximate dates can be a day off; only drop uploads well outside the window.
-        if date and date < from_date:
-            if (datetime.fromisoformat(from_date) - datetime.fromisoformat(date)).days > 2:
-                continue
-        if date and date > to_date:
-            continue
-        kept.append(row)
-        if len(kept) >= cap:
-            break
-    return kept
+        tier, speaker = hit
+        ranked.append((0 if tier == "presser" else 1, idx, {**row, "kind": tier, "speaker": speaker}))
+    ranked.sort(key=lambda t: (t[0], t[1]))
+    candidates = [r for _t, _i, r in ranked[: max(cap * 3, cap)]]
+    if resolve_dates:
+        missing = [r for r in candidates if not r.get("date")]
+        if missing:
+            found = resolve_dates([r["id"] for r in missing])
+            for r in missing:
+                r["date"] = found.get(r["id"])
+    kept = [r for r in candidates if _in_window_loose(r.get("date"), from_date, to_date)]
+    return kept[:cap]
 
 
 # ---------------------------------------------------------------------------
@@ -326,8 +439,10 @@ def search_team_official(
             result["errors"].append(f"{abbr}: {err}")
             _log(f"{abbr}: channel listing failed: {err}")
             continue
-        chosen = select_pressers(videos, from_date, to_date, presser_cap)
-        _log(f"{abbr}: {len(videos)} channel uploads scanned, {len(chosen)} pressers kept")
+        chosen = select_pressers(
+            videos, from_date, to_date, presser_cap, team=team, resolve_dates=fetch_upload_dates,
+        )
+        _log(f"{abbr}: {len(videos)} channel uploads scanned, {len(chosen)} pressers/clips kept")
         for row in chosen:
             result["pressers"].append({**row, "team": abbr, "team_name": team.get("name", abbr)})
 
@@ -344,6 +459,7 @@ def search_team_official(
         for row in result["pressers"]:
             text = transcripts.get(row["id"])
             if text:
+                text = clean_transcript(text)
                 row["transcript"] = text
                 row["transcript_highlights"] = youtube_yt.extract_transcript_highlights(text, topic, limit=5)
     if not result["news"] and not result["pressers"] and result["errors"]:
@@ -375,10 +491,10 @@ def parse_team_official_response(result: Dict[str, Any], query: str = "") -> Lis
         transcript = str(row.get("transcript") or "")
         text = f"{row.get('title', '')} {transcript[:2000]}".strip()
         rel = max(_MIN_RELEVANCE["presser"], token_overlap_relevance(query, text) if query else 0.0)
-        speaker = speaker_from_title(row.get("title", ""))
+        speaker = str(row.get("speaker") or "") or speaker_from_title(row.get("title", ""))
         items.append({
             "id": f"TO-YT-{row.get('id', '')}",
-            "kind": "presser",
+            "kind": row.get("kind") or "presser",
             "title": row.get("title", ""),
             "url": row.get("url", ""),
             "date": row.get("date"),
@@ -391,7 +507,7 @@ def parse_team_official_response(result: Dict[str, Any], query: str = "") -> Lis
             "author": speaker or f"{row.get('team_name', 'Team')} (official)",
             "engagement": {"views": int(row.get("views") or 0)},
             "relevance": rel,
-            "why_relevant": "Official team press conference",
+            "why_relevant": "Official team press conference or player/coach clip",
         })
     return items
 
@@ -402,7 +518,7 @@ def format_summary_line(items: List[Dict[str, Any]] | List[Any]) -> Optional[str
     for item in items:
         meta = getattr(item, "metadata", None)
         kind = (meta or {}).get("kind") if meta is not None else item.get("kind")
-        if kind == "presser":
+        if kind in ("presser", "clip"):
             pressers += 1
             has_text = bool((meta or {}).get("transcript_snippet")) if meta is not None else bool(item.get("transcript_snippet"))
             transcribed += 1 if has_text else 0
@@ -412,5 +528,5 @@ def format_summary_line(items: List[Dict[str, Any]] | List[Any]) -> Optional[str
         return None
     line = f"🏟️ Team official: {news} news"
     if pressers:
-        line += f" │ {pressers} presser{'s' if pressers != 1 else ''} ({transcribed} transcribed)"
+        line += f" │ {pressers} presser/clip{'s' if pressers != 1 else ''} ({transcribed} transcribed)"
     return line

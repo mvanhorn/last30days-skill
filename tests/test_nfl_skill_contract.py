@@ -58,3 +58,9 @@ def test_every_nfl_cli_flag_in_the_engine_is_documented_in_configuration():
     for flag in ("--team", "--player", "--beat-writers", "NFL30_BEAT_WRITERS", "beat_writers.json",
                  "team_official", "nfl_polymarket"):
         assert flag in config, flag
+
+
+def test_connector_recipe_tells_hosts_how_to_get_the_beat_roster():
+    recipe = SKILL.split("**Grok Bot X connector recipe", 1)[1].split("**Step 1: Run the research script", 1)[0]
+    assert "--diagnose --team {ABBR}" in recipe and "nfl.beat_handles" in recipe
+    assert "--beat-writers off" in recipe

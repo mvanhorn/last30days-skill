@@ -1,5 +1,7 @@
 """nfl30 wiring: entity resolution in run(), beat-writer handles, and attribution."""
 
+from unittest import mock
+
 from lib import nfl, pipeline, render, schema
 
 
@@ -76,3 +78,39 @@ def test_run_without_nfl_entity_leaves_roster_empty():
     assert config["_nfl"] is None
     assert config["_beat_writer_handles"] == []
     assert "_dedicated_subreddits" not in config
+
+
+def test_nfl_entity_drops_tech_default_sources_but_keeps_football_lanes():
+    everything = ["reddit", "x", "youtube", "hackernews", "github", "arxiv", "techmeme", "digg",
+                  "polymarket", "jobs", "grounding", "team_official", "nfl_polymarket", "tiktok"]
+    kept = pipeline._apply_nfl_source_defaults(list(everything), {"kind": "team"})
+    assert kept == ["reddit", "x", "youtube", "grounding", "team_official", "nfl_polymarket", "tiktok"]
+    # No NFL entity: the upstream default set is untouched.
+    assert pipeline._apply_nfl_source_defaults(list(everything), None) == everything
+    assert pipeline.NFL_DEFAULT_OFF_SOURCES.isdisjoint(pipeline.NFL_LANES)
+
+
+def test_default_window_is_seven_days_end_to_end(capsys):
+    """The CLI default (not just a constant) must reach the report window."""
+    import importlib.util
+    import json
+    import sys
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parents[1] / "skills" / "nfl30" / "scripts" / "nfl30.py"
+    spec = importlib.util.spec_from_file_location("nfl30_cli_under_test", script)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    assert module.DEFAULT_LOOKBACK_DAYS == 7
+
+    def window(*extra: str) -> int:
+        capsys.readouterr()
+        argv = ["nfl30.py", "Chiefs", "--mock", "--emit=json", "--no-browser-cookies", *extra]
+        with mock.patch.object(sys, "argv", argv):
+            assert module.main() == 0
+        out = capsys.readouterr().out
+        return json.loads(out[out.index("{"):])["window_days"]
+
+    assert window() == 7
+    assert window("--days", "3") == 3
