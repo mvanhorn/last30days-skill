@@ -98,15 +98,18 @@ def test_beat_handles_caps_by_depth():
     quick = nfl.beat_handles(ent, depth="quick")
     default = nfl.beat_handles(ent, depth="default")
     deep = nfl.beat_handles(ent, depth="deep")
-    assert len(quick) == 4 and len(default) == 10
+    # The team's official account rides along uncapped: caps are 2+2 / 6+4 beat/national.
+    assert quick[0] == default[0] == deep[0] == "Chiefs"
+    assert len(quick) == 5 and len(default) == 11
     assert len(deep) > len(default)
-    assert quick[0] == default[0] == deep[0]  # team writers first, in roster order
+    assert quick[1] == default[1] == "adamteicher"  # team writers next, in roster order
     assert "AdamSchefter" in quick  # national insiders always included
     assert len(set(h.lower() for h in deep)) == len(deep)
 
 
 def test_beat_handles_game_splits_team_budget_and_league_is_national_only():
     game = nfl.beat_handles(nfl.resolve("Packers vs Lions"), depth="default")
+    assert game[:2] == ["packers", "Lions"]  # both official accounts first
     roster = nfl.load_beat_writers()
     gb = {r["handle"].lower() for r in roster["teams"]["GB"]}
     det = {r["handle"].lower() for r in roster["teams"]["DET"]}
@@ -122,6 +125,10 @@ def test_beat_writer_meta_lookup_is_case_insensitive():
     assert meta["adamteicher"]["team"] == "KC" and meta["adamteicher"]["outlet"]
     assert meta["rapsheet"]["role"] == "insider" and meta["rapsheet"]["team"] is None
     assert "nobody" not in meta
+    official = nfl.beat_writer_meta(["Chiefs", "packers"])
+    assert official["chiefs"] == {"name": "Kansas City Chiefs", "outlet": "official team account",
+                                  "role": "official", "team": "KC"}
+    assert official["packers"]["team"] == "GB"
 
 
 def test_override_merge_replaces_team_unions_national_and_removes(tmp_path):
@@ -202,3 +209,18 @@ def test_data_files_are_valid_json_with_notes():
     for path in (nfl.TEAMS_FILE, nfl.BEAT_WRITERS_FILE, nfl.PLAYERS_FILE):
         data = json.loads(Path(path).read_text(encoding="utf-8"))
         assert data.get("as_of") and data.get("_note")
+
+
+# === game topics are not comparisons ===
+
+
+def test_scheduled_game_is_not_a_comparison_but_other_vs_topics_are():
+    from lib import planner
+
+    assert planner._comparison_entities("Packers vs Lions") == []
+    assert planner._comparison_entities("Packers vs Lions injuries") == []
+    assert planner._comparison_entities("Chiefs at Bills") == []  # no vs: never a comparison
+    assert len(planner._comparison_entities("Mahomes vs Allen")) == 2
+    assert len(planner._comparison_entities("Chiefs vs Bills vs Ravens")) == 3
+    assert len(planner._comparison_entities("React vs Vue")) == 2
+    assert nfl.resolve("Chiefs vs Bills vs Ravens").kind == "team"

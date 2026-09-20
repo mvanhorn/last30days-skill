@@ -372,3 +372,33 @@ def test_best_takes_ranking_applies_source_weights():
     hn_pos = body.lower().find("hacker")
     assert tt_pos != -1 and hn_pos != -1
     assert tt_pos < hn_pos
+
+
+# === nfl30 registers ===
+
+
+def test_nfl_registers_are_registered_with_expected_shape():
+    assert {"fan", "bettor"} <= set(registers.REGISTER_NAMES)
+    fan, bettor = registers.get_register("fan"), registers.get_register("bettor")
+    assert fan.section_order[:3] == ("clusters", "best_takes", "top_comments")
+    assert bettor.section_order[:2] == ("stats", "clusters")
+    # Same section vocabulary as default so nothing is silently unrendered.
+    for reg in (fan, bettor):
+        assert set(reg.section_order) == set(registers.get_register("default").section_order)
+    assert bettor.emphasis_for("nfl_polymarket") == 1.60 > bettor.emphasis_for("polymarket") > 1.0
+    assert fan.emphasis_for("x") == fan.emphasis_for("reddit") == 1.20
+    assert bettor.budget_for("clusters", 99) == 5 and fan.budget_for("top_comments", 1) == 8
+
+
+def test_nfl_registers_shape_the_rendered_brief():
+    report = fixture_report()
+    fan = render.render_compact(report, register="fan")
+    bettor = render.render_compact(report, register="bettor")
+    assert fan.index("## Best Takes") < fan.index("## Stats")
+    assert bettor.index("## Stats") < bettor.index("## Ranked Evidence Clusters")
+    assert _cluster_count(bettor) == 5 and _cluster_count(fan) == 8
+
+
+def test_default_and_eli5_stay_unchanged_by_new_registers():
+    report = fixture_report()
+    assert render.render_compact(report, register="eli5") == render.render_compact(report, register="default")

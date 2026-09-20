@@ -335,6 +335,9 @@ def _resolve_game(topic: str) -> NflEntity | None:
     if not match:
         return None
     left, right = match.group(1), match.group(2)
+    # "Chiefs vs Bills vs Ravens" is a three-way comparison, not one game.
+    if re.search(r"\b(?:vs\.?|versus)\b", right, re.IGNORECASE):
+        return None
     a = _team_by_token(left) or (_team_in_text(left) or (None, None))[0] or _abbr_in_text(left)
     b = _team_by_token(right) or (_team_in_text(right) or (None, None))[0] or _abbr_in_text(right)
     if a and b and a.abbr != b.abbr:
@@ -422,7 +425,8 @@ def beat_handles(
     depth: str = "default",
     roster: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Roster handles for this run, capped by depth, team writers first."""
+    """Handles for this run: the team's official X account(s) first (not counted
+    against the caps), then beat writers capped by depth, then national insiders."""
     if entity is None:
         return []
     ent = entity if isinstance(entity, dict) else entity.as_dict()
@@ -442,10 +446,14 @@ def beat_handles(
             taken += 1
 
     abbrs: list[str] = []
+    official: list[dict[str, Any]] = []
     for key in ("team", "opponent"):
         team = ent.get(key)
         if isinstance(team, dict) and team.get("abbr"):
             abbrs.append(str(team["abbr"]).upper())
+            if team.get("x_handle"):
+                official.append({"handle": team["x_handle"]})
+    _take(official, len(official))
     if ent.get("kind") == "game" and len(abbrs) == 2:
         half = max(1, team_cap // 2)
         _take(roster["teams"].get(abbrs[0], []), half)
@@ -463,6 +471,15 @@ def beat_writer_meta(
     roster = roster or load_beat_writers()
     wanted = {_clean(h) for h in handles}
     meta: dict[str, dict[str, Any]] = {}
+    for abbr, team in load_teams().items():
+        key = _clean(team.x_handle)
+        if key in wanted:
+            meta[key] = {
+                "name": team.name,
+                "outlet": "official team account",
+                "role": "official",
+                "team": abbr,
+            }
     for abbr, rows in roster["teams"].items():
         for row in rows:
             key = _clean(row.get("handle", ""))

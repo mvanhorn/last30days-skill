@@ -1,12 +1,12 @@
 ---
 name: nfl30
 version: "3.25.0"
-description: "Research what people actually say about any topic in the last 30 days. Pulls posts and engagement from Reddit, X, YouTube, TikTok, Hacker News, Polymarket, GitHub, and the web. Includes a doctor health check to diagnose broken or missing sources."
-argument-hint: 'nfl30 nvidia earnings reaction | nfl30 AI video tools | nfl30 what users want in react'
+description: "Research any NFL team, player, game, or storyline over the last 7 days. Pulls NFL beat writers and insiders on X, official team news and post-game press conferences, Reddit, YouTube, the web, and Polymarket odds (game lines, futures, awards, coaching markets). Includes a doctor health check to diagnose broken or missing sources."
+argument-hint: 'nfl30 Chiefs | nfl30 Mahomes injury | nfl30 Packers vs Lions | nfl30 NFL MVP odds'
 allowed-tools: Bash, Read, Write, AskUserQuestion, WebSearch
 homepage: https://github.com/cmdashc/last30days-nfl
 repository: https://github.com/cmdashc/last30days-nfl
-author: mvanhorn
+author: cmdashc
 license: MIT
 user-invocable: true
 metadata:
@@ -38,6 +38,11 @@ metadata:
       - "scripts/*"
     homepage: https://github.com/cmdashc/last30days-nfl
     tags:
+      - nfl
+      - football
+      - sports
+      - beat-writers
+      - press-conferences
       - research
       - deep-research
       - reddit
@@ -415,7 +420,7 @@ If your Bash call to `nfl30.py` does NOT include the FULL pre-flight checklist r
 
 ---
 
-# nfl30 v3.25.0: Research Any Topic from the Last 30 Days
+# nfl30 v3.25.0: Research Any NFL Topic from the Last 7 Days
 
 > **Permissions overview:** Reads public web/platform data and optionally saves research briefings to `LAST30DAYS_MEMORY_DIR` (defaults to `~/Documents/NFL30`). X/Twitter search uses optional user-provided tokens (AUTH_TOKEN/CT0 env vars), an X API v2 app-only bearer (X_BEARER_TOKEN, sent only to api.x.com), or a host-provided `--x-posts` envelope the hosting model fetched through its own X connector. Bluesky search uses optional app password (BSKY_HANDLE/BSKY_APP_PASSWORD env vars - create at bsky.app/settings/app-passwords). On hosts with `uv` and no Python 3.12+, the preflight may install a uv-managed CPython 3.12 (one-time ~28MB download, announced on stderr). All credential usage and data writes are documented in the [Security & Permissions](#security--permissions) section.
 
@@ -570,7 +575,7 @@ When both `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` are set, the engine run
 **Step 2 - Welcome + setup choice (one modal).** Call AskUserQuestion with EXACTLY this question and these options. Reproduce the question verbatim, including the welcome pitch on the first lines:
 
 Question:
-"Welcome to /nfl30! I research any topic across Reddit, X, YouTube, TikTok, Digg, arXiv, Techmeme, HN, Polymarket & more - pulling what people actually said in the last 30 days.
+"Welcome to /nfl30! I research any NFL team, player, game, or storyline - the beat writers on X, official team news and press conferences, Reddit, YouTube, Polymarket odds & more - pulling what people actually said in the last 7 days.
 
 How would you like to set up?"
 
@@ -795,13 +800,18 @@ Before doing anything, parse the user's input for:
    - **COMPARISON** - "X vs Y", "X versus Y", "compare X and Y", "X or Y which is better" → User wants a side-by-side comparison
    - **GENERAL** - anything else → User wants broad understanding of the topic
 
+**NFL topic kind (not a QUERY_TYPE).** nfl30 assumes every topic is about the NFL. The engine resolves the topic itself to one entity and logs it on stderr, for example `[NFL] resolved team: Kansas City Chiefs (via alias); beat writers: 11`. The kind is one of TEAM, PLAYER (players and coaches), GAME (`Packers vs Lions`, `Chiefs at Bills`), or LEAGUE (`NFL MVP odds`, `week 3 power rankings`). The kind selects lanes and synthesis emphasis (see "NFL Synthesis" in the Judge section); QUERY_TYPE still selects the output template. Three rules:
+- **A scheduled two-team matchup is ONE topic.** `Packers vs Lions` is QUERY_TYPE = GENERAL (or NEWS for "latest on ..."), NOT COMPARISON. Do not split it into TOPIC_A / TOPIC_B and do not pass `--competitors`; the engine will not fan it out either. Player-vs-player (`Mahomes vs Allen`) and three-way (`Chiefs vs Bills vs Ravens`) topics remain COMPARISON.
+- Injury, transaction, trade, waiver, and contract wording ("Mahomes injury", "Chiefs release a corner") is NEWS.
+- The default window is **7 days** (one game week). Pass `--days N` only when the user names a longer span ("this month", "since the draft").
+
 Common patterns:
 - `[topic] for [tool]` → "web mockups for Nano Banana Pro" → TOOL IS SPECIFIED
 - `[topic] prompts for [tool]` → "UI design prompts for Midjourney" → TOOL IS SPECIFIED
 - Just `[topic]` → "iOS design mockups" → TOOL NOT SPECIFIED, that's OK
 - "best [topic]" or "top [topic]" → QUERY_TYPE = RECOMMENDATIONS
 - "what are the best [topic]" → QUERY_TYPE = RECOMMENDATIONS
-- "X vs Y" or "X versus Y" → QUERY_TYPE = COMPARISON, TOPIC_A = X, TOPIC_B = Y (split on ` vs ` or ` versus ` with spaces)
+- "X vs Y" or "X versus Y" → QUERY_TYPE = COMPARISON, TOPIC_A = X, TOPIC_B = Y (split on ` vs ` or ` versus ` with spaces) - EXCEPT a scheduled NFL game between two teams, which is one GENERAL topic (see NFL topic kind)
 
 **IMPORTANT: Do NOT ask about target tool before research.**
 - If tool is specified in the query, use it
@@ -811,7 +821,7 @@ Common patterns:
 - `TOPIC = [extracted topic]`
 - `TARGET_TOOL = [extracted tool, or "unknown" if not specified]`
 - `QUERY_TYPE = [RECOMMENDATIONS | NEWS | HOW-TO | COMPARISON | GENERAL]`
-- `REGISTER = [default | exec | dev | creator | eli5]` from an explicit `--register` argument, otherwise `LAST30DAYS_REGISTER`, otherwise `default`. A legacy `ELI5_MODE=true` config means `eli5` when no register was selected. Register words are controls, not part of TOPIC.
+- `REGISTER = [default | exec | dev | creator | eli5 | fan | bettor]` from an explicit `--register` argument, otherwise `LAST30DAYS_REGISTER`, otherwise `default`. A legacy `ELI5_MODE=true` config means `eli5` when no register was selected. Register words are controls, not part of TOPIC.
 - `TOPIC_A = [first item]` (only if COMPARISON)
 - `TOPIC_B = [second item]` (only if COMPARISON)
 
@@ -822,7 +832,7 @@ SKILL_DIR="<absolute path of the directory containing the SKILL.md you just Read
 "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/nfl30.py" --diagnose
 ```
 
-`--diagnose` prints JSON. `ACTIVE_SOURCES_LIST` is its `available_sources` array — the engine's authoritative source set, computed after credential resolution. Map the tokens to display names: `reddit`→Reddit, `hackernews`→Hacker News, `polymarket`→Polymarket, `github`→GitHub, `digg`→Digg, `x`→X, `youtube`→YouTube, `tiktok`→TikTok, `instagram`→Instagram, `threads`→Threads, `pinterest`→Pinterest, `linkedin`→LinkedIn, `bluesky`→Bluesky, `perplexity`→Perplexity, `grounding`→Web, `jobs`→Jobs, `meta_ads`→Meta Ads, `corpus`→Your files, `dripstack`→DripStack.
+`--diagnose` prints JSON. `ACTIVE_SOURCES_LIST` is its `available_sources` array — the engine's authoritative source set, computed after credential resolution. Map the tokens to display names: `reddit`→Reddit, `hackernews`→Hacker News, `polymarket`→Polymarket, `github`→GitHub, `digg`→Digg, `x`→X, `youtube`→YouTube, `tiktok`→TikTok, `instagram`→Instagram, `threads`→Threads, `pinterest`→Pinterest, `linkedin`→LinkedIn, `bluesky`→Bluesky, `perplexity`→Perplexity, `grounding`→Web, `jobs`→Jobs, `meta_ads`→Meta Ads, `corpus`→Your files, `dripstack`→DripStack, `team_official`→Team official, `nfl_polymarket`→NFL markets.
 
 - If EXCLUDE_SOURCES is set (comma-separated, case-insensitive): drop any matching source from ACTIVE_SOURCES_LIST before displaying
 
@@ -898,8 +908,14 @@ Known keyword-trap classes and how to handle each:
   4. **X/Twitter and YouTube are the highest-value missing sources for non-English topics.** Surface this clearly in the output so the user knows what would unlock deeper coverage.
 - Do NOT skip this class check for mixed-script queries (e.g. "קפה עלית Elite Coffee") - if any non-Latin characters are present, Class 5 applies.
 
+**Class 6: NFL name collision (resolve, do not ask)**
+- Pattern: a bare team word shared with other sports, cities, or things - Giants and Jets (New York has two teams and MLB/NHL namesakes), Cardinals (MLB), Panthers (NHL), Rams and Chargers (Los Angeles has two teams), Eagles (the band), Commanders, Washington, "LA", "New York", "Chicago", "Miami".
+- Why it fails: the engine's team resolver is conservative on purpose. A bare shared city never resolves, and a nickname that is also a common word can pull non-NFL evidence into Reddit, X, and the web.
+- Action: **do not ask a clarifying question** - resolve it yourself and pass `--team {ABBR}` (KC, GB, SF, NYG, NYJ, LAR, LAC, WAS, ...). The user typed "Giants" inside an NFL skill; they mean the football team. If the topic is a person, also pass `--player "{Full Name}"`. For player topics, keep the player's name in the topic string.
+- Note in the Resolved block: "NFL entity: {team or player}, resolved to {ABBR}."
+
 **Pre-Flight decision flow (do this BEFORE any WebSearch):**
-1. Read the topic. Match against Classes 1-5 above.
+1. Read the topic. Match against Classes 1-6 above.
 2. If the topic matches a class, ALWAYS emit a visible pre-flight note before the Resolved block:
    - `Pre-Flight: topic matches {Class N} ({class name}). {Action: clarifying question / reframe / specificity ask}.`
 3. If the action is a clarifying question, STOP after emitting it. Wait for the user response before any engine work.
@@ -919,6 +935,9 @@ Before running the engine, determine which flags apply to this topic and resolve
 
 | Flag | Resolved in | Applies when |
 |------|-------------|--------------|
+| `--team {ABBR}` | Step 0.5 (Section NFL below) | **Every NFL topic where you can name the team** - team, game, or a player on a known team. MANDATORY for collision-prone names (Class 6). Turns on the beat-writer, team-official, and NFL-market lanes |
+| `--player "{Full Name}"` | Step 0.5 (Section NFL below) | The topic is about one player or coach |
+| `--beat-writers off` | Step 0.5 (Section NFL below) | ONLY when the user asks for no reporters / no insider posts. Default is on |
 | `--x-handle={handle}` | Step 0.5 (Section A below) | X is in `ACTIVE_SOURCES_LIST` and the topic is a person, brand, product, or creator with an X presence |
 | `--x-related={h1,h2,...}` | Step 0.5 (Section A below) | X is in `ACTIVE_SOURCES_LIST` and the topic has associated entities (founders, commentators, spouse, collaborators, media handles) |
 | `--github-user={user}` | Step 0.5b | Topic is a person who ships code (developer, engineer, CEO-who-codes, researcher) |
@@ -938,7 +957,18 @@ Before running the engine, determine which flags apply to this topic and resolve
 
 ---
 
+### Section NFL: Resolve the Team (do this FIRST; it replaces most of Section A and Step 0.55)
+
+1. **Pass `--team {ABBR}`** whenever you can name the team with certainty. The engine also resolves teams from the topic (abbreviation, nickname, city plus football words, `X vs Y`, or a player in its built-in table of roughly 100 names), but your explicit flag wins and is required for the Class 6 collisions. Use the standard abbreviation: ARI ATL BAL BUF CAR CHI CIN CLE DAL DEN DET GB HOU IND JAX KC LV LAC LAR MIA MIN NE NO NYG NYJ PHI PIT SF SEA TB TEN WAS.
+2. **Do NOT run the Section A X-handle WebSearches for the team or its reporters.** When a team resolves, the engine searches the team's official X account plus a curated roster (default depth: up to 6 team beat writers and 4 national insiders) at full weight, with no topic filter, because a reporter's practice report rarely repeats the team name. Their posts render as `@handle (Outlet)`. Pass `--x-handle` only for a **player's own** account when you know it for certain.
+3. **Do NOT resolve subreddits.** The engine seeds r/nfl and the team's own subreddit. Pass `--subreddits` only when the user names another community (for example r/fantasyfootball).
+4. **The roster is seeded, not verified.** If the user says a reporter is missing, stale, or wrong, point them to `~/.config/nfl30/beat_writers.json` (see CONFIGURATION.md, "`--team`, `--player`, `--beat-writers`") instead of editing the skill or guessing handles.
+5. **LEAGUE topics** (`NFL MVP odds`, `week 3 power rankings`) have no team: the engine searches national insiders and the league-wide markets. Do not invent a team.
+
 ### Section A: Resolve X Handles (only when X is active and the topic could have X accounts)
+
+> **NFL topics:** skip this section when a team resolved (Section NFL above). It still applies to a player's personal handle and to non-team entities such as a broadcaster.
+
 
 If `ACTIVE_SOURCES_LIST` contains `x` and TOPIC looks like it could have its own X/Twitter account - **people, creators, brands, products, tools, companies, communities** (e.g., "Dor Brothers", "Jason Calacanis", "Nano Banana Pro", "Seedance", "Midjourney"), do WebSearches to find handles in three categories. If X is not active, skip this section without prompting or trying to unlock it.
 
@@ -1296,6 +1326,8 @@ The output must distinguish evidence from interpretation. Good: "3 current roles
 > **PLATFORM GATE:** If your platform does NOT support WebSearch (e.g., OpenClaw, raw CLI), **skip Steps 0.55 and 0.75** but add `--auto-resolve` to the Python command in the Research Execution section. The engine will do its own pre-research using configured web search backends (Brave, Exa, or Serper) to discover subreddits, X handles, and current events context before planning.
 
 **MANDATORY on Claude Code (and any platform with WebSearch).** You MUST perform Step 0.55 before calling the Python engine. Skipping this step is the second-most-common failure mode of this skill, right after skipping the engine entirely. If your Bash call to `nfl30.py` does NOT include a `--plan` flag with resolved handles and subreddits, that is a Step 0.55 skip and a failure. The engine's `[Resolve] No web search backend available, skipping resolve` log line means you, the model, did not do your job - it does NOT mean "the engine will handle it." Treat this step as non-skippable. Repeat invocations on the same topic still re-run Step 0.55 because Reddit/X/TikTok handles for breaking-news topics change week to week.
+
+> **NFL SHORTCUT:** when the topic resolved to an NFL team, game, or player (you passed `--team`, or the engine logs `[NFL] resolved ...`), skip the subreddit, handle, and channel WebSearches below. The engine already knows the team's subreddit, official X account, beat roster, site RSS, and YouTube channel. You still **must** write the `--plan` (LAW 7): go straight to Step 0.75. The engine attaches the `team_official` and `nfl_polymarket` lanes to your primary subquery on its own, so you do not need to list them in the plan's sources. One WebSearch for current context is still worthwhile ("{TEAM} news {CURRENT_MONTH} {CURRENT_YEAR}") to spot a coaching change, trade, or injury that should shape the subqueries.
 
 **Run 2-3 focused WebSearches (in parallel) to resolve platform-specific targeting. Do NOT search for every platform individually - that wastes time. Instead, use your knowledge of the topic to infer most targeting, and only WebSearch for what you can't infer.**
 
@@ -1783,6 +1815,8 @@ The engine applies the selected register to evidence section order, item budgets
 - **exec** - Decisions first. After `What I learned:`, give exactly five compact numbered findings. Put the strongest number, probability, or scale signal in finding 1; state the decision implication in every finding; cut implementation trivia unless it changes the decision. Keep the required engine footer and invitation unchanged.
 - **dev** - Technical depth first. Lead with GitHub/code evidence, shipped behavior, versions, APIs, benchmarks, failure modes, and implementation tradeoffs. Prefer live repository numbers over third-party claims. Preserve uncertainty and distinguish demonstrated behavior from proposals.
 - **creator** - Lead with the sharpest audience hook, then Best Takes and high-vote community language. Bring views, likes, shares, comment velocity, and cross-platform resonance forward. End the synthesis body with 3 concrete content angles or hooks grounded in the evidence; do not invent trend claims from raw reach alone.
+- **fan** - The football-Sunday read. Lead with what the beat and the fans are saying, then the official line. Keep numbers light and end the body with one line on the mood of the fan base. Never turn a rumor into a fact to make it more fun.
+- **bettor** - Decisions first, with the market on top. Open with the `Market says` numbers and the injury or lineup news that moves them; give at most five tight findings. State probabilities and their 7-day movement, never advice: no picks, no "lock", no "value" claims, no dollar amounts.
 - **eli5** - Use the established ELI5 guidance below. Evidence selection and renderer bytes remain equivalent to `default`; only the explanation register changes.
 
 ### Source-Specific Guidance (still applies within clusters)
@@ -1800,6 +1834,23 @@ The Judge Agent must:
 10. **For GitHub person-mode data:** When the output includes "GitHub Person Profile" items, these contain PR velocity, top repos with star counts, release notes, README summaries, and top issues. Lead with the velocity headline ("X PRs merged across Y repos"), then highlight the most impressive repos by star count. Weave release notes into the narrative to show what actually shipped. For own projects, mention top feature requests and complaints as community signal. The cross-source story is: "X is shipping Y (GitHub) while people on Z platform are saying W about it."
 11. **For GitHub project-mode data:** When the output includes "GitHub project:" items, these have live star counts, README snippets, release notes, and top issues fetched directly from the API. Always prefer these numbers over star counts cited by blog posts, YouTube videos, or tweets. Live API data is authoritative. When items include "(live: NNK stars)" annotations, use those numbers.
 12. **For GitHub star enrichment:** When candidates have `(live: NNK stars)` appended to their evidence, that number came from a post-research API check. It overrides whatever the original source claimed.
+
+### NFL Synthesis (nfl30)
+
+The engine hands you evidence in three trust tiers. Keep them distinct in the prose.
+
+1. **Official.** `Team official` items (team-site news, injury reports, press conferences) and posts from the team's own X account (`@handle (official team account)`). These are the club's statements. Say "the team announced" or "per the Chiefs' injury report".
+2. **Reported.** Beat writers and national insiders, rendered `@handle (Outlet)`. Attribute every reported claim: "per @adamteicher (ESPN)", "Schefter reports". Reporters are evidence about what sources say, not confirmation. Use "reportedly" when a claim has one reporter and no team confirmation.
+3. **Chatter.** Reddit, YouTube commentary, TikTok, unverified X. Color and mood only. Never state a chatter claim as fact.
+
+Rules that matter for football:
+- **Injury designations:** use the official status word exactly as written (Out, Doubtful, Questionable, Limited, Full participant, Did not participate, IR) and say where it came from. If only reporters cover an injury, say the team has not made it official. Never infer a diagnosis or a timeline that no source stated.
+- **Press conferences:** quote at most one short line per presser, from the transcript highlights, with the speaker's name: `Reid said the offense "was sharp on third down"`. Transcripts are auto-generated and can contain errors; if the highlight reads oddly, paraphrase or skip it. Never invent a quote. If a presser has no transcript, say only what its title supports.
+- **Transactions and contracts:** separate "agreed to" (reported), "signed" (official), and "released" (official). A trade is not done until the team says so.
+- **Market says:** use the `📊 Market says` header and the `NFL markets` items as probabilities, never predictions. Weave one or two into the story ("the market gives the Chiefs a 70% chance against the Colts, up 5 points on the week") and follow the Prediction Markets rules below. If a game shows 99-100% or is marked `live`, the game is in progress or decided: say so instead of quoting the number as a forecast. Never give betting advice.
+- **Window:** the default window is one game week, so frame findings as "this week" and "since the last game", not "this month".
+
+**Body shape.** LAW 4 still forbids `##` headers in a GENERAL or NEWS body. Inside the normal `What I learned:` body, use bold lead-ins in this order, and omit any that has no evidence rather than padding: **Where things stand.** **Injuries and transactions.** **What the beat is saying.** **The official line.** **What the market says.** **Fan mood.** For a GAME topic, open with the matchup and kickoff, then the injury picture for both teams, then the two beats' angles, then the market. For a LEAGUE topic, lead with the market and the insiders.
 
 ### Prediction Markets (Polymarket)
 
@@ -1826,6 +1877,8 @@ The Judge Agent must:
 **Do NOT display stats here - they come at the end, right before the invitation.**
 
 6. **Polymarket odds with real money behind them are STRONGER signals than opinions.** A $66K volume market with 96% odds is more reliable than 100 tweets. Always include specific percentages in the synthesis when Polymarket markets are confirmed relevant.
+
+**NFL topics:** `NFL markets` items (source `nfl_polymarket`) are team- and game-specific and outrank generic `Polymarket` items for the same team. Rank by importance in this order: the game moneyline for the current week, then division and playoff odds, then conference and championship odds, then award and coaching markets. Ignore a generic Polymarket item that duplicates an NFL markets item.
 
 ### X Reply Cluster Weighting
 
@@ -2085,6 +2138,8 @@ CITATION RULE: Cite sources sparingly to prove research is real.
 - Do NOT chain multiple citations: "per @x, @y, @z" is too much. Pick the strongest one.
 
 **URL formatting is governed by LAW 8** in the VOICE CONTRACT block above: inline `[name](url)` on hidden-link hosts (Claude Code; Grok Bot / Cursor agent chat), plain source labels on visible-URL hosts (Codex/Gemini CLI/raw CLI). Raw URL strings are forbidden either way. Re-read LAW 8 now if you skipped it. The stats footer is engine-emitted per LAW 5 and passes through verbatim.
+
+**NFL topics:** the order is (a) team-official statements and the team's own X account, (b) named beat writers and insiders as `per @handle (Outlet)`, (c) the rest of this list. Cite the official source when it and a reporter cover the same fact.
 
 CITATION PRIORITY (most to least preferred). Examples are shown in plain-label shape; on a hidden-link host, wrap the label as `[label](url)` per LAW 8:
 1. @handles from X - `per @handle` (these prove the tool's unique value)

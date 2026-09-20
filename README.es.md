@@ -20,7 +20,23 @@
   </a>
 </p>
 
-**Un buscador dirigido por un agente de IA que puntúa por votos positivos, likes y dinero real, no por redacciones.**
+**Investigación de la NFL de los últimos 7 días: los periodistas de cada equipo, la voz oficial de los clubes y lo que dice el mercado.**
+
+`/nfl30` es un fork de [`/last30days`](https://github.com/mvanhorn/last30days-skill) centrado en la NFL. Conserva el mismo motor multifuente y lo apunta al fútbol americano. Dale un equipo, un jugador, un partido o un tema: identifica la entidad y busca en paralelo:
+
+- **Periodistas de equipo e insiders en X.** Una lista inicial de reporteros de los 32 equipos más insiders nacionales, buscados con peso completo junto a la cuenta oficial del equipo. Las publicaciones aparecen como `@handle (Medio)`.
+- **Comunicados oficiales y ruedas de prensa.** El feed de noticias del sitio de cada equipo y su canal oficial de YouTube, con transcripciones citables de ruedas de prensa y de después del partido.
+- **Polymarket.** La línea de dinero del partido con spread y total, futuros de temporada con variación a 7 días, mercados de MVP y premios, y mercados de entrenadores y plantilla, resumidos en una línea `Market says` al inicio del informe.
+- **El lado de la afición.** Reddit (r/nfl y el subreddit del equipo), YouTube y la web.
+
+```
+/nfl30 Chiefs
+/nfl30 Packers vs Lions
+/nfl30 Mahomes injury
+/nfl30 NFL MVP odds
+```
+
+La ventana por defecto es una semana de partidos (`--days` la cambia). La lista de periodistas es un punto de partida que puedes editar en `~/.config/nfl30/beat_writers.json`; consulta [CONFIGURATION.md](CONFIGURATION.md).
 
 Este README documenta el pipeline v3 actual. La especificación de ejecución de la skill vive en [skills/nfl30/SKILL.md](skills/nfl30/SKILL.md), que es la referencia definitiva sobre el comportamiento de los comandos y la configuración.
 

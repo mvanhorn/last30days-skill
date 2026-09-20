@@ -904,6 +904,18 @@ def _comparison_entities(topic: str, *, uncapped: bool = False) -> list[str]:
     Caps at ``competitors.COMPARISON_ENTITY_MAX`` unless ``uncapped`` (caller
     truncates and may warn about dropped entities).
     """
+    # nfl30: "Packers vs Lions" is one scheduled game, not a two-entity
+    # comparison. Fanning it out per side would lose the matchup (the game
+    # market, both teams' beat writers). Three-way and player-vs-player
+    # topics do not resolve as a game and stay comparisons.
+    try:
+        from . import nfl as _nfl
+
+        _entity = _nfl.resolve(topic)
+        if _entity is not None and _entity.kind == "game":
+            return []
+    except Exception:  # resolution must never break planning
+        pass
     # "difference between X and Y" -> "X vs Y" (replace "and" only in this context)
     normalized = re.sub(
         r"\bdifference between\s+(.+?)\s+and\s+",

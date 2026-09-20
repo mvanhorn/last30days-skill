@@ -112,6 +112,48 @@ _REGISTERS = {
             "reddit": 1.10,
         },
     ),
+    # nfl30: the fan register is the football-Sunday read. Community voice and
+    # the reporters lead; the numbers come after the story.
+    "fan": _preset(
+        "fan",
+        section_order=(
+            "clusters",
+            "best_takes",
+            "top_comments",
+            "stats",
+            "hiring_signals",
+            "source_outcomes",
+            "source_coverage",
+        ),
+        item_budgets={"clusters": 8, "best_takes": 4, "top_comments": 8},
+        emphasis_weights={
+            "x": 1.20,
+            "reddit": 1.20,
+            "team_official": 1.10,
+            "youtube": 1.10,
+        },
+    ),
+    # nfl30: the bettor register is decisions-first. The market numbers and the
+    # injury/lineup news that moves them go on top, with fewer, tighter findings.
+    "bettor": _preset(
+        "bettor",
+        section_order=(
+            "stats",
+            "clusters",
+            "best_takes",
+            "top_comments",
+            "hiring_signals",
+            "source_outcomes",
+            "source_coverage",
+        ),
+        item_budgets={"clusters": 5, "best_takes": 2, "top_comments": 3},
+        emphasis_weights={
+            "nfl_polymarket": 1.60,
+            "polymarket": 1.30,
+            "team_official": 1.10,
+            "x": 1.10,
+        },
+    ),
     # ELI5 historically changed only the agent's prose. Keep the renderer
     # descriptor identical to default and express its voice in SKILL.md.
     "eli5": _preset("eli5"),

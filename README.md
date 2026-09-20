@@ -20,7 +20,23 @@ English | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](READM
   </a>
 </p>
 
-**An AI agent-led search engine scored by upvotes, likes, and real money - not editors.**
+**NFL research over the last 7 days: the beat writers, the team's own words, and what the market says.**
+
+`/nfl30` is an NFL-focused fork of [`/last30days`](https://github.com/mvanhorn/last30days-skill). It keeps the same multi-source engine and points it at football. Give it a team, a player, a game, or a storyline. It resolves the entity, then searches in parallel:
+
+- **Beat writers and insiders on X.** A seeded roster of reporters for all 32 teams plus national insiders, searched at full weight alongside the team's official account. Posts appear as `@handle (Outlet)`.
+- **Official team updates and press conferences.** Each team's site news feed and official YouTube channel, with press-conference and postgame transcripts you can quote.
+- **Polymarket.** The game moneyline with spread and total, season futures with 7-day movement, MVP and award markets, and coaching and roster markets, summarized in a `Market says` line at the top of the report.
+- **The fan side.** Reddit (r/nfl and the team's own subreddit), YouTube, and the web.
+
+```
+/nfl30 Chiefs
+/nfl30 Packers vs Lions
+/nfl30 Mahomes injury
+/nfl30 NFL MVP odds
+```
+
+The window is one game week by default (`--days` overrides it). The reporter roster is a starting point you can edit at `~/.config/nfl30/beat_writers.json`; see [CONFIGURATION.md](CONFIGURATION.md).
 
 This README tracks the current v3 pipeline. The runtime skill spec lives in [skills/nfl30/SKILL.md](skills/nfl30/SKILL.md), which is the source of truth for the latest command and setup behavior.
 

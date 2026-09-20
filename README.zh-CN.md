@@ -20,7 +20,23 @@
   </a>
 </p>
 
-**一个由 AI 智能体驱动的搜索引擎：按赞同票、点赞和真金白银评分，而不是由编辑决定。**
+**过去 7 天的 NFL 研究：跟队记者、球队官方发声，以及预测市场怎么看。**
+
+`/nfl30` 是 [`/last30days`](https://github.com/mvanhorn/last30days-skill) 面向 NFL 的分支。它沿用同一套多来源引擎，并将其对准美式橄榄球。给它一支球队、一名球员、一场比赛或一个话题，它会先识别对象，然后并行搜索：
+
+- **X 上的跟队记者与内幕人士。** 覆盖全部 32 支球队的预置记者名单，加上全国性内幕记者，与球队官方账号一并按完整权重检索。帖子显示为 `@handle (媒体)`。
+- **球队官方动态与新闻发布会。** 每支球队官网的新闻订阅源和官方 YouTube 频道，附带可引用的赛前赛后发布会文字稿。
+- **Polymarket。** 单场比赛的胜负盘（含让分与总分）、带 7 天变动的赛季期货、MVP 等奖项市场，以及教练和阵容相关市场，汇总为报告顶部的一行 `Market says`。
+- **球迷一侧。** Reddit（r/nfl 与球队自己的子版块）、YouTube 和网页。
+
+```
+/nfl30 Chiefs
+/nfl30 Packers vs Lions
+/nfl30 Mahomes injury
+/nfl30 NFL MVP odds
+```
+
+默认窗口为一个比赛周（可用 `--days` 修改）。记者名单只是起点，可在 `~/.config/nfl30/beat_writers.json` 中编辑；详见 [CONFIGURATION.md](CONFIGURATION.md)。
 
 本文档对应当前的 v3 流水线。运行时 Skill 规范位于 [skills/nfl30/SKILL.md](skills/nfl30/SKILL.md)，最新命令与配置行为以该文件为准。
 

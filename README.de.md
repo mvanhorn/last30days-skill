@@ -20,7 +20,23 @@
   </a>
 </p>
 
-**Eine von einem KI-Agenten gesteuerte Suchmaschine, die nach Upvotes, Likes und echtem Geld gewichtet – nicht nach Redaktionen.**
+**NFL-Recherche der letzten 7 Tage: die Beat-Reporter, die offiziellen Worte der Teams und was der Markt sagt.**
+
+`/nfl30` ist ein auf die NFL ausgerichteter Fork von [`/last30days`](https://github.com/mvanhorn/last30days-skill). Er behält die Multi-Source-Engine und richtet sie auf Football aus. Nenne ein Team, einen Spieler, ein Spiel oder ein Thema. Der Skill erkennt die Entität und durchsucht dann parallel:
+
+- **Beat-Reporter und Insider auf X.** Eine vorbefüllte Liste von Reportern für alle 32 Teams plus nationale Insider, voll gewichtet gemeinsam mit dem offiziellen Team-Account. Beiträge erscheinen als `@handle (Medium)`.
+- **Offizielle Team-Meldungen und Pressekonferenzen.** Der News-Feed der Team-Website und der offizielle YouTube-Kanal, mit zitierfähigen Transkripten von Pressekonferenzen und Post-Game-Runden.
+- **Polymarket.** Die Spiel-Moneyline mit Spread und Total, Saison-Futures mit 7-Tage-Bewegung, MVP- und Award-Märkte sowie Trainer- und Kader-Märkte, zusammengefasst in einer `Market says`-Zeile am Berichtsanfang.
+- **Die Fan-Seite.** Reddit (r/nfl und das Subreddit des Teams), YouTube und das Web.
+
+```
+/nfl30 Chiefs
+/nfl30 Packers vs Lions
+/nfl30 Mahomes injury
+/nfl30 NFL MVP odds
+```
+
+Das Standardfenster ist eine Spielwoche (`--days` ändert es). Die Reporter-Liste ist ein Ausgangspunkt, den du in `~/.config/nfl30/beat_writers.json` anpassen kannst; siehe [CONFIGURATION.md](CONFIGURATION.md).
 
 Dieses README beschreibt die aktuelle v3-Pipeline. Die Laufzeitspezifikation der Skill liegt in [skills/nfl30/SKILL.md](skills/nfl30/SKILL.md) und ist maßgeblich für das aktuelle Verhalten von Befehlen und Setup.
 

@@ -57,7 +57,7 @@ def test_run_resolves_entity_and_seeds_roster_and_subreddits():
     pipeline.run(topic="Chiefs", config=config, depth="quick", mock=True)
     assert config["_nfl"]["kind"] == "team" and config["_nfl"]["team"]["abbr"] == "KC"
     handles = config["_beat_writer_handles"]
-    assert len(handles) == 4 and "AdamSchefter" in handles
+    assert len(handles) == 5 and handles[0] == "Chiefs" and "AdamSchefter" in handles
     assert config["_beat_writer_meta"]["adamteicher"]["outlet"]
     assert config["_dedicated_subreddits"] == ["KansasCityChiefs"]
 
