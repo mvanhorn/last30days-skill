@@ -18,6 +18,8 @@ SOURCE_QUALITY = {
     "techmeme": 0.85,
     # nfl30: first-party team statements and pressers are primary sources.
     "team_official": 0.85,
+    # Entity-matched (team/game/award), so a notch above the generic 0.5.
+    "nfl_polymarket": 0.6,
     "trustpilot": 0.78,
     # Verified-purchase reviews on a live aggregate rating: high-quality
     # buyer evidence, a notch above Trustpilot's open review model.
@@ -187,6 +189,7 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "truthsocial":  [("likes", 0.45), ("reposts", 0.30), ("replies", 0.25)],
     "polymarket":   [("volume", 0.60), ("liquidity", 0.40)],
     "team_official": [("views", 0.70), ("likes", 0.20), ("comments", 0.10)],
+    "nfl_polymarket": [("volume", 1.0)],
     "digg":         [("postCount", 0.40), ("uniqueAuthors", 0.30), ("rank_score", 0.30)],
     "trustpilot":   [("reviews", 1.0)],
     "amazon":       [("ratings", 1.0)],

@@ -150,6 +150,7 @@ SOURCE_CAPABILITIES = {
     "arxiv": {"reference", "analysis", "link"},
     "techmeme": {"discussion", "link", "reference"},
     "team_official": {"reference", "link", "video"},
+    "nfl_polymarket": {"market"},
     "trustpilot": {"reference", "company_signal", "social"},
     "amazon": {"reference", "company_signal", "product_signal"},
     "meta_ads": {"reference", "company_signal", "product_signal"},

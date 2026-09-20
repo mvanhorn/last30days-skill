@@ -79,7 +79,7 @@ from . import (
     xurl_x,
     youtube_yt,
 )
-from . import nfl, team_official
+from . import nfl, nfl_polymarket, team_official
 from .cluster import cluster_candidates
 from . import fusion
 from . import render
@@ -98,6 +98,8 @@ DEPTH_SETTINGS = {
 
 SEARCH_ALIAS = {
     "official": "team_official",
+    "nflmarkets": "nfl_polymarket",
+    "odds": "nfl_polymarket",
     "team": "team_official",
     "pressers": "team_official",
     "hn": "hackernews",
@@ -122,7 +124,7 @@ MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
     "telegram": 1, "meta_ads": 1,
     # nfl30: keyed off the resolved team, not the subquery text.
-    "team_official": 1,
+    "team_official": 1, "nfl_polymarket": 1,
 }
 
 # Sources whose thin result is their normal success state, so the "<3 items"
@@ -134,7 +136,7 @@ MAX_SOURCE_FETCHES: dict[str, int] = {
 #   meta_ads resolves one advertiser page per run, so a brand that genuinely
 #   ran two creatives this month is complete; a retry would re-resolve the
 #   page and re-spend the discovery credit.
-THIN_RETRY_EXEMPT: frozenset[str] = frozenset({"trustpilot", "perplexity", "meta_ads", "team_official"})
+THIN_RETRY_EXEMPT: frozenset[str] = frozenset({"trustpilot", "perplexity", "meta_ads", "team_official", "nfl_polymarket"})
 
 # Stream-artifact keys promoted to named top-level report artifacts. A stream
 # artifact only ever reaches the report as an anonymous entry in the grounding
@@ -240,6 +242,7 @@ def _has_perplexity_provider(config: dict[str, Any]) -> bool:
 MOCK_AVAILABLE_SOURCES = [
     "reddit",
     "team_official",
+    "nfl_polymarket",
     "x",
     "youtube",
     "tiktok",
@@ -337,6 +340,10 @@ def available_sources(
     # (set in run(), or by --team on --diagnose); no team, no lane.
     if _nfl_team(config):
         available.append("team_official")
+    # NFL markets are keyed off any resolved entity (team, player, game, or
+    # the league itself: "NFL MVP odds" has no team).
+    if _nfl_entity(config):
+        available.append("nfl_polymarket")
     # StockTwits is gated to ticker/crypto topics only (flag set in run()).
     if config.get("_financial_topic"):
         available.append("stocktwits")
@@ -3454,7 +3461,15 @@ def _ensure_jobs_in_plan(
             subquery.sources.append("jobs")
 
 
-NFL_LANES: tuple[str, ...] = ("team_official",)
+NFL_LANES: tuple[str, ...] = ("team_official", "nfl_polymarket")
+
+
+def _nfl_entity(config: dict[str, Any] | None) -> dict[str, Any] | None:
+    """The resolved NFL entity dict on this run (team, player, game, league), or None."""
+    if not isinstance(config, dict):
+        return None
+    ent = config.get("_nfl")
+    return ent if isinstance(ent, dict) and ent.get("kind") else None
 
 
 def _nfl_team(config: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -3479,7 +3494,7 @@ def _ensure_nfl_lanes_in_plan(
     quick-mode source slot or depend on the planner's intent guess.
     (Mirrors marketvalue180's _ensure_stock_lanes_in_plan.)
     """
-    if not _nfl_team(config) or not plan.subqueries:
+    if not _nfl_entity(config) or not plan.subqueries:
         return
     primary = plan.subqueries[0]
     for lane in NFL_LANES:
@@ -4673,6 +4688,7 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
     module_backed = source in {
         "reddit",
         "team_official",
+        "nfl_polymarket",
         "x",
         "youtube",
         "stocktwits",
@@ -5357,6 +5373,15 @@ def _retrieve_stream_impl(
             arxiv.parse_arxiv_response(result, query=relevance_topic),
             _result_outcome_artifact(source, result),
         )
+    if source == "nfl_polymarket":
+        entity = _nfl_entity(config)
+        if not entity:
+            return [], _outcome_artifact(schema.SKIPPED_UNCONFIGURED, "no NFL entity resolved", attempted=False)
+        result = nfl_polymarket.search_nfl_markets(entity, from_date, to_date, depth=depth)
+        return (
+            nfl_polymarket.parse_nfl_polymarket_response(result, query=raw_topic or topic or subquery.search_query),
+            _result_outcome_artifact(source, result),
+        )
     if source == "team_official":
         ent = config.get("_nfl") if isinstance(config, dict) else None
         if not _nfl_team(config):
@@ -5562,6 +5587,36 @@ def _mock_stream_results(source: str, subquery: schema.SubQuery) -> tuple[list[d
                 "relevance": 0.82,
                 "why_relevant": "Mock Reddit result",
             }
+        ],
+        "nfl_polymarket": [
+            {
+                "id": f"NPM-{slug}-game",
+                "title": "Mock Away vs. Mock Home: Mock Home 70% to win (Sun 9/21)",
+                "text": "Mock Away vs. Mock Home: Mock Home 70% to win (Sun 9/21)",
+                "question": "Mock Away vs. Mock Home",
+                "url": f"https://polymarket.com/event/nfl-away-home-{slug}",
+                "date": dates.get_date_range(0)[0],
+                "bucket": "game", "market_type": "moneyline", "label": "Moneyline",
+                "team": "Mock Home", "team_abbr": "KC", "team_prob": 0.7,
+                "opp": "Mock Away", "opp_prob": 0.3, "spread": "Mock Home (-3.5)", "total": 44.5,
+                "week_change": 0.02, "game_start": "2026-09-21T17:00:00+00:00", "live": False,
+                "outcome_prices": [("Mock Home", 0.7), ("Mock Away", 0.3)],
+                "engagement": {"volume": 250000}, "relevance": 0.95,
+                "why_relevant": "Polymarket moneyline for the game",
+            },
+            {
+                "id": f"NPM-{slug}-future",
+                "title": "Mock Home: Champion 8.0%",
+                "text": "Mock Home: Champion 8.0% (▲2.0 7d) — Pro Football: Champion",
+                "question": "Will Mock Home win the championship?",
+                "url": f"https://polymarket.com/event/champion-{slug}",
+                "date": dates.get_date_range(0)[0],
+                "bucket": "future", "market_type": "champion", "label": "Champion",
+                "team": "Mock Home", "team_abbr": "KC", "team_prob": 0.08,
+                "week_change": 0.02, "outcome_prices": [("Mock Home", 0.08)],
+                "engagement": {"volume": 90000}, "relevance": 0.8,
+                "why_relevant": "Polymarket season future",
+            },
         ],
         "team_official": [
             {

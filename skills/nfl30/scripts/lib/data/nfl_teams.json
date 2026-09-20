@@ -1,5 +1,5 @@
 {
-  "_note": "Static 32-team table for nfl30. pm_abbr is the token Polymarket uses in game slugs (nfl-{away}-{home}-{date}); rss is null where the team CMS has no /rss/news feed. Verify handles/RSS after each season. All 32 rss URLs and youtube handles were verified live on 2026-09-20.",
+  "_note": "Static 32-team table for nfl30. pm_abbr is the token Polymarket uses in game slugs (nfl-{away}-{home}-{date}); rss is null where the team CMS has no /rss/news feed. Verify handles/RSS after each season. All 32 rss URLs and youtube handles were verified live on 2026-09-20. Polymarket abbreviates the Rams as 'la' in game slugs (verified 2026-09-20).",
   "as_of": "2026-09",
   "teams": {
     "ARI": {
@@ -268,7 +268,7 @@
       ]
     },
     "LAR": {
-      "pm_abbr": "lar",
+      "pm_abbr": "la",
       "city": "Los Angeles",
       "nickname": "Rams",
       "division": "NFC West",

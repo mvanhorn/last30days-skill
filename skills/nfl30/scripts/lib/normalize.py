@@ -68,6 +68,7 @@ def normalize_source_items(
         "arxiv": _normalize_arxiv,
         "techmeme": _normalize_techmeme,
         "team_official": _normalize_team_official,
+        "nfl_polymarket": _normalize_nfl_polymarket,
         "trustpilot": _normalize_trustpilot,
         "amazon": _normalize_amazon,
         "meta_ads": _normalize_meta_ads,
@@ -682,6 +683,43 @@ def _normalize_arxiv(
             "authors": authors,
             "summary": summary,
         },
+    )
+
+
+def _normalize_nfl_polymarket(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for nfl30 NFL market cards (game / future / award / roster)."""
+    title = str(item.get("title") or "").strip()
+    metadata: dict[str, Any] = {
+        key: item.get(key)
+        for key in (
+            "bucket", "market_type", "label", "team", "team_abbr", "team_prob", "opp",
+            "opp_prob", "spread", "total", "week_change", "game_start", "live",
+            "question", "end_date",
+        )
+        if item.get(key) is not None
+    }
+    metadata["outcome_prices"] = item.get("outcome_prices") or []
+    return _source_item(
+        item_id=str(item.get("id") or f"NPM{index + 1}"),
+        source=source,
+        title=title or f"NFL market {index + 1}",
+        body=str(item.get("text") or title),
+        url=str(item.get("url") or ""),
+        author=None,
+        container="Polymarket (NFL)",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.7),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=title[:400],
+        metadata=metadata,
     )
 
 

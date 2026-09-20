@@ -229,6 +229,7 @@ SOURCE_LABELS = {
     "arxiv": "arXiv",
     "techmeme": "Techmeme",
     "team_official": "Team official",
+    "nfl_polymarket": "NFL markets",
     "trustpilot": "Trustpilot",
     "amazon": "Amazon",
     "meta_ads": "Meta Ads",
@@ -804,6 +805,7 @@ def render_compact(
         f"- Sources: {len(non_empty)} active ({', '.join(_source_label(s) for s in non_empty)})"
         if non_empty
         else "- Sources: none",
+        *_nfl_header_lines(report),
         "",
     ]
     drill_context = _render_drill_context(report)
@@ -1816,6 +1818,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         f"- Sources: {len(non_empty)} active ({', '.join(_source_label(s) for s in non_empty)})"
         if non_empty
         else "- Sources: none",
+        *_nfl_header_lines(report),
         "",
     ]
 
@@ -1874,6 +1877,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         "threads",
         "pinterest",
         "team_official",
+        "nfl_polymarket",
         "hackernews",
         "bluesky",
         "truthsocial",
@@ -2147,6 +2151,7 @@ def render_brief(report: schema.Report, cluster_limit: int = 8) -> str:
         f"- Sources: {len(non_empty)} active ({', '.join(_source_label(s) for s in non_empty)})"
         if non_empty
         else "- Sources: none",
+        *_nfl_header_lines(report),
         "",
     ]
     drill_context = _render_drill_context(report)
@@ -3375,6 +3380,17 @@ def _format_date(item: schema.SourceItem | None) -> str:
     return f"{item.published_at} [date:{item.date_confidence}]"
 
 
+def _nfl_header_lines(report: schema.Report) -> list[str]:
+    """nfl30 report header: the "Market says" line built from NFL market items."""
+    items = report.items_by_source.get("nfl_polymarket") or []
+    if not items:
+        return []
+    from . import nfl_polymarket as _npm
+
+    line = _npm.format_market_says_line(items)
+    return [f"- {line}"] if line else []
+
+
 def _x_author_label(item: schema.SourceItem) -> str:
     """``@handle``, with the outlet appended for curated beat writers."""
     handle = str(item.author or "").lstrip("@")
@@ -3415,6 +3431,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "linkedin": [("likes", "likes"), ("comments", "cmt")],
     "polymarket": [],
     "team_official": [("views", "views")],
+    "nfl_polymarket": [],
     "github": [
         ("stars", "stars"),
         ("merged_prs", "merged"),
