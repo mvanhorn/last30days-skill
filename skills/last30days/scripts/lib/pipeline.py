@@ -5165,10 +5165,11 @@ def _retrieve_stream_impl(
         return items, _result_outcome_artifact(source, result)
     if source == "hackernews":
         result = hackernews.search_hackernews(subquery.search_query, from_date, to_date, depth=depth)
-        return (
-            hackernews.parse_hackernews_response(result, query=subquery.search_query),
-            _result_outcome_artifact(source, result),
-        )
+        items = hackernews.parse_hackernews_response(result, query=subquery.search_query)
+        # Attach top-level comments to the highest-point stories (bounded by
+        # hackernews.ENRICH_LIMITS per depth).
+        items = hackernews.enrich_top_stories(items, depth=depth)
+        return items, _result_outcome_artifact(source, result)
     if source == "stocktwits":
         # Pass raw_topic so symbol detection sees the full topic, not the
         # narrowed per-subquery search_query (same rationale as reddit).

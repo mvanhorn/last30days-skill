@@ -504,5 +504,65 @@ def test_fetch_item_comments_preserves_absent_and_zero_points(mock_request, poin
     assert result["comments"][0]["points"] is points
 
 
+# === Pipeline wiring ===
+
+
+@patch("lib.hackernews.http.request")
+def test_pipeline_hackernews_stream_attaches_top_comments(mock_request):
+    """The HN stream must enrich top stories with comments (#1168)."""
+    from lib import pipeline, schema
+
+    def fake_request(method, url, **kwargs):
+        if url.startswith(hackernews.ALGOLIA_ITEM_URL):
+            return {
+                "children": [
+                    {"author": "alice", "text": "<p>Great launch.</p>", "points": 7},
+                ]
+            }
+        return {
+            "hits": [
+                create_mock_hit(object_id="1", title="Widget launch", points=300),
+                create_mock_hit(object_id="2", title="Widget review", points=50),
+            ]
+        }
+
+    mock_request.side_effect = fake_request
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="widget",
+        ranking_query="widget",
+        sources=["hackernews"],
+    )
+
+    items, _ = pipeline._retrieve_stream_impl(
+        topic="widget",
+        subquery=subquery,
+        source="hackernews",
+        config={},
+        depth="quick",
+        date_range=("2026-08-24", "2026-09-23"),
+        runtime=schema.ProviderRuntime(
+            reasoning_provider="none",
+            planner_model="none",
+            rerank_model="none",
+        ),
+        mock=False,
+    )
+
+    by_id = {item["id"]: item for item in items}
+    assert by_id["1"]["top_comments"] == [
+        {"author": "alice", "text": "Great launch.", "points": 7}
+    ]
+    assert by_id["1"]["comment_insights"] == ["Great launch."]
+    item_urls = [
+        call.args[1] for call in mock_request.call_args_list
+        if call.args[1].startswith(hackernews.ALGOLIA_ITEM_URL)
+    ]
+    assert sorted(item_urls) == [
+        f"{hackernews.ALGOLIA_ITEM_URL}/1",
+        f"{hackernews.ALGOLIA_ITEM_URL}/2",
+    ]
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
