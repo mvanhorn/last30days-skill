@@ -564,5 +564,54 @@ def test_pipeline_hackernews_stream_attaches_top_comments(mock_request):
     ]
 
 
+@patch("lib.http.time.sleep")
+@patch("lib.http.urllib.request.urlopen")
+@patch("lib.hackernews.search_hackernews")
+def test_pipeline_hackernews_reports_failed_comment_enrichment(
+    mock_search, mock_urlopen, _mock_sleep
+):
+    """Rate-limited item fetches keep the stories but surface in the outcome."""
+    import urllib.error
+
+    from lib import pipeline, schema
+
+    mock_search.return_value = {
+        "hits": [
+            create_mock_hit(object_id="1", title="Widget launch", points=300),
+            create_mock_hit(object_id="2", title="Widget review", points=50),
+        ]
+    }
+    mock_urlopen.side_effect = urllib.error.HTTPError(
+        hackernews.ALGOLIA_ITEM_URL, 429, "Too Many Requests", {}, None
+    )
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="widget",
+        ranking_query="widget",
+        sources=["hackernews"],
+    )
+
+    items, artifact = pipeline._retrieve_stream(
+        topic="widget",
+        subquery=subquery,
+        source="hackernews",
+        config={},
+        depth="quick",
+        date_range=("2026-08-24", "2026-09-23"),
+        runtime=schema.ProviderRuntime(
+            reasoning_provider="none",
+            planner_model="none",
+            rerank_model="none",
+        ),
+        mock=False,
+    )
+
+    assert sorted(item["id"] for item in items) == ["1", "2"]
+    assert all(item["top_comments"] == [] for item in items)
+    assert "_source_outcome" not in artifact
+    assert "2 sub-requests rate-limited (HTTP 429)" in artifact["_source_outcome_detail"]
+    assert artifact["_source_outcome_detail_state"] == schema.RATE_LIMITED
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
