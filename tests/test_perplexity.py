@@ -321,6 +321,22 @@ class PerplexityAgentTests(unittest.TestCase):
         self.assertEqual("OpenRouter fallback synthesis", items[0]["snippet"])
         self.assertEqual("OpenRouter citation", items[1]["title"])
 
+    def test_openrouter_sonar_fallback_honors_base_url_override(self):
+        response = {"id": "openrouter-2", "model": "perplexity/sonar-pro",
+                    "choices": [{"message": {"content": "ok"}}]}
+        with patch.dict("os.environ", {"OPENROUTER_BASE_URL": "https://gateway.test/v1"}), patch(
+            "lib.perplexity.http.post", return_value=response
+        ) as post, patch("lib.perplexity.http.get"):
+            perplexity.search(
+                "test topic",
+                ("2026-05-01", "2026-06-01"),
+                {"OPENROUTER_API_KEY": "or-test"},
+            )
+
+        self.assertEqual(
+            "https://gateway.test/v1/chat/completions", post.call_args.args[0]
+        )
+
     def test_openrouter_search_mode_degrades_to_sonar_fallback(self):
         response = {
             "id": "openrouter-2",

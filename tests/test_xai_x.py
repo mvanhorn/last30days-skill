@@ -61,3 +61,29 @@ class TestXaiXEngagementZero(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestXaiXBaseUrlOverride(unittest.TestCase):
+    """XAI_BASE_URL redirects the x_search request like the reasoning client."""
+
+    def _posted_url(self, env):
+        import os
+        from unittest import mock
+        from lib import xai_x
+
+        with mock.patch.dict(os.environ, env, clear=True), mock.patch(
+            "lib.xai_x.http.post", return_value={"output": []}
+        ) as post:
+            xai_x.search_x("xai-test", "grok-test", "topic", "2026-05-01", "2026-06-01")
+        return post.call_args.args[0]
+
+    def test_default_endpoint_without_override(self):
+        from lib import xai_x
+
+        self.assertEqual(xai_x.XAI_RESPONSES_URL, self._posted_url({}))
+
+    def test_api_root_override_is_honored(self):
+        self.assertEqual(
+            "https://gateway.test/v1/responses",
+            self._posted_url({"XAI_BASE_URL": "https://gateway.test/v1"}),
+        )
