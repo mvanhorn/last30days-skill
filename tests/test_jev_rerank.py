@@ -3,8 +3,9 @@ import copy
 import json
 from unittest.mock import Mock
 import pytest
-from lib import jev, rerank, schema
+from lib import jev, render, rerank, schema
 from tests.test_rerank_v3 import make_candidate, make_plan, FakeProvider
+from tests.test_render_v3 import sample_report
 
 
 def candidates(n):
@@ -110,6 +111,8 @@ def test_entity_cap_and_first_party_interaction_rules():
     by_id = {c.candidate_id: c for c in result}
     assert by_id["0"].rerank_score == 30 and by_id["1"].rerank_score == 100
     assert by_id["1"].metadata["interaction_targets"] == ["other"]
+    assert not rerank.candidate_relevance_ok(by_id["0"])
+    assert rerank.candidate_relevance_ok(by_id["1"])
 
 
 def test_malformed_injected_client_also_fails_closed():
@@ -153,3 +156,27 @@ def test_oversized_injected_number_uses_unmodified_fallback():
     assert run(copy.deepcopy(cs), jev_client=judge, receipt=receipt) == expected
     assert receipt["judge_route"] == "deterministic"
     assert receipt["fallback_reason"] == "jev_failed"
+
+
+@pytest.mark.parametrize("entity,visible", [(0.1, False), (0.5, True)])
+def test_jev_entity_judgment_controls_rendered_evidence(entity, visible):
+    report = sample_report()
+    report.topic = "OpenClaw"
+    report.query_plan.raw_topic = report.topic
+    candidate = report.ranked_candidates[0]
+    candidate.title = "Public candidate evidence"
+    report.clusters[0].title = candidate.title
+    report.ranked_candidates = rerank.rerank_candidates(
+        topic=report.topic, plan=report.query_plan, candidates=[candidate],
+        provider=None, model=None, shortlist_size=1, jev_client=Judge(entity=entity),
+    )
+    report.clusters[0].score = candidate.final_score
+
+    unmarked = copy.deepcopy(candidate)
+    unmarked.explanation = "jev relevance and entity judgment"
+    expected_penalty = 0 if visible else rerank.ENTITY_MISS_FINAL_PENALTY
+    assert candidate.final_score == pytest.approx(rerank._final_score(unmarked) - expected_penalty)
+    output = render.render_compact(report)
+    assert (candidate.title in output) is visible
+    assert ("This is the strongest user reaction." in output) is visible
+    assert ("**Nothing solid this window.**" in output) is not visible

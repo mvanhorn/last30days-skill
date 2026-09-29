@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import env
+from . import env, jev
 
 
 ENDPOINT_OVERRIDE_KEYS = {
@@ -122,6 +122,15 @@ def build(
     }
 
     action_items: list[str] = []
+    # Keep the frozen preflight schema; disclose new access through its notices.
+    jev_route, _ = jev.configured_route(config)
+    if jev_route:
+        provider_name = "Typesafe" if jev_route == "typesafe" else "OpenRouter"
+        action_items.append(
+            f"Review Jev access via {provider_name}: API key present. "
+            "Research sends the topic and public snippets for judgments. "
+            "Use --jev-provider off to disable."
+        )
     if ignored_project_config:
         action_items.append("Project config was ignored; set LAST30DAYS_TRUST_PROJECT_CONFIG=1 to trust it.")
     # get_config() already emptied these, so the provider flags above read them

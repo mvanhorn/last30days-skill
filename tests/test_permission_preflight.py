@@ -8,8 +8,11 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
+import pytest
+
 import last30days as cli
-from lib import env, permission_preflight, pipeline
+from lib import env, jev, permission_preflight, pipeline
+from tests.test_diagnose_compat import _run_cli
 
 DEFAULT_SAVE_DIR = "~" + "/Documents/Last30Days"
 
@@ -320,3 +323,33 @@ def test_preflight_without_templates_keeps_the_ready_shape():
     assert preflight["status"] == "ready"
     assert preflight["action_items"] == []
     assert "Unsubstituted config template" not in permission_preflight.render_text(preflight)
+
+
+@pytest.mark.parametrize("config,flags,route", [
+    ({"TYPESAFE_API_KEY": "dummy-typesafe-key"}, [], "Typesafe"),
+    ({"OPENROUTER_API_KEY": "dummy-openrouter-key"}, [], "OpenRouter"),
+    ({"TYPESAFE_API_KEY": "dummy-typesafe-key", "OPENROUTER_API_KEY": "dummy-openrouter-key"}, [], "Typesafe"),
+    ({"TYPESAFE_API_KEY": "dummy-typesafe-key", "OPENROUTER_API_KEY": "dummy-openrouter-key"}, ["--jev-provider", "openrouter"], "OpenRouter"),
+    ({"TYPESAFE_API_KEY": "dummy-typesafe-key"}, ["--jev-provider", "off"], None),
+    ({"TYPESAFE_API_KEY": "dummy-typesafe-key"}, ["--jev-provider", "openrouter"], None),
+    ({}, [], None),
+])
+def test_cli_preflight_discloses_active_jev_route_without_requests(config, flags, route):
+    with mock.patch.object(jev, "JevClient", side_effect=AssertionError("client creation")), \
+         mock.patch("socket.socket.connect", side_effect=AssertionError("network access")):
+        rc, stdout = _run_cli(["--preflight", "--emit=json", *flags], config)
+    assert rc == 0
+    preflight = json.loads(stdout)
+    notices = [item for item in preflight["action_items"] if "Jev" in item]
+    rendered = permission_preflight.render_text(preflight)
+    if route:
+        assert len(notices) == 1
+        assert route in notices[0]
+        assert "API key present" in notices[0]
+        assert "topic and public snippets" in notices[0]
+        assert notices[0] in rendered
+    else:
+        assert notices == []
+    for secret in config.values():
+        assert secret not in stdout
+        assert secret not in rendered

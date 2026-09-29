@@ -380,10 +380,12 @@ def _jev_scores(
             entity = answers[f"entity_{i}"]["noul"]
             # This mirrors the incumbent prompt's <=30 entity cap. It is an
             # experimental decision threshold, not a calibrated accuracy claim.
+            reason = "jev relevance and entity judgment"
             if primary_entity and entity < 0.5 and not _is_first_party(c, handles):
                 score = min(score, 30.0)
+                reason += " (entity-miss demotion)"
             scores.append({"candidate_id": c.candidate_id, "relevance": score,
-                           "reason": "jev relevance and entity judgment"})
+                           "reason": reason})
     return {"scores": scores}
 
 
