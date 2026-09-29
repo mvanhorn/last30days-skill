@@ -455,6 +455,22 @@ class CliV3Tests(unittest.TestCase):
         self.assertEqual(1, err.count("no direct PERPLEXITY_API_KEY is configured"))
         self.assertNotIn("bypassing the hosted backend", err)
 
+    def test_search_type_flag_without_direct_key_matches_no_flag_routing(self):
+        # Without a direct key the flag cannot apply, so hosted routing and its
+        # local-only option checks must match a run without the flag.
+        for extra in (["--x-posts", "https://x.com/a/status/1"], ["--emit=json", "--json-profile=agent"]):
+            plain_rc, plain_run, plain_hosted, _ = self._run_perplexity_search_type_cli(
+                extra, {"OPENROUTER_API_KEY": "or-test"}, hosted=True,
+            )
+            flag_rc, flag_run, flag_hosted, _ = self._run_perplexity_search_type_cli(
+                ["--perplexity-search-type", "fast", *extra],
+                {"OPENROUTER_API_KEY": "or-test"},
+                hosted=True,
+            )
+            self.assertEqual(plain_rc, flag_rc, extra)
+            self.assertEqual(plain_run.call_count, flag_run.call_count, extra)
+            self.assertEqual(plain_hosted.call_count, flag_hosted.call_count, extra)
+
     def test_env_only_perplexity_search_type_stays_hosted_with_one_note(self):
         rc, run_mock, hosted_mock, err = self._run_perplexity_search_type_cli(
             [], {"LAST30DAYS_PERPLEXITY_SEARCH_TYPE": "fast"}, hosted=True,
