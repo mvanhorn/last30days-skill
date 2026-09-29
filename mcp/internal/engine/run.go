@@ -36,6 +36,11 @@ const DefaultTimeout = 5 * time.Minute
 // (seconds, integer). Honored by Run when RunOptions.Timeout is zero.
 const TimeoutEnvOverride = "LAST30DAYS_MCP_TIMEOUT"
 
+// termGracePeriod bounds the SIGTERM phase of the deadline path: the
+// python SIGTERM handler needs a moment to killpg() the setsid'd
+// descendant groups before the SIGKILL backstop fires.
+const termGracePeriod = 2 * time.Second
+
 // PythonEnvOverride lets operators select the Python 3.12+ executable used
 // by the MCP server. When unset, Run preserves the python3 PATH lookup.
 const PythonEnvOverride = "LAST30DAYS_PYTHON"
@@ -88,14 +93,48 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	defer cancel()
 
 	args := append([]string{scriptPath}, opts.Args...)
-	cmd := exec.CommandContext(subCtx, pythonPath, args...)
+	cmd := exec.Command(pythonPath, args...)
 	cmd.Env = buildEnv(opts.CacheDir, opts.ExtraEnv)
+	// Own process group so a timeout SIGTERM reaches same-group
+	// grandchildren (grok CLI). exec.CommandContext would SIGKILL only the
+	// direct python child while its SIGTERM-handler/atexit cleanup never
+	// runs on SIGKILL, orphaning the setsid'd descendant groups.
+	// Mirrors lib/subproc.py.
+	setProcessGroup(cmd)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	if err := cmd.Start(); err != nil {
+		res := &RunResult{
+			Stdout:   stdout.Bytes(),
+			Stderr:   stderr.Bytes(),
+			ExitCode: 0,
+			TimedOut: errors.Is(subCtx.Err(), context.DeadlineExceeded),
+		}
+		return res, fmt.Errorf("engine: subprocess failed to start: %w", err)
+	}
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+
+	select {
+	case <-subCtx.Done():
+		// Deadline or parent cancel: SIGTERM the group first so the
+		// python SIGTERM handler killpg()s the setsid'd descendant
+		// groups (node, yt-dlp, digg) that kill(-pid) cannot reach,
+		// then SIGKILL stragglers that ignore TERM. Then reap.
+		termProcessGroup(cmd)
+		select {
+		case err = <-waitCh:
+		case <-time.After(termGracePeriod):
+			killProcessGroup(cmd)
+			err = <-waitCh
+		}
+	case werr := <-waitCh:
+		err = werr
+	}
+
 	res := &RunResult{
 		Stdout:   stdout.Bytes(),
 		Stderr:   stderr.Bytes(),

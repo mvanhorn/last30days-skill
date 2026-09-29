@@ -311,34 +311,16 @@ def _invoke_bird_subprocess(query: str, count: int, timeout: int):
         "--json",
     ]
 
-    pid_holder: list[int] = []
-
-    def _register(pid: int) -> None:
-        pid_holder.append(pid)
-        try:
-            from last30days import register_child_pid
-            register_child_pid(pid)
-        except ImportError:
-            pass
-
     try:
         result = subproc.run_with_timeout(
             cmd,
             timeout=timeout,
             env=_subprocess_env(),
-            on_pid=_register,
         )
     except subproc.SubprocTimeout:
         return None, {"error": f"Search timed out after {timeout}s", "items": []}
     except Exception as e:
         return None, {"error": str(e), "items": []}
-    finally:
-        if pid_holder:
-            try:
-                from last30days import unregister_child_pid
-                unregister_child_pid(pid_holder[0])
-            except Exception:
-                pass
 
     return result, None
 

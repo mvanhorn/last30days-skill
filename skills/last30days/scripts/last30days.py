@@ -15,7 +15,6 @@ import re
 import signal
 import sqlite3
 import sys
-import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -51,36 +50,33 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, freshness, html_render, http, permission_preflight, pipeline, registers, render, schema, ui, x_envelope
+from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, freshness, html_render, http, permission_preflight, pipeline, registers, render, schema, subproc, ui, x_envelope
 
-_child_pids: set[int] = set()
-_child_pids_lock = threading.Lock()
-
-
-def register_child_pid(pid: int) -> None:
-    with _child_pids_lock:
-        _child_pids.add(pid)
+atexit.register(subproc.cleanup_children)
 
 
-def unregister_child_pid(pid: int) -> None:
-    with _child_pids_lock:
-        _child_pids.discard(pid)
+def _on_sigterm(signum, frame) -> None:
+    """SIGTERM handler: clean descendant groups, then die as SIGTERM.
+
+    Every run_with_timeout child runs in its own pgid (lib/subproc.py via
+    os.setsid), so a group kill aimed at the engine can never reach them;
+    only the lib.subproc registry can. atexit never runs on a signal death,
+    so without this handler an MCP timeout would orphan node bird-search,
+    yt-dlp, and the digg CLI. The MCP server SIGTERMs the engine group
+    first, giving this handler room to killpg() each registered child
+    group before the SIGKILL backstop. Restoring the default disposition
+    and re-raising preserves killed-by-SIGTERM semantics for the parent.
+    """
+    subproc.cleanup_children()
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
-def _cleanup_children() -> None:
-    with _child_pids_lock:
-        pids = list(_child_pids)
-    for pid in pids:
-        try:
-            if hasattr(os, "killpg"):
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
-            else:
-                os.kill(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            continue
-
-
-atexit.register(_cleanup_children)
+def _install_sigterm_handler() -> None:
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError, RuntimeError):
+        pass
 
 
 def parse_meta_ads_page(raw: str) -> str:
@@ -4327,4 +4323,5 @@ def _main(
 
 
 if __name__ == "__main__":
+    _install_sigterm_handler()
     raise SystemExit(main())
