@@ -1246,9 +1246,10 @@ def search(
     mode = _mode(config, deep, provider)
     search_type = None
     try:
-        search_type = _search_type(config)
         if provider == "openrouter":
-            if search_type is not None:
+            # Sonar ignores the direct-only setting, so never validate it here:
+            # an unusable value must not block an otherwise working search.
+            if _config_text(config, "LAST30DAYS_PERPLEXITY_SEARCH_TYPE"):
                 _log("LAST30DAYS_PERPLEXITY_SEARCH_TYPE requires PERPLEXITY_API_KEY; "
                      "it does not change OpenRouter Sonar search")
             result = _openrouter_sonar_search(
@@ -1260,6 +1261,7 @@ def search(
             if deep:
                 _log_deep_receipt(result[1])
             return result
+        search_type = _search_type(config)
         if mode == PERPLEXITY_MODE_SEARCH:
             return _search_api(query, date_range, config, api_key)
         if mode == PERPLEXITY_MODE_BOTH:

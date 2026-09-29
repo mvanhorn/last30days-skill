@@ -428,7 +428,9 @@ class CliV3Tests(unittest.TestCase):
 
     def test_perplexity_search_type_flag_bypasses_hosted_with_one_notice(self):
         rc, run_mock, hosted_mock, err = self._run_perplexity_search_type_cli(
-            ["--perplexity-search-type", "fast"], {}, hosted=True,
+            ["--perplexity-search-type", "fast"],
+            {"PERPLEXITY_API_KEY": "pplx-test"},
+            hosted=True,
         )
 
         self.assertEqual(0, rc)
@@ -439,6 +441,19 @@ class CliV3Tests(unittest.TestCase):
         self.assertEqual(1, err.count("--perplexity-search-type"))
         self.assertIn("bypassing the hosted backend", err)
         self.assertNotIn("does not apply LAST30DAYS_PERPLEXITY_SEARCH_TYPE", err)
+
+    def test_perplexity_search_type_flag_without_direct_key_stays_hosted(self):
+        rc, run_mock, hosted_mock, err = self._run_perplexity_search_type_cli(
+            ["--perplexity-search-type", "fast"],
+            {"OPENROUTER_API_KEY": "or-test"},
+            hosted=True,
+        )
+
+        self.assertEqual(0, rc)
+        hosted_mock.assert_called_once()
+        run_mock.assert_not_called()
+        self.assertEqual(1, err.count("no direct PERPLEXITY_API_KEY is configured"))
+        self.assertNotIn("bypassing the hosted backend", err)
 
     def test_env_only_perplexity_search_type_stays_hosted_with_one_note(self):
         rc, run_mock, hosted_mock, err = self._run_perplexity_search_type_cli(

@@ -88,6 +88,18 @@ def test_openrouter_keeps_sonar_and_discloses_ignored_search_type():
     assert any("does not change OpenRouter" in str(call) for call in log.call_args_list)
 
 
+@pytest.mark.parametrize("value", ["pro", "FAST!", "garbage"])
+def test_invalid_type_never_blocks_openrouter_sonar(value):
+    response = {"choices": [{"message": {"content": "Summary"}}]}
+    with patch.object(perplexity.http, "post", return_value=response) as post:
+        items, artifact = perplexity.search("topic", DATE_RANGE, {
+            "OPENROUTER_API_KEY": "dummy-test-key", KEY: value})
+    assert post.call_count == 1
+    assert post.call_args.args[0] == perplexity.OPENROUTER_URL
+    assert artifact["provider"] == "openrouter"
+    assert "must be web or fast" not in str(artifact)
+
+
 @pytest.mark.parametrize("cli_value,expected", [(None, "fast"), ("web", "web")])
 def test_cli_override_reaches_config_without_enabling_paid_source(cli_value, expected):
     args = ["last30days.py", "Rust releases"]

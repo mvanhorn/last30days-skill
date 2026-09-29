@@ -3531,11 +3531,14 @@ def _main(
             "[last30days] Local corpus configured; bypassing the hosted backend so files stay on this machine.\n"
         )
     # An explicit --perplexity-search-type is per-invocation intent the hosted
-    # backend cannot honor, so it runs locally. Key on the parsed CLI flag only:
-    # a value from LAST30DAYS_PERPLEXITY_SEARCH_TYPE must never move routing.
+    # backend cannot honor, so it runs locally, but only when a direct
+    # PERPLEXITY_API_KEY can apply it; otherwise the switch would trade hosted
+    # coverage for nothing. Key on the parsed CLI flag only: a value from
+    # LAST30DAYS_PERPLEXITY_SEARCH_TYPE must never move routing.
     elif (
         topic
         and args.perplexity_search_type is not None
+        and config.get("PERPLEXITY_API_KEY")
         and not args.diagnose
         and not args.mock
         and not args.record_fixtures
@@ -3556,9 +3559,14 @@ def _main(
         and os.environ.get("LAST30DAYS_API_BASE")
         and not resolved_corpus_dirs
         and not args.deep_research
-        and args.perplexity_search_type is None
+        and (args.perplexity_search_type is None or not config.get("PERPLEXITY_API_KEY"))
     ):
-        if config.get("LAST30DAYS_PERPLEXITY_SEARCH_TYPE"):
+        if args.perplexity_search_type is not None:
+            sys.stderr.write(
+                "hosted backend does not apply --perplexity-search-type and no direct "
+                "PERPLEXITY_API_KEY is configured to run it locally; skipping\n"
+            )
+        elif config.get("LAST30DAYS_PERPLEXITY_SEARCH_TYPE"):
             sys.stderr.write(
                 "hosted backend does not apply LAST30DAYS_PERPLEXITY_SEARCH_TYPE; skipping\n"
             )
