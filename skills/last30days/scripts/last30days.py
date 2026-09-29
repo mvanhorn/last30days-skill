@@ -813,6 +813,8 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=["auto", "brave", "exa", "serper", "parallel", "parallel-mcp", "keyless", "none"],
                         help="Web search backend (default: auto; parallel-mcp explicitly opts into the "
                              "anonymous hosted MCP; keyless forces the zero-key floor)")
+    parser.add_argument("--perplexity-search-type", choices=["web", "fast"],
+                        help="Search backend for direct Perplexity Search API and Agent web_search; overrides LAST30DAYS_PERPLEXITY_SEARCH_TYPE. Does not enable the paid source or select an Agent preset.")
     parser.add_argument("--deep-research", action="store_true",
                         help="Use at most one Perplexity Deep Research run. Direct PERPLEXITY_API_KEY uses the Agent API background path; OPENROUTER_API_KEY keeps the synchronous Sonar fallback; cannot be combined with competitor or vs-mode.")
     parser.add_argument("--hiring-signals", action="store_true",
@@ -3200,6 +3202,8 @@ def _main(
             return _run_store_key(store_key_name)
 
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
+    if args.perplexity_search_type is not None:
+        config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"] = args.perplexity_search_type
     # One memo per command: comparison mode runs pipeline.run per entity in
     # parallel, so the reset must not live inside the pipeline.
     http.reset_reddit_keyless_memo()
@@ -3526,6 +3530,23 @@ def _main(
         sys.stderr.write(
             "[last30days] Local corpus configured; bypassing the hosted backend so files stay on this machine.\n"
         )
+    # An explicit --perplexity-search-type is per-invocation intent the hosted
+    # backend cannot honor, so it runs locally. Key on the parsed CLI flag only:
+    # a value from LAST30DAYS_PERPLEXITY_SEARCH_TYPE must never move routing.
+    elif (
+        topic
+        and args.perplexity_search_type is not None
+        and not args.diagnose
+        and not args.mock
+        and not args.record_fixtures
+        and not args.deep_research
+        and env.read_secret_env("LAST30DAYS_API_KEY")
+        and os.environ.get("LAST30DAYS_API_BASE")
+    ):
+        sys.stderr.write(
+            "[last30days] --perplexity-search-type set; bypassing the hosted backend "
+            "because it does not apply the Perplexity search type.\n"
+        )
     if (
         topic
         and not args.diagnose
@@ -3535,7 +3556,12 @@ def _main(
         and os.environ.get("LAST30DAYS_API_BASE")
         and not resolved_corpus_dirs
         and not args.deep_research
+        and args.perplexity_search_type is None
     ):
+        if config.get("LAST30DAYS_PERPLEXITY_SEARCH_TYPE"):
+            sys.stderr.write(
+                "hosted backend does not apply LAST30DAYS_PERPLEXITY_SEARCH_TYPE; skipping\n"
+            )
         if _freshness_enabled(args, config):
             if args.verify_freshness is True:
                 sys.stderr.write(

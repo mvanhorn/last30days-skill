@@ -383,6 +383,119 @@ class CliV3Tests(unittest.TestCase):
         self.assertEqual(["reddit", "perplexity"], requested_sources)
         self.assertTrue(run_mock.call_args.kwargs["config"]["_deep_research"])
 
+    def _run_perplexity_search_type_cli(self, argv_extra, config, *, hosted):
+        report = self.make_report(topic="rust releases")
+        diag = {
+            "available_sources": ["reddit"],
+            "providers": {"google": False, "openai": False, "xai": False},
+            "x_backend": None,
+            "bird_installed": True,
+            "bird_authenticated": False,
+            "bird_username": None,
+            "native_web_backend": None,
+        }
+        environ = {"LAST30DAYS_SKIP_PREFLIGHT": "1"}
+        if hosted:
+            environ["LAST30DAYS_API_BASE"] = "https://hosted.example.test"
+        stderr = io.StringIO()
+        with mock.patch.object(
+            cli.env, "get_config", return_value=dict(config),
+        ), mock.patch.object(
+            cli.env, "read_secret_env",
+            return_value="hosted-test-key" if hosted else None,
+        ), mock.patch.object(
+            cli.pipeline, "diagnose", return_value=diag,
+        ), mock.patch.object(
+            cli.pipeline, "run", return_value=report,
+        ) as run_mock, mock.patch(
+            "lib.hosted.run_hosted", return_value=0,
+        ) as hosted_mock, mock.patch(
+            "lib.resolve.auto_resolve", return_value={},
+        ), mock.patch.object(
+            cli.ui, "ProgressDisplay", return_value=mock.Mock(),
+        ), mock.patch.object(
+            cli, "emit_output", return_value="# rendered",
+        ), mock.patch.dict(
+            os.environ, environ, clear=False,
+        ), mock.patch.object(
+            sys, "argv", ["last30days.py", "rust", "releases", *argv_extra],
+        ):
+            if not hosted:
+                os.environ.pop("LAST30DAYS_API_BASE", None)
+            with redirect_stdout(io.StringIO()), redirect_stderr(stderr):
+                rc = cli.main()
+        return rc, run_mock, hosted_mock, stderr.getvalue()
+
+    def test_perplexity_search_type_flag_bypasses_hosted_with_one_notice(self):
+        rc, run_mock, hosted_mock, err = self._run_perplexity_search_type_cli(
+            ["--perplexity-search-type", "fast"], {}, hosted=True,
+        )
+
+        self.assertEqual(0, rc)
+        hosted_mock.assert_not_called()
+        run_mock.assert_called_once()
+        config = run_mock.call_args.kwargs["config"]
+        self.assertEqual("fast", config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"])
+        self.assertEqual(1, err.count("--perplexity-search-type"))
+        self.assertIn("bypassing the hosted backend", err)
+        self.assertNotIn("does not apply LAST30DAYS_PERPLEXITY_SEARCH_TYPE", err)
+
+    def test_env_only_perplexity_search_type_stays_hosted_with_one_note(self):
+        rc, run_mock, hosted_mock, err = self._run_perplexity_search_type_cli(
+            [], {"LAST30DAYS_PERPLEXITY_SEARCH_TYPE": "fast"}, hosted=True,
+        )
+
+        self.assertEqual(0, rc)
+        hosted_mock.assert_called_once()
+        run_mock.assert_not_called()
+        self.assertEqual(
+            1,
+            err.count("hosted backend does not apply LAST30DAYS_PERPLEXITY_SEARCH_TYPE"),
+        )
+        self.assertNotIn("bypassing the hosted backend", err)
+
+    def test_hosted_without_perplexity_search_type_is_unchanged(self):
+        rc, run_mock, hosted_mock, err = self._run_perplexity_search_type_cli(
+            [], {}, hosted=True,
+        )
+
+        self.assertEqual(0, rc)
+        hosted_mock.assert_called_once()
+        run_mock.assert_not_called()
+        self.assertNotIn("search type", err.lower())
+        self.assertNotIn("SEARCH_TYPE", err)
+
+    def test_perplexity_search_type_flag_does_not_enable_perplexity(self):
+        _, baseline_run, _, _ = self._run_perplexity_search_type_cli(
+            [], {"PERPLEXITY_API_KEY": "pplx-test"}, hosted=False,
+        )
+        rc, flagged_run, _, err = self._run_perplexity_search_type_cli(
+            ["--perplexity-search-type", "fast"],
+            {"PERPLEXITY_API_KEY": "pplx-test"},
+            hosted=False,
+        )
+
+        self.assertEqual(0, rc)
+        self.assertEqual(
+            baseline_run.call_args.kwargs["requested_sources"],
+            flagged_run.call_args.kwargs["requested_sources"],
+        )
+        self.assertNotIn("perplexity", flagged_run.call_args.kwargs["requested_sources"] or [])
+        config = flagged_run.call_args.kwargs["config"]
+        self.assertEqual("fast", config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"])
+        self.assertNotIn("INCLUDE_SOURCES", config)
+        self.assertNotIn("bypassing the hosted backend", err)
+
+    def test_perplexity_search_type_flag_overrides_env_value(self):
+        _, run_mock, _, _ = self._run_perplexity_search_type_cli(
+            ["--perplexity-search-type", "web"],
+            {"LAST30DAYS_PERPLEXITY_SEARCH_TYPE": "fast"},
+            hosted=False,
+        )
+
+        config = run_mock.call_args.kwargs["config"]
+        self.assertEqual("web", config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"])
+
     def test_build_parser_still_accepts_other_web_backend_values(self):
         parser = cli.build_parser()
         for value in ("auto", "brave", "exa", "serper", "parallel", "parallel-mcp", "none"):
