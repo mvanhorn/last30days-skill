@@ -1,4 +1,8 @@
 import copy
+from datetime import date
+from pathlib import Path
+
+import pytest
 import unittest
 
 from lib import hiring_signals, render, schema
@@ -1782,3 +1786,130 @@ class TestSourceUrlsAreClickable(unittest.TestCase):
         text = "\n".join(render._render_candidate(candidate, "1."))
         self.assertNotIn("\n## forged heading", text)
         self.assertNotIn("URL: [", text)
+
+
+
+def research_route_report():
+    report = sample_report()
+    report.topic = 'Home Assistant Zigbee updates'
+    report.range_from, report.range_to = '2026-08-29', '2026-09-28'
+    report.generated_at = '2026-09-28T12:00:00Z'
+    for items in report.items_by_source.values():
+        for item in items:
+            item.published_at = '2026-09-20'
+    report.artifacts = {
+        'grounding': [{'provider': 'perplexity', 'mode': 'search', 'request': {'search_type': 'fast'}}],
+        'jev_rerank': {'resolution': 'ready',
+                       'initial': {'judge_route': 'jev:typesafe', 'fallback_reason': None},
+                       'final': {'judge_route': 'jev:typesafe', 'fallback_reason': None}},
+        'fixed_research': {'status': 'complete', 'reason': 'bounded_round',
+                           'searches': [{'status': 'ok', 'search_type': 'fast'}, {'status': 'ok', 'search_type': 'fast'}]},
+    }
+    report.source_status['perplexity'] = schema.SourceOutcome('perplexity', 'ok', items_returned=2)
+    return report
+
+
+@pytest.fixture
+def research_route_date(monkeypatch):
+    class FixtureDate(date):
+        @classmethod
+        def today(cls):
+            return cls(2026, 9, 28)
+
+    monkeypatch.setattr(render, "date", FixtureDate)
+
+
+def test_render_compact_fixed_route_matches_complete_expected_output(monkeypatch, research_route_date):
+    monkeypatch.setattr(render, '_skill_version', lambda: 'TEST')
+    actual = render.render_compact(research_route_report(), fun_level='off')
+    expected = (Path(__file__).parent / 'fixtures' / 'research_route_compact.md').read_text()
+    assert actual == expected
+    footer = actual.split('<!-- PASS-THROUGH FOOTER:')[1].split('<!-- END PASS-THROUGH FOOTER -->')[0]
+    assert 'Search requested: fast; server mode unconfirmed; Perplexity ok.' in footer
+    assert 'coverage complete' not in actual.lower()
+
+
+def test_render_compact_without_new_receipts_preserves_complete_old_output(monkeypatch, research_route_date):
+    monkeypatch.setattr(render, '_skill_version', lambda: 'TEST')
+    report = research_route_report()
+    report.artifacts = {}
+    expected = (Path(__file__).parent / 'fixtures' / 'research_route_baseline.md').read_text()
+    assert render.render_compact(report, fun_level='off') == expected
+
+
+def test_render_route_without_facets_shows_only_actual_judge():
+    report = research_route_report()
+    report.artifacts = {'jev_rerank': {'resolution': 'ready', 'initial': {'judge_route': 'jev:openrouter'}}}
+    assert render._render_research_route(report) == ['Ranking: initial: Jev (OpenRouter).']
+
+
+def test_render_route_missing_key_reports_skip_and_incumbent():
+    report = research_route_report()
+    report.artifacts = {
+        'jev_rerank': {'resolution': 'missing_key', 'initial': {'judge_route': 'incumbent'}},
+        'fixed_research': {'status': 'skipped', 'reason': 'judge_unavailable', 'searches': []},
+    }
+    assert render._render_research_route(report) == [
+        'Ranking: initial: existing model (missing Jev key).',
+        'Fixed follow-up: 0 attempted, 0 succeeded; skipped; Jev unavailable.',
+    ]
+
+
+@pytest.mark.parametrize('stage,route', [('initial', 'incumbent'), ('final', 'deterministic')])
+def test_render_route_failed_judge_preserves_actual_fallback_stage(stage, route):
+    report = research_route_report()
+    report.artifacts['jev_rerank'][stage] = {'judge_route': route, 'fallback_reason': 'jev_failed',
+                                          'jev_calls': [{'status': 'failed', 'error': 'DO_NOT_PRINT_PROVIDER_BODY'}]}
+    lines = render._render_research_route(report)
+    label = {'incumbent': 'existing model', 'deterministic': 'local scoring'}[route]
+    assert f'{stage}: {label} (fallback: Jev failed)' in lines[1]
+    assert 'DO_NOT_PRINT_PROVIDER_BODY' not in '\n'.join(lines)
+
+
+@pytest.mark.parametrize('status,reason,rows,expected', [
+    ('partial', 'search_failed', [{'status': 'ok'}, {'status': 'failed'}], '2 attempted, 1 succeeded; partial; search failed'),
+    ('complete', 'no_new_evidence', [{'status': 'ok', 'new_urls': 0}], '1 attempted, 1 succeeded; finished; no new URLs'),
+    ('complete', 'bounded_round', [{'status': 'ok'}], '1 attempted, 1 succeeded; finished; planned queries finished'),
+    ('partial', 'search_budget_exhausted', [], '0 attempted, 0 succeeded; partial; search budget exhausted'),
+    ('skipped', 'source_budget_disabled', [], '0 attempted, 0 succeeded; skipped; search budget disabled'),
+    ('partial', 'deadline_exceeded', [], '0 attempted, 0 succeeded; partial; deadline exceeded'),
+])
+def test_render_fixed_stop_reason_is_not_a_coverage_claim(status, reason, rows, expected):
+    report = research_route_report()
+    report.artifacts['fixed_research'] = {'status': status, 'reason': reason, 'searches': rows}
+    assert render._render_research_route(report)[-1] == f'Fixed follow-up: {expected}.'
+
+
+def test_render_search_receipts_handles_agent_both_failure_and_mixed_modes():
+    report = research_route_report()
+    report.artifacts = {'grounding': [
+        {'provider': 'perplexity', 'mode': 'both', 'search': {'requested_search_type': 'fast'},
+         'agent': {'request': {'tools': [{'type': 'web_search', 'search_type': 'web'}]}}},
+        {'provider': 'unrelated', 'request': {'search_type': 'fast'}},
+    ]}
+    report.source_status['perplexity'] = schema.SourceOutcome('perplexity', 'partial', items_returned=1)
+    assert render._render_research_route(report) == ['Search requested: fast, web; server mode unconfirmed; Perplexity partial.']
+
+
+def test_render_research_receipt_does_not_serialize_secrets_queries_or_private_text():
+    report = research_route_report()
+    canary = 'PRIVATE_CREDENTIAL_CANARY'
+    report.artifacts['grounding'][0].update(query=canary, response=canary, headers={'Authorization': canary})
+    report.artifacts['grounding'][0]['request'].update(query=canary, api_key=canary)
+    report.artifacts['jev_rerank']['initial'].update(jev_calls=[{'state': canary, 'usage': {'unsafe': canary}}])
+    report.artifacts['jev_rerank']['final'].update(judge_route=canary, fallback_reason=canary)
+    report.artifacts['fixed_research'].update(reason=canary)
+    report.artifacts['fixed_research']['searches'][0].update(query=canary)
+    report.artifacts['corpus'] = {'private_body': canary}
+    actual = render.render_compact(report, fun_level='off')
+    assert canary not in actual
+    assert 'final: unknown (fallback: unknown)' in actual
+
+
+def test_render_route_omits_unselected_search_and_tolerates_old_malformed_receipts():
+    report = research_route_report()
+    report.artifacts = {'grounding': [{'provider': 'perplexity', 'request': {'tools': [None, {'type': 'web_search'}]}}],
+                        'jev_rerank': [], 'fixed_research': None}
+    assert render._render_research_route(report) == []
+    report.artifacts = {'grounding': 'bad', 'fixed_research': {'searches': 'bad', 'status': [], 'reason': {}}}
+    assert render._render_research_route(report) == ['Fixed follow-up: 0 attempted, 0 succeeded; unknown; unknown.']

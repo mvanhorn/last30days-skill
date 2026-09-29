@@ -59,3 +59,4 @@ v3 has durable watchlist with multi-source storage and extended time windows.
 - [@JosephOIbrahim](https://github.com/JosephOIbrahim) - Windows Unicode fix ([#17](https://github.com/mvanhorn/last30days-skill/pull/17))
 - [@levineam](https://github.com/levineam) - Model fallback for unverified orgs ([#16](https://github.com/mvanhorn/last30days-skill/pull/16))
 - [@jonthebeef](https://github.com/jonthebeef) - Early testing and feedback
+- [@sk-holmes](https://github.com/sk-holmes) - Perplexity direct API modes and async Deep Research ([#629](https://github.com/mvanhorn/last30days-skill/pull/629)); Perplexity Agent API migration ([#1019](https://github.com/mvanhorn/last30days-skill/pull/1019))

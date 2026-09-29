@@ -821,6 +821,7 @@ class TestGetXSourceStatusGrokPin:
         }
         with (
             mock.patch("lib.grok_x.has_stored_auth", return_value=True),
+            mock.patch("lib.xurl_x.has_stored_auth", return_value=False),
             mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
         ):
             status = env.get_x_source_status(config, probe=False)

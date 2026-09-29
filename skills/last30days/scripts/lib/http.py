@@ -7,7 +7,6 @@ import os
 import random
 import re
 import socket
-import sys
 import threading
 import time
 import urllib.error
@@ -765,6 +764,7 @@ def request(
     max_429_retries: int = MAX_429_RETRIES,
     raw: bool = False,
     deadline_monotonic: float | None = None,
+    retry_dns: bool = True,
 ) -> Union[Dict[str, Any], str]:
     """Make an HTTP request and return JSON response.
 
@@ -778,6 +778,7 @@ def request(
         timeout: Request timeout in seconds
         retries: Number of retries on failure
         max_429_retries: Maximum 429 retries before giving up (separate cap)
+        retry_dns: Permit DNS failures to expand the attempt budget.
         raw: If True, return raw response text instead of parsed JSON
         deadline_monotonic: Optional absolute monotonic deadline shared by all
             attempts and retry delays.
@@ -823,8 +824,11 @@ def request(
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
+    def log_request(message: str) -> None:
+        log(_scrub_fixture_value(message, redactions=fixture_redactions))
+
     safe_url = re.sub(r'([?&])(key|api_key|token|secret)=[^&]*', r'\1\2=***', url)
-    log(f"{method} {safe_url}")
+    log_request(f"{method} {safe_url}")
 
     last_error = None
     rate_limit_count = 0
@@ -853,13 +857,25 @@ def request(
         time.sleep(delay)
         return True
 
-    def open_and_read(request_timeout: float) -> tuple[int, str]:
-        with _open_request(req, request_timeout) as response:
-            return response.status, response.read().decode('utf-8')
+    def open_and_read(
+        request_timeout: float,
+    ) -> tuple[int, str | None, urllib.error.HTTPError | None]:
+        try:
+            with _open_request(req, request_timeout) as response:
+                return response.status, response.read().decode('utf-8'), None
+        except urllib.error.HTTPError as error:
+            # Error bodies can stall just like successful bodies. Read both
+            # inside the same deadline-protected worker before classification.
+            body = None
+            try:
+                body = error.read().decode('utf-8')
+            except (OSError, UnicodeDecodeError):
+                pass
+            return error.code, body, error
 
     def open_and_read_before_deadline(
         request_timeout: float,
-    ) -> tuple[int, str]:
+    ) -> tuple[int, str | None, urllib.error.HTTPError | None]:
         """Stop waiting at the wall deadline, even during DNS or body reads."""
         if deadline_monotonic is None:
             return open_and_read(request_timeout)
@@ -895,13 +911,16 @@ def request(
                 break
             request_timeout = min(timeout, remaining)
         try:
-            response_status, body = open_and_read_before_deadline(request_timeout)
+            response_status, body, response_error = open_and_read_before_deadline(request_timeout)
             if (
                 deadline_monotonic is not None
                 and time.monotonic() >= deadline_monotonic
             ):
                 raise_recorded(deadline_error())
-            log(f"Response: {response_status} ({len(body)} bytes)")
+            if response_error is not None:
+                raise response_error
+            body = body or ""
+            log_request(f"Response: {response_status} ({len(body)} bytes)")
             if raw:
                 _fixture_record(fixture_request, value=body, redactions=fixture_redactions)
                 return body
@@ -911,15 +930,10 @@ def request(
         except DeadlineExceeded as exc:
             raise_recorded(exc)
         except urllib.error.HTTPError as e:
-            body = None
-            try:
-                body = e.read().decode('utf-8')
-            except (OSError, UnicodeDecodeError):
-                pass
-            log(f"HTTP Error {e.code}: {e.reason}")
+            log_request(f"HTTP Error {e.code}: {e.reason}")
             if body:
-                snippet = " ".join(body.split())
-                log(f"Error body: {snippet[:200]}")
+                snippet = _scrub_fixture_value(" ".join(body.split()), redactions=fixture_redactions)
+                log_request(f"Error body: {snippet[:200]}")
             last_error = HTTPError(f"HTTP {e.code}: {e.reason}", e.code, body)
 
             # Don't retry client errors (4xx) except rate limits
@@ -942,7 +956,7 @@ def request(
                         getattr(e, "headers", None),
                         RETRY_DELAY * (2 ** attempt) + 1,
                     )
-                    log(f"Rate limited (429). Waiting {delay:.1f}s before retry {attempt + 2}/{retries}")
+                    log_request(f"Rate limited (429). Waiting {delay:.1f}s before retry {attempt + 2}/{retries}")
                 else:
                     delay = RETRY_DELAY * (2 ** attempt)
                 if not sleep_before_retry(delay):
@@ -953,7 +967,7 @@ def request(
                 # widening is DNS-only — don't grant extra HTTP attempts.
                 break
         except urllib.error.URLError as e:
-            log(f"URL Error: {e.reason}")
+            log_request(f"URL Error: {e.reason}")
             reason = getattr(e, "reason", None)
             # urllib commonly wraps socket.timeout (an alias of TimeoutError
             # since 3.10) in URLError; classify those as timeouts, not
@@ -963,7 +977,7 @@ def request(
                 f"URL Error: {e.reason}",
                 outcome_state=health.TIMEOUT if wrapped_timeout else health.UNREACHABLE,
             )
-            if _is_dns_failure(e):
+            if retry_dns and _is_dns_failure(e):
                 # DNS resolution failures are transient; expand the retry budget
                 # to MIN_DNS_RETRIES if the caller passed fewer, and use
                 # exponential backoff (1s, 2s, 4s, ...) instead of the linear
@@ -971,14 +985,14 @@ def request(
                 # causes don't bypass the regular retry budget.
                 dns_attempts += 1
                 if effective_retries < MIN_DNS_RETRIES:
-                    log(
+                    log_request(
                         f"DNS resolution failed; expanding retry budget from "
                         f"{effective_retries} to {MIN_DNS_RETRIES}"
                     )
                     effective_retries = MIN_DNS_RETRIES
                 if attempt < effective_retries - 1:
                     delay = 2 ** (dns_attempts - 1)  # 1s, 2s, 4s, 8s, ...
-                    log(
+                    log_request(
                         f"DNS resolution failure (attempt {dns_attempts}); "
                         f"retrying in {delay:.1f}s"
                     )
@@ -995,7 +1009,7 @@ def request(
                 # to non-DNS error paths.
                 break
         except json.JSONDecodeError as e:
-            log(f"JSON decode error: {e}")
+            log_request(f"JSON decode error: {e}")
             last_error = HTTPError(
                 f"Invalid JSON response: {e}",
                 outcome_state=health.SCHEMA_DRIFT,
@@ -1003,7 +1017,7 @@ def request(
             raise_recorded(last_error)
         except (OSError, TimeoutError, ConnectionResetError) as e:
             # Handle socket-level errors (connection reset, timeout, etc.)
-            log(f"Connection error: {type(e).__name__}: {e}")
+            log_request(f"Connection error: {type(e).__name__}: {e}")
             state = health.TIMEOUT if isinstance(e, TimeoutError) else health.UNREACHABLE
             last_error = HTTPError(
                 f"Connection error: {type(e).__name__}: {e}",

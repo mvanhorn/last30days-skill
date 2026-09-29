@@ -20,6 +20,8 @@ from shutil import which
 from typing import Any
 
 from . import (
+    adaptive_research,
+    jev,
     amazon,
     arxiv,
     bird_x,
@@ -626,15 +628,15 @@ def _discovery_engagement(
     totals: dict[str, dict[str, float | int]] = {}
     for item in items:
         bucket = totals.setdefault(item.source, {})
-        for field, value in item.engagement.items():
+        for field_name, value in item.engagement.items():
             if not isinstance(value, (int, float)) or isinstance(value, bool):
                 continue
             # Rank/score/reach metadata is not additive engagement: summing
             # Digg ranks across items fabricates a metric (agent-export uses
             # the same counter-field rule).
-            if not schema._is_counter_field(field):
+            if not schema._is_counter_field(field_name):
                 continue
-            bucket[field] = bucket.get(field, 0) + value
+            bucket[field_name] = bucket.get(field_name, 0) + value
     return {
         source: dict(sorted(metrics.items()))
         for source, metrics in sorted(totals.items())
@@ -2101,6 +2103,24 @@ def run(
     # enrichment starts at search time (inside _retrieve_stream_impl) so it
     # overlaps other sources instead of waiting for them all to finish.
     run_started = time.monotonic()
+    research_policy = config.get("_research_policy", "adaptive")
+    if research_policy not in {"adaptive", "fixed"}:
+        raise ValueError("Research policy must be adaptive or fixed")
+    if "_research_policy" in config and not config.get("_research_facets"):
+        raise ValueError("Research policy requires research facets")
+    jev_route, jev_reason = jev.configured_route(config)
+    facets = []
+    jev_client = None
+    if jev_route is not None:
+        facets = adaptive_research.validate_facets(config["_research_facets"]) if config.get("_research_facets") else []
+        if facets and internal_subrun:
+            raise ValueError("Research facets require a standalone topic run")
+        if facets:
+            config = dict(config)
+            config.setdefault("_perplexity_paid_budget", PaidSourceBudget())
+        jev_client, jev_reason = jev.resolve(config) if not mock else (None, "mock")
+    if jev_client is not None and facets:
+        jev_client.deadline_monotonic = run_started + 300
     from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
     resolved_corpus_dirs = corpus.resolve_directories(
         corpus_dirs or config.get("_CORPUS_DIRS"),
@@ -2676,18 +2696,6 @@ def run(
         run_started=run_started,
     )
 
-    # Reclassify partial failures as DEGRADED instead of silently dropping them.
-    # A source that 429'd on one subquery but succeeded on another is not a hard
-    # failure, but it is not healthy either: it likely returned fewer results
-    # than it should have. Move it out of errors_by_source (so it isn't reported
-    # as "failed") and into degraded_by_source (so it survives into warnings),
-    # rather than deleting the signal outright as the engine used to.
-    degraded_by_source: dict[str, str] = {}
-    for source in list(bundle.errors_by_source):
-        if bundle.items_by_source.get(source):
-            degraded_by_source[source] = bundle.errors_by_source[source]
-            del bundle.errors_by_source[source]
-
     hiring_summary = _apply_hiring_signal_gate(
         bundle,
         explicit=hiring_signals_mode,
@@ -2782,6 +2790,7 @@ def run(
     public_candidates = [
         candidate for candidate in candidates if id(candidate) not in private_candidate_ids
     ]
+    judge_receipt: dict[str, Any] = {}
     ranked_public = rerank.rerank_candidates(
         topic=topic,
         plan=plan,
@@ -2790,7 +2799,48 @@ def run(
         model=None if mock else runtime.rerank_model,
         shortlist_size=settings["rerank_limit"],
         resolved_handles=resolved_handles,
+        jev_client=jev_client,
+        receipt=judge_receipt,
     )
+    if jev_route is not None:
+        bundle.artifacts["jev_rerank"] = {"resolution": jev_reason, "initial": judge_receipt}
+    if facets:
+        added = _adaptive_followups(
+            topic=topic, config=config, facets=facets, client=jev_client,
+            judge_receipt=judge_receipt, candidates=ranked_public, bundle=bundle,
+            plan=plan, available=available, runtime=runtime, depth=depth,
+            date_range=(from_date, to_date), run_started=run_started,
+            per_stream_limit=settings["per_stream_limit"], mock=mock,
+        )
+        if added:
+            # Re-fuse public streams only. The private packet remains local and
+            # is scored below. Do not repeat enrichment network requests.
+            public_streams = {
+                key: [item for item in items if item.source != "corpus"]
+                for key, items in bundle.items_by_source_and_query.items()
+                if key[1] != "corpus"
+            }
+            refreshed = weighted_rrf(public_streams, plan, pool_limit=settings["pool_limit"],
+                                     range_from=from_date, range_to=to_date,
+                                     first_party_handles=resolved_handles)
+            final_judge: dict[str, Any] = {}
+            ranked_public = rerank.rerank_candidates(
+                topic=topic, plan=plan, candidates=refreshed,
+                provider=None if mock else reasoning_provider,
+                model=None if mock else runtime.rerank_model,
+                shortlist_size=settings["rerank_limit"], resolved_handles=resolved_handles,
+                jev_client=jev_client, receipt=final_judge,
+            )
+            bundle.artifacts["jev_rerank"]["final"] = final_judge
+            if research_policy == "adaptive":
+                if (final_judge.get("judge_route", "").startswith("jev:")
+                        and bundle.artifacts["adaptive_research"]["status"] == "complete"):
+                    bundle.artifacts["adaptive_research"]["after"] = adaptive_research.assess(
+                        ranked_public, facets, jev_client)
+                else:
+                    bundle.artifacts["adaptive_research"]["after"] = {"status": "unknown", "reason": "incomplete_search_or_judge"}
+            items_by_source["perplexity"] = dedupe.dedupe_items(bundle.items_by_source.get("perplexity", []))
+        source_status = _finalize_source_status(bundle.source_status, items_by_source)
     # Corpus titles/snippets must never enter a hosted reasoning prompt. Score
     # every candidate carrying corpus evidence with the deterministic fallback,
     # even when the rest of the run uses a remote reranker.
@@ -2855,6 +2905,18 @@ def run(
             )
             http.fixture_source_record(star_request, collected_star_map)
 
+    # Reconcile failures after every retrieval stage, including follow-ups.
+    # A source that 429'd on one subquery but succeeded on another is not a hard
+    # failure, but it is not healthy either: it likely returned fewer results
+    # than it should have. Move it out of errors_by_source (so it isn't reported
+    # as "failed") and into degraded_by_source (so it survives into warnings),
+    # rather than deleting the signal outright as the engine used to.
+    degraded_by_source: dict[str, str] = {}
+    for source in list(bundle.errors_by_source):
+        if bundle.items_by_source.get(source):
+            degraded_by_source[source] = bundle.errors_by_source[source]
+            del bundle.errors_by_source[source]
+
     clusters = cluster_candidates(ranked_candidates, plan)
     warnings = _warnings(items_by_source, ranked_candidates, bundle.errors_by_source, degraded_by_source)
     # One-sided entity coverage is a reporting warning, not a source failure:
@@ -2900,6 +2962,168 @@ def run(
         artifacts=bundle.artifacts,
         library_context=library_context,
     )
+
+
+def _followup_skip_reason(*, config: dict[str, Any], candidates: list[schema.Candidate],
+                          client: jev.JevClient | None, judge_receipt: dict[str, Any],
+                          available: list[str], bundle: schema.RetrievalBundle,
+                          run_started: float, mock: bool) -> str | None:
+    if mock:
+        return "mock"
+    if any(adaptive_research.is_private_candidate(candidate) for candidate in candidates):
+        return "private_candidates"
+    if client is None:
+        return "judge_unavailable"
+    if candidates and not judge_receipt.get("judge_route", "").startswith("jev:"):
+        return "judge_failed"
+    if not config.get("PERPLEXITY_API_KEY") or "perplexity" not in available:
+        return "native_search_not_enabled"
+    if _source_fetch_cap("perplexity", config) <= 0:
+        return "source_budget_disabled"
+    if any(outcome.state not in (health.OK, health.NO_RESULTS) or outcome.lane_failure_state
+           for source, outcome in bundle.source_status.items() if source != "corpus"):
+        return "collection_incomplete"
+    if time.monotonic() >= run_started + 300:
+        return "deadline_exceeded"
+    return None
+
+
+def _followup_pivots(policy: str, facets: list[dict[str, Any]], plan: schema.QueryPlan,
+                     candidates: list[schema.Candidate], client: jev.JevClient,
+                     receipt: dict[str, Any]) -> list[dict[str, Any]] | None:
+    if policy == "adaptive":
+        receipt["before"] = adaptive_research.assess(candidates, facets, client)
+        if receipt["before"].get("status") != "ok":
+            receipt.update(status="unknown", reason="judgment_failed", after={"status": "unknown"})
+            return None
+        return adaptive_research.select_pivots(
+            receipt["before"], [q.search_query for q in plan.subqueries], limit=2)
+    seen_queries = {" ".join(q.search_query.split()).casefold() for q in plan.subqueries}
+    pivots = []
+    for facet in facets:
+        query_key = " ".join(facet["query"].split()).casefold()
+        if query_key not in seen_queries:
+            seen_queries.add(query_key)
+            pivots.append(facet)
+        if len(pivots) == 2:
+            break
+    return pivots
+
+
+def _retrieve_followup(*, topic: str, facet: dict[str, Any], label: str,
+                       row: dict[str, Any], config: dict[str, Any],
+                       bundle: schema.RetrievalBundle, plan: schema.QueryPlan,
+                       runtime: schema.ProviderRuntime, depth: str,
+                       date_range: tuple[str, str], run_started: float,
+                       per_stream_limit: int) -> bool | None:
+    """Append one public stream; None records an expected source failure."""
+    subquery = schema.SubQuery(label=label, search_query=facet["query"],
+                              ranking_query=topic, sources=["perplexity"], weight=0.5)
+    followup_config = {**config, "LAST30DAYS_PERPLEXITY_MODE": "search",
+                       "LAST30DAYS_PERPLEXITY_SEARCH_TYPE": facet["search_type"],
+                       "_deep_research": False, "_adaptive_deadline": run_started + 300}
+    plan.subqueries.append(subquery)
+    try:
+        raw, artifact = _retrieve_stream(
+            topic=topic, subquery=subquery, source="perplexity", config=followup_config,
+            depth=depth, date_range=date_range, runtime=runtime, mock=False,
+            run_started=run_started,
+        )
+        outcome = _legacy_artifact_outcome("perplexity", artifact)
+        if outcome or artifact.get("_source_outcome_detail"):
+            state = outcome["state"] if outcome else artifact.get("_source_outcome_detail_state", health.ERROR)
+            raise SourceRunError("Adaptive search returned an incomplete result", state)
+    except (SourceRunError, http.HTTPError, OSError, ValueError) as exc:
+        state, attempted = _classify_source_failure(exc)
+        bundle.record_failure("perplexity", state, "Adaptive search failed", attempted=attempted)
+        row["failure_state"] = state
+        return None
+    normalized = _normalize_score_dedupe(
+        "perplexity", raw, *date_range, freshness_mode=plan.freshness_mode,
+        ranking_query=topic)[:per_stream_limit]
+    seen = {fusion.candidate_key(item) for items in bundle.items_by_source.values() for item in items}
+    novel = [item for item in normalized if fusion.candidate_key(item) not in seen]
+    bundle.add_items(label, "perplexity", novel)
+    if artifact:
+        bundle.artifacts.setdefault("grounding", []).append(artifact)
+    row.update(status="ok", returned=len(raw), retained=len(normalized), new_urls=len(novel))
+    return bool(novel)
+
+
+def _run_followup_queries(*, topic: str, policy: str, pivots: list[dict[str, Any]],
+                          receipt: dict[str, Any], config: dict[str, Any],
+                          bundle: schema.RetrievalBundle, plan: schema.QueryPlan,
+                          runtime: schema.ProviderRuntime, depth: str,
+                          date_range: tuple[str, str], run_started: float,
+                          per_stream_limit: int) -> bool:
+    """Spend the shared budget in order and stop on failure or no new URL."""
+    added = False
+    used_labels = {q.label for q in plan.subqueries}
+    budget = config.get("_perplexity_paid_budget")
+    if not isinstance(budget, PaidSourceBudget):
+        budget = PaidSourceBudget(used=1)  # Reserve the initial call for direct helper use.
+    source_cap = config.get("_max_source_fetches")
+    search_limit = 3 if source_cap is None else min(3, int(source_cap))
+    for index, facet in enumerate(pivots):
+        if time.monotonic() >= run_started + 300:
+            receipt.update(status="partial", reason="deadline_exceeded")
+            break
+        if not budget.try_consume(search_limit, claimant=topic):
+            receipt.update(status="partial", reason="search_budget_exhausted")
+            break
+        label = f"{policy}_{index + 1}"
+        while label in used_labels:
+            label += "_"
+        used_labels.add(label)
+        row = {"facet_id": facet["id"], "query": facet["query"],
+               "search_type": facet["search_type"], "status": "failed", "new_urls": 0}
+        receipt["searches"].append(row)
+        novel = _retrieve_followup(
+            topic=topic, facet=facet, label=label, row=row, config=config, bundle=bundle,
+            plan=plan, runtime=runtime, depth=depth, date_range=date_range,
+            run_started=run_started, per_stream_limit=per_stream_limit)
+        if novel is None:
+            receipt.update(status="partial", reason="search_failed")
+            break
+        added = added or novel
+        if not novel:
+            receipt["reason"] = "no_new_evidence"
+            break
+    return added
+
+
+def _adaptive_followups(*, topic: str, config: dict[str, Any], facets: list[dict[str, Any]],
+                        client: jev.JevClient | None, judge_receipt: dict[str, Any],
+                        candidates: list[schema.Candidate], bundle: schema.RetrievalBundle,
+                        plan: schema.QueryPlan, available: list[str], runtime: schema.ProviderRuntime,
+                        depth: str, date_range: tuple[str, str], run_started: float,
+                        per_stream_limit: int, mock: bool = False) -> bool:
+    """One public-only follow-up round; fixed policy makes no coverage claims."""
+    policy = config.get("_research_policy", "adaptive")
+    if policy not in {"fixed", "adaptive"}:
+        raise ValueError("Research policy must be adaptive or fixed")
+    receipt = {"status": "skipped", "reason": None, "searches": [],
+               "max_queries": 2, "deadline_seconds_from_run_start": 300}
+    bundle.artifacts["fixed_research" if policy == "fixed" else "adaptive_research"] = receipt
+    if policy == "fixed":
+        receipt["policy"] = "fixed"
+    receipt["reason"] = _followup_skip_reason(
+        config=config, candidates=candidates, client=client, judge_receipt=judge_receipt,
+        available=available, bundle=bundle, run_started=run_started, mock=mock)
+    if receipt["reason"]:
+        return False
+    pivots = _followup_pivots(policy, facets, plan, candidates, client, receipt)
+    if pivots is None:
+        return False
+    receipt.update(status="complete", reason="bounded_round" if pivots else (
+        "no_unused_queries" if policy == "fixed" else "no_explicit_gap"))
+    added = _run_followup_queries(
+        topic=topic, policy=policy, pivots=pivots, receipt=receipt, config=config,
+        bundle=bundle, plan=plan, runtime=runtime, depth=depth,
+        date_range=date_range, run_started=run_started, per_stream_limit=per_stream_limit)
+    if not added and policy == "adaptive":
+        receipt["after"] = receipt["before"] if receipt["status"] == "complete" else {"status": "unknown"}
+    return added
 
 
 def _candidate_is_duplicate(
@@ -4099,7 +4323,6 @@ def _run_supplemental_searches(
     # Search primary handles (full weight): FROM lane (their own tweets) +
     # ABOUT lane (tweets mentioning them). Both engagement-weighted and deduped
     # by URL at normalize time.
-    any_revoked = False  # Track auth revocation across lanes
     if all_promotable:
         # Independent try/except per lane so a failure in one does not discard
         # the other's already-computed results.
@@ -4114,7 +4337,6 @@ def _run_supplemental_searches(
                 explicit_items, explicit_revoked = _from_lane(explicit_promotable, FROM_LANE_COUNT_PER, and_topic=False)
                 from_items.extend(explicit_items)
                 if explicit_revoked:
-                    any_revoked = True
                     bundle.record_failure(
                         x_slug, schema.AUTH_FAILED,
                         "Phase 2 FROM-lane (explicit): grok session expired or was revoked",
@@ -4133,7 +4355,6 @@ def _run_supplemental_searches(
                 extracted_items, extracted_revoked = _from_lane(extracted_promotable, FROM_LANE_COUNT_PER, and_topic=True)
                 from_items.extend(extracted_items)
                 if extracted_revoked:
-                    any_revoked = True
                     bundle.record_failure(
                         x_slug, schema.AUTH_FAILED,
                         "Phase 2 FROM-lane (extracted): grok session expired or was revoked",
@@ -4151,7 +4372,6 @@ def _run_supplemental_searches(
         try:
             about_items, about_revoked = _about_lane(all_promotable, MENTION_LANE_COUNT_PER)
             if about_revoked:
-                any_revoked = True
                 bundle.record_failure(
                     x_slug, schema.AUTH_FAILED,
                     "Phase 2 ABOUT-lane: grok session expired or was revoked",
@@ -4171,7 +4391,6 @@ def _run_supplemental_searches(
             try:
                 name_items, name_revoked = _name_lane(all_promotable, MENTION_LANE_COUNT_PER)
                 if name_revoked:
-                    any_revoked = True
                     bundle.record_failure(
                         x_slug, schema.AUTH_FAILED,
                         "Phase 2 NAME-lane: grok session expired or was revoked",
@@ -4237,7 +4456,6 @@ def _run_supplemental_searches(
         try:
             raw_items, rel_revoked = _from_lane(related_handles, RELATED_HANDLE_COUNT_PER, and_topic=False)
             if rel_revoked:
-                any_revoked = True
                 bundle.record_failure(
                     x_slug, schema.AUTH_FAILED,
                     "Phase 2 related handle search: grok session expired or was revoked",

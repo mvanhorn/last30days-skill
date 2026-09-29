@@ -43,6 +43,7 @@ ALL_KEYS=(
   GITHUB_TOKEN
   BRIGHTDATA_API_KEY
   X_BEARER_TOKEN
+  TYPESAFE_API_KEY
 )
 
 if [[ "${OSTYPE:-}" != darwin* ]]; then

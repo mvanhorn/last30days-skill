@@ -17,6 +17,72 @@ This is a focused **configuration reference** maintained alongside the engine. T
 
 ---
 
+## Jev judgments and bounded follow-up
+
+Jev ranks public snippets when a usable key is configured. The default `auto` chooses a direct Typesafe key first, otherwise OpenRouter. Set `LAST30DAYS_JEV_PROVIDER=off` or `--jev-provider off` to disable it. An explicit `typesafe` or `openrouter` selection uses only that route.
+
+A failed selected route uses the existing judgment path; it does not try another Jev provider. Private corpus content stays local and is excluded from Jev input.
+
+If the selected route has no nonblank key in the resolved engine config, Jev and follow-up are skipped before facet-file reads or validation, client creation, and follow-up budget or controller setup. Ordinary local or hosted research continues. Ordinary runs without a key stay quiet.
+
+Without a usable selected key, explicit Jev or facet requests receive one fixed skip message. No-key runs create no Jev or follow-up report artifact. An explicit route never borrows the other route's key.
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `LAST30DAYS_JEV_PROVIDER` | `auto` | A usable key enables Jev. `off` disables it; `typesafe` and `openrouter` pin one route. CLI wins. |
+| `TYPESAFE_API_KEY` | unset | Direct Typesafe credential; supported by env files, Keychain, and pass. Enables the default Jev route. |
+| `OPENROUTER_API_KEY` | unset | Existing credential also enables Jev when no Typesafe key is available, unless the provider is pinned or off. |
+
+For route selection, use the "When to use Jev" table in [the skill](skills/last30days/SKILL.md). See [measured results and failure cases](docs/jev-research-results.md) for the evidence behind that guidance.
+
+An OpenRouter key can also activate the engine's existing reasoning provider for planning and fun scoring. The Jev selector controls Jev judgments, not the existing reasoning provider. If the configured reasoning model is unavailable, select an available model with `LAST30DAYS_PLANNER_MODEL` and `LAST30DAYS_RERANK_MODEL`. Jev success does not prove that this separate model is available.
+
+### Add a Jev key
+
+Add the selected key to `~/.config/last30days/.env` (or the `.env` inside `LAST30DAYS_CONFIG_DIR`). Preserve existing entries. Keep file permissions at `600` on POSIX hosts. A repo-root `.env` is not loaded automatically.
+
+```dotenv
+# Direct Typesafe route: fill this value.
+TYPESAFE_API_KEY=
+# Alternative OpenRouter route: fill this value instead.
+OPENROUTER_API_KEY=
+```
+
+Use `TYPESAFE_API_KEY`, not `JEV_API_KEY`; the engine does not read that alias. Empty slots are ignored. An empty slot does not disable a key supplied by the process environment or an existing credential store. Leave `LAST30DAYS_JEV_PROVIDER` unset to use the default `auto`. The key enables Jev ranking; no extra switch is needed. Ask `/last30days Rust releases through Typesafe` or specify OpenRouter to pin the route for one run. Set the provider to `off` to keep ordinary ranking even when a key exists. For dev-time engine tests, use `--jev-provider typesafe` or `--jev-provider openrouter`.
+
+Fast Search and either follow-up policy also need a direct `PERPLEXITY_API_KEY` and an enabled Perplexity collector. An OpenRouter key can supply Jev judgments, but cannot supply native Perplexity Fast Search. Store real keys only in local credential files, the process environment, or a supported credential store. Do not put them in examples, reports, or PRs.
+
+For bounded gap filling, ask `/last30days Rust releases with Jev and the research facets in facets.json`. The skill passes `--research-facets facets.json` when the user requests follow-up. The configured key supplies Jev ranking; facets and paid Perplexity collection still need their own request or saved source preference. The facets file has this shape:
+
+```json
+[
+  {"id": "release", "question": "Which Rust release changed deployment behavior?", "query": "Rust release deployment changes", "search_type": "fast", "required_role": "any"},
+  {"id": "experience", "question": "What deployment failures did users report?", "query": "Rust release deployment failure experience", "search_type": "web", "required_role": "experience"}
+]
+```
+
+Each facet has `id`, `question`, and `query`. Optional `search_type` is `fast` (default) or `web`; optional `required_role` is `any` (default) or `experience`. A facet asks about snippet coverage, not truth or full-document support. Judgment thresholds are provisional and require calibration.
+
+Both policies require a direct `PERPLEXITY_API_KEY`, an already enabled Perplexity collector, and a usable Jev route that is not disabled. With a configured Jev route, other missing prerequisites produce a skipped receipt and no extra calls. Facets do not enable Perplexity by themselves.
+
+The run allows at most one follow-up round and two raw Search API requests, with a 300-second deadline from run start for Jev and added searches. Jev ranking has no separate per-run call quota or fixed batch-count cutoff. Each request still has a timeout, at most 32 questions, and a 64,000-byte packet limit. Adaptive coverage inspects at most 12 candidates.
+
+An explicit `--max-source-fetches` cap includes the initial Perplexity request and can reduce the follow-up allowance; zero or a negative cap disables it. Only runs with facets use this 300-second deadline for Jev requests and added searches. Without facets, Jev ranking keeps its per-request 10-second timeout and does not expire because earlier collection took more than 300 seconds. Existing collectors, planning, and incumbent fallback keep their existing limits; this is not a total run-time or spend cap. Mock runs make no live judgment or search calls.
+
+With a configured Jev route, discovery, comparison, drill, Deep Research, cached-only rendering, and internal commands reject facets. When a usable Jev key is configured and Jev is not disabled, the engine bypasses the hosted backend and runs locally. Without that key, optional Jev and facets are skipped and ordinary hosted research remains available. Read the adaptive receipt and collector gaps before making a coverage claim.
+
+For fixed follow-up, ask `/last30days Rust releases with Perplexity Fast Search, Jev, and fixed follow-ups from facets.json`. The skill adds `--research-policy fixed` and selects direct Search mode for the initial request. Use `search_type: "fast"` on **each facet** for all-fast retrieval: the global Perplexity selector does not override facet search types. Fixed mode runs the first two unused facet queries in file order, removes duplicate queries, and stops when a search adds no new URL. It keeps Jev reranking before and after added results, but makes no coverage judgments or claims. Read `fixed_research` for retrieval status and `jev_rerank` for ranking failures or fallback. `--research-policy adaptive` retains gap-based follow-up and remains the default when the flag is absent. An explicit policy requires a facets file; neither policy enables Perplexity collection by itself.
+
+Ordinary compact output includes a short execution receipt when these artifacts exist. It shows requested Search types (not server-confirmed modes), recorded initial/final ranking routes and fallback, and follow-up attempts, successes, and stop reason. Adaptive output also reports unknown coverage without a completeness claim. No query text, credentials, raw provider errors, or private snippets are included. Runs without these artifacts keep the existing output shape.
+
+Example footer lines for a successful fixed run:
+
+```text
+Search requested: fast; server mode unconfirmed; Perplexity ok.
+Ranking: initial: Jev (Typesafe); final: Jev (Typesafe).
+Fixed follow-up: 2 attempted, 2 succeeded; finished; planned queries finished.
+```
+
 ## Where output is saved
 
 | Platform | Default path | Override |
@@ -44,6 +110,10 @@ The engine's `.env` reader doesn't expand `$HOME` — only the tilde, via `Path(
 **Per-run overrides:**
 
 - `--save-dir <path>` - one-off output location. **Flag wins over env var.** If neither flag nor env var is set, the engine does not write a file (DB persistence is independent — see `LAST30DAYS_STORE` below).
+- `--jev-provider {off,auto,typesafe,openrouter}` - override `LAST30DAYS_JEV_PROVIDER`. Default: `auto`; a usable Typesafe or OpenRouter key enables Jev ranking. `off` disables it.
+- `--research-policy <fixed|adaptive>` - choose fixed prewritten queries or adaptive gap filling (default). Requires `--research-facets`; local runs only.
+- `--research-facets <path>` - read a local UTF-8 JSON list of at most four facets (64 KiB maximum). Requires a usable Jev route and fresh single-topic local research. See [Jev judgments and bounded follow-up](#jev-judgments-and-bounded-follow-up).
+- `--perplexity-search-type {web,fast}` - override `LAST30DAYS_PERPLEXITY_SEARCH_TYPE` for direct Perplexity Search API and Agent `web_search`. This does not enable the paid source or select an Agent preset.
 - `--output <file>` - write the rendered output to an exact file path, using the format selected by `--emit`.
 - `--json-profile {agent,raw}` - select the research JSON shape used with `--emit=json`. `agent` is the default, versioned workflow contract; `raw` preserves the full internal `Report` dump for debugging and power users. See the [JSON export reference](docs/reference/json-export.md).
 - `--corpus <dir>` - add a local `.md`/`.txt` directory as a private ranked source; repeat the flag for multiple directories. PDFs are extracted only when `pdftotext` is on PATH and otherwise skip with a note. File modification time supplies recency, so the normal research window applies.
@@ -117,7 +187,7 @@ Override the global location with `LAST30DAYS_CONFIG_DIR=/path` (or `LAST30DAYS_
 
 The project-scoped file is useful for **intentional per-client setups**: drop a `.claude/last30days.env` into each client folder (`SCRAPECREATORS_API_KEY`, `INCLUDE_SOURCES`, `LAST30DAYS_MEMORY_DIR`, `BSKY_HANDLE`, etc), then opt in with `LAST30DAYS_TRUST_PROJECT_CONFIG=1` from your shell or `~/.config/last30days/.env`. Folder-mode hosts such as Codex desktop do not trust hidden project config by default, and discovery stops at the git root so unrelated parent folders cannot silently influence runs. An untrusted repo's `.claude/last30days.env` is not read.
 
-**`LAST30DAYS_API_KEY`** + **`LAST30DAYS_API_BASE`** - optional remote-API backend. Set BOTH to route research through a remote API endpoint instead of running the local sources: `LAST30DAYS_API_BASE` is the endpoint (there is no built-in default), and `LAST30DAYS_API_KEY` is the bearer key for it. When both are set (and `--mock` is not passed), the engine submits the topic to that endpoint, polls with progress on stderr, and prints the server's report; none of the per-source keys below are used for that run. A configured local corpus is the privacy exception: the engine bypasses the hosted backend and runs locally rather than forwarding file-derived input. Non-default `--register` selections are forwarded with the request so server-side synthesis uses the same audience preset. Leave either unset to run local sources exactly as normal. Unlike the other keys here, these two are read only from the **process environment** (export them in your shell or host config) - they are deliberately not loaded from the `.env` files above, so a project-scoped `.env` can never silently redirect research to a remote endpoint. The remote endpoint does not return the local `Report` needed for the versioned agent JSON profile; use `--emit=json --json-profile=raw` for its existing server-response JSON contract.
+**`LAST30DAYS_API_KEY`** + **`LAST30DAYS_API_BASE`** - optional remote-API backend. Set BOTH to route research through a remote API endpoint instead of running the local sources: `LAST30DAYS_API_BASE` is the endpoint (there is no built-in default), and `LAST30DAYS_API_KEY` is the bearer key for it. When both are set (and `--mock` is not passed), the engine submits the topic to that endpoint, polls with progress on stderr, and prints the server's report; none of the per-source keys below are used for that run. A configured local corpus or Jev route bypasses the hosted backend and runs locally. This keeps file-derived input local and lets the local pipeline run Jev. Explicit `LAST30DAYS_JEV_PROVIDER=off` disables the Jev exception. Non-default `--register` selections are forwarded with the request so server-side synthesis uses the same audience preset. Leave either unset to run local sources exactly as normal. Unlike the other keys here, these two are read only from the **process environment** (export them in your shell or host config) - they are deliberately not loaded from the `.env` files above, so a project-scoped `.env` can never silently redirect research to a remote endpoint. The remote endpoint does not return the local `Report` needed for the versioned agent JSON profile; use `--emit=json --json-profile=raw` for its existing server-response JSON contract.
 
 **`BRIGHTDATA_API_KEY`** - optional, for the `amazon` source. The Bright Data CLI normally owns its own auth via `brightdata login`, so this is only needed if you would rather keep an explicit key in `.env` or the keychain. It is resolved through the standard config layering and passed to the CLI through the child process environment, never on the command line (where it would be readable from `/proc/<pid>/cmdline` by other local users on a shared host).
 
@@ -271,6 +341,12 @@ With a direct key, normal `agent` mode uses the controlled `last30days-controlle
 
 The engine routes every normal Perplexity mode through one whole-topic planner subquery per command, including competitor fanout, and does not repeat it during thin-source retries. A generic source-fetch override cannot raise this paid-call cap.
 
+For an explicit Fast Search run, ask `/last30days Rust releases using Perplexity Fast Search`. The skill maps that request to the direct Perplexity source and `--perplexity-search-type fast`. For raw ranked rows, also set `LAST30DAYS_PERPLEXITY_MODE=search`; keep `agent` for synthesis. No source is enabled by the search-type flag alone.
+
+`fast` selects the search backend, not the Agent API `fast` preset. Use it for routine retrieval after deciding that the lower-latency path fits the task. Keep `web` for difficult or ambiguous queries. Do not infer equal recall from a matching response schema. The engine makes no automatic comparison or fallback requests. Compare fresh runs with separate output names; cached report review retains the original request metadata and does not rerun search. See the [Search API contract](https://docs.perplexity.ai/docs/search/fast-search) and [Agent web search contract](https://docs.perplexity.ai/docs/agent-api/tools/web-search).
+
+Fast Search failure receipts keep `requested_search_type` when a native request fails. This records intent, not server execution. The hosted backend does not accept this selector. If a usable Jev key already routes the run locally, the selector applies there. Otherwise, hosted execution exits with an explicit error instead of ignoring the selector.
+
 `LAST30DAYS_PERPLEXITY_AGENT_PRESET` is a separate explicit opt-in for a mutable Perplexity preset (`fast`, `low`, `medium`, or `high`). Presets can change their model, prompt, tools, cost, and output behavior. The engine still supplies its configured `web_search` tool so date, domain, location, result-count, and context constraints merge with the preset; other preset tools can remain enabled. Do not set this variable when you need the controlled profile. The engine never selects a preset automatically for normal runs.
 
 `--deep-research` requires a normal positional topic and ignores `LAST30DAYS_PERPLEXITY_MODE`. With a direct key it starts at most one Agent API background run with the explicit dynamic `high` preset. With only OpenRouter it preserves the older synchronous `perplexity/sonar-deep-research` fallback. It cannot be combined with discovery, drill, cached-only, competitor, or vs-mode. This is a separate paid action. The engine caps it at one planner subquery and does not repeat it during thin-source retries. Direct background runs merge the configured `web_search` constraints with the preset, but the provider controls its other tools and can change them. A local timeout stops waiting but does not stop a direct remote run. Direct artifacts retain the served model, response ID, provider status, incomplete reason, poll count, timeout, and safe error metadata; OpenRouter artifacts retain the served model, response ID, usage, and citation count. Neither stores request headers or raw tool traces.
@@ -286,6 +362,7 @@ Perplexity-specific env vars:
 | `LAST30DAYS_PERPLEXITY_AGENT_TIMEOUT_SECONDS` | `120` | controlled Agent profile | Synchronous request timeout, clamped to 1..600 seconds. |
 | `LAST30DAYS_PERPLEXITY_AGENT_PRESET` | unset | normal Agent runs | Explicit mutable preset only: `fast`, `low`, `medium`, or `high`. It replaces the controlled profile for that run. |
 | `LAST30DAYS_PERPLEXITY_MAX_RESULTS` | `10` | Search API and all Agent `web_search` requests | Clamped to 1..20. |
+| `LAST30DAYS_PERPLEXITY_SEARCH_TYPE` | unset | Search API and all Agent `web_search` requests | Explicit `web` or `fast`; invalid values stop the Perplexity source before a request. Omitted when unset, so existing provider defaults remain. CLI `--perplexity-search-type` wins. Does not change OpenRouter Sonar. |
 | `LAST30DAYS_PERPLEXITY_SEARCH_CONTEXT_SIZE` | provider default | Search API and all Agent `web_search` requests | `low`, `medium`, or `high`; omitted unless set. |
 | `LAST30DAYS_PERPLEXITY_DOMAIN_FILTER` | unset | Search API and all Agent `web_search` requests | Comma-separated domains, max 20. |
 | `LAST30DAYS_PERPLEXITY_LANGUAGE_FILTER` | unset | Search API only | Comma-separated ISO 639-1 language codes. Agent API has no equivalent. |

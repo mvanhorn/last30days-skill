@@ -1,0 +1,252 @@
+{
+  "date": "2026-09-28",
+  "pipeline_executions": 16,
+  "topic_count": 2,
+  "final_selected_pipeline_cases": 11,
+  "final_selected_passes": 11,
+  "initial_pipeline_failures": 5,
+  "initial_failure_cause": "The configured reasoning model was unavailable (HTTP 404); all Jev and Perplexity calls succeeded.",
+  "successful_reasoning_test_pin": "openai/gpt-4.1-mini",
+  "repo_defaults_changed": false,
+  "physical_api_calls": 99,
+  "http_failures": 6,
+  "jev_http_failures": 0,
+  "provider_reported_cost_usd": 0.011213072,
+  "search_list_price_estimate_usd": 0.073,
+  "direct_jev_list_price_estimate_usd": 0.0019066740000000001,
+  "known_cost_estimate_usd": 0.086119746,
+  "unpriced_failed_requests": 6,
+  "pricing_sources": [
+    "https://docs.perplexity.ai/docs/search/fast-search",
+    "https://docs.typesafe.ai/models"
+  ],
+  "distinct_search_jev_policy_configurations": 9,
+  "holdout_checks": {
+    "typesafe": {
+      "cases": 7,
+      "nonempty_cases": 5,
+      "errors": 0,
+      "ndcg_at_5": 0.9927880866633305,
+      "deterministic_ndcg_at_5": 0.8837604313571182,
+      "provider_calls": 5,
+      "returned_models": [
+        "jev-1.13.0"
+      ],
+      "median_request_ms": 145.0080843642354,
+      "provider_reported_cost_usd": null,
+      "fixture_sha256": "2bdc60b7089f6faf8f99e97b89b74dcef25ec28616a4995a809f54838d6e777c"
+    },
+    "openrouter": {
+      "cases": 7,
+      "nonempty_cases": 5,
+      "errors": 0,
+      "ndcg_at_5": 0.9927880866633305,
+      "deterministic_ndcg_at_5": 0.8837604313571182,
+      "provider_calls": 5,
+      "returned_models": [
+        "typesafe/jev-1.13-20260917"
+      ],
+      "median_request_ms": 170.67025043070316,
+      "provider_reported_cost_usd": 0.000228228,
+      "fixture_sha256": "2bdc60b7089f6faf8f99e97b89b74dcef25ec28616a4995a809f54838d6e777c"
+    }
+  },
+  "selected_cases": [
+    {
+      "case": "rust-off-fast-none",
+      "status": "passed",
+      "checks": {
+        "sources_ok": true,
+        "transport_ok": true,
+        "bounded_search": true,
+        "correct_search_mode": true,
+        "candidates_present": true,
+        "no_optional_flow": true
+      },
+      "wall_ms": 338.206,
+      "calls": 1
+    },
+    {
+      "case": "rust-typesafe-fast-none",
+      "status": "passed",
+      "checks": {
+        "sources_ok": true,
+        "transport_ok": true,
+        "bounded_search": true,
+        "correct_search_mode": true,
+        "candidates_present": true,
+        "selected_provider_only": true,
+        "initial_jev": true
+      },
+      "wall_ms": 405.801,
+      "calls": 2
+    },
+    {
+      "case": "rust-typesafe-fast-fixed",
+      "status": "passed",
+      "checks": {
+        "sources_ok": true,
+        "transport_ok": true,
+        "bounded_search": true,
+        "correct_search_mode": true,
+        "candidates_present": true,
+        "selected_provider_only": true,
+        "initial_jev": true,
+        "final_jev": true,
+        "fixed_complete": true,
+        "fixed_no_coverage": true,
+        "fixed_no_judge_coverage": true
+      },
+      "wall_ms": 1240.946,
+      "calls": 5
+    },
+    {
+      "case": "rust-typesafe-web-fixed",
+      "status": "passed",
+      "checks": {
+        "sources_ok": true,
+        "transport_ok": true,
+        "bounded_search": true,
+        "correct_search_mode": true,
+        "candidates_present": true,
+        "selected_provider_only": true,
+        "initial_jev": true,
+        "final_jev": true,
+        "fixed_complete": true,
+        "fixed_no_coverage": true,
+        "fixed_no_judge_coverage": true
+      },
+      "wall_ms": 1425.798,
+      "calls": 5
+    },
+    {
+      "case": "rust-typesafe-fast-adaptive",
+      "status": "passed",
+      "checks": {
+        "sources_ok": true,
+        "transport_ok": true,
+        "bounded_search": true,
+        "correct_search_mode": true,
+        "candidates_present": true,
+        "selected_provider_only": true,
+        "initial_jev": true,
+        "final_jev": true,
+        "adaptive_complete": true,
+        "coverage_executed": true
+      },
+      "wall_ms": 1167.213,
+      "calls": 7
+    },
+    {
+      "case": "home-typesafe-fast-fixed",
+      "status": "passed",
+      "checks": {
+        "sources_ok": true,
+        "transport_ok": true,
+        "bounded_search": true,
+        "correct_search_mode": true,
+        "candidates_present": true,
+        "selected_provider_only": true,
+        "initial_jev": true,
+        "final_jev": true,
+        "fixed_complete": true,
+        "fixed_no_coverage": true,
+        "fixed_no_judge_coverage": true
+      },
+      "wall_ms": 1096.86,
+      "calls": 5
+    },
+    {
+      "case": "rust-openrouter-fast-none",
+      "status": "passed",
+      "checks": {
+        "sources_ok": true,
+        "transport_ok": true,
+        "bounded_search": true,
+        "correct_search_mode": true,
+        "candidates_present": true,
+        "selected_provider_only": true,
+        "initial_jev": true
+      },
+      "wall_ms": 4308.414,
+      "calls": 3
+    },
+    {
+      "case": "rust-openrouter-fast-fixed",
+      "status": "passed",
+      "checks": {
+        "sources_ok": true,
+        "transport_ok": true,
+        "bounded_search": true,
+        "correct_search_mode": true,
+        "candidates_present": true,
+        "selected_provider_only": true,
+        "initial_jev": true,
+        "final_jev": true,
+        "fixed_complete": true,
+        "fixed_no_coverage": true,
+        "fixed_no_judge_coverage": true
+      },
+      "wall_ms": 7802.409,
+      "calls": 6
+    },
+    {
+      "case": "rust-openrouter-web-fixed",
+      "status": "passed",
+      "checks": {
+        "sources_ok": true,
+        "transport_ok": true,
+        "bounded_search": true,
+        "correct_search_mode": true,
+        "candidates_present": true,
+        "selected_provider_only": true,
+        "initial_jev": true,
+        "final_jev": true,
+        "fixed_complete": true,
+        "fixed_no_coverage": true,
+        "fixed_no_judge_coverage": true
+      },
+      "wall_ms": 8663.363,
+      "calls": 6
+    },
+    {
+      "case": "rust-openrouter-fast-adaptive",
+      "status": "passed",
+      "checks": {
+        "sources_ok": true,
+        "transport_ok": true,
+        "bounded_search": true,
+        "correct_search_mode": true,
+        "candidates_present": true,
+        "selected_provider_only": true,
+        "initial_jev": true,
+        "final_jev": true,
+        "adaptive_complete": true,
+        "coverage_executed": true
+      },
+      "wall_ms": 7115.114,
+      "calls": 8
+    },
+    {
+      "case": "home-openrouter-fast-fixed",
+      "status": "passed",
+      "checks": {
+        "sources_ok": true,
+        "transport_ok": true,
+        "bounded_search": true,
+        "correct_search_mode": true,
+        "candidates_present": true,
+        "selected_provider_only": true,
+        "initial_jev": true,
+        "final_jev": true,
+        "fixed_complete": true,
+        "fixed_no_coverage": true,
+        "fixed_no_judge_coverage": true
+      },
+      "wall_ms": 5551.116,
+      "calls": 6
+    }
+  ],
+  "timing_scope": "Production pipeline with an external plan and Perplexity only. OpenRouter tests also use the normal reasoning fun scorer; Typesafe-only tests use deterministic reasoning. Times are not matched provider-speed comparisons or full-skill latencies.",
+  "cost_scope": "Provider-reported charges plus Search and direct Typesafe list-price estimates; six failed reasoning requests have unknown cost. Not an invoice."
+}

@@ -8,6 +8,7 @@ Agent Skills package for researching any topic across Reddit, X, YouTube, and we
 - `skills/last30days/scripts/lib/` — search, enrichment, rendering modules
 - `skills/last30days/scripts/lib/vendor/bird-search/` — vendored X search client
 - `docs/solutions/` — documented solutions to past problems (bugs, best practices, workflow patterns), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`)
+- `docs/jev-research-results.md` - Jev use cases, measured ranking gains, and source-support failures; runtime selection rules live in `skills/last30days/SKILL.md` under "When to use Jev". Jev defaults to `auto`: a configured Typesafe or OpenRouter key enables ranking; explicit `off` disables it. Facets and paid source collection remain separate choices.
 - `CONCEPTS.md` — shared domain vocabulary (Skill, Engine, Harness, Beta channel) — relevant when orienting to the codebase or discussing project terminology
 - `CONFIGURATION.md` — user-facing knobs (env vars, flags, per-host install patterns); keep in sync per the rules below
 - `CHANGELOG.md` — structured release history built by towncrier at release time (launch copy lives in GitHub Releases)

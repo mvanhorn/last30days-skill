@@ -320,3 +320,137 @@ def test_raw_results_only_footer_includes_freshness_line():
     assert "🕒" in text
     assert "no usable dated evidence" in text
     assert "Raw results saved to /tmp/l30d-scratch/topic-raw.md" in text
+
+
+
+def test_footer_keeps_skipped_research_receipt_when_no_sources_returned():
+    report = _report()
+    report.artifacts = {'fixed_research': {'status': 'skipped', 'reason': 'native_search_not_enabled', 'searches': []}}
+    assert render._render_emoji_footer(report, None) == [
+        '---', '✅ All agents reported back!',
+        '└─ Fixed follow-up: 0 attempted, 0 succeeded; skipped; native Search unavailable.', '---',
+    ]
+
+
+def test_adaptive_footer_reports_latest_excerpt_counts_without_facet_text():
+    report = _report()
+    report.artifacts = {'adaptive_research': {
+        'status': 'complete', 'reason': 'bounded_round',
+        'searches': [{'status': 'ok', 'query': 'PRIVATE_QUERY'}],
+        'before': {'status': 'ok', 'facets': [{'state': 'gap'}]},
+        'after': {'status': 'ok', 'facets': [
+            {'state': 'covered', 'question': 'PRIVATE_QUESTION'},
+            {'state': 'gap'}, {'state': 'unknown'},
+        ]},
+    }}
+    expected = (
+        'Adaptive follow-up: 1 attempted, 1 succeeded; finished; planned queries finished. '
+        'Public excerpt check: 1 covered, 1 gap, 1 unknown.'
+    )
+    for text in (render.render_compact(report), render.render_full(report),
+                 render.render_full(report, save_path='/tmp/research-report.md')):
+        assert expected in text
+        assert 'PRIVATE_' not in text
+        assert 'coverage complete' not in text.lower()
+
+
+def test_adaptive_final_unknown_does_not_reuse_prior_coverage():
+    report = _report()
+    report.artifacts = {'adaptive_research': {
+        'status': 'complete', 'reason': 'bounded_round', 'searches': [{'status': 'ok'}],
+        'before': {'status': 'ok', 'facets': [{'state': 'covered'}]},
+        'after': {'status': 'unknown', 'reason': 'judgment_failed'},
+    }}
+    text = '\n'.join(render._render_research_route(report))
+    assert 'finished; planned queries finished.' in text
+    assert 'Public excerpt check: unknown; coverage judgment failed.' in text
+    assert '1 covered' not in text
+
+
+def test_adaptive_skip_and_unknown_labels_do_not_expose_raw_errors():
+    report = _report()
+    report.artifacts = {'adaptive_research': {
+        'status': 'skipped', 'reason': 'collection_incomplete', 'searches': [],
+    }}
+    assert render._render_research_route(report) == [
+        'Adaptive follow-up: 0 attempted, 0 succeeded; skipped; collection incomplete.',
+    ]
+    report.artifacts['adaptive_research'].update(
+        status=['bad'], reason='PRIVATE_PROVIDER_ERROR',
+        after={'status': 'unknown', 'reason': 'PRIVATE_PROVIDER_ERROR'},
+    )
+    assert render._render_research_route(report) == [
+        'Adaptive follow-up: 0 attempted, 0 succeeded; unknown; unknown. '
+        'Public excerpt check: unknown; unknown.',
+    ]
+
+
+def test_pipeline_coverage_judge_failure_reaches_compact_and_full_output(tmp_path, monkeypatch):
+    """Successful ranking must not hide a later malformed coverage response."""
+    import socket
+
+    from lib import pipeline
+
+    topic = 'Rust compiler changes'
+    searches = []
+    judge_stages = []
+
+    def transport(url, payload, **kwargs):
+        if url.endswith('/systemone'):
+            questions = payload['questions']
+            is_coverage = any(name.startswith('facet_') for name in questions)
+            judge_stages.append('coverage' if is_coverage else 'ranking')
+            answers = {}
+            if not is_coverage:
+                for name, question in questions.items():
+                    kind = question['type']
+                    if kind == 'noul':
+                        answers[name] = {'type': kind, 'noul': .99}
+                    elif kind == 'choice':
+                        chosen = next(iter(question['criteria']))
+                        answers[name] = {'type': kind, 'choice': chosen, 'confidence': 1.,
+                                         'probabilities': {key: float(key == chosen) for key in question['criteria']}}
+                    else:
+                        choices = question['criteria']
+                        top = len(choices) - 1
+                        answers[name] = {'type': kind, 'score': top, 'confidence': 1.,
+                                         'probabilities': {str(i): float(i == top) for i in range(len(choices))},
+                                         'legend': {str(i): label for i, label in enumerate(choices)}}
+            return {'model': 'jev-1.13.0', 'answers': answers, 'usage': {}}
+        assert url == 'https://api.perplexity.ai/search'
+        searches.append(payload['query'])
+        return {'results': [{'id': 'release', 'title': 'Rust compiler changes announced',
+                            'url': 'https://example.com/rust-release',
+                            'snippet': 'Rust compiler changes add diagnostics and improve compile time.',
+                            'date': '2026-09-24'}]}
+
+    def no_network(*args, **kwargs):
+        raise AssertionError('network forbidden')
+
+    monkeypatch.setattr(socket.socket, 'connect', no_network)
+    monkeypatch.setattr(pipeline.env, 'CONFIG_DIR', tmp_path)
+    monkeypatch.setattr(pipeline, 'available_sources', lambda *args, **kwargs: ['perplexity'])
+    monkeypatch.setattr(pipeline.providers, 'resolve_runtime', lambda *args, **kwargs:
+                        (schema.ProviderRuntime('local', 'deterministic', 'local-score'), None))
+    monkeypatch.setattr(pipeline.http, 'post', transport)
+    plan = {'intent': 'product', 'freshness_mode': 'balanced_recent', 'cluster_mode': 'theme',
+            'subqueries': [{'label': 'primary', 'search_query': topic,
+                            'ranking_query': topic, 'sources': ['perplexity'], 'weight': 1.0}]}
+    report = pipeline.run(
+        topic=topic, depth='quick', mock=False, web_backend='none',
+        requested_sources=['perplexity'], external_plan=plan, as_of_date='2026-09-28',
+        config={'PERPLEXITY_API_KEY': 'dummy-pplx', 'TYPESAFE_API_KEY': 'dummy-jev',
+                'LAST30DAYS_JEV_PROVIDER': 'typesafe', 'LAST30DAYS_PERPLEXITY_MODE': 'search',
+                '_research_policy': 'adaptive',
+                '_research_facets': [{'id': 'issues', 'question': 'What failures do users report?',
+                                     'query': 'Rust compiler user regressions', 'required_role': 'experience'}]},
+    )
+    assert judge_stages == ['ranking', 'coverage']
+    assert searches == [topic]
+    assert len(report.items_by_source['perplexity']) == 1
+    assert report.artifacts['adaptive_research']['reason'] == 'judgment_failed'
+    for text in (render.render_compact(report), render.render_full(report),
+                 render.render_full(report, save_path='/tmp/research-report.md')):
+        assert 'Ranking: initial: Jev (Typesafe).' in text
+        assert ('Adaptive follow-up: 0 attempted, 0 succeeded; unknown; coverage judgment failed. '
+                'Public excerpt check: unknown.') in text

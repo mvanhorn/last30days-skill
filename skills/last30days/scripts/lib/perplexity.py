@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
-from . import health, http, log
+from . import http, log
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -231,6 +231,16 @@ def _safe_incomplete_reason(data: dict[str, Any]) -> str | None:
     return reason[:100] if isinstance(reason, str) and reason else None
 
 
+def _search_type(config: dict[str, Any]) -> str | None:
+    """Keep omission intact; search backends are separate from Agent presets."""
+    value = _config_text(config, "LAST30DAYS_PERPLEXITY_SEARCH_TYPE").lower()
+    if not value:
+        return None
+    if value not in {"web", "fast"}:
+        raise ValueError("LAST30DAYS_PERPLEXITY_SEARCH_TYPE must be web or fast")
+    return value
+
+
 def _build_search_payload(
     query: str,
     date_range: tuple[str, str],
@@ -251,6 +261,9 @@ def _build_search_payload(
         config,
         "LAST30DAYS_PERPLEXITY_SEARCH_CONTEXT_SIZE",
     ).lower()
+    search_type = _search_type(config)
+    if search_type is not None:
+        payload["search_type"] = search_type
     if context_size in SEARCH_CONTEXT_SIZES:
         payload["search_context_size"] = context_size
 
@@ -310,6 +323,9 @@ def _build_web_search_tool(
         config,
         "LAST30DAYS_PERPLEXITY_SEARCH_CONTEXT_SIZE",
     ).lower()
+    search_type = _search_type(config)
+    if search_type is not None:
+        tool["search_type"] = search_type
     if context_size in SEARCH_CONTEXT_SIZES:
         tool["search_context_size"] = context_size
 
@@ -386,6 +402,7 @@ def _safe_request(payload: dict[str, Any]) -> dict[str, Any]:
                     "type",
                     "max_results",
                     "search_context_size",
+                    "search_type",
                     "user_location",
                     "filters",
                 )
@@ -787,6 +804,9 @@ def _search_api(
         headers=headers,
         timeout=30,
         retries=1,
+        **({"retry_dns": False, "max_429_retries": 1,
+            "deadline_monotonic": config["_adaptive_deadline"]}
+           if config.get("_adaptive_deadline") is not None else {}),
     )
     results = data.get("results") or []
     if not isinstance(results, list):
@@ -1180,8 +1200,11 @@ def _top_level_failure(
     deep: bool,
     exc: Exception,
     provider: str = "perplexity",
+    requested_search_type: str | None = None,
 ) -> dict[str, Any]:
     artifact = _error_artifact(exc)
+    if provider == "perplexity" and requested_search_type is not None:
+        artifact["requested_search_type"] = requested_search_type
     if provider == "openrouter":
         endpoint = "openrouter-chat-completions"
     elif deep:
@@ -1224,8 +1247,13 @@ def search(
     provider, api_key = resolved
 
     mode = _mode(config, deep, provider)
+    search_type = None
     try:
+        search_type = _search_type(config)
         if provider == "openrouter":
+            if search_type is not None:
+                _log("LAST30DAYS_PERPLEXITY_SEARCH_TYPE requires PERPLEXITY_API_KEY; "
+                     "it does not change OpenRouter Sonar search")
             result = _openrouter_sonar_search(
                 query,
                 date_range,
@@ -1252,6 +1280,8 @@ def search(
             except Exception as exc:
                 _log(f"Search API leg failed in both mode: {exc}")
                 search_artifact = _error_artifact(exc)
+                if search_type is not None:
+                    search_artifact["requested_search_type"] = search_type
             try:
                 agent_items, agent_artifact = _agent_search(
                     query,
@@ -1263,6 +1293,8 @@ def search(
             except Exception as exc:
                 _log(f"Agent API leg failed in both mode: {exc}")
                 agent_artifact = _error_artifact(exc)
+                if search_type is not None:
+                    agent_artifact["requested_search_type"] = search_type
             items = _merge_agent_and_search(agent_items, search_items)
             return items, {
                 "label": "perplexity",
@@ -1290,6 +1322,7 @@ def search(
             deep,
             exc,
             provider=provider,
+            requested_search_type=search_type,
         )
         if deep:
             _log_deep_receipt(artifact)
@@ -1302,6 +1335,7 @@ def search(
             deep,
             exc,
             provider=provider,
+            requested_search_type=search_type,
         )
         if deep:
             _log_deep_receipt(artifact)
@@ -1314,6 +1348,7 @@ def search(
             deep,
             exc,
             provider=provider,
+            requested_search_type=search_type,
         )
         if deep:
             _log_deep_receipt(artifact)

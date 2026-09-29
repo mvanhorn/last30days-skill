@@ -1,4 +1,6 @@
 import urllib.error
+import io
+import threading
 import unittest
 import time
 from unittest.mock import patch, MagicMock
@@ -41,7 +43,7 @@ class Test429RetryLimit(unittest.TestCase):
 
     @patch("lib.http.urllib.request.urlopen")
     @patch("lib.http.time.sleep")
-    @patch("lib.http.time.monotonic", side_effect=[0.0, 0.5, 0.5])
+    @patch("lib.http.time.monotonic", return_value=0.5)
     def test_shared_deadline_stops_retry_before_backoff_crosses_it(
         self,
         _mock_monotonic,
@@ -105,6 +107,47 @@ class Test429RetryLimit(unittest.TestCase):
             )
 
         self.assertLess(time.monotonic() - started, 0.12)
+
+    @patch("lib.http.urllib.request.urlopen")
+    def test_shared_deadline_stops_waiting_during_error_body_read(self, mock_urlopen):
+        release = threading.Event()
+        read_started = threading.Event()
+
+        class SlowBody(io.BytesIO):
+            def read(self, *args, **kwargs):
+                read_started.set()
+                release.wait(1)
+                return super().read(*args, **kwargs)
+
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "https://example.com", 500, "Server error", {}, SlowBody(b"error")
+        )
+        started = time.monotonic()
+        try:
+            with self.assertRaises(http.DeadlineExceeded):
+                http.request(
+                    "GET", "https://example.com", retries=1,
+                    deadline_monotonic=started + 0.05,
+                )
+            self.assertTrue(read_started.is_set())
+            self.assertLess(time.monotonic() - started, 0.5)
+            self.assertEqual(mock_urlopen.call_count, 1)
+        finally:
+            release.set()
+
+    @patch("lib.http.urllib.request.urlopen")
+    def test_error_body_within_deadline_keeps_status_and_body(self, mock_urlopen):
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "https://example.com", 401, "Unauthorized", {}, io.BytesIO(b"bad token")
+        )
+        with self.assertRaises(http.HTTPError) as caught:
+            http.request(
+                "GET", "https://example.com", retries=1,
+                deadline_monotonic=time.monotonic() + 1,
+            )
+        self.assertEqual(caught.exception.status_code, 401)
+        self.assertEqual(caught.exception.body, "bad token")
+        self.assertEqual(caught.exception.outcome_state, http.health.AUTH_FAILED)
 
     @patch("lib.http.urllib.request.urlopen")
     def test_worker_socket_timeout_is_not_wall_deadline_expiration(

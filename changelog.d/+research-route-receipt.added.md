@@ -1,0 +1,1 @@
+Show requested Search types, recorded Jev ranking routes and fallback, and bounded fixed and adaptive follow-up results in the ordinary output footer. Keep provider payloads and private text out of this summary.

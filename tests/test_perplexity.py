@@ -1,7 +1,7 @@
 import unittest
 from unittest.mock import patch
 
-from lib import perplexity
+from lib import health, perplexity
 
 
 def _agent_response(
@@ -668,7 +668,7 @@ class PerplexityAgentTests(unittest.TestCase):
             "lib.perplexity.http.get",
             side_effect=perplexity.http.HTTPError(
                 "URL Error: timed out",
-                outcome_state=perplexity.health.TIMEOUT,
+                outcome_state=health.TIMEOUT,
             ),
         ), patch(
             "lib.perplexity.time.monotonic",

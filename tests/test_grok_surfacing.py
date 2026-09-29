@@ -9,7 +9,7 @@ import inspect
 from pathlib import Path
 from unittest import mock
 
-from lib import backends, doctor, health, quality_nudge
+from lib import doctor, health, quality_nudge
 
 REPO = Path(__file__).resolve().parent.parent
 
@@ -179,7 +179,7 @@ def test_doctor_grok_only_unpinned_is_not_tier_error():
         mock.patch.object(grok_x, "binary_path", return_value="/usr/bin/grok"),
         mock.patch.object(grok_x, "has_stored_auth", return_value=True),
         mock.patch.object(grok_x, "stored_auth_status", return_value=(grok_x.AUTH_OK, "", None)),
-        mock.patch("lib.backends.which", return_value="/usr/bin/grok"),
+        mock.patch("lib.backends.which", side_effect=lambda cmd: "/usr/bin/grok" if cmd == "grok" else None),
         mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
         mock.patch("lib.bird_x.is_bird_installed", return_value=False),
         mock.patch("lib.xurl_x.has_stored_auth", return_value=False),
@@ -219,7 +219,7 @@ def test_doctor_grok_error_unpinned_is_not_tier_error():
             grok_x, "stored_auth_status",
             return_value=(grok_x.AUTH_ERROR, "store unreadable", None),
         ),
-        mock.patch("lib.backends.which", return_value="/usr/bin/grok"),
+        mock.patch("lib.backends.which", side_effect=lambda cmd: "/usr/bin/grok" if cmd == "grok" else None),
         mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
         mock.patch("lib.bird_x.is_bird_installed", return_value=False),
         mock.patch("lib.xurl_x.has_stored_auth", return_value=False),
@@ -258,7 +258,7 @@ def test_doctor_grok_store_with_pending_bird_predicts_bird():
         mock.patch.object(grok_x, "binary_path", return_value="/usr/bin/grok"),
         mock.patch.object(grok_x, "has_stored_auth", return_value=True),
         mock.patch.object(grok_x, "stored_auth_status", return_value=(grok_x.AUTH_OK, "", None)),
-        mock.patch("lib.backends.which", return_value="/usr/bin/grok"),
+        mock.patch("lib.backends.which", side_effect=lambda cmd: "/usr/bin/grok" if cmd == "grok" else None),
         mock.patch("lib.bird_x.get_bird_status", return_value=bird_status),
         mock.patch("lib.bird_x.is_bird_installed", return_value=True),
         mock.patch("lib.xurl_x.has_stored_auth", return_value=False),

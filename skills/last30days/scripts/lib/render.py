@@ -2005,6 +2005,10 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         footer_lines = _render_emoji_footer(evidence_report, save_path)
         if footer_lines:
             lines.extend(["", *footer_lines])
+    else:
+        route_lines = _render_research_route(evidence_report)
+        if route_lines:
+            lines.extend(["", "## Research Route", "", *route_lines])
     return "\n".join(lines).strip() + "\n"
 
 
@@ -2495,7 +2499,7 @@ def _shorten_polymarket_title(title: str) -> str:
     # Pattern: "<Subject> visit <Place>" -> "<Place> visit"
     m = re.match(r"^(.+?)\s+visit\s+(?:the\s+)?(.+)$", t, flags=re.IGNORECASE)
     if m:
-        subject, place = m.group(1), m.group(2)
+        place = m.group(2)
         t = f"{place} visit"
 
     t = t.strip()
@@ -3237,6 +3241,124 @@ def _top_voices_footer_line(report: schema.Report) -> str | None:
     return f"🗣️ Top voices: {' │ '.join(parts)}"
 
 
+_RESEARCH_REASONS = {
+    "bounded_round": "planned queries finished", "no_unused_queries": "no unused queries",
+    "no_new_evidence": "no new URLs", "search_budget_exhausted": "search budget exhausted",
+    "deadline_exceeded": "deadline exceeded", "search_failed": "search failed",
+    "mock": "mock run", "missing_key": "missing Jev key", "off": "Jev off",
+    "invalid_provider": "invalid Jev provider", "judge_unavailable": "Jev unavailable",
+    "judge_failed": "initial judge failed", "native_search_not_enabled": "native Search unavailable",
+    "source_budget_disabled": "search budget disabled", "collection_incomplete": "collection incomplete",
+    "private_candidates": "private candidates excluded", "jev_failed": "Jev failed",
+    "shortlist_too_large": "shortlist too large",
+    "judgment_failed": "coverage judgment failed", "no_explicit_gap": "no explicit excerpt gap",
+    "incomplete_search_or_judge": "search or judgment incomplete",
+    "jev_unavailable": "Jev unavailable", "duplicate_candidate_ids": "duplicate candidate IDs",
+}
+_JUDGE_ROUTES = {
+    "jev:typesafe": "Jev (Typesafe)", "jev:openrouter": "Jev (OpenRouter)",
+    "incumbent": "existing model", "deterministic": "local scoring",
+}
+
+
+def _receipt_mapping(value: object) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _receipt_label(value: object, labels: dict[str, str], default: str = "unknown") -> str:
+    # Only engine-owned labels enter the pass-through footer, never raw errors.
+    return labels.get(value, default) if isinstance(value, str) else default
+
+
+def _requested_search_types(report: schema.Report) -> list[str]:
+    modes: set[str] = set()
+    grounding = report.artifacts.get("grounding", [])
+    for artifact in grounding if isinstance(grounding, list) else []:
+        artifact = _receipt_mapping(artifact)
+        if artifact.get("provider") != "perplexity" and artifact.get("label") != "perplexity":
+            continue
+        records = [artifact, _receipt_mapping(artifact.get("search")), _receipt_mapping(artifact.get("agent"))]
+        for record in records:
+            request = _receipt_mapping(record.get("request"))
+            values = [record.get("requested_search_type"), request.get("search_type")]
+            tools = request.get("tools", [])
+            for tool in tools if isinstance(tools, list) else []:
+                tool = _receipt_mapping(tool)
+                if tool.get("type") == "web_search":
+                    values.append(tool.get("search_type"))
+            modes.update(value for value in values if isinstance(value, str) and value in {"fast", "web"})
+    for key in ("fixed_research", "adaptive_research"):
+        searches = _receipt_mapping(report.artifacts.get(key)).get("searches", [])
+        for search in searches if isinstance(searches, list) else []:
+            mode = _receipt_mapping(search).get("search_type")
+            if isinstance(mode, str) and mode in {"fast", "web"}:
+                modes.add(mode)
+    return sorted(modes)
+
+
+def _render_judge_route(receipt: dict, resolution: object) -> str:
+    route = _receipt_label(receipt.get("judge_route"), _JUDGE_ROUTES)
+    reason = receipt.get("fallback_reason")
+    if reason:
+        return f"{route} (fallback: {_receipt_label(reason, _RESEARCH_REASONS)})"
+    if resolution not in (None, "ready"):
+        return f"{route} ({_receipt_label(resolution, _RESEARCH_REASONS)})"
+    return route
+
+
+def _render_followup(receipt: dict, policy: str) -> str:
+    searches = receipt.get("searches", [])
+    searches = [row for row in searches if isinstance(row, dict)] if isinstance(searches, list) else []
+    succeeded = sum(row.get("status") == "ok" for row in searches)
+    status = _receipt_label(receipt.get("status"), {
+        "complete": "finished", "partial": "partial", "skipped": "skipped", "unknown": "unknown",
+    })
+    reason = _receipt_label(receipt.get("reason"), _RESEARCH_REASONS)
+    line = f"{policy} follow-up: {len(searches)} attempted, {succeeded} succeeded; {status}; {reason}."
+    if policy == "Adaptive":
+        # An unavailable final check must not reuse an earlier successful check.
+        check = _receipt_mapping(receipt.get("after", receipt.get("before")))
+        if check:
+            if check.get("status") == "ok":
+                facets = check.get("facets", [])
+                facets = [row for row in facets if isinstance(row, dict)] if isinstance(facets, list) else []
+                counts = [f"{sum(row.get('state') == state for row in facets)} {state}"
+                          for state in ("covered", "gap", "unknown")]
+                line += f" Public excerpt check: {', '.join(counts)}."
+            else:
+                reason = _receipt_label(check.get("reason"), _RESEARCH_REASONS)
+                line += f" Public excerpt check: unknown; {reason}." if check.get("reason") else " Public excerpt check: unknown."
+    return line
+
+
+def _render_research_route(report: schema.Report) -> list[str]:
+    """Summarize recorded choices without exposing query or provider payload text."""
+    modes = _requested_search_types(report)
+    judge = _receipt_mapping(report.artifacts.get("jev_rerank"))
+    lines: list[str] = []
+    if modes:
+        state = getattr(report.source_status.get("perplexity"), "state", None)
+        source_state = _receipt_label(state, {value: value for value in (
+            health.OK, health.NO_RESULTS, health.PARTIAL, health.ERROR, health.TIMEOUT,
+            health.AUTH_FAILED, health.PAYMENT_REQUIRED, health.RATE_LIMITED,
+            health.UNREACHABLE, health.SCHEMA_DRIFT, health.SKIPPED_UNCONFIGURED,
+        )}, "not recorded")
+        lines.append(f"Search requested: {', '.join(modes)}; server mode unconfirmed; Perplexity {source_state}.")
+    if judge:
+        stages = []
+        for stage in ("initial", "final"):
+            if stage in judge:
+                route = _render_judge_route(_receipt_mapping(judge[stage]), judge.get("resolution"))
+                stages.append(f"{stage}: {route}")
+        if stages:
+            lines.append(f"Ranking: {'; '.join(stages)}.")
+    for key, policy in (("fixed_research", "Fixed"), ("adaptive_research", "Adaptive")):
+        receipt = _receipt_mapping(report.artifacts.get(key))
+        if receipt:
+            lines.append(_render_followup(receipt, policy))
+    return lines
+
+
 def _render_emoji_footer(report: schema.Report, save_path: str | None) -> list[str]:
     """Produce the deterministic magic footer block.
 
@@ -3257,13 +3379,14 @@ def _render_emoji_footer(report: schema.Report, save_path: str | None) -> list[s
 
     body: list[str] = []
     body.extend(source_lines)
+    body.extend(_render_research_route(report))
     if voices_line:
         body.append(voices_line)
     # Append freshness whenever it would annotate something: either the body
     # already has content, or the raw-results line will make the footer
     # non-empty. An otherwise empty run stays silent rather than announcing
     # its own emptiness.
-    if freshness_line and (body or raw_line):
+    if freshness_line and (source_lines or voices_line or raw_line):
         body.append(freshness_line)
     if raw_line:
         body.append(raw_line)

@@ -1,0 +1,1 @@
+Add an explicit Perplexity Fast Search option through `--perplexity-search-type` and `LAST30DAYS_PERPLEXITY_SEARCH_TYPE`. It applies to Search API and Agent web search, preserves existing defaults and paid-source opt-in, and records the selected type in safe request artifacts.

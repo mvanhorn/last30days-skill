@@ -1,0 +1,1 @@
+Skip optional Jev and research follow-up before reading facet files or creating clients and budgets when the selected route has no configured key. Preserve ordinary local and hosted research, with a fixed CLI skip message only when Jev or facets were requested; ordinary no-key runs stay quiet.

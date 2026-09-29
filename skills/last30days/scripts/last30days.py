@@ -813,6 +813,14 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=["auto", "brave", "exa", "serper", "parallel", "parallel-mcp", "keyless", "none"],
                         help="Web search backend (default: auto; parallel-mcp explicitly opts into the "
                              "anonymous hosted MCP; keyless forces the zero-key floor)")
+    parser.add_argument("--jev-provider", choices=["off", "auto", "typesafe", "openrouter"],
+                        help="Select Jev judgments; defaults to auto when a key is configured. Use off to disable.")
+    parser.add_argument("--research-policy", choices=["fixed", "adaptive"],
+                        help="Follow-up policy with --research-facets (default: adaptive). Fixed runs at most two prewritten queries without coverage judgments.")
+    parser.add_argument("--research-facets", metavar="PATH",
+                        help="JSON list of at most four research facets; requires a configured Jev key and a normal single-topic local run.")
+    parser.add_argument("--perplexity-search-type", choices=["web", "fast"],
+                        help="Search backend for direct Perplexity Search API and Agent web_search; overrides LAST30DAYS_PERPLEXITY_SEARCH_TYPE. Does not enable the paid source or select an Agent preset.")
     parser.add_argument("--deep-research", action="store_true",
                         help="Use at most one Perplexity Deep Research run. Direct PERPLEXITY_API_KEY uses the Agent API background path; OPENROUTER_API_KEY keeps the synchronous Sonar fallback; cannot be combined with competitor or vs-mode.")
     parser.add_argument("--hiring-signals", action="store_true",
@@ -3154,6 +3162,51 @@ def _looks_like_entity_topic(topic: str) -> bool:
     return not any(w.lower() in common for w in words)
 
 
+def _configure_jev_research(args: argparse.Namespace, topic: str, config: dict) -> None:
+    """Resolve key-driven judgments and validate bounded local facet input."""
+    mode = args.jev_provider if args.jev_provider is not None else config.get("LAST30DAYS_JEV_PROVIDER", "auto")
+    mode = str(mode or "auto").strip().lower()
+    if mode not in {"off", "auto", "typesafe", "openrouter"}:
+        raise ValueError("LAST30DAYS_JEV_PROVIDER must be off, auto, typesafe, or openrouter")
+    if args.jev_provider is not None or "LAST30DAYS_JEV_PROVIDER" in config:
+        config["LAST30DAYS_JEV_PROVIDER"] = mode
+    if args.research_policy is not None and args.research_facets is None:
+        raise ValueError("--research-policy requires --research-facets")
+    if args.research_facets is not None and mode == "off":
+        raise ValueError("--research-facets requires --jev-provider auto, typesafe, or openrouter")
+    from lib import adaptive_research, jev, planner
+
+    route, reason = jev.configured_route(config)
+    if route is None:
+        if reason == "missing_key" and (args.jev_provider is not None or args.research_facets is not None or mode in {"typesafe", "openrouter"}):
+            sys.stderr.write("[last30days] Jev and research follow-up skipped: selected route has no configured key; ordinary research continues.\n")
+        return
+    if args.research_facets is None:
+        return
+
+    internal_topic = topic.lower() in {"doctor", "setup", "library feed", "library search", "queue list", "queue cover"}
+    internal_topic = internal_topic or topic.lower().startswith(("library search ", "queue cover "))
+    comparison = any(value is not None for value in (args.competitors, args.competitors_list, args.competitors_plan))
+    comparison = comparison or len(planner._comparison_entities(topic, uncapped=True)) >= 2
+    if (not topic or internal_topic or comparison or args.discover is not None
+            or args.discover_shallow or args.nominate_only or args.judgments is not None
+            or args.finalize or args.angles is not None or args.drill is not None
+            or args.deep_research or args.diagnose or args.preflight
+            or (args.emit == "html" and args.synthesis_file is not None)):
+        raise ValueError("--research-facets supports only fresh, normal single-topic research; discovery, comparison, drill, Deep Research, cached rendering, and internal commands are unsupported")
+    try:
+        with Path(args.research_facets).expanduser().open("rb") as source:
+            raw = source.read(65_537)
+        if len(raw) > 65_536:
+            raise ValueError("--research-facets file exceeds 64 KiB")
+        value = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("--research-facets requires a readable UTF-8 JSON file") from exc
+    config["_research_facets"] = adaptive_research.validate_facets(value)
+    if args.research_policy is not None:
+        config["_research_policy"] = args.research_policy
+
+
 def main() -> int:
     parser = build_parser()
     # Use parse_known_args so setup sub-flags (--device-auth, --github,
@@ -3173,6 +3226,9 @@ def _main(
     if args.debug:
         os.environ["LAST30DAYS_DEBUG"] = "1"
 
+    if args.welcome and (args.research_facets is not None or args.research_policy is not None):
+        sys.stderr.write("[last30days] --research-facets/--research-policy is not supported by --welcome.\n")
+        return 2
     if args.welcome:
         from lib import setup_wizard
         print(setup_wizard.render_welcome())
@@ -3197,9 +3253,19 @@ def _main(
         # probes, no cookie policy), so it dispatches before get_config.
         store_key_present, store_key_name, _ = _split_store_key(extra_argv)
         if store_key_present:
+            if args.research_facets is not None or args.research_policy is not None:
+                sys.stderr.write("[last30days] --research-facets/--research-policy is not supported by setup.\n")
+                return 2
             return _run_store_key(store_key_name)
 
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
+    try:
+        _configure_jev_research(args, topic, config)
+    except ValueError as exc:
+        sys.stderr.write(f"[last30days] {exc}\n")
+        return 2
+    if args.perplexity_search_type is not None:
+        config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"] = args.perplexity_search_type
     # One memo per command: comparison mode runs pipeline.run per entity in
     # parallel, so the reset must not live inside the pipeline.
     http.reset_reddit_keyless_memo()
@@ -3512,6 +3578,10 @@ def _main(
         sys.stderr.write(f"[last30days] {exc}\n")
         return 2
 
+    from lib import jev
+
+    local_jev = jev.configured_route(config)[0] is not None
+
     # Remote API path: when BOTH LAST30DAYS_API_KEY and LAST30DAYS_API_BASE are
     # set (and --mock is not), the search runs through the configured remote API
     # instead of local sources; no local provider keys are needed (see
@@ -3519,12 +3589,14 @@ def _main(
     # to local-only runs - there is no built-in endpoint.
     if (
         topic
-        and resolved_corpus_dirs
+        and (resolved_corpus_dirs or local_jev)
         and env.read_secret_env("LAST30DAYS_API_KEY")
         and os.environ.get("LAST30DAYS_API_BASE")
     ):
         sys.stderr.write(
             "[last30days] Local corpus configured; bypassing the hosted backend so files stay on this machine.\n"
+            if resolved_corpus_dirs else
+            "[last30days] Jev configured; using local research because the hosted backend does not support Jev.\n"
         )
     if (
         topic
@@ -3534,8 +3606,15 @@ def _main(
         and env.read_secret_env("LAST30DAYS_API_KEY")
         and os.environ.get("LAST30DAYS_API_BASE")
         and not resolved_corpus_dirs
+        and not local_jev
         and not args.deep_research
     ):
+        if config.get("LAST30DAYS_PERPLEXITY_SEARCH_TYPE"):
+            sys.stderr.write(
+                "[last30days] Perplexity search type is not supported by the hosted backend; "
+                "run locally or unset --perplexity-search-type and LAST30DAYS_PERPLEXITY_SEARCH_TYPE.\n"
+            )
+            return 2
         if _freshness_enabled(args, config):
             if args.verify_freshness is True:
                 sys.stderr.write(

@@ -69,7 +69,7 @@ KEYCHAIN_KEYS = (
     "TRUTHSOCIAL_TOKEN", "BRAVE_API_KEY", "EXA_API_KEY", "SERPER_API_KEY",
     "OPENROUTER_API_KEY", "PERPLEXITY_API_KEY", "PARALLEL_API_KEY", "XQUIK_API_KEY",
     "XIAOHONGSHU_API_BASE", "GITHUB_TOKEN", "BRIGHTDATA_API_KEY",
-    "X_BEARER_TOKEN",
+    "X_BEARER_TOKEN", "TYPESAFE_API_KEY",
 )
 
 # pass(1) integration: Linux/Unix analog of the Keychain source. Each key in
@@ -565,6 +565,8 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('GOOGLE_GENAI_API_KEY', None),
         ('XIAOHONGSHU_API_BASE', None),
         ('LAST30DAYS_REASONING_PROVIDER', 'auto'),
+        ('LAST30DAYS_JEV_PROVIDER', 'auto'),
+        ('TYPESAFE_API_KEY', None),
         ('LAST30DAYS_PLANNER_MODEL', None),
         ('LAST30DAYS_RERANK_MODEL', None),
         ('LAST30DAYS_X_MODEL', None),
@@ -630,6 +632,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_PERPLEXITY_AGENT_TIMEOUT_SECONDS', '120'),
         ('LAST30DAYS_PERPLEXITY_MAX_RESULTS', None),
         ('LAST30DAYS_PERPLEXITY_SEARCH_CONTEXT_SIZE', None),
+        ('LAST30DAYS_PERPLEXITY_SEARCH_TYPE', None),
         ('LAST30DAYS_PERPLEXITY_SEARCH_MODE', None),
         ('LAST30DAYS_PERPLEXITY_DOMAIN_FILTER', None),
         ('LAST30DAYS_PERPLEXITY_LANGUAGE_FILTER', None),

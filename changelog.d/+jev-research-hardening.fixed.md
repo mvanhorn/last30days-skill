@@ -1,0 +1,2 @@
+Reject oversized Jev numeric answers without losing fallback ranking. Redact echoed credentials from HTTP debug output. Preserve unknown search latency and stricter caller timeouts in the research evaluation runner. Split follow-up handling into typed helpers and isolate X backend tests from installed local clients.
+Keep slow HTTP error-body reads inside the shared deadline so failed provider responses cannot hold Jev calls past their timeout.

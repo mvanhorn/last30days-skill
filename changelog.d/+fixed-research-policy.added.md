@@ -1,0 +1,1 @@
+Add explicit fixed follow-up research with `--research-policy fixed` and a facets file. It uses at most two prewritten Perplexity queries with Jev reranking and no coverage judgments. Adaptive behavior remains the default.
