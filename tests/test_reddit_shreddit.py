@@ -12,6 +12,22 @@ def _html():
     return FIXTURE.read_text(encoding="utf-8")
 
 
+# The same shreddit markup as fetched through a real browser (the Scrapling
+# fallback): the DOM lowercases every attribute NAME, so ``thingId`` -> ``thingid``.
+# The parser must read this shape too, or every comment loses its body and drops.
+BROWSER_SHAPED_HTML = """
+<shreddit-comment-tree-stats total-comments="2" sort="TOP"></shreddit-comment-tree-stats>
+<shreddit-comment created="2026-08-09T12:45:51+0000" author="alice" thingid="t1_aaa"
+  permalink="/r/videos/comments/x1/comment/aaa/" score="1136" depth="0">
+  <div id="t1_aaa-post-rtjson-content"><div><p>First body about $750 pending.</p></div></div>
+</shreddit-comment>
+<shreddit-comment created="2026-08-09T12:46:00+0000" author="bob" thingid="t1_bbb"
+  permalink="/r/videos/comments/x1/comment/bbb/" score="42" depth="0">
+  <div id="t1_bbb-post-rtjson-content"><div><p>Second body.</p></div></div>
+</shreddit-comment>
+"""
+
+
 class TestExtractPostRef:
     def test_extracts_sub_and_id(self):
         ref = rs.extract_post_ref("https://www.reddit.com/r/Rakuten/comments/1taeiw0/title/")
@@ -66,6 +82,14 @@ class TestParseComments:
     def test_empty_html_returns_empty(self):
         assert rs.parse_comments("") == []
         assert rs.parse_comments("<html>no comments here</html>") == []
+
+    def test_browser_lowercased_attrs_parsed(self):
+        # Regression guard for the Scrapling fallback: browser-serialized markup
+        # carries `thingid` (lowercased), which must still yield full comments.
+        comments = rs.parse_comments(BROWSER_SHAPED_HTML)
+        assert [c["score"] for c in comments] == [1136, 42]
+        assert comments[0]["author"] == "alice"
+        assert "$750" in comments[0]["body"]
 
 
 class TestBotFilter:
@@ -128,6 +152,24 @@ class TestTotalComments:
         assert rs._total_comments("<html></html>") is None
 
 
+
+def _keyless_403(*_args, **_kwargs):
+    """Stand-in for ``http.reddit_keyless_get_text`` when Reddit refuses the GET:
+    ``get_text`` swallows the HTTPError and returns None, but the 403 has already
+    been recorded in the context-local failure sink -- exactly what the browser
+    fallback keys on."""
+    rs.http._record_failure(rs.http.HTTPError("HTTP 403: Blocked", status_code=403))
+    return None
+
+
+def _keyless_miss(status):
+    """A keyless miss that is NOT Reddit's block wall (5xx, 429, ...)."""
+    def _side_effect(*_args, **_kwargs):
+        rs.http._record_failure(rs.http.HTTPError(f"HTTP {status}", status_code=status))
+        return None
+    return _side_effect
+
+
 class TestFetchComments:
     """fetch_comments wires URL -> svc fetch -> parse, never raising."""
 
@@ -149,11 +191,84 @@ class TestFetchComments:
         assert out["top_comments"] == [] and out["num_comments"] is None
 
     def test_fetch_failure_returns_empty(self):
+        # Keyless HTTP fails AND Scrapling is unavailable (the CI/Cowork case):
+        # behaves exactly as before the fallback existed. is_available is forced
+        # False so the test is deterministic on a dev box where scrapling is on PATH.
         url = "https://www.reddit.com/r/Rakuten/comments/1taeiw0/title/"
-        with mock.patch.object(rs.http, "get_text", return_value=None):
+        with mock.patch.object(rs.http, "get_text", return_value=None), \
+                mock.patch.object(rs.scrapling_fetch, "is_available", return_value=False):
             out = rs.fetch_comments(url)
         assert out["top_comments"] == [] and out["num_comments"] is None
 
+    def test_scrapling_fallback_used_when_keyless_blocked(self):
+        # Keyless HTTP returns nothing (403'd); Scrapling is installed and its
+        # browser fetch returns the same (lowercased-attr) markup -> comments.
+        url = "https://www.reddit.com/r/videos/comments/1vjokkz/title/"
+        with mock.patch.object(rs.http, "reddit_keyless_get_text", side_effect=_keyless_403), \
+                mock.patch.object(rs.scrapling_fetch, "is_available", return_value=True), \
+                mock.patch.object(rs.scrapling_fetch, "fetch", return_value=BROWSER_SHAPED_HTML) as sf:
+            out = rs.fetch_comments(url)
+        # stealthy-fetch, html format, on the svc URL
+        assert sf.call_args.kwargs["mode"] == rs.scrapling_fetch.MODE_STEALTHY
+        assert sf.call_args.kwargs["fmt"] == "html"
+        assert "/svc/shreddit/comments/" in sf.call_args[0][0]
+        assert [c["score"] for c in out["top_comments"]] == [1136, 42]
+        assert out["num_comments"] == 2
+
+    def test_scrapling_not_called_when_keyless_succeeds(self):
+        # No regression: when the HTTP path works, the browser fallback is never
+        # invoked (it is slow and should stay a last resort).
+        url = "https://www.reddit.com/r/Rakuten/comments/1taeiw0/title/"
+        with mock.patch.object(rs.http, "get_text", return_value=_html()), \
+                mock.patch.object(rs.scrapling_fetch, "fetch") as sf:
+            out = rs.fetch_comments(url)
+        sf.assert_not_called()
+        assert len(out["top_comments"]) >= 1
+
+    def test_scrapling_not_called_on_non_403_miss(self):
+        # Greptile (#976): the fallback must key on Reddit's 403 block wall, not
+        # on "the HTTP path returned nothing". A 5xx or a 429 is not something a
+        # real browser clears, so the slow browser launch must stay off.
+        url = "https://www.reddit.com/r/Rakuten/comments/1taeiw0/title/"
+        for status in (500, 502, 429):
+            with mock.patch.object(rs.http, "reddit_keyless_get_text",
+                                   side_effect=_keyless_miss(status)), \
+                    mock.patch.object(rs.scrapling_fetch, "is_available", return_value=True), \
+                    mock.patch.object(rs.scrapling_fetch, "fetch") as sf:
+                out = rs.fetch_comments(url)
+            sf.assert_not_called()
+            assert out["top_comments"] == [] and out["num_comments"] is None
+
+    def test_scrapling_not_called_when_keyless_gives_up_silently(self):
+        # reddit_keyless_get_text can return None without recording any failure
+        # (memo election gave up, or a timeout with no status): no 403, no browser.
+        url = "https://www.reddit.com/r/Rakuten/comments/1taeiw0/title/"
+        with mock.patch.object(rs.http, "reddit_keyless_get_text", return_value=None), \
+                mock.patch.object(rs.scrapling_fetch, "is_available", return_value=True), \
+                mock.patch.object(rs.scrapling_fetch, "fetch") as sf:
+            out = rs.fetch_comments(url)
+        sf.assert_not_called()
+        assert out["top_comments"] == [] and out["num_comments"] is None
+
+    def test_scrapling_not_called_on_empty_200_body(self):
+        # An empty-but-successful body is a parse miss, not a block.
+        url = "https://www.reddit.com/r/Rakuten/comments/1taeiw0/title/"
+        with mock.patch.object(rs.http, "reddit_keyless_get_text", return_value=""), \
+                mock.patch.object(rs.scrapling_fetch, "is_available", return_value=True), \
+                mock.patch.object(rs.scrapling_fetch, "fetch") as sf:
+            out = rs.fetch_comments(url)
+        sf.assert_not_called()
+        assert out["top_comments"] == [] and out["num_comments"] is None
+
+    def test_scrapling_absent_no_fallback(self):
+        # Keyless fails and scrapling is not installed: no fetch attempt, empty out.
+        url = "https://www.reddit.com/r/Rakuten/comments/1taeiw0/title/"
+        with mock.patch.object(rs.http, "reddit_keyless_get_text", side_effect=_keyless_403), \
+                mock.patch.object(rs.scrapling_fetch, "is_available", return_value=False), \
+                mock.patch.object(rs.scrapling_fetch, "fetch") as sf:
+            out = rs.fetch_comments(url)
+        sf.assert_not_called()
+        assert out["top_comments"] == [] and out["num_comments"] is None
 
 class TestEnrichmentBudget:
     """Busy topics enrich more threads and carry more comments per thread."""
@@ -171,3 +286,62 @@ class TestEnrichmentBudget:
         out = rs.parse_comments(html)
         assert len(out) == rs.MAX_COMMENTS == 12
         assert [c["score"] for c in out] == list(range(100, 88, -1))
+
+
+class TestScraplingDeadline:
+    """The browser fallback must respect the caller's aggregate enrichment
+    budget: its subprocess timeout is capped to the time remaining before
+    ``deadline`` (so run_with_timeout kills the browser at the budget edge
+    instead of outliving a cancelled future), and it is skipped outright
+    when too little budget remains to be worth a browser launch."""
+
+    URL = "https://www.reddit.com/r/videos/comments/1vjokkz/title/"
+
+    def _fetch(self, deadline, now=1000.0):
+        with mock.patch.object(rs.http, "reddit_keyless_get_text", side_effect=_keyless_403), \
+                mock.patch.object(rs.scrapling_fetch, "is_available", return_value=True), \
+                mock.patch.object(rs.scrapling_fetch, "fetch",
+                                  return_value=BROWSER_SHAPED_HTML) as sf, \
+                mock.patch.object(rs.time, "monotonic", return_value=now):
+            out = rs.fetch_comments(self.URL, deadline=deadline)
+        return out, sf
+
+    def test_timeout_capped_to_remaining_budget(self):
+        # 30s left of a 45s budget -> the 75s default must shrink to fit, and
+        # it must NOT be handed the whole 30s: run_with_timeout's SIGTERM ->
+        # wait(5) -> SIGKILL -> wait(5) cleanup runs AFTER the timeout fires,
+        # so a subprocess given the full remainder outlives the deadline by up
+        # to ten seconds (Greptile, #976). The cap reserves that grace.
+        out, sf = self._fetch(deadline=1030.0)
+        assert sf.call_args.kwargs["timeout"] < 30
+        assert sf.call_args.kwargs["timeout"] + rs.SCRAPLING_CLEANUP_GRACE <= 30
+        assert [c["score"] for c in out["top_comments"]] == [1136, 42]
+
+    def test_skipped_when_only_cleanup_grace_remains(self):
+        # Enough seconds for a browser launch on paper, but not once the
+        # process-group cleanup is reserved: skip rather than overrun.
+        out, sf = self._fetch(
+            deadline=1000.0 + rs.SCRAPLING_MIN_BUDGET + rs.SCRAPLING_CLEANUP_GRACE - 1
+        )
+        sf.assert_not_called()
+        assert out["top_comments"] == [] and out["num_comments"] is None
+
+    def test_ample_budget_keeps_default_timeout(self):
+        # More time left than the default: never widen beyond SCRAPLING_TIMEOUT.
+        _, sf = self._fetch(deadline=1000.0 + rs.SCRAPLING_TIMEOUT + 60)
+        assert sf.call_args.kwargs["timeout"] == rs.SCRAPLING_TIMEOUT
+
+    def test_skipped_when_budget_nearly_spent(self):
+        # Below the minimum useful window a browser launch can only burn the
+        # tail of the budget -> no fetch attempt, empty result.
+        out, sf = self._fetch(deadline=1000.0 + rs.SCRAPLING_MIN_BUDGET - 1)
+        sf.assert_not_called()
+        assert out["top_comments"] == [] and out["num_comments"] is None
+
+    def test_no_deadline_keeps_default_timeout(self):
+        with mock.patch.object(rs.http, "reddit_keyless_get_text", side_effect=_keyless_403), \
+                mock.patch.object(rs.scrapling_fetch, "is_available", return_value=True), \
+                mock.patch.object(rs.scrapling_fetch, "fetch",
+                                  return_value=BROWSER_SHAPED_HTML) as sf:
+            rs.fetch_comments(self.URL)
+        assert sf.call_args.kwargs["timeout"] == rs.SCRAPLING_TIMEOUT
