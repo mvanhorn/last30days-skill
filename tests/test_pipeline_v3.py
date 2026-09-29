@@ -1700,6 +1700,79 @@ class TestThinSourceRetry(unittest.TestCase):
 
         mock_retrieve.assert_not_called()
 
+    def _youtube_plan(self, topic="AI safety"):
+        return schema.QueryPlan(
+            intent="exploration",
+            freshness_mode="balanced_recent",
+            cluster_mode="topic",
+            raw_topic=topic,
+            subqueries=[
+                schema.SubQuery(
+                    label="primary",
+                    search_query=topic,
+                    ranking_query=f"What recent evidence matters for {topic}?",
+                    sources=["youtube"],
+                )
+            ],
+            source_weights={"youtube": 1.0},
+        )
+
+    def test_youtube_retry_allows_backstop_when_never_fired(self):
+        # thin_sources is selected from the post-filter/dedup count, which can
+        # drop below the floor even when phase 1's raw yt-dlp count cleared it
+        # and the backstop correctly never fired (#1009 review). The retry
+        # must still be allowed to use the backstop in that case.
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["youtube"] = [
+            _make_source_item("youtube", "Y1", "https://youtube.com/watch?v=1"),
+        ]
+        self.assertNotIn("youtube", bundle.sc_backstop_fired)
+
+        with patch("lib.pipeline._retrieve_stream", return_value=([], {})) as mock_retrieve:
+            pipeline._retry_thin_sources(
+                topic="AI safety",
+                bundle=bundle,
+                plan=self._youtube_plan(),
+                config={},
+                depth="default",
+                date_range=("2026-02-15", "2026-03-17"),
+                runtime=_make_runtime(),
+                mock=False,
+                rate_limited_sources=set(),
+                rate_limit_lock=threading.Lock(),
+                settings=pipeline.DEPTH_SETTINGS["default"],
+            )
+
+        mock_retrieve.assert_called_once()
+        self.assertFalse(mock_retrieve.call_args.kwargs["skip_sc_backstop"])
+
+    def test_youtube_retry_skips_backstop_when_already_fired(self):
+        # Phase 1 already spent an SC search for this source this run; the
+        # retry must not double-spend by re-firing it.
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["youtube"] = [
+            _make_source_item("youtube", "Y1", "https://youtube.com/watch?v=1"),
+        ]
+        bundle.sc_backstop_fired.add("youtube")
+
+        with patch("lib.pipeline._retrieve_stream", return_value=([], {})) as mock_retrieve:
+            pipeline._retry_thin_sources(
+                topic="AI safety",
+                bundle=bundle,
+                plan=self._youtube_plan(),
+                config={},
+                depth="default",
+                date_range=("2026-02-15", "2026-03-17"),
+                runtime=_make_runtime(),
+                mock=False,
+                rate_limited_sources=set(),
+                rate_limit_lock=threading.Lock(),
+                settings=pipeline.DEPTH_SETTINGS["default"],
+            )
+
+        mock_retrieve.assert_called_once()
+        self.assertTrue(mock_retrieve.call_args.kwargs["skip_sc_backstop"])
+
 
 class TestErrorCleanup(unittest.TestCase):
     """Source errors should be cleared when the source has items from other subqueries."""

@@ -354,6 +354,11 @@ class RetrievalBundle:
     # what a healthy-looking run lost without branding the source partial.
     detail_by_source: dict[str, str] = field(default_factory=dict)
     lane_state_by_source: dict[str, RunOutcomeState] = field(default_factory=dict)
+    # Sources where a paid backstop (e.g. the YouTube ScrapeCreators search
+    # backstop, #977) already fired this run, so a phase-2b thin-source retry
+    # knows not to re-fire it (double spend) but also does not withhold it
+    # from a source that never actually got it in phase 1.
+    sc_backstop_fired: set[str] = field(default_factory=set)
 
     def mark_attempted(self, source: str) -> None:
         """Register a planned source before its first retrieval starts."""
