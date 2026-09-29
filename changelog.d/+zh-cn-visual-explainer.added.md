@@ -1,0 +1,1 @@
+Add a Chinese (zh-CN), plain-language visual explainer page (`docs/explainer.zh-CN.html`) that walks through the pipeline, engagement-based scoring, Reddit enrichment, Discovery mode, and why the SKILL.md output contract is so long — using self-contained inline SVG diagrams (no external assets).
