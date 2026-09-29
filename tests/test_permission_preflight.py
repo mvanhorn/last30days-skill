@@ -164,6 +164,24 @@ def test_preflight_reports_ignored_project_config_without_secret_values(tmp_path
     assert "sk-global" not in rendered
 
 
+def test_preflight_lists_active_provider_base_url_overrides():
+    config = {
+        "OPENAI_BASE_URL": "https://gateway.test/v1",
+        "OPENROUTER_BASE_URL": "https://gateway.test/v1",
+        "XAI_BASE_URL": "https://gateway.test/v1",
+    }
+    preflight = permission_preflight.build(config, _diag())
+
+    assert preflight["network"]["endpoint_overrides"] == [
+        "OPENAI_BASE_URL",
+        "OPENROUTER_BASE_URL",
+        "XAI_BASE_URL",
+    ]
+    rendered = permission_preflight.render_text(preflight)
+    assert "OPENROUTER_BASE_URL" in rendered
+    assert "gateway.test" not in rendered
+
+
 def test_diagnose_uses_preflight_endpoint_override_key_set():
     ignored_keys = sorted(permission_preflight.ENDPOINT_OVERRIDE_KEYS) + ["UNRELATED_KEY"]
     diag = pipeline.diagnose(

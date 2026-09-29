@@ -59,9 +59,6 @@ class TestXaiXEngagementZero(unittest.TestCase):
         self.assertEqual(1, eng["replies"])
         self.assertEqual(0, eng["quotes"])
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestXaiXBaseUrlOverride(unittest.TestCase):
     """XAI_BASE_URL redirects the x_search request like the reasoning client."""
@@ -87,3 +84,7 @@ class TestXaiXBaseUrlOverride(unittest.TestCase):
             "https://gateway.test/v1/responses",
             self._posted_url({"XAI_BASE_URL": "https://gateway.test/v1"}),
         )
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch
 
@@ -44,6 +45,13 @@ def _agent_response(
 
 
 class PerplexityAgentTests(unittest.TestCase):
+    def setUp(self):
+        # The default-URL assertions must not depend on an ambient override.
+        env_patch = patch.dict("os.environ")
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        os.environ.pop("OPENROUTER_BASE_URL", None)
+
     def test_controlled_agent_uses_direct_key_and_explicit_web_search(self):
         citations = [
             {
