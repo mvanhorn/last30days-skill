@@ -171,6 +171,55 @@ class TestBackfillOutcome:
         assert "ScrapeCreators backfill ran" in detail
         assert "added 1" in detail
 
+    def test_swallowed_sc_429_after_free_items_does_not_rate_limit_reddit(self):
+        # ScrapeCreators 429s inside the backfill are swallowed by lib.reddit
+        # (recorded in the capture sink, then []). reddit.com was never
+        # rate-limited, so the stream must not carry RATE_LIMITED: the fan-out
+        # would add 'reddit' to rate_limited_sources and skip later Reddit
+        # streams and the thin-source retry.
+        free = [_item("a"), _item("b"), _item("c")]
+
+        def _sc_http_429(*_args, **_kwargs):
+            http._raise(http.HTTPError("HTTP 429: Too Many Requests", status_code=429))
+
+        with mock.patch("lib.reddit_public.search_reddit_public", return_value=free), \
+             mock.patch("lib.http.get", side_effect=_sc_http_429) as sc_get:
+            items, artifact = _stream(self.KEY)
+        assert sc_get.called
+        assert _ids(items) == ["a", "b", "c"]
+        assert not artifact.get("_source_outcome")
+        assert artifact.get("_source_outcome_detail_state") != health.RATE_LIMITED
+        detail = artifact.get("_source_outcome_detail") or ""
+        assert "ScrapeCreators backfill" in detail
+        assert "HTTP 429" in detail
+
+    def test_raised_sc_429_after_free_items_does_not_rate_limit_reddit(self):
+        free = [_item("a"), _item("b"), _item("c")]
+
+        def _sc_raise_429(*_args, **_kwargs):
+            http._raise(http.HTTPError("HTTP 429: Too Many Requests", status_code=429))
+
+        with mock.patch("lib.reddit_public.search_reddit_public", return_value=free), \
+             mock.patch("lib.reddit.search_and_enrich", side_effect=_sc_raise_429):
+            items, artifact = _stream(self.KEY)
+        assert _ids(items) == ["a", "b", "c"]
+        assert not artifact.get("_source_outcome")
+        assert artifact.get("_source_outcome_detail_state") != health.RATE_LIMITED
+        detail = artifact.get("_source_outcome_detail") or ""
+        assert "ScrapeCreators backfill failed" in detail
+        assert "429" in detail
+
+    def test_sc_429_with_no_free_items_keeps_explicit_rate_limited_outcome(self):
+        def _sc_raise_429(*_args, **_kwargs):
+            http._raise(http.HTTPError("HTTP 429: Too Many Requests", status_code=429))
+
+        with mock.patch("lib.reddit_public.search_reddit_public", return_value=[]), \
+             mock.patch("lib.reddit.search_and_enrich", side_effect=_sc_raise_429):
+            items, artifact = _stream(self.KEY)
+        assert items == []
+        outcome = artifact.get("_source_outcome") or {}
+        assert outcome.get("state") == health.RATE_LIMITED
+
     def test_no_backfill_no_note(self):
         free = [_item(c) for c in "abcdef"]
         with mock.patch("lib.reddit_public.search_reddit_public", return_value=free), \
