@@ -7,6 +7,7 @@ page, which is synthetic (see its provenance line).
 
 import itertools
 import json
+import re
 import urllib.error
 from datetime import datetime, timezone
 from pathlib import Path
@@ -266,6 +267,27 @@ class TestOutcomes:
             first = reddit_search.search("ButcherBox", depth="quick")
             second = reddit_search.search("ButcherBox", depth="quick")
         assert first == [] and second == []
+        assert fake_reddit.requests == [PAGE1_URL, PAGE1_URL]
+        assert len(failures) == 2
+        assert all(f.outcome_state == health.SCHEMA_DRIFT for f in failures)
+
+    @pytest.mark.parametrize("drift", [
+        # Tracking context attribute gone entirely.
+        lambda body: re.sub(r'\sdata-faceplate-tracking-context="[^"]*"', "", body),
+        # Attribute kept, JSON shape changed (action_info renamed).
+        lambda body: body.replace("&quot;action_info&quot;", "&quot;action&quot;"),
+    ], ids=["stripped", "reshaped"])
+    def test_results_marker_with_no_parseable_units_is_schema_drift(self, fake_reddit, drift):
+        body = drift(_fixture("reddit_search_page1.html"))
+        assert reddit_search.RESULTS_MARKER in body
+        assert reddit_search.parse_page(body)[0] == []
+        assert reddit_search.unrecognized_body(body)
+        fake_reddit.default = body
+        with http.capture_failures() as failures:
+            first = reddit_search.search("ButcherBox", depth="quick")
+            second = reddit_search.search("ButcherBox", depth="quick")
+        assert first == [] and second == []
+        # Not memoized: the second run fetches again.
         assert fake_reddit.requests == [PAGE1_URL, PAGE1_URL]
         assert len(failures) == 2
         assert all(f.outcome_state == health.SCHEMA_DRIFT for f in failures)

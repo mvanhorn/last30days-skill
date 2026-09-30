@@ -1021,7 +1021,7 @@ class LiveProbe(unittest.TestCase):
             return doctor._probe_source("reddit", {}, 5)
 
     def test_reddit_probe_200_with_results_passes(self):
-        body = f'<div {reddit_search.RESULTS_MARKER}><a>post</a></div>'
+        body = (Path(__file__).resolve().parent.parent / "fixtures" / "reddit_search_page1.html").read_text()
         res = self._probe_reddit_with_body(body)
         self.assertTrue(res["ok"])
         self.assertEqual("HTTP 200", res["detail"])

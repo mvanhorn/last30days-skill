@@ -67,8 +67,14 @@ def _log(msg: str) -> None:
 
 def unrecognized_body(text: str) -> Optional[str]:
     """Validator for the fetch hook: None for a search page, else a reason."""
-    if RESULTS_MARKER in text or NO_RESULTS_MARKER in text:
+    if NO_RESULTS_MARKER in text:
         return None
+    if RESULTS_MARKER in text:
+        # Marker kept but tracking context changed shape: a clean zero-result
+        # parse would hide the drift, so treat it as a lane failure.
+        if _post_units(text):
+            return None
+        return "Reddit search result units no longer parse"
     return "not a Reddit search results page"
 
 
