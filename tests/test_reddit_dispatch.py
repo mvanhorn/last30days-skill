@@ -190,7 +190,7 @@ class TestNoSearchJson:
     def test_keyless_discovery_never_calls_searchjson(self):
         # reddit_public.search (the .json caller) must never run in the keyless flow.
         with mock.patch("lib.reddit_public.search") as json_search, \
-             mock.patch("lib.reddit_keyless.reddit_rss.search_rss", return_value=[]), \
+             mock.patch("lib.reddit_keyless.reddit_search.search", return_value=[]), \
              mock.patch("lib.reddit_keyless.reddit_listing.fetch_listings", return_value=[]):
             reddit_keyless._discover("topic", "default", ["test"])
         json_search.assert_not_called()
