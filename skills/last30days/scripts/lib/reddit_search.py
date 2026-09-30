@@ -22,11 +22,10 @@ import json
 import re
 import sys
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, quote, urlencode, urlsplit
 
-from . import http
+from . import http, reddit_listing
 from .relevance import token_overlap_relevance
 
 BASE = "https://www.reddit.com"
@@ -91,18 +90,6 @@ def search_url(
     return f"{BASE}{path}?{urlencode(params)}"
 
 
-def _parse_ts(value: Optional[str]) -> Optional[datetime]:
-    if not value:
-        return None
-    try:
-        dt = datetime.fromisoformat(value.strip())
-    except (ValueError, TypeError):
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
-
-
 def _post_units(html_text: str) -> List[Tuple[int, Dict[str, Any]]]:
     """(offset, tracking context) for each post-title tracker, in page order."""
     units = []
@@ -154,7 +141,7 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
             url = f"{BASE}/r/{subreddit}/comments/{post_id}/"
 
         ts_match = _TIMEAGO.search(chunk)
-        created = _parse_ts(ts_match.group(1) if ts_match else None)
+        ts = ts_match.group(1) if ts_match else None
         counts = {"vote": 0, "comment": 0}
         for number, label in _COUNTER.findall(chunk):
             counts[label] = int(number)
@@ -167,10 +154,10 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
             "score": score,
             "num_comments": num_comments,
             "subreddit": subreddit,
-            "created_utc": created.timestamp() if created else None,
+            "created_utc": reddit_listing._to_epoch(ts),
             "author": "",
             "selftext": "",
-            "date": created.date().isoformat() if created else None,
+            "date": reddit_listing._to_date(ts),
             "engagement": {
                 "score": score,
                 "num_comments": num_comments,

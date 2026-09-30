@@ -1930,16 +1930,15 @@ def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional
     if url:
         blocked = _PROBE_BLOCKED_STATUSES.get(name, frozenset())
         headers = _PROBE_HEADERS.get(name)
-        body_check = _PROBE_BODY_CHECKS.get(name)
-        ok, detail = _http_ok(
-            url, timeout, blocked_statuses=blocked, headers=headers, body_check=body_check
-        )
+        probe_kwargs = {
+            "blocked_statuses": blocked,
+            "headers": headers,
+            "body_check": _PROBE_BODY_CHECKS.get(name),
+        }
+        ok, detail = _http_ok(url, timeout, **probe_kwargs)
         if not ok and _transient_probe_detail(name, detail):
             time.sleep(_PROBE_RETRY_DELAY_SECONDS)
-            ok, detail = _http_ok(
-                url, timeout, blocked_statuses=blocked, headers=headers,
-                body_check=body_check,
-            )
+            ok, detail = _http_ok(url, timeout, **probe_kwargs)
             if not ok and _transient_probe_detail(name, detail):
                 return {
                     "ok": False,

@@ -721,12 +721,6 @@ def _resolve_alternative(
     return res
 
 
-def _reddit_sc_min_items(config: Dict[str, Any]) -> int:
-    """The thinness floor, via the parser the pipeline also uses
-    (env.reddit_sc_min_items: unset -> default 5, 0 -> off, malformed -> 0)."""
-    return env.reddit_sc_min_items(config)
-
-
 def _resolve_conditional(
     descriptor: ChainDescriptor,
     config: Dict[str, Any],
@@ -744,7 +738,7 @@ def _resolve_conditional(
     has_key = bool(config.get("SCRAPECREATORS_API_KEY"))
     raw_pin = (config.get(descriptor.pin_var) or "").lower() if descriptor.pin_var else ""
     pinned_sc = has_key and raw_pin == "scrapecreators"
-    floor = _reddit_sc_min_items(config)
+    floor = env.reddit_sc_min_items(config)
 
     if pinned_sc:
         res.pinned = True
