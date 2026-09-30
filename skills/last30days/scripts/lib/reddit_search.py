@@ -31,7 +31,7 @@ from .relevance import token_overlap_relevance
 
 BASE = "https://www.reddit.com"
 
-# Post caps per run, carried over from the RSS lane it replaces.
+# Post caps per run by depth.
 DEPTH_LIMITS = {"quick": 10, "default": 25, "deep": 50}
 # Global search pages per depth (about 7 posts per page).
 GLOBAL_PAGE_CAPS = {"quick": 2, "default": 4, "deep": 8}

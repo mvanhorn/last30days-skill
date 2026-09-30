@@ -46,7 +46,7 @@ _EPOCH_RESET_THRESHOLD = 100_000_000.0
 def retry_delay_from_headers(headers, fallback):
     """Seconds to wait after a 429, read from whichever header the host sent.
 
-    ``Retry-After`` is the standard, but Reddit's search/RSS endpoints answer an
+    ``Retry-After`` is the standard, but Reddit's keyless search endpoints answer an
     anonymous 429 with ``x-ratelimit-reset`` (seconds until the window rolls) and
     no ``Retry-After`` at all::
 
@@ -1068,7 +1068,7 @@ def get_text(
 ) -> Optional[str]:
     """Fetch a URL and return decoded text, or None on any failure.
 
-    Keyless helper for Reddit RSS and shreddit HTML endpoints — the free path
+    Keyless helper for Reddit site search and shreddit HTML endpoints, the free path
     that replaced the now-403 ``.json`` endpoints. Sends a browser User-Agent
     and never raises: returns None on HTTP error, network failure, or timeout
     so tiered callers can fall through to the next source.
@@ -1077,7 +1077,7 @@ def get_text(
         url: Request URL
         timeout: HTTP timeout per attempt in seconds
         retries: Number of retries on failure (kept low — these tiers fail fast)
-        accept: Accept header value (e.g. "application/atom+xml", "text/html")
+        accept: Accept header value (e.g. "text/html")
         headers: Optional extra headers merged over the defaults
 
     Returns:
@@ -1157,10 +1157,10 @@ class RateLimiter:
                     self._waiting -= 1
 
 
-# Shared across all keyless Reddit tiers (RSS, listing, shreddit) so their
+# Shared across all keyless Reddit tiers (site search, listing, shreddit) so their
 # combined fan-out is throttled as one family. Burst lets the parallel
 # enrichment workers proceed; sustained rate caps the stampede.
-# 1 req/sec is slow enough that home IPs survive RSS + listing + shreddit
+# 1 req/sec is slow enough that home IPs survive search + listing + shreddit
 # fan-out; raise LAST30DAYS_REDDIT_KEYLESS_RATE to trade 429s for wall-clock.
 REDDIT_KEYLESS_RATE_ENV = "LAST30DAYS_REDDIT_KEYLESS_RATE"
 DEFAULT_REDDIT_KEYLESS_RATE = 1.0
@@ -1218,10 +1218,11 @@ def _sleep_reddit_429_retry() -> None:
     )
 
 
-# Run-scoped memo for keyless Reddit GETs. Subreddit listing partials, listing
-# RSS feeds, arctic supplements, and shreddit comment pages depend only on the
-# subreddit and sort, and the Reddit lane is dispatched with the raw topic for
-# every subquery, so a four-subquery run requested each of them four times.
+# Run-scoped memo for keyless Reddit GETs. Subreddit listing partials, site
+# search pages, arctic supplements, and shreddit comment pages depend only on
+# the subreddit, sort, or raw topic, and the Reddit lane is dispatched with the
+# raw topic for every subquery, so a four-subquery run requested each of them
+# four times.
 # Memoizing successful bodies for the life of one command turns ~184 requests
 # into ~50 on the measured 2026-08-31 run shape. Concurrent requesters for the
 # same URL wait on the first fetch instead of issuing their own (all four

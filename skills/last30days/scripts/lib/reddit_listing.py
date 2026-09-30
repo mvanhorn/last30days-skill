@@ -3,14 +3,14 @@
 The subreddit listing partial
 ``/svc/shreddit/community-more-posts/{sort}/?name={sub}[&t={range}]`` serves
 HTTP 200 with no API key and **server-renders each post's upvote score**, which
-neither RSS nor the comments endpoint provides. Each post is a
+the comments endpoint does not provide. Each post is a
 ``<shreddit-post>`` element whose start-tag attributes carry ``score``,
 ``comment-count``, ``post-title``, ``permalink``, ``author``, ``subreddit-name``
 and ``created-timestamp``.
 
 This is the keyless source of post-level upvotes. It works for normal users on
 ordinary connections (verified), so reddit_keyless uses it both as a scored
-discovery source and to backfill scores onto RSS-discovered posts.
+discovery source and to backfill scores onto posts discovered elsewhere.
 """
 
 import html as _html
@@ -351,7 +351,7 @@ def fetch_discovery_listings(
 def score_index(subreddits: List[str], depth: str = "default") -> Dict[str, Dict[str, int]]:
     """Build a {post_id: {score, num_comments}} map from subreddit listings.
 
-    Used to backfill real scores onto posts discovered via RSS, which carries
+    Used to backfill real scores onto posts discovered by a lane that carries
     no engagement numbers.
     """
     index: Dict[str, Dict[str, int]] = {}
