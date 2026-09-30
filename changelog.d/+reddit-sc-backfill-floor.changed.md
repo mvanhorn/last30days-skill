@@ -1,0 +1,1 @@
+With `SCRAPECREATORS_API_KEY` set, Reddit now spends ScrapeCreators credits to backfill search whenever the free path returns fewer than 5 items, instead of only when it returns nothing. A run makes at most one ScrapeCreators Reddit call per distinct query. Set `LAST30DAYS_REDDIT_SC_MIN_ITEMS=0` to restore the old backfill-only-when-empty behavior.

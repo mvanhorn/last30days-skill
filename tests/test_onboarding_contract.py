@@ -281,16 +281,20 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_offer_copy_names_comments_and_auto_enrichment(self):
         """The Step 4 offer states comments are part of the default value and
-        describes the key's real Reddit/YouTube roles (empty-path Reddit
-        search backfill + yt-dlp transcript backstop) — not rate-limit
+        describes the key's real Reddit/YouTube roles (Reddit search backfill
+        below the 5-item floor + yt-dlp transcript backstop), not rate-limit
         escalation or SC Reddit comment enrichment on the free path."""
         before = self._modal_before_step5()
         self.assertIn("comments", before.lower())
         self.assertIn("Reddit", before)
         self.assertIn("YouTube", before)
         self.assertIn("10,000 free calls", before)
-        # Empty-only search backup (not transport/rate-limit escalation).
-        self.assertIn("returns no items", before)
+        # Floor-triggered search backfill with the 0 opt-out (not
+        # transport/rate-limit escalation, and no longer empty-only).
+        self.assertIn("fewer than 5 items", before)
+        self.assertIn("LAST30DAYS_REDDIT_SC_MIN_ITEMS=0", before)
+        self.assertNotIn("returns no items", before)
+        self.assertNotIn("empty-only", before)
         self.assertNotIn("when they hit rate limits", before)
         # Free-path comments are shreddit; do not claim SC comment preference.
         self.assertNotIn("prefers ScrapeCreators for Reddit", before)
@@ -301,7 +305,8 @@ class TestOnboardingContract(unittest.TestCase):
         step5 = self._modal_step5()
         self.assertNotIn("public + ScrapeCreators", step5)
         self.assertNotIn("Reddit auto-enrichment", step5)
-        self.assertIn("empty-only", step5)
+        self.assertIn("fewer than 5 items", step5)
+        self.assertNotIn("empty-only", step5)
 
     def test_recommended_tier_writes_comments_by_default(self):
         """Comments are the DEFAULT: the recommended option enables YouTube +

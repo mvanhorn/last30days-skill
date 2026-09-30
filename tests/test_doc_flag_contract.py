@@ -71,9 +71,14 @@ def test_reddit_backend_env_var_is_documented_for_users_and_runtime_skill():
     assert "LAST30DAYS_REDDIT_SC_MIN_ITEMS" in skill_text
     # Security copy must not claim transport/rate-limit escalation for Reddit search.
     assert "when public Reddit is unavailable" not in skill_text
-    assert "backup when the free path returns no items" in skill_text or (
-        "returns **no items**" in skill_text
-    )
+    # Keyed default: ScrapeCreators backfills below a 5-item floor; 0 opts out.
+    assert "fewer than 5 items" in skill_text
+    assert "LAST30DAYS_REDDIT_SC_MIN_ITEMS=0" in skill_text
+    assert "LAST30DAYS_REDDIT_SC_MIN_ITEMS=0" in config_text
+    for text in (skill_text, config_text):
+        assert "empty-only" not in text
+        assert "returns no items" not in text
+        assert "returns **no items**" not in text
 
 
 def test_save_is_not_documented_as_python_cli_flag():
