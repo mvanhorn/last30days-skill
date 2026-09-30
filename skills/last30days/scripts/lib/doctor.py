@@ -54,7 +54,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, brightdata, env, health, http, prescriptions, x_api
+from . import backends, brightdata, env, health, http, prescriptions, reddit_search, x_api
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -1121,10 +1121,12 @@ def _sub_lanes_for(source: str, config: Dict[str, Any]):
     comments: Optional[Dict[str, Any]] = None
     has_sc = bool(config.get("SCRAPECREATORS_API_KEY"))
     if source == "reddit":
-        backups.append({
-            "name": "ScrapeCreators backfill", "armed": has_sc,
-            "note": "fills in when the free public path returns nothing",
-        })
+        floor = env.reddit_sc_min_items(config)
+        if floor > 0:
+            note = f"fills in when results fall below the {floor}-item floor"
+        else:
+            note = "fills in when the free public path returns nothing"
+        backups.append({"name": "ScrapeCreators backfill", "armed": has_sc, "note": note})
     elif source == "youtube":
         backups.append({
             "name": "ScrapeCreators transcript/search backstop", "armed": has_sc,
@@ -1805,11 +1807,10 @@ def _write_cache(report: Dict[str, Any], config: Dict[str, Any]) -> bool:
 
 # Free, keyless liveness endpoints (reachability check, tiny payload).
 _HTTP_PROBE_URLS = {
-    # The keyless engine's real discovery endpoint (reddit_rss._build_urls).
-    # /r/all/hot.json is permanently 403 keyless (see the reddit_keyless module
-    # docstring) and no lane requests it any more, so probing it measured an
-    # endpoint the engine had already abandoned.
-    "reddit": "https://www.reddit.com/search.rss?q=test&sort=relevance&t=month",
+    # The keyless engine's real discovery endpoint, built by the lane itself so
+    # the probe cannot drift from what the engine requests (hand-copied URLs
+    # kept certifying endpoints the engine had abandoned).
+    "reddit": reddit_search.search_url("test"),
     "hackernews": "https://hn.algolia.com/api/v1/search?query=test&hitsPerPage=1",
     "polymarket": "https://gamma-api.polymarket.com/events?limit=1",
     "github": "https://api.github.com/rate_limit",
@@ -1837,8 +1838,15 @@ _PROBE_RETRY_DELAY_SECONDS = 2.0
 _PROBE_HEADERS = {
     "reddit": {
         "User-Agent": http.BROWSER_USER_AGENT,
-        "Accept": "application/atom+xml",
+        "Accept": "text/html",
     },
+}
+
+# Per-source body validators, run on a 2xx: None means the body is the page the
+# lane parses, anything else is the reason it is not. Reddit answers a blocked
+# keyless client with a 200 challenge page, so status alone reads it as working.
+_PROBE_BODY_CHECKS: Dict[str, Callable[[str], Optional[str]]] = {
+    "reddit": reddit_search.unrecognized_body,
 }
 
 DEFAULT_PROBE_TIMEOUT_SECONDS = 10
@@ -1873,6 +1881,7 @@ def _http_ok(
     *,
     blocked_statuses: frozenset = frozenset(),
     headers: Optional[Dict[str, str]] = None,
+    body_check: Optional[Callable[[str], Optional[str]]] = None,
 ) -> tuple:
     """Reachability check: a 4xx still means the endpoint responded; 5xx or a
     connection/timeout error means it did not.
@@ -1880,7 +1889,8 @@ def _http_ok(
     ``blocked_statuses`` names the per-source codes that mean "responded, but
     refused us" (Reddit's keyless 403/429) — those are a failure, not
     reachability. ``headers`` overrides the probe identity so a source can be
-    probed with the same User-Agent its lane sends.
+    probed with the same User-Agent its lane sends. ``body_check`` validates
+    a 2xx body; a non-None reason fails the probe as blocked.
     """
     def _verdict(code: int) -> tuple:
         return code < 500 and code not in blocked_statuses, f"HTTP {code}"
@@ -1890,7 +1900,13 @@ def _http_ok(
             url, headers=headers or {"User-Agent": "last30days-doctor"}
         )
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return _verdict(getattr(resp, "status", 200) or 200)
+            code = getattr(resp, "status", 200) or 200
+            if body_check is not None and code < 300:
+                text = resp.read().decode("utf-8", errors="replace")
+                reason = body_check(text)
+                if reason:
+                    return False, f"HTTP {code} but blocked: {reason}"
+            return _verdict(code)
     except urllib.error.HTTPError as exc:
         return _verdict(exc.code)
     except Exception as exc:
@@ -1914,10 +1930,16 @@ def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional
     if url:
         blocked = _PROBE_BLOCKED_STATUSES.get(name, frozenset())
         headers = _PROBE_HEADERS.get(name)
-        ok, detail = _http_ok(url, timeout, blocked_statuses=blocked, headers=headers)
+        body_check = _PROBE_BODY_CHECKS.get(name)
+        ok, detail = _http_ok(
+            url, timeout, blocked_statuses=blocked, headers=headers, body_check=body_check
+        )
         if not ok and _transient_probe_detail(name, detail):
             time.sleep(_PROBE_RETRY_DELAY_SECONDS)
-            ok, detail = _http_ok(url, timeout, blocked_statuses=blocked, headers=headers)
+            ok, detail = _http_ok(
+                url, timeout, blocked_statuses=blocked, headers=headers,
+                body_check=body_check,
+            )
             if not ok and _transient_probe_detail(name, detail):
                 return {
                     "ok": False,

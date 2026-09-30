@@ -36,7 +36,7 @@ _WELCOME_TEXT = """Welcome to /last30days! I research any topic across Reddit, X
 I synthesize what people are actually saying right now across social, news, and market sources.
 
 Auto setup gives you the core sources free in about 30 seconds:
-- Reddit with comments - free keyless discovery (RSS + shreddit), no API key needed.
+- Reddit with comments - free keyless discovery (Reddit search + shreddit), no API key needed.
 - YouTube search + transcripts - installs yt-dlp (open source, 190K+ GitHub stars).
 - Digg - trending news, GitHub stars, and pipeline feeds - installs the free, keyless Digg CLI.
 - arXiv (papers) + Techmeme (tech-news) - install free, keyless Printing Press CLIs and run on any topic (arXiv is relevance + recency gated to research topics).

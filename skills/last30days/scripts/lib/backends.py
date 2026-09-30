@@ -21,7 +21,7 @@ Two resolution modes:
   results fall below the configured thinness floor (see the gating in
   ``lib/pipeline.py``). No probe can pick one winner, so resolution renders
   honest conditional wording instead of an ``active_backend``. Reddit's
-  internal keyless lanes (rss/listing/arctic/shreddit) are sub-probe detail
+  internal keyless lanes (search/listing/arctic/shreddit) are sub-probe detail
   inside the public composite, never chain entries.
 
 ``active_backend`` semantics: a PREDICTION — "the first backend the probes
@@ -456,7 +456,7 @@ def _probe_reddit_public(config: Dict[str, Any]) -> BackendFinding:
     return BackendFinding(
         name="public",
         status=health.OK,
-        detail="public keyless composite (lanes: rss, listing, arctic, shreddit)",
+        detail="public keyless composite (lanes: search, listing, arctic, shreddit)",
         requires="none (public endpoints)",
     )
 

@@ -206,7 +206,7 @@ class TestDescriptorRegistry:
         assert d.mode == backends.MODE_CONDITIONAL
         names = [s.name for s in d.backends]
         # Internal keyless lanes are sub-probe detail, never chain entries.
-        for lane in ("rss", "listing", "arctic", "shreddit"):
+        for lane in ("search", "listing", "arctic", "shreddit", "rss"):
             assert lane not in names
         assert names == ["public", "scrapecreators"]
 
@@ -695,8 +695,8 @@ class TestRedditConditional:
     def test_keyless_lanes_are_sub_probe_detail(self):
         res = backends.resolve("reddit", {})
         public = next(f for f in res.findings if f.name == "public")
-        for lane in ("rss", "listing", "arctic", "shreddit"):
-            assert lane in public.detail
+        assert public.detail.endswith("(lanes: search, listing, arctic, shreddit)")
+        assert "rss" not in public.detail
 
 
 # ---------------------------------------------------------------------------
