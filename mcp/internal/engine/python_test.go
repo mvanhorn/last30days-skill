@@ -26,7 +26,7 @@ func fakePython(t *testing.T, dir, name, version string) string {
 func TestPythonDiscoveryFallback(t *testing.T) {
 	for _, name := range []string{"python3", "python3.12", "python3.99", "python"} {
 		t.Run(name, func(t *testing.T) {
-			t.Setenv(PythonEnvOverride, "")
+			unsetPythonOverride(t)
 			first, second := t.TempDir(), t.TempDir()
 			fakePython(t, first, "python3", "3.9")
 			want := fakePython(t, second, name, "3.12")
@@ -44,7 +44,7 @@ func TestPythonDiscoveryFallback(t *testing.T) {
 }
 
 func TestPythonDiscoveryPreservesDefault(t *testing.T) {
-	t.Setenv(PythonEnvOverride, "")
+	unsetPythonOverride(t)
 	dir := t.TempDir()
 	want := fakePython(t, dir, "python3", "3.12")
 	fakePython(t, dir, "python3.14", "3.14")
@@ -80,7 +80,7 @@ func TestPythonOverrideVerifiedWithoutFallback(t *testing.T) {
 }
 
 func TestPythonDiscoveryExcludesRelativePathsAndConfigHelpers(t *testing.T) {
-	t.Setenv(PythonEnvOverride, "")
+	unsetPythonOverride(t)
 	dir := t.TempDir()
 	fakePython(t, dir, "python3-config", "3.14")
 	fakePython(t, dir, "python3.14-config", "3.14")
@@ -92,7 +92,7 @@ func TestPythonDiscoveryExcludesRelativePathsAndConfigHelpers(t *testing.T) {
 	if _, err := resolvePython(""); err == nil {
 		t.Fatal("accepted relative override")
 	}
-	t.Setenv(PythonEnvOverride, "")
+	unsetPythonOverride(t)
 	if _, err := resolvePython(""); err == nil {
 		t.Fatal("accepted relative PATH")
 	}
@@ -121,5 +121,54 @@ func TestPythonProbeCancellation(t *testing.T) {
 	}
 	if time.Since(start) > time.Second {
 		t.Fatal("probe ignored cancellation")
+	}
+}
+
+func unsetPythonOverride(t *testing.T) {
+	t.Helper()
+	t.Setenv(PythonEnvOverride, "")
+	if err := os.Unsetenv(PythonEnvOverride); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestDiscoveryFilesystemCancellation(t *testing.T) {
+	release := make(chan struct{})
+	defer close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := discoveryOperation(ctx, func() (string, error) { <-release; return "", nil })
+	if err != context.DeadlineExceeded || time.Since(start) > time.Second {
+		t.Fatalf("filesystem cancellation: %v", err)
+	}
+}
+
+func TestDiscoveryStopsBeforeLaterDirectory(t *testing.T) {
+	unsetPythonOverride(t)
+	first, second := t.TempDir(), t.TempDir()
+	want := fakePython(t, first, "python3", "3.12")
+	t.Setenv("PATH", first+string(os.PathListSeparator)+second)
+	got, err := resolvePythonWithCandidates(context.Background(), "", func(dir string) []string {
+		if dir == second {
+			t.Error("scanned later directory after valid interpreter")
+		}
+		return pythonCandidates(dir)
+	})
+	if err != nil || got != want {
+		t.Fatalf("got %q, %v", got, err)
+	}
+}
+func TestDiscoveryCancelsStalledDirectory(t *testing.T) {
+	unsetPythonOverride(t)
+	t.Setenv("PATH", t.TempDir())
+	release := make(chan struct{})
+	defer close(release)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	_, err := resolvePythonWithCandidates(ctx, "", func(string) []string { <-release; return nil })
+	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") || time.Since(start) > time.Second {
+		t.Fatalf("stalled discovery ignored cancellation: %v", err)
 	}
 }

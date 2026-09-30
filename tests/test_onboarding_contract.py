@@ -72,6 +72,34 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertLess(self.grok.index("search_posts_all"), self.grok.index("X_BEARER_TOKEN"))
         self.assertIn("setup --store-key", self.grok)
 
+    def test_first_run_flows_do_not_invoke_preflight(self):
+        """Status and permission inspection are not a required first-run beat.
+        `--preflight` stays an opt-in inspector; Step 0 must not dump `.env`."""
+        self.assertNotIn("--preflight", self.modal)
+        self.assertNotIn("--preflight", self.prose)
+        self.assertNotIn("--preflight", self.grok)
+        self.assertIn("Do not run it as a required first-run step", self.step0)
+        self.assertIn("Do not print `.env` contents or credential values", self.step0)
+
+    def test_first_run_gate_defers_to_step0_credential_sources(self):
+        """The cheap SETUP_COMPLETE grep is not itself a first-run verdict."""
+        start = self.text.index("**FIRST-RUN GATE")
+        end = self.text.index("\n## Step 0: First-Run Setup Wizard")
+        gate = self.text[start:end]
+        self.assertIn("FIRST_RUN_DETECTED", gate)
+        self.assertIn("A missing `.env` alone is not a first run", gate)
+        self.assertIn("That section decides first-run from every credential source", gate)
+
+    def test_complete_does_not_treat_setup_stdout_as_source_list(self):
+        self.assertIn(
+            "Setup stdout is what this run installed, not the runtime source list",
+            self.prose,
+        )
+        self.assertIn(
+            "Setup stdout is what this run installed, not the runtime source list",
+            self.grok,
+        )
+
     def test_hard_gate_step0_before_step1(self):
         """The erosion-resistant gate that orphaned the wizard in #659 is restored."""
         self.assertIn("ALWAYS execute Step 0 BEFORE Step 1", self.step0)

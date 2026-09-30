@@ -1,0 +1,1 @@
+`--perplexity-search-type` no longer moves hosted-backend runs to local research when no direct `PERPLEXITY_API_KEY` is configured, and an invalid `LAST30DAYS_PERPLEXITY_SEARCH_TYPE` value no longer blocks OpenRouter Sonar searches.

@@ -281,6 +281,19 @@ def slugify(value: str, max_length: int = 180) -> str:
     return slug or "last30days"
 
 
+def sanitize_suffix(suffix: str) -> str:
+    """Sanitize a user-provided ``--save-suffix`` into a path-safe token.
+
+    The suffix is glued directly into the saved-report filename, so restrict it
+    to the same ``[a-z0-9-]`` class as the topic slug. This neutralizes path
+    separators and parent refs (``/``, ``..``) so a suffix can never escape the
+    save directory, while leaving ordinary values ('v3', 'gemini', a client
+    slug) unchanged. Unlike ``slugify`` there is no fallback token: a suffix
+    that sanitizes to nothing simply drops, yielding no suffix part.
+    """
+    return re.sub(r"[^a-z0-9]+", "-", suffix.lower()).strip("-")
+
+
 def _report_has_private_corpus(report: schema.Report) -> bool:
     items_by_source = getattr(report, "items_by_source", {})
     if isinstance(items_by_source, dict) and items_by_source.get("corpus"):
@@ -327,7 +340,8 @@ def save_output(
     slug = slugify(topic_override or report.topic)
     extension = "json" if emit == "json" else "html" if emit == "html" else "md"
     raw_label = "raw-html" if emit == "html" else "raw"
-    suffix_part = f"-{suffix}" if suffix else ""
+    safe_suffix = sanitize_suffix(suffix)
+    suffix_part = f"-{safe_suffix}" if safe_suffix else ""
     base = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
     date_str = datetime.now().strftime('%Y-%m-%d')
     candidates = [base]
@@ -556,6 +570,17 @@ def comparison_topic(entity_reports: list[tuple[str, schema.Report]]) -> str:
     return " vs ".join(label for label, _ in entity_reports)
 
 
+def comparison_label_key(label: str) -> str:
+    """Normalize an entity label for duplicate detection.
+
+    Comparison labels double as keys in the fan-out's results dict, so two
+    entities differing only in case, surrounding space, or a repeated space
+    collide there while still looking distinct on the command line. Spaces
+    are collapsed, never stripped: "Open AI" stays distinct from "OpenAI".
+    """
+    return " ".join(label.split()).casefold()
+
+
 def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str) -> str:
     """Compute the user-friendly save path string that will be shown in the footer.
 
@@ -567,7 +592,8 @@ def compute_save_path_display(save_dir: str, topic: str, suffix: str, emit: str)
     slug = slugify(topic)
     extension = "json" if emit == "json" else "html" if emit == "html" else "md"
     raw_label = "raw-html" if emit == "html" else "raw"
-    suffix_part = f"-{suffix}" if suffix else ""
+    safe_suffix = sanitize_suffix(suffix)
+    suffix_part = f"-{safe_suffix}" if safe_suffix else ""
     raw = path / f"{slug}-{raw_label}{suffix_part}.{extension}"
     try:
         home = _Path.home().resolve()
@@ -787,6 +813,8 @@ def build_parser() -> argparse.ArgumentParser:
                         choices=["auto", "brave", "exa", "serper", "parallel", "parallel-mcp", "keyless", "none"],
                         help="Web search backend (default: auto; parallel-mcp explicitly opts into the "
                              "anonymous hosted MCP; keyless forces the zero-key floor)")
+    parser.add_argument("--perplexity-search-type", choices=["web", "fast"],
+                        help="Search backend for direct Perplexity Search API and Agent web_search; overrides LAST30DAYS_PERPLEXITY_SEARCH_TYPE. Does not enable the paid source or select an Agent preset.")
     parser.add_argument("--deep-research", action="store_true",
                         help="Use at most one Perplexity Deep Research run. Direct PERPLEXITY_API_KEY uses the Agent API background path; OPENROUTER_API_KEY keeps the synchronous Sonar fallback; cannot be combined with competitor or vs-mode.")
     parser.add_argument("--hiring-signals", action="store_true",
@@ -1646,7 +1674,8 @@ def _save_discovery_output(
     directory = Path(save_dir).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True)
     extension = "json" if emit == "json" else "md"
-    suffix_part = f"-{suffix}" if suffix else ""
+    safe_suffix = sanitize_suffix(suffix)
+    suffix_part = f"-{safe_suffix}" if safe_suffix else ""
     stem = f"{slugify(domain)}-discover-raw{suffix_part}"
     date_str = datetime.datetime.now().strftime("%Y-%m-%d")
     candidates = [directory / f"{stem}.{extension}", directory / f"{stem}-{date_str}.{extension}"]
@@ -3173,6 +3202,8 @@ def _main(
             return _run_store_key(store_key_name)
 
     config = env.get_config(policy=_config_policy_for_args(args, topic, extra_argv))
+    if args.perplexity_search_type is not None:
+        config["LAST30DAYS_PERPLEXITY_SEARCH_TYPE"] = args.perplexity_search_type
     # One memo per command: comparison mode runs pipeline.run per entity in
     # parallel, so the reset must not live inside the pipeline.
     http.reset_reddit_keyless_memo()
@@ -3499,6 +3530,26 @@ def _main(
         sys.stderr.write(
             "[last30days] Local corpus configured; bypassing the hosted backend so files stay on this machine.\n"
         )
+    # An explicit --perplexity-search-type is per-invocation intent the hosted
+    # backend cannot honor, so it runs locally, but only when a direct
+    # PERPLEXITY_API_KEY can apply it; otherwise the switch would trade hosted
+    # coverage for nothing. Key on the parsed CLI flag only: a value from
+    # LAST30DAYS_PERPLEXITY_SEARCH_TYPE must never move routing.
+    elif (
+        topic
+        and args.perplexity_search_type is not None
+        and config.get("PERPLEXITY_API_KEY")
+        and not args.diagnose
+        and not args.mock
+        and not args.record_fixtures
+        and not args.deep_research
+        and env.read_secret_env("LAST30DAYS_API_KEY")
+        and os.environ.get("LAST30DAYS_API_BASE")
+    ):
+        sys.stderr.write(
+            "[last30days] --perplexity-search-type set; bypassing the hosted backend "
+            "because it does not apply the Perplexity search type.\n"
+        )
     if (
         topic
         and not args.diagnose
@@ -3508,7 +3559,17 @@ def _main(
         and os.environ.get("LAST30DAYS_API_BASE")
         and not resolved_corpus_dirs
         and not args.deep_research
+        and (args.perplexity_search_type is None or not config.get("PERPLEXITY_API_KEY"))
     ):
+        if args.perplexity_search_type is not None:
+            sys.stderr.write(
+                "hosted backend does not apply --perplexity-search-type and no direct "
+                "PERPLEXITY_API_KEY is configured to run it locally; skipping\n"
+            )
+        elif config.get("LAST30DAYS_PERPLEXITY_SEARCH_TYPE"):
+            sys.stderr.write(
+                "hosted backend does not apply LAST30DAYS_PERPLEXITY_SEARCH_TYPE; skipping\n"
+            )
         if _freshness_enabled(args, config):
             if args.verify_freshness is True:
                 sys.stderr.write(
@@ -3997,6 +4058,33 @@ def _main(
                     )
                     return 2
 
+            # run_competitor_fanout keys its results by label, so two
+            # submissions sharing one collapse to a single report while the
+            # returned list still carries two entries. That yields a
+            # comparison of an entity against itself, and it hides a failed
+            # main topic from the survivor check below: the duplicate peer's
+            # report answers for the label the main run was supposed to fill.
+            distinct_peers: list[str] = []
+            claimed_labels = {comparison_label_key(topic)}
+            for peer in discovered:
+                key = comparison_label_key(peer)
+                if key in claimed_labels:
+                    sys.stderr.write(
+                        f"[Competitors] Dropping {peer!r}: duplicates the main "
+                        "topic or an earlier peer.\n"
+                    )
+                    continue
+                claimed_labels.add(key)
+                distinct_peers.append(peer)
+            if not distinct_peers:
+                sys.stderr.write(
+                    f"[Competitors] No peer distinct from {topic!r} remains; "
+                    "there is nothing to compare against. Pass "
+                    "--competitors-list with distinct entities.\n"
+                )
+                return 2
+            discovered = distinct_peers
+
             sys.stderr.write(
                 f"[Competitors] Comparing: {topic} vs " + " vs ".join(discovered) + "\n"
             )
@@ -4105,6 +4193,25 @@ def _main(
                 competitors=discovered,
                 competitor_runner=_competitor_runner,
             )
+            # run_competitor_fanout drops a failed sub-run from the list, and
+            # the render takes entity_reports[0] as the comparison's subject.
+            # Without this check, a main topic that raised while >=2 peers
+            # succeeded silently promoted a competitor to be the subject: the
+            # report was headed by that peer, saved under its slug, and the
+            # topic the user actually asked about went unmentioned.
+            survived = {label for label, _ in entity_reports}
+            dropped = [
+                label for label in (topic, *discovered) if label not in survived
+            ]
+            if topic not in survived:
+                progress.end_processing()
+                sys.stderr.write(
+                    f"[Competitors] The main topic {topic!r} failed; "
+                    f"{len(entity_reports)} competitor sub-run(s) survived. "
+                    "Refusing to render a comparison headed by a competitor. "
+                    "Check the warnings above.\n"
+                )
+                return 1
             if len(entity_reports) < 2:
                 progress.end_processing()
                 sys.stderr.write(
@@ -4114,6 +4221,14 @@ def _main(
                 )
                 return 1
             report = entity_reports[0][1]
+            if dropped:
+                # A narrower comparison than the user asked for is a result
+                # they need to see, not a silent substitution.
+                report.warnings.append(
+                    "Comparison is incomplete: "
+                    f"{len(dropped)} of {len(discovered) + 1} entities failed and "
+                    f"were dropped ({', '.join(dropped)})."
+                )
         else:
             entity_reports = None
             report = _main_runner()

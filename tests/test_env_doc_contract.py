@@ -27,6 +27,7 @@ DOC_ONLY_KEYS = {
     "LAST30DAYS_API_BASE",
     "LAST30DAYS_API_KEY",
     "LAST30DAYS_CACHE_DIR",
+    "LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES",
     "LAST30DAYS_MCP_TIMEOUT",
     "LAST30DAYS_PYTHON",
     # Read from the process environment before or outside get_config

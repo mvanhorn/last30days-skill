@@ -143,16 +143,11 @@ class TestPluginContract(unittest.TestCase):
 
         self.assertEqual([], offenders)
 
-    def test_session_start_hook_uses_bare_claude_plugin_root(self) -> None:
-        # Claude Code's missing-plugin-root guard matches the exact literal
-        # ${CLAUDE_PLUGIN_ROOT}. Defaults like ${CLAUDE_PLUGIN_ROOT:-.} slip past
-        # that check and resolve relative to the session cwd (issue #1074).
-        hooks = _json(ROOT / "hooks" / "hooks.json")
-        command = hooks["hooks"]["SessionStart"][0]["hooks"][0]["command"]
-        self.assertIn("${CLAUDE_PLUGIN_ROOT}", command)
-        self.assertNotIn(":-", command)
-        self.assertNotIn("extensionPath", command)
-        self.assertNotIn(":-.}", command)
+    def test_plugin_ships_no_session_start_hook(self) -> None:
+        # SessionStart ran in every Claude Code / Grok session whether or not
+        # /last30days was invoked. First-run NUX lives in SKILL.md Step 0.
+        self.assertFalse((ROOT / "hooks" / "hooks.json").exists())
+        self.assertFalse((ROOT / "hooks" / "scripts" / "check-config.sh").exists())
 
     def test_mcp_manifest_credential_entries_are_sensitive(self) -> None:
         # Every user_config entry that names a credential (title ends in _KEY

@@ -1,1 +1,0 @@
-Trailing `# comment` annotations on unquoted `.env` values (the shape shown in `CONFIGURATION.md`) are now stripped instead of being stored as part of the value; `#` inside quotes or glued to the value stays literal.

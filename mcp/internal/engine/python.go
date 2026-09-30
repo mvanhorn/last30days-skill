@@ -20,14 +20,21 @@ func resolvePython(override string) (string, error) {
 }
 
 func resolvePythonContext(ctx context.Context, override string) (string, error) {
+	return resolvePythonWithCandidates(ctx, override, pythonCandidates)
+}
+
+func resolvePythonWithCandidates(ctx context.Context, override string, candidatesInDir func(string) []string) (string, error) {
 	// Preserve the trusted injection seam used by embedded callers and tests.
 	if override != "" {
 		return override, nil
 	}
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if candidate := os.Getenv(PythonEnvOverride); candidate != "" {
-		path, err := exec.LookPath(candidate)
+	if candidate, configured := os.LookupEnv(PythonEnvOverride); configured {
+		if candidate == "" {
+			return "", fmt.Errorf("engine: %s is set but empty", PythonEnvOverride)
+		}
+		path, err := discoveryOperation(ctx, func() (string, error) { return exec.LookPath(candidate) })
 		if err == nil && !filepath.IsAbs(path) {
 			err = fmt.Errorf("relative executable paths are not allowed")
 		}
@@ -39,20 +46,28 @@ func resolvePythonContext(ctx context.Context, override string) (string, error) 
 		}
 		return path, nil
 	}
-	candidates := pythonCandidates(os.Getenv("PATH"))
 	var failures []string
-	for _, candidate := range candidates {
-		if ctx.Err() != nil {
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if !filepath.IsAbs(dir) {
+			continue
+		}
+		candidates, err := discoveryOperation(ctx, func() ([]string, error) { return candidatesInDir(dir), nil })
+		if err != nil {
 			break
 		}
-		path, err := exec.LookPath(candidate)
-		if err == nil {
-			err = checkPythonVersion(ctx, path)
+		for _, candidate := range candidates {
+			if ctx.Err() != nil {
+				break
+			}
+			path, err := discoveryOperation(ctx, func() (string, error) { return exec.LookPath(candidate) })
+			if err == nil {
+				err = checkPythonVersion(ctx, path)
+			}
+			if err == nil {
+				return path, nil
+			}
+			failures = append(failures, fmt.Sprintf("%s: %v", candidate, err))
 		}
-		if err == nil {
-			return path, nil
-		}
-		failures = append(failures, fmt.Sprintf("%s: %v", candidate, err))
 	}
 	if ctx.Err() != nil {
 		failures = append(failures, ctx.Err().Error())
@@ -140,4 +155,27 @@ func checkPythonVersion(ctx context.Context, path string) error {
 		return fmt.Errorf("incompatible Python version %q", strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+// Filesystem calls cannot be interrupted by context. A buffered worker lets the
+// caller honor cancellation without waiting for a stalled mount. Discovery is
+// sequential, so at most one filesystem operation is left pending per request.
+func discoveryOperation[T any](ctx context.Context, operation func() (T, error)) (T, error) {
+	type result struct {
+		value T
+		err   error
+	}
+	if err := ctx.Err(); err != nil {
+		var zero T
+		return zero, err
+	}
+	done := make(chan result, 1)
+	go func() { value, err := operation(); done <- result{value, err} }()
+	select {
+	case <-ctx.Done():
+		var zero T
+		return zero, ctx.Err()
+	case r := <-done:
+		return r.value, r.err
+	}
 }

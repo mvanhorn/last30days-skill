@@ -1,5 +1,0 @@
-**Meta Ads source** — a new opt-in research lane that surfaces what a brand is *paying* to say this month, alongside what everyone else is saying about it. It resolves the brand's advertiser page in the Meta Ad Library, pulls the creatives that launched inside your 30-day window, and reads back the ad copy, launch date, placements, call to action, landing product, any promo code, and the spoken transcript of the newest video ads. The 📣 footer line names the advertiser page it resolved, so a wrong-company match is visible rather than silent, and reports how much the brand is still running from before the window.
-
-Paid message only, never audience reaction: Meta publishes reach and spend for political ads alone, so commercial creatives carry no engagement numbers.
-
-Off by default and never inferred from topic shape. Turn it on per run with `--search meta_ads` or durably with `INCLUDE_SOURCES=meta_ads`; it needs `SCRAPECREATORS_API_KEY`. A default-depth run spends at most 7 of the 10,000 free calls. Use `--meta-ads-page=<page_id>` when a brand advertises under product-line page names, and `LAST30DAYS_META_ADS_COUNTRY` for a non-US Ad Library.

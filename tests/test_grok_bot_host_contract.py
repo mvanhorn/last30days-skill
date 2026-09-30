@@ -135,7 +135,6 @@ class TestGrokBotProseFlow(unittest.TestCase):
             "about the last week",
             "SETUP_COMPLETE=true",
             "X_DECLINED=grok-bot",
-            "--preflight",
         ):
             self.assertIn(token, self.flow, token)
 

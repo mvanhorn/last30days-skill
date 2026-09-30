@@ -3,7 +3,8 @@ name: Changelog guard
 # Non-release PRs must not edit CHANGELOG.md or bump lockstep version strings.
 # Content edits to SKILL.md / pyproject.toml / uv.lock are fine.
 # Release PRs (label: release) are exempt. Engine changes need a changelog
-# fragment unless labeled skip-changelog.
+# fragment unless labeled skip-changelog. Dependabot PRs skip the fragment
+# requirement automatically (author dependabot[bot]); the label is optional.
 
 on:
   pull_request:
@@ -30,6 +31,7 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
 
@@ -41,6 +43,13 @@ jobs:
           fi
           if printf '%s\n' "${LABELS}" | grep -qx 'skip-changelog'; then
             SKIP_CHANGELOG=1
+          fi
+          # Dependabot cannot add skip-changelog itself (labels: in
+          # dependabot.yml replaces default ecosystem labels, and a missing
+          # repo label is silently dropped). Author is available on opened.
+          if [ "${PR_AUTHOR}" = "dependabot[bot]" ]; then
+            SKIP_CHANGELOG=1
+            echo "PR author is dependabot[bot] — changelog fragment not required."
           fi
 
           mapfile -t CHANGED < <(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")

@@ -49,7 +49,7 @@ Agents open most PRs. Follow this so `CHANGELOG.md` stops conflicting and versio
 
 1. **Feature/fix PRs:** add `changelog.d/<pr-or-issue>.<type>.md` (`added` / `changed` / `fixed` / `removed` / `deprecated` / `security`) when the change belongs in the next release notes. See `changelog.d/README.md` and `CONTRIBUTING.md`. Fill the PR template’s Summary, Agent disclosure, and Relationship sections.
 2. **Never** edit `CHANGELOG.md` in a feature PR. **Never** bump version strings in `pyproject.toml`, `SKILL.md`, plugin/marketplace JSON, or `uv.lock` outside a release PR. CI (`changelog-guard.yml`) enforces this.
-3. **Nothing for release notes:** omit the fragment, check Skip changelog in the template, and add the `skip-changelog` label.
+3. **Nothing for release notes:** omit the fragment, check Skip changelog in the template, and add the `skip-changelog` label. Dependabot PRs (author `dependabot[bot]`) skip that requirement automatically.
 4. **Cutting a release:** run Actions → **Prepare release** (patch/minor/major). That opens a `chore(release): bump version to X.Y.Z` PR which runs towncrier and bumps every lockstep surface. Merging to `main` triggers **Tag release**, which pushes `vX.Y.Z` and existing `release.yml` publishes `.skill` / `.mcpb` artifacts. Do not hand-edit ten version files. Contributors do not need a global towncrier install — `uv sync --group dev` (or the Action) provides it for release prep only.
 5. Lockstep gate remains `tests/test_plugin_contract.py::test_versions_match_across_manifests`. Workflow contract: `tests/test_changelog_workflow.py`.
 

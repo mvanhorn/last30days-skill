@@ -146,6 +146,31 @@ class RenderComparisonMultiTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             render.render_comparison_multi([])
 
+    def test_context_emit_carries_warnings(self):
+        # render_context shows warnings for a single entity; comparison
+        # context mode dropped them, so --emit=context was the one supported
+        # output where a dropped entity or failed source was invisible.
+        report_a = _build_report("OpenAI", ["GPT-5 drop"])
+        report_b = _build_report("Anthropic", ["Claude 4.7"])
+        report_a.warnings.append(
+            "Comparison is incomplete: 1 of 3 entities failed and were dropped (xAI)."
+        )
+        report_b.warnings.append("Exa returned 0 results")
+        out = render.render_comparison_multi_context(
+            [("OpenAI", report_a), ("Anthropic", report_b)]
+        )
+        self.assertIn("Warnings:", out)
+        self.assertIn("[OpenAI] Comparison is incomplete", out)
+        self.assertIn("[Anthropic] Exa returned 0 results", out)
+        # Above the per-entity sections so it survives tail truncation.
+        self.assertLess(out.index("Warnings:"), out.index("## OpenAI"))
+
+    def test_context_emit_omits_empty_warnings_block(self):
+        out = render.render_comparison_multi_context(
+            [("OpenAI", _build_report("OpenAI", ["GPT-5 drop"]))]
+        )
+        self.assertNotIn("Warnings:", out)
+
     def test_context_emit(self):
         reports = [
             ("OpenAI", _build_report("OpenAI", ["GPT-5 drop"])),

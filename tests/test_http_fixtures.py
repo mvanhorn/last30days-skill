@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from unittest.mock import MagicMock
 
 import pytest
@@ -57,6 +58,85 @@ def test_http_recording_redacts_credentials_echoed_in_response_values(tmp_path, 
     fixture_text = (fixture_dir / "http.json").read_text(encoding="utf-8")
     assert "live-secret" not in fixture_text
     assert '"echo": "<redacted>"' in fixture_text
+
+
+def test_http_recording_scrubs_app_password_and_session_jwts(tmp_path, monkeypatch):
+    """A Bluesky session exchange puts the app password in the request body and
+    both JWTs in the response. Redaction is key-name driven, so every one of
+    those names has to be recognized."""
+    monkeypatch.setattr(
+        http.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _response(json.dumps({
+            "accessJwt": "eyJhbGciOi.ACCESS-SENTINEL",
+            "refreshJwt": "eyJhbGciOi.REFRESH-SENTINEL",
+            "handle": "me.bsky.social",
+        })),
+    )
+    fixture_dir = tmp_path / "fixture"
+
+    with http.recording_requests(fixture_dir):
+        http.post(
+            "https://bsky.social/xrpc/com.atproto.server.createSession",
+            json_data={
+                "identifier": "me.bsky.social",
+                "password": "abcd-efgh-ijkl-SENTINEL",
+            },
+        )
+
+    fixture_path = fixture_dir / "http.json"
+    fixture_text = fixture_path.read_text(encoding="utf-8")
+    assert "abcd-efgh-ijkl-SENTINEL" not in fixture_text
+    assert "ACCESS-SENTINEL" not in fixture_text
+    assert "REFRESH-SENTINEL" not in fixture_text
+    # Non-secret fields still round-trip, so the fixture stays useful.
+    assert "me.bsky.social" in fixture_text
+    # And the file is not world-readable.
+    if os.name != "nt":
+        assert fixture_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_recorded_fixture_is_private_from_creation_not_after_a_chmod(
+    tmp_path, monkeypatch
+):
+    """Tightening the mode after writing leaves the credentials in a
+    world-readable file for the length of the write. Assert the temp file is
+    opened 0600, since a final-mode check passes either way."""
+    monkeypatch.setattr(
+        http.urllib.request,
+        "urlopen",
+        lambda *_args, **_kwargs: _response('{"ok": true}'),
+    )
+    opened: list[tuple[str, int]] = []
+    real_open = os.open
+
+    def _recording_open(path, flags, mode=0o777, **kwargs):
+        opened.append((str(path), mode))
+        return real_open(path, flags, mode, **kwargs)
+
+    monkeypatch.setattr(http.os, "open", _recording_open)
+
+    fixture_dir = tmp_path / "fixture"
+    with http.recording_requests(fixture_dir):
+        http.get("https://api.example.test/thing")
+
+    tmp_opens = [
+        (path, mode) for path, mode in opened if path.endswith(".http.json.tmp")
+    ]
+    assert tmp_opens, "the fixture temp file must be created via os.open with a mode"
+    assert all(mode == 0o600 for _path, mode in tmp_opens), tmp_opens
+
+
+def test_is_secret_key_covers_credential_names_without_over_matching():
+    for name in (
+        "password", "passwd", "app_password", "BSKY_APP_PASSWORD",
+        "accessJwt", "refreshJwt", "jwt", "passphrase", "credential",
+        "api_key", "apiKey", "x_api_key", "Authorization", "cookie",
+        "secret", "token", "access_token",
+    ):
+        assert http._is_secret_key(name), name
+    for name in ("monkey", "handle", "identifier", "url", "title", "did"):
+        assert not http._is_secret_key(name), name
 
 
 def test_aborted_recording_does_not_overwrite_existing_fixture(tmp_path):

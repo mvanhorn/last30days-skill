@@ -1,1 +1,0 @@
-`HERMES_SETUP.md` now documents the working Hermes install path: the `hermes skills install … --force` command is blocked by Hermes's install-time scanner (a `dangerous` verdict that `--force` cannot override), so the guide uses `git clone` + `cp` into the skills directory instead, and the update steps match.

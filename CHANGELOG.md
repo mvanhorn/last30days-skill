@@ -9,6 +9,52 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.25.0] - 2026-09-18
+
+### Security
+
+- Scraped titles can no longer forge the engine's own block sentinels. Titles are the full post body on X, TikTok, Instagram and LinkedIn and kept their internal newlines, so a short post could close the EVIDENCE FOR SYNTHESIS envelope early and open a block shaped like the PASS-THROUGH FOOTER, which LAW 5 tells the host model to relay verbatim. Titles are now collapsed to one line, and the sentinel markers are defanged in titles, in snippet/comment evidence, and in private-corpus titles, filenames and snippets — every path that renders inside the synthesis envelope. ([#1053](https://github.com/mvanhorn/last30days-skill/issues/1053))
+- Safari cookie extraction now matches the cookie host exactly or as a true subdomain, so a session cookie stored for an unrelated host such as `x.com.evil.tld` is no longer picked up for `x.com`.
+- Scraped content can no longer close the `<untrusted_content>` fence that wraps it. A post title carrying the literal closing tag previously ended the block early, placing the rest of that title outside the fence in both the rerank judge prompt and the `--discover` host digest — the latter being the engine stdout that becomes the host agent's tool result.
+- `--record-fixtures` no longer writes live credentials to disk. Fixture redaction is driven by key name, and the recognized set omitted `password`, `accessJwt`, and `refreshJwt` — so a Bluesky session exchange recorded the app password from the request body and both session JWTs from the response in cleartext, in a file created world-readable. The key set now covers those names, recorded files are created `0600`, and env-derived secret values are scrubbed from responses on this path as they already were for source records.
+
+### Removed
+
+- The Claude Code and Grok plugin no longer installs a SessionStart hook. Welcome, source status, and the ScrapeCreators tip run only when `/last30days` is invoked (SKILL.md Step 0). `--preflight` remains as an opt-in permission inspector and MCP JSON contract; it is not a required first-run step. `LAST30DAYS_QUIET` is gone with the hook. The engine still creates `LAST30DAYS_MEMORY_DIR` on first save.
+
+### Added
+
+- **Meta Ads source** — a new opt-in research lane that surfaces what a brand is *paying* to say this month, alongside what everyone else is saying about it. It resolves the brand's advertiser page in the Meta Ad Library, pulls the creatives that launched inside your 30-day window, and reads back the ad copy, launch date, placements, call to action, landing product, any promo code, and the spoken transcript of the newest video ads. The 📣 footer line names the advertiser page it resolved, so a wrong-company match is visible rather than silent, and reports how much the brand is still running from before the window.
+
+  Paid message only, never audience reaction: Meta publishes reach and spend for political ads alone, so commercial creatives carry no engagement numbers.
+
+  Off by default and never inferred from topic shape. Turn it on per run with `--search meta_ads` or durably with `INCLUDE_SOURCES=meta_ads`; it needs `SCRAPECREATORS_API_KEY`. A default-depth run spends at most 7 of the 10,000 free calls. Use `--meta-ads-page=<page_id>` when a brand advertises under product-line page names, and `LAST30DAYS_META_ADS_COUNTRY` for a non-US Ad Library.
+
+### Fixed
+
+- ScrapeCreators GitHub device flow: `fetch_api_key` no longer collapses HTTP 5xx from `/v1/github/device/profile` into the already-linked "Authorized but failed to fetch API key" path. Server errors surface as `reason: upstream_error` with a distinct message (after bounded retries and a truncated body in the detail), and SKILL.md routes those failures to web signup/retry instead of "your GitHub is probably already linked." ([#882](https://github.com/mvanhorn/last30days-skill/issues/882))
+- Entity-miss demotion no longer goes inert on long topics without a distinctive named entity. Intent modifiers are stripped only as trailing suffixes, and generic-headed topics use stronger trailing anchors while broad words such as "code", "review", and "work" cannot ground a result by themselves. ([#887](https://github.com/mvanhorn/last30days-skill/issues/887))
+- The LinkedIn source now honors the requested date window instead of always querying a hardcoded `last-month` bucket, walks the response cursor instead of stopping after the first ~10 posts, and treats the endpoint's 404 as an empty result rather than an error, since 404 is how this API signals that a query matched no posts. Because results inside a bucket are relevance-ranked rather than recency-ranked, the search queries both the narrow and the covering bucket and unions them. A bucket that fails after another succeeded now returns `partial: True` with the first error rather than reading as a complete, low-volume result. ([#939](https://github.com/mvanhorn/last30days-skill/issues/939))
+- Adapter-valid arXiv papers are no longer dropped by the report date window during normalization. ([#946](https://github.com/mvanhorn/last30days-skill/issues/946))
+- GitHub search qualifiers wrapped in parentheses, quotes, or brackets (`(created:>2025-03-20)`, `"created:>2025-03-20"`) are now stripped from topics before the query is built, matching the plain-qualifier behavior. Previously a wrapped `created:` survived into the search, collided with the adapter's own `created:>{from_date}` window (GitHub honors the first), and the source silently reported zero results. Leftover empty wrapper pairs are removed too, so a wrapped qualifier-only topic still degrades to the no-search error instead of emitting stray characters. ([#952](https://github.com/mvanhorn/last30days-skill/issues/952))
+- Empty or qualifier-only GitHub topics now report no-results instead of marking the source as failed. ([#953](https://github.com/mvanhorn/last30days-skill/issues/953))
+- GitHub qualifier-only rejections now truncate the topic in error detail and logs so a long planner query cannot spam stderr, the error envelope, and doctor hints on every subquery. ([#954](https://github.com/mvanhorn/last30days-skill/issues/954))
+- `--diagnose` and doctor no longer report xurl as unauthenticated when credentials live in the current `~/.xurl/auth.yml` directory layout; the legacy flat `~/.xurl` file is still recognized. ([#978](https://github.com/mvanhorn/last30days-skill/issues/978))
+- Instagram creator reels now unwrap ScrapeCreators `media` envelopes before parsing, preserving their metadata and date filtering. ([#1017](https://github.com/mvanhorn/last30days-skill/issues/1017))
+- Grok X backend now requests `--output-format json` and parses the JSON array Grok CLI 1.0.5 actually emits, so searches no longer die as "no items parsed". `--json-schema` is still not passed. ([#1051](https://github.com/mvanhorn/last30days-skill/issues/1051))
+- A config value left as an unsubstituted `${user_config.*}` extension template is now treated as unset. `doctor` and `permission_preflight` report it as an unsubstituted template instead of a healthy credential, and backends fall back rather than sending the placeholder upstream. Previously the placeholder read as configured, so the diagnostics cleared a setup that could not work and the failure surfaced as a vendor auth error. (#1081) ([#1081](https://github.com/mvanhorn/last30days-skill/issues/1081))
+- A comparison run whose main topic fails now exits with an error instead of silently promoting a competitor to be the report's subject. `run_competitor_fanout` drops a failed sub-run, and the render treats the first surviving entry as the subject, so a main topic that raised while two or more peers succeeded produced a complete-looking comparison headed by a peer, saved under that peer's slug, with the requested topic unmentioned. Entities that were dropped are also recorded as a report warning, so a narrower comparison than requested is visible rather than silent.
+- Add `mcp/manifest.json` to the lockstep version set so the `.mcpb` manifest is bumped by release prep and guarded against drift in feature PRs.
+- Audio transcription posts the skill's canonical User-Agent instead of Python-urllib, so Groq's Cloudflare edge no longer 403s the request with error 1010.
+- Reddit ranking no longer crashes with a `math domain error` when a downvoted post has a negative score; such posts now receive the minimum engagement bonus.
+- The Grok CLI's stdout is now decoded as UTF-8 instead of the OS locale codec. On Windows (cp1252), an emoji or smart quote in an X post's text crashed the decode inside `subprocess.run`, which surfaced as "no items parsed" from the `grok` X backend rather than a real error.
+- Trailing `# comment` annotations on unquoted `.env` values (the shape shown in `CONFIGURATION.md`) are now stripped instead of being stored as part of the value; `#` inside quotes or glued to the value stays literal.
+- `HERMES_SETUP.md` now documents the working Hermes install path: the `hermes skills install … --force` command is blocked by Hermes's install-time scanner (a `dangerous` verdict that `--force` cannot override), so the guide uses `git clone` + `cp` into the skills directory instead, and the update steps match.
+- `OPENAI_BASE_URL`, `XAI_BASE_URL`, and `OPENROUTER_BASE_URL` now accept an API root (`https://host/v1`) in addition to a full endpoint URL. Values copied from a provider's setup guide previously POSTed to the API root and failed.
+- `doctor` no longer reports a rate-limited source as an outage. A probe refused with HTTP 429 is retried once and, if still refused, shown as unverified instead of `NOT WORKING`. Reddit was the visible case: a burst of keyless probes draws a 429 while the research lane, which retries with backoff, serves the same query fine. HTTP 403 still counts as a hard failure.
+- `verify_v3.py` now runs the unit stage with pytest, so pytest-style test files (previously skipped by `unittest discover`) are verified.
+
+
 ## [3.24.0] - 2026-09-09
 
 ### Added

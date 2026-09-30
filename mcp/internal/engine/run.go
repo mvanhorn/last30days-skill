@@ -37,7 +37,7 @@ const TimeoutEnvOverride = "LAST30DAYS_MCP_TIMEOUT"
 // PythonPath is exposed so tests can substitute a stub interpreter without
 // manipulating the process PATH.
 type RunOptions struct {
-	PythonPath string        // resolved python3 binary; empty means look up DefaultPythonBinary on PATH
+	PythonPath string        // resolved test/caller override; empty honors PythonEnvOverride, then DefaultPythonBinary
 	CacheDir   string        // engine.Ensure result; lib/ here is added to PYTHONPATH
 	Args       []string      // arguments after last30days.py (topic, --emit=..., etc.)
 	ExtraEnv   []string      // appended to os.Environ() for the child process
