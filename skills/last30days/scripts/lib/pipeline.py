@@ -4762,7 +4762,7 @@ def _retrieve_stream_impl(
             # env.REDDIT_BACKEND_PIN_VAR=scrapecreators: SC primary, public fallback
             primary_failure: Exception | None = None
             try:
-                result = reddit.search_and_enrich(
+                result = reddit.search_and_enrich_memo(
                     reddit_query, from_date, to_date, depth=depth,
                     token=config.get("SCRAPECREATORS_API_KEY"),
                     subreddits=subreddits,
@@ -4847,7 +4847,7 @@ def _retrieve_stream_impl(
                 f"(below the {min_items}-item floor); backfilling with ScrapeCreators\n"
             )
         try:
-            result = reddit.search_and_enrich(
+            result = reddit.search_and_enrich_memo(
                 reddit_query, from_date, to_date, depth=depth,
                 token=config.get("SCRAPECREATORS_API_KEY"),
                 subreddits=subreddits,

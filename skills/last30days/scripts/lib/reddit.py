@@ -7,9 +7,11 @@ Requires SCRAPECREATORS_API_KEY in config (same key as TikTok + Instagram).
 API docs: https://scrapecreators.com/docs
 """
 
+import copy
 import math
 import re
 import sys
+import threading
 import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as futures_wait
@@ -794,6 +796,78 @@ def search_and_enrich(
         result["items"] = items
 
     return result
+
+
+# Run-scoped memo for the paid ScrapeCreators Reddit call (R9). All subquery
+# streams share the raw topic, and the thin-source retry repeats it, so without
+# this one run could pay for the same query five times. Concurrent callers for
+# one key wait on the first call; results AND failures are kept until the
+# per-command reset, so a failed backfill is never retried within the run.
+_SC_MEMO: Dict[tuple, tuple] = {}
+_SC_INFLIGHT: Dict[tuple, threading.Event] = {}
+_SC_MEMO_LOCK = threading.Lock()
+
+
+def reset_scrapecreators_memo() -> None:
+    """Forget memoized ScrapeCreators Reddit calls. Called once per command, and by tests."""
+    with _SC_MEMO_LOCK:
+        _SC_MEMO.clear()
+        _SC_INFLIGHT.clear()
+
+
+def _sc_memo_outcome(entry: tuple) -> Dict[str, Any]:
+    ok, value = entry
+    if not ok:
+        raise value
+    # Each caller gets its own copy so one stream cannot mutate another's items.
+    return copy.deepcopy(value)
+
+
+def search_and_enrich_memo(
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str = "default",
+    token: str = None,
+    subreddits: List[str] | None = None,
+) -> Dict[str, Any]:
+    """:func:`search_and_enrich`, at most once per key per command.
+
+    Keyed by query, date window, depth, and sorted subreddits.
+    """
+    key = (topic, from_date, to_date, depth, tuple(sorted(subreddits or ())))
+    while True:
+        with _SC_MEMO_LOCK:
+            entry = _SC_MEMO.get(key)
+            if entry is None:
+                gate = _SC_INFLIGHT.get(key)
+                owner = gate is None
+                if owner:
+                    gate = threading.Event()
+                    _SC_INFLIGHT[key] = gate
+        if entry is not None:
+            return _sc_memo_outcome(entry)
+        if owner:
+            break
+        gate.wait()
+        # Loop: read the owner's cached outcome, or re-elect if it was
+        # interrupted before caching one (e.g. KeyboardInterrupt).
+    try:
+        try:
+            result = search_and_enrich(
+                topic, from_date, to_date, depth=depth, token=token,
+                subreddits=subreddits,
+            )
+            entry = (True, result)
+        except Exception as exc:
+            entry = (False, exc)
+        with _SC_MEMO_LOCK:
+            _SC_MEMO[key] = entry
+    finally:
+        with _SC_MEMO_LOCK:
+            _SC_INFLIGHT.pop(key, None)
+        gate.set()
+    return _sc_memo_outcome(entry)
 
 
 def parse_reddit_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:
