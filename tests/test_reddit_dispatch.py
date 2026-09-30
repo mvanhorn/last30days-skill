@@ -5,7 +5,7 @@ from unittest import mock
 
 from pathlib import Path
 
-from lib import env, pipeline, reddit_keyless, schema
+from lib import env, health, http, pipeline, reddit_keyless, schema
 
 
 def _subquery():
@@ -28,71 +28,156 @@ def _ids(items):
 
 class TestThinnessFloor:
     KEY = {"SCRAPECREATORS_API_KEY": "k"}
+    FLOOR = env.REDDIT_SC_MIN_ITEMS_VAR
 
     def _run(self, config, public, sc_parsed):
         with mock.patch("lib.reddit_public.search_reddit_public", return_value=public), \
              mock.patch("lib.reddit.search_and_enrich", return_value={"raw": 1}) as sc, \
              mock.patch("lib.reddit.parse_reddit_response", return_value=sc_parsed):
-            items, _ = pipeline._retrieve_stream(
-                topic="kanye", subquery=_subquery(), source="reddit", config=config,
-                depth="quick", date_range=("2026-05-26", "2026-06-25"),
-                runtime=_runtime(), mock=False,
-            )
+            items, _ = _stream(config)
         return items, sc
 
-    def test_default_zero_does_not_call_sc_when_free_has_items(self):
-        # min_items unset (0): today's empty-only behavior — free wins, no SC.
-        items, sc = self._run(self.KEY, [_item("a"), _item("b"), _item("c")], [_item("z")])
-        assert len(items) == 3
+    def test_unset_floor_backfills_thin_free_run_free_first(self):
+        # Default floor is 5: 3 free items < 5 -> one SC call, free first.
+        free = [_item("a"), _item("b"), _item("c")]
+        items, sc = self._run(self.KEY, free, [_item("b"), _item("z")])
+        sc.assert_called_once()
+        assert _ids(items) == ["a", "b", "c", "z"]
+
+    def test_unset_floor_six_free_items_spends_nothing(self):
+        free = [_item(c) for c in "abcdef"]
+        items, sc = self._run(self.KEY, free, [_item("z")])
         sc.assert_not_called()
+        assert len(items) == 6
 
-    def test_default_empty_free_falls_to_sc(self):
-        items, sc = self._run(self.KEY, [], [_item("z")])
-        assert _ids(items) == ["z"]
+    def test_exactly_default_floor_is_acceptable(self):
+        free = [_item(c) for c in "abcde"]
+        items, sc = self._run(self.KEY, free, [_item("z")])
+        sc.assert_not_called()
+        assert len(items) == 5
+
+    def test_empty_string_floor_behaves_as_unset(self):
+        cfg = {**self.KEY, self.FLOOR: ""}
+        items, sc = self._run(cfg, [_item("a"), _item("b"), _item("c")], [_item("z")])
         sc.assert_called_once()
+        assert _ids(items) == ["a", "b", "c", "z"]
 
-    def test_threshold_fires_on_thin_run_and_merges_deduped(self):
-        cfg = {**self.KEY, "LAST30DAYS_REDDIT_SC_MIN_ITEMS": "5"}
-        free = [_item("a"), _item("b")]        # 2 < 5 -> backfill
-        sc_parsed = [_item("b"), _item("c")]   # overlaps "b"
-        items, sc = self._run(cfg, free, sc_parsed)
-        sc.assert_called_once()
-        assert _ids(items) == ["a", "b", "c"]  # free first, dedup b, append c
-
-    def test_threshold_not_fired_when_free_above_floor(self):
-        cfg = {**self.KEY, "LAST30DAYS_REDDIT_SC_MIN_ITEMS": "2"}
+    def test_explicit_zero_is_empty_only(self):
+        cfg = {**self.KEY, self.FLOOR: "0"}
         items, sc = self._run(cfg, [_item("a"), _item("b"), _item("c")], [_item("z")])
         sc.assert_not_called()
         assert len(items) == 3
 
-    def test_exactly_floor_is_acceptable_no_backfill(self):
-        # MIN_ITEMS=N means N results are acceptable; only fewer than N backfills.
-        cfg = {**self.KEY, "LAST30DAYS_REDDIT_SC_MIN_ITEMS": "3"}
+    def test_explicit_zero_still_backfills_empty_free_run(self):
+        cfg = {**self.KEY, self.FLOOR: "0"}
+        items, sc = self._run(cfg, [], [_item("z")])
+        sc.assert_called_once()
+        assert _ids(items) == ["z"]
+
+    def test_threshold_not_fired_when_free_above_floor(self):
+        cfg = {**self.KEY, self.FLOOR: "2"}
         items, sc = self._run(cfg, [_item("a"), _item("b"), _item("c")], [_item("z")])
         sc.assert_not_called()
         assert len(items) == 3
 
     def test_no_key_never_calls_sc(self):
-        items, sc = self._run({"LAST30DAYS_REDDIT_SC_MIN_ITEMS": "5"}, [_item("a")], [_item("z")])
+        for floor in (None, "", "0", "5", "junk"):
+            cfg = {} if floor is None else {self.FLOOR: floor}
+            items, sc = self._run(cfg, [_item("a")], [_item("z")])
+            sc.assert_not_called()
+            assert len(items) == 1
+
+    def test_malformed_floor_spends_nothing(self):
+        # Malformed means 0 (empty-only): 3 free items -> no SC call.
+        cfg = {**self.KEY, self.FLOOR: "not-an-int"}
+        items, sc = self._run(cfg, [_item("a"), _item("b"), _item("c")], [_item("z")])
         sc.assert_not_called()
-        assert len(items) == 1
+        assert len(items) == 3
 
-    def test_bad_threshold_value_defaults_to_empty_only(self):
-        cfg = {**self.KEY, "LAST30DAYS_REDDIT_SC_MIN_ITEMS": "not-an-int"}
-        items, sc = self._run(cfg, [_item("a")], [_item("z")])
-        sc.assert_not_called()  # falls back to 0 -> free (1 item) wins
-        assert len(items) == 1
 
-    def test_sc_failure_degrades_to_free(self):
-        cfg = {**self.KEY, "LAST30DAYS_REDDIT_SC_MIN_ITEMS": "5"}
-        with mock.patch("lib.reddit_public.search_reddit_public", return_value=[_item("a")]), \
+def _stream(config):
+    return pipeline._retrieve_stream(
+        topic="kanye", subquery=_subquery(), source="reddit", config=config,
+        depth="quick", date_range=("2026-05-26", "2026-06-25"),
+        runtime=_runtime(), mock=False,
+    )
+
+
+def _sc_402(*_args, **_kwargs):
+    # Mirrors the real transport: http records the failure in the run's
+    # capture sink, then raises.
+    http._raise(http.HTTPError("HTTP 402: Payment Required", status_code=402))
+
+
+class TestBackfillOutcome:
+    KEY = {"SCRAPECREATORS_API_KEY": "k"}
+
+    def test_backfill_402_after_free_items_keeps_source_working(self):
+        free = [_item("a"), _item("b"), _item("c")]
+        with mock.patch("lib.reddit_public.search_reddit_public", return_value=free), \
+             mock.patch("lib.reddit.search_and_enrich", side_effect=_sc_402):
+            items, artifact = _stream(self.KEY)
+        assert _ids(items) == ["a", "b", "c"]
+        assert not artifact.get("_source_outcome")  # not branded failed
+        detail = artifact.get("_source_outcome_detail") or ""
+        assert "402" in detail
+        assert "ScrapeCreators backfill failed" in detail
+        assert artifact.get("_source_outcome_detail_state") == health.PAYMENT_REQUIRED
+
+    def test_backfill_generic_failure_after_free_items_is_detail(self):
+        free = [_item("a")]
+        with mock.patch("lib.reddit_public.search_reddit_public", return_value=free), \
              mock.patch("lib.reddit.search_and_enrich", side_effect=Exception("down")):
-            items, _ = pipeline._retrieve_stream(
-                topic="kanye", subquery=_subquery(), source="reddit", config=cfg,
-                depth="quick", date_range=("2026-05-26", "2026-06-25"),
-                runtime=_runtime(), mock=False,
-            )
-        assert _ids(items) == ["a"]  # backup failed -> keep the free items
+            items, artifact = _stream(self.KEY)
+        assert _ids(items) == ["a"]
+        assert not artifact.get("_source_outcome")
+        assert "down" in (artifact.get("_source_outcome_detail") or "")
+
+    def test_backfill_failure_with_no_free_items_keeps_explicit_failure(self):
+        with mock.patch("lib.reddit_public.search_reddit_public", return_value=[]), \
+             mock.patch("lib.reddit.search_and_enrich", side_effect=_sc_402):
+            items, artifact = _stream(self.KEY)
+        assert items == []
+        outcome = artifact.get("_source_outcome") or {}
+        assert outcome.get("state") == health.PAYMENT_REQUIRED
+
+    def test_backfill_note_and_swallowed_keyless_403_both_survive(self):
+        free = [_item("a"), _item("b"), _item("c")]
+
+        def _public(*_args, **_kwargs):
+            # A keyless lane swallowed a 403 but the source still delivered.
+            http._record_failure(http.HTTPError("HTTP 403: Blocked", status_code=403))
+            return free
+
+        with mock.patch("lib.reddit_public.search_reddit_public", side_effect=_public), \
+             mock.patch("lib.reddit.search_and_enrich", return_value={"raw": 1}), \
+             mock.patch("lib.reddit.parse_reddit_response", return_value=[_item("z")]):
+            items, artifact = _stream(self.KEY)
+        assert _ids(items) == ["a", "b", "c", "z"]
+        assert not artifact.get("_source_outcome")
+        detail = artifact.get("_source_outcome_detail") or ""
+        assert "ScrapeCreators backfill ran" in detail
+        assert "1 sub-request blocked (HTTP 403)" in detail
+
+    def test_backfill_that_ran_is_noted(self):
+        with mock.patch("lib.reddit_public.search_reddit_public", return_value=[_item("a")]), \
+             mock.patch("lib.reddit.search_and_enrich", return_value={"raw": 1}), \
+             mock.patch("lib.reddit.parse_reddit_response",
+                        return_value=[_item("a"), _item("z")]):
+            items, artifact = _stream(self.KEY)
+        assert _ids(items) == ["a", "z"]
+        assert not artifact.get("_source_outcome")
+        detail = artifact.get("_source_outcome_detail") or ""
+        assert "ScrapeCreators backfill ran" in detail
+        assert "added 1" in detail
+
+    def test_no_backfill_no_note(self):
+        free = [_item(c) for c in "abcdef"]
+        with mock.patch("lib.reddit_public.search_reddit_public", return_value=free), \
+             mock.patch("lib.reddit.search_and_enrich") as sc:
+            _items, artifact = _stream(self.KEY)
+        sc.assert_not_called()
+        assert not artifact.get("_source_outcome_detail")
 
 
 class TestMergeHelper:

@@ -722,12 +722,9 @@ def _resolve_alternative(
 
 
 def _reddit_sc_min_items(config: Dict[str, Any]) -> int:
-    """The thinness floor, parsed exactly as the pipeline parses it
-    (lib/pipeline.py reddit fetch: int(... or 0), malformed -> 0)."""
-    try:
-        return int(config.get(env.REDDIT_SC_MIN_ITEMS_VAR) or 0)
-    except (TypeError, ValueError):
-        return 0
+    """The thinness floor, via the parser the pipeline also uses
+    (env.reddit_sc_min_items: unset -> default 5, 0 -> off, malformed -> 0)."""
+    return env.reddit_sc_min_items(config)
 
 
 def _resolve_conditional(

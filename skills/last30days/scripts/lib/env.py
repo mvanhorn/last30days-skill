@@ -1211,6 +1211,26 @@ X_OFFICIAL = _X_OFFICIAL
 X_BACKEND_PIN_VAR = 'LAST30DAYS_X_BACKEND'
 REDDIT_BACKEND_PIN_VAR = 'LAST30DAYS_REDDIT_BACKEND'
 REDDIT_SC_MIN_ITEMS_VAR = 'LAST30DAYS_REDDIT_SC_MIN_ITEMS'
+# Keyed runs backfill Reddit from ScrapeCreators when the free path returns
+# fewer than this many items. Thin topics yield 2-3 free results; healthy
+# topics many more, so 5 spends credits only where it adds coverage.
+REDDIT_SC_MIN_ITEMS_DEFAULT = 5
+
+
+def reddit_sc_min_items(config: dict[str, Any]) -> int:
+    """The Reddit ScrapeCreators backfill floor, parsed one way for every caller.
+
+    Unset or blank means ``REDDIT_SC_MIN_ITEMS_DEFAULT``; an explicit ``0``
+    means backfill only when the free path is empty; a malformed value means
+    ``0`` so a typo never spends extra credits. Negative values clamp to 0.
+    """
+    raw = config.get(REDDIT_SC_MIN_ITEMS_VAR)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return REDDIT_SC_MIN_ITEMS_DEFAULT
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 @dataclass(frozen=True)
