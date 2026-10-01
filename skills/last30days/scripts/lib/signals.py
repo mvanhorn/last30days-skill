@@ -15,6 +15,7 @@ SOURCE_QUALITY = {
     "youtube": 0.85,
     "digg": 0.85,
     "arxiv": 0.9,
+    "diffbot": 0.9,
     "techmeme": 0.85,
     "trustpilot": 0.78,
     # Verified-purchase reviews on a live aggregate rating: high-quality

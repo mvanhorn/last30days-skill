@@ -228,6 +228,7 @@ SOURCE_LABELS = {
     "digg": "Digg",
     "arxiv": "arXiv",
     "techmeme": "Techmeme",
+    "diffbot": "Diffbot",
     "trustpilot": "Trustpilot",
     "amazon": "Amazon",
     "meta_ads": "Meta Ads",
