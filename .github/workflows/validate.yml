@@ -63,6 +63,9 @@ jobs:
           go-version: "1.25.5"
           cache-dependency-path: mcp/go.sum
 
+      - name: Sync vendored engine
+        run: bash mcp/scripts/sync-engine.sh
+
       - name: Run MCP Go tests
         run: go test -race ./...
         working-directory: mcp
