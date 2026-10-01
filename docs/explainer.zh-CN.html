@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>last30days 是什么？一张图看懂这个技能</title>
+<meta name="description" content="用大白话 + 多张图，解释 mvanhorn/last30days-skill 这个 AI 智能体技能在做什么、怎么运作。" />
+<style>
+  :root {
+    --purple: #6f42c1;
+    --purple-soft: #8a63d2;
+    --ink: #1c1c28;
+    --muted: #5b5b6b;
+    --line: #e7e4f0;
+    --bg: #faf9fe;
+    --card: #ffffff;
+    --ok: #1a9d63;
+    --warn: #d97706;
+    --shadow: 0 6px 24px rgba(111, 66, 193, 0.08);
+    --radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", "Noto Sans SC", system-ui, sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 20px; }
+  a { color: var(--purple); }
+
+  /* ---- hero ---- */
+  header.hero {
+    background: radial-gradient(1200px 400px at 50% -120px, rgba(138,99,210,.35), transparent),
+                linear-gradient(160deg, #f3efff, #faf9fe);
+    border-bottom: 1px solid var(--line);
+    padding: 56px 0 44px;
+    text-align: center;
+  }
+  .badge-line {
+    display: inline-block; font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13px; color: var(--purple); background: #fff;
+    border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; margin-bottom: 20px;
+  }
+  h1 { font-size: clamp(28px, 5vw, 42px); margin: 6px 0 10px; letter-spacing: -.5px; }
+  .subtitle { font-size: clamp(16px, 2.4vw, 20px); color: var(--muted); margin: 0 auto; max-width: 620px; }
+  .pill-row { margin-top: 22px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  .pill { font-size: 13px; background: #fff; border: 1px solid var(--line); border-radius: 999px; padding: 5px 12px; color: var(--muted); }
+
+  /* ---- sections ---- */
+  section { padding: 40px 0; border-bottom: 1px solid var(--line); }
+  .eyebrow { color: var(--purple); font-weight: 700; font-size: 13px; letter-spacing: 1.5px; text-transform: uppercase; margin: 0 0 6px; }
+  h2 { font-size: clamp(22px, 3.4vw, 30px); margin: 0 0 14px; letter-spacing: -.3px; }
+  h3 { font-size: 18px; margin: 26px 0 8px; }
+  p { margin: 12px 0; }
+  .lead { font-size: 18px; color: var(--ink); }
+  .muted { color: var(--muted); }
+
+  .card {
+    background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 22px 24px; box-shadow: var(--shadow); margin: 18px 0;
+  }
+  .grid { display: grid; gap: 14px; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 640px) { .grid-2, .grid-3 { grid-template-columns: 1fr; } }
+
+  .src {
+    display: flex; align-items: center; gap: 10px; background: #fff;
+    border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
+  }
+  .src .emoji { font-size: 22px; }
+  .src b { display: block; font-size: 15px; }
+  .src span { font-size: 12.5px; color: var(--muted); }
+
+  figure { margin: 20px 0; text-align: center; }
+  figure svg { max-width: 100%; height: auto; }
+  figcaption { font-size: 13px; color: var(--muted); margin-top: 10px; }
+
+  .callout { border-left: 4px solid var(--purple); background: #f6f2ff; border-radius: 0 12px 12px 0; padding: 14px 18px; margin: 18px 0; }
+  .callout.warn { border-left-color: var(--warn); background: #fff7ed; }
+  .callout.ok { border-left-color: var(--ok); background: #ecfdf3; }
+
+  code { font-family: ui-monospace, "SF Mono", Menlo, monospace; background: #f1eefb; color: #5a34a8; padding: 1px 6px; border-radius: 6px; font-size: 13.5px; }
+  pre { background: #1e1b2e; color: #eae6ff; padding: 16px 18px; border-radius: 12px; overflow-x: auto; font-size: 13.5px; line-height: 1.6; }
+  pre code { background: none; color: inherit; padding: 0; }
+
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 14.5px; }
+  th, td { text-align: left; padding: 10px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 600; background: #faf8ff; }
+
+  ol.steps { counter-reset: s; list-style: none; padding: 0; }
+  ol.steps li { position: relative; padding: 10px 0 10px 44px; border-bottom: 1px dashed var(--line); }
+  ol.steps li::before { counter-increment: s; content: counter(s); position: absolute; left: 0; top: 10px; width: 28px; height: 28px; background: var(--purple); color: #fff; border-radius: 8px; display: grid; place-items: center; font-weight: 700; font-size: 14px; }
+
+  footer { padding: 34px 0 60px; color: var(--muted); font-size: 13.5px; text-align: center; }
+  footer a { color: var(--purple); }
+</style>
+</head>
+<body>
+
+<!-- SECTION: hero -->
+<header class="hero" id="hero">
+  <div class="wrap">
+    <div class="badge-line">🌐 last30days · 一张图看懂它在干嘛</div>
+    <h1>问「最近 30 天，真实的人怎么说」</h1>
+    <p class="subtitle">
+      <code>/last30days</code> 是一个 AI 智能体技能：给它一个主题，它会去 Reddit、X、YouTube、
+      Hacker News、Polymarket 等地方，把最近一个月<strong>真实用户的讨论和热度</strong>捞回来，
+      再综合成一份有出处、可查证的摘要。
+    </p>
+    <div class="pill-row">
+      <span class="pill">🗣️ 看的是「人」，不是编辑</span>
+      <span class="pill">📊 用赞数 / 点赞 / 真金白银排序</span>
+      <span class="pill">🔌 装进 Claude Code、Codex、Cursor…</span>
+      <span class="pill">🆓 没有 API key 也能跑</span>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <!-- SECTION: one-liner -->
+  <section id="what">
+    <p class="eyebrow">一句话</p>
+    <h2>它跟普通搜索有什么不一样？</h2>
+    <p class="lead">
+      普通搜索给你的是<strong>网站和编辑挑出来的内容</strong>；<code>/last30days</code> 给你的是
+      <strong>最近 30 天里，一群真实的人用赞、评论、点赞、甚至下注真金白银「投票」出来的内容</strong>。
+    </p>
+    <p class="muted">
+      换句话说：它不问「哪个网站权威」，而是问「过去一个月，大家实际上在聊什么、聊得多热、态度怎样」。
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 760 220" role="img" aria-label="传统搜索问编辑，last30days 问人群">
+        <!-- left: traditional -->
+        <rect x="10" y="20" width="340" height="180" rx="14" fill="#ffffff" stroke="#e7e4f0"/>
+        <text x="180" y="48" text-anchor="middle" font-size="15" font-weight="700" fill="#5b5b6b">普通搜索</text>
+        <text x="180" y="70" text-anchor="middle" font-size="12" fill="#8a8a99">「哪个网站权威？」</text>
+        <circle cx="180" cy="120" r="26" fill="#eeeaf8"/>
+        <text x="180" y="127" text-anchor="middle" font-size="22">🗞️</text>
+        <text x="180" y="172" text-anchor="middle" font-size="12" fill="#5b5b6b">编辑 / 排名算法帮你挑</text>
+
+        <!-- right: last30days -->
+        <rect x="410" y="20" width="340" height="180" rx="14" fill="#f6f2ff" stroke="#8a63d2"/>
+        <text x="580" y="48" text-anchor="middle" font-size="15" font-weight="700" fill="#6f42c1">/last30days</text>
+        <text x="580" y="70" text-anchor="middle" font-size="12" fill="#8a63d2">「过去 30 天，人们怎么说？」</text>
+        <text x="520" y="118" font-size="20">👤</text><text x="560" y="108" font-size="20">👥</text>
+        <text x="600" y="120" font-size="20">🗨️</text><text x="636" y="106" font-size="20">👍</text>
+        <text x="540" y="146" font-size="20">💬</text><text x="596" y="150" font-size="20">💸</text>
+        <text x="580" y="188" text-anchor="middle" font-size="12" fill="#6f42c1">赞数 / 评论 / 下注 帮你排</text>
+      </svg>
+      <figcaption>左：内容由编辑与排名决定 · 右：内容由真实用户的互动热度决定</figcaption>
+    </figure>
+  </section>
+
+  <!-- SECTION: sources -->
+  <section id="sources">
+    <p class="eyebrow">它去哪里捞</p>
+    <h2>一次问一堆平台，同时进行</h2>
+    <p>一个主题会被同时丢给多个来源去查，每个来源各查各的，最后再合并。核心来源：</p>
+    <div class="grid grid-3">
+      <div class="src"><span class="emoji">👽</span><div><b>Reddit</b><span>论坛真实讨论 + 赞数评论</span></div></div>
+      <div class="src"><span class="emoji">🐦</span><div><b>X / Twitter</b><span>即时舆论与热帖</span></div></div>
+      <div class="src"><span class="emoji">▶️</span><div><b>YouTube</b><span>视频 + 观看/点赞</span></div></div>
+      <div class="src"><span class="emoji">🎵</span><div><b>TikTok</b><span>短视频热度</span></div></div>
+      <div class="src"><span class="emoji">🟠</span><div><b>Hacker News</b><span>技术圈讨论</span></div></div>
+      <div class="src"><span class="emoji">💰</span><div><b>Polymarket</b><span>预测市场：真金白银下注</span></div></div>
+      <div class="src"><span class="emoji">🐙</span><div><b>GitHub</b><span>项目热度与趋势</span></div></div>
+      <div class="src"><span class="emoji">🌐</span><div><b>Web 搜索</b><span>兜底补充与佐证</span></div></div>
+      <div class="src"><span class="emoji">➕</span><div><b>还有更多</b><span>Bluesky、小红书、Truth Social…</span></div></div>
+    </div>
+    <div class="callout">
+      <strong>为什么 Polymarket 也算一个来源？</strong> 因为在预测市场里，人们是<strong>拿钱投票</strong>——
+      比起随口一句评论，「愿意押多少钱」往往更能反映大家真实相信什么。
+    </div>
+  </section>
+
+  <!-- SECTION: pipeline -->
+  <section id="pipeline">
+    <p class="eyebrow">它怎么运作</p>
+    <h2>从「一句主题」到「一份摘要」的六步</h2>
+
+    <figure>
+      <svg viewBox="0 0 760 470" role="img" aria-label="last30days 处理流程">
+        <defs>
+          <marker id="arw" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#8a63d2"/>
+          </marker>
+          <style>
+            .box{fill:#fff;stroke:#e7e4f0;stroke-width:1.5;}
+            .boxp{fill:#f6f2ff;stroke:#8a63d2;stroke-width:1.5;}
+            .t{font-size:13px;fill:#1c1c28;font-weight:700;}
+            .s{font-size:11px;fill:#5b5b6b;}
+            .ln{stroke:#8a63d2;stroke-width:1.6;fill:none;}
+          </style>
+        </defs>
+
+        <!-- step 1 -->
+        <rect class="boxp" x="270" y="14" width="220" height="46" rx="10"/>
+        <text class="t" x="380" y="34" text-anchor="middle">① 你的问题</text>
+        <text class="s" x="380" y="50" text-anchor="middle">例：last30days 英伟达财报反应</text>
+        <path class="ln" d="M380,60 L380,84" marker-end="url(#arw)"/>
+
+        <!-- step 2 -->
+        <rect class="box" x="250" y="86" width="260" height="46" rx="10"/>
+        <text class="t" x="380" y="106" text-anchor="middle">② 拆成几条子查询</text>
+        <text class="s" x="380" y="122" text-anchor="middle">同一主题换几种问法去查</text>
+
+        <!-- fan-out lines -->
+        <path class="ln" d="M300,132 L150,168" marker-end="url(#arw)"/>
+        <path class="ln" d="M360,132 L320,168" marker-end="url(#arw)"/>
+        <path class="ln" d="M410,132 L470,168" marker-end="url(#arw)"/>
+        <path class="ln" d="M460,132 L620,168" marker-end="url(#arw)"/>
+
+        <!-- step 3: parallel sources -->
+        <rect class="box" x="70" y="170" width="150" height="44" rx="10"/>
+        <text class="t" x="145" y="190" text-anchor="middle">👽 Reddit</text>
+        <text class="s" x="145" y="205" text-anchor="middle">并行查</text>
+        <rect class="box" x="250" y="170" width="140" height="44" rx="10"/>
+        <text class="t" x="320" y="190" text-anchor="middle">🐦 X</text>
+        <text class="s" x="320" y="205" text-anchor="middle">并行查</text>
+        <rect class="box" x="410" y="170" width="140" height="44" rx="10"/>
+        <text class="t" x="480" y="190" text-anchor="middle">▶️ YouTube</text>
+        <text class="s" x="480" y="205" text-anchor="middle">并行查</text>
+        <rect class="box" x="570" y="170" width="150" height="44" rx="10"/>
+        <text class="t" x="645" y="190" text-anchor="middle">💰 其他来源</text>
+        <text class="s" x="645" y="205" text-anchor="middle">并行查</text>
+
+        <path class="ln" d="M145,214 L360,250" marker-end="url(#arw)"/>
+        <path class="ln" d="M320,214 L375,250" marker-end="url(#arw)"/>
+        <path class="ln" d="M480,214 L400,250" marker-end="url(#arw)"/>
+        <path class="ln" d="M645,214 L410,250" marker-end="url(#arw)"/>
+
+        <!-- step 4: enrich -->
+        <rect class="box" x="250" y="252" width="260" height="52" rx="10"/>
+        <text class="t" x="380" y="272" text-anchor="middle">④ 富化：抓「真实互动」</text>
+        <text class="s" x="380" y="290" text-anchor="middle">真的去 Reddit 拿赞数 / 评论数 / 热评</text>
+        <path class="ln" d="M380,304 L380,326" marker-end="url(#arw)"/>
+
+        <!-- step 5: merge/score -->
+        <rect class="box" x="210" y="328" width="340" height="60" rx="10"/>
+        <text class="t" x="380" y="350" text-anchor="middle">⑤ 合并 → 去重 → 过滤 → 打分 → 聚类</text>
+        <text class="s" x="380" y="368" text-anchor="middle">同一条内容按网址合成一份；判断是否真的在讲你的主题</text>
+        <path class="ln" d="M380,388 L380,410" marker-end="url(#arw)"/>
+
+        <!-- step 6 -->
+        <rect class="boxp" x="250" y="412" width="260" height="46" rx="10"/>
+        <text class="t" x="380" y="432" text-anchor="middle">⑥ 合成一份带出处的摘要</text>
+        <text class="s" x="380" y="448" text-anchor="middle">给你结论 + 关键规律 + 数据脚注</text>
+      </svg>
+      <figcaption>整条流水线里，②③是「广撒网」，④⑤是「去芜存菁」，⑥才落成人能读的答案。</figcaption>
+    </figure>
+
+    <ol class="steps">
+      <li><strong>拆问题</strong>：把你的主题换成几种不同问法（技术上叫「子查询」），避免只用一种说法漏掉内容。</li>
+      <li><strong>并行开查</strong>：每个来源同时查（用多线程），不是一个查完再查下一个，所以快。</li>
+      <li><strong>富化</strong>：这是它的招牌动作——搜到 Reddit 帖子后，<em>真的再去 Reddit 抓一次</em>拿到真实赞数、评论数、热门评论，而不是让 AI 猜。</li>
+      <li><strong>合并去重</strong>：同一条内容可能被好几条子查询各搜到一次，按「归一化后的网址」合成一条，并保留信息最全的那份。</li>
+      <li><strong>过滤打分</strong>：先确认这条内容<em>真的在讲你的主题</em>（实体核对），再按热度打分、聚类。</li>
+      <li><strong>合成</strong>：最后把这些证据写成一段有结论、有关键规律、有脚注出处的摘要交给你。</li>
+    </ol>
+  </section>
+
+  <!-- SECTION: scoring -->
+  <section id="scoring">
+    <p class="eyebrow">怎么排序</p>
+    <h2>热度说话，但要先「真的在讲这件事」</h2>
+    <p>排序的燃料是真实互动：<strong>赞数、评论数、点赞、观看、下注金额</strong>。但在比热度之前，有一道关卡——</p>
+
+    <div class="grid grid-2">
+      <div class="card">
+        <h3>🎯 先过「实体核对」这一关</h3>
+        <p class="muted" style="margin-top:6px">
+          搜「英伟达财报」时，一条讲别的公司、只是热度很高的帖子会被<strong>果断降权</strong>，
+          热度再高也救不回来。判断时只看主题的<strong>核心词</strong>（第一个词），
+          因为后面的「财报」「测评」这类词通常只是描述你想知道什么，硬要求全部命中反而会错杀真正相关的内容。
+        </p>
+      </div>
+      <div class="card">
+        <h3>🏆 再看谁被讨论得最凶</h3>
+        <p class="muted" style="margin-top:6px">
+          过关之后才比热度。当月被讨论最多、最有共识的内容排在前面；
+          它还会特意保留几个「高互动又切题」的名额，
+          确保那种「大家都在转但标题跟你搜的词对不太上」的爆帖，也能进到结果里。
+        </p>
+      </div>
+    </div>
+
+    <figure>
+      <svg viewBox="0 0 760 220" role="img" aria-label="按互动热度排序示意">
+        <text x="20" y="26" font-size="13" font-weight="700" fill="#5b5b6b">切题的内容 · 按互动热度排</text>
+        <!-- bars -->
+        <rect x="20" y="44" width="520" height="26" rx="6" fill="#6f42c1"/>
+        <text x="548" y="62" font-size="12" fill="#5b5b6b">👍 12.4k · 💬 980</text>
+        <rect x="20" y="80" width="360" height="26" rx="6" fill="#8a63d2"/>
+        <text x="388" y="98" font-size="12" fill="#5b5b6b">👍 6.1k · 💬 430</text>
+        <rect x="20" y="116" width="240" height="26" rx="6" fill="#a98adf"/>
+        <text x="268" y="134" font-size="12" fill="#5b5b6b">💰 市场押注 $58k</text>
+        <rect x="20" y="152" width="150" height="26" rx="6" fill="#c9b6ec"/>
+        <text x="178" y="170" font-size="12" fill="#5b5b6b">👍 900 · 💬 60</text>
+        <!-- rejected -->
+        <rect x="20" y="188" width="470" height="22" rx="6" fill="#f0eef6" stroke="#e0dcec" stroke-dasharray="4 3"/>
+        <text x="30" y="204" font-size="11.5" fill="#9a97a8">✗ 热度很高但没在讲这个主题 → 被降权，不进结果</text>
+      </svg>
+      <figcaption>热度决定高低，但「跑题」的内容再热也出局——这道关卡挡掉的是「蹭热度但答非所问」。</figcaption>
+    </figure>
+  </section>
+
+  <!-- SECTION: reddit enrichment -->
+  <section id="enrichment">
+    <p class="eyebrow">招牌动作</p>
+    <h2>「富化」：数据是抓来的，不是猜的</h2>
+    <p>
+      很多 AI 工具会让模型「估计」一个帖子大概多热。这个技能不这样——它搜到 Reddit 帖子后，
+      会<strong>免费再打一次 Reddit 的公开接口</strong>，把那条帖子的真实数据抓回来：
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 760 200" role="img" aria-label="Reddit 富化流程">
+        <defs>
+          <marker id="arw2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#8a63d2"/>
+          </marker>
+        </defs>
+        <rect x="20" y="70" width="200" height="60" rx="12" fill="#f6f2ff" stroke="#8a63d2"/>
+        <text x="120" y="95" text-anchor="middle" font-size="13" font-weight="700" fill="#6f42c1">搜到一个帖子</text>
+        <text x="120" y="114" text-anchor="middle" font-size="11.5" fill="#8a63d2">只有标题 + 网址</text>
+
+        <path d="M220,100 L300,100" stroke="#8a63d2" stroke-width="1.8" fill="none" marker-end="url(#arw2)"/>
+        <text x="260" y="90" text-anchor="middle" font-size="11" fill="#5b5b6b">再抓一次</text>
+
+        <rect x="300" y="60" width="180" height="80" rx="12" fill="#fff" stroke="#e7e4f0"/>
+        <text x="390" y="86" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1c1c28">Reddit 公开 JSON</text>
+        <text x="390" y="106" text-anchor="middle" font-size="11" fill="#5b5b6b">免 API key</text>
+        <text x="390" y="124" text-anchor="middle" font-size="11" fill="#5b5b6b">/.json 接口</text>
+
+        <path d="M480,100 L560,100" stroke="#8a63d2" stroke-width="1.8" fill="none" marker-end="url(#arw2)"/>
+
+        <rect x="560" y="34" width="188" height="132" rx="12" fill="#ecfdf3" stroke="#1a9d63"/>
+        <text x="654" y="58" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1a9d63">拿到真实数据</text>
+        <text x="574" y="80" font-size="11.5" fill="#1c1c28">👍 真实赞数</text>
+        <text x="574" y="99" font-size="11.5" fill="#1c1c28">💬 真实评论数</text>
+        <text x="574" y="118" font-size="11.5" fill="#1c1c28">🔥 前 10 条热评</text>
+        <text x="574" y="137" font-size="11.5" fill="#1c1c28">📅 真实发帖时间</text>
+        <text x="574" y="156" font-size="11.5" fill="#1c1c28">📈 赞踩比</text>
+      </svg>
+      <figcaption>这一步让结果里的「热度数字」是真的，不是模型脑补的——也是它跟一般 AI 摘要最大的差别。</figcaption>
+    </figure>
+
+    <div class="callout ok">
+      <strong>为什么这很重要？</strong> 因为它排序、判断「哪条最值得看」全靠这些真实数字。
+      数字若是猜的，排序就是假的；数字是抓的，结论才站得住。
+    </div>
+  </section>
+
+  <!-- SECTION: keyless vs keyed -->
+  <section id="tiers">
+    <p class="eyebrow">要不要花钱</p>
+    <h2>没有 API key 也能用，有 key 更强</h2>
+    <p>它设计成「零门槛先能跑，愿意配 key 再升级」。两种模式都合法：</p>
+    <table>
+      <thead>
+        <tr><th style="width:24%"></th><th>🆓 免 key 模式</th><th>🔑 配了 key 的模式</th></tr>
+      </thead>
+      <tbody>
+        <tr><td><strong>怎么拿数据</strong></td><td>靠公开网页抓取 + RSS 订阅</td><td>用官方认证接口（OpenAI / xAI 等）</td></tr>
+        <tr><td><strong>怎么排序</strong></td><td>本地打分（词面 + 真实互动）</td><td>可用大模型帮忙判断相关性、重排</td></tr>
+        <tr><td><strong>切题把关</strong></td><td>更依赖「实体核对」这类规则来防跑题</td><td>模型能从语义上判断是否相关</td></tr>
+        <tr><td><strong>成本</strong></td><td>零</td><td>按各家接口计费</td></tr>
+      </tbody>
+    </table>
+    <div class="callout">
+      技能里还内建一个 <code>doctor</code> 体检命令：它会先告诉你<strong>哪些来源现在能用、哪些因为缺 key 或登录会被跳过</strong>，
+      跑之前先心里有数，而不是跑完才发现某个平台是空的。
+    </div>
+  </section>
+
+  <!-- SECTION: discovery -->
+  <section id="discovery">
+    <p class="eyebrow">进阶玩法</p>
+    <h2>Discovery：不给主题，让它告诉你「该研究什么」</h2>
+    <p>
+      前面讲的都是「你给主题、它去查」。还有一个反过来的模式——<strong>你什么都不给</strong>，
+      它自己去各大平台的热榜里扫一圈，帮你找出「最近有什么值得研究的趋势」。
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 760 210" role="img" aria-label="Discovery 模式流程">
+        <defs>
+          <marker id="arw3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0,0 L10,5 L0,10 z" fill="#8a63d2"/>
+          </marker>
+        </defs>
+        <rect x="10" y="80" width="150" height="50" rx="10" fill="#f6f2ff" stroke="#8a63d2"/>
+        <text x="85" y="102" text-anchor="middle" font-size="12.5" font-weight="700" fill="#6f42c1">扫各平台热榜</text>
+        <text x="85" y="119" text-anchor="middle" font-size="11" fill="#8a63d2">先攒一堆候选</text>
+        <path d="M160,105 L196,105" stroke="#8a63d2" stroke-width="1.6" fill="none" marker-end="url(#arw3)"/>
+
+        <rect x="198" y="80" width="150" height="50" rx="10" fill="#fff" stroke="#e7e4f0"/>
+        <text x="273" y="102" text-anchor="middle" font-size="12.5" font-weight="700">起个名 + 判垃圾</text>
+        <text x="273" y="119" text-anchor="middle" font-size="11" fill="#5b5b6b">是新闻还是求助帖？</text>
+        <path d="M348,105 L384,105" stroke="#8a63d2" stroke-width="1.6" fill="none" marker-end="url(#arw3)"/>
+
+        <rect x="386" y="80" width="160" height="50" rx="10" fill="#fff" stroke="#e7e4f0"/>
+        <text x="466" y="102" text-anchor="middle" font-size="12.5" font-weight="700">对每个候选深挖</text>
+        <text x="466" y="119" text-anchor="middle" font-size="11" fill="#5b5b6b">跑一遍完整研究</text>
+        <path d="M546,105 L582,105" stroke="#8a63d2" stroke-width="1.6" fill="none" marker-end="url(#arw3)"/>
+
+        <rect x="584" y="80" width="166" height="50" rx="10" fill="#ecfdf3" stroke="#1a9d63"/>
+        <text x="667" y="102" text-anchor="middle" font-size="12.5" font-weight="700" fill="#1a9d63">过「信心门槛」</text>
+        <text x="667" y="119" text-anchor="middle" font-size="11" fill="#1a9d63">够硬才能上榜</text>
+
+        <text x="380" y="168" text-anchor="middle" font-size="12" fill="#5b5b6b">证据不够硬时 → 老实说「这一轮没有值得称为趋势的东西」，而不是硬凑</text>
+      </svg>
+      <figcaption>Discovery 的关键是那道「信心门槛」：宁可回「本轮没有」，也不把噪音包装成趋势。</figcaption>
+    </figure>
+
+    <div class="callout warn">
+      <strong>诚实的空结果也是一种结果。</strong> 如果这轮没有任何话题够格，它会直接说「没有」，
+      并指出最接近的那个弱信号——不编、不凑、不硬给你一个假趋势。这是这个项目很看重的一条原则。
+    </div>
+  </section>
+
+  <!-- SECTION: why long skill -->
+  <section id="contract">
+    <p class="eyebrow">一个有意思的细节</p>
+    <h2>为什么它的说明书有 1400 多行？</h2>
+    <p>
+      这个技能由两部分组成：一份 <code>SKILL.md</code>（写给 AI 看的「行为契约」）+ 一个 Python 引擎（真正干活的代码）。
+      让人意外的是，那份说明书<strong>非常长、非常啰嗦</strong>——这不是啰嗦，是刻意的。
+    </p>
+
+    <div class="grid grid-2">
+      <div class="card">
+        <h3>🧩 引擎 = 干活的手</h3>
+        <p class="muted" style="margin-top:6px">
+          <code>scripts/last30days.py</code> 负责真正去查、去抓、去打分。
+          AI 只要按约定传对参数，引擎就吐出固定格式的结果。
+        </p>
+      </div>
+      <div class="card">
+        <h3>📜 SKILL.md = 给 AI 的紧箍咒</h3>
+        <p class="muted" style="margin-top:6px">
+          它规定 AI 拿到结果后<strong>只能怎么呈现</strong>：
+          第一行必须打一个版本徽章、不许自己编标题、不许加小标题、不许在结尾附一堆链接……
+        </p>
+      </div>
+    </div>
+
+    <p>
+      为什么管这么死？因为作者<strong>真的踩过坑</strong>：同一个模型、内容差不多的说明书，
+      有一批测试里 AI 会「自由发挥」，把结果写成一篇博客、编出根本没搜到的标题。
+      于是这份契约用了好几个「结构锚点」——比如强制第一行输出徽章——把 AI 死死按在正确的格式上。
+    </p>
+
+    <div class="callout">
+      <strong>一句话总结：</strong> 这份超长说明书是在跟「AI 容易自作主张」这件事对着干。
+      它把「必须怎么做、绝对不许怎么做」写死，换来的是<strong>每次输出都长一个样、可预期、可信</strong>。
+      对做 AI 智能体的人来说，这本身就是个很好的范例。
+    </div>
+  </section>
+
+  <!-- SECTION: install/use -->
+  <section id="use">
+    <p class="eyebrow">怎么用</p>
+    <h2>装进你的 AI 工具，一句话开跑</h2>
+    <p>它遵循开放的 <a href="https://agentskills.io" target="_blank" rel="noopener">Agent Skills</a> 格式，能装进 50 多种 AI 工具。</p>
+
+    <h3>Claude Code（推荐，会自动更新）</h3>
+<pre><code>/plugin marketplace add mvanhorn/last30days-skill
+/plugin install last30days</code></pre>
+
+    <h3>Codex / Cursor / Copilot / Gemini CLI 等</h3>
+<pre><code>npx skills add mvanhorn/last30days-skill -g</code></pre>
+
+    <h3>装好之后</h3>
+<pre><code>/last30days 英伟达财报反应
+/last30days AI 视频工具
+/last30days react 用户到底想要什么</code></pre>
+
+    <div class="callout ok">
+      跑完你会拿到：一段结论式摘要 + 几条「关键规律」+ 每个来源各贡献了多少内容的统计脚注。
+      全部有出处，可以点进去核对——这正是它跟「张口就来的 AI 摘要」的分界线。
+    </div>
+  </section>
+</main>
+
+<!-- SECTION: footer -->
+<footer id="footer" class="wrap">
+  <p>
+    本页是对 <a href="https://github.com/mvanhorn/last30days-skill" target="_blank" rel="noopener">mvanhorn/last30days-skill</a>
+    的通俗图解，内容依据仓库自身文档整理：
+    <a href="../README.md">README</a> ·
+    <a href="../CONCEPTS.md">CONCEPTS.md</a> ·
+    <a href="../skills/last30days/SKILL.md">SKILL.md</a> ·
+    <a href="how-search-works.md">docs/how-search-works.md</a>。
+  </p>
+  <p>
+    整理基于提交 <code>084662b</code>（2026-09-29）。数字与实现细节以仓库最新代码为准；本页只做概念性讲解，不追新每一处参数。
+  </p>
+  <p style="margin-top:14px">📰 last30days · MIT License · 图解为社区贡献</p>
+</footer>
+
+</body>
+</html>
