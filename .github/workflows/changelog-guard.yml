@@ -29,11 +29,25 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
+
+          # github.event.pull_request.base.sha is fixed when the PR is created
+          # and is never refreshed as the base branch advances, so a PR whose
+          # base moved forward gets graded against a commit that is no longer
+          # the base: the diff reports files the base already contains. Resolve
+          # the real merge base at job time. fetch-depth: 0 above populates
+          # refs/remotes/origin, so this needs no extra fetch and no credentials.
+          BASE_REMOTE_REF="refs/remotes/origin/${BASE_REF}"
+          if ! git rev-parse --verify --quiet "${BASE_REMOTE_REF}" >/dev/null; then
+            echo "::error::Cannot resolve ${BASE_REMOTE_REF}. Checkout must use fetch-depth: 0."
+            exit 1
+          fi
+          BASE_SHA="$(git merge-base "${BASE_REMOTE_REF}" "${HEAD_SHA}")"
+          echo "Base ${BASE_SHA} (merge-base with origin/${BASE_REF})"
 
           LABELS="$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" --jq '.[].name')"
           IS_RELEASE=0
