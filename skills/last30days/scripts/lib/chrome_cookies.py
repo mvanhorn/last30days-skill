@@ -5,7 +5,7 @@ stdlib modules and the system openssl CLI (ships with macOS). Zero pip
 dependencies.
 
 Chromium on macOS uses v10 encryption (AES-128-CBC with Keychain-stored key).
-Every Chromium-based browser (Chrome, Brave, Edge, Vivaldi, Opera, Arc,
+Every Chromium-based browser (Chrome, Brave, Edge, Vivaldi, Opera, Arc, Dia,
 Chromium) shares the same algorithm; only the profile directory and Keychain
 service name differ, so they all run through the same decryption core.
 This is NOT affected by Windows App-Bound Encryption (v20).
@@ -48,6 +48,7 @@ CHROMIUM_BROWSER_PROFILES: dict[str, tuple[Path, str]] = {
     "vivaldi": (_APP_SUPPORT / "Vivaldi", "Vivaldi Safe Storage"),
     "opera": (_APP_SUPPORT / "com.operasoftware.Opera", "Opera Safe Storage"),
     "arc": (_APP_SUPPORT / "Arc" / "User Data", "Arc Safe Storage"),
+    "dia": (_APP_SUPPORT / "Dia" / "User Data", "Dia Safe Storage"),
     "chromium": (_APP_SUPPORT / "Chromium", "Chromium Safe Storage"),
 }
 
@@ -447,7 +448,7 @@ def extract_chromium_browser_cookies_macos(
     """Extract cookies from a registry-defined Chromium browser on macOS.
 
     Covers every browser in CHROMIUM_BROWSER_PROFILES (Edge, Vivaldi, Opera,
-    Arc, Chromium). They all reuse Chrome's v10 AES-128-CBC encryption; only
+    Arc, Dia, Chromium). They all reuse Chrome's v10 AES-128-CBC encryption; only
     the profile directory and Keychain service name differ.
     """
     spec = CHROMIUM_BROWSER_PROFILES.get(browser)

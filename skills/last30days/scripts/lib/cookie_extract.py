@@ -341,7 +341,7 @@ def _extract_chromium_family_cookies(
 ) -> Optional[Dict[str, str]]:
     """Extract cookies from a non-Chrome/Brave Chromium browser on macOS.
 
-    macOS only — Edge, Vivaldi, Opera, Arc, and Chromium all reuse Chrome's
+    macOS only — Edge, Vivaldi, Opera, Arc, Dia, and Chromium all reuse Chrome's
     v10 AES-128-CBC encryption, with their own profile path and Keychain
     service name (see chrome_cookies.CHROMIUM_BROWSER_PROFILES).
     """
@@ -374,6 +374,11 @@ def extract_opera_cookies(domain: str, cookie_names: List[str]) -> Optional[Dict
 def extract_arc_cookies(domain: str, cookie_names: List[str]) -> Optional[Dict[str, str]]:
     """Extract cookies from Arc for the given domain (macOS only)."""
     return _extract_chromium_family_cookies("arc", domain, cookie_names)
+
+
+def extract_dia_cookies(domain: str, cookie_names: List[str]) -> Optional[Dict[str, str]]:
+    """Extract cookies from Dia for the given domain (macOS only)."""
+    return _extract_chromium_family_cookies("dia", domain, cookie_names)
 
 
 def extract_chromium_cookies(domain: str, cookie_names: List[str]) -> Optional[Dict[str, str]]:
@@ -409,9 +414,9 @@ def extract_cookies(
 
     Args:
         browser: One of 'firefox', 'chrome', 'brave', 'edge', 'vivaldi',
-            'opera', 'arc', 'chromium', 'safari', or 'auto'.
+            'opera', 'arc', 'dia', 'chromium', 'safari', or 'auto'.
             'auto' tries browsers in platform-appropriate order:
-            - macOS: Chrome -> Brave -> Edge -> Vivaldi -> Opera -> Arc -> Chromium -> Firefox -> Safari
+            - macOS: Chrome -> Brave -> Edge -> Vivaldi -> Opera -> Arc -> Dia -> Chromium -> Firefox -> Safari
             - Linux: Firefox only
         domain: The cookie domain to match (e.g. ".x.com").
         cookie_names: List of cookie names to extract.
@@ -461,7 +466,7 @@ def extract_cookies_with_source(
 
     Args:
         browser: One of 'firefox', 'chrome', 'brave', 'edge', 'vivaldi',
-            'opera', 'arc', 'chromium', 'safari', or 'auto'.
+            'opera', 'arc', 'dia', 'chromium', 'safari', or 'auto'.
         domain: The cookie domain to match (e.g. ".x.com").
         cookie_names: List of cookie names to extract.
 
@@ -477,6 +482,7 @@ def extract_cookies_with_source(
         "vivaldi": extract_vivaldi_cookies,
         "opera": extract_opera_cookies,
         "arc": extract_arc_cookies,
+        "dia": extract_dia_cookies,
         "chromium": extract_chromium_cookies,
         "safari": extract_safari_cookies,
     }
@@ -498,7 +504,7 @@ def extract_cookies_with_source(
     # two orderings are intentional for their respective callers.
     system = platform.system()
     if system == "Darwin":
-        order = ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium", "firefox", "safari"]
+        order = ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "dia", "chromium", "firefox", "safari"]
     elif system == "Linux":
         order = ["firefox"]
     else:
