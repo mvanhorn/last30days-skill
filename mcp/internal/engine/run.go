@@ -27,10 +27,11 @@ const MinPythonVersion = "3.12"
 // have a direct route from the failure to a fix.
 const PythonInstallURL = "https://www.python.org/downloads/"
 
-// DefaultTimeout caps a single research subprocess. The engine's deep mode
-// can run several minutes; five minutes is a safe upper bound that still
-// fails fast when something hangs.
-const DefaultTimeout = 5 * time.Minute
+// DefaultTimeout caps a single research subprocess. The engine's deep-tier
+// resume enrichment alone budgets 450s, so ten minutes is the floor that lets
+// a full run finish; the per-stream and X-chain deadlines inside the pipeline
+// still fail fast when something hangs.
+const DefaultTimeout = 10 * time.Minute
 
 // TimeoutEnvOverride lets operators override DefaultTimeout per install
 // (seconds, integer). Honored by Run when RunOptions.Timeout is zero.

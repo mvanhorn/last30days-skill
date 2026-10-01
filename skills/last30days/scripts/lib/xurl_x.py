@@ -16,6 +16,7 @@ import re
 import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -262,12 +263,16 @@ def _classify_cli_failure(output: str) -> str:
 def search_x(
     query: str,
     depth: str = "default",
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Search X via xurl CLI using X API v2 search/recent.
 
     Args:
         query: Search query string
         depth: "quick", "default", or "deep"
+        deadline: Optional shared wall-clock deadline (``time.monotonic()``
+            instant) from the X backend chain. The single subprocess timeout
+            is clamped to the time left; a call past the deadline never starts.
 
     Returns:
         Raw JSON response from X API v2 tweets/search/recent, or a dict
@@ -277,6 +282,12 @@ def search_x(
     max_results = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     # X API v2 search/recent requires max_results in 10–100 range
     max_results = max(10, min(100, max_results))
+    timeout = 30
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining < 1:
+            return {"error": "xurl: chain budget exhausted"}
+        timeout = max(1, min(timeout, int(remaining)))
 
     try:
         # --auth app (app-only bearer): xurl >=1.1 mis-signs OAuth1 requests
@@ -286,7 +297,7 @@ def search_x(
             ["xurl", "search", query, "-n", str(max_results), "--auth", "app"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout,
         )
 
         if result.returncode != 0:

@@ -614,12 +614,15 @@ def search_x(
     from_date: str,
     to_date: str,
     depth: str = "default",
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Topic search via X API v2.
 
     Returns ``{"items": [...]}`` or ``{"items": [], "error": "..."}`` (the
     xquik shape); ``"warning"`` carries the truncation detail after the
-    recent-search fallback.
+    recent-search fallback. ``deadline`` is the X chain's shared
+    ``time.monotonic()`` budget; without one the search gets its own
+    ``DEADLINE_SECONDS``.
     """
     if not token:
         return {"items": [], "error": ERR_NO_TOKEN}
@@ -630,7 +633,7 @@ def search_x(
         return {"items": [], "error": ERR_EMPTY_QUERY}
     return _run_search(
         token, compiled, from_date, to_date, count,
-        topic=query, id_prefix="XAPI", label="topic",
+        topic=query, id_prefix="XAPI", label="topic", deadline=deadline,
     )
 
 

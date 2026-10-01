@@ -1,0 +1,1 @@
+Runs now bound slow X backends and source waits to shared deadlines so a hung lane degrades gracefully instead of stalling the report. The MCP server timeout rises to 10 minutes to fit deep-tier enrichment, accepting a longer worst-case hang window in exchange.

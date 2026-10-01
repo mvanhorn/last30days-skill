@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
-from collections.abc import Iterable, Mapping
+from collections.abc import Iterable, Iterator, Mapping
 import math
 import queue
 import re
@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait as futures_wait
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -137,6 +137,39 @@ THIN_RETRY_EXEMPT: frozenset[str] = frozenset({"trustpilot", "perplexity", "meta
 # most importantly on a zero-item run, which is exactly when naming the
 # resolved advertiser and its counts matters most.
 STREAM_ARTIFACT_LIFT_KEYS: tuple[str, ...] = ("meta_ads_page", "meta_ads_tally")
+
+# Shared wall-clock bounds for fan-out waits (CR-012/CR-016). Each bounded
+# fan-out waits with futures_wait(timeout=...) inside _abandoning_executor, so
+# a hung lane degrades to a TIMEOUT partial instead of stalling run() forever.
+# Worst case per stream is one timeout ceiling (+ one inline 5xx retry in the
+# main fan-out, itself bounded by the lane's own timeouts); no new config knobs.
+STREAM_FUTURE_TIMEOUT_SECONDS = 180.0
+DISCOVERY_FUTURE_TIMEOUT_SECONDS = 60.0
+THIN_RETRY_FUTURE_TIMEOUT_SECONDS = 120.0
+# One X source, ordered backends: grok (up to 240s/call) + xai (90-180s) would
+# stack sequentially inside one unbounded future under MCP's kill. The chain
+# owns a shared monotonic deadline (x_api's TIMEOUT 30/RETRIES 2/DEADLINE 90
+# pattern); backends past the deadline are skipped.
+X_CHAIN_DEADLINE_SECONDS = 90.0
+
+
+@contextlib.contextmanager
+def _abandoning_executor(max_workers: int) -> Iterator[ThreadPoolExecutor]:
+    """ThreadPoolExecutor whose exit does not join running workers.
+
+    The stock context manager exits via shutdown(wait=True), which blocks on
+    the very straggler a futures_wait budget just declared timed out, so the
+    budget would bound only the wait, not the caller. Exiting with
+    shutdown(wait=False, cancel_futures=True) drops queued work and lets a
+    running straggler finish and discard its result in the background (the
+    amazon review-lane pattern). The interpreter still joins those threads at
+    exit, so each straggler stays bounded by its lane's own timeouts.
+    """
+    pool = ThreadPoolExecutor(max_workers=max_workers)
+    try:
+        yield pool
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _lift_stream_artifacts(bundle) -> None:
@@ -546,6 +579,7 @@ def _fetch_discovery_source(
     mock: bool,
     config: dict[str, Any],
     keyword_gate: bool = True,
+    warnings: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], str | None]:
     """Fetch one listing/river source for the nominate stage.
 
@@ -554,7 +588,8 @@ def _fetch_discovery_source(
     keeps the gate on; global trending (``--discover`` with no domain) turns it
     off, because there is no keyword to gate against - the river feeds ARE the
     "what is hot right now" signal, and the confidence floor downstream is what
-    keeps junk out, not a keyword match.
+    keeps junk out, not a keyword match. ``warnings``, when given, collects
+    backend receipts that are not failures (xapi's truncated window).
     """
     if mock:
         return _mock_discovery_items(source, plan.domain, to_date), None
@@ -604,9 +639,15 @@ def _fetch_discovery_source(
         # Discovery uses domain directly as query (no planner search_query)
         query = plan.domain
         last_error = ""
+        chain_deadline = time.monotonic() + X_CHAIN_DEADLINE_SECONDS
+        x_warnings: list[str] = []
         for backend in env.x_backend_chain(config):
+            if time.monotonic() >= chain_deadline:
+                last_error = f"{last_error}; X chain budget exhausted".strip("; ") if last_error else "X chain budget exhausted"
+                break
             items, error = _fetch_x_backend(
                 backend, query, from_date, to_date, depth, config,
+                warnings=x_warnings, deadline=chain_deadline,
             )
             if items:
                 # Earlier failed-over backends' errors are observability, not
@@ -614,9 +655,13 @@ def _fetch_discovery_source(
                 # these items are partial and must surface as such.
                 if last_error:
                     print(f"[x] earlier backend failed: {last_error}", file=sys.stderr)
+                if warnings is not None:
+                    warnings.extend(x_warnings)
                 return items, error or None
             if error:
                 last_error = f"{backend}: {error}"
+        if warnings is not None:
+            warnings.extend(x_warnings)
         return [], last_error or None
     raise ValueError(f"Unsupported discovery source: {source}")
 
@@ -676,7 +721,10 @@ def nominate_candidates(
     run - the confidence floor decides whether the surviving evidence is enough.
     """
     bundle = schema.RetrievalBundle()
-    with ThreadPoolExecutor(max_workers=max(1, len(plan.sources))) as executor:
+    # Shared receipts sink: only X appends (xapi's truncated window); the
+    # executor submit below passes it to every source, the rest ignore it.
+    x_receipts: list[str] = []
+    with _abandoning_executor(max_workers=max(1, len(plan.sources))) as executor:
         futures = {
             executor.submit(
                 _fetch_discovery_source,
@@ -688,14 +736,35 @@ def nominate_candidates(
                 mock=mock,
                 config=config,
                 keyword_gate=keyword_gate,
+                warnings=x_receipts,
             ): source
             for source in plan.sources
         }
-        for future in as_completed(futures):
+        # Bounded wait (reddit-lane futures_wait pattern): a hung feed degrades
+        # to a TIMEOUT partial instead of stalling nominate forever.
+        done, not_done = futures_wait(futures, timeout=DISCOVERY_FUTURE_TIMEOUT_SECONDS)
+        for future in not_done:
+            source = futures[future]
+            bundle.mark_attempted(source)
+            future.cancel()
+            detail = f"{source} timed out after {DISCOVERY_FUTURE_TIMEOUT_SECONDS:g}s"
+            bundle.errors_by_source[source] = detail
+            bundle.record_failure(
+                source,
+                health.TIMEOUT,
+                detail,
+                attempted=True,
+            )
+        for future in done:
             source = futures[future]
             bundle.mark_attempted(source)
             try:
-                raw_items, partial_error = future.result()
+                raw_items, partial_error = future.result(timeout=0)
+            except Exception as exc:
+                state, attempted = _classify_source_failure(exc)
+                bundle.record_failure(source, state, str(exc), attempted=attempted)
+                continue
+            try:
                 normalized = normalize.normalize_source_items(
                     source,
                     raw_items,
@@ -732,6 +801,14 @@ def nominate_candidates(
             except Exception as exc:
                 state, attempted = _classify_source_failure(exc)
                 bundle.record_failure(source, state, str(exc), attempted=attempted)
+    # Backend receipts that are not failures (xapi's truncated window): the
+    # same x_partial_coverage key the main path uses. X extends the sink just
+    # before returning, so a finished X future's receipts are complete. The
+    # executor exit does not join stragglers: a timed-out X can still append
+    # after the wait, and its receipts are dropped along with its items.
+    x_finished = any(futures[future] == "x" for future in done)
+    if x_finished and x_receipts:
+        bundle.artifacts.setdefault("x_partial_coverage", []).extend(list(x_receipts))
     return bundle
 
 
@@ -1020,10 +1097,18 @@ def enrich_nominations(
     if not nominations:
         return []
 
+    # Cooperative cancel: not-yet-started sub-runs and streams skip new
+    # network work once the batch budget expires. The event rides the
+    # per-worker config copy into run() -> _retrieve_stream_impl, which exits
+    # early when set; in-flight requests still run to their own timeouts.
+    cancel = threading.Event()
+
     def _run_one(nomination: Nomination) -> schema.Report:
+        worker_config = dict(config)
+        worker_config["_enrich_cancel"] = cancel
         return run(
             topic=nomination.name,
-            config=config,
+            config=worker_config,
             depth=depth,
             requested_sources=requested_sources,
             mock=mock,
@@ -1050,6 +1135,9 @@ def enrich_nominations(
 
     def _worker(nomination: Nomination) -> None:
         with slots:
+            if cancel.is_set():
+                results_queue.put((nomination, None, TimeoutError("enrichment budget exhausted")))
+                return
             try:
                 results_queue.put((nomination, _run_one(nomination), None))
             except Exception as exc:  # noqa: BLE001 - containment is the contract
@@ -1065,28 +1153,35 @@ def enrich_nominations(
 
     deadline = time.monotonic() + max(1.0, budget_seconds)
     pending = len(nominations)
-    while pending and (remaining := deadline - time.monotonic()) > 0:
-        try:
-            nomination, report, exc = results_queue.get(timeout=min(remaining, 0.5))
-        except queue.Empty:
-            continue
-        pending -= 1
-        if exc is None:
-            enriched[nomination.name] = EnrichedTopic(
-                nomination=nomination, report=report,
-            )
-        else:
-            enriched[nomination.name] = EnrichedTopic(
-                nomination=nomination,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-            print(
-                f"[Discover] enrichment failed for {nomination.name!r}: "
-                f"{type(exc).__name__}: {exc}",
-                file=sys.stderr,
-            )
-    # Budget expired (or all done): unfinished topics fall through below as
-    # nomination-only; their daemon workers are abandoned and cannot block exit.
+    try:
+        while pending and (remaining := deadline - time.monotonic()) > 0:
+            try:
+                nomination, report, exc = results_queue.get(timeout=min(remaining, 0.5))
+            except queue.Empty:
+                continue
+            pending -= 1
+            if exc is None:
+                enriched[nomination.name] = EnrichedTopic(
+                    nomination=nomination, report=report,
+                )
+            else:
+                enriched[nomination.name] = EnrichedTopic(
+                    nomination=nomination,
+                    error=f"{type(exc).__name__}: {exc}",
+                )
+                print(
+                    f"[Discover] enrichment failed for {nomination.name!r}: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+    finally:
+        # Budget expired (or all done, or the drain itself failed):
+        # unfinished topics fall through below as nomination-only; their
+        # daemon workers are abandoned and cannot block exit. Signal
+        # cooperative cancel so queued workers skip new sub-runs and
+        # not-yet-started streams exit early; in-flight spend continues to
+        # its own timeout.
+        cancel.set()
 
     results: list[EnrichedTopic] = []
     for nomination in nominations:
@@ -2480,7 +2575,7 @@ def run(
         if source in available and source != "corpus"
     )
     max_workers = _inner_max_workers(stream_count, internal_subrun=internal_subrun)
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    with _abandoning_executor(max_workers=max_workers) as executor:
         for subquery in plan.subqueries:
             for source in subquery.sources:
                 if source not in available:
@@ -2545,10 +2640,25 @@ def run(
                     )
                 ] = (subquery, source)
 
-        for future in as_completed(futures):
+        # Bounded fan-out (reddit-lane futures_wait pattern): the whole Phase 1
+        # waits at most STREAM_FUTURE_TIMEOUT_SECONDS, so a hung lane degrades
+        # to a TIMEOUT partial instead of stalling run() forever. Worst case
+        # per stream is the wait ceiling plus, for a stream that failed fast
+        # with a 5xx while budget remained, one inline retry bounded by that
+        # lane's own timeouts. No retry starts after the wait timed out or
+        # the enrichment cancel fired.
+        done, not_done = futures_wait(futures, timeout=STREAM_FUTURE_TIMEOUT_SECONDS)
+        budget_expired = bool(not_done)
+        for future in not_done:
+            subquery, source = futures[future]
+            future.cancel()
+            detail = f"{source} timed out after {STREAM_FUTURE_TIMEOUT_SECONDS:g}s"
+            bundle.errors_by_source[source] = detail
+            bundle.record_failure(source, health.TIMEOUT, detail, attempted=True)
+        for future in done:
             subquery, source = futures[future]
             try:
-                raw_items, artifact = future.result()
+                raw_items, artifact = future.result(timeout=0)
             except Exception as exc:
                 # Share 429 signal so pending futures skip this source
                 if _is_rate_limit_error(exc):
@@ -2558,8 +2668,19 @@ def run(
                     state, attempted = _classify_source_failure(exc)
                     bundle.record_failure(source, state, str(exc), attempted=attempted)
                     continue
-                # Retry once for transient 5xx errors
+                # Retry once for transient 5xx errors, but never after the
+                # wait already timed out or cancel fired: the retry's lane
+                # timeouts plus the blocking sleep would run past the budget
+                # that just expired.
                 if _is_transient_error(exc):
+                    _cancel = config.get("_enrich_cancel")
+                    if budget_expired or (
+                        _cancel is not None and getattr(_cancel, "is_set", lambda: False)()
+                    ):
+                        bundle.errors_by_source[source] = str(exc)
+                        state, attempted = _classify_source_failure(exc)
+                        bundle.record_failure(source, state, str(exc), attempted=attempted)
+                        continue
                     time.sleep(3)
                     try:
                         raw_items, artifact = _retrieve_stream(
@@ -4307,6 +4428,10 @@ def _retry_thin_sources(
     """Retry sources with thin results using simplified core subject query."""
     if depth == "quick":
         return
+    # No new paid/network work after the enrichment budget expired.
+    _thin_cancel = config.get("_enrich_cancel")
+    if _thin_cancel is not None and getattr(_thin_cancel, "is_set", lambda: False)():
+        return
 
     planned_sources: list[str] = []
     for subquery in plan.subqueries:
@@ -4398,13 +4523,30 @@ def _retry_thin_sources(
 
     retryable = [s for s in thin_sources if s not in rate_limited_sources]
 
-    from concurrent.futures import ThreadPoolExecutor, as_completed
-    with ThreadPoolExecutor(max_workers=min(4, len(retryable) or 1)) as executor:
+    with _abandoning_executor(max_workers=min(4, len(retryable) or 1)) as executor:
         futures = {executor.submit(_retry_one_source, s): s for s in retryable}
-        for future in as_completed(futures):
+        done, not_done = futures_wait(futures, timeout=THIN_RETRY_FUTURE_TIMEOUT_SECONDS)
+        for future in not_done:
+            source = futures[future]
+            future.cancel()
+            detail = f"{source} timed out after {THIN_RETRY_FUTURE_TIMEOUT_SECONDS:g}s"
+            print(f"[Pipeline] Retry timed out for {source}: {detail}", file=sys.stderr)
+            bundle.record_failure(source, health.TIMEOUT, f"Simplified-query retry failed: {detail}", attempted=True)
+        for future in done:
             source = futures[future]
             try:
-                source, normalized, outcome_note, (detail_note, detail_state) = future.result()
+                source, normalized, outcome_note, (detail_note, detail_state) = future.result(timeout=0)
+            except Exception as exc:
+                print(f"[Pipeline] Retry failed for {source}: {type(exc).__name__}: {exc}", file=sys.stderr)
+                state, attempted = _classify_source_failure(exc)
+                bundle.record_failure(
+                    source,
+                    state,
+                    f"Simplified-query retry failed: {exc}",
+                    attempted=attempted,
+                )
+                continue
+            try:
                 if outcome_note:
                     bundle.record_failure(
                         source,
@@ -4431,12 +4573,15 @@ def _retry_thin_sources(
                 )
 
 
-def _fetch_x_backend(backend, query, from_date, to_date, depth, config, warnings=None):
+def _fetch_x_backend(backend, query, from_date, to_date, depth, config, warnings=None, deadline=None):
     """Fetch X items from a single backend. Returns (items, error_str).
 
     ``warnings``, when given, collects backend receipts that are not
     failures (xapi's "window truncated to 7 days" after the recent-search
     fallback) so the X branch can surface them as run artifacts.
+    ``deadline`` is the chain's shared ``time.monotonic()`` budget; backends
+    that accept one (bird/grok/xai/xurl/xquik/xapi) clamp their waits to the
+    time left.
 
     Backends are tried in priority order by the caller (env.x_backend_chain);
     a non-empty error_str signals a hard failure (auth/payment/etc.) so the
@@ -4451,26 +4596,29 @@ def _fetch_x_backend(backend, query, from_date, to_date, depth, config, warnings
     ``search_query`` which may contain operator strings like "Rome Italy".
     """
     if backend == "bird":
-        result = bird_x.search_x(query, from_date, to_date, depth=depth)
+        result = bird_x.search_x(query, from_date, to_date, depth=depth, deadline=deadline)
         items = bird_x.parse_bird_response(result, query=query)
     elif backend == "grok":
-        result = grok_x.search_x(query, from_date, to_date, depth=depth)
+        result = grok_x.search_x(
+            query, from_date, to_date, depth=depth, deadline=deadline,
+            cancel=config.get("_enrich_cancel"),
+        )
         items = result.get("items", []) if isinstance(result, dict) else []
         if isinstance(result, dict) and result.get("auth_revoked"):
             err = result.get("error") or "grok session expired or was revoked"
             return items, f"grok: {err}"
     elif backend == "xai":
         model = config.get("LAST30DAYS_X_MODEL") or config.get("XAI_MODEL_PIN") or providers.XAI_DEFAULT
-        result = xai_x.search_x(config["XAI_API_KEY"], model, query, from_date, to_date, depth=depth)
+        result = xai_x.search_x(config["XAI_API_KEY"], model, query, from_date, to_date, depth=depth, deadline_monotonic=deadline)
         items = xai_x.parse_x_response(result)
     elif backend == "xurl":
-        result = xurl_x.search_x(query, depth=depth)
+        result = xurl_x.search_x(query, depth=depth, deadline=deadline)
         items = xurl_x.parse_x_response(result, topic=query)
     elif backend == "xquik":
-        result = xquik.search_xquik(query, from_date, to_date, depth=depth, token=env.get_xquik_token(config))
+        result = xquik.search_xquik(query, from_date, to_date, depth=depth, token=env.get_xquik_token(config), deadline=deadline)
         items = xquik.parse_xquik_response(result)
     elif backend == "xapi":
-        result = x_api.search_x(config.get("X_BEARER_TOKEN") or "", query, from_date, to_date, depth=depth)
+        result = x_api.search_x(config.get("X_BEARER_TOKEN") or "", query, from_date, to_date, depth=depth, deadline=deadline)
         items = result.get("items", []) if isinstance(result, dict) else []
         warning = result.get("warning") if isinstance(result, dict) else None
         if warning:
@@ -4733,6 +4881,11 @@ def _retrieve_stream_impl(
     # Early exit if source was rate-limited by a sibling future
     if rate_limited_sources is not None and source in rate_limited_sources:
         return [], {}
+    # Cooperative enrichment cancel: the batch budget expired, so skip new
+    # network work instead of burning credits past the deadline.
+    _cancel = config.get("_enrich_cancel")
+    if _cancel is not None and getattr(_cancel, "is_set", lambda: False)():
+        return [], {}
     from_date, to_date = date_range
     if mock:
         return _mock_stream_results(source, subquery)
@@ -4938,9 +5091,17 @@ def _retrieve_stream_impl(
         items = []
         used_backend = None
         x_warnings: list[str] = []
+        chain_deadline = time.monotonic() + X_CHAIN_DEADLINE_SECONDS
         for i, backend in enumerate(chain):
+            if time.monotonic() >= chain_deadline:
+                msg = "X chain budget exhausted"
+                last_error = f"{last_error}; {msg}".strip("; ") if last_error else msg
+                chain_errors.append(msg)
+                print("[X] chain budget exhausted; skipping remaining backends", file=sys.stderr)
+                break
             items, err = _fetch_x_backend(
                 backend, x_query, from_date, to_date, depth, config, warnings=x_warnings,
+                deadline=chain_deadline,
             )
             if items:
                 if i > 0:
@@ -5030,30 +5191,34 @@ def _retrieve_stream_impl(
                 print(f"[X] corpus off-topic; retrying with '{retry_query}'", file=sys.stderr)
 
                 if used_backend:
-                    retry_items, retry_err = _fetch_x_backend(
-                        used_backend, retry_query, from_date, to_date, depth, config
-                    )
-                    if retry_items:
-                        # Judge retry corpus
-                        retry_for_judge = [
-                            {"author_handle": it.get("author_handle", ""), "text": it.get("text", "")}
-                            for it in retry_items
-                        ]
-                        retry_judgment = x_judge.judge_x_corpus(
-                            retry_for_judge, x_query, ranking_query=ranking_query
+                    if time.monotonic() >= chain_deadline:
+                        print("[X] chain budget exhausted; skipping judge retry", file=sys.stderr)
+                    else:
+                        retry_items, retry_err = _fetch_x_backend(
+                            used_backend, retry_query, from_date, to_date, depth, config,
+                            deadline=chain_deadline,
                         )
-                        orig_judgment = x_judge.judge_x_corpus(
-                            items_for_judge, x_query, ranking_query=ranking_query
-                        )
-                        # Use retry if better on-topic ratio
-                        if retry_judgment["on_topic_ratio"] > orig_judgment["on_topic_ratio"]:
-                            print(
-                                f"[X] retry improved on-topic ratio: "
-                                f"{orig_judgment['on_topic_ratio']:.0%} -> "
-                                f"{retry_judgment['on_topic_ratio']:.0%}",
-                                file=sys.stderr,
+                        if retry_items:
+                            # Judge retry corpus
+                            retry_for_judge = [
+                                {"author_handle": it.get("author_handle", ""), "text": it.get("text", "")}
+                                for it in retry_items
+                            ]
+                            retry_judgment = x_judge.judge_x_corpus(
+                                retry_for_judge, x_query, ranking_query=ranking_query
                             )
-                            items = retry_items
+                            orig_judgment = x_judge.judge_x_corpus(
+                                items_for_judge, x_query, ranking_query=ranking_query
+                            )
+                            # Use retry if better on-topic ratio
+                            if retry_judgment["on_topic_ratio"] > orig_judgment["on_topic_ratio"]:
+                                print(
+                                    f"[X] retry improved on-topic ratio: "
+                                    f"{orig_judgment['on_topic_ratio']:.0%} -> "
+                                    f"{retry_judgment['on_topic_ratio']:.0%}",
+                                    file=sys.stderr,
+                                )
+                                items = retry_items
 
             # Prune off-topic items before the pool. Eight on-topic → ok with 8.
             # Zero on-topic after retry → no-results, not ok with 40 junk.

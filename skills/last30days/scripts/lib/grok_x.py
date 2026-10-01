@@ -863,7 +863,7 @@ def _run_query(
             remaining = deadline - time.monotonic()
             if remaining < _MIN_USEFUL_CALL_SECONDS:
                 return [], last_error or "X lane budget exhausted", False
-            timeout = min(timeout, int(remaining))
+            timeout = min(timeout, max(1, int(remaining)))
         _log(f"searching: {query}" + (f" (attempt {attempt})" if attempt > 1 else ""))
         response = _invoke(prompt, timeout)
         if response.get("error"):
@@ -891,6 +891,8 @@ def search_x(
     from_date: str,
     to_date: str,
     depth: str = "default",
+    deadline: Optional[float] = None,
+    cancel: Optional[Any] = None,
 ) -> Dict[str, Any]:
     """Search X for a topic, fanning out to reach the depth's target count.
 
@@ -898,6 +900,13 @@ def search_x(
     calls. Without this, grok returned 10 posts at every depth while sitting
     ahead of bird in the chain -- silently downgrading a `--deep` run from 60
     posts to 10.
+
+    ``deadline`` is the X chain's shared ``time.monotonic()`` budget (see
+    pipeline's ``X_CHAIN_DEADLINE_SECONDS``): each fan-out call clamps its
+    per-call timeout to the time left, and calls past the deadline are never
+    started, so grok cannot consume the whole chain budget alone. ``cancel``
+    is an optional ``threading.Event`` (the enrichment batch's cooperative
+    cancel): set means not-yet-started fan-out queries are skipped.
 
     Returns {'items': [...]}; 'error' is set only for an actual invocation
     failure. A completed run that found nothing returns an empty list with no
@@ -916,8 +925,18 @@ def search_x(
     invocation_failed = False
     auth_revoked = False
     for mode_query in _fanout_queries(topic, from_date, to_date, calls):
+        if deadline is not None and time.monotonic() >= deadline:
+            if not last_error:
+                last_error = "X lane budget exhausted"
+            _log("chain deadline reached; skipping remaining grok queries")
+            break
+        if cancel is not None and getattr(cancel, "is_set", lambda: False)():
+            if not last_error:
+                last_error = "enrichment budget exhausted"
+            _log("enrichment cancelled; skipping remaining grok queries")
+            break
         items, error, revoked = _run_query(mode_query, from_date, to_date, depth=depth,
-                                           relevance_topic=topic)
+                                           relevance_topic=topic, deadline=deadline)
         if revoked:
             auth_revoked = True
             last_error = error or "Grok session expired or was revoked"

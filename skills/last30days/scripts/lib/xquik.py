@@ -7,6 +7,7 @@ bookmarks). Requires an API key from xquik.com.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -79,6 +80,7 @@ def search_xquik(
     to_date: str,
     depth: str = "default",
     token: str = "",
+    deadline: float | None = None,
 ) -> Dict[str, Any]:
     """Search X via Xquik REST API.
 
@@ -88,6 +90,10 @@ def search_xquik(
         to_date: End date (YYYY-MM-DD)
         depth: Research depth - "quick", "default", or "deep"
         token: Xquik API key
+        deadline: Optional shared wall-clock deadline (``time.monotonic()``
+            instant) from the X backend chain. Queries past the deadline are
+            never started; the per-request timeout/retry pair still bounds
+            each call (mirrors ``x_api``'s TIMEOUT_SECONDS/RETRIES pattern).
 
     Returns:
         Dict with "items" list and optional "error" string.
@@ -101,12 +107,16 @@ def search_xquik(
     seen_ids: set[str] = set()
 
     for query_text in queries:
+        if deadline is not None and time.monotonic() >= deadline:
+            _log("chain deadline reached; skipping remaining queries")
+            break
         q = f"{query_text} since:{from_date} until:{to_date}"
         items, auth_error = _execute_search(
             q, cfg["limit"], token,
             label=query_text, id_prefix="XQ",
             seen_ids=seen_ids, relevance_query=query_text,
             index_offset=len(all_items),
+            deadline_monotonic=deadline,
         )
         if auth_error:
             # Auth/payment failure is fatal for the whole source (e.g. 401/403,
@@ -128,6 +138,7 @@ def _execute_search(
     seen_ids: set[str],
     relevance_query: str,
     index_offset: int = 0,
+    deadline_monotonic: float | None = None,
 ) -> tuple[List[Dict[str, Any]], str | None]:
     """Run one Xquik search call and parse its tweets.
 
@@ -138,12 +149,17 @@ def _execute_search(
     handle lanes that differs from the search query (``from:handle``).
     ``index_offset`` keeps item ids unique across multiple calls that share an
     accumulator (multi-query topic search, per-handle lanes).
+    ``deadline_monotonic`` bounds the request including retries at the
+    transport (mirrors ``x_api._get``).
     """
     full_url = f"{_BASE_URL}/x/tweets/search?q={_url_encode(q)}&queryType=Top&limit={limit}"
     _log(f"Searching: {label}")
     try:
         request_headers = {"X-Api-Key": token}
-        response = http.get(full_url, headers=request_headers, timeout=30, retries=2)
+        response = http.get(
+            full_url, headers=request_headers, timeout=30, retries=2,
+            deadline_monotonic=deadline_monotonic,
+        )
     except http.HTTPError as exc:
         status = getattr(exc, "status_code", None)
         if status == 402:
