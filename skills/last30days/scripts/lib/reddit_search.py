@@ -106,8 +106,12 @@ def _post_units(html_text: str) -> List[Tuple[int, Dict[str, Any]]]:
             continue
         if not isinstance(ctx, dict):
             continue
-        action = ctx.get("action_info") or {}
-        post = ctx.get("post") or {}
+        action = ctx.get("action_info")
+        post = ctx.get("post")
+        # A field that is no longer an object is drift: skip the unit, and a
+        # page left with none is flagged by unrecognized_body.
+        if not isinstance(action, dict) or not isinstance(post, dict):
+            continue
         if action.get("type") == "post" and post.get("id"):
             units.append((m.start(), ctx))
     return units
@@ -241,8 +245,8 @@ def search(
 
     Runs a paged global search plus one page of per-subreddit search for each
     targeted subreddit. Returns normalized, dated, scored posts, deduped by URL
-    and capped by depth, with targeted-subreddit posts first so the cap cannot
-    crowd them out. Returns ``[]`` on total failure and never raises; failures
+    and capped by depth. Streams are interleaved round-robin before the cap so
+    neither the targeted subreddits nor the global search crowds out the other. Returns ``[]`` on total failure and never raises; failures
     land in the pipeline's failure sink.
     """
     try:
@@ -257,7 +261,7 @@ def search(
 
         jobs = [(sub, SUB_PAGE_CAP) for sub in subs] + [(None, global_pages)]
         batch = sum(pages for _sub, pages in jobs)
-        results: List[Dict[str, Any]] = []
+        streams: List[List[Dict[str, Any]]] = []
         with ThreadPoolExecutor(max_workers=min(MAX_WORKERS, len(jobs))) as executor:
             # submit_with_context, not executor.submit: a plain submit starts the
             # worker with an empty context, dropping the pipeline's
@@ -269,10 +273,18 @@ def search(
             ]
             for future, sub, pages in futures:
                 try:
-                    results.extend(future.result(timeout=_result_timeout(batch, pages)))
+                    streams.append(future.result(timeout=_result_timeout(batch, pages)))
                 except (Exception, FuturesTimeoutError) as e:
                     _log(f"{'r/' + sub if sub else 'global'} search future failed: {e}")
 
+        # Round-robin across streams, each in its own relevance order, so the
+        # depth cap keeps a share of every stream.
+        results = [
+            stream[i]
+            for i in range(max((len(s) for s in streams), default=0))
+            for stream in streams
+            if i < len(stream)
+        ]
         seen: set = set()
         unique: List[Dict[str, Any]] = []
         for post in results:

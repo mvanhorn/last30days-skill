@@ -259,6 +259,23 @@ class TestTargetedSubs:
         assert len(posts) == 10
         assert {"s1", "s2"} <= set(_post_ids(posts))
 
+    def test_full_targeted_pages_do_not_crowd_out_global_results(self, fake_reddit):
+        subs = ["SubA", "SubB", "SubC", "SubD"]
+        fake_reddit.routes = {
+            "https://www.reddit.com/svc/shreddit/r/" + sub + "/search/"
+            "?q=Tubi&type=posts&t=month&sort=relevance": _synthetic_page(
+                [f"{sub}{i}" for i in range(7)], sub=sub
+            )
+            for sub in subs
+        }
+        fake_reddit.default = _synthetic_page([f"g{i}" for i in range(7)])
+        posts = reddit_search.search("Tubi", depth="default", subreddits=subs)
+        ids = _post_ids(posts)
+        assert len(ids) == 25
+        # 28 targeted posts alone would fill all 25 slots; global keeps a share.
+        assert {f"g{i}" for i in range(5)} <= set(ids)
+        assert all(any(i.startswith(sub) for i in ids) for sub in subs)
+
 
 class TestOutcomes:
     def test_challenge_page_records_failure_and_is_not_memoized(self, fake_reddit):
@@ -276,7 +293,9 @@ class TestOutcomes:
         lambda body: re.sub(r'\sdata-faceplate-tracking-context="[^"]*"', "", body),
         # Attribute kept, JSON shape changed (action_info renamed).
         lambda body: body.replace("&quot;action_info&quot;", "&quot;action&quot;"),
-    ], ids=["stripped", "reshaped"])
+        # Field kept but no longer an object, so .get() on it would raise.
+        lambda body: body.replace("&quot;post&quot;:{", "&quot;post&quot;:&quot;x&quot;,&quot;old_post&quot;:{"),
+    ], ids=["stripped", "reshaped", "post-not-object"])
     def test_results_marker_with_no_parseable_units_is_schema_drift(self, fake_reddit, drift):
         body = drift(_fixture("reddit_search_page1.html"))
         assert reddit_search.RESULTS_MARKER in body
