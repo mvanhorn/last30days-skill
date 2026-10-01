@@ -1098,16 +1098,28 @@ def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
     for _service, spec in COOKIE_DOMAINS.items():
         if all(config.get(env_key) for env_key in spec["mapping"].values()):
             continue
+        # Cookies from different browsers can belong to different sessions,
+        # so values are never combined across browsers: a complete set from
+        # one browser wins, else the first browser's partial set is kept.
+        chosen: dict[str, str] | None = None
+        fallback: dict[str, str] | None = None
         for browser in browsers:
             try:
                 cookies = cookie_extract.extract_cookies(browser, spec["domain"], spec["cookies"])
             except Exception:
                 continue
-            if cookies:
-                for cookie_name, env_key in spec["mapping"].items():
-                    if cookie_name in cookies and not config.get(env_key):
-                        extracted[env_key] = cookies[cookie_name]
-                break  # Found cookies for this service, stop trying browsers
+            if not cookies:
+                continue
+            if cookie_extract.has_complete_pair(cookies, spec["cookies"]):
+                chosen = cookies
+                break
+            if fallback is None:
+                fallback = cookies
+        if chosen is None:
+            chosen = fallback or {}
+        for cookie_name, env_key in spec["mapping"].items():
+            if chosen.get(cookie_name) and not config.get(env_key):
+                extracted[env_key] = chosen[cookie_name]
     return extracted
 
 

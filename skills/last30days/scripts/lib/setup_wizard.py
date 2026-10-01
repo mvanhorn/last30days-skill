@@ -130,9 +130,9 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
                 except Exception as exc:
                     logger.debug("Cookie extraction failed for %s via %s: %s", source_name, browser, exc)
                     continue
-                if result is not None and result[0]:
+                if result is not None and cookie_extract.has_complete_pair(result[0], cookie_names):
                     cookies_found[source_name] = result[1]
-                    break  # Found cookies for this service, stop trying browsers
+                    break  # Complete pair found for this service, stop trying browsers
 
     # Check yt-dlp availability and install via Homebrew if missing. Windows
     # has no Homebrew, and its working install path is `pip install yt-dlp`
@@ -935,6 +935,21 @@ def _existing_scrapecreators_key() -> Optional[str]:
     return None
 
 
+def _clamp_device_interval(interval: Any) -> int:
+    """Clamp a server-provided device-flow poll interval to [1, 30] seconds.
+
+    The ``interval`` comes from the server (device/code response or the
+    persisted poll handle), so 0 would hot-loop ``time.sleep``, a negative
+    would crash it, a huge value would sail past the poll timeout, and a
+    non-numeric value would raise. Defaults to 5 on missing/garbled input.
+    """
+    try:
+        value = int(interval or 5)
+    except (TypeError, ValueError):
+        return 5
+    return min(max(value, 1), 30)
+
+
 def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
     """Start the device authorization flow.
 
@@ -957,7 +972,7 @@ def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
     device_code = data.get("device_code")
     user_code = data.get("user_code")
     verification_uri = data.get("verification_uri")
-    interval = data.get("interval", 5)
+    interval = _clamp_device_interval(data.get("interval", 5))
 
     if not device_code or not user_code:
         # Log only the response's key names, never its values — a returning
@@ -991,6 +1006,7 @@ def poll_device_auth(
     """
     import sys
 
+    interval = _clamp_device_interval(interval)
     started_at = time.time()
     deadline = started_at + timeout
     last_reminder = started_at
@@ -1323,7 +1339,7 @@ def run_github_poll(timeout: int = 300, *, _handle: Optional[Dict[str, Any]] = N
             }
 
     device_code = data["device_code"]
-    interval = int(data.get("interval", 5))
+    interval = _clamp_device_interval(data.get("interval", 5))
     user_code = data.get("user_code", "")
     # Read the real clipboard state so the polling reminder never falsely claims
     # the code is on the clipboard (non-macOS, or a failed pbcopy). Missing key

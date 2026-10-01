@@ -14,6 +14,7 @@ from lib import cookie_extract
 from lib.cookie_extract import (
     extract_cookies,
     extract_firefox_cookies,
+    has_complete_pair,
     _query_cookies_db,
     _find_default_profile,
     _get_firefox_profiles_dir,
@@ -222,6 +223,74 @@ class TestExtractFirefoxCookies:
             result = extract_firefox_cookies(".x.com", ["auth_token"])
 
         assert result is None
+
+    def test_default_partial_yields_to_complete_non_default(self, mock_firefox_env):
+        """Default profile holds a lone ct0 (logged-out); the logged-in
+        non-default profile's complete pair wins."""
+        profiles_dir = mock_firefox_env(
+            profiles={
+                "aaa111.default": [
+                    (".x.com", "ct0", "partial_ct0"),
+                ],
+                "bbb222.release": [
+                    (".x.com", "auth_token", "tok_complete"),
+                    (".x.com", "ct0", "ct0_complete"),
+                ],
+            },
+            profiles_ini=textwrap.dedent("""\
+                [General]
+                StartWithLastProfile=1
+
+                [Profile0]
+                Name=default
+                IsRelative=1
+                Path=aaa111.default
+                Default=1
+
+                [Profile1]
+                Name=release
+                IsRelative=1
+                Path=bbb222.release
+            """),
+        )
+
+        with patch(
+            "lib.cookie_extract._get_firefox_profiles_dir",
+            return_value=profiles_dir,
+        ):
+            result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
+
+        assert result is not None
+        assert result["auth_token"] == "tok_complete"
+        assert result["ct0"] == "ct0_complete"
+
+    def test_partial_fallback_when_no_complete_profile(self, mock_firefox_env):
+        """With no complete profile anywhere, the first partial is kept."""
+        profiles_dir = mock_firefox_env(
+            profiles={
+                "aaa111.default": [
+                    (".x.com", "ct0", "partial_ct0"),
+                ],
+            },
+            profiles_ini=textwrap.dedent("""\
+                [General]
+                StartWithLastProfile=1
+
+                [Profile0]
+                Name=default
+                IsRelative=1
+                Path=aaa111.default
+                Default=1
+            """),
+        )
+
+        with patch(
+            "lib.cookie_extract._get_firefox_profiles_dir",
+            return_value=profiles_dir,
+        ):
+            result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
+
+        assert result == {"ct0": "partial_ct0"}
 
     def test_cookies_sqlite_empty(self, mock_firefox_env):
         """Returns None when cookies.sqlite has no rows."""
@@ -476,3 +545,34 @@ class TestExtractCookiesAuto:
         ):
             result = extract_cookies("safari", ".x.com", ["auth_token"])
         assert result == {"auth_token": "safari_tok"}
+
+
+class TestHasCompletePair:
+    """Tests for the shared has_complete_pair() helper."""
+
+    def test_none_is_incomplete(self):
+        assert has_complete_pair(None, ["auth_token", "ct0"]) is False
+
+    def test_empty_is_incomplete(self):
+        assert has_complete_pair({}, ["auth_token", "ct0"]) is False
+
+    def test_partial_pair_is_incomplete(self):
+        assert has_complete_pair({"ct0": "x"}, ["auth_token", "ct0"]) is False
+
+    def test_empty_valued_pair_is_incomplete(self):
+        assert has_complete_pair({"auth_token": "", "ct0": ""}, ["auth_token", "ct0"]) is False
+        assert has_complete_pair({"auth_token": "a", "ct0": ""}, ["auth_token", "ct0"]) is False
+
+    def test_complete_pair(self):
+        assert has_complete_pair(
+            {"auth_token": "a", "ct0": "c"}, ["auth_token", "ct0"]
+        ) is True
+
+    def test_single_cookie_service(self):
+        assert has_complete_pair({"_session_id": "s"}, ["_session_id"]) is True
+
+    def test_extra_keys_still_complete(self):
+        assert has_complete_pair(
+            {"auth_token": "a", "ct0": "c", "other": "o"},
+            ["auth_token", "ct0"],
+        ) is True
