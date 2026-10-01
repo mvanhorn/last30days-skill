@@ -942,6 +942,11 @@ def to_agent_export(
         ],
         "clusters": exported_clusters,
         "results": results,
+        # TROVR: real reasoning-provider token usage for this run (planner +
+        # rerank calls), when available — None in mock/local-provider mode.
+        # Additive field, no schema_version bump: unknown keys are ignored by
+        # existing consumers.
+        "usage": report.artifacts.get("usage"),
     }
 
 
