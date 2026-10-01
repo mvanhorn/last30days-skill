@@ -222,10 +222,7 @@ func TestRunTimesOut(t *testing.T) {
 }
 
 func TestResolvePythonHonorsEnvOverride(t *testing.T) {
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatalf("os.Executable: %v", err)
-	}
+	executable := fakePython(t, t.TempDir(), "selected-python", "3.12")
 	t.Setenv(PythonEnvOverride, executable)
 	t.Setenv("PATH", "")
 
@@ -275,15 +272,7 @@ func TestResolvePythonRejectsInvalidEnvOverride(t *testing.T) {
 
 func TestResolvePythonDefaultsToPython3Lookup(t *testing.T) {
 	dir := t.TempDir()
-	name := DefaultPythonBinary
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-		t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
-	}
-	candidate := filepath.Join(dir, name)
-	if err := os.WriteFile(candidate, []byte("stub"), 0o755); err != nil {
-		t.Fatalf("write default python stub: %v", err)
-	}
+	candidate := fakePython(t, dir, DefaultPythonBinary, "3.12")
 	t.Setenv(PythonEnvOverride, "temporarily-set-for-cleanup")
 	if err := os.Unsetenv(PythonEnvOverride); err != nil {
 		t.Fatalf("unset %s: %v", PythonEnvOverride, err)
@@ -308,6 +297,7 @@ func TestResolvePythonDefaultsToPython3Lookup(t *testing.T) {
 }
 
 func TestRunMissingPython(t *testing.T) {
+	unsetPythonOverride(t)
 	cache := stageCache(t)
 	// Empty PATH guarantees the lookup fails. PythonPath stays unset so Run
 	// falls through to exec.LookPath.
@@ -330,6 +320,7 @@ func TestRunMissingPython(t *testing.T) {
 }
 
 func TestResolvePythonRejectsRelativePATH(t *testing.T) {
+	unsetPythonOverride(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX executable fixture")
 	}
@@ -346,12 +337,13 @@ func TestResolvePythonRejectsRelativePATH(t *testing.T) {
 }
 
 func TestResolvePythonAcceptsAbsolutePATH(t *testing.T) {
+	unsetPythonOverride(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("POSIX executable fixture")
 	}
 	dir := t.TempDir()
 	want := filepath.Join(dir, DefaultPythonBinary)
-	if err := os.WriteFile(want, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+	if err := os.WriteFile(want, []byte("#!/bin/sh\nprintf '3.12\\n'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)
