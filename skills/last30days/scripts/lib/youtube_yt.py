@@ -1729,7 +1729,8 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
         with http.capture_failures() as _tf:
             data = http.get(
                 f"{SCRAPECREATORS_YT_BASE}/video/transcript",
-                params={"url": video_url},
+                # Without a language the endpoint may return an auto-dubbed track (#1169).
+                params={"url": video_url, "language": _ytdlp_sub_langs().split(",")[0]},
                 headers=http.scrapecreators_headers(token),
                 timeout=30,
                 retries=1,
