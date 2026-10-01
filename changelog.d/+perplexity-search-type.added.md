@@ -1,1 +1,0 @@
-New `--perplexity-search-type fast|web` flag and `LAST30DAYS_PERPLEXITY_SEARCH_TYPE` setting choose the search type for direct Perplexity Search API and Agent `web_search` requests. They do not enable the Perplexity source and need a direct `PERPLEXITY_API_KEY`. Thanks to @sk-holmes (#1184).
