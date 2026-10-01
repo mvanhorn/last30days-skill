@@ -5,7 +5,7 @@ import re
 import sys
 from typing import Any, Dict, List, Optional
 
-from . import http, log
+from . import http, log, providers
 
 
 def _safe_text(val) -> str:
@@ -122,7 +122,10 @@ def search_x(
         ],
     }
 
-    return http.post(XAI_RESPONSES_URL, payload, headers=headers, timeout=timeout)
+    # Honor XAI_BASE_URL like the planner/rerank client does (providers.py), so
+    # an override redirects every request that carries the xAI key, not only some.
+    url = providers.resolve_endpoint("XAI_BASE_URL", XAI_RESPONSES_URL)
+    return http.post(url, payload, headers=headers, timeout=timeout)
 
 
 def parse_x_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:

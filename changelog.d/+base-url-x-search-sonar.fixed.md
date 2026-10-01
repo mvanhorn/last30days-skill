@@ -1,0 +1,1 @@
+`XAI_BASE_URL` and `OPENROUTER_BASE_URL` now also redirect the X search (`x_search`) and the OpenRouter Sonar fallback, not only the planner and rerank client, so a gateway or proxy sees every request that carries those keys. `--preflight` now lists `OPENROUTER_BASE_URL` among the active endpoint overrides.
