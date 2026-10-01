@@ -1,0 +1,1 @@
+Codex desktop research now uses host-provided Python runtimes when needed, preserves clickable source citations, and collects long-running engine sessions through the host API. Skill formatting respects user instructions and host citation requirements.
