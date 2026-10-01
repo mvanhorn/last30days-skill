@@ -260,6 +260,23 @@ def _strip_inline_comment(value: str) -> str:
     return value
 
 
+# ``export KEY=value`` is the shell spelling people paste into .env files, and
+# python-dotenv and docker compose accept it too. The prefix only counts when
+# whitespace and a key follow it, so a key literally named ``export`` is kept.
+_EXPORT_PREFIX = re.compile(r'export\s+')
+
+
+def env_line_key(lhs: str) -> str:
+    """Return the key named by the left-hand side of a ``KEY=value`` line.
+
+    Shared with the setup wizard's .env writers so that reading and writing
+    agree on which key a hand-written line sets.
+    """
+    key = lhs.strip()
+    match = _EXPORT_PREFIX.match(key)
+    return key[match.end():] if match else key
+
+
 def load_env_file(path: Path) -> dict[str, str]:
     """Load environment variables from a file."""
     env = {}
@@ -283,7 +300,7 @@ def load_env_file(path: Path) -> dict[str, str]:
             continue
         if '=' in line:
             key, _, value = line.partition('=')
-            key = key.strip()
+            key = env_line_key(key)
             value = _strip_inline_comment(value).strip()
             # Remove quotes if present
             if value and value[0] in ('"', "'") and value[-1] == value[0]:
