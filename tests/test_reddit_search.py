@@ -144,6 +144,29 @@ class TestParse:
         assert last_cursor is None
 
 
+class TestPartialDrift:
+    def test_skipped_post_does_not_leak_counts_into_its_neighbour(self):
+        body = _fixture("reddit_search_page1.html")
+        clean, _ = reddit_search.parse_page(body)
+        assert len(clean) >= 3
+        # Corrupt only the second post's tracker (post field no longer an object).
+        victim = clean[1]["metadata"]["post_id"]
+        tracker = next(
+            m for m in reddit_search._TRACKER.finditer(body)
+            if "t3_" + victim in m.group(0) and "&quot;type&quot;:&quot;post&quot;" in m.group(0)
+        )
+        start = body.index("&quot;post&quot;:{", tracker.start(), tracker.end())
+        corrupted = body[:start] + "&quot;post&quot;:&quot;x&quot;,&quot;old_post&quot;:{" + body[start + len("&quot;post&quot;:{"):]
+        parsed, _ = reddit_search.parse_page(corrupted)
+        by_id = {p["metadata"]["post_id"]: p for p in parsed}
+        assert victim not in by_id
+        for post in clean:
+            pid = post["metadata"]["post_id"]
+            if pid == victim:
+                continue
+            assert (by_id[pid]["score"], by_id[pid]["num_comments"]) == (post["score"], post["num_comments"])
+
+
 class TestUrls:
     def test_global_and_cursor_urls(self):
         assert reddit_search.search_url("ButcherBox", "month") == PAGE1_URL

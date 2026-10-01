@@ -815,8 +815,14 @@ def reset_scrapecreators_memo() -> None:
         _SC_INFLIGHT.clear()
 
 
-def _sc_memo_outcome(entry: tuple) -> Dict[str, Any]:
-    ok, value = entry
+def _sc_memo_outcome(entry: tuple, replay_failures: bool = True) -> Dict[str, Any]:
+    ok, value, failures = entry
+    if replay_failures:
+        # search_and_enrich swallows ScrapeCreators HTTP errors into the
+        # caller's failure sink; a later caller must see them too, or an
+        # empty cached result reads as a clean no-results.
+        for failure in failures:
+            http._record_failure(failure)
     if not ok:
         raise value
     # Each caller gets its own copy so one stream cannot mutate another's items.
@@ -853,21 +859,24 @@ def search_and_enrich_memo(
         # Loop: read the owner's cached outcome, or re-elect if it was
         # interrupted before caching one (e.g. KeyboardInterrupt).
     try:
-        try:
-            result = search_and_enrich(
-                topic, from_date, to_date, depth=depth, token=token,
-                subreddits=subreddits,
-            )
-            entry = (True, result)
-        except Exception as exc:
-            entry = (False, exc)
+        with http.tee_failures() as recorded:
+            try:
+                result = search_and_enrich(
+                    topic, from_date, to_date, depth=depth, token=token,
+                    subreddits=subreddits,
+                )
+                outcome = (True, result)
+            except Exception as exc:
+                outcome = (False, exc)
+        entry = (*outcome, list(recorded))
         with _SC_MEMO_LOCK:
             _SC_MEMO[key] = entry
     finally:
         with _SC_MEMO_LOCK:
             _SC_INFLIGHT.pop(key, None)
         gate.set()
-    return _sc_memo_outcome(entry)
+    # The owner's failures already reached its own sink through tee_failures.
+    return _sc_memo_outcome(entry, replay_failures=False)
 
 
 def parse_reddit_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:

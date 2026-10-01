@@ -8,7 +8,7 @@ from unittest import mock
 
 import pytest
 
-from lib import env, pipeline, reddit, schema
+from lib import env, http, pipeline, reddit, schema
 
 FROM, TO = "2026-05-26", "2026-06-25"
 
@@ -55,6 +55,24 @@ class TestMemo:
                 _memo()
         assert sc.call_count == 1
         assert str(first.value) == str(second.value) == "HTTP 402: Payment Required"
+
+    def test_swallowed_failure_is_replayed_to_every_caller(self):
+        # search_and_enrich swallows a ScrapeCreators HTTP error into the
+        # caller's failure sink and returns no posts. A memo hit must replay
+        # that failure, or a later stream reads it as a clean empty result.
+        def _swallow_429(*_args, **_kwargs):
+            http._record_failure(http.HTTPError("HTTP 429: Too Many Requests", status_code=429))
+            return {"items": []}
+
+        with mock.patch("lib.reddit.search_and_enrich", side_effect=_swallow_429) as sc:
+            with http.capture_failures() as first_sink:
+                first = _memo()
+            with http.capture_failures() as second_sink:
+                second = _memo()
+        assert sc.call_count == 1
+        assert first == second == {"items": []}
+        assert [f.status_code for f in first_sink] == [429]
+        assert [f.status_code for f in second_sink] == [429]
 
     def test_depth_and_subreddits_are_part_of_the_key(self):
         with mock.patch("lib.reddit.search_and_enrich",

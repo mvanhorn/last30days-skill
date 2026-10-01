@@ -140,7 +140,8 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
         end = units[i + 1][0] if i + 1 < len(units) else len(html_text)
         chunk = html_text[start:end]
 
-        subreddit = str((ctx.get("subreddit") or {}).get("name") or "")
+        sub_ctx = ctx.get("subreddit")
+        subreddit = str(sub_ctx.get("name") or "") if isinstance(sub_ctx, dict) else ""
         title = str(ctx["post"].get("title") or "")
         href_match = _TITLE_HREF.search(chunk)
         href = _html.unescape((href_match.group(1) or href_match.group(2))) if href_match else ""
@@ -152,10 +153,12 @@ def parse_page(html_text: str, query: str = "") -> Tuple[List[Dict[str, Any]], O
 
         ts_match = _TIMEAGO.search(chunk)
         ts = ts_match.group(1) if ts_match else None
-        counts = {"vote": 0, "comment": 0}
+        # First counter of each kind wins: this post's own counters precede any
+        # that belong to a skipped (malformed) neighbour sharing the chunk.
+        counts: Dict[str, int] = {}
         for number, label in _COUNTER.findall(chunk):
-            counts[label] = int(number)
-        score, num_comments = counts["vote"], counts["comment"]
+            counts.setdefault(label, int(number))
+        score, num_comments = counts.get("vote", 0), counts.get("comment", 0)
 
         posts.append({
             "id": "",
