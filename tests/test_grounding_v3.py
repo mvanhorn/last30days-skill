@@ -30,17 +30,19 @@ class BraveSearchTests(unittest.TestCase):
                     {
                         "title": "Undated Article",
                         "url": "https://example.com/undated",
-                        "description": "Should also be filtered",
+                        "description": "Kept because date is unknown",
                     }
                 ]
             }
         }
         with patch("lib.grounding.http.request", return_value=mock_response) as mock_req:
             items, artifact = grounding.brave_search("test", ("2026-02-25", "2026-03-27"), "fake-key")
-            self.assertEqual(1, len(items))
+            self.assertEqual(2, len(items))
             self.assertEqual("Test Article", items[0]["title"])
             self.assertEqual("https://example.com/article", items[0]["url"])
             self.assertEqual("2026-03-10", items[0]["date"])
+            self.assertEqual("Undated Article", items[1]["title"])
+            self.assertIsNone(items[1]["date"])
             self.assertEqual("brave", artifact["label"])
             call_url = mock_req.call_args.args[1]
             self.assertIn("freshness=2026-02-25to2026-03-27", call_url)
@@ -65,15 +67,17 @@ class SerperSearchTests(unittest.TestCase):
                 {
                     "title": "Undated Result",
                     "link": "https://example.com/undated",
-                    "snippet": "Should also be filtered",
+                    "snippet": "Kept because date is unknown",
                 }
             ]
         }
         with patch("lib.grounding.http.request", return_value=mock_response):
             items, artifact = grounding.serper_search("test", ("2026-02-25", "2026-03-27"), "fake-key")
-            self.assertEqual(1, len(items))
+            self.assertEqual(2, len(items))
             self.assertEqual("Serper Result", items[0]["title"])
             self.assertEqual("2026-03-15", items[0]["date"])
+            self.assertEqual("Undated Result", items[1]["title"])
+            self.assertIsNone(items[1]["date"])
             self.assertEqual("serper", artifact["label"])
 
 
@@ -98,19 +102,21 @@ class ExaSearchTests(unittest.TestCase):
                 {
                     "title": "Undated Exa Result",
                     "url": "https://example.com/undated-exa",
-                    "text": "No date means filtered",
+                    "text": "Kept because date is unknown",
                 },
             ]
         }
         with patch("lib.grounding.http.request", return_value=mock_response) as mock_req:
             items, artifact = grounding.exa_search("test", ("2026-02-25", "2026-03-27"), "fake-exa-key")
-            self.assertEqual(1, len(items))
+            self.assertEqual(2, len(items))
             self.assertEqual("Exa Result", items[0]["title"])
             self.assertEqual("https://example.com/exa", items[0]["url"])
             self.assertEqual("2026-03-15", items[0]["date"])
+            self.assertEqual("Undated Exa Result", items[1]["title"])
+            self.assertIsNone(items[1]["date"])
             self.assertTrue(items[0]["id"].startswith("WE"))
             self.assertEqual("exa", artifact["label"])
-            self.assertEqual(1, artifact["resultCount"])
+            self.assertEqual(2, artifact["resultCount"])
             # Verify API call
             call_args = mock_req.call_args
             self.assertEqual("POST", call_args.args[0])
@@ -143,7 +149,7 @@ class ParallelSearchTests(unittest.TestCase):
                 {
                     "title": "Undated Parallel Result",
                     "url": "https://example.com/undated-parallel",
-                    "snippet": "Should also be filtered",
+                    "snippet": "Kept because date is unknown",
                 },
             ]
         }
@@ -151,13 +157,15 @@ class ParallelSearchTests(unittest.TestCase):
             items, artifact = grounding.parallel_search(
                 "test", ("2026-02-25", "2026-03-27"), "fake-parallel-key"
             )
-            self.assertEqual(1, len(items))
+            self.assertEqual(2, len(items))
             self.assertEqual("Parallel Result", items[0]["title"])
             self.assertEqual("https://example.com/parallel", items[0]["url"])
             self.assertEqual("2026-03-15", items[0]["date"])
+            self.assertEqual("Undated Parallel Result", items[1]["title"])
+            self.assertIsNone(items[1]["date"])
             self.assertTrue(items[0]["id"].startswith("WP"))
             self.assertEqual("parallel", artifact["label"])
-            self.assertEqual(1, artifact["resultCount"])
+            self.assertEqual(2, artifact["resultCount"])
             self.assertEqual("POST", mock_req.call_args.args[0])
             self.assertEqual("https://api.parallel.ai/v1/search", mock_req.call_args.args[1])
             self.assertEqual(
