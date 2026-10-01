@@ -516,6 +516,7 @@ class TestInputBounds:
         for directory in (home / ".grok", home / ".xurl", cfg):
             directory.mkdir(parents=True)
         monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
         monkeypatch.setattr(env, "CONFIG_DIR", cfg)
         monkeypatch.setattr(env, "CONFIG_FILE", cfg / ".env")
         for target in (home / ".grok" / "auth.json", home / ".xurl" / "tokens.json", cfg / "posts.json"):

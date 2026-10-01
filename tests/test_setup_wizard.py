@@ -329,10 +329,12 @@ class TestDiggAutoInstall:
 
     # Redirect HOME/GOPATH so real ~/.local/bin or ~/go/bin digg-pp-cli on the
     # dev box does not make the binary look present during absence tests.
+    # USERPROFILE too: Path.home() reads it on Windows, and the two must agree.
     @staticmethod
     def _empty_home(tmp_path, monkeypatch):
         monkeypatch.delenv("GOPATH", raising=False)
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
     @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
     @patch("shutil.which")
