@@ -1021,9 +1021,14 @@ def enrich_nominations(
         return []
 
     def _run_one(nomination: Nomination) -> schema.Report:
+        # Per-worker copy: run() mutates config in place
+        # (config["_financial_topic"] = ...), so sharing one dict across
+        # daemon threads lets topic A's flag overwrite topic B's mid-run,
+        # with stragglers mutating past budget expiry. Same idiom as the
+        # competitor runner (entity_config = dict(config)).
         return run(
             topic=nomination.name,
-            config=config,
+            config=dict(config),
             depth=depth,
             requested_sources=requested_sources,
             mock=mock,
