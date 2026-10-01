@@ -28,17 +28,17 @@ def _candidate_sort_key(c: schema.Candidate) -> tuple:
 
 
 def _normalize_url(url: str) -> str:
-    """Normalize URL for dedup: lowercase, strip www/old/m prefixes, remove tracking params."""
-    parsed = urlparse(url.strip().lower())
-    netloc = parsed.netloc
+    """Normalize URL for dedup: lowercase host, strip www/old/m prefixes, remove tracking params."""
+    parsed = urlparse(url.strip())
+    netloc = parsed.netloc.lower()
     for prefix in ("www.", "old.", "m."):
         if netloc.startswith(prefix):
             netloc = netloc[len(prefix):]
     # Strip tracking params
     params = parse_qs(parsed.query)
-    clean_params = {k: v for k, v in params.items() if not k.startswith("utm_")}
+    clean_params = {k: v for k, v in params.items() if not k.lower().startswith("utm_")}
     query = urlencode(clean_params, doseq=True)
-    return urlunparse((parsed.scheme, netloc, parsed.path.rstrip("/"), "", query, ""))
+    return urlunparse((parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", query, ""))
 
 
 def candidate_key(item: schema.SourceItem) -> str:

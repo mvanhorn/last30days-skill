@@ -212,3 +212,52 @@ def test_timeout_never_exceeds_the_remaining_budget(monkeypatch):
         deadline=_time.monotonic() + remaining,
     )
     assert seen["timeout"] <= remaining
+
+
+def test_no_x_backend_is_skipped_unconfigured(monkeypatch):
+    """CR-025: an empty X chain must read as SKIPPED_UNCONFIGURED, not failure."""
+    from unittest.mock import patch
+
+    from lib import env, schema
+
+    monkeypatch.setattr(env, "x_backend_chain", lambda config: [])
+    subquery = schema.SubQuery(
+        label="test",
+        search_query="test query",
+        ranking_query="test query",
+        sources=["x"],
+    )
+    runtime = schema.ProviderRuntime(
+        reasoning_provider="mock",
+        planner_model="mock",
+        rerank_model="mock",
+    )
+    try:
+        pipeline._retrieve_stream_impl(
+            topic="test",
+            subquery=subquery,
+            source="x",
+            config={},
+            depth="quick",
+            date_range=("2026-02-15", "2026-03-17"),
+            runtime=runtime,
+            mock=False,
+        )
+    except pipeline.SourceRunError as exc:
+        assert exc.outcome_state == schema.SKIPPED_UNCONFIGURED
+    else:
+        raise AssertionError("empty X chain should raise SourceRunError")
+
+
+def test_no_x_backend_message_carries_skip_marker():
+    """The unconfigured-X error must match the _classify_source_failure skip marker."""
+    from lib import schema
+
+    state, attempted = pipeline._classify_source_failure(
+        pipeline.SourceRunError(
+            "No X backend is available (not configured).",
+            schema.SKIPPED_UNCONFIGURED,
+        )
+    )
+    assert state == schema.SKIPPED_UNCONFIGURED
+    assert attempted is False

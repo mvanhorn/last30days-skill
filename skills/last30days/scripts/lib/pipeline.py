@@ -3533,11 +3533,41 @@ def _warnings(
     return warnings
 
 
+_STATUS_PREFIX = r"\b(?:https?(?:/\d(?:\.\d)?)?(?:\s+error)?|status(?:[\s_]*code)?|code)\s*[:=#]?\s*"
+
+
+def _mentions_status(msg: str, code_pattern: str, phrases: tuple[str, ...]) -> bool:
+    """True when ``msg`` names an HTTP status matching ``code_pattern``.
+
+    A bare number is not enough (``"batch 429 failed"`` is not a rate
+    limit): the code must follow an HTTP/status/code marker, or co-occur
+    with one of ``phrases`` (``"rate limited (429)"``). Digit-aware
+    boundaries keep ``"14293"`` from reading as a 429.
+    """
+    if not msg:
+        return False
+    code = r"(?:" + code_pattern + r")(?!\d)"
+    if re.search(_STATUS_PREFIX + code, msg, re.IGNORECASE):
+        return True
+    lowered = msg.lower()
+    return any(p in lowered for p in phrases) and re.search(r"(?<!\d)" + code, msg) is not None
+
+
+_RATE_LIMIT_PHRASES = ("rate limit", "rate-limit", "ratelimit", "too many requests")
+_SERVER_ERROR_PHRASES = (
+    "server error",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    "gateway time-out",
+)
+
+
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Detect 429 rate-limit errors by status code or message text."""
     if hasattr(exc, "status_code") and getattr(exc, "status_code", None) == 429:
         return True
-    return "429" in str(exc)
+    return _mentions_status(str(exc), "429", _RATE_LIMIT_PHRASES)
 
 
 class SourceRunError(RuntimeError):
@@ -3772,8 +3802,7 @@ def _is_transient_error(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if isinstance(status, int) and 500 <= status < 600:
         return True
-    msg = str(exc)
-    return any(code in msg for code in ("500", "502", "503", "504"))
+    return _mentions_status(str(exc), r"5\d\d", _SERVER_ERROR_PHRASES)
 
 
 def _topic_handle_mentions(topic: str) -> set[str]:
@@ -4539,7 +4568,10 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
     except Exception as exc:
         recorded_exc = exc
         if failures and not getattr(exc, "outcome_state", None):
-            failure = failures[-1]
+            failure = min(
+                failures,
+                key=lambda f: _FAILURE_SPECIFICITY.get(f.outcome_state, 9),
+            )
             recorded_exc = SourceRunError(str(exc), failure.outcome_state)
         if module_backed:
             http.fixture_source_record_error(fixture_request, recorded_exc)
@@ -4932,7 +4964,10 @@ def _retrieve_stream_impl(
         if pinned:
             chain = [pinned] + [b for b in chain if b != pinned]
         if not chain:
-            raise RuntimeError("No X backend is available.")
+            raise SourceRunError(
+                "No X backend is available (not configured).",
+                schema.SKIPPED_UNCONFIGURED,
+            )
         last_error = ""
         chain_errors: list[str] = []
         items = []
