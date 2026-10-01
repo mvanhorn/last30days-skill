@@ -1099,6 +1099,21 @@ class TestScTranscriptParsing(unittest.TestCase):
             youtube_yt._sc_fetch_transcript("vidJ", "key")
         self.assertTrue(any("credits low" in m.lower() for m in logs))
 
+    def test_requests_preferred_language(self):
+        """Without a language the endpoint can return an auto-dubbed track (#1169)."""
+        payload = {"transcript": "some transcript text", "credits_remaining": 9999}
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": ""}), \
+             mock.patch.object(youtube_yt.http, "get", return_value=payload) as get_mock:
+            youtube_yt._sc_fetch_transcript("vidL", "key")
+        self.assertEqual(get_mock.call_args.kwargs["params"]["language"], "en")
+
+    def test_language_follows_sub_langs_setting(self):
+        payload = {"transcript": "some transcript text", "credits_remaining": 9999}
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "es,en"}), \
+             mock.patch.object(youtube_yt.http, "get", return_value=payload) as get_mock:
+            youtube_yt._sc_fetch_transcript("vidM", "key")
+        self.assertEqual(get_mock.call_args.kwargs["params"]["language"], "es")
+
     def test_healthy_credits_no_warning(self):
         payload = {"transcript": "some transcript text", "credits_remaining": 9999}
         logs = []
