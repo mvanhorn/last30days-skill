@@ -49,6 +49,7 @@ def normalize_source_items(
         "hackernews": _normalize_hackernews,
         "stocktwits": _normalize_stocktwits,
         "dripstack": _normalize_dripstack,
+        "trendshift": _normalize_trendshift,
         "bluesky": lambda s, i, idx, fd, td: _normalize_microblog(
             s, i, idx, fd, td, "BS", "Bluesky post"
         ),
@@ -302,6 +303,33 @@ def _normalize_dripstack(
             **meta,
             "publication_slug": meta.get("publication_slug"),
         },
+    )
+
+
+def _normalize_trendshift(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalize a current Trendshift ranking snapshot."""
+    metadata = item.get("metadata") or {}
+    return _source_item(
+        item_id=str(item.get("id") or f"TS{index + 1}"),
+        source=source,
+        title=str(item.get("title") or f"Trendshift repository {index + 1}"),
+        body=str(item.get("snippet") or item.get("title") or ""),
+        url=str(item.get("url") or ""),
+        author=None,
+        container="Trendshift",
+        published_at=item.get("date"),
+        date_confidence="high",
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=str(item.get("snippet") or "")[:400],
+        metadata=metadata,
     )
 
 

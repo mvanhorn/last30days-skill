@@ -125,6 +125,9 @@ class CliV3Tests(unittest.TestCase):
             cli.parse_search_flag("threads, pinterest"),
         )
 
+    def test_parse_search_flag_accepts_trendshift(self):
+        self.assertEqual(["trendshift"], cli.parse_search_flag("trendshift"))
+
     def test_explicit_threads_search_uses_scrapecreators_key_without_include_sources(self):
         available = cli.pipeline.available_sources(
             {"SCRAPECREATORS_API_KEY": "test-key", "INCLUDE_SOURCES": ""},
