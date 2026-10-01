@@ -36,6 +36,10 @@ DOC_ONLY_KEYS = {
     "LAST30DAYS_CONFIG_DIR",
     "LAST30DAYS_PASS_PREFIX",
     "LAST30DAYS_SKIP_KEYCHAIN",
+    # LAW 7 host-plan gate: process environment only, so a .env line can
+    # neither make a cron run look agent-hosted nor silently lift the gate.
+    "LAST30DAYS_ALLOW_ENGINE_PLAN",
+    "LAST30DAYS_HOST_AGENT",
 }
 
 

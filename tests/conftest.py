@@ -62,6 +62,26 @@ def _reset_reddit_keyless_memo():
 
 
 @pytest.fixture(autouse=True)
+def _no_ambient_agent_host(monkeypatch):
+    """Strip agent-host markers so the LAW 7 host-plan gate stays off.
+
+    Contributors mostly run this suite from inside Claude Code or Codex, whose
+    shells export CLAUDECODE / CODEX_* markers that CI never has. Tests that
+    exercise the gate set these themselves.
+    """
+    from lib import env as _env
+
+    for name in (
+        *_env.AGENT_HOST_ENV_VARS,
+        _env.HOST_AGENT_VAR,
+        _env.X_HOST_VAR,
+        _env.ALLOW_ENGINE_PLAN_VAR,
+    ):
+        monkeypatch.delenv(name, raising=False)
+    yield
+
+
+@pytest.fixture(autouse=True)
 def _no_ambient_credentials(monkeypatch):
     """Strip credential-shaped variables from the process environment.
 

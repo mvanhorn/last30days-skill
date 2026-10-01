@@ -90,6 +90,8 @@ def verify_smoke() -> list[dict[str, object]]:
     for provider, extra in SMOKE_CASES:
         env = os.environ.copy()
         env["LAST30DAYS_REASONING_PROVIDER"] = provider
+        # This smoke exercises the engine's own planner providers on purpose.
+        env["LAST30DAYS_ALLOW_ENGINE_PLAN"] = "1"
         start = time.time()
         result = run_command(
             [PYTHON, str(ENGINE), SMOKE_TOPIC, "--emit=json", "--json-profile=raw", *extra],

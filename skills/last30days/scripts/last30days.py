@@ -2747,6 +2747,51 @@ def _comparison_requested(args: argparse.Namespace, topic: str) -> bool:
     ) or len(_planner._comparison_entities(topic, uncapped=True)) >= 2
 
 
+LAW7_HOST_PLAN_EXIT = 2
+
+
+def _law7_host_plan_message(signal: str) -> str:
+    return (
+        "[Planner] LAW 7: no --plan passed, and this run is agent-hosted "
+        f"({signal} is set). The engine stopped before retrieval and did not "
+        "call its internal planner. If you are the reasoning model hosting "
+        "this skill, YOU ARE the planner; no API key or provider is needed. "
+        "Write the JSON query plan (SKILL.md Step 0.75) to a tmpfile with a "
+        "quoted heredoc - QUERY_PLAN_FILE=$(mktemp "
+        "\"${TMPDIR:-/tmp}/last30days-plan.XXXXXX\"); "
+        "cat >| \"$QUERY_PLAN_FILE\" <<'PLAN_EOF' ... PLAN_EOF - and re-run "
+        "with --plan \"$QUERY_PLAN_FILE\" (see SKILL.md Step 1). With no "
+        "web-search tool, pass --auto-resolve instead. For headless or cron "
+        f"runs under an agent, set {env.ALLOW_ENGINE_PLAN_VAR}=1 to let the "
+        "engine plan internally.\n"
+    )
+
+
+def _law7_host_plan_gate(args: argparse.Namespace, topic: str) -> int | None:
+    """Stop an agent-hosted research run that skipped its own plan (LAW 7).
+
+    Returns an exit code when the run must stop before retrieval, else None.
+    Only reached on the normal topic-research path: doctor, setup,
+    --diagnose, --preflight, library/queue commands, discovery legs, drill,
+    cached freshness, the hosted API path, and HTML re-renders served from
+    the report cache all return before it. Exempt here, because SKILL.md
+    lets them run without a query plan: --mock, --hiring-signals,
+    --auto-resolve (the documented no-web-search path), and comparison runs
+    (vs topics and --competitors*; peers never take a query plan).
+    """
+    if args.plan or args.mock or args.hiring_signals or args.auto_resolve:
+        return None
+    if _comparison_requested(args, topic):
+        return None
+    if env.engine_plan_allowed():
+        return None
+    signal = env.agent_host_signal()
+    if not signal:
+        return None
+    sys.stderr.write(_law7_host_plan_message(signal))
+    return LAW7_HOST_PLAN_EXIT
+
+
 def _read_x_envelope(
     path: str,
     topic: str,
@@ -3742,6 +3787,12 @@ def _main(
             "--emit=html --synthesis-file; running fresh research.\n"
         )
         sys.stderr.flush()
+
+    # LAW 7: an agent host that skipped --plan stops here, before auto-resolve,
+    # the internal planner, or any source retrieval can spend anything.
+    law7_exit = _law7_host_plan_gate(args, topic)
+    if law7_exit is not None:
+        return law7_exit
 
     progress = ui.ProgressDisplay(topic, show_banner=True)
     progress.start_processing()

@@ -206,6 +206,8 @@ Named-entity topics (capitalized proper nouns, product names, person names, proj
 
 **Self-check before Bash:** re-read your pending `scripts/last30days.py` command. Does it contain `--plan "$QUERY_PLAN_FILE"` (or another path the engine can read)? If no, and the topic is a named entity, STOP. Return to Step 0.75 and generate the plan, then write it to a tmpfile per the Step 1 pattern. Do not interpret the word "provider" in any engine message as "you need credentials" - you are the provider.
 
+**The engine enforces this under a detected agent host.** When `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `CODEX_SANDBOX`, `LAST30DAYS_HOST`, or `LAST30DAYS_HOST_AGENT=1` is set, a research run without `--plan` exits 2 before any retrieval or internal-planner spend, with a `[Planner] LAW 7` message. Write the plan (Step 0.75), pass it per the Step 1 tmpfile pattern, and re-run. Exempt: `--mock`, `--hiring-signals`, `--auto-resolve` (the no-WebSearch path), comparison runs, and the non-research commands (doctor, setup, `--diagnose`, `--preflight`, discovery legs, `--drill`, library/queue, watchlist). A headless or cron run under an agent sets `LAST30DAYS_ALLOW_ENGINE_PLAN=1` to let the engine plan internally.
+
 **LAW 8 - CITE READABLY FOR THE CURRENT HOST. INLINE-LINK ON HIDDEN-LINK HOSTS; PLAIN LABELS ON VISIBLE-URL HOSTS. NEVER A RAW URL STRING. NEVER URL SOUP.** Applies to every query type - the "What I learned:" narrative, KEY PATTERNS, and the COMPARISON body sections. There are two rendering regimes and the host picks which one you use:
 
 - **Hidden-link hosts (Claude Code; Grok Bot / Cursor agent chat) - inline-link every citation.** These hosts render `[text](url)` as blue clickable text: the URL is hidden, only the label shows. Wrap every cited @handle, r/subreddit, u/name comment author, publication, YouTube channel, TikTok creator, Instagram creator, GitHub repo, and Polymarket market as `[name](url)` at first mention. The URL comes from the raw research dump (every engine item carries one; WebSearch supplements carry their own): a u/name cite takes the comment URL from that comment's own row in `## Top Community Comments` or the item evidence, and a GitHub cite takes the URL from the engine evidence block with a label that matches what that URL opens - `[owner/repo](url)` only when the evidence URL is the repository root; when the evidence row carries an issue, PR, or release URL, label the link as that item (e.g. `[owner/repo#123](url)`) instead of pairing an `owner/repo` label with an item URL, and never trim an item URL down to a guessed repo root. Never guess, reconstruct, or reassemble a URL. This rich-citation form is the default and must not regress.
@@ -1645,7 +1647,7 @@ Then add to the engine command:
 **If you skipped Steps 0.55 and 0.75 (no WebSearch -- OpenClaw, Codex, etc.), add:**
 - `--auto-resolve` (the engine will use Brave/Exa/Serper to discover subreddits and context before planning)
 
-**If you skipped Steps 0.55 and 0.75 (no WebSearch), run the command as-is.** The Python engine will plan internally.
+**If you skipped Steps 0.55 and 0.75 (no WebSearch), keep `--auto-resolve` on the command.** The Python engine will plan internally. Under a detected agent host a run with neither `--plan` nor `--auto-resolve` exits 2 (LAW 7).
 
 Use a **timeout of 300000** (5 minutes) on the Bash call. The script typically takes 1-3 minutes.
 

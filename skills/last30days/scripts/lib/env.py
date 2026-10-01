@@ -1200,6 +1200,52 @@ GROK_BOT_HOST = 'grok-bot'
 # Per-session X connector lane signal: process env only.
 X_HOST_LANE_VAR = 'LAST30DAYS_X_HOST_LANE'
 
+# Agent-hosted run detection, used only to enforce SKILL.md LAW 7 (the host
+# model writes the query plan and passes --plan). This is separate from the
+# X policy above, which trusts LAST30DAYS_HOST alone. Here the engine reads
+# the markers agent runtimes export into the shells they spawn, because the
+# failure it guards against is a host that forgot to plan. Process
+# environment only: a .env line never makes a cron run look agent-hosted.
+AGENT_HOST_ENV_VARS = (
+    'CLAUDECODE',              # Claude Code
+    'CLAUDE_CODE_ENTRYPOINT',  # Claude Code / Claude Agent SDK
+    'CODEX_THREAD_ID',         # Codex
+    'CODEX_SESSION_ID',
+    'CODEX_SANDBOX',
+)
+# Explicit self-identification for any other agent runtime.
+HOST_AGENT_VAR = 'LAST30DAYS_HOST_AGENT'
+# Headless/cron escape hatch under an agent: let the engine plan internally.
+ALLOW_ENGINE_PLAN_VAR = 'LAST30DAYS_ALLOW_ENGINE_PLAN'
+
+
+def agent_host_signal(environ: Any = None) -> str:
+    """Name of the env var that marks this process as agent-hosted, or "".
+
+    ``LAST30DAYS_HOST_AGENT`` counts when truthy; the runtime markers in
+    ``AGENT_HOST_ENV_VARS`` and a host self-identification in
+    ``LAST30DAYS_HOST`` (e.g. ``grok-bot``) count when non-empty. Returns the
+    variable name (never its value) so messages can cite what was detected.
+    """
+    source = os.environ if environ is None else environ
+    if _truthy(source.get(HOST_AGENT_VAR)):
+        return HOST_AGENT_VAR
+    for name in (*AGENT_HOST_ENV_VARS, X_HOST_VAR):
+        if str(source.get(name) or '').strip():
+            return name
+    return ''
+
+
+def agent_hosted_run(environ: Any = None) -> bool:
+    """True when an agent runtime appears to be hosting this engine process."""
+    return bool(agent_host_signal(environ))
+
+
+def engine_plan_allowed(environ: Any = None) -> bool:
+    """True when ``LAST30DAYS_ALLOW_ENGINE_PLAN`` opts back into engine planning."""
+    source = os.environ if environ is None else environ
+    return _truthy(source.get(ALLOW_ENGINE_PLAN_VAR))
+
 # Public routing definitions for the doctor/backend-descriptor layer
 # (lib/backends.py). These are aliases for knowledge this module already
 # owns — the declared X chain order and the pin/floor env var names — so

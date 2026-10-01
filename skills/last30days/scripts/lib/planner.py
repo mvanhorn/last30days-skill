@@ -359,7 +359,11 @@ def plan_query(
     internal_subrun: when True, suppress the LAW 7 "No --plan passed" stderr
     warning. LAW 7 targets the hosting-reasoning-model path; competitor
     fan-out sub-runs are engine-internal and the warning is a false positive
-    there. Default False preserves the warning on every user-facing invocation.
+    there. Default False preserves the warning on every user-facing invocation
+    that ends on the deterministic fallback, including a failed internal
+    planner. On a detected agent host the CLI stops a plan-less research run
+    before this is reached, apart from its documented exemptions and the
+    ``LAST30DAYS_ALLOW_ENGINE_PLAN`` override (``last30days._law7_host_plan_gate``).
     """
     if _should_force_deterministic_plan(topic):
         return _fallback_plan(
@@ -383,6 +387,11 @@ def plan_query(
         except (ValueError, KeyError, json.JSONDecodeError, OSError, http.HTTPError) as exc:
             import sys
             print(f"[Planner] LLM planning failed, using deterministic fallback: {type(exc).__name__}: {exc}", file=sys.stderr)
+            # A failed internal planner (e.g. HTTP 402, no credits) degrades
+            # the run exactly like having none, and the host may not be
+            # detectable, so the LAW 7 reminder applies here too.
+            if not internal_subrun:
+                _print_law7_reminder()
             return _fallback_plan(
                 topic, available_sources, requested_sources, depth,
                 note=f"fallback-plan (LLM error: {type(exc).__name__})",
@@ -397,17 +406,21 @@ def plan_query(
     # the hosting reasoning model, YOU are the provider. LAW 7 / 2026-04-19
     # Hermes Agent Use Cases failure mode.
     if not internal_subrun:
-        import sys
-        print(
-            "[Planner] No --plan passed. If you are the reasoning model hosting "
-            "this skill (Claude Code, Codex, Hermes, Gemini, or any agent runtime), "
-            "YOU ARE the planner: generate a JSON query plan yourself and pass it "
-            "via --plan. You do not need an API key or credentials; you ARE the "
-            "LLM. The deterministic fallback below is the headless/cron path only. "
-            "See LAW 7 in SKILL.md and Step 0.75 for the plan schema.",
-            file=sys.stderr,
-        )
+        _print_law7_reminder()
     return _fallback_plan(topic, available_sources, requested_sources, depth)
+
+
+def _print_law7_reminder() -> None:
+    import sys
+    print(
+        "[Planner] No --plan passed. If you are the reasoning model hosting "
+        "this skill (Claude Code, Codex, Hermes, Gemini, or any agent runtime), "
+        "YOU ARE the planner: generate a JSON query plan yourself and pass it "
+        "via --plan. You do not need an API key or credentials; you ARE the "
+        "LLM. The deterministic fallback below is the headless/cron path only. "
+        "See LAW 7 in SKILL.md and Step 0.75 for the plan schema.",
+        file=sys.stderr,
+    )
 
 
 def _build_prompt(

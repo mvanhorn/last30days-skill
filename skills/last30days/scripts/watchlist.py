@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
@@ -15,7 +16,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import store
-from lib import http, schema
+from lib import env as envlib, http, schema
 
 
 # --- Webhook Delivery Functions ---
@@ -194,6 +195,11 @@ def _run_topic(topic: dict) -> dict:
             capture_output=True,
             text=True,
             timeout=300,
+            # Unattended runs have no host model to write a --plan. When the
+            # watchlist is launched from an agent shell, the child inherits
+            # the agent markers, so opt it back into engine planning (LAW 7
+            # gate in last30days.py).
+            env={**os.environ, envlib.ALLOW_ENGINE_PLAN_VAR: "1"},
         )
         duration = time.time() - start_time
         if result.returncode != 0:
