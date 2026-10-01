@@ -303,7 +303,7 @@ Reddit（含评论）、Hacker News、Polymarket 和 GitHub 无需任何配置�
 | 小红书（RED） | 运行已登录的 x-mcp 浏览器插件或 `xiaohongshu-mcp` 服务，并在单次运行中通过 `--search xhs` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=xiaohongshu`；last30days 会依次自动探测 `http://localhost:18060` 和 `http://host.docker.internal:18060`，也可通过 `XIAOHONGSHU_API_BASE` 指定自定义地址 | last30days 不需要 API 密钥；依赖本地浏览器会话服务 |
 | DripStack（付费金融通讯） | 每次运行通过 `--search dripstack` 启用，或在 `.env` 中设置 `INCLUDE_SOURCES=dripstack` | 无需密钥；公共搜索 API 免费 |
 | Perplexity Agent API / Search API / Deep Research | Perplexity 密钥，或作为 Sonar 回退方案的 OpenRouter 密钥 | 按量付费；直接密钥启用 Agent API 和后台 Deep Research |
-| Web 搜索 | Brave Search 密钥 | 每月 2,000 次免费查询 |
+| Web 搜索 | 无需密钥（Keenable 无需密钥即可使用），或 Brave/Exa/Serper/Parallel 密钥 | Keenable 免费且无需密钥（可选密钥可提高速率限制）；Brave 每月 2,000 次免费查询 |
 
 ### macOS Keychain（可选）
 

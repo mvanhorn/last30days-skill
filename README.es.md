@@ -305,7 +305,7 @@ Estas plataformas no tienen ninguna relación entre sí. X no sabe lo que piensa
 | Xiaohongshu (RED) | Ten corriendo un plugin de navegador x-mcp con sesión iniciada o un servicio `xiaohongshu-mcp`, y activa la fuente con `--search xhs` por ejecución o con `INCLUDE_SOURCES=xiaohongshu` en `.env`; last30days prueba automáticamente `http://localhost:18060` y después `http://host.docker.internal:18060`, o usa `XIAOHONGSHU_API_BASE` para una URL propia | No hace falta clave de API de last30days; depende de tu servicio local de sesión de navegador |
 | DripStack (boletines financieros premium) | Opcional: `--search dripstack` por ejecución, o `INCLUDE_SOURCES=dripstack` en `.env` | Sin clave; API de búsqueda pública y gratuita |
 | Perplexity Agent API / Search API / Deep Research | Una clave de Perplexity, o una clave de OpenRouter como alternativa para Sonar | Pago por uso; una clave directa habilita la Agent API y Deep Research en segundo plano |
-| Búsqueda web | Una clave de Brave Search | 2.000 consultas gratis al mes |
+| Búsqueda web | Nada (Keenable no necesita clave), o una clave de Brave/Exa/Serper/Parallel | Keenable es gratis y sin clave (una clave opcional sube el límite de peticiones); Brave ofrece 2.000 consultas gratis al mes |
 
 ### Llavero de macOS (opcional)
 

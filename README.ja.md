@@ -304,7 +304,7 @@ Reddit(コメント込み)、Hacker News、Polymarket、GitHub はすぐに使�
 | Xiaohongshu(RED) | ログイン済みの x-mcp ブラウザプラグインか `xiaohongshu-mcp` サービスを動かしたうえで、実行ごとに `--search xhs` を付けるか `.env` に `INCLUDE_SOURCES=xiaohongshu` を設定して有効化します。last30days は `http://localhost:18060`、次に `http://host.docker.internal:18060` の順に自動で接続を試し、独自のURLを使う場合は `XIAOHONGSHU_API_BASE` を指定します | last30days 側のAPIキーは不要。ローカルのブラウザセッションのサービス次第です |
 | DripStack(有料の金融ニュースレター) | 任意で有効化: 実行ごとに `--search dripstack`、または `.env` に `INCLUDE_SOURCES=dripstack` | キー不要。無料の公開検索APIを使います |
 | Perplexity Agent API / Search API / Deep Research | Perplexity のキー、または Sonar の代替として OpenRouter のキー | 従量課金。直接キーで Agent API とバックグラウンド Deep Research が有効になります |
-| ウェブ検索 | Brave Search のキー | 月2,000クエリまで無料 |
+| ウェブ検索 | 不要（Keenable はキーなしで動作）、または Brave/Exa/Serper/Parallel のキー | Keenable は無料でキー不要（キーを設定するとレート制限が緩和されます）。Brave は月2,000クエリまで無料 |
 
 ### macOS のキーチェーン(任意)
 
