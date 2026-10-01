@@ -134,6 +134,17 @@ def _open_request(req, timeout):
         return current(req, timeout=timeout)
     return _opener.open(req, timeout=timeout)
 
+
+def open_request(req, timeout):
+    """Open ``req`` with cross-origin credential stripping (see #1062).
+
+    Public entry point for modules that build their own ``Request`` and would
+    otherwise call ``urllib.request.urlopen`` directly, bypassing the redirect
+    handler installed above.
+    """
+    return _open_request(req, timeout)
+
+
 _failure_sink: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
     "last30days_http_failure_sink",
     default=None,

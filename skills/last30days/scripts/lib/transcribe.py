@@ -193,6 +193,8 @@ def _post_audio(provider: str, path: str, api_key: str, timeout: float) -> Optio
     import json
     import urllib.request
 
+    from . import http
+
     endpoint = _PROVIDER_ENDPOINTS[provider]
     model = _PROVIDER_MODELS[provider]
     boundary = "----l30dTranscribeBoundary"
@@ -225,7 +227,7 @@ def _post_audio(provider: str, path: str, api_key: str, timeout: float) -> Optio
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with http.open_request(req, timeout) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return data.get("text")
 
