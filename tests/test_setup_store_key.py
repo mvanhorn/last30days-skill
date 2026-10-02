@@ -1,10 +1,9 @@
 """`setup --store-key <NAME>` (U6): persist one allowlisted credential from stdin.
 
-This is the only way the Grok Bot flow persists X_BEARER_TOKEN: the model
-pipes the value on stdin, the engine appends it to the global .env as a 0o600
-secret through setup_wizard.write_api_key, and stdout carries only the masked
-name plus a JSON status line. The value never reaches stdout or stderr; a name
-outside env.KEYCHAIN_KEYS or an empty value exits 2 without echoing anything.
+An owner may provide an allowlisted credential privately to the engine through
+stdin. The engine writes a 0o600 secret via setup_wizard.write_api_key and
+prints only a masked name and JSON status; it never exposes the raw value on
+stdout or stderr. An invalid name or empty value exits 2 without echoing it.
 """
 
 from __future__ import annotations
