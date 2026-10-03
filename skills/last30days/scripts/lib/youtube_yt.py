@@ -548,16 +548,19 @@ def search_youtube(
             return published
 
         stdout = result.stdout
-        if ssh_host and result.returncode != 0 and not stdout.strip():
+        if result.returncode != 0 and not stdout.strip():
             stderr_first = (result.stderr or "").strip().splitlines()
             first_line = stderr_first[0] if stderr_first else "(no stderr)"
-            _log(
-                f"YouTube search via SSH host {ssh_host!r} failed "
-                f"(rc={result.returncode}): {first_line}"
-            )
-            published = _publish(
-                {"items": [], "error": f"SSH routing to {ssh_host!r} failed: {first_line}"},
-            )
+            if ssh_host:
+                _log(
+                    f"YouTube search via SSH host {ssh_host!r} failed "
+                    f"(rc={result.returncode}): {first_line}"
+                )
+                error = f"SSH routing to {ssh_host!r} failed: {first_line}"
+            else:
+                _log(f"YouTube search failed (rc={result.returncode}): {first_line}")
+                error = f"yt-dlp search failed: {first_line}"
+            published = _publish({"items": [], "error": error})
             return published
         if not stdout.strip():
             _log("YouTube search returned 0 results")

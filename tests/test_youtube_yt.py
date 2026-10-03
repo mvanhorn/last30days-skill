@@ -1148,9 +1148,36 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
     def setUp(self):
         youtube_yt.reset_search_cache()
 
-    def _fake_result(self, stdout: str = "", returncode: int = 0):
+    def _fake_result(self, stdout: str = "", returncode: int = 0, stderr: str = ""):
         from lib.subproc import SubprocResult
-        return SubprocResult(returncode=returncode, stdout=stdout, stderr="")
+        return SubprocResult(returncode=returncode, stdout=stdout, stderr=stderr)
+
+    def test_search_nonzero_exit_reports_error_not_empty(self):
+        stderr = (
+            "ERROR: [youtube] abc123: Sign in to confirm you're not a bot. "
+            "Use --cookies-from-browser or --cookies for the authentication.\n"
+        )
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(
+                 youtube_yt.subproc, "run_with_timeout",
+                 return_value=self._fake_result(returncode=1, stderr=stderr),
+             ):
+            out = youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+        self.assertEqual(out.get("items"), [])
+        self.assertIn("not a bot", out.get("error") or "")
+        self.assertEqual(
+            youtube_yt.classify_run_failure(out["error"]),
+            youtube_yt.health.RATE_LIMITED,
+        )
+
+    def test_search_zero_exit_with_no_output_is_clean_empty(self):
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(
+                 youtube_yt.subproc, "run_with_timeout",
+                 return_value=self._fake_result(),
+             ):
+            out = youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+        self.assertEqual(out, {"items": []})
 
     def test_search_timeout_reports_timeout_error_not_empty(self):
         with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
