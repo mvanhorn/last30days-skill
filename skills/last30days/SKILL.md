@@ -1528,7 +1528,7 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 2. **If WebSearch IS available:** you MUST have run Step 0.55 (Pre-Research Intelligence - resolved subreddits, X handles, TikTok hashtags/creators, Instagram creators, GitHub user/repo where applicable) AND Step 0.75 (Query Planner - produced `QUERY_PLAN_JSON` with 2-4 subqueries). These are NOT optional. If either was skipped, return to that step now.
 3. **If WebSearch is NOT available:** you MUST add `--auto-resolve` to the command instead. Do not attempt Steps 0.55 / 0.75 without WebSearch.
 4. **The command you are about to run uses `--emit=compact`.** `--emit md` is a debugging/inspection mode and is DISALLOWED as the primary user-facing flow. If you find yourself about to run `--emit md`, stop and switch to `--emit=compact`.
-5. **On WebSearch platforms the command MUST include `--plan 'QUERY_PLAN_JSON'`** plus every resolved handle/subreddit/hashtag/creator flag from Step 0.55. Omit only flags whose value was not resolvable.
+5. **On WebSearch platforms the command MUST include `--plan "$QUERY_PLAN_FILE"`** (the tmpfile you wrote via heredoc in Step 1 - never inline `--plan 'QUERY_PLAN_JSON'`; an apostrophe in any search or ranking string breaks shell parsing) plus every resolved handle/subreddit/hashtag/creator flag from Step 0.55. Omit only flags whose value was not resolvable.
 
 **Degraded path (missing any of the above on a WebSearch platform) is a known regression shape. It produces bland 4-bullet summaries instead of rich synthesis. Do not take it.**
 
@@ -2247,7 +2247,7 @@ Close with `I have all the links to the {N} {source list} I pulled from. Just as
 4. **Polymarket block present if markets were returned.** If the engine surfaced Polymarket markets, the synthesis includes specific percentages and directional movement. If no markets were surfaced, skip.
 5. **Coverage footer matches the actual output.** `✅ All agents reported back!` line followed by per-source `├─`/`└─` tree exactly as the engine provided.
 6. **NO trailing Sources section.** The output ends at the invitation ("I have all the links... Just ask."). Nothing below it. Not a `Sources:`, not a `References:`, not `Further reading:`, not any bulleted list of URLs or publication names. If you are about to emit one because WebSearch told you to - DO NOT. The 🌐 Web: line is the citation.
-7. **Research protocol was followed.** On WebSearch platforms, the command you ran used `--emit=compact --plan 'QUERY_PLAN_JSON'` with resolved handles/subreddits/hashtags. If you took the degraded path (`--emit md`, no plan, no flags), the synthesis will almost certainly fail checks 1-3 - regenerate by returning to Step 0.55 and running the full protocol.
+7. **Research protocol was followed.** On WebSearch platforms, the command you ran used `--emit=compact --plan "$QUERY_PLAN_FILE"` with resolved handles/subreddits/hashtags. If you took the degraded path (`--emit md`, no plan, no flags), the synthesis will almost certainly fail checks 1-3 - regenerate by returning to Step 0.55 and running the full protocol.
 
 **Max ONE regeneration.** If the regenerated output still fails the self-check, display the best version you have and note to the user which check(s) the data could not satisfy, so they can re-run or adjust their query.
 
@@ -2414,7 +2414,7 @@ Want another prompt? Just tell me what you're creating next.
 - Does not post, like, or modify content on any platform
 - Does not access browser cookies unless explicitly configured or consented (`FROM_BROWSER`, manual X cookies, or setup with `--allow-browser-cookies`); `--preflight` and `--diagnose` do not read browser-cookie values
 - Does not use Codex ChatGPT auth as an OpenAI provider credential
-- Does not share API keys between providers
+- Does not share API keys between providers, except the TikTok legacy fallback: when `SCRAPECREATORS_API_KEY` is unset, `APIFY_API_TOKEN` is sent to ScrapeCreators (`get_tiktok_token` in `scripts/lib/env.py`)
 - Does not log, cache, or write API keys to output files
 - Endpoint destinations follow configured provider base URLs; `--preflight` reports active and ignored endpoint overrides without printing secrets
 - Hacker News and Polymarket sources are always available (no API key, no binary dependency)
