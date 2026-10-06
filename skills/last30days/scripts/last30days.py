@@ -4095,10 +4095,9 @@ def _main(
             )
 
             def _competitor_runner(entity: str) -> schema.Report:
-                # Deep-copy config so per-entity auto_resolve context does not
-                # leak across sub-runs. Each sub-run writes its own
-                # `_auto_resolve_context` into its local config copy.
+                # Resolution belongs to each entity, not the shared command.
                 entity_config = dict(config)
+                entity_config.pop("_auto_resolve_context", None)
                 # The Amazon keyword is entity-SPECIFIC, unlike the depth caps
                 # this shallow copy exists to inherit. Leaving the main topic's
                 # keyword in place would search Weber SKUs for a Traeger peer,
