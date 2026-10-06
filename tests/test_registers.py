@@ -269,7 +269,7 @@ def test_registers_do_not_shape_comparison_output():
 @pytest.mark.parametrize(
     "topic",
     [
-        "alpha/beta",
+        "React/Vue",
         "alpha compared to beta",
         "difference between alpha and beta",
     ],
@@ -280,6 +280,17 @@ def test_registers_use_canonical_comparison_detection(topic):
     assert cli._audience_register_for_run(
         args, {"LAST30DAYS_REGISTER": "board"}, None
     ).name == "default"
+
+
+@pytest.mark.parametrize("topic", ["CI/CD", "alpha/beta", "https://example.com"])
+def test_slash_topics_keep_single_topic_register_selection(topic):
+    args = cli.build_parser().parse_args([topic])
+
+    assert cli._audience_register_for_run(
+        args, {"LAST30DAYS_REGISTER": "creator"}, None
+    ).name == "creator"
+    with pytest.raises(ValueError, match="unknown audience register 'board'"):
+        cli._audience_register_for_run(args, {"LAST30DAYS_REGISTER": "board"}, None)
 
 
 def test_registered_html_excludes_source_failure_diagnostics():

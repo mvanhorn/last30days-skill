@@ -72,4 +72,4 @@ def test_follow_up_turn_preserves_html_deliverable_mode():
     text = SAVE_HTML.read_text(encoding="utf-8")
     assert "explicitly refers back to that visible synthesis" in text
     assert "treat it as HTML-as-deliverable mode" in text
-    assert "Always report whichever path the redirect actually used in the chat handoff" in text
+    assert "Always report the path stored in `HTML_PATH` in the chat handoff" in text

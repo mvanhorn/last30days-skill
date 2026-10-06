@@ -336,6 +336,34 @@ class TestOnboardingContract(unittest.TestCase):
             self.assertIn("Chrome", slice_text, f"{slice_name} cookie copy omits Chrome")
             self.assertIn("Always Allow", slice_text, f"{slice_name} omits the Keychain cue")
 
+    def test_cookie_consent_explains_future_reads_before_the_answer(self):
+        prompts = (
+            self.modal.split('Question: "Auto setup', 1)[1].split("Options (", 1)[0],
+            self.prose.split("Otherwise ask. Example:", 1)[1].split("**Wait for the answer.**", 1)[0],
+        )
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                self.assertIn("later research runs", prompt)
+                self.assertIn("browser names", prompt)
+                self.assertIn("may prompt again", prompt)
+                self.assertIn("Always Allow", prompt)
+                self.assertIn("BROWSER_CONSENT=false", prompt)
+                self.assertIn("FROM_BROWSER=off", prompt)
+                self.assertIn("On macOS", prompt)
+                self.assertIn("Windows and Linux", prompt)
+                self.assertIn("Windows Firefox", prompt)
+
+    def test_cookie_persistence_contract_matches_each_host_flow(self):
+        for flow in (self.modal, self.prose):
+            with self.subTest(flow=flow[:30]):
+                self.assertIn("complete cookies", flow)
+                self.assertIn("comma-separated", flow)
+                self.assertIn("never saves cookie values", flow)
+                self.assertNotIn("one-time macOS Keychain prompt", flow)
+                self.assertNotIn("only when it is Firefox or Safari", flow)
+                self.assertNotIn("only a Firefox/Safari winner", flow)
+                self.assertNotIn("Chrome never re-", flow)
+
     def test_fda_reframed_as_safari_fallback(self):
         """Full Disk Access is framed as Safari-only, not the default path."""
         self.assertNotIn("scan your browser (Firefox/Safari)", self.modal)

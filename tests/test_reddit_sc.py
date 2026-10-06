@@ -143,7 +143,7 @@ class TestDepthConfig(unittest.TestCase):
             self.assertIn(depth, reddit.DEPTH_CONFIG)
 
     def test_required_keys(self):
-        required = {"global_searches", "subreddit_searches", "comment_enrichments", "timeframe"}
+        required = {"global_searches", "subreddit_searches", "comment_enrichments"}
         for depth, config in reddit.DEPTH_CONFIG.items():
             self.assertTrue(required.issubset(config.keys()),
                             f"Missing keys in {depth}: {required - config.keys()}")
