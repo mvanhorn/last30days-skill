@@ -1963,8 +1963,16 @@ def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional
         if time.monotonic() >= deadline or detail == "probe exceeded deadline":
             return expired
         if not ok and _transient_probe_detail(name, detail):
-            if deadline - time.monotonic() <= _PROBE_RETRY_DELAY_SECONDS:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
                 return expired
+            if remaining <= _PROBE_RETRY_DELAY_SECONDS:
+                return {
+                    "ok": False,
+                    "transient": True,
+                    "detail": f"{detail} (retry skipped: insufficient probe budget)",
+                    "probed": True,
+                }
             time.sleep(_PROBE_RETRY_DELAY_SECONDS)
             remaining = deadline - time.monotonic()
             if remaining <= 0:

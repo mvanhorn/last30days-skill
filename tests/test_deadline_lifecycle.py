@@ -122,10 +122,31 @@ def test_doctor_returns_before_held_response_is_released(local_http, children):
             assert result["reddit"] == {
                 "ok": False, "detail": "probe exceeded deadline", "probed": True,
             }
+            assert doctor.audit_state("reddit", {"tier": doctor.TIER_OK},
+                                      probe_result=result["reddit"]) == doctor.AUDIT_NOT_WORKING
         finally:
             release.set()
             caller.join(3)
             assert not caller.is_alive()
+
+
+@pytest.mark.parametrize("status,expected_audit", [
+    (429, doctor.AUDIT_UNVERIFIED),
+    (403, doctor.AUDIT_NOT_WORKING),
+])
+def test_short_doctor_budget_preserves_completed_reddit_status(local_http, children, status, expected_audit):
+    url, _, _, _ = local_http
+    with patch.dict(doctor._HTTP_PROBE_URLS, {"reddit": f"{url}/status/{status}"}), \
+         patch.object(doctor.time, "sleep") as sleep:
+        result = doctor._probe_source("reddit", {}, 1)
+    assert not result["ok"]
+    assert result["probed"]
+    assert result["detail"].startswith(f"HTTP {status}")
+    assert result.get("transient", False) is (status == 429)
+    assert doctor.audit_state("reddit", {"tier": doctor.TIER_OK},
+                              probe_result=result) == expected_audit
+    assert len(children) == 1
+    sleep.assert_not_called()
 
 
 def test_reddit_keeps_fast_comments_and_reaps_stalled_transport(local_http, children, monkeypatch):
@@ -522,18 +543,41 @@ def test_doctor_retry_spends_one_operation_budget(monkeypatch):
     assert timeouts == [(10, 110), (2, 110)]
 
 
-def test_doctor_does_not_retry_when_backoff_exceeds_budget(monkeypatch):
+@pytest.mark.parametrize("elapsed", [8, 9])
+def test_doctor_does_not_retry_when_backoff_exceeds_budget(monkeypatch, elapsed):
     clock = [100.0]
 
     def get(*args, **kwargs):
-        clock[0] += 9
+        clock[0] += elapsed
         return False, "HTTP 429"
 
     monkeypatch.setattr(doctor.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(doctor, "_http_ok", get)
     with patch.object(doctor.time, "sleep") as sleep:
         result = doctor._probe_source("reddit", {}, 10)
-    assert result["detail"] == "probe exceeded deadline"
+    assert result == {
+        "ok": False, "transient": True,
+        "detail": "HTTP 429 (retry skipped: insufficient probe budget)", "probed": True,
+    }
+    assert doctor.audit_state("reddit", {"tier": doctor.TIER_OK},
+                              probe_result=result) == doctor.AUDIT_UNVERIFIED
+    sleep.assert_not_called()
+
+
+@pytest.mark.parametrize("readings", [
+    (100.0, 101.0),
+    (100.0, 100.5, 101.0),
+])
+def test_doctor_expired_429_keeps_deadline_precedence(monkeypatch, readings):
+    clock = iter(readings)
+    monkeypatch.setattr(doctor.time, "monotonic", lambda: next(clock))
+    with patch.object(doctor, "_http_ok", return_value=(False, "HTTP 429")) as transport, \
+         patch.object(doctor.time, "sleep") as sleep:
+        result = doctor._probe_source("reddit", {}, 1)
+    assert result == {"ok": False, "detail": "probe exceeded deadline", "probed": True}
+    assert doctor.audit_state("reddit", {"tier": doctor.TIER_OK},
+                              probe_result=result) == doctor.AUDIT_NOT_WORKING
+    transport.assert_called_once()
     sleep.assert_not_called()
 
 
