@@ -1,6 +1,7 @@
 import contextlib
 import io
 import json
+import math
 import os
 import sys
 import tempfile
@@ -146,10 +147,16 @@ class EvaluatorV3Tests(unittest.TestCase):
         self.assertEqual(1.0, evaluator.jaccard(set(), set()))
         self.assertEqual(1.0, evaluator.retention(set(), {"a"}))
         self.assertEqual(0.5, evaluator.precision_at_k(ranking, judgments, 2))
-        self.assertGreater(evaluator.ndcg_at_k(ranking, judgments, 2, judged), 0.0)
+        self.assertEqual(1.0, evaluator.ndcg_at_k(ranking, judgments, 2, judged))
+        expected_reversed = (1 + 7 / math.log2(3)) / (7 + 1 / math.log2(3))
+        self.assertAlmostEqual(
+            expected_reversed,
+            evaluator.ndcg_at_k(list(reversed(ranking)), judgments, 2, judged),
+        )
         self.assertEqual(1.0, evaluator.source_coverage_recall(ranking, judged, judgments))
         self.assertEqual(0.0, evaluator.precision_at_k([], judgments, 5))
         self.assertEqual(0.0, evaluator.ndcg_at_k([], judgments, 5, judged))
+        self.assertEqual(0.0, evaluator.ndcg_at_k(ranking, {"a": 0, "b": 0}, 2, judged))
 
     def test_resolve_google_judge_api_key_prefers_google_key(self):
         with mock.patch.dict("os.environ", {"GOOGLE_API_KEY": "google", "GEMINI_API_KEY": "gemini"}, clear=False):

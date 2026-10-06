@@ -225,17 +225,12 @@ def test_findings_from_report_includes_polymarket(sample_report):
 
 
 def test_findings_from_report_respects_limit(sample_report):
-    """Test that limit parameter works correctly."""
+    """The limit applies across ranked and supplemental sources."""
     findings = store.findings_from_report(sample_report, limit=2)
-    
-    # Should have at most 2 items per source
-    source_counts = {}
-    for f in findings:
-        source = f["source"]
-        source_counts[source] = source_counts.get(source, 0) + 1
-    
-    for count in source_counts.values():
-        assert count <= 2
+    assert [(f["source"], f["source_url"]) for f in findings] == [
+        ("reddit", "https://reddit.com/r/test/1"),
+        ("x", "https://x.com/test/status/1"),
+    ]
 
 
 def test_findings_from_report_handles_empty_sources():

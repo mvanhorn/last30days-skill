@@ -7,7 +7,7 @@ any of these functions would silently degrade output quality.
 
 import unittest
 
-from lib import planner, rerank, render, signals, schema
+from lib import dates, planner, rerank, render, signals, schema
 
 
 def _item(source: str = "reddit", **kwargs) -> schema.SourceItem:
@@ -405,9 +405,14 @@ class TestDaysAgoZeroFalsy(unittest.TestCase):
         )
 
     def test_items_from_today_count_as_recent(self):
-        from datetime import date
-        today = date.today().isoformat()
-        report = self._report_with_items([today] * 5)
+        report = self._report_with_items(["2026-03-17"] * 5)
+        self.assertEqual(
+            [0] * 5,
+            [
+                dates.days_ago(item.published_at, reference_date=report.range_to)
+                for item in report.items_by_source["reddit"]
+            ],
+        )
         warning = render._assess_data_freshness(report)
         self.assertIsNone(warning, f"Items from today should be recent, got warning: {warning}")
 
@@ -564,4 +569,3 @@ class TestXaiModelDefault(unittest.TestCase):
         from lib import providers
         self.assertIn("grok-4", providers.XAI_DEFAULT,
                       f"XAI_DEFAULT should be a grok-4 model, got: {providers.XAI_DEFAULT}")
-

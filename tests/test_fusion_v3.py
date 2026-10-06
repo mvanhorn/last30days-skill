@@ -379,9 +379,9 @@ class TestPerAuthorCap(unittest.TestCase):
         ]
         streams = {("primary", "x"): items}
         candidates = fusion.weighted_rrf(streams, plan, pool_limit=20)
-        kept_ids = {c.item_id for c in candidates if any(si.author == "@prolific" for si in c.source_items)}
+        kept_ids = [c.item_id for c in candidates if any(si.author == "@prolific" for si in c.source_items)]
         # The top 3 items (x_0, x_1, x_2) should be kept
-        self.assertLessEqual(len(kept_ids), 3)
+        self.assertEqual(["x_0", "x_1", "x_2"], kept_ids)
 
 
 class TestUrlNormalization(unittest.TestCase):

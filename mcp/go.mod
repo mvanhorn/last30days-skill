@@ -2,7 +2,10 @@ module github.com/mvanhorn/last30days-skill/mcp
 
 go 1.25.5
 
-require github.com/mark3labs/mcp-go v1.1.1
+require (
+	github.com/mark3labs/mcp-go v1.1.1
+	gopkg.in/yaml.v3 v3.0.1
+)
 
 require (
 	github.com/google/jsonschema-go v0.4.2 // indirect
