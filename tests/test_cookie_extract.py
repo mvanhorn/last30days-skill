@@ -42,6 +42,9 @@ def mock_firefox_env(tmp_path):
                 default_profile: [
                     (".x.com", "auth_token", "tok_abc123"),
                     (".x.com", "ct0", "ct0_xyz789"),
+                    (".x.com", "session", "sess_unrequested"),
+                    (".example.com", "auth_token", "foreign_auth_token"),
+                    (".example.com", "ct0", "foreign_ct0"),
                     (".example.com", "session", "sess_other"),
                 ],
             }
@@ -167,10 +170,7 @@ class TestExtractFirefoxCookies:
         ):
             result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
 
-        assert result is not None
-        assert result["auth_token"] == "tok_abc123"
-        assert result["ct0"] == "ct0_xyz789"
-        assert "session" not in result  # different domain cookie not included
+        assert result == {"auth_token": "tok_abc123", "ct0": "ct0_xyz789"}
 
     def test_multiple_profiles_selects_default(self, mock_firefox_env):
         """When multiple profiles exist, the one with Default=1 is used."""
@@ -314,6 +314,8 @@ class TestExtractFirefoxCookies:
         profiles_dir = mock_firefox_env(
             profiles={
                 "abc123.default-release": [
+                    (".example.com", "auth_token", "foreign_auth_token"),
+                    (".example.com", "ct0", "foreign_ct0"),
                     (".example.com", "session", "sess_123"),
                 ],
             },

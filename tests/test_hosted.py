@@ -568,16 +568,25 @@ def test_persistent_network_failure_gives_up_with_message(remote_env, monkeypatc
     assert TEST_KEY not in captured.err
 
 
-def test_emit_json_prints_terminal_row_without_stderr(remote_env, monkeypatch, capsys):
+def test_emit_json_prints_terminal_row_without_stderr(remote_env, monkeypatch, capsys, tmp_path):
+    terminal = {
+        **POLL_COMPLETE,
+        "stderr": f"PRIVATE-STDERR-{tmp_path.name}",
+        "internal_trace": f"PRIVATE-TRACE-{tmp_path.name}",
+    }
     monkeypatch.setattr(hosted.http, "post", lambda *a, **k: dict(SUBMIT_OK))
-    monkeypatch.setattr(hosted.http, "get", lambda *a, **k: dict(POLL_COMPLETE))
+    monkeypatch.setattr(hosted.http, "get", lambda *a, **k: dict(terminal))
     rc = hosted.run_hosted("test topic", "default", emit="json",
                            save_dir=None, save_suffix="")
     captured = capsys.readouterr()
     assert rc == 0
     payload = json.loads(captured.out)
-    assert payload["status"] == "complete"
-    assert payload["synthesis_text"].startswith("## What happened")
-    assert payload["raw_markdown"].startswith("# Raw markdown")
-    assert "stderr" not in payload
+    assert payload == {
+        "id": SEARCH_ID,
+        "status": "complete",
+        "synthesis_text": "## What happened\nSynthesized report body.",
+        "raw_markdown": "# Raw markdown\nFull dump.",
+    }
+    assert terminal["stderr"] not in captured.out
+    assert terminal["internal_trace"] not in captured.out
     assert TEST_KEY not in captured.out

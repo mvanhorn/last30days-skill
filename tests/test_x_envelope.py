@@ -510,7 +510,11 @@ class TestInputBounds:
         as_json.write_text('{"X_BEARER_TOKEN": "SECRETVALUE"}', encoding="utf-8")
         _assert_contract(str(as_json), must_not_contain=["SECRETVALUE"])
 
-    def test_config_dir_and_credential_stores_are_rejected(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("store", [".grok", ".xurl", "config"])
+    @pytest.mark.parametrize("via_symlink", [False, True], ids=["direct", "symlink"])
+    def test_config_dir_and_credential_stores_are_rejected(
+        self, tmp_path, monkeypatch, store, via_symlink,
+    ):
         home = tmp_path / "home"
         cfg = tmp_path / "cfg"
         for directory in (home / ".grok", home / ".xurl", cfg):
@@ -519,13 +523,21 @@ class TestInputBounds:
         monkeypatch.setenv("USERPROFILE", str(home))
         monkeypatch.setattr(env, "CONFIG_DIR", cfg)
         monkeypatch.setattr(env, "CONFIG_FILE", cfg / ".env")
-        for target in (home / ".grok" / "auth.json", home / ".xurl" / "tokens.json", cfg / "posts.json"):
-            target.write_text(json.dumps({"token": "SECRETVALUE"}), encoding="utf-8")
-            _assert_contract(str(target), must_not_contain=["SECRETVALUE"])
-        # A symlink into a store is resolved before the check.
-        link = tmp_path / "link.json"
-        link.symlink_to(home / ".grok" / "auth.json")
-        _assert_contract(str(link), must_not_contain=["SECRETVALUE"])
+        sentinel = f"SECRETVALUE-{tmp_path.name}"
+        payload = _envelope([_call("topic", posts=[_row(0, text=sentinel)])])
+        allowed = _write(tmp_path, payload)
+        assert _read(allowed).accepted == 1
+
+        directory = cfg if store == "config" else home / store
+        target = Path(_write(directory, payload))
+        path = target
+        if via_symlink:
+            path = tmp_path / "link.json"
+            path.symlink_to(target)
+        with mock.patch.object(Path, "read_bytes", autospec=True, side_effect=Path.read_bytes) as read_bytes:
+            message = _assert_contract(str(path), must_not_contain=[sentinel])
+            read_bytes.assert_not_called()
+        assert "is inside a configuration or credential directory" in message
 
     def test_wrong_suffix_directory_and_missing_file_are_rejected(self, tmp_path):
         _assert_contract(_write(tmp_path, _envelope([]), "posts.txt"))
