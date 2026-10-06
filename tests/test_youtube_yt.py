@@ -754,13 +754,13 @@ class TestYtdlpSSHRouting(unittest.TestCase):
         self.assertEqual(wrapped[dash_idx + 1], "macmini")
 
     def test_host_alias_with_dash_prefix_is_rejected(self):
-        """A host value starting with `-` is rejected by the alias validator.
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "-p22"
+        self.assertIsNone(youtube_yt._ytdlp_ssh_host())
+        cmd = ["yt-dlp", "--version"]
+        self.assertEqual(youtube_yt._wrap_ytdlp_cmd(cmd), cmd)
 
-        Without validation, ssh could parse `-oProxyCommand=...` as a flag
-        instead of a hostname. The `--` terminator in _wrap_ytdlp_cmd is
-        defense-in-depth; this regex on _ytdlp_ssh_host() rejects the value
-        before it ever reaches the ssh command line.
-        """
+    def test_host_alias_with_option_payload_is_rejected(self):
+        """Reject an SSH option payload independently of command option termination."""
         os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "-oProxyCommand=evil"
         self.assertIsNone(youtube_yt._ytdlp_ssh_host())
         # And the wrap function falls back to the local-execution path.
@@ -778,7 +778,7 @@ class TestYtdlpSSHRouting(unittest.TestCase):
 
     def test_host_alias_validator_accepts_realistic_aliases(self):
         """Valid SSH config aliases are accepted: bare names, FQDNs, IPs."""
-        for good in ("macmini", "home-server", "pi5.local", "192.168.1.10", "homelab_box"):
+        for good in ("p22", "macmini", "home-server", "pi5.local", "192.168.1.10", "homelab_box"):
             os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = good
             self.assertEqual(youtube_yt._ytdlp_ssh_host(), good)
 

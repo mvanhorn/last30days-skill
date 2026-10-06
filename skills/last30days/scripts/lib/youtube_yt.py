@@ -296,7 +296,7 @@ def is_ytdlp_installed() -> bool:
 # Host aliases must be plain hostnames / SSH config aliases — no flags, no
 # shell metacharacters. Rejects any value that could be reinterpreted by ssh
 # (or the surrounding shell) as something other than a destination.
-_SSH_HOST_ALIAS_RE = re.compile(r"^[a-zA-Z0-9._-]+$")
+_SSH_HOST_ALIAS_RE = re.compile(r"^(?!-)[a-zA-Z0-9._-]+$")
 
 
 def _ytdlp_ssh_host() -> Optional[str]:

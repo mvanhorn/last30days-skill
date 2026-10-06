@@ -270,7 +270,22 @@ class TestParseGithubResponse(unittest.TestCase):
         self.assertEqual(items[0]["title"], "In window")
 
     def test_sorts_by_relevance(self):
-        items = github.parse_github_response(self._RAW_ENVELOPE)
+        envelope = {
+            "items": [
+                {"html_url": "https://github.com/foo/bar/issues/1",
+                 "title": "Unrelated work", "comments": 0,
+                 "reactions": {"total_count": 0}},
+                {"html_url": "https://github.com/foo/bar/issues/2",
+                 "title": "foo", "comments": 100,
+                 "reactions": {"total_count": 500}},
+            ],
+            "context": {"core": "foo"},
+        }
+        items = github.parse_github_response(envelope)
+        self.assertEqual(
+            [item["url"] for item in items],
+            ["https://github.com/foo/bar/issues/2", "https://github.com/foo/bar/issues/1"],
+        )
         scores = [i.get("relevance", 0) for i in items]
         self.assertEqual(scores, sorted(scores, reverse=True))
 

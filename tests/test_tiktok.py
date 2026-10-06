@@ -140,14 +140,16 @@ class TestTikTokEnrichWithComments(unittest.TestCase):
 
         fake_sc_response = {
             "comments": [
-                {"text": "loved it", "user": {"nickname": "Alice"},
-                 "digg_count": 420, "create_time": 1709251200},
                 {"text": "meh", "user": {"nickname": "Bob"},
                  "digg_count": 3, "create_time": 1709251300},
+                {"text": "loved it", "user": {"nickname": "Alice"},
+                 "digg_count": 420, "create_time": 1709251200},
+                {"text": "useful", "user": {"nickname": "Carol"},
+                 "digg_count": 80, "create_time": 1709251300},
                 {"text": "", "user": {"nickname": "Skip"},
                  "digg_count": 999, "create_time": 1709251400},
             ],
-            "total": 3,
+            "total": 4,
         }
 
         with patch.object(tiktok.http, "get", return_value=fake_sc_response):
@@ -157,12 +159,18 @@ class TestTikTokEnrichWithComments(unittest.TestCase):
                 max_comments=5,
             )
         # Empty-text comment dropped; rest sorted desc by digg_count.
-        self.assertEqual(2, len(out))
+        self.assertEqual([c["text"] for c in out], ["loved it", "useful", "meh"])
         self.assertEqual("loved it", out[0]["text"])
         self.assertEqual(420, out[0]["digg_count"])
         self.assertEqual("Alice", out[0]["author"])
         self.assertEqual("2024-03-01", out[0]["date"])
-        self.assertEqual(3, out[1]["digg_count"])
+        self.assertEqual([c["digg_count"] for c in out], [420, 80, 3])
+        capped_response = {"comments": fake_sc_response["comments"][:3]}
+        with patch.object(tiktok.http, "get", return_value=capped_response):
+            capped = tiktok._fetch_post_comments(
+                "https://www.tiktok.com/@u/video/1", token="k", max_comments=1,
+            )
+        self.assertEqual([c["text"] for c in capped], ["loved it"])
 
     def test_fetch_post_comments_prefers_unique_id_over_nickname(self):
         """Author prefers unique_id (@handle) over nickname (display name)."""

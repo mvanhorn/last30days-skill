@@ -413,18 +413,18 @@ def test_parse_hackernews_response_relevance_scoring():
 
 def test_parse_hackernews_response_engagement_boost():
     """Test that high-engagement items get relevance boost."""
-    response = {
-        "hits": [
-            create_mock_hit(object_id="1", points=500, num_comments=200),  # High engagement
-            create_mock_hit(object_id="2", points=10, num_comments=5),     # Low engagement
-        ]
-    }
-    
-    items = hackernews.parse_hackernews_response(response, query="test")
-    
-    # Verify engagement is captured
-    assert items[0]["engagement"]["points"] == 500
-    assert items[1]["engagement"]["points"] == 10
+    high = hackernews.parse_hackernews_response(
+        {"hits": [create_mock_hit(object_id="story", points=500, num_comments=5)]},
+        query="",
+    )[0]
+    low = hackernews.parse_hackernews_response(
+        {"hits": [create_mock_hit(object_id="story", points=10, num_comments=5)]},
+        query="",
+    )[0]
+
+    assert high["engagement"]["points"] == 500
+    assert low["engagement"]["points"] == 10
+    assert high["relevance"] > low["relevance"]
 
 
 def test_parse_hackernews_response_prefix_filtering():

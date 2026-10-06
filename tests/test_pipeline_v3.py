@@ -1628,91 +1628,55 @@ class TestSupplementalSearches(unittest.TestCase):
         self.assertEqual(pipeline.FROM_LANE_COUNT_PER, from_call.kwargs.get("count_per"))
         self.assertEqual(pipeline.MENTION_LANE_COUNT_PER, mock_mentions.call_args.kwargs.get("count_per"))
 
-    def test_phase2_skipped_in_quick_mode(self):
-        """_run_supplemental_searches should return immediately when depth='quick'."""
-        bundle = schema.RetrievalBundle()
-        bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/a/1", author="someone"),
-        ]
+    def _assert_phase2_guard(self, **blocked):
+        for allowed in (False, True):
+            with self.subTest(allowed=allowed):
+                bundle = schema.RetrievalBundle()
+                bundle.items_by_source["x"] = [
+                    _make_source_item("x", "X1", "https://x.com/subject1/status/1", author="subject1"),
+                ]
+                options = dict(depth="default", mock=False, rate_limited_sources=set(), backend="bird")
+                if not allowed:
+                    options.update(blocked)
+                backend = options.pop("backend")
+                with patch("lib.env.x_backend_chain", return_value=[]), patch(
+                    "lib.entity_extract.extract_entities",
+                    return_value={"x_handles": [], "x_hashtags": [], "reddit_subreddits": []},
+                ), patch("lib.bird_x.search_handles", return_value=[{
+                    "id": "guard-control", "text": "subject1 test update",
+                    "url": "https://x.com/subject1/status/2", "author_handle": "subject1",
+                    "date": "2026-03-15", "engagement": {"likes": 12}, "relevance": 1.0,
+                }]) as handles, patch("lib.bird_x.search_mentions", return_value=[]) as mentions:
+                    pipeline._run_supplemental_searches(
+                        topic="subject1", bundle=bundle, plan=_make_plan("subject1"),
+                        config={}, date_range=("2026-02-15", "2026-03-17"),
+                        runtime=_make_runtime(backend), rate_limit_lock=threading.Lock(),
+                        x_handle="subject1", **options,
+                    )
+                if allowed:
+                    self.assertEqual(handles.call_count, 1)
+                    self.assertEqual(handles.call_args.args, (["subject1"], "subject1", "2026-02-15"))
+                    self.assertEqual(mentions.call_count, 1)
+                    self.assertEqual(
+                        [i.url for i in bundle.items_by_source["x"]],
+                        ["https://x.com/subject1/status/1", "https://x.com/subject1/status/2"],
+                    )
+                else:
+                    handles.assert_not_called()
+                    mentions.assert_not_called()
+                    self.assertEqual([i.item_id for i in bundle.items_by_source["x"]], ["X1"])
 
-        # If it tries to import entity_extract, that's fine -- it should return before calling it
-        pipeline._run_supplemental_searches(
-            topic="test",
-            bundle=bundle,
-            plan=_make_plan(),
-            config={},
-            depth="quick",
-            date_range=("2026-02-15", "2026-03-17"),
-            runtime=_make_runtime("bird"),
-            mock=False,
-            rate_limited_sources=set(),
-            rate_limit_lock=threading.Lock(),
-        )
-        # Bundle should be unchanged (only original item)
-        self.assertEqual(len(bundle.items_by_source["x"]), 1)
+    def test_phase2_skipped_in_quick_mode(self):
+        self._assert_phase2_guard(depth="quick")
 
     def test_phase2_skipped_in_mock_mode(self):
-        """_run_supplemental_searches should return immediately when mock=True."""
-        bundle = schema.RetrievalBundle()
-        bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/a/1", author="someone"),
-        ]
-
-        pipeline._run_supplemental_searches(
-            topic="test",
-            bundle=bundle,
-            plan=_make_plan(),
-            config={},
-            depth="default",
-            date_range=("2026-02-15", "2026-03-17"),
-            runtime=_make_runtime("bird"),
-            mock=True,
-            rate_limited_sources=set(),
-            rate_limit_lock=threading.Lock(),
-        )
-        self.assertEqual(len(bundle.items_by_source["x"]), 1)
+        self._assert_phase2_guard(mock=True)
 
     def test_phase2_skipped_when_x_rate_limited(self):
-        """_run_supplemental_searches should skip when X is rate-limited."""
-        bundle = schema.RetrievalBundle()
-        bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/a/1", author="someone"),
-        ]
+        self._assert_phase2_guard(rate_limited_sources={"x"})
 
-        pipeline._run_supplemental_searches(
-            topic="test",
-            bundle=bundle,
-            plan=_make_plan(),
-            config={},
-            depth="default",
-            date_range=("2026-02-15", "2026-03-17"),
-            runtime=_make_runtime("bird"),
-            mock=False,
-            rate_limited_sources={"x"},
-            rate_limit_lock=threading.Lock(),
-        )
-        self.assertEqual(len(bundle.items_by_source["x"]), 1)
-
-    def test_phase2_skipped_when_backend_not_bird(self):
-        """_run_supplemental_searches should skip when X backend is not bird."""
-        bundle = schema.RetrievalBundle()
-        bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/a/1", author="someone"),
-        ]
-
-        pipeline._run_supplemental_searches(
-            topic="test",
-            bundle=bundle,
-            plan=_make_plan(),
-            config={},
-            depth="default",
-            date_range=("2026-02-15", "2026-03-17"),
-            runtime=_make_runtime("xai"),
-            mock=False,
-            rate_limited_sources=set(),
-            rate_limit_lock=threading.Lock(),
-        )
-        self.assertEqual(len(bundle.items_by_source["x"]), 1)
+    def test_phase2_skipped_when_backend_has_no_handle_support(self):
+        self._assert_phase2_guard(backend="xai")
 
 
 class TestThinSourceRetry(unittest.TestCase):
@@ -1779,6 +1743,18 @@ class TestThinSourceRetry(unittest.TestCase):
         self.assertIn("reddit", call_sources)
         # X should NOT have been retried
         self.assertNotIn("x", call_sources)
+        mock_retrieve.assert_called_once()
+        retry = mock_retrieve.call_args.kwargs["subquery"]
+        self.assertEqual(retry.search_query, "advanced ai safety")
+        self.assertEqual(
+            retry.ranking_query,
+            "What recent evidence from the last 30 days matters for advanced ai safety?",
+        )
+        self.assertEqual(retry.sources, ["reddit"])
+        self.assertEqual(
+            [i.url for i in bundle.items_by_source["reddit"]],
+            ["https://reddit.com/r/test/1", "https://reddit.com/r/test/2"],
+        )
 
     def test_sources_with_enough_items_not_retried(self):
         """Sources with >= 3 items should not be retried."""
@@ -1962,17 +1938,31 @@ class TestXHandleFlag(unittest.TestCase):
         self.assertIn("x_handle", sig.parameters, "pipeline.run() must accept x_handle parameter")
 
     def test_x_handle_passed_to_supplemental_searches(self):
-        """When x_handle is provided, it should trigger targeted handle search."""
-        # Run pipeline in mock mode with x_handle -- should not raise
-        report = pipeline.run(
-            topic="test topic",
-            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
-            depth="quick",
-            requested_sources=["reddit", "x", "grounding"],
-            mock=True,
-            x_handle="testuser",
-        )
-        self.assertEqual("test topic", report.topic)
+        with patch("lib.providers.resolve_runtime", return_value=(_make_runtime(), None)), patch(
+            "lib.pipeline.available_sources", return_value=["x"],
+        ), patch("lib.pipeline._fetch_x_backend", return_value=([], None)), patch(
+            "lib.env.x_backend_chain", return_value=["bird"],
+        ), patch("lib.entity_extract.extract_entities", return_value={
+            "x_handles": [], "x_hashtags": [], "reddit_subreddits": [],
+        }), patch("lib.bird_x.search_handles", return_value=[{
+            "id": "explicit-handle", "text": "test topic from testuser",
+            "url": "https://x.com/testuser/status/123", "author_handle": "testuser",
+            "date": "2026-03-15", "engagement": {"likes": 15}, "relevance": 1.0,
+        }]) as handles, patch("lib.bird_x.search_mentions", return_value=[]):
+            report = pipeline.run(
+                topic="test topic", config={}, depth="default", requested_sources=["x"],
+                mock=False, x_handle="testuser", web_backend="none", as_of_date="2026-03-17",
+                external_plan={
+                    "intent": "exploration", "freshness_mode": "balanced_recent", "cluster_mode": "topic",
+                    "subqueries": [{"label": "primary", "search_query": "test topic",
+                                    "ranking_query": "test topic", "sources": ["x"]}],
+                },
+            )
+        handles.assert_called_once()
+        self.assertEqual(handles.call_args.args, (["testuser"], "test topic", "2026-02-15"))
+        self.assertEqual(handles.call_args.kwargs["to_date"], "2026-03-17")
+        self.assertEqual(handles.call_args.kwargs["count_per"], pipeline.FROM_LANE_COUNT_PER)
+        self.assertEqual([i.url for i in report.items_by_source["x"]], ["https://x.com/testuser/status/123"])
 
 
 class TestWarnings(unittest.TestCase):
