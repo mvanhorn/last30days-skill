@@ -1170,6 +1170,29 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
             youtube_yt.health.RATE_LIMITED,
         )
 
+    def test_sc_fallback_results_clear_ytdlp_search_failure(self):
+        from lib import pipeline, schema
+        video = {"id": "abc123", "title": "Vuori review", "url": "https://www.youtube.com/watch?v=abc123"}
+        with mock.patch.object(pipeline, "which", return_value="/usr/bin/yt-dlp"), \
+             mock.patch.object(
+                 youtube_yt, "search_and_transcribe",
+                 return_value={"items": [], "error": "yt-dlp search failed: ERROR: Sign in to confirm you're not a bot"},
+             ), \
+             mock.patch.object(youtube_yt, "search_youtube_sc", return_value={"items": [video]}), \
+             mock.patch.object(pipeline.env, "is_youtube_comments_available", return_value=False):
+            items, artifact = pipeline._retrieve_stream_impl(
+                topic="Vuori",
+                subquery=schema.SubQuery(label="q", search_query="Vuori", ranking_query="Vuori", sources=["youtube"]),
+                source="youtube",
+                config={"SCRAPECREATORS_API_KEY": "k"},
+                depth="default",
+                date_range=("2026-06-01", "2026-07-01"),
+                runtime=schema.ProviderRuntime(reasoning_provider="mock", planner_model="mock", rerank_model="mock"),
+                mock=False,
+            )
+        self.assertEqual(items, [video])
+        self.assertEqual(artifact, {})
+
     def test_search_zero_exit_with_no_output_is_clean_empty(self):
         with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
              mock.patch.object(

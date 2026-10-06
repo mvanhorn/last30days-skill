@@ -5131,6 +5131,8 @@ def _retrieve_stream_impl(
                 )
                 if result.get("error"):
                     youtube_failure = str(result["error"])
+                elif result.get("items"):
+                    youtube_failure = None
             except Exception as exc:
                 youtube_failure = str(exc)
                 result = None
