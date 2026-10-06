@@ -588,5 +588,7 @@ def test_emit_json_prints_terminal_row_without_stderr(remote_env, monkeypatch, c
         "raw_markdown": "# Raw markdown\nFull dump.",
     }
     assert terminal["stderr"] not in captured.out
+    assert terminal["stderr"] not in captured.err
     assert terminal["internal_trace"] not in captured.out
+    assert terminal["internal_trace"] not in captured.err
     assert TEST_KEY not in captured.out
