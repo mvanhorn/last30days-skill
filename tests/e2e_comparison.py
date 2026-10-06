@@ -5,6 +5,8 @@ Usage:
     python3 tests/e2e_comparison.py [--v2-script PATH]
 
 Outputs a markdown comparison table with per-query metrics.
+Passed comparisons exit 0; failed or partial comparisons exit 1, including
+otherwise successful commands that report source errors.
 """
 
 import json
@@ -14,7 +16,7 @@ import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[1]
-V3_SCRIPT = str(REPO / "scripts" / "last30days.py")
+V3_SCRIPT = str(REPO / "skills" / "last30days" / "scripts" / "last30days.py")
 
 # v2.9.5 from plugin cache (main branch equivalent)
 V2_SCRIPT = str(
@@ -54,7 +56,7 @@ def run_query(script: str, topic: str, timeout: int = 180) -> dict:
         elapsed = time.time() - start
         if result.returncode != 0:
             return {
-                "error": result.stderr[:200],
+                "error": result.stderr[:200] or f"engine exited with status {result.returncode}",
                 "elapsed": elapsed,
                 "sources": 0,
                 "candidates": 0,
@@ -118,7 +120,7 @@ def run_query(script: str, topic: str, timeout: int = 180) -> dict:
         }
 
 
-def main():
+def main() -> int:
     v2_script = V2_SCRIPT
     if len(sys.argv) > 2 and sys.argv[1] == "--v2-script":
         v2_script = sys.argv[2]
@@ -160,18 +162,20 @@ def main():
         })
 
     # Print comparison table
-    print("| Query | Intent | v3 sources | v2 sources | v3 items | v2 items | v3 time | v2 time | v3 errors | v2 errors |")
-    print("|-------|--------|-----------|-----------|---------|---------|---------|---------|-----------|-----------|")
+    print("| Query | Intent | v3 sources | v2 sources | v3 items | v2 items | v3 time | v2 time | v3 source errors | v2 source errors | v3 command error | v2 command error |")
+    print("|-------|--------|-----------|-----------|---------|---------|---------|---------|-----------|-----------|-----------|-----------|")
     for r in results:
         v3, v2 = r["v3"], r["v2"]
         v3_err = ", ".join(v3.get("errors", [])) or "-"
         v2_err = ", ".join(v2.get("errors", [])) or "-"
+        v3_command_error = str(v3.get("error", "-")).replace("|", "\\|").replace("\n", " ")
+        v2_command_error = str(v2.get("error", "-")).replace("|", "\\|").replace("\n", " ")
         print(
             f"| {r['topic'][:45]} | {v3.get('intent', '?')} | "
             f"{v3.get('sources', 0)} | {v2.get('sources', 0)} | "
             f"{v3.get('total_items', 0)} | {v2.get('total_items', 0)} | "
             f"{v3.get('elapsed', 0):.1f}s | {v2.get('elapsed', 0):.1f}s | "
-            f"{v3_err} | {v2_err} |"
+            f"{v3_err} | {v2_err} | {v3_command_error} | {v2_command_error} |"
         )
 
     # Summary
@@ -184,6 +188,14 @@ def main():
     v2_total_time = sum(r["v2"].get("elapsed", 0) for r in results)
     v3_errors = sum(len(r["v3"].get("errors", [])) for r in results)
     v2_errors = sum(len(r["v2"].get("errors", [])) for r in results)
+    v3_command_errors = sum("error" in r["v3"] for r in results)
+    v2_command_errors = sum("error" in r["v2"] for r in results)
+    command_errors = v3_command_errors + v2_command_errors
+    outcome = (
+        "failed" if command_errors == 2 * len(results)
+        else "partial" if command_errors or v3_errors or v2_errors
+        else "passed"
+    )
 
     print("## Summary")
     print()
@@ -193,10 +205,13 @@ def main():
     print(f"| Total items retrieved | {v3_total_items} | {v2_total_items} | {v3_total_items - v2_total_items:+d} |")
     print(f"| Total wall time | {v3_total_time:.1f}s | {v2_total_time:.1f}s | {v3_total_time - v2_total_time:+.1f}s |")
     print(f"| Source errors | {v3_errors} | {v2_errors} | {v3_errors - v2_errors:+d} |")
+    print(f"| Command errors | {v3_command_errors} | {v2_command_errors} | {v3_command_errors - v2_command_errors:+d} |")
     print(f"| Avg sources/query | {v3_total_sources/len(results):.1f} | {v2_total_sources/len(results):.1f} | |")
     print(f"| Avg items/query | {v3_total_items/len(results):.1f} | {v2_total_items/len(results):.1f} | |")
     print(f"| Avg time/query | {v3_total_time/len(results):.1f}s | {v2_total_time/len(results):.1f}s | |")
+    print(f"\nOutcome: {outcome}")
+    return 0 if outcome == "passed" else 1
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

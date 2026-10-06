@@ -459,11 +459,7 @@ class TestGenericEngagementFormatter(unittest.TestCase):
     def test_xiaohongshu_engagement_not_garbled(self):
         item = _item(source="xiaohongshu", engagement={"likes": 500, "views": 10000})
         result = render._format_engagement(item)
-        if result is not None:
-            self.assertNotIn("likes500", result, "Key used as value prefix")
-            self.assertNotIn("views10000", result, "Key used as value prefix")
-            # Should contain numeric values, not dict keys as numbers
-            self.assertIn("500", result)
+        self.assertEqual(result, "[500likes, 10,000views]")
 
 if __name__ == "__main__":
     unittest.main()

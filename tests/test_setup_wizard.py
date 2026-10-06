@@ -3,6 +3,7 @@
 import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -10,6 +11,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from lib import setup_wizard
+import last30days as cli
 
 
 class _NtOs:
@@ -921,27 +923,34 @@ class TestGetSetupStatusText:
 
 
 class TestSetupSubcommand:
-    """Tests for setup subcommand detection in argument parsing."""
+    """Tests for setup dispatch through the production entrypoint."""
 
-    def test_setup_detected_as_topic(self):
-        """The word 'setup' is treated as the setup subcommand."""
-        # Simulate what argparse produces
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("topic", nargs="*")
-        args = parser.parse_args(["setup"])
-        topic = " ".join(args.topic) if args.topic else None
-        assert topic is not None
-        assert topic.strip().lower() == "setup"
+    def test_setup_detected_as_topic(self, capsys):
+        with patch.object(sys, "argv", ["last30days", "setup"]), patch.object(
+            cli.env, "get_config", return_value={}
+        ), patch.object(setup_wizard, "run_auto_setup", return_value={}) as setup, patch.object(
+            setup_wizard, "write_setup_config", return_value=True
+        ) as write_config, patch.object(
+            setup_wizard, "get_setup_status_text", return_value="setup-completed-sentinel"
+        ), patch.object(cli.pipeline, "run") as research:
+            assert cli.main() == 0
+        setup.assert_called_once_with({}, allow_browser_cookies=False)
+        write_config.assert_called_once()
+        research.assert_not_called()
+        assert "setup-completed-sentinel" in capsys.readouterr().err
 
     def test_normal_topic_not_setup(self):
-        """A normal topic is not confused with setup."""
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("topic", nargs="*")
-        args = parser.parse_args(["AI", "video", "tools"])
-        topic = " ".join(args.topic) if args.topic else None
-        assert topic.strip().lower() != "setup"
+        with patch.object(sys, "argv", ["last30days", "AI", "setup", "tools", "--mock"]), patch.object(
+            cli.env, "get_config", return_value={}
+        ), patch.object(setup_wizard, "run_auto_setup", return_value={}) as setup, patch.object(
+            setup_wizard, "write_setup_config", return_value=True
+        ), patch.object(setup_wizard, "get_setup_status_text", return_value="setup-sentinel"), patch.object(
+            cli.pipeline, "diagnose", side_effect=RuntimeError("research-path-sentinel")
+        ) as research:
+            with pytest.raises(RuntimeError, match="research-path-sentinel"):
+                cli.main()
+        research.assert_called_once()
+        setup.assert_not_called()
 
 
 class TestBrightDataStatusHonesty:
