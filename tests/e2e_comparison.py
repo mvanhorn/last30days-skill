@@ -7,6 +7,7 @@ Usage:
 Outputs a markdown comparison table with per-query metrics.
 Passed comparisons exit 0; failed or partial comparisons exit 1, including
 otherwise successful commands that report source errors.
+Comparison totals sum the metrics of each entity report.
 """
 
 import json
@@ -43,6 +44,26 @@ def _load_queries() -> list[tuple[str, str]]:
 QUERIES = _load_queries()
 
 
+def _v3_metrics(data: dict) -> dict:
+    items_by_source = data.get("items_by_source", {})
+    errors = list(data.get("errors_by_source", {}))
+    for source, outcome in data.get("source_status", {}).items():
+        if outcome.get("state") in {
+            "partial", "rate-limited", "auth-failed", "payment-required",
+            "unreachable", "timeout", "schema-drift", "error",
+        } and source not in errors:
+            errors.append(source)
+    return {
+        "sources": sum(1 for items in items_by_source.values() if items),
+        "total_items": sum(len(items) for items in items_by_source.values()),
+        "candidates": len(data.get("ranked_candidates", [])),
+        "clusters": len(data.get("clusters", [])),
+        "intent": data["query_plan"].get("intent", "?"),
+        "subqueries": len(data["query_plan"].get("subqueries", [])),
+        "errors": errors,
+    }
+
+
 def run_query(script: str, topic: str, timeout: int = 180) -> dict:
     """Run a query and return parsed JSON + timing."""
     start = time.time()
@@ -65,19 +86,22 @@ def run_query(script: str, topic: str, timeout: int = 180) -> dict:
             }
         data = json.loads(result.stdout)
 
-        # v3 shape
-        if "query_plan" in data:
-            items_by_source = data.get("items_by_source", {})
+        if data.get("comparison"):
+            reports = [(entry["entity"], _v3_metrics(entry["report"])) for entry in data["reports"]]
+            if not reports:
+                raise ValueError("comparison output contains no reports")
             return {
                 "elapsed": elapsed,
-                "sources": sum(1 for v in items_by_source.values() if v),
-                "total_items": sum(len(v) for v in items_by_source.values()),
-                "candidates": len(data.get("ranked_candidates", [])),
-                "clusters": len(data.get("clusters", [])),
-                "intent": data["query_plan"].get("intent", "?"),
-                "subqueries": len(data["query_plan"].get("subqueries", [])),
-                "errors": list(data.get("errors_by_source", {}).keys()),
+                **{key: sum(metrics[key] for _, metrics in reports) for key in (
+                    "sources", "total_items", "candidates", "clusters", "subqueries",
+                )},
+                "intent": "comparison",
+                "errors": [f"{entity}: {error}" for entity, metrics in reports for error in metrics["errors"]],
             }
+
+        # v3 shape
+        if "query_plan" in data:
+            return {"elapsed": elapsed, **_v3_metrics(data)}
 
         # v2 shape
         sources_with_items = 0
