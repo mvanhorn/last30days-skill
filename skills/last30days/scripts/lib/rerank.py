@@ -64,14 +64,23 @@ def discovery_engagement_total(item: schema.SourceItem) -> float:
     )
 
 
+def discovery_signal_total(item: schema.SourceItem) -> float:
+    """Return discovery strength without relabeling a listing rank as engagement."""
+    if item.source == "trendshift":
+        value = item.metadata.get("discovery_signal")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return max(0.0, float(value))
+    return discovery_engagement_total(item)
+
+
 def engagement_velocity_score(
     item: schema.SourceItem,
     *,
     as_of_date: str,
 ) -> float:
     """Weight native engagement by age, with an explicit first-week boost."""
-    engagement = discovery_engagement_total(item)
-    if engagement <= 0:
+    signal = discovery_signal_total(item)
+    if signal <= 0:
         return 0.0
     try:
         published = datetime.fromisoformat((item.published_at or "").replace("Z", "+00:00")).date()
@@ -82,7 +91,7 @@ def engagement_velocity_score(
     recency_weight = 1.0 / math.sqrt(age_days + 1)
     if age_days < 7:
         recency_weight *= 1.5
-    return round(engagement * recency_weight, 4)
+    return round(signal * recency_weight, 4)
 
 
 def discovery_velocity_score(
@@ -126,6 +135,7 @@ def passes_discovery_floor(
     item_count: int,
     junk_shape: bool = False,
     seed_source_count: int | None = None,
+    ranked_listing_signal: float = 0.0,
 ) -> bool:
     """Whether a discovery topic's evidence is strong enough to show a user.
 
@@ -138,7 +148,15 @@ def passes_discovery_floor(
     ``source_count`` otherwise. Non-junk topics are unaffected by both
     parameters.
     """
-    if item_count <= 0 or engagement_total < FLOOR_MIN_ENGAGEMENT:
+    if item_count <= 0:
+        return False
+    # A Trendshift rank is a source-provided ordering signal, not an
+    # interaction count. Allow only its top five positions to nominate a
+    # single-source discovery topic; lower-ranked entries still need normal
+    # interaction or cross-source evidence.
+    if ranked_listing_signal >= 0.2 and not junk_shape:
+        return True
+    if engagement_total < FLOOR_MIN_ENGAGEMENT:
         return False
     if junk_shape:
         corroboration = seed_source_count if seed_source_count is not None else source_count

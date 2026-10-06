@@ -16,6 +16,7 @@ SOURCE_QUALITY = {
     "digg": 0.85,
     "arxiv": 0.9,
     "techmeme": 0.85,
+    "trendshift": 0.7,
     "trustpilot": 0.78,
     # Verified-purchase reviews on a live aggregate rating: high-quality
     # buyer evidence, a notch above Trustpilot's open review model.
@@ -185,6 +186,9 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "truthsocial":  [("likes", 0.45), ("reposts", 0.30), ("replies", 0.25)],
     "polymarket":   [("volume", 0.60), ("liquidity", 0.40)],
     "digg":         [("postCount", 0.40), ("uniqueAuthors", 0.30), ("rank_score", 0.30)],
+    # Trendshift rank is an ordinal listing position, not engagement. Its
+    # separate inverse-rank discovery signal is used only in discovery mode.
+    "trendshift":   [],
     "trustpilot":   [("reviews", 1.0)],
     "amazon":       [("ratings", 1.0)],
     # Meta publishes reach and spend only for political and issue ads, so a
@@ -266,9 +270,8 @@ def engagement_raw(item: schema.SourceItem) -> float | None:
         return _tiktok_engagement(item)
     if item.source == "instagram":
         return _instagram_engagement(item)
-    weights = ENGAGEMENT_WEIGHTS.get(item.source)
-    if weights:
-        return _weighted_engagement(item, weights)
+    if item.source in ENGAGEMENT_WEIGHTS:
+        return _weighted_engagement(item, ENGAGEMENT_WEIGHTS[item.source])
     return _generic_engagement(item)
 
 

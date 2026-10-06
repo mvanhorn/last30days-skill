@@ -161,6 +161,7 @@ SOURCE_ORDER = (
     "hackernews",
     "polymarket",
     "github",
+    "trendshift",
     "digg",
     "techmeme",
     "arxiv",
@@ -663,6 +664,18 @@ def _github_record(config):
                    requires="none (GITHUB_TOKEN or gh CLI optional)")
 
 
+def _trendshift_record(config):
+    include = env.include_sources(config)
+    if "trendshift" not in include:
+        return _record(
+            status="opt-in",
+            requires="none (public Trendshift HTML)",
+            fix="add trendshift to INCLUDE_SOURCES or request it via --search trendshift",
+            note="third-party repository momentum signal; off by default",
+        )
+    return _record(status=health.OK, requires="none (public Trendshift HTML)")
+
+
 def _digg_record(config):
     probe = health.probe_dependency("digg-pp-cli")
     requires = "digg-pp-cli on the agent-subprocess PATH"
@@ -959,6 +972,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "hackernews": _hackernews_record,
     "polymarket": _polymarket_record,
     "github": _github_record,
+    "trendshift": _trendshift_record,
     "digg": _digg_record,
     "techmeme": _techmeme_record,
     "arxiv": _arxiv_record,

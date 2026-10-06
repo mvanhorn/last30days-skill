@@ -12,7 +12,7 @@ from . import categories, competitors, entity_extract, http, log, providers, que
 # Hebrew Unicode block: U+0590–U+05FF
 _HEBREW_RE = re.compile(r'[\u0590-\u05FF]')
 
-DISCOVERY_SOURCE_ORDER = ("reddit", "hackernews", "digg", "x")
+DISCOVERY_SOURCE_ORDER = ("reddit", "hackernews", "digg", "trendshift", "x")
 
 
 def detect_language(text: str) -> str | None:
@@ -146,6 +146,7 @@ SOURCE_CAPABILITIES = {
     "polymarket": {"market"},
     "stocktwits": {"social", "market", "finance_social"},
     "dripstack": {"reference", "analysis", "link"},
+    "trendshift": {"reference", "analysis", "link"},
     "digg": {"discussion", "social", "link"},
     "arxiv": {"reference", "analysis", "link"},
     "techmeme": {"discussion", "link", "reference"},

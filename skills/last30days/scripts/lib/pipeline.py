@@ -69,6 +69,7 @@ from . import (
     threads,
     tiktok,
     topic_shape,
+    trendshift,
     truthsocial,
     trustpilot,
     x_api,
@@ -85,7 +86,7 @@ from . import fusion
 from . import render
 from .fusion import collapse_duplicate_urls, weighted_rrf
 
-DISCOVERY_SOURCES = ("reddit", "hackernews", "digg", "x")
+DISCOVERY_SOURCES = ("reddit", "hackernews", "digg", "trendshift", "x")
 _DISCOVERY_GENERIC_DOMAIN_TERMS = {
     "ai", "artificial", "intelligence", "tech", "technology", "trending", "trend",
 }
@@ -258,6 +259,7 @@ MOCK_AVAILABLE_SOURCES = [
     "linkedin",
     "corpus",
     "dripstack",
+    "trendshift",
     "telegram",
 ]
 
@@ -347,6 +349,12 @@ def available_sources(
         requested_sources and "dripstack" in requested_sources
     ):
         available.append("dripstack")
+    # Trendshift is a free public ranking, but remains opt-in: it is a
+    # third-party repository-momentum signal rather than conversational evidence.
+    if "trendshift" in include_sources or (
+        requested_sources and "trendshift" in requested_sources
+    ):
+        available.append("trendshift")
     if which("digg-pp-cli"):
         available.append("digg")
     # arXiv is default-on when its Printing Press CLI is installed (zero auth).
@@ -503,6 +511,18 @@ def _mock_discovery_items(
                 "relevance": 0.9,
                 "why_relevant": "Mock Digg discovery cluster",
             })
+        elif source == "trendshift":
+            items.append({
+                "id": f"discovery-ts-{index}",
+                "title": f"example/{slug}",
+                "url": f"https://trendshift.io/repositories/{index}",
+                "date": to_date,
+                "engagement": {"rank": index},
+                "metadata": {"rank": index, "discovery_signal": 1.0 / index},
+                "relevance": 0.9,
+                "why_relevant": f"Trendshift daily rank #{index}",
+                "snippet": f"Trendshift daily rank #{index}.",
+            })
         elif source == "x":
             items.append({
                 "id": f"discovery-x-{index}",
@@ -600,6 +620,20 @@ def _fetch_discovery_source(
                 if _matches_discovery_domain(plan.domain, str(item.get("title") or ""))
             ]
         return items, result.get("error")
+    if source == "trendshift":
+        items, error = trendshift.fetch_trendshift(
+            plan.domain,
+            from_date,
+            to_date,
+            depth=depth,
+            require_snapshot_date=bool(config.get("_trendshift_explicit_as_of")),
+        )
+        if keyword_gate:
+            items = [
+                item for item in items
+                if _matches_discovery_domain(plan.domain, str(item.get("title") or ""))
+            ]
+        return items, error
     if source == "x":
         # Discovery uses domain directly as query (no planner search_query)
         query = plan.domain
@@ -1191,11 +1225,12 @@ def _discovery_sweep(
     ``run_discover_nominate`` (protocol leg 1) so the two paths can never
     drift on what a sweep means."""
     from_date, to_date = dates.get_date_range(lookback_days, as_of_date=as_of_date)
+    config = {**config, "_trendshift_explicit_as_of": as_of_date is not None}
     requested = normalize_requested_sources(requested_sources)
     unsupported = sorted(set(requested or []) - set(DISCOVERY_SOURCES))
     if unsupported:
         raise ValueError(
-            "Discovery supports listing sources only: reddit, hackernews, digg "
+            "Discovery supports listing sources only: reddit, hackernews, digg, trendshift "
             f"(unsupported: {', '.join(unsupported)})"
         )
     available = list(DISCOVERY_SOURCES) if mock else [
@@ -1385,6 +1420,11 @@ def _floor_survivor_records(
         native_total = sum(
             rerank.discovery_engagement_total(item) for item in evidence_items
         )
+        ranked_listing_signal = max(
+            (rerank.discovery_signal_total(item)
+             for item in evidence_items if item.source == "trendshift"),
+            default=0.0,
+        )
         score = rerank.discovery_velocity_score(evidence_items, as_of_date=to_date)
         if not rerank.passes_discovery_floor(
             source_count=len(sources),
@@ -1395,6 +1435,7 @@ def _floor_survivor_records(
             # the enriched corpus - a successful enrichment pass is
             # multi-source for almost any topic, so it would never bind.
             seed_source_count=len({item.source for item in nomination.items}),
+            ranked_listing_signal=ranked_listing_signal,
         ):
             # Sub-floor evidence never ranks; remember what came closest so a
             # nothing-solid brief can still name the strongest weak signal.
@@ -1413,10 +1454,15 @@ def _floor_survivor_records(
             f" and {sources[-1]}" if len(sources) > 1 else (sources[0] if sources else "the listings")
         )
         noun = "evidence item" if entry.report is not None else "listing item"
+        if native_total:
+            signal_summary = f"generated {native_total:,.0f} native interactions"
+        elif ranked_listing_signal:
+            signal_summary = "earned a top-five Trendshift listing rank"
+        else:
+            signal_summary = "provided no native interaction count"
         why = (
             f"{len(evidence_items)} {noun}{'s' if len(evidence_items) != 1 else ''} on "
-            f"{source_phrase} generated {native_total:,.0f} native interactions. "
-            f"{nomination.summary[:220]}"
+            f"{source_phrase} {signal_summary}. {nomination.summary[:220]}"
         )
         top_comment = _best_community_comment(evidence_items) if entry.report is not None else None
         # Stage-2 angle input: the survivor's strongest evidence, enriched
@@ -1426,7 +1472,7 @@ def _floor_survivor_records(
             item.title.strip()
             for item in sorted(
                 evidence_items,
-                key=rerank.discovery_engagement_total,
+                key=rerank.discovery_signal_total,
                 reverse=True,
             )
             if item.title and item.title.strip()
@@ -2101,6 +2147,7 @@ def run(
     # parallel entity sub-runs can still share in-run hits.
     if not internal_subrun:
         youtube_yt.reset_search_cache()
+    config = {**config, "_trendshift_explicit_as_of": as_of_date is not None}
     settings = _resolve_depth_settings(depth, config)
     requested_sources = normalize_requested_sources(requested_sources)
     # Wall-clock origin for budget-aware enrichment lanes. Amazon review
@@ -5493,6 +5540,15 @@ def _retrieve_stream_impl(
         # tokenless run. The condition is logged in github.search_github.
         items = github.enrich_with_comments(items, depth=depth, token=token)
         return items, _result_outcome_artifact(source, response)
+    if source == "trendshift":
+        items, error = trendshift.fetch_trendshift(
+            topic or subquery.search_query,
+            from_date,
+            to_date,
+            depth=depth,
+            require_snapshot_date=bool(config.get("_trendshift_explicit_as_of")),
+        )
+        return items, _result_outcome_artifact(source, {"error": error} if error else {})
     if source == "pinterest":
         result = pinterest.search_pinterest(
             subquery.search_query, from_date, to_date,
