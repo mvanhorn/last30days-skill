@@ -1,5 +1,6 @@
 import unittest
 from unittest.mock import patch
+from urllib.parse import parse_qs, urlsplit
 
 from lib import health
 from lib.xquik import (
@@ -225,11 +226,29 @@ class TestSearchXquik(unittest.TestCase):
             "text": "duplicate tweet",
             "author": {"username": "user"},
         }
-        mock_get.return_value = {"tweets": [tweet]}
-        result = search_xquik("test topic", "2026-01-01", "2026-03-01", depth="default", token="key")
-        # Even with multiple queries, same tweet ID should appear only once
+        distinct = {
+            "id": "333",
+            "text": "another relevant post",
+            "author": {"username": "other"},
+        }
+        mock_get.side_effect = [
+            {"tweets": [tweet]},
+            {"tweets": [tweet, distinct]},
+        ]
+        with patch("lib.xquik.expand_xquik_queries", return_value=["test topic", "topic variant"]):
+            result = search_xquik("test topic", "2026-01-01", "2026-03-01", depth="default", token="key")
+        self.assertEqual(
+            [parse_qs(urlsplit(call.args[0]).query)["q"][0] for call in mock_get.call_args_list],
+            [
+                "test topic since:2026-01-01 until:2026-03-01",
+                "topic variant since:2026-01-01 until:2026-03-01",
+            ],
+        )
+        self.assertEqual(
+            [item["url"] for item in result["items"]],
+            ["https://x.com/user/status/222", "https://x.com/other/status/333"],
+        )
         ids = [item.get("id") for item in result["items"]]
-        # All items should have unique XQ ids (deduped by tweet ID)
         self.assertEqual(len(ids), len(set(ids)))
 
     @patch("lib.xquik.http.get")

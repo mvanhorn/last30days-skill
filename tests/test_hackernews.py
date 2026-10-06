@@ -3,6 +3,7 @@
 import json
 from datetime import datetime, timezone
 from unittest.mock import Mock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -246,12 +247,10 @@ def test_search_hackernews_date_filtering(mock_request):
     
     hackernews.search_hackernews("test", "2026-01-01", "2026-01-31", depth="quick")
     
-    call_args = mock_request.call_args[0]
-    url = call_args[1]
-    
-    # Should have numeric filters for date range
-    assert "numericFilters" in url
-    assert "created_at_i" in url
+    mock_request.assert_called_once()
+    url = mock_request.call_args.args[1]
+    filters = parse_qs(urlsplit(url).query)["numericFilters"]
+    assert filters == ["created_at_i>1767225600,created_at_i<1769904000"]
 
 @patch('lib.hackernews.http.request')
 
