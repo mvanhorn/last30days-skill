@@ -376,52 +376,37 @@ class TestSourceFetchCap(unittest.TestCase):
         self.assertEqual("deep-research", plan.subqueries[-1].label)
         self.assertEqual(["perplexity"], plan.subqueries[-1].sources)
 
-    def test_cap_logic_limits_source_submissions(self):
-        """Verify the cap logic skips submissions beyond the limit."""
-        subquery_sources = [
-            ["x", "reddit", "youtube"],
-            ["x", "reddit", "youtube"],
-            ["x", "reddit", "youtube"],
-            ["x", "reddit", "youtube"],
-        ]
-        source_fetch_count: dict[str, int] = {}
-        submitted: list[str] = []
-        for sources in subquery_sources:
-            for source in sources:
-                source_cap = pipeline.MAX_SOURCE_FETCHES.get(source)
-                if source_cap is not None:
-                    current = source_fetch_count.get(source, 0)
-                    if current >= source_cap:
-                        continue
-                    source_fetch_count[source] = current + 1
-                submitted.append(source)
-
-        x_count = submitted.count("x")
-        reddit_count = submitted.count("reddit")
-        self.assertEqual(x_count, 2, f"X should be capped at 2, got {x_count}")
-        self.assertEqual(reddit_count, 4, f"Reddit should be uncapped, got {reddit_count}")
-
+    @patch("lib.pipeline._retry_thin_sources")
     @patch("lib.pipeline._retrieve_stream")
-    def test_mock_run_caps_x_fetches(self, mock_retrieve):
-        """Pipeline.run in mock mode should call _retrieve_stream for X at most 2 times."""
-        mock_retrieve.side_effect = lambda **kwargs: pipeline._mock_stream_results(
-            kwargs["source"], kwargs["subquery"]
-        )
-        pipeline.run(
-            topic="compare iPhone vs Android vs Pixel vs Samsung",
-            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
-            depth="quick",
+    def test_run_caps_primary_x_fetches_without_capping_reddit(self, mock_retrieve, _retry):
+        mock_retrieve.return_value = ([], {})
+        report = pipeline.run(
+            topic="compare iPhone vs Android",
+            config={},
+            depth="default",
             requested_sources=["reddit", "x"],
             mock=True,
+            web_backend="none",
+            external_plan={
+                "intent": "comparison",
+                "freshness_mode": "balanced_recent",
+                "cluster_mode": "topic",
+                "subqueries": [
+                    {"label": label, "search_query": f"phones {label}",
+                     "ranking_query": f"phones {label}", "sources": ["x", "reddit"]}
+                    for label in ["price", "camera", "battery", "privacy"]
+                ],
+            },
         )
-        x_calls = [
-            call for call in mock_retrieve.call_args_list
-            if call.kwargs.get("source") == "x"
-        ]
-        self.assertLessEqual(
-            len(x_calls), 2,
-            f"X should be fetched at most 2 times, got {len(x_calls)}",
+        self.assertEqual(4, len(report.query_plan.subqueries))
+        submissions = {(call.kwargs["source"], call.kwargs["subquery"].label)
+                       for call in mock_retrieve.call_args_list}
+        self.assertEqual(
+            {("x", "price"), ("x", "camera"),
+             *[("reddit", label) for label in ["price", "camera", "battery", "privacy"]]},
+            submissions,
         )
+        self.assertEqual(6, mock_retrieve.call_count)
 
     @patch("lib.pipeline._retrieve_stream")
     def test_zero_source_fetch_override_suppresses_capped_source(self, mock_retrieve):
@@ -1551,23 +1536,29 @@ class TestSupplementalSearches(unittest.TestCase):
         self.assertIn("timed out", outcome.detail)
         self.assertIn("@analyst1", outcome.detail)
 
+    @patch("lib.bird_x.search_mentions", return_value=[])
     @patch("lib.bird_x.search_handles")
     @patch("lib.entity_extract.extract_entities")
-    def test_supplemental_items_deduplicated_by_url(self, mock_extract, mock_handles):
+    def test_supplemental_items_deduplicated_by_url(self, mock_extract, mock_handles, mock_mentions):
         """Supplemental items with same URL as Phase 1 should not be duplicated."""
         mock_extract.return_value = {"x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": []}
-        # Return item with same URL as Phase 1
         mock_handles.return_value = [
             {
                 "id": "dup1",
-                "text": "Same tweet",
+                "text": "AI safety technical analysis from the author",
                 "url": "https://x.com/analyst1/status/1",
                 "author_handle": "analyst1",
                 "date": "2026-03-15",
                 "engagement": {"likes": 50},
                 "relevance": 0.8,
                 "why_relevant": "duplicate",
-            }
+            },
+            {
+                "id": "unique2", "text": "New AI safety benchmark results",
+                "url": "https://x.com/analyst1/status/2",
+                "author_handle": "analyst1", "date": "2026-03-16",
+                "engagement": {"likes": 20}, "relevance": 0.8,
+            },
         ]
 
         bundle = schema.RetrievalBundle()
@@ -1587,15 +1578,16 @@ class TestSupplementalSearches(unittest.TestCase):
             mock=False,
             rate_limited_sources=set(),
             rate_limit_lock=threading.Lock(),
+            x_handle="analyst1",
         )
 
-        # Should still have only 1 item (no duplicates)
+        mock_handles.assert_called_once()
+        mock_mentions.assert_called_once()
         x_items = bundle.items_by_source.get("x", [])
         urls = [item.url for item in x_items]
-        self.assertEqual(
-            urls.count("https://x.com/analyst1/status/1"), 1,
-            f"Duplicate URL found: {urls}",
-        )
+        self.assertCountEqual(["https://x.com/analyst1/status/1",
+                               "https://x.com/analyst1/status/2"], urls)
+        self.assertIs(original, x_items[0])
 
     @patch("lib.bird_x.search_mentions")
     @patch("lib.bird_x.search_handles")
@@ -1903,37 +1895,51 @@ class TestThinSourceRetry(unittest.TestCase):
 
 
 class TestErrorCleanup(unittest.TestCase):
-    """Source errors should be cleared when the source has items from other subqueries."""
+    def _run_with_failed_stream(self, successful_items):
+        def retrieve(**kwargs):
+            if kwargs["subquery"].label == "failed":
+                raise RuntimeError("fixture lane unavailable")
+            return successful_items, {}
 
-    def test_error_cleared_when_source_has_items(self):
-        """A source that 429'd on one subquery but succeeded on another is not errored."""
-        bundle = schema.RetrievalBundle(artifacts={})
-        item = schema.SourceItem(
-            item_id="x1", source="x", title="A tweet", body="content",
-            url="https://x.com/user/status/1",
-        )
-        bundle.items_by_source["x"] = [item]
-        bundle.errors_by_source["x"] = "HTTP 429: Too Many Requests"
+        with patch.object(pipeline, "_retrieve_stream", side_effect=retrieve) as retrieval, \
+             patch.object(pipeline, "_retry_thin_sources"):
+            report = pipeline.run(
+                topic="AI safety", config={}, depth="default", mock=True,
+                requested_sources=["x"], web_backend="none", as_of_date="2026-03-17",
+                external_plan={
+                    "intent": "exploration", "freshness_mode": "balanced_recent",
+                    "cluster_mode": "topic",
+                    "subqueries": [
+                        {"label": label, "search_query": f"AI safety {label}",
+                         "ranking_query": "AI safety", "sources": ["x"]}
+                        for label in ["success", "failed"]
+                    ],
+                },
+            )
+        self.assertCountEqual(["success", "failed"], [
+            call.kwargs["subquery"].label for call in retrieval.call_args_list])
+        return report
 
-        # Simulate the cleanup logic from pipeline.run()
-        for source in list(bundle.errors_by_source):
-            if bundle.items_by_source.get(source):
-                del bundle.errors_by_source[source]
+    def test_error_becomes_partial_warning_when_another_stream_succeeds(self):
+        report = self._run_with_failed_stream([{
+            "id": "survivor", "text": "AI safety evaluation results",
+            "url": "https://x.com/researcher/status/1", "author_handle": "researcher",
+            "date": "2026-03-15", "engagement": {"likes": 50},
+        }])
+        self.assertEqual(["survivor"], [item.item_id for item in report.items_by_source["x"]])
+        self.assertNotIn("x", report.errors_by_source)
+        self.assertEqual(schema.PARTIAL, report.source_status["x"].state)
+        self.assertIn("fixture lane unavailable", report.source_status["x"].detail)
+        self.assertIn("Some sources returned partial results (degraded): x", report.warnings)
+        self.assertNotIn("Some sources failed: x", report.warnings)
 
-        self.assertNotIn("x", bundle.errors_by_source,
-                         "X should not be errored when it has items")
-
-    def test_error_kept_when_source_has_no_items(self):
-        """A source with zero items should remain in errors_by_source."""
-        bundle = schema.RetrievalBundle(artifacts={})
-        bundle.errors_by_source["x"] = "HTTP 429: Too Many Requests"
-
-        for source in list(bundle.errors_by_source):
-            if bundle.items_by_source.get(source):
-                del bundle.errors_by_source[source]
-
-        self.assertIn("x", bundle.errors_by_source,
-                      "X should remain errored when it has no items")
+    def test_error_remains_hard_failure_when_no_stream_returns_items(self):
+        report = self._run_with_failed_stream([])
+        self.assertEqual([], report.items_by_source.get("x", []))
+        self.assertEqual("fixture lane unavailable", report.errors_by_source["x"])
+        self.assertNotEqual(schema.PARTIAL, report.source_status["x"].state)
+        self.assertIn("Some sources failed: x", report.warnings)
+        self.assertNotIn("Some sources returned partial results (degraded): x", report.warnings)
 
 
 class TestXHandleFlag(unittest.TestCase):
