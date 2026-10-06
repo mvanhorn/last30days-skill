@@ -12,7 +12,6 @@ from lib import (
     pipeline,
     reddit,
     reddit_listing,
-    reddit_rss,
     render,
     schema,
     youtube_yt,
@@ -150,22 +149,8 @@ def test_reddit_nested_worker_propagates_failure_capture(mock_urlopen, _mock_sle
     assert failures[-1].outcome_state == schema.RATE_LIMITED
 
 
-def _reddit_429(url="https://www.reddit.com/search.rss"):
+def _reddit_429(url="https://www.reddit.com/svc/shreddit/search/"):
     return urllib.error.HTTPError(url, 429, "Too Many Requests", {}, None)
-
-
-@patch("lib.http.time.sleep")
-@patch("lib.http.urllib.request.urlopen")
-def test_reddit_rss_fanout_propagates_failure_capture(mock_urlopen, _mock_sleep):
-    # get_text launders the 429 into None; the sink is what must survive the
-    # ThreadPoolExecutor hop into the feed workers (issue #899).
-    mock_urlopen.side_effect = _reddit_429()
-
-    with http.capture_failures() as failures:
-        posts = reddit_rss.search_rss("test topic", depth="quick")
-
-    assert posts == []
-    assert failures[-1].outcome_state == schema.RATE_LIMITED
 
 
 @patch("lib.http.time.sleep")

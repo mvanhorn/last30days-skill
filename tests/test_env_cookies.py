@@ -99,6 +99,58 @@ class TestExtractBrowserCredentials:
         assert "AUTH_TOKEN" not in result
         assert result["CT0"] == "cookie_ct0"
 
+    @patch("lib.cookie_extract.extract_cookies")
+    def test_partial_pair_does_not_shadow_complete_browser(self, mock_extract):
+        """A partial X pair (lone ct0 from a logged-out session) must not
+        stop the scan: the complete pair from a later browser wins."""
+        def side_effect(browser, domain, cookie_names):
+            if domain == ".x.com":
+                if browser == "firefox":
+                    return {"ct0": "logged_out_ct0"}
+                if browser == "safari":
+                    return {"auth_token": "tok", "ct0": "ct0"}
+            if domain == ".truthsocial.com":
+                return {"_session_id": "sess"}
+            return None
+        mock_extract.side_effect = side_effect
+        config = _base_config(FROM_BROWSER="firefox,safari")
+        result = extract_browser_credentials(config)
+        assert result["AUTH_TOKEN"] == "tok"
+        assert result["CT0"] == "ct0"
+
+    @patch("lib.cookie_extract.extract_cookies")
+    def test_complementary_partials_never_merge_across_browsers(self, mock_extract):
+        """auth_token from one browser and ct0 from another can belong to
+        different X sessions: only the first browser's partial is kept."""
+        def side_effect(browser, domain, cookie_names):
+            if domain == ".x.com":
+                if browser == "firefox":
+                    return {"auth_token": "tok"}
+                if browser == "safari":
+                    return {"ct0": "other_session_ct0"}
+            return None
+        mock_extract.side_effect = side_effect
+        config = _base_config(FROM_BROWSER="firefox,safari")
+        result = extract_browser_credentials(config)
+        assert result["AUTH_TOKEN"] == "tok"
+        assert "CT0" not in result
+
+    @patch("lib.cookie_extract.extract_cookies")
+    def test_partial_then_complete_uses_only_complete_browser(self, mock_extract):
+        """A complete pair from a later browser replaces an earlier partial
+        wholesale; no value from the partial browser survives."""
+        def side_effect(browser, domain, cookie_names):
+            if domain == ".x.com":
+                if browser == "firefox":
+                    return {"auth_token": "stale_tok"}
+                if browser == "safari":
+                    return {"auth_token": "tok", "ct0": "ct0"}
+            return None
+        mock_extract.side_effect = side_effect
+        config = _base_config(FROM_BROWSER="firefox,safari")
+        result = extract_browser_credentials(config)
+        assert result == {"AUTH_TOKEN": "tok", "CT0": "ct0"}
+
 
 class TestGetConfigCookieIntegration:
     """Integration tests for policy-gated cookie extraction in get_config()."""

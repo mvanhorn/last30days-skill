@@ -332,18 +332,32 @@ class PerplexityAgentTests(unittest.TestCase):
     def test_openrouter_sonar_fallback_honors_base_url_override(self):
         response = {"id": "openrouter-2", "model": "perplexity/sonar-pro",
                     "choices": [{"message": {"content": "ok"}}]}
-        with patch.dict("os.environ", {"OPENROUTER_BASE_URL": "https://gateway.test/v1"}), patch(
-            "lib.perplexity.http.post", return_value=response
-        ) as post, patch("lib.perplexity.http.get"):
-            perplexity.search(
-                "test topic",
-                ("2026-05-01", "2026-06-01"),
-                {"OPENROUTER_API_KEY": "or-test"},
-            )
+        endpoint = "https://gateway.test/v1/chat/completions"
+        for override in ("https://gateway.test/v1", endpoint):
+            for deep, model, timeout in (
+                (False, "perplexity/sonar-pro", 30),
+                (True, "perplexity/sonar-deep-research", 120),
+            ):
+                with self.subTest(override=override, deep=deep), patch.dict(
+                    "os.environ", {"OPENROUTER_BASE_URL": override}
+                ), patch("lib.perplexity.http.post", return_value=response) as post:
+                    items, artifact = perplexity.search(
+                        "test topic",
+                        ("2026-05-01", "2026-06-01"),
+                        {"OPENROUTER_API_KEY": "or-test"},
+                        deep=deep,
+                    )
 
-        self.assertEqual(
-            "https://gateway.test/v1/chat/completions", post.call_args.args[0]
-        )
+                    post.assert_called_once()
+                    url, payload = post.call_args.args
+                    self.assertEqual(endpoint, url)
+                    self.assertEqual(model, payload["model"])
+                    self.assertIn("test topic", payload["messages"][0]["content"])
+                    self.assertEqual("Bearer or-test", post.call_args.kwargs["headers"]["Authorization"])
+                    self.assertEqual(timeout, post.call_args.kwargs["timeout"])
+                    self.assertEqual(1, post.call_args.kwargs["retries"])
+                    self.assertEqual("openrouter", artifact["provider"])
+                    self.assertEqual("ok", items[0]["snippet"])
 
     def test_openrouter_search_mode_degrades_to_sonar_fallback(self):
         response = {

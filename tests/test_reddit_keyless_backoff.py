@@ -3,7 +3,7 @@
 import os
 from unittest import mock
 
-from lib import http, reddit_listing, reddit_rss, render, schema
+from lib import http, reddit_listing, render, schema
 
 
 class TestRateLimiter:
@@ -44,16 +44,10 @@ class TestRedditKeylessGetText:
     def test_acquires_limiter_then_delegates(self):
         with mock.patch.object(http.REDDIT_KEYLESS_LIMITER, "acquire") as acq, \
              mock.patch.object(http, "get_text", return_value="body") as gt:
-            out = http.reddit_keyless_get_text("https://www.reddit.com/x.rss", accept="application/atom+xml")
+            out = http.reddit_keyless_get_text("https://www.reddit.com/svc/shreddit/search/?q=x", accept="text/html")
         assert out == "body"
         acq.assert_called_once()
         gt.assert_called_once()
-
-    def test_reddit_rss_routes_through_throttle(self):
-        # The RSS tier must use the throttled helper, not raw get_text.
-        with mock.patch.object(reddit_rss.http, "reddit_keyless_get_text", return_value=None) as throttled:
-            reddit_rss.search_rss("test query")
-        assert throttled.called
 
 
 class TestRedditKeylessRateKnob:
@@ -81,7 +75,7 @@ class TestRedditKeylessRateKnob:
         monkeypatch.setenv(http.REDDIT_KEYLESS_RATE_ENV, "0.5")
         with mock.patch.object(http.REDDIT_KEYLESS_LIMITER, "acquire"), \
              mock.patch.object(http, "get_text", return_value="ok"):
-            http.reddit_keyless_get_text("https://www.reddit.com/x.rss")
+            http.reddit_keyless_get_text("https://www.reddit.com/svc/shreddit/search/?q=x")
         assert http.REDDIT_KEYLESS_LIMITER.rate == 0.5
 
     def test_env_file_value_is_exported_for_limiter(self, tmp_path, monkeypatch):
@@ -111,7 +105,7 @@ def _record_status(code: int, reason: str) -> None:
 
 class TestRedditKeyless429Retry:
     def test_429_then_200_recovers_via_single_retry(self):
-        bodies = [None, "<feed xmlns='http://www.w3.org/2005/Atom'/>"]
+        bodies = [None, "<html>ok</html>"]
 
         def fake_get(*_args, **_kwargs):
             val = bodies.pop(0)
@@ -124,9 +118,9 @@ class TestRedditKeyless429Retry:
              mock.patch.object(http.time, "sleep") as slept, \
              mock.patch.object(http.random, "uniform", return_value=0.0):
             text, err = http.reddit_keyless_get_text_retry_429(
-                "https://www.reddit.com/search.rss"
+                "https://www.reddit.com/svc/shreddit/search/?q=x"
             )
-        assert text.startswith("<feed")
+        assert text.startswith("<html")
         assert err is None
         assert acq.call_count == 2
         slept.assert_called_once()
@@ -143,7 +137,7 @@ class TestRedditKeyless429Retry:
              mock.patch.object(http.random, "uniform", return_value=0.0), \
              http.capture_failures() as failures:
             text, err = http.reddit_keyless_get_text_retry_429(
-                "https://www.reddit.com/search.rss"
+                "https://www.reddit.com/svc/shreddit/search/?q=x"
             )
         assert text is None
         assert err is not None and "429" in err
@@ -160,37 +154,13 @@ class TestRedditKeyless429Retry:
              mock.patch.object(http.time, "sleep") as slept, \
              http.capture_failures() as failures:
             text, err = http.reddit_keyless_get_text_retry_429(
-                "https://www.reddit.com/search.rss"
+                "https://www.reddit.com/svc/shreddit/search/?q=x"
             )
         assert text is None
         assert "403" in (err or "")
         assert gt.call_count == 1
         slept.assert_not_called()
         assert any(f.status_code == 403 for f in failures)
-
-    def test_rss_fetch_feed_recovers_after_one_429(self):
-        feed = (
-            '<feed xmlns="http://www.w3.org/2005/Atom"><entry>'
-            "<title>Recovered</title>"
-            '<link href="https://www.reddit.com/r/test/comments/abc/x/" />'
-            "<updated>2026-05-20T00:00:00+00:00</updated></entry></feed>"
-        )
-        bodies = [None, feed]
-
-        def fake_get(*_args, **_kwargs):
-            val = bodies.pop(0)
-            if val is None:
-                _record_status(429, "Too Many Requests")
-            return val
-
-        with mock.patch.object(http, "get_text", side_effect=fake_get), \
-             mock.patch.object(http.REDDIT_KEYLESS_LIMITER, "acquire"), \
-             mock.patch.object(http.time, "sleep"):
-            posts = reddit_rss._fetch_feed(
-                "https://www.reddit.com/search.rss", "Recovered"
-            )
-        assert len(posts) == 1
-        assert posts[0]["title"] == "Recovered"
 
     def test_listing_fetch_recovers_after_one_429(self):
         from pathlib import Path

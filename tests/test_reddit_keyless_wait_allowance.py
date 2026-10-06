@@ -1,17 +1,17 @@
 """Per-future result timeouts must cover the keyless bucket's queue.
 
-At 1 req/s, a batch of thirteen feed URLs on four workers queues about
+At 1 req/s, a batch of thirteen keyless URLs on four workers queues about
 thirteen seconds of token waits before the last fetch even starts, and four
 subquery streams share the same bucket. A fixed 20-second future timeout then
-expires while the fetch is still waiting for a token, and the feed is dropped
-(`[RedditRSS] feed future failed:` with an empty message on the 2026-08-31
-smoke run).
+expires while the fetch is still waiting for a token, and the result is
+dropped with an empty future-failure message (seen on the 2026-08-31 smoke
+run). The site search lane's timeout is covered in test_reddit_search.py.
 """
 
 import threading
 from unittest import mock
 
-from lib import http, reddit_listing, reddit_rss
+from lib import http, reddit_listing
 
 
 def test_limiter_reports_waiting_threads():
@@ -47,12 +47,11 @@ def test_wait_allowance_scales_with_batch_and_queue(monkeypatch):
         assert http.reddit_keyless_wait_allowance(13) == 9.0 + pad
 
 
-def test_rss_and_listing_result_timeouts_include_the_allowance(monkeypatch):
+def test_listing_result_timeout_includes_the_allowance(monkeypatch):
     limiter = http.RateLimiter(rate_per_sec=1.0, burst=2)
     monkeypatch.delenv(http.REDDIT_KEYLESS_RATE_ENV, raising=False)
     with mock.patch.object(http, "REDDIT_KEYLESS_LIMITER", limiter):
         pad = http.REDDIT_KEYLESS_CONTENTION_SECONDS
-        assert reddit_rss._result_timeout(13) == reddit_rss.FEED_TIMEOUT + 5 + 13.0 + pad
         assert reddit_listing._result_timeout(20) == reddit_listing.LISTING_TIMEOUT + 5 + 20.0 + pad
 
 

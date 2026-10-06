@@ -429,8 +429,37 @@ class TestUrlNormalization(unittest.TestCase):
     def test_case_insensitive(self):
         from lib.fusion import _normalize_url
         self.assertEqual(
-            _normalize_url("https://Reddit.com/r/Test"),
+            _normalize_url("https://Reddit.com/r/test"),
             _normalize_url("https://reddit.com/r/test"),
+        )
+
+    def test_path_case_preserved(self):
+        # CR-009: the path is case-sensitive; only the host lowercases.
+        from lib.fusion import _normalize_url
+        self.assertNotEqual(
+            _normalize_url("https://example.com/Page"),
+            _normalize_url("https://example.com/page"),
+        )
+
+    def test_query_case_preserved(self):
+        # CR-009: the query is case-sensitive; only the host lowercases.
+        from lib.fusion import _normalize_url
+        self.assertNotEqual(
+            _normalize_url("https://youtube.com/watch?v=ABC123"),
+            _normalize_url("https://youtube.com/watch?v=abc123"),
+        )
+
+    def test_uppercase_utm_params_stripped(self):
+        # Tracking params strip case-insensitively, so an uppercase
+        # UTM param does not poison the dedup key.
+        from lib.fusion import _normalize_url
+        self.assertEqual(
+            _normalize_url("https://example.com/page?UTM_SOURCE=x"),
+            _normalize_url("https://example.com/page"),
+        )
+        self.assertEqual(
+            _normalize_url("https://example.com/page?UTM_SOURCE=x"),
+            _normalize_url("https://example.com/page?utm_source=y"),
         )
 
 if __name__ == "__main__":

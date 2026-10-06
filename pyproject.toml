@@ -1,6 +1,6 @@
 [project]
 name = "last30days-skill"
-version = "3.25.0"
+version = "3.26.0"
 description = "Multi-source last-30-days research skill"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -63,7 +63,7 @@ addopts = [
 
 [tool.coverage.run]
 branch = true
-source = ["skills/last30days/scripts", "tests"]
+source = ["skills/last30days/scripts"]
 omit = [
   "skills/last30days/scripts/lib/vendor/*",
   "dist/*",
@@ -73,10 +73,14 @@ omit = [
 skip_empty = true
 show_missing = true
 # Coverage gate (issue #254). Floor intended to rise over time, not a ceiling.
-# Baseline measured 2026-07-03 on main before feat/hosted-api-mode
-# (source = scripts + tests): TOTAL 84.06%. Gate pinned at that baseline.
+# Baseline measured 2026-09-23 on the full suite with scripts-tree source
+# (tests/ excluded): TOTAL 82.28%. The previous 84 floor was measured with
+# source = scripts + tests, where well-tested test code inflated the number;
+# excluding tests/ lowers the honest baseline, which is why the floor moves
+# 84 -> 81. Pinned at 81 (not 82) for ~1.3pp headroom against the measured
+# 82.28; raise back toward 82+ as coverage grows.
 # Do not lower without documenting why in the PR (see AGENTS.md Rules).
-fail_under = 84
+fail_under = 81
 omit = [
   "skills/last30days/scripts/lib/vendor/*",
   "dist/*",

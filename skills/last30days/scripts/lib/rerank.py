@@ -907,7 +907,10 @@ def _extract_comment_text(candidate: schema.Candidate) -> str:
     parts = []
     for item in candidate.source_items:
         for comment in item.metadata.get("top_comments", [])[:3]:
-            body = comment.get("body", "") if isinstance(comment, dict) else str(comment)
+            body = (
+                comment.get("excerpt") or comment.get("body", "")
+                if isinstance(comment, dict) else str(comment)
+            )
             if body:
                 parts.append(body[:150])
         for insight in item.metadata.get("comment_insights", [])[:2]:
@@ -926,7 +929,7 @@ def _extract_comment_text_scored(candidate: schema.Candidate) -> str:
     for item in candidate.source_items:
         for comment in item.metadata.get("top_comments", [])[:3]:
             if isinstance(comment, dict):
-                body = comment.get("body", "")
+                body = comment.get("excerpt") or comment.get("body", "")
                 if not body:
                     continue
                 score = comment.get("score")

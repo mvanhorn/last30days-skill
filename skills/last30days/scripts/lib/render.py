@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from . import (
     amazon,
     dates,
+    fusion,
     health,
     hiring_signals,
     library_index,
@@ -2300,12 +2301,36 @@ def _render_hiring_signals(
     if not isinstance(summary, dict):
         return []
     mode = summary.get("mode") or "standard"
-    if candidates is not None:
-        job_items: dict[str, schema.SourceItem] = {}
-        for candidate in candidates:
+    rejected_jobs = set(summary.get("rejected_job_keys") or [])
+    if candidates is not None or rejected_jobs:
+        solid_clusters = _clusters_clearing_relevance_floor(report, report.clusters)
+        accepted = _candidates_for_auxiliary_sections(
+            report, report.clusters, solid_clusters,
+        )
+        accepted_ids = {
+            candidate.candidate_id for candidate in accepted
+            if _best_take_relevance_ok(candidate)
+        }
+        rejected_jobs.update(
+            fusion.candidate_key(item)
+            for candidate in report.ranked_candidates
+            if candidate.candidate_id not in accepted_ids
+            for item in candidate.source_items
+            if item.source == "jobs"
+        )
+        # Board size and rare-role signals must survive the ranking pool and
+        # display limits, while explicitly rejected evidence stays excluded.
+        job_items = {
+            fusion.candidate_key(item): item
+            for item in report.items_by_source.get("jobs", [])
+            if fusion.candidate_key(item) not in rejected_jobs
+        }
+        for candidate in accepted:
+            if candidate.candidate_id not in accepted_ids:
+                continue
             for item in candidate.source_items:
                 if item.source == "jobs":
-                    job_items[item.item_id] = item
+                    job_items[fusion.candidate_key(item)] = item
         if not job_items:
             return []
         summary = hiring_signals.analyze(

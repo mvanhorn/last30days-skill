@@ -9,7 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
 
 import last30days as cli
-from lib import env, permission_preflight, pipeline
+from lib import env, permission_preflight, pipeline, providers
 
 DEFAULT_SAVE_DIR = "~" + "/Documents/Last30Days"
 
@@ -180,6 +180,35 @@ def test_preflight_lists_active_provider_base_url_overrides():
     rendered = permission_preflight.render_text(preflight)
     assert "OPENROUTER_BASE_URL" in rendered
     assert "gateway.test" not in rendered
+
+
+def test_cli_preflight_propagates_file_endpoint_overrides(tmp_path, monkeypatch, capsys):
+    config_file = tmp_path / ".env"
+    config_file.write_text(
+        "XAI_BASE_URL=https://x-gateway.test/v1\n"
+        "OPENROUTER_BASE_URL=https://router-gateway.test/v1\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(env, "CONFIG_FILE", config_file)
+    for key in ("OPENAI_BASE_URL", "XAI_BASE_URL", "OPENROUTER_BASE_URL"):
+        monkeypatch.setenv(key, "")
+    monkeypatch.setattr(sys, "argv", ["last30days.py", "--preflight", "--emit=json"])
+
+    with mock.patch.object(env, "_load_keychain", return_value={}), \
+         mock.patch.object(env, "_load_pass", return_value={}):
+        assert cli.main() == 0
+
+    preflight = json.loads(capsys.readouterr().out)
+    assert preflight["network"]["endpoint_overrides"] == [
+        "OPENROUTER_BASE_URL", "XAI_BASE_URL",
+    ]
+    assert providers.resolve_endpoint("XAI_BASE_URL", providers.XAI_RESPONSES_URL) == (
+        "https://x-gateway.test/v1/responses"
+    )
+    assert providers.resolve_endpoint("OPENROUTER_BASE_URL", providers.OPENROUTER_URL) == (
+        "https://router-gateway.test/v1/chat/completions"
+    )
 
 
 def test_diagnose_uses_preflight_endpoint_override_key_set():

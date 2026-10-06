@@ -1,0 +1,1 @@
+Tightened source failure classification: 429/5xx status matching no longer false-positives on embedded digits, the stream exception path keeps the most specific failure (auth over rate-limit), X URLs keep path/query case when deduping, and an unconfigured X backend reads as skipped rather than failed.

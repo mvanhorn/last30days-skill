@@ -9,6 +9,32 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.26.0] - 2026-10-01
+
+### Security
+
+- `--save-suffix` is sanitized to a path-safe token so traversal fragments cannot escape the save directory (including discover-mode saves). ([#736](https://github.com/mvanhorn/last30days-skill/issues/736))
+
+### Removed
+
+- Keyless Reddit discovery no longer uses Reddit RSS feeds, which Reddit shuts off on 2026-11-13.
+
+### Added
+
+- Keyless Reddit discovery now uses Reddit's own site search, alongside subreddit listings, arctic-shift, and shreddit comments, so Reddit keeps working with no API key after the RSS shutdown.
+- New `--perplexity-search-type fast|web` flag and `LAST30DAYS_PERPLEXITY_SEARCH_TYPE` setting choose the search type for direct Perplexity Search API and Agent `web_search` requests. They do not enable the Perplexity source and need a direct `PERPLEXITY_API_KEY`. Thanks to @sk-holmes (#1184).
+- The local MCP server can now use an explicit `LAST30DAYS_PYTHON` interpreter and a default-deny, consent-gated `LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES` switch, enabling reproducible Windows Claude Desktop deployments without weakening the existing cookie-access default.
+
+### Changed
+
+- With `SCRAPECREATORS_API_KEY` set, Reddit now spends ScrapeCreators credits to backfill search whenever the free path returns fewer than 5 items, instead of only when it returns nothing. A run makes at most one ScrapeCreators Reddit backfill per distinct query, date window, and subreddit set, and each backfill is several API calls (searches plus comment fetches, roughly 10 at default depth). Set `LAST30DAYS_REDDIT_SC_MIN_ITEMS=0` to restore the old backfill-only-when-empty behavior.
+
+### Fixed
+
+- `--perplexity-search-type` no longer moves hosted-backend runs to local research when no direct `PERPLEXITY_API_KEY` is configured, and an invalid `LAST30DAYS_PERPLEXITY_SEARCH_TYPE` value no longer blocks OpenRouter Sonar searches. ([#1188](https://github.com/mvanhorn/last30days-skill/issues/1188))
+- Reading an HTTP error response body now counts against the caller's deadline instead of stalling past it, and debug logs redact request API keys, including keys a provider echoes back in an error body. Thanks to @sk-holmes (#1184).
+
+
 ## [3.25.0] - 2026-09-18
 
 ### Security

@@ -7,6 +7,7 @@ from lib import fanout
 from lib import http
 from lib import pipeline
 from lib import schema
+from lib import subproc
 
 
 class DepthSettingsOverrideTests(unittest.TestCase):
@@ -658,6 +659,99 @@ class TestRateLimitSharing(unittest.TestCase):
     def test_is_rate_limit_error_rejects_unrelated_error(self):
         exc = RuntimeError("Connection refused")
         self.assertFalse(pipeline._is_rate_limit_error(exc))
+
+    def test_is_rate_limit_error_rejects_embedded_digits(self):
+        # CR-007: "14293" must not read as a 429.
+        exc = RuntimeError("request id 14293 failed")
+        self.assertFalse(pipeline._is_rate_limit_error(exc))
+
+    def test_is_rate_limit_error_detects_standalone_code(self):
+        exc = RuntimeError("failed with HTTP 429")
+        self.assertTrue(pipeline._is_rate_limit_error(exc))
+
+    def test_is_rate_limit_error_rejects_bare_number(self):
+        # A bare 429 with no HTTP/status/rate-limit marker is not a rate
+        # limit; misreading it skips the source for the rest of the run.
+        exc = RuntimeError("batch 429 failed")
+        self.assertFalse(pipeline._is_rate_limit_error(exc))
+
+    def test_is_rate_limit_error_accepts_real_message_shapes(self):
+        for msg in (
+            "HTTP 429: Too Many Requests",
+            "HTTP Error 429: Too Many Requests",
+            "xapi: http 429",
+            "status: 429",
+            "status_code=429",
+            "Reddit rate limited (429) fetching https://example.com",
+            "429 Too Many Requests",
+        ):
+            with self.subTest(msg=msg):
+                self.assertTrue(pipeline._is_rate_limit_error(RuntimeError(msg)))
+
+    def test_is_transient_error_rejects_embedded_digits(self):
+        # CR-023: "15003" must not read as a 500.
+        exc = RuntimeError("job 15003 failed")
+        self.assertFalse(pipeline._is_transient_error(exc))
+
+    def test_is_transient_error_detects_full_5xx_range(self):
+        for code in ("500", "501", "502", "503", "504", "505", "507", "508", "520", "524", "599"):
+            with self.subTest(code=code):
+                exc = RuntimeError(f"upstream failed with HTTP {code}")
+                self.assertTrue(pipeline._is_transient_error(exc))
+
+    def test_is_transient_error_rejects_bare_number(self):
+        exc = RuntimeError("job 500 rows failed")
+        self.assertFalse(pipeline._is_transient_error(exc))
+
+    def test_is_transient_error_accepts_real_message_shapes(self):
+        for msg in (
+            "HTTP 503: Service Unavailable",
+            "HTTP Error 502: Bad Gateway",
+            "HTTP/1.1 504 Gateway Timeout",
+            "error code 520",
+            "upstream returned 502 Bad Gateway",
+        ):
+            with self.subTest(msg=msg):
+                self.assertTrue(pipeline._is_transient_error(RuntimeError(msg)))
+
+    def test_is_transient_error_rejects_unrelated_error(self):
+        exc = RuntimeError("Connection refused")
+        self.assertFalse(pipeline._is_transient_error(exc))
+
+    def test_retrieve_stream_exception_path_prefers_specific_failure(self):
+        # CR-008: the exception path must use _FAILURE_SPECIFICITY, so an
+        # AUTH_FAILED captured earlier is not masked by a later 429.
+        from lib import schema as _schema
+
+        def boom(*_args, **_kwargs):
+            # Record into the enclosing capture sink: auth first, 429 last,
+            # so the old failures[-1] code would have picked RATE_LIMITED.
+            http._record_failure(http.HTTPError("HTTP 401", status_code=401))
+            http._record_failure(http.HTTPError("HTTP 429", status_code=429))
+            raise RuntimeError("stream blew up")
+
+        with patch("lib.pipeline._retrieve_stream_impl", side_effect=boom):
+            with self.assertRaises(pipeline.SourceRunError) as caught:
+                pipeline._retrieve_stream(
+                    topic="test",
+                    subquery=_schema.SubQuery(
+                        label="test",
+                        search_query="test query",
+                        ranking_query="test query",
+                        sources=["x"],
+                    ),
+                    source="other",
+                    config={},
+                    depth="quick",
+                    date_range=("2026-02-15", "2026-03-17"),
+                    runtime=_schema.ProviderRuntime(
+                        reasoning_provider="mock",
+                        planner_model="mock",
+                        rerank_model="mock",
+                    ),
+                    mock=True,
+                )
+        self.assertEqual(caught.exception.outcome_state, _schema.AUTH_FAILED)
 
     def test_retrieve_stream_skips_rate_limited_source(self):
         """_retrieve_stream should return empty when source is rate-limited."""
@@ -1349,6 +1443,113 @@ class TestSupplementalSearches(unittest.TestCase):
         mock_xq_handles.assert_called_once()
         x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
         self.assertIn("https://x.com/analyst1/status/888", x_urls)
+
+    @patch("lib.env.get_xquik_token", return_value="k")
+    @patch("lib.env.x_backend_chain", return_value=["xquik"])
+    @patch("lib.xquik._execute_search", return_value=([], "Xquik key unpaid: payment required (402)"))
+    @patch("lib.entity_extract.extract_entities")
+    def test_xquik_handle_lane_auth_failure_reaches_source_status(
+        self, mock_extract, _mock_exec, *_patches
+    ):
+        """An unpaid xquik key produced an empty FROM lane and no outcome, so
+        the run reported X as a clean zero and the report stated as fact that
+        the subject posted nothing."""
+        mock_extract.return_value = {
+            "x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": [],
+        }
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1",
+                              author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2",
+                              author="analyst1", body="AI safety research"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime(None), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+
+        outcome = bundle.source_status.get("x")
+        self.assertIsNotNone(outcome, "x outcome must exist, not a silent zero")
+        self.assertEqual(schema.AUTH_FAILED, outcome.state)
+        self.assertTrue(outcome.attempted)
+
+    @patch("lib.env.get_xquik_token", return_value="k")
+    @patch("lib.env.x_backend_chain", return_value=["xquik"])
+    @patch("lib.xquik.http.get")
+    @patch("lib.entity_extract.extract_entities")
+    def test_xquik_handle_lane_rate_limit_reaches_source_status(
+        self, mock_extract, mock_get, *_patches
+    ):
+        """A 429 is not an auth failure, so it took the non-fatal path inside
+        _execute_search and reported nothing at all: the lane came back empty
+        with no outcome and the run called it genuine silence."""
+        mock_extract.return_value = {
+            "x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": [],
+        }
+        mock_get.side_effect = http.HTTPError(
+            "HTTP 429: Too Many Requests", status_code=429,
+        )
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1",
+                              author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2",
+                              author="analyst1", body="AI safety research"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime(None), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+
+        outcome = bundle.source_status.get("x")
+        self.assertIsNotNone(outcome, "x outcome must exist, not a silent zero")
+        # PARTIAL rather than AUTH_FAILED: a 429 is transient, and Phase 1
+        # items survived, so record_failure keeps them and marks the source.
+        self.assertEqual(schema.PARTIAL, outcome.state)
+        self.assertIn("429", outcome.detail)
+
+    @patch("lib.env.x_backend_chain", return_value=["bird"])
+    @patch("lib.bird_x.search_mentions", return_value=[])
+    @patch("lib.bird_x.subproc.run_with_timeout")
+    @patch("lib.entity_extract.extract_entities")
+    def test_bird_handle_lane_transport_failure_reaches_source_status(
+        self, mock_extract, mock_run, *_patches
+    ):
+        """Same defect on the bird path: a bird-search timeout returned no
+        items and no outcome, so an unreachable lane looked like silence."""
+        mock_extract.return_value = {
+            "x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": [],
+        }
+        mock_run.side_effect = subproc.SubprocTimeout("timed out")
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1",
+                              author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2",
+                              author="analyst1", body="AI safety research"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime(None), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+
+        outcome = bundle.source_status.get("x")
+        self.assertIsNotNone(outcome, "x outcome must exist, not a silent zero")
+        # PARTIAL, not UNREACHABLE: X delivered Phase 1 items and only the
+        # Phase 2 handle lane failed, which is what record_failure encodes.
+        self.assertEqual(schema.PARTIAL, outcome.state)
+        self.assertIn("timed out", outcome.detail)
+        self.assertIn("@analyst1", outcome.detail)
 
     @patch("lib.bird_x.search_handles")
     @patch("lib.entity_extract.extract_entities")

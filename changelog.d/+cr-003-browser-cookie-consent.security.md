@@ -1,0 +1,1 @@
+Require explicit consent before reading browser cookies through Chrome debugging sessions. Setup now saves acceptance or refusal, and a saved refusal blocks native browser and CDP reads on subsequent runs without storing cookie values.

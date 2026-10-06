@@ -1,6 +1,9 @@
 import json
+import os
 import unittest
+from unittest import mock
 
+from lib import xai_x
 from lib.xai_x import parse_x_response
 
 
@@ -64,10 +67,6 @@ class TestXaiXBaseUrlOverride(unittest.TestCase):
     """XAI_BASE_URL redirects the x_search request like the reasoning client."""
 
     def _posted_url(self, env):
-        import os
-        from unittest import mock
-        from lib import xai_x
-
         with mock.patch.dict(os.environ, env, clear=True), mock.patch(
             "lib.xai_x.http.post", return_value={"output": []}
         ) as post:
@@ -75,8 +74,6 @@ class TestXaiXBaseUrlOverride(unittest.TestCase):
         return post.call_args.args[0]
 
     def test_default_endpoint_without_override(self):
-        from lib import xai_x
-
         self.assertEqual(xai_x.XAI_RESPONSES_URL, self._posted_url({}))
 
     def test_api_root_override_is_honored(self):
@@ -84,6 +81,32 @@ class TestXaiXBaseUrlOverride(unittest.TestCase):
             "https://gateway.test/v1/responses",
             self._posted_url({"XAI_BASE_URL": "https://gateway.test/v1"}),
         )
+
+    def test_override_preserves_request_and_deadline(self):
+        endpoint = "https://gateway.test/v1/responses"
+        cancel = object()
+        with mock.patch.dict(os.environ, {"XAI_BASE_URL": endpoint}), mock.patch(
+            "lib.xai_x.http.post", return_value={"output": []}
+        ) as post:
+            xai_x.search_x(
+                "xai-test", "grok-test", "routing topic", "2026-05-01", "2026-06-01",
+                depth="quick", deadline_monotonic=1234.5, cancel=cancel,
+            )
+
+        post.assert_called_once()
+        url, payload = post.call_args.args
+        self.assertEqual(endpoint, url)
+        self.assertEqual("grok-test", payload["model"])
+        self.assertIn("routing topic", payload["input"][0]["content"])
+        self.assertEqual(
+            [{"type": "x_search", "from_date": "2026-05-01", "to_date": "2026-06-01"}],
+            payload["tools"],
+        )
+        self.assertEqual("Bearer xai-test", post.call_args.kwargs["headers"]["Authorization"])
+        self.assertEqual(90, post.call_args.kwargs["timeout"])
+        self.assertEqual(1, post.call_args.kwargs["retries"])
+        self.assertEqual(1234.5, post.call_args.kwargs["deadline_monotonic"])
+        self.assertIs(cancel, post.call_args.kwargs["cancel"])
 
 
 if __name__ == "__main__":
