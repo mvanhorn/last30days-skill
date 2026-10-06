@@ -1,6 +1,7 @@
 import json
 import os
 import socket
+import signal
 import sys
 import threading
 import time
@@ -55,6 +56,8 @@ def local_http():
             status = int(parsed.path.rsplit("/", 1)[1]) if parsed.path.startswith("/status/") else 200
             if parsed.path == "/held-error":
                 status = 403
+            if query.get("url") == ["failed"]:
+                status = 402
             self.send_response(status)
             self.send_header("Retry-After", "0")
             self.end_headers()
@@ -223,6 +226,35 @@ def test_owned_get_cancellation_reaps_transport(local_http, children):
         assert not caller.is_alive()
 
 
+def test_stalled_error_body_is_reaped_and_captured_as_timeout(local_http, children):
+    url, started, release, _ = local_http
+    with http.capture_failures() as failures:
+        try:
+            with pytest.raises(http.DeadlineExceeded) as caught:
+                http.get(f"{url}/held-error", retries=1,
+                         deadline_monotonic=time.monotonic() + 0.8, owned_get=True)
+            assert started.is_set(), "real HTTP error body read was not reached"
+            assert caught.value.outcome_state == health.TIMEOUT
+            assert failures == [caught.value]
+            assert all(process.poll() is not None for process in children)
+        finally:
+            release.set()
+
+
+def test_reddit_comment_worker_preserves_parent_failure_capture(local_http, children, monkeypatch):
+    url, _, _, _ = local_http
+    monkeypatch.setattr(reddit, "SCRAPECREATORS_BASE", url)
+    items = [{"id": "failed", "url": "failed", "engagement": {"score": 10}}]
+    with http.capture_failures() as failures:
+        result = reddit.enrich_with_comments(items, "dummy-key", budget_seconds=2)
+    assert result is items
+    assert "top_comments" not in result[0]
+    assert len(failures) == 1
+    assert failures[0].status_code == 402
+    assert failures[0].outcome_state == health.PAYMENT_REQUIRED
+    assert failures[0].body == '{"error":"credits exhausted"}'
+
+
 def test_dns_error_wire_record_retains_retry_signal():
     restored = bounded_get._error_from_record({
         "kind": "URLError", "reason": {"kind": "gaierror", "errno": socket.EAI_AGAIN,
@@ -294,6 +326,86 @@ def test_unexpected_parent_failure_reaps_owned_child(children, monkeypatch):
         subproc.run_with_timeout([sys.executable, "-c", "import time; time.sleep(30)"],
                                  timeout=2, cleanup_grace=0.1)
     assert all(process.poll() is not None for process in children)
+
+
+@pytest.mark.skipif(not hasattr(os, "killpg"), reason="POSIX process-group termination")
+def test_health_timeout_terminates_inherited_output_descendant(tmp_path, children, monkeypatch):
+    descendant_pid = tmp_path / "descendant.pid"
+    stopped = tmp_path / "descendant.stopped"
+    child = (
+        "import os, signal, sys, time\nfrom pathlib import Path\n"
+        f"def stop(*args):\n Path({str(stopped)!r}).write_text('terminated')\n sys.exit(0)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        f"Path({str(descendant_pid)!r}).write_text(str(os.getpid()))\n"
+        "time.sleep(30)\n"
+    )
+    command = tmp_path / "version.py"
+    command.write_text(f"import subprocess, sys, time\nsubprocess.Popen([sys.executable, '-c', {child!r}])\ntime.sleep(30)\n")
+    monkeypatch.setitem(health._VERSION_ARGS, sys.executable, [str(command)])
+    started = time.monotonic()
+    try:
+        result = health._probe_dependency_uncached(sys.executable, 0.8)
+        assert time.monotonic() - started < 1.5
+        assert result.status == health.TIMEOUT
+        assert descendant_pid.exists(), "real descendant was not reached"
+        assert stopped.exists(), "timed-out version probe left its descendant running"
+        assert stopped.read_text() == "terminated"
+        assert all(process.poll() is not None for process in children)
+    finally:
+        if descendant_pid.exists() and not stopped.exists():
+            try:
+                os.kill(int(descendant_pid.read_text()), signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+
+
+def test_health_real_version_command_preserves_first_line(children, monkeypatch):
+    monkeypatch.setitem(health._VERSION_ARGS, sys.executable, [
+        "-c", "import sys; print('1.2.3'); print('ignored second line'); print('stderr detail', file=sys.stderr)",
+    ])
+    result = health._probe_dependency_uncached(sys.executable, 2)
+    assert result.status == health.OK
+    assert result.detail == "1.2.3"
+    assert result.prescription == ""
+    assert all(process.stdout is None and process.stderr is None for process in children)
+
+
+def test_file_capture_returns_bounded_stdout_and_stderr(children):
+    result = subproc.run_with_timeout([
+        sys.executable, "-c", "import sys; print('a' * 100); print('b' * 100, file=sys.stderr)",
+    ], timeout=2, capture_limit_bytes=16)
+    assert result.returncode == 0
+    assert result.stdout == "a" * 16
+    assert result.stderr == "b" * 16
+    assert all(process.stdout is None and process.stderr is None for process in children)
+
+
+def test_file_capture_without_process_groups_avoids_descendant_pipe_wait(tmp_path, children, monkeypatch):
+    descendant_pid = tmp_path / "descendant.pid"
+    command = tmp_path / "version.py"
+    child = "import time; time.sleep(30)"
+    command.write_text(
+        "import subprocess, sys, time\nfrom pathlib import Path\n"
+        f"child = subprocess.Popen([sys.executable, '-c', {child!r}])\n"
+        f"Path({str(descendant_pid)!r}).write_text(str(child.pid))\n"
+        "time.sleep(30)\n"
+    )
+    monkeypatch.setattr(subproc, "os", SimpleNamespace(kill=os.kill))
+    started = time.monotonic()
+    try:
+        with pytest.raises(subproc.SubprocTimeout):
+            subproc.run_with_timeout([sys.executable, str(command)], timeout=0.6,
+                                     cleanup_grace=0.1, capture_limit_bytes=64 * 1024)
+        assert time.monotonic() - started < 1.5
+        assert descendant_pid.exists(), "real descendant was not reached"
+        assert all(process.poll() is not None for process in children)
+        assert all(process.stdout is None and process.stderr is None for process in children)
+    finally:
+        if descendant_pid.exists():
+            try:
+                os.kill(int(descendant_pid.read_text()), signal.SIGTERM)
+            except ProcessLookupError:
+                pass
 
 
 def test_doctor_retry_spends_one_operation_budget(monkeypatch):

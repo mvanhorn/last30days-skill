@@ -10,8 +10,10 @@ from __future__ import annotations
 import os
 import signal
 import subprocess
+import tempfile
 import threading
 import time
+from contextlib import ExitStack
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
@@ -133,6 +135,7 @@ def run_with_timeout(
     deadline_monotonic: Optional[float] = None,
     cancel: Optional[threading.Event] = None,
     cleanup_grace: float = 5.0,
+    capture_limit_bytes: Optional[int] = None,
 ) -> SubprocResult:
     """Run a subprocess with process-group cleanup on timeout.
 
@@ -153,6 +156,8 @@ def run_with_timeout(
         deadline_monotonic: Absolute operation deadline, including startup.
         cancel: Optional event checked while waiting for the command.
         cleanup_grace: Maximum TERM wait and subsequent KILL/reap wait, each.
+        capture_limit_bytes: Capture to temporary files instead of pipes,
+            reading at most this many bytes from each stream after exit.
 
     Returns:
         SubprocResult with returncode, stdout, and stderr as strings.
@@ -167,28 +172,34 @@ def run_with_timeout(
         raise SubprocTimeout("Command deadline exceeded before spawn", started=False)
     if cancel is not None and cancel.is_set():
         raise SubprocTimeout("Command cancelled before spawn", started=False)
+    if capture_limit_bytes is not None and capture_limit_bytes < 0:
+        raise ValueError("capture limit must be nonnegative")
     own_group = hasattr(os, "setsid") and hasattr(os, "killpg")
-
-    proc = subprocess.Popen(
-        list(cmd),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        stdin=subprocess.PIPE if input_text is not None else None,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        start_new_session=own_group,
-        env=env,
-    )
-
-    if on_pid is not None:
-        try:
-            on_pid(proc.pid)
-        except Exception:
-            pass
-
+    capture = ExitStack()
+    try:
+        stdout_file = capture.enter_context(tempfile.TemporaryFile()) if capture_limit_bytes is not None else None
+        stderr_file = capture.enter_context(tempfile.TemporaryFile()) if capture_limit_bytes is not None else None
+        proc = subprocess.Popen(
+            list(cmd),
+            stdout=stdout_file if stdout_file is not None else subprocess.PIPE,
+            stderr=stderr_file if stderr_file is not None else subprocess.PIPE,
+            stdin=subprocess.PIPE if input_text is not None else None,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            start_new_session=own_group,
+            env=env,
+        )
+    except BaseException:
+        capture.close()
+        raise
     register_child_pid(proc.pid)
     try:
+        if on_pid is not None:
+            try:
+                on_pid(proc.pid)
+            except Exception:
+                pass
         try:
             deadline = time.monotonic() + timeout
             if deadline_monotonic is not None:
@@ -249,6 +260,11 @@ def run_with_timeout(
                             break
                         time.sleep(min(_CLEANUP_POLL_SECONDS, remaining))
             raise SubprocTimeout(f"Command {cmd[0]} timed out after {timeout}s")
+        if capture_limit_bytes is not None:
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = stdout_file.read(capture_limit_bytes).decode("utf-8", errors="replace")
+            stderr = stderr_file.read(capture_limit_bytes).decode("utf-8", errors="replace")
     except SubprocTimeout:
         raise
     except BaseException:
@@ -264,6 +280,7 @@ def run_with_timeout(
         for pipe in (proc.stdin, proc.stdout, proc.stderr):
             if pipe is not None:
                 pipe.close()
+        capture.close()
 
     return SubprocResult(
         returncode=proc.returncode,
