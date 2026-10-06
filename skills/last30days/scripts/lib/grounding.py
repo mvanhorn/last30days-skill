@@ -246,9 +246,9 @@ def _parse_serper_relative(raw: str, now: datetime | None = None) -> str | None:
     m = _SERPER_RELATIVE_RE.match(text)
     if not m:
         return None
-    amount = int(m.group(1))
     unit = {"min": "minute", "hr": "hour"}.get(m.group(2), m.group(2))
     try:
+        amount = int(m.group(1))
         if unit == "minute":
             return (anchor - timedelta(minutes=amount)).date().isoformat()
         if unit == "hour":

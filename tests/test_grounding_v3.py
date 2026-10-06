@@ -115,6 +115,25 @@ class SerperSearchTests(unittest.TestCase):
             self.assertEqual("2026-03-26", items[1]["date"])
 
 
+    def test_serper_search_keeps_valid_result_after_overlong_relative_age(self):
+        response = {
+            "organic": [
+                {"title": "Malformed", "link": "https://example.com/bad",
+                 "date": "9" * 5000 + " days ago"},
+                {"title": "Valid", "link": "https://example.com/good",
+                 "date": "1 day ago"},
+            ]
+        }
+        with patch("lib.grounding.http.request", return_value=response), \
+             patch("lib.grounding._now", return_value=datetime(2026, 3, 27, 12, 0)):
+            items, artifact = grounding.serper_search(
+                "test", ("2026-03-26", "2026-03-27"), "fake-key"
+            )
+        self.assertEqual(["https://example.com/good"], [item["url"] for item in items])
+        self.assertEqual("2026-03-26", items[0]["date"])
+        self.assertEqual(1, artifact["resultCount"])
+
+
 class SerperRelativeDateTests(unittest.TestCase):
     NOON = datetime(2026, 3, 27, 12, 0)
 
