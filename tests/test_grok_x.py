@@ -719,13 +719,24 @@ def test_empty_result_is_not_reported_as_an_error():
     assert "error" not in result
 
 
-def test_depth_drives_the_fanout_call_count():
+@pytest.mark.parametrize("depth, expected_calls", [("quick", 1), ("deep", 4)])
+def test_depth_drives_the_fanout_call_count(monkeypatch, depth, expected_calls):
     """DEPTH_CONFIG was dead: grok returned 10 posts at every depth while
     sitting ahead of bird, silently downgrading a deep run."""
-    quick = grok_x._fanout_queries("t", "2026-07-14", "2026-08-13", 1)
-    deep = grok_x._fanout_queries("t", "2026-07-14", "2026-08-13", 4)
-    assert len(quick) == 1 and len(deep) == 4
-    assert len(set(deep)) == 4, "fan-out variants must differ or they repeat one result set"
+    queries = []
+
+    def empty_query(query, from_date, to_date, **kwargs):
+        assert (from_date, to_date) == WINDOW
+        assert kwargs["depth"] == depth
+        queries.append(query)
+        return [], "", False
+
+    monkeypatch.setattr(grok_x, "_run_query", empty_query)
+    result = grok_x.search_x("Peter Steinberger", *WINDOW, depth=depth)
+
+    assert result == {"items": []}
+    assert len(queries) == expected_calls
+    assert len(set(queries)) == expected_calls, "fan-out must reach distinct result sets"
 
 
 def test_fanout_queries_no_phrase_quote_for_place_names():
