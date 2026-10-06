@@ -905,6 +905,9 @@ def request(
                     req, timeout=request_timeout,
                     deadline_monotonic=deadline_monotonic, cancel=cancel,
                 )
+            except bounded_get.GetLaunchError:
+                usage.cancel(charge)
+                raise
             except bounded_get.GetTimeout as exc:
                 if not exc.started:
                     usage.cancel(charge)

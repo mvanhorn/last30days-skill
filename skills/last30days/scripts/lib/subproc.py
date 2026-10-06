@@ -190,11 +190,13 @@ def run_with_timeout(
             start_new_session=own_group,
             env=env,
         )
-    except BaseException:
+    except BaseException as exc:
+        if isinstance(exc, OSError):
+            exc._last30days_subproc_launch_failed = True
         capture.close()
         raise
-    register_child_pid(proc.pid)
     try:
+        register_child_pid(proc.pid)
         if on_pid is not None:
             try:
                 on_pid(proc.pid)

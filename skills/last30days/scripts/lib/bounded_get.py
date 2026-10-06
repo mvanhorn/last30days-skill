@@ -30,6 +30,10 @@ class GetTimeout(TimeoutError):
         self.started = started
 
 
+class GetLaunchError(OSError):
+    """GET worker launch failed before the worker received a request."""
+
+
 def _error_record(exc):
     if isinstance(exc, urllib.error.URLError):
         reason = exc.reason
@@ -88,6 +92,10 @@ def get(
         )
     except subproc.SubprocTimeout as exc:
         raise GetTimeout("GET exceeded operation deadline or was cancelled", started=exc.started) from exc
+    except OSError as exc:
+        if not getattr(exc, "_last30days_subproc_launch_failed", False):
+            raise
+        raise GetLaunchError(*exc.args) from exc
     if result.returncode != 0:
         raise OSError("bounded GET worker failed")
     record = json.loads(result.stdout)

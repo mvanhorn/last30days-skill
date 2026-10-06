@@ -1,7 +1,9 @@
+import errno
 import json
 import os
 import socket
 import signal
+import sqlite3
 import sys
 import threading
 import time
@@ -288,6 +290,102 @@ def test_unstarted_owned_get_cancels_request_charge(local_http):
     begin.assert_called_once()
     cancel.assert_called_once_with(charge)
     spawn.assert_not_called()
+
+
+@pytest.fixture
+def paid_owned_get(local_http, tmp_path, monkeypatch):
+    """Keep real provider accounting while restricting worker destinations to loopback."""
+    local_url, _, _, _ = local_http
+    paid_url = "https://api.scrapecreators.com/v1/reddit/post"
+    journal = tmp_path / "usage.db"
+    usage.create_journal(journal)
+    monkeypatch.setenv(usage.JOURNAL_ENV, str(journal))
+    guarded_get = bounded_get.get
+
+    def local_transport(req, **kwargs):
+        assert req.full_url == paid_url
+        return guarded_get(urllib.request.Request(f"{local_url}/echo"), **kwargs)
+
+    monkeypatch.setattr(bounded_get, "get", local_transport)
+    monkeypatch.setattr(http.time, "sleep", lambda _: None)
+    return paid_url, journal
+
+
+def _pending_charges(journal):
+    with sqlite3.connect(journal) as connection:
+        return connection.execute("SELECT COUNT(*) FROM attempts WHERE unknown = 1").fetchone()[0]
+
+
+@pytest.mark.parametrize("error_number", [errno.ENOENT, errno.EAGAIN, errno.EMFILE])
+def test_owned_get_launch_error_preserves_errno_and_cause(local_http, monkeypatch, error_number):
+    local_url, _, _, _ = local_http
+    error = OSError(error_number, "GET worker launch failed")
+    with patch.object(subproc.subprocess, "Popen", side_effect=error):
+        with pytest.raises(bounded_get.GetLaunchError) as caught:
+            bounded_get.get(urllib.request.Request(f"{local_url}/echo"), timeout=2,
+                            deadline_monotonic=time.monotonic() + 2)
+    assert caught.value.errno == error_number
+    assert caught.value.__cause__ is error
+
+
+@pytest.mark.parametrize("error_number", [errno.EAGAIN, errno.EMFILE])
+def test_owned_get_spawn_errors_cancel_each_paid_retry(paid_owned_get, monkeypatch, error_number):
+    url, journal = paid_owned_get
+    pending_before_spawn = []
+
+    def unavailable(*args, **kwargs):
+        pending_before_spawn.append(_pending_charges(journal))
+        raise OSError(error_number, "GET worker could not start")
+
+    monkeypatch.setattr(subproc.subprocess, "Popen", unavailable)
+    with http.capture_failures() as failures:
+        with pytest.raises(http.HTTPError) as caught:
+            http.get(url, retries=3, deadline_monotonic=time.monotonic() + 30, owned_get=True)
+
+    assert len(pending_before_spawn) == 3
+    assert _pending_charges(journal) == 0
+    assert pending_before_spawn == [1, 1, 1]
+    assert usage.read_journal(journal) == {
+        "token_cost": 0.0, "cost_unknown": 0, "prompt_tokens": 0, "completion_tokens": 0,
+    }
+    assert caught.value.outcome_state == health.UNREACHABLE
+    assert "GET worker could not start" in str(caught.value)
+    assert failures == [caught.value]
+
+
+@pytest.mark.parametrize("error_number", [errno.EAGAIN, errno.EMFILE])
+@pytest.mark.parametrize("stage", ["registration", "communication"])
+def test_owned_get_post_launch_errors_keep_unknown_paid_retries(paid_owned_get, children, monkeypatch, error_number, stage):
+    url, journal = paid_owned_get
+    pending_before_spawn = []
+    start = subproc.subprocess.Popen
+
+    def fail(*args, **kwargs):
+        raise OSError(error_number, "GET parent failed after launch")
+
+    def fail_after_start(*args, **kwargs):
+        pending_before_spawn.append(_pending_charges(journal))
+        process = start(*args, **kwargs)
+        if stage == "communication":
+            process.communicate = fail
+        return process
+
+    monkeypatch.setattr(subproc.subprocess, "Popen", fail_after_start)
+    if stage == "registration":
+        monkeypatch.setattr(subproc, "register_child_pid", fail)
+    with http.capture_failures() as failures:
+        with pytest.raises(http.HTTPError) as caught:
+            http.get(url, retries=3, deadline_monotonic=time.monotonic() + 30, owned_get=True)
+
+    assert len(children) == 3
+    assert pending_before_spawn == [1, 2, 3]
+    assert _pending_charges(journal) == 3
+    assert usage.read_journal(journal) == {
+        "token_cost": 0.0, "cost_unknown": 1, "prompt_tokens": 0, "completion_tokens": 0,
+    }
+    assert caught.value.outcome_state == health.UNREACHABLE
+    assert "GET parent failed after launch" in str(caught.value)
+    assert failures == [caught.value]
 
 
 @pytest.mark.parametrize("kwargs", [
