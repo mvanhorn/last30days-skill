@@ -1,5 +1,7 @@
 import unittest
 
+import pytest
+
 from lib.reddit import (
     _extract_date,
     _extract_score,
@@ -304,3 +306,39 @@ def test_window_to_time_filter_covers_historical_from_date(monkeypatch):
     # One-day request ending two weeks ago: span alone would pick "week" and
     # miss the entire range; age of from_date requires "month".
     assert reddit._window_to_time_filter("2026-07-09", "2026-07-10") == "month"
+
+
+@pytest.mark.parametrize(
+    "depth,from_date,to_date,expected",
+    [
+        ("default", "2026-04-25", "2026-07-24", "year"),
+        ("quick", "2026-06-24", "2026-07-24", "month"),
+        ("deep", "2026-04-25", "2026-07-24", "year"),
+        ("quick", "2026-07-09", "2026-07-10", "month"),
+        ("default", "2026-07-23", "2026-07-24", "week"),
+        ("deep", "2026-07-23", "2026-07-24", "week"),
+    ],
+)
+def test_search_reddit_requests_complete_date_window(monkeypatch, depth, from_date, to_date, expected):
+    from datetime import datetime, timezone
+    from unittest.mock import Mock
+
+    from lib import reddit
+
+    clock = Mock()
+    clock.now.return_value = datetime(2026, 7, 24, tzinfo=timezone.utc)
+    monkeypatch.setattr(reddit, "datetime", clock)
+    global_search = Mock(return_value=[])
+    subreddit_search = Mock(return_value=[])
+    monkeypatch.setattr(reddit, "_global_search", global_search)
+    monkeypatch.setattr(reddit, "_subreddit_search", subreddit_search)
+
+    reddit.search_reddit(
+        "Python", from_date, to_date, depth=depth,
+        token="dummy-scrapecreators-key", subreddits=["Python"],
+    )
+
+    assert global_search.call_count > 0
+    assert subreddit_search.call_count > 0
+    assert {call.args[-1] for call in global_search.call_args_list} == {expected}
+    assert {call.args[-1] for call in subreddit_search.call_args_list} == {expected}

@@ -42,19 +42,16 @@ DEPTH_CONFIG = {
         "global_searches": 1,
         "subreddit_searches": 2,
         "comment_enrichments": 3,
-        "timeframe": "week",
     },
     "default": {
         "global_searches": 2,
         "subreddit_searches": 3,
         "comment_enrichments": 5,
-        "timeframe": "month",
     },
     "deep": {
         "global_searches": 3,
         "subreddit_searches": 5,
         "comment_enrichments": 8,
-        "timeframe": "month",
     },
 }
 
@@ -456,9 +453,6 @@ def _dedupe_posts(posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return unique
 
 
-_TIMEFRAME_ORDER = {"hour": 0, "day": 1, "week": 2, "month": 3, "year": 4, "all": 5}
-
-
 def _days_to_reddit_bucket(days: float) -> str:
     """Map a day count onto the smallest Reddit rolling bucket that covers it.
 
@@ -489,7 +483,7 @@ def _window_to_time_filter(from_date: str, to_date: str) -> str:
        bucket that reaches ``from_date``; span-alone would pick ``week`` and
        the API would omit the entire requested range.
 
-    Take the wider of the two; the caller then mins with the depth default.
+    Take the wider of the two, independently of retrieval depth.
     Phase 5 still trims to ``from_date``/``to_date``. Falls back to ``month``
     if the dates don't parse.
     """
@@ -531,13 +525,7 @@ def search_reddit(
         return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
 
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
-    # Fetch window must track the requested date range, not just the depth
-    # default. Otherwise a --days 1 request fetches a month of relevance-
-    # sorted posts and Phase 5 discards everything outside 24h (0 on quiet
-    # days). Use the tighter of {window-derived, depth default}.
-    _depth_tf = config["timeframe"]
-    _window_tf = _window_to_time_filter(from_date, to_date)
-    timeframe = _window_tf if _TIMEFRAME_ORDER.get(_window_tf, 3) <= _TIMEFRAME_ORDER.get(_depth_tf, 3) else _depth_tf
+    timeframe = _window_to_time_filter(from_date, to_date)
     intent = infer_query_intent(topic)
 
     # === Phase 1: Query Expansion ===

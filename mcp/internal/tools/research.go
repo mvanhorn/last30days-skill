@@ -92,14 +92,21 @@ func makeResearchHandler(cfg Config) server.ToolHandlerFunc {
 }
 
 func researchRunArgs(topic, emit string, save bool) []string {
-	runArgs := []string{topic, "--emit=" + emit}
+	// Options first, positional topic last behind a `--` separator: a
+	// dash-prefixed topic must never be parsed as engine flags.
+	runArgs := []string{"--emit=" + emit}
 	if !browserCookiesAllowed() {
 		runArgs = append(runArgs, "--no-browser-cookies")
 	}
+	// Always pass --save-dir explicitly. An empty value skips the engine's
+	// `is None` LAST30DAYS_MEMORY_DIR fallback and is falsy at the save
+	// gate, so declining to save writes nothing even when the env var set.
 	if save {
 		runArgs = append(runArgs, "--save-dir", mcpSaveDir())
+	} else {
+		runArgs = append(runArgs, "--save-dir", "")
 	}
-	return runArgs
+	return append(runArgs, "--", topic)
 }
 
 func browserCookiesAllowed() bool {

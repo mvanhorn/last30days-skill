@@ -765,6 +765,47 @@ def test_add_topic_with_search_queries(temp_db):
     assert json.loads(topic["search_queries"]) == ["query1", "query2"]
 
 
+def test_persist_report_preserves_existing_watchlist_settings(temp_db, sample_report):
+    import last30days as cli
+
+    topic = store.add_topic(
+        sample_report.topic,
+        search_queries=["custom research query"],
+        schedule="0 8 * * 1",
+    )
+    before = store.get_topic(sample_report.topic)
+
+    counts = cli.persist_report(sample_report, store_db=temp_db)
+
+    after = store.get_topic(sample_report.topic)
+    assert after == before
+    assert after["id"] == topic["id"]
+    assert counts["new"] > 0
+    assert store.get_new_findings(topic["id"])
+
+
+def test_persist_report_creates_a_missing_watchlist_topic(temp_db, sample_report):
+    import last30days as cli
+
+    assert store.get_topic(sample_report.topic) is None
+
+    counts = cli.persist_report(sample_report, store_db=temp_db)
+
+    topic = store.get_topic(sample_report.topic)
+    assert topic["schedule"] == "0 8 * * *"
+    assert counts["new"] > 0
+
+
+def test_add_topic_still_updates_explicit_watchlist_configuration(temp_db):
+    first = store.add_topic("Configured topic", search_queries=["old"], schedule="0 8 * * 1")
+
+    updated = store.add_topic("Configured topic", search_queries=["new"], schedule="0 9 * * 2")
+
+    assert updated["id"] == first["id"]
+    assert json.loads(updated["search_queries"]) == ["new"]
+    assert updated["schedule"] == "0 9 * * 2"
+
+
 def test_remove_topic_cascades_findings(temp_db, sample_report):
     """Test that removing a topic deletes its findings and runs."""
     topic = store.add_topic("Test Topic")
@@ -851,8 +892,8 @@ def test_get_new_findings_filters_by_date(temp_db, sample_report):
 # === Tests for the discovery topic queue (migration 3, U6) ===
 
 
-def test_init_db_reaches_migration_3_with_discovery_topics_table(temp_db):
-    """A fresh database lands on migration 3 with the queue table present."""
+def test_init_db_reaches_migration_4_with_discovery_topics_table(temp_db):
+    """A fresh database lands on migration 4 with the queue table present."""
     conn = sqlite3.connect(str(temp_db))
     version = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
     table = conn.execute(
@@ -863,7 +904,7 @@ def test_init_db_reaches_migration_3_with_discovery_topics_table(temp_db):
     }
     conn.close()
 
-    assert version == 3
+    assert version == 4
     assert table is not None
     assert {
         "id", "name", "normalized_name", "entity_key", "domain",
@@ -872,7 +913,7 @@ def test_init_db_reaches_migration_3_with_discovery_topics_table(temp_db):
     } <= columns
 
 
-def test_migration_2_db_upgrades_to_3_without_data_loss(tmp_path, monkeypatch):
+def test_migration_2_db_upgrades_to_4_without_data_loss(tmp_path, monkeypatch):
     """A database built at migration 2 gains the queue table without losing rows."""
     db_path = tmp_path / "research.db"
     monkeypatch.setattr(store, "_db_override", db_path)
@@ -881,7 +922,11 @@ def test_migration_2_db_upgrades_to_3_without_data_loss(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "MIGRATIONS", {2: full_migrations[2]})
     store.init_db()
     topic = store.add_topic("Preexisting Topic")
-    run_id = store.record_run(topic["id"], source_mode="v3")
+    with sqlite3.connect(db_path) as conn:
+        run_id = conn.execute(
+            "INSERT INTO research_runs (topic_id, run_date, source_mode) VALUES (?, datetime('now'), 'v3')",
+            (topic["id"],),
+        ).lastrowid
     store.store_findings(run_id, topic["id"], [{
         "source": "reddit",
         "source_url": "https://reddit.com/preexisting",
@@ -900,13 +945,36 @@ def test_migration_2_db_upgrades_to_3_without_data_loss(tmp_path, monkeypatch):
     store.init_db()
 
     conn = sqlite3.connect(str(db_path))
-    assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 3
+    assert conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] == 4
     assert conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='discovery_topics'"
     ).fetchone() is not None
     assert conn.execute("SELECT COUNT(*) FROM topics").fetchone()[0] == 1
     assert conn.execute("SELECT COUNT(*) FROM findings").fetchone()[0] == 1
     conn.close()
+
+
+def test_cost_migration_preserves_known_spend_and_marks_legacy_zero_unknown(tmp_path, monkeypatch):
+    db_path = tmp_path / "research.db"
+    monkeypatch.setattr(store, "_db_override", db_path)
+    full_migrations = store.MIGRATIONS
+    monkeypatch.setattr(store, "MIGRATIONS", {key: value for key, value in full_migrations.items() if key < 4})
+    store.init_db()
+    topic = store.add_topic("Legacy")
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executemany(
+            "INSERT INTO research_runs (topic_id, run_date, token_cost) VALUES (?, datetime('now'), ?)",
+            [(topic["id"], 0), (topic["id"], 1.25)],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    monkeypatch.setattr(store, "MIGRATIONS", full_migrations)
+    store.init_db()
+    store.init_db()
+    assert store.get_daily_cost() == 1.25
+    assert store.get_daily_unknown_cost_runs() == 1
 
 
 def test_record_discovery_surfacing_inserts_fresh_row(temp_db):

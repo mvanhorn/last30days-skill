@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import time
+import tempfile
 import urllib.parse
 from pathlib import Path
 
@@ -15,7 +17,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import store
-from lib import http, schema
+from lib import http, schema, usage
 
 
 # --- Webhook Delivery Functions ---
@@ -121,6 +123,7 @@ def cmd_list(args):
         "topics": topics,
         "budget_used": budget_used,
         "budget_limit": budget_limit,
+        "budget_unknown_runs": store.get_daily_unknown_cost_runs(),
     }, default=str))
 
 
@@ -137,7 +140,7 @@ def cmd_run_one(args):
     if not topic:
         print(json.dumps({"error": f'Topic not found: "{args.topic}"'}))
         sys.exit(1)
-    print(json.dumps(_run_topic(topic), default=str))
+    print(json.dumps(_budget_skip(topic) or _run_topic(topic), default=str))
 
 
 def cmd_run_all(args):
@@ -150,27 +153,49 @@ def cmd_run_all(args):
     budget_limit = float(store.get_setting("daily_budget", "5.00"))
     results = []
     for topic in topics:
-        if store.get_daily_cost() >= budget_limit:
-            results.append({
-                "topic": topic["name"],
-                "status": "skipped",
-                "reason": f"Budget exceeded: ${store.get_daily_cost():.2f}/${budget_limit:.2f}",
-            })
-            continue
-        results.append(_run_topic(topic))
+        results.append(_budget_skip(topic) or _run_topic(topic))
 
     print(json.dumps({
         "action": "run_all",
         "results": results,
         "budget_used": store.get_daily_cost(),
         "budget_limit": budget_limit,
+        "budget_unknown_runs": store.get_daily_unknown_cost_runs(),
     }, default=str))
 
 
+def _budget_skip(topic: dict) -> dict | None:
+    limit = float(store.get_setting("daily_budget", "5.00"))
+    cost = store.get_daily_cost()
+    unknown = store.get_daily_unknown_cost_runs()
+    if cost >= limit:
+        reason = f"Budget exceeded: ${cost:.2f}/${limit:.2f}"
+    elif unknown:
+        reason = f"Budget unknown: {unknown} run(s) today have unreported provider charges"
+    else:
+        return None
+    return {"topic": topic["name"], "status": "skipped", "reason": reason}
+
+
 def _run_topic(topic: dict) -> dict:
+    topic_id = topic["id"]
+    with tempfile.TemporaryDirectory(prefix="last30days-usage-") as temp_dir:
+        journal = Path(temp_dir) / "usage.db"
+        usage.create_journal(journal)
+        child_env = dict(os.environ, **{usage.JOURNAL_ENV: str(journal), "LAST30DAYS_STORE": "0"})
+        run_id = store.record_run(topic_id, source_mode="v3", status="running")
+        try:
+            result = _research_topic(topic, run_id, child_env)
+        finally:
+            costs = usage.read_journal(journal)
+            store.update_run(run_id, **costs)
+        result.update(costs)
+        return result
+
+
+def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
     start_time = time.time()
     topic_id = topic["id"]
-    run_id = store.record_run(topic_id, source_mode="v3", status="running")
 
     try:
         search_queries = json.loads(topic["search_queries"]) if topic.get("search_queries") else None
@@ -194,6 +219,7 @@ def _run_topic(topic: dict) -> dict:
             capture_output=True,
             text=True,
             timeout=300,
+            env=child_env,
         )
         duration = time.time() - start_time
         if result.returncode != 0:

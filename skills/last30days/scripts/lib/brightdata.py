@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
-from . import log, subproc
+from . import log, subproc, usage
 
 
 CLI_BIN = "brightdata"
@@ -235,6 +235,7 @@ def run_pipeline(
     cmd = _build_args(pipeline_type, params, cli_timeout=cli_timeout)
 
     try:
+        usage.begin("brightdata")
         result = subproc.run_with_timeout(cmd, timeout=timeout, env=_child_env(key))
     except subproc.SubprocTimeout as exc:
         _log(f"Timeout: {exc}")

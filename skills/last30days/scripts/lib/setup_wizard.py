@@ -110,6 +110,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         from . import cookie_extract
 
         cookie_config = dict(config)
+        cookie_config["BROWSER_CONSENT"] = "true"
         if not (cookie_config.get("FROM_BROWSER") or "").strip():
             # Chromium-first: Chrome/Brave/etc. read cookies via the Keychain
             # with no Full Disk Access, so try them before Safari, whose
@@ -130,9 +131,9 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
                 except Exception as exc:
                     logger.debug("Cookie extraction failed for %s via %s: %s", source_name, browser, exc)
                     continue
-                if result is not None and result[0]:
+                if result is not None and cookie_extract.has_complete_pair(result[0], cookie_names):
                     cookies_found[source_name] = result[1]
-                    break  # Found cookies for this service, stop trying browsers
+                    break  # Complete pair found for this service, stop trying browsers
 
     # Check yt-dlp availability and install via Homebrew if missing. Windows
     # has no Homebrew, and its working install path is `pip install yt-dlp`
@@ -585,20 +586,27 @@ def _format_env_value(value: str) -> str:
     return value
 
 
-def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
-    """Write SETUP_COMPLETE and FROM_BROWSER to the .env file.
+def write_setup_config(
+    env_path: Path,
+    from_browser: str | None = None,
+    *,
+    browser_consent: bool | None = None,
+) -> bool:
+    """Write setup completion, browser selection, and consent to the .env file.
 
     Creates the file and parent directories if needed.
-    Appends to existing file without overwriting existing keys.
+    Appends without overwriting existing keys, except for an explicit consent
+    decision.
 
     Args:
         env_path: Path to the .env file (e.g. ~/.config/last30days/.env)
-        from_browser: Browser extraction mode to persist. Pass the browser that
-            actually yielded cookies (e.g. "firefox") to fast-path future runs.
-            Pass None (default) to NOT pin FROM_BROWSER — the steady-state
-            default (Firefox/Safari, no Keychain prompt) then applies. We avoid
-            persisting "auto" because it makes every later run probe Chrome and
-            re-trigger the Keychain prompt.
+        from_browser: Browser or comma-separated browser list that actually
+            yielded cookies after consent (e.g. "chrome,firefox"). Pass None
+            (default) to leave FROM_BROWSER unchanged; when unset, future runs
+            do not read native browser stores. Avoid "auto", which would also probe
+            browsers that did not supply cookies during setup.
+        browser_consent: Record the user's current cookie-access decision.
+            None preserves any previous decision.
 
     Returns:
         True if config was written successfully, False on error.
@@ -606,6 +614,12 @@ def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
     try:
         env_path = Path(env_path)
         env_path.parent.mkdir(parents=True, exist_ok=True)
+        if browser_consent is not None:
+            if not write_api_key(
+                env_path, "true" if browser_consent else "false",
+                key_name="BROWSER_CONSENT", replace=True,
+            ):
+                return False
 
         # Read existing content to avoid overwriting keys
         existing_keys: set = set()
@@ -935,6 +949,21 @@ def _existing_scrapecreators_key() -> Optional[str]:
     return None
 
 
+def _clamp_device_interval(interval: Any) -> int:
+    """Clamp a server-provided device-flow poll interval to [1, 30] seconds.
+
+    The ``interval`` comes from the server (device/code response or the
+    persisted poll handle), so 0 would hot-loop ``time.sleep``, a negative
+    would crash it, a huge value would sail past the poll timeout, and a
+    non-numeric value would raise. Defaults to 5 on missing/garbled input.
+    """
+    try:
+        value = int(interval or 5)
+    except (TypeError, ValueError):
+        return 5
+    return min(max(value, 1), 30)
+
+
 def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
     """Start the device authorization flow.
 
@@ -957,7 +986,7 @@ def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
     device_code = data.get("device_code")
     user_code = data.get("user_code")
     verification_uri = data.get("verification_uri")
-    interval = data.get("interval", 5)
+    interval = _clamp_device_interval(data.get("interval", 5))
 
     if not device_code or not user_code:
         # Log only the response's key names, never its values — a returning
@@ -991,6 +1020,7 @@ def poll_device_auth(
     """
     import sys
 
+    interval = _clamp_device_interval(interval)
     started_at = time.time()
     deadline = started_at + timeout
     last_reminder = started_at
@@ -1323,7 +1353,7 @@ def run_github_poll(timeout: int = 300, *, _handle: Optional[Dict[str, Any]] = N
             }
 
     device_code = data["device_code"]
-    interval = int(data.get("interval", 5))
+    interval = _clamp_device_interval(data.get("interval", 5))
     user_code = data.get("user_code", "")
     # Read the real clipboard state so the polling reminder never falsely claims
     # the code is on the clipboard (non-macOS, or a failed pbcopy). Missing key

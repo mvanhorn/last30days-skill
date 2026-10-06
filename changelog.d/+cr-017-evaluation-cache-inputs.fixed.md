@@ -1,0 +1,1 @@
+Search-quality evaluations now reuse cached judgments only when the judge model and complete prompt match, so changed results, topics, or grading instructions receive fresh scores. Older caches are refreshed before reuse.

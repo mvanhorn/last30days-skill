@@ -1,0 +1,1 @@
+Honor configured memory directories in skill research, library, and topic-queue commands, preserve explicit empty values, fall through unresolved host placeholders to lower-priority configuration, and reuse the resolved directory throughout discovery. Only claim a saved artifact when the engine emitted its path.
