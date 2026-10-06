@@ -16,6 +16,8 @@ import re
 import unittest
 from pathlib import Path
 
+from tests.skill_contract import reference_text
+
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
 CONFIGURATION = ROOT / "CONFIGURATION.md"
@@ -79,8 +81,8 @@ def _grok_flow(text: str) -> str:
 
 
 def _recipe(text: str) -> str:
-    research = text[text.index("## Research Execution") :]
-    return _slice_between(research, RECIPE_MARKER, RECIPE_END)
+    assert RECIPE_MARKER in text, f"missing {RECIPE_MARKER!r}"
+    return text[text.index(RECIPE_MARKER):]
 
 
 def _guaranteed_band(text: str) -> str:
@@ -88,7 +90,8 @@ def _guaranteed_band(text: str) -> str:
 
 
 def _extras_passages(text: str) -> dict[str, str]:
-    step0 = _slice_between(text, "## Step 0: First-Run Setup Wizard", "## CRITICAL: Parse User Intent")
+    step0 = text
+    assert "## Step 0: First-Run Setup Wizard" in step0
     modal = _slice_between(step0, "### Claude Code Modal Flow", "### Non-Modal Prose Flow")
     prose = _slice_between(step0, "### Non-Modal Prose Flow", FLOW_HEADING)
     manual = step0[step0.index("### Manual Setup Guide") :]
@@ -105,13 +108,11 @@ def _forbidden_hits(slice_text: str) -> list[str]:
 
 class TestGrokBotProseFlow(unittest.TestCase):
     def setUp(self):
-        self.text = _text()
+        self.text = reference_text("setup-wizard")
         self.flow = _grok_flow(self.text)
 
     def test_flow_is_the_third_step0_branch(self):
-        step0 = _slice_between(
-            self.text, "## Step 0: First-Run Setup Wizard", "## CRITICAL: Parse User Intent"
-        )
+        step0 = self.text
         split = _slice_between(step0, "**Platform split", "### Claude Code Modal Flow")
         self.assertIn("Grok Bot Prose Flow", split)
         # Cursor stays a Non-Modal host; it is not routed to the Grok Bot flow.
@@ -152,7 +153,7 @@ class TestGrokBotProseFlow(unittest.TestCase):
         tool name alone (search_posts_all stays as the example)."""
         self.assertIn('"X for Grok Bot"', self.flow)
         self.assertIn("search_posts_all", self.flow)
-        rule = _text()[: _text().index("## Step 0")]
+        rule = _guaranteed_band(_text())
         self.assertIn('"X for Grok Bot"', rule)
 
     def test_connector_step_precedes_bearer_offer(self):
@@ -195,7 +196,7 @@ class TestGuaranteedLoadedRule(unittest.TestCase):
     def test_rule_lives_in_the_guaranteed_loaded_band(self):
         self.assertIn("LAST30DAYS_HOST=grok-bot", self.band)
         self.assertIn("LAST30DAYS_X_HOST_LANE=1", self.band)
-        self.assertIn("never place post text unquoted", self.band)
+        self.assertIn("never place post text unquoted", self.band.lower())
         self.assertIn("CURSOR_AGENT", self.band)
 
     def test_rule_is_not_keyed_on_cursor_agent_alone(self):
@@ -207,12 +208,13 @@ class TestGuaranteedLoadedRule(unittest.TestCase):
 
 class TestConnectorRecipe(unittest.TestCase):
     def setUp(self):
-        self.recipe = _recipe(_text())
+        self.recipe = _recipe(reference_text("grok-bot-x"))
 
     def test_recipe_precedes_the_engine_command(self):
-        text = _text()
+        text = reference_text("research-runbook")
         research = text[text.index("## Research Execution") :]
-        self.assertLess(research.index(RECIPE_MARKER), research.index(RECIPE_END))
+        self.assertLess(research.index("grok-bot-x.md"), research.index(RECIPE_END))
+        self.assertIn("before", research[:research.index(RECIPE_END)].lower())
 
     def test_recipe_names_counts_window_and_status(self):
         for token in (
@@ -267,20 +269,19 @@ class TestConnectorRecipe(unittest.TestCase):
 
 class TestExtrasPassagesRescoped(unittest.TestCase):
     def test_extras_passages_no_longer_name_grok_bot(self):
-        for name, passage in _extras_passages(_text()).items():
+        for name, passage in _extras_passages(reference_text("setup-wizard")).items():
             self.assertNotIn("Grok Bot", passage, f"{name} extras passage still names Grok Bot")
             self.assertIn("grok-bot", passage, f"{name} extras passage does not exclude the grok-bot host")
 
     def test_manual_repair_heading_rescoped(self):
-        text = _text()
+        text = reference_text("setup-wizard")
         self.assertIn("**X on Linux / Mac mini (repair).**", text)
         self.assertNotIn("X on Linux / Grok Bot / Mac mini", text)
 
 
 class TestManualSetupGuide(unittest.TestCase):
     def setUp(self):
-        text = _text()
-        step0 = _slice_between(text, "## Step 0: First-Run Setup Wizard", "## CRITICAL: Parse User Intent")
+        step0 = reference_text("setup-wizard")
         self.manual = step0[step0.index("### Manual Setup Guide") :]
 
     def test_bearer_bullet_comes_first_in_x_section(self):
@@ -309,8 +310,9 @@ class TestSecurityAndFrontmatter(unittest.TestCase):
         self.assertIn("api.x.com", security)
         self.assertIn("--x-posts", security)
         self.assertIn("X connector", security)
-        overview = _slice_between(text, "**Permissions overview:**", "Research ANY topic")
-        self.assertIn("api.x.com", overview)
+        self.assertIn("X_BEARER_TOKEN", security)
+        self.assertIn("sent only in the Authorization header", security)
+        self.assertIn("no X backend is called", security)
 
 
 class TestConfigurationGrokBotSubsection(unittest.TestCase):

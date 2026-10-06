@@ -9,6 +9,8 @@ import sys
 
 import pytest
 
+from tests.skill_contract import reference_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "skills" / "last30days"
@@ -67,7 +69,7 @@ def test_documented_memory_resolution(global_value, process_value, expected, she
         )
     if process_value is not None:
         shell_env["LAST30DAYS_MEMORY_DIR"] = process_value
-    assignments = re.findall(r"^LAST30DAYS_MEMORY_DIR=.*$", (SKILL / "SKILL.md").read_text(), re.M)
+    assignments = re.findall(r"^LAST30DAYS_MEMORY_DIR=.*$", reference_text("runtime"), re.M)
     assert assignments
     for assignment in set(assignments):
         result = subprocess.run(
@@ -168,7 +170,7 @@ def test_project_placeholder_preserves_global_research_save(
     )
     command = '"$LAST30DAYS_PYTHON" "$SKILL_DIR/scripts/last30days.py" OpenAI --mock --quick --no-browser-cookies --emit=compact'
     if entrypoint == "skill":
-        assignment = re.findall(r"^LAST30DAYS_MEMORY_DIR=.*$", (SKILL / "SKILL.md").read_text(), re.M)[0]
+        assignment = re.findall(r"^LAST30DAYS_MEMORY_DIR=.*$", reference_text("runtime"), re.M)[0]
         command = assignment + "\n" + command + ' --save-dir="$LAST30DAYS_MEMORY_DIR"'
     result = subprocess.run(
         [BASH, "-c", command], env=shell_env, cwd=tmp_path,
@@ -225,7 +227,7 @@ def test_dotenv_path_is_data_not_shell_code(shell_env, tmp_path):
     marker = tmp_path / "must-not-execute"
     value = f"$(printf unsafe > {marker})"
     write_config(Path(shell_env["LAST30DAYS_CONFIG_DIR"]) / ".env", f"LAST30DAYS_MEMORY_DIR={value}\n")
-    assignment = re.findall(r"^LAST30DAYS_MEMORY_DIR=.*$", (SKILL / "SKILL.md").read_text(), re.M)[0]
+    assignment = re.findall(r"^LAST30DAYS_MEMORY_DIR=.*$", reference_text("runtime"), re.M)[0]
     result = subprocess.run(
         [BASH, "-c", assignment + '\nprintf "%s" "$LAST30DAYS_MEMORY_DIR"'],
         env=shell_env, cwd=tmp_path, text=True, capture_output=True, check=True,
@@ -253,8 +255,8 @@ def test_resolver_exits_before_auth_or_research(monkeypatch, capsys):
 
 
 def test_documented_discovery_legs_reuse_captured_directory(shell_env, tmp_path):
-    text = (SKILL / "SKILL.md").read_text()
-    starts = re.findall(r"^LAST30DAYS_MEMORY_DIR=.*$", text, re.M)
+    text = reference_text("discovery")
+    starts = re.findall(r"^LAST30DAYS_MEMORY_DIR=.*$", reference_text("runtime"), re.M)
     guards = re.findall(r'^: "\$\{LAST30DAYS_MEMORY_DIR\?.*$', text, re.M)
     assert len(guards) == 2
     config_path = Path(shell_env["LAST30DAYS_CONFIG_DIR"]) / ".env"
@@ -277,7 +279,7 @@ def test_documented_discovery_legs_reuse_captured_directory(shell_env, tmp_path)
 def test_mock_research_saves_to_documented_dotenv_directory(shell_env, tmp_path):
     target = tmp_path / "client research"
     write_config(Path(shell_env["LAST30DAYS_CONFIG_DIR"]) / ".env", f"LAST30DAYS_MEMORY_DIR={target}\n")
-    text = (SKILL / "SKILL.md").read_text()
+    text = reference_text("runtime")
     assignment = re.findall(r"^LAST30DAYS_MEMORY_DIR=.*$", text, re.M)[0]
     command = assignment + '\n"$LAST30DAYS_PYTHON" "$SKILL_DIR/scripts/last30days.py" OpenAI --mock --quick --no-browser-cookies --emit=md --save-dir="$LAST30DAYS_MEMORY_DIR"'
     result = subprocess.run(
@@ -315,7 +317,7 @@ def test_documented_mock_research_placeholder_uses_configured_save_state(shell_e
         f"LAST30DAYS_MEMORY_DIR={'' if disabled else target}\n",
     )
     shell_env["LAST30DAYS_MEMORY_DIR"] = "${user_config.memory_dir}"
-    assignment = re.findall(r"^LAST30DAYS_MEMORY_DIR=.*$", (SKILL / "SKILL.md").read_text(), re.M)[0]
+    assignment = re.findall(r"^LAST30DAYS_MEMORY_DIR=.*$", reference_text("runtime"), re.M)[0]
     command = assignment + '\n"$LAST30DAYS_PYTHON" "$SKILL_DIR/scripts/last30days.py" OpenAI --mock --quick --no-browser-cookies --emit=compact --save-dir="$LAST30DAYS_MEMORY_DIR"'
     result = subprocess.run(
         [BASH, "-c", command], env=shell_env, cwd=tmp_path,
@@ -336,13 +338,16 @@ def test_documented_mock_research_placeholder_uses_configured_save_state(shell_e
 def test_skill_footer_claims_only_emitted_saved_paths():
     text = (SKILL / "SKILL.md").read_text()
     law = text.split("**LAW 5 -", 1)[1].split("**LAW 6 -", 1)[0]
-    assert "saved-file pointer is optional" in law
-    assert "only when emitted" in law
-    assert "higher-priority instructions" in law
-    footer = text.split("**THEN - Engine footer pass-through", 1)[1].split("**LAST - Invitation", 1)[0]
+    assert "Relay a saved-file pointer only if emitted" in law
+    assert "Never invent a footer, saved path" in law
+    assert "subject to governing instructions" in law
+    synthesis = reference_text("synthesis")
+    footer = synthesis.split("**THEN - Engine footer pass-through", 1)[1].split("**LAST - Invitation", 1)[0]
     assert "only when the engine emitted a saved path" in footer
     assert "Never invent a path" in footer
     assert "higher-priority instructions" in footer
     assert "and ending with `📎 Raw results saved to" not in footer
     assert "└─ 📎 Raw results saved to ..." not in text
     assert "The research script already saved raw data" not in text
+    assert "└─ 📎 Raw results saved to ..." not in synthesis
+    assert "The research script already saved raw data" not in synthesis

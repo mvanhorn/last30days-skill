@@ -159,7 +159,7 @@ jobs:
           touches_engine=0
           for path in "${CHANGED[@]}"; do
             case "${path}" in
-              skills/last30days/scripts/*|skills/last30days/SKILL.md|mcp/*)
+              skills/last30days/scripts/*|skills/last30days/SKILL.md|skills/last30days/references/*|mcp/*)
                 touches_engine=1
                 ;;
             esac

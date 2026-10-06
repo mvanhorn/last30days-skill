@@ -330,16 +330,20 @@ class TestSkillMdFirstRunReference(unittest.TestCase):
     """Verifies SKILL.md references that exist in the CLI."""
 
     def test_nux_wizard_not_referenced(self):
-        content = SKILL_MD.read_text(encoding="utf-8")
+        from tests.skill_contract import contract_documents
+
+        content = "\n".join(contract_documents().values())
         self.assertNotIn(
             "nux-wizard.md", content,
             "SKILL.md should not reference the missing nux-wizard.md file",
         )
 
     def test_skill_md_references_setup_command(self):
-        content = SKILL_MD.read_text(encoding="utf-8")
+        from tests.skill_contract import reference_text
+
+        content = reference_text("setup-wizard")
         self.assertIn(
-            "last30days.py setup", content,
+            'last30days.py" setup', content,
             "SKILL.md should reference the Python setup subcommand",
         )
 

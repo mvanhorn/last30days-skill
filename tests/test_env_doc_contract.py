@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from lib import env
+from tests.skill_contract import contract_documents
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -52,6 +53,8 @@ def _documented_env_keys() -> set[str]:
     keys: set[str] = set()
     for path in DOC_PATHS:
         keys.update(CONFIG_ENV_KEY_RE.findall(path.read_text(encoding="utf-8")))
+    for text in contract_documents().values():
+        keys.update(CONFIG_ENV_KEY_RE.findall(text))
     return keys
 
 

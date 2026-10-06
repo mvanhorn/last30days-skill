@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+from tests.skill_contract import reference_text
+
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
 SAVE_HTML = ROOT / "skills" / "last30days" / "references" / "save-html-brief.md"
@@ -9,21 +11,22 @@ SAVE_HTML = ROOT / "skills" / "last30days" / "references" / "save-html-brief.md"
 
 def test_skill_routes_html_to_reference_and_artifact_handoff():
     text = SKILL_MD.read_text(encoding="utf-8")
-    start = text.index("## SHAREABLE HTML BRIEF")
-    end = text.index("## WAIT FOR USER'S RESPONSE", start)
+    start = text.index("## HTML and follow-up handoff")
+    end = text.index("## Security & Permissions", start)
     section = text[start:end]
 
-    assert "Read `references/save-html-brief.md`" in section
-    assert "artifact handoff" in section
-    assert "open the local file when the host can do so" in section
-    assert "Upload or publish" in section
+    assert reference_text("save-html-brief")
+    assert "read the HTML reference through the root gate before finishing" in section
+    assert "concise handoff for an HTML deliverable" in section
+    assert "open locally when supported and implied" in section
+    assert "Never upload/publish without an explicit hosted-sharing request" in section
     assert "Append the confirmation line" not in section
-    assert "a literal flag is not required" in section
-    assert "do not confuse it with the complete Python CLI contract" in section
+    assert "or a natural-language request for an HTML brief" in section
+    assert "not the full Python CLI contract" in section
 
 
 def test_html_deliverable_is_artifact_first_not_full_markdown_repeat():
-    text = SAVE_HTML.read_text(encoding="utf-8")
+    text = reference_text("save-html-brief")
     assert "**HTML as the requested deliverable**" in text
     assert 'prose like "give it to me in HTML"' in text
     assert "the HTML artifact is the primary output" in text
@@ -40,7 +43,7 @@ def test_html_deliverable_is_artifact_first_not_full_markdown_repeat():
 
 
 def test_html_handoff_opens_locally_without_os_command_menu():
-    text = SAVE_HTML.read_text(encoding="utf-8")
+    text = reference_text("save-html-brief")
     assert "Let the host choose the correct OS-specific mechanism" in text
     assert "do not print a menu of shell commands" in text
     assert "If opening fails or the host is headless" in text
@@ -49,7 +52,7 @@ def test_html_handoff_opens_locally_without_os_command_menu():
 
 
 def test_html_save_flow_does_not_publish_or_upload():
-    text = SAVE_HTML.read_text(encoding="utf-8")
+    text = reference_text("save-html-brief")
     assert "Do not upload in this flow unless the user chooses a publishing option" in text
     assert "Do NOT publish, upload, or send the HTML to a third-party service" in text
     assert "Do NOT block a local HTML export on a hosting decision" in text
@@ -57,7 +60,7 @@ def test_html_save_flow_does_not_publish_or_upload():
 
 
 def test_markdown_and_html_access_paths_are_separate():
-    text = SKILL_MD.read_text(encoding="utf-8")
+    text = reference_text("synthesis")
     start = text.index("**Saved artifact access flow:**")
     section = text[start:start + 1600]
 
@@ -69,7 +72,7 @@ def test_markdown_and_html_access_paths_are_separate():
 
 
 def test_follow_up_turn_preserves_html_deliverable_mode():
-    text = SAVE_HTML.read_text(encoding="utf-8")
+    text = reference_text("save-html-brief")
     assert "explicitly refers back to that visible synthesis" in text
     assert "treat it as HTML-as-deliverable mode" in text
     assert "Always report the path stored in `HTML_PATH` in the chat handoff" in text

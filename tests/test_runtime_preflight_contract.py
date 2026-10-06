@@ -9,13 +9,15 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from tests.skill_contract import contract_documents, reference_text, root_text
+
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
 
 
 class RuntimePreflightContractTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.skill_md = SKILL_MD.read_text(encoding="utf-8")
+        self.skill_md = reference_text("runtime")
 
     def test_windows_localappdata_python_install_dir_is_scanned_first(self) -> None:
         scan_command = 'find "$windows_python_root" -maxdepth 2 -type f -iname python.exe'
@@ -41,8 +43,9 @@ class RuntimePreflightContractTests(unittest.TestCase):
         # Claude Code replaces $<digit> in a skill body with words from the
         # invocation arguments before the model reads it (anthropics/claude-code#94709),
         # so shell/awk code in SKILL.md spells positional parameters as ${1} / $(2).
-        fenced = re.findall(r"```.*?```", self.skill_md, re.S)
-        inline = re.findall(r"`[^`\n]+`", re.sub(r"```.*?```", "", self.skill_md, flags=re.S))
+        text = "\n".join(contract_documents().values())
+        fenced = re.findall(r"```.*?```", text, re.S)
+        inline = re.findall(r"`[^`\n]+`", re.sub(r"```.*?```", "", text, flags=re.S))
         hits = [m.group(0) for block in fenced + inline for m in re.finditer(r"\$\d+(?![A-Za-z0-9_])", block)]
         self.assertEqual(hits, [])
 
@@ -50,7 +53,7 @@ class RuntimePreflightContractTests(unittest.TestCase):
 @unittest.skipUnless(shutil.which("bash") and shutil.which("awk"), "requires bash and awk")
 class RuntimePreflightExecutionTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.skill_md = SKILL_MD.read_text(encoding="utf-8")
+        self.skill_md = reference_text("runtime")
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
@@ -105,7 +108,10 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
     def _run_preflight(self) -> subprocess.CompletedProcess[str]:
         snippet = re.search(r"```bash\n(try_last30days_python\(\).*?)\n```", self.skill_md, re.S)
         self.assertIsNotNone(snippet)
-        return self._run(snippet[1] + '\nprintf "Selected: <%s>\\n" "$LAST30DAYS_PYTHON"')
+        resolution = re.search(r"## Save-directory resolution.*?```bash\n(.*?)\n```", self.skill_md, re.S)
+        self.assertIsNotNone(resolution)
+        self.assertLess(snippet.start(), resolution.start())
+        return self._run(snippet[1] + "\n" + resolution[1] + '\nprintf "Selected: <%s>\\n" "$LAST30DAYS_PYTHON"')
 
     def test_missing_python_stops_before_engine(self) -> None:
         result = self._run_preflight()
@@ -161,7 +167,7 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
         self.assertIn(f"Resolved save directory: <{self.save_dir}>", result.stderr)
 
     def test_badge_version_awk_fallback_survives_argument_substitution(self) -> None:
-        command = re.search(r"`(jq -r '\.version'.*?)`", self.skill_md)
+        command = re.search(r"`(jq -r '\.version'.*?)`", root_text())
         self.assertIsNotNone(command)
         installed_skill = self.root / "badge skill"
         installed_skill.mkdir()

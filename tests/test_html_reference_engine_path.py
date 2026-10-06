@@ -6,6 +6,8 @@ import re
 import subprocess
 import sys
 
+from tests.skill_contract import reference_text
+
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL = ROOT / "skills" / "last30days"
@@ -45,7 +47,7 @@ def _engine_command(block):
 
 
 def test_documented_local_export_uses_runtime_skill_directory(tmp_path):
-    blocks = re.findall(r"```bash\n(.*?)```", REFERENCE.read_text(), re.DOTALL)
+    blocks = re.findall(r"```bash\n(.*?)```", reference_text("save-html-brief"), re.DOTALL)
     env, output = _command_environment(tmp_path)
     command = _engine_command(blocks[0])
     result = subprocess.run(
@@ -70,7 +72,7 @@ def test_documented_local_export_uses_runtime_skill_directory(tmp_path):
 
 
 def test_documented_publish_command_reaches_engine_parser(tmp_path):
-    blocks = re.findall(r"```bash\n(.*?)```", REFERENCE.read_text(), re.DOTALL)
+    blocks = re.findall(r"```bash\n(.*?)```", reference_text("save-html-brief"), re.DOTALL)
     env, _ = _command_environment(tmp_path)
     result = subprocess.run(
         ["bash", "-ec", "SCOPE_FLAGS=(--help)\n" + blocks[1]],

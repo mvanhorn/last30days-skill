@@ -2,7 +2,7 @@
 
 AGENTS.md: "A new engine flag with no SKILL.md integration is incomplete."
 This test enforces that rule: each non-suppressed long option registered by
-build_parser() must appear literally in skills/last30days/SKILL.md, so the
+build_parser() must appear in the root or an explicitly routed reference, so the
 model invoking the skill can discover every flag a user might pass through.
 
 Suppressed (argparse.SUPPRESS-help) flags are exempt: they are hidden from
@@ -12,6 +12,7 @@ import re
 from pathlib import Path
 
 import last30days as cli
+from tests.skill_contract import contract_documents
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD = REPO_ROOT / "skills" / "last30days" / "SKILL.md"
@@ -30,7 +31,7 @@ def _documented_flags():
 
 
 def test_all_parser_flags_documented_in_skill_md():
-    skill = SKILL_MD.read_text(encoding="utf-8")
+    skill = "\n".join(contract_documents().values())
     missing = [
         flag
         for flag in sorted(_documented_flags())

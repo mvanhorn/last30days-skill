@@ -3,6 +3,7 @@ import unittest
 from pathlib import Path
 
 from lib.skill_meta import read_skill_version
+from tests.skill_contract import contract_documents
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_ROOT = ROOT / "skills" / "last30days"
@@ -35,7 +36,7 @@ class TestVersionConsistency(unittest.TestCase):
         self.assertIn(f"# last30days v{version}:", text)
 
     def test_memory_save_dir_uses_single_env_variable(self) -> None:
-        skill_text = (SKILL_ROOT / "SKILL.md").read_text(encoding="utf-8")
+        skill_text = "\n".join(contract_documents().values())
         compare_text = (SKILL_ROOT / "scripts" / "compare.sh").read_text(encoding="utf-8")
         default_assignment = 'LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"'
 

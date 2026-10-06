@@ -3,6 +3,7 @@
 import os
 from pathlib import Path
 import subprocess
+from tests.skill_contract import reference_text
 import sys
 
 import pytest
@@ -52,7 +53,7 @@ sys.exit(int(os.environ.get('RENDER_EXIT', '0')))
         "RENDER_CONTENT": "<html>first report</html>",
     }
     env.pop("SKILL_ROOT", None)
-    text = REFERENCE.read_text(encoding="utf-8")
+    text = reference_text("save-html-brief")
     block = text.split("```bash\n", 1)[1].split("```", 1)[0]
     flow = block[block.index("SLUG="):]
     command = ["bash", "-c", "set -euo pipefail\nset -o noclobber\n"

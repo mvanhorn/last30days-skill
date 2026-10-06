@@ -18,6 +18,7 @@ import unittest
 from pathlib import Path
 
 from lib import setup_wizard
+from tests.skill_contract import contract_documents, reference_text
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
@@ -29,9 +30,8 @@ class TestOnboardingContract(unittest.TestCase):
         self.text = SKILL_MD.read_text(encoding="utf-8")
         # Scope assertions to Step 0 so generic substrings elsewhere in the file
         # do not satisfy ordering/presence checks.
-        start = self.text.index("## Step 0: First-Run Setup Wizard")
-        end = self.text.index("## CRITICAL: Parse User Intent", start)
-        self.step0 = self.text[start:end]
+        self.step0 = reference_text("setup-wizard")
+        self.assertIn("## Step 0: First-Run Setup Wizard", self.step0)
         # Branch slices.
         modal_start = self.step0.index("### Claude Code Modal Flow")
         prose_start = self.step0.index("### Non-Modal Prose Flow")
@@ -84,8 +84,7 @@ class TestOnboardingContract(unittest.TestCase):
     def test_first_run_gate_defers_to_step0_credential_sources(self):
         """The cheap SETUP_COMPLETE grep is not itself a first-run verdict."""
         start = self.text.index("**FIRST-RUN GATE")
-        end = self.text.index("\n## Step 0: First-Run Setup Wizard")
-        gate = self.text[start:end]
+        gate = self.text[start:].split("\n## ", 1)[0].replace("**", "")
         self.assertIn("FIRST_RUN_DETECTED", gate)
         self.assertIn("A missing `.env` alone is not a first run", gate)
         self.assertIn("That section decides first-run from every credential source", gate)
@@ -140,14 +139,16 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertIn("Do not re-ask cookie consent as part of the resume", self.prose)
 
     def test_x_handle_resolution_and_plan_follow_active_sources(self):
-        self.assertIn("If `ACTIVE_SOURCES_LIST` contains `x`", self.text)
-        self.assertIn("every applicable source from `ACTIVE_SOURCES_LIST`", self.text)
-        self.assertIn("Preserve X whenever it is active", self.text)
+        research = reference_text("research-runbook")
+        self.assertIn("If `ACTIVE_SOURCES_LIST` contains `x`", research)
+        self.assertIn("every applicable source from `ACTIVE_SOURCES_LIST`", research)
+        self.assertIn("Preserve X whenever it is active", research)
 
     def test_post_report_x_note_is_non_blocking(self):
-        self.assertNotIn("Just-in-time X unlock", self.text)
-        self.assertIn("Optional X omission", self.text)
-        self.assertIn("finish the useful findings first", self.text)
+        synthesis = reference_text("synthesis")
+        self.assertNotIn("Just-in-time X unlock", synthesis)
+        self.assertIn("Optional X omission", synthesis)
+        self.assertIn("finish the useful findings first", synthesis)
 
     # --- Modal flow: the restored NUX, stages in order ---
 
@@ -187,7 +188,7 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_modal_cookie_consent_before_setup(self):
         consent = self.modal.find("your browser's x.com cookies")
-        setup = self.modal.find("last30days.py setup")
+        setup = self.modal.find('last30days.py" setup')
         self.assertGreater(consent, -1, "no cookie-consent modal in modal flow")
         self.assertGreater(setup, -1, "no setup invocation in modal flow")
         self.assertLess(consent, setup, "cookie consent must precede setup in modal flow")
@@ -204,7 +205,7 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_prose_cookie_consent_before_setup(self):
         consent = self.prose.find("Cookie consent")
-        setup = self.prose.find("last30days.py setup")
+        setup = self.prose.find('last30days.py" setup')
         self.assertGreater(consent, -1, "no cookie-consent step in prose flow")
         self.assertGreater(setup, -1, "no setup invocation in prose flow")
         self.assertLess(consent, setup, "cookie consent must precede setup in prose flow")
@@ -378,7 +379,7 @@ class TestOnboardingContract(unittest.TestCase):
         # The modal flow explicitly does NOT run a separate --welcome command.
         self.assertIn("Do NOT run a separate `--welcome`", self.modal)
         # The non-modal flow still uses the engine welcome command.
-        self.assertIn("last30days.py --welcome", self.prose)
+        self.assertIn('last30days.py" --welcome', self.prose)
 
     def test_stocktwits_surfaced_as_conditional(self):
         """StockTwits is advertised in the engine welcome as a ticker/crypto-gated
@@ -451,10 +452,13 @@ class TestOnboardingContract(unittest.TestCase):
     # --- Legacy guarantees retained ---
 
     def test_old_silent_wizard_instruction_removed(self):
-        self.assertNotIn("Follow the wizard's prompts end-to-end", self.text)
+        for document in contract_documents().values():
+            self.assertNotIn("Follow the wizard's prompts end-to-end", document)
 
     def test_consent_is_conversational_contract_documented(self):
-        self.assertIn("Named onboarding contract", self.step0)
+        self.assertIn("You are the conversational driver", self.step0)
+        self.assertIn("consent happens HERE, in chat", self.step0)
+        self.assertIn("gate each subprocess call on the answer", self.step0)
         self.assertIn("non-interactive subprocess", self.step0)
 
 
