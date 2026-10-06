@@ -35,6 +35,14 @@ def get_shell_cmd(cmd_str: str) -> list[str]:
     return ["sh", "-c", cmd_str]
 
 
+class TestSubprocTimeout(unittest.TestCase):
+    def test_exception_class_raises_without_a_message(self):
+        with self.assertRaises(subproc.SubprocTimeout) as caught:
+            raise subproc.SubprocTimeout
+        self.assertEqual(str(caught.exception), "")
+        self.assertTrue(caught.exception.started)
+
+
 class TestRunWithTimeout(unittest.TestCase):
     def setUp(self):
         self.addCleanup(setattr, subproc, "_shutting_down", False)

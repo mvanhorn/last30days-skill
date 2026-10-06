@@ -21,7 +21,7 @@ from typing import Optional, Sequence
 class SubprocTimeout(Exception):
     """Raised when a subprocess exceeds its timeout and is killed."""
 
-    def __init__(self, message: str, *, started: bool = True):
+    def __init__(self, message: str = "", *, started: bool = True):
         super().__init__(message)
         self.started = started
 
