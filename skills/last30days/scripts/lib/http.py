@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit, quote
 
-from . import health, usage
+from . import bounded_get, health, usage
 from . import log as _log
 
 DEFAULT_TIMEOUT = 30
@@ -776,6 +776,7 @@ def request(
     raw: bool = False,
     deadline_monotonic: float | None = None,
     cancel: threading.Event | None = None,
+    owned_get: bool = False,
 ) -> Union[Dict[str, Any], str]:
     """Make an HTTP request and return JSON response.
 
@@ -792,6 +793,8 @@ def request(
         raw: If True, return raw response text instead of parsed JSON
         deadline_monotonic: Optional absolute monotonic deadline shared by all
             attempts and retry delays.
+        owned_get: Run GET transport in a child that is killed and reaped at
+            its deadline. Requires deadline_monotonic; other methods are refused.
 
     Returns:
         Parsed JSON response as dict, or raw text string if raw=True.
@@ -799,6 +802,10 @@ def request(
     Raises:
         HTTPError: On request failure
     """
+    if owned_get and (method != "GET" or json_data is not None):
+        raise ValueError("owned transport requires a bodyless GET")
+    if owned_get and deadline_monotonic is None:
+        raise ValueError("owned GET requires an operation deadline")
     headers = headers or {}
     headers.setdefault("User-Agent", USER_AGENT)
 
@@ -892,6 +899,23 @@ def request(
         request_timeout: float,
     ) -> tuple[int, str | None, urllib.error.HTTPError | None]:
         """Stop waiting at the wall deadline, even during DNS or body reads."""
+        if owned_get:
+            try:
+                status, body, error = bounded_get.get(
+                    req, timeout=request_timeout,
+                    deadline_monotonic=deadline_monotonic, cancel=cancel,
+                )
+            except bounded_get.GetTimeout as exc:
+                if not exc.started:
+                    usage.cancel(charge)
+                raise deadline_error() from exc
+            try:
+                decoded = body.decode("utf-8") if body is not None else None
+            except UnicodeDecodeError:
+                if error is None:
+                    raise
+                decoded = None
+            return status, decoded, error
         if deadline_monotonic is None and cancel is None:
             return open_and_read(request_timeout)
         wait_deadline = deadline_monotonic or (time.monotonic() + request_timeout)

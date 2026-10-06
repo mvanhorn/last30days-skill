@@ -405,8 +405,9 @@ time.sleep(15)
             def __init__(self):
                 self.pid = 4321
                 self.kill_count = 0
+                self.stdin = self.stdout = self.stderr = None
 
-            def communicate(self, timeout=None):
+            def communicate(self, timeout=None, input=None):
                 raise TimeoutExpired(cmd="x", timeout=timeout)
 
             def wait(self, timeout=None):

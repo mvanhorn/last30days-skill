@@ -13,6 +13,7 @@ import re
 import sys
 import threading
 import time
+from contextlib import ExitStack
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as futures_wait
 from datetime import date, datetime, timezone
@@ -404,6 +405,9 @@ def _subreddit_search(
 def fetch_post_comments(
     url: str,
     token: str,
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> List[Dict[str, Any]]:
     """Fetch comments for a Reddit post via ScrapeCreators.
 
@@ -421,6 +425,9 @@ def fetch_post_comments(
             params={"url": url},
             timeout=30,
             retries=2,
+            deadline_monotonic=deadline_monotonic,
+            cancel=cancel,
+            owned_get=deadline_monotonic is not None,
         )
         return data.get("comments", data.get("data", []))
     except http.HTTPError as e:
@@ -669,7 +676,7 @@ def enrich_with_comments(
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     max_comments = config["comment_enrichments"]
 
-    if not items or not token or max_comments <= 0:
+    if not items or not token or max_comments <= 0 or budget_seconds <= 0:
         return items
 
     # Select the top threads by total engagement (upvotes + comment count),
@@ -680,11 +687,23 @@ def enrich_with_comments(
     _log(f"Enriching comments for {len(top_items)} posts (by total engagement)")
 
     start = time.monotonic()
+    deadline = start + budget_seconds
+    cancel = threading.Event()
 
-    with ThreadPoolExecutor(max_workers=min(4, len(top_items))) as executor:
+    def fetch(item):
+        if cancel.is_set() or time.monotonic() >= deadline:
+            return None
+        comments = fetch_post_comments(
+            item.get("url", ""), token,
+            deadline_monotonic=deadline, cancel=cancel,
+        )
+        return comments if time.monotonic() < deadline else None
+
+    with ThreadPoolExecutor(max_workers=min(4, len(top_items))) as executor, ExitStack() as cleanup:
+        cleanup.callback(cancel.set)
         futures = {
             http.submit_with_context(
-                executor, fetch_post_comments, item.get("url", ""), token,
+                executor, fetch, item,
             ): item
             for item in top_items
             if item.get("url")
@@ -693,6 +712,8 @@ def enrich_with_comments(
         # Wait with budget instead of unbounded as_completed
         remaining = max(0, budget_seconds - (time.monotonic() - start))
         done, not_done = futures_wait(futures, timeout=remaining)
+        if not_done:
+            cancel.set()
 
         enriched_count = 0
         for future in done:

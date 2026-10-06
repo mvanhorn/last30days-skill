@@ -154,7 +154,7 @@ class TestEnrichSelectsTopEngagement(unittest.TestCase):
 
         enriched_urls = []
 
-        def mock_fetch_comments(url, token):
+        def mock_fetch_comments(url, token, **kwargs):
             enriched_urls.append(url)
             return [{"body": "Great thread!", "ups": 10, "author": "testuser"}]
 
@@ -189,7 +189,7 @@ class TestEnrichSelectsTopEngagement(unittest.TestCase):
 
         enriched_urls = []
 
-        def mock_fetch_comments(url, token):
+        def mock_fetch_comments(url, token, **kwargs):
             enriched_urls.append(url)
             return [{"body": "Comment", "ups": 5, "author": "user"}]
 
@@ -231,20 +231,16 @@ class TestEnrichmentBudget(unittest.TestCase):
 
     def test_budget_zero_returns_items_unenriched(self):
         """With budget=0, items are returned without enrichment (not discarded)."""
-        import time as _time
         from unittest.mock import patch
 
         items = self._make_items(3)
 
-        def slow_fetch(url, token):
-            _time.sleep(2)
-            return [{"body": "comment", "score": 10, "author": "u"}]
-
-        with patch("lib.reddit.fetch_post_comments", side_effect=slow_fetch):
+        with patch("lib.reddit.fetch_post_comments") as fetch:
             result = enrich_with_comments(items, "fake-token", depth="quick", budget_seconds=0)
-
-        # All 3 items returned (not discarded)
+        self.assertIs(result, items)
         self.assertEqual(len(result), 3)
+        self.assertTrue(all("top_comments" not in item for item in result))
+        fetch.assert_not_called()
 
     def test_empty_items_returns_immediately(self):
         result = enrich_with_comments([], "fake-token", depth="default", budget_seconds=60)

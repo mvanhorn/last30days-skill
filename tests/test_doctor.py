@@ -1005,19 +1005,7 @@ class LiveProbe(unittest.TestCase):
         self.assertEqual(reddit_search.search_url("test"), url)
 
     def _probe_reddit_with_body(self, body):
-        class _Resp:
-            status = 200
-
-            def read(self, *args):
-                return body.encode("utf-8")
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return False
-
-        with mock.patch("lib.doctor.urllib.request.urlopen", return_value=_Resp()):
+        with mock.patch("lib.bounded_get.get", return_value=(200, body.encode("utf-8"), None)):
             return doctor._probe_source("reddit", {}, 5)
 
     def test_reddit_probe_200_with_results_passes(self):
@@ -1045,7 +1033,7 @@ class LiveProbe(unittest.TestCase):
             doctor._HTTP_PROBE_URLS["reddit"], code, "Blocked", {}, None
         )
         with (
-            mock.patch("lib.doctor.urllib.request.urlopen", side_effect=error),
+            mock.patch("lib.bounded_get.get", return_value=(code, None, error)),
             # 429 buys a retry; don't pay the real backoff in the suite.
             mock.patch("lib.doctor.time.sleep"),
         ):
@@ -1125,7 +1113,7 @@ class LiveProbe(unittest.TestCase):
         error = urllib.error.HTTPError(
             doctor._HTTP_PROBE_URLS["github"], 403, "Forbidden", {}, None
         )
-        with mock.patch("lib.doctor.urllib.request.urlopen", side_effect=error):
+        with mock.patch("lib.bounded_get.get", return_value=(403, None, error)):
             res = doctor._probe_source("github", {}, 5)
         self.assertTrue(res["ok"])
 
@@ -1133,12 +1121,12 @@ class LiveProbe(unittest.TestCase):
         # Probing with a different UA measures the User-Agent, not the endpoint.
         seen = {}
 
-        def capture(req, timeout=None):
+        def capture(req, **kwargs):
             seen["ua"] = req.get_header("User-agent")
             seen["accept"] = req.get_header("Accept")
-            raise urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
+            return 500, None, urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
 
-        with mock.patch("lib.doctor.urllib.request.urlopen", capture):
+        with mock.patch("lib.bounded_get.get", capture):
             doctor._probe_source("reddit", {}, 5)
         self.assertEqual(http.BROWSER_USER_AGENT, seen["ua"])
         self.assertIn("text/html", seen["accept"])
@@ -1155,19 +1143,12 @@ class LiveProbe(unittest.TestCase):
         self.assertIn("boom", results["reddit"]["detail"])
         self.assertTrue(results["hackernews"]["ok"])  # others unaffected
 
-    def test_probe_deadline_never_hangs(self):
-        import time
-
-        def too_slow(name, config, timeout):
-            time.sleep(1.3)  # exceeds the timeout(0)+1s result deadline
-            return {"ok": True, "probed": True}
-
-        with mock.patch("lib.doctor._probe_source", too_slow):
+    def test_zero_probe_budget_starts_no_transport(self):
+        with mock.patch("lib.bounded_get.get") as transport:
             results = doctor._probe_sources({}, timeout=0)
+        transport.assert_not_called()
         self.assertTrue(results)
-        self.assertTrue(
-            any("deadline" in r.get("detail", "") for r in results.values())
-        )
+        self.assertTrue(all("deadline" in r["detail"] for r in results.values()))
 
     def test_probe_result_flips_unverified_to_working(self):
         rec = {"tier": "ok", "status": "ok", "audit_state": doctor.AUDIT_UNVERIFIED}
