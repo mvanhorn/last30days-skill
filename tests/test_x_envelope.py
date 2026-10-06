@@ -857,9 +857,11 @@ class TestPipelineWiring:
 
     def test_exclude_sources_x_ignores_the_envelope_with_a_receipt(self, tmp_path):
         envelope = _read(_basic(tmp_path))
-        report, stderr = _capture(lambda: _run(
-            envelope, config={"EXCLUDE_SOURCES": "x"}, requested=None, plan=_plan(("reddit",)),
-        ))
+        with mock.patch("lib.reddit_public.search_reddit_public", return_value=[]) as search:
+            report, stderr = _capture(lambda: _run(
+                envelope, config={"EXCLUDE_SOURCES": "x"}, requested=None, plan=_plan(("reddit",)),
+            ))
+        search.assert_called()
         assert "x" not in report.items_by_source
         assert "envelope ignored" in stderr
         assert envelope.topic_items, "an ignored envelope is not consumed"

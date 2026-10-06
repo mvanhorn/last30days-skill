@@ -439,18 +439,18 @@ def test_search_polymarket_query_expansion():
     # Should expand to multiple queries
     assert len(queries) >= 2
 
-@patch('lib.polymarket.http.post')
-
-
-def test_search_polymarket_http_error_handling(mock_post):
+@patch('lib.polymarket.http.request')
+def test_search_polymarket_http_error_handling(mock_request):
     """Test graceful handling of HTTP errors."""
     from lib.http import HTTPError
-    mock_post.side_effect = HTTPError("HTTP 429: Rate limit")
+    mock_request.side_effect = HTTPError("HTTP 429: Rate limit", status_code=429)
     
     result = polymarket.search_polymarket("test", "2026-01-01", "2026-01-31")
     
-    # Should return structure with error
-    assert "events" in result or "error" in result
+    assert mock_request.call_count > 0
+    assert all(call.args[0] == "GET" for call in mock_request.call_args_list)
+    assert result["events"] == []
+    assert "HTTP 429: Rate limit" in result["error"]
 
 # === Tests for parse_polymarket_response() ===
 

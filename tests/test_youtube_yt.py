@@ -12,6 +12,13 @@ from unittest import mock
 from lib import youtube_yt
 
 
+def _write_transcript_fixture(directory):
+    (Path(directory) / "abc123.en.vtt").write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nOffline transcript fixture.\n",
+        encoding="utf-8",
+    )
+
+
 class _DummyProc:
     def __init__(self):
         self.pid = 12345
@@ -82,8 +89,10 @@ class TestYtDlpFlags(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir, \
              mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
              mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()) as run_mock:
-            youtube_yt.fetch_transcript("abc123", temp_dir)
+            _write_transcript_fixture(temp_dir)
+            transcript = youtube_yt.fetch_transcript("abc123", temp_dir)
 
+        self.assertEqual(transcript, "Offline transcript fixture.")
         cmd = run_mock.call_args.args[0]
         self.assertIn("--ignore-config", cmd)
         self.assertIn("--no-cookies-from-browser", cmd)
@@ -125,8 +134,10 @@ class TestYtDlpSubLangs(unittest.TestCase):
              mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
              mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()) as run_mock:
             os.environ.pop("LAST30DAYS_YT_SUB_LANGS", None)
-            youtube_yt.fetch_transcript("abc123", temp_dir)
+            _write_transcript_fixture(temp_dir)
+            transcript = youtube_yt.fetch_transcript("abc123", temp_dir)
 
+        self.assertEqual(transcript, "Offline transcript fixture.")
         cmd = run_mock.call_args_list[0].args[0]
         idx = cmd.index("--sub-lang")
         self.assertEqual(cmd[idx + 1], "en,es,pt")
@@ -136,8 +147,10 @@ class TestYtDlpSubLangs(unittest.TestCase):
              mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "fr,de,it"}), \
              mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
              mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()) as run_mock:
-            youtube_yt.fetch_transcript("abc123", temp_dir)
+            _write_transcript_fixture(temp_dir)
+            transcript = youtube_yt.fetch_transcript("abc123", temp_dir)
 
+        self.assertEqual(transcript, "Offline transcript fixture.")
         cmd = run_mock.call_args_list[0].args[0]
         idx = cmd.index("--sub-lang")
         self.assertEqual(cmd[idx + 1], "fr,de,it")

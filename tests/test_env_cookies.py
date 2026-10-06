@@ -197,7 +197,8 @@ class TestGetConfigCookieIntegration:
             "FROM_BROWSER": "auto",
             "LAST30DAYS_CONFIG_DIR": "",
         }
-        with patch.dict(os.environ, env_patch, clear=False):
+        with patch.dict(os.environ, env_patch, clear=False), \
+             patch("lib.chrome_cdp.read_x_cookies", return_value=None):
             config = get_config(policy=ConfigLoadPolicy(browser_cookies="read"))
         assert config["AUTH_TOKEN"] == "browser_tok"
         assert config["CT0"] == "browser_ct0"

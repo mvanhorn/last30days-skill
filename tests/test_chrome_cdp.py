@@ -389,9 +389,8 @@ def test_wsconn_connect_refuses_wss():
 
 
 def test_read_x_cookies_no_reachable_endpoint_returns_none():
-    # A port with nothing listening: connection refused, returns None.
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        dead_port = s.getsockname()[1]
-    config = {"BROWSER_CDP_URL": f"http://127.0.0.1:{dead_port}", "BROWSER_CONSENT": "true"}
-    assert chrome_cdp.read_x_cookies(config) is None
+    config = {"BROWSER_CDP_URL": "http://127.0.0.1:18800", "BROWSER_CONSENT": "true"}
+    with mock.patch("urllib.request.urlopen", side_effect=ConnectionRefusedError) as request:
+        assert chrome_cdp.read_x_cookies(config) is None
+    request.assert_called_once()
+    assert request.call_args.args[0] == "http://127.0.0.1:18800/json/version"

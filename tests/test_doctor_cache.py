@@ -76,6 +76,7 @@ class _Hermetic:
         self.probe_spy = mock.Mock(side_effect=probe or _fake_probe)
         self._patches = [
             mock.patch("lib.health.probe_dependency", self.probe_spy),
+            mock.patch("lib.doctor._probe_sources", return_value={}),
             mock.patch("lib.bird_x.is_bird_installed", return_value=False),
             mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None),
             mock.patch("lib.bird_x.get_bird_status", return_value=dict(BIRD_STATUS_OFF)),

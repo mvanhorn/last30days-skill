@@ -194,6 +194,7 @@ class LastRunStateTests(unittest.TestCase):
             config = {"OPENROUTER_API_KEY": "or-test"}
             with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
                  mock.patch.object(cli.env, "get_config", return_value=config), \
+                 mock.patch("lib.resolve.auto_resolve", return_value={}), \
                  mock.patch.object(cli.pipeline, "diagnose", return_value=_diag()), \
                  mock.patch.object(cli.pipeline, "run", return_value=fresh_report) as run_mock, \
                  mock.patch.object(cli.ui, "ProgressDisplay"), \
