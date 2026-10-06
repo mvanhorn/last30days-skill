@@ -134,8 +134,9 @@ def test_research_run_defaults_to_browser_cookie_read():
     assert policy.browser_cookies == "read"
 
 
-def test_no_browser_cookies_flag_disables_research_run_cookie_read():
-    """--no-browser-cookies flips a research run to the no-read policy."""
+def test_no_browser_cookies_flag_overrides_configured_browser_mode(monkeypatch):
+    """An ambient browser setting cannot override an explicit no-read run."""
+    monkeypatch.setenv("FROM_BROWSER", "auto")
     parser = cli.build_parser()
     args, extra = parser.parse_known_args(["--no-browser-cookies", "some topic"])
     policy = cli._config_policy_for_args(args, "some topic", extra)

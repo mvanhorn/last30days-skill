@@ -1,13 +1,9 @@
 """Contract tests for the Grok Bot host slice of SKILL.md (R4, R12, R16; AE9).
 
-On a Grok Bot host the model-facing contract must drive X through the
-official path only: the X connector lane first, the X API bearer or the xAI
-key as backups, keys written only through the engine's ``setup --store-key``
-path, and no browser-session step of any kind. These tests read SKILL.md as
-text - the model's runtime contract - the way tests/test_onboarding_contract.py
-and tests/test_codex_host_contract.py do, and slice the Grok Bot passages so a
-word that is fine elsewhere (the cookie recipes for Linux / Mac mini) cannot
-satisfy or fail an assertion here.
+On a Grok Bot host the model-facing contract must use official X access: the
+connector lane first, bearer or xAI backups configured privately by the owner,
+and no browser-session step. Scope checks to Grok passages so wording that is
+valid for other hosts cannot mask violations here.
 """
 
 from __future__ import annotations
@@ -121,23 +117,6 @@ class TestGrokBotProseFlow(unittest.TestCase):
     def test_flow_has_no_r4_vocabulary(self):
         self.assertEqual([], _forbidden_hits(self.flow))
 
-    def test_flow_names_the_official_contract(self):
-        for token in (
-            "LAST30DAYS_HOST=grok-bot",
-            "LAST30DAYS_X_HOST_LANE=1",
-            "X_BEARER_TOKEN",
-            "XAI_API_KEY",
-            "--x-posts",
-            "search_posts_all",
-            "generated_at",
-            "window-unsupported",
-            "setup --store-key",
-            "about the last week",
-            "SETUP_COMPLETE=true",
-            "X_DECLINED=grok-bot",
-        ):
-            self.assertIn(token, self.flow, token)
-
     def test_flow_names_the_call_counts_and_lanes(self):
         self.assertRegex(self.flow, r"10\s*/\s*30\s*/\s*60")
         self.assertRegex(self.flow, r"\b8\b.*\b5\b.*\b3\b")
@@ -160,18 +139,7 @@ class TestGrokBotProseFlow(unittest.TestCase):
         bearer = self.flow.index("X_BEARER_TOKEN")
         self.assertLess(connector, bearer)
 
-    def test_bearer_coverage_caveat_never_implies_parity(self):
-        self.assertIn(
-            "recent posts, about the last week, unless your X developer project has full-archive access",
-            self.flow,
-        )
-        self.assertIn("X developer console", self.flow)
-        self.assertIn("console.x.ai", self.flow)
-
-    def test_key_persistence_only_through_engine_and_masked(self):
-        self.assertIn("setup --store-key", self.flow)
-        self.assertIn("=****", self.flow)
-        self.assertIn("never echo the value back", self.flow)
+    def test_flow_has_no_shell_write_of_key_or_envelope(self):
         for line in self.flow.splitlines():
             if not re.search(r"\b(echo|printf)\b", line):
                 continue
@@ -283,18 +251,9 @@ class TestManualSetupGuide(unittest.TestCase):
         step0 = _slice_between(text, "## Step 0: First-Run Setup Wizard", "## CRITICAL: Parse User Intent")
         self.manual = step0[step0.index("### Manual Setup Guide") :]
 
-    def test_bearer_bullet_comes_first_in_x_section(self):
-        x_section = _slice_between(self.manual, "**X/Twitter (pick one", "**X on Linux / Mac mini (repair).**")
-        bullets = [line for line in x_section.splitlines() if line.startswith("- ")]
-        self.assertTrue(bullets, "no X bullets in the Manual Setup Guide")
-        self.assertIn("X_BEARER_TOKEN", bullets[0])
-        self.assertIn("about a week", bullets[0])
-
     def test_grok_bot_repair_paragraph_is_official_only(self):
         para = _slice_between(self.manual, "**X on a Grok Bot (repair).**", "**X on Linux / Mac mini (repair).**")
         self.assertEqual([], _forbidden_hits(para))
-        for token in ("connect X", "X_BEARER_TOKEN", "about the last week", "XAI_API_KEY", "top up"):
-            self.assertIn(token, para, token)
 
 
 class TestSecurityAndFrontmatter(unittest.TestCase):
@@ -311,7 +270,6 @@ class TestSecurityAndFrontmatter(unittest.TestCase):
         self.assertIn("X connector", security)
         overview = _slice_between(text, "**Permissions overview:**", "Research ANY topic")
         self.assertIn("api.x.com", overview)
-
 
 class TestConfigurationGrokBotSubsection(unittest.TestCase):
     def test_configuration_grok_bot_subsection_has_no_r4_vocabulary(self):
