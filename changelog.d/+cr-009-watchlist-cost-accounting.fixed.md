@@ -1,0 +1,1 @@
+Fixed watchlist daily budgets to accumulate provider-reported OpenRouter and Perplexity USD charges, preserve spending after failed or timed-out runs, and stop subsequent topics when the budget is exhausted or paid usage has unknown cost.

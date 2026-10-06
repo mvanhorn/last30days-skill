@@ -1,9 +1,9 @@
 """Arctic-shift score resolver — post upvote counts by id, keyless and free.
 
-``search.json`` and ``/comments/{id}.json`` are 403 keyless, and ``search.rss``
-(used for discovery) carries titles but NO score; the shreddit listing partials
-score only posts that appear in a pulled listing. For a thread found only via
-global RSS search in a broad sub, the free score comes from arctic-shift
+``search.json`` and ``/comments/{id}.json`` are 403 keyless. Site search and the
+shreddit listing partials usually carry a score, but some posts still arrive
+unscored. For a thread that reaches the merge with score 0, the free score
+comes from arctic-shift
 (https://arctic-shift.photon-reddit.com), a public Reddit archive whose
 ``/api/posts/ids`` returns the post object (score, num_comments, title) for a
 batch of base36 post ids. Scores are point-in-time snapshots — slightly stale vs

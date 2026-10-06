@@ -30,7 +30,7 @@ from pathlib import Path
 from unittest import mock
 
 import last30days as cli
-from lib import backends, doctor, env, grok_x, health, http, prescriptions
+from lib import backends, doctor, env, grok_x, health, http, prescriptions, reddit_search
 
 BIRD_STATUS_OFF = {
     "installed": False,
@@ -999,11 +999,46 @@ class LiveProbe(unittest.TestCase):
         self.assertIsNone(doctor._probe_source("tiktok", {}, 5))
 
     def test_reddit_probe_targets_the_endpoint_the_engine_uses(self):
-        # /r/all/hot.json is permanently 403 keyless and no lane requests it;
-        # probing it certified an endpoint the engine had abandoned (#899).
+        # Probing a hand-copied URL certified endpoints the engine had already
+        # abandoned (hot.json, then the retired feed). The probe asks the lane.
         url = doctor._HTTP_PROBE_URLS["reddit"]
-        self.assertIn("search.rss", url)
-        self.assertNotIn("hot.json", url)
+        self.assertEqual(reddit_search.search_url("test"), url)
+
+    def _probe_reddit_with_body(self, body):
+        class _Resp:
+            status = 200
+
+            def read(self, *args):
+                return body.encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        with mock.patch("lib.doctor.urllib.request.urlopen", return_value=_Resp()):
+            return doctor._probe_source("reddit", {}, 5)
+
+    def test_reddit_probe_200_with_results_passes(self):
+        body = (Path(__file__).resolve().parent.parent / "fixtures" / "reddit_search_page1.html").read_text()
+        res = self._probe_reddit_with_body(body)
+        self.assertTrue(res["ok"])
+        self.assertEqual("HTTP 200", res["detail"])
+
+    def test_reddit_probe_200_no_results_page_passes(self):
+        # Reddit's explicit empty page is still the search endpoint answering.
+        res = self._probe_reddit_with_body(f"<div {reddit_search.NO_RESULTS_MARKER}></div>")
+        self.assertTrue(res["ok"])
+
+    def test_reddit_probe_200_challenge_page_is_blocked(self):
+        # A 200 challenge page is the failure the lane hits: status alone
+        # would report a blocked Reddit as working.
+        res = self._probe_reddit_with_body("<html><title>Please wait for verification</title></html>")
+        self.assertFalse(res["ok"])
+        self.assertIn("HTTP 200", res["detail"])
+        self.assertIn("blocked", res["detail"])
+        self.assertFalse(res.get("transient", False))
 
     def _probe_reddit_with_status(self, code):
         error = urllib.error.HTTPError(
@@ -1100,11 +1135,13 @@ class LiveProbe(unittest.TestCase):
 
         def capture(req, timeout=None):
             seen["ua"] = req.get_header("User-agent")
+            seen["accept"] = req.get_header("Accept")
             raise urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
 
         with mock.patch("lib.doctor.urllib.request.urlopen", capture):
             doctor._probe_source("reddit", {}, 5)
         self.assertEqual(http.BROWSER_USER_AGENT, seen["ua"])
+        self.assertIn("text/html", seen["accept"])
 
     def test_probe_failure_is_isolated(self):
         def flaky(name, config, timeout):
@@ -1237,6 +1274,19 @@ class BackupAndCommentLanes(unittest.TestCase):
         self.assertIn("rate-limited", yt_backup["note"])
         text = doctor.render_text(report)
         self.assertIn("backup: ScrapeCreators transcript/search backstop — armed", text)
+
+    def test_reddit_backup_note_names_the_floor(self):
+        report = _build({"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"})
+        note = report["sources"]["reddit"]["backups"][0]["note"]
+        self.assertIn("below the 5-item floor", note)
+
+    def test_reddit_backup_note_floor_off_means_empty_only(self):
+        report = _build({
+            "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
+            env.REDDIT_SC_MIN_ITEMS_VAR: "0",
+        })
+        note = report["sources"]["reddit"]["backups"][0]["note"]
+        self.assertIn("returns nothing", note)
 
     def test_backups_off_without_sc_key(self):
         report = _build({})

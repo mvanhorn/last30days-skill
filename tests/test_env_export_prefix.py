@@ -31,6 +31,34 @@ def test_export_prefix_combines_with_quotes_and_inline_comment(tmp_path):
     assert loaded == {"NAME": "Jane # Doe"}
 
 
+def test_exported_settings_reach_get_config(tmp_path, monkeypatch):
+    env_path = _write(tmp_path, "export FUN_LEVEL=high\n")
+    monkeypatch.setenv("LAST30DAYS_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("FUN_LEVEL", raising=False)
+    monkeypatch.setattr(env, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(env, "CONFIG_FILE", env_path)
+    monkeypatch.setattr(env, "_load_keychain", lambda *args, **kwargs: {})
+    monkeypatch.setattr(env, "_load_pass", lambda *args, **kwargs: {})
+    monkeypatch.chdir(tmp_path)
+
+    assert env.get_config()["FUN_LEVEL"] == "high"
+
+
+@pytest.mark.parametrize("value", ["$HOME", "$(printf sentinel)", "`printf sentinel`"])
+def test_export_does_not_evaluate_shell_syntax(tmp_path, value):
+    assert _load(tmp_path, f"export RAW={value}\n") == {"RAW": value}
+
+
+def test_export_preserves_empty_disable_values_but_ignores_empty_secrets(tmp_path):
+    loaded = _load(
+        tmp_path,
+        'export LAST30DAYS_YT_PLAYER_CLIENT= # disabled\n'
+        'export LAST30DAYS_MEMORY_DIR=""\n'
+        'export XAI_API_KEY= # not configured\n',
+    )
+    assert loaded == {"LAST30DAYS_YT_PLAYER_CLIENT": "", "LAST30DAYS_MEMORY_DIR": ""}
+
+
 @pytest.mark.parametrize("line, key", [
     ("export=literal\n", "export"),
     ("export =literal\n", "export"),
@@ -90,3 +118,26 @@ def test_write_setup_config_sees_export_line_as_present(tmp_path):
     assert setup_wizard.write_setup_config(env_path) is True
 
     assert env_path.read_text() == "export SETUP_COMPLETE=true\n"
+
+
+def test_write_setup_config_rotates_exported_consent_and_preserves_browser(tmp_path):
+    env_path = _write(
+        tmp_path,
+        "export SETUP_COMPLETE=true\n"
+        "export FROM_BROWSER=firefox\n"
+        "export BROWSER_CONSENT=true\n"
+        "BROWSER_CONSENT=true\n",
+    )
+
+    assert setup_wizard.write_setup_config(
+        env_path, from_browser="chrome", browser_consent=False,
+    ) is True
+
+    assert env_path.read_text() == (
+        "export SETUP_COMPLETE=true\n"
+        "export FROM_BROWSER=firefox\n"
+        "export BROWSER_CONSENT=false\n"
+    )
+    assert env.load_env_file(env_path) == {
+        "SETUP_COMPLETE": "true", "FROM_BROWSER": "firefox", "BROWSER_CONSENT": "false",
+    }

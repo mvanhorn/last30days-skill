@@ -39,10 +39,23 @@ class TestVersionConsistency(unittest.TestCase):
         compare_text = (SKILL_ROOT / "scripts" / "compare.sh").read_text(encoding="utf-8")
         default_assignment = 'LAST30DAYS_MEMORY_DIR="${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}"'
 
-        self.assertIn(default_assignment, skill_text)
+        assignments = re.findall(r"^LAST30DAYS_MEMORY_DIR=.*$", skill_text, re.MULTILINE)
+        self.assertTrue(assignments, "Skill commands must resolve the configured memory directory")
+        for assignment in assignments:
+            with self.subTest(assignment=assignment):
+                self.assertIn("--resolve-save-dir", assignment)
+        self.assertFalse(
+            default_assignment in skill_text,
+            "Shell defaults must not bypass the engine's memory-directory configuration",
+        )
         self.assertIn(default_assignment, compare_text)
         self.assertNotIn("--save-dir=~/Documents/Last30Days", skill_text)
-        self.assertIn('--save-dir="${LAST30DAYS_MEMORY_DIR}"', skill_text)
+        bash_blocks = re.findall(r"```bash\n(.*?)\n```", skill_text, re.DOTALL)
+        save_dir_values = re.findall(
+            r'''--save-dir=("[^"]*"|'[^']*'|\S+)''', "\n".join(bash_blocks)
+        )
+        self.assertTrue(save_dir_values, "Skill commands must pass the resolved save directory")
+        self.assertEqual({'"${LAST30DAYS_MEMORY_DIR}"'}, set(save_dir_values))
 
     def test_compare_script_does_not_skip_permissions(self) -> None:
         compare_text = (SKILL_ROOT / "scripts" / "compare.sh").read_text(encoding="utf-8")
@@ -67,9 +80,18 @@ class TestVersionConsistency(unittest.TestCase):
             except UnicodeDecodeError:
                 continue
 
+            in_code_block = False
             for line_number, line in enumerate(lines, start=1):
+                if path.suffix == ".md" and line.lstrip().startswith("```"):
+                    in_code_block = not in_code_block
                 if "~/Documents/Last30Days" not in line and "$HOME/Documents/Last30Days" not in line:
                     continue
+                documented_fallback = (
+                    path.suffix == ".md"
+                    and not in_code_block
+                    and ("LAST30DAYS_MEMORY_DIR" in line or "--resolve-save-dir" in line)
+                    and re.search(r"\b(default\w*|fallback)\b", line) is not None
+                )
                 allowed_default = (
                     "LAST30DAYS_MEMORY_DIR" in line
                     and (
@@ -82,7 +104,7 @@ class TestVersionConsistency(unittest.TestCase):
                         or "${LAST30DAYS_MEMORY_DIR:-$HOME/Documents/Last30Days}" in line
                     )
                 )
-                if not allowed_default:
+                if not (allowed_default or documented_fallback):
                     offenders.append(f"{path.relative_to(ROOT)}:{line_number}: {line.strip()}")
 
         self.assertEqual([], offenders)

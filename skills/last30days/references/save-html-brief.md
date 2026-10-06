@@ -31,7 +31,7 @@ The contract has two modes:
 SYNTHESIS_FILE="/tmp/last30days-synthesis-${CLAUDE_SESSION_ID}.md"
 # >| not >: fixed path may already exist on a same-session re-run; a plain >
 # is refused under `set -o noclobber`.
-cat >| "$SYNTHESIS_FILE" <<'SYNTHESIS_EOF'
+cat >| "${SYNTHESIS_FILE}" << 'SYNTHESIS_EOF'
 What I learned:
 
 **{First headline}** - {body with [name](url) inline citations}
@@ -57,20 +57,39 @@ SYNTHESIS_EOF
 #    different topic, stderr says "No matching cached report data" and the
 #    engine falls back to a fresh run; the same scope flags keep that fallback
 #    aligned with the synthesis body.
-SLUG=$(echo "$TOPIC" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')
-HTML_PATH="${LAST30DAYS_MEMORY_DIR}/${SLUG}-brief.html"
-# Collision guard: the `> "$HTML_PATH"` redirect below OVERWRITES - the engine
-# does NOT auto-date the brief (its date-suffix logic applies only to --save-dir
-# raw files, not to this redirected --emit=html stream). So if the clean name
-# already exists, date-suffix it here to avoid clobbering a prior brief.
-if [ -f "$HTML_PATH" ]; then
-  HTML_PATH="${LAST30DAYS_MEMORY_DIR}/${SLUG}-brief-$(date +%F).html"
-fi
-"${LAST30DAYS_PYTHON}" "${SKILL_ROOT}/scripts/last30days.py" "${TOPIC}" \
-  --emit=html \
-  --synthesis-file "$SYNTHESIS_FILE" \
-  "${SCOPE_FLAGS[@]}" \
-  >| "$HTML_PATH"   # >| not >: noclobber-safe write to the collision-guarded path
+SLUG=$(printf '%s\n' "${TOPIC}" | tr '[:upper:]' '[:lower:]' | tr -cs 'a-z0-9' '-' | sed 's/^-//;s/-$//')
+# Render beside the destination, then create a new name atomically. The hard
+# link refuses existing paths even when another exporter wins the same name.
+HTML_PATH=$(
+  HTML_TMP=$(mktemp "${LAST30DAYS_MEMORY_DIR}/.last30days-html.XXXXXXXX") || exit "$?"
+  trap 'rm -f -- "${HTML_TMP}"' EXIT
+  "${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "${TOPIC}" \
+    --emit=html \
+    --synthesis-file "${SYNTHESIS_FILE}" \
+    "${SCOPE_FLAGS[@]}" \
+    >| "${HTML_TMP}" || exit "$?"
+  "${LAST30DAYS_PYTHON}" - "${HTML_TMP}" "${LAST30DAYS_MEMORY_DIR}" "${SLUG}" << 'HTML_PATH_PY'
+from datetime import date
+import os
+from pathlib import Path
+import sys
+
+temporary, directory, slug = sys.argv[1:]
+base = Path(directory) / f"{slug}-brief"
+dated = f"{base}-{date.today().isoformat()}"
+candidate = Path(f"{base}.html")
+suffix = 1
+while True:
+    try:
+        os.link(temporary, candidate)
+    except FileExistsError:
+        candidate = Path(f"{dated}.html" if suffix == 1 else f"{dated}-{suffix}.html")
+        suffix += 1
+    else:
+        print(candidate)
+        break
+HTML_PATH_PY
+) || exit "$?"
 #    where SCOPE_FLAGS is the same array you passed the first time, e.g.
 #    SCOPE_FLAGS=(--hiring-signals --plan "$QUERY_PLAN_FILE" --x-handle=acme).
 #    For a scoped --hiring-signals brief, --hiring-signals MUST be here too so
@@ -110,7 +129,7 @@ When the user chooses the built-in `ht-ml.app` path, add `--publish-html` to the
 
 ```bash
 LAST30DAYS_PUBLISH_PASSWORD="${PUBLISH_PASSWORD:-}" \
-"${LAST30DAYS_PYTHON}" "${SKILL_ROOT}/scripts/last30days.py" "${TOPIC}" \
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "${TOPIC}" \
   --emit=html \
   --synthesis-file "$SYNTHESIS_FILE" \
   --output "$HTML_PATH" \
@@ -189,7 +208,7 @@ The engine will try to reuse `~/.config/last30days/last-report.json` for that se
 - Do NOT save HTML if the user didn't ask. The sparse mode (no synthesis) produces a thin file; not useful as a shareable.
 - Do NOT add content to the temp file beyond your synthesis prose. The badge / footer / colophon come from the engine.
 - Do NOT change the file path convention. `${LAST30DAYS_MEMORY_DIR}/${SLUG}-brief.html` is the canonical location.
-- Do NOT silently overwrite an existing file. The `--emit=html` output is written via a shell redirect (`>| "$HTML_PATH"`), which OVERWRITES the collision-guarded path — use `>|` not `>` because `set -o noclobber` refuses plain `>` when the file already exists. The collision guard in step 2 handles same-topic re-runs: if `{slug}-brief.html` already exists it date-suffixes to `{slug}-brief-YYYY-MM-DD.html`. Always report whichever path the redirect actually used in the chat handoff.
+- Do NOT overwrite an existing file. Step 2 renders to a private temporary file and links the completed output to a new name. If `{slug}-brief.html` exists, try `{slug}-brief-YYYY-MM-DD.html`, then `{slug}-brief-YYYY-MM-DD-2.html`, incrementing until a name is available. This also handles concurrent exporters without replacing files, directories, or symlinks. The temporary file is removed on success or failure. If rendering or linking fails, report the error instead of a successful save. Always report the path stored in `HTML_PATH` in the chat handoff.
 - Do NOT include the data quality warning text in the temp file or in your final chat line. Warnings are an engine-stderr concern, not an artifact concern.
 - Do NOT publish, upload, or send the HTML to a third-party service as part of the local save flow.
 - Do NOT publish to any service merely because HTML was requested. Show the saved path and next-step choices first; publishing requires the user to choose a publish option.

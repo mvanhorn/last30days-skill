@@ -1,0 +1,1 @@
+Prevent concurrent MCP server startups from replacing a complete engine cache with a partial extraction. Each process now stages its own files, bounds publication-lock waits to five seconds, and safely reclaims staging files left by terminated extractors.

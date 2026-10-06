@@ -27,9 +27,11 @@ DOC_ONLY_KEYS = {
     "LAST30DAYS_API_BASE",
     "LAST30DAYS_API_KEY",
     "LAST30DAYS_CACHE_DIR",
+    "LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES",
     "LAST30DAYS_MCP_TIMEOUT",
     "LAST30DAYS_PYTHON",
-    "LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES",
+    # Watchlist owns this private temporary subprocess path; it is not user configuration.
+    "LAST30DAYS_USAGE_JOURNAL",
     # Read from the process environment before or outside get_config
     # (config-dir override, Keychain/pass source switches), so they are
     # documented in CONFIGURATION.md without being config keys.

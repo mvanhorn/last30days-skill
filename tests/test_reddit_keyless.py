@@ -1,4 +1,4 @@
-"""Tests for scripts/lib/reddit_keyless.py — tiered keyless Reddit pipeline."""
+"""Tests for scripts/lib/reddit_keyless.py: tiered keyless Reddit pipeline."""
 
 from unittest import mock
 
@@ -11,7 +11,7 @@ def _post(i, date="2026-05-20", rel=0.0):
         "id": "", "title": f"Post {i}", "url": url, "score": 0, "num_comments": 0,
         "subreddit": "test", "created_utc": None, "author": "u", "selftext": "",
         "date": date, "engagement": {"score": 0, "num_comments": 0, "upvote_ratio": None},
-        "relevance": rel, "why_relevant": "Reddit RSS", "metadata": {},
+        "relevance": rel, "why_relevant": "Reddit search", "metadata": {},
     }
 
 
@@ -26,71 +26,121 @@ def _scored(i, score, ncmt=0):
     return p
 
 
+def _searched(i, score, ncmt=0, rel=0.5):
+    """A site-search result: dated and scored straight from the search page."""
+    p = _scored(i, score, ncmt)
+    p["relevance"] = rel
+    p["why_relevant"] = "Reddit search"
+    return p
+
+
+def _lanes(search=(), listing=(), arctic_listing=(), arctic_scores=None):
+    """Patch every discovery lane at its module boundary; return the mocks."""
+    return (
+        mock.patch.object(reddit_keyless.reddit_search, "search", return_value=list(search)),
+        mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                          return_value=list(listing)),
+        mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                          return_value=list(arctic_listing)),
+        mock.patch.object(reddit_keyless.reddit_arctic, "fetch_scores",
+                          return_value=dict(arctic_scores or {})),
+    )
+
+
 class TestDiscovery:
-    """RSS breadth + scored listings are the keyless discovery path (no .json)."""
+    """Reddit site search + scored listings are the keyless discovery path."""
 
-    def test_keyless_path_runs_rss_and_listings(self):
-        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
-                               return_value=[_post(1), _post(2)]) as rss, \
-             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
-                               return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
-                               return_value=[]):
-            out = reddit_keyless._discover("topic", "default", ["test"])
-        assert len(out) == 2
-        rss.assert_called_once()
+    def test_bare_run_returns_search_posts_without_listing_requests(self):
+        hits = [_searched(1, score=412, ncmt=38), _searched(2, score=77, ncmt=5)]
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes(search=hits)
+        with p_search as search, p_listing as listing, \
+             p_arctic_listing as arctic_listing, p_scores as scores:
+            out = reddit_keyless._discover("topic", "default", None)
+        search.assert_called_once()
+        assert search.call_args.kwargs["subreddits"] is None
+        listing.assert_not_called()
+        arctic_listing.assert_not_called()
+        scores.assert_not_called()  # real scores, nothing to backfill
+        assert [p["url"] for p in out] == [h["url"] for h in hits]
+        assert [p["engagement"]["score"] for p in out] == [412, 77]
+        assert [p["num_comments"] for p in out] == [38, 5]
 
-    def test_listing_scores_backfill_rss_posts(self):
-        # RSS finds post 1 (no score); listing card for post 1 carries the score.
-        rss_post = _post(1)
+    def test_targeted_run_merges_search_and_listing_first_writer_wins(self):
         listing_post = _scored(1, score=52692, ncmt=1743)
-        listing_post["subreddit"] = "test"  # Match the requested subreddit.
-        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
-                               return_value=[rss_post]), \
-             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
-                               return_value=[listing_post]), \
-             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
-                               return_value=[]):  # No arctic supplement.
+        listing_only = _scored(2, score=10)
+        search_dup = _searched(1, score=50000, ncmt=1700)  # same url as listing_post
+        search_only = _searched(3, score=9)
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes(
+            search=[search_dup, search_only], listing=[listing_post, listing_only])
+        with p_search as search, p_listing as listing, p_arctic_listing, p_scores:
             out = reddit_keyless._discover("topic", "default", ["test"])
-        # listing post (scored) is kept; RSS dup of same url is dropped
-        assert len(out) == 1
+        assert search.call_args.kwargs["subreddits"] == ["test"]
+        assert listing.call_args.args[0] == ["test"]
+        urls = [p["url"] for p in out]
+        assert urls == [listing_post["url"], listing_only["url"], search_only["url"]]
+        assert out[0]["why_relevant"] == "Reddit listing"  # one copy, listing kept
         assert out[0]["engagement"]["score"] == 52692
-        assert out[0]["num_comments"] == 1743
 
-    def test_scores_flow_to_distinct_rss_posts(self):
-        # Distinct RSS post whose id matches a listing card gets backfilled.
-        rss_post = _post(7)  # url .../000007/...
+    def test_targeted_listing_score_fills_distinct_search_post(self):
+        # A search post whose id matches a listing card under another url takes
+        # the listing's live score.
+        search_post = _searched(7, score=0)
         listing_post = _scored(7, score=999)
         listing_post["url"] = "https://www.reddit.com/r/test/comments/zzzzzz/other/"
-        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
-                               return_value=[rss_post]), \
-             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
-                               return_value=[listing_post]):
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes(
+            search=[search_post], listing=[listing_post])
+        with p_search, p_listing, p_arctic_listing, p_scores:
             out = reddit_keyless._discover("topic", "default", ["test"])
-        backfilled = [p for p in out if p["url"] == rss_post["url"]][0]
-        assert backfilled["engagement"]["score"] == 999
+        filled = [p for p in out if p["url"] == search_post["url"]][0]
+        assert filled["engagement"]["score"] == 999
+
+    def test_zero_score_search_post_gets_arctic_fill(self):
+        unscored = _searched(4, score=0)
+        scored = _searched(5, score=120, ncmt=3)
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes(
+            search=[unscored, scored],
+            arctic_scores={"000004": {"score": 31, "num_comments": 6}})
+        with p_search, p_listing, p_arctic_listing, p_scores as scores:
+            out = reddit_keyless._discover("topic", "default", None)
+        scores.assert_called_once_with(["000004"])
+        by_url = {p["url"]: p for p in out}
+        assert by_url[unscored["url"]]["engagement"]["score"] == 31
+        assert by_url[unscored["url"]]["num_comments"] == 6
+        assert by_url[scored["url"]]["engagement"]["score"] == 120
 
     def test_bare_query_does_not_merge_listing_discovery(self):
-        # No subreddits provided: derived-subreddit listings must NOT be added as
-        # results (avoids flooding with off-topic high-upvote posts) — only used
-        # to backfill scores onto the keyword-matched RSS posts.
-        rss_post = _post(1)  # on-topic keyword match
-        offtopic_listing = _scored(99, score=88888)  # high score, unrelated sub
+        # No subreddits provided: no listing is fetched, so high-upvote
+        # off-topic listing posts can never flood the keyword-matched results.
+        on_topic = _searched(1, score=15)
+        offtopic_listing = _scored(99, score=88888)
         offtopic_listing["url"] = "https://www.reddit.com/r/random/comments/zzz999/x/"
-        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
-                               return_value=[rss_post]), \
-             mock.patch.object(reddit_keyless, "_top_subreddits", return_value=["random"]), \
-             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
-                               return_value=[offtopic_listing]):
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes(
+            search=[on_topic], listing=[offtopic_listing], arctic_listing=[offtopic_listing])
+        with p_search, p_listing as listing, p_arctic_listing as arctic_listing, p_scores:
             out = reddit_keyless._discover("topic", "default", None)
         urls = [p["url"] for p in out]
-        assert rss_post["url"] in urls
-        assert offtopic_listing["url"] not in urls  # not merged as discovery
+        assert urls == [on_topic["url"]]
+        listing.assert_not_called()
+        arctic_listing.assert_not_called()
 
     def test_discover_never_raises_returns_empty(self):
-        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss", return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", return_value=[]):
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes()
+        with p_search, p_listing, p_arctic_listing, p_scores:
             assert reddit_keyless._discover("t", "default", None) == []
+
+    def test_empty_search_makes_keyless_path_return_empty(self):
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes()
+        with p_search, p_listing, p_arctic_listing, p_scores:
+            assert reddit_keyless.search_and_enrich("t", "2026-05-01", "2026-05-31") == []
+
+    def test_search_window_follows_lookback(self):
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes()
+        with p_search as search, p_listing, p_arctic_listing, p_scores:
+            reddit_keyless.search_and_enrich("t", "2026-05-24", "2026-05-31", depth="quick")
+        kwargs = search.call_args.kwargs
+        assert kwargs["from_date"] == "2026-05-24"
+        assert kwargs["to_date"] == "2026-05-31"
+        assert kwargs["depth"] == "quick"
 
 
 class TestSearchAndEnrich:

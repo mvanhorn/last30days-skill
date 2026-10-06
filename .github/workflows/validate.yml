@@ -20,7 +20,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Set up Python
         run: uv python install 3.12
@@ -39,7 +39,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Set up Python
         run: uv python install 3.12
@@ -62,6 +62,9 @@ jobs:
         with:
           go-version: "1.25.5"
           cache-dependency-path: mcp/go.sum
+
+      - name: Sync vendored engine
+        run: bash mcp/scripts/sync-engine.sh
 
       - name: Run MCP Go tests
         run: go test -race ./...
