@@ -1723,25 +1723,31 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
         Plaintext transcript string, or None if unavailable.
     """
     video_url = f"https://www.youtube.com/watch?v={video_id}"
-    try:
-        # Isolate SC transcript fetch errors from the pipeline-level
-        # capture_failures() context.
-        with http.capture_failures() as _tf:
-            data = http.get(
-                f"{SCRAPECREATORS_YT_BASE}/video/transcript",
-                # Without a language the endpoint may return an auto-dubbed track (#1169).
-                params={"url": video_url, "language": _ytdlp_sub_langs().split(",")[0]},
-                headers=http.scrapecreators_headers(token),
-                timeout=30,
-                retries=1,
-            )
-    except Exception as exc:
-        _log(f"SC transcript error for {video_id}: {exc}")
-        return None
+    transcript = None
+    # Without a language the endpoint may return an auto-dubbed track (#1169).
+    for language in _ytdlp_sub_langs().split(","):
+        try:
+            # Isolate SC transcript fetch errors from the pipeline-level
+            # capture_failures() context.
+            with http.capture_failures() as _tf:
+                data = http.get(
+                    f"{SCRAPECREATORS_YT_BASE}/video/transcript",
+                    params={"url": video_url, "language": language},
+                    headers=http.scrapecreators_headers(token),
+                    timeout=30,
+                    retries=1,
+                )
+        except Exception as exc:
+            _log(f"SC transcript error for {video_id} ({language}): {exc}")
+            if getattr(exc, "status_code", None) == 404:
+                continue
+            return None
 
-    _warn_low_sc_credits(data)
+        _warn_low_sc_credits(data)
 
-    transcript = data.get("transcript")
+        transcript = data.get("transcript")
+        if transcript:
+            break
     if not transcript:
         return None
 

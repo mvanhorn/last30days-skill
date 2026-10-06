@@ -1114,6 +1114,26 @@ class TestScTranscriptParsing(unittest.TestCase):
             youtube_yt._sc_fetch_transcript("vidM", "key")
         self.assertEqual(get_mock.call_args.kwargs["params"]["language"], "es")
 
+    def test_tries_next_language_when_first_has_no_transcript(self):
+        responses = [{"transcript": None}, {"transcript": "texto en español"}]
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": ""}), \
+             mock.patch.object(youtube_yt.http, "get", side_effect=responses) as get_mock:
+            out = youtube_yt._sc_fetch_transcript("vidN", "key")
+        self.assertEqual(out, "texto en español")
+        self.assertEqual(
+            [c.kwargs["params"]["language"] for c in get_mock.call_args_list], ["en", "es"],
+        )
+
+    def test_stops_on_non_404_error(self):
+        with mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": ""}), \
+             mock.patch.object(
+                 youtube_yt.http, "get",
+                 side_effect=youtube_yt.http.HTTPError("HTTP 429", status_code=429),
+             ) as get_mock:
+            out = youtube_yt._sc_fetch_transcript("vidO", "key")
+        self.assertIsNone(out)
+        self.assertEqual(get_mock.call_count, 1)
+
     def test_healthy_credits_no_warning(self):
         payload = {"transcript": "some transcript text", "credits_remaining": 9999}
         logs = []
