@@ -34,9 +34,7 @@ def network_guard():
     original_sendmsg = getattr(socket.socket, "sendmsg", None)
     original_create_connection = socket.create_connection
     original_getaddrinfo = socket.getaddrinfo
-    original_gethostbyname = socket.gethostbyname
-    original_gethostbyname_ex = socket.gethostbyname_ex
-    original_gethostbyaddr = socket.gethostbyaddr
+    original_getnameinfo = socket.getnameinfo
 
     def deny(operation, address):
         attempts.append(f"{operation}: {address!r}")
@@ -61,7 +59,10 @@ def network_guard():
         answers = []
         for address in sorted(hosts):
             try:
-                candidates = original_getaddrinfo(address, port, family, kind, protocol, flags)
+                candidates = original_getaddrinfo(
+                    address, port, family, kind, protocol,
+                    flags | socket.AI_NUMERICHOST | socket.AI_NUMERICSERV,
+                )
             except socket.gaierror:
                 continue
             for item in candidates:
@@ -115,20 +116,29 @@ def network_guard():
     def getaddrinfo(host, port, family=0, type=0, proto=0, flags=0):
         return destinations("getaddrinfo", host, port, family, type, proto, flags)
 
-    def gethostbyname(host):
+    def local_address(operation, host, ipv4_only=False):
         if not _loopback(host):
-            deny("gethostbyname", host)
-        return original_gethostbyname(host)
+            deny(operation, host)
+        address = ipaddress.ip_address("127.0.0.1" if host == "localhost" else host)
+        if ipv4_only and address.version != 4:
+            raise socket.gaierror(socket.EAI_FAMILY, "IPv4 lookup requires an IPv4 address")
+        return str(address)
+
+    def gethostbyname(host):
+        return local_address("gethostbyname", host, ipv4_only=True)
 
     def gethostbyname_ex(host):
-        if not _loopback(host):
-            deny("gethostbyname_ex", host)
-        return original_gethostbyname_ex(host)
+        address = local_address("gethostbyname_ex", host, ipv4_only=True)
+        return "localhost" if host == "localhost" else address, [], [address]
 
     def gethostbyaddr(host):
-        if not _loopback(host):
-            deny("gethostbyaddr", host)
-        return original_gethostbyaddr(host)
+        return "localhost", [], [local_address("gethostbyaddr", host)]
+
+    def getnameinfo(address, flags):
+        required = socket.NI_NUMERICHOST | socket.NI_NUMERICSERV
+        if not _loopback(address[0]) or address[0] == "localhost" or flags & required != required:
+            deny("getnameinfo", address)
+        return original_getnameinfo(address, flags)
 
     with pytest.MonkeyPatch.context() as patch:
         patch.setattr(socket.socket, "bind", bind)
@@ -144,6 +154,7 @@ def network_guard():
         patch.setattr(socket, "gethostbyname", gethostbyname)
         patch.setattr(socket, "gethostbyname_ex", gethostbyname_ex)
         patch.setattr(socket, "gethostbyaddr", gethostbyaddr)
+        patch.setattr(socket, "getnameinfo", getnameinfo)
         try:
             bounded_get = importlib.import_module("lib.bounded_get")
         except ModuleNotFoundError as error:
@@ -155,13 +166,10 @@ def network_guard():
             def worker_get(req, *args, **kwargs):
                 target = urlsplit(req.full_url)
                 address = (target.hostname, target.port if target.port is not None else (443 if target.scheme == "https" else 80))
-                destinations("bounded_get", *address, kind=socket.SOCK_STREAM)
                 if target.hostname == "localhost":
                     # Isolated workers resolve the hostname outside the parent socket patches.
-                    owned = live_endpoints()
-                    candidates = original_getaddrinfo(*address, type=socket.SOCK_STREAM)
-                    if any(endpoint(item[0], item[1], item[2], item[4]) not in owned for item in candidates):
-                        deny("bounded_get", address)
+                    deny("bounded_get", address)
+                destinations("bounded_get", *address, kind=socket.SOCK_STREAM)
                 return original_get(req, *args, **kwargs)
 
             patch.setattr(bounded_get, "get", worker_get)

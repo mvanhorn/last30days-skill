@@ -49,6 +49,127 @@ def test_swallowed_network_attempt_fails_test(tmp_path, operation):
     assert host in result.stdout
 
 
+@pytest.mark.parametrize("operation, host, expected", [
+    ("gethostbyname", "localhost", "127.0.0.1"),
+    ("gethostbyname", "127.0.0.2", "127.0.0.2"),
+    ("gethostbyname_ex", "localhost", ("localhost", [], ["127.0.0.1"])),
+    ("gethostbyname_ex", "127.0.0.2", ("127.0.0.2", [], ["127.0.0.2"])),
+    ("gethostbyaddr", "localhost", ("localhost", [], ["127.0.0.1"])),
+    ("gethostbyaddr", "127.0.0.2", ("localhost", [], ["127.0.0.2"])),
+    ("gethostbyaddr", "::1", ("localhost", [], ["::1"])),
+])
+def test_loopback_resolvers_do_not_delegate_to_libc(tmp_path, operation, host, expected):
+    result = _run_probe(tmp_path, f"""
+        import socket
+
+        calls = []
+        def system_resolver(host):
+            calls.append(host)
+            return {expected!r}
+        socket.{operation} = system_resolver
+
+        def test_local_answer():
+            assert socket.{operation}({host!r}) == {expected!r}
+            assert calls == [], 'loopback lookup reached the system resolver'
+    """)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+
+
+@pytest.mark.parametrize("operation", ["gethostbyname", "gethostbyname_ex"])
+def test_ipv4_resolvers_reject_ipv6_without_libc(tmp_path, operation):
+    result = _run_probe(tmp_path, f"""
+        import socket
+        import pytest
+
+        calls = []
+        def system_resolver(host):
+            calls.append(host)
+            raise socket.gaierror(socket.EAI_FAMILY, 'IPv4 lookup requires an IPv4 address')
+        socket.{operation} = system_resolver
+
+        def test_ipv4_only_contract():
+            with pytest.raises(socket.gaierror):
+                socket.{operation}('::1')
+            assert calls == [], 'IPv6 input reached the IPv4 system resolver'
+    """)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+
+
+def test_owned_getaddrinfo_delegates_only_numeric_addresses_and_services(tmp_path):
+    result = _run_probe(tmp_path, """
+        import socket
+
+        system_resolver = socket.getaddrinfo
+        calls = []
+        def numeric_resolver(host, port, family=0, type=0, proto=0, flags=0):
+            calls.append((host, port, flags))
+            assert flags & socket.AI_NUMERICHOST, 'system resolver lacks AI_NUMERICHOST'
+            assert flags & socket.AI_NUMERICSERV, 'system resolver lacks AI_NUMERICSERV'
+            return system_resolver(host, port, family, type, proto, flags)
+        socket.getaddrinfo = numeric_resolver
+
+        def test_owned_localhost():
+            with socket.socket() as server:
+                server.bind(('127.0.0.1', 0))
+                port = server.getsockname()[1]
+                result = socket.getaddrinfo('localhost', port, type=socket.SOCK_STREAM)
+                assert {item[4] for item in result} == {('127.0.0.1', port)}
+                assert calls
+                assert all(host == '127.0.0.1' for host, _, _ in calls)
+    """)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+
+
+@pytest.mark.parametrize("flags", [0, socket.NI_NUMERICHOST, socket.NI_NUMERICSERV])
+def test_getnameinfo_rejects_resolver_modes_without_libc(tmp_path, flags):
+    result = _run_probe(tmp_path, f"""
+        import socket
+
+        calls = []
+        def system_resolver(address, flags):
+            calls.append((address, flags))
+            return 'resolver-host', 'resolver-service'
+        socket.getnameinfo = system_resolver
+
+        def test_no_reverse_resolution():
+            try:
+                socket.getnameinfo(('127.0.0.2', 80), {flags!r})
+            except OSError:
+                pass
+            assert calls == [], 'reverse name/service lookup reached the system resolver'
+    """)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 passed, 1 error" in result.stdout
+    assert "Unexpected network attempts" in result.stdout
+    assert "getnameinfo" in result.stdout
+
+
+@pytest.mark.parametrize("address", [("127.0.0.2", 80), ("::1", 80, 0, 0)])
+def test_getnameinfo_numeric_mode_remains_usable(tmp_path, address):
+    result = _run_probe(tmp_path, f"""
+        import socket
+
+        system_resolver = socket.getnameinfo
+        calls = []
+        def numeric_resolver(address, flags):
+            calls.append((address, flags))
+            assert flags & socket.NI_NUMERICHOST
+            assert flags & socket.NI_NUMERICSERV
+            return system_resolver(address, flags)
+        socket.getnameinfo = numeric_resolver
+
+        def test_numeric_answer():
+            flags = socket.NI_NUMERICHOST | socket.NI_NUMERICSERV
+            assert socket.getnameinfo({address!r}, flags) == ({address[0]!r}, '80')
+            assert calls == [({address!r}, flags)]
+    """)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+
+
 @pytest.mark.parametrize("address", [("203.0.113.8", 443), ("127.0.0.1", 18800), ("localhost", 9222)])
 def test_unowned_ip_or_loopback_connection_fails_test(tmp_path, address):
     result = _run_probe(tmp_path, f"""
@@ -187,6 +308,38 @@ def test_owned_udp_transport_remains_real(tmp_path, operation):
     assert "1 passed" in result.stdout
 
 
+def test_guard_restores_every_patched_socket_function(tmp_path):
+    result = _run_probe(tmp_path, """
+        import atexit
+        import socket
+
+        socket_names = ['bind', 'close', 'detach', 'connect', 'connect_ex', 'sendto']
+        if hasattr(socket.socket, 'sendmsg'):
+            socket_names.append('sendmsg')
+        module_names = ['create_connection', 'getaddrinfo', 'gethostbyname',
+                        'gethostbyname_ex', 'gethostbyaddr', 'getnameinfo']
+        originals = [(socket.socket, name, getattr(socket.socket, name)) for name in socket_names]
+        originals += [(socket, name, getattr(socket, name)) for name in module_names]
+
+        def verify_restored():
+            for owner, name, original in originals:
+                assert getattr(owner, name) is original, f'{name} was not restored'
+            print(f'restored-{len(originals)}-socket-functions')
+        atexit.register(verify_restored)
+
+        def test_owned_transport():
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+                server.bind(('127.0.0.1', 0))
+                server.settimeout(1)
+                sender.sendto(b'restoration transport', server.getsockname())
+                assert server.recv(64) == b'restoration transport'
+    """)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+    count = 12 + int(hasattr(socket.socket, "sendmsg"))
+    assert f"restored-{count}-socket-functions" in result.stdout, result.stdout + result.stderr
+
+
 def test_detached_fixture_does_not_authorize_a_port(tmp_path):
     result = _run_probe(tmp_path, """
         import os
@@ -290,3 +443,44 @@ def test_worker_boundary_guards_destination_and_preserves_allowed_call(tmp_path,
         assert "1 passed, 1 error" in result.stdout
         assert "Unexpected network attempts" in result.stdout
         assert host in result.stdout
+
+
+def test_worker_hostname_url_does_not_delegate_to_libc(tmp_path):
+    result = _run_probe(tmp_path, """
+        import socket
+        import sys
+        import types
+        from urllib.request import Request
+
+        package = types.ModuleType('lib')
+        package.__path__ = []
+        worker = types.ModuleType('lib.bounded_get')
+        launches = []
+        worker.get = lambda req, **kwargs: launches.append(req.full_url)
+        sys.modules['lib'] = package
+        sys.modules['lib.bounded_get'] = worker
+
+        system_resolver = socket.getaddrinfo
+        lookups = []
+        def resolver(host, port, family=0, type=0, proto=0, flags=0):
+            lookups.append(host)
+            numeric_host = '127.0.0.1' if host == 'localhost' else host
+            return system_resolver(numeric_host, port, family, type, proto,
+                                   flags | socket.AI_NUMERICHOST | socket.AI_NUMERICSERV)
+        socket.getaddrinfo = resolver
+
+        def test_no_worker_hostname_resolution():
+            with socket.socket() as server:
+                server.bind(('127.0.0.1', 0))
+                url = f'http://localhost:{server.getsockname()[1]}/fixture'
+                try:
+                    worker.get(Request(url), timeout=1, deadline_monotonic=123)
+                except OSError:
+                    pass
+                assert 'localhost' not in lookups, 'worker hostname reached the system resolver'
+                assert launches == []
+    """)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 passed, 1 error" in result.stdout
+    assert "Unexpected network attempts" in result.stdout
+    assert "bounded_get" in result.stdout
