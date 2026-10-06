@@ -78,6 +78,26 @@ def network_guard():
         return destinations(operation, address[0], address[1], sock.family, sock.type, sock.proto)[0][4]
 
     def bind(sock, address):
+        if sock.family in (socket.AF_INET, socket.AF_INET6):
+            host = address[0]
+            if isinstance(host, bytes):
+                try:
+                    host = host.decode("ascii")
+                except UnicodeDecodeError:
+                    deny("bind", address)
+            if not isinstance(host, str):
+                raise TypeError("socket host must be str or bytes")
+            if host == "localhost":
+                host = "127.0.0.1" if sock.family == socket.AF_INET else "::1"
+            elif host == "":
+                host = "0.0.0.0" if sock.family == socket.AF_INET else "::"
+            try:
+                numeric = ipaddress.ip_address(host)
+            except ValueError:
+                deny("bind", address)
+            if numeric.version != (4 if sock.family == socket.AF_INET else 6):
+                raise socket.gaierror(socket.EAI_FAMILY, "IP address does not match the socket family")
+            address = (str(numeric), *address[1:])
         result = original_bind(sock, address)
         if sock.family in (socket.AF_INET, socket.AF_INET6) and _loopback(address[0]):
             with ownership_lock:

@@ -123,6 +123,154 @@ def test_owned_getaddrinfo_delegates_only_numeric_addresses_and_services(tmp_pat
     assert "1 passed" in result.stdout
 
 
+@pytest.mark.parametrize("form", ["text", "bytes", "four_byte_hostname"])
+def test_bind_hostname_is_denied_before_original_method(tmp_path, form):
+    host = f"bind-{uuid.uuid4().hex}.invalid"
+    if form == "bytes":
+        host = host.encode("ascii")
+    elif form == "four_byte_hostname":
+        host = b"abcd"
+    result = _run_probe(tmp_path, f"""
+        import socket
+
+        delegated = []
+        def original_bind(sock, address):
+            delegated.append(address)
+            raise OSError('controlled bind resolver canary; no DNS was called')
+        socket.socket.bind = original_bind
+
+        def test_denied_hostname():
+            with socket.socket() as server:
+                try:
+                    server.bind(({host!r}, 0))
+                except OSError:
+                    pass
+            assert delegated == [], 'hostname reached original bind'
+    """)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 passed, 1 error" in result.stdout, result.stdout + result.stderr
+    assert "Unexpected network attempts" in result.stdout
+    assert "bind:" in result.stdout
+
+
+@pytest.mark.parametrize("family, host, expected", [
+    ("AF_INET", "localhost", "127.0.0.1"),
+    ("AF_INET", "", "0.0.0.0"),
+    ("AF_INET", "127.0.0.1", "127.0.0.1"),
+    ("AF_INET", b"localhost", "127.0.0.1"),
+    ("AF_INET", b"", "0.0.0.0"),
+    ("AF_INET", b"127.0.0.1", "127.0.0.1"),
+    ("AF_INET6", "localhost", "::1"),
+    ("AF_INET6", "", "::"),
+    ("AF_INET6", "::1", "::1"),
+    ("AF_INET6", b"localhost", "::1"),
+    ("AF_INET6", b"", "::"),
+    ("AF_INET6", b"::1", "::1"),
+])
+def test_bind_passes_numeric_host_and_preserves_sockaddr_fields(tmp_path, family, host, expected):
+    trailing = (0,) if family == "AF_INET" else (0, 17, 29)
+    result = _run_probe(tmp_path, f"""
+        import socket
+
+        delegated = []
+        def original_bind(sock, address):
+            delegated.append(address)
+            raise OSError('controlled numeric bind; no system call was made')
+        socket.socket.bind = original_bind
+
+        class BoundSocket:
+            family = socket.{family}
+
+        def test_numeric_boundary():
+            try:
+                socket.socket.bind(BoundSocket(), ({host!r}, *{trailing!r}))
+            except OSError:
+                pass
+            assert delegated == [({expected!r}, *{trailing!r})]
+    """)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+
+
+@pytest.mark.parametrize("family, host", [("AF_INET", "::1"), ("AF_INET6", "127.0.0.1")])
+def test_bind_rejects_wrong_ip_family_before_original_method(tmp_path, family, host):
+    result = _run_probe(tmp_path, f"""
+        import socket
+        import pytest
+
+        delegated = []
+        def original_bind(sock, address):
+            delegated.append(address)
+            raise socket.gaierror(socket.EAI_FAMILY, 'wrong address family')
+        socket.socket.bind = original_bind
+
+        class BoundSocket:
+            family = socket.{family}
+
+        def test_family_error_is_local():
+            with pytest.raises(socket.gaierror) as error:
+                socket.socket.bind(BoundSocket(), ({host!r}, 0))
+            assert error.value.errno == socket.EAI_FAMILY
+            assert delegated == [], 'wrong-family host reached original bind'
+    """)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+
+
+def test_bind_preserves_unix_socket_address(tmp_path):
+    if not hasattr(socket, "AF_UNIX"):
+        pytest.skip("AF_UNIX is unavailable on this platform")
+    result = _run_probe(tmp_path, """
+        import socket
+
+        delegated = []
+        def original_bind(sock, address):
+            delegated.append(address)
+            raise OSError('controlled Unix bind; no system call was made')
+        socket.socket.bind = original_bind
+
+        class BoundSocket:
+            family = socket.AF_UNIX
+
+        def test_unix_boundary():
+            try:
+                socket.socket.bind(BoundSocket(), '/tmp/owned-fixture.sock')
+            except OSError:
+                pass
+            assert delegated == ['/tmp/owned-fixture.sock']
+    """)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+
+
+@pytest.mark.parametrize("kind", ["SOCK_STREAM", "SOCK_DGRAM"])
+def test_localhost_bind_preserves_real_owned_transport(tmp_path, kind):
+    canary = f"bound-{uuid.uuid4().hex}".encode("ascii")
+    result = _run_probe(tmp_path, f"""
+        import socket
+
+        def test_owned_bound_transport():
+            with socket.socket(socket.AF_INET, socket.{kind}) as server:
+                server.bind(('localhost', 0))
+                server.settimeout(1)
+                assert server.getsockname()[0] == '127.0.0.1'
+                address = ('localhost', server.getsockname()[1])
+                if socket.{kind} == socket.SOCK_STREAM:
+                    server.listen()
+                    with socket.create_connection(address) as client:
+                        client.sendall({canary!r})
+                        accepted, _ = server.accept()
+                        with accepted:
+                            assert accepted.recv(128) == {canary!r}
+                else:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
+                        client.sendto({canary!r}, address)
+                        assert server.recv(128) == {canary!r}
+    """)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+
+
 @pytest.mark.parametrize("flags", [0, socket.NI_NUMERICHOST, socket.NI_NUMERICSERV])
 def test_getnameinfo_rejects_resolver_modes_without_libc(tmp_path, flags):
     result = _run_probe(tmp_path, f"""
