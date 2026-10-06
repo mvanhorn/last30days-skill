@@ -1,4 +1,5 @@
 import os
+import socket
 import subprocess
 import sys
 import textwrap
@@ -102,6 +103,109 @@ def test_owned_loopback_transport_remains_real(tmp_path):
     """)
     assert result.returncode == 0, result.stdout + result.stderr
     assert "1 passed" in result.stdout
+
+
+def test_owned_port_does_not_authorize_another_loopback_address(tmp_path):
+    canary = f"address-{uuid.uuid4().hex}"
+    result = _run_probe(tmp_path, f"""
+        import socket
+        import pytest
+
+        ambient = socket.socket()
+        ambient.bind(('127.0.0.2', 0))
+        ambient.listen()
+        ambient.setblocking(False)
+
+        def test_exact_address():
+            with ambient, socket.socket() as owned:
+                owned.bind(('127.0.0.1', ambient.getsockname()[1]))
+                try:
+                    with socket.create_connection(ambient.getsockname()) as client:
+                        client.sendall({canary.encode()!r})
+                except OSError:
+                    pass
+                with pytest.raises(BlockingIOError):
+                    accepted, _ = ambient.accept()
+                    with accepted:
+                        assert accepted.recv(128) != {canary.encode()!r}
+    """)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 passed, 1 error" in result.stdout
+    assert "Unexpected network attempts" in result.stdout
+    assert "127.0.0.2" in result.stdout
+
+
+@pytest.mark.parametrize("operation", ["sendto", "sendmsg"])
+def test_owned_tcp_port_does_not_authorize_udp(tmp_path, operation):
+    if operation == "sendmsg" and not hasattr(socket.socket, "sendmsg"):
+        pytest.skip("sendmsg is unavailable on this platform")
+    canary = f"protocol-{uuid.uuid4().hex}"
+    call = f"sender.sendto({canary.encode()!r}, address)" if operation == "sendto" else f"sender.sendmsg([{canary.encode()!r}], [], 0, address)"
+    result = _run_probe(tmp_path, f"""
+        import socket
+        import pytest
+
+        ambient = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        ambient.bind(('127.0.0.1', 0))
+        ambient.setblocking(False)
+
+        def test_exact_transport():
+            with ambient, socket.socket() as owned, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+                address = ambient.getsockname()
+                owned.bind(address)
+                try:
+                    {call}
+                except OSError:
+                    pass
+                with pytest.raises(BlockingIOError):
+                    assert ambient.recv(128) != {canary.encode()!r}
+    """)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 passed, 1 error" in result.stdout
+    assert "Unexpected network attempts" in result.stdout
+    assert operation in result.stdout
+
+
+@pytest.mark.parametrize("operation", ["sendto", "sendmsg"])
+def test_owned_udp_transport_remains_real(tmp_path, operation):
+    if operation == "sendmsg" and not hasattr(socket.socket, "sendmsg"):
+        pytest.skip("sendmsg is unavailable on this platform")
+    canary = f"owned-{uuid.uuid4().hex}"
+    call = f"sender.sendto({canary.encode()!r}, address)" if operation == "sendto" else f"sender.sendmsg([{canary.encode()!r}], [], 0, address)"
+    result = _run_probe(tmp_path, f"""
+        import socket
+
+        def test_udp_exchange():
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server, socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sender:
+                server.bind(('127.0.0.1', 0))
+                server.settimeout(1)
+                address = ('localhost', server.getsockname()[1])
+                {call}
+                assert server.recv(128) == {canary.encode()!r}
+    """)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "1 passed" in result.stdout
+
+
+def test_detached_fixture_does_not_authorize_a_port(tmp_path):
+    result = _run_probe(tmp_path, """
+        import os
+        import socket
+
+        def test_detached_fixture():
+            server = socket.socket()
+            server.bind(('127.0.0.1', 0))
+            address = server.getsockname()
+            descriptor = server.detach()
+            os.close(descriptor)
+            try:
+                socket.create_connection(address)
+            except OSError:
+                pass
+    """)
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "1 passed, 1 error" in result.stdout
+    assert "Unexpected network attempts" in result.stdout
 
 
 def test_closed_fixture_does_not_authorize_a_port(tmp_path):
