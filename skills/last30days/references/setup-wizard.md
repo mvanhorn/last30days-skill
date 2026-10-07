@@ -1,6 +1,10 @@
-# First-run setup
+# First-run setup and source repair
 
-Read when the root first-run gate requires setup evaluation. After onboarding, resume the original requested route, including discovery; do not replace it with ordinary topic research.
+Read when either root setup or repair gate applies. For first-run setup, follow Step 0 below. After onboarding, resume the original requested route, including discovery; do not replace it with ordinary topic research.
+
+**Repair entry (including when `SETUP_COMPLETE=true`):** For a requested repair or a doctor's host-specific prescription, go directly to the applicable **Manual Setup Guide** subsection below. Skip Step 0, its welcome, offers, source-tier prompts, and topic picker. The Manual Setup Guide's completion tail applies only to onboarding: during repair, do not write `SETUP_COMPLETE=true`, and do not start research unless it was requested. Return to the original request after the authorized repair or repair guidance.
+
+Carry out only the authorized repair. Reading this guide or a doctor prescription does not authorize installs, browser launches, cookie reads, or configuration writes. Browser access requires explicit browser-cookie consent. Existing authorization still applies; a refusal, skip, or no answer is not consent. On a `LAST30DAYS_HOST=grok-bot` host, use only **X on a Grok Bot (repair)** for X; never read a browser session or use the Linux / Mac mini repair. Preserve the MacBook exception, human login handoff, and block/challenge/rate-limit stop rules in the applicable subsection.
 
 ## Step 0: First-Run Setup Wizard
 

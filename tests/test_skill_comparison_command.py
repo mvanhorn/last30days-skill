@@ -14,6 +14,24 @@ from lib import planner
 from tests.skill_contract import reference_text
 
 
+def test_host_comparison_plan_covers_only_the_main_entity():
+    research = reference_text("research-runbook")
+    planning = research.split("## Step 0.75: Generate Query Plan", 1)[1].split(
+        "## Research Execution", 1,
+    )[0]
+    rule = next(line for line in planning.splitlines() if line.startswith('- For comparison ('))
+    assert "TOPIC_A only" in rule
+    assert "`comparison.md`" in rule
+    assert "peer sub-runs plan independently" in rule
+    assert "per-entity subqueries" not in planning
+    assert "head-to-head subquery" not in planning
+
+    comparison = reference_text("comparison")
+    assert "for **TOPIC_A only**, not the whole vs-string" in comparison
+    assert "**Then do WebSearch supplements**" in comparison
+    assert "`{TOPIC_A} vs {TOPIC_B} comparison {YEAR}`" in comparison
+
+
 def test_comparison_command_preserves_both_plans_and_cleans_them_up(tmp_path):
     text = reference_text("comparison")
     blocks = re.findall(r"```bash\n(.*?)\n```", text, re.S)

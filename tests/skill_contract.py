@@ -9,6 +9,7 @@ ROUTES = {
     "Before any engine command": ("runtime",),
     "Library search, feed, or queue intent": ("library-queue",),
     "First-run setup is required": ("setup-wizard",),
+    "Source repair requested or indicated by doctor": ("setup-wizard",),
     "Trending/discovery intent": ("discovery",),
     "Ordinary topic research or source-health diagnosis": ("research-runbook",),
     "Before synthesizing ordinary research": ("synthesis",),

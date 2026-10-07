@@ -39,6 +39,35 @@ def test_core_and_standard_research_fit_the_read_budget():
     assert total <= 180_000, f"standard configured research path loads {total} bytes"
 
 
+def test_existing_users_can_load_repair_without_restarting_onboarding():
+    condition = "Source repair requested or indicated by doctor"
+    assert routing_table().get(condition) == ("setup-wizard",)
+    assert condition not in STANDARD_CONDITIONS
+    setup = reference_text("setup-wizard")
+    entry = setup.split("## Step 0: First-Run Setup Wizard", 1)[0]
+    assert "including when `SETUP_COMPLETE=true`" in entry
+    assert "go directly to the applicable **Manual Setup Guide** subsection" in entry
+    assert "Skip Step 0" in entry
+    assert "do not write `SETUP_COMPLETE=true`" in entry
+    assert "do not start research unless it was requested" in entry
+    assert "explicit browser-cookie consent" in entry
+    assert "Existing authorization still applies" in entry
+    assert "a refusal, skip, or no answer is not consent" in entry
+    assert "only **X on a Grok Bot (repair)**" in entry
+    assert "never read a browser session or use the Linux / Mac mini repair" in entry
+
+
+def test_doctor_routes_host_specific_repairs_without_authorizing_them():
+    runbook = reference_text("research-runbook")
+    doctor = runbook.split("**Doctor health check:**", 1)[1].split(
+        "**Grok session expiry handling:**", 1,
+    )[0]
+    assert "Source repair requested or indicated by doctor" in doctor
+    assert "read `references/setup-wizard.md` in full" in doctor
+    assert "A doctor result is not authorization" in doctor
+    assert "For a health-check-only request, relay the audit and repair guidance, then stop" in doctor
+
+
 def test_selected_references_are_read_fully_without_loading_every_mode():
     core = root_text()
     bootstrap = core.split("## Bootstrap and file reads", 1)[1].split("## Reference routing", 1)[0]
