@@ -94,3 +94,25 @@ class TestSearchRss:
         assert any("/r/Rakuten/search.rss" in u and "restrict_sr=on" in u for u in urls)
         assert any("/r/Rakuten/top.rss" in u for u in urls)
         assert all(".json" not in u for u in urls)  # never the dead endpoint
+
+
+_BOMB = (
+    '<?xml version="1.0"?><!DOCTYPE feed [<!ENTITY a "aaaa">'
+    '<!ENTITY b "&a;&a;&a;&a;">]><feed xmlns="http://www.w3.org/2005/Atom">'
+    '<entry><title>&b;</title></entry></feed>'
+)
+
+
+class TestEntityHardening:
+    """DTD/entity payloads are rejected, never expanded, and never raise."""
+
+    def test_rejected_with_defusedxml(self):
+        assert reddit_rss._parse_feed(_BOMB, query="x") == []
+
+    def test_rejected_by_fallback_guard(self):
+        with mock.patch.object(reddit_rss, "_safe_fromstring", None):
+            assert reddit_rss._parse_feed(_BOMB, query="x") == []
+
+    def test_fallback_still_parses_normal_feed(self):
+        with mock.patch.object(reddit_rss, "_safe_fromstring", None):
+            assert reddit_rss._parse_feed(_feed_text(), query="x")

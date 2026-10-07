@@ -14,12 +14,20 @@ dicts match the normalized shape emitted by ``reddit_public._parse_posts`` so
 downstream code (pipeline, renderer) is unaffected.
 """
 
+import re
 import sys
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote_plus
+
+try:  # optional hardening: skill-copy installs may not have the package
+    from defusedxml.ElementTree import fromstring as _safe_fromstring
+    from defusedxml import DefusedXmlException
+except ImportError:  # pragma: no cover - exercised by patching in tests
+    _safe_fromstring = None
+    DefusedXmlException = ValueError
 
 from . import http
 from .relevance import token_overlap_relevance
@@ -42,6 +50,9 @@ LISTING_SORTS = {
 
 MAX_WORKERS = 4
 FEED_TIMEOUT = 15
+
+
+_DTD_RE = re.compile(r"<!\s*(DOCTYPE|ENTITY)", re.IGNORECASE)
 
 
 def _log(msg: str) -> None:
@@ -87,9 +98,13 @@ def _parse_feed(xml_text: str, query: str = "") -> List[Dict[str, Any]]:
     """Parse an Atom feed string into normalized post dicts. Never raises."""
     if not xml_text:
         return []
+    if _safe_fromstring is None and _DTD_RE.search(xml_text):
+        # Without defusedxml, refuse DTDs outright (entity-expansion guard).
+        _log("feed rejected: DOCTYPE/ENTITY declarations are not allowed")
+        return []
     try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError as e:
+        root = (_safe_fromstring or ET.fromstring)(xml_text)
+    except (ET.ParseError, DefusedXmlException) as e:
         _log(f"feed parse error: {e}")
         return []
 

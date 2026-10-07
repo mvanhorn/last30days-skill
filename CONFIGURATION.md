@@ -342,6 +342,8 @@ An explicit `--register` wins over `LAST30DAYS_REGISTER`; the environment/config
 
 ---
 
+**Optional hardening:** `pip install defusedxml` (declared in `pyproject.toml`) makes the keyless Reddit RSS parser refuse XML entity/DTD payloads. Skill-copy installs without it fall back to a built-in guard that rejects any `<!DOCTYPE`/`<!ENTITY` feed, so nothing breaks either way.
+
 ## Reasoning provider priority
 
 `/last30days` needs one reasoning model for planning + reranking when you don't pass `--plan` yourself. Auto-detect priority (set `LAST30DAYS_REASONING_PROVIDER=<name>` to pin one):
