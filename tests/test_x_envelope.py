@@ -1045,7 +1045,8 @@ class TestCli:
         assert rc == 2
         assert "x_posts" in err and "--competitors-plan" in err
 
-    def test_per_entity_x_posts_in_competitors_plan(self, tmp_path):
+    @pytest.mark.parametrize("auto_resolve", [False, True])
+    def test_per_entity_x_posts_in_competitors_plan(self, tmp_path, auto_resolve):
         acme = _write(tmp_path, _envelope([_call("topic", posts=[_row(0, "a", "acme news")])], topic="acme"), "acme.json")
         globex = _write(tmp_path, _envelope([_call("topic", posts=[_row(1, "b", "globex news")])], topic="globex"), "globex.json")
         plan = json.dumps({"acme": {"x_posts": acme}, "globex": {"x_posts": globex}})
@@ -1056,12 +1057,49 @@ class TestCli:
             return _fake_report(kwargs["topic"])
 
         with mock.patch.object(cli, "emit_comparison_output", return_value="# rendered"):
-            rc, _, err = _cli(["acme vs globex", "--competitors-plan", plan], tmp_path, run=fake_run)
+            argv = ["acme vs globex", "--competitors-plan", plan]
+            if auto_resolve:
+                argv.append("--auto-resolve")
+            rc, _, err = _cli(argv, tmp_path, run=fake_run)
         assert rc == 0, err
         assert seen["acme"]["x_posts"].sha256 == hashlib.sha256(Path(acme).read_bytes()).hexdigest()
         assert seen["globex"]["x_posts"].sha256 == hashlib.sha256(Path(globex).read_bytes()).hexdigest()
         parsed = cli.parse_competitors_plan(plan)
         assert parsed["acme"]["x_posts"] == acme
+
+    def test_comparison_plan_preserves_each_entity_handle_lane(self, tmp_path):
+        acme = _write(tmp_path, _envelope([
+            _call("topic", posts=[_row(0, "alice", "acme news")]),
+            _call("from", handles=[SUBJECT], posts=[_row(1, SUBJECT, "acme update")]),
+            _call("related", handles=[RELATED], posts=[_row(2, RELATED, "acme partner")]),
+        ], topic="acme"), "acme.json")
+        globex = _write(tmp_path, _envelope([
+            _call("topic", posts=[_row(3, "bob", "globex news")]),
+            _call("from", handles=["globex"], posts=[_row(4, "globex", "globex update")]),
+        ], topic="globex"), "globex.json")
+        plan = json.dumps({
+            "acme": {"x_posts": acme, "x_handle": SUBJECT, "x_related": [RELATED]},
+            "globex": {"x_posts": globex, "x_handle": "globex"},
+        })
+        seen: dict[str, dict] = {}
+
+        def fake_run(**kwargs):
+            seen[kwargs["topic"]] = kwargs
+            return _fake_report(kwargs["topic"])
+
+        argv = [
+            "acme vs globex", "--competitors-plan", plan, "--auto-resolve",
+            "--x-handle", SUBJECT, "--x-related", RELATED,
+        ]
+        with mock.patch.object(cli, "emit_comparison_output", return_value="# rendered"):
+            rc, _, err = _cli(argv, tmp_path, run=fake_run)
+        assert rc == 0, err
+        assert seen["acme"]["x_handle"] == SUBJECT
+        assert seen["acme"]["x_related"] == [RELATED]
+        assert seen["acme"]["x_posts"].lane_counts["from"] == 1
+        assert seen["acme"]["x_posts"].lane_counts["related"] == 1
+        assert seen["globex"]["x_handle"] == "globex"
+        assert seen["globex"]["x_posts"].lane_counts["from"] == 1
 
     def test_comparison_pass_rejects_the_other_entitys_envelope(self, tmp_path):
         acme = _write(tmp_path, _envelope([_call("topic", posts=[_row(0, "a", "acme news")])], topic="acme"), "acme.json")

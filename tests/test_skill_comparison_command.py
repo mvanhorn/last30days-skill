@@ -71,6 +71,7 @@ def test_comparison_command_preserves_both_plans_and_cleans_them_up(tmp_path):
         "COMPETITORS_PLAN_JSON": json.dumps(peer_plan),
         "TOPIC_A": main_topic, "TOPIC_B": "Peer Widget", "TOPIC_C": "Peer Three",
         "TOPIC_A_HANDLE": f"main_handle$(touch {shlex.quote(str(marker))})",
+        "TOPIC_A_RELATED": "main_partner",
         "TOPIC_A_SUBS": "main_sub",
     }
     command = _command(text, "With host web search")
@@ -107,6 +108,11 @@ def test_comparison_command_preserves_both_plans_and_cleans_them_up(tmp_path):
     (binaries / "mktemp").chmod(0o755)
     temporary = tmp_path / "temporary plans"
     temporary.mkdir()
+    envelope_dir = tmp_path / "X envelopes"
+    envelope_dir.mkdir()
+    (envelope_dir / "main.json").write_text("{}", encoding="utf-8")
+    parent_trap_marker = tmp_path / "parent trap ran"
+    command = 'trap \'rm -rf "$X_POSTS_DIR"; touch "$PARENT_TRAP_MARKER"\' EXIT\n' + command
     result = subprocess.run(
         ["bash", "-eC", "-c", command], cwd=tmp_path,
         env={
@@ -116,6 +122,8 @@ def test_comparison_command_preserves_both_plans_and_cleans_them_up(tmp_path):
             "LAST30DAYS_PYTHON": str(interpreter),
             "LAST30DAYS_MEMORY_DIR": str(tmp_path / "saved research"),
             "TMPDIR": str(temporary),
+            "X_POSTS_DIR": str(envelope_dir),
+            "PARENT_TRAP_MARKER": str(parent_trap_marker),
         },
         text=True, capture_output=True, timeout=15,
     )
@@ -127,6 +135,7 @@ def test_comparison_command_preserves_both_plans_and_cleans_them_up(tmp_path):
     assert call["args"][0] == str(installed / "scripts" / "last30days.py")
     assert call["args"][1] == main_topic + " vs Peer Widget vs Peer Three"
     assert f"--x-handle=main_handle$(touch {shlex.quote(str(marker))})" in call["args"]
+    assert "--x-related=main_partner" in call["args"]
     assert "--subreddits=main_sub" in call["args"]
     parsed = cli.build_parser().parse_args(call["args"][1:])
     assert parsed.emit == "compact"
@@ -137,6 +146,8 @@ def test_comparison_command_preserves_both_plans_and_cleans_them_up(tmp_path):
     assert call["plans"][1] == peer_plan
     assert all(not Path(path).exists() for path in call["paths"])
     assert list(temporary.iterdir()) == []
+    assert parent_trap_marker.exists()
+    assert not envelope_dir.exists()
     parsed_peers = cli.parse_competitors_plan(json.dumps(call["plans"][1]))
     assert set(parsed_peers) == {"peer widget", "peer three"}
     assert parsed_peers["peer widget"]["context"] == quoted_context + " " + untrusted
@@ -180,3 +191,76 @@ def test_no_web_search_comparison_command_uses_engine_planning(tmp_path, peers):
     assert parsed.plan is None
     assert parsed.competitors_plan is None
     assert parsed.emit == "compact"
+
+
+def test_no_web_grok_bot_comparison_passes_connector_posts_without_host_plan(tmp_path):
+    text = reference_text("comparison")
+    command = _command(text, "Without host web search")
+    command = command.replace("{TOPIC_A} vs {TOPIC_B} vs {TOPIC_C}", "Main Brand vs Peer Brand")
+    envelope_dir = tmp_path / "X envelopes"
+    envelope_dir.mkdir()
+    main_posts = envelope_dir / "main.json"
+    peer_posts = envelope_dir / "peer.json"
+    for path in (main_posts, peer_posts):
+        path.write_text("{}", encoding="utf-8")
+    peer_plan = {
+        "Main Brand": {
+            "x_posts": str(main_posts), "x_handle": "main_brand",
+            "x_related": ["main_partner"],
+        },
+        "Peer Brand": {"x_posts": str(peer_posts), "x_handle": "peer_brand"},
+    }
+    command = command.replace("{COMPETITORS_PLAN_JSON}", json.dumps(peer_plan))
+    command = command.replace("{TOPIC_A_HANDLE}", "main_brand")
+    command = command.replace("{TOPIC_A_RELATED}", "main_partner")
+    parent_trap_marker = tmp_path / "parent trap ran"
+    command = 'trap \'rm -rf "$X_POSTS_DIR"; touch "$PARENT_TRAP_MARKER"\' EXIT\n' + command
+
+    installed = tmp_path / "installed skill"
+    (installed / "scripts").mkdir(parents=True)
+    (installed / "scripts" / "last30days.py").write_text("")
+    capture = tmp_path / "engine call.json"
+    interpreter = tmp_path / "engine capture"
+    interpreter.write_text(
+        f"#!{sys.executable}\n"
+        "import json, pathlib, sys\n"
+        "args = sys.argv[1:]\n"
+        "if args[:2] == ['-m', 'json.tool']:\n"
+        "    json.loads(pathlib.Path(args[2]).read_text())\n"
+        "    raise SystemExit(0)\n"
+        "plan_path = pathlib.Path(args[args.index('--competitors-plan') + 1])\n"
+        "record = {'args': args, 'plan': json.loads(plan_path.read_text()), 'path': str(plan_path)}\n"
+        f"pathlib.Path({str(capture)!r}).write_text(json.dumps(record))\n"
+    )
+    interpreter.chmod(0o755)
+    temporary = tmp_path / "temporary plans"
+    temporary.mkdir()
+    result = subprocess.run(
+        ["bash", "-eC", "-c", command], cwd=tmp_path,
+        env={
+            "PATH": os.defpath,
+            "SKILL_DIR": str(installed),
+            "LAST30DAYS_PYTHON": str(interpreter),
+            "LAST30DAYS_MEMORY_DIR": str(tmp_path / "saved research"),
+            "LAST30DAYS_HOST": "grok-bot",
+            "LAST30DAYS_X_HOST_LANE": "1",
+            "X_POSTS_DIR": str(envelope_dir),
+            "PARENT_TRAP_MARKER": str(parent_trap_marker),
+            "TMPDIR": str(temporary),
+        },
+        text=True, capture_output=True, timeout=15,
+    )
+    assert result.returncode == 0, result.stderr
+    call = json.loads(capture.read_text())
+    parsed = cli.build_parser().parse_args(call["args"][1:])
+    assert parsed.auto_resolve is True
+    assert parsed.plan is None
+    assert parsed.x_posts is None
+    assert parsed.x_handle == "main_brand"
+    assert parsed.x_related == "main_partner"
+    assert parsed.competitors_plan == call["path"]
+    assert call["plan"] == peer_plan
+    assert not Path(call["path"]).exists()
+    assert list(temporary.iterdir()) == []
+    assert parent_trap_marker.exists()
+    assert not envelope_dir.exists()
