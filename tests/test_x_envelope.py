@@ -990,6 +990,30 @@ class TestPipelineWiring:
         assert "via X connector" in md
         assert "3 items" in md
 
+    def test_footer_provenance_reads_via_grok_bot_x_for_native_envelopes(self, tmp_path):
+        envelope = _read(_basic(tmp_path, provider="x-native"))
+        report = _run(envelope, x_handle=SUBJECT)
+        md = render.render_compact(report)
+        assert "via Grok Bot X" in md
+        assert "via X connector" not in md
+
+    @pytest.mark.parametrize("provider", ["", "X-Native; rm -rf ~", "grok", "x-native-ish"])
+    def test_unknown_provider_falls_back_to_connector_label(self, tmp_path, provider):
+        envelope = _read(_basic(tmp_path, provider=provider))
+        report = _run(envelope, x_handle=SUBJECT)
+        md = render.render_compact(report)
+        assert "via X connector" in md
+        if provider:
+            assert provider not in md
+
+    def test_native_partial_outcome_names_grok_bot_x(self, tmp_path):
+        envelope = _read(_basic(tmp_path, provider="x-native", status="partial", error="window-unsupported"))
+        state, detail = envelope.outcome()
+        assert state == schema.PARTIAL
+        assert detail.startswith("Grok Bot X returned partial results")
+        connector = _read(_basic(tmp_path, status="partial", error="window-unsupported"))
+        assert connector.outcome()[1].startswith("X connector returned partial results")
+
     def test_env_file_lane_line_without_process_env_leaves_x_absent(self, tmp_path, monkeypatch):
         monkeypatch.delenv("LAST30DAYS_X_HOST_LANE", raising=False)
         config_file = tmp_path / ".env"

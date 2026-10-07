@@ -2431,8 +2431,8 @@ def run(
 
     bundle = schema.RetrievalBundle(artifacts={"grounding": []})
     if envelope is not None:
-        # The footer's X provenance reads "via X connector" (render._render_stats).
-        bundle.artifacts["x_provenance"] = "connector"
+        # The footer names the X provenance (render._render_stats).
+        bundle.artifacts["x_provenance"] = envelope.provenance
     # Handles the user named explicitly. Available before any retrieval, unlike
     # the entity-extracted set, so Phase 1 and quick-depth runs get first-party
     # protection too. Without this the exemption reached only the Phase 2
