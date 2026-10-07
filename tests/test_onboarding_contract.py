@@ -89,6 +89,25 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertIn("A missing `.env` alone is not a first run", gate)
         self.assertIn("That section decides first-run from every credential source", gate)
 
+    def test_root_first_run_gate_routes_to_setup_wizard(self):
+        """The wizard's own Step 0 gate is only read after this root route fires."""
+        start = self.text.index("**FIRST-RUN GATE")
+        gate = self.text[start:].split("\n## ", 1)[0]
+        first_run = next(
+            line for line in gate.splitlines() if line.startswith("- `FIRST_RUN_DETECTED`")
+        )
+        self.assertIn("read the setup-wizard reference through its root gate immediately", first_run)
+        self.assertIn("complete the applicable flow before topic research", first_run)
+        self.assertLess(gate.index("FIRST_RUN_DETECTED"), gate.index("Topic supplied: load the topic runbook"))
+
+    def test_root_consent_rules_hold_without_setup_wizard(self):
+        """Configured runs never load setup-wizard.md, so consent must stay in the root."""
+        start = self.text.index("**Onboarding consent is model-led and host-split.**")
+        consent = self.text[start:].split("\n\n", 1)[0]
+        self.assertIn("Ask before browser-cookie reads, and preserve refusal", consent)
+        self.assertIn("a skip or no answer is never consent", consent)
+        self.assertIn("All three host flows offer the ScrapeCreators signup on first run", consent)
+
     def test_complete_does_not_treat_setup_stdout_as_source_list(self):
         self.assertIn(
             "Setup stdout is what this run installed, not the runtime source list",
@@ -146,7 +165,8 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_post_report_x_note_is_non_blocking(self):
         synthesis = reference_text("synthesis")
-        self.assertNotIn("Just-in-time X unlock", synthesis)
+        for name, text in contract_documents().items():
+            self.assertNotIn("Just-in-time X unlock", text, name)
         self.assertIn("Optional X omission", synthesis)
         self.assertIn("finish the useful findings first", synthesis)
 

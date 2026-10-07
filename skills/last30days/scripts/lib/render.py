@@ -1364,7 +1364,7 @@ def _render_degraded_run_warning(report: schema.Report) -> list[str]:
         "",
         "**If you are a user reading this:** the assistant skipped its own",
         "planning step. Ask it to regenerate following Step 0.55 and Step 0.75",
-        "of SKILL.md.",
+        "of the skill's research runbook.",
         "<!-- END USER-VISIBLE BANNER -->",
     ]
 
@@ -1434,7 +1434,7 @@ def _render_comparison_scaffold(topic: str) -> list[str]:
         separator,
         *body,
         "",
-        "After the table, write the Bottom Line section with one Choose-X-if paragraph per entity, then the emerging stack paragraph. See the comparison template in SKILL.md for the full structure.",
+        "After the table, write the Bottom Line section with one Choose-X-if paragraph per entity, then the emerging stack paragraph. See the comparison template in the skill's references/comparison.md for the full structure.",
     ]
 
 

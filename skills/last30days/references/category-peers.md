@@ -35,4 +35,4 @@ Resolved:
 - Reddit: r/OpenAI, r/ChatGPT, r/singularity, r/ChatGPTpromptengineering, r/StableDiffusion, r/midjourney, r/dalle2, r/aiArt (+ ai_image_generation peers)
 ```
 
-The parenthetical `(+ ai_image_generation peers)` is the observable contract of the new Resolved block format. See Step 0.55 self-check below.
+The parenthetical `(+ ai_image_generation peers)` is the observable contract of the new Resolved block format. See the Step 0.55 category-peer self-check in the research runbook.

@@ -79,7 +79,7 @@ This is the slash-command skill, not a generic search prompt. Run the installed 
 
 ## Bootstrap and file reads
 
-Bind `SKILL_DIR` to the absolute directory containing the **root SKILL.md actually loaded by the host**. Never bind it to `references/`, the current directory, or a different installation discovered through a path search. `SKILL.md` and `scripts/` are siblings.
+Bind `SKILL_DIR` to the absolute directory containing the **root SKILL.md actually loaded by the host**. Never bind it to `references/`, the current directory, or a different installation discovered through a path search. `SKILL.md` and `scripts/` are siblings. Retain `SKILL_DIR` across shell calls; when calls do not share variables, begin each command that uses it with a quoted assignment of that same absolute path.
 
 Before any engine command, read the runtime reference below in full. Run its stale-clone self-check first. If the loaded root is in `/.claude/plugins/marketplaces/` and the check names a newer cached root, stop, read that replacement root in full, rebind `SKILL_DIR`, and restart dispatch. Other valid install locations do not trigger a redirect.
 
@@ -99,10 +99,10 @@ Paths resolve relative to `SKILL_DIR`. A mode selected while reading a reference
 | Source repair requested or indicated by doctor | Read [references/setup-wizard.md](references/setup-wizard.md) in full. | Use the repair entry and applicable Manual Setup Guide subsection; preserve consent and host restrictions without restarting onboarding. |
 | Trending/discovery intent | Read [references/discovery.md](references/discovery.md) in full. | Run the complete host-judged protocol and relay its brief; skip ordinary topic planning, supplements, and synthesis. |
 | Ordinary topic research or source-health diagnosis | Read [references/research-runbook.md](references/research-runbook.md) in full. | Diagnose sources; stop after health-check-only guidance. For research, parse intent, run query quality/resolution/planning, execute the engine, and collect supplements. |
-| Before synthesizing ordinary research | Read [references/synthesis.md](references/synthesis.md) in full. | Synthesize grounded evidence, then apply the root output laws and final checks. |
+| Before synthesizing ordinary or comparison research | Read [references/synthesis.md](references/synthesis.md) in full. | Synthesize grounded evidence (comparison bodies use the comparison template), then apply the root output laws and final checks. |
 | Explicit comparison intent | Read [references/comparison.md](references/comparison.md) in full. | Use comparison execution and its output exceptions before writing the comparison body. |
 | `--competitors` mode | Read [references/competitors.md](references/competitors.md) and [references/comparison.md](references/comparison.md) in full. | Use comparison execution and synthesis; preserve per-entity targeting. |
-| Hiring intent | Read [references/hiring-signals.md](references/hiring-signals.md) in full. | Apply the jobs lane and its scoped planning exception. |
+| Hiring intent or an engine `## Hiring Signals` block | Read [references/hiring-signals.md](references/hiring-signals.md) in full. | Apply the jobs lane and its scoped planning exception; in standard runs, apply its evidence-versus-interpretation rule. |
 | `--agent` mode or explicit machine-readable JSON | Read [references/agent-mode.md](references/agent-mode.md) in full. | Apply structured output without treating absent consent as permission. |
 | Recommendation intent | Read [references/recommendations.md](references/recommendations.md) in full. | Rank and render the recommended items before the footer/invitation. |
 | Identifiable product requires category peers | Read [references/category-peers.md](references/category-peers.md) in full. | Expand peers during Step 0.55 before planning. |
@@ -112,7 +112,7 @@ Paths resolve relative to `SKILL_DIR`. A mode selected while reading a reference
 
 ## Dispatch before research
 
-Preserve the user's original request while handling setup. Classify library/feed/queue and existing-research follow-ups before entering topic research or setup. Their fast paths skip topic/backend preflight, host WebSearch resolution, and fresh source research; interpreter bootstrap still applies to any engine command.
+Preserve the user's original request while handling setup. Classify library/feed/queue and existing-research follow-ups before entering topic research or setup. Their fast paths skip topic/backend preflight, host WebSearch resolution, and fresh source research; interpreter bootstrap still applies to any engine command. Load the agent-mode reference before the first-run gate when its route applies.
 
 For library search/feed/queue, run the selected offline procedure and relay its result. Never fall through to fresh research because the library is empty, SQLite lacks FTS5, or a queue name is unknown. An unknown queue-cover name requires listing exact queued names.
 

@@ -12,10 +12,10 @@ ROUTES = {
     "Source repair requested or indicated by doctor": ("setup-wizard",),
     "Trending/discovery intent": ("discovery",),
     "Ordinary topic research or source-health diagnosis": ("research-runbook",),
-    "Before synthesizing ordinary research": ("synthesis",),
+    "Before synthesizing ordinary or comparison research": ("synthesis",),
     "Explicit comparison intent": ("comparison",),
     "--competitors mode": ("competitors", "comparison"),
-    "Hiring intent": ("hiring-signals",),
+    "Hiring intent or an engine ## Hiring Signals block": ("hiring-signals",),
     "--agent mode or explicit machine-readable JSON": ("agent-mode",),
     "Recommendation intent": ("recommendations",),
     "Identifiable product requires category peers": ("category-peers",),
@@ -26,7 +26,7 @@ ROUTES = {
 STANDARD_CONDITIONS = (
     "Before any engine command",
     "Ordinary topic research or source-health diagnosis",
-    "Before synthesizing ordinary research",
+    "Before synthesizing ordinary or comparison research",
 )
 
 

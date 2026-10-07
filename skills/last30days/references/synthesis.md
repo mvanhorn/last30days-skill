@@ -1,6 +1,6 @@
 # Research synthesis
 
-Read before synthesizing ordinary research. The root output laws and final checks govern this reference. Load any comparison/recommendation reference selected by intent before writing its body.
+Read before synthesizing ordinary or comparison research. For comparisons, the `comparison.md` template governs the body; this reference supplies evidence reading and weighting. The root output laws and final checks govern this reference. Load any comparison/recommendation reference selected by intent before writing its body.
 
 ## Judge Agent: Synthesize All Sources
 
@@ -223,7 +223,7 @@ If the research output does not contain the footer block, skip it and go straigh
 
 **Citation requirements before the invitation:** include visible citations required by higher-priority host/tool requirements or user instructions. Keep the engine footer where compatible with those requirements. The default response ends at the invitation without an additional source list; required trailing citations are an exception.
 
-**SELF-CHECK before displaying**: Re-read your "What I learned" section. Does it match what the research ACTUALLY says? If you catch yourself projecting your own knowledge instead of the research, rewrite it. Then verify: (a) no `##` headers in your response body, (b) no em-dashes or en-dashes anywhere, (c) any emitted engine footer appears between KEY PATTERNS and the invitation under LAW 5, with no added saved-file pointer.
+**SELF-CHECK before displaying**: Re-read your "What I learned" section. Does it match what the research ACTUALLY says? If you catch yourself projecting your own knowledge instead of the research, rewrite it. Then verify: (a) no `##` headers in your response body (comparisons allow only the headers LAW 4 permits), (b) no em-dashes or en-dashes anywhere, (c) any emitted engine footer appears between KEY PATTERNS and the invitation under LAW 5, with no added saved-file pointer.
 
 **Saved artifact access flow:** after the engine has created a file, decide how the user should get access to it based on what they asked for:
 
@@ -265,15 +265,7 @@ I'm now an expert on {TOPIC}. Some things you could ask:
 - [Question about what might happen next based on current trajectory]
 ```
 
-**If QUERY_TYPE = COMPARISON:**
-```
----
-I've compared {TOPIC_A} vs {TOPIC_B} using the latest community data. Some things you could ask:
-- [Deep dive into {TOPIC_A} alone with /last30days {TOPIC_A}]
-- [Deep dive into {TOPIC_B} alone with /last30days {TOPIC_B}]
-- [Focus on a specific dimension from the comparison table]
-- [Look at a different time period with --days=7 or --days=90]
-```
+**If QUERY_TYPE = COMPARISON:** use the invitation in the `comparison.md` template.
 
 **If QUERY_TYPE = GENERAL:**
 ```

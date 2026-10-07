@@ -145,10 +145,11 @@ def test_skill_md_presents_grok_as_opt_in_backup():
 
 def test_skill_md_replaces_just_in_time_unlock_with_optional_omission():
     """A useful report ends without a second X consent or key prompt."""
-    from tests.skill_contract import reference_text
+    from tests.skill_contract import contract_documents, reference_text
 
+    for name, document in contract_documents().items():
+        assert "Just-in-time X unlock" not in document, name
     text = reference_text("synthesis")
-    assert "Just-in-time X unlock" not in text
     section = text[text.index("Optional X omission"):][:1200]
     assert "finish the useful findings first" in section
     assert "Do not open a modal" in section

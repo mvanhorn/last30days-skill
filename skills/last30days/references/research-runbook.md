@@ -468,7 +468,7 @@ Passing the resolved block visibly (per-entity, all 4 types each) is the observa
 
 **If you can't infer targeting for a platform, skip that flag -- the Python engine will fall back to keyword search.**
 
-**Step 0.55 self-check: category-peer coverage.** Before emitting the Resolved block, re-read your resolved subreddit list. Does the topic match any category in the Section 2a table (or fit the spirit of one — AI image gen, AI coding, AI music, etc.)? If YES: does your list include AT LEAST 2 peer subs from that category? If NO, widen the list NOW — do not run the engine yet. The observable contract is the `(+ {category_id} peers)` annotation on the Reddit line in the Resolved block. Its absence on a product-in-a-known-category topic is a Step 0.55 regression. Person topics, music artists, news stories, and topics outside any category are exempt; omit the annotation.
+**Step 0.55 self-check: category-peer coverage.** Before emitting the Resolved block, re-read your resolved subreddit list. Does the topic match any category in the `category-peers.md` table (or fit the spirit of one — AI image gen, AI coding, AI music, etc.)? If one plausibly applies and that reference is not loaded, load it through the root gate now. If YES: does your list include AT LEAST 2 peer subs from that category? If NO, widen the list NOW — do not run the engine yet. The observable contract is the `(+ {category_id} peers)` annotation on the Reddit line in the Resolved block. Its absence on a product-in-a-known-category topic is a Step 0.55 regression. Person topics, music artists, news stories, and topics outside any category are exempt; omit the annotation.
 
 **After resolving all handles and communities, display what you found before moving on.** This shows the user that intelligent pre-research happened:
 
@@ -724,6 +724,7 @@ For ALL query types:
 - `--publish-password=PASS` → Shared password for `--publish-html` / `--publish`; prefer `LAST30DAYS_PUBLISH_PASSWORD` in the environment so the secret never appears in process lists
 - `--debug` → Enable HTTP debug logging (troubleshooting only)
 - `--store` → Persist ranked findings to the SQLite research store
+- `--polymarket-keywords="kw1,kw2"` → Disambiguate Polymarket for ambiguous single-token topics ("Warriors" → `nba,gsw,golden-state`)
 
 **Leaving Step 2 - LAW 1 reminder:** honor higher-priority host/tool requirements and user instructions for visible citations. The `🌐 Web:` footer and saved-raw-file appendix do not substitute for required links or source sections. When no additional citation form is required, keep the default ending at the invitation without a duplicate source list.
 

@@ -4042,7 +4042,7 @@ def _main(
                         "  3. Re-invoke: /last30days '{topic} vs {peer1} vs {peer2}' "
                         "--competitors-plan '{\"Peer1\":{\"x_handle\":\"h1\",\"subreddits\":"
                         "[\"s1\"],...},\"Peer2\":{...}}'.\n"
-                        "See SKILL.md 'Competitor mode' for the full protocol.\n"
+                        "See the skill's references/competitors.md for the full protocol.\n"
                         "\n"
                         "HEADLESS / CRON PATH (no hosting model available): set "
                         "BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY / "

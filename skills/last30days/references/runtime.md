@@ -25,7 +25,7 @@ echo "CLAUDE_CACHE_SKILL_MD=$CLAUDE_CACHE_SKILL_MD"
 
 If the loaded root SKILL.md path contains `/.claude/plugins/marketplaces/` AND `$CLAUDE_CACHE_SKILL_MD` is non-empty, STOP and re-read `$CLAUDE_CACHE_SKILL_MD` before proceeding. Otherwise the SKILL.md you have is fine — continue.
 
-**Other install paths are fine:** `~/.codex/skills/`, `~/.agents/skills/`, an `npx skills add` install dir, or a repo checkout are all valid load points - the resolver in Step 1 picks them up. Do NOT abort or hop on those paths.
+**Other install paths are fine:** `~/.codex/skills/`, `~/.agents/skills/`, an `npx skills add` install dir, or a repo checkout are all valid load points - the root `SKILL_DIR` binding picks them up. Do NOT abort or hop on those paths.
 
 ---
 

@@ -93,7 +93,7 @@ The Modal and Non-Modal flows share the same consent points:
 2. **Full Disk Access (macOS)** - if a cookie read is permission-denied, the model surfaces the System Settings > Privacy & Security > Full Disk Access fix and offers one retry.
 3. **ScrapeCreators GitHub signup** - offered on every first run (10,000 free calls). On consent it runs `setup --github`, which opens a browser for GitHub device-auth (or registers instantly via the `gh` CLI when installed) and, on success, **persists `SCRAPECREATORS_API_KEY` automatically** (0o600, masked in output) so TikTok, Instagram, empty-path Reddit search backup, and the YouTube transcript fallback activate on the next run. Decline anytime; you can run it later by asking to set up ScrapeCreators. The Step 5 opt-in has two tiers, both comment-enabled: **Recommended** (TikTok + Instagram posts AND top comments, plus YouTube comments — `INCLUDE_SOURCES=tiktok,instagram,youtube_comments,tiktok_comments,instagram_comments`) and **Everything**, which also adds Threads + Pinterest. Comments are on by default; Threads and Pinterest are the only opt-in extras.
 
-Re-run onboarding by deleting `~/.config/last30days/.env`. The mechanical work lives in `scripts/lib/setup_wizard.py`; the consent conversation and both host flows are specified in `skills/last30days/SKILL.md` Step 0. The original v3.0.0 wizard is captured at `docs/reference/old-nux-wizard-v3.0.0.md`.
+Re-run onboarding by deleting `~/.config/last30days/.env`. The mechanical work lives in `scripts/lib/setup_wizard.py`; the consent conversation and the host flows are specified in Step 0 of `skills/last30days/references/setup-wizard.md`, which the root `SKILL.md` routes to on first run. The original v3.0.0 wizard is captured at `docs/reference/old-nux-wizard-v3.0.0.md`.
 
 ---
 
@@ -316,8 +316,8 @@ everything is already in `.env`.
 Effective credential priority is: process env > trusted project config
 (`.claude/last30days.env`) > global config (`~/.config/last30days/.env`) >
 macOS Keychain > `pass`(1). A Keychain-only setup still counts as configured:
-the engine resolves `last30days-<KEY>` at runtime. First-run in SKILL.md
-Step 0 must not treat a missing `.env` as unconfigured.
+the engine resolves `last30days-<KEY>` at runtime. First-run Step 0 in
+`references/setup-wizard.md` must not treat a missing `.env` as unconfigured.
 
 | Platform | Source | Store keys with | Lookup convention |
 |---|---|---|---|
@@ -697,7 +697,7 @@ l30d-client() {
 
 [`scripts/lib/categories.py`](skills/last30days/scripts/lib/categories.py) holds a table of `(category_id, trigger_keywords, peer_subreddits)`. If a client lives in a vertical that isn't covered (legal-tech, real-estate-tech, B2B HR SaaS), add a row. Pure data, no logic.
 
-Section 2a of `SKILL.md` documents the merging rule the skill applies when your topic matches a category.
+Section 2a of `skills/last30days/references/research-runbook.md` and `references/category-peers.md` document the merging rule the skill applies when your topic matches a category.
 
 ### 4. Pre-built `--competitors-plan` JSON
 
@@ -715,7 +715,7 @@ For competitor-vs-comparisons that recur, a pre-written JSON skeleton per client
 }
 ```
 
-Pass as `--competitors-plan @client/competitors-plan.json` (or as a string). See `SKILL.md` section "If QUERY_TYPE = COMPARISON" for the full schema.
+Pass as `--competitors-plan @client/competitors-plan.json` (or as a string). See `skills/last30days/references/comparison.md` for the full schema.
 
 ### Grok Bot
 

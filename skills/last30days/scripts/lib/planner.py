@@ -404,7 +404,8 @@ def plan_query(
             "YOU ARE the planner: generate a JSON query plan yourself and pass it "
             "via --plan. You do not need an API key or credentials; you ARE the "
             "LLM. The deterministic fallback below is the headless/cron path only. "
-            "See LAW 7 in SKILL.md and Step 0.75 for the plan schema.",
+            "See LAW 7 in SKILL.md and Step 0.75 in references/research-runbook.md "
+            "for the plan schema.",
             file=sys.stderr,
         )
     return _fallback_plan(topic, available_sources, requested_sources, depth)

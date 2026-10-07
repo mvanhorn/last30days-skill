@@ -11,7 +11,7 @@ The contract has two modes:
 
 - For normal-report-plus-HTML mode: after you have already emitted the full chat response: badge, "What I learned:" (or comparison title), bold-lead-in paragraphs with citations, KEY PATTERNS list, engine footer pass-through, invitation block.
 - For HTML-as-deliverable mode: after you have drafted the synthesis that will go into the HTML, before emitting the final chat response.
-- BEFORE the WAIT FOR USER'S RESPONSE pause.
+- BEFORE the closing invitation and wait for the user's response.
 - ONLY if the user asked. Do NOT save HTML when the user didn't ask for it.
 
 ## How to fire it
@@ -220,4 +220,4 @@ The engine will try to reuse `~/.config/last30days/last-report.json` for that se
 - **Topic with shell-special characters** (quotes, ampersands): the temp filename uses a slugified version, but the engine receives the raw topic. The `cat <<'SYNTHESIS_EOF'` quoted heredoc form handles arbitrary content without expansion. Your synthesis text can include any character.
 - **Very long synthesis**: no upper bound. The engine handles long markdown bodies. Just paste verbatim.
 - **Synthesis with images or non-ASCII**: emoji and Unicode pass through. Image tags pass through as raw HTML; the renderer doesn't transform them. If you didn't include images in chat, don't add them here.
-- **No `${LAST30DAYS_MEMORY_DIR}` set**: defaults to `~/Documents/Last30Days/` per the SKILL.md `Configuration` section.
+- **No `${LAST30DAYS_MEMORY_DIR}` set**: defaults to `~/Documents/Last30Days/` per the `Configuration` section of `references/runtime.md`.

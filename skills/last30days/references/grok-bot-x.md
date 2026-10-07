@@ -2,7 +2,7 @@
 
 Read only for an actual Grok Bot host with the official X connector lane active. Browser sessions are never read on this host.
 
-**Grok Bot X connector recipe (only when `LAST30DAYS_X_HOST_LANE=1` is exported - see the Grok Bot host rule in HOW TO INVOKE).** On a Grok Bot with the X connector, YOU fetch X through the connector before the engine command and hand the engine the file; the engine then calls no X backend, plans `x` in, and the footer's X provenance reads "X via X connector". Do this before the Step 1 command below.
+**Grok Bot X connector recipe (only when `LAST30DAYS_X_HOST_LANE=1` is exported - see the GROK BOT HOST RULE in the root SKILL.md).** On a Grok Bot with the X connector, YOU fetch X through the connector before the engine command and hand the engine the file; the engine then calls no X backend, plans `x` in, and the footer's X provenance reads "X via X connector". Do this before the research runbook's Step 1 command.
 
 1. **Calls (the connector's post-search tool, e.g. `search_posts_all`).** Window = the engine's date range (`--days`, default 30: `from` is today minus the day count, `to` is today). Depth count = 10 (`--quick`) / 30 (default) / 60 (`--deep`).
    - One `topic` call: the topic query plus `-is:retweet`, the window, and the depth count.

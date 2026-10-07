@@ -35,7 +35,7 @@ printf 'Resolved save directory: <%s>\n' "$LAST30DAYS_MEMORY_DIR" >&2
 
   Judge every row: an omitted or malformed row silently falls back to the engine's deterministic heuristics for that nomination - a safety net, not a shortcut.
 
-  **Leg 2 - research (Bash timeout 600000).** Write the judgments file and run the resume leg in the SAME Bash call, using the established tmpfile pattern (mktemp XXXXXX + trap + `cat >|` + quoted heredoc - same rules as the Step 0.75 plan tmpfile; run the block directly in your shell tool, NEVER wrapped in `bash -lc '...'`):
+  **Leg 2 - research (Bash timeout 600000).** Write the judgments file and run the resume leg in the SAME Bash call, using the established tmpfile pattern (mktemp XXXXXX + trap + `cat >|` + quoted heredoc - same rules as the LAW 7 plan tmpfile; run the block directly in your shell tool, NEVER wrapped in `bash -lc '...'`):
 
 ```bash
 : "${LAST30DAYS_MEMORY_DIR?Restore the exact save directory captured in discovery leg 1}"
