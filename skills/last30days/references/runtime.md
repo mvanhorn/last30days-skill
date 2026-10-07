@@ -108,6 +108,16 @@ fi
   exit 1
 }
 
+last30days_python_path="$(command -v "$LAST30DAYS_PYTHON")" || exit 1
+case "$last30days_python_path" in
+  /*) LAST30DAYS_PYTHON="$last30days_python_path" ;;
+  */*) last30days_python_dir="$(cd -P -- "${last30days_python_path%/*}" && pwd -P)" || exit 1
+       LAST30DAYS_PYTHON="$last30days_python_dir/${last30days_python_path##*/}" ;;
+  *) echo "ERROR: selected Python must resolve to an executable path." >&2; exit 1 ;;
+esac
+export LAST30DAYS_PYTHON
+"${LAST30DAYS_PYTHON}" -c 'import os, shlex; print("LAST30DAYS_PYTHON=" + shlex.quote(os.environ["LAST30DAYS_PYTHON"]))'
+
 ```
 
 **PYTHON VERSION GATE — when the Runtime Preflight Bash block above exits with a Python version error:**
@@ -138,7 +148,7 @@ Your host search is better than the engine's keyless web fallback, so this tells
 After interpreter bootstrap, resolve the save directory once before the first engine operation that needs it. If the user supplied a one-off directory, add `--save-dir="<requested directory>"` to the resolver command below before running it. Remove any duplicate save-directory flag from the later research arguments. Never source a `.env` file.
 
 ```bash
-LAST30DAYS_MEMORY_DIR="$("${LAST30DAYS_PYTHON:-python3}" "${SKILL_DIR}/scripts/last30days.py" --resolve-save-dir)" || exit
+LAST30DAYS_MEMORY_DIR="$("${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" --resolve-save-dir)" || exit
 printf 'Resolved save directory: <%s>\n' "$LAST30DAYS_MEMORY_DIR" >&2
 ```
 

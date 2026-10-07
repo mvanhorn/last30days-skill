@@ -79,3 +79,23 @@ def test_main_context_does_not_leak_to_peer_without_context(monkeypatch, tmp_pat
     assert observed.calls["PeerOne"]["config"]["_auto_resolve_context"] == "PeerOne distinct context"
     assert observed.calls["PeerTwo"]["config"].get("_auto_resolve_context", "") == ""
     assert observed.reports["PeerTwo"].artifacts["resolved"]["context"] == ""
+
+
+def test_vs_topic_auto_resolve_targets_each_entity_separately(monkeypatch, tmp_path):
+    observed = run_competitor_cli(
+        monkeypatch, tmp_path, topic="MainBrand vs PeerOne vs PeerTwo",
+        competitors_list=None, args=["--auto-resolve"],
+        config={"BRAVE_API_KEY": "dummy-brave-key"}, has_backend=True,
+        resolutions={
+            "MainBrand": {"x_handle": "mainbrand", "subreddits": ["mainbrand"]},
+            "PeerOne": {"x_handle": "peerone", "subreddits": ["peerone"]},
+            "PeerTwo": {"x_handle": "peertwo", "subreddits": ["peertwo"]},
+        },
+    )
+
+    resolver_topics = [call.args[0] for call in observed.resolver.call_args_list]
+    assert resolver_topics[0] == "MainBrand"
+    assert sorted(resolver_topics[1:]) == ["PeerOne", "PeerTwo"]
+    assert observed.calls["MainBrand"]["x_handle"] == "mainbrand"
+    assert observed.calls["PeerOne"]["x_handle"] == "peerone"
+    assert observed.calls["PeerTwo"]["x_handle"] == "peertwo"

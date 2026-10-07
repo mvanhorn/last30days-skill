@@ -239,25 +239,29 @@ class TestChangelogWorkflow(unittest.TestCase):
         ]
         self.assertEqual(1, len(blocks))
         gate = blocks[0][blocks[0].index("has_fragment=0"):]
-        reference = "skills/last30days/references/setup-wizard.md"
-        cases = (
-            ([reference], "0", 1),
-            ([reference, "changelog.d/1230.changed.md"], "0", 0),
-            ([reference], "1", 0),
-            (["README.md"], "0", 0),
+        references = (
+            "skills/last30days/references/setup-wizard.md",
+            "skills/last30days/references/comparison.md",
         )
-        for changed, skip, expected in cases:
-            with self.subTest(changed=changed, skip=skip):
-                setup = "CHANGED=(" + " ".join(shlex.quote(path) for path in changed) + ")\n"
-                result = subprocess.run(
-                    ["bash", "-euc", setup + gate], text=True, capture_output=True,
-                    env={**os.environ, "SKIP_CHANGELOG": skip},
-                )
-                self.assertEqual(expected, result.returncode, result.stdout + result.stderr)
-                if expected:
-                    self.assertIn("Engine/skill changes need a changelog.d fragment", result.stdout)
-                else:
-                    self.assertIn("Changelog guard passed", result.stdout)
+        for reference in references:
+            cases = (
+                ([reference], "0", 1),
+                ([reference, "changelog.d/1230.changed.md"], "0", 0),
+                ([reference], "1", 0),
+                (["README.md"], "0", 0),
+            )
+            for changed, skip, expected in cases:
+                with self.subTest(changed=changed, skip=skip):
+                    setup = "CHANGED=(" + " ".join(shlex.quote(path) for path in changed) + ")\n"
+                    result = subprocess.run(
+                        ["bash", "-euc", setup + gate], text=True, capture_output=True,
+                        env={**os.environ, "SKIP_CHANGELOG": skip},
+                    )
+                    self.assertEqual(expected, result.returncode, result.stdout + result.stderr)
+                    if expected:
+                        self.assertIn("Engine/skill changes need a changelog.d fragment", result.stdout)
+                    else:
+                        self.assertIn("Changelog guard passed", result.stdout)
 
     def test_read_manifest_version_helper(self) -> None:
         script = ROOT / ".github" / "scripts" / "read_manifest_version.py"

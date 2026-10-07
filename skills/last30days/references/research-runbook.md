@@ -588,7 +588,7 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 
 **CRITICAL: Run this command in the FOREGROUND with a 5-minute timeout. Do NOT use run_in_background. The full output contains Reddit, X, AND YouTube data that you need to read completely.**
 
-**IMPORTANT: Pass your QUERY_PLAN_JSON via the --plan flag. This tells the Python script to use YOUR plan instead of calling Gemini.**
+**On hosts with web search, pass your QUERY_PLAN_JSON via the --plan flag.** This tells the Python script to use your plan instead of its internal planner. On hosts without web search, omit `--plan` and use `--auto-resolve`.
 
 **IMPORTANT: Include `--x-handle={RESOLVED_HANDLE}` in the command. For comparison mode, use the single parallel comparison invocation in `comparison.md`, with outer targeting for the main entity and per-peer targeting in `--competitors-plan`. Also include `--subreddits={RESOLVED_SUBREDDITS}`, `--tiktok-hashtags={RESOLVED_HASHTAGS}`, `--tiktok-creators={RESOLVED_TIKTOK_CREATORS}`, and `--ig-creators={RESOLVED_IG_CREATORS}` from Step 0.55. Omit any flag where the value was not resolved (empty).**
 
@@ -667,9 +667,9 @@ The script will automatically:
 
 ---
 
-## STEP 2: DO WEBSEARCH AFTER SCRIPT COMPLETES
+## STEP 2: HOST WEB SEARCH SUPPLEMENTS AFTER SCRIPT COMPLETES
 
-After the script finishes, do WebSearch to supplement with blogs, tutorials, and news.
+If host web search is unavailable, skip this step. Otherwise, after the script finishes, do WebSearch to supplement with blogs, tutorials, and news.
 
 **Run 2-3 post-engine WebSearch supplements. This is a SEPARATE budget from Step 0.55 pre-research. Pre-research WebSearches DO NOT count against this budget.**
 
@@ -680,7 +680,7 @@ The supplement budget and the Step 0.55 pre-research budget are distinct. Step 0
 - Ceiling: 3. Do not fire 5+ "just in case" - that is what pushed runtimes to 9 minutes on earlier validation.
 - Example (Kanye West with 113 engine items): 2-3 supplements covering (1) Billboard/Pitchfork critical reception, (2) Wireless Festival ban news context, (3) optionally a specific claim you want corroborated. Not zero, even though the engine was rich.
 
-For **ALL modes**, do WebSearch to supplement (or provide all data in web-only mode).
+For every research mode on a host with web search, do supplements after the engine. Web search alone does not replace the engine.
 
 Choose search queries based on QUERY_TYPE:
 

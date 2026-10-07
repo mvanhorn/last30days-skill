@@ -4,9 +4,9 @@ Read for explicit comparison intent before engine execution and synthesis. The r
 
 ## If QUERY_TYPE = COMPARISON
 
-When the user asks "X vs Y" (or "X vs Y vs Z"), the engine fans out N full `pipeline.run()` calls in parallel — one per entity — each with its own Step 0.55-grade targeting. This restored the old N-pass architecture (reverted the one-pass latency optimization that removed per-entity depth); parallel execution keeps wall clock ≈ a single pass.
+When the user asks "X vs Y" (or "X vs Y vs Z"), the engine fans out N full `pipeline.run()` calls in parallel — one per entity. This restored the old N-pass architecture (reverted the one-pass latency optimization that removed per-entity depth); parallel execution keeps wall clock ≈ a single pass.
 
-**MANDATORY per-entity resolution.** For each entity, resolve the full Step 0.55 stack (X handle, subreddits, GitHub user/repos, news context). Then assemble a `--competitors-plan` JSON mapping each entity to its targeting, and invoke the engine ONCE with the vs-topic string.
+**When host web search is available, per-entity resolution is mandatory.** For each entity, resolve the full Step 0.55 stack (X handle, subreddits, GitHub user/repos, news context). Then assemble a `--competitors-plan` JSON mapping each peer to its targeting, and invoke the engine once with the vs-topic string. When host web search is unavailable, skip Steps 0.55 and 0.75 as the root requires. Invoke the no-web-search command below without a host plan; the engine resolves the main entity and each peer independently when a configured resolver exists, then plans each sub-run internally. Without a configured resolver, keyword search still runs, but entity targeting can be thinner.
 
 Peer targeting entries accept `x_handle`, `x_related`, `subreddits`, `github_user`, `github_repos`, `trustpilot_domain`, `context`, and `x_posts`. Use arrays for related handles, subreddits, and repositories. Other peer targeting keys are ignored; do not invent fields for dedicated subreddits, TikTok, or Instagram.
 
@@ -16,9 +16,14 @@ Peer targeting entries accept `x_handle`, `x_related`, `subreddits`, `github_use
 - The engine logs every written file as `[last30days] Saved output to {path}` and, for comparison runs, follows with `[last30days] Comparison artifact set: main={path}; peers={path, ...}`. Treat that log line as authoritative instead of recomputing paths from slugs.
 - Stdout shows a merged comparison with the `## Head-to-Head` scaffold + per-entity Resolved Entities block.
 
-Generate `QUERY_PLAN_JSON` through Step 0.75 for **TOPIC_A only**, not the whole vs-string. The main entity receives that `--plan`; peer sub-runs plan independently. The competitors plan supplies peer targeting, not peer query plans.
+On hosts with web search, generate `QUERY_PLAN_JSON` through Step 0.75 for **TOPIC_A only**, not the whole vs-string. The main entity receives that `--plan`; peer sub-runs plan independently. The competitors plan supplies peer targeting, not peer query plans.
 
-**Invocation:**
+Build `COMPETITORS_PLAN_JSON` as valid JSON keyed by the exact peer names, with JSON-encoded string values. For example, a peer entry can contain `{"Peer Widget":{"x_handle":"peer_widget","subreddits":["peer_widget"],"context":"The product says \"zero setup\""}}`. Encode quotes, backslashes, and newlines in names and fetched context; never paste raw values between JSON quotes. Use a quoted heredoc delimiter that is absent from the data. The same delimiter rule applies to the topic and main-targeting heredocs.
+
+For a two-entity comparison, omit ` vs {TOPIC_C}` from the topic heredoc in either command. For more entities, include each name up to the engine's comparison limit.
+
+### With host web search
+
 ```bash
 # SKILL_DIR is already bound to the directory containing the loaded root SKILL.md.
 # Never rebind it to this reference directory or search other installations.
@@ -29,13 +34,23 @@ if [ ! -f "$SKILL_DIR/scripts/last30days.py" ]; then
   exit 1
 fi
 
-# Write the per-entity plan to a tmpfile and pass the path to the engine.
-# The engine's parse_competitors_plan() reads file paths transparently. This
-# avoids the inline-single-quoted-JSON apostrophe trap (resolved context
-# strings like "people's choice" or "McDonald's" otherwise close the outer
-# single-quote and break shell parsing before the engine is even invoked).
-# Trailing XXXXXX (no .json suffix) so BSD/macOS mktemp works the same as
-# GNU; BSD only substitutes X's at the end of the template.
+COMPARISON_TOPIC=$(cat <<'TOPIC_EOF'
+{TOPIC_A} vs {TOPIC_B} vs {TOPIC_C}
+TOPIC_EOF
+)
+TOPIC_A_HANDLE=$(cat <<'HANDLE_EOF'
+{TOPIC_A_HANDLE}
+HANDLE_EOF
+)
+TOPIC_A_SUBS=$(cat <<'SUBS_EOF'
+{TOPIC_A_SUBS}
+SUBS_EOF
+)
+MAIN_TARGETING=()
+[ -n "$TOPIC_A_HANDLE" ] && MAIN_TARGETING+=(--x-handle="$TOPIC_A_HANDLE")
+[ -n "$TOPIC_A_SUBS" ] && MAIN_TARGETING+=(--subreddits="$TOPIC_A_SUBS")
+
+# BSD/macOS mktemp requires XXXXXX at the end of the template.
 QUERY_PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-plan.XXXXXX")
 COMPETITORS_PLAN_FILE=$(mktemp "${TMPDIR:-/tmp}/last30days-competitors.XXXXXX")
 trap 'rm -f "$QUERY_PLAN_FILE" "$COMPETITORS_PLAN_FILE"' EXIT
@@ -45,33 +60,44 @@ QUERY_PLAN_EOF
 # >| not >: mktemp already created the file, so a plain > is refused under
 # `set -o noclobber` (leaving the plan empty -> deterministic fallback).
 cat >| "$COMPETITORS_PLAN_FILE" <<'PLAN_EOF'
-{
-  "{TOPIC_B}": {"x_handle":"{TOPIC_B_HANDLE}","subreddits":["{TOPIC_B_SUB_1}","{TOPIC_B_SUB_2}"],"github_user":"{TOPIC_B_GH}","context":"{TOPIC_B_CONTEXT}"},
-  "{TOPIC_C}": {"x_handle":"{TOPIC_C_HANDLE}","subreddits":["{TOPIC_C_SUB_1}"],"github_user":"{TOPIC_C_GH}","context":"{TOPIC_C_CONTEXT}"}
-}
+{COMPETITORS_PLAN_JSON}
 PLAN_EOF
+"${LAST30DAYS_PYTHON}" -m json.tool "$COMPETITORS_PLAN_FILE" >/dev/null || exit 2
 
-"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "{TOPIC_A} vs {TOPIC_B} vs {TOPIC_C}" \
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "$COMPARISON_TOPIC" \
   --emit=compact \
   --plan "$QUERY_PLAN_FILE" \
   --save-dir="${LAST30DAYS_MEMORY_DIR}" \
   --save-suffix=v3 \
-  --x-handle={TOPIC_A_HANDLE} \
-  --subreddits={TOPIC_A_SUBS} \
+  "${MAIN_TARGETING[@]}" \
   --competitors-plan "$COMPETITORS_PLAN_FILE"
 ```
 
-**Keep the heredoc marker quoted as `'PLAN_EOF'`.** Quoting suppresses shell interpolation so apostrophes, `$`, backticks, etc. pass through verbatim. If you ever switch to an unquoted `<<PLAN_EOF`, every variable reference and apostrophe inside the JSON becomes a parse hazard.
+For any additional outer targeting flag, capture its value through a quoted heredoc and add it to `MAIN_TARGETING` with a quoted variable expansion. Omit unresolved flags. Never paste a topic, handle, subreddit, or fetched context directly into shell command words. The quoted heredocs keep shell-active text literal; `json.tool` rejects malformed peer JSON before the research run.
+
+### Without host web search
+
+```bash
+COMPARISON_TOPIC=$(cat <<'TOPIC_EOF'
+{TOPIC_A} vs {TOPIC_B} vs {TOPIC_C}
+TOPIC_EOF
+)
+"${LAST30DAYS_PYTHON}" "${SKILL_DIR}/scripts/last30days.py" "$COMPARISON_TOPIC" \
+  --emit=compact --auto-resolve \
+  --save-dir="${LAST30DAYS_MEMORY_DIR}" --save-suffix=v3
+```
+
+This branch has no host-authored `--plan` or `--competitors-plan`. If the user supplied explicit targeting flags, pass those values through quoted variables as above. Do not fabricate a host plan or pretend that empty `## Resolved Entities` fields prove Step 0.55 was skipped on a host that cannot run it.
 
 Topic A (the main topic, first in the vs-string) uses outer `--x-handle`, `--x-related`, `--subreddits`, `--github-user`, `--github-repo`, `--trustpilot-domain`, `--tiktok-*`, `--ig-creators` as usual. Topics B and C get their targeting from `--competitors-plan` entries (keyed by entity name, case-insensitive) — a main-topic entry does not override those outer targeting flags, so the main topic's Trustpilot domain must ride the outer flag. Per-entity `x_posts` entries are the explicit exception: they can supply the main entity's connector envelope as well as peer envelopes.
 
-**Step 0.55 for N entities.** The same pre-research protocol that applies to a single-entity topic applies to EACH entity in a vs-run. For N=3, that means 3 WebSearches for X handles, 3 for subreddits, 3 for GitHub, 3 for news context — or equivalent batched queries. A `## Resolved Entities` block with dashes for any entity means you skipped Step 0.55 for that one. Re-run with a corrected plan.
+**Step 0.55 for N entities when host web search is available.** The same pre-research protocol that applies to a single-entity topic applies to EACH entity in a vs-run. For N=3, that means 3 WebSearches for X handles, 3 for subreddits, 3 for GitHub, 3 for news context — or equivalent batched queries. On that host path, a `## Resolved Entities` block with dashes for any entity means you skipped Step 0.55 for that one. Re-run with a corrected plan.
 
-**Then do WebSearch supplements** for: `{TOPIC_A} vs {TOPIC_B} comparison {YEAR}` and `{TOPIC_A} vs {TOPIC_B} which is better` — these catch rivalry articles that per-entity passes might not surface.
+**When host web search is available, do WebSearch supplements** for: `{TOPIC_A} vs {TOPIC_B} comparison {YEAR}` and `{TOPIC_A} vs {TOPIC_B} which is better` — these catch rivalry articles that per-entity passes might not surface.
 
 **Use `RESOLVED_POSITIONING` per entity (Step 0.55 item 6) in two ways.** First, ground each entity's `What it is` cell in its CURRENT fetched pitch - describe the entity as it pitches itself today, never from memory. Second, if an entity's month of evidence directly bears on its pitch - SUPPORTS a specific claim, CUTS AGAINST one, or the conversation is squarely ABOUT the pitched ground - say so in ONE prose sentence inside that entity's section of the comparison synthesis (right after the Community Sentiment line - the template marks the slot), anchored to the real item with its engagement. When the pulse is orthogonal to the pitch (on-entity but about something the pitch doesn't speak to), say NOTHING about the pitch: omission is the correct output, and a manufactured connection is worse than silence. Match altitude: test SPECIFIC claims ("zero-config", "fastest", an uptime number) against specific threads; never grade a broad tagline ("financial infrastructure") against an individual thread - it is too broad to hit or miss. Keep claims windowed - "this month's conversation" - never trend verbs like "losing the narrative" that one 30-day window cannot support. If positioning was not actually fetched this run for an entity, skip both uses for that entity - never supply a pitch from memory.
 
-**Use the comparison invocation above in place of the research runbook's Step 1 command.** Then run the runbook's Step 2 supplements and Step 2.5 appendix (comparison runs append to every per-entity file), and write the body with the comparison template below instead of the general template in `synthesis.md`.
+**Use the applicable comparison invocation above in place of the research runbook's Step 1 command.** Run the runbook's Step 2 supplements when host web search is available and Step 2.5 appendix (comparison runs append to every per-entity file), then write the body with the comparison template below instead of the general template in `synthesis.md`.
 
 **COMPARISON TABLE SCAFFOLD (engine-emitted, pass through verbatim):** For comparison topics, the engine's compact output includes a `## Head-to-Head` block with an empty markdown table (columns = entities, rows = axes like "What it is", "Philosophy", "Best for"). Your synthesis MUST include this block verbatim with filled cells, positioned between the narrative and the emoji-tree footer. Keep each cell to 5-15 words. Use ' - ' (hyphen with spaces) not em-dashes inside cells.
 

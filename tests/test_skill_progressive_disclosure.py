@@ -39,6 +39,22 @@ def test_core_and_standard_research_fit_the_read_budget():
     assert total <= 180_000, f"standard configured research path loads {total} bytes"
 
 
+def test_configured_user_without_global_marker_has_a_bounded_setup_check():
+    core = root_text()
+    gate = core.split("**FIRST-RUN GATE", 1)[1].split("**Onboarding consent", 1)[0]
+    assert 'grep -q "SETUP_COMPLETE=true" ~/.config/last30days/.env' in gate
+    assert "FIRST_RUN_DETECTED" in gate
+    assert "read the setup-wizard reference" in gate
+    setup = reference_text("setup-wizard")
+    assert "Skip Step 0" in setup.split("## Step 0: First-Run Setup Wizard", 1)[0]
+
+    names = {"runtime", "setup-wizard", "research-runbook", "synthesis"}
+    total = len((SKILL_ROOT / "SKILL.md").read_bytes()) + sum(
+        len(reference_text(name).encode("utf-8")) for name in names
+    )
+    assert total <= 190_000, f"configured path without a global marker loads {total} bytes"
+
+
 def test_existing_users_can_load_repair_without_restarting_onboarding():
     condition = "Source repair requested or indicated by doctor"
     assert routing_table().get(condition) == ("setup-wizard",)

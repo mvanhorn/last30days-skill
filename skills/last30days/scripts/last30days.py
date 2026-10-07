@@ -3808,12 +3808,18 @@ def _main(
         # relevance floor entirely — a noisier report beats losing evidence.
         # Skipped when a handle was already supplied, when an external plan
         # owns resolution, or in mock runs.
+        auto_resolve_topic = topic
+        if args.competitors_list is None and (args.competitors is None or comp_plan):
+            from lib import planner as _planner
+            vs_entities = _planner._comparison_entities(topic, uncapped=True)
+            if len(vs_entities) >= 2:
+                auto_resolve_topic = vs_entities[0]
         if (
             not args.auto_resolve
             and not external_plan
             and not args.x_handle
             and not args.mock
-            and _looks_like_entity_topic(topic)
+            and _looks_like_entity_topic(auto_resolve_topic)
         ):
             args.auto_resolve = True
             sys.stderr.write(
@@ -3823,7 +3829,7 @@ def _main(
 
         if args.auto_resolve and not external_plan:
             from lib import resolve
-            resolution = resolve.auto_resolve(topic, config)
+            resolution = resolve.auto_resolve(auto_resolve_topic, config)
             if resolution.get("subreddits") and not subreddits:
                 subreddits = resolution["subreddits"]
                 sys.stderr.write(f"[AutoResolve] Subreddits: {', '.join(subreddits)}\n")

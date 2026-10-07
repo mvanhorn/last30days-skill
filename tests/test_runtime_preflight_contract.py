@@ -95,11 +95,11 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
         candidate.chmod(0o755)
         return candidate
 
-    def _run(self, source: str) -> subprocess.CompletedProcess[str]:
+    def _run(self, source: str, *, cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
         return subprocess.run(
             [shutil.which("bash"), "--noprofile", "--norc", "-c", self._substitute_arguments(source)],
             env=self.env,
-            cwd=self.root,
+            cwd=cwd or self.root,
             capture_output=True,
             text=True,
             timeout=15,
@@ -132,7 +132,10 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
         self._python_candidate("python3.12", (3, 12))
         result = self._run_preflight()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, "Selected: <python3.13>\n")
+        self.assertEqual(
+            result.stdout,
+            f"LAST30DAYS_PYTHON={self.bin / 'python3.13'}\nSelected: <{self.bin / 'python3.13'}>\n",
+        )
         self.assertIn(f"Resolved save directory: <{self.save_dir}>", result.stderr)
 
     def test_explicit_python_path_with_spaces_is_preserved(self) -> None:
@@ -140,8 +143,39 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
         self.env["LAST30DAYS_PYTHON"] = str(candidate)
         result = self._run_preflight()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, f"Selected: <{candidate}>\n")
+        self.assertEqual(
+            result.stdout,
+            f"LAST30DAYS_PYTHON={shlex.quote(str(candidate))}\nSelected: <{candidate}>\n",
+        )
         self.assertIn(f"Resolved save directory: <{self.save_dir}>", result.stderr)
+
+    def test_selected_python_runs_welcome_in_a_separate_shell(self) -> None:
+        candidate = self._python_candidate("supported python", (3, 12))
+        self.env["LAST30DAYS_PYTHON"] = f"./bin/{candidate.name}"
+        preflight = self._run_preflight()
+        self.assertEqual(preflight.returncode, 0, preflight.stderr)
+        assignment = next(
+            (line for line in preflight.stdout.splitlines() if line.startswith("LAST30DAYS_PYTHON=")),
+            None,
+        )
+        self.assertIsNotNone(assignment, "preflight must print a reusable shell assignment")
+        self.assertEqual(assignment, f"LAST30DAYS_PYTHON={shlex.quote(str(candidate))}")
+
+        installed = self.root / "welcome skill"
+        (installed / "scripts").mkdir(parents=True)
+        (installed / "scripts" / "last30days.py").write_text('print("welcome")\n', encoding="utf-8")
+        self.env.pop("LAST30DAYS_PYTHON")
+        self.env["SKILL_DIR"] = str(installed)
+        welcome = re.search(
+            r"\*\*1\. Welcome\.\*\* Run `([^`]+--welcome)`",
+            reference_text("setup-wizard"),
+        )
+        self.assertIsNotNone(welcome)
+        later_cwd = self.root / "later shell"
+        later_cwd.mkdir()
+        result = self._run(assignment + "\n" + welcome[1], cwd=later_cwd)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, "welcome\n")
 
     def test_invalid_explicit_python_does_not_fall_back(self) -> None:
         self._python_candidate("python3.12", (3, 12))
@@ -163,7 +197,10 @@ class RuntimePreflightExecutionTests(unittest.TestCase):
         self.env["LOCALAPPDATA"] = str(local_appdata)
         result = self._run_preflight()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout, f"Selected: <{candidate}>\n")
+        self.assertEqual(
+            result.stdout,
+            f"LAST30DAYS_PYTHON={shlex.quote(str(candidate))}\nSelected: <{candidate}>\n",
+        )
         self.assertIn(f"Resolved save directory: <{self.save_dir}>", result.stderr)
 
     def test_badge_version_awk_fallback_survives_argument_substitution(self) -> None:

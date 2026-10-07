@@ -9,7 +9,8 @@ from lib import resolve, schema
 
 
 def run_competitor_cli(
-    monkeypatch, tmp_path, *, args=(), config=None, has_backend=False, resolutions=None
+    monkeypatch, tmp_path, *, args=(), config=None, has_backend=False, resolutions=None,
+    topic="MainBrand", competitors_list="PeerOne,PeerTwo",
 ):
     config = {} if config is None else config
     calls = {}
@@ -44,10 +45,11 @@ def run_competitor_cli(
     monkeypatch.setenv("LAST30DAYS_STORE", "")
     monkeypatch.delenv("LAST30DAYS_API_BASE", raising=False)
     monkeypatch.delenv("LAST30DAYS_API_KEY", raising=False)
-    monkeypatch.setattr(sys, "argv", [
-        "last30days.py", "MainBrand", "--competitors-list", "PeerOne,PeerTwo",
-        "--emit=json", "--json-profile=raw", "--save-dir=", *args,
-    ])
+    argv = ["last30days.py", topic]
+    if competitors_list is not None:
+        argv.extend(["--competitors-list", competitors_list])
+    argv.extend(["--emit=json", "--json-profile=raw", "--save-dir=", *args])
+    monkeypatch.setattr(sys, "argv", argv)
 
     assert cli.main() == 0
     assert set(calls) == {"MainBrand", "PeerOne", "PeerTwo"}
