@@ -24,7 +24,7 @@ CONFIGURATION = ROOT / "CONFIGURATION.md"
 AGENTS_MD = ROOT / "AGENTS.md"
 
 FLOW_HEADING = "### Grok Bot Prose Flow"
-RECIPE_MARKER = "X connector recipe"
+RECIPE_MARKER = "Grok Bot X recipe"
 RECIPE_END = "**Step 1: Run the research script"
 
 # R4 vocabulary: none of it may appear in the Grok Bot flow (case-insensitive).
@@ -265,6 +265,34 @@ class TestConnectorRecipe(unittest.TestCase):
 
     def test_recipe_has_no_r4_vocabulary(self):
         self.assertEqual([], _forbidden_hits(self.recipe))
+
+    def test_recipe_names_both_host_lanes_by_source_before_the_engine_chain(self):
+        plugin = self.recipe.index('"X for Grok Bot"')
+        native = self.recipe.index("namespace `x`")
+        bearer = self.recipe.index("X_BEARER_TOKEN")
+        self.assertLess(max(plugin, native), bearer)
+        self.assertIn("never by its name", self.recipe)
+        for token in ('"provider": "x-native"', '"x-connector"', "X via Grok Bot X"):
+            self.assertIn(token, self.recipe, token)
+
+    def test_recipe_pages_recency_to_the_depth_count(self):
+        for token in ("`recency`", "next_token", "max_results", "ONE envelope call", "note_tweet"):
+            self.assertIn(token, self.recipe, token)
+        for metric in ("like_count", "retweet_count", "reply_count", "quote_count"):
+            self.assertIn(metric, self.recipe, metric)
+
+    def test_recipe_gives_discovered_authors_full_handle_lanes(self):
+        authors = self.recipe[self.recipe.index("**Discovered authors.**"):]
+        authors = authors[: authors.index("\n   - ")]
+        self.assertIn("`from` call", authors)
+        self.assertIn("8 posts", authors)
+        self.assertIn("`mention` call", authors)
+        self.assertIn("5 posts", authors)
+        self.assertIn("`--x-related`", authors)
+
+    def test_recipe_exports_the_lane_only_after_posts_came_back(self):
+        self.assertIn("only when a lane returned posts", self.recipe)
+        self.assertIn("unset LAST30DAYS_X_HOST_LANE", self.recipe)
 
 
 class TestExtrasPassagesRescoped(unittest.TestCase):

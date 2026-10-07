@@ -883,6 +883,16 @@ class TestPipelineWiring:
         assert fetch.called
         assert "x_provenance" not in report.artifacts
 
+    def test_discovered_author_lanes_passed_as_related_keep_their_lanes(self, tmp_path):
+        envelope = _read(_write(tmp_path, _envelope([
+            _call("topic", posts=[_row(0, "alice", "ai agents review")]),
+            _call("from", handles=[RELATED], posts=[_row(1, RELATED, "ai agents in my stack")]),
+            _call("mention", handles=[RELATED], posts=[_row(2, "carol", f"@{RELATED} ai agents question")]),
+        ])), handles=(), related=(RELATED,))
+        assert envelope.lane_counts["from"] == 1
+        assert envelope.lane_counts["mention"] == 1
+        assert envelope.counters["lane-mismatch"] == 0
+
     def test_available_sources_lists_x_for_envelope_without_backend(self):
         with mock.patch("lib.env.x_backend_chain", return_value=[]), \
              mock.patch("lib.env.x_pending_browser_auth", return_value=False):
