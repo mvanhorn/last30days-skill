@@ -2806,9 +2806,15 @@ def run(
             # Jobs is exempt from per_stream_limit: a careers board is a complete
             # snapshot of open roles, and truncating it to the default 12 drops
             # strategic postings (the whole point of hiring-signals coverage).
+            # A host-fetched envelope serves every topic row to the first X
+            # stream, so that one stream carries what the backend's X streams
+            # together would have (per_stream_limit x the X fetch cap).
             if source != "jobs":
+                stream_limit = settings["per_stream_limit"]
+                if source == "x" and config.get("_x_envelope") is not None:
+                    stream_limit *= _source_fetch_cap("x", config) or 1
                 normalized = _apply_reddit_stream_keepers(
-                    source, normalized, settings["per_stream_limit"], topic
+                    source, normalized, stream_limit, topic
                 )
             bundle.add_items(subquery.label, source, normalized)
             if artifact:
