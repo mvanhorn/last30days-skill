@@ -23,6 +23,7 @@ from . import (
     schema,
     signals,
     skill_meta,
+    x_envelope,
 )
 
 
@@ -3310,14 +3311,6 @@ def _render_emoji_footer(report: schema.Report, save_path: str | None) -> list[s
     ]
 
 
-# Footer label per host-fetched X provenance (pipeline sets x_provenance from
-# the envelope's allowlisted provider).
-_X_PROVENANCE_LABELS = {
-    "connector": "via X connector",
-    "native": "via Grok Bot X",
-}
-
-
 def _render_stats(report: schema.Report) -> list[str]:
     lines = [
         "## Stats",
@@ -3362,9 +3355,10 @@ def _render_stats(report: schema.Report) -> list[str]:
         actor_summary = _top_actor_summary(source, items)
         if actor_summary:
             parts.append(actor_summary)
-        if source == "x" and report.artifacts.get("x_provenance") in _X_PROVENANCE_LABELS:
+        provenance = report.artifacts.get("x_provenance") if source == "x" else None
+        if provenance in x_envelope.PROVENANCE_LABELS:
             # Host-fetched lane (--x-posts): name the provenance in the footer.
-            parts.append(_X_PROVENANCE_LABELS[report.artifacts["x_provenance"]])
+            parts.append(f"via {x_envelope.PROVENANCE_LABELS[provenance]}")
         lines.append(f"- {_source_label(source)}: {' | '.join(parts)}")
     lines.append("")
     return lines

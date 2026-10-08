@@ -84,12 +84,14 @@ COUNTERS = (
 
 # Engine-authored fixed outcome details. The envelope's own error text
 # never becomes a detail string.
-DETAIL_CREDITS = "X connector reported no credits"
-DETAIL_NOT_CONNECTED = "X connector not connected"
-DETAIL_UNAVAILABLE = "X connector unavailable"
-DETAIL_ERROR = "X connector error"
-DETAIL_GENERATED = "X connector rows rejected (id sequence looks generated)"
-DETAIL_PARTIAL = "X connector returned partial results"
+_CONNECTOR_LABEL = "X connector"
+_NATIVE_LABEL = "Grok Bot X"
+DETAIL_CREDITS = f"{_CONNECTOR_LABEL} reported no credits"
+DETAIL_NOT_CONNECTED = f"{_CONNECTOR_LABEL} not connected"
+DETAIL_UNAVAILABLE = f"{_CONNECTOR_LABEL} unavailable"
+DETAIL_ERROR = f"{_CONNECTOR_LABEL} error"
+DETAIL_GENERATED = f"{_CONNECTOR_LABEL} rows rejected (id sequence looks generated)"
+DETAIL_PARTIAL = f"{_CONNECTOR_LABEL} returned partial results"
 DETAIL_NOT_PASSED = "connector result not passed"
 
 # The envelope's free-text ``provider`` reaches output only through this
@@ -98,8 +100,10 @@ DETAIL_NOT_PASSED = "connector result not passed"
 PROVIDER_NATIVE = "x-native"
 PROVENANCE_NATIVE = "native"
 PROVENANCE_CONNECTOR = "connector"
-_CONNECTOR_LABEL = "X connector"
-_NATIVE_LABEL = "Grok Bot X"
+PROVENANCE_LABELS = {
+    PROVENANCE_CONNECTOR: _CONNECTOR_LABEL,
+    PROVENANCE_NATIVE: _NATIVE_LABEL,
+}
 
 CATEGORY_CREDITS = "credits"
 CATEGORY_NOT_CONNECTED = "not-connected"
