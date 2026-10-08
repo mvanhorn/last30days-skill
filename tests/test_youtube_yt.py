@@ -1423,6 +1423,75 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
                 self.assertEqual(calls, 1)
                 self.assertEqual(report.source_status["youtube"].state, state)
 
+    def _run_keyless_search_report(self, responses, *, depth="default"):
+        from lib import pipeline
+
+        retrieve = pipeline._retrieve_stream
+
+        def retrieve_live_youtube(*args, **kwargs):
+            return retrieve(*args, **{**kwargs, "mock": False})
+
+        plan = {
+            "intent": "general", "freshness_mode": "balanced_recent",
+            "cluster_mode": "story",
+            "subqueries": [{
+                "label": "primary", "search_query": "Vuori",
+                "ranking_query": "Vuori", "sources": ["youtube"],
+            }],
+            "source_weights": {"youtube": 1.0},
+        }
+        with mock.patch.object(pipeline, "which", return_value="/usr/bin/yt-dlp"), \
+             mock.patch.object(pipeline, "_retrieve_stream", side_effect=retrieve_live_youtube), \
+             mock.patch.object(youtube_yt, "search_and_transcribe", side_effect=responses) as search, \
+             mock.patch.object(youtube_yt, "search_youtube_sc") as sc_search:
+            report = pipeline.run(
+                topic="Vuori", config={}, depth=depth,
+                requested_sources=["youtube"], mock=True,
+                external_plan=plan, as_of_date="2026-07-01",
+            )
+        return report, search.call_count, sc_search.call_count
+
+    def test_keyless_transient_search_failure_recovers_on_thin_retry(self):
+        from lib import health
+
+        recent = {
+            "id": "recent", "title": "Vuori review", "date": "2026-06-15",
+            "url": "https://www.youtube.com/watch?v=recent",
+        }
+        report, calls, sc_calls = self._run_keyless_search_report([
+            {"items": [], "error": "yt-dlp search failed: connection reset"},
+            {"items": [recent]},
+        ])
+
+        self.assertEqual((calls, sc_calls), (2, 0))
+        self.assertEqual(report.source_status["youtube"].state, health.OK)
+        self.assertEqual([item.item_id for item in report.items_by_source["youtube"]], ["recent"])
+
+    def test_keyless_transient_search_failure_survives_failed_thin_retry(self):
+        from lib import health
+
+        failure = {"items": [], "error": "yt-dlp search failed: connection reset"}
+        report, calls, sc_calls = self._run_keyless_search_report([failure, failure])
+
+        self.assertEqual((calls, sc_calls), (2, 0))
+        self.assertEqual(report.source_status["youtube"].state, health.UNREACHABLE)
+        self.assertIn("connection reset", report.source_status["youtube"].detail)
+
+    def test_keyless_auth_and_rate_limit_failures_skip_thin_retry(self):
+        from lib import health
+
+        for error, state in (
+            ("yt-dlp search failed: Sign in to confirm you're not a bot", health.RATE_LIMITED),
+            ("yt-dlp search failed: login required", health.AUTH_FAILED),
+        ):
+            with self.subTest(state=state):
+                report, calls, sc_calls = self._run_keyless_search_report([
+                    {"items": [], "error": error},
+                    {"items": [{"id": "recent", "title": "Vuori review", "date": "2026-06-15"}]},
+                ])
+                self.assertEqual((calls, sc_calls), (1, 0))
+                self.assertEqual(report.source_status["youtube"].state, state)
+
     def test_search_zero_exit_with_no_output_is_clean_empty(self):
         with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
              mock.patch.object(

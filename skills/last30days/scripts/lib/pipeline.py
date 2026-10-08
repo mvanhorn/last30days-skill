@@ -2594,12 +2594,19 @@ def run(
             if isinstance(artifact, dict) and artifact.get("_source_outcome"):
                 artifact = dict(artifact)
                 outcome_note = artifact.pop("_source_outcome")
-                bundle.record_failure(
-                    source,
-                    outcome_note["state"],
-                    outcome_note["detail"],
-                    attempted=outcome_note.get("attempted", True),
-                )
+                if (
+                    source == "youtube"
+                    and not raw_items
+                    and _retryable_youtube_outcome(outcome_note)
+                ):
+                    deferred_retryable_failures.setdefault(source, outcome_note)
+                else:
+                    bundle.record_failure(
+                        source,
+                        outcome_note["state"],
+                        outcome_note["detail"],
+                        attempted=outcome_note.get("attempted", True),
+                    )
             if isinstance(artifact, dict) and artifact.get("_source_outcome_detail"):
                 artifact = dict(artifact)
                 lane_state = artifact.pop("_source_outcome_detail_state", None)
@@ -2631,10 +2638,7 @@ def run(
                 artifact = dict(artifact)
                 deferred_outcome = artifact.pop("_source_outcome_if_empty")
                 if not normalized:
-                    retryable = deferred_outcome["state"] in (health.TIMEOUT, health.UNREACHABLE)
-                    if deferred_outcome["state"] == health.ERROR:
-                        retryable = _is_transient_error(SourceRunError(deferred_outcome["detail"]))
-                    if retryable:
+                    if _retryable_youtube_outcome(deferred_outcome):
                         deferred_retryable_failures.setdefault(source, deferred_outcome)
                     else:
                         bundle.record_failure(
@@ -3805,6 +3809,15 @@ def _is_transient_error(exc: Exception) -> bool:
         return True
     msg = str(exc)
     return any(code in msg for code in ("500", "502", "503", "504"))
+
+
+def _retryable_youtube_outcome(outcome: dict[str, Any]) -> bool:
+    state = outcome.get("state")
+    if state in (health.TIMEOUT, health.UNREACHABLE):
+        return True
+    return state == health.ERROR and _is_transient_error(
+        SourceRunError(str(outcome.get("detail") or ""))
+    )
 
 
 def _topic_handle_mentions(topic: str) -> set[str]:
