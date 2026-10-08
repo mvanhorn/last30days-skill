@@ -53,6 +53,37 @@ def test_cleartext_or_schemeless_remote_override_is_refused(value, monkeypatch, 
     assert "cleartext" in err
 
 
+def test_rejected_override_does_not_print_embedded_credentials(monkeypatch, capsys):
+    secret = "dummy-secret-do-not-log"
+    monkeypatch.setenv(
+        "OPENAI_BASE_URL",
+        f"http://{secret}@gateway.example/path/{secret}?token={secret}",
+    )
+
+    assert providers.base_url_override("OPENAI_BASE_URL", providers.OPENAI_RESPONSES_URL) == (
+        providers.OPENAI_RESPONSES_URL
+    )
+    warning = capsys.readouterr().err
+    assert "OPENAI_BASE_URL" in warning
+    assert "cleartext" in warning
+    assert secret not in warning
+
+
+def test_rejected_override_is_not_reported_as_active(monkeypatch):
+    secret = "dummy-secret-do-not-report"
+    rejected = f"http://gateway.example/v1?token={secret}"
+    monkeypatch.setenv("OPENROUTER_BASE_URL", rejected)
+    preflight = permission_preflight.build(
+        {"OPENROUTER_BASE_URL": rejected},
+        {"ignored_endpoint_overrides": [], "safe": True},
+    )
+
+    assert preflight["network"]["endpoint_overrides"] == []
+    assert preflight["network"]["ignored_endpoint_overrides"] == ["OPENROUTER_BASE_URL"]
+    assert preflight["status"] == "action_needed"
+    assert secret not in str(preflight)
+
+
 @pytest.mark.parametrize(
     "value",
     [

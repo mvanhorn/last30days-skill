@@ -8,7 +8,7 @@ import os
 import re
 import sys
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
 
 from . import env, http, schema
 
@@ -26,6 +26,7 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # constant is suffix-free. If GEMINI_FLASH_LITE moves to a non-preview stable ID,
 # double-check that OpenRouter's slug still maps to the same upstream model.
 OPENROUTER_DEFAULT = "google/gemini-3.1-flash-lite-preview"
+PROVIDER_BASE_URL_KEYS = frozenset({"OPENAI_BASE_URL", "XAI_BASE_URL", "OPENROUTER_BASE_URL"})
 
 
 def _is_loopback(host: str) -> bool:
@@ -36,6 +37,17 @@ def _is_loopback(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def allowed_base_url_override(value: str) -> bool:
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname
+    except ValueError:
+        return False
+    return bool(host) and (
+        parts.scheme == "https" or (parts.scheme == "http" and _is_loopback(host))
+    )
 
 
 def base_url_override(key: str, default: str) -> str:
@@ -57,13 +69,10 @@ def base_url_override(key: str, default: str) -> str:
     raw = (os.environ.get(key) or "").strip()
     if not raw:
         return default
-    parts = urlsplit(raw)
-    if parts.scheme == "https":
-        return raw
-    if parts.scheme == "http" and _is_loopback(parts.hostname or ""):
+    if allowed_base_url_override(raw):
         return raw
     sys.stderr.write(
-        f"[last30days] WARNING: ignoring {key}={raw!r} - a provider endpoint override "
+        f"[last30days] WARNING: ignoring {key} - a provider endpoint override "
         "must be https:// (http:// is allowed only on localhost), otherwise the API "
         f"key would be sent in cleartext. Using {default} instead.\n"
     )
@@ -86,17 +95,19 @@ def resolve_endpoint(env_var: str, default_url: str) -> str:
     path. This module historically required the full endpoint URL instead, so a
     value copied from a provider's setup guide POSTed to the API root and failed.
 
-    Accept both forms: an API root gets the endpoint path appended, and a value
-    that already ends with the endpoint path is used unchanged.
+    Accept both forms: a host or versioned API root gets the endpoint path
+    appended, and a complete gateway route is used unchanged. Query strings
+    stay after the path in either form.
     """
     override = base_url_override(env_var, default_url)
     if override == default_url:
         return default_url
-    override = override.rstrip("/")
-    path = _ENDPOINT_PATHS[default_url]
-    if override.endswith(path):
-        return override
-    return override + path
+    parts = urlsplit(override)
+    root_path = parts.path.rstrip("/")
+    last_segment = root_path.rsplit("/", 1)[-1]
+    if not root_path or re.fullmatch(r"v\d+(?:beta\d*)?", last_segment):
+        return urlunsplit(parts._replace(path=root_path + _ENDPOINT_PATHS[default_url]))
+    return override
 
 
 class ReasoningClient:
