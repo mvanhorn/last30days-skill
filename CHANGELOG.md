@@ -9,6 +9,13 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.27.1] - 2026-10-08
+
+### Fixed
+
+- On Grok Bot, the month's most-engaged on-topic X posts now reach the report: a host-fetched X stream holds half its slots for its most-engaged posts that name the topic, so the popular pass's big posts no longer lose to fresher low-engagement ones, and off-topic viral posts never take those slots. The footer's X line now names its source ("via Grok Bot X" or "via X connector"), and the Grok Bot X recipe gives discovered authors only topic-word lanes and uses the engine's UTC date for the window.
+
+
 ## [3.27.0] - 2026-10-08
 
 ### Security
