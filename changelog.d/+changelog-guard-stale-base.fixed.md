@@ -1,1 +1,0 @@
-The changelog guard now compares files and lockstep versions from the same merge base resolved at job time. This avoids attributing base-branch releases to a pull request when its event contains an older base SHA or its branch has not yet incorporated the latest release.

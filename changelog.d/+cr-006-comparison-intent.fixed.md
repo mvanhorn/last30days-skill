@@ -1,1 +1,0 @@
-Keep slash-containing research topics such as `CI/CD`, repository names, and URLs intact instead of launching unintended competitor comparisons. Preserve supported comparison forms, including `React/Vue/Svelte`, and slashes inside explicitly compared entities.

@@ -1,1 +1,0 @@
-Preserve job-board roles through author diversity filtering and calculate hiring signals from the complete accepted board, so ranking and display limits do not hide strategic roles or understate company size.
