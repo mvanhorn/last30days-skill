@@ -213,6 +213,161 @@ class SerperRelativeDateTests(unittest.TestCase):
                 self.assertIsNone(grounding._parse_serper_date(raw, self.NOON))
 
 
+class LoootSearchTests(unittest.TestCase):
+    WINDOW = ("2026-03-26", "2026-03-27")
+    NOON = datetime(2026, 3, 27, 12, 0)
+    SERPER_BODY = {
+        "organic": [
+            {"title": "Fresh", "link": "https://example.com/fresh",
+             "snippet": "Two hours old", "position": 1, "date": "2 hours ago"},
+            {"title": "Absolute", "link": "https://example.com/abs",
+             "snippet": "Dated", "position": 2, "date": "Mar 26, 2026"},
+            {"title": "Stale", "link": "https://example.com/stale",
+             "snippet": "Too old", "position": 3, "date": "Jan 15, 2026"},
+            {"title": "Undated", "link": "https://example.com/none",
+             "snippet": "No date", "position": 4},
+        ]
+    }
+
+    @staticmethod
+    def _run(status, **extra):
+        return {"runId": "run_123", "status": status, **extra}
+
+    def _search(self, responses, token="looot-test-token"):
+        with patch("lib.grounding.http.request", side_effect=responses) as request, \
+             patch("lib.grounding.time.sleep") as sleep, \
+             patch("lib.grounding._now", return_value=self.NOON):
+            items, artifact = grounding.looot_search("test", self.WINDOW, token)
+        return items, artifact, request, sleep
+
+    def test_posts_serper_input_to_the_runs_endpoint(self):
+        _, _, request, _ = self._search(
+            [self._run("completed", result=self.SERPER_BODY)]
+        )
+        request.assert_called_once()
+        args, kwargs = request.call_args
+        self.assertEqual(("POST", "https://api.looot.ai/v1/runs?wait=30"), args)
+        self.assertEqual("Bearer looot-test-token", kwargs["headers"]["Authorization"])
+        body = kwargs["json_data"]
+        self.assertEqual("serper-search", body["endpointId"])
+        self.assertEqual(
+            {"q": "test", "num": 5, "tbs": "cdr:1,cd_min:03/26/2026,cd_max:03/27/2026"},
+            body["input"],
+        )
+        self.assertTrue(body["idempotencyKey"])
+
+    def test_idempotency_key_differs_per_search(self):
+        keys = []
+        for _ in range(2):
+            _, _, request, _ = self._search(
+                [self._run("completed", result=self.SERPER_BODY)]
+            )
+            keys.append(request.call_args.kwargs["json_data"]["idempotencyKey"])
+        self.assertNotEqual(keys[0], keys[1])
+
+    def test_completed_run_maps_through_the_serper_parser(self):
+        items, artifact, _, sleep = self._search(
+            [self._run("completed", result=self.SERPER_BODY)]
+        )
+        self.assertEqual(["Fresh", "Absolute"], [i["title"] for i in items])
+        self.assertEqual(["2026-03-27", "2026-03-26"], [i["date"] for i in items])
+        self.assertEqual("https://example.com/fresh", items[0]["url"])
+        self.assertEqual("example.com", items[0]["source_domain"])
+        self.assertEqual("looot", artifact["label"])
+        self.assertEqual(2, artifact["resultCount"])
+        sleep.assert_not_called()
+
+    def test_polls_until_the_run_is_terminal(self):
+        items, _, request, sleep = self._search([
+            self._run("running"),
+            self._run("running"),
+            self._run("completed", result=self.SERPER_BODY),
+        ])
+        self.assertEqual(2, len(items))
+        self.assertEqual(3, request.call_count)
+        poll = request.call_args_list[1]
+        self.assertEqual(("GET", "https://api.looot.ai/v1/runs/run_123"), poll.args)
+        self.assertEqual("Bearer looot-test-token", poll.kwargs["headers"]["Authorization"])
+        self.assertEqual(2, sleep.call_count)
+
+    def test_first_response_already_terminal_does_not_poll(self):
+        _, _, request, _ = self._search([self._run("completed", result={"organic": []})])
+        self.assertEqual(1, request.call_count)
+
+    def test_failed_blocked_and_stopped_runs_raise(self):
+        for status in ("failed", "blocked", "stopped"):
+            with self.subTest(status=status):
+                response = self._run(
+                    status, error={"code": "provider_error", "message": "upstream said no"}
+                )
+                with self.assertRaises(RuntimeError) as ctx:
+                    self._search([response])
+                self.assertIn(status, str(ctx.exception))
+                self.assertIn("upstream said no", str(ctx.exception))
+
+    def test_failure_found_while_polling_raises(self):
+        with self.assertRaises(RuntimeError):
+            self._search([self._run("queued"), self._run("failed", error={"code": "x", "message": "m"})])
+
+    def test_polling_gives_up_at_the_deadline(self):
+        clock = iter([0.0, 0.0, 10.0, 20.0, 31.0, 31.0, 31.0])
+        with patch("lib.grounding.http.request", return_value=self._run("running")) as request, \
+             patch("lib.grounding.time.sleep"), \
+             patch("lib.grounding.time.monotonic", side_effect=lambda: next(clock)):
+            with self.assertRaises(RuntimeError) as ctx:
+                grounding.looot_search("test", self.WINDOW, "looot-test-token")
+        self.assertIn("run_123", str(ctx.exception))
+        self.assertLess(request.call_count, 6)
+
+    def test_completed_run_without_a_result_object_raises(self):
+        with self.assertRaises(RuntimeError):
+            self._search([self._run("completed", result="not a dict")])
+
+    def test_empty_organic_list_is_a_normal_empty_result(self):
+        items, artifact, _, _ = self._search([self._run("completed", result={"organic": []})])
+        self.assertEqual([], items)
+        self.assertEqual(0, artifact["resultCount"])
+
+    def test_serper_output_is_unchanged_by_the_shared_parser(self):
+        with patch("lib.grounding.http.request", return_value=self.SERPER_BODY), \
+             patch("lib.grounding._now", return_value=self.NOON):
+            items, artifact = grounding.serper_search("test", self.WINDOW, "fake-key")
+        self.assertEqual("WS1", items[0]["id"])
+        self.assertEqual("Serper web search", items[0]["why_relevant"])
+        self.assertEqual("serper", artifact["label"])
+
+
+class LoootDispatchTests(unittest.TestCase):
+    RANGE = ("2026-02-25", "2026-03-27")
+
+    def test_explicit_looot_backend_uses_the_token(self):
+        with patch("lib.grounding.looot_search", return_value=([], {"label": "looot"})) as search:
+            grounding.web_search("test", self.RANGE, {"LOOOT_TOKEN": "tok"}, backend="looot")
+        search.assert_called_once_with("test", self.RANGE, "tok")
+
+    def test_explicit_looot_backend_requires_the_token(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            grounding.web_search("test", self.RANGE, {}, backend="looot")
+        self.assertIn("LOOOT_TOKEN", str(ctx.exception))
+
+    def test_auto_never_picks_looot(self):
+        config = {"LOOOT_TOKEN": "tok", "PARALLEL_API_KEY": "pk"}
+        with patch("lib.grounding.looot_search") as looot, \
+             patch("lib.grounding.parallel_search", return_value=([], {})) as parallel:
+            grounding.web_search("test", self.RANGE, config, backend="auto")
+        looot.assert_not_called()
+        parallel.assert_called_once()
+
+    def test_auto_with_only_a_looot_token_runs_nothing_paid(self):
+        with patch("lib.grounding.looot_search") as looot, \
+             patch("lib.grounding.web_search_keyless.keyless_search", return_value=([], {})):
+            grounding.web_search(
+                "test", self.RANGE,
+                {"LOOOT_TOKEN": "tok", "LAST30DAYS_NATIVE_SEARCH": "1"}, backend="auto",
+            )
+        looot.assert_not_called()
+
+
 class ExaSearchTests(unittest.TestCase):
     def test_exa_search_filters_to_in_range_dated_items(self):
         mock_response = {

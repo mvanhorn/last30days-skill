@@ -124,6 +124,29 @@ class PipelineV3Tests(unittest.TestCase):
         # At least one per-subquery line.
         self.assertIn("[Planner]   sq1 label=", output)
 
+    def test_looot_web_backend_enables_grounding_without_other_keys(self):
+        body = {"organic": [{
+            "title": "Test topic update", "link": "https://example.com/update",
+            "snippet": "New evidence", "date": "Aug 1, 2026",
+        }]}
+        with patch("lib.grounding.looot_search", return_value=(
+            [{"id": "WL1", "title": "Test topic update", "url": "https://example.com/update",
+              "source_domain": "example.com", "snippet": body["organic"][0]["snippet"],
+              "date": "2026-08-01", "relevance": 0.8, "why_relevant": "looot web search"}],
+            {"label": "looot", "webSearchQueries": ["test topic"], "resultCount": 1},
+        )):
+            report = pipeline.run(
+                topic="test topic",
+                config={"LAST30DAYS_REASONING_PROVIDER": "auto",
+                        "LAST30DAYS_NATIVE_SEARCH": "1", "LOOOT_TOKEN": "tok"},
+                depth="quick",
+                requested_sources=["grounding"],
+                web_backend="looot",
+                as_of_date="2026-08-26",
+            )
+        self.assertNotIn("grounding", report.errors_by_source)
+        self.assertEqual(1, len(report.items_by_source["grounding"]))
+
     def test_parallel_web_backend_enables_grounding_source(self):
         plan = {
             "intent": "news",
