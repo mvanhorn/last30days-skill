@@ -59,6 +59,49 @@ def test_repeated_research_reads_explicitly_consented_browser(browser_session, s
     assert auth_token not in env_path.read_text()
 
 
+def test_law7_rejection_skips_consented_browser_probe(browser_session, monkeypatch):
+    env_path, cdp, native, _ = browser_session
+    env_path.write_text(
+        "BROWSER_CONSENT=true\n"
+        "AGENTCOOKIE=off\n"
+        "BROWSER_CDP_URL=ws://127.0.0.1:18800/devtools/page/test\n"
+    )
+    cdp.return_value = []
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
+    monkeypatch.setattr(sys, "argv", [
+        "last30days.py", "best", "espresso", "grinders", "--search=reddit",
+    ])
+
+    assert cli.main() == cli.LAW7_HOST_PLAN_EXIT
+    cdp.assert_not_called()
+    native.assert_not_called()
+
+
+def test_law7_auto_resolve_keeps_consented_browser_probe(browser_session, monkeypatch):
+    env_path, cdp, _, _ = browser_session
+    env_path.write_text(
+        "BROWSER_CONSENT=true\n"
+        "AGENTCOOKIE=off\n"
+        "BROWSER_CDP_URL=ws://127.0.0.1:18800/devtools/page/test\n"
+    )
+    cdp.return_value = []
+    monkeypatch.setenv("CLAUDECODE", "1")
+    monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
+    monkeypatch.setattr(sys, "argv", [
+        "last30days.py", "best", "espresso", "grinders",
+        "--search=reddit", "--auto-resolve",
+    ])
+
+    class DiagnoseReached(Exception):
+        pass
+
+    with mock.patch.object(cli.pipeline, "diagnose", side_effect=DiagnoseReached):
+        with pytest.raises(DiagnoseReached):
+            cli.main()
+    cdp.assert_called_once_with("ws://127.0.0.1:18800/devtools/page/test")
+
+
 def test_from_browser_off_overrides_recorded_consent(browser_session):
     env_path, cdp, native, _ = browser_session
     env_path.write_text("BROWSER_CONSENT=true\nFROM_BROWSER=off\n")

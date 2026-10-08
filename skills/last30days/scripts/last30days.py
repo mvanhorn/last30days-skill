@@ -2770,25 +2770,22 @@ def _law7_host_plan_message(signal: str) -> str:
     )
 
 
-def _law7_host_plan_gate(args: argparse.Namespace, topic: str) -> int | None:
-    """Stop an agent-hosted research run that skipped its own plan (LAW 7).
-
-    Returns an exit code when the run must stop before retrieval, else None.
-    Only reached on the normal topic-research path: doctor, setup,
-    --diagnose, --preflight, library/queue commands, discovery legs, drill,
-    cached freshness, the hosted API path, and HTML re-renders served from
-    the report cache all return before it. Exempt here, because SKILL.md
-    lets them run without a query plan: --mock, --hiring-signals,
-    --auto-resolve (the documented no-web-search path), and comparison runs
-    (vs topics and --competitors*; peers never take a query plan).
-    """
+def _law7_host_plan_signal(args: argparse.Namespace, topic: str) -> str:
+    """Identify a blocked agent run before configuration probes run."""
+    if not topic:
+        return ""
     if args.plan or args.mock or args.hiring_signals or args.auto_resolve:
-        return None
+        return ""
     if _comparison_requested(args, topic):
-        return None
+        return ""
     if env.engine_plan_allowed():
-        return None
-    signal = env.agent_host_signal()
+        return ""
+    return env.agent_host_signal()
+
+
+def _law7_host_plan_gate(args: argparse.Namespace, topic: str) -> int | None:
+    """Stop a plan-less agent research run after dispatch and cache exemptions."""
+    signal = _law7_host_plan_signal(args, topic)
     if not signal:
         return None
     sys.stderr.write(_law7_host_plan_message(signal))
@@ -2938,6 +2935,9 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
         browser_mode = "plan_only"
     elif normalized_topic == "setup":
         browser_mode = "read" if _setup_allows_browser_cookies(args, extra_argv) else "off"
+    elif _law7_host_plan_signal(args, topic):
+        # Hosted and cached paths need config before dispatch, but no browser read.
+        browser_mode = "plan_only"
     else:
         browser_mode = "read"
     return env.ConfigLoadPolicy(
