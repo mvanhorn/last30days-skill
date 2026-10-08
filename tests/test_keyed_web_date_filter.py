@@ -73,6 +73,27 @@ def test_parallel_historical_window_drops_undated_result():
     assert artifact["resultCount"] == 0
 
 
+def test_parallel_undated_result_survives_utc_midnight_between_stages():
+    today = datetime.now(timezone.utc).date()
+    date_range = (
+        (today - timedelta(days=8)).isoformat(),
+        (today - timedelta(days=1)).isoformat(),
+    )
+    payload = {"results": [{
+        "title": "Undated", "url": "https://example.com/parallel",
+    }]}
+    with patch("lib.grounding.http.request", return_value=payload), \
+         patch("lib.grounding.datetime") as retrieval_clock:
+        retrieval_clock.now.return_value = datetime.fromisoformat(
+            f"{date_range[1]}T23:59:00+00:00"
+        )
+        raw, _ = grounding.parallel_search("test", date_range, "fake-key")
+    normalized = normalize.normalize_source_items("grounding", raw, *date_range)
+    assert len(normalized) == 1
+    assert normalized[0].published_at is None
+    assert normalized[0].date_confidence == "low"
+
+
 def _titles(items):
     return [item["title"] for item in items]
 

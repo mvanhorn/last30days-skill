@@ -210,7 +210,9 @@ def parallel_search(
             "date": pub_date,
             "relevance": 0.8,
             "why_relevant": "Parallel AI web search",
-            "metadata": {"date_window_basis": "server_start"},
+            "metadata": {
+                "date_window_basis": "server_start_current" if current_window else "server_start"
+            },
         })
     artifact = {"label": "parallel", "webSearchQueries": [query], "resultCount": len(items)}
     return items, artifact

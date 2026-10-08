@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -23,10 +22,7 @@ def filter_by_date_range(
             if (
                 not require_date
                 or basis == "server_bounds"
-                or (
-                    basis == "server_start"
-                    and to_date >= datetime.now(timezone.utc).date().isoformat()
-                )
+                or basis == "server_start_current"
             ):
                 filtered.append(item)
             continue
