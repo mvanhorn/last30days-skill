@@ -1152,6 +1152,7 @@ class TestScTranscriptParsing(unittest.TestCase):
             len({c.kwargs["deadline_monotonic"] for c in get_mock.call_args_list}), 1,
         )
         self.assertTrue(all(c.kwargs["max_429_retries"] == 0 for c in get_mock.call_args_list))
+        self.assertTrue(all(c.kwargs["owned_get"] for c in get_mock.call_args_list))
 
     def test_custom_language_list_deduplicates_and_stops_after_three_requests(self):
         with mock.patch.dict(

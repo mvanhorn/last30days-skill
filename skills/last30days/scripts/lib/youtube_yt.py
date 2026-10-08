@@ -1747,6 +1747,7 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
                     retries=1,
                     max_429_retries=0,
                     deadline_monotonic=deadline,
+                    owned_get=True,
                 )
         except Exception as exc:
             _log(f"SC transcript error for {video_id} ({language}): {exc}")
