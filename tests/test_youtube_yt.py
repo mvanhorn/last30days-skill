@@ -1191,7 +1191,100 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
                 mock=False,
             )
         self.assertEqual(items, [video])
-        self.assertEqual(artifact, {})
+        self.assertNotIn("_source_outcome", artifact)
+        self.assertEqual(
+            artifact["_source_outcome_if_empty"]["state"],
+            youtube_yt.health.RATE_LIMITED,
+        )
+
+    def _run_sc_fallback_report(self, video, *, initial_empty=False, depth="quick"):
+        from lib import pipeline
+
+        retrieve = pipeline._retrieve_stream
+        calls = 0
+
+        def retrieve_live_youtube(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            if initial_empty and calls == 1:
+                return [], {}
+            return retrieve(*args, **{**kwargs, "mock": False})
+
+        plan = {
+            "intent": "general",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "story",
+            "subqueries": [{
+                "label": "primary",
+                "search_query": "Vuori",
+                "ranking_query": "Vuori",
+                "sources": ["youtube"],
+            }],
+            "source_weights": {"youtube": 1.0},
+        }
+        with mock.patch.object(pipeline, "which", return_value="/usr/bin/yt-dlp"), \
+             mock.patch.object(pipeline, "_retrieve_stream", side_effect=retrieve_live_youtube), \
+             mock.patch.object(
+                 youtube_yt, "search_and_transcribe",
+                 return_value={"items": [], "error": "yt-dlp search failed: Sign in to confirm you're not a bot"},
+             ), \
+             mock.patch.object(youtube_yt, "search_youtube_sc", return_value={"items": [video]}), \
+             mock.patch.object(pipeline.env, "is_youtube_comments_available", return_value=False):
+            return pipeline.run(
+                topic="Vuori",
+                config={"SCRAPECREATORS_API_KEY": "k"},
+                depth=depth,
+                requested_sources=["youtube"],
+                mock=True,
+                external_plan=plan,
+                as_of_date="2026-07-01",
+            )
+
+    def test_sc_fallback_without_usable_video_preserves_search_failure_in_coverage(self):
+        from lib import render, schema
+
+        report = self._run_sc_fallback_report({
+            "id": "abc123",
+            "title": "Vuori review",
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "date": "2026-05-01",
+            "transcript_snippet": "",
+        })
+
+        self.assertEqual(report.items_by_source.get("youtube"), [])
+        self.assertEqual(report.source_status["youtube"].state, schema.RATE_LIMITED)
+        self.assertIn("not a bot", report.source_status["youtube"].detail)
+        self.assertIn("rate-limited", "\n".join(render._render_source_coverage(report)))
+
+    def test_sc_fallback_with_usable_video_reports_recovered_coverage(self):
+        from lib import health, render
+
+        report = self._run_sc_fallback_report({
+            "id": "abc123",
+            "title": "Vuori review",
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "date": "2026-06-15",
+            "transcript_snippet": "",
+        })
+
+        self.assertEqual(report.source_status["youtube"].state, health.OK)
+        self.assertEqual(len(report.items_by_source["youtube"]), 1)
+        self.assertEqual("\n".join(render._render_source_coverage(report)),
+                         "## Source Coverage\n\n- YouTube: 1 item")
+
+    def test_sc_fallback_retry_without_usable_video_preserves_search_failure(self):
+        from lib import schema
+
+        report = self._run_sc_fallback_report({
+            "id": "abc123",
+            "title": "Vuori review",
+            "url": "https://www.youtube.com/watch?v=abc123",
+            "date": "2026-05-01",
+            "transcript_snippet": "",
+        }, initial_empty=True, depth="default")
+
+        self.assertEqual(report.source_status["youtube"].state, schema.RATE_LIMITED)
+        self.assertIn("not a bot", report.source_status["youtube"].detail)
 
     def test_search_zero_exit_with_no_output_is_clean_empty(self):
         with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \

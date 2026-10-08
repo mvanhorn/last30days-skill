@@ -2626,6 +2626,16 @@ def run(
                 normalized = _apply_reddit_stream_keepers(
                     source, normalized, settings["per_stream_limit"], topic
                 )
+            if isinstance(artifact, dict) and artifact.get("_source_outcome_if_empty"):
+                artifact = dict(artifact)
+                deferred_outcome = artifact.pop("_source_outcome_if_empty")
+                if not normalized:
+                    bundle.record_failure(
+                        source,
+                        deferred_outcome["state"],
+                        deferred_outcome["detail"],
+                        attempted=deferred_outcome.get("attempted", True),
+                    )
             bundle.add_items(subquery.label, source, normalized)
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
@@ -4394,6 +4404,8 @@ def _retry_thin_sources(
         normalized = _apply_reddit_stream_keepers(
             source, normalized, settings["per_stream_limit"], topic
         )
+        if not normalized and isinstance(artifact, dict):
+            outcome_note = outcome_note or artifact.get("_source_outcome_if_empty")
         return source, normalized, outcome_note, (detail_note, detail_state)
 
     retryable = [s for s in thin_sources if s not in rate_limited_sources]
@@ -5105,6 +5117,7 @@ def _retrieve_stream_impl(
         yt_query = raw_topic or subquery.search_query
         result = None
         youtube_failure: str | None = None
+        recovered_failure: str | None = None
         # ScrapeCreators key (when present) is the default-on backup tier: it
         # powers the per-video transcript fallback, the SC search fallback, and
         # comment enrichment. None when no key, which keeps everything keyless.
@@ -5131,7 +5144,8 @@ def _retrieve_stream_impl(
                 )
                 if result.get("error"):
                     youtube_failure = str(result["error"])
-                elif result.get("items"):
+                elif result.get("items") and youtube_failure:
+                    recovered_failure = youtube_failure
                     youtube_failure = None
             except Exception as exc:
                 youtube_failure = str(exc)
@@ -5148,6 +5162,14 @@ def _retrieve_stream_impl(
             state = youtube_yt.classify_run_failure(youtube_failure)
             attempted = state != schema.SKIPPED_UNCONFIGURED
             return items, _outcome_artifact(state, youtube_failure, attempted=attempted)
+        if recovered_failure:
+            state = youtube_yt.classify_run_failure(recovered_failure)
+            attempted = state != schema.SKIPPED_UNCONFIGURED
+            return items, {
+                "_source_outcome_if_empty": _outcome_artifact(
+                    state, recovered_failure, attempted=attempted,
+                )["_source_outcome"]
+            }
         return items, {}
     if source == "tiktok":
         # Use raw_topic so expand_tiktok_queries() generates diverse variants
