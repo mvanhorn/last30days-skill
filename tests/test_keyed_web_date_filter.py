@@ -1,16 +1,76 @@
-"""Keyed web backends must not drop undated organic results (issue #928).
+"""Keyed web results with unknown dates keep their date uncertainty (#928).
 
-Brave freshness, Exa published-date bounds, and Serper ``tbs=cdr`` already
-constrain the query server-side. Organic results often omit a parseable
-date; treating that as out-of-range emptied the backend. Only a known date
-outside the window is dropped.
+Brave, Exa, and Serper bound both ends at the provider. Parallel bounds the
+start date and retains undated results only for current-window searches.
 """
 
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from lib import grounding
+import pytest
+
+from lib import grounding, normalize, render
 
 DATE_RANGE = ("2026-02-25", "2026-03-27")
+TODAY = datetime.now(timezone.utc).date()
+LIVE_DATE_RANGE = ((TODAY - timedelta(days=30)).isoformat(), TODAY.isoformat())
+
+
+@pytest.mark.parametrize(
+    ("search", "payload"),
+    [
+        (grounding.brave_search, {"web": {"results": [
+            {"title": "Undated", "url": "https://example.com/brave"},
+        ]}}),
+        (grounding.exa_search, {"results": [
+            {"title": "Undated", "url": "https://example.com/exa"},
+        ]}),
+        (grounding.serper_search, {"organic": [
+            {"title": "Undated", "link": "https://example.com/serper"},
+        ]}),
+    ],
+)
+def test_server_bounded_undated_result_survives_normalization(search, payload):
+    with patch("lib.grounding.http.request", return_value=payload):
+        raw, _ = search("test", DATE_RANGE, "fake-key")
+    normalized = normalize.normalize_source_items("grounding", raw, *DATE_RANGE)
+    assert len(normalized) == 1
+    assert normalized[0].published_at is None
+    assert normalized[0].date_confidence == "low"
+    assert render._format_date(normalized[0]) == "date unknown [date:low]"
+
+
+def test_parallel_undated_result_survives_only_for_current_window():
+    today = datetime.now(timezone.utc).date()
+    date_range = ((today - timedelta(days=30)).isoformat(), today.isoformat())
+    payload = {"results": [{
+        "title": "Undated", "url": "https://example.com/parallel",
+    }]}
+    with patch("lib.grounding.http.request", return_value=payload) as request:
+        raw, _ = grounding.parallel_search("test", date_range, "fake-key")
+    assert request.call_args.kwargs["json_data"]["advanced_settings"]["source_policy"] == {
+        "after_date": date_range[0]
+    }
+    normalized = normalize.normalize_source_items("grounding", raw, *date_range)
+    assert len(normalized) == 1
+    assert normalized[0].published_at is None
+    assert normalized[0].date_confidence == "low"
+    assert render._format_date(normalized[0]) == "date unknown [date:low]"
+
+
+def test_parallel_historical_window_drops_undated_result():
+    today = datetime.now(timezone.utc).date()
+    date_range = (
+        (today - timedelta(days=60)).isoformat(),
+        (today - timedelta(days=30)).isoformat(),
+    )
+    payload = {"results": [{
+        "title": "Undated", "url": "https://example.com/parallel",
+    }]}
+    with patch("lib.grounding.http.request", return_value=payload):
+        raw, artifact = grounding.parallel_search("test", date_range, "fake-key")
+    assert raw == []
+    assert artifact["resultCount"] == 0
 
 
 def _titles(items):
@@ -192,7 +252,7 @@ class TestParallelKeepsUndatedResults:
         }
         with patch("lib.grounding.http.request", return_value=payload):
             items, artifact = grounding.parallel_search(
-                "OpenAI", DATE_RANGE, "fake-key", count=5
+                "OpenAI", LIVE_DATE_RANGE, "fake-key", count=5
             )
         assert _titles(items) == ["U"]
         assert artifact["resultCount"] == 1
@@ -205,7 +265,7 @@ class TestParallelKeepsUndatedResults:
                     "title": "In range",
                     "url": "https://example.com/parallel",
                     "excerpts": ["ok"],
-                    "publish_date": "2026-03-15T00:00:00Z",
+                    "publish_date": f"{LIVE_DATE_RANGE[1]}T00:00:00Z",
                 },
                 {
                     "title": "Old",
@@ -222,7 +282,7 @@ class TestParallelKeepsUndatedResults:
         }
         with patch("lib.grounding.http.request", return_value=payload):
             items, artifact = grounding.parallel_search(
-                "test", DATE_RANGE, "fake-key"
+                "test", LIVE_DATE_RANGE, "fake-key"
             )
         assert _titles(items) == ["In range", "Undated"]
         assert artifact["resultCount"] == 2

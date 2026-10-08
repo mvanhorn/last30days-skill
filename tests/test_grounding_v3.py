@@ -1,4 +1,5 @@
 import unittest
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from lib import grounding
@@ -126,13 +127,15 @@ class ExaSearchTests(unittest.TestCase):
 
 class ParallelSearchTests(unittest.TestCase):
     def test_parallel_search_filters_to_in_range_dated_items(self):
+        today = datetime.now(timezone.utc).date()
+        date_range = ((today - timedelta(days=30)).isoformat(), today.isoformat())
         mock_response = {
             "results": [
                 {
                     "title": "Parallel Result",
                     "url": "https://example.com/parallel",
                     "snippet": "A parallel snippet",
-                    "publish_date": "2026-03-15T00:00:00Z",
+                    "publish_date": f"{today.isoformat()}T00:00:00Z",
                 },
                 {
                     "title": "Old Parallel Result",
@@ -149,12 +152,12 @@ class ParallelSearchTests(unittest.TestCase):
         }
         with patch("lib.grounding.http.request", return_value=mock_response) as mock_req:
             items, artifact = grounding.parallel_search(
-                "test", ("2026-02-25", "2026-03-27"), "fake-parallel-key"
+                "test", date_range, "fake-parallel-key"
             )
             self.assertEqual(2, len(items))
             self.assertEqual("Parallel Result", items[0]["title"])
             self.assertEqual("https://example.com/parallel", items[0]["url"])
-            self.assertEqual("2026-03-15", items[0]["date"])
+            self.assertEqual(today.isoformat(), items[0]["date"])
             self.assertEqual("Undated Parallel Result", items[1]["title"])
             self.assertIsNone(items[1]["date"])
             self.assertTrue(items[0]["id"].startswith("WP"))
@@ -162,10 +165,7 @@ class ParallelSearchTests(unittest.TestCase):
             self.assertEqual(2, artifact["resultCount"])
             self.assertEqual("POST", mock_req.call_args.args[0])
             self.assertEqual("https://api.parallel.ai/v1/search", mock_req.call_args.args[1])
-            self.assertEqual(
-                "Bearer fake-parallel-key",
-                mock_req.call_args.kwargs["headers"]["Authorization"],
-            )
+            self.assertEqual("fake-parallel-key", mock_req.call_args.kwargs["headers"]["x-api-key"])
 
     def test_parallel_search_returns_empty_for_no_results(self):
         with patch("lib.grounding.http.request", return_value={"results": []}):

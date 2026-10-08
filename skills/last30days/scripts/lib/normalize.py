@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
@@ -18,7 +19,15 @@ def filter_by_date_range(
     filtered: list[schema.SourceItem] = []
     for item in items:
         if not item.published_at:
-            if not require_date:
+            basis = item.metadata.get("date_window_basis") if item.source == "grounding" else None
+            if (
+                not require_date
+                or basis == "server_bounds"
+                or (
+                    basis == "server_start"
+                    and to_date >= datetime.now(timezone.utc).date().isoformat()
+                )
+            ):
                 filtered.append(item)
             continue
         if item.published_at < from_date or item.published_at > to_date:

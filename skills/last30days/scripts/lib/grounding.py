@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 import urllib.parse
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 from . import dates, env, http, schema, web_search_keyless
@@ -75,6 +75,7 @@ def brave_search(
             "date": pub_date,
             "relevance": 0.8,
             "why_relevant": "Brave web search",
+            "metadata": {"date_window_basis": "server_bounds"},
         })
     artifact = {"label": "brave", "webSearchQueries": [query], "resultCount": len(items)}
     return items, artifact
@@ -120,6 +121,7 @@ def exa_search(
             "date": pub_date,
             "relevance": 0.8,
             "why_relevant": "Exa web search",
+            "metadata": {"date_window_basis": "server_bounds"},
         })
     artifact = {"label": "exa", "webSearchQueries": [query], "resultCount": len(items)}
     return items, artifact
@@ -157,6 +159,7 @@ def serper_search(
             "date": pub_date,
             "relevance": 0.8,
             "why_relevant": "Serper web search",
+            "metadata": {"date_window_basis": "server_bounds"},
         })
     artifact = {"label": "serper", "webSearchQueries": [query], "resultCount": len(items)}
     return items, artifact
@@ -169,12 +172,16 @@ def serper_search(
 def parallel_search(
     query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
 ) -> tuple[list[dict], dict]:
+    current_window = date_range[1] >= datetime.now(timezone.utc).date().isoformat()
     data = http.request(
         "POST", "https://api.parallel.ai/v1/search",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers={"x-api-key": api_key, "Content-Type": "application/json"},
         json_data={
             "search_queries": [query],
-            "advanced_settings": {"max_results": count},
+            "advanced_settings": {
+                "max_results": count,
+                "source_policy": {"after_date": date_range[0]},
+            },
         },
         timeout=15,
     )
@@ -189,6 +196,8 @@ def parallel_search(
         pub_date = _normalize_date(raw_date[:10]) if raw_date else None
         if _known_date_out_of_range(pub_date, date_range):
             continue
+        if pub_date is None and not current_window:
+            continue
         items.append({
             "id": f"WP{i + 1}",
             "title": r.get("title", ""),
@@ -198,6 +207,7 @@ def parallel_search(
             "date": pub_date,
             "relevance": 0.8,
             "why_relevant": "Parallel AI web search",
+            "metadata": {"date_window_basis": "server_start"},
         })
     artifact = {"label": "parallel", "webSearchQueries": [query], "resultCount": len(items)}
     return items, artifact
