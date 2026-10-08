@@ -314,13 +314,15 @@ def parse_v2_response(
 # ---------------------------------------------------------------------------
 
 
-def _topic_tokens(topic: str) -> List[str]:
+def _topic_tokens(topic: str, *, preserve_trailing_colon: bool = False) -> List[str]:
     """Sanitized topic tokens: no quotes, grouping, operators, or negation."""
     separators = str.maketrans({char: " " for char in _GROUPING_CHARS + _QUOTE_CHARS})
     cleaned = str(topic or "").translate(separators)
     tokens: List[str] = []
     for token in cleaned.split():
         clean = token.strip(_APOSTROPHES)
+        if preserve_trailing_colon and clean.endswith(":") and clean.count(":") == 1:
+            clean = clean[:-1]
         if not clean:
             continue
         if ":" in clean or clean.startswith("-"):
@@ -335,6 +337,27 @@ def _compile(tokens: List[str]) -> str:
     return f'"{" ".join(tokens)}" -is:retweet'
 
 
+def _compile_keywords(tokens: List[str]) -> str:
+    return " ".join(tokens)
+
+
+def _fit(tokens: List[str], compile_tokens: Callable[[List[str]], str]) -> str:
+    """Compile *tokens*, dropping trailing ones until under ``MAX_QUERY_CHARS``."""
+    if not tokens:
+        return ""
+    tokens = list(tokens)
+    compiled = compile_tokens(tokens)
+    while len(compiled) > MAX_QUERY_CHARS and len(tokens) > 1:
+        tokens.pop()
+        compiled = compile_tokens(tokens)
+    if len(compiled) > MAX_QUERY_CHARS:
+        # One token longer than the whole budget: keep as much of it as fits.
+        overhead = len(compile_tokens([""]))
+        tokens = [tokens[0][: MAX_QUERY_CHARS - overhead]]
+        compiled = compile_tokens(tokens)
+    return compiled
+
+
 def build_query(topic: str) -> str:
     """Compile a topic into one quoted phrase plus ``-is:retweet``.
 
@@ -346,19 +369,22 @@ def build_query(topic: str) -> str:
     result stays under ``MAX_QUERY_CHARS``, cut at a token boundary. Returns
     "" when nothing lexical survives.
     """
-    tokens = _topic_tokens(topic)
-    if not tokens:
-        return ""
-    compiled = _compile(tokens)
-    while len(compiled) > MAX_QUERY_CHARS and len(tokens) > 1:
-        tokens.pop()
-        compiled = _compile(tokens)
-    if len(compiled) > MAX_QUERY_CHARS:
-        # One token longer than the whole budget: keep as much of it as fits.
-        overhead = len(_compile([""]))
-        tokens = [tokens[0][: MAX_QUERY_CHARS - overhead]]
-        compiled = _compile(tokens)
-    return compiled
+    return _fit(_topic_tokens(topic), _compile)
+
+
+def build_keyword_query(topic: str) -> str:
+    """Compile a topic into space-joined keywords (implicit AND), no operators.
+
+    The keyword counterpart of :func:`build_query` for callers that keep
+    X's default any-order keyword matching instead of one exact phrase
+    (``xurl_x``). The same operator safeguards apply, while ordinary trailing
+    colons preserve subject words: bare ``and``/``or`` in any case, colon
+    operators, leading ``-`` negation, grouping and quote characters never
+    reach X, whose v2 grammar rejects a bare lowercase ``and``/``or`` with
+    HTTP 400. Capped at ``MAX_QUERY_CHARS`` on a token boundary. Returns ""
+    when nothing lexical survives.
+    """
+    return _fit(_topic_tokens(topic, preserve_trailing_colon=True), _compile_keywords)
 
 
 # ---------------------------------------------------------------------------
