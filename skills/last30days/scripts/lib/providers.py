@@ -59,31 +59,84 @@ class ReasoningClient:
 
     name: str
 
-    # TROVR: accumulates real token usage across every generate_text/
-    # generate_json call made on this instance for the whole run (planner +
-    # rerank share one instance, resolved once in resolve_runtime() below) —
-    # the engine never surfaced this to callers before. A concrete subclass
-    # calls record_usage() after each real HTTP call, with whatever usage
-    # shape its own API returns; total_usage is what pipeline.py reads at the
-    # end to attach to the report's `artifacts["usage"]` for the JSON export.
     def __init__(self) -> None:
         self._usage_calls = 0
         self._usage_prompt_tokens = 0
         self._usage_completion_tokens = 0
+        self._usage_complete = True
 
-    def record_usage(self, prompt_tokens: int, completion_tokens: int) -> None:
+    @staticmethod
+    def _valid_token_count(value: Any) -> bool:
+        return type(value) is int and value >= 0
+
+    def record_usage(
+        self,
+        prompt_tokens: Any,
+        completion_tokens: Any,
+        total_tokens: Any = None,
+    ) -> None:
         self._usage_calls += 1
+        if not self._valid_token_count(prompt_tokens):
+            self._usage_complete = False
+            return
+        if total_tokens is not None:
+            if (
+                not self._valid_token_count(total_tokens)
+                or total_tokens < prompt_tokens
+                or (
+                    completion_tokens is not None
+                    and (
+                        not self._valid_token_count(completion_tokens)
+                        or total_tokens < prompt_tokens + completion_tokens
+                    )
+                )
+            ):
+                self._usage_complete = False
+                return
+            # Reported totals can include reasoning tokens absent from completion counts.
+            completion_tokens = total_tokens - prompt_tokens
+        elif not self._valid_token_count(completion_tokens):
+            self._usage_complete = False
+            return
         self._usage_prompt_tokens += prompt_tokens
         self._usage_completion_tokens += completion_tokens
 
     @property
-    def total_usage(self) -> dict[str, int]:
+    def total_usage(self) -> dict[str, int] | None:
+        if not self._usage_calls or not self._usage_complete:
+            return None
         return {
             "calls": self._usage_calls,
             "promptTokens": self._usage_prompt_tokens,
             "completionTokens": self._usage_completion_tokens,
             "totalTokens": self._usage_prompt_tokens + self._usage_completion_tokens,
         }
+
+    def _record_response_usage(
+        self,
+        response: dict[str, Any],
+        *,
+        metadata_key: str,
+        prompt_key: str,
+        completion_key: str,
+        total_key: str,
+        prompt_fallback_key: str | None = None,
+        completion_fallback_key: str | None = None,
+    ) -> None:
+        usage = response.get(metadata_key)
+        if not isinstance(usage, dict):
+            usage = {}
+        prompt_tokens = usage.get(prompt_key)
+        completion_tokens = usage.get(completion_key)
+        if prompt_tokens is None and prompt_fallback_key:
+            prompt_tokens = usage.get(prompt_fallback_key)
+        if completion_tokens is None and completion_fallback_key:
+            completion_tokens = usage.get(completion_fallback_key)
+        self.record_usage(
+            prompt_tokens,
+            completion_tokens,
+            usage.get(total_key),
+        )
 
     def generate_text(
         self,
@@ -150,10 +203,12 @@ class GeminiClient(ReasoningClient):
             tools=tools,
             response_mime_type=response_mime_type,
         )
-        usage = payload.get("usageMetadata") or {}
-        self.record_usage(
-            usage.get("promptTokenCount", 0),
-            usage.get("candidatesTokenCount", 0),
+        self._record_response_usage(
+            payload,
+            metadata_key="usageMetadata",
+            prompt_key="promptTokenCount",
+            completion_key="candidatesTokenCount",
+            total_key="totalTokenCount",
         )
         return extract_gemini_text(payload)
 
@@ -188,6 +243,13 @@ class OpenAIClient(ReasoningClient):
             },
             timeout=90,
         )
+        self._record_response_usage(
+            response,
+            metadata_key="usage",
+            prompt_key="input_tokens",
+            completion_key="output_tokens",
+            total_key="total_tokens",
+        )
         return extract_openai_text(response)
 
 
@@ -219,6 +281,15 @@ class XAIClient(ReasoningClient):
                 "Content-Type": "application/json",
             },
             timeout=90,
+        )
+        self._record_response_usage(
+            response,
+            metadata_key="usage",
+            prompt_key="input_tokens",
+            completion_key="output_tokens",
+            total_key="total_tokens",
+            prompt_fallback_key="prompt_tokens",
+            completion_fallback_key="completion_tokens",
         )
         return extract_openai_text(response)
 
@@ -252,6 +323,13 @@ class OpenRouterClient(ReasoningClient):
                 "Content-Type": "application/json",
             },
             timeout=90,
+        )
+        self._record_response_usage(
+            response,
+            metadata_key="usage",
+            prompt_key="prompt_tokens",
+            completion_key="completion_tokens",
+            total_key="total_tokens",
         )
         return extract_openai_text(response)
 

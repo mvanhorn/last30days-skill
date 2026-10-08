@@ -1,1 +1,0 @@
-The agent JSON export (`--emit=json --json-profile=agent`) now includes a `usage` field with the real reasoning-provider token usage for the run (planner + rerank calls) — `null` in mock/local-provider mode. Previously the engine never surfaced this, forcing headless callers to fall back to rough character-based estimates.
