@@ -510,21 +510,34 @@ class TestInputBounds:
         as_json.write_text('{"X_BEARER_TOKEN": "SECRETVALUE"}', encoding="utf-8")
         _assert_contract(str(as_json), must_not_contain=["SECRETVALUE"])
 
-    def test_config_dir_and_credential_stores_are_rejected(self, tmp_path, monkeypatch):
+    @pytest.mark.parametrize("store", [".grok", ".xurl", "config"])
+    @pytest.mark.parametrize("via_symlink", [False, True], ids=["direct", "symlink"])
+    def test_config_dir_and_credential_stores_are_rejected(
+        self, tmp_path, monkeypatch, store, via_symlink,
+    ):
         home = tmp_path / "home"
         cfg = tmp_path / "cfg"
         for directory in (home / ".grok", home / ".xurl", cfg):
             directory.mkdir(parents=True)
         monkeypatch.setenv("HOME", str(home))
+        monkeypatch.setenv("USERPROFILE", str(home))
         monkeypatch.setattr(env, "CONFIG_DIR", cfg)
         monkeypatch.setattr(env, "CONFIG_FILE", cfg / ".env")
-        for target in (home / ".grok" / "auth.json", home / ".xurl" / "tokens.json", cfg / "posts.json"):
-            target.write_text(json.dumps({"token": "SECRETVALUE"}), encoding="utf-8")
-            _assert_contract(str(target), must_not_contain=["SECRETVALUE"])
-        # A symlink into a store is resolved before the check.
-        link = tmp_path / "link.json"
-        link.symlink_to(home / ".grok" / "auth.json")
-        _assert_contract(str(link), must_not_contain=["SECRETVALUE"])
+        sentinel = f"SECRETVALUE-{tmp_path.name}"
+        payload = _envelope([_call("topic", posts=[_row(0, text=sentinel)])])
+        allowed = _write(tmp_path, payload)
+        assert _read(allowed).accepted == 1
+
+        directory = cfg if store == "config" else home / store
+        target = Path(_write(directory, payload))
+        path = target
+        if via_symlink:
+            path = tmp_path / "link.json"
+            path.symlink_to(target)
+        with mock.patch.object(Path, "read_bytes", autospec=True, side_effect=Path.read_bytes) as read_bytes:
+            message = _assert_contract(str(path), must_not_contain=[sentinel])
+            read_bytes.assert_not_called()
+        assert "is inside a configuration or credential directory" in message
 
     def test_wrong_suffix_directory_and_missing_file_are_rejected(self, tmp_path):
         _assert_contract(_write(tmp_path, _envelope([]), "posts.txt"))
@@ -795,6 +808,135 @@ class TestPipelineWiring:
         assert "x" not in report.errors_by_source
         assert report.source_status["x"].state == health.OK
 
+    @staticmethod
+    def _many_topic_rows(count: int) -> list[dict]:
+        # Distinct wording per row so near-duplicate collapsing keeps them all.
+        onsets = ("br", "k", "pl", "st", "gr", "v", "dr", "sh")
+        vowels = ("a", "e", "i", "o", "u", "ai", "oo")
+        codas = ("n", "x", "lt", "mp", "rd", "sk", "th", "z")
+
+        def word(n: int) -> str:
+            return onsets[n % 8] + vowels[(n // 8) % 7] + codas[(n // 56) % 8]
+
+        return [
+            _row(
+                i, f"user{i}",
+                f"ai agents {word(i * 3)} {word(i * 3 + 1)} {word(i * 3 + 2)}",
+                likes=count - i,
+            )
+            for i in range(count)
+        ]
+
+    @pytest.mark.parametrize(("depth", "expected"), [("quick", 12), ("default", 24), ("deep", 40)])
+    def test_topic_lane_carries_two_x_streams_worth_of_rows(self, tmp_path, depth, expected):
+        rows = self._many_topic_rows(57)
+        envelope = _read(_write(tmp_path, _envelope([
+            _call("topic", posts=rows[:30]), _call("topic", posts=rows[30:]),
+        ])))
+        report = _run(envelope, depth=depth)
+        assert len(report.items_by_source["x"]) == expected
+
+    def test_small_envelope_keeps_every_topic_row(self, tmp_path):
+        envelope = _read(_write(tmp_path, _envelope([_call("topic", posts=self._many_topic_rows(9))])))
+        report = _run(envelope)
+        assert len(report.items_by_source["x"]) == 9
+
+    @staticmethod
+    def _old_row(likes: int, handle: str, text: str, low: int) -> dict:
+        day = _day(25)
+        return {
+            "id": _snowflake(day, hour=9, low=low), "author_handle": handle,
+            "created_at": f"{day}T09:00:00Z", "text": text,
+            "likes": likes, "reposts": likes // 10, "replies": likes // 20, "quotes": 0,
+        }
+
+    def test_old_high_engagement_post_survives_a_cap_full_of_fresh_posts(self, tmp_path):
+        rows = self._many_topic_rows(57)
+        viral = self._old_row(6749, "sawyer", "ai agents livestream building a whole company", 777001)
+        envelope = _read(_write(tmp_path, _envelope([_call("topic", posts=[*rows, viral])])))
+        report = _run(envelope)
+        assert len(report.items_by_source["x"]) == 24
+        kept_likes = {item.engagement.get("likes") for item in report.items_by_source["x"]}
+        assert 6749 in kept_likes
+
+    def test_engagement_keepers_never_evict_the_named_subjects_posts(self):
+        def item(n, author, likes, text):
+            return schema.SourceItem(
+                item_id=f"X{n}", source="x", title=text, body=text,
+                url=f"https://x.com/{author}/status/{1900000000000000000 + n}",
+                author=author, engagement={"likes": likes}, local_relevance=0.9,
+            )
+        fresh = [item(i, f"user{i}", 1, f"ai agents fresh note {i}") for i in range(8)]
+        subject = [item(20 + i, SUBJECT, 1, f"ai agents subject note {i}") for i in range(2)]
+        viral = [item(40 + i, f"fan{i}", 5000 + i, f"ai agents viral thread {i}") for i in range(6)]
+        ranked = [*fresh[:6], *subject, *fresh[6:], *viral]
+        kept = pipeline._apply_reddit_stream_keepers(
+            "x", ranked, 8, TOPIC, host_fetched_x=True, protected_authors={SUBJECT},
+        )
+        assert len(kept) == 8
+        assert sum(1 for i in kept if i.author == SUBJECT) == 2
+        assert sum(1 for i in kept if i.author.startswith("fan")) == 4
+
+    def test_off_topic_viral_post_never_takes_an_engagement_slot(self, tmp_path):
+        rows = self._many_topic_rows(57)
+        off_topic = self._old_row(9000, "rocketco", "orbital launch window opens on friday", 777002)
+        envelope = _read(_write(tmp_path, _envelope([_call("topic", posts=[*rows, off_topic])])))
+        report = _run(envelope)
+        kept_likes = {item.engagement.get("likes") for item in report.items_by_source["x"]}
+        assert 9000 not in kept_likes
+
+    def test_capped_topic_rows_keep_the_most_engaged_posts(self, tmp_path):
+        rows = self._many_topic_rows(57)
+        envelope = _read(_write(tmp_path, _envelope([_call("topic", posts=list(reversed(rows)))])))
+        report = _run(envelope)
+        kept = {item.engagement.get("likes") for item in report.items_by_source["x"]}
+        assert max(row["likes"] for row in rows) in kept
+        assert min(row["likes"] for row in rows) not in kept
+
+    def test_backend_x_stream_keeps_the_per_stream_limit(self):
+        items = [
+            {"id": f"X{i}", "text": f"ai agents note {i}", "url": f"https://x.com/u{i}/status/{1900000000000000000 + i}",
+             "author_handle": f"u{i}", "date": TO, "engagement": {"likes": i}}
+            for i in range(30)
+        ]
+        with mock.patch("lib.env.x_backend_chain", return_value=["bird"]), \
+             mock.patch("lib.pipeline._fetch_x_backend", return_value=(items, {})):
+            report = pipeline.run(
+                topic=TOPIC, config={}, depth="default", requested_sources=["x"], mock=False,
+                external_plan=_plan(), web_backend="none", save_dir="",
+            )
+        assert len(report.items_by_source["x"]) <= 12
+
+    def test_set_backend_on_grok_bot_yields_to_envelope_and_runs_without_one(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("LAST30DAYS_HOST", "grok-bot")
+        config = {"LAST30DAYS_HOST": "grok-bot", "LAST30DAYS_X_BACKEND": "xapi", "X_BEARER_TOKEN": "dummy"}
+        envelope = _read(_basic(tmp_path))
+        served = _run(envelope, config=config, x_handle=SUBJECT)
+        assert served.artifacts.get("x_provenance") in {"connector", "native"}
+        assert len(served.items_by_source["x"]) == 3
+        backend_item = {
+            "id": "X1", "text": "ai agents from the set backend",
+            "url": "https://x.com/someone/status/1900000000000000001", "author_handle": "someone",
+            "date": TO, "engagement": {"likes": 5},
+        }
+        with mock.patch("lib.pipeline._fetch_x_backend", return_value=([backend_item], {})) as fetch:
+            report = pipeline.run(
+                topic=TOPIC, config=dict(config), depth="default", requested_sources=["x"], mock=False,
+                external_plan=_plan(), web_backend="none", save_dir="",
+            )
+        assert fetch.called
+        assert "x_provenance" not in report.artifacts
+
+    def test_discovered_author_lanes_passed_as_related_keep_their_lanes(self, tmp_path):
+        envelope = _read(_write(tmp_path, _envelope([
+            _call("topic", posts=[_row(0, "alice", "ai agents review")]),
+            _call("from", handles=[RELATED], posts=[_row(1, RELATED, "ai agents in my stack")]),
+            _call("mention", handles=[RELATED], posts=[_row(2, "carol", f"@{RELATED} ai agents question")]),
+        ])), handles=(), related=(RELATED,))
+        assert envelope.lane_counts["from"] == 1
+        assert envelope.lane_counts["mention"] == 1
+        assert envelope.counters["lane-mismatch"] == 0
+
     def test_available_sources_lists_x_for_envelope_without_backend(self):
         with mock.patch("lib.env.x_backend_chain", return_value=[]), \
              mock.patch("lib.env.x_pending_browser_auth", return_value=False):
@@ -856,9 +998,11 @@ class TestPipelineWiring:
 
     def test_exclude_sources_x_ignores_the_envelope_with_a_receipt(self, tmp_path):
         envelope = _read(_basic(tmp_path))
-        report, stderr = _capture(lambda: _run(
-            envelope, config={"EXCLUDE_SOURCES": "x"}, requested=None, plan=_plan(("reddit",)),
-        ))
+        with mock.patch("lib.reddit_public.search_reddit_public", return_value=[]) as search:
+            report, stderr = _capture(lambda: _run(
+                envelope, config={"EXCLUDE_SOURCES": "x"}, requested=None, plan=_plan(("reddit",)),
+            ))
+        search.assert_called()
         assert "x" not in report.items_by_source
         assert "envelope ignored" in stderr
         assert envelope.topic_items, "an ignored envelope is not consumed"
@@ -899,6 +1043,44 @@ class TestPipelineWiring:
         md = render.render_compact(report)
         assert "via X connector" in md
         assert "3 items" in md
+
+    def test_footer_provenance_reads_via_grok_bot_x_for_native_envelopes(self, tmp_path):
+        envelope = _read(_basic(tmp_path, provider="x-native"))
+        report = _run(envelope, x_handle=SUBJECT)
+        md = render.render_compact(report)
+        assert "via Grok Bot X" in md
+        assert "via X connector" not in md
+
+    @pytest.mark.parametrize(("provider", "label"), [("x-native", "via Grok Bot X"), ("x-connector", "via X connector")])
+    def test_user_facing_footer_x_line_names_the_host_lane(self, tmp_path, provider, label):
+        envelope = _read(_basic(tmp_path, provider=provider))
+        report = _run(envelope, x_handle=SUBJECT)
+        footer = [line for line in render._build_source_footer_lines(report) if line.startswith("🔵 X:")]
+        assert footer and footer[0].endswith(label)
+
+    def test_backend_footer_x_line_carries_no_host_label(self, tmp_path):
+        envelope = _read(_basic(tmp_path))
+        report = _run(envelope, x_handle=SUBJECT)
+        report.artifacts.pop("x_provenance", None)
+        footer = [line for line in render._build_source_footer_lines(report) if line.startswith("🔵 X:")]
+        assert footer and "via " not in footer[0]
+
+    @pytest.mark.parametrize("provider", ["", "X-Native; rm -rf ~", "grok", "x-native-ish"])
+    def test_unknown_provider_falls_back_to_connector_label(self, tmp_path, provider):
+        envelope = _read(_basic(tmp_path, provider=provider))
+        report = _run(envelope, x_handle=SUBJECT)
+        md = render.render_compact(report)
+        assert "via X connector" in md
+        if provider:
+            assert provider not in md
+
+    def test_native_partial_outcome_names_grok_bot_x(self, tmp_path):
+        envelope = _read(_basic(tmp_path, provider="x-native", status="partial", error="window-unsupported"))
+        state, detail = envelope.outcome()
+        assert state == schema.PARTIAL
+        assert detail.startswith("Grok Bot X returned partial results")
+        connector = _read(_basic(tmp_path, status="partial", error="window-unsupported"))
+        assert connector.outcome()[1].startswith("X connector returned partial results")
 
     def test_env_file_lane_line_without_process_env_leaves_x_absent(self, tmp_path, monkeypatch):
         monkeypatch.delenv("LAST30DAYS_X_HOST_LANE", raising=False)
@@ -1030,7 +1212,8 @@ class TestCli:
         assert rc == 2
         assert "x_posts" in err and "--competitors-plan" in err
 
-    def test_per_entity_x_posts_in_competitors_plan(self, tmp_path):
+    @pytest.mark.parametrize("auto_resolve", [False, True])
+    def test_per_entity_x_posts_in_competitors_plan(self, tmp_path, auto_resolve):
         acme = _write(tmp_path, _envelope([_call("topic", posts=[_row(0, "a", "acme news")])], topic="acme"), "acme.json")
         globex = _write(tmp_path, _envelope([_call("topic", posts=[_row(1, "b", "globex news")])], topic="globex"), "globex.json")
         plan = json.dumps({"acme": {"x_posts": acme}, "globex": {"x_posts": globex}})
@@ -1041,12 +1224,49 @@ class TestCli:
             return _fake_report(kwargs["topic"])
 
         with mock.patch.object(cli, "emit_comparison_output", return_value="# rendered"):
-            rc, _, err = _cli(["acme vs globex", "--competitors-plan", plan], tmp_path, run=fake_run)
+            argv = ["acme vs globex", "--competitors-plan", plan]
+            if auto_resolve:
+                argv.append("--auto-resolve")
+            rc, _, err = _cli(argv, tmp_path, run=fake_run)
         assert rc == 0, err
         assert seen["acme"]["x_posts"].sha256 == hashlib.sha256(Path(acme).read_bytes()).hexdigest()
         assert seen["globex"]["x_posts"].sha256 == hashlib.sha256(Path(globex).read_bytes()).hexdigest()
         parsed = cli.parse_competitors_plan(plan)
         assert parsed["acme"]["x_posts"] == acme
+
+    def test_comparison_plan_preserves_each_entity_handle_lane(self, tmp_path):
+        acme = _write(tmp_path, _envelope([
+            _call("topic", posts=[_row(0, "alice", "acme news")]),
+            _call("from", handles=[SUBJECT], posts=[_row(1, SUBJECT, "acme update")]),
+            _call("related", handles=[RELATED], posts=[_row(2, RELATED, "acme partner")]),
+        ], topic="acme"), "acme.json")
+        globex = _write(tmp_path, _envelope([
+            _call("topic", posts=[_row(3, "bob", "globex news")]),
+            _call("from", handles=["globex"], posts=[_row(4, "globex", "globex update")]),
+        ], topic="globex"), "globex.json")
+        plan = json.dumps({
+            "acme": {"x_posts": acme, "x_handle": SUBJECT, "x_related": [RELATED]},
+            "globex": {"x_posts": globex, "x_handle": "globex"},
+        })
+        seen: dict[str, dict] = {}
+
+        def fake_run(**kwargs):
+            seen[kwargs["topic"]] = kwargs
+            return _fake_report(kwargs["topic"])
+
+        argv = [
+            "acme vs globex", "--competitors-plan", plan, "--auto-resolve",
+            "--x-handle", SUBJECT, "--x-related", RELATED,
+        ]
+        with mock.patch.object(cli, "emit_comparison_output", return_value="# rendered"):
+            rc, _, err = _cli(argv, tmp_path, run=fake_run)
+        assert rc == 0, err
+        assert seen["acme"]["x_handle"] == SUBJECT
+        assert seen["acme"]["x_related"] == [RELATED]
+        assert seen["acme"]["x_posts"].lane_counts["from"] == 1
+        assert seen["acme"]["x_posts"].lane_counts["related"] == 1
+        assert seen["globex"]["x_handle"] == "globex"
+        assert seen["globex"]["x_posts"].lane_counts["from"] == 1
 
     def test_comparison_pass_rejects_the_other_entitys_envelope(self, tmp_path):
         acme = _write(tmp_path, _envelope([_call("topic", posts=[_row(0, "a", "acme news")])], topic="acme"), "acme.json")

@@ -84,13 +84,26 @@ COUNTERS = (
 
 # Engine-authored fixed outcome details. The envelope's own error text
 # never becomes a detail string.
-DETAIL_CREDITS = "X connector reported no credits"
-DETAIL_NOT_CONNECTED = "X connector not connected"
-DETAIL_UNAVAILABLE = "X connector unavailable"
-DETAIL_ERROR = "X connector error"
-DETAIL_GENERATED = "X connector rows rejected (id sequence looks generated)"
-DETAIL_PARTIAL = "X connector returned partial results"
+_CONNECTOR_LABEL = "X connector"
+_NATIVE_LABEL = "Grok Bot X"
+DETAIL_CREDITS = f"{_CONNECTOR_LABEL} reported no credits"
+DETAIL_NOT_CONNECTED = f"{_CONNECTOR_LABEL} not connected"
+DETAIL_UNAVAILABLE = f"{_CONNECTOR_LABEL} unavailable"
+DETAIL_ERROR = f"{_CONNECTOR_LABEL} error"
+DETAIL_GENERATED = f"{_CONNECTOR_LABEL} rows rejected (id sequence looks generated)"
+DETAIL_PARTIAL = f"{_CONNECTOR_LABEL} returned partial results"
 DETAIL_NOT_PASSED = "connector result not passed"
+
+# The envelope's free-text ``provider`` reaches output only through this
+# allowlist: ``x-native`` (Grok Bot's built-in X tools) gets its own label,
+# and anything else keeps the connector wording.
+PROVIDER_NATIVE = "x-native"
+PROVENANCE_NATIVE = "native"
+PROVENANCE_CONNECTOR = "connector"
+PROVENANCE_LABELS = {
+    PROVENANCE_CONNECTOR: _CONNECTOR_LABEL,
+    PROVENANCE_NATIVE: _NATIVE_LABEL,
+}
 
 CATEGORY_CREDITS = "credits"
 CATEGORY_NOT_CONNECTED = "not-connected"
@@ -192,18 +205,31 @@ class Envelope:
             self._lanes_served = True
             return list(self.lane_calls)
 
+    @property
+    def provenance(self) -> str:
+        """``native`` for a Grok Bot built-in X envelope, else ``connector``."""
+        if self.provider.lower() == PROVIDER_NATIVE:
+            return PROVENANCE_NATIVE
+        return PROVENANCE_CONNECTOR
+
     def outcome(self) -> tuple[schema.RunOutcomeState, str] | None:
         """The fixed source outcome for a non-ok envelope, else ``None``."""
         if self.status == "error":
-            return _error_outcome(self.error_category)
+            state, detail = _error_outcome(self.error_category)
+            return state, self._labelled(detail)
         if self.status == "partial":
             detail = DETAIL_PARTIAL
             if self.error_category:
                 detail += f": {self.error_category}"
             if self.call_lanes:
                 detail += f" (calls: {', '.join(self.call_lanes)})"
-            return schema.PARTIAL, detail
+            return schema.PARTIAL, self._labelled(detail)
         return None
+
+    def _labelled(self, detail: str) -> str:
+        if self.provenance == PROVENANCE_NATIVE:
+            return detail.replace(_CONNECTOR_LABEL, _NATIVE_LABEL, 1)
+        return detail
 
     def receipt(self) -> str:
         dropped = ", ".join(

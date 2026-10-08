@@ -51,12 +51,18 @@ class TestFunFallbackCommentText:
         candidate = _make_candidate(
             title="Boring press conference recap",
             snippet="Coach talked about the game plan.",
-            top_comments=[{"body": "lmao this is gold"}],
+            top_comments=[{"body": "lmao"}],
+        )
+        control = _make_candidate(
+            title="Boring press conference recap",
+            snippet="Coach talked about the game plan.",
+            top_comments=[{"body": "nope"}],
         )
         _apply_single_fun_fallback(candidate)
-        # marker_bonus = 10, should be reflected in fun_score
+        _apply_single_fun_fallback(control)
         assert candidate.fun_score is not None
-        assert candidate.fun_score >= 10.0
+        assert control.fun_score is not None
+        assert candidate.fun_score - control.fun_score == pytest.approx(10.0)
         assert candidate.fun_explanation == "heuristic-fallback"
 
     def test_short_punchy_comment_higher_shortness(self):

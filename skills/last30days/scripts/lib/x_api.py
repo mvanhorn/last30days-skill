@@ -314,13 +314,15 @@ def parse_v2_response(
 # ---------------------------------------------------------------------------
 
 
-def _topic_tokens(topic: str) -> List[str]:
+def _topic_tokens(topic: str, *, preserve_trailing_colon: bool = False) -> List[str]:
     """Sanitized topic tokens: no quotes, grouping, operators, or negation."""
     separators = str.maketrans({char: " " for char in _GROUPING_CHARS + _QUOTE_CHARS})
     cleaned = str(topic or "").translate(separators)
     tokens: List[str] = []
     for token in cleaned.split():
         clean = token.strip(_APOSTROPHES)
+        if preserve_trailing_colon and clean.endswith(":") and clean.count(":") == 1:
+            clean = clean[:-1]
         if not clean:
             continue
         if ":" in clean or clean.startswith("-"):
@@ -335,6 +337,27 @@ def _compile(tokens: List[str]) -> str:
     return f'"{" ".join(tokens)}" -is:retweet'
 
 
+def _compile_keywords(tokens: List[str]) -> str:
+    return " ".join(tokens)
+
+
+def _fit(tokens: List[str], compile_tokens: Callable[[List[str]], str]) -> str:
+    """Compile *tokens*, dropping trailing ones until under ``MAX_QUERY_CHARS``."""
+    if not tokens:
+        return ""
+    tokens = list(tokens)
+    compiled = compile_tokens(tokens)
+    while len(compiled) > MAX_QUERY_CHARS and len(tokens) > 1:
+        tokens.pop()
+        compiled = compile_tokens(tokens)
+    if len(compiled) > MAX_QUERY_CHARS:
+        # One token longer than the whole budget: keep as much of it as fits.
+        overhead = len(compile_tokens([""]))
+        tokens = [tokens[0][: MAX_QUERY_CHARS - overhead]]
+        compiled = compile_tokens(tokens)
+    return compiled
+
+
 def build_query(topic: str) -> str:
     """Compile a topic into one quoted phrase plus ``-is:retweet``.
 
@@ -346,19 +369,22 @@ def build_query(topic: str) -> str:
     result stays under ``MAX_QUERY_CHARS``, cut at a token boundary. Returns
     "" when nothing lexical survives.
     """
-    tokens = _topic_tokens(topic)
-    if not tokens:
-        return ""
-    compiled = _compile(tokens)
-    while len(compiled) > MAX_QUERY_CHARS and len(tokens) > 1:
-        tokens.pop()
-        compiled = _compile(tokens)
-    if len(compiled) > MAX_QUERY_CHARS:
-        # One token longer than the whole budget: keep as much of it as fits.
-        overhead = len(_compile([""]))
-        tokens = [tokens[0][: MAX_QUERY_CHARS - overhead]]
-        compiled = _compile(tokens)
-    return compiled
+    return _fit(_topic_tokens(topic), _compile)
+
+
+def build_keyword_query(topic: str) -> str:
+    """Compile a topic into space-joined keywords (implicit AND), no operators.
+
+    The keyword counterpart of :func:`build_query` for callers that keep
+    X's default any-order keyword matching instead of one exact phrase
+    (``xurl_x``). The same operator safeguards apply, while ordinary trailing
+    colons preserve subject words: bare ``and``/``or`` in any case, colon
+    operators, leading ``-`` negation, grouping and quote characters never
+    reach X, whose v2 grammar rejects a bare lowercase ``and``/``or`` with
+    HTTP 400. Capped at ``MAX_QUERY_CHARS`` on a token boundary. Returns ""
+    when nothing lexical survives.
+    """
+    return _fit(_topic_tokens(topic, preserve_trailing_colon=True), _compile_keywords)
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +476,7 @@ def _failure_for(exc: http.HTTPError) -> _XApiFailure:
 
 def _get(
     token: str, url: str, params: Dict[str, Any], deadline: Optional[float] = None,
+    cancel: Any = None,
 ) -> Dict[str, Any]:
     """One authenticated GET; every failure surfaces as ``_XApiFailure``.
 
@@ -466,6 +493,7 @@ def _get(
             timeout=TIMEOUT_SECONDS,
             retries=RETRIES,
             deadline_monotonic=deadline,
+            **({"cancel": cancel} if cancel is not None else {}),
         )
     except http.HTTPError as exc:
         raise _failure_for(exc) from None
@@ -486,6 +514,7 @@ def _search_pages(
     params: Dict[str, Any],
     count: int,
     deadline: Optional[float] = None,
+    cancel: Any = None,
 ) -> Dict[str, Any]:
     """Follow ``next_token`` until ``count`` posts are collected.
 
@@ -502,6 +531,11 @@ def _search_pages(
     # Bound the walk even when every page carries a next_token.
     max_pages = max(1, -(-count // MIN_PAGE_RESULTS))
     for page_index in range(max_pages):
+        if cancel is not None and cancel.is_set():
+            if not data:
+                raise _XApiFailure(ERR_TIMED_OUT)
+            truncated = True
+            break
         if page_index and deadline is not None and time.monotonic() >= deadline:
             _log(f"search deadline ({DEADLINE_SECONDS}s) reached; keeping {len(data)} posts")
             truncated = True
@@ -509,7 +543,7 @@ def _search_pages(
         # A fresh dict per page: the transport must never see a later
         # page's next_token on an earlier request.
         try:
-            response = _get(token, url, dict(page_params), deadline)
+            response = _get(token, url, dict(page_params), deadline, **({"cancel": cancel} if cancel is not None else {}))
         except _XApiFailure as exc:
             if data and str(exc) == ERR_TIMED_OUT:
                 # The budget ran out mid-walk: the pages already collected
@@ -546,6 +580,7 @@ def _run_search(
     id_prefix: str,
     label: str,
     deadline: Optional[float] = None,
+    cancel: Any = None,
 ) -> Dict[str, Any]:
     """Full-archive search with the recent-search fallback.
 
@@ -567,7 +602,7 @@ def _run_search(
         "tweet.fields": "created_at,public_metrics,note_tweet,entities",
         "user.fields": "username",
     }
-    if deadline is not None and time.monotonic() >= deadline:
+    if (cancel is not None and cancel.is_set()) or (deadline is not None and time.monotonic() >= deadline):
         _log(f"{label}: lane budget ({LANE_BUDGET_SECONDS:.0f}s) exhausted before the search started")
         return {"items": [], "warning": DEADLINE_DETAIL}
     _log(f"Searching: {label}")
@@ -575,7 +610,7 @@ def _run_search(
     if deadline is None:
         deadline = time.monotonic() + DEADLINE_SECONDS
     try:
-        response = _search_pages(token, _SEARCH_ALL_URL, params, count, deadline)
+        response = _search_pages(token, _SEARCH_ALL_URL, params, count, deadline, **({"cancel": cancel} if cancel is not None else {}))
     except _XApiFailure as exc:
         if not exc.enrollment:
             _log(f"{label}: {exc}")
@@ -589,7 +624,7 @@ def _run_search(
             return {"items": [], "warning": TRUNCATION_DETAIL}
         params["start_time"] = max(start, floor)
         try:
-            response = _search_pages(token, _SEARCH_RECENT_URL, params, count, deadline)
+            response = _search_pages(token, _SEARCH_RECENT_URL, params, count, deadline, **({"cancel": cancel} if cancel is not None else {}))
         except _XApiFailure as exc2:
             _log(f"{label}: {exc2}")
             return {"items": [], "error": str(exc2)}
@@ -614,12 +649,16 @@ def search_x(
     from_date: str,
     to_date: str,
     depth: str = "default",
+    deadline: Optional[float] = None,
+    cancel: Any = None,
 ) -> Dict[str, Any]:
     """Topic search via X API v2.
 
     Returns ``{"items": [...]}`` or ``{"items": [], "error": "..."}`` (the
     xquik shape); ``"warning"`` carries the truncation detail after the
-    recent-search fallback.
+    recent-search fallback. ``deadline`` is the X chain's shared
+    ``time.monotonic()`` budget; without one the search gets its own
+    ``DEADLINE_SECONDS``.
     """
     if not token:
         return {"items": [], "error": ERR_NO_TOKEN}
@@ -630,7 +669,8 @@ def search_x(
         return {"items": [], "error": ERR_EMPTY_QUERY}
     return _run_search(
         token, compiled, from_date, to_date, count,
-        topic=query, id_prefix="XAPI", label="topic",
+        topic=query, id_prefix="XAPI", label="topic", deadline=deadline,
+        **({"cancel": cancel} if cancel is not None else {}),
     )
 
 
@@ -726,6 +766,7 @@ def search_handles(
     token: str = "",
     deadline: Optional[float] = None,
     warnings: Optional[List[str]] = None,
+    cancel: Any = None,
 ) -> List[Dict[str, Any]]:
     """FROM lane: posts authored BY each handle (their own timeline).
 
@@ -741,6 +782,7 @@ def search_handles(
         return _run_search(
             token, f"from:{handle} -is:retweet", from_date, to_date, count_per,
             topic=topic, id_prefix="XF", label=f"from:{handle}", deadline=deadline,
+            **({"cancel": cancel} if cancel is not None else {}),
         )
 
     return _run_handle_lanes(clean, _search_one, id_prefix="XF", warnings=warnings)
@@ -756,6 +798,7 @@ def search_mentions(
     token: str = "",
     deadline: Optional[float] = None,
     warnings: Optional[List[str]] = None,
+    cancel: Any = None,
 ) -> List[Dict[str, Any]]:
     """ABOUT lane: posts mentioning each handle, authored by OTHERS.
 
@@ -771,6 +814,7 @@ def search_mentions(
         return _run_search(
             token, f"@{handle} -from:{handle} -is:retweet", from_date, to_date, count_per,
             topic=topic, id_prefix="XA", label=f"@{handle}", deadline=deadline,
+            **({"cancel": cancel} if cancel is not None else {}),
         )
 
     return _run_handle_lanes(

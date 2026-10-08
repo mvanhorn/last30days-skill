@@ -32,6 +32,7 @@ def _run_engine(
     topic: str,
     extra_argv: list[str],
     env_overrides: dict[str, str],
+    cwd: Path | None = None,
 ) -> subprocess.CompletedProcess:
     cmd = [
         sys.executable,
@@ -55,6 +56,7 @@ def _run_engine(
         encoding="utf-8",
         errors="replace",
         check=False,
+        cwd=cwd,
     )
 
 
@@ -67,12 +69,24 @@ class SaveDirEnvFallbackTests(unittest.TestCase):
         self.config_dir.mkdir()
         self.save_target = self.tmp / "Last30Days"
         self.save_target.mkdir()
+        self.home = self.tmp / "home"
+        self.home.mkdir()
+        self.cwd = self.tmp / "work"
+        self.cwd.mkdir()
 
     def tearDown(self) -> None:
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     def _write_dotenv(self, contents: str) -> None:
         (self.config_dir / ".env").write_text(contents, encoding="utf-8")
+
+    def _assert_no_report_saved(self, result: subprocess.CompletedProcess) -> None:
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertRegex(result.stdout, r"(?m)^# last30days v[^\n]+: OpenAI$")
+        self.assertEqual(list(self.home.rglob("*.md")), [])
+        self.assertEqual(list(self.cwd.rglob("*.md")), [])
+        self.assertEqual(list(self.save_target.rglob("*.md")), [])
+        self.assertNotIn("Saved output to", result.stderr)
 
     def test_env_var_in_dotenv_file_triggers_save(self) -> None:
         """Setting LAST30DAYS_MEMORY_DIR in .env makes --save-dir-less runs save."""
@@ -133,11 +147,10 @@ class SaveDirEnvFallbackTests(unittest.TestCase):
         result = _run_engine(
             topic="OpenAI",
             extra_argv=[],
-            env_overrides={"LAST30DAYS_CONFIG_DIR": ""},
+            env_overrides={"LAST30DAYS_CONFIG_DIR": "", "HOME": str(self.home), "USERPROFILE": str(self.home)},
+            cwd=self.cwd,
         )
-        self.assertEqual(result.returncode, 0, msg=result.stderr)
-        files = sorted(self.save_target.glob("*.md"))
-        self.assertEqual(len(files), 0)
+        self._assert_no_report_saved(result)
 
     def test_empty_string_env_var_does_not_trigger_save(self) -> None:
         """LAST30DAYS_MEMORY_DIR='' is treated as 'no fallback', not as a path."""
@@ -147,11 +160,12 @@ class SaveDirEnvFallbackTests(unittest.TestCase):
             env_overrides={
                 "LAST30DAYS_CONFIG_DIR": "",
                 "LAST30DAYS_MEMORY_DIR": "",
+                "HOME": str(self.home),
+                "USERPROFILE": str(self.home),
             },
+            cwd=self.cwd,
         )
-        self.assertEqual(result.returncode, 0, msg=result.stderr)
-        files = sorted(self.save_target.glob("*.md"))
-        self.assertEqual(len(files), 0)
+        self._assert_no_report_saved(result)
 
     def test_explicit_empty_save_dir_flag_does_not_trigger_fallback(self) -> None:
         """--save-dir '' (explicit empty) suppresses save even when env var is set."""

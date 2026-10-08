@@ -1,4 +1,6 @@
 import unittest
+from urllib.parse import parse_qs, urlsplit
+from unittest.mock import MagicMock, patch
 
 from lib.tiktok import _parse_items
 
@@ -140,14 +142,16 @@ class TestTikTokEnrichWithComments(unittest.TestCase):
 
         fake_sc_response = {
             "comments": [
-                {"text": "loved it", "user": {"nickname": "Alice"},
-                 "digg_count": 420, "create_time": 1709251200},
                 {"text": "meh", "user": {"nickname": "Bob"},
                  "digg_count": 3, "create_time": 1709251300},
+                {"text": "loved it", "user": {"nickname": "Alice"},
+                 "digg_count": 420, "create_time": 1709251200},
+                {"text": "useful", "user": {"nickname": "Carol"},
+                 "digg_count": 80, "create_time": 1709251300},
                 {"text": "", "user": {"nickname": "Skip"},
                  "digg_count": 999, "create_time": 1709251400},
             ],
-            "total": 3,
+            "total": 4,
         }
 
         with patch.object(tiktok.http, "get", return_value=fake_sc_response):
@@ -157,12 +161,18 @@ class TestTikTokEnrichWithComments(unittest.TestCase):
                 max_comments=5,
             )
         # Empty-text comment dropped; rest sorted desc by digg_count.
-        self.assertEqual(2, len(out))
+        self.assertEqual([c["text"] for c in out], ["loved it", "useful", "meh"])
         self.assertEqual("loved it", out[0]["text"])
         self.assertEqual(420, out[0]["digg_count"])
         self.assertEqual("Alice", out[0]["author"])
         self.assertEqual("2024-03-01", out[0]["date"])
-        self.assertEqual(3, out[1]["digg_count"])
+        self.assertEqual([c["digg_count"] for c in out], [420, 80, 3])
+        capped_response = {"comments": fake_sc_response["comments"][:3]}
+        with patch.object(tiktok.http, "get", return_value=capped_response):
+            capped = tiktok._fetch_post_comments(
+                "https://www.tiktok.com/@u/video/1", token="k", max_comments=1,
+            )
+        self.assertEqual([c["text"] for c in capped], ["loved it"])
 
     def test_fetch_post_comments_prefers_unique_id_over_nickname(self):
         """Author prefers unique_id (@handle) over nickname (display name)."""
@@ -229,6 +239,36 @@ class TestTikTokEnrichWithComments(unittest.TestCase):
         self.assertIn("top_comments", by_id["high"])
         self.assertIn("top_comments", by_id["mid"])
         self.assertNotIn("top_comments", by_id["low"])
+
+class TestTikTokArabicTopicEncoding(unittest.TestCase):
+    """Regression for issue #817 across the TikTok search path."""
+
+    def _sent_url(self, mock_urlopen) -> str:
+        return mock_urlopen.call_args[0][0].full_url
+
+    @patch("lib.http.urllib.request.urlopen")
+    def test_arabic_topic_returns_success_with_ascii_encoded_url(self, mock_urlopen):
+        from lib.tiktok import search_tiktok
+        resp = MagicMock()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = b'{"search_item_list": []}'
+        resp.status = 200
+        mock_urlopen.return_value = resp
+
+        topic = "اسعار التمريض المنزلي السعودية"
+        result = search_tiktok(
+            topic,
+            "2026-06-01",
+            "2026-07-13",
+            depth="quick",
+            token="dummy-key",
+        )
+        self.assertNotIn("error", result)
+        sent_url = self._sent_url(mock_urlopen)
+        sent_url.encode("ascii")
+        self.assertEqual(parse_qs(urlsplit(sent_url).query)["query"], [topic])
+
 
 if __name__ == "__main__":
     unittest.main()

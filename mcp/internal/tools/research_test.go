@@ -104,7 +104,7 @@ func TestResearchRunArgsIncludesNoBrowserCookies(t *testing.T) {
 		t.Fatalf("unset %s: %v", BrowserCookiesEnvOverride, err)
 	}
 	args := researchRunArgs("OpenAI", "compact", false)
-	want := []string{"OpenAI", "--emit=compact", "--no-browser-cookies"}
+	want := []string{"--emit=compact", "--no-browser-cookies", "--save-dir", "", "--", "OpenAI"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
@@ -115,7 +115,7 @@ func TestResearchRunArgsAllowsBrowserCookiesForTruthyOptIn(t *testing.T) {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv(BrowserCookiesEnvOverride, value)
 			args := researchRunArgs("OpenAI", "compact", false)
-			want := []string{"OpenAI", "--emit=compact"}
+			want := []string{"--emit=compact", "--save-dir", "", "--", "OpenAI"}
 			if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 				t.Fatalf("%s=%q: args = %#v, want %#v", BrowserCookiesEnvOverride, value, args, want)
 			}
@@ -132,7 +132,7 @@ func TestResearchRunArgsDeniesBrowserCookiesForFalseAndUnrecognizedValues(t *tes
 		t.Run(name, func(t *testing.T) {
 			t.Setenv(BrowserCookiesEnvOverride, value)
 			args := researchRunArgs("OpenAI", "compact", false)
-			want := []string{"OpenAI", "--emit=compact", "--no-browser-cookies"}
+			want := []string{"--emit=compact", "--no-browser-cookies", "--save-dir", "", "--", "OpenAI"}
 			if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 				t.Fatalf("%s=%q: args = %#v, want %#v", BrowserCookiesEnvOverride, value, args, want)
 			}
@@ -148,7 +148,7 @@ func TestResearchRunArgsSaveUsesSupportedSaveDir(t *testing.T) {
 	if strings.Contains(got, "--save\x00") || strings.HasSuffix(got, "--save") {
 		t.Fatalf("args still include unsupported --save: %#v", args)
 	}
-	want := []string{"OpenAI", "--emit=html", "--no-browser-cookies", "--save-dir", "~/Documents/Last30Days"}
+	want := []string{"--emit=html", "--no-browser-cookies", "--save-dir", "~/Documents/Last30Days", "--", "OpenAI"}
 	if got != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}
@@ -158,7 +158,49 @@ func TestResearchRunArgsSaveUsesMemoryDirEnvOverride(t *testing.T) {
 	t.Setenv(BrowserCookiesEnvOverride, "")
 	t.Setenv("LAST30DAYS_MEMORY_DIR", "/tmp/last30days-reports")
 	args := researchRunArgs("OpenAI", "html", true)
-	want := []string{"OpenAI", "--emit=html", "--no-browser-cookies", "--save-dir", "/tmp/last30days-reports"}
+	want := []string{"--emit=html", "--no-browser-cookies", "--save-dir", "/tmp/last30days-reports", "--", "OpenAI"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+}
+
+// TestResearchRunArgsSeparatesTopicWithDoubleDash pins CR-002: options come
+// first and `--` precedes the topic, so a dash-prefixed topic is parsed as
+// the positional topic instead of engine flags (--mock/--save-dir collide).
+func TestResearchRunArgsSeparatesTopicWithDoubleDash(t *testing.T) {
+	t.Setenv(BrowserCookiesEnvOverride, "")
+	t.Setenv("LAST30DAYS_MEMORY_DIR", "")
+	args := researchRunArgs("--mock", "compact", false)
+	want := []string{"--emit=compact", "--no-browser-cookies", "--save-dir", "", "--", "--mock"}
+	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("args = %#v, want %#v", args, want)
+	}
+	sep := -1
+	for i, a := range args {
+		if a == "--" {
+			sep = i
+			break
+		}
+	}
+	if sep < 0 || args[len(args)-1] != "--mock" || sep != len(args)-2 {
+		t.Fatalf("topic must follow a `--` separator as the final argv: %#v", args)
+	}
+	for _, a := range args[:sep] {
+		if a == "--mock" {
+			t.Fatalf("topic leaked into option position: %#v", args)
+		}
+	}
+}
+
+// TestResearchRunArgsSaveFalsePassesExplicitEmptySaveDir pins CR-003: when
+// save is false the argv carries an explicit empty --save-dir, which skips
+// the engine's `is None` MEMORY_DIR fallback and is falsy at the save gate,
+// so declining to save writes nothing even with LAST30DAYS_MEMORY_DIR set.
+func TestResearchRunArgsSaveFalsePassesExplicitEmptySaveDir(t *testing.T) {
+	t.Setenv(BrowserCookiesEnvOverride, "")
+	t.Setenv("LAST30DAYS_MEMORY_DIR", "/tmp/last30days-reports")
+	args := researchRunArgs("OpenAI", "compact", false)
+	want := []string{"--emit=compact", "--no-browser-cookies", "--save-dir", "", "--", "OpenAI"}
 	if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
 		t.Fatalf("args = %#v, want %#v", args, want)
 	}

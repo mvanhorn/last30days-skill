@@ -102,7 +102,7 @@ def _fetch_json(
 
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with http.open_request(req, timeout) as resp:
             body = resp.read().decode("utf-8")
             return json.loads(body)
     except urllib.error.HTTPError as e:
@@ -583,7 +583,7 @@ def _fetch_readme_snippet(repo: str, token: str, max_chars: int = 500) -> Option
 
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with http.open_request(req, 10) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except (urllib.error.HTTPError, urllib.error.URLError, OSError, TimeoutError):
         return None

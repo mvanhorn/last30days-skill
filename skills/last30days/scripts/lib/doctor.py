@@ -54,7 +54,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from . import backends, brightdata, env, health, http, prescriptions, x_api
+from . import backends, brightdata, env, health, http, prescriptions, reddit_search, x_api
 from .backends import TIER_ERROR, TIER_OK, TIER_WARN
 
 # Rollup tiers (R1). ok/warn/error are U2's; only "off" is doctor's own.
@@ -429,8 +429,8 @@ def _reddit_record(config):
 # Official-path wording. The bearer path is never described as
 # parity with the connector lane.
 X_BEARER_CAVEAT = x_api.BEARER_COVERAGE_NOTE
-X_CONNECTOR_NOTE = "will use: X connector (host-fetched at run time)"
-X_CONNECTOR_ARMED = "X connector lane armed"
+X_CONNECTOR_NOTE = "will use: built-in X tools or X connector (host-fetched at run time)"
+X_CONNECTOR_ARMED = "host X lane armed (built-in X tools or X connector)"
 
 
 def _x_will_use_note(record: Dict[str, Any], policy: env.XPolicy) -> str:
@@ -1109,7 +1109,7 @@ def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
         note = "explicit backend pin"
     else:
         note = (
-            "no official X path armed (add the X for Grok Bot plugin and connect X in Grok Bot settings, or set "
+            "no official X path armed (use Grok Bot's built-in X tools or add the X for Grok Bot plugin, or set "
             "X_BEARER_TOKEN or XAI_API_KEY)"
         )
     return {"name": "X auth path", "armed": bool(source), "note": note}
@@ -1121,10 +1121,12 @@ def _sub_lanes_for(source: str, config: Dict[str, Any]):
     comments: Optional[Dict[str, Any]] = None
     has_sc = bool(config.get("SCRAPECREATORS_API_KEY"))
     if source == "reddit":
-        backups.append({
-            "name": "ScrapeCreators backfill", "armed": has_sc,
-            "note": "fills in when the free public path returns nothing",
-        })
+        floor = env.reddit_sc_min_items(config)
+        if floor > 0:
+            note = f"fills in when results fall below the {floor}-item floor"
+        else:
+            note = "fills in when the free public path returns nothing"
+        backups.append({"name": "ScrapeCreators backfill", "armed": has_sc, "note": note})
     elif source == "youtube":
         backups.append({
             "name": "ScrapeCreators transcript/search backstop", "armed": has_sc,
@@ -1805,11 +1807,10 @@ def _write_cache(report: Dict[str, Any], config: Dict[str, Any]) -> bool:
 
 # Free, keyless liveness endpoints (reachability check, tiny payload).
 _HTTP_PROBE_URLS = {
-    # The keyless engine's real discovery endpoint (reddit_rss._build_urls).
-    # /r/all/hot.json is permanently 403 keyless (see the reddit_keyless module
-    # docstring) and no lane requests it any more, so probing it measured an
-    # endpoint the engine had already abandoned.
-    "reddit": "https://www.reddit.com/search.rss?q=test&sort=relevance&t=month",
+    # The keyless engine's real discovery endpoint, built by the lane itself so
+    # the probe cannot drift from what the engine requests (hand-copied URLs
+    # kept certifying endpoints the engine had abandoned).
+    "reddit": reddit_search.search_url("test"),
     "hackernews": "https://hn.algolia.com/api/v1/search?query=test&hitsPerPage=1",
     "polymarket": "https://gamma-api.polymarket.com/events?limit=1",
     "github": "https://api.github.com/rate_limit",
@@ -1837,8 +1838,15 @@ _PROBE_RETRY_DELAY_SECONDS = 2.0
 _PROBE_HEADERS = {
     "reddit": {
         "User-Agent": http.BROWSER_USER_AGENT,
-        "Accept": "application/atom+xml",
+        "Accept": "text/html",
     },
+}
+
+# Per-source body validators, run on a 2xx: None means the body is the page the
+# lane parses, anything else is the reason it is not. Reddit answers a blocked
+# keyless client with a 200 challenge page, so status alone reads it as working.
+_PROBE_BODY_CHECKS: Dict[str, Callable[[str], Optional[str]]] = {
+    "reddit": reddit_search.unrecognized_body,
 }
 
 DEFAULT_PROBE_TIMEOUT_SECONDS = 10
@@ -1873,6 +1881,8 @@ def _http_ok(
     *,
     blocked_statuses: frozenset = frozenset(),
     headers: Optional[Dict[str, str]] = None,
+    body_check: Optional[Callable[[str], Optional[str]]] = None,
+    deadline_monotonic: Optional[float] = None,
 ) -> tuple:
     """Reachability check: a 4xx still means the endpoint responded; 5xx or a
     connection/timeout error means it did not.
@@ -1880,7 +1890,8 @@ def _http_ok(
     ``blocked_statuses`` names the per-source codes that mean "responded, but
     refused us" (Reddit's keyless 403/429) — those are a failure, not
     reachability. ``headers`` overrides the probe identity so a source can be
-    probed with the same User-Agent its lane sends.
+    probed with the same User-Agent its lane sends. ``body_check`` validates
+    a 2xx body; a non-None reason fails the probe as blocked.
     """
     def _verdict(code: int) -> tuple:
         return code < 500 and code not in blocked_statuses, f"HTTP {code}"
@@ -1889,11 +1900,35 @@ def _http_ok(
         req = urllib.request.Request(
             url, headers=headers or {"User-Agent": "last30days-doctor"}
         )
+        if deadline_monotonic is not None:
+            from . import bounded_get
+
+            code, body, error = bounded_get.get(
+                req, timeout=timeout, deadline_monotonic=deadline_monotonic,
+                read_body=body_check is not None, read_error_body=False,
+            )
+            if error is not None:
+                return _verdict(error.code)
+            if body_check is not None and code < 300:
+                reason = body_check((body or b"").decode("utf-8", errors="replace"))
+                if reason:
+                    return False, f"HTTP {code} but blocked: {reason}"
+            return _verdict(code)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return _verdict(getattr(resp, "status", 200) or 200)
+            code = getattr(resp, "status", 200) or 200
+            if body_check is not None and code < 300:
+                text = resp.read().decode("utf-8", errors="replace")
+                reason = body_check(text)
+                if reason:
+                    return False, f"HTTP {code} but blocked: {reason}"
+            return _verdict(code)
     except urllib.error.HTTPError as exc:
         return _verdict(exc.code)
     except Exception as exc:
+        from . import bounded_get
+
+        if isinstance(exc, bounded_get.GetTimeout):
+            return False, "probe exceeded deadline"
         return False, f"{type(exc).__name__}: {exc}"
 
 
@@ -1910,14 +1945,41 @@ def _transient_probe_detail(name: str, detail: str) -> bool:
 
 
 def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
+    deadline = time.monotonic() + timeout
+    expired = {"ok": False, "detail": "probe exceeded deadline", "probed": True}
+    if timeout <= 0:
+        return expired
     url = _HTTP_PROBE_URLS.get(name)
     if url:
         blocked = _PROBE_BLOCKED_STATUSES.get(name, frozenset())
         headers = _PROBE_HEADERS.get(name)
-        ok, detail = _http_ok(url, timeout, blocked_statuses=blocked, headers=headers)
+        probe_kwargs = {
+            "blocked_statuses": blocked,
+            "headers": headers,
+            "body_check": _PROBE_BODY_CHECKS.get(name),
+            "deadline_monotonic": deadline,
+        }
+        ok, detail = _http_ok(url, timeout, **probe_kwargs)
+        if time.monotonic() >= deadline or detail == "probe exceeded deadline":
+            return expired
         if not ok and _transient_probe_detail(name, detail):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return expired
+            if remaining <= _PROBE_RETRY_DELAY_SECONDS:
+                return {
+                    "ok": False,
+                    "transient": True,
+                    "detail": f"{detail} (retry skipped: insufficient probe budget)",
+                    "probed": True,
+                }
             time.sleep(_PROBE_RETRY_DELAY_SECONDS)
-            ok, detail = _http_ok(url, timeout, blocked_statuses=blocked, headers=headers)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return expired
+            ok, detail = _http_ok(url, remaining, **probe_kwargs)
+            if time.monotonic() >= deadline or detail == "probe exceeded deadline":
+                return expired
             if not ok and _transient_probe_detail(name, detail):
                 return {
                     "ok": False,
@@ -1929,7 +1991,9 @@ def _probe_source(name: str, config: Dict[str, Any], timeout: float) -> Optional
     cli = CLI_DEPENDENCIES.get(name)
     if cli:
         try:
-            probe = health.probe_dependency(cli)
+            probe = health.probe_dependency(cli, timeout=max(0, deadline - time.monotonic()))
+            if time.monotonic() >= deadline:
+                return expired
         except Exception as exc:
             return {"ok": False, "detail": f"{type(exc).__name__}: {exc}", "probed": True}
         return {"ok": bool(probe.ok), "detail": probe.detail, "probed": True}
@@ -1952,7 +2016,7 @@ def _probe_sources(config: Dict[str, Any], timeout: int) -> Dict[str, Dict[str, 
         }
         for name, fut in futures.items():
             try:
-                res = fut.result(timeout=timeout + 1)
+                res = fut.result()
             except concurrent.futures.TimeoutError:
                 res = {"ok": False, "detail": "probe exceeded deadline", "probed": True}
             except Exception as exc:

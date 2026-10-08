@@ -52,7 +52,7 @@ def test_nominate_candidates_threads_keyword_gate():
     plan = _plan("", ["reddit"])
     seen: dict[str, bool] = {}
 
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         seen["keyword_gate"] = keyword_gate
         return [], None
 
@@ -72,7 +72,7 @@ def test_nominate_candidates_records_source_failure_without_raising():
     still yields candidates, and the call never raises."""
     plan = _plan("AI agents", ["reddit", "hackernews"])
 
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         if source == "hackernews":
             raise TimeoutError("hn listing timed out")
         return pipeline._mock_discovery_items(source, plan.domain, to_date), None

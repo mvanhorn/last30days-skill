@@ -28,17 +28,17 @@ def _candidate_sort_key(c: schema.Candidate) -> tuple:
 
 
 def _normalize_url(url: str) -> str:
-    """Normalize URL for dedup: lowercase, strip www/old/m prefixes, remove tracking params."""
-    parsed = urlparse(url.strip().lower())
-    netloc = parsed.netloc
+    """Normalize URL for dedup: lowercase host, strip www/old/m prefixes, remove tracking params."""
+    parsed = urlparse(url.strip())
+    netloc = parsed.netloc.lower()
     for prefix in ("www.", "old.", "m."):
         if netloc.startswith(prefix):
             netloc = netloc[len(prefix):]
     # Strip tracking params
     params = parse_qs(parsed.query)
-    clean_params = {k: v for k, v in params.items() if not k.startswith("utm_")}
+    clean_params = {k: v for k, v in params.items() if not k.lower().startswith("utm_")}
     query = urlencode(clean_params, doseq=True)
-    return urlunparse((parsed.scheme, netloc, parsed.path.rstrip("/"), "", query, ""))
+    return urlunparse((parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", query, ""))
 
 
 def candidate_key(item: schema.SourceItem) -> str:
@@ -197,7 +197,8 @@ _MAX_ITEMS_PER_FIRST_PARTY_AUTHOR = 8
 def _extract_author(candidate: schema.Candidate) -> str | None:
     """Return a normalized author key from a candidate's source items."""
     for item in candidate.source_items:
-        if item.author:
+        # Jobs use the ATS provider as author, not an individual contributor.
+        if item.source != "jobs" and item.author:
             return item.author.strip().lower()
     return None
 

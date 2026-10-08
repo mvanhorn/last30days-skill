@@ -16,13 +16,15 @@ import re
 import unittest
 from pathlib import Path
 
+from tests.skill_contract import reference_text
+
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
 CONFIGURATION = ROOT / "CONFIGURATION.md"
 AGENTS_MD = ROOT / "AGENTS.md"
 
 FLOW_HEADING = "### Grok Bot Prose Flow"
-RECIPE_MARKER = "X connector recipe"
+RECIPE_MARKER = "Grok Bot X recipe"
 RECIPE_END = "**Step 1: Run the research script"
 
 # R4 vocabulary: none of it may appear in the Grok Bot flow (case-insensitive).
@@ -79,8 +81,8 @@ def _grok_flow(text: str) -> str:
 
 
 def _recipe(text: str) -> str:
-    research = text[text.index("## Research Execution") :]
-    return _slice_between(research, RECIPE_MARKER, RECIPE_END)
+    assert RECIPE_MARKER in text, f"missing {RECIPE_MARKER!r}"
+    return text[text.index(RECIPE_MARKER):]
 
 
 def _guaranteed_band(text: str) -> str:
@@ -88,7 +90,8 @@ def _guaranteed_band(text: str) -> str:
 
 
 def _extras_passages(text: str) -> dict[str, str]:
-    step0 = _slice_between(text, "## Step 0: First-Run Setup Wizard", "## CRITICAL: Parse User Intent")
+    step0 = text
+    assert "## Step 0: First-Run Setup Wizard" in step0
     modal = _slice_between(step0, "### Claude Code Modal Flow", "### Non-Modal Prose Flow")
     prose = _slice_between(step0, "### Non-Modal Prose Flow", FLOW_HEADING)
     manual = step0[step0.index("### Manual Setup Guide") :]
@@ -105,13 +108,11 @@ def _forbidden_hits(slice_text: str) -> list[str]:
 
 class TestGrokBotProseFlow(unittest.TestCase):
     def setUp(self):
-        self.text = _text()
+        self.text = reference_text("setup-wizard")
         self.flow = _grok_flow(self.text)
 
     def test_flow_is_the_third_step0_branch(self):
-        step0 = _slice_between(
-            self.text, "## Step 0: First-Run Setup Wizard", "## CRITICAL: Parse User Intent"
-        )
+        step0 = self.text
         split = _slice_between(step0, "**Platform split", "### Claude Code Modal Flow")
         self.assertIn("Grok Bot Prose Flow", split)
         # Cursor stays a Non-Modal host; it is not routed to the Grok Bot flow.
@@ -152,13 +153,25 @@ class TestGrokBotProseFlow(unittest.TestCase):
         tool name alone (search_posts_all stays as the example)."""
         self.assertIn('"X for Grok Bot"', self.flow)
         self.assertIn("search_posts_all", self.flow)
-        rule = _text()[: _text().index("## Step 0")]
+        rule = _guaranteed_band(_text())
         self.assertIn('"X for Grok Bot"', rule)
 
     def test_connector_step_precedes_bearer_offer(self):
         connector = self.flow.index("search_posts_all")
         bearer = self.flow.index("X_BEARER_TOKEN")
         self.assertLess(connector, bearer)
+
+    def test_built_in_x_tools_come_before_the_plugin_and_need_no_setup(self):
+        native = self.flow.index("namespace `x`")
+        plugin = self.flow.index('"X for Grok Bot"')
+        bearer = self.flow.index("X_BEARER_TOKEN")
+        self.assertLess(native, plugin)
+        self.assertLess(plugin, bearer)
+        self.assertIn("nothing to configure", self.flow)
+        self.assertIn("only when neither is present", self.flow)
+
+    def test_lane_signal_is_exported_only_after_a_fetch_returned_posts(self):
+        self.assertIn("only in an engine shell whose fetch returned posts", self.flow)
 
     def test_bearer_coverage_caveat_never_implies_parity(self):
         self.assertIn(
@@ -195,7 +208,7 @@ class TestGuaranteedLoadedRule(unittest.TestCase):
     def test_rule_lives_in_the_guaranteed_loaded_band(self):
         self.assertIn("LAST30DAYS_HOST=grok-bot", self.band)
         self.assertIn("LAST30DAYS_X_HOST_LANE=1", self.band)
-        self.assertIn("never place post text unquoted", self.band)
+        self.assertIn("never place post text unquoted", self.band.lower())
         self.assertIn("CURSOR_AGENT", self.band)
 
     def test_rule_is_not_keyed_on_cursor_agent_alone(self):
@@ -207,12 +220,13 @@ class TestGuaranteedLoadedRule(unittest.TestCase):
 
 class TestConnectorRecipe(unittest.TestCase):
     def setUp(self):
-        self.recipe = _recipe(_text())
+        self.recipe = _recipe(reference_text("grok-bot-x"))
 
     def test_recipe_precedes_the_engine_command(self):
-        text = _text()
+        text = reference_text("research-runbook")
         research = text[text.index("## Research Execution") :]
-        self.assertLess(research.index(RECIPE_MARKER), research.index(RECIPE_END))
+        self.assertLess(research.index("grok-bot-x.md"), research.index(RECIPE_END))
+        self.assertIn("before", research[:research.index(RECIPE_END)].lower())
 
     def test_recipe_names_counts_window_and_status(self):
         for token in (
@@ -264,23 +278,80 @@ class TestConnectorRecipe(unittest.TestCase):
     def test_recipe_has_no_r4_vocabulary(self):
         self.assertEqual([], _forbidden_hits(self.recipe))
 
+    def test_recipe_names_both_host_lanes_by_source_before_the_engine_chain(self):
+        plugin = self.recipe.index('"X for Grok Bot"')
+        native = self.recipe.index("namespace `x`")
+        bearer = self.recipe.index("X_BEARER_TOKEN")
+        self.assertLess(native, plugin)
+        self.assertLess(plugin, bearer)
+        self.assertIn("never by its name", self.recipe)
+        for token in ('"provider": "x-native"', '"x-connector"', "X via Grok Bot X"):
+            self.assertIn(token, self.recipe, token)
+
+    def test_recipe_pages_recency_to_the_depth_count(self):
+        for token in ("`recency`", "next_token", "max_results", "ONE envelope call", "note_tweet"):
+            self.assertIn(token, self.recipe, token)
+        for metric in ("like_count", "retweet_count", "reply_count", "quote_count"):
+            self.assertIn(metric, self.recipe, metric)
+
+    def test_recipe_samples_popular_posts_across_the_whole_window(self):
+        self.assertIn("popular pass", self.recipe)
+        popular = self.recipe[self.recipe.index("popular pass"):]
+        popular = popular[: popular.index("\n")]
+        self.assertIn("first topic query only", popular)
+        self.assertIn("10 equal slices", popular)
+        self.assertIn("`relevancy`", popular)
+        self.assertIn("ONE envelope call", popular)
+
+    def test_recipe_keeps_the_envelope_inside_engine_limits(self):
+        self.assertIn("500 posts per call", self.recipe)
+        self.assertIn("1,000 posts and 20 calls in total", self.recipe)
+        self.assertIn("drop discovered-author calls first", self.recipe)
+
+    def test_comparison_uses_envelopes_only_when_every_entity_has_posts(self):
+        self.assertIn("only when every entity's fetch returned posts", self.recipe)
+
+    def test_comparison_paces_tool_calls_under_the_per_minute_limit(self):
+        self.assertIn("no minute holds more than 30 tool calls", self.recipe)
+        self.assertIn("popular pass for the main entity only", self.recipe)
+
+    def test_recipe_gives_discovered_authors_full_handle_lanes(self):
+        authors = self.recipe[self.recipe.index("**Discovered authors.**"):]
+        authors = authors[: authors.index("\n   - ")]
+        self.assertIn("`from` call", authors)
+        self.assertIn("8 posts", authors)
+        self.assertIn("`mention` call", authors)
+        self.assertIn("5 posts", authors)
+        self.assertIn("`--x-related`", authors)
+
+    def test_related_calls_are_only_for_handles_the_user_passed(self):
+        self.assertIn("Per handle the user explicitly passed with `--x-related`", self.recipe)
+        self.assertIn("A discovered author never gets a `related` call.", self.recipe)
+        self.assertIn("These are a discovered author's only calls.", self.recipe)
+
+    def test_recipe_window_uses_the_engines_utc_date(self):
+        self.assertIn("today's UTC date", self.recipe)
+
+    def test_recipe_exports_the_lane_only_after_posts_came_back(self):
+        self.assertIn("only when a lane returned posts", self.recipe)
+        self.assertIn("unset LAST30DAYS_X_HOST_LANE", self.recipe)
+
 
 class TestExtrasPassagesRescoped(unittest.TestCase):
     def test_extras_passages_no_longer_name_grok_bot(self):
-        for name, passage in _extras_passages(_text()).items():
+        for name, passage in _extras_passages(reference_text("setup-wizard")).items():
             self.assertNotIn("Grok Bot", passage, f"{name} extras passage still names Grok Bot")
             self.assertIn("grok-bot", passage, f"{name} extras passage does not exclude the grok-bot host")
 
     def test_manual_repair_heading_rescoped(self):
-        text = _text()
+        text = reference_text("setup-wizard")
         self.assertIn("**X on Linux / Mac mini (repair).**", text)
         self.assertNotIn("X on Linux / Grok Bot / Mac mini", text)
 
 
 class TestManualSetupGuide(unittest.TestCase):
     def setUp(self):
-        text = _text()
-        step0 = _slice_between(text, "## Step 0: First-Run Setup Wizard", "## CRITICAL: Parse User Intent")
+        step0 = reference_text("setup-wizard")
         self.manual = step0[step0.index("### Manual Setup Guide") :]
 
     def test_bearer_bullet_comes_first_in_x_section(self):
@@ -309,8 +380,9 @@ class TestSecurityAndFrontmatter(unittest.TestCase):
         self.assertIn("api.x.com", security)
         self.assertIn("--x-posts", security)
         self.assertIn("X connector", security)
-        overview = _slice_between(text, "**Permissions overview:**", "Research ANY topic")
-        self.assertIn("api.x.com", overview)
+        self.assertIn("X_BEARER_TOKEN", security)
+        self.assertIn("sent only in the Authorization header", security)
+        self.assertIn("no X backend is called", security)
 
 
 class TestConfigurationGrokBotSubsection(unittest.TestCase):

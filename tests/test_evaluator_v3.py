@@ -1,7 +1,9 @@
 import contextlib
 import io
 import json
+import math
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +13,60 @@ import evaluate_search_quality as evaluator
 
 
 class EvaluatorV3Tests(unittest.TestCase):
+    def test_main_rejudges_changed_results_and_reuses_identical_results(self):
+        for changed_id in (False, True):
+            with self.subTest(changed_id=changed_id), tempfile.TemporaryDirectory() as tmp:
+                output_dir = Path(tmp)
+                topics = output_dir / "topics.json"
+                topics.write_text(json.dumps([{"topic": "test topic", "query_type": "general"}]))
+                baseline_url = "https://example.com/baseline-only"
+                shared_url = "https://example.com/shared"
+                old_url = "https://example.com/old"
+                new_url = "https://example.com/new" if changed_id else old_url
+                shared_item = {"url": shared_url, "title": "Shared relevant result", "score": 80}
+                baseline_report = {"reddit": [
+                    {"url": baseline_url, "title": "Unrelated baseline result", "score": 90},
+                    shared_item,
+                ]}
+                old_report = {"reddit": [shared_item, {"url": old_url, "title": "Relevant result", "score": 90}]}
+                new_title = "New relevant result" if changed_id else "Off-topic replacement"
+                new_report = {"reddit": [shared_item, {"url": new_url, "title": new_title, "score": 90}]}
+                new_grade = 3 if changed_id else 0
+                responses = [
+                    mock.Mock(returncode=0, stdout=json.dumps(report), stderr="")
+                    for report in (baseline_report, old_report, baseline_report, new_report, baseline_report, new_report)
+                ]
+                argv = [
+                    "evaluate_search_quality.py", "--baseline=WORKTREE", "--candidate=WORKTREE",
+                    "--topics-file", str(topics), "--output-dir", str(output_dir),
+                ]
+                with (
+                    mock.patch.object(sys, "argv", argv),
+                    mock.patch.dict(os.environ, {"GOOGLE_API_KEY": "dummy-evaluation-key"}),
+                    mock.patch.object(evaluator.subprocess, "run", autospec=True, side_effect=responses),
+                    mock.patch.object(evaluator, "call_gemini_judge", autospec=True, side_effect=[
+                        {"judgments": [{"id": baseline_url, "grade": 0}, {"id": shared_url, "grade": 3}, {"id": old_url, "grade": 3}]},
+                        {"judgments": [{"id": baseline_url, "grade": 0}, {"id": shared_url, "grade": 3}, {"id": new_url, "grade": new_grade}]},
+                    ]) as judge,
+                    contextlib.redirect_stdout(io.StringIO()),
+                ):
+                    self.assertEqual(0, evaluator.main())
+                    first = json.loads((output_dir / "metrics.json").read_text())
+                    self.assertEqual(0.5, first["topics"][0]["baseline"]["precision_at_5"])
+                    self.assertEqual(1.0, first["topics"][0]["candidate"]["precision_at_5"])
+                    self.assertEqual(0, evaluator.main())
+                    second = json.loads((output_dir / "metrics.json").read_text())
+                    self.assertEqual(0.5, second["topics"][0]["baseline"]["precision_at_5"])
+                    self.assertEqual((1 + (new_grade >= 2)) / 2, second["topics"][0]["candidate"]["precision_at_5"])
+                    self.assertEqual(2, judge.call_count)
+                    for call, result_url in zip(judge.call_args_list, (old_url, new_url)):
+                        judged_ids = [line.removeprefix("- id: ") for line in call.args[2].splitlines() if line.startswith("- id: ")]
+                        self.assertCountEqual([baseline_url, shared_url, result_url], judged_ids)
+                    self.assertEqual(0, evaluator.main())
+                    third = json.loads((output_dir / "metrics.json").read_text())
+                    self.assertEqual(second["topics"], third["topics"])
+                    self.assertEqual(2, judge.call_count)
+
     def test_build_ranked_items_uses_multi_source_provenance_and_best_date(self):
         report = {
             "ranked_candidates": [
@@ -91,10 +147,16 @@ class EvaluatorV3Tests(unittest.TestCase):
         self.assertEqual(1.0, evaluator.jaccard(set(), set()))
         self.assertEqual(1.0, evaluator.retention(set(), {"a"}))
         self.assertEqual(0.5, evaluator.precision_at_k(ranking, judgments, 2))
-        self.assertGreater(evaluator.ndcg_at_k(ranking, judgments, 2, judged), 0.0)
+        self.assertEqual(1.0, evaluator.ndcg_at_k(ranking, judgments, 2, judged))
+        expected_reversed = (1 + 7 / math.log2(3)) / (7 + 1 / math.log2(3))
+        self.assertAlmostEqual(
+            expected_reversed,
+            evaluator.ndcg_at_k(list(reversed(ranking)), judgments, 2, judged),
+        )
         self.assertEqual(1.0, evaluator.source_coverage_recall(ranking, judged, judgments))
         self.assertEqual(0.0, evaluator.precision_at_k([], judgments, 5))
         self.assertEqual(0.0, evaluator.ndcg_at_k([], judgments, 5, judged))
+        self.assertEqual(0.0, evaluator.ndcg_at_k(ranking, {"a": 0, "b": 0}, 2, judged))
 
     def test_resolve_google_judge_api_key_prefers_google_key(self):
         with mock.patch.dict("os.environ", {"GOOGLE_API_KEY": "google", "GEMINI_API_KEY": "gemini"}, clear=False):
@@ -115,24 +177,28 @@ class EvaluatorV3Tests(unittest.TestCase):
     def test_get_judgments_uses_cache_and_skips_when_not_configured(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
-            cache_dir = output_dir / "judgments"
-            cache_dir.mkdir()
-            (cache_dir / "topic.json").write_text(
-                json.dumps(
-                    {
-                        "judge_model": "gemini-3.1-flash-lite",
-                        "judgments": [{"id": "a", "grade": 3}],
-                    }
+            items = [{"key": "a", "source": "reddit", "text": "Test topic", "url": "https://example.com/a"}]
+            with mock.patch.object(evaluator, "call_gemini_judge", autospec=True, return_value={
+                "judgments": [{"id": "a", "grade": 3}],
+            }) as judge:
+                evaluator.get_judgments(
+                    output_dir=output_dir,
+                    slug="topic",
+                    topic="test topic",
+                    query_type="general",
+                    items=items,
+                    judge_model="gemini-3.1-flash-lite",
+                    gemini_api_key="dummy-evaluation-key",
                 )
-            )
+                judge.assert_called_once()
             cached = evaluator.get_judgments(
                 output_dir=output_dir,
                 slug="topic",
                 topic="test topic",
                 query_type="general",
-                items=[{"key": "a"}],
+                items=items,
                 judge_model="gemini-3.1-flash-lite",
-                gemini_api_key="key",
+                gemini_api_key=None,
             )
             self.assertEqual({"a": 3}, cached)
 
@@ -147,9 +213,7 @@ class EvaluatorV3Tests(unittest.TestCase):
             )
             self.assertEqual({}, skipped)
 
-    def test_get_judgments_remisses_on_judge_model_change(self):
-        """A cache written by a different judge model must not be reused; a
-        --judge-model change forces a re-judge instead of returning stale grades."""
+    def test_get_judgments_rejects_unverified_legacy_cache_without_api_key(self):
         with tempfile.TemporaryDirectory() as tmp:
             output_dir = Path(tmp)
             cache_dir = output_dir / "judgments"
@@ -162,10 +226,6 @@ class EvaluatorV3Tests(unittest.TestCase):
                     }
                 )
             )
-            # Same slug, different model, no API key to re-judge: the stale
-            # grades must NOT come back — an empty result signals "re-judge
-            # needed" rather than silently wrong numbers, and the discard is
-            # announced on stderr instead of failing silently.
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr):
                 result = evaluator.get_judgments(
@@ -173,12 +233,65 @@ class EvaluatorV3Tests(unittest.TestCase):
                     slug="topic",
                     topic="test topic",
                     query_type="general",
-                    items=[{"key": "a"}],
-                    judge_model="gemini-2.5-pro",
+                    items=[{"key": "a", "source": "reddit", "text": "Test topic", "url": "https://example.com/a"}],
+                    judge_model="gemini-3.1-flash-lite",
                     gemini_api_key=None,
                 )
             self.assertEqual({}, result)
-            self.assertIn("different", stderr.getvalue())
+            self.assertIn("unverified", stderr.getvalue())
+
+    def test_get_judgments_refreshes_legacy_cache(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            cache_dir = output_dir / "judgments"
+            cache_dir.mkdir()
+            (cache_dir / "topic.json").write_text(json.dumps({
+                "judge_model": "gemini-3.1-flash-lite",
+                "judgments": [{"id": "a", "grade": 3}],
+            }))
+            with mock.patch.object(evaluator, "call_gemini_judge", autospec=True, return_value={
+                "judgments": [{"id": "a", "grade": 0}],
+            }) as judge:
+                result = evaluator.get_judgments(
+                    output_dir=output_dir,
+                    slug="topic",
+                    topic="test topic",
+                    query_type="general",
+                    items=[{"key": "a", "source": "reddit", "text": "Off topic", "url": "https://example.com/a"}],
+                    judge_model="gemini-3.1-flash-lite",
+                    gemini_api_key="dummy-evaluation-key",
+                )
+            self.assertEqual({"a": 0}, result)
+            judge.assert_called_once()
+
+    def test_get_judgments_rejudges_changed_context(self):
+        changes = [
+            {"topic": "other topic"},
+            {"query_type": "comparison"},
+            {"judge_model": "other-model"},
+            {"source": "youtube"},
+            {"url": "https://example.com/changed"},
+            {"date": "2026-10-02"},
+        ]
+        for change in changes:
+            with self.subTest(change=change), tempfile.TemporaryDirectory() as tmp:
+                item = {"key": "a", "source": "reddit", "text": "Test topic", "url": "https://example.com/a", "date": "2026-10-01"}
+                arguments = dict(
+                    output_dir=Path(tmp), slug="topic", topic="test topic", query_type="general",
+                    items=[item], judge_model="gemini-3.1-flash-lite", gemini_api_key="dummy-evaluation-key",
+                )
+                with mock.patch.object(evaluator, "call_gemini_judge", autospec=True, side_effect=[
+                    {"judgments": [{"id": "a", "grade": 3}]},
+                    {"judgments": [{"id": "a", "grade": 0}]},
+                ]) as judge:
+                    self.assertEqual({"a": 3}, evaluator.get_judgments(**arguments))
+                    for key, value in change.items():
+                        if key in item:
+                            item[key] = value
+                        else:
+                            arguments[key] = value
+                    self.assertEqual({"a": 0}, evaluator.get_judgments(**arguments))
+                    self.assertEqual(2, judge.call_count)
 
     def test_create_eval_env_and_run_last30days(self):
         credential_env = {

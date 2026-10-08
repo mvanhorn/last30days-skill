@@ -22,6 +22,9 @@ import (
 //	STUB_SLEEP_SECS  - sleep before exiting (for timeout tests)
 //	STUB_ECHO_ENV    - name of an env var; the stub prints "<NAME>=<VALUE>"
 //	STUB_ECHO_ARG    - integer index; the stub prints "ARG<i>=<args[i]>"
+//	STUB_ECHO_ARGS   - when set (any value), the stub prints its full argv
+//	                   after the script path, one argument per line, so tests
+//	                   can assert the exact argv the engine receives
 //
 // The stub ignores its first argument (the script path), matching how a
 // real python3 invocation treats `python3 last30days.py ...`.
@@ -38,6 +41,7 @@ if [ -n "${STUB_STDOUT:-}" ]; then printf "%s" "$STUB_STDOUT"; fi
 if [ -n "${STUB_STDERR:-}" ]; then printf "%s" "$STUB_STDERR" >&2; fi
 if [ -n "${STUB_ECHO_ENV:-}" ]; then echo "${STUB_ECHO_ENV}=${!STUB_ECHO_ENV:-<unset>}"; fi
 if [ -n "${STUB_ECHO_ARG:-}" ]; then echo "ARG${STUB_ECHO_ARG}=${!STUB_ECHO_ARG:-<unset>}"; fi
+if [ -n "${STUB_ECHO_ARGS:-}" ]; then shift; printf "%s\n" "$@"; fi
 exit "${STUB_EXIT_CODE:-0}"
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
@@ -79,6 +83,30 @@ func TestRunHappyPath(t *testing.T) {
 	}
 	if res.TimedOut {
 		t.Fatal("TimedOut = true, want false")
+	}
+}
+
+// TestRunForwardsExactArgv pins the full argv the engine subprocess
+// receives: options first, explicit empty --save-dir on decline, `--`
+// separator, then the positional topic. The default-deny
+// --no-browser-cookies flag rides along in this shape too.
+func TestRunForwardsExactArgv(t *testing.T) {
+	stub := makeStubPython(t)
+	cache := stageCache(t)
+	t.Setenv("STUB_ECHO_ARGS", "1")
+
+	want := []string{"--emit=compact", "--no-browser-cookies", "--save-dir", "", "--", "--mock"}
+	res, err := Run(context.Background(), RunOptions{
+		PythonPath: stub,
+		CacheDir:   cache,
+		Args:       want,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(res.Stdout), "\n"), "\n")
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("engine argv = %#v, want %#v", got, want)
 	}
 }
 
@@ -218,6 +246,39 @@ func TestRunTimesOut(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "timeout") {
 		t.Fatalf("error %q lacks 'timeout' marker", err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run error = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestRunCanceledBeforeStart(t *testing.T) {
+	for _, wantErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(wantErr.Error(), func(t *testing.T) {
+			expired := wantErr == context.DeadlineExceeded
+			ctx, cancel := context.WithCancel(context.Background())
+			if expired {
+				cancel()
+				ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			}
+			cancel()
+			cache := stageCache(t)
+			// A missing executable exposes an attempted start even when a
+			// valid child would be killed before it could write output.
+			res, err := Run(ctx, RunOptions{
+				PythonPath: filepath.Join(cache, "must-not-start"),
+				CacheDir:   cache,
+			})
+			if !errors.Is(err, wantErr) {
+				t.Errorf("Run error = %v, want %v", err, wantErr)
+			}
+			if res == nil {
+				t.Fatal("Run result is nil; want a canceled result")
+			}
+			if res.TimedOut != expired || res.ExitCode != -1 || len(res.Stdout) != 0 {
+				t.Errorf("Run result = %+v, want no started subprocess and TimedOut=%v", res, expired)
+			}
+		})
 	}
 }
 

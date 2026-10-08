@@ -18,6 +18,7 @@ import unittest
 from pathlib import Path
 
 from lib import setup_wizard
+from tests.skill_contract import contract_documents, reference_text
 
 ROOT = Path(__file__).resolve().parents[1]
 SKILL_MD = ROOT / "skills" / "last30days" / "SKILL.md"
@@ -29,9 +30,8 @@ class TestOnboardingContract(unittest.TestCase):
         self.text = SKILL_MD.read_text(encoding="utf-8")
         # Scope assertions to Step 0 so generic substrings elsewhere in the file
         # do not satisfy ordering/presence checks.
-        start = self.text.index("## Step 0: First-Run Setup Wizard")
-        end = self.text.index("## CRITICAL: Parse User Intent", start)
-        self.step0 = self.text[start:end]
+        self.step0 = reference_text("setup-wizard")
+        self.assertIn("## Step 0: First-Run Setup Wizard", self.step0)
         # Branch slices.
         modal_start = self.step0.index("### Claude Code Modal Flow")
         prose_start = self.step0.index("### Non-Modal Prose Flow")
@@ -84,11 +84,29 @@ class TestOnboardingContract(unittest.TestCase):
     def test_first_run_gate_defers_to_step0_credential_sources(self):
         """The cheap SETUP_COMPLETE grep is not itself a first-run verdict."""
         start = self.text.index("**FIRST-RUN GATE")
-        end = self.text.index("\n## Step 0: First-Run Setup Wizard")
-        gate = self.text[start:end]
+        gate = self.text[start:].split("\n## ", 1)[0].replace("**", "")
         self.assertIn("FIRST_RUN_DETECTED", gate)
         self.assertIn("A missing `.env` alone is not a first run", gate)
         self.assertIn("That section decides first-run from every credential source", gate)
+
+    def test_root_first_run_gate_routes_to_setup_wizard(self):
+        """The wizard's own Step 0 gate is only read after this root route fires."""
+        start = self.text.index("**FIRST-RUN GATE")
+        gate = self.text[start:].split("\n## ", 1)[0]
+        first_run = next(
+            line for line in gate.splitlines() if line.startswith("- `FIRST_RUN_DETECTED`")
+        )
+        self.assertIn("read the setup-wizard reference through its root gate immediately", first_run)
+        self.assertIn("complete the applicable flow before topic research", first_run)
+        self.assertLess(gate.index("FIRST_RUN_DETECTED"), gate.index("Topic supplied: load the topic runbook"))
+
+    def test_root_consent_rules_hold_without_setup_wizard(self):
+        """Configured runs never load setup-wizard.md, so consent must stay in the root."""
+        start = self.text.index("**Onboarding consent is model-led and host-split.**")
+        consent = self.text[start:].split("\n\n", 1)[0]
+        self.assertIn("Ask before browser-cookie reads, and preserve refusal", consent)
+        self.assertIn("a skip or no answer is never consent", consent)
+        self.assertIn("All three host flows offer the ScrapeCreators signup on first run", consent)
 
     def test_complete_does_not_treat_setup_stdout_as_source_list(self):
         self.assertIn(
@@ -140,14 +158,17 @@ class TestOnboardingContract(unittest.TestCase):
         self.assertIn("Do not re-ask cookie consent as part of the resume", self.prose)
 
     def test_x_handle_resolution_and_plan_follow_active_sources(self):
-        self.assertIn("If `ACTIVE_SOURCES_LIST` contains `x`", self.text)
-        self.assertIn("every applicable source from `ACTIVE_SOURCES_LIST`", self.text)
-        self.assertIn("Preserve X whenever it is active", self.text)
+        research = reference_text("research-runbook")
+        self.assertIn("If `ACTIVE_SOURCES_LIST` contains `x`", research)
+        self.assertIn("every applicable source from `ACTIVE_SOURCES_LIST`", research)
+        self.assertIn("Preserve X whenever it is active", research)
 
     def test_post_report_x_note_is_non_blocking(self):
-        self.assertNotIn("Just-in-time X unlock", self.text)
-        self.assertIn("Optional X omission", self.text)
-        self.assertIn("finish the useful findings first", self.text)
+        synthesis = reference_text("synthesis")
+        for name, text in contract_documents().items():
+            self.assertNotIn("Just-in-time X unlock", text, name)
+        self.assertIn("Optional X omission", synthesis)
+        self.assertIn("finish the useful findings first", synthesis)
 
     # --- Modal flow: the restored NUX, stages in order ---
 
@@ -187,7 +208,7 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_modal_cookie_consent_before_setup(self):
         consent = self.modal.find("your browser's x.com cookies")
-        setup = self.modal.find("last30days.py setup")
+        setup = self.modal.find('last30days.py" setup')
         self.assertGreater(consent, -1, "no cookie-consent modal in modal flow")
         self.assertGreater(setup, -1, "no setup invocation in modal flow")
         self.assertLess(consent, setup, "cookie consent must precede setup in modal flow")
@@ -204,7 +225,7 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_prose_cookie_consent_before_setup(self):
         consent = self.prose.find("Cookie consent")
-        setup = self.prose.find("last30days.py setup")
+        setup = self.prose.find('last30days.py" setup')
         self.assertGreater(consent, -1, "no cookie-consent step in prose flow")
         self.assertGreater(setup, -1, "no setup invocation in prose flow")
         self.assertLess(consent, setup, "cookie consent must precede setup in prose flow")
@@ -281,16 +302,20 @@ class TestOnboardingContract(unittest.TestCase):
 
     def test_offer_copy_names_comments_and_auto_enrichment(self):
         """The Step 4 offer states comments are part of the default value and
-        describes the key's real Reddit/YouTube roles (empty-path Reddit
-        search backfill + yt-dlp transcript backstop) — not rate-limit
+        describes the key's real Reddit/YouTube roles (Reddit search backfill
+        below the 5-item floor + yt-dlp transcript backstop), not rate-limit
         escalation or SC Reddit comment enrichment on the free path."""
         before = self._modal_before_step5()
         self.assertIn("comments", before.lower())
         self.assertIn("Reddit", before)
         self.assertIn("YouTube", before)
         self.assertIn("10,000 free calls", before)
-        # Empty-only search backup (not transport/rate-limit escalation).
-        self.assertIn("returns no items", before)
+        # Floor-triggered search backfill with the 0 opt-out (not
+        # transport/rate-limit escalation, and no longer empty-only).
+        self.assertIn("fewer than 5 items", before)
+        self.assertIn("LAST30DAYS_REDDIT_SC_MIN_ITEMS=0", before)
+        self.assertNotIn("returns no items", before)
+        self.assertNotIn("empty-only", before)
         self.assertNotIn("when they hit rate limits", before)
         # Free-path comments are shreddit; do not claim SC comment preference.
         self.assertNotIn("prefers ScrapeCreators for Reddit", before)
@@ -301,7 +326,8 @@ class TestOnboardingContract(unittest.TestCase):
         step5 = self._modal_step5()
         self.assertNotIn("public + ScrapeCreators", step5)
         self.assertNotIn("Reddit auto-enrichment", step5)
-        self.assertIn("empty-only", step5)
+        self.assertIn("fewer than 5 items", step5)
+        self.assertNotIn("empty-only", step5)
 
     def test_recommended_tier_writes_comments_by_default(self):
         """Comments are the DEFAULT: the recommended option enables YouTube +
@@ -331,6 +357,34 @@ class TestOnboardingContract(unittest.TestCase):
             self.assertIn("Chrome", slice_text, f"{slice_name} cookie copy omits Chrome")
             self.assertIn("Always Allow", slice_text, f"{slice_name} omits the Keychain cue")
 
+    def test_cookie_consent_explains_future_reads_before_the_answer(self):
+        prompts = (
+            self.modal.split('Question: "Auto setup', 1)[1].split("Options (", 1)[0],
+            self.prose.split("Otherwise ask. Example:", 1)[1].split("**Wait for the answer.**", 1)[0],
+        )
+        for prompt in prompts:
+            with self.subTest(prompt=prompt):
+                self.assertIn("later research runs", prompt)
+                self.assertIn("browser names", prompt)
+                self.assertIn("may prompt again", prompt)
+                self.assertIn("Always Allow", prompt)
+                self.assertIn("BROWSER_CONSENT=false", prompt)
+                self.assertIn("FROM_BROWSER=off", prompt)
+                self.assertIn("On macOS", prompt)
+                self.assertIn("Windows and Linux", prompt)
+                self.assertIn("Windows Firefox", prompt)
+
+    def test_cookie_persistence_contract_matches_each_host_flow(self):
+        for flow in (self.modal, self.prose):
+            with self.subTest(flow=flow[:30]):
+                self.assertIn("complete cookies", flow)
+                self.assertIn("comma-separated", flow)
+                self.assertIn("never saves cookie values", flow)
+                self.assertNotIn("one-time macOS Keychain prompt", flow)
+                self.assertNotIn("only when it is Firefox or Safari", flow)
+                self.assertNotIn("only a Firefox/Safari winner", flow)
+                self.assertNotIn("Chrome never re-", flow)
+
     def test_fda_reframed_as_safari_fallback(self):
         """Full Disk Access is framed as Safari-only, not the default path."""
         self.assertNotIn("scan your browser (Firefox/Safari)", self.modal)
@@ -345,7 +399,7 @@ class TestOnboardingContract(unittest.TestCase):
         # The modal flow explicitly does NOT run a separate --welcome command.
         self.assertIn("Do NOT run a separate `--welcome`", self.modal)
         # The non-modal flow still uses the engine welcome command.
-        self.assertIn("last30days.py --welcome", self.prose)
+        self.assertIn('last30days.py" --welcome', self.prose)
 
     def test_stocktwits_surfaced_as_conditional(self):
         """StockTwits is advertised in the engine welcome as a ticker/crypto-gated
@@ -418,10 +472,13 @@ class TestOnboardingContract(unittest.TestCase):
     # --- Legacy guarantees retained ---
 
     def test_old_silent_wizard_instruction_removed(self):
-        self.assertNotIn("Follow the wizard's prompts end-to-end", self.text)
+        for document in contract_documents().values():
+            self.assertNotIn("Follow the wizard's prompts end-to-end", document)
 
     def test_consent_is_conversational_contract_documented(self):
-        self.assertIn("Named onboarding contract", self.step0)
+        self.assertIn("You are the conversational driver", self.step0)
+        self.assertIn("consent happens HERE, in chat", self.step0)
+        self.assertIn("gate each subprocess call on the answer", self.step0)
         self.assertIn("non-interactive subprocess", self.step0)
 
 
