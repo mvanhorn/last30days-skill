@@ -506,7 +506,94 @@ time.sleep(15)
     def test_windows_timeout_kills_grandchild_after_shim_exits(self):
         self._assert_windows_timeout_kills_grandchild(shim_exits=True)
 
-    def _assert_windows_timeout_kills_grandchild(self, *, shim_exits):
+    @unittest.skipUnless(IS_WINDOWS, "native Windows process-tree validation")
+    def test_windows_timeout_kills_grandchild_after_two_ancestors_exit(self):
+        self._assert_windows_timeout_kills_grandchild(shim_exits=True, intermediate_exits=True)
+
+    @unittest.skipUnless(IS_WINDOWS, "native Windows process-tree validation")
+    def test_windows_success_reaps_detached_grandchild(self):
+        self._assert_windows_timeout_kills_grandchild(shim_exits=True, normal_exit=True)
+
+    @unittest.skipUnless(IS_WINDOWS, "native Windows process-tree validation")
+    def test_windows_job_assignment_failure_never_starts_child(self):
+        import pathlib
+        import sys
+        import tempfile
+
+        from lib.windows_job import WindowsJob
+
+        spawned = []
+        real_popen = subproc.subprocess.Popen
+
+        def record_spawn(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = pathlib.Path(tmp, "started")
+            try:
+                with patch.object(WindowsJob, "assign", side_effect=OSError("job assignment refused")), \
+                     patch.object(subproc.subprocess, "Popen", side_effect=record_spawn):
+                    with self.assertRaisesRegex(OSError, "job assignment refused"):
+                        subproc.run_with_timeout(
+                            [sys.executable, "-c", "import pathlib,sys;pathlib.Path(sys.argv[1]).touch()", str(marker)],
+                            timeout=2,
+                        )
+                self.assertEqual(len(spawned), 1)
+                self.assertIsNotNone(spawned[0].poll(), "suspended child survived assignment failure")
+                self.assertFalse(marker.exists(), "child ran without a process job")
+                self.assertNotIn(spawned[0].pid, subproc._child_pids)
+                self.assertNotIn(spawned[0].pid, subproc._child_jobs)
+            finally:
+                for proc in spawned:
+                    if proc.poll() is None:
+                        proc.kill()
+                        proc.wait(timeout=2)
+
+    @unittest.skipUnless(IS_WINDOWS, "native Windows process-tree validation")
+    def test_windows_shutdown_during_registration_never_starts_child(self):
+        import pathlib
+        import sys
+        import tempfile
+
+        from lib.windows_job import WindowsJob
+
+        spawned = []
+        real_popen = subproc.subprocess.Popen
+        real_assign = WindowsJob.assign
+
+        def record_spawn(*args, **kwargs):
+            proc = real_popen(*args, **kwargs)
+            spawned.append(proc)
+            return proc
+
+        def shut_down_before_registration(job, handle):
+            real_assign(job, handle)
+            subproc._shutting_down = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = pathlib.Path(tmp, "started")
+            try:
+                with patch.object(WindowsJob, "assign", shut_down_before_registration), \
+                     patch.object(subproc.subprocess, "Popen", side_effect=record_spawn):
+                    with self.assertRaises(subproc.SubprocTimeout):
+                        subproc.run_with_timeout(
+                            [sys.executable, "-c", "import pathlib,sys;pathlib.Path(sys.argv[1]).touch()", str(marker)],
+                            timeout=2,
+                        )
+                self.assertEqual(len(spawned), 1)
+                self.assertIsNotNone(spawned[0].poll(), "suspended child survived shutdown")
+                self.assertFalse(marker.exists(), "child ran after shutdown began")
+                self.assertNotIn(spawned[0].pid, subproc._child_pids)
+                self.assertNotIn(spawned[0].pid, subproc._child_jobs)
+            finally:
+                for proc in spawned:
+                    if proc.poll() is None:
+                        proc.kill()
+                        proc.wait(timeout=2)
+
+    def _assert_windows_timeout_kills_grandchild(self, *, shim_exits, intermediate_exits=False, normal_exit=False):
         import ctypes
         import pathlib
         import signal
@@ -540,14 +627,34 @@ time.sleep(15)
         )
         shim = (
             "import subprocess,sys,time;"
-            "subprocess.Popen([sys.executable,'-c',sys.argv[2],sys.argv[1]]);"
+            "subprocess.Popen([sys.executable,'-c',sys.argv[2],sys.argv[1]]"
+            + (",stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL" if normal_exit else "")
+            + ");"
             + ("" if shim_exits else "time.sleep(30)")
         )
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = pathlib.Path(tmp, "grandchild.pid")
+            intermediate_pidfile = pathlib.Path(tmp, "intermediate.pid")
+            if intermediate_exits:
+                intermediate = (
+                    "import os,pathlib,subprocess,sys;"
+                    "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()));"
+                    "subprocess.Popen([sys.executable,'-c',sys.argv[3],sys.argv[2]])"
+                )
+                shim = (
+                    "import subprocess,sys;"
+                    "subprocess.Popen([sys.executable,'-c',sys.argv[3],sys.argv[1],sys.argv[2],sys.argv[4]])"
+                )
+                cmd = [
+                    sys.executable, "-c", shim, str(intermediate_pidfile),
+                    str(pidfile), intermediate, grandchild,
+                ]
+            else:
+                cmd = [sys.executable, "-c", shim, str(pidfile), grandchild]
             shim_pids = []
             observed_live = []
             observed_root_exit = []
+            observed_intermediate_exit = []
             bystander = (
                 subproc.subprocess.Popen(
                     [sys.executable, "-c", "import time;time.sleep(12)"],
@@ -567,6 +674,14 @@ time.sleep(15)
                             while running(pid) and time.monotonic() < deadline:
                                 time.sleep(0.01)
                             observed_root_exit.append(not running(pid))
+                        if intermediate_exits:
+                            while not intermediate_pidfile.exists() and time.monotonic() < deadline:
+                                time.sleep(0.01)
+                            if intermediate_pidfile.exists():
+                                intermediate_pid = int(intermediate_pidfile.read_text())
+                                while running(intermediate_pid) and time.monotonic() < deadline:
+                                    time.sleep(0.01)
+                                observed_intermediate_exit.append(not running(intermediate_pid))
                         return
                     time.sleep(0.01)
                 self.fail("grandchild did not write its PID")
@@ -574,6 +689,8 @@ time.sleep(15)
             def kill_owned_processes():
                 grandchild_pid = pidfile.read_text().strip() if pidfile.exists() else ""
                 targets = shim_pids + ([int(grandchild_pid)] if grandchild_pid.isdigit() else [])
+                if intermediate_pidfile.exists():
+                    targets.append(int(intermediate_pidfile.read_text()))
                 for pid in targets:
                     if running(pid):
                         try:
@@ -597,17 +714,19 @@ time.sleep(15)
             watchdog.start()
             try:
                 started = time.monotonic()
-                with self.assertRaises(subproc.SubprocTimeout):
-                    subproc.run_with_timeout(
-                        [sys.executable, "-c", shim, str(pidfile), grandchild],
-                        timeout=0.2,
-                        on_pid=wait_for_grandchild,
-                    )
-                self.assertLess(time.monotonic() - started, 8, "timeout waited for the grandchild to exit")
+                if normal_exit:
+                    result = subproc.run_with_timeout(cmd, timeout=5, on_pid=wait_for_grandchild)
+                    self.assertEqual(result.returncode, 0)
+                else:
+                    with self.assertRaises(subproc.SubprocTimeout):
+                        subproc.run_with_timeout(cmd, timeout=0.2, on_pid=wait_for_grandchild)
+                self.assertLess(time.monotonic() - started, 8, "cleanup waited for the grandchild to exit")
                 self.assertTrue(shim_pids)
                 self.assertEqual(observed_live, [True], "grandchild was not alive before timeout")
                 if shim_exits:
                     self.assertEqual(observed_root_exit, [True], "shim did not exit before timeout")
+                if intermediate_exits:
+                    self.assertEqual(observed_intermediate_exit, [True], "intermediate did not exit before timeout")
                 self.assertTrue(pidfile.exists())
                 shim_pid = shim_pids[0]
                 grandchild_pid = int(pidfile.read_text())

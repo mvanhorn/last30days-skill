@@ -51,6 +51,10 @@ jobs:
           uv run python -m unittest
           tests.test_subproc.TestRunWithTimeout.test_windows_timeout_kills_shim_grandchild
           tests.test_subproc.TestRunWithTimeout.test_windows_timeout_kills_grandchild_after_shim_exits
+          tests.test_subproc.TestRunWithTimeout.test_windows_timeout_kills_grandchild_after_two_ancestors_exit
+          tests.test_subproc.TestRunWithTimeout.test_windows_success_reaps_detached_grandchild
+          tests.test_subproc.TestRunWithTimeout.test_windows_job_assignment_failure_never_starts_child
+          tests.test_subproc.TestRunWithTimeout.test_windows_shutdown_during_registration_never_starts_child
           -v
 
   eval:

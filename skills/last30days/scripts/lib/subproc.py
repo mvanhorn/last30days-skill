@@ -1,7 +1,7 @@
 """Subprocess helpers: safe timeout + process-tree cleanup.
 
 Used by Bird/X search and other external-source clients. POSIX children use
-their own process group; Windows children need taskkill's tree termination.
+their own process group; Windows children run inside a kill-on-close job.
 """
 
 from __future__ import annotations
@@ -36,6 +36,7 @@ class SubprocTimeout(Exception):
 # lock in register_child_pid.
 _child_pids: set[int] = set()
 _child_pids_lock = threading.RLock()
+_child_jobs: dict[int, object] = {}
 # Set once cleanup_children starts. Worker threads keep running while the
 # handler sleeps through the grace, so a source can spawn a child after the
 # snapshot; register_child_pid kills such late children itself.
@@ -54,6 +55,9 @@ def register_child_pid(pid: int) -> None:
 def unregister_child_pid(pid: int) -> None:
     with _child_pids_lock:
         _child_pids.discard(pid)
+        job = _child_jobs.pop(pid, None)
+        if job is not None:
+            job.close()
 
 
 # Upper bound on how long cleanup_children waits for SIGTERMed groups before
@@ -90,133 +94,23 @@ def _taskkill_pid(pid: int, timeout: float = 2) -> bool:
     return result.returncode == 0
 
 
-def _kill_exited_windows_children(pid: int) -> bool:
-    import ctypes
-    from ctypes import wintypes
-
-    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
-    TH32CS_SNAPPROCESS = 0x2
-    STILL_ACTIVE = 259
-    ERROR_NO_MORE_FILES = 18
-
-    class FileTime(ctypes.Structure):
-        _fields_ = [
-            ("low", wintypes.DWORD),
-            ("high", wintypes.DWORD),
-        ]
-
-    class ProcessEntry(ctypes.Structure):
-        _fields_ = [
-            ("size", wintypes.DWORD),
-            ("usage", wintypes.DWORD),
-            ("pid", wintypes.DWORD),
-            ("heap_id", ctypes.c_size_t),
-            ("module_id", wintypes.DWORD),
-            ("threads", wintypes.DWORD),
-            ("parent_pid", wintypes.DWORD),
-            ("priority", wintypes.LONG),
-            ("flags", wintypes.DWORD),
-            ("name", wintypes.WCHAR * 260),
-        ]
-
-    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
-    kernel.OpenProcess.restype = wintypes.HANDLE
-    kernel.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(FileTime),) * 4
-    kernel.GetProcessTimes.restype = wintypes.BOOL
-    kernel.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
-    kernel.GetExitCodeProcess.restype = wintypes.BOOL
-    kernel.GetSystemTimeAsFileTime.argtypes = (ctypes.POINTER(FileTime),)
-    kernel.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
-    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
-    kernel.Process32FirstW.argtypes = (wintypes.HANDLE, ctypes.POINTER(ProcessEntry))
-    kernel.Process32FirstW.restype = wintypes.BOOL
-    kernel.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(ProcessEntry))
-    kernel.Process32NextW.restype = wintypes.BOOL
-    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
-
-    def created_at(handle: int) -> Optional[int]:
-        times = [FileTime() for _ in range(4)]
-        if not kernel.GetProcessTimes(handle, *(ctypes.byref(value) for value in times)):
-            return None
-        return times[0].high << 32 | times[0].low
-
-    deadline = time.monotonic() + 2
-    with ExitStack() as handles:
-        root = kernel.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
-        if not root:
-            return False
-        handles.callback(kernel.CloseHandle, root)
-        root_created = created_at(root)
-        exit_code = wintypes.DWORD()
-        if root_created is None or not kernel.GetExitCodeProcess(root, ctypes.byref(exit_code)):
-            return False
-        if exit_code.value == STILL_ACTIVE:
-            return False
-
-        cutoff = FileTime()
-        kernel.GetSystemTimeAsFileTime(ctypes.byref(cutoff))
-        cutoff_created = cutoff.high << 32 | cutoff.low
-        snapshot = kernel.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
-        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
-            return False
-        handles.callback(kernel.CloseHandle, snapshot)
-
-        entry = ProcessEntry()
-        entry.size = ctypes.sizeof(ProcessEntry)
-        if not kernel.Process32FirstW(snapshot, ctypes.byref(entry)):
-            return False
-        children = []
-        complete = False
-        while True:
-            if time.monotonic() >= deadline:
-                break
-            if entry.parent_pid == pid and entry.pid != pid:
-                child = kernel.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, entry.pid)
-                if child:
-                    handles.callback(kernel.CloseHandle, child)
-                    child_created = created_at(child)
-                    if child_created is not None and root_created <= child_created <= cutoff_created:
-                        children.append((entry.pid, child))
-                        if len(children) == 64:
-                            break
-            if not kernel.Process32NextW(snapshot, ctypes.byref(entry)):
-                complete = ctypes.get_last_error() == ERROR_NO_MORE_FILES
-                break
-            if time.monotonic() >= deadline:
-                break
-
-        for child_pid, child in children:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return False
-            if not _taskkill_pid(child_pid, timeout=remaining):
-                return False
-            while True:
-                if not kernel.GetExitCodeProcess(child, ctypes.byref(exit_code)):
-                    return False
-                if exit_code.value != STILL_ACTIVE:
-                    break
-                if time.monotonic() >= deadline:
-                    return False
-                time.sleep(0.01)
-    return complete
-
-
 def _kill_windows_tree(pid: int) -> bool:
-    if _taskkill_pid(pid):
-        return True
-    try:
-        return _kill_exited_windows_children(pid)
-    except (OSError, AttributeError, ValueError):
-        return False
+    return _taskkill_pid(pid)
+
+
+def _kill_windows_managed_tree(pid: int) -> bool:
+    with _child_pids_lock:
+        job = _child_jobs.get(pid)
+        if job is not None and job.terminate():
+            return True
+        return _kill_windows_tree(pid)
 
 
 def _kill_child_group(pid: int, sig: int) -> None:
     if hasattr(os, "setsid") and hasattr(os, "killpg"):
         _signal_group(pid, sig)
         return
-    if _WINDOWS and _kill_windows_tree(pid):
+    if _WINDOWS and _kill_windows_managed_tree(pid):
         return
     try:
         os.kill(pid, sig)
@@ -227,10 +121,11 @@ def _kill_child_group(pid: int, sig: int) -> None:
 def cleanup_children(grace: float = CLEANUP_TERM_GRACE_SECONDS) -> None:
     """Terminate the process group of every registered child.
 
-    SIGTERM every group, wait up to ``grace`` seconds for the groups to
-    empty, then SIGKILL the survivors. run_with_timeout starts each child
-    with os.setsid, so the child's pid is its pgid; signalling the pgid
-    directly still reaches grandchildren after the leader has been reaped,
+    Windows jobs terminate immediately. On POSIX, SIGTERM every group, wait
+    up to ``grace`` seconds for the groups to empty, then SIGKILL survivors.
+    run_with_timeout starts each POSIX child with os.setsid, so the child's
+    pid is its pgid; signalling the pgid directly still reaches grandchildren
+    after the leader has been reaped,
     and the kernel does not reuse a pid while a group of that id has
     members. A group whose only member is an unreaped zombie still reads as
     live, which at worst costs the full grace and a harmless SIGKILL.
@@ -245,7 +140,9 @@ def cleanup_children(grace: float = CLEANUP_TERM_GRACE_SECONDS) -> None:
         return
     if not (hasattr(os, "setsid") and hasattr(os, "killpg")):
         for pid in pids:
-            _kill_child_group(pid, signal.SIGTERM)
+            with _child_pids_lock:
+                if pid in _child_pids:
+                    _kill_child_group(pid, signal.SIGTERM)
         return
     live = [pgid for pgid in pids if _signal_group(pgid, signal.SIGTERM)]
     deadline = time.monotonic() + grace
@@ -280,11 +177,11 @@ def run_with_timeout(
     """Run a subprocess with process-group cleanup on timeout.
 
     Spawns ``cmd`` inside its own process group via ``start_new_session`` where
-    available. On Windows, taskkill terminates the child tree; if the child
-    already exited, surviving direct children are found by parent PID and
-    taskkill terminates their trees. If tree termination fails, the direct
-    child is killed. POSIX signals the group with SIGTERM, then escalates to
-    SIGKILL if needed.
+    available. On Windows, the child enters a kill-on-close job before it runs,
+    so cleanup reaches descendants that inherit the job after launchers exit.
+    Closing the job on normal return also stops detached descendants. Job setup
+    failure aborts the suspended child. POSIX signals the group with SIGTERM,
+    then escalates to SIGKILL if needed.
 
     Args:
         cmd: Command and arguments to spawn.
@@ -316,10 +213,16 @@ def run_with_timeout(
     if capture_limit_bytes is not None and capture_limit_bytes < 0:
         raise ValueError("capture limit must be nonnegative")
     own_group = hasattr(os, "setsid") and hasattr(os, "killpg")
+    native_windows = _WINDOWS and os.name == "nt"
     capture = ExitStack()
+    job = None
     try:
         stdout_file = capture.enter_context(tempfile.TemporaryFile()) if capture_limit_bytes is not None else None
         stderr_file = capture.enter_context(tempfile.TemporaryFile()) if capture_limit_bytes is not None else None
+        if native_windows:
+            from .windows_job import CREATE_SUSPENDED, WindowsJob
+
+            job = WindowsJob()
         proc = subprocess.Popen(
             list(cmd),
             stdout=stdout_file if stdout_file is not None else subprocess.PIPE,
@@ -330,14 +233,47 @@ def run_with_timeout(
             errors="replace",
             start_new_session=own_group,
             env=env,
+            **({"creationflags": CREATE_SUSPENDED} if native_windows else {}),
         )
     except BaseException as exc:
         if isinstance(exc, OSError):
             exc._last30days_subproc_launch_failed = True
+        if job is not None:
+            job.close()
         capture.close()
         raise
     try:
-        register_child_pid(proc.pid)
+        if native_windows:
+            from .windows_job import resume_suspended_process
+
+            try:
+                job.assign(proc._handle)
+                with _child_pids_lock:
+                    _child_pids.add(proc.pid)
+                    _child_jobs[proc.pid] = job
+                    late = _shutting_down
+                    if late:
+                        if not job.terminate():
+                            proc.kill()
+                    else:
+                        resume_suspended_process(proc.pid)
+                if late:
+                    raise SubprocTimeout("Command cancelled during shutdown")
+            except BaseException as exc:
+                if isinstance(exc, OSError):
+                    exc._last30days_subproc_launch_failed = True
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                try:
+                    proc.wait(timeout=min(cleanup_grace, 2))
+                except subprocess.TimeoutExpired:
+                    pass
+                raise
+        else:
+            register_child_pid(proc.pid)
         if on_pid is not None:
             try:
                 on_pid(proc.pid)
@@ -372,7 +308,7 @@ def run_with_timeout(
                 if own_group:
                     pgid = proc.pid
                     os.killpg(pgid, signal.SIGTERM)
-                elif not (_WINDOWS and _kill_windows_tree(proc.pid)):
+                elif not (_WINDOWS and _kill_windows_managed_tree(proc.pid)):
                     proc.kill()
             except (ProcessLookupError, PermissionError, OSError, AttributeError):
                 pgid = None
@@ -384,7 +320,7 @@ def run_with_timeout(
                 try:
                     if pgid is not None:
                         os.killpg(pgid, signal.SIGKILL)
-                    elif not (_WINDOWS and _kill_windows_tree(proc.pid)):
+                    elif not (_WINDOWS and _kill_windows_managed_tree(proc.pid)):
                         proc.kill()
                 except (ProcessLookupError, PermissionError, OSError, AttributeError):
                     proc.kill()
@@ -420,6 +356,8 @@ def run_with_timeout(
         raise
     finally:
         unregister_child_pid(proc.pid)
+        if job is not None:
+            job.close()
         for pipe in (proc.stdin, proc.stdout, proc.stderr):
             if pipe is not None:
                 pipe.close()
