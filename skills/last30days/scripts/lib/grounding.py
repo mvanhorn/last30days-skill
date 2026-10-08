@@ -235,15 +235,22 @@ def _looot_run_result(first: dict, headers: dict) -> dict:
             raise RuntimeError(f"looot run {run_id} {status}" + (f": {detail}" if detail else ""))
         if not run_id:
             raise RuntimeError("looot returned no runId")
-        if time.monotonic() >= deadline:
-            raise RuntimeError(
-                f"looot run {run_id} still {status or 'pending'} after "
-                f"{_LOOOT_POLL_DEADLINE_SECONDS:.0f}s of polling"
-            )
-        time.sleep(_LOOOT_POLL_INTERVAL_SECONDS)
-        run = http.request(
-            "GET", f"{LOOOT_API_BASE}/v1/runs/{run_id}", headers=headers, timeout=15,
+        timed_out = RuntimeError(
+            f"looot run {run_id} still {status or 'pending'} after "
+            f"{_LOOOT_POLL_DEADLINE_SECONDS:.0f}s of polling"
         )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise timed_out
+        time.sleep(min(_LOOOT_POLL_INTERVAL_SECONDS, remaining))
+        try:
+            # The deadline covers the request, its retries and rate-limit waits.
+            run = http.request(
+                "GET", f"{LOOOT_API_BASE}/v1/runs/{run_id}", headers=headers,
+                timeout=15, deadline_monotonic=deadline,
+            )
+        except http.DeadlineExceeded:
+            raise timed_out from None
 
 
 def looot_search(

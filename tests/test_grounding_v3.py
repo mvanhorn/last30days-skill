@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from lib import grounding, parallel_mcp
+from lib import grounding, http, parallel_mcp
 
 
 class BraveSearchTests(unittest.TestCase):
@@ -328,6 +328,39 @@ class LoootSearchTests(unittest.TestCase):
                 grounding.looot_search("test", self.WINDOW, "looot-test-token")
         self.assertIn("run_123", str(ctx.exception))
         self.assertLess(request.call_count, 6)
+
+    def test_poll_request_shares_the_polling_deadline(self):
+        clock = iter([100.0, 100.0, 105.0])
+        responses = [self._run("running"), self._run("completed", result=self.SERPER_BODY)]
+        with patch("lib.grounding.http.request", side_effect=responses) as request, \
+             patch("lib.grounding.time.sleep"), \
+             patch("lib.grounding._now", return_value=self.NOON), \
+             patch("lib.grounding.time.monotonic", side_effect=lambda: next(clock)):
+            grounding.looot_search("test", self.WINDOW, "looot-test-token")
+        poll = request.call_args_list[1]
+        self.assertEqual("GET", poll.args[0])
+        self.assertEqual(130.0, poll.kwargs["deadline_monotonic"])
+
+    def test_sleep_is_capped_by_the_time_left(self):
+        clock = iter([0.0, 29.6, 29.9])
+        responses = [self._run("running"), self._run("completed", result=self.SERPER_BODY)]
+        with patch("lib.grounding.http.request", side_effect=responses), \
+             patch("lib.grounding.time.sleep") as sleep, \
+             patch("lib.grounding._now", return_value=self.NOON), \
+             patch("lib.grounding.time.monotonic", side_effect=lambda: next(clock)):
+            grounding.looot_search("test", self.WINDOW, "looot-test-token")
+        sleep.assert_called_once()
+        self.assertAlmostEqual(0.4, sleep.call_args.args[0], places=6)
+
+    def test_slow_poll_request_stops_at_the_deadline(self):
+        responses = [self._run("running"), http.DeadlineExceeded()]
+        with patch("lib.grounding.http.request", side_effect=responses) as request, \
+             patch("lib.grounding.time.sleep"):
+            with self.assertRaises(RuntimeError) as ctx:
+                grounding.looot_search("test", self.WINDOW, "looot-test-token")
+        self.assertIn("run_123", str(ctx.exception))
+        self.assertIn("still running", str(ctx.exception))
+        self.assertEqual(2, request.call_count)
 
     def test_completed_run_without_a_result_object_raises(self):
         with self.assertRaises(RuntimeError):
