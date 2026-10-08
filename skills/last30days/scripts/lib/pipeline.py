@@ -2811,10 +2811,11 @@ def run(
             # together would have (per_stream_limit x the X fetch cap).
             if source != "jobs":
                 stream_limit = settings["per_stream_limit"]
-                if source == "x" and config.get("_x_envelope") is not None:
+                host_fetched_x = source == "x" and config.get("_x_envelope") is not None
+                if host_fetched_x:
                     stream_limit *= _source_fetch_cap("x", config) or 1
                 normalized = _apply_reddit_stream_keepers(
-                    source, normalized, stream_limit, topic
+                    source, normalized, stream_limit, topic, host_fetched_x=host_fetched_x
                 )
             bundle.add_items(subquery.label, source, normalized)
             if artifact:
@@ -3312,23 +3313,58 @@ def _batch_subject_handles(raw_items: list[dict], *, top_n: int = 2) -> set[str]
 REDDIT_STREAM_KEEPERS = 3
 
 
+def _x_raw_engagement(item: schema.SourceItem) -> float:
+    """Likes, reposts, replies, and quotes as a plain number."""
+    eng = item.engagement or {}
+    return float(sum(
+        value for key in ("likes", "reposts", "replies", "quotes")
+        if isinstance(value := eng.get(key), (int, float)) and not isinstance(value, bool)
+    ))
+
+
+def _x_post_qualifies(item: schema.SourceItem, entity: str, floor: float) -> bool:
+    """On-topic enough for an engagement slot: clears the floor and names the entity."""
+    if (item.local_relevance or 0.0) < floor or _x_raw_engagement(item) <= 0:
+        return False
+    if not entity:
+        return True
+    return rerank._entity_grounded(f"{item.title or ''} {item.body or ''}", entity)
+
+
 def _apply_reddit_stream_keepers(
     source: str,
     items: list[schema.SourceItem],
     limit: int,
     topic: str,
+    *,
+    host_fetched_x: bool = False,
 ) -> list[schema.SourceItem]:
-    """Truncate a stream to *limit*, holding slots for Reddit engagement keepers."""
+    """Truncate a stream to *limit*, holding slots for engagement keepers.
+
+    Reddit holds a few slots for its most-engaged on-topic threads. A
+    host-fetched X stream holds half its slots for its most-engaged on-topic
+    posts, because its popular pass reaches back across the whole window and
+    those posts would otherwise lose to fresher low-engagement ones.
+    """
     kept = list(items[:limit])
-    if source != "reddit" or len(items) <= limit:
+    if len(items) <= limit:
         return kept
     entity = rerank._primary_entity(topic or "") if topic else ""
     floor = fusion.relevance_floor_for_entity(entity)
-    keepers = [
-        item
-        for item in sorted(items, key=fusion.raw_engagement, reverse=True)
-        if fusion.reddit_thread_qualifies(item, entity, floor)
-    ][:REDDIT_STREAM_KEEPERS]
+    if source == "reddit":
+        keepers = [
+            item
+            for item in sorted(items, key=fusion.raw_engagement, reverse=True)
+            if fusion.reddit_thread_qualifies(item, entity, floor)
+        ][:REDDIT_STREAM_KEEPERS]
+    elif source == "x" and host_fetched_x:
+        keepers = [
+            item
+            for item in sorted(items, key=_x_raw_engagement, reverse=True)
+            if _x_post_qualifies(item, entity, floor)
+        ][: max(1, limit // 2)]
+    else:
+        return kept
     keeper_ids = {id(item) for item in keepers}
     for keeper in keepers:
         if any(item is keeper for item in kept):
