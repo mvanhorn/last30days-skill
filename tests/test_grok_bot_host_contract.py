@@ -161,6 +161,18 @@ class TestGrokBotProseFlow(unittest.TestCase):
         bearer = self.flow.index("X_BEARER_TOKEN")
         self.assertLess(connector, bearer)
 
+    def test_built_in_x_tools_come_before_the_plugin_and_need_no_setup(self):
+        native = self.flow.index("namespace `x`")
+        plugin = self.flow.index('"X for Grok Bot"')
+        bearer = self.flow.index("X_BEARER_TOKEN")
+        self.assertLess(native, plugin)
+        self.assertLess(plugin, bearer)
+        self.assertIn("nothing to configure", self.flow)
+        self.assertIn("only when neither is present", self.flow)
+
+    def test_lane_signal_is_exported_only_after_a_fetch_returned_posts(self):
+        self.assertIn("only in an engine shell whose fetch returned posts", self.flow)
+
     def test_bearer_coverage_caveat_never_implies_parity(self):
         self.assertIn(
             "recent posts, about the last week, unless your X developer project has full-archive access",
@@ -270,7 +282,8 @@ class TestConnectorRecipe(unittest.TestCase):
         plugin = self.recipe.index('"X for Grok Bot"')
         native = self.recipe.index("namespace `x`")
         bearer = self.recipe.index("X_BEARER_TOKEN")
-        self.assertLess(max(plugin, native), bearer)
+        self.assertLess(native, plugin)
+        self.assertLess(plugin, bearer)
         self.assertIn("never by its name", self.recipe)
         for token in ('"provider": "x-native"', '"x-connector"', "X via Grok Bot X"):
             self.assertIn(token, self.recipe, token)
@@ -280,6 +293,14 @@ class TestConnectorRecipe(unittest.TestCase):
             self.assertIn(token, self.recipe, token)
         for metric in ("like_count", "retweet_count", "reply_count", "quote_count"):
             self.assertIn(metric, self.recipe, metric)
+
+    def test_recipe_samples_popular_posts_across_the_whole_window(self):
+        self.assertIn("popular pass", self.recipe)
+        popular = self.recipe[self.recipe.index("popular pass"):]
+        popular = popular[: popular.index("\n")]
+        self.assertIn("slices of about 3 days", popular)
+        self.assertIn("`relevancy`", popular)
+        self.assertIn("ONE envelope call", popular)
 
     def test_recipe_gives_discovered_authors_full_handle_lanes(self):
         authors = self.recipe[self.recipe.index("**Discovered authors.**"):]

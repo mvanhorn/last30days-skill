@@ -106,7 +106,7 @@ Paths resolve relative to `SKILL_DIR`. A mode selected while reading a reference
 | `--agent` mode or explicit machine-readable JSON | Read [references/agent-mode.md](references/agent-mode.md) in full. | Apply structured output without treating absent consent as permission. |
 | Recommendation intent | Read [references/recommendations.md](references/recommendations.md) in full. | Rank and render the recommended items before the footer/invitation. |
 | Identifiable product requires category peers | Read [references/category-peers.md](references/category-peers.md) in full. | Expand peers during Step 0.55 before planning. |
-| Grok Bot official X connector lane | Read [references/grok-bot-x.md](references/grok-bot-x.md) in full. | Fetch and validate the X envelope before the research engine command. |
+| Grok Bot X lane | Read [references/grok-bot-x.md](references/grok-bot-x.md) in full. | Fetch and validate the X envelope before the research engine command. |
 | Follow-up on existing research | Read [references/followups.md](references/followups.md) in full. | Answer or re-render existing research; use the explicit cached drill/freshness/queue routes when requested. |
 | HTML/export intent | Read [references/save-html-brief.md](references/save-html-brief.md) in full. | Create the local artifact, then follow its access and explicit publishing choices. |
 
@@ -122,7 +122,7 @@ For fresh research or discovery, resolve whether the agent session has a usable 
 - When host web search is available, use it for applicable pre-research and supplements. Export `LAST30DAYS_NATIVE_SEARCH=1` in the same shell as the engine.
 - When no host web search is available, leave that signal unset. Skip Steps 0.55 and 0.75, and add `--auto-resolve`; the engine uses configured backends or its keyless floor.
 
-**GROK BOT HOST RULE (every invocation, including `SETUP_COMPLETE=true`).** On an actual Grok Bot host, export `LAST30DAYS_HOST=grok-bot` in every engine shell. Do not infer this host from `CURSOR_AGENT` alone; Cursor also sets it. When the session exposes the official X connector's post-search tools (the "X for Grok Bot" plugin), export `LAST30DAYS_X_HOST_LANE=1` and load the connector reference through the gate above. Use its `--x-posts` envelope. Never read a browser session on a Grok Bot. Never place post text unquoted in a shell command; write envelopes only with a single-quoted heredoc delimiter or tool file output. First-run Grok Bot uses the Grok Bot Prose Flow; Cursor uses the Non-Modal Prose Flow.
+**GROK BOT HOST RULE (every invocation, including `SETUP_COMPLETE=true`).** On an actual Grok Bot host, export `LAST30DAYS_HOST=grok-bot` in every engine shell. Do not infer this host from `CURSOR_AGENT` alone; Cursor also sets it. Load the Grok Bot X lane reference through the gate above and fetch X yourself first: the built-in X tools (namespace `x`), else the "X for Grok Bot" plugin. Export `LAST30DAYS_X_HOST_LANE=1` with its `--x-posts` envelope only when posts came back. Never read a browser session on a Grok Bot. Never place post text unquoted in a shell command; write envelopes only with a single-quoted heredoc delimiter or tool file output. First-run Grok Bot uses the Grok Bot Prose Flow; Cursor uses the Non-Modal Prose Flow.
 
 **FIRST-RUN GATE — after resolving host web search, before topic research:**
 

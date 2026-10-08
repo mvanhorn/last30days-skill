@@ -429,8 +429,8 @@ def _reddit_record(config):
 # Official-path wording. The bearer path is never described as
 # parity with the connector lane.
 X_BEARER_CAVEAT = x_api.BEARER_COVERAGE_NOTE
-X_CONNECTOR_NOTE = "will use: X connector (host-fetched at run time)"
-X_CONNECTOR_ARMED = "X connector lane armed"
+X_CONNECTOR_NOTE = "will use: built-in X tools or X connector (host-fetched at run time)"
+X_CONNECTOR_ARMED = "host X lane armed (built-in X tools or X connector)"
 
 
 def _x_will_use_note(record: Dict[str, Any], policy: env.XPolicy) -> str:
@@ -1109,7 +1109,7 @@ def _x_auth_path(config: Dict[str, Any]) -> Dict[str, Any]:
         note = "explicit backend pin"
     else:
         note = (
-            "no official X path armed (add the X for Grok Bot plugin and connect X in Grok Bot settings, or set "
+            "no official X path armed (use Grok Bot's built-in X tools or add the X for Grok Bot plugin, or set "
             "X_BEARER_TOKEN or XAI_API_KEY)"
         )
     return {"name": "X auth path", "armed": bool(source), "note": note}

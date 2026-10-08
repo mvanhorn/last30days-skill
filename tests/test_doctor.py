@@ -1545,21 +1545,21 @@ class GrokBotHostDoctor(unittest.TestCase):
         self.assertEqual("ok", rec["status"])
         self.assertEqual("ok", rec["tier"])
         self.assertEqual("connector", rec["active_backend"])
-        self.assertEqual("will use: X connector (host-fetched at run time)", rec["note"])
+        self.assertEqual("will use: built-in X tools or X connector (host-fetched at run time)", rec["note"])
         self.assertEqual("", rec["fix"])
         backup = rec["backups"][0]
         self.assertTrue(backup["armed"])
-        self.assertEqual("X connector lane armed", backup["note"])
+        self.assertEqual("host X lane armed (built-in X tools or X connector)", backup["note"])
         text = "\n".join(_x_text_lines(doctor.render_text(report)))
-        self.assertIn("will use: X connector (host-fetched at run time)", text)
-        self.assertIn("X connector lane armed", text)
+        self.assertIn("will use: built-in X tools or X connector (host-fetched at run time)", text)
+        self.assertIn("host X lane armed (built-in X tools or X connector)", text)
         self._assert_official_vocabulary(report)
 
     def test_lane_with_bearer_keeps_backend_prediction_and_lane_armed(self):
         report = _build(_grok_bot(LAST30DAYS_X_HOST_LANE="1", X_BEARER_TOKEN="dummy-x-bearer-secret-000"))
         rec = report["sources"]["x"]
         self.assertEqual("xapi", rec["active_backend"])
-        self.assertEqual("X connector lane armed", rec["backups"][0]["note"])
+        self.assertEqual("host X lane armed (built-in X tools or X connector)", rec["backups"][0]["note"])
 
     def test_bird_pin_names_bird_once_as_pinned(self):
         config = _grok_bot(

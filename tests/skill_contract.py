@@ -19,7 +19,7 @@ ROUTES = {
     "--agent mode or explicit machine-readable JSON": ("agent-mode",),
     "Recommendation intent": ("recommendations",),
     "Identifiable product requires category peers": ("category-peers",),
-    "Grok Bot official X connector lane": ("grok-bot-x",),
+    "Grok Bot X lane": ("grok-bot-x",),
     "Follow-up on existing research": ("followups",),
     "HTML/export intent": ("save-html-brief",),
 }

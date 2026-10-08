@@ -582,7 +582,7 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 ---
 
 
-**Grok Bot connector:** when the official X connector lane is active, follow the root routing gate for `grok-bot-x.md` before the engine command.
+**Grok Bot X:** on a Grok Bot host, follow the root routing gate for `grok-bot-x.md` before the engine command.
 
 **Step 1: Run the research script WITH your query plan (FOREGROUND)**
 

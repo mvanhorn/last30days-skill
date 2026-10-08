@@ -109,18 +109,20 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         anchor="api-keys-env",
     ),
     # Official X path (an official-only host per env.x_policy, or an explicit
-    # xapi pin). Copy is limited to the connector lane, X_BEARER_TOKEN,
-    # XAI_API_KEY, and X API credits; the bearer path is described as
-    # about a week, never as parity with the connector. Anchors point at
+    # xapi pin). Copy is limited to the host X lanes (Grok Bot's built-in X
+    # tools, then the X for Grok Bot connector), X_BEARER_TOKEN, XAI_API_KEY,
+    # and X API credits; the bearer path is described as about a week, never
+    # as parity with the host lanes. Anchors point at
     # the CONFIGURATION.md Grok Bot subsection (slug grok-bot).
     _entry(
         "x", "bearer_missing",
         cause=(
-            "no official X path is configured (X connector, X_BEARER_TOKEN, "
-            "or XAI_API_KEY)"
+            "no official X path is configured (Grok Bot X tools, X connector, "
+            "X_BEARER_TOKEN, or XAI_API_KEY)"
         ),
         fix_nl=(
-            "add the X for Grok Bot plugin and connect X in Grok Bot settings (full 30-day coverage), or set "
+            "fetch X with Grok Bot's built-in X tools and pass the posts with --x-posts, or add the X for Grok Bot "
+            "plugin and connect X in Grok Bot settings (full 30-day coverage), or set "
             f"X_BEARER_TOKEN from the X developer console ({BEARER_COVERAGE_NOTE}), "
             "or set XAI_API_KEY from console.x.ai"
         ),
@@ -151,12 +153,12 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
     _entry(
         "x", "connector_missing",
         cause=(
-            "the X connector lane was declared but no connector result was "
+            "the host X lane was declared but no host-fetched result was "
             "passed to the engine"
         ),
         fix_nl=(
-            "add the X for Grok Bot plugin and connect X in Grok Bot settings (full 30-day coverage) and pass the "
-            "connector's posts with --x-posts, or set X_BEARER_TOKEN from the X "
+            "fetch X with Grok Bot's built-in X tools (or the X for Grok Bot connector) and pass the "
+            "posts with --x-posts, or unset LAST30DAYS_X_HOST_LANE and set X_BEARER_TOKEN from the X "
             f"developer console ({BEARER_COVERAGE_NOTE})"
         ),
         fix_cli=f'{ENGINE_CLI} "<topic>" --x-posts <path-to-x-posts.json>',
