@@ -70,11 +70,12 @@ def _run_main(monkeypatch, argv, *, host_env=None, config=None):
     monkeypatch.setattr(sys, "argv", ["last30days.py", *argv])
 
     run_mock = mock.Mock(side_effect=_RetrievalReached)
+    diagnose_mock = mock.Mock(return_value=dict(DIAG))
     runtime_mock = mock.Mock(side_effect=AssertionError("provider resolved"))
     resolve_mock = mock.Mock(return_value={})
     err = io.StringIO()
     with mock.patch.object(cli.env, "get_config", return_value=dict(config or DUMMY_CONFIG)), \
-         mock.patch.object(cli.pipeline, "diagnose", return_value=dict(DIAG)), \
+         mock.patch.object(cli.pipeline, "diagnose", diagnose_mock), \
          mock.patch.object(cli.pipeline, "run", run_mock), \
          mock.patch("lib.providers.resolve_runtime", runtime_mock), \
          mock.patch("lib.resolve.auto_resolve", resolve_mock), \
@@ -84,7 +85,10 @@ def _run_main(monkeypatch, argv, *, host_env=None, config=None):
             rc = cli.main()
         except _RetrievalReached:
             rc = None
-    return rc, err.getvalue(), {"run": run_mock, "runtime": runtime_mock, "resolve": resolve_mock}
+    return rc, err.getvalue(), {
+        "diagnose": diagnose_mock, "run": run_mock,
+        "runtime": runtime_mock, "resolve": resolve_mock,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -144,6 +148,7 @@ def test_agent_hosted_run_without_plan_stops_before_retrieval(monkeypatch, name)
     assert "LAW 7" in stderr
     assert f"({name} is set)" in stderr
     assert "Step 0.75" in stderr
+    assert "references/research-runbook.md" in stderr
     assert '--plan "$QUERY_PLAN_FILE"' in stderr
     assert "<<'PLAN_EOF'" in stderr
     assert "LAST30DAYS_ALLOW_ENGINE_PLAN=1" in stderr
@@ -159,6 +164,14 @@ def test_entity_topic_stops_before_engine_auto_resolve(monkeypatch):
     assert rc == cli.LAW7_HOST_PLAN_EXIT
     mocks["resolve"].assert_not_called()
     mocks["run"].assert_not_called()
+
+
+def test_agent_hosted_run_without_plan_stops_before_live_diagnostics(monkeypatch):
+    rc, _stderr, mocks = _run_main(
+        monkeypatch, TOPIC, host_env={"CLAUDECODE": "1"}
+    )
+    assert rc == cli.LAW7_HOST_PLAN_EXIT
+    mocks["diagnose"].assert_not_called()
 
 
 def test_agent_hosted_run_with_plan_reaches_retrieval(monkeypatch, tmp_path):
@@ -271,6 +284,8 @@ def test_non_research_commands_are_not_gated(monkeypatch, argv, target):
 def test_diagnose_is_not_gated(monkeypatch):
     rc, stderr, mocks = _run_main(monkeypatch, [*TOPIC, "--diagnose"], host_env={"CLAUDECODE": "1"})
     assert rc == 0
+    mocks["diagnose"].assert_called_once()
+    assert mocks["diagnose"].call_args.kwargs["safe"] is True
     mocks["run"].assert_not_called()
     assert "LAW 7" not in stderr
 

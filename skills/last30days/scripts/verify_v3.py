@@ -115,12 +115,15 @@ def verify_smoke() -> list[dict[str, object]]:
 
 def verify_latency() -> dict[str, dict[str, object]]:
     results: dict[str, dict[str, object]] = {}
+    env = os.environ.copy()
+    env["LAST30DAYS_ALLOW_ENGINE_PLAN"] = "1"
     for profile, extra in LATENCY_PROFILES:
         timings = []
         for topic in LATENCY_TOPICS:
             start = time.time()
             run_command(
                 [PYTHON, str(ENGINE), topic, "--emit=json", "--json-profile=raw", *extra],
+                env=env,
                 timeout=300,
             )
             timings.append(time.time() - start)

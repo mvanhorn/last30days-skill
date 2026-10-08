@@ -2757,11 +2757,13 @@ def _law7_host_plan_message(signal: str) -> str:
         f"({signal} is set). The engine stopped before retrieval and did not "
         "call its internal planner. If you are the reasoning model hosting "
         "this skill, YOU ARE the planner; no API key or provider is needed. "
-        "Write the JSON query plan (SKILL.md Step 0.75) to a tmpfile with a "
+        "Write the JSON query plan (references/research-runbook.md Step 0.75) "
+        "to a tmpfile with a "
         "quoted heredoc - QUERY_PLAN_FILE=$(mktemp "
         "\"${TMPDIR:-/tmp}/last30days-plan.XXXXXX\"); "
         "cat >| \"$QUERY_PLAN_FILE\" <<'PLAN_EOF' ... PLAN_EOF - and re-run "
-        "with --plan \"$QUERY_PLAN_FILE\" (see SKILL.md Step 1). With no "
+        "with --plan \"$QUERY_PLAN_FILE\" (see Research Execution in that "
+        "runbook). With no "
         "web-search tool, pass --auto-resolve instead. For headless or cron "
         f"runs under an agent, set {env.ALLOW_ENGINE_PLAN_VAR}=1 to let the "
         "engine plan internally.\n"
@@ -3742,19 +3744,13 @@ def _main(
         except x_envelope.EnvelopeContractError as exc:
             sys.stderr.write(f"[last30days] {exc.message}\n")
             return 2
-    diag = pipeline.diagnose(
-        config, requested_sources, safe=args.diagnose,
-        x_envelope=x_posts_envelope is not None,
-    )
-
     if args.diagnose:
+        diag = pipeline.diagnose(
+            config, requested_sources, safe=True,
+            x_envelope=x_posts_envelope is not None,
+        )
         print(json.dumps(diag, indent=2, sort_keys=True))
         return 0
-
-    # Competitor sub-runs shallow-copy this config. The shared object makes the
-    # paid Perplexity cap command-wide and thread-safe across that fanout. Keep
-    # this runtime-only object out of the safe diagnose configuration contract.
-    config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget()
 
     # Per-entity host-fetched X envelopes are validated here, on the main
     # thread and BEFORE the report-cache lookup, so a bad or stale one fails
@@ -3824,11 +3820,21 @@ def _main(
         )
         sys.stderr.flush()
 
-    # LAW 7: an agent host that skipped --plan stops here, before auto-resolve,
-    # the internal planner, or any source retrieval can spend anything.
+    # LAW 7: an agent host that skipped --plan stops before live diagnostics,
+    # auto-resolve, the internal planner, or any source retrieval can spend.
     law7_exit = _law7_host_plan_gate(args, topic)
     if law7_exit is not None:
         return law7_exit
+
+    diag = pipeline.diagnose(
+        config, requested_sources, safe=False,
+        x_envelope=x_posts_envelope is not None,
+    )
+
+    # Competitor sub-runs shallow-copy this config. The shared object makes the
+    # paid Perplexity cap command-wide and thread-safe across that fanout. Keep
+    # this runtime-only object out of the safe diagnose configuration contract.
+    config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget()
 
     progress = ui.ProgressDisplay(topic, show_banner=True)
     progress.start_processing()

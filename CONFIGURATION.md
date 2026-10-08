@@ -446,7 +446,7 @@ When you invoke `/last30days` from Claude Code, Codex, or Gemini, the host model
 
 ### Agent-hosted runs must pass `--plan`
 
-When the engine detects an agent host, a research run without `--plan` exits 2 before any retrieval and does not call the internal planner. It prints a `[Planner] LAW 7` message telling the host model to write the plan and pass it with `--plan` (SKILL.md Step 0.75 and the Step 1 tmpfile pattern). The engine treats a run as agent-hosted when any of these variables is set in the process environment (a `.env` line never counts):
+When the engine detects an agent host, a research run without `--plan` exits 2 before live diagnostics or retrieval and does not call the internal planner. It prints a `[Planner] LAW 7` message telling the host model to write the plan and pass it with `--plan` (Step 0.75 and Research Execution in `references/research-runbook.md`). The engine treats a run as agent-hosted when any of these variables is set in the process environment (a `.env` line never counts):
 
 | Variable | Set by |
 |---|---|
