@@ -149,6 +149,8 @@ def serper_search(
     for i, r in enumerate((data.get("organic", []))[:count]):
         raw_date = r.get("date") or ""
         pub_date = _parse_serper_date(raw_date)
+        if pub_date is None and _SERPER_RELATIVE_RE.match(raw_date.strip()):
+            continue
         if _known_date_out_of_range(pub_date, date_range):
             continue
         items.append({
@@ -258,7 +260,7 @@ def _parse_serper_relative(raw: str, now: datetime | None = None) -> str | None:
         return None
     unit = {"min": "minute", "hr": "hour"}.get(m.group(2), m.group(2))
     try:
-        amount = int(m.group(1))
+        amount = int(m.group(1).lstrip("0") or "0")
         if unit == "minute":
             return (anchor - timedelta(minutes=amount)).date().isoformat()
         if unit == "hour":

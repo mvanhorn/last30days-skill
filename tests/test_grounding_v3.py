@@ -216,6 +216,12 @@ class SerperRelativeDateTests(unittest.TestCase):
             with self.subTest(raw=raw):
                 self.assertIsNone(grounding._parse_serper_date(raw, self.NOON))
 
+    def test_long_zero_padded_age_is_still_parseable(self):
+        self.assertEqual(
+            "2026-03-26",
+            grounding._parse_serper_date("0" * 5000 + "1 day ago", self.NOON),
+        )
+
 
 class ExaSearchTests(unittest.TestCase):
     def test_exa_search_filters_to_in_range_dated_items(self):
