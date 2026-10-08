@@ -174,6 +174,20 @@ class ResolveEndpointTests(unittest.TestCase):
             self._resolve("https://example.test/v1/responses"),
         )
 
+    def test_full_endpoint_query_string_is_preserved(self):
+        endpoint = "https://example.test/v1/responses?tenant=acme"
+        self.assertEqual(endpoint, self._resolve(endpoint))
+
+    def test_custom_gateway_route_is_preserved(self):
+        endpoint = "https://example.test/proxy?tenant=acme"
+        self.assertEqual(endpoint, self._resolve(endpoint))
+
+    def test_api_root_query_string_stays_after_appended_path(self):
+        self.assertEqual(
+            "https://example.test/v1/responses?tenant=acme",
+            self._resolve("https://example.test/v1?tenant=acme"),
+        )
+
     def test_openrouter_uses_chat_completions_path(self):
         self.assertEqual(
             "https://example.test/api/v1/chat/completions",

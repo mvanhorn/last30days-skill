@@ -211,6 +211,35 @@ def test_cli_preflight_propagates_file_endpoint_overrides(tmp_path, monkeypatch,
     )
 
 
+def test_cli_preflight_rejects_file_override_without_leaking_it(tmp_path, monkeypatch, capsys):
+    secret = "dummy-secret-do-not-report"
+    config_file = tmp_path / ".env"
+    config_file.write_text(
+        f"OPENROUTER_BASE_URL=http://{secret}@gateway.example/v1?token={secret}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(env, "CONFIG_FILE", config_file)
+    for key in ("OPENAI_BASE_URL", "XAI_BASE_URL", "OPENROUTER_BASE_URL"):
+        monkeypatch.setenv(key, "")
+    monkeypatch.setattr(sys, "argv", ["last30days.py", "--preflight", "--emit=json"])
+
+    with mock.patch.object(env, "_load_keychain", return_value={}), \
+         mock.patch.object(env, "_load_pass", return_value={}):
+        assert cli.main() == 0
+
+    captured = capsys.readouterr()
+    preflight = json.loads(captured.out)
+    assert preflight["status"] == "action_needed"
+    assert preflight["network"]["endpoint_overrides"] == []
+    assert preflight["network"]["ignored_endpoint_overrides"] == ["OPENROUTER_BASE_URL"]
+    assert secret not in captured.out + captured.err
+    assert providers.resolve_endpoint("OPENROUTER_BASE_URL", providers.OPENROUTER_URL) == (
+        providers.OPENROUTER_URL
+    )
+    assert secret not in capsys.readouterr().err
+
+
 def test_diagnose_uses_preflight_endpoint_override_key_set():
     ignored_keys = sorted(permission_preflight.ENDPOINT_OVERRIDE_KEYS) + ["UNRELATED_KEY"]
     diag = pipeline.diagnose(

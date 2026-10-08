@@ -144,6 +144,7 @@ def search_x(
         url, payload, headers=headers, timeout=timeout,
         retries=1, deadline_monotonic=deadline_monotonic,
         cancel=cancel,
+        bypass_proxy=providers.is_loopback_http_endpoint(url),
     )
 
 

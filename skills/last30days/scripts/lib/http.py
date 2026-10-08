@@ -124,15 +124,19 @@ class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
 
 
 _opener = urllib.request.build_opener(_StripAuthOnCrossOriginRedirect)
+_direct_opener = urllib.request.build_opener(
+    urllib.request.ProxyHandler({}), _StripAuthOnCrossOriginRedirect
+)
 _DEFAULT_URLOPEN = urllib.request.urlopen
 
 
-def _open_request(req, timeout):
+def _open_request(req, timeout, *, bypass_proxy=False):
     """Honor test patches of urllib.request.urlopen; otherwise use the strip opener."""
     current = urllib.request.urlopen
     if current is not _DEFAULT_URLOPEN:
         return current(req, timeout=timeout)
-    return _opener.open(req, timeout=timeout)
+    opener = _direct_opener if bypass_proxy else _opener
+    return opener.open(req, timeout=timeout)
 
 
 def open_request(req, timeout):
@@ -777,6 +781,7 @@ def request(
     deadline_monotonic: float | None = None,
     cancel: threading.Event | None = None,
     owned_get: bool = False,
+    bypass_proxy: bool = False,
 ) -> Union[Dict[str, Any], str]:
     """Make an HTTP request and return JSON response.
 
@@ -795,6 +800,7 @@ def request(
             attempts and retry delays.
         owned_get: Run GET transport in a child that is killed and reaped at
             its deadline. Requires deadline_monotonic; other methods are refused.
+        bypass_proxy: Use a direct connection for this request and its redirects.
 
     Returns:
         Parsed JSON response as dict, or raw text string if raw=True.
@@ -806,6 +812,8 @@ def request(
         raise ValueError("owned transport requires a bodyless GET")
     if owned_get and deadline_monotonic is None:
         raise ValueError("owned GET requires an operation deadline")
+    if owned_get and bypass_proxy:
+        raise ValueError("owned GET does not support proxy bypass")
     headers = headers or {}
     headers.setdefault("User-Agent", USER_AGENT)
 
@@ -883,7 +891,11 @@ def request(
         request_timeout: float,
     ) -> tuple[int, str | None, urllib.error.HTTPError | None]:
         try:
-            with _open_request(req, request_timeout) as response:
+            transport = (
+                _open_request(req, request_timeout, bypass_proxy=True)
+                if bypass_proxy else _open_request(req, request_timeout)
+            )
+            with transport as response:
                 return response.status, response.read().decode('utf-8'), None
         except urllib.error.HTTPError as error:
             # Error bodies can stall just like successful bodies. Read both
