@@ -324,6 +324,14 @@ class TestConnectorRecipe(unittest.TestCase):
         self.assertIn("5 posts", authors)
         self.assertIn("`--x-related`", authors)
 
+    def test_related_calls_are_only_for_handles_the_user_passed(self):
+        self.assertIn("Per handle the user explicitly passed with `--x-related`", self.recipe)
+        self.assertIn("A discovered author never gets a `related` call.", self.recipe)
+        self.assertIn("These are a discovered author's only calls.", self.recipe)
+
+    def test_recipe_window_uses_the_engines_utc_date(self):
+        self.assertIn("today's UTC date", self.recipe)
+
     def test_recipe_exports_the_lane_only_after_posts_came_back(self):
         self.assertIn("only when a lane returned posts", self.recipe)
         self.assertIn("unset LAST30DAYS_X_HOST_LANE", self.recipe)
