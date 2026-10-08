@@ -298,9 +298,18 @@ class TestConnectorRecipe(unittest.TestCase):
         self.assertIn("popular pass", self.recipe)
         popular = self.recipe[self.recipe.index("popular pass"):]
         popular = popular[: popular.index("\n")]
-        self.assertIn("slices of about 3 days", popular)
+        self.assertIn("first topic query only", popular)
+        self.assertIn("10 equal slices", popular)
         self.assertIn("`relevancy`", popular)
         self.assertIn("ONE envelope call", popular)
+
+    def test_recipe_keeps_the_envelope_inside_engine_limits(self):
+        self.assertIn("500 posts per call", self.recipe)
+        self.assertIn("1,000 posts and 20 calls in total", self.recipe)
+        self.assertIn("drop discovered-author calls first", self.recipe)
+
+    def test_comparison_uses_envelopes_only_when_every_entity_has_posts(self):
+        self.assertIn("only when every entity's fetch returned posts", self.recipe)
 
     def test_recipe_gives_discovered_authors_full_handle_lanes(self):
         authors = self.recipe[self.recipe.index("**Discovered authors.**"):]
