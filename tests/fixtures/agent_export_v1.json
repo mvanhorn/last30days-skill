@@ -1,5 +1,5 @@
 {
-  "schema_version": "1.3",
+  "schema_version": "1.4",
   "query": "AI coding agents",
   "generated_at": "2026-07-10T00:00:00Z",
   "window_days": 30,

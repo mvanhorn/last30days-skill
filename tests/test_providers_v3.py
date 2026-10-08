@@ -1,6 +1,8 @@
+import io
 import json
 import os
 import unittest
+import urllib.error
 from unittest import mock
 from typing import get_args
 
@@ -196,6 +198,57 @@ class ResolveEndpointTests(unittest.TestCase):
 
 
 class TestProviderUsage(unittest.TestCase):
+    def test_successful_http_request_reports_usage(self):
+        client = providers.OpenAIClient("dummy")
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = json.dumps({
+            "output_text": "ok",
+            "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+        }).encode("utf-8")
+        with mock.patch.object(providers.http.urllib.request, "urlopen", return_value=response) as urlopen:
+            self.assertEqual("ok", client.generate_text("model", "prompt"))
+        self.assertEqual(1, urlopen.call_count)
+        self.assertEqual(
+            {"calls": 1, "promptTokens": 5, "completionTokens": 3, "totalTokens": 8},
+            client.total_usage,
+        )
+
+    def test_failed_request_makes_later_usage_incomplete(self):
+        client = providers.OpenAIClient("dummy")
+        response = {
+            "output_text": "ok",
+            "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+        }
+        with mock.patch.object(
+            providers.http, "post",
+            side_effect=[response, providers.http.HTTPError("timed out"), response],
+        ):
+            self.assertEqual("ok", client.generate_text("model", "prompt"))
+            with self.assertRaises(providers.http.HTTPError):
+                client.generate_text("model", "prompt")
+            self.assertEqual("ok", client.generate_text("model", "prompt"))
+        self.assertIsNone(client.total_usage)
+
+    def test_hidden_http_retry_makes_usage_incomplete(self):
+        client = providers.OpenAIClient("dummy")
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = json.dumps({
+            "output_text": "ok",
+            "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+        }).encode("utf-8")
+        failed_attempt = urllib.error.HTTPError(
+            providers.OPENAI_RESPONSES_URL, 500, "server error", {}, io.BytesIO(b"{}"),
+        )
+        with mock.patch.object(providers.http.urllib.request, "urlopen", side_effect=[failed_attempt, response]) as urlopen:
+            with mock.patch.object(providers.http.time, "sleep"):
+                self.assertEqual("ok", client.generate_text("model", "prompt"))
+        self.assertEqual(2, urlopen.call_count)
+        self.assertIsNone(client.total_usage)
+
     def test_gemini_counts_all_calls_including_thought_tokens(self):
         client = providers.GeminiClient("dummy-key")
         responses = [

@@ -163,9 +163,10 @@ def _report() -> schema.Report:
     )
 
 
-def test_agent_export_matches_v1_3_golden_contract():
+def test_agent_export_matches_v1_4_golden_contract():
     expected = json.loads(GOLDEN.read_text(encoding="utf-8"))
 
+    assert schema.AGENT_EXPORT_SCHEMA_VERSION == "1.4"
     assert schema.to_agent_export(_report()) == expected
 
 

@@ -777,6 +777,7 @@ def request(
     deadline_monotonic: float | None = None,
     cancel: threading.Event | None = None,
     owned_get: bool = False,
+    on_retry: Callable[[], None] | None = None,
 ) -> Union[Dict[str, Any], str]:
     """Make an HTTP request and return JSON response.
 
@@ -795,6 +796,7 @@ def request(
             attempts and retry delays.
         owned_get: Run GET transport in a child that is killed and reaped at
             its deadline. Requires deadline_monotonic; other methods are refused.
+        on_retry: Called before each transport attempt after the first.
 
     Returns:
         Parsed JSON response as dict, or raw text string if raw=True.
@@ -968,6 +970,8 @@ def request(
                 break
             request_timeout = min(timeout, remaining)
         try:
+            if attempt > 0 and on_retry is not None:
+                on_retry()
             charge = usage.begin_http(url, method)
             response_status, body, response_error = open_and_read_before_deadline(request_timeout)
             if body:

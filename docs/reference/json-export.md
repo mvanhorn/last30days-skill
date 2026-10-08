@@ -41,7 +41,7 @@ When `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` route a run through a config
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | string | Agent export contract version. The current version is `1.3`. |
+| `schema_version` | string | Agent export contract version. The current version is `1.4`. |
 | `query` | string | The research topic supplied to the engine. |
 | `generated_at` | string | UTC generation timestamp in RFC 3339 format. |
 | `window_days` | integer | Number of days between the report's start and end dates. |
@@ -49,8 +49,22 @@ When `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` route a run through a config
 | `freshness_verdicts` | array | Per-claim act-time verdicts produced by `--verify-freshness`; empty when verification was not requested or no conservative claims were extractable. |
 | `clusters` | array | Ranked groups of related results. |
 | `results` | array | Ranked, flat evidence results for downstream processing. |
+| `usage` | object or null | Provider-reported token usage for planner and rerank calls across the run. Added in `1.4`; see below. |
 
 All top-level fields are always present. Empty runs contain empty `clusters` and `results` arrays. Sources appear in `source_status` when the run recorded an outcome for them.
+
+## `usage`
+
+When every reasoning request reports valid token counts, `usage` contains four non-negative integer fields:
+
+| Field | Meaning |
+| --- | --- |
+| `calls` | Number of successful provider responses included in the total. |
+| `promptTokens` | Sum of reported input tokens. |
+| `completionTokens` | Sum of output tokens, including reported reasoning tokens when a provider's total exceeds input plus visible output. |
+| `totalTokens` | Sum of `promptTokens` and `completionTokens`. |
+
+`usage` is `null` when no reasoning provider was called, a response omits or invalidates token counts, or a request fails or retries after a transport attempt whose token cost is unknown. The engine does not publish a partial total as zero or as the full run total. These counts come from provider responses and do not represent a monetary charge.
 
 ## `freshness_verdicts`
 
@@ -109,12 +123,12 @@ Comparison queries use an envelope so each entity keeps its own contract:
 
 ```json
 {
-  "schema_version": "1.3",
+  "schema_version": "1.4",
   "comparison": true,
   "entities": ["OpenAI", "Anthropic"],
   "reports": [
-    {"entity": "OpenAI", "report": {"schema_version": "1.3", "query": "OpenAI"}},
-    {"entity": "Anthropic", "report": {"schema_version": "1.3", "query": "Anthropic"}}
+    {"entity": "OpenAI", "report": {"schema_version": "1.4", "query": "OpenAI"}},
+    {"entity": "Anthropic", "report": {"schema_version": "1.4", "query": "Anthropic"}}
   ]
 }
 ```
@@ -127,6 +141,7 @@ The abbreviated reports above only illustrate the envelope; real reports contain
 - Any breaking field removal, rename, type change, semantic change, or envelope change requires a major-version bump.
 - Backward-compatible field additions may use a minor-version bump. Consumers should ignore fields they do not recognize.
 - The checked-in golden snapshot test locks the complete current shape. Contract changes must update the version and snapshot deliberately.
+- `1.4` added `usage` to the top level. It is `null` unless all reasoning requests have complete provider-reported token counts.
 - `1.3` added the `payment-required` value to `source_status` for credit exhaustion (HTTP 402). Backward-compatible minor bump: consumers that switch on state names should treat it like `auth-failed` (a failure state, not evidence of silence) until they add a branch for it. Messages that previously classified as `auth-failed` or `error` because of a 402 or an "insufficient credits" body now carry this state on every source.
 - `1.2` added `candidate_id` to each `results` entry so verdicts can be joined to the result they annotate.
 - Discovery `1.1` added `podcast_angle`, `x_article_angle`, `previously_surfaced_count`, `last_surfaced`, and `covered` to each discovery `results` entry — a backward-compatible minor bump; the fields carry their defaults (`null`/`null`/`0`/`null`/`false`) until an angle generator or the topic queue populates them.

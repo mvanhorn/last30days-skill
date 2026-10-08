@@ -67,7 +67,7 @@ class ReasoningClient:
 
     @staticmethod
     def _valid_token_count(value: Any) -> bool:
-        return type(value) is int and value >= 0
+        return isinstance(value, int) and not isinstance(value, bool) and value >= 0
 
     def record_usage(
         self,
@@ -111,6 +111,16 @@ class ReasoningClient:
             "completionTokens": self._usage_completion_tokens,
             "totalTokens": self._usage_prompt_tokens + self._usage_completion_tokens,
         }
+
+    def _mark_usage_incomplete(self) -> None:
+        self._usage_complete = False
+
+    def _post(self, url: str, payload: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+        try:
+            return http.post(url, payload, on_retry=self._mark_usage_incomplete, **kwargs)
+        except Exception:
+            self._mark_usage_incomplete()
+            raise
 
     def _record_response_usage(
         self,
@@ -182,7 +192,7 @@ class GeminiClient(ReasoningClient):
             body["generationConfig"]["responseMimeType"] = response_mime_type
         if tools:
             body["tools"] = tools
-        return http.post(
+        return self._post(
             GEMINI_URL.format(model=model, api_key=self.api_key),
             body,
             headers={"Content-Type": "application/json"},
@@ -234,7 +244,7 @@ class OpenAIClient(ReasoningClient):
             "input": prompt,
             "temperature": 0,
         }
-        response = http.post(
+        response = self._post(
             resolve_endpoint("OPENAI_BASE_URL", OPENAI_RESPONSES_URL),
             payload,
             headers={
@@ -273,7 +283,7 @@ class XAIClient(ReasoningClient):
             "model": model,
             "input": [{"role": "user", "content": prompt}],
         }
-        response = http.post(
+        response = self._post(
             resolve_endpoint("XAI_BASE_URL", XAI_RESPONSES_URL),
             payload,
             headers={
@@ -315,7 +325,7 @@ class OpenRouterClient(ReasoningClient):
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
         }
-        response = http.post(
+        response = self._post(
             resolve_endpoint("OPENROUTER_BASE_URL", OPENROUTER_URL),
             payload,
             headers={

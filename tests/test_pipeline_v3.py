@@ -41,6 +41,53 @@ class DepthSettingsOverrideTests(unittest.TestCase):
 
 
 class PipelineV3Tests(unittest.TestCase):
+    def test_failed_rerank_keeps_agent_export_usage_null(self):
+        calls = 0
+
+        def response(url, body, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise http.HTTPError("timed out")
+            return {
+                "candidates": [{"content": {"parts": [{"text": '{"scores": []}'}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 11,
+                },
+            }
+
+        with patch.object(pipeline, "available_sources", return_value=["reddit"]), patch.object(
+            pipeline, "_retrieve_stream",
+            side_effect=lambda **kwargs: pipeline._mock_stream_results(
+                kwargs["source"], kwargs["subquery"]
+            ),
+        ), patch.object(pipeline, "_retry_thin_sources"), patch.object(
+            pipeline.providers.http, "post", side_effect=response
+        ):
+            report = pipeline.run(
+                topic="AI coding agents",
+                config={"GOOGLE_API_KEY": "dummy-key", "LAST30DAYS_REASONING_PROVIDER": "gemini"},
+                depth="quick",
+                requested_sources=["reddit"],
+                web_backend="none",
+                external_plan={
+                    "intent": "research",
+                    "freshness_mode": "balanced_recent",
+                    "cluster_mode": "topic",
+                    "subqueries": [{
+                        "label": "primary",
+                        "search_query": "AI coding agents",
+                        "ranking_query": "AI coding agents",
+                        "sources": ["reddit"],
+                    }],
+                },
+            )
+
+        self.assertGreaterEqual(calls, 2)
+        self.assertIsNone(schema.to_agent_export(report)["usage"])
+
     def test_agent_export_usage_includes_final_rerank_calls(self):
         calls = []
 
