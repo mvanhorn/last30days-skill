@@ -2938,6 +2938,10 @@ def _build_source_footer_lines(report: schema.Report) -> list[str]:
                 )
             )
             parts.append(f"{with_transcripts}/{len(items)} with transcripts")
+        provenance = report.artifacts.get("x_provenance") if source_key == "x" else None
+        if provenance in x_envelope.PROVENANCE_LABELS:
+            # Host-fetched X names its lane on the user-facing line too.
+            parts.append(f"via {x_envelope.PROVENANCE_LABELS[provenance]}")
         stats = " │ ".join(parts)
         line = _footer_line_for_source(emoji, label, len(items), item_word, stats)
         # Counts only: run diagnostics live in doctor --postmortem, the saved

@@ -841,6 +841,32 @@ class TestPipelineWiring:
         report = _run(envelope)
         assert len(report.items_by_source["x"]) == 9
 
+    @staticmethod
+    def _old_row(likes: int, handle: str, text: str, low: int) -> dict:
+        day = _day(25)
+        return {
+            "id": _snowflake(day, hour=9, low=low), "author_handle": handle,
+            "created_at": f"{day}T09:00:00Z", "text": text,
+            "likes": likes, "reposts": likes // 10, "replies": likes // 20, "quotes": 0,
+        }
+
+    def test_old_high_engagement_post_survives_a_cap_full_of_fresh_posts(self, tmp_path):
+        rows = self._many_topic_rows(57)
+        viral = self._old_row(6749, "sawyer", "ai agents livestream building a whole company", 777001)
+        envelope = _read(_write(tmp_path, _envelope([_call("topic", posts=[*rows, viral])])))
+        report = _run(envelope)
+        assert len(report.items_by_source["x"]) == 24
+        kept_likes = {item.engagement.get("likes") for item in report.items_by_source["x"]}
+        assert 6749 in kept_likes
+
+    def test_off_topic_viral_post_never_takes_an_engagement_slot(self, tmp_path):
+        rows = self._many_topic_rows(57)
+        off_topic = self._old_row(9000, "rocketco", "orbital launch window opens on friday", 777002)
+        envelope = _read(_write(tmp_path, _envelope([_call("topic", posts=[*rows, off_topic])])))
+        report = _run(envelope)
+        kept_likes = {item.engagement.get("likes") for item in report.items_by_source["x"]}
+        assert 9000 not in kept_likes
+
     def test_capped_topic_rows_keep_the_most_engaged_posts(self, tmp_path):
         rows = self._many_topic_rows(57)
         envelope = _read(_write(tmp_path, _envelope([_call("topic", posts=list(reversed(rows)))])))
@@ -1006,6 +1032,20 @@ class TestPipelineWiring:
         md = render.render_compact(report)
         assert "via Grok Bot X" in md
         assert "via X connector" not in md
+
+    @pytest.mark.parametrize(("provider", "label"), [("x-native", "via Grok Bot X"), ("x-connector", "via X connector")])
+    def test_user_facing_footer_x_line_names_the_host_lane(self, tmp_path, provider, label):
+        envelope = _read(_basic(tmp_path, provider=provider))
+        report = _run(envelope, x_handle=SUBJECT)
+        footer = [line for line in render._build_source_footer_lines(report) if line.startswith("🔵 X:")]
+        assert footer and footer[0].endswith(label)
+
+    def test_backend_footer_x_line_carries_no_host_label(self, tmp_path):
+        envelope = _read(_basic(tmp_path))
+        report = _run(envelope, x_handle=SUBJECT)
+        report.artifacts.pop("x_provenance", None)
+        footer = [line for line in render._build_source_footer_lines(report) if line.startswith("🔵 X:")]
+        assert footer and "via " not in footer[0]
 
     @pytest.mark.parametrize("provider", ["", "X-Native; rm -rf ~", "grok", "x-native-ish"])
     def test_unknown_provider_falls_back_to_connector_label(self, tmp_path, provider):
