@@ -12,6 +12,13 @@ from unittest import mock
 from lib import youtube_yt
 
 
+def _write_transcript_fixture(directory):
+    (Path(directory) / "abc123.en.vtt").write_text(
+        "WEBVTT\n\n00:00:00.000 --> 00:00:02.000\nOffline transcript fixture.\n",
+        encoding="utf-8",
+    )
+
+
 class _DummyProc:
     def __init__(self):
         self.pid = 12345
@@ -29,10 +36,10 @@ class TestYouTubeEngagementZero(unittest.TestCase):
 
     def test_zero_view_count_preserved(self):
         """video.get('view_count') == 0 must stay 0, not become the fallback."""
-        import json
-        import tempfile
-        import os
+        from lib.subproc import SubprocResult
 
+        youtube_yt.reset_search_cache()
+        self.addCleanup(youtube_yt.reset_search_cache)
         video = {
             "id": "abc123",
             "title": "Test",
@@ -42,23 +49,20 @@ class TestYouTubeEngagementZero(unittest.TestCase):
             "upload_date": "20260301",
             "description": "desc",
         }
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False) as f:
-            f.write(json.dumps(video) + "\n")
-            f.flush()
-            with open(f.name) as rf:
-                lines = rf.readlines()
+        positive = dict(video, id="positive", view_count=321, like_count=7, comment_count=2)
+        result = SubprocResult(
+            returncode=0,
+            stdout="\n".join(json.dumps(item) for item in (video, positive)),
+            stderr="",
+        )
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=result):
+            out = youtube_yt.search_youtube("Test", "2026-02-01", "2026-03-01")
 
-        # Re-parse as the search function would
-        parsed = json.loads(lines[0])
-        view_count = parsed.get("view_count") if parsed.get("view_count") is not None else 0
-        like_count = parsed.get("like_count") if parsed.get("like_count") is not None else 0
-        comment_count = parsed.get("comment_count") if parsed.get("comment_count") is not None else 0
-
-        os.unlink(f.name)
-
-        self.assertEqual(0, view_count)
-        self.assertEqual(0, like_count)
-        self.assertEqual(0, comment_count)
+        self.assertNotIn("error", out)
+        self.assertEqual([item["video_id"] for item in out["items"]], ["positive", "abc123"])
+        self.assertEqual(out["items"][0]["engagement"], {"views": 321, "likes": 7, "comments": 2})
+        self.assertEqual(out["items"][1]["engagement"], {"views": 0, "likes": 0, "comments": 0})
 
 
 class TestYtDlpFlags(unittest.TestCase):
@@ -82,8 +86,10 @@ class TestYtDlpFlags(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir, \
              mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
              mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()) as run_mock:
-            youtube_yt.fetch_transcript("abc123", temp_dir)
+            _write_transcript_fixture(temp_dir)
+            transcript = youtube_yt.fetch_transcript("abc123", temp_dir)
 
+        self.assertEqual(transcript, "Offline transcript fixture.")
         cmd = run_mock.call_args.args[0]
         self.assertIn("--ignore-config", cmd)
         self.assertIn("--no-cookies-from-browser", cmd)
@@ -125,8 +131,10 @@ class TestYtDlpSubLangs(unittest.TestCase):
              mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
              mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()) as run_mock:
             os.environ.pop("LAST30DAYS_YT_SUB_LANGS", None)
-            youtube_yt.fetch_transcript("abc123", temp_dir)
+            _write_transcript_fixture(temp_dir)
+            transcript = youtube_yt.fetch_transcript("abc123", temp_dir)
 
+        self.assertEqual(transcript, "Offline transcript fixture.")
         cmd = run_mock.call_args_list[0].args[0]
         idx = cmd.index("--sub-lang")
         self.assertEqual(cmd[idx + 1], "en,es,pt")
@@ -136,8 +144,10 @@ class TestYtDlpSubLangs(unittest.TestCase):
              mock.patch.dict(os.environ, {"LAST30DAYS_YT_SUB_LANGS": "fr,de,it"}), \
              mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
              mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=self._fake_result()) as run_mock:
-            youtube_yt.fetch_transcript("abc123", temp_dir)
+            _write_transcript_fixture(temp_dir)
+            transcript = youtube_yt.fetch_transcript("abc123", temp_dir)
 
+        self.assertEqual(transcript, "Offline transcript fixture.")
         cmd = run_mock.call_args_list[0].args[0]
         idx = cmd.index("--sub-lang")
         self.assertEqual(cmd[idx + 1], "fr,de,it")
@@ -754,13 +764,13 @@ class TestYtdlpSSHRouting(unittest.TestCase):
         self.assertEqual(wrapped[dash_idx + 1], "macmini")
 
     def test_host_alias_with_dash_prefix_is_rejected(self):
-        """A host value starting with `-` is rejected by the alias validator.
+        os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "-p22"
+        self.assertIsNone(youtube_yt._ytdlp_ssh_host())
+        cmd = ["yt-dlp", "--version"]
+        self.assertEqual(youtube_yt._wrap_ytdlp_cmd(cmd), cmd)
 
-        Without validation, ssh could parse `-oProxyCommand=...` as a flag
-        instead of a hostname. The `--` terminator in _wrap_ytdlp_cmd is
-        defense-in-depth; this regex on _ytdlp_ssh_host() rejects the value
-        before it ever reaches the ssh command line.
-        """
+    def test_host_alias_with_option_payload_is_rejected(self):
+        """Reject an SSH option payload independently of command option termination."""
         os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = "-oProxyCommand=evil"
         self.assertIsNone(youtube_yt._ytdlp_ssh_host())
         # And the wrap function falls back to the local-execution path.
@@ -778,7 +788,7 @@ class TestYtdlpSSHRouting(unittest.TestCase):
 
     def test_host_alias_validator_accepts_realistic_aliases(self):
         """Valid SSH config aliases are accepted: bare names, FQDNs, IPs."""
-        for good in ("macmini", "home-server", "pi5.local", "192.168.1.10", "homelab_box"):
+        for good in ("p22", "macmini", "home-server", "pi5.local", "192.168.1.10", "homelab_box"):
             os.environ["LAST30DAYS_YOUTUBE_SSH_HOST"] = good
             self.assertEqual(youtube_yt._ytdlp_ssh_host(), good)
 
@@ -1544,13 +1554,17 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
              ) as run_mock:
             first = youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
             second = youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
+            self.assertEqual(first, second)
+            second["items"][0]["title"] = "mutated"
+            second["items"][0]["engagement"]["views"] = -1
+            third = youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
         self.assertEqual(run_mock.call_count, 1)
         self.assertEqual(len(first["items"]), 1)
         self.assertEqual(len(second["items"]), 1)
         self.assertEqual(first["items"][0]["video_id"], second["items"][0]["video_id"])
-        # Callers get independent copies so mutations cannot poison the cache.
-        second["items"][0]["title"] = "mutated"
-        self.assertNotEqual(first["items"][0]["title"], "mutated")
+        self.assertEqual(first["items"][0]["title"], "Vuori review")
+        self.assertEqual(third, first)
+        self.assertEqual(third["items"][0]["engagement"]["views"], 100)
 
     def test_timeout_errors_are_not_cached(self):
         with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
@@ -1565,6 +1579,7 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
     def test_waiter_receives_leader_result_without_synthetic_timeout(self):
         """A coalesced waiter must not invent a timeout while the leader runs."""
         import threading
+        from concurrent.futures import ThreadPoolExecutor
         from lib.subproc import SubprocResult
 
         video = {
@@ -1579,41 +1594,50 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
         }
         started = threading.Event()
         release = threading.Event()
+        contender_reached = threading.Event()
 
         def slow_run(cmd, timeout=None):
+            if started.is_set():
+                contender_reached.set()
             started.set()
-            release.wait(timeout=5)
+            self.assertTrue(release.wait(timeout=5), "leader was not released")
             return SubprocResult(
                 returncode=0, stdout=json.dumps(video) + "\n", stderr="",
             )
 
-        results = []
-
-        def leader():
-            results.append(
-                youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
-            )
-
-        def waiter():
-            started.wait(timeout=5)
-            results.append(
-                youtube_yt.search_youtube("Vuori", "2026-06-01", "2026-07-01")
-            )
-
         with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
-             mock.patch.object(youtube_yt.subproc, "run_with_timeout", side_effect=slow_run):
-            t_leader = threading.Thread(target=leader)
-            t_waiter = threading.Thread(target=waiter)
-            t_leader.start()
-            self.assertTrue(started.wait(timeout=5))
-            t_waiter.start()
-            release.set()
-            t_leader.join(timeout=5)
-            t_waiter.join(timeout=5)
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", side_effect=slow_run) as run_mock, \
+             ThreadPoolExecutor(max_workers=2) as pool:
+            leader = pool.submit(youtube_yt.search_youtube, "Vuori", "2026-06-01", "2026-07-01")
+            try:
+                self.assertTrue(started.wait(timeout=5), "leader did not start yt-dlp")
+                with youtube_yt._search_cache_lock:
+                    [(event, _slot)] = youtube_yt._search_inflight.values()
+                real_wait = event.wait
 
+                def observed_wait(timeout=None):
+                    contender_reached.set()
+                    return real_wait(timeout)
+
+                with mock.patch.object(event, "wait", side_effect=observed_wait) as wait_mock:
+                    waiter = pool.submit(youtube_yt.search_youtube, "Vuori", "2026-06-01", "2026-07-01")
+                    self.assertTrue(contender_reached.wait(timeout=5), "second caller did not reach wait or yt-dlp")
+                    self.assertEqual(run_mock.call_count, 1)
+                    wait_mock.assert_called_once_with()
+                    self.assertFalse(leader.done())
+                    self.assertFalse(waiter.done())
+                    release.set()
+                    results = [leader.result(timeout=5), waiter.result(timeout=5)]
+            finally:
+                release.set()
+
+        self.assertEqual(run_mock.call_count, 1)
         self.assertEqual(len(results), 2)
-        self.assertTrue(all(r.get("items") for r in results))
-        self.assertTrue(all(not r.get("error") for r in results))
+        self.assertEqual(results[0], results[1])
+        for result in results:
+            self.assertNotIn("error", result)
+            self.assertEqual([item["video_id"] for item in result["items"]], ["waiter1"])
+            self.assertEqual(result["items"][0]["engagement"], {"views": 10, "likes": 1, "comments": 0})
 
     def test_stale_leader_after_reset_does_not_pop_newer_inflight(self):
         """A leader that outlives reset_search_cache must not drop the new slot."""

@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, Optional, Union
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit, quote
 
-from . import health
+from . import bounded_get, health, usage
 from . import log as _log
 
 DEFAULT_TIMEOUT = 30
@@ -133,6 +133,17 @@ def _open_request(req, timeout):
     if current is not _DEFAULT_URLOPEN:
         return current(req, timeout=timeout)
     return _opener.open(req, timeout=timeout)
+
+
+def open_request(req, timeout):
+    """Open ``req`` with cross-origin credential stripping (see #1062).
+
+    Public entry point for modules that build their own ``Request`` and would
+    otherwise call ``urllib.request.urlopen`` directly, bypassing the redirect
+    handler installed above.
+    """
+    return _open_request(req, timeout)
+
 
 _failure_sink: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
     "last30days_http_failure_sink",
@@ -764,6 +775,8 @@ def request(
     max_429_retries: int = MAX_429_RETRIES,
     raw: bool = False,
     deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
+    owned_get: bool = False,
 ) -> Union[Dict[str, Any], str]:
     """Make an HTTP request and return JSON response.
 
@@ -780,6 +793,8 @@ def request(
         raw: If True, return raw response text instead of parsed JSON
         deadline_monotonic: Optional absolute monotonic deadline shared by all
             attempts and retry delays.
+        owned_get: Run GET transport in a child that is killed and reaped at
+            its deadline. Requires deadline_monotonic; other methods are refused.
 
     Returns:
         Parsed JSON response as dict, or raw text string if raw=True.
@@ -787,6 +802,10 @@ def request(
     Raises:
         HTTPError: On request failure
     """
+    if owned_get and (method != "GET" or json_data is not None):
+        raise ValueError("owned transport requires a bodyless GET")
+    if owned_get and deadline_monotonic is None:
+        raise ValueError("owned GET requires an operation deadline")
     headers = headers or {}
     headers.setdefault("User-Agent", USER_AGENT)
 
@@ -852,7 +871,12 @@ def request(
             if remaining <= 0 or delay >= remaining:
                 last_error = deadline_error()
                 return False
-        time.sleep(delay)
+        if cancel is not None:
+            if cancel.wait(delay):
+                last_error = deadline_error()
+                return False
+        else:
+            time.sleep(delay)
         return True
 
     def open_and_read(
@@ -875,32 +899,67 @@ def request(
         request_timeout: float,
     ) -> tuple[int, str | None, urllib.error.HTTPError | None]:
         """Stop waiting at the wall deadline, even during DNS or body reads."""
-        if deadline_monotonic is None:
+        if owned_get:
+            try:
+                status, body, error = bounded_get.get(
+                    req, timeout=request_timeout,
+                    deadline_monotonic=deadline_monotonic, cancel=cancel,
+                )
+            except bounded_get.GetLaunchError:
+                usage.cancel(charge)
+                raise
+            except bounded_get.GetTimeout as exc:
+                if not exc.started:
+                    usage.cancel(charge)
+                raise deadline_error() from exc
+            try:
+                decoded = body.decode("utf-8") if body is not None else None
+            except UnicodeDecodeError:
+                if error is None:
+                    raise
+                decoded = None
+            return status, decoded, error
+        if deadline_monotonic is None and cancel is None:
             return open_and_read(request_timeout)
-        remaining = deadline_monotonic - time.monotonic()
+        wait_deadline = deadline_monotonic or (time.monotonic() + request_timeout)
+        remaining = wait_deadline - time.monotonic()
         if remaining <= 0:
             raise deadline_error()
         future: Future = Future()
 
         def worker() -> None:
             try:
+                if cancel is not None and cancel.is_set():
+                    raise deadline_error()
                 future.set_result(open_and_read(request_timeout))
             except BaseException as exc:
                 future.set_exception(exc)
 
         threading.Thread(target=worker, daemon=True).start()
-        try:
-            return future.result(timeout=remaining)
-        except TimeoutError as exc:
-            # A worker-side socket TimeoutError is a transport failure, not
-            # proof that the command-wide wall deadline expired. Re-read a
-            # completed future so its original exception reaches the normal
-            # transport classifier below.
-            if future.done():
-                return future.result()
-            raise deadline_error() from exc
+        if cancel is None:
+            try:
+                return future.result(timeout=remaining)
+            except TimeoutError as exc:
+                if future.done():
+                    return future.result()
+                raise deadline_error() from exc
+        while True:
+            if cancel.is_set():
+                raise deadline_error()
+            remaining = wait_deadline - time.monotonic()
+            if remaining <= 0:
+                raise deadline_error()
+            try:
+                return future.result(timeout=min(remaining, 0.1))
+            except TimeoutError:
+                # Preserve worker-side socket failures for transport classification.
+                if future.done():
+                    return future.result()
 
     while attempt < effective_retries:
+        if cancel is not None and cancel.is_set():
+            last_error = deadline_error()
+            break
         request_timeout = timeout
         if deadline_monotonic is not None:
             remaining = deadline_monotonic - time.monotonic()
@@ -909,7 +968,13 @@ def request(
                 break
             request_timeout = min(timeout, remaining)
         try:
+            charge = usage.begin_http(url, method)
             response_status, body, response_error = open_and_read_before_deadline(request_timeout)
+            if body:
+                try:
+                    usage.finish(charge, json.loads(body))
+                except (ValueError, TypeError):
+                    pass
             if (
                 deadline_monotonic is not None
                 and time.monotonic() >= deadline_monotonic

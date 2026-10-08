@@ -9,29 +9,41 @@ run). The site search lane's timeout is covered in test_reddit_search.py.
 """
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 from unittest import mock
 
 from lib import http, reddit_listing
 
 
-def test_limiter_reports_waiting_threads():
-    limiter = http.RateLimiter(rate_per_sec=1000.0, burst=1)
+def test_limiter_reports_waiting_threads(monkeypatch):
+    sleeping = threading.Event()
+    release = threading.Event()
+    now = [0.0]
+
+    def blocked_sleep(delay):
+        sleeping.set()
+        assert release.wait(timeout=5), "queued worker was not released"
+        now[0] += delay
+
+    monkeypatch.setattr(http, "time", SimpleNamespace(monotonic=lambda: now[0], sleep=blocked_sleep))
+    monkeypatch.delenv(http.REDDIT_KEYLESS_RATE_ENV, raising=False)
+    limiter = http.RateLimiter(rate_per_sec=1.0, burst=1)
+    monkeypatch.setattr(http, "REDDIT_KEYLESS_LIMITER", limiter)
     assert limiter.waiting == 0
     limiter.acquire()  # drains the single token
-    started = threading.Event()
-
-    def _wait():
-        started.set()
-        limiter.acquire()
-
-    t = threading.Thread(target=_wait)
-    t.start()
-    started.wait(timeout=1)
-    # The waiter is inside acquire() until a token refills.
-    deadline = threading.Event()
-    deadline.wait(timeout=0.01)
-    t.join(timeout=2)
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        worker = pool.submit(limiter.acquire)
+        try:
+            assert sleeping.wait(timeout=5), "worker did not reach token wait"
+            assert not worker.done()
+            assert limiter.waiting == 1
+            assert http.reddit_keyless_wait_allowance(2) == 3.0 + http.REDDIT_KEYLESS_CONTENTION_SECONDS
+        finally:
+            release.set()
+        worker.result(timeout=5)
     assert limiter.waiting == 0
+    assert http.reddit_keyless_wait_allowance(2) == 2.0 + http.REDDIT_KEYLESS_CONTENTION_SECONDS
 
 
 def test_wait_allowance_scales_with_batch_and_queue(monkeypatch):

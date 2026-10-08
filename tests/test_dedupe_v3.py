@@ -96,10 +96,10 @@ class TestTokenJaccard(unittest.TestCase):
         self.assertAlmostEqual(result, 1.0 / 3.0)  # {big} / {big, cat, dog}
 
     def test_filters_single_char_tokens(self):
-        # Single char tokens like "I" are filtered (len > 1)
-        result = dedupe.token_jaccard("I am great", "I am terrible")
-        # "am" is len 2, "great"/"terrible" are content
-        self.assertGreater(result, 0.0)
+        self.assertAlmostEqual(
+            dedupe.token_jaccard("x shared alpha", "x shared beta"), 1.0 / 3.0
+        )
+        self.assertEqual(dedupe.token_jaccard("x alpha", "x beta"), 0.0)
 
 # ---------------------------------------------------------------------------
 # hybrid_similarity

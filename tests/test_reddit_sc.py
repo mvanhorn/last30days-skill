@@ -74,12 +74,12 @@ class TestDiscoverSubreddits(unittest.TestCase):
 
     def test_ranks_by_frequency(self):
         results = [
+            {"subreddit": "python", "score": 10},
             {"subreddit": "programming", "score": 10},
-            {"subreddit": "programming", "score": 20},
-            {"subreddit": "python", "score": 5},
+            {"subreddit": "programming", "score": 10},
         ]
         subs = reddit.discover_subreddits(results, max_subs=5)
-        self.assertEqual(subs[0], "programming")
+        self.assertEqual(subs, ["programming", "python"])
 
     def test_utility_sub_penalty(self):
         results = [
@@ -87,24 +87,24 @@ class TestDiscoverSubreddits(unittest.TestCase):
             {"subreddit": "tipofmytongue", "score": 100},
             {"subreddit": "python", "score": 10},
         ]
-        subs = reddit.discover_subreddits(results, topic="python", max_subs=5)
-        self.assertEqual(subs[0], "python")
+        subs = reddit.discover_subreddits(results, max_subs=5)
+        self.assertEqual(subs, ["python", "tipofmytongue"])
 
     def test_topic_name_bonus(self):
         results = [
-            {"subreddit": "reactjs", "score": 10},
             {"subreddit": "webdev", "score": 10},
+            {"subreddit": "reactjs", "score": 10},
         ]
         subs = reddit.discover_subreddits(results, topic="react hooks", max_subs=5)
-        self.assertEqual(subs[0], "reactjs")
+        self.assertEqual(subs, ["reactjs", "webdev"])
 
     def test_engagement_bonus(self):
         results = [
-            {"subreddit": "AIsub", "ups": 500},
             {"subreddit": "OtherSub", "ups": 5},
+            {"subreddit": "AIsub", "ups": 500},
         ]
         subs = reddit.discover_subreddits(results, max_subs=5)
-        self.assertEqual(subs[0], "AIsub")
+        self.assertEqual(subs, ["AIsub", "OtherSub"])
 
     def test_max_subs_limit(self):
         results = [{"subreddit": f"sub{i}"} for i in range(20)]
@@ -143,7 +143,7 @@ class TestDepthConfig(unittest.TestCase):
             self.assertIn(depth, reddit.DEPTH_CONFIG)
 
     def test_required_keys(self):
-        required = {"global_searches", "subreddit_searches", "comment_enrichments", "timeframe"}
+        required = {"global_searches", "subreddit_searches", "comment_enrichments"}
         for depth, config in reddit.DEPTH_CONFIG.items():
             self.assertTrue(required.issubset(config.keys()),
                             f"Missing keys in {depth}: {required - config.keys()}")

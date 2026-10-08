@@ -8,7 +8,7 @@ import urllib.request
 from typing import Any
 from urllib.parse import urlparse
 
-from . import dates, http
+from . import dates, http, usage
 
 PARALLEL_MCP_URL = "https://search.parallel.ai/mcp"
 _PROTOCOL_VERSION = "2025-03-26"
@@ -87,6 +87,8 @@ def _request(
         headers=headers,
         method="POST" if message is not None else "DELETE",
     )
+    if api_key and message is not None and message.get("method") == "tools/call":
+        usage.begin("parallel")
     with urllib.request.build_opener(_NoRedirect()).open(request, timeout=http.DEFAULT_TIMEOUT) as response:
         result = _read_response(response, message.get("id")) if message is not None else {}
         return result, response.headers.get("Mcp-Session-Id") or session_id
