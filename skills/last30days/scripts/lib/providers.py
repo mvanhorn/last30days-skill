@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import os
 import re
 import sys
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from . import env, http, schema
 
@@ -24,6 +26,63 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 # constant is suffix-free. If GEMINI_FLASH_LITE moves to a non-preview stable ID,
 # double-check that OpenRouter's slug still maps to the same upstream model.
 OPENROUTER_DEFAULT = "google/gemini-3.1-flash-lite-preview"
+PROVIDER_BASE_URL_KEYS = frozenset({"OPENAI_BASE_URL", "XAI_BASE_URL", "OPENROUTER_BASE_URL"})
+
+
+def _is_loopback(host: str) -> bool:
+    """True for hosts that never leave the machine."""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def allowed_base_url_override(value: str) -> bool:
+    try:
+        parts = urlsplit(value)
+        host = parts.hostname
+    except ValueError:
+        return False
+    return bool(host) and (
+        parts.scheme == "https" or (parts.scheme == "http" and _is_loopback(host))
+    )
+
+
+def is_loopback_http_endpoint(url: str) -> bool:
+    parts = urlsplit(url)
+    return parts.scheme == "http" and _is_loopback(parts.hostname or "")
+
+
+def base_url_override(key: str, default: str) -> str:
+    """Resolve a provider base-URL override, refusing cleartext remote hosts.
+
+    Every provider resolves its endpoint through here so one guard covers both
+    ways a value arrives: the process environment, and
+    ``_propagate_config_to_environ`` pushing a `.env` value into os.environ.
+
+    A base-URL override redirects the request that carries the provider's bearer
+    token, so an `http://` override to a remote host would put the API key on
+    the wire in cleartext. That is refused and the built-in vendor endpoint is
+    used instead - failing closed protects the credential, and the warning makes
+    the drop visible instead of leaving the user to wonder why their gateway is
+    being bypassed. Loopback is the one legitimate `http://` case (a local
+    LiteLLM/Ollama gateway or an SSH tunnel never leaves the machine), so it is
+    allowed.
+    """
+    raw = (os.environ.get(key) or "").strip()
+    if not raw:
+        return default
+    if allowed_base_url_override(raw):
+        return raw
+    sys.stderr.write(
+        f"[last30days] WARNING: ignoring {key} - a provider endpoint override "
+        "must be https:// (http:// is allowed only on localhost), otherwise the API "
+        f"key would be sent in cleartext. Using {default} instead.\n"
+    )
+    sys.stderr.flush()
+    return default
 
 
 _ENDPOINT_PATHS = {
@@ -41,17 +100,19 @@ def resolve_endpoint(env_var: str, default_url: str) -> str:
     path. This module historically required the full endpoint URL instead, so a
     value copied from a provider's setup guide POSTed to the API root and failed.
 
-    Accept both forms: an API root gets the endpoint path appended, and a value
-    that already ends with the endpoint path is used unchanged.
+    Accept both forms: a host or versioned API root gets the endpoint path
+    appended, and a complete gateway route is used unchanged. Query strings
+    stay after the path in either form.
     """
-    override = os.environ.get(env_var, "").strip()
-    if not override:
+    override = base_url_override(env_var, default_url)
+    if override == default_url:
         return default_url
-    override = override.rstrip("/")
-    path = _ENDPOINT_PATHS[default_url]
-    if override.endswith(path):
-        return override
-    return override + path
+    parts = urlsplit(override)
+    root_path = parts.path.rstrip("/")
+    last_segment = root_path.rsplit("/", 1)[-1]
+    if not root_path or re.fullmatch(r"v\d+(?:beta\d*)?", last_segment):
+        return urlunsplit(parts._replace(path=root_path + _ENDPOINT_PATHS[default_url]))
+    return override
 
 
 class ReasoningClient:
@@ -146,14 +207,16 @@ class OpenAIClient(ReasoningClient):
             "input": prompt,
             "temperature": 0,
         }
+        endpoint = resolve_endpoint("OPENAI_BASE_URL", OPENAI_RESPONSES_URL)
         response = http.post(
-            resolve_endpoint("OPENAI_BASE_URL", OPENAI_RESPONSES_URL),
+            endpoint,
             payload,
             headers={
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
             },
             timeout=90,
+            bypass_proxy=is_loopback_http_endpoint(endpoint),
         )
         return extract_openai_text(response)
 
@@ -177,14 +240,16 @@ class XAIClient(ReasoningClient):
             "model": model,
             "input": [{"role": "user", "content": prompt}],
         }
+        endpoint = resolve_endpoint("XAI_BASE_URL", XAI_RESPONSES_URL)
         response = http.post(
-            resolve_endpoint("XAI_BASE_URL", XAI_RESPONSES_URL),
+            endpoint,
             payload,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             },
             timeout=90,
+            bypass_proxy=is_loopback_http_endpoint(endpoint),
         )
         return extract_openai_text(response)
 
@@ -209,14 +274,16 @@ class OpenRouterClient(ReasoningClient):
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
         }
+        endpoint = resolve_endpoint("OPENROUTER_BASE_URL", OPENROUTER_URL)
         response = http.post(
-            resolve_endpoint("OPENROUTER_BASE_URL", OPENROUTER_URL),
+            endpoint,
             payload,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             },
             timeout=90,
+            bypass_proxy=is_loopback_http_endpoint(endpoint),
         )
         return extract_openai_text(response)
 

@@ -1078,12 +1078,14 @@ def _openrouter_sonar_search(
     }
     _log(f"Querying OpenRouter {model} for '{query}' ({from_date} to {to_date})")
     # Honor OPENROUTER_BASE_URL like the planner/rerank client does (providers.py).
+    url = providers.resolve_endpoint("OPENROUTER_BASE_URL", OPENROUTER_URL)
     data = http.post(
-        providers.resolve_endpoint("OPENROUTER_BASE_URL", OPENROUTER_URL),
+        url,
         payload,
         headers=headers,
         timeout=120 if deep else 30,
         retries=1,
+        bypass_proxy=providers.is_loopback_http_endpoint(url),
     )
 
     choices = data.get("choices")
