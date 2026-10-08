@@ -101,9 +101,5 @@ def test_loopback_http_override_stays_usable(value, monkeypatch):
 
 @pytest.mark.parametrize("key,_default", OVERRIDES)
 def test_every_propagated_override_is_preflight_reportable(key, _default):
-    """--preflight is the control that surfaces endpoint redirection.
-
-    OPENROUTER_BASE_URL was propagated into os.environ but missing from this
-    set, so an OpenRouter redirect was invisible in the preflight summary.
-    """
+    """Each provider override key remains in the preflight endpoint inventory."""
     assert key in permission_preflight.ENDPOINT_OVERRIDE_KEYS
