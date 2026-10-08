@@ -2283,6 +2283,7 @@ def run(
         print("[Planner]   (no subqueries in plan)", file=sys.stderr)
 
     bundle = schema.RetrievalBundle(artifacts={"grounding": []})
+    deferred_retryable_failures: dict[str, dict[str, Any]] = {}
     if envelope is not None:
         # The footer's X provenance reads "via X connector" (render._render_stats).
         bundle.artifacts["x_provenance"] = "connector"
@@ -2630,12 +2631,18 @@ def run(
                 artifact = dict(artifact)
                 deferred_outcome = artifact.pop("_source_outcome_if_empty")
                 if not normalized:
-                    bundle.record_failure(
-                        source,
-                        deferred_outcome["state"],
-                        deferred_outcome["detail"],
-                        attempted=deferred_outcome.get("attempted", True),
-                    )
+                    retryable = deferred_outcome["state"] in (health.TIMEOUT, health.UNREACHABLE)
+                    if deferred_outcome["state"] == health.ERROR:
+                        retryable = _is_transient_error(SourceRunError(deferred_outcome["detail"]))
+                    if retryable:
+                        deferred_retryable_failures.setdefault(source, deferred_outcome)
+                    else:
+                        bundle.record_failure(
+                            source,
+                            deferred_outcome["state"],
+                            deferred_outcome["detail"],
+                            attempted=deferred_outcome.get("attempted", True),
+                        )
             bundle.add_items(subquery.label, source, normalized)
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
@@ -2664,6 +2671,10 @@ def run(
     _github_skip_retry = {"corpus"}
     if _github_person_done or _github_custom_done:
         _github_skip_retry.add("github")
+    pre_retry_counts = {
+        source: len(bundle.items_by_source.get(source, []))
+        for source in deferred_retryable_failures
+    }
     _retry_thin_sources(
         topic=topic,
         bundle=bundle,
@@ -2686,6 +2697,16 @@ def run(
         first_party_by_source=creator_first_party,
         run_started=run_started,
     )
+    for source, outcome in deferred_retryable_failures.items():
+        if (
+            source in bundle.errors_by_source
+            or len(bundle.items_by_source.get(source, [])) > pre_retry_counts[source]
+        ):
+            continue
+        bundle.record_failure(
+            source, outcome["state"], outcome["detail"],
+            attempted=outcome.get("attempted", True),
+        )
 
     # Reclassify partial failures as DEGRADED instead of silently dropping them.
     # A source that 429'd on one subquery but succeeded on another is not a hard

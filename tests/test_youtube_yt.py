@@ -1197,7 +1197,10 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
             youtube_yt.health.RATE_LIMITED,
         )
 
-    def _run_sc_fallback_report(self, video, *, initial_empty=False, depth="quick"):
+    def _run_sc_fallback_report(
+        self, video, *, initial_empty=False, depth="quick", retry_video=None,
+        search_error="yt-dlp search failed: Sign in to confirm you're not a bot",
+    ):
         from lib import pipeline
 
         retrieve = pipeline._retrieve_stream
@@ -1222,15 +1225,22 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
             }],
             "source_weights": {"youtube": 1.0},
         }
+        sc_results = [{"items": [video]}]
+        if retry_video is not None:
+            sc_results.append({"items": [retry_video]})
         with mock.patch.object(pipeline, "which", return_value="/usr/bin/yt-dlp"), \
              mock.patch.object(pipeline, "_retrieve_stream", side_effect=retrieve_live_youtube), \
              mock.patch.object(
                  youtube_yt, "search_and_transcribe",
-                 return_value={"items": [], "error": "yt-dlp search failed: Sign in to confirm you're not a bot"},
+                 return_value={"items": [], "error": search_error},
              ), \
-             mock.patch.object(youtube_yt, "search_youtube_sc", return_value={"items": [video]}), \
+             mock.patch.object(
+                 youtube_yt, "search_youtube_sc",
+                 side_effect=sc_results if retry_video is not None else None,
+                 return_value=sc_results[0],
+             ) as sc_search, \
              mock.patch.object(pipeline.env, "is_youtube_comments_available", return_value=False):
-            return pipeline.run(
+            report = pipeline.run(
                 topic="Vuori",
                 config={"SCRAPECREATORS_API_KEY": "k"},
                 depth=depth,
@@ -1239,11 +1249,12 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
                 external_plan=plan,
                 as_of_date="2026-07-01",
             )
+        return report, sc_search.call_count
 
     def test_sc_fallback_without_usable_video_preserves_search_failure_in_coverage(self):
         from lib import render, schema
 
-        report = self._run_sc_fallback_report({
+        report, _ = self._run_sc_fallback_report({
             "id": "abc123",
             "title": "Vuori review",
             "url": "https://www.youtube.com/watch?v=abc123",
@@ -1259,7 +1270,7 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
     def test_sc_fallback_with_usable_video_reports_recovered_coverage(self):
         from lib import health, render
 
-        report = self._run_sc_fallback_report({
+        report, _ = self._run_sc_fallback_report({
             "id": "abc123",
             "title": "Vuori review",
             "url": "https://www.youtube.com/watch?v=abc123",
@@ -1275,7 +1286,7 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
     def test_sc_fallback_retry_without_usable_video_preserves_search_failure(self):
         from lib import schema
 
-        report = self._run_sc_fallback_report({
+        report, _ = self._run_sc_fallback_report({
             "id": "abc123",
             "title": "Vuori review",
             "url": "https://www.youtube.com/watch?v=abc123",
@@ -1285,6 +1296,132 @@ class TestYouTubeSearchTimeoutAndCache(unittest.TestCase):
 
         self.assertEqual(report.source_status["youtube"].state, schema.RATE_LIMITED)
         self.assertIn("not a bot", report.source_status["youtube"].detail)
+
+    def test_sc_fallback_transient_failure_recovers_on_thin_retry(self):
+        from lib import health
+
+        old = {
+            "id": "old", "title": "Vuori archive", "date": "2026-05-01",
+            "url": "https://www.youtube.com/watch?v=old", "transcript_snippet": "",
+        }
+        recent = {
+            "id": "recent", "title": "Vuori review", "date": "2026-06-15",
+            "url": "https://www.youtube.com/watch?v=recent", "transcript_snippet": "",
+        }
+        for search_error in (
+            "yt-dlp search failed: connection reset",
+            "yt-dlp search failed: HTTP Error 503",
+        ):
+            with self.subTest(search_error=search_error):
+                report, calls = self._run_sc_fallback_report(
+                    old, depth="default", retry_video=recent,
+                    search_error=search_error,
+                )
+                self.assertEqual(calls, 2)
+                self.assertEqual(report.source_status["youtube"].state, health.OK)
+                self.assertEqual(
+                    [item.item_id for item in report.items_by_source["youtube"]],
+                    ["recent"],
+                )
+
+    def test_sc_fallback_transient_failure_survives_unusable_thin_retry(self):
+        from lib import health
+
+        old = {
+            "id": "old", "title": "Vuori archive", "date": "2026-05-01",
+            "url": "https://www.youtube.com/watch?v=old", "transcript_snippet": "",
+        }
+        report, calls = self._run_sc_fallback_report(
+            old, depth="default", retry_video=old,
+            search_error="yt-dlp search failed: connection reset",
+        )
+
+        self.assertEqual(calls, 2)
+        self.assertEqual(report.source_status["youtube"].state, health.UNREACHABLE)
+        self.assertIn("connection reset", report.source_status["youtube"].detail)
+
+    def test_sc_fallback_quick_transient_failure_remains_visible(self):
+        from lib import health
+
+        old = {
+            "id": "old", "title": "Vuori archive", "date": "2026-05-01",
+            "url": "https://www.youtube.com/watch?v=old", "transcript_snippet": "",
+        }
+        report, calls = self._run_sc_fallback_report(
+            old, search_error="yt-dlp search failed: connection reset",
+        )
+
+        self.assertEqual(calls, 1)
+        self.assertEqual(report.source_status["youtube"].state, health.UNREACHABLE)
+        self.assertIn("youtube", report.errors_by_source)
+
+    def test_unrecovered_stream_remains_partial_when_another_stream_has_videos(self):
+        from lib import health, pipeline
+
+        fresh = [{
+            "id": f"recent-{index}", "title": title,
+            "url": f"https://www.youtube.com/watch?v=recent-{index}",
+            "date": "2026-06-15", "relevance": 1.0,
+        } for index, title in enumerate((
+            "Vuori earnings report", "Vuori trail running gear review",
+            "Vuori store opening Toronto",
+        ))]
+        stale = [{
+            "id": "old", "title": "Vuori archive", "date": "2026-05-01",
+            "url": "https://www.youtube.com/watch?v=old", "transcript_snippet": "",
+        }]
+
+        def retrieve_stream(*_args, **kwargs):
+            if kwargs["subquery"].label == "usable":
+                return fresh, {}
+            return stale, {"_source_outcome_if_empty": {
+                "state": health.UNREACHABLE,
+                "detail": "yt-dlp search failed: connection reset",
+                "attempted": True,
+            }}
+
+        plan = {
+            "intent": "general", "freshness_mode": "balanced_recent",
+            "cluster_mode": "story",
+            "subqueries": [
+                {"label": label, "search_query": "Vuori", "ranking_query": "Vuori", "sources": ["youtube"]}
+                for label in ("usable", "stale")
+            ],
+            "source_weights": {"youtube": 1.0},
+        }
+        with mock.patch.object(pipeline, "_retrieve_stream", side_effect=retrieve_stream) as search:
+            report = pipeline.run(
+                topic="Vuori", config={}, depth="default",
+                requested_sources=["youtube"], mock=True,
+                external_plan=plan, as_of_date="2026-07-01",
+            )
+
+        self.assertEqual(search.call_count, 2)
+        self.assertEqual(report.source_status["youtube"].state, health.PARTIAL)
+        self.assertEqual(report.source_status["youtube"].items_returned, 3)
+        self.assertIn("connection reset", report.source_status["youtube"].detail)
+
+    def test_sc_fallback_auth_and_rate_limit_failures_skip_thin_retry(self):
+        from lib import health
+
+        old = {
+            "id": "old", "title": "Vuori archive", "date": "2026-05-01",
+            "url": "https://www.youtube.com/watch?v=old", "transcript_snippet": "",
+        }
+        recent = {
+            "id": "recent", "title": "Vuori review", "date": "2026-06-15",
+            "url": "https://www.youtube.com/watch?v=recent", "transcript_snippet": "",
+        }
+        for search_error, state in (
+            ("yt-dlp search failed: Sign in to confirm you're not a bot", health.RATE_LIMITED),
+            ("yt-dlp search failed: login required", health.AUTH_FAILED),
+        ):
+            with self.subTest(state=state):
+                report, calls = self._run_sc_fallback_report(
+                    old, depth="default", retry_video=recent, search_error=search_error,
+                )
+                self.assertEqual(calls, 1)
+                self.assertEqual(report.source_status["youtube"].state, state)
 
     def test_search_zero_exit_with_no_output_is_clean_empty(self):
         with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
