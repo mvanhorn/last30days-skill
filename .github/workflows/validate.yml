@@ -47,7 +47,11 @@ jobs:
       - name: Verify Windows process-tree cleanup
         env:
           PYTHONPATH: ${{ github.workspace }}/skills/last30days/scripts
-        run: uv run python -m unittest tests.test_subproc.TestRunWithTimeout.test_windows_timeout_kills_shim_grandchild -v
+        run: >-
+          uv run python -m unittest
+          tests.test_subproc.TestRunWithTimeout.test_windows_timeout_kills_shim_grandchild
+          tests.test_subproc.TestRunWithTimeout.test_windows_timeout_kills_grandchild_after_shim_exits
+          -v
 
   eval:
     runs-on: ubuntu-latest

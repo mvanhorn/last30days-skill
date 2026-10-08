@@ -500,6 +500,13 @@ time.sleep(15)
 
     @unittest.skipUnless(IS_WINDOWS, "native Windows process-tree validation")
     def test_windows_timeout_kills_shim_grandchild(self):
+        self._assert_windows_timeout_kills_grandchild(shim_exits=False)
+
+    @unittest.skipUnless(IS_WINDOWS, "native Windows process-tree validation")
+    def test_windows_timeout_kills_grandchild_after_shim_exits(self):
+        self._assert_windows_timeout_kills_grandchild(shim_exits=True)
+
+    def _assert_windows_timeout_kills_grandchild(self, *, shim_exits):
         import ctypes
         import pathlib
         import signal
@@ -534,12 +541,21 @@ time.sleep(15)
         shim = (
             "import subprocess,sys,time;"
             "subprocess.Popen([sys.executable,'-c',sys.argv[2],sys.argv[1]]);"
-            "time.sleep(30)"
+            + ("" if shim_exits else "time.sleep(30)")
         )
         with tempfile.TemporaryDirectory() as tmp:
             pidfile = pathlib.Path(tmp, "grandchild.pid")
             shim_pids = []
             observed_live = []
+            observed_root_exit = []
+            bystander = (
+                subproc.subprocess.Popen(
+                    [sys.executable, "-c", "import time;time.sleep(12)"],
+                    stdout=subproc.subprocess.DEVNULL,
+                    stderr=subproc.subprocess.DEVNULL,
+                )
+                if shim_exits else None
+            )
 
             def wait_for_grandchild(pid):
                 shim_pids.append(pid)
@@ -547,6 +563,10 @@ time.sleep(15)
                 while time.monotonic() < deadline:
                     if pidfile.exists() and pidfile.stat().st_size:
                         observed_live.append(running(int(pidfile.read_text())))
+                        if shim_exits:
+                            while running(pid) and time.monotonic() < deadline:
+                                time.sleep(0.01)
+                            observed_root_exit.append(not running(pid))
                         return
                     time.sleep(0.01)
                 self.fail("grandchild did not write its PID")
@@ -586,14 +606,21 @@ time.sleep(15)
                 self.assertLess(time.monotonic() - started, 8, "timeout waited for the grandchild to exit")
                 self.assertTrue(shim_pids)
                 self.assertEqual(observed_live, [True], "grandchild was not alive before timeout")
+                if shim_exits:
+                    self.assertEqual(observed_root_exit, [True], "shim did not exit before timeout")
                 self.assertTrue(pidfile.exists())
                 shim_pid = shim_pids[0]
                 grandchild_pid = int(pidfile.read_text())
                 self.assertFalse(running(shim_pid), "shim survived its timeout")
                 self.assertFalse(running(grandchild_pid), "grandchild survived its timeout")
+                if bystander is not None:
+                    self.assertTrue(running(bystander.pid), "unrelated process was terminated")
             finally:
                 watchdog.cancel()
                 kill_owned_processes()
+                if bystander is not None and running(bystander.pid):
+                    bystander.kill()
+                    bystander.wait(timeout=2)
 
     def test_on_pid_callback_exceptions_are_suppressed(self):
         """If the PID callback raises, the subprocess should still run to completion."""

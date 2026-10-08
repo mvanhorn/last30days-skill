@@ -74,20 +74,142 @@ def _signal_group(pgid: int, sig: int) -> bool:
     return True
 
 
-def _kill_windows_tree(pid: int) -> bool:
+def _taskkill_pid(pid: int, timeout: float = 2) -> bool:
     try:
         result = subprocess.run(
             ["taskkill", "/F", "/T", "/PID", str(pid)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
-            timeout=2,
+            timeout=timeout,
             check=False,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
     except (OSError, subprocess.TimeoutExpired):
         return False
     return result.returncode == 0
+
+
+def _kill_exited_windows_children(pid: int) -> bool:
+    import ctypes
+    from ctypes import wintypes
+
+    PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    TH32CS_SNAPPROCESS = 0x2
+    STILL_ACTIVE = 259
+    ERROR_NO_MORE_FILES = 18
+
+    class FileTime(ctypes.Structure):
+        _fields_ = [
+            ("low", wintypes.DWORD),
+            ("high", wintypes.DWORD),
+        ]
+
+    class ProcessEntry(ctypes.Structure):
+        _fields_ = [
+            ("size", wintypes.DWORD),
+            ("usage", wintypes.DWORD),
+            ("pid", wintypes.DWORD),
+            ("heap_id", ctypes.c_size_t),
+            ("module_id", wintypes.DWORD),
+            ("threads", wintypes.DWORD),
+            ("parent_pid", wintypes.DWORD),
+            ("priority", wintypes.LONG),
+            ("flags", wintypes.DWORD),
+            ("name", wintypes.WCHAR * 260),
+        ]
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+    kernel.OpenProcess.restype = wintypes.HANDLE
+    kernel.GetProcessTimes.argtypes = (wintypes.HANDLE,) + (ctypes.POINTER(FileTime),) * 4
+    kernel.GetProcessTimes.restype = wintypes.BOOL
+    kernel.GetExitCodeProcess.argtypes = (wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD))
+    kernel.GetExitCodeProcess.restype = wintypes.BOOL
+    kernel.GetSystemTimeAsFileTime.argtypes = (ctypes.POINTER(FileTime),)
+    kernel.CreateToolhelp32Snapshot.argtypes = (wintypes.DWORD, wintypes.DWORD)
+    kernel.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
+    kernel.Process32FirstW.argtypes = (wintypes.HANDLE, ctypes.POINTER(ProcessEntry))
+    kernel.Process32FirstW.restype = wintypes.BOOL
+    kernel.Process32NextW.argtypes = (wintypes.HANDLE, ctypes.POINTER(ProcessEntry))
+    kernel.Process32NextW.restype = wintypes.BOOL
+    kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+    def created_at(handle: int) -> Optional[int]:
+        times = [FileTime() for _ in range(4)]
+        if not kernel.GetProcessTimes(handle, *(ctypes.byref(value) for value in times)):
+            return None
+        return times[0].high << 32 | times[0].low
+
+    deadline = time.monotonic() + 2
+    with ExitStack() as handles:
+        root = kernel.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not root:
+            return False
+        handles.callback(kernel.CloseHandle, root)
+        root_created = created_at(root)
+        exit_code = wintypes.DWORD()
+        if root_created is None or not kernel.GetExitCodeProcess(root, ctypes.byref(exit_code)):
+            return False
+        if exit_code.value == STILL_ACTIVE:
+            return False
+
+        cutoff = FileTime()
+        kernel.GetSystemTimeAsFileTime(ctypes.byref(cutoff))
+        cutoff_created = cutoff.high << 32 | cutoff.low
+        snapshot = kernel.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+            return False
+        handles.callback(kernel.CloseHandle, snapshot)
+
+        entry = ProcessEntry()
+        entry.size = ctypes.sizeof(ProcessEntry)
+        if not kernel.Process32FirstW(snapshot, ctypes.byref(entry)):
+            return False
+        children = []
+        complete = False
+        while True:
+            if time.monotonic() >= deadline:
+                break
+            if entry.parent_pid == pid and entry.pid != pid:
+                child = kernel.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, entry.pid)
+                if child:
+                    handles.callback(kernel.CloseHandle, child)
+                    child_created = created_at(child)
+                    if child_created is not None and root_created <= child_created <= cutoff_created:
+                        children.append((entry.pid, child))
+                        if len(children) == 64:
+                            break
+            if not kernel.Process32NextW(snapshot, ctypes.byref(entry)):
+                complete = ctypes.get_last_error() == ERROR_NO_MORE_FILES
+                break
+            if time.monotonic() >= deadline:
+                break
+
+        for child_pid, child in children:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            if not _taskkill_pid(child_pid, timeout=remaining):
+                return False
+            while True:
+                if not kernel.GetExitCodeProcess(child, ctypes.byref(exit_code)):
+                    return False
+                if exit_code.value != STILL_ACTIVE:
+                    break
+                if time.monotonic() >= deadline:
+                    return False
+                time.sleep(0.01)
+    return complete
+
+
+def _kill_windows_tree(pid: int) -> bool:
+    if _taskkill_pid(pid):
+        return True
+    try:
+        return _kill_exited_windows_children(pid)
+    except (OSError, AttributeError, ValueError):
+        return False
 
 
 def _kill_child_group(pid: int, sig: int) -> None:
@@ -158,9 +280,11 @@ def run_with_timeout(
     """Run a subprocess with process-group cleanup on timeout.
 
     Spawns ``cmd`` inside its own process group via ``start_new_session`` where
-    available. On Windows, taskkill terminates the owned child and descendants.
-    If tree termination fails, the direct child is killed. POSIX signals the
-    group with SIGTERM, then escalates to SIGKILL if needed.
+    available. On Windows, taskkill terminates the child tree; if the child
+    already exited, surviving direct children are found by parent PID and
+    taskkill terminates their trees. If tree termination fails, the direct
+    child is killed. POSIX signals the group with SIGTERM, then escalates to
+    SIGKILL if needed.
 
     Args:
         cmd: Command and arguments to spawn.
