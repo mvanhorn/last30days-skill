@@ -89,6 +89,8 @@ _search_cache_lock = threading.Lock()
 # comment API can never dominate a run's wall clock (bounded to 3 videos).
 _COMMENT_TIMEOUT = 20
 _SC_LOW_CREDIT_THRESHOLD = 50  # warn once ScrapeCreators credits drop below this
+_SC_TRANSCRIPT_MAX_LANGUAGES = 3
+_SC_TRANSCRIPT_TIMEOUT = 30
 # Transient = worth retrying (and definitely not "no captions").
 _TRANSIENT_RE = re.compile(
     r"429|too many requests|sign in to confirm|not a bot|rate.?limit"
@@ -1724,8 +1726,12 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
     """
     video_url = f"https://www.youtube.com/watch?v={video_id}"
     transcript = None
+    deadline = time.monotonic() + _SC_TRANSCRIPT_TIMEOUT
     # Without a language the endpoint may return an auto-dubbed track (#1169).
-    for language in _ytdlp_sub_langs().split(","):
+    languages = list(dict.fromkeys(_ytdlp_sub_langs().split(",")))[:_SC_TRANSCRIPT_MAX_LANGUAGES]
+    for language in languages:
+        if time.monotonic() >= deadline:
+            break
         try:
             # Isolate SC transcript fetch errors from the pipeline-level
             # capture_failures() context.
@@ -1734,8 +1740,10 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
                     f"{SCRAPECREATORS_YT_BASE}/video/transcript",
                     params={"url": video_url, "language": language},
                     headers=http.scrapecreators_headers(token),
-                    timeout=30,
+                    timeout=_SC_TRANSCRIPT_TIMEOUT,
                     retries=1,
+                    max_429_retries=0,
+                    deadline_monotonic=deadline,
                 )
         except Exception as exc:
             _log(f"SC transcript error for {video_id} ({language}): {exc}")
@@ -1746,16 +1754,16 @@ def _sc_fetch_transcript(video_id: str, token: str) -> Optional[str]:
         _warn_low_sc_credits(data)
 
         transcript = data.get("transcript")
+        if isinstance(transcript, list):
+            transcript = " ".join(_sc_segment_text(seg) for seg in transcript).strip()
+        if not isinstance(transcript, str):
+            transcript = None
+            continue
+        transcript = _clean_vtt(transcript)
         if transcript:
             break
     if not transcript:
         return None
-
-    if isinstance(transcript, list):
-        transcript = " ".join(_sc_segment_text(seg) for seg in transcript).strip()
-
-    # Clean VTT formatting if present
-    transcript = _clean_vtt(transcript)
 
     # Truncate to max words
     words = transcript.split()
