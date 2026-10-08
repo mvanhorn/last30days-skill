@@ -210,9 +210,18 @@ def _parse_briefing(path: Path) -> LibraryEntry:
         raise ValueError("briefing has no valid date") from exc
     topic = "Weekly research briefing" if is_weekly else "Daily research briefing"
     top = data.get("top_finding") if isinstance(data.get("top_finding"), dict) else {}
-    headline = str(top.get("title") or topic)
+    headline = _briefing_public_headline(data, topic)
     summary = _briefing_summary(data, headline)
     markdown = _briefing_markdown(data, topic, published_date, summary)
+    local_title = str(top.get("title") or "")
+    if local_title and local_title != headline:
+        local_title = local_title.replace("LAST30DAYS_PRIVATE_CORPUS", "LAST30DAYS_PRIVATE-CORPUS")
+        markdown += (
+            "\n<!-- LAST30DAYS_PRIVATE_CORPUS_START -->\n"
+            "## Local briefing highlight\n\n"
+            f"{local_title}\n"
+            "<!-- LAST30DAYS_PRIVATE_CORPUS_END -->\n"
+        )
     return LibraryEntry(
         slug=slugify(topic),
         topic=topic,
@@ -224,6 +233,36 @@ def _parse_briefing(path: Path) -> LibraryEntry:
         source_updated_at=_source_updated_at(path),
         source_format="json",
     )
+
+
+def _briefing_public_headline(data: dict[str, object], fallback: str) -> str:
+    top = data.get("top_finding")
+    candidates = [top] if isinstance(top, dict) else []
+    # Legacy daily archives lack source on top_finding but retain it on findings.
+    topics = data.get("topics")
+    if isinstance(topics, list):
+        for topic in topics:
+            if not isinstance(topic, dict):
+                continue
+            for field in ("findings", "top_findings"):
+                findings = topic.get(field)
+                if isinstance(findings, list):
+                    candidates.extend(findings)
+
+    public_titles = []
+    for finding in candidates:
+        if not isinstance(finding, dict):
+            continue
+        source = str(finding.get("source") or "").strip().lower()
+        url = str(finding.get("source_url") or "").strip().lower()
+        if not source or source == "corpus" or url.startswith("corpus:"):
+            continue
+        title = finding.get("source_title") or finding.get("title")
+        if title:
+            engagement = finding.get("engagement_score", finding.get("engagement"))
+            score = engagement if isinstance(engagement, (int, float)) else 0
+            public_titles.append((score, str(title)))
+    return max(public_titles, key=lambda item: item[0])[1] if public_titles else fallback
 
 
 def _source_updated_at(path: Path) -> datetime:

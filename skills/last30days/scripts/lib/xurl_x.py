@@ -16,10 +16,11 @@ import re
 import shutil
 import stat
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import health, http, log
+from . import health, http, log, usage
 from . import x_api
 # One X API v2 depth table and one parser: xurl_x re-imports both.
 from .x_api import DEPTH_CONFIG
@@ -237,6 +238,9 @@ ERR_UNAUTHORIZED = "xurl: unauthorized (bearer token rejected)"
 ERR_FORBIDDEN = "xurl: forbidden (bearer token lacks access)"
 ERR_RATE_LIMITED = "xurl: rate limit exceeded (X API)"
 ERR_FAILED = "xurl: search failed"
+# HTTP 400 from X's query grammar (for example a bare lowercase "and").
+ERR_INVALID_REQUEST = "xurl: X rejected the query (invalid request)"
+ERR_EMPTY_QUERY = "xurl: no searchable keywords left after removing X search operators"
 ERR_INVALID_JSON = "xurl: invalid JSON from xurl"
 ERR_NOT_FOUND = "xurl not found in PATH"
 ERR_TIMED_OUT = "xurl search timed out (30s)"
@@ -256,37 +260,65 @@ def _classify_cli_failure(output: str) -> str:
         return ERR_FORBIDDEN
     if state == health.RATE_LIMITED:
         return ERR_RATE_LIMITED
+    # X's v2 problem type (".../2/problems/invalid-request") or its title
+    # ("Invalid Request"). Only the fixed string leaves; the body may echo
+    # the query or request headers.
+    lowered = text.lower()
+    if "invalid-request" in lowered or "invalid request" in lowered:
+        return ERR_INVALID_REQUEST
     return ERR_FAILED
 
 
 def search_x(
     query: str,
     depth: str = "default",
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Search X via xurl CLI using X API v2 search/recent.
 
+    The topic is sanitized into space-joined keywords first
+    (``x_api.build_keyword_query``): X's v2 grammar rejects a bare lowercase
+    ``and``/``or`` with HTTP 400 and treats ``from:``-style tokens, leading
+    ``-``, parentheses and quotes as operators, and the pipeline always
+    passes the raw user topic here.
+
     Args:
-        query: Search query string
+        query: Search topic (raw user text is fine; it is sanitized)
         depth: "quick", "default", or "deep"
+        deadline: Optional shared wall-clock deadline (``time.monotonic()``
+            instant) from the X backend chain. The single subprocess timeout
+            is clamped to the time left; a call past the deadline never starts.
 
     Returns:
         Raw JSON response from X API v2 tweets/search/recent, or a dict
         with an "error" key holding a fixed string on failure. The CLI's
         own output reaches only the debug log, never the error.
     """
+    search_query = x_api.build_keyword_query(query)
+    if not search_query:
+        return {"error": ERR_EMPTY_QUERY}
+
     max_results = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     # X API v2 search/recent requires max_results in 10–100 range
     max_results = max(10, min(100, max_results))
+    timeout = 30
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining < 1:
+            return {"error": "xurl: chain budget exhausted"}
+        timeout = max(1, min(timeout, int(remaining)))
 
+    charge = None
     try:
         # --auth app (app-only bearer): xurl >=1.1 mis-signs OAuth1 requests
         # whose query needs percent-encoding (spaces, parens, ...) -> 401.
         # Bearer auth sends no signature, so multi-word queries work.
+        charge = usage.begin("x")
         result = subprocess.run(
-            ["xurl", "search", query, "-n", str(max_results), "--auth", "app"],
+            ["xurl", "search", search_query, "-n", str(max_results), "--auth", "app"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout,
         )
 
         if result.returncode != 0:
@@ -300,6 +332,7 @@ def search_x(
         return json.loads(result.stdout)
 
     except FileNotFoundError:
+        usage.cancel(charge)
         return {"error": ERR_NOT_FOUND}
     except subprocess.TimeoutExpired:
         return {"error": ERR_TIMED_OUT}

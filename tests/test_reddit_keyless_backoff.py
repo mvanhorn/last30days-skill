@@ -42,12 +42,20 @@ class TestRateLimiter:
 
 class TestRedditKeylessGetText:
     def test_acquires_limiter_then_delegates(self):
+        calls = mock.Mock()
         with mock.patch.object(http.REDDIT_KEYLESS_LIMITER, "acquire") as acq, \
              mock.patch.object(http, "get_text", return_value="body") as gt:
+            calls.attach_mock(acq, "acquire")
+            calls.attach_mock(gt, "get_text")
             out = http.reddit_keyless_get_text("https://www.reddit.com/svc/shreddit/search/?q=x", accept="text/html")
         assert out == "body"
-        acq.assert_called_once()
-        gt.assert_called_once()
+        assert calls.mock_calls == [
+            mock.call.acquire(),
+            mock.call.get_text(
+                "https://www.reddit.com/svc/shreddit/search/?q=x",
+                timeout=http.DEFAULT_TIMEOUT, retries=2, accept="text/html", headers=None,
+            ),
+        ]
 
 
 class TestRedditKeylessRateKnob:

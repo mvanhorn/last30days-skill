@@ -63,16 +63,34 @@ def _has_x_credentials(config: dict) -> bool:
 def _x_error_prescription(config: dict, research_results: dict) -> prescriptions.Prescription:
     """The fix for a configured X that errored, routed through the X policy.
 
-    On an official-only host a credit-exhaustion error asks for a top-up
-    (``payment_required``) and every other error asks for a valid bearer or
-    the connector (``cookies_expired`` maps to ``bearer_invalid`` there);
-    elsewhere the entry is today's ``cookies_expired``.
+    The pipeline stamps the failed backend into ``x_error`` or
+    ``x_degraded_error``, sometimes behind a simplified-query retry label.
+    Use that runtime provenance before the host policy.
     """
-    message = str(research_results.get("x_error") or "")
+    message = str(research_results.get("x_error") or research_results.get("x_degraded_error") or "")
     if message.startswith(x_envelope.DETAIL_NOT_PASSED):
         # The model declared the X connector lane and passed no envelope:
         # the fix is the connector, on any host.
         return prescriptions.for_x(config, "connector_missing")
+    backend_error = message.removeprefix("Simplified-query retry failed: ")
+    backend_error = backend_error.removeprefix("All X backends failed — ")
+    if backend_error.startswith("X served via "):
+        served_backend, separator, origin_error = backend_error.removeprefix("X served via ").partition(" after ")
+        if separator:
+            backend_error = origin_error.split(f"; {served_backend}", 1)[0]
+    if backend_error.startswith("xai:"):
+        state = http.classify_failure(message=backend_error)
+        if state == health.PAYMENT_REQUIRED:
+            failure = "xai_payment_required"
+        elif state == health.RATE_LIMITED:
+            failure = "xai_rate_limited"
+        elif state == health.TIMEOUT:
+            failure = "xai_timeout"
+        elif state == health.AUTH_FAILED or "model" in backend_error.lower():
+            failure = "xai_error"
+        else:
+            failure = "xai_unavailable"
+        return prescriptions.for_x(config, failure)
     failure = "cookies_expired"
     if env.x_policy(config).hint_namespace == "official":
         if http.classify_failure(message=message) == health.PAYMENT_REQUIRED:
@@ -193,7 +211,8 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
             degraded-YouTube detection (transcript-fetch ratio below threshold,
             or fallback/provider data returned without local yt-dlp).
             Optional key ``instagram_items_count`` enables silent-failure
-            detection for the bonus Instagram source.
+            detection for the bonus Instagram source. ``x_degraded_error``
+            carries a failed xAI lane when another backend served X items.
 
     Returns:
         {
@@ -226,6 +245,8 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
     )
     if _is_x_active(config, research_results):
         core_active.append("x")
+        if research_results.get("x_degraded_error"):
+            core_degraded.append("x")
     elif x_configured and research_results.get("x_error"):
         core_missing.append("x")
         core_errored.append("x")
@@ -270,7 +291,7 @@ def compute_quality_score(config: dict, research_results: dict) -> dict:
 
     has_sc = bool(config.get("SCRAPECREATORS_API_KEY"))
     active_sources = research_results.get("active_sources") or []
-    x_fix = _x_error_prescription(config, research_results) if "x" in core_errored else None
+    x_fix = _x_error_prescription(config, research_results) if "x" in core_errored or "x" in core_degraded else None
     nudge_text = _build_nudge_text(
         core_missing,
         core_errored,
@@ -349,6 +370,11 @@ def _build_nudge_text(
         if x_fix is None:
             x_fix = prescriptions.get("x", "cookies_expired")
         free_suggestions.append(f"X/Twitter errored - {x_fix.fix_nl}.")
+
+    if "x" in core_degraded:
+        if x_fix is None:
+            x_fix = prescriptions.get("x", "cookies_expired")
+        free_suggestions.append(f"X/Twitter used a backup - {x_fix.fix_nl}.")
 
     if "youtube" in core_missing:
         if "youtube" in core_errored:

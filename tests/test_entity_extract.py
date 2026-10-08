@@ -35,13 +35,15 @@ class TestExtractXHandles(unittest.TestCase):
 
     def test_frequency_ranking(self):
         items = [
-            {"author_handle": "popular", "text": ""},
-            {"author_handle": "popular", "text": ""},
-            {"author_handle": "popular", "text": ""},
             {"author_handle": "rare", "text": ""},
+            {"author_handle": "popular", "text": ""},
+            {"author_handle": "regular", "text": ""},
+            {"author_handle": "popular", "text": ""},
+            {"author_handle": "regular", "text": ""},
+            {"author_handle": "popular", "text": ""},
         ]
         result = entity_extract._extract_x_handles(items)
-        self.assertEqual(result[0], "popular")
+        self.assertEqual(result, ["popular", "regular", "rare"])
 
     def test_leading_at_stripped(self):
         items = [{"author_handle": "@withatsign", "text": ""}]
@@ -78,12 +80,15 @@ class TestExtractXHashtags(unittest.TestCase):
 
     def test_frequency_ranking(self):
         items = [
-            {"text": "#ai is great"},
-            {"text": "#ai again"},
             {"text": "#rare tag"},
+            {"text": "#ai is great"},
+            {"text": "#python is useful"},
+            {"text": "#ai again"},
+            {"text": "#python again"},
+            {"text": "#ai once more"},
         ]
         result = entity_extract._extract_x_hashtags(items)
-        self.assertEqual(result[0], "#ai")
+        self.assertEqual(result, ["#ai", "#python", "#rare"])
 
     def test_single_char_tag_filtered(self):
         items = [{"text": "#X is not enough chars but #AI is"}]
@@ -115,12 +120,15 @@ class TestExtractSubreddits(unittest.TestCase):
 
     def test_frequency_ranking(self):
         items = [
-            {"subreddit": "popular"},
-            {"subreddit": "popular"},
             {"subreddit": "rare"},
+            {"subreddit": "popular"},
+            {"subreddit": "regular"},
+            {"subreddit": "popular"},
+            {"subreddit": "regular"},
+            {"subreddit": "popular"},
         ]
         result = entity_extract._extract_subreddits(items)
-        self.assertEqual(result[0], "popular")
+        self.assertEqual(result, ["popular", "regular", "rare"])
 
     def test_leading_r_slash_stripped(self):
         items = [{"subreddit": "r/stripped"}]

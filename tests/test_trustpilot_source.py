@@ -343,17 +343,51 @@ def test_warmup_stale_session_logs_in_once(monkeypatch):
 
 
 def test_warmup_concurrent_calls_single_warmup(monkeypatch):
-    import threading as _threading
-    calls = _capture_cli(monkeypatch, {"auth status": {"isFresh": True}})
-    threads = [
-        _threading.Thread(target=trustpilot.ensure_session_ready, args=("ThriftBooks",))
-        for _ in range(8)
-    ]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-    assert len([c for c in calls if c[1] == "auth"]) == 1  # vs-mode race guard
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    started = threading.Event()
+    release = threading.Event()
+    contender_reached = threading.Event()
+    real_lock = trustpilot._warmup_lock
+    calls = []
+
+    class ObservedLock:
+        def __enter__(self):
+            if started.is_set():
+                contender_reached.set()
+            return real_lock.__enter__()
+
+        def __exit__(self, *args):
+            return real_lock.__exit__(*args)
+
+    def blocked_cli(cmd, timeout):
+        calls.append(list(cmd))
+        if started.is_set():
+            contender_reached.set()
+        started.set()
+        assert release.wait(timeout=5), "warm-up was not released"
+        return {"isFresh": True}
+
+    monkeypatch.setattr(trustpilot, "_is_available", lambda: True)
+    monkeypatch.setattr(trustpilot, "_warmup_lock", ObservedLock())
+    monkeypatch.setattr(trustpilot, "_run_cli", blocked_cli)
+    expected = [[trustpilot.CLI_BIN, "auth", "status", "--agent"]]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(trustpilot.ensure_session_ready, "ThriftBooks")
+        try:
+            assert started.wait(timeout=5), "first warm-up did not reach CLI"
+            second = pool.submit(trustpilot.ensure_session_ready, "ThriftBooks")
+            assert contender_reached.wait(timeout=5), "second caller did not reach lock or CLI"
+            assert calls == expected
+            assert not first.done()
+            assert not second.done()
+            release.set()
+            first.result(timeout=5)
+            second.result(timeout=5)
+        finally:
+            release.set()
+    assert calls == expected
 
 
 def test_warmup_skips_non_brand_topic(monkeypatch):

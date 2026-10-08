@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Any
 from urllib.parse import urlparse
 
-from . import health, http, log
+from . import health, http, log, providers
 
 
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
@@ -1077,8 +1077,9 @@ def _openrouter_sonar_search(
         "Content-Type": "application/json",
     }
     _log(f"Querying OpenRouter {model} for '{query}' ({from_date} to {to_date})")
+    # Honor OPENROUTER_BASE_URL like the planner/rerank client does (providers.py).
     data = http.post(
-        OPENROUTER_URL,
+        providers.resolve_endpoint("OPENROUTER_BASE_URL", OPENROUTER_URL),
         payload,
         headers=headers,
         timeout=120 if deep else 30,

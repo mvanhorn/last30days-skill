@@ -9,6 +9,79 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.27.1] - 2026-10-08
+
+### Fixed
+
+- On Grok Bot, the month's most-engaged on-topic X posts now reach the report: a host-fetched X stream holds half its slots for its most-engaged posts that name the topic, so the popular pass's big posts no longer lose to fresher low-engagement ones, and off-topic viral posts never take those slots. The footer's X line now names its source ("via Grok Bot X" or "via X connector"), and the Grok Bot X recipe gives discovered authors only topic-word lanes and uses the engine's UTC date for the window.
+
+
+## [3.27.0] - 2026-10-08
+
+### Security
+
+- Route `github.py` and `transcribe.py` through `http.open_request` so their bearer tokens are also dropped on cross-origin redirects; both built their own Request and called `urllib.request.urlopen` directly, bypassing the handler added for #1062. ([#1062](https://github.com/mvanhorn/last30days-skill/issues/1062))
+- Restricted Grok X research to an agent profile with no local tools or default tool injection, while retaining hosted X search. Only the audited Grok 1.0.46 stable build (2765805b9442) runs; other builds fail before credentials are staged. Search topics now enter the prompt as single-line JSON string literals, so quotes, backslashes, newlines, and invisible Unicode cannot break the prompt's framing. The model can still misinterpret a topic or report inaccurate results; escaping does not make model output trustworthy. ([#1161](https://github.com/mvanhorn/last30days-skill/issues/1161))
+- Prevented private corpus titles from appearing in published library briefs, indexes, and feeds. Daily briefing archives now retain headline provenance; library headlines use public findings from daily and weekly archives or a generic headline when provenance is unavailable. Original titles remain available locally.
+- Require explicit consent before reading browser cookies through Chrome debugging sessions. Setup now saves acceptance or refusal, and a saved refusal blocks native browser and CDP reads on subsequent runs without storing cookie values.
+
+### Added
+
+- Document previously-undocumented engine flags in SKILL.md; add CLI-flag and engine-sync contract tests.
+
+### Changed
+
+- Load last30days instructions by research stage and optional mode, keeping the skill entry point short and preserving onboarding, output, citation, and permission requirements. Remove conflicting recommendation and comparison recipes and align plan guidance with the existing engine contract. ([#1230](https://github.com/mvanhorn/last30days-skill/issues/1230))
+- On Grok Bot, X now works out of the box: the bot fetches X through its built-in X tools first, with no plugin, key, or X API credits needed, then falls back to the X for Grok Bot connector and the official X API keys. Busy topics also get a popular pass, one relevance-sorted page for each of 10 equal slices of the window (5 on `--quick`), so the month's most-engaged posts surface, and the footer reads "via Grok Bot X". Host-fetched X results (`--x-posts`) can now fill the same topic budget as the engine's own two X fetches (24 posts at default depth, up from 12).
+
+### Fixed
+
+- `.env` lines written with the shell's `export` prefix (`export KEY=value`) now set `KEY`; before, they created a key literally named `export KEY` and the setting was silently ignored. The setup wizard also treats an `export KEY=...` line as the key being set, so it no longer appends a second copy. ([#930](https://github.com/mvanhorn/last30days-skill/issues/930))
+- Hacker News stories now get their top comments attached again: the pipeline calls `hackernews.enrich_top_stories` after parsing search results, so HN items no longer reach normalization with empty `top_comments`. ([#1168](https://github.com/mvanhorn/last30days-skill/issues/1168))
+- SKILL.md now consistently documents the `--plan` tmpfile form (`--plan "$QUERY_PLAN_FILE"`) in the pre-run checklist and post-run self-check, matching LAW 7; the inline `--plan 'QUERY_PLAN_JSON'` form no longer appears in those spots. ([#1196](https://github.com/mvanhorn/last30days-skill/issues/1196))
+- SKILL.md's privacy list now notes the TikTok legacy fallback: when `SCRAPECREATORS_API_KEY` is unset, `APIFY_API_TOKEN` is sent to ScrapeCreators. ([#1197](https://github.com/mvanhorn/last30days-skill/issues/1197))
+- Reject YouTube SSH host aliases beginning with a dash while preserving valid aliases and SSH option termination.
+
+  The manual engine comparison tool now uses the canonical engine path, counts nested entity reports, reports command failures separately from source errors, and exits unsuccessfully for failed or partial comparisons, including failures retained only in source status. ([#1226](https://github.com/mvanhorn/last30days-skill/issues/1226))
+- A failed X handle lane is no longer reported as "the subject posted nothing". The bird and xquik FROM/ABOUT lanes signalled a per-handle failure by returning no items, and the pipeline hardcoded the auth flag to `False` for both backends, so a missing `node`, a bird-search timeout, or an unpaid xquik key produced an empty lane with no recorded outcome — indistinguishable from genuine silence. Both adapters now report the reason, the pipeline records it, and the lane's auth message names the backend that actually failed.
+- Bound MCP output-pipe draining after engine shutdown so detached helpers cannot delay timeout responses indefinitely. Canceled and timed-out requests now report their context error even when the engine's signal handler exits successfully, and requests canceled before startup do not launch the engine.
+- Bound X searches, source waits, and discovery enrichment with shared deadlines. Cancelled enrichment stops later supplemental searches, X retries, and pipeline provider phases; completed evidence survives source timeouts as partial results. Bird searches that complete empty before the budget blocks optional retries retain their no-results status and show a partial-coverage warning. In-flight subprocesses retain their bounded timeouts. Raised the MCP subprocess timeout to 600 seconds (10 minutes) to accommodate deep enrichment; `LAST30DAYS_MCP_TIMEOUT` overrides it. The longer cap also lets a hung subprocess occupy an MCP slot longer.
+- Browser cookie detection now requires the complete login pair before accepting a source, so a logged-out session can no longer shadow the browser where you are actually logged in.
+- Discovery enrichment now hands each sub-run worker its own config copy, so one topic's financial-topic flag can no longer overwrite another's mid-run.
+- Doctor source probes and Reddit comment enrichment now stop stalled HTTP reads within their operation budgets and reap the transport workers. Reddit keeps comments that completed in time, and a zero enrichment budget starts no requests.
+
+  GET worker launch failures no longer leave unknown API-spend records for requests that were never delivered.
+
+  Doctor preserves completed Reddit HTTP 429 responses as unverified when the remaining probe budget cannot fit a retry.
+- Fixed browser selections being lost after consented setup, including Chromium and services signed in through different browsers, so later research can reuse their sessions without saving cookie values.
+  Both onboarding flows now explain future browser reads before consent, possible repeated macOS Keychain prompts, and how to disable native browser and CDP access.
+- Fixed the runtime preflight failing with "requires Python 3.12+" when `/last30days` is invoked in Claude Code with a multi-word topic: positional parameters in the `SKILL.md` preflight are now written as `${1}` / `$(2)`, which Claude Code's `$<digit>` argument substitution leaves alone.
+- Fixed watchlist daily budgets to accumulate provider-reported OpenRouter and Perplexity USD charges, preserve spending after failed or timed-out runs, and stop subsequent topics when the budget is exhausted or paid usage has unknown cost.
+- Fixed watchlist topic removal to preserve findings and run history shared with other topics. Topic lists, finding queries, trend counts, and briefings now include shared findings without double-counting repeated sightings, using each topic's first sighting for reporting windows.
+- HTML export and optional publishing commands now locate the engine through the skill's established `SKILL_DIR`, including installation paths containing spaces.
+- Honor configured memory directories in skill research, library, and topic-queue commands, preserve explicit empty values, fall through unresolved host placeholders to lower-priority configuration, and reuse the resolved directory throughout discovery. Only claim a saved artifact when the engine emitted its path.
+- Honor the research end date in Bird X searches, including query retries, author timelines, and mentions, so newer posts cannot crowd out historical results.
+- Honor the research plan's source selection for supplemental X handle searches and host-fetched X posts, preventing excluded X sources from returning evidence or making extra backend requests.
+- Include the research persistence module in MCP bundles so enabling `LAST30DAYS_STORE` saves findings without failing before results are returned.
+- Keep slash-containing research topics such as `CI/CD`, repository names, and URLs intact instead of launching unintended competitor comparisons. Preserve supported comparison forms, including `React/Vue/Svelte`, and slashes inside explicitly compared entities.
+- MCP research tool now separates the topic from engine flags and no longer saves a report after an explicit decline.
+- On POSIX systems, MCP timeouts now terminate descendant processes (X search, YouTube/transcript, Digg helpers) instead of leaving them orphaned and running after the engine is killed. Per-source timeouts also stop helpers whose parent exits before them.
+- Paid Reddit search preserves the requested date range at every research depth, including historical windows.
+- Preserve discovery sweep coverage warnings through saved nomination bundles, resumed research, and final reports, including empty results. Older nomination bundles continue to load.
+- Preserve existing HTML briefs across repeated or concurrent exports, and publish a new local artifact only after rendering succeeds.
+- Preserve job-board roles through author diversity filtering and calculate hiring signals from the complete accepted board, so ranking and display limits do not hide strategic roles or understate company size.
+- Prevent competitor research from inheriting the main topic's resolved context when the competitor has no context of its own.
+- Prevent concurrent MCP server startups from replacing a complete engine cache with a partial extraction. Each process now stages its own files, bounds publication-lock waits to five seconds, and safely reclaims staging files left by terminated extractors.
+- Respect host, tool, and user citation requirements in research summaries while retaining the default footer and saved research appendix where compatible.
+- Saving research preserves an existing watchlist topic's custom queries and schedule.
+- Search-quality evaluations now reuse cached judgments only when the judge model and complete prompt match, so changed results, topics, or grading instructions receive fresh scores. Older caches are refreshed before reuse.
+- The `serper` web backend no longer discards every recent result. Google renders a relative date ("2 hours ago", "1 day ago") for fresh results, which the date parser did not understand, so the in-range check dropped them — the newer the result, the more likely it was thrown away. On a one-day research window the web lane came back empty every time, reported as `Web: 0 items (no results)` rather than as a failure. Relative dates now resolve against the query date, which is what the label states an age relative to, so a `--as-of` search of a past window keeps the results that belong to it. A sub-day label is subtracted from the clock rather than rounded up to the current date, so shortly after midnight "23 hours ago" still names yesterday, and an age too large to represent reads as an unparseable date instead of aborting the rest of the results. The `brave` and `exa` backends were unaffected, since they return ISO timestamps.
+- The changelog guard now compares files and lockstep versions from the same merge base resolved at job time. This avoids attributing base-branch releases to a pull request when its event contains an older base SHA or its branch has not yet incorporated the latest release.
+- The fun judge now reads normalized comment excerpts and their vote counts from YouTube, TikTok, and Instagram, while preserving legacy comment bodies and comment insights.
+- Tightened source failure classification: 429/5xx status matching no longer false-positives on embedded digits, the stream exception path keeps the most specific failure (auth over rate-limit), X URLs keep path/query case when deduping, and an unconfigured X backend reads as skipped rather than failed.
+- `XAI_BASE_URL` and `OPENROUTER_BASE_URL` now also redirect the X search (`x_search`) and the OpenRouter Sonar fallback, not only the planner and rerank client, so a gateway or proxy sees every request that carries those keys. `--preflight` now lists `OPENROUTER_BASE_URL` among the active endpoint overrides.
+
+
 ## [3.26.0] - 2026-10-01
 
 ### Security
