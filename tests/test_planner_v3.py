@@ -615,11 +615,12 @@ class FallbackDefaultsTests(unittest.TestCase):
         # The old misleading phrasing must NOT appear.
         self.assertNotIn("No --plan and no LLM provider configured", output)
 
-    def test_fallback_does_not_log_new_warning_when_provider_present(self):
+    def test_provider_failure_logs_error_and_law7_reminder(self):
         # When a provider is configured, the provider path runs; if it
-        # errors, we get the "LLM planning failed" message, NOT the
-        # "No --plan passed" guidance (which is specifically for the
-        # no-provider-no-plan caller path).
+        # errors, we get the "LLM planning failed" message AND the
+        # "No --plan passed" guidance: a failed internal planner degrades
+        # the run exactly like having none, and the host may not be
+        # detectable (see test_law7_host_plan_gate.py).
         import io
         import contextlib
         buf = io.StringIO()
@@ -639,7 +640,7 @@ class FallbackDefaultsTests(unittest.TestCase):
             )
         output = buf.getvalue()
         self.assertIn("LLM planning failed", output)
-        self.assertNotIn("No --plan passed", output)
+        self.assertIn("No --plan passed", output)
 
 if __name__ == "__main__":
     unittest.main()

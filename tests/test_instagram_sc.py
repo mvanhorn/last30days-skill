@@ -2,6 +2,7 @@
 
 import os
 import unittest
+from urllib.parse import parse_qs, urlsplit
 from unittest.mock import MagicMock, patch
 
 # Add lib to path
@@ -249,6 +250,35 @@ class TestTranscriptTimeoutConfig(unittest.TestCase):
             instagram.fetch_captions(items, token="fake-token")
             kwargs = mock_http_get.call_args.kwargs
             self.assertEqual(kwargs["timeout"], 30.0)
+
+class TestInstagramArabicTopicEncoding(unittest.TestCase):
+    """Regression for issue #817 across the Instagram search path."""
+
+    def _sent_url(self, mock_urlopen) -> str:
+        return mock_urlopen.call_args[0][0].full_url
+
+    @patch("lib.http.urllib.request.urlopen")
+    def test_arabic_topic_returns_success_with_ascii_encoded_url(self, mock_urlopen):
+        resp = MagicMock()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = b'{"reels": []}'
+        resp.status = 200
+        mock_urlopen.return_value = resp
+
+        topic = "اسعار التمريض المنزلي السعودية"
+        result = instagram.search_instagram(
+            topic,
+            "2026-06-01",
+            "2026-07-13",
+            depth="quick",
+            token="dummy-key",
+        )
+        self.assertNotIn("error", result)
+        sent_url = self._sent_url(mock_urlopen)
+        sent_url.encode("ascii")
+        self.assertEqual(parse_qs(urlsplit(sent_url).query)["query"], [topic])
+
 
 if __name__ == "__main__":
     unittest.main()

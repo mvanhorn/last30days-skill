@@ -1,8 +1,7 @@
-"""Subprocess helpers: safe timeout + process-group cleanup.
+"""Subprocess helpers: safe timeout + process-tree cleanup.
 
-Used by bird_x.py (Node.js Bird search) and youtube_yt.py (yt-dlp search
-and transcript download). Both need the same os.setsid/killpg cleanup
-dance on timeout to avoid orphaning child processes.
+Used by Bird/X search and other external-source clients. POSIX children use
+their own process group; Windows children run inside a kill-on-close job.
 """
 
 from __future__ import annotations
@@ -37,10 +36,12 @@ class SubprocTimeout(Exception):
 # lock in register_child_pid.
 _child_pids: set[int] = set()
 _child_pids_lock = threading.RLock()
+_child_jobs: dict[int, object] = {}
 # Set once cleanup_children starts. Worker threads keep running while the
 # handler sleeps through the grace, so a source can spawn a child after the
 # snapshot; register_child_pid kills such late children itself.
 _shutting_down = False
+_WINDOWS = os.name == "nt"
 
 
 def register_child_pid(pid: int) -> None:
@@ -54,6 +55,9 @@ def register_child_pid(pid: int) -> None:
 def unregister_child_pid(pid: int) -> None:
     with _child_pids_lock:
         _child_pids.discard(pid)
+        job = _child_jobs.pop(pid, None)
+        if job is not None:
+            job.close()
 
 
 # Upper bound on how long cleanup_children waits for SIGTERMed groups before
@@ -74,9 +78,39 @@ def _signal_group(pgid: int, sig: int) -> bool:
     return True
 
 
+def _taskkill_pid(pid: int, timeout: float = 2) -> bool:
+    try:
+        result = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=timeout,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
+def _kill_windows_tree(pid: int) -> bool:
+    return _taskkill_pid(pid)
+
+
+def _kill_windows_managed_tree(pid: int) -> bool:
+    with _child_pids_lock:
+        job = _child_jobs.get(pid)
+        if job is not None and job.terminate():
+            return True
+        return _kill_windows_tree(pid)
+
+
 def _kill_child_group(pid: int, sig: int) -> None:
     if hasattr(os, "setsid") and hasattr(os, "killpg"):
         _signal_group(pid, sig)
+        return
+    if _WINDOWS and _kill_windows_managed_tree(pid):
         return
     try:
         os.kill(pid, sig)
@@ -87,10 +121,11 @@ def _kill_child_group(pid: int, sig: int) -> None:
 def cleanup_children(grace: float = CLEANUP_TERM_GRACE_SECONDS) -> None:
     """Terminate the process group of every registered child.
 
-    SIGTERM every group, wait up to ``grace`` seconds for the groups to
-    empty, then SIGKILL the survivors. run_with_timeout starts each child
-    with os.setsid, so the child's pid is its pgid; signalling the pgid
-    directly still reaches grandchildren after the leader has been reaped,
+    Windows jobs terminate immediately. On POSIX, SIGTERM every group, wait
+    up to ``grace`` seconds for the groups to empty, then SIGKILL survivors.
+    run_with_timeout starts each POSIX child with os.setsid, so the child's
+    pid is its pgid; signalling the pgid directly still reaches grandchildren
+    after the leader has been reaped,
     and the kernel does not reuse a pid while a group of that id has
     members. A group whose only member is an unreaped zombie still reads as
     live, which at worst costs the full grace and a harmless SIGKILL.
@@ -105,7 +140,9 @@ def cleanup_children(grace: float = CLEANUP_TERM_GRACE_SECONDS) -> None:
         return
     if not (hasattr(os, "setsid") and hasattr(os, "killpg")):
         for pid in pids:
-            _kill_child_group(pid, signal.SIGTERM)
+            with _child_pids_lock:
+                if pid in _child_pids:
+                    _kill_child_group(pid, signal.SIGTERM)
         return
     live = [pgid for pgid in pids if _signal_group(pgid, signal.SIGTERM)]
     deadline = time.monotonic() + grace
@@ -140,10 +177,11 @@ def run_with_timeout(
     """Run a subprocess with process-group cleanup on timeout.
 
     Spawns ``cmd`` inside its own process group via ``start_new_session`` where
-    available. If ``communicate(timeout=...)`` raises ``TimeoutExpired``,
-    signals ``SIGTERM`` to the entire group, falls back to ``proc.kill()``
-    if the signal fails, then waits up to ``cleanup_grace`` seconds before
-    escalating to SIGKILL and waiting once more to reap the child.
+    available. On Windows, the child enters a kill-on-close job before it runs,
+    so cleanup reaches descendants that inherit the job after launchers exit.
+    Closing the job on normal return also stops detached descendants. Job setup
+    failure aborts the suspended child. POSIX signals the group with SIGTERM,
+    then escalates to SIGKILL if needed.
 
     Args:
         cmd: Command and arguments to spawn.
@@ -175,10 +213,16 @@ def run_with_timeout(
     if capture_limit_bytes is not None and capture_limit_bytes < 0:
         raise ValueError("capture limit must be nonnegative")
     own_group = hasattr(os, "setsid") and hasattr(os, "killpg")
+    native_windows = _WINDOWS
     capture = ExitStack()
+    job = None
     try:
         stdout_file = capture.enter_context(tempfile.TemporaryFile()) if capture_limit_bytes is not None else None
         stderr_file = capture.enter_context(tempfile.TemporaryFile()) if capture_limit_bytes is not None else None
+        if native_windows:
+            from .windows_job import CREATE_SUSPENDED, WindowsJob
+
+            job = WindowsJob()
         proc = subprocess.Popen(
             list(cmd),
             stdout=stdout_file if stdout_file is not None else subprocess.PIPE,
@@ -189,14 +233,47 @@ def run_with_timeout(
             errors="replace",
             start_new_session=own_group,
             env=env,
+            **({"creationflags": CREATE_SUSPENDED} if native_windows else {}),
         )
     except BaseException as exc:
         if isinstance(exc, OSError):
             exc._last30days_subproc_launch_failed = True
+        if job is not None:
+            job.close()
         capture.close()
         raise
     try:
-        register_child_pid(proc.pid)
+        if native_windows:
+            from .windows_job import resume_suspended_process
+
+            try:
+                job.assign(proc._handle)
+                with _child_pids_lock:
+                    _child_pids.add(proc.pid)
+                    _child_jobs[proc.pid] = job
+                    late = _shutting_down
+                    if late:
+                        if not job.terminate():
+                            proc.kill()
+                    else:
+                        resume_suspended_process(proc.pid)
+                if late:
+                    raise SubprocTimeout("Command cancelled during shutdown")
+            except BaseException as exc:
+                if isinstance(exc, OSError):
+                    exc._last30days_subproc_launch_failed = True
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+                try:
+                    proc.wait(timeout=min(cleanup_grace, 2))
+                except subprocess.TimeoutExpired:
+                    pass
+                raise
+        else:
+            register_child_pid(proc.pid)
         if on_pid is not None:
             try:
                 on_pid(proc.pid)
@@ -231,7 +308,7 @@ def run_with_timeout(
                 if own_group:
                     pgid = proc.pid
                     os.killpg(pgid, signal.SIGTERM)
-                else:
+                elif not (_WINDOWS and _kill_windows_managed_tree(proc.pid)):
                     proc.kill()
             except (ProcessLookupError, PermissionError, OSError, AttributeError):
                 pgid = None
@@ -243,7 +320,7 @@ def run_with_timeout(
                 try:
                     if pgid is not None:
                         os.killpg(pgid, signal.SIGKILL)
-                    else:
+                    elif not (_WINDOWS and _kill_windows_managed_tree(proc.pid)):
                         proc.kill()
                 except (ProcessLookupError, PermissionError, OSError, AttributeError):
                     proc.kill()
@@ -279,6 +356,8 @@ def run_with_timeout(
         raise
     finally:
         unregister_child_pid(proc.pid)
+        if job is not None:
+            job.close()
         for pipe in (proc.stdin, proc.stdout, proc.stderr):
             if pipe is not None:
                 pipe.close()

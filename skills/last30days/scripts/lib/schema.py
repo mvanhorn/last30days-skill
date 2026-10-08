@@ -692,7 +692,7 @@ def candidate_primary_item(candidate: Candidate) -> SourceItem | None:
     return candidate.source_items[0]
 
 
-AGENT_EXPORT_SCHEMA_VERSION = "1.3"
+AGENT_EXPORT_SCHEMA_VERSION = "1.4"
 
 
 def without_sources(report: Report, excluded_sources: set[str]) -> Report:
@@ -942,6 +942,7 @@ def to_agent_export(
         ],
         "clusters": exported_clusters,
         "results": results,
+        "usage": report.artifacts.get("usage"),
     }
 
 

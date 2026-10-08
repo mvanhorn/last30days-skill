@@ -41,6 +41,105 @@ class DepthSettingsOverrideTests(unittest.TestCase):
 
 
 class PipelineV3Tests(unittest.TestCase):
+    def test_failed_rerank_keeps_agent_export_usage_null(self):
+        calls = 0
+
+        def response(url, body, **kwargs):
+            nonlocal calls
+            calls += 1
+            if calls > 1:
+                raise http.HTTPError("timed out")
+            return {
+                "candidates": [{"content": {"parts": [{"text": '{"scores": []}'}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": 11,
+                },
+            }
+
+        with patch.object(pipeline, "available_sources", return_value=["reddit"]), patch.object(
+            pipeline, "_retrieve_stream",
+            side_effect=lambda **kwargs: pipeline._mock_stream_results(
+                kwargs["source"], kwargs["subquery"]
+            ),
+        ), patch.object(pipeline, "_retry_thin_sources"), patch.object(
+            pipeline.providers.http, "post", side_effect=response
+        ):
+            report = pipeline.run(
+                topic="AI coding agents",
+                config={"GOOGLE_API_KEY": "dummy-key", "LAST30DAYS_REASONING_PROVIDER": "gemini"},
+                depth="quick",
+                requested_sources=["reddit"],
+                web_backend="none",
+                external_plan={
+                    "intent": "research",
+                    "freshness_mode": "balanced_recent",
+                    "cluster_mode": "topic",
+                    "subqueries": [{
+                        "label": "primary",
+                        "search_query": "AI coding agents",
+                        "ranking_query": "AI coding agents",
+                        "sources": ["reddit"],
+                    }],
+                },
+            )
+
+        self.assertGreaterEqual(calls, 2)
+        self.assertIsNone(schema.to_agent_export(report)["usage"])
+
+    def test_agent_export_usage_includes_final_rerank_calls(self):
+        calls = []
+
+        def response(url, body, **kwargs):
+            self.assertIn("generativelanguage.googleapis.com", url)
+            calls.append(body)
+            prompt_tokens = len(calls) * 10
+            return {
+                "candidates": [{"content": {"parts": [{"text": '{"scores": []}'}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": prompt_tokens,
+                    "candidatesTokenCount": 1,
+                    "totalTokenCount": prompt_tokens + 1,
+                },
+            }
+
+        with patch.object(pipeline, "available_sources", return_value=["reddit"]), patch.object(
+            pipeline, "_retrieve_stream",
+            side_effect=lambda **kwargs: pipeline._mock_stream_results(
+                kwargs["source"], kwargs["subquery"]
+            ),
+        ), patch.object(pipeline, "_retry_thin_sources"), patch.object(
+            pipeline.providers.http, "post", side_effect=response
+        ):
+            report = pipeline.run(
+                topic="AI coding agents",
+                config={"GOOGLE_API_KEY": "dummy-key", "LAST30DAYS_REASONING_PROVIDER": "gemini"},
+                depth="quick",
+                requested_sources=["reddit"],
+                web_backend="none",
+                external_plan={
+                    "intent": "research",
+                    "freshness_mode": "balanced_recent",
+                    "cluster_mode": "topic",
+                    "subqueries": [{
+                        "label": "primary",
+                        "search_query": "AI coding agents",
+                        "ranking_query": "AI coding agents",
+                        "sources": ["reddit"],
+                    }],
+                },
+            )
+
+        self.assertGreaterEqual(len(calls), 2)
+        expected = {
+            "calls": len(calls),
+            "promptTokens": sum(i * 10 for i in range(1, len(calls) + 1)),
+            "completionTokens": len(calls),
+            "totalTokens": sum(i * 10 + 1 for i in range(1, len(calls) + 1)),
+        }
+        self.assertEqual(expected, schema.to_agent_export(report)["usage"])
+
     def test_mock_pipeline_report_without_live_credentials(self):
         report = pipeline.run(
             topic="test topic",
@@ -1163,9 +1262,9 @@ class TestMixedResultRevocation(unittest.TestCase):
                 date_range=("2026-05-19", "2026-06-18"), runtime=_make_runtime(None), mock=False,
             )
         self.assertEqual(1, len(items))
-        outcome = artifact.get("_source_outcome", {})
-        # Non-auth error followed by fallback success is OK
-        self.assertEqual("ok", outcome.get("state"))
+        self.assertNotIn("_source_outcome", artifact)
+        self.assertIn("grok: network timeout", artifact["_source_outcome_detail"])
+        self.assertEqual(health.TIMEOUT, artifact["_source_outcome_detail_state"])
 
     @patch("lib.env.x_backend_chain", return_value=["bird", "grok"])
     def test_prior_non_auth_then_current_auth_fail_yields_auth_failed(self, _chain):

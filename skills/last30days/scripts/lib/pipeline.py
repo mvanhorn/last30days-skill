@@ -679,7 +679,7 @@ def _fetch_discovery_source(
             if _research_stopped(config) or time.monotonic() >= chain_deadline:
                 last_error = f"{last_error}; X chain budget exhausted (timed out or cancelled)".strip("; ")
                 break
-            items, error = _fetch_x_backend(
+            items, error, _ = _attempt_x_backend(
                 backend, query, from_date, to_date, depth, config,
                 warnings=x_warnings, deadline=chain_deadline,
             )
@@ -2430,6 +2430,7 @@ def run(
         print("[Planner]   (no subqueries in plan)", file=sys.stderr)
 
     bundle = schema.RetrievalBundle(artifacts={"grounding": []})
+    deferred_retryable_failures: dict[str, dict[str, Any]] = {}
     if envelope is not None:
         # The footer names the X provenance (render._render_stats).
         bundle.artifacts["x_provenance"] = envelope.provenance
@@ -2777,22 +2778,33 @@ def run(
             if isinstance(artifact, dict) and artifact.get("_source_outcome"):
                 artifact = dict(artifact)
                 outcome_note = artifact.pop("_source_outcome")
-                bundle.record_failure(
-                    source,
-                    outcome_note["state"],
-                    outcome_note["detail"],
-                    attempted=outcome_note.get("attempted", True),
-                )
+                if (
+                    source == "youtube"
+                    and not raw_items
+                    and _retryable_youtube_outcome(outcome_note)
+                ):
+                    deferred_retryable_failures.setdefault(source, outcome_note)
+                else:
+                    bundle.record_failure(
+                        source,
+                        outcome_note["state"],
+                        outcome_note["detail"],
+                        attempted=outcome_note.get("attempted", True),
+                    )
             if isinstance(artifact, dict) and artifact.get("_source_outcome_detail"):
                 artifact = dict(artifact)
+                detail_rate_limited = _detail_rate_limits_source(source, artifact)
                 lane_state = artifact.pop("_source_outcome_detail_state", None)
+                detail_note = artifact.pop("_source_outcome_detail")
                 bundle.record_detail(
-                    source, artifact.pop("_source_outcome_detail"), state=lane_state
+                    source, detail_note, state=lane_state
                 )
-                if lane_state == health.RATE_LIMITED:
+                if detail_rate_limited:
                     # Do not re-fan-out against a host still inside its window.
                     with rate_limit_lock:
                         rate_limited_sources.add(source)
+            if isinstance(artifact, dict):
+                artifact.pop("_x_backup_not_rate_limited", None)
             normalized = _normalize_score_dedupe(
                 source, raw_items, from_date, to_date,
                 freshness_mode=plan.freshness_mode,
@@ -2818,6 +2830,19 @@ def run(
                     source, normalized, stream_limit, topic,
                     host_fetched_x=host_fetched_x, protected_authors=explicit_first_party,
                 )
+            if isinstance(artifact, dict) and artifact.get("_source_outcome_if_empty"):
+                artifact = dict(artifact)
+                deferred_outcome = artifact.pop("_source_outcome_if_empty")
+                if not normalized:
+                    if _retryable_youtube_outcome(deferred_outcome):
+                        deferred_retryable_failures.setdefault(source, deferred_outcome)
+                    else:
+                        bundle.record_failure(
+                            source,
+                            deferred_outcome["state"],
+                            deferred_outcome["detail"],
+                            attempted=deferred_outcome.get("attempted", True),
+                        )
             bundle.add_items(subquery.label, source, normalized)
             if artifact:
                 bundle.artifacts.setdefault("grounding", []).append(artifact)
@@ -2847,6 +2872,10 @@ def run(
     _github_skip_retry = {"corpus"}
     if _github_person_done or _github_custom_done:
         _github_skip_retry.add("github")
+    pre_retry_counts = {
+        source: len(bundle.items_by_source.get(source, []))
+        for source in deferred_retryable_failures
+    }
     _retry_thin_sources(
         topic=topic,
         bundle=bundle,
@@ -2869,6 +2898,16 @@ def run(
         first_party_by_source=creator_first_party,
         run_started=run_started,
     )
+    for source, outcome in deferred_retryable_failures.items():
+        if (
+            source in bundle.errors_by_source
+            or len(bundle.items_by_source.get(source, [])) > pre_retry_counts[source]
+        ):
+            continue
+        bundle.record_failure(
+            source, outcome["state"], outcome["detail"],
+            attempted=outcome.get("attempted", True),
+        )
 
     # Reclassify partial failures as DEGRADED instead of silently dropping them.
     # A source that 429'd on one subquery but succeeded on another is not a hard
@@ -3092,6 +3131,7 @@ def run(
     )
     if library_warning:
         warnings.append(library_warning)
+    bundle.artifacts["usage"] = reasoning_provider.total_usage if reasoning_provider else None
 
     return schema.Report(
         topic=topic,
@@ -4057,6 +4097,15 @@ def _is_transient_error(exc: Exception) -> bool:
     return _mentions_status(str(exc), r"5\d\d", _SERVER_ERROR_PHRASES)
 
 
+def _retryable_youtube_outcome(outcome: dict[str, Any]) -> bool:
+    state = outcome.get("state")
+    if state in (health.TIMEOUT, health.UNREACHABLE):
+        return True
+    return state == health.ERROR and _is_transient_error(
+        SourceRunError(str(outcome.get("detail") or ""))
+    )
+
+
 def _topic_handle_mentions(topic: str) -> set[str]:
     """@mentions in the topic, which are real X handles.
 
@@ -4755,6 +4804,8 @@ def _retry_thin_sources(
         normalized = _apply_reddit_stream_keepers(
             source, normalized, settings["per_stream_limit"], topic
         )
+        if not normalized and isinstance(artifact, dict):
+            outcome_note = outcome_note or artifact.get("_source_outcome_if_empty")
         return source, normalized, outcome_note, (detail_note, detail_state)
 
     retryable = [s for s in thin_sources if s not in rate_limited_sources]
@@ -4870,6 +4921,33 @@ def _fetch_x_backend(backend, query, from_date, to_date, depth, config, warnings
     return items, (err or "")
 
 
+def _attempt_x_backend(backend, query, from_date, to_date, depth, config, warnings=None, deadline=None):
+    try:
+        items, error = _fetch_x_backend(
+            backend, query, from_date, to_date, depth, config,
+            warnings=warnings, deadline=deadline,
+        )
+    except http.HTTPError as exc:
+        detail = str(exc)
+        cause = (
+            f"HTTP {exc.status_code}"
+            if exc.status_code is not None
+            else {
+                health.AUTH_FAILED: "authentication failed",
+                health.PAYMENT_REQUIRED: "payment required",
+                health.RATE_LIMITED: "rate limited",
+                health.TIMEOUT: "timed out",
+                health.UNREACHABLE: "connection error",
+                health.SCHEMA_DRIFT: "invalid JSON",
+            }.get(exc.outcome_state)
+        )
+        if cause and cause.lower() not in detail.lower():
+            detail = f"{cause}: {detail}"
+        return [], detail, exc.outcome_state
+    detail = str(error or "")
+    return items, detail, http.classify_failure(message=detail) if detail else None
+
+
 def _reddit_post_key(item: dict) -> str:
     """Stable per-thread dedupe key (base36 post id from the url/permalink)."""
     url = item.get("url") or item.get("permalink") or ""
@@ -4891,6 +4969,12 @@ def _merge_reddit_items(free: list[dict], sc: list[dict]) -> list[dict]:
             seen.add(key)
             merged.append(it)
     return merged
+
+
+def _detail_rate_limits_source(source: str, artifact: dict) -> bool:
+    if artifact.get("_source_outcome_detail_state") != health.RATE_LIMITED:
+        return False
+    return source != "x" or not bool(artifact.get("_x_backup_not_rate_limited"))
 
 
 def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
@@ -4928,7 +5012,8 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
         if matched:
             replay_artifact = replayed[1] or {}
             publish_rate_limit((replay_artifact.get("_source_outcome") or {}).get("state"))
-            publish_rate_limit(replay_artifact.get("_source_outcome_detail_state"))
+            if _detail_rate_limits_source(source, replay_artifact):
+                publish_rate_limit(health.RATE_LIMITED)
             return replayed[0], replayed[1]
     try:
         with http.capture_failures() as failures, \
@@ -4989,7 +5074,8 @@ def _retrieve_stream(*args, **kwargs) -> tuple[list[dict], dict]:
                 states, key=lambda state: _FAILURE_SPECIFICITY.get(state, 9)
             )
     publish_rate_limit((artifact.get("_source_outcome") or {}).get("state"))
-    publish_rate_limit(artifact.get("_source_outcome_detail_state"))
+    if _detail_rate_limits_source(source, artifact):
+        publish_rate_limit(health.RATE_LIMITED)
     if module_backed:
         http.fixture_source_record(fixture_request, [items, artifact])
     return items, artifact
@@ -5347,7 +5433,8 @@ def _retrieve_stream_impl(
                 schema.SKIPPED_UNCONFIGURED,
             )
         last_error = ""
-        chain_errors: list[str] = []
+        chain_errors: list[tuple[str, schema.RunOutcomeState]] = []
+        last_state = health.ERROR
         items = []
         used_backend = None
         x_warnings: list[str] = []
@@ -5356,13 +5443,15 @@ def _retrieve_stream_impl(
             if _research_stopped(config) or time.monotonic() >= chain_deadline:
                 msg = "X chain budget exhausted (timed out or cancelled)"
                 last_error = f"{last_error}; {msg}".strip("; ") if last_error else msg
-                chain_errors.append(msg)
+                last_state = health.TIMEOUT
+                chain_errors.append((msg, last_state))
                 print("[X] chain budget exhausted; skipping remaining backends", file=sys.stderr)
                 break
-            items, err = _fetch_x_backend(
-                backend, x_query, from_date, to_date, depth, config, warnings=x_warnings,
-                deadline=chain_deadline,
-            )
+            with http.tee_failures() as backend_failures:
+                items, err, err_state = _attempt_x_backend(
+                    backend, x_query, from_date, to_date, depth, config, warnings=x_warnings,
+                    deadline=chain_deadline,
+                )
             if items:
                 if i > 0:
                     # xapi is metered: name the spend when it served as a backup.
@@ -5373,35 +5462,50 @@ def _retrieve_stream_impl(
                     )
                 # Check for auth errors before proceeding to judge-retry
                 if last_error:
-                    # Fallback succeeded after earlier backend failed. Classify
-                    # the original error: if it was AUTH_FAILED (grok revoked),
-                    # preserve that state so user gets re-login guidance.
-                    prior_state = http.classify_failure(message=last_error)
+                    # Preserve a prior auth failure even when the backup served
+                    # items. Session backends alone need re-login guidance.
+                    prior_state = last_state
+                    backup_rate_limited = err_state == health.RATE_LIMITED or any(
+                        failure.outcome_state == health.RATE_LIMITED for failure in backend_failures
+                    )
+                    detail = f"X served via {backend} after {last_error}"
+                    if err:
+                        detail += f"; {backend}: {err}"
+                    if backup_rate_limited and err_state != health.RATE_LIMITED:
+                        detail += f"; {backend} also rate-limited"
                     if prior_state == schema.AUTH_FAILED:
-                        # Keep AUTH_FAILED visible so host shows re-login hint
-                        return items, _outcome_artifact(
-                            schema.AUTH_FAILED,
-                            f"X served via {backend} after {last_error}; re-login needed for primary backend",
+                        repair = (
+                            "; re-login needed for primary backend"
+                            if last_error.startswith(("grok:", "bird:")) else ""
                         )
+                        artifact = _outcome_artifact(
+                            schema.AUTH_FAILED,
+                            f"{detail}{repair}",
+                        )
+                        if backup_rate_limited:
+                            artifact["_source_outcome_detail"] = f"{backend} also rate-limited"
+                            artifact["_source_outcome_detail_state"] = health.RATE_LIMITED
+                        return items, artifact
                     # Prior error was non-auth. Check if *current* backend also
                     # reported an error (e.g., grok returned items + revocation).
                     if err:
-                        current_state = http.classify_failure(message=err)
+                        current_state = err_state
                         if current_state == schema.AUTH_FAILED:
+                            repair = "; re-login needed" if backend in ("grok", "bird") else ""
                             return items, _outcome_artifact(
                                 schema.AUTH_FAILED,
-                                f"X served {len(items)} items via {backend} but also errored: {err}; re-login needed",
+                                f"X served {len(items)} items via {backend} but also errored: {err}{repair}",
                             )
-                    # Non-auth prior error, no current auth error → fallback OK
-                    return items, _outcome_artifact(
-                        health.OK,
-                        f"X served via {backend} after {last_error}",
-                    )
+                    return items, {
+                        "_source_outcome_detail": detail,
+                        "_source_outcome_detail_state": health.RATE_LIMITED if backup_rate_limited else prior_state,
+                        "_x_backup_not_rate_limited": not backup_rate_limited,
+                    }
                 if err:
                     # Mixed result: backend returned items BUT also hit an error
                     # (e.g., grok got some posts then auth was revoked mid-fanout).
                     # Surface the error so the user gets re-login guidance.
-                    state = http.classify_failure(message=err)
+                    state = err_state
                     return items, _outcome_artifact(
                         state,
                         f"X returned {len(items)} items but also errored: {err}",
@@ -5411,23 +5515,24 @@ def _retrieve_stream_impl(
                 break
             if err:
                 last_error = f"{backend}: {err}"
-                chain_errors.append(last_error)
+                last_state = err_state
+                chain_errors.append((last_error, last_state))
                 print(f"[X] backend '{backend}' failed ({err}); trying next", file=sys.stderr)
 
         if not items and last_error:
             # A credit-exhaustion failure earlier in the chain is the most
             # specific outcome (top up, not re-authenticate); a later
             # backend's generic failure must not mask it.
-            for candidate in chain_errors:
-                if http.classify_failure(message=candidate) == health.PAYMENT_REQUIRED:
-                    last_error = candidate
+            for candidate, candidate_state in chain_errors:
+                if candidate_state == health.PAYMENT_REQUIRED:
+                    last_error, last_state = candidate, candidate_state
                     break
             state = (
                 health.TIMEOUT
                 if _research_stopped(config) or time.monotonic() >= chain_deadline
                 else bird_x.classify_run_failure(last_error)
                 if last_error.startswith("bird:")
-                else http.classify_failure(message=last_error)
+                else last_state
             )
             raise SourceRunError(f"All X backends failed — {last_error}", state)
 
@@ -5456,7 +5561,7 @@ def _retrieve_stream_impl(
                     if _research_stopped(config) or time.monotonic() >= chain_deadline:
                         print("[X] chain budget exhausted; skipping judge retry", file=sys.stderr)
                     else:
-                        retry_items, retry_err = _fetch_x_backend(
+                        retry_items, retry_err, _ = _attempt_x_backend(
                             used_backend, retry_query, from_date, to_date, depth, config,
                             deadline=chain_deadline,
                         )
@@ -5532,6 +5637,7 @@ def _retrieve_stream_impl(
         yt_query = raw_topic or subquery.search_query
         result = None
         youtube_failure: str | None = None
+        recovered_failure: str | None = None
         # ScrapeCreators key (when present) is the default-on backup tier: it
         # powers the per-video transcript fallback, the SC search fallback, and
         # comment enrichment. None when no key, which keeps everything keyless.
@@ -5558,6 +5664,9 @@ def _retrieve_stream_impl(
                 )
                 if result.get("error"):
                     youtube_failure = str(result["error"])
+                elif result.get("items") and youtube_failure:
+                    recovered_failure = youtube_failure
+                    youtube_failure = None
             except Exception as exc:
                 youtube_failure = str(exc)
                 result = None
@@ -5573,6 +5682,14 @@ def _retrieve_stream_impl(
             state = youtube_yt.classify_run_failure(youtube_failure)
             attempted = state != schema.SKIPPED_UNCONFIGURED
             return items, _outcome_artifact(state, youtube_failure, attempted=attempted)
+        if recovered_failure:
+            state = youtube_yt.classify_run_failure(recovered_failure)
+            attempted = state != schema.SKIPPED_UNCONFIGURED
+            return items, {
+                "_source_outcome_if_empty": _outcome_artifact(
+                    state, recovered_failure, attempted=attempted,
+                )["_source_outcome"]
+            }
         return items, {}
     if source == "tiktok":
         # Use raw_topic so expand_tiktok_queries() generates diverse variants

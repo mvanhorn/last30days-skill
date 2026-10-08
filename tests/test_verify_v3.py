@@ -38,6 +38,7 @@ class VerifyV3Tests(unittest.TestCase):
         self.assertEqual(commands[0], [module.PYTHON, str(module.ENGINE), module.SMOKE_TOPIC, "--emit=json", "--json-profile=raw", "--quick"])
         self.assertEqual(commands[1], [module.PYTHON, str(module.ENGINE), "topic", "--emit=json", "--json-profile=raw", "--quick"])
         self.assertEqual(run.call_args_list[0].kwargs["env"]["LAST30DAYS_REASONING_PROVIDER"], "auto")
+        self.assertEqual(run.call_args_list[1].kwargs["env"]["LAST30DAYS_ALLOW_ENGINE_PLAN"], "1")
         self.assertEqual(len(smoke), 1)
         self.assertEqual({key: value for key, value in smoke[0].items() if key != "duration_seconds"}, {
             "provider": "auto", "reasoning_provider": "fixture", "cluster_count": 1,

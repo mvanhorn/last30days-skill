@@ -186,9 +186,11 @@ python3 skills/last30days/scripts/last30days.py "MCP servers" \
 
 **Reddit keyless pacing.** Unauthenticated reddit.com requests (site search, listing partials, shreddit) share one token bucket. The default is `1` request per second with a burst of 2, slow enough that engine fan-out does not trip HTTP 429 on a typical home IP. Set `LAST30DAYS_REDDIT_KEYLESS_RATE` to a float req/sec to trade wall-clock for coverage: higher finishes faster and loses more sub-requests to 429; lower is safer and slower. Invalid or non-positive values fall back to `1`. A 429'd search or listing sub-request is retried once after a short jittered pause, still through the limiter. Identical reddit.com requests within one command (subreddit listings, listing feeds, comment pages, which repeat across subqueries) are fetched once and memoized, so a typical four-subquery run issues roughly a quarter of the requests it used to. Comment enrichment covers 4 / 8 / 12 threads per subquery at quick / default / deep depth. This does not change ScrapeCreators routing (`LAST30DAYS_REDDIT_BACKEND` / `LAST30DAYS_REDDIT_SC_MIN_ITEMS`).
 
-**YouTube transcript tuning.** `LAST30DAYS_YT_SUB_LANGS` controls the comma-separated caption-language priority passed to yt-dlp and defaults to `en,es,pt`. `LAST30DAYS_YT_PLAYER_CLIENT` defaults to `android` so yt-dlp can pass YouTube's web bot-gate without cookies (search, transcripts, and comments); set it empty to disable. When `SCRAPECREATORS_API_KEY` is available, yt-dlp uses one fast attempt before the paid fallback; set `LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT` to the number of seconds allowed for that attempt when a throttled host needs longer than the 12-second default. A VTT completed before the timeout is reused rather than discarded. `LAST30DAYS_YT_SEARCH_TIMEOUT` sets the per-search yt-dlp deadline (default 120s). Comparison-mode fan-out also caps concurrent yt-dlp processes process-wide and caches identical searches within a run so redundant `ytsearch` calls do not self-throttle the same IP.
+**YouTube transcript tuning.** `LAST30DAYS_YT_SUB_LANGS` controls the comma-separated caption-language priority passed to yt-dlp and defaults to `en,es,pt`. The ScrapeCreators transcript fallback tries at most the first three distinct languages in that order, with a shared 30-second deadline per video; it stops after the first usable transcript. `LAST30DAYS_YT_PLAYER_CLIENT` defaults to `android` so yt-dlp can pass YouTube's web bot-gate without cookies (search, transcripts, and comments); set it empty to disable. When `SCRAPECREATORS_API_KEY` is available, yt-dlp uses one fast attempt before the paid fallback; set `LAST30DAYS_YT_TRANSCRIPT_FAST_TIMEOUT` to the number of seconds allowed for that attempt when a throttled host needs longer than the 12-second default. A VTT completed before the timeout is reused rather than discarded. `LAST30DAYS_YT_SEARCH_TIMEOUT` sets the per-search yt-dlp deadline (default 120s). Comparison-mode fan-out also caps concurrent yt-dlp processes process-wide and caches identical searches within a run so redundant `ytsearch` calls do not self-throttle the same IP.
 
 **X backend priority (bird first).** The default X backend chain is bird (browser cookies) → xai (API key) → xurl (OAuth2 CLI) → xquik (API key). Cookies beat `XAI_API_KEY` when both are present. A leftover grok login never steals the X lane; see below. `xapi` (the official X API v2 with `X_BEARER_TOKEN`) is opt-in on these hosts (`LAST30DAYS_X_BACKEND=xapi`), so an ambient bearer never spends X API credits when the free path comes back empty. **Grok Bot exception.** On a Grok Bot host (`LAST30DAYS_HOST=grok-bot`) the unpinned chain is the official chain instead: xapi (`X_BEARER_TOKEN`) → xai (`XAI_API_KEY`) → xurl (the X API through X's CLI). When the bot fetched X itself (its built-in X tools, or the X connector), those results come first and the chain is not called at all; see [Grok Bot](#grok-bot) under Per-client patterns.
+
+**xAI backend errors.** For an `xai:` authentication or model failure, check `XAI_API_KEY` and its chat/model permissions in console.x.ai. Set `LAST30DAYS_X_MODEL` to a model available to that key if the configured model is unavailable. For HTTP 402, check xAI billing and credits; for HTTP 429, wait for the xAI rate limit to reset; for a timeout, retry later. Logging into x.com or replacing `X_BEARER_TOKEN` does not repair the xAI API backend.
 
 **Grok CLI (opt-in backup).** Install the Grok CLI (`curl -fsSL https://x.ai/cli/install.sh | bash`) and run `grok login`, and X can work with no X account, no browser cookies, and no `XAI_API_KEY`. However, grok is **opt-in only**: a leftover `~/.grok/auth.json` must never steal the X lane. Pin `LAST30DAYS_X_BACKEND=grok` to enable it. It is not "free" in the way the cookie path is: calls draw on your Grok plan, and depth costs several calls per run because the underlying tool caps each search at 10 posts. Results are validated before use — every returned post's ID is decoded to confirm it falls inside the requested date range, because the retrieval is performed by a language model and can otherwise return confident, well-formed posts that were never searched for.
 
@@ -441,6 +443,43 @@ An explicit `--register` wins over `LAST30DAYS_REGISTER`; the environment/config
 5. **Local / deterministic** - always available, lowest quality
 
 When you invoke `/last30days` from Claude Code, Codex, or Gemini, the host model **is** the reasoning provider for plan + synthesis - you don't need any of the keys above unless you also run the script headlessly (cron, CI, watchlist).
+
+### Agent-hosted runs must pass `--plan`
+
+When the engine detects an agent host, a research run without `--plan` exits 2 before live diagnostics or retrieval and does not call the internal planner. It prints a `[Planner] LAW 7` message telling the host model to write the plan and pass it with `--plan` (Step 0.75 and Research Execution in `references/research-runbook.md`). The engine treats a run as agent-hosted when any of these variables is set in the process environment (a `.env` line never counts):
+
+| Variable | Set by |
+|---|---|
+| `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` | Claude Code / Claude Agent SDK |
+| `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `CODEX_SANDBOX` | Codex |
+| `LAST30DAYS_HOST` | Hosts that self-identify (e.g. `grok-bot`) |
+| `LAST30DAYS_HOST_AGENT=1` | Any other agent runtime, explicitly |
+
+Runs that may skip the plan stay unaffected: `--mock`, `--hiring-signals`, `--auto-resolve` (the no-WebSearch path), comparison runs (`A vs B`, `--competitors*`), the hosted API path, and non-research commands (`doctor`, `setup`, `--diagnose`, `--preflight`, discovery legs, `--drill`, `--verify-freshness` without a topic, `library`/`queue` commands). The watchlist runner and the MCP `research` tool opt their engine calls back in automatically.
+
+| Variable | Effect |
+|---|---|
+| `LAST30DAYS_ALLOW_ENGINE_PLAN=1` | Lift the gate for a headless or cron run launched from an agent shell: the engine plans internally with the reasoning provider above (or the deterministic fallback). Process environment only. |
+
+Outside a detected agent host nothing changes. The engine still plans internally and prints the LAW 7 reminder whenever it ends on the deterministic fallback, including when the internal planner fails (for example an HTTP 402 from a provider with no credits).
+
+### Provider endpoint overrides
+
+Point a provider at a gateway (LiteLLM, an enterprise proxy, a self-hosted OpenAI-compatible server) without a code change:
+
+| Var | Default |
+| --- | --- |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1/responses` |
+| `XAI_BASE_URL` | `https://api.x.ai/v1/responses` |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1/chat/completions` |
+
+These redirect the request that carries the provider's `Authorization: Bearer <key>` header, so they are a credential boundary, not just a URL setting:
+
+- **`https://` is required for remote hosts.** An `http://` override to anything other than loopback is refused with a stderr warning and the vendor endpoint is used instead - otherwise the API key would go over the wire in cleartext.
+- **`http://` on loopback is allowed** (`localhost`, `127.0.0.0/8`, `::1`) so a local gateway or SSH tunnel keeps working. These provider requests bypass HTTP proxy settings for the request, keeping the bearer token on the local connection.
+- A host or API root ending in a version segment (for example, `/v1` or `/api/v1`) gets the provider's route appended. A complete custom gateway route is used unchanged, including its query string.
+- **`--preflight` reports all three** under `endpoint_overrides` / `ignored_endpoint_overrides`, so you can see before a run whether a config file is redirecting a key. Rejected values appear only by variable name, never by URL or embedded credentials.
+- A per-project `.claude/last30days.env` can set them only when project config is trusted (`LAST30DAYS_TRUST_PROJECT_CONFIG=1`); untrusted project files are ignored and listed by `--preflight`.
 
 ---
 

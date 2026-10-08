@@ -252,3 +252,10 @@ func TestFormatRunErrorHandlesNilResult(t *testing.T) {
 		t.Fatalf("nil result: got %q, want %q", msg, "boom")
 	}
 }
+
+func TestResearchExtraEnvAllowsEnginePlanning(t *testing.T) {
+	got := researchExtraEnv()
+	if len(got) != 1 || got[0] != "LAST30DAYS_ALLOW_ENGINE_PLAN=1" {
+		t.Fatalf("researchExtraEnv() = %#v, want [LAST30DAYS_ALLOW_ENGINE_PLAN=1]", got)
+	}
+}

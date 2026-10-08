@@ -2749,6 +2749,50 @@ def _comparison_requested(args: argparse.Namespace, topic: str) -> bool:
     ) or len(_planner._comparison_entities(topic, uncapped=True)) >= 2
 
 
+LAW7_HOST_PLAN_EXIT = 2
+
+
+def _law7_host_plan_message(signal: str) -> str:
+    return (
+        "[Planner] LAW 7: no --plan passed, and this run is agent-hosted "
+        f"({signal} is set). The engine stopped before retrieval and did not "
+        "call its internal planner. If you are the reasoning model hosting "
+        "this skill, YOU ARE the planner; no API key or provider is needed. "
+        "Write the JSON query plan (references/research-runbook.md Step 0.75) "
+        "to a tmpfile with a "
+        "quoted heredoc - QUERY_PLAN_FILE=$(mktemp "
+        "\"${TMPDIR:-/tmp}/last30days-plan.XXXXXX\"); "
+        "cat >| \"$QUERY_PLAN_FILE\" <<'PLAN_EOF' ... PLAN_EOF - and re-run "
+        "with --plan \"$QUERY_PLAN_FILE\" (see Research Execution in that "
+        "runbook). With no "
+        "web-search tool, pass --auto-resolve instead. For headless or cron "
+        f"runs under an agent, set {env.ALLOW_ENGINE_PLAN_VAR}=1 to let the "
+        "engine plan internally.\n"
+    )
+
+
+def _law7_host_plan_signal(args: argparse.Namespace, topic: str) -> str:
+    """Identify a blocked agent run before configuration probes run."""
+    if not topic:
+        return ""
+    if args.plan or args.mock or args.hiring_signals or args.auto_resolve:
+        return ""
+    if _comparison_requested(args, topic):
+        return ""
+    if env.engine_plan_allowed():
+        return ""
+    return env.agent_host_signal()
+
+
+def _law7_host_plan_gate(args: argparse.Namespace, topic: str) -> int | None:
+    """Stop a plan-less agent research run after dispatch and cache exemptions."""
+    signal = _law7_host_plan_signal(args, topic)
+    if not signal:
+        return None
+    sys.stderr.write(_law7_host_plan_message(signal))
+    return LAW7_HOST_PLAN_EXIT
+
+
 def _read_x_envelope(
     path: str,
     topic: str,
@@ -2892,6 +2936,9 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
         browser_mode = "plan_only"
     elif normalized_topic == "setup":
         browser_mode = "read" if _setup_allows_browser_cookies(args, extra_argv) else "off"
+    elif _law7_host_plan_signal(args, topic):
+        # Hosted and cached paths need config before dispatch, but no browser read.
+        browser_mode = "plan_only"
     else:
         browser_mode = "read"
     return env.ConfigLoadPolicy(
@@ -3167,6 +3214,38 @@ def main() -> int:
         with http.recording_requests(Path(args.record_fixtures)):
             return _main(parser, args, extra_argv)
     return _main(parser, args, extra_argv)
+
+
+def _quality_research_results(report, diag, yt_fetch_stats):
+    youtube_items = report.items_by_source.get("youtube") or []
+    instagram_items = report.items_by_source.get("instagram") or []
+    x_outcome = report.source_status.get("x")
+    x_degraded_error = None
+    if (
+        report.items_by_source.get("x")
+        and x_outcome is not None
+        and x_outcome.detail
+        and x_outcome.detail.startswith("X served via ")
+        and " after xai:" in x_outcome.detail
+    ):
+        x_degraded_error = x_outcome.detail
+    return {
+        "active_sources": diag.get("available_sources") or [],
+        "youtube_videos_count": len(youtube_items),
+        "youtube_transcripts_count": sum(
+            1 for it in youtube_items
+            if (it.metadata.get("transcript_highlights") or it.metadata.get("transcript_snippet"))
+        ),
+        "youtube_error": report.errors_by_source.get("youtube"),
+        "x_error": report.errors_by_source.get("x"),
+        "x_degraded_error": x_degraded_error,
+        "youtube_captions_disabled_count": sum(
+            1 for it in youtube_items if it.metadata.get("captions_disabled")
+        ),
+        "youtube_transcript_fetch_attempts": yt_fetch_stats["attempts"],
+        "youtube_transcript_fetch_failures": yt_fetch_stats["failures"],
+        "instagram_items_count": len(instagram_items),
+    }
 
 
 def _main(
@@ -3666,19 +3745,13 @@ def _main(
         except x_envelope.EnvelopeContractError as exc:
             sys.stderr.write(f"[last30days] {exc.message}\n")
             return 2
-    diag = pipeline.diagnose(
-        config, requested_sources, safe=args.diagnose,
-        x_envelope=x_posts_envelope is not None,
-    )
-
     if args.diagnose:
+        diag = pipeline.diagnose(
+            config, requested_sources, safe=True,
+            x_envelope=x_posts_envelope is not None,
+        )
         print(json.dumps(diag, indent=2, sort_keys=True))
         return 0
-
-    # Competitor sub-runs shallow-copy this config. The shared object makes the
-    # paid Perplexity cap command-wide and thread-safe across that fanout. Keep
-    # this runtime-only object out of the safe diagnose configuration contract.
-    config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget()
 
     # Per-entity host-fetched X envelopes are validated here, on the main
     # thread and BEFORE the report-cache lookup, so a bad or stale one fails
@@ -3747,6 +3820,22 @@ def _main(
             "--emit=html --synthesis-file; running fresh research.\n"
         )
         sys.stderr.flush()
+
+    # LAW 7: an agent host that skipped --plan stops before live diagnostics,
+    # auto-resolve, the internal planner, or any source retrieval can spend.
+    law7_exit = _law7_host_plan_gate(args, topic)
+    if law7_exit is not None:
+        return law7_exit
+
+    diag = pipeline.diagnose(
+        config, requested_sources, safe=False,
+        x_envelope=x_posts_envelope is not None,
+    )
+
+    # Competitor sub-runs shallow-copy this config. The shared object makes the
+    # paid Perplexity cap command-wide and thread-safe across that fanout. Keep
+    # this runtime-only object out of the safe diagnose configuration contract.
+    config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget()
 
     progress = ui.ProgressDisplay(topic, show_banner=True)
     progress.start_processing()
@@ -4281,40 +4370,9 @@ def _main(
         try:
             from lib import quality_nudge
             from lib import youtube_yt as _youtube_yt
-            # Populate transcript-fetch ratio so quality_nudge can detect the
-            # degraded-YouTube failure mode (videos returned but transcripts
-            # silently failed - typically a stale yt-dlp binary).
-            youtube_items = report.items_by_source.get("youtube") or []
-            _yt_fetch_stats = _youtube_yt.get_transcript_fetch_stats()
-            instagram_items = report.items_by_source.get("instagram") or []
-            research_results = {
-                "active_sources": diag.get("available_sources") or [],
-                "youtube_videos_count": len(youtube_items),
-                "youtube_transcripts_count": sum(
-                    1 for it in youtube_items
-                    if (it.metadata.get("transcript_highlights") or it.metadata.get("transcript_snippet"))
-                ),
-                "youtube_error": report.errors_by_source.get("youtube"),
-                "x_error": report.errors_by_source.get("x"),
-                # Captions-disabled videos can never produce a transcript regardless
-                # of yt-dlp version; subtract them from the degraded-ratio
-                # denominator so a single uploader-disabled video does not trip the
-                # "stale yt-dlp" nudge.
-                "youtube_captions_disabled_count": sum(
-                    1 for it in youtube_items if it.metadata.get("captions_disabled")
-                ),
-                # Actual yt-dlp fetch outcomes for this run. The counts above are
-                # computed from post-pruning items, so they can't tell "fetches
-                # failed (stale binary)" from "fetches succeeded but the videos
-                # were pruned downstream"; the latter was producing false
-                # stale-yt-dlp nudges (#531).
-                "youtube_transcript_fetch_attempts": _yt_fetch_stats["attempts"],
-                "youtube_transcript_fetch_failures": _yt_fetch_stats["failures"],
-                # Track Instagram returned-zero-items so quality_nudge can detect
-                # the silent-failure case (SC configured but the v2 reels endpoint
-                # 500'd through both the original query and the hashtag retry).
-                "instagram_items_count": len(instagram_items),
-            }
+            research_results = _quality_research_results(
+                report, diag, _youtube_yt.get_transcript_fetch_stats()
+            )
             quality = quality_nudge.compute_quality_score(config, research_results)
             if quality.get("nudge_text"):
                 sys.stderr.write(f"\n{quality['nudge_text']}\n")

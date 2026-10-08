@@ -182,6 +182,8 @@ GENERAL / NEWS / PROMPTING / RECOMMENDATIONS use `What I learned:` on line 3 and
 
 **LAW 7 - YOU ARE THE PLANNER. `--plan` IS MANDATORY ON NAMED-ENTITY TOPICS.** The hosting reasoning model generates the JSON query plan without an external provider key. Internal planning/fallback is a headless/cron path. Named entities include proper nouns, products, people, projects, and topics benefiting from handle resolution. Before the research command, verify it contains `--plan "$QUERY_PLAN_FILE"` (or another readable plan-file path); otherwise stop and generate the plan through Step 0.75. Do not interpret “provider” in an engine message as a requirement for credentials to write your own plan. The explicit no-host-WebSearch and jobs-only exceptions remain scoped to their runbook/mode procedures.
 
+Agent research without `--plan` exits 2 before live probes unless exempt.
+
 Write plans to a temporary file using `mktemp` with trailing `XXXXXX`, a cleanup trap, `cat >|`, and a quoted heredoc delimiter. Pass the file path, never inline single-quoted JSON. Run the heredoc directly in the shell tool. Never wrap the invocation in `bash -lc '...'` or `zsh -lc '...'`; apostrophes in search/ranking strings must remain data.
 
 **LAW 8 - CITE READABLY FOR THE CURRENT HOST.** Governing host/tool requirements and user instructions determine required links before renderer preferences. Detection is deterministic: `CLAUDECODE` or `CURSOR_AGENT` set means hidden-link default; both unset means visible-URL default. This renderer split is separate from onboarding; Cursor remains non-modal.

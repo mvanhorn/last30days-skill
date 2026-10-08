@@ -92,6 +92,44 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         anchor="api-keys-env",
     ),
     _entry(
+        "x", "xai_error",
+        cause="the xAI X search backend failed this run",
+        fix_nl=(
+            "check XAI_API_KEY and its chat/model permissions in console.x.ai, "
+            "confirm LAST30DAYS_X_MODEL names an available model, then re-run"
+        ),
+        fix_cli="XAI_API_KEY=<your-xai-key> LAST30DAYS_X_MODEL=<available-xai-model>",
+        anchor="api-keys-env",
+    ),
+    _entry(
+        "x", "xai_payment_required",
+        cause="the xAI X search backend has no available credits",
+        fix_nl="check xAI billing and credits in console.x.ai, then re-run",
+        fix_cli=f'{ENGINE_CLI} "<topic>" --search x',
+        anchor="api-keys-env",
+    ),
+    _entry(
+        "x", "xai_rate_limited",
+        cause="the xAI X search backend hit its rate limit",
+        fix_nl="wait for the xAI rate limit to reset, then re-run",
+        fix_cli=f'{ENGINE_CLI} "<topic>" --search x',
+        anchor="api-keys-env",
+    ),
+    _entry(
+        "x", "xai_timeout",
+        cause="the xAI X search backend timed out",
+        fix_nl="xAI timed out; retry the run or select another configured X backend",
+        fix_cli=f'{ENGINE_CLI} "<topic>" --search x',
+        anchor="api-keys-env",
+    ),
+    _entry(
+        "x", "xai_unavailable",
+        cause="the xAI X search backend failed this run",
+        fix_nl="retry xAI later or select another configured X backend",
+        fix_cli=f'{ENGINE_CLI} "<topic>" --search x',
+        anchor="api-keys-env",
+    ),
+    _entry(
         "x", "grok_cli_missing",
         cause="the Grok CLI is not installed, so the keyless X path is unavailable",
         fix_nl=(

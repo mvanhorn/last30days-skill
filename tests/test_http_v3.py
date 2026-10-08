@@ -3,6 +3,7 @@ import threading
 import urllib.error
 import unittest
 import time
+from urllib.parse import parse_qs, unquote, urlsplit
 from unittest.mock import patch, MagicMock
 
 from lib import http
@@ -229,6 +230,41 @@ class TestParamsEncoding(unittest.TestCase):
         sent_url = self._sent_url(mock_urlopen)
         self.assertIn("count=25", sent_url)
         self.assertIn("raw=True", sent_url)
+
+    @patch("lib.http.urllib.request.urlopen")
+    def test_arabic_query_param_is_percent_encoded(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response()
+        arabic_topic = "اسعار التمريض المنزلي"
+        http.get("https://api.scrapecreators.com/v1/tiktok/search/keyword",
+                 params={"query": arabic_topic})
+        sent_url = self._sent_url(mock_urlopen)
+        sent_url.encode("ascii")
+        self.assertIn("%D8%A7", sent_url)
+        self.assertEqual(parse_qs(urlsplit(sent_url).query)["query"], [arabic_topic])
+
+    @patch("lib.http.urllib.request.urlopen")
+    def test_cjk_query_param_is_percent_encoded(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response()
+        http.get("https://api.example.com/search", params={"q": "人工智能"})
+        sent_url = self._sent_url(mock_urlopen)
+        sent_url.encode("ascii")
+        self.assertEqual(parse_qs(urlsplit(sent_url).query)["q"], ["人工智能"])
+
+    @patch("lib.http.urllib.request.urlopen")
+    def test_non_ascii_in_base_url_path_is_percent_encoded(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response()
+        http.get("https://api.example.com/search/العربية")
+        sent_url = self._sent_url(mock_urlopen)
+        sent_url.encode("ascii")
+        self.assertEqual(unquote(urlsplit(sent_url).path), "/search/العربية")
+
+    @patch("lib.http.urllib.request.urlopen")
+    def test_non_ascii_in_raw_url_query_string_is_percent_encoded(self, mock_urlopen):
+        mock_urlopen.return_value = _mock_response()
+        http.get("https://api.example.com/search?q=العربية")
+        sent_url = self._sent_url(mock_urlopen)
+        sent_url.encode("ascii")
+        self.assertEqual(parse_qs(urlsplit(sent_url).query)["q"], ["العربية"])
 
 
 class TestDNSResolutionRetry(unittest.TestCase):

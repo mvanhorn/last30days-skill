@@ -652,7 +652,7 @@ Then add to the engine command:
 **If you skipped Steps 0.55 and 0.75 (no WebSearch -- OpenClaw, Codex, etc.), add:**
 - `--auto-resolve` (the engine will use Brave/Exa/Serper to discover subreddits and context before planning)
 
-**If you skipped Steps 0.55 and 0.75 (no WebSearch), run with `--auto-resolve`; the engine plans internally.**
+**If you skipped Steps 0.55 and 0.75 (no WebSearch), keep `--auto-resolve` on the command; the engine plans internally.** Under a detected agent host, a research run with neither `--plan` nor `--auto-resolve` exits 2 (LAW 7).
 
 Use a **timeout of 300000** (5 minutes) on the Bash call. The script typically takes 1-3 minutes.
 

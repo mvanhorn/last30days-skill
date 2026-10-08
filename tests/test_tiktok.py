@@ -1,4 +1,6 @@
 import unittest
+from urllib.parse import parse_qs, urlsplit
+from unittest.mock import MagicMock, patch
 
 from lib.tiktok import _parse_items
 
@@ -237,6 +239,36 @@ class TestTikTokEnrichWithComments(unittest.TestCase):
         self.assertIn("top_comments", by_id["high"])
         self.assertIn("top_comments", by_id["mid"])
         self.assertNotIn("top_comments", by_id["low"])
+
+class TestTikTokArabicTopicEncoding(unittest.TestCase):
+    """Regression for issue #817 across the TikTok search path."""
+
+    def _sent_url(self, mock_urlopen) -> str:
+        return mock_urlopen.call_args[0][0].full_url
+
+    @patch("lib.http.urllib.request.urlopen")
+    def test_arabic_topic_returns_success_with_ascii_encoded_url(self, mock_urlopen):
+        from lib.tiktok import search_tiktok
+        resp = MagicMock()
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        resp.read.return_value = b'{"search_item_list": []}'
+        resp.status = 200
+        mock_urlopen.return_value = resp
+
+        topic = "اسعار التمريض المنزلي السعودية"
+        result = search_tiktok(
+            topic,
+            "2026-06-01",
+            "2026-07-13",
+            depth="quick",
+            token="dummy-key",
+        )
+        self.assertNotIn("error", result)
+        sent_url = self._sent_url(mock_urlopen)
+        sent_url.encode("ascii")
+        self.assertEqual(parse_qs(urlsplit(sent_url).query)["query"], [topic])
+
 
 if __name__ == "__main__":
     unittest.main()
