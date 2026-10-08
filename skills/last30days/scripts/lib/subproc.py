@@ -213,7 +213,7 @@ def run_with_timeout(
     if capture_limit_bytes is not None and capture_limit_bytes < 0:
         raise ValueError("capture limit must be nonnegative")
     own_group = hasattr(os, "setsid") and hasattr(os, "killpg")
-    native_windows = _WINDOWS and os.name == "nt"
+    native_windows = _WINDOWS
     capture = ExitStack()
     job = None
     try:

@@ -8,8 +8,9 @@ import builtins
 import errno
 import os as real_os
 import platform
+import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from lib import subproc
 
@@ -18,11 +19,11 @@ IS_WINDOWS = platform.system() == "Windows"
 def get_shell_cmd(cmd_str: str) -> list[str]:
     if IS_WINDOWS:
         if cmd_str == "echo hello":
-            return ["cmd", "/c", "echo hello"]
+            return [sys.executable, "-c", "print('hello')"]
         elif cmd_str == "exit 3":
             return ["cmd", "/c", "exit 3"]
         elif cmd_str == "echo err >&2":
-            return ["cmd", "/c", "echo err 1>&2"]
+            return [sys.executable, "-c", "import sys;print('err', file=sys.stderr)"]
         elif cmd_str in ("sleep 10", "sleep 10 & wait"):
             return ["powershell", "-Command", "Start-Sleep 10"]
         elif cmd_str == "echo $LAST30DAYS_TEST_VAR":
@@ -205,20 +206,30 @@ time.sleep(15)
     def test_child_pid_registered_during_run_and_cleared_after(self):
         """Every run_with_timeout child is in the cleanup registry while alive."""
         seen = []
+        observed_registered = []
+        observed_job = []
+
+        def observe(pid):
+            seen.append(pid)
+            observed_registered.append(pid in subproc._child_pids)
+            if IS_WINDOWS:
+                observed_job.append(pid in subproc._child_jobs)
+
         with patch.object(
-            subproc, "register_child_pid", wraps=subproc.register_child_pid
-        ) as reg, patch.object(
             subproc, "unregister_child_pid", wraps=subproc.unregister_child_pid
         ) as unreg:
             result = subproc.run_with_timeout(
                 get_shell_cmd("echo ok"),
                 timeout=5,
-                on_pid=seen.append,
+                on_pid=observe,
             )
         self.assertEqual(result.stdout.strip(), "ok")
-        reg.assert_called_once_with(seen[0])
+        self.assertEqual(observed_registered, [True])
+        if IS_WINDOWS:
+            self.assertEqual(observed_job, [True])
         unreg.assert_called_once_with(seen[0])
         self.assertEqual(subproc._child_pids, set())
+        self.assertEqual(subproc._child_jobs, {})
 
     def test_timed_out_child_is_unregistered(self):
         with self.assertRaises(subproc.SubprocTimeout):
@@ -366,6 +377,7 @@ time.sleep(15)
         ]
         self.assertEqual(offenders, [])
 
+    @unittest.skipIf(IS_WINDOWS, "POSIX fallback simulation uses sh")
     def test_timeout_falls_back_to_kill_when_killpg_unavailable(self):
         """Without POSIX groups or Windows tree cleanup, kill the direct child."""
         real_hasattr = builtins.hasattr
@@ -387,6 +399,7 @@ time.sleep(15)
 
         class FakeProc:
             pid = 4321
+            _handle = 9876
             stdin = stdout = stderr = None
             returncode = None
 
@@ -400,6 +413,9 @@ time.sleep(15)
                 self.returncode = 1
                 return 1
 
+            def poll(self):
+                return self.returncode
+
             def kill(self):
                 self.killed = True
 
@@ -411,14 +427,21 @@ time.sleep(15)
                 return False
             return real_hasattr(obj, name)
 
+        job = MagicMock()
+        job.terminate.return_value = True
         with patch.object(builtins, "hasattr", side_effect=windows_hasattr), \
              patch.object(subproc, "_WINDOWS", True), \
-             patch.object(subproc, "_kill_windows_tree", return_value=True) as kill_tree, \
+             patch("lib.windows_job.WindowsJob", return_value=job), \
+             patch("lib.windows_job.resume_suspended_process") as resume, \
+             patch.object(subproc, "_kill_windows_tree") as kill_tree, \
              patch.object(subproc.subprocess, "Popen", return_value=fake):
             with self.assertRaises(subproc.SubprocTimeout):
                 subproc.run_with_timeout(["node", "bird-search.mjs"], timeout=1)
 
-        kill_tree.assert_called_once_with(fake.pid)
+        job.assign.assert_called_once_with(fake._handle)
+        resume.assert_called_once_with(fake.pid)
+        job.terminate.assert_called_once_with()
+        kill_tree.assert_not_called()
         self.assertFalse(fake.killed)
 
     def test_windows_tree_kill_uses_pid_scoped_taskkill_and_handles_failure(self):
@@ -464,6 +487,7 @@ time.sleep(15)
 
         class FakeProc:
             pid = 4321
+            _handle = 9876
             stdin = stdout = stderr = None
             returncode = None
 
@@ -477,6 +501,9 @@ time.sleep(15)
                 self.returncode = 1
                 return 1
 
+            def poll(self):
+                return self.returncode
+
             def kill(self):
                 self.killed = True
 
@@ -488,13 +515,20 @@ time.sleep(15)
                 return False
             return real_hasattr(obj, name)
 
+        job = MagicMock()
+        job.terminate.return_value = False
         with patch.object(builtins, "hasattr", side_effect=windows_hasattr), \
              patch.object(subproc, "_WINDOWS", True), \
+             patch("lib.windows_job.WindowsJob", return_value=job), \
+             patch("lib.windows_job.resume_suspended_process") as resume, \
              patch.object(subproc, "_kill_windows_tree", return_value=False) as kill_tree, \
              patch.object(subproc.subprocess, "Popen", return_value=fake):
             with self.assertRaises(subproc.SubprocTimeout):
                 subproc.run_with_timeout(["node", "bird-search.mjs"], timeout=1)
 
+        job.assign.assert_called_once_with(fake._handle)
+        resume.assert_called_once_with(fake.pid)
+        job.terminate.assert_called_once_with()
         kill_tree.assert_called_once_with(fake.pid)
         self.assertTrue(fake.killed)
 
@@ -755,6 +789,7 @@ time.sleep(15)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout.strip(), "ok")
 
+    @unittest.skipIf(IS_WINDOWS, "POSIX SIGTERM escalation uses sh")
     def test_sigterm_ignoring_child_is_sigkill_escalated(self):
         """A child that ignores SIGTERM must be escalated to SIGKILL.
 
@@ -768,6 +803,7 @@ time.sleep(15)
                 timeout=1,
             )
 
+    @unittest.skipIf(IS_WINDOWS, "POSIX killpg simulation requires os.getpgid")
     def test_escalation_path_guards_killpg_attributeerror(self):
         """The SIGKILL escalation must not crash if killpg is unavailable (Windows).
 
