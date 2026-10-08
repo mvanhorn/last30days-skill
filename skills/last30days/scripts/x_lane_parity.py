@@ -23,9 +23,23 @@ _METRICS = ("likes", "reposts", "replies", "quotes")
 TOP_N = 10
 
 
-def _x_items(path: str) -> list[dict]:
-    report = json.loads(Path(path).read_text(encoding="utf-8"))
+def _load(path: str) -> dict:
+    return json.loads(Path(path).read_text(encoding="utf-8"))
+
+
+def _x_items(report: dict) -> list[dict]:
     return list((report.get("items_by_source") or {}).get("x") or [])
+
+
+def _require_same_run_shape(base: dict, cand: dict, envelope: dict | None) -> None:
+    """Refuse to compare reports that cover different topics or windows."""
+    for key in ("topic", "range_from", "range_to"):
+        if base.get(key) != cand.get(key):
+            raise ValueError(f"reports differ on {key}: {base.get(key)!r} vs {cand.get(key)!r}")
+    if envelope is not None and envelope.get("topic") != cand.get("topic"):
+        raise ValueError(
+            f"envelope topic {envelope.get('topic')!r} does not match the candidate report {cand.get('topic')!r}"
+        )
 
 
 def _post_id(item: dict) -> str | None:
@@ -38,10 +52,9 @@ def _likes(item: dict) -> int:
     return int(value) if isinstance(value, (int, float)) else 0
 
 
-def _envelope_ids(path: str | None) -> set[str]:
-    if not path:
+def _envelope_ids(payload: dict | None) -> set[str]:
+    if not payload:
         return set()
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
     return {
         str(post.get("id"))
         for call in payload.get("calls") or []
@@ -56,9 +69,12 @@ def _ratio(numerator: float, denominator: float) -> float:
 
 def compare(baseline: str, candidate: str, *, envelope: str | None = None) -> dict:
     """Counts, top-liked recall, field completeness, and author spread."""
-    base_items = _x_items(baseline)
-    cand_items = _x_items(candidate)
-    cand_ids = {pid for pid in map(_post_id, cand_items) if pid} | _envelope_ids(envelope)
+    base, cand = _load(baseline), _load(candidate)
+    env = _load(envelope) if envelope else None
+    _require_same_run_shape(base, cand, env)
+    base_items = _x_items(base)
+    cand_items = _x_items(cand)
+    cand_ids = {pid for pid in map(_post_id, cand_items) if pid} | _envelope_ids(env)
     top = sorted(base_items, key=_likes, reverse=True)[:TOP_N]
     top_ids = [pid for pid in map(_post_id, top) if pid]
     complete = sum(

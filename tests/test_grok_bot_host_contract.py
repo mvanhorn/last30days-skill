@@ -311,6 +311,10 @@ class TestConnectorRecipe(unittest.TestCase):
     def test_comparison_uses_envelopes_only_when_every_entity_has_posts(self):
         self.assertIn("only when every entity's fetch returned posts", self.recipe)
 
+    def test_comparison_paces_tool_calls_under_the_per_minute_limit(self):
+        self.assertIn("no minute holds more than 30 tool calls", self.recipe)
+        self.assertIn("popular pass for the main entity only", self.recipe)
+
     def test_recipe_gives_discovered_authors_full_handle_lanes(self):
         authors = self.recipe[self.recipe.index("**Discovered authors.**"):]
         authors = authors[: authors.index("\n   - ")]

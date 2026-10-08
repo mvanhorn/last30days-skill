@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 import x_lane_parity as parity
 
 
@@ -20,9 +22,12 @@ def _item(post_id: int, handle: str, likes: int | None, **engagement) -> dict:
     }
 
 
-def _report(tmp_path: Path, name: str, items: list[dict]) -> str:
+def _report(tmp_path: Path, name: str, items: list[dict], topic: str = "t") -> str:
     path = tmp_path / name
-    path.write_text(json.dumps({"topic": "t", "items_by_source": {"x": items}}), encoding="utf-8")
+    path.write_text(json.dumps({
+        "topic": topic, "range_from": "2026-09-07", "range_to": "2026-10-07",
+        "items_by_source": {"x": items},
+    }), encoding="utf-8")
     return str(path)
 
 
@@ -44,7 +49,7 @@ def test_recall_also_counts_posts_present_only_in_the_envelope(tmp_path):
     baseline = [_item(100 + i, f"b{i}", likes=50 - i) for i in range(10)]
     candidate = [_item(100, "b0", likes=50)]
     envelope = tmp_path / "env.json"
-    envelope.write_text(json.dumps({"calls": [{"lane": "topic", "posts": [
+    envelope.write_text(json.dumps({"topic": "t", "calls": [{"lane": "topic", "posts": [
         {"id": str(100 + i), "author_handle": f"b{i}"} for i in range(1, 5)
     ]}]}), encoding="utf-8")
     result = parity.compare(
@@ -64,3 +69,15 @@ def test_empty_reports_do_not_crash(tmp_path):
     assert result["baseline_count"] == 0
     assert result["count_ratio"] == 0.0
     assert result["top_liked_recall"] == 0.0
+
+
+def test_reports_for_different_topics_are_refused(tmp_path):
+    with pytest.raises(ValueError, match="topic"):
+        parity.compare(_report(tmp_path, "a.json", [], topic="t"), _report(tmp_path, "b.json", [], topic="other"))
+
+
+def test_envelope_for_another_topic_is_refused(tmp_path):
+    envelope = tmp_path / "env.json"
+    envelope.write_text(json.dumps({"topic": "other", "calls": []}), encoding="utf-8")
+    with pytest.raises(ValueError, match="envelope topic"):
+        parity.compare(_report(tmp_path, "a.json", []), _report(tmp_path, "b.json", []), envelope=str(envelope))
