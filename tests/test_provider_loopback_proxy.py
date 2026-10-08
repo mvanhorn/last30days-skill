@@ -9,14 +9,14 @@ import urllib.request
 
 import pytest
 
-from lib import http, providers
+from lib import http, perplexity, providers, xai_x
 
 
 @pytest.fixture
 def serve():
     running = []
 
-    def start(*, reply="direct", redirect_to=None):
+    def start(*, reply="direct", payload=None, redirect_to=None):
         requests = []
 
         class Handler(stdlib_http.BaseHTTPRequestHandler):
@@ -38,7 +38,7 @@ def serve():
                     self.send_header("Content-Length", "0")
                     self.end_headers()
                     return
-                body = json.dumps({"output_text": reply}).encode()
+                body = json.dumps(payload if payload is not None else {"output_text": reply}).encode()
                 self.send_response(200)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
@@ -123,3 +123,41 @@ def test_loopback_provider_request_does_not_change_other_proxy_routes(monkeypatc
     assert len(endpoint_requests) == 1
     assert len(proxy_requests) == 1
     assert "authorization" not in proxy_requests[0][2]
+
+
+def test_xai_x_search_loopback_override_bypasses_proxy(monkeypatch, serve):
+    endpoint, endpoint_requests = serve()
+    proxy, proxy_requests = serve(reply="proxy")
+    _enable_proxy(monkeypatch, proxy)
+    monkeypatch.setenv("XAI_BASE_URL", endpoint + "/v1")
+
+    response = xai_x.search_x(
+        "dummy-key", "model", "topic", "2026-09-01", "2026-10-01", depth="quick"
+    )
+
+    assert response == {"output_text": "direct"}
+    assert proxy_requests == []
+    assert len(endpoint_requests) == 1
+    assert endpoint_requests[0][0:2] == ("POST", "/v1/responses")
+    assert endpoint_requests[0][2]["authorization"] == "Bearer dummy-key"
+
+
+def test_openrouter_sonar_loopback_override_bypasses_proxy(monkeypatch, serve):
+    endpoint, endpoint_requests = serve(
+        payload={"choices": [{"message": {"content": "direct"}}]}
+    )
+    proxy, proxy_requests = serve(
+        payload={"choices": [{"message": {"content": "proxy"}}]}
+    )
+    _enable_proxy(monkeypatch, proxy)
+    monkeypatch.setenv("OPENROUTER_BASE_URL", endpoint + "/v1")
+
+    items, _ = perplexity._openrouter_sonar_search(
+        "topic", ("2026-09-01", "2026-10-01"), "dummy-key", deep=False
+    )
+
+    assert items[0]["snippet"] == "direct"
+    assert proxy_requests == []
+    assert len(endpoint_requests) == 1
+    assert endpoint_requests[0][0:2] == ("POST", "/v1/chat/completions")
+    assert endpoint_requests[0][2]["authorization"] == "Bearer dummy-key"

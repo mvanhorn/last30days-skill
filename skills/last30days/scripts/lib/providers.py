@@ -50,7 +50,7 @@ def allowed_base_url_override(value: str) -> bool:
     )
 
 
-def _is_loopback_http_url(url: str) -> bool:
+def is_loopback_http_endpoint(url: str) -> bool:
     parts = urlsplit(url)
     return parts.scheme == "http" and _is_loopback(parts.hostname or "")
 
@@ -216,7 +216,7 @@ class OpenAIClient(ReasoningClient):
                 "Content-Type": "application/json",
             },
             timeout=90,
-            bypass_proxy=_is_loopback_http_url(endpoint),
+            bypass_proxy=is_loopback_http_endpoint(endpoint),
         )
         return extract_openai_text(response)
 
@@ -249,7 +249,7 @@ class XAIClient(ReasoningClient):
                 "Content-Type": "application/json",
             },
             timeout=90,
-            bypass_proxy=_is_loopback_http_url(endpoint),
+            bypass_proxy=is_loopback_http_endpoint(endpoint),
         )
         return extract_openai_text(response)
 
@@ -283,7 +283,7 @@ class OpenRouterClient(ReasoningClient):
                 "Content-Type": "application/json",
             },
             timeout=90,
-            bypass_proxy=_is_loopback_http_url(endpoint),
+            bypass_proxy=is_loopback_http_endpoint(endpoint),
         )
         return extract_openai_text(response)
 
