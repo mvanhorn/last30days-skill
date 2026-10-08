@@ -2,7 +2,7 @@
 
 from unittest import mock
 
-from lib import health, transcribe
+from lib import health, http, transcribe
 
 
 class TestPrerequisites:
@@ -52,10 +52,15 @@ class TestTranscribeFlow:
 
     def test_over_limit_chunks_joined_in_order(self):
         chunks = ["/tmp/wd/chunk_000.mp3", "/tmp/wd/chunk_001.mp3"]
+        transcripts = {chunks[0]: "part one", chunks[1]: "part two"}
+
+        def post(provider, path, key, timeout):
+            return transcripts[path]
+
         with mock.patch.object(transcribe.shutil, "which", return_value="/usr/bin/ffmpeg"), \
              mock.patch.object(transcribe, "_acquire_audio", return_value="/tmp/audio.mp3"), \
              mock.patch.object(transcribe, "_chunk_audio", return_value=chunks), \
-             mock.patch.object(transcribe, "_post_audio", side_effect=["part one", "part two"]), \
+             mock.patch.object(transcribe, "_post_audio", side_effect=post), \
              mock.patch.object(transcribe.shutil, "rmtree"), \
              mock.patch.object(transcribe.tempfile, "mkdtemp", return_value="/tmp/wd"):
             result = transcribe.transcribe_media("https://x/v", {"GROQ_API_KEY": "k"})
@@ -91,3 +96,58 @@ class TestTranscribeFlow:
             result = transcribe.transcribe_media("https://x/v", {"GROQ_API_KEY": "k"})
         assert result.ok is False
         assert "all providers failed" in result.reason
+
+
+class TestPostAudioUserAgent:
+    """_post_audio must send a real User-Agent, not Python-urllib/3.x.
+
+    Groq's Cloudflare edge 403s the default urllib fingerprint with
+    "error code: 1010" (#983); a plain-urllib UA is a liability on every
+    provider this helper serves.
+    """
+
+    class _Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b'{"text": "hello"}'
+
+    def _capture_headers(self, tmp_path):
+        captured = {}
+
+        def _capture(req, timeout=None):
+            # urllib stores header keys capitalized ("User-agent").
+            captured.update({k.lower(): v for k, v in req.headers.items()})
+            return self._Resp()
+
+        audio = tmp_path / "audio.mp3"
+        audio.write_bytes(b"fake-audio")
+        with mock.patch("urllib.request.urlopen", side_effect=_capture):
+            transcribe._post_audio("groq", str(audio), "key", timeout=5.0)
+        return captured
+
+    def test_user_agent_is_canonical_skill_ua(self, tmp_path):
+        captured = self._capture_headers(tmp_path)
+        assert "user-agent" in captured
+        assert captured["user-agent"] == http.USER_AGENT
+
+    def test_user_agent_not_urllib_default(self, tmp_path):
+        captured = self._capture_headers(tmp_path)
+        assert not captured["user-agent"].startswith("Python-urllib")
+
+    def test_user_agent_sent_for_openai_too(self, tmp_path):
+        captured = {}
+
+        def _capture(req, timeout=None):
+            captured.update({k.lower(): v for k, v in req.headers.items()})
+            return self._Resp()
+
+        audio = tmp_path / "audio.mp3"
+        audio.write_bytes(b"fake-audio")
+        with mock.patch("urllib.request.urlopen", side_effect=_capture):
+            transcribe._post_audio("openai", str(audio), "key", timeout=5.0)
+        assert captured.get("user-agent") == http.USER_AGENT

@@ -40,6 +40,37 @@ class TestInstagramOwnerTypeSafety(unittest.TestCase):
         self.assertEqual("fallbackuser", items[0]["author_name"])
 
 
+class TestInstagramUserReelsEnvelope(unittest.TestCase):
+    def test_wrapped_user_reel_is_parsed_with_its_fields(self):
+        from unittest.mock import patch
+        from lib import instagram
+
+        reel = {
+            "id": "reel-1017",
+            "code": "ABC1017",
+            "taken_at": "2026-08-01T12:34:56.000Z",
+            "caption": {"text": "Wrapped reel caption"},
+            "video_play_count": 123,
+            "like_count": 45,
+            "comment_count": 6,
+        }
+        response = {"items": [{"media": reel}]}
+
+        with patch.object(instagram.http, "get", return_value=response):
+            raw_items = instagram._user_reels("creator", token="test-token")
+
+        items = _parse_items(raw_items, "wrapped reel")
+
+        self.assertEqual(1, len(items))
+        self.assertEqual("reel-1017", items[0]["video_id"])
+        self.assertEqual("2026-08-01", items[0]["date"])
+        self.assertEqual("Wrapped reel caption", items[0]["text"])
+        self.assertEqual(
+            {"views": 123, "likes": 45, "comments": 6},
+            items[0]["engagement"],
+        )
+
+
 class TestInstagramComments(unittest.TestCase):
     """U1: Instagram comment fetching via ScrapeCreators."""
 

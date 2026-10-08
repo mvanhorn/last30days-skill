@@ -59,13 +59,69 @@ class TestParseComments:
         assert any("$750" in b or "pending" in b for b in bodies)
 
     def test_comment_url_built(self):
-        for c in rs.parse_comments(_html()):
-            if c["url"]:
-                assert c["url"].startswith("https://reddit.com/r/")
+        comments = rs.parse_comments(_html())
+        assert [c["url"] for c in comments] == [
+            f"https://reddit.com/r/Rakuten/comments/1taeiw0/comment/{comment_id}/"
+            for comment_id in (
+                "ol8tp8n", "olcy1iv", "olaqzjk", "omlbiqg", "ol8undb", "ol8w8w6", "synthneg"
+            )
+        ]
 
     def test_empty_html_returns_empty(self):
         assert rs.parse_comments("") == []
         assert rs.parse_comments("<html>no comments here</html>") == []
+
+
+class TestBotFilter:
+    """Bot comments occupy top-comment slots without carrying community signal."""
+
+    @staticmethod
+    def _comment_html(author, thing_id="t1_botfilter1", score=999):
+        return (
+            f'<shreddit-comment author="{author}" thingId="{thing_id}" '
+            f'score="{score}" permalink="/r/test/comments/1/x/{thing_id}/">'
+            f'</shreddit-comment>'
+            f'<div id="{thing_id}-post-rtjson-content">'
+            f'<p>I will be messaging you in 3 days to remind you of this link.</p>'
+            f'</div>'
+        )
+
+    def test_known_bots_dropped(self):
+        for bot in ("RemindMeBot", "AutoModerator", "sneakpeekbot"):
+            assert rs.parse_comments(self._comment_html(bot)) == [], bot
+
+    def test_bot_match_is_case_insensitive(self):
+        assert rs.parse_comments(self._comment_html("remindmebot")) == []
+
+    def test_separator_suffix_bots_dropped(self):
+        for bot in ("some-random-bot", "subreddit_bot"):
+            assert rs.parse_comments(self._comment_html(bot)) == [], bot
+
+    def test_camelcase_bots_dropped(self):
+        # The separator-free convention is the common one on Reddit.
+        for bot in ("WikiTextBot", "RepostSleuthBot", "RemindMeBot2"):
+            assert rs.parse_comments(self._comment_html(bot)) == [], bot
+
+    def test_human_authors_kept(self):
+        # Names merely ending in "bot" are people, not bots. The capital B in
+        # the camelCase rule is what separates "WikiTextBot" from "Talbot".
+        for human in ("Talbot", "abbot", "u_bothell_local", "MSRS-",
+                      "TheBotanist", "Botany101", "Robotics_fan"):
+            out = rs.parse_comments(self._comment_html(human))
+            assert len(out) == 1, human
+            assert out[0]["author"] == human
+
+    def test_bot_does_not_displace_human_from_slot(self):
+        # The reported failure was a bot *taking a slot*, not merely appearing:
+        # it outscores the humans, so it wins the ranking before truncation.
+        html = (self._comment_html("RemindMeBot", thing_id="t1_bot", score=999)
+                + self._comment_html("real_person", thing_id="t1_human", score=5))
+        out = rs.parse_comments(html, limit=1)
+        assert [c["author"] for c in out] == ["real_person"]
+
+    def test_is_bot_author_handles_blank(self):
+        assert rs._is_bot_author("") is False
+        assert rs._is_bot_author(None) is False
 
 
 class TestTotalComments:
@@ -101,3 +157,21 @@ class TestFetchComments:
         with mock.patch.object(rs.http, "get_text", return_value=None):
             out = rs.fetch_comments(url)
         assert out["top_comments"] == [] and out["num_comments"] is None
+
+
+class TestEnrichmentBudget:
+    """Busy topics enrich more threads and carry more comments per thread."""
+
+    def test_enrich_limits_by_depth(self):
+        assert rs.ENRICH_LIMITS == {"quick": 4, "default": 8, "deep": 12}
+
+    def test_parse_comments_returns_up_to_twelve(self):
+        html = "".join(
+            f'<shreddit-comment author="user{i}" thingId="t1_c{i}" score="{100 - i}" '
+            f'permalink="/r/test/comments/1/x/t1_c{i}/"></shreddit-comment>'
+            f'<div id="t1_c{i}-post-rtjson-content"><p>comment number {i} body text</p></div>'
+            for i in range(30)
+        )
+        out = rs.parse_comments(html)
+        assert len(out) == rs.MAX_COMMENTS == 12
+        assert [c["score"] for c in out] == list(range(100, 88, -1))

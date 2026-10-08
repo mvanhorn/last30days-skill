@@ -35,7 +35,7 @@ def test_security_workflow_runs_secret_scan_for_pull_requests_and_main_pushes() 
     assert "workflow_dispatch:" in text
     assert "branches:\n      - main" in text
     assert "trufflesecurity/trufflehog" in secret_scan_job
-    assert "version: 3.95.5" in secret_scan_job
+    assert "version: 3.97.1" in secret_scan_job
     assert "extra_args: --results=verified" in secret_scan_job
     assert "continue-on-error: true" not in secret_scan_job
     assert "if: github.event_name" not in secret_scan_job

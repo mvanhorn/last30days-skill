@@ -155,9 +155,11 @@ def test_library_block_and_explainer_absent_when_empty():
     assert "Prior saved runs" not in text
 
 
-def test_footer_keeps_partial_populated_source_with_warning():
+def test_footer_keeps_partial_populated_source_without_warning_text():
     """A source that returned SOME items but then failed stays in the footer
-    with its ⚠ suffix - only zero-item sources are dropped."""
+    as counts only: run diagnostics live in doctor --postmortem, the saved raw
+    file, and the model-facing ## Partial Coverage note, never on the
+    user-facing conclusion surface."""
     ig_item = schema.SourceItem(
         item_id="ig1",
         source="instagram",
@@ -182,7 +184,71 @@ def test_footer_keeps_partial_populated_source_with_warning():
     text = render.render_compact(report)
 
     assert "📸 Instagram: 1 reel" in text
-    assert "⚠" in text  # partial suffix preserved on the populated line
+    footer = text.split("✅ All agents reported back!", 1)[1]
+    assert "⚠" not in footer
+    assert "run doctor" not in footer
+    assert "## Partial Coverage" in text
+    assert "Instagram" in text.split("## Partial Coverage", 1)[1].split("\n\n", 1)[0] or "Instagram partial" in text
+
+
+def test_footer_auth_failed_populated_source_has_no_warning_text():
+    ig_item = schema.SourceItem(
+        item_id="ig1",
+        source="instagram",
+        title="A reel",
+        body="caption",
+        url="https://instagram.com/reel/1",
+    )
+    report = _report(
+        items_by_source={"reddit": [_reddit_item()], "instagram": [ig_item]},
+        source_status={
+            "reddit": schema.SourceOutcome(source="reddit", state=health.OK, items_returned=1),
+            "instagram": schema.SourceOutcome(
+                source="instagram",
+                state=schema.AUTH_FAILED,
+                items_returned=1,
+                detail="HTTP 401",
+                fix_hint="doctor",
+            ),
+        },
+    )
+
+    text = render.render_compact(report)
+    footer = text.split("✅ All agents reported back!", 1)[1]
+
+    assert "📸 Instagram: 1 reel" in footer
+    assert "⚠" not in footer
+    assert "auth-failed" in text.split("## Partial Coverage", 1)[1]
+
+
+def test_compact_drops_source_failure_warnings_and_source_errors_block():
+    report = _report(
+        items_by_source={"reddit": [_reddit_item()]},
+        source_status={
+            "reddit": schema.SourceOutcome(source="reddit", state=health.OK, items_returned=1),
+            "jobs": schema.SourceOutcome(source="jobs", state=schema.UNREACHABLE, items_returned=0, detail="DNS"),
+        },
+    )
+    report.warnings = [
+        "Some sources failed: jobs",
+        "Some sources returned partial results (degraded): reddit",
+        "Evidence is thin for this topic.",
+    ]
+    report.errors_by_source = {"jobs": "URL Error: nodename nor servname provided"}
+
+    compact = render.render_compact(report)
+    assert "## Source Errors" not in compact
+    assert "Some sources failed" not in compact
+    assert "returned partial results" not in compact
+    assert "Evidence is thin for this topic." in compact
+
+    full = render.render_full(report)
+    assert "## Source Errors" in full
+
+    payload = schema.to_dict(report)
+    assert payload["warnings"] == report.warnings
+    assert payload["errors_by_source"] == {"jobs": "URL Error: nodename nor servname provided"}
+    assert payload["source_status"]["jobs"]["state"] == schema.UNREACHABLE
 
 
 def test_footer_carries_freshness_verdict():

@@ -14,6 +14,10 @@
   <a href="https://trendshift.io/repositories/21997" target="_blank">
     <img src="https://trendshift.io/api/badge/repositories/21997" alt="mvanhorn/last30days-skill | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
+  <br/>
+  <a href="https://github.com/mvanhorn/last30days-skill/actions/workflows/validate.yml">
+    <img src="https://github.com/mvanhorn/last30days-skill/actions/workflows/validate.yml/badge.svg" alt="Validate status" />
+  </a>
 </p>
 
 **編集者ではなく、アップボート・いいね・実際に動いたお金でランク付けする、AIエージェント主導の検索エンジンです。**
@@ -76,6 +80,7 @@ CEOと会うとして、直近30日間のツイートと YouTube の文字起こ
 | **arXiv** | 話題の裏側にある論文。対象期間に出た新しい研究が、無料・APIキーなしで手に入ります。`arxiv-pp-cli` が PATH にあると自動的に有効になります(初回セットアップでインストールされます)。 |
 | **Techmeme** | テックニュースの編集レイヤーを、対象の30日間に絞って取得します。無料・APIキーなし。`techmeme-pp-cli` が PATH にあると自動的に有効になります(初回セットアップでインストールされます)。 |
 | **LinkedIn** | ビジネス面のシグナル。投稿と記事を拾い、記事は強いシグナルとして重み付けします。 |
+| **Meta Ads** | ブランドが費用を払って発信しているメッセージ。今月配信を開始した Meta 広告のコピー、プロモコード、音声の書き起こしを拾います。 |
 | **StockTwits** | トレーダーの温度感。調べる対象が銘柄コードや暗号資産のときに自動で有効になります。 |
 | **Threads** | Twitter 以後のテキストの層。クリエイターやブランドの会話です。 |
 | **Pinterest** | ビジュアル起点の発見。プロダクトやアイデアに対するピン・保存・コメント。 |
@@ -177,6 +182,10 @@ Claude Code で Agent Skills 経由のインストールを使いたい場合も
 npx skills add mvanhorn/last30days-skill -g -a claude-code
 ```
 
+### クイック試用リンク
+
+[Telegram または WhatsApp で Last30Days Research Skill を試す](https://app.clawmama.run/skills/2ne05f/hermes?utm_source=github&utm_medium=issue&utm_campaign=skill_outreach_mvanhorn_last30days_skill)
+
 ネイティブプラグインと `npx skills` でのインストールは共存できます。ただし Claude Code はインストール方法をまたいだ重複排除を行いません。マーケットプレイス版のプラグインと `npx skills` のコピーを両方とも有効にしていると、`/last30days` が2件表示されます。1台につきインストール方法は1つにしてください。
 
 ### Grok(xAI Build CLI)
@@ -194,7 +203,7 @@ grok plugin marketplace add mvanhorn/last30days-skill
 grok plugin install last30days
 ```
 
-インストール時の確認を省きたい場合は `--trust` を付けてください。更新は `grok plugin update last30days` です。Grok は互換性のために Claude Code のマニフェストも読みますが、第一の経路はネイティブの `.grok-plugin/` のペアで、[xAI のマーケットプレイス](https://github.com/xai-org/plugin-marketplace)への公式掲載もこちらを指しています。`npx skills add` は、どのホストでも使える代替手段として引き続き有効です。
+インストール時の確認を省きたい場合は `--trust` を付けてください。更新は `grok plugin update last30days` です。Grok は互換性のために Claude Code のマニフェストも読みますが、第一の経路はネイティブの `.grok-plugin/` のペアで、[xAI のマーケットプレイス](https://github.com/xai-org/plugin-marketplace)への公式掲載もこちらを指しています。`npx skills add` は、どのホストでも使える代替手段として引き続き有効です。Grok Bot では、X は設定不要でボットの組み込み X ツールを通じて動作し、次にボットの X コネクタ、公式 X API（`X_BEARER_TOKEN`）がバックアップになります。
 
 ### Codex、Cursor、Copilot、Gemini CLI、その他の Agent Skills ホスト
 
@@ -206,7 +215,7 @@ npx skills add mvanhorn/last30days-skill -g
 
 `-g`(グローバル)フラグを付けるとユーザーディレクトリにインストールされ、スキルをすべてのプロジェクトで使えます。`-g` を付けない場合、`npx skills` はプロジェクト内の `./.skills/` にインストールし、リポジトリと一緒にコミットされます。世界中を調べるためのツールなので、通常はグローバルが向いています。
 
-Codex のデスクトップ版など、フォルダ単位で動くホストは、Git リポジトリでも普通のフォルダでも動作します。最初の調査を始める前に、読み込み済みのスキルディレクトリから同梱の `scripts/last30days.py --preflight` を実行するようホストのエージェントに頼んでください。ソースをチェックアウトしている場合、同等のコマンドは `python3 skills/last30days/scripts/last30days.py --preflight` です。設定の取得元、ブラウザのクッキーをどう扱う予定か、どのファイルを書き込む予定か、任意で使えるコマンド、無視されるプロジェクト設定を表示します。クッキーの読み取りもファイルの書き込みも調査の実行もしません。
+Codex のデスクトップ版など、フォルダ単位で動くホストは、Git リポジトリでも普通のフォルダでも動作します。調査を始めずに読み書き予定を確認するには、読み込み済みのスキルディレクトリから同梱の `scripts/last30days.py --preflight` を実行してください。ソースをチェックアウトしている場合、同等のコマンドは `python3 skills/last30days/scripts/last30days.py --preflight` です。設定の取得元、ブラウザのクッキーをどう扱う予定か、どのファイルを書き込む予定か、任意で使えるコマンド、無視されるプロジェクト設定を表示します。クッキーの読み取りもファイルの書き込みも調査の実行もしません。初回セットアップでは必須ではありません。
 
 既定では、`npx skills` が検出したホスト向けにインストールされます。特定のホスト(または複数)を指定するには次のようにします。
 
@@ -288,7 +297,7 @@ Reddit(コメント込み)、Hacker News、Polymarket、GitHub はすぐに使�
 |---------|---------------|------|
 | Reddit(コメント込み)+ HN + Polymarket + GitHub + StockTwits | 不要 | 無料 |
 | arXiv + Techmeme | 無料のCLI。初回セットアップが自動でインストールします | 無料 |
-| X / Twitter | 任意のブラウザで x.com にログインするか、`XQUIK_API_KEY` / `XAI_API_KEY` を設定 | ブラウザのクッキーは無料。キーの料金は提供元によります |
+| X / Twitter | 公式 X API 用に `X_BEARER_TOKEN` を設定（最近の投稿、およそ直近 1 週間分。X 開発者プロジェクトにフルアーカイブ検索のアクセスがある場合を除く。Grok Bot ではボットの組み込み X ツールの次のバックアップ、それ以外のホストでは `LAST30DAYS_X_BACKEND=xapi` でオプトイン）するか、任意のブラウザで x.com にログインするか、`XQUIK_API_KEY` / `XAI_API_KEY` を設定 | X API のクレジットはご自身の X 開発者プロジェクトから消費。ブラウザのクッキーは無料。その他のキーの料金は提供元によります |
 | YouTube | `brew install yt-dlp` | 無料 |
 | Bluesky | bsky.app のアプリパスワード | 無料 |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + YouTube のコメント | ScrapeCreators のキー | 1万リクエストまで無料、以降は従量課金 |
@@ -323,7 +332,7 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 初日に知っておくとよいことが2つあります。
 
-**調査ファイルの保存先。** `LAST30DAYS_MEMORY_DIR` の既定値は `~/Documents/Last30Days/` です(Windows では `C:\Users\<you>\Documents\Last30Days\`)。変更したい場合は、シェルでこの環境変数に任意のパスを設定するか、実行ごとに `--save-dir <path>` を指定します。レンダリング結果を特定のパスに出力したいときは `--output <file>` を使い、形式は `--emit` で選びます。同じトピックの複数のバリエーションを分けて残したいときは `--save-suffix=<name>` を使ってください(クライアントごとに分ける場合など)。`--save-dir` を付けた実行では `<slug>-raw[-suffix].md` が生成されます。調査を走らせる前に書き込み予定を確認するには `python3 skills/last30days/scripts/last30days.py --preflight` を実行してください。
+**調査ファイルの保存先。** `LAST30DAYS_MEMORY_DIR` の既定値は `~/Documents/Last30Days/` です(Windows では `C:\Users\<you>\Documents\Last30Days\`)。変更したい場合は、シェルでこの環境変数に任意のパスを設定するか、実行ごとに `--save-dir <path>` を指定します。レンダリング結果を特定のパスに出力したいときは `--output <file>` を使い、形式は `--emit` で選びます。同じトピックの複数のバリエーションを分けて残したいときは `--save-suffix=<name>` を使ってください(クライアントごとに分ける場合など)。`--save-dir` を付けた実行では `<slug>-raw[-suffix].md` が生成されます。調査を走らせずに書き込み予定を確認するには、任意で `python3 skills/last30days/scripts/last30days.py --preflight` を実行してください。
 
 **エージェントやワークフロー向けの構造化出力。** `/last30days` に機械可読なJSONを求めると、安定したバージョン付きのエージェント向けプロファイルが返ります。スクリプトや開発でエンジンを直接使う場合は `python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json` を実行してください。バージョン管理されていない内部の `Report` のダンプが必要なときだけ `--json-profile=raw` を追加します。[JSONエクスポートのフィールド一覧とバージョニング方針](docs/reference/json-export.md)も参照してください。
 

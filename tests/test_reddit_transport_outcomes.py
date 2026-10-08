@@ -11,7 +11,7 @@ capture sink -> source outcome -> postmortem bucket -- stays honest.
 import urllib.error
 from unittest import mock
 
-from lib import doctor, pipeline, schema
+from lib import doctor, http, pipeline, schema
 
 
 def _plan(source):
@@ -66,7 +66,7 @@ def _postmortem_from(report):
 def test_reddit_rate_limit_is_not_reported_as_clean_no_results():
     report = _run_reddit_against(
         urllib.error.HTTPError(
-            "https://www.reddit.com/search.rss", 429, "Too Many Requests", {}, None
+            "https://www.reddit.com/svc/shreddit/search/", 429, "Too Many Requests", {}, None
         )
     )
 
@@ -78,7 +78,7 @@ def test_reddit_rate_limit_is_not_reported_as_clean_no_results():
 def test_reddit_block_is_not_reported_as_clean_no_results():
     report = _run_reddit_against(
         urllib.error.HTTPError(
-            "https://www.reddit.com/search.rss", 403, "Blocked", {}, None
+            "https://www.reddit.com/svc/shreddit/search/", 403, "Blocked", {}, None
         )
     )
 
@@ -90,7 +90,7 @@ def test_reddit_block_is_not_reported_as_clean_no_results():
 def test_postmortem_does_not_claim_success_after_a_reddit_block():
     report = _run_reddit_against(
         urllib.error.HTTPError(
-            "https://www.reddit.com/search.rss", 429, "Too Many Requests", {}, None
+            "https://www.reddit.com/svc/shreddit/search/", 429, "Too Many Requests", {}, None
         )
     )
 
@@ -100,3 +100,176 @@ def test_postmortem_does_not_claim_success_after_a_reddit_block():
     assert "Succeeded: reddit" not in text
     assert "Failed:" in text
     assert schema.RATE_LIMITED in text
+
+
+def test_items_delivered_with_swallowed_lane_403_are_not_branded():
+    """Regression (datacenter egress): a source that returns items must not be
+    branded auth-failed/partial by a swallowed lane-level 403.
+
+    On hosts where Reddit blocks the shreddit partials (HTTP 403), the capture
+    sink records those failures even though the keyless lanes delivered items.
+    Before the fix, ``_retrieve_stream`` attached the captured failure as the
+    source outcome and the run reported ``auth-failed`` / ``partial after N
+    items: HTTP 403: Blocked`` for a source that actually succeeded.
+    """
+    lane_error = http.HTTPError(
+        "https://www.reddit.com/svc/shreddit/community-more-posts/top/?name=tea",
+        status_code=403,
+        body=b"Blocked",
+    )
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="matcha tea trends",
+        ranking_query="matcha tea trends",
+        sources=["reddit"],
+    )
+    with mock.patch.object(
+        pipeline,
+        "_retrieve_stream_impl",
+        return_value=([{"url": "https://www.reddit.com/r/tea/comments/abc/"}], {}),
+    ), mock.patch.object(http, "capture_failures") as cf, mock.patch.object(
+        http, "fixture_module_capture"
+    ):
+        cf.return_value.__enter__.return_value = [lane_error]
+        cf.return_value.__exit__.return_value = False
+        items, artifact = pipeline._retrieve_stream(
+            source="reddit",
+            topic="matcha tea trends",
+            subquery=subquery,
+            config={},
+            depth="quick",
+            date_range=("2026-07-08", "2026-08-08"),
+            runtime=schema.ProviderRuntime("local", "test-planner", "test-reranker"),
+            mock=False,
+            web_backend="auto",
+        )
+
+    assert items, "the run delivered items"
+    assert "_source_outcome" not in artifact, (
+        "swallowed lane failures must not brand a source that returned items"
+    )
+
+
+def test_swallowed_lane_403_still_brands_when_no_items_returned():
+    """The no-items case keeps the transport-failure outcome (issue #899): the
+    captured failure must still surface so doctor can prescribe a fix."""
+    lane_error = http.HTTPError(
+        "https://www.reddit.com/svc/shreddit/community-more-posts/top/?name=tea",
+        status_code=403,
+        body=b"Blocked",
+    )
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="matcha tea trends",
+        ranking_query="matcha tea trends",
+        sources=["reddit"],
+    )
+    with mock.patch.object(
+        pipeline, "_retrieve_stream_impl", return_value=([], {})
+    ), mock.patch.object(http, "capture_failures") as cf, mock.patch.object(
+        http, "fixture_module_capture"
+    ):
+        cf.return_value.__enter__.return_value = [lane_error]
+        cf.return_value.__exit__.return_value = False
+        items, artifact = pipeline._retrieve_stream(
+            source="reddit",
+            topic="matcha tea trends",
+            subquery=subquery,
+            config={},
+            depth="quick",
+            date_range=("2026-07-08", "2026-08-08"),
+            runtime=schema.ProviderRuntime("local", "test-planner", "test-reranker"),
+            mock=False,
+            web_backend="auto",
+        )
+
+    assert not items
+    assert artifact.get("_source_outcome", {}).get("state") == schema.AUTH_FAILED
+
+
+def test_items_delivered_with_swallowed_lane_failure_carry_detail():
+    """A source that delivered items keeps ``ok`` but records what was lost, so
+    ``doctor --postmortem`` can still show the swallowed sub-request failures."""
+    lane_error = http.HTTPError(
+        "https://www.reddit.com/svc/shreddit/community-more-posts/top/?name=tea",
+        status_code=429,
+        body=b"Too Many Requests",
+    )
+    subquery = schema.SubQuery(
+        label="primary",
+        search_query="matcha tea trends",
+        ranking_query="matcha tea trends",
+        sources=["reddit"],
+    )
+    with mock.patch.object(
+        pipeline,
+        "_retrieve_stream_impl",
+        return_value=([{"url": "https://www.reddit.com/r/tea/comments/abc/"}], {}),
+    ), mock.patch.object(http, "capture_failures") as cf, mock.patch.object(
+        http, "fixture_module_capture"
+    ):
+        cf.return_value.__enter__.return_value = [lane_error, lane_error]
+        cf.return_value.__exit__.return_value = False
+        items, artifact = pipeline._retrieve_stream(
+            source="reddit",
+            topic="matcha tea trends",
+            subquery=subquery,
+            config={},
+            depth="quick",
+            date_range=("2026-07-08", "2026-08-08"),
+            runtime=schema.ProviderRuntime("local", "test-planner", "test-reranker"),
+            mock=False,
+            web_backend="auto",
+        )
+
+    assert items
+    assert "_source_outcome" not in artifact
+    detail = artifact.get("_source_outcome_detail") or ""
+    assert "2 sub-requests" in detail
+    assert "429" in detail
+
+
+def test_postmortem_shows_lane_detail_on_succeeded_source():
+    outcome = schema.SourceOutcome(
+        source="reddit",
+        state="ok",
+        items_returned=36,
+        attempted=True,
+        detail="3 sub-requests rate-limited (HTTP 429)",
+    )
+    pm = {
+        "engine_version": "test",
+        "mode": "postmortem",
+        "present": True,
+        "topic": "kanye west",
+        "at": outcome.at,
+        "outcomes": {"reddit": schema.to_dict(outcome)},
+    }
+
+    text = doctor.render_postmortem_text(pm)
+
+    assert "Failed:" not in text
+    assert "Partial:" not in text
+    assert "Succeeded: reddit (36 items; 3 sub-requests rate-limited (HTTP 429))" in text
+
+
+def test_swallowed_429s_flag_the_source_as_rate_limited_for_thin_retry():
+    lane_error = http.HTTPError(
+        "https://www.reddit.com/svc/shreddit/search/", status_code=429, body=b"Too Many Requests"
+    )
+    subquery = schema.SubQuery(
+        label="primary", search_query="matcha", ranking_query="matcha", sources=["reddit"],
+    )
+    with mock.patch.object(
+        pipeline, "_retrieve_stream_impl",
+        return_value=([{"url": "https://www.reddit.com/r/tea/comments/abc/"}], {}),
+    ), mock.patch.object(http, "capture_failures") as cf, mock.patch.object(http, "fixture_module_capture"):
+        cf.return_value.__enter__.return_value = [lane_error]
+        cf.return_value.__exit__.return_value = False
+        _items, artifact = pipeline._retrieve_stream(
+            source="reddit", topic="matcha", subquery=subquery, config={}, depth="quick",
+            date_range=("2026-07-08", "2026-08-08"),
+            runtime=schema.ProviderRuntime("local", "test-planner", "test-reranker"),
+            mock=False, web_backend="auto",
+        )
+    assert artifact["_source_outcome_detail_state"] == schema.RATE_LIMITED

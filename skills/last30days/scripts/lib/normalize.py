@@ -78,6 +78,7 @@ def normalize_source_items(
         "techmeme": _normalize_techmeme,
         "trustpilot": _normalize_trustpilot,
         "amazon": _normalize_amazon,
+        "meta_ads": _normalize_meta_ads,
         "grounding": _normalize_grounding,
         "xiaohongshu": _normalize_grounding,
         "github": _normalize_github,
@@ -92,6 +93,10 @@ def normalize_source_items(
         normalizer(source, item, index, from_date, to_date)
         for index, item in enumerate(items)
     ]
+    if source == "arxiv":
+        # The adapter owns arXiv's 365-day recency contract. Applying the
+        # report window again here drops relevant papers the adapter accepted.
+        return normalized
     if source == "jobs":
         # A careers board is a snapshot of CURRENTLY OPEN roles. An open posting
         # is current evidence regardless of when it was posted, so date-windowing
@@ -105,6 +110,20 @@ def normalize_source_items(
     )
     if filtered:
         return filtered
+    # YouTube search already keeps out-of-window videos when fewer than 3
+    # are recent, then pays for transcripts. A second hard date filter here
+    # dropped those transcribed items to zero (#1043). Keep transcript-backed
+    # retrieved items instead of paying for transcripts that never appear in
+    # the brief. Metadata-only / caption-failed videos are not that rescue.
+    if source == "youtube" and normalized:
+        transcribed = [
+            item for item in normalized if str(item.snippet or "").strip()
+        ]
+        if transcribed:
+            if require_date:
+                dated = [item for item in transcribed if item.published_at]
+                return dated or transcribed
+            return transcribed
     if freshness_mode == "evergreen_ok" and source == "youtube":
         if require_date:
             return [item for item in normalized if item.published_at]
@@ -705,6 +724,92 @@ def _normalize_techmeme(
         snippet=title[:400],
         metadata={
             "publication": source_name,
+        },
+    )
+
+
+def _normalize_meta_ads(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    """Normalizer for Meta Ad Library creatives.
+
+    One item per distinct creative launched inside the window. Identity is the
+    Ad Library permalink, never the landing URL: many creatives for one product
+    share a landing page, and fusion merges by normalized URL, so keying on the
+    landing page would collapse a whole campaign into one candidate and lose
+    every transcript but the first.
+
+    Grounding-exempt on the Amazon precedent. Ad copy is written to sell, not
+    to name the brand -- "Stop making boring drinks" never repeats the topic --
+    and the advertiser page was already resolved by name before any of these
+    were created, so they are on-entity by construction.
+    """
+    body = str(item.get("text") or "").strip()
+    transcript = str(item.get("transcript") or "").strip()
+    advertiser = str(item.get("advertiser") or "").strip()
+    cta = str(item.get("cta") or "").strip()
+    landing = str(item.get("landing_url") or "").strip()
+    placements = [str(p) for p in (item.get("placements") or [])]
+    promo = str(item.get("promo_code") or "").strip()
+
+    # The spoken script is usually the sharper version of the pitch, so it
+    # leads the evidence snippet when present.
+    snippet_parts = [part for part in [body, transcript] if part]
+    # The adapter deliberately keeps creatives that launched inside the window
+    # and have since ended -- a one-week promo push is exactly the signal this
+    # source exists for -- so the wording has to follow the stored state rather
+    # than calling every creative active.
+    running = bool(item.get("is_active"))
+    ended_on = str(item.get("ended_on") or "").strip()
+    if running:
+        state_word = "Running paid creative"
+    elif ended_on:
+        state_word = f"Paid creative that ran until {ended_on}"
+    else:
+        state_word = "Paid creative that has since ended"
+    default_why = f"{state_word} from {advertiser}" if advertiser else state_word
+    context = " │ ".join(
+        part
+        for part in [
+            cta or "",
+            f"code {promo}" if promo else "",
+            landing,
+        ]
+        if part
+    )
+    return _source_item(
+        item_id=str(item.get("id") or f"MA{index + 1}"),
+        source=source,
+        title=str(item.get("title") or "").strip() or body[:140] or f"Meta ad {index + 1}",
+        body=body,
+        url=str(item.get("url") or "").strip(),
+        author=advertiser,
+        container="Meta Ad Library",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement={"variants": int(item.get("variants") or 1)},
+        relevance_hint=0.8,
+        why_relevant=str(item.get("why_relevant") or "") or default_why,
+        snippet=" ".join(snippet_parts)[:400],
+        metadata={
+            "grounding_exempt": True,
+            "advertiser": advertiser,
+            "page_id": str(item.get("page_id") or ""),
+            "is_active": bool(item.get("is_active")),
+            "ended_on": item.get("ended_on"),
+            "display_format": str(item.get("display_format") or ""),
+            "placements": placements,
+            "cta": cta,
+            "landing_url": landing,
+            "promo_code": promo,
+            "variants": int(item.get("variants") or 1),
+            "has_video": bool(item.get("has_video")),
+            "transcript_snippet": transcript[:400],
+            "ad_context": context,
         },
     )
 

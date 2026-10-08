@@ -52,7 +52,7 @@ def run_command(cmd: list[str], *, env: dict[str, str] | None = None, timeout: i
 
 
 def verify_unit() -> dict[str, str]:
-    run_command([PYTHON, "-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"], timeout=600)
+    run_command([PYTHON, "-m", "pytest", "tests"], timeout=600)
     run_command(
         [
             PYTHON,

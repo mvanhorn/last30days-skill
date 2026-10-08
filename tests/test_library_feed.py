@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import json
 import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
@@ -10,6 +11,8 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from unittest import mock
 from xml.etree import ElementTree as ET
+
+import pytest
 
 import last30days as cli
 from lib import feed, html_publish, html_render, library
@@ -461,27 +464,85 @@ def test_per_suffix_reports_stay_distinct(tmp_path):
     assert len({e.output_name for e in same_topic}) == 2
 
 
-def test_scoped_library_ignores_global_briefing_archive(tmp_path, monkeypatch):
-    import io
-    from contextlib import redirect_stdout, redirect_stderr
-    from unittest import mock
-
-    _write_report(tmp_path)
+@pytest.fixture
+def public_briefing_archives(tmp_path, monkeypatch):
+    memory = tmp_path / "memory"
+    memory.mkdir()
+    _write_report(memory)
+    local_briefs = memory / "briefings"
     global_briefs = tmp_path / "global-briefings"
-    global_briefs.mkdir()
-    (global_briefs / "2026-07-11.json").write_text(
-        '{"status":"ok","date":"2026-07-11","total_new":3,"total_topics":1,'
-        '"top_finding":{"title":"OTHER CLIENT SECRET"},"topics":[{"name":"X","new_count":1}]}',
-        encoding="utf-8",
-    )
+    local_title = f"LOCAL CLIENT FINDING {tmp_path.name}"
+    foreign_title = f"OTHER CLIENT FINDING {tmp_path.name}"
+    for directory, day, title in (
+        (local_briefs, "2026-07-12", local_title),
+        (global_briefs, "2026-07-11", foreign_title),
+    ):
+        directory.mkdir()
+        (directory / f"{day}.json").write_text(json.dumps({
+            "status": "ok", "date": day, "total_new": 3, "total_topics": 1,
+            "top_finding": {
+                "title": title, "source": "reddit",
+                "source_url": "https://www.reddit.com/r/test/comments/dummy/finding/",
+            },
+            "topics": [{"name": "X", "new_count": 3}],
+        }), encoding="utf-8")
+    monkeypatch.delenv("LAST30DAYS_MEMORY_DIR", raising=False)
+    monkeypatch.setattr(library, "DEFAULT_MEMORY_DIR", memory)
     monkeypatch.setattr(library, "DEFAULT_BRIEFS_DIR", global_briefs)
-    with mock.patch.object(cli.sys, "argv",
-        ["last30days.py", "library", "feed", "--save-dir", str(tmp_path)]), \
-         mock.patch.object(cli.env, "get_config", lambda **_k: {}), \
-         redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+    monkeypatch.setattr(cli.env, "get_config", lambda **_k: {})
+    return memory, local_title, foreign_title
+
+
+def test_scoped_library_ignores_global_briefing_archive(public_briefing_archives, monkeypatch):
+    memory, local_title, foreign_title = public_briefing_archives
+    monkeypatch.setattr(sys, "argv", [
+        "last30days.py", "library", "feed", "--save-dir", str(memory),
+    ])
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
         assert cli.main() == 0
-    blob = (tmp_path / "index.html").read_text(encoding="utf-8")
-    assert "OTHER CLIENT SECRET" not in blob
+
+    index = (memory / "index.html").read_text(encoding="utf-8")
+    assert foreign_title not in index
+    assert local_title in index
+    namespace = {"atom": feed.ATOM_NS}
+    atom = ET.parse(memory / "feed.xml")
+    assert {node.text for node in atom.findall("atom:entry/atom:title", namespace)} == {
+        local_title, "Agent loops are becoming durable",
+    }
+    expected_briefs = {
+        "ai-agents-c7760ea1-2026-07-10.html",
+        "daily-research-briefing-739d632a-2026-07-12.html",
+    }
+    assert {path.name for path in (memory / "briefs").glob("*.html")} == expected_briefs
+    assert {node.attrib["href"] for node in atom.findall("atom:entry/atom:link", namespace)} == {
+        f"briefs/{name}" for name in expected_briefs
+    }
+    for path in (memory / "briefs").glob("*.html"):
+        assert foreign_title not in path.read_text(encoding="utf-8")
+
+
+def test_default_library_includes_global_briefing_archive(public_briefing_archives, monkeypatch):
+    memory, local_title, foreign_title = public_briefing_archives
+    monkeypatch.setattr(sys, "argv", ["last30days.py", "library", "feed"])
+    with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+        assert cli.main() == 0
+
+    index = (memory / "index.html").read_text(encoding="utf-8")
+    assert foreign_title in index
+    assert local_title not in index
+    namespace = {"atom": feed.ATOM_NS}
+    atom = ET.parse(memory / "feed.xml")
+    assert {node.text for node in atom.findall("atom:entry/atom:title", namespace)} == {
+        foreign_title, "Agent loops are becoming durable",
+    }
+    expected_briefs = {
+        "ai-agents-c7760ea1-2026-07-10.html",
+        "daily-research-briefing-c99e697b-2026-07-11.html",
+    }
+    assert {path.name for path in (memory / "briefs").glob("*.html")} == expected_briefs
+    assert foreign_title in (
+        memory / "briefs" / "daily-research-briefing-c99e697b-2026-07-11.html"
+    ).read_text(encoding="utf-8")
 
 
 def test_hand_written_index_is_backed_up_not_clobbered(tmp_path, monkeypatch):

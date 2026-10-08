@@ -3,14 +3,14 @@
 The subreddit listing partial
 ``/svc/shreddit/community-more-posts/{sort}/?name={sub}[&t={range}]`` serves
 HTTP 200 with no API key and **server-renders each post's upvote score**, which
-neither RSS nor the comments endpoint provides. Each post is a
+the comments endpoint does not provide. Each post is a
 ``<shreddit-post>`` element whose start-tag attributes carry ``score``,
 ``comment-count``, ``post-title``, ``permalink``, ``author``, ``subreddit-name``
 and ``created-timestamp``.
 
 This is the keyless source of post-level upvotes. It works for normal users on
 ordinary connections (verified), so reddit_keyless uses it both as a scored
-discovery source and to backfill scores onto RSS-discovered posts.
+discovery source and to backfill scores onto posts discovered elsewhere.
 """
 
 import html as _html
@@ -189,20 +189,25 @@ def _fetch_one_with_status(
     timeframe: str = TIMEFRAME,
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     try:
-        # tee_failures, not capture_failures: the latter would replace the
-        # pipeline's sink and hide this failure from it. get_text launders a
-        # terminal HTTP failure into None, so the tee is how this lane recovers
-        # the status code it needs to report (issue #899).
-        with http.tee_failures() as swallowed:
-            text = http.reddit_keyless_get_text(_listing_url(subreddit, sort, timeframe), timeout=LISTING_TIMEOUT,
-                                                accept="text/html")
+        # retry_429 records a terminal miss into the pipeline sink (issue #899)
+        # and retries a 429 once through the limiter (issue #985). An empty
+        # body ("") is a real empty listing; None never is.
+        text, error = http.reddit_keyless_get_text_retry_429(
+            _listing_url(subreddit, sort, timeframe),
+            timeout=LISTING_TIMEOUT,
+            accept="text/html",
+        )
         if text is None:
-            # An empty body ("") is a real empty listing; None never is.
-            return [], (str(swallowed[-1]) if swallowed else "no response")
+            return [], (error or "no response")
         return parse_cards(text, query), None
     except Exception as e:
         _log(f"listing fetch failed r/{subreddit} {sort}: {e}")
         return [], str(e)
+
+
+def _result_timeout(batch_size: int) -> float:
+    """Per-future wait: the fetch's own timeout plus the bucket's queue depth."""
+    return LISTING_TIMEOUT + 5 + http.reddit_keyless_wait_allowance(batch_size)
 
 
 def fetch_listings(
@@ -233,7 +238,7 @@ def fetch_listings(
                    for sub, sort in jobs}
         for future in futures:
             try:
-                all_posts.extend(future.result(timeout=LISTING_TIMEOUT + 5))
+                all_posts.extend(future.result(timeout=_result_timeout(len(jobs))))
             except (Exception, FuturesTimeoutError) as e:
                 _log(f"listing future failed: {e}")
 
@@ -281,7 +286,7 @@ def fetch_discovery_listings(
         }
         for future, (subreddit, sort) in futures.items():
             try:
-                fetched, error = future.result(timeout=LISTING_TIMEOUT + 5)
+                fetched, error = future.result(timeout=_result_timeout(len(jobs)))
             except (Exception, FuturesTimeoutError) as exc:
                 errors.append(f"r/{subreddit} {sort}: {exc}")
                 continue
@@ -346,7 +351,7 @@ def fetch_discovery_listings(
 def score_index(subreddits: List[str], depth: str = "default") -> Dict[str, Dict[str, int]]:
     """Build a {post_id: {score, num_comments}} map from subreddit listings.
 
-    Used to backfill real scores onto posts discovered via RSS, which carries
+    Used to backfill real scores onto posts discovered by a lane that carries
     no engagement numbers.
     """
     index: Dict[str, Dict[str, int]] = {}

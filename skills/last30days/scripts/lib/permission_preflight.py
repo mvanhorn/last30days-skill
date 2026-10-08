@@ -4,12 +4,15 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import env
+
 
 ENDPOINT_OVERRIDE_KEYS = {
     "BSKY_SEARCH_HOST",
     "LAST30DAYS_SEARXNG_URL",
     "LAST30DAYS_YOUTUBE_SSH_HOST",
     "OPENAI_BASE_URL",
+    "OPENROUTER_BASE_URL",
     "XAI_BASE_URL",
     "XIAOHONGSHU_API_BASE",
 }
@@ -22,6 +25,10 @@ PROVIDER_CREDENTIALS = {
     "perplexity": "Perplexity API key",
     "scrapecreators": "ScrapeCreators API key",
     "github": "GitHub token or gh auth",
+    # X API v2 app-only bearer (X_BEARER_TOKEN). Presence is computed from
+    # config inside build(), never through diagnose.providers, whose key set
+    # is frozen by tests/test_diagnose_compat.py.
+    "x_bearer": "X API bearer token",
 }
 
 
@@ -100,6 +107,10 @@ def build(
             "label": PROVIDER_CREDENTIALS["scrapecreators"],
         },
         "github": {"present": bool(diagnose.get("has_github")), "label": PROVIDER_CREDENTIALS["github"]},
+        "x_bearer": {
+            "present": bool(str(config.get("X_BEARER_TOKEN") or "").strip()),
+            "label": PROVIDER_CREDENTIALS["x_bearer"],
+        },
     }
 
     active_endpoint_overrides = sorted(
@@ -114,6 +125,16 @@ def build(
     action_items: list[str] = []
     if ignored_project_config:
         action_items.append("Project config was ignored; set LAST30DAYS_TRUST_PROJECT_CONFIG=1 to trust it.")
+    # get_config() already emptied these, so the provider flags above read them
+    # as absent. Name them anyway: the user's setup is broken in a way the
+    # presence booleans alone describe as "nothing configured".
+    templated_keys = env.templated_config_keys(config)
+    if templated_keys:
+        action_items.append(
+            "Unsubstituted config template(s) count as unset: "
+            + _format_names(templated_keys)
+            + ". Replace each with a real value or remove it."
+        )
 
     return {
         "status": "action_needed" if action_items else "ready",

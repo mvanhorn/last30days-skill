@@ -5,12 +5,14 @@ from pathlib import Path
 from unittest import mock
 
 from lib import env
+from tests.skill_contract import contract_documents
 
 
 ROOT = Path(__file__).resolve().parents[1]
 DOC_PATHS = [
     ROOT / "skills" / "last30days" / "SKILL.md",
     ROOT / "README.md",
+    ROOT / "CONFIGURATION.md",
 ]
 CONFIG_ENV_KEY_RE = re.compile(
     r"(?<![A-Z0-9_])(?:"
@@ -19,15 +21,24 @@ CONFIG_ENV_KEY_RE = re.compile(
     r"BSKY|TRUTHSOCIAL|BRAVE|EXA|SERPER|OPENROUTER|PERPLEXITY|PARALLEL|"
     r"XQUIK|GROQ)_[A-Z0-9_]+|"
     r"OPENAI_API_KEY|AUTH_TOKEN|CT0|FROM_BROWSER|INCLUDE_SOURCES|"
-    r"EXCLUDE_SOURCES|SETUP_COMPLETE|FUN_LEVEL"
+    r"EXCLUDE_SOURCES|SETUP_COMPLETE|FUN_LEVEL|X_BEARER_TOKEN"
     r")(?![A-Z0-9_])"
 )
 DOC_ONLY_KEYS = {
     "LAST30DAYS_API_BASE",
     "LAST30DAYS_API_KEY",
     "LAST30DAYS_CACHE_DIR",
+    "LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES",
     "LAST30DAYS_MCP_TIMEOUT",
     "LAST30DAYS_PYTHON",
+    # Watchlist owns this private temporary subprocess path; it is not user configuration.
+    "LAST30DAYS_USAGE_JOURNAL",
+    # Read from the process environment before or outside get_config
+    # (config-dir override, Keychain/pass source switches), so they are
+    # documented in CONFIGURATION.md without being config keys.
+    "LAST30DAYS_CONFIG_DIR",
+    "LAST30DAYS_PASS_PREFIX",
+    "LAST30DAYS_SKIP_KEYCHAIN",
 }
 
 
@@ -42,6 +53,8 @@ def _documented_env_keys() -> set[str]:
     keys: set[str] = set()
     for path in DOC_PATHS:
         keys.update(CONFIG_ENV_KEY_RE.findall(path.read_text(encoding="utf-8")))
+    for text in contract_documents().values():
+        keys.update(CONFIG_ENV_KEY_RE.findall(text))
     return keys
 
 

@@ -7,10 +7,13 @@ Requires SCRAPECREATORS_API_KEY in config (same key as TikTok + Instagram).
 API docs: https://scrapecreators.com/docs
 """
 
+import copy
 import math
 import re
 import sys
+import threading
 import time
+from contextlib import ExitStack
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed, wait as futures_wait
 from datetime import date, datetime, timezone
@@ -40,19 +43,16 @@ DEPTH_CONFIG = {
         "global_searches": 1,
         "subreddit_searches": 2,
         "comment_enrichments": 3,
-        "timeframe": "week",
     },
     "default": {
         "global_searches": 2,
         "subreddit_searches": 3,
         "comment_enrichments": 5,
-        "timeframe": "month",
     },
     "deep": {
         "global_searches": 3,
         "subreddit_searches": 5,
         "comment_enrichments": 8,
-        "timeframe": "month",
     },
 }
 
@@ -264,7 +264,7 @@ def _relevance_rank_key(item: Dict[str, Any]) -> float:
     ~0) above an on-topic one (relevance >= RELEVANCE_FLOOR).
     """
     rel = item.get("relevance") or 0.0
-    eng_bonus = min(0.25, math.log10(_total_engagement(item) + 1) / 20.0)
+    eng_bonus = min(0.25, math.log10(max(0, _total_engagement(item)) + 1) / 20.0)
     return rel + eng_bonus
 
 
@@ -405,6 +405,9 @@ def _subreddit_search(
 def fetch_post_comments(
     url: str,
     token: str,
+    *,
+    deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
 ) -> List[Dict[str, Any]]:
     """Fetch comments for a Reddit post via ScrapeCreators.
 
@@ -422,6 +425,9 @@ def fetch_post_comments(
             params={"url": url},
             timeout=30,
             retries=2,
+            deadline_monotonic=deadline_monotonic,
+            cancel=cancel,
+            owned_get=deadline_monotonic is not None,
         )
         return data.get("comments", data.get("data", []))
     except http.HTTPError as e:
@@ -454,9 +460,6 @@ def _dedupe_posts(posts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return unique
 
 
-_TIMEFRAME_ORDER = {"hour": 0, "day": 1, "week": 2, "month": 3, "year": 4, "all": 5}
-
-
 def _days_to_reddit_bucket(days: float) -> str:
     """Map a day count onto the smallest Reddit rolling bucket that covers it.
 
@@ -487,7 +490,7 @@ def _window_to_time_filter(from_date: str, to_date: str) -> str:
        bucket that reaches ``from_date``; span-alone would pick ``week`` and
        the API would omit the entire requested range.
 
-    Take the wider of the two; the caller then mins with the depth default.
+    Take the wider of the two, independently of retrieval depth.
     Phase 5 still trims to ``from_date``/``to_date``. Falls back to ``month``
     if the dates don't parse.
     """
@@ -529,13 +532,7 @@ def search_reddit(
         return {"items": [], "error": "No SCRAPECREATORS_API_KEY configured"}
 
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
-    # Fetch window must track the requested date range, not just the depth
-    # default. Otherwise a --days 1 request fetches a month of relevance-
-    # sorted posts and Phase 5 discards everything outside 24h (0 on quiet
-    # days). Use the tighter of {window-derived, depth default}.
-    _depth_tf = config["timeframe"]
-    _window_tf = _window_to_time_filter(from_date, to_date)
-    timeframe = _window_tf if _TIMEFRAME_ORDER.get(_window_tf, 3) <= _TIMEFRAME_ORDER.get(_depth_tf, 3) else _depth_tf
+    timeframe = _window_to_time_filter(from_date, to_date)
     intent = infer_query_intent(topic)
 
     # === Phase 1: Query Expansion ===
@@ -679,7 +676,7 @@ def enrich_with_comments(
     config = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     max_comments = config["comment_enrichments"]
 
-    if not items or not token or max_comments <= 0:
+    if not items or not token or max_comments <= 0 or budget_seconds <= 0:
         return items
 
     # Select the top threads by total engagement (upvotes + comment count),
@@ -690,11 +687,23 @@ def enrich_with_comments(
     _log(f"Enriching comments for {len(top_items)} posts (by total engagement)")
 
     start = time.monotonic()
+    deadline = start + budget_seconds
+    cancel = threading.Event()
 
-    with ThreadPoolExecutor(max_workers=min(4, len(top_items))) as executor:
+    def fetch(item):
+        if cancel.is_set() or time.monotonic() >= deadline:
+            return None
+        comments = fetch_post_comments(
+            item.get("url", ""), token,
+            deadline_monotonic=deadline, cancel=cancel,
+        )
+        return comments if time.monotonic() < deadline else None
+
+    with ThreadPoolExecutor(max_workers=min(4, len(top_items))) as executor, ExitStack() as cleanup:
+        cleanup.callback(cancel.set)
         futures = {
             http.submit_with_context(
-                executor, fetch_post_comments, item.get("url", ""), token,
+                executor, fetch, item,
             ): item
             for item in top_items
             if item.get("url")
@@ -703,6 +712,8 @@ def enrich_with_comments(
         # Wait with budget instead of unbounded as_completed
         remaining = max(0, budget_seconds - (time.monotonic() - start))
         done, not_done = futures_wait(futures, timeout=remaining)
+        if not_done:
+            cancel.set()
 
         enriched_count = 0
         for future in done:
@@ -794,6 +805,87 @@ def search_and_enrich(
         result["items"] = items
 
     return result
+
+
+# Run-scoped memo for the paid ScrapeCreators Reddit call (R9). All subquery
+# streams share the raw topic, and the thin-source retry repeats it, so without
+# this one run could pay for the same query five times. Concurrent callers for
+# one key wait on the first call; results AND failures are kept until the
+# per-command reset, so a failed backfill is never retried within the run.
+_SC_MEMO: Dict[tuple, tuple] = {}
+_SC_INFLIGHT: Dict[tuple, threading.Event] = {}
+_SC_MEMO_LOCK = threading.Lock()
+
+
+def reset_scrapecreators_memo() -> None:
+    """Forget memoized ScrapeCreators Reddit calls. Called once per command, and by tests."""
+    with _SC_MEMO_LOCK:
+        _SC_MEMO.clear()
+        _SC_INFLIGHT.clear()
+
+
+def _sc_memo_outcome(entry: tuple, replay_failures: bool = True) -> Dict[str, Any]:
+    ok, value, failures = entry
+    if replay_failures:
+        # search_and_enrich swallows ScrapeCreators HTTP errors into the
+        # caller's failure sink; a later caller must see them too, or an
+        # empty cached result reads as a clean no-results.
+        for failure in failures:
+            http._record_failure(failure)
+    if not ok:
+        raise value
+    # Each caller gets its own copy so one stream cannot mutate another's items.
+    return copy.deepcopy(value)
+
+
+def search_and_enrich_memo(
+    topic: str,
+    from_date: str,
+    to_date: str,
+    depth: str = "default",
+    token: str = None,
+    subreddits: List[str] | None = None,
+) -> Dict[str, Any]:
+    """:func:`search_and_enrich`, at most once per key per command.
+
+    Keyed by query, date window, depth, and sorted subreddits.
+    """
+    key = (topic, from_date, to_date, depth, tuple(sorted(subreddits or ())))
+    while True:
+        with _SC_MEMO_LOCK:
+            entry = _SC_MEMO.get(key)
+            if entry is None:
+                gate = _SC_INFLIGHT.get(key)
+                owner = gate is None
+                if owner:
+                    gate = threading.Event()
+                    _SC_INFLIGHT[key] = gate
+        if entry is not None:
+            return _sc_memo_outcome(entry)
+        if owner:
+            break
+        gate.wait()
+        # Loop: read the owner's cached outcome, or re-elect if it was
+        # interrupted before caching one (e.g. KeyboardInterrupt).
+    try:
+        with http.tee_failures() as recorded:
+            try:
+                result = search_and_enrich(
+                    topic, from_date, to_date, depth=depth, token=token,
+                    subreddits=subreddits,
+                )
+                outcome = (True, result)
+            except Exception as exc:
+                outcome = (False, exc)
+        entry = (*outcome, list(recorded))
+        with _SC_MEMO_LOCK:
+            _SC_MEMO[key] = entry
+    finally:
+        with _SC_MEMO_LOCK:
+            _SC_INFLIGHT.pop(key, None)
+        gate.set()
+    # The owner's failures already reached its own sink through tee_failures.
+    return _sc_memo_outcome(entry, replay_failures=False)
 
 
 def parse_reddit_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:

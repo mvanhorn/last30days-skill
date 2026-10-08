@@ -1,10 +1,12 @@
 """HTTP utilities for last30days skill (stdlib only)."""
 
 import json
+from collections import OrderedDict
+import math
 import os
+import random
 import re
 import socket
-import sys
 import threading
 import time
 import urllib.error
@@ -13,10 +15,10 @@ from concurrent.futures import Future
 from contextlib import contextmanager
 from contextvars import ContextVar, copy_context
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Callable, Dict, Optional, Union
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit, quote
 
-from . import health
+from . import bounded_get, health, usage
 from . import log as _log
 
 DEFAULT_TIMEOUT = 30
@@ -30,12 +32,118 @@ def log(msg: str):
 MAX_RETRIES = 5
 MAX_429_RETRIES = 2
 RETRY_DELAY = 2.0
+
+
+# Longest a 429 retry may sleep on any host. Reddit's x-ratelimit-reset can say
+# 540s and GitHub's is an epoch timestamp; neither is worth parking a worker
+# (or the main thread) for. Past this bound the retry is not worth taking, so
+# the caller's own fallback backoff applies and the request fails fast.
+MAX_RETRY_DELAY_SECONDS = 60.0
+# A reset value this large is an absolute epoch timestamp, not delta-seconds.
+_EPOCH_RESET_THRESHOLD = 100_000_000.0
+
+
+def retry_delay_from_headers(headers, fallback):
+    """Seconds to wait after a 429, read from whichever header the host sent.
+
+    ``Retry-After`` is the standard, but Reddit's keyless search endpoints answer an
+    anonymous 429 with ``x-ratelimit-reset`` (seconds until the window rolls) and
+    no ``Retry-After`` at all::
+
+        HTTP/2 429
+        x-ratelimit-used: 1
+        x-ratelimit-remaining: 0.0
+        x-ratelimit-reset: 42
+
+    Reading only ``Retry-After`` means the caller falls back to exponential
+    backoff -- 3s, 5s, 9s -- every one of which is shorter than the ~42s Reddit
+    actually requires. Each retry re-429s, the budget drains, and the source is
+    reported dead when it was merely early. Honouring the reset header turns a
+    guaranteed zero into a result at the cost of one wait.
+
+    Returns ``fallback`` when neither header is present or parseable.
+    """
+    if not headers:
+        return fallback
+    for name in ("Retry-After", "x-ratelimit-reset"):
+        raw = headers.get(name)
+        if raw is None:
+            continue
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if value >= _EPOCH_RESET_THRESHOLD:
+            # GitHub-style absolute reset time.
+            value = value - time.time()
+        if value > 0:
+            return min(value, MAX_RETRY_DELAY_SECONDS)
+    return fallback
+
 # DNS resolution failures (gaierror) are transient — typically resolved by a
 # brief backoff and retry. Use a dedicated minimum attempt count + exponential
 # delays (1s, 2s, 4s) so callers that pass a small `retries` value still get a
 # meaningful chance to recover from a transient resolution failure.
 MIN_DNS_RETRIES = 3
 USER_AGENT = "last30days-skill/3.0 (Assistant Skill)"
+
+# urllib copies almost all headers across 3xx; strip credentials when origin changes (#1062).
+_CROSS_ORIGIN_AUTH_HEADERS = frozenset(
+    {"authorization", "x-api-key", "x-csrf-token", "x-subscription-token"}
+)
+
+
+def _request_origin(url: str) -> tuple[str, str, int]:
+    parts = urlsplit(url)
+    scheme = parts.scheme.lower()
+    host = (parts.hostname or "").lower()
+    if parts.port is not None:
+        port = parts.port
+    elif scheme == "https":
+        port = 443
+    elif scheme == "http":
+        port = 80
+    else:
+        port = 0
+    return scheme, host, port
+
+
+class _StripAuthOnCrossOriginRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        new = super().redirect_request(req, fp, code, msg, headers, newurl)
+        if new is None:
+            return None
+        if _request_origin(req.full_url) != _request_origin(new.full_url):
+            for store in (new.headers, getattr(new, "unredirected_hdrs", None)):
+                if not store:
+                    continue
+                for name in list(store):
+                    if name.lower() in _CROSS_ORIGIN_AUTH_HEADERS:
+                        del store[name]
+        return new
+
+
+_opener = urllib.request.build_opener(_StripAuthOnCrossOriginRedirect)
+_DEFAULT_URLOPEN = urllib.request.urlopen
+
+
+def _open_request(req, timeout):
+    """Honor test patches of urllib.request.urlopen; otherwise use the strip opener."""
+    current = urllib.request.urlopen
+    if current is not _DEFAULT_URLOPEN:
+        return current(req, timeout=timeout)
+    return _opener.open(req, timeout=timeout)
+
+
+def open_request(req, timeout):
+    """Open ``req`` with cross-origin credential stripping (see #1062).
+
+    Public entry point for modules that build their own ``Request`` and would
+    otherwise call ``urllib.request.urlopen`` directly, bypassing the redirect
+    handler installed above.
+    """
+    return _open_request(req, timeout)
+
 
 _failure_sink: ContextVar[Optional[list["HTTPError"]]] = ContextVar(
     "last30days_http_failure_sink",
@@ -48,7 +156,17 @@ _expected_miss_statuses: ContextVar[frozenset[int]] = ContextVar(
 
 _FIXTURE_FORMAT = "last30days-http-fixture/v1"
 _FIXTURE_SECRET_KEYS = frozenset(
-    {"api_key", "apikey", "authorization", "cookie", "key", "secret", "token"}
+    {
+        "api_key", "apikey", "authorization", "cookie", "key", "secret", "token",
+        "password", "passwd", "passphrase", "credential", "bearer", "jwt",
+    }
+)
+# Suffixes are matched on the normalized key, where camelCase collapses without
+# a separator ("accessJwt" -> "accessjwt"), so these are bare rather than
+# underscore-prefixed. "key" is deliberately absent: it would redact "monkey".
+_FIXTURE_SECRET_KEY_SUFFIXES = (
+    "_api_key", "apikey", "_authorization", "_cookie", "_secret", "_token",
+    "password", "passwd", "passphrase", "credential", "jwt",
 )
 _fixture_lock = threading.Lock()
 _fixture_state: Optional[dict[str, Any]] = None
@@ -63,7 +181,7 @@ def _is_secret_key(value: object) -> bool:
     key = re.sub(r"[^a-z0-9]+", "_", str(value).lower()).strip("_")
     return (
         key in _FIXTURE_SECRET_KEYS
-        or key.endswith(("_api_key", "_authorization", "_cookie", "_secret", "_token"))
+        or key.endswith(_FIXTURE_SECRET_KEY_SUFFIXES)
     )
 
 
@@ -96,10 +214,19 @@ def _scrub_fixture_value(
     return value
 
 
+_AUTH_SCHEME_RE = re.compile(r"^(?:bearer|basic|token)\s+(\S+)$", re.IGNORECASE)
+
+
 def _collect_secret_values(value: Any, *, key: str = "") -> set[str]:
     values: set[str] = set()
     if key and _is_secret_key(key) and value not in (None, ""):
-        values.add(str(value))
+        text = str(value)
+        values.add(text)
+        # "Bearer <token>": the bare token is what a response body or an
+        # adapter error message echoes, so redact it on its own too.
+        scheme = _AUTH_SCHEME_RE.match(text.strip())
+        if scheme:
+            values.add(scheme.group(1))
         return values
     if isinstance(value, dict):
         for child_key, child_value in value.items():
@@ -124,7 +251,54 @@ def _fixture_redactions(
         pass
     values.update(_collect_secret_values(headers))
     values.update(_collect_secret_values(json_data))
+    # Session-wide secret values (process env plus resolved config) so a
+    # bearer loaded from .env, Keychain, or pass is scrubbed at the HTTP
+    # seam even when this request carried it only in a header.
+    with _fixture_lock:
+        state = _fixture_state
+        if state is not None and state.get("redactions"):
+            values.update(state["redactions"])
     return frozenset(values)
+
+
+def config_secret_values(config: Dict[str, Any]) -> frozenset[str]:
+    """Secret VALUES from a resolved config, for fixture redaction.
+
+    Every key the Keychain/pass loader knows (``env.KEYCHAIN_KEYS``) plus any
+    secret-named key is a credential regardless of which layer supplied it.
+    """
+    values: set[str] = set()
+    try:
+        from . import env as _env
+        secret_keys = set(_env.KEYCHAIN_KEYS)
+    except Exception:  # pragma: no cover - env is always importable
+        secret_keys = set()
+    for key, value in (config or {}).items():
+        if not isinstance(value, str) or len(value) < 4:
+            continue
+        if "://" in value:
+            # An endpoint (e.g. an API base URL) is an address, not a credential.
+            continue
+        if key in secret_keys or _is_secret_key(key):
+            values.add(value)
+    return frozenset(values)
+
+
+def add_fixture_redactions(values) -> None:
+    """Register secret values with the active recording session, if any.
+
+    ``env.get_config`` calls this with the resolved config's secrets so a
+    bearer loaded from a file or a credential store is redacted at both the
+    HTTP seam and the module seam. A no-op outside a recording session.
+    """
+    extra = {v for v in values if isinstance(v, str) and len(v) >= 4}
+    if not extra:
+        return
+    with _fixture_lock:
+        state = _fixture_state
+        if state is None or state["mode"] != "record":
+            return
+        state["redactions"] = frozenset(state.get("redactions") or frozenset()) | extra
 
 
 def _scrub_fixture_url(url: str) -> str:
@@ -183,7 +357,9 @@ def recording_requests(path: str | Path):
             "source_exchanges": [],
             # Secret VALUES from the environment, so module-seam recordings
             # scrub tokens echoed inside normal string fields (adapter error
-            # messages, parsed item text), not just secret-named keys.
+            # messages, parsed item text), not just secret-named keys. The
+            # resolved config's secrets join via add_fixture_redactions once
+            # env.get_config runs inside the session.
             "redactions": frozenset(
                 value
                 for key, value in os.environ.items()
@@ -205,13 +381,26 @@ def recording_requests(path: str | Path):
                 "exchanges": state["exchanges"],
                 "source_exchanges": state["source_exchanges"],
             }
+            # A recorded exchange is credential-adjacent by construction:
+            # redaction is key-name driven, so an unrecognized key name leaves
+            # a real value on disk. Create the temp file 0600 at open time
+            # rather than chmod-ing after the write, or the credentials sit in
+            # a world-readable file for the length of the write (the parent
+            # directory is caller-supplied and not guaranteed private).
+            # Mirrors last30days.save_output. Unlink first so a stale or
+            # pre-planted temp file cannot be reused with its own wider mode --
+            # O_CREAT does not alter the mode of an existing file.
             temporary = target.with_name(f".{target.name}.tmp")
-            temporary.write_text(
-                json.dumps(payload, indent=2, ensure_ascii=False) + "\n",
-                encoding="utf-8",
+            temporary.unlink(missing_ok=True)
+            fd = os.open(
+                temporary,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                0o600,
             )
-            if os.name != "nt":
-                temporary.chmod(0o644)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(
+                    json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+                )
             temporary.replace(target)
 
 
@@ -300,6 +489,12 @@ def _fixture_record(
         state = _fixture_state
         if state is None or state["mode"] != "record":
             return
+        # Union the session's env-derived secret VALUES in, so a credential
+        # echoed back inside an ordinary response field is scrubbed on this
+        # path too, not only on the source-record path. Response scrubbing does
+        # not feed _fixture_key, so this cannot make a replay key
+        # machine-dependent.
+        redactions = redactions | (state.get("redactions") or frozenset())
         response: dict[str, Any]
         if error is None:
             response = {"value": _scrub_fixture_value(value, redactions=redactions)}
@@ -502,14 +697,28 @@ def classify_failure(*, status_code: Optional[int] = None, message: str = "") ->
         marker in text for marker in ("http 429", "status 429", "rate limit", "too many requests")
     ):
         return health.RATE_LIMITED
-    if status_code in (401, 402, 403) or any(
+    # Credit exhaustion is checked before the auth branch: a 402 (or a body
+    # saying the account has no credits) asks the user to top up, not to
+    # re-authenticate. Markers stay narrow on purpose: the bare word "credits"
+    # is not one ("10,000 free credits" is onboarding copy, not a failure).
+    if status_code == 402 or any(
+        marker in text
+        for marker in (
+            "http 402",
+            "status 402",
+            "payment required",
+            "insufficient credits",
+            "does not have any credits",
+            "out of credits",
+        )
+    ):
+        return health.PAYMENT_REQUIRED
+    if status_code in (401, 403) or any(
         marker in text
         for marker in (
             "http 401",
-            "http 402",
             "http 403",
             "status 401",
-            "status 402",
             "status 403",
             "unauthorized",
             "forbidden",
@@ -566,6 +775,8 @@ def request(
     max_429_retries: int = MAX_429_RETRIES,
     raw: bool = False,
     deadline_monotonic: float | None = None,
+    cancel: threading.Event | None = None,
+    owned_get: bool = False,
 ) -> Union[Dict[str, Any], str]:
     """Make an HTTP request and return JSON response.
 
@@ -582,6 +793,8 @@ def request(
         raw: If True, return raw response text instead of parsed JSON
         deadline_monotonic: Optional absolute monotonic deadline shared by all
             attempts and retry delays.
+        owned_get: Run GET transport in a child that is killed and reaped at
+            its deadline. Requires deadline_monotonic; other methods are refused.
 
     Returns:
         Parsed JSON response as dict, or raw text string if raw=True.
@@ -589,6 +802,10 @@ def request(
     Raises:
         HTTPError: On request failure
     """
+    if owned_get and (method != "GET" or json_data is not None):
+        raise ValueError("owned transport requires a bodyless GET")
+    if owned_get and deadline_monotonic is None:
+        raise ValueError("owned GET requires an operation deadline")
     headers = headers or {}
     headers.setdefault("User-Agent", USER_AGENT)
 
@@ -624,8 +841,11 @@ def request(
 
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
 
+    def log_request(message: str) -> None:
+        log(_scrub_fixture_value(message, redactions=fixture_redactions))
+
     safe_url = re.sub(r'([?&])(key|api_key|token|secret)=[^&]*', r'\1\2=***', url)
-    log(f"{method} {safe_url}")
+    log_request(f"{method} {safe_url}")
 
     last_error = None
     rate_limit_count = 0
@@ -651,43 +871,95 @@ def request(
             if remaining <= 0 or delay >= remaining:
                 last_error = deadline_error()
                 return False
-        time.sleep(delay)
+        if cancel is not None:
+            if cancel.wait(delay):
+                last_error = deadline_error()
+                return False
+        else:
+            time.sleep(delay)
         return True
 
-    def open_and_read(request_timeout: float) -> tuple[int, str]:
-        with urllib.request.urlopen(req, timeout=request_timeout) as response:
-            return response.status, response.read().decode('utf-8')
+    def open_and_read(
+        request_timeout: float,
+    ) -> tuple[int, str | None, urllib.error.HTTPError | None]:
+        try:
+            with _open_request(req, request_timeout) as response:
+                return response.status, response.read().decode('utf-8'), None
+        except urllib.error.HTTPError as error:
+            # Error bodies can stall just like successful bodies. Read both
+            # inside the same deadline-protected worker before classification.
+            body = None
+            try:
+                body = error.read().decode('utf-8')
+            except (OSError, UnicodeDecodeError):
+                pass
+            return error.code, body, error
 
     def open_and_read_before_deadline(
         request_timeout: float,
-    ) -> tuple[int, str]:
+    ) -> tuple[int, str | None, urllib.error.HTTPError | None]:
         """Stop waiting at the wall deadline, even during DNS or body reads."""
-        if deadline_monotonic is None:
+        if owned_get:
+            try:
+                status, body, error = bounded_get.get(
+                    req, timeout=request_timeout,
+                    deadline_monotonic=deadline_monotonic, cancel=cancel,
+                )
+            except bounded_get.GetLaunchError:
+                usage.cancel(charge)
+                raise
+            except bounded_get.GetTimeout as exc:
+                if not exc.started:
+                    usage.cancel(charge)
+                raise deadline_error() from exc
+            try:
+                decoded = body.decode("utf-8") if body is not None else None
+            except UnicodeDecodeError:
+                if error is None:
+                    raise
+                decoded = None
+            return status, decoded, error
+        if deadline_monotonic is None and cancel is None:
             return open_and_read(request_timeout)
-        remaining = deadline_monotonic - time.monotonic()
+        wait_deadline = deadline_monotonic or (time.monotonic() + request_timeout)
+        remaining = wait_deadline - time.monotonic()
         if remaining <= 0:
             raise deadline_error()
         future: Future = Future()
 
         def worker() -> None:
             try:
+                if cancel is not None and cancel.is_set():
+                    raise deadline_error()
                 future.set_result(open_and_read(request_timeout))
             except BaseException as exc:
                 future.set_exception(exc)
 
         threading.Thread(target=worker, daemon=True).start()
-        try:
-            return future.result(timeout=remaining)
-        except TimeoutError as exc:
-            # A worker-side socket TimeoutError is a transport failure, not
-            # proof that the command-wide wall deadline expired. Re-read a
-            # completed future so its original exception reaches the normal
-            # transport classifier below.
-            if future.done():
-                return future.result()
-            raise deadline_error() from exc
+        if cancel is None:
+            try:
+                return future.result(timeout=remaining)
+            except TimeoutError as exc:
+                if future.done():
+                    return future.result()
+                raise deadline_error() from exc
+        while True:
+            if cancel.is_set():
+                raise deadline_error()
+            remaining = wait_deadline - time.monotonic()
+            if remaining <= 0:
+                raise deadline_error()
+            try:
+                return future.result(timeout=min(remaining, 0.1))
+            except TimeoutError:
+                # Preserve worker-side socket failures for transport classification.
+                if future.done():
+                    return future.result()
 
     while attempt < effective_retries:
+        if cancel is not None and cancel.is_set():
+            last_error = deadline_error()
+            break
         request_timeout = timeout
         if deadline_monotonic is not None:
             remaining = deadline_monotonic - time.monotonic()
@@ -696,13 +968,22 @@ def request(
                 break
             request_timeout = min(timeout, remaining)
         try:
-            response_status, body = open_and_read_before_deadline(request_timeout)
+            charge = usage.begin_http(url, method)
+            response_status, body, response_error = open_and_read_before_deadline(request_timeout)
+            if body:
+                try:
+                    usage.finish(charge, json.loads(body))
+                except (ValueError, TypeError):
+                    pass
             if (
                 deadline_monotonic is not None
                 and time.monotonic() >= deadline_monotonic
             ):
                 raise_recorded(deadline_error())
-            log(f"Response: {response_status} ({len(body)} bytes)")
+            if response_error is not None:
+                raise response_error
+            body = body or ""
+            log_request(f"Response: {response_status} ({len(body)} bytes)")
             if raw:
                 _fixture_record(fixture_request, value=body, redactions=fixture_redactions)
                 return body
@@ -712,15 +993,10 @@ def request(
         except DeadlineExceeded as exc:
             raise_recorded(exc)
         except urllib.error.HTTPError as e:
-            body = None
-            try:
-                body = e.read().decode('utf-8')
-            except (OSError, UnicodeDecodeError):
-                pass
-            log(f"HTTP Error {e.code}: {e.reason}")
+            log_request(f"HTTP Error {e.code}: {e.reason}")
             if body:
-                snippet = " ".join(body.split())
-                log(f"Error body: {snippet[:200]}")
+                snippet = _scrub_fixture_value(" ".join(body.split()), redactions=fixture_redactions)
+                log_request(f"Error body: {snippet[:200]}")
             last_error = HTTPError(f"HTTP {e.code}: {e.reason}", e.code, body)
 
             # Don't retry client errors (4xx) except rate limits
@@ -737,16 +1013,13 @@ def request(
             # failures get the widened `effective_retries` budget.
             if attempt < retries - 1:
                 if e.code == 429:
-                    # Respect Retry-After header, fall back to exponential backoff
-                    retry_after = e.headers.get("Retry-After") if hasattr(e, 'headers') else None
-                    if retry_after:
-                        try:
-                            delay = float(retry_after)
-                        except ValueError:
-                            delay = RETRY_DELAY * (2 ** attempt) + 1
-                    else:
-                        delay = RETRY_DELAY * (2 ** attempt) + 1  # 3s, 5s, 9s...
-                    log(f"Rate limited (429). Waiting {delay:.1f}s before retry {attempt + 2}/{retries}")
+                    # Respect Retry-After or x-ratelimit-reset (Reddit sends the
+                    # latter), falling back to exponential backoff: 3s, 5s, 9s...
+                    delay = retry_delay_from_headers(
+                        getattr(e, "headers", None),
+                        RETRY_DELAY * (2 ** attempt) + 1,
+                    )
+                    log_request(f"Rate limited (429). Waiting {delay:.1f}s before retry {attempt + 2}/{retries}")
                 else:
                     delay = RETRY_DELAY * (2 ** attempt)
                 if not sleep_before_retry(delay):
@@ -757,7 +1030,7 @@ def request(
                 # widening is DNS-only — don't grant extra HTTP attempts.
                 break
         except urllib.error.URLError as e:
-            log(f"URL Error: {e.reason}")
+            log_request(f"URL Error: {e.reason}")
             reason = getattr(e, "reason", None)
             # urllib commonly wraps socket.timeout (an alias of TimeoutError
             # since 3.10) in URLError; classify those as timeouts, not
@@ -775,14 +1048,14 @@ def request(
                 # causes don't bypass the regular retry budget.
                 dns_attempts += 1
                 if effective_retries < MIN_DNS_RETRIES:
-                    log(
+                    log_request(
                         f"DNS resolution failed; expanding retry budget from "
                         f"{effective_retries} to {MIN_DNS_RETRIES}"
                     )
                     effective_retries = MIN_DNS_RETRIES
                 if attempt < effective_retries - 1:
                     delay = 2 ** (dns_attempts - 1)  # 1s, 2s, 4s, 8s, ...
-                    log(
+                    log_request(
                         f"DNS resolution failure (attempt {dns_attempts}); "
                         f"retrying in {delay:.1f}s"
                     )
@@ -799,7 +1072,7 @@ def request(
                 # to non-DNS error paths.
                 break
         except json.JSONDecodeError as e:
-            log(f"JSON decode error: {e}")
+            log_request(f"JSON decode error: {e}")
             last_error = HTTPError(
                 f"Invalid JSON response: {e}",
                 outcome_state=health.SCHEMA_DRIFT,
@@ -807,7 +1080,7 @@ def request(
             raise_recorded(last_error)
         except (OSError, TimeoutError, ConnectionResetError) as e:
             # Handle socket-level errors (connection reset, timeout, etc.)
-            log(f"Connection error: {type(e).__name__}: {e}")
+            log_request(f"Connection error: {type(e).__name__}: {e}")
             state = health.TIMEOUT if isinstance(e, TimeoutError) else health.UNREACHABLE
             last_error = HTTPError(
                 f"Connection error: {type(e).__name__}: {e}",
@@ -860,7 +1133,7 @@ def get_text(
 ) -> Optional[str]:
     """Fetch a URL and return decoded text, or None on any failure.
 
-    Keyless helper for Reddit RSS and shreddit HTML endpoints — the free path
+    Keyless helper for Reddit site search and shreddit HTML endpoints, the free path
     that replaced the now-403 ``.json`` endpoints. Sends a browser User-Agent
     and never raises: returns None on HTTP error, network failure, or timeout
     so tiered callers can fall through to the next source.
@@ -869,7 +1142,7 @@ def get_text(
         url: Request URL
         timeout: HTTP timeout per attempt in seconds
         retries: Number of retries on failure (kept low — these tiers fail fast)
-        accept: Accept header value (e.g. "application/atom+xml", "text/html")
+        accept: Accept header value (e.g. "text/html")
         headers: Optional extra headers merged over the defaults
 
     Returns:
@@ -913,28 +1186,162 @@ class RateLimiter:
         self._tokens = float(self.capacity)
         self._last = time.monotonic()
         self._lock = threading.Lock()
+        # Threads currently blocked in acquire(). Callers that wait on a batch
+        # of throttled futures size their timeouts from this queue depth.
+        self._waiting = 0
+
+    @property
+    def waiting(self) -> int:
+        """Threads currently blocked in :meth:`acquire`."""
+        with self._lock:
+            return self._waiting
 
     def acquire(self) -> None:
         """Consume one token, blocking only when the bucket is empty."""
-        while True:
-            with self._lock:
-                now = time.monotonic()
-                # Clamp elapsed to >= 0: a backward clock reading must never
-                # drive tokens negative (which would spin this loop forever).
-                elapsed = max(0.0, now - self._last)
-                self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
-                self._last = now
-                if self._tokens >= 1.0:
-                    self._tokens -= 1.0
-                    return
-                wait = (1.0 - self._tokens) / self.rate
-            time.sleep(wait)
+        queued = False
+        try:
+            while True:
+                with self._lock:
+                    now = time.monotonic()
+                    # Clamp elapsed to >= 0: a backward clock reading must never
+                    # drive tokens negative (which would spin this loop forever).
+                    elapsed = max(0.0, now - self._last)
+                    self._tokens = min(self.capacity, self._tokens + elapsed * self.rate)
+                    self._last = now
+                    if self._tokens >= 1.0:
+                        self._tokens -= 1.0
+                        return
+                    if not queued:
+                        self._waiting += 1
+                        queued = True
+                    wait = (1.0 - self._tokens) / self.rate
+                time.sleep(wait)
+        finally:
+            if queued:
+                with self._lock:
+                    self._waiting -= 1
 
 
-# Shared across all keyless Reddit tiers (RSS, listing, shreddit) so their
+# Shared across all keyless Reddit tiers (site search, listing, shreddit) so their
 # combined fan-out is throttled as one family. Burst lets the parallel
 # enrichment workers proceed; sustained rate caps the stampede.
-REDDIT_KEYLESS_LIMITER = RateLimiter(rate_per_sec=5.0, burst=5)
+# 1 req/sec is slow enough that home IPs survive search + listing + shreddit
+# fan-out; raise LAST30DAYS_REDDIT_KEYLESS_RATE to trade 429s for wall-clock.
+REDDIT_KEYLESS_RATE_ENV = "LAST30DAYS_REDDIT_KEYLESS_RATE"
+DEFAULT_REDDIT_KEYLESS_RATE = 1.0
+DEFAULT_REDDIT_KEYLESS_BURST = 2
+_REDDIT_429_RETRY_SLEEP_SEC = 1.0
+_REDDIT_429_RETRY_JITTER_SEC = 0.5
+
+
+def parse_reddit_keyless_rate(raw: Optional[str]) -> float:
+    """Parse LAST30DAYS_REDDIT_KEYLESS_RATE; invalid/non-positive -> default."""
+    text = (raw or "").strip()
+    if not text:
+        return DEFAULT_REDDIT_KEYLESS_RATE
+    try:
+        rate = float(text)
+    except (TypeError, ValueError):
+        return DEFAULT_REDDIT_KEYLESS_RATE
+    if not math.isfinite(rate) or rate <= 0:
+        return DEFAULT_REDDIT_KEYLESS_RATE
+    return rate
+
+
+def make_reddit_keyless_limiter(
+    environ: Optional[Dict[str, str]] = None,
+) -> RateLimiter:
+    envmap = os.environ if environ is None else environ
+    return RateLimiter(
+        rate_per_sec=parse_reddit_keyless_rate(envmap.get(REDDIT_KEYLESS_RATE_ENV)),
+        burst=DEFAULT_REDDIT_KEYLESS_BURST,
+    )
+
+
+REDDIT_KEYLESS_LIMITER = make_reddit_keyless_limiter()
+
+
+def _sync_reddit_keyless_rate() -> None:
+    """Apply a process-env override without resetting in-flight tokens."""
+    rate = parse_reddit_keyless_rate(os.environ.get(REDDIT_KEYLESS_RATE_ENV))
+    if REDDIT_KEYLESS_LIMITER.rate != rate:
+        REDDIT_KEYLESS_LIMITER.rate = rate
+
+
+def _failures_are_429(failures: list[HTTPError]) -> bool:
+    if not failures:
+        return False
+    last = failures[-1]
+    return last.status_code == 429 or last.outcome_state == health.RATE_LIMITED
+
+
+def _sleep_reddit_429_retry() -> None:
+    """Short jittered pause before the single in-lane 429 retry."""
+    time.sleep(
+        _REDDIT_429_RETRY_SLEEP_SEC
+        + random.uniform(0.0, _REDDIT_429_RETRY_JITTER_SEC)
+    )
+
+
+# Run-scoped memo for keyless Reddit GETs. Subreddit listing partials, site
+# search pages, arctic supplements, and shreddit comment pages depend only on
+# the subreddit, sort, or raw topic, and the Reddit lane is dispatched with the
+# raw topic for every subquery, so a four-subquery run requested each of them
+# four times.
+# Memoizing successful bodies for the life of one command turns ~184 requests
+# into ~50 on the measured 2026-08-31 run shape. Concurrent requesters for the
+# same URL wait on the first fetch instead of issuing their own (all four
+# subquery streams start at once, so a result-only cache would miss).
+REDDIT_KEYLESS_MEMO_MAX = 512
+_REDDIT_KEYLESS_MEMO: "OrderedDict[str, str]" = OrderedDict()
+_REDDIT_KEYLESS_INFLIGHT: Dict[str, threading.Event] = {}
+_REDDIT_KEYLESS_MEMO_LOCK = threading.Lock()
+
+
+# Queue depth only counts threads already blocked in acquire(). The other
+# lanes' workers submit their requests as they go, so a batch's last fetch can
+# start well after the depth seen at wait time. This flat allowance covers
+# that (the 2026-08-31 smoke lost three feeds at ~35s with the depth term
+# alone; a full run's ~50 distinct keyless requests take ~50s at 1 req/s).
+REDDIT_KEYLESS_CONTENTION_SECONDS = 45.0
+
+
+def reddit_keyless_wait_allowance(batch_size: int) -> float:
+    """Seconds a batch of *batch_size* throttled fetches may spend waiting for tokens.
+
+    Every keyless Reddit lane in a run shares one bucket, so a lane's futures
+    can sit behind other lanes' requests before their own fetch starts. Size
+    per-future result timeouts as ``base + this`` instead of a fixed number;
+    at 1 req/s a fixed 20-second timeout expired on real runs while the fetch
+    was still queued (issue #985 follow-up).
+    """
+    _sync_reddit_keyless_rate()
+    limiter = REDDIT_KEYLESS_LIMITER
+    rate = limiter.rate if limiter.rate > 0 else 1.0
+    return (limiter.waiting + max(0, batch_size)) / rate + REDDIT_KEYLESS_CONTENTION_SECONDS
+
+
+def reset_reddit_keyless_memo() -> None:
+    """Forget memoized keyless Reddit bodies. Called once per command, and by tests."""
+    with _REDDIT_KEYLESS_MEMO_LOCK:
+        _REDDIT_KEYLESS_MEMO.clear()
+        _REDDIT_KEYLESS_INFLIGHT.clear()
+
+
+def _reddit_memo_get(url: str) -> Optional[str]:
+    with _REDDIT_KEYLESS_MEMO_LOCK:
+        text = _REDDIT_KEYLESS_MEMO.get(url)
+        if text is not None:
+            _REDDIT_KEYLESS_MEMO.move_to_end(url)
+        return text
+
+
+def _reddit_memo_put(url: str, text: str) -> None:
+    with _REDDIT_KEYLESS_MEMO_LOCK:
+        _REDDIT_KEYLESS_MEMO[url] = text
+        _REDDIT_KEYLESS_MEMO.move_to_end(url)
+        while len(_REDDIT_KEYLESS_MEMO) > REDDIT_KEYLESS_MEMO_MAX:
+            _REDDIT_KEYLESS_MEMO.popitem(last=False)
 
 
 def reddit_keyless_get_text(
@@ -943,15 +1350,117 @@ def reddit_keyless_get_text(
     retries: int = 2,
     accept: str = "*/*",
     headers: Optional[Dict[str, str]] = None,
+    validate: Optional[Callable[[str], Optional[str]]] = None,
 ) -> Optional[str]:
-    """get_text for the keyless Reddit tiers, throttled by a shared limiter.
+    """get_text for the keyless Reddit tiers, memoized per run and throttled.
 
-    Same contract as :func:`get_text` (returns None on any failure) but spaces
-    requests via :data:`REDDIT_KEYLESS_LIMITER` so a broad multi-query run does
-    not stampede Reddit's keyless endpoints and trip blocks.
+    Same contract as :func:`get_text` (returns None on any failure) but a URL
+    already fetched this command is served from the run memo without spending
+    a limiter token, concurrent requesters for one URL share the in-flight
+    fetch, and cold fetches are spaced via :data:`REDDIT_KEYLESS_LIMITER` so a
+    broad multi-query run does not stampede Reddit's keyless endpoints.
+
+    ``validate`` lets a caller reject a fetched body before it is memoized. It
+    returns None for a body the caller recognizes, or a short reason string.
+    A rejected body is recorded into the failure sink as schema drift and the
+    call returns None, so an HTTP 200 challenge page is neither reported as a
+    clean empty result nor served from the memo to later streams.
     """
-    REDDIT_KEYLESS_LIMITER.acquire()
-    return get_text(url, timeout=timeout, retries=retries, accept=accept, headers=headers)
+    cached = _reddit_memo_get(url)
+    if cached is not None:
+        return cached
+    # Elect one owner per URL. A waiter whose owner failed re-enters the
+    # election rather than fetching un-gated, so a failed fetch costs one
+    # retry for the whole group, not one per waiter.
+    for _round in range(3):
+        with _REDDIT_KEYLESS_MEMO_LOCK:
+            cached = _REDDIT_KEYLESS_MEMO.get(url)
+            if cached is not None:
+                return cached
+            gate = _REDDIT_KEYLESS_INFLIGHT.get(url)
+            owner = gate is None
+            if owner:
+                gate = threading.Event()
+                _REDDIT_KEYLESS_INFLIGHT[url] = gate
+        if owner:
+            break
+        # The owner may itself be queued in the shared bucket; wait for that
+        # queue, not just for one socket timeout.
+        gate.wait(
+            timeout=timeout * max(1, retries) + reddit_keyless_wait_allowance(1)
+        )
+        cached = _reddit_memo_get(url)
+        if cached is not None:
+            return cached
+    else:
+        # Three failed owners in a row: give up quietly rather than pile on.
+        return None
+    try:
+        _sync_reddit_keyless_rate()
+        REDDIT_KEYLESS_LIMITER.acquire()
+        text = get_text(url, timeout=timeout, retries=retries, accept=accept, headers=headers)
+        if text is not None and validate is not None:
+            problem = validate(text)
+            if problem:
+                _record_failure(HTTPError(
+                    f"Unrecognized response ({problem}): {url}",
+                    outcome_state=health.SCHEMA_DRIFT,
+                ))
+                return None
+        if text is not None:
+            _reddit_memo_put(url, text)
+        return text
+    finally:
+        with _REDDIT_KEYLESS_MEMO_LOCK:
+            _REDDIT_KEYLESS_INFLIGHT.pop(url, None)
+        gate.set()
+
+
+def reddit_keyless_get_text_retry_429(
+    url: str,
+    timeout: int = DEFAULT_TIMEOUT,
+    accept: str = "*/*",
+    headers: Optional[Dict[str, str]] = None,
+    validate: Optional[Callable[[str], Optional[str]]] = None,
+) -> tuple[Optional[str], Optional[str]]:
+    """Limiter-throttled GET with one extra limiter-respecting retry on 429.
+
+    Returns ``(body, error)``. The first attempt is captured locally so a
+    recovered 429 is not left in the pipeline sink. A second 429, or any
+    non-429 miss, is recorded as before. Internal ``get_text`` retries are
+    skipped (``retries=1``) so the in-lane retry is the one that re-acquires
+    the bucket. ``validate`` is passed through to
+    :func:`reddit_keyless_get_text`; a rejected body is a non-429 miss.
+    """
+    # retries=1 on purpose: letting request() sleep out a 42-60s
+    # x-ratelimit-reset inside a lane worker starves the whole batch (the
+    # 2026-08-31 smoke lost 14 feeds to future timeouts with retries=2 versus
+    # 6 with 1). A keyless 429 fails fast, the lane retries once after a short
+    # jittered pause through the bucket, and the memo keeps the other streams
+    # from re-requesting the same URL.
+    kwargs: Dict[str, Any] = {
+        "timeout": timeout,
+        "retries": 1,
+        "accept": accept,
+        "headers": headers,
+        "validate": validate,
+    }
+    with capture_failures() as first:
+        text = reddit_keyless_get_text(url, **kwargs)
+    if text is not None:
+        return text, None
+    if _failures_are_429(first):
+        _sleep_reddit_429_retry()
+        with tee_failures() as second:
+            text = reddit_keyless_get_text(url, **kwargs)
+        if text is not None:
+            return text, None
+        err = second[-1] if second else (first[-1] if first else None)
+        return None, str(err) if err is not None else "no response"
+    for err in first:
+        _record_failure(err)
+    err = first[-1] if first else None
+    return None, str(err) if err is not None else "no response"
 
 
 def scrapecreators_headers(token: str) -> Dict[str, str]:

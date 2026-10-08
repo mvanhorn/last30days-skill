@@ -155,7 +155,10 @@ def _bullet_count(output: str, heading: str) -> int:
             "creator",
             ["Best Takes", "Top Community Comments", "Stats", "Ranked Evidence Clusters", "Source Coverage"],
             6,
-            6,
+            # The register's own top_comments budget. It used to read 6 only
+            # because the comments pool was limited to the 6 visible clusters;
+            # the pool now spans every floor-clearing cluster.
+            8,
         ),
     ],
 )
@@ -203,9 +206,11 @@ def test_default_register_is_byte_identical_when_omitted(monkeypatch):
 
     assert implicit == explicit
     assert hashlib.sha256(implicit.encode()).hexdigest() == (
-        # Hash includes #886's linked evidence URLs and #890's Hacker News
-        # comment-rendering changes from main.
-        "351089b5c0eae7ef55bcfd35cc23a6eca1008a7f3d8c28e3266fe351a788c985"
+        # Hash includes #886's linked evidence URLs, #890's Hacker News
+        # comment-rendering changes, the quiet footer (no outcome text, no
+        # ## Source Errors in compact), and the comments pool reading every
+        # floor-clearing cluster.
+        "81fdfc85643d124f2c06ff0bac8956c30280c652436bc4a58dbfc37718be71e1"
     )
 
 
@@ -264,7 +269,7 @@ def test_registers_do_not_shape_comparison_output():
 @pytest.mark.parametrize(
     "topic",
     [
-        "alpha/beta",
+        "React/Vue",
         "alpha compared to beta",
         "difference between alpha and beta",
     ],
@@ -275,6 +280,17 @@ def test_registers_use_canonical_comparison_detection(topic):
     assert cli._audience_register_for_run(
         args, {"LAST30DAYS_REGISTER": "board"}, None
     ).name == "default"
+
+
+@pytest.mark.parametrize("topic", ["CI/CD", "alpha/beta", "https://example.com"])
+def test_slash_topics_keep_single_topic_register_selection(topic):
+    args = cli.build_parser().parse_args([topic])
+
+    assert cli._audience_register_for_run(
+        args, {"LAST30DAYS_REGISTER": "creator"}, None
+    ).name == "creator"
+    with pytest.raises(ValueError, match="unknown audience register 'board'"):
+        cli._audience_register_for_run(args, {"LAST30DAYS_REGISTER": "board"}, None)
 
 
 def test_registered_html_excludes_source_failure_diagnostics():

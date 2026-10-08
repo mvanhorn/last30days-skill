@@ -39,7 +39,7 @@ class ProviderRuntime:
     reasoning_provider: Literal["gemini", "openai", "xai", "local"]
     planner_model: str
     rerank_model: str
-    x_search_backend: Literal["xai", "grok", "bird", "xurl", "xquik"] | None = None
+    x_search_backend: Literal["xai", "grok", "bird", "xurl", "xquik", "xapi"] | None = None
 
 
 @dataclass(frozen=True)
@@ -149,6 +149,7 @@ RunOutcomeState = Literal[
     "partial",
     "rate-limited",
     "auth-failed",
+    "payment-required",
     "unreachable",
     "timeout",
     "schema-drift",
@@ -167,6 +168,7 @@ NO_RESULTS = health.NO_RESULTS
 PARTIAL = health.PARTIAL
 RATE_LIMITED = health.RATE_LIMITED
 AUTH_FAILED = health.AUTH_FAILED
+PAYMENT_REQUIRED = health.PAYMENT_REQUIRED
 UNREACHABLE = health.UNREACHABLE
 SCHEMA_DRIFT = health.SCHEMA_DRIFT
 SKIPPED_UNCONFIGURED = health.SKIPPED_UNCONFIGURED
@@ -192,6 +194,10 @@ class SourceOutcome:
     attempted: bool = True
     detail: str | None = None
     at: str = field(default_factory=_utc_now)
+    # Most specific state among sub-request failures the adapter swallowed
+    # while still delivering items. Stays informational while items exist;
+    # becomes the outcome state if post-retrieval filtering empties the source.
+    lane_failure_state: RunOutcomeState | None = None
     fix_hint: str | None = None
 
     def __post_init__(self) -> None:
@@ -203,6 +209,7 @@ class SourceOutcome:
             PARTIAL,
             RATE_LIMITED,
             AUTH_FAILED,
+            PAYMENT_REQUIRED,
             UNREACHABLE,
             SCHEMA_DRIFT,
             SKIPPED_UNCONFIGURED,
@@ -341,6 +348,12 @@ class RetrievalBundle:
     errors_by_source: dict[str, str] = field(default_factory=dict)
     source_status: dict[str, SourceOutcome] = field(default_factory=dict)
     artifacts: dict[str, Any] = field(default_factory=dict)
+    # Swallowed sub-request failures on a source that still delivered items.
+    # These never change the outcome state (the source succeeded); they ride
+    # along as ``SourceOutcome.detail`` so ``doctor --postmortem`` can show
+    # what a healthy-looking run lost without branding the source partial.
+    detail_by_source: dict[str, str] = field(default_factory=dict)
+    lane_state_by_source: dict[str, RunOutcomeState] = field(default_factory=dict)
 
     def mark_attempted(self, source: str) -> None:
         """Register a planned source before its first retrieval starts."""
@@ -379,6 +392,32 @@ class RetrievalBundle:
             fix_hint="doctor",
         )
 
+    def record_detail(
+        self,
+        source: str,
+        detail: str,
+        state: RunOutcomeState | None = None,
+    ) -> None:
+        """Note a swallowed lane failure on a source that still delivered items.
+
+        Unlike :meth:`record_failure`, this never changes the outcome state and
+        sets no ``fix_hint``. The note is merged into the ``ok`` outcome on the
+        next :meth:`add_items` and survives later clean subqueries.
+        """
+        detail = " ".join((detail or "").split())
+        if not detail:
+            return
+        existing = self.detail_by_source.get(source)
+        if existing and detail not in existing:
+            detail = f"{existing}; {detail}"
+        self.detail_by_source[source] = detail
+        if state:
+            self.lane_state_by_source[source] = state
+        current = self.source_status.get(source)
+        if current and current.state in (health.OK, NO_RESULTS):
+            current.detail = detail
+            current.lane_failure_state = self.lane_state_by_source.get(source)
+
     def add_items(self, label: str, source: str, items: list[SourceItem]) -> None:
         """Atomically append items to both items_by_source_and_query and items_by_source."""
         self.items_by_source_and_query.setdefault((label, source), []).extend(items)
@@ -387,6 +426,18 @@ class RetrievalBundle:
         state: RunOutcomeState = health.OK if items else NO_RESULTS
         detail = None
         fix_hint = None
+        if previous and previous.state == health.OK and not items:
+            # A later empty subquery must not downgrade a source that already
+            # delivered items to no-results.
+            state = health.OK
+        lane_state = None
+        if state in (health.OK, NO_RESULTS):
+            detail = self.detail_by_source.get(source)
+            lane_state = self.lane_state_by_source.get(source)
+            if state == NO_RESULTS and lane_state and not self.items_by_source[source]:
+                # Nothing delivered and sub-requests failed: that is the
+                # failure, not a clean empty result.
+                state = lane_state
         if previous and previous.state not in (health.OK, NO_RESULTS):
             # Preserve AUTH_FAILED state even when items are added: it's an
             # actionable signal (re-login needed) that shouldn't be downgraded
@@ -404,6 +455,7 @@ class RetrievalBundle:
             attempted=True,
             detail=detail,
             fix_hint=fix_hint,
+            lane_failure_state=lane_state,
         )
 
 
@@ -518,6 +570,7 @@ def _source_status_from_dict(payload: dict[str, Any]) -> dict[str, "SourceOutcom
             items_returned=int(outcome.get("items_returned") or 0),
             attempted=bool(outcome.get("attempted", True)),
             detail=outcome.get("detail"),
+            lane_failure_state=outcome.get("lane_failure_state"),
             at=outcome.get("at") or _utc_now(),
             fix_hint=outcome.get("fix_hint"),
         )
@@ -639,7 +692,7 @@ def candidate_primary_item(candidate: Candidate) -> SourceItem | None:
     return candidate.source_items[0]
 
 
-AGENT_EXPORT_SCHEMA_VERSION = "1.2"
+AGENT_EXPORT_SCHEMA_VERSION = "1.3"
 
 
 def without_sources(report: Report, excluded_sources: set[str]) -> Report:

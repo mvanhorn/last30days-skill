@@ -41,7 +41,7 @@ When `LAST30DAYS_API_KEY` and `LAST30DAYS_API_BASE` route a run through a config
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `schema_version` | string | Agent export contract version. The current version is `1.2`. |
+| `schema_version` | string | Agent export contract version. The current version is `1.3`. |
 | `query` | string | The research topic supplied to the engine. |
 | `generated_at` | string | UTC generation timestamp in RFC 3339 format. |
 | `window_days` | integer | Number of days between the report's start and end dates. |
@@ -67,6 +67,7 @@ Each value distinguishes a clean empty result from incomplete coverage:
 | `partial` | The source returned some items before a later failure. |
 | `rate-limited` | Retrieval was stopped by a provider rate limit. |
 | `auth-failed` | Credentials were missing, rejected, or expired during retrieval. |
+| `payment-required` | The provider rejected the request because the account's credits are exhausted (HTTP 402 or an explicit credit-exhaustion message). Fix is to top up, not to re-authenticate. Added in `1.3`. |
 | `unreachable` | The source or network endpoint could not be reached. |
 | `timeout` | Retrieval exceeded its time limit. |
 | `schema-drift` | The provider response no longer matched the expected shape. |
@@ -108,12 +109,12 @@ Comparison queries use an envelope so each entity keeps its own contract:
 
 ```json
 {
-  "schema_version": "1.2",
+  "schema_version": "1.3",
   "comparison": true,
   "entities": ["OpenAI", "Anthropic"],
   "reports": [
-    {"entity": "OpenAI", "report": {"schema_version": "1.2", "query": "OpenAI"}},
-    {"entity": "Anthropic", "report": {"schema_version": "1.2", "query": "Anthropic"}}
+    {"entity": "OpenAI", "report": {"schema_version": "1.3", "query": "OpenAI"}},
+    {"entity": "Anthropic", "report": {"schema_version": "1.3", "query": "Anthropic"}}
   ]
 }
 ```
@@ -126,6 +127,7 @@ The abbreviated reports above only illustrate the envelope; real reports contain
 - Any breaking field removal, rename, type change, semantic change, or envelope change requires a major-version bump.
 - Backward-compatible field additions may use a minor-version bump. Consumers should ignore fields they do not recognize.
 - The checked-in golden snapshot test locks the complete current shape. Contract changes must update the version and snapshot deliberately.
+- `1.3` added the `payment-required` value to `source_status` for credit exhaustion (HTTP 402). Backward-compatible minor bump: consumers that switch on state names should treat it like `auth-failed` (a failure state, not evidence of silence) until they add a branch for it. Messages that previously classified as `auth-failed` or `error` because of a 402 or an "insufficient credits" body now carry this state on every source.
 - `1.2` added `candidate_id` to each `results` entry so verdicts can be joined to the result they annotate.
 - Discovery `1.1` added `podcast_angle`, `x_article_angle`, `previously_surfaced_count`, `last_surfaced`, and `covered` to each discovery `results` entry — a backward-compatible minor bump; the fields carry their defaults (`null`/`null`/`0`/`null`/`false`) until an angle generator or the topic queue populates them.
 - `--json-profile=raw` is outside this compatibility policy because it mirrors internal pipeline dataclasses.

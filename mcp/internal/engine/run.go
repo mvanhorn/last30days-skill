@@ -27,20 +27,34 @@ const MinPythonVersion = "3.12"
 // have a direct route from the failure to a fix.
 const PythonInstallURL = "https://www.python.org/downloads/"
 
-// DefaultTimeout caps a single research subprocess. The engine's deep mode
-// can run several minutes; five minutes is a safe upper bound that still
-// fails fast when something hangs.
-const DefaultTimeout = 5 * time.Minute
+// DefaultTimeout caps a single research subprocess. The engine's deep-tier
+// resume enrichment alone budgets 450s, so ten minutes is the floor that lets
+// a full run finish; the per-stream and X-chain deadlines inside the pipeline
+// still fail fast when something hangs.
+const DefaultTimeout = 10 * time.Minute
 
 // TimeoutEnvOverride lets operators override DefaultTimeout per install
 // (seconds, integer). Honored by Run when RunOptions.Timeout is zero.
 const TimeoutEnvOverride = "LAST30DAYS_MCP_TIMEOUT"
 
+// termGracePeriod bounds the SIGTERM phase of the deadline path: the
+// python SIGTERM handler needs a moment to killpg() the setsid'd
+// descendant groups before the SIGKILL backstop fires.
+const termGracePeriod = 2 * time.Second
+
+// pipeGracePeriod bounds output draining after the engine exits even if
+// an unregistered detached descendant still holds its output pipes.
+const pipeGracePeriod = time.Second
+
+// PythonEnvOverride lets operators select the Python 3.12+ executable used
+// by the MCP server. When unset, Run preserves the python3 PATH lookup.
+const PythonEnvOverride = "LAST30DAYS_PYTHON"
+
 // RunOptions configures one invocation of the embedded Python engine.
 // PythonPath is exposed so tests can substitute a stub interpreter without
 // manipulating the process PATH.
 type RunOptions struct {
-	PythonPath string        // resolved python3 binary; empty means look up DefaultPythonBinary on PATH
+	PythonPath string        // resolved test/caller override; empty honors PythonEnvOverride, then DefaultPythonBinary
 	CacheDir   string        // engine.Ensure result; lib/ here is added to PYTHONPATH
 	Args       []string      // arguments after last30days.py (topic, --emit=..., etc.)
 	ExtraEnv   []string      // appended to os.Environ() for the child process
@@ -84,19 +98,71 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 	defer cancel()
 
 	args := append([]string{scriptPath}, opts.Args...)
-	cmd := exec.CommandContext(subCtx, pythonPath, args...)
+	cmd := exec.Command(pythonPath, args...)
 	cmd.Env = buildEnv(opts.CacheDir, opts.ExtraEnv)
+	cmd.WaitDelay = pipeGracePeriod
+	// Own process group so a timeout SIGTERM reaches same-group
+	// grandchildren (grok CLI). exec.CommandContext would SIGKILL only the
+	// direct python child while its SIGTERM-handler/atexit cleanup never
+	// runs on SIGKILL, orphaning the setsid'd descendant groups.
+	// Mirrors lib/subproc.py.
+	setProcessGroup(cmd)
 
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	err = cmd.Run()
+	if err := subCtx.Err(); err != nil {
+		return &RunResult{
+			ExitCode: -1,
+			TimedOut: errors.Is(err, context.DeadlineExceeded),
+		}, fmt.Errorf("engine: subprocess not started: %w", err)
+	}
+	if err := cmd.Start(); err != nil {
+		res := &RunResult{
+			Stdout:   stdout.Bytes(),
+			Stderr:   stderr.Bytes(),
+			ExitCode: 0,
+			TimedOut: errors.Is(subCtx.Err(), context.DeadlineExceeded),
+		}
+		return res, fmt.Errorf("engine: subprocess failed to start: %w", err)
+	}
+	waitCh := make(chan error, 1)
+	go func() { waitCh <- cmd.Wait() }()
+
+	select {
+	case <-subCtx.Done():
+		// Deadline or parent cancel: SIGTERM the group first so the
+		// python SIGTERM handler killpg()s the setsid'd descendant
+		// groups (node, yt-dlp, digg) that kill(-pid) cannot reach,
+		// then SIGKILL stragglers that ignore TERM. Then reap.
+		termProcessGroup(cmd)
+		select {
+		case err = <-waitCh:
+			killProcessGroup(cmd)
+		case <-time.After(termGracePeriod):
+			killProcessGroup(cmd)
+			err = <-waitCh
+		}
+	case werr := <-waitCh:
+		err = werr
+	}
+
+	ctxErr := subCtx.Err()
 	res := &RunResult{
 		Stdout:   stdout.Bytes(),
 		Stderr:   stderr.Bytes(),
 		ExitCode: 0,
-		TimedOut: errors.Is(subCtx.Err(), context.DeadlineExceeded),
+		TimedOut: errors.Is(ctxErr, context.DeadlineExceeded),
+	}
+	if cmd.ProcessState != nil {
+		res.ExitCode = cmd.ProcessState.ExitCode()
+	}
+	if res.TimedOut {
+		return res, fmt.Errorf("engine: subprocess exceeded %s timeout: %w", timeout, ctxErr)
+	}
+	if ctxErr != nil {
+		return res, fmt.Errorf("engine: subprocess canceled: %w", ctxErr)
 	}
 	if err == nil {
 		return res, nil
@@ -104,24 +170,39 @@ func Run(ctx context.Context, opts RunOptions) (*RunResult, error) {
 
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) {
-		res.ExitCode = exitErr.ExitCode()
-		if res.TimedOut {
-			return res, fmt.Errorf("engine: subprocess exceeded %s timeout", timeout)
-		}
 		return res, fmt.Errorf("engine: subprocess exited with code %d", res.ExitCode)
 	}
-	return res, fmt.Errorf("engine: subprocess failed to start: %w", err)
+	return res, fmt.Errorf("engine: subprocess failed: %w", err)
 }
 
-// resolvePython returns an absolute path to the interpreter or an error
-// naming the install URL. If the caller supplied a path we trust it - tests
-// rely on this to inject a stub. Otherwise we look up python3 on PATH.
+// resolvePython returns a resolved interpreter path or a clear error. A
+// caller-supplied path remains the highest-priority test seam. Otherwise an
+// explicitly configured LAST30DAYS_PYTHON must resolve successfully; only
+// an absent override falls back to the existing python3 PATH lookup.
 func resolvePython(override string) (string, error) {
 	if override != "" {
 		return override, nil
 	}
+	if configured, ok := os.LookupEnv(PythonEnvOverride); ok {
+		if configured == "" {
+			return "", fmt.Errorf(
+				"engine: %s is set but empty; set it to a Python %s+ executable or unset it to use %s on PATH",
+				PythonEnvOverride, MinPythonVersion, DefaultPythonBinary,
+			)
+		}
+		path, err := exec.LookPath(configured)
+		if err != nil {
+			return "", fmt.Errorf(
+				"engine: %s=%q does not resolve to an executable (need Python %s+, install from %s): %w",
+				PythonEnvOverride, configured, MinPythonVersion, PythonInstallURL, err,
+			)
+		}
+		return path, nil
+	}
 	path, err := exec.LookPath(DefaultPythonBinary)
-	if err == nil {
+	// Go normally rejects relative results with ErrDot. Keep this invariant
+	// even when that protection is disabled with GODEBUG=execerrdot=0.
+	if err == nil && filepath.IsAbs(path) {
 		return path, nil
 	}
 	return "", fmt.Errorf(

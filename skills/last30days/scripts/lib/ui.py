@@ -131,6 +131,7 @@ SOURCE_COMPLETION_ORDER = [
     "techmeme",
     "trustpilot",
     "amazon",
+    "meta_ads",
 ]
 
 SOURCE_COMPLETION_META = {
@@ -150,6 +151,7 @@ SOURCE_COMPLETION_META = {
     "techmeme": ("Techmeme", "headline", "headlines", Colors.CYAN),
     "trustpilot": ("Trustpilot", "review", "reviews", Colors.GREEN),
     "amazon": ("Amazon", "product", "products", Colors.YELLOW),
+    "meta_ads": ("Meta Ads", "creative", "creatives", Colors.BLUE),
 }
 
 

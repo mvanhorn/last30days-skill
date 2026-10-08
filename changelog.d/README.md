@@ -34,4 +34,4 @@ General reports no longer promote unanchored fallback entity misses into synthes
 
 ### Skip
 
-Pure chores (typos in comments, CI pin bumps with nothing for release notes) can omit a fragment and check **Skip changelog** in the PR template, or add the `skip-changelog` label.
+Pure chores (typos in comments, CI pin bumps with nothing for release notes) can omit a fragment and check **Skip changelog** in the PR template, or add the `skip-changelog` label. Dependabot PRs skip the fragment requirement automatically.

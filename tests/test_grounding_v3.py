@@ -1,8 +1,14 @@
+import io
+import json
+import threading
 import unittest
+import urllib.error
+from contextlib import contextmanager
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
-from lib import grounding
+from lib import grounding, parallel_mcp
 
 
 class BraveSearchTests(unittest.TestCase):
@@ -74,6 +80,141 @@ class SerperSearchTests(unittest.TestCase):
             self.assertEqual("Undated Result", items[1]["title"])
             self.assertIsNone(items[1]["date"])
             self.assertEqual("serper", artifact["label"])
+
+    def test_serper_search_keeps_relative_dates(self):
+        """Google renders recent results with a relative date, not an absolute one.
+
+        Before these were parsed, every fresh result failed the in-range check
+        and the web lane came back empty on short windows.
+        """
+        mock_response = {
+            "organic": [
+                {
+                    "title": "Two Hours Old",
+                    "link": "https://example.com/hours",
+                    "snippet": "Fresh enough that Google shows an hour count",
+                    "date": "2 hours ago",
+                },
+                {
+                    "title": "One Day Old",
+                    "link": "https://example.com/day",
+                    "snippet": "Yesterday, relative to the window end",
+                    "date": "1 day ago",
+                },
+                {
+                    "title": "Too Old",
+                    "link": "https://example.com/stale",
+                    "snippet": "Resolves before the window start",
+                    "date": "3 weeks ago",
+                },
+            ]
+        }
+        with patch("lib.grounding.http.request", return_value=mock_response), \
+             patch("lib.grounding._now", return_value=datetime(2026, 3, 27, 12, 0)):
+            items, _ = grounding.serper_search("test", ("2026-03-26", "2026-03-27"), "fake-key")
+            self.assertEqual(2, len(items))
+            self.assertEqual("Two Hours Old", items[0]["title"])
+            self.assertEqual("2026-03-27", items[0]["date"])
+            self.assertEqual("One Day Old", items[1]["title"])
+            self.assertEqual("2026-03-26", items[1]["date"])
+
+
+    def test_serper_search_keeps_valid_result_after_overlong_relative_age(self):
+        response = {
+            "organic": [
+                {"title": "Malformed", "link": "https://example.com/bad",
+                 "date": "9" * 5000 + " days ago"},
+                {"title": "Valid", "link": "https://example.com/good",
+                 "date": "1 day ago"},
+            ]
+        }
+        with patch("lib.grounding.http.request", return_value=response), \
+             patch("lib.grounding._now", return_value=datetime(2026, 3, 27, 12, 0)):
+            items, artifact = grounding.serper_search(
+                "test", ("2026-03-26", "2026-03-27"), "fake-key"
+            )
+        self.assertEqual(["https://example.com/good"], [item["url"] for item in items])
+        self.assertEqual("2026-03-26", items[0]["date"])
+        self.assertEqual(1, artifact["resultCount"])
+
+
+class SerperRelativeDateTests(unittest.TestCase):
+    NOON = datetime(2026, 3, 27, 12, 0)
+
+    def test_absolute_formats_are_unchanged(self):
+        for raw, expected in (
+            ("Mar 15, 2026", "2026-03-15"),
+            ("March 15, 2026", "2026-03-15"),
+            ("2026-03-15", "2026-03-15"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(expected, grounding._parse_serper_date(raw, self.NOON))
+
+    def test_relative_units_resolve_against_query_time(self):
+        for raw, expected in (
+            ("45 minutes ago", "2026-03-27"),
+            ("2 hours ago", "2026-03-27"),
+            ("1 day ago", "2026-03-26"),
+            ("5 days ago", "2026-03-22"),
+            ("2 weeks ago", "2026-03-13"),
+            ("3 months ago", "2025-12-27"),
+            ("about 2 days ago", "2026-03-25"),
+            ("today", "2026-03-27"),
+            ("yesterday", "2026-03-26"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(expected, grounding._parse_serper_date(raw, self.NOON))
+
+    def test_historical_window_dates_against_query_time(self):
+        """A relative label describes age at query time, not age at the window end.
+
+        Searching a past window with --as-of still runs today, so Serper labels a
+        result from the window with its age as of today. Anchoring to the window
+        end would place it before the window and discard it.
+        """
+        self.assertEqual(
+            "2026-03-15",
+            grounding._parse_serper_date("12 days ago", now=datetime(2026, 3, 27, 12, 0)),
+        )
+
+    def test_unparseable_and_missing_dates_still_return_none(self):
+        for raw in ("", "sometime last spring", "ago 2 days", "many hours ago"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(grounding._parse_serper_date(raw, self.NOON))
+
+    def test_defaults_to_the_current_clock(self):
+        with patch("lib.grounding._now", return_value=datetime(2026, 3, 27, 12, 0)):
+            self.assertEqual("2026-03-26", grounding._parse_serper_date("1 day ago"))
+
+    def test_sub_day_labels_cross_the_midnight_boundary(self):
+        """A sub-day age is exact, so it must not be rounded up to the query date.
+
+        Just after midnight, "23 hours ago" names yesterday. Stamping it with
+        today's date both misreports the publication date downstream and lets a
+        one-day window admit a result that falls outside it.
+        """
+        just_after_midnight = datetime(2026, 3, 27, 0, 30)
+        for raw, expected in (
+            ("23 hours ago", "2026-03-26"),
+            ("20 minutes ago", "2026-03-27"),
+            ("2 hours ago", "2026-03-26"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    expected, grounding._parse_serper_date(raw, just_after_midnight)
+                )
+
+    def test_absurd_ages_are_unparseable_rather_than_fatal(self):
+        """One malformed label must not take the whole web lane down with it.
+
+        The amount is unbounded, and a large enough one overflows `timedelta` or
+        runs off the end of `date`. That has to read as an unparseable date, the
+        same as any other junk value, not as an exception escaping the result
+        loop in `serper_search`.
+        """
+        for raw in ("999999999 years ago", "3000000 days ago", "99999999999 hours ago"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(grounding._parse_serper_date(raw, self.NOON))
 
 
 class ExaSearchTests(unittest.TestCase):
@@ -385,6 +526,236 @@ class RedditEnrichmentIsolationTests(unittest.TestCase):
         self.assertEqual(len(items), 1)
         # The enrichment 403 is isolated in its own sink; the source's sink is clean.
         self.assertEqual(source_sink, [])
+
+
+class ParallelMCPRuntimeTests(unittest.TestCase):
+    class _Response:
+        def __init__(self, payload, session=None, content_type="application/json"):
+            raw = payload if isinstance(payload, bytes) else json.dumps(payload).encode() if payload is not None else b""
+            self.body = io.BytesIO(raw)
+            self.headers = {"Content-Type": content_type}
+            if session:
+                self.headers["Mcp-Session-Id"] = session
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            return False
+        def read(self, size=-1):
+            return self.body.read(size)
+        def readline(self, size=-1):
+            return self.body.readline(size)
+
+    def test_explicit_parallel_mcp_discovers_invokes_and_maps_anonymous_result(self):
+        responses = iter([
+            self._Response({"jsonrpc": "2.0", "id": 1, "result": {"protocolVersion": "2025-03-26"}}, "session-1"),
+            self._Response(None),
+            self._Response({"jsonrpc": "2.0", "id": 2, "result": {"tools": [{"name": "web_search"}, {"name": "web_fetch"}]}}),
+            self._Response({"jsonrpc": "2.0", "id": 3, "result": {"structuredContent": {"results": [{"url": "https://example.com/evidence", "title": None, "publish_date": "2026-08-01", "excerpts": ["Useful evidence"]}]}}}),
+            self._Response(None),
+        ])
+        requests = []
+        def open_response(request, timeout):
+            requests.append(request)
+            return next(responses)
+        with patch("lib.parallel_mcp.urllib.request.OpenerDirector.open", side_effect=open_response):
+            items, artifact = grounding.web_search(
+                "agent runtimes", ("2026-07-27", "2026-08-26"), {}, backend="parallel-mcp"
+            )
+        self.assertEqual("https://example.com/evidence", items[0]["url"])
+        self.assertEqual("Useful evidence", items[0]["snippet"])
+        self.assertEqual("2026-08-01", items[0]["date"])
+        self.assertEqual("parallel-mcp", artifact["label"])
+        self.assertTrue(all(request.get_header("Authorization") is None for request in requests))
+        self.assertTrue(all(request.get_header("Mcp-session-id") == "session-1" for request in requests[1:]))
+        self.assertTrue(all(request.get_header("Mcp-protocol-version") == "2025-03-26" for request in requests[1:]))
+        self.assertEqual("DELETE", requests[-1].method)
+        messages = [json.loads(request.data) for request in requests if request.data]
+        self.assertEqual(["initialize", "notifications/initialized", "tools/list", "tools/call"], [message["method"] for message in messages])
+        self.assertEqual("web_search", messages[-1]["params"]["name"])
+        self.assertEqual(["agent runtimes"], messages[-1]["params"]["arguments"]["search_queries"])
+        self.assertNotIn("max_results", messages[-1]["params"]["arguments"])
+
+    def test_parallel_mcp_rejects_oversized_response(self):
+        class OversizedResponse(self._Response):
+            def read(self, size=-1):
+                self.requested_size = size
+                return b"x" * size
+        response = OversizedResponse(None)
+        with patch("lib.parallel_mcp.urllib.request.OpenerDirector.open", return_value=response):
+            with self.assertRaisesRegex(RuntimeError, "exceeded 4 MiB"):
+                grounding.web_search(
+                    "test", ("2026-07-27", "2026-08-26"), {}, backend="parallel-mcp"
+                )
+        self.assertEqual(4 * 1024 * 1024 + 1, response.requested_size)
+
+    def test_auto_without_opt_in_does_not_contact_parallel_mcp(self):
+        with patch("lib.grounding.parallel_mcp.search") as mcp_search, \
+             patch("lib.grounding.web_search_keyless.keyless_search", return_value=([], {})):
+            grounding.web_search("test", ("2026-07-27", "2026-08-26"), {}, backend="auto")
+        mcp_search.assert_not_called()
+
+    def test_explicit_parallel_mcp_preserves_optional_bearer_auth(self):
+        with patch("lib.grounding.parallel_mcp.search", return_value=([], {})) as mcp_search:
+            grounding.web_search(
+                "test", ("2026-07-27", "2026-08-26"),
+                {"PARALLEL_API_KEY": "test-key"}, backend="parallel-mcp",
+            )
+        mcp_search.assert_called_once_with("test", ("2026-07-27", "2026-08-26"), "test-key")
+
+    @contextmanager
+    def _server(self, handler):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), handler)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
+        thread.start()
+        try:
+            yield f"http://127.0.0.1:{server.server_port}"
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join()
+
+    def test_redirects_never_forward_auth_session_or_search_data(self):
+        target_requests = []
+        original_requests = []
+
+        class Target(BaseHTTPRequestHandler):
+            def do_GET(self):
+                target_requests.append(dict(self.headers))
+                self.send_response(200)
+                self.end_headers()
+            do_POST = do_GET
+            def log_message(self, *_args):
+                pass
+
+        class Redirect(Target):
+            def do_POST(self):
+                original_requests.append(dict(self.headers))
+                self.rfile.read(int(self.headers.get("Content-Length", 0)))
+                self.send_response(int(self.path.strip("/")))
+                self.send_header("Location", target_url)
+                self.end_headers()
+
+        with self._server(Target) as target_url, self._server(Redirect) as source_url:
+            for status in (301, 302, 303, 307, 308):
+                with self.subTest(status=status), patch.object(parallel_mcp, "PARALLEL_MCP_URL", f"{source_url}/{status}"):
+                    with self.assertRaises(urllib.error.HTTPError) as raised:
+                        parallel_mcp._request(
+                            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+                            "test-key", "test-session",
+                        )
+                    self.assertEqual(status, raised.exception.code)
+                    raised.exception.close()
+        self.assertEqual([], target_requests)
+        self.assertEqual(5, len(original_requests))
+        self.assertTrue(all(headers["Authorization"] == "Bearer test-key" for headers in original_requests))
+        self.assertTrue(all(headers["Mcp-Session-Id"] == "test-session" for headers in original_requests))
+
+    def test_sse_matches_request_and_returns_without_waiting_for_eof(self):
+        class OpenStream(self._Response):
+            def read(self, size=-1):
+                raise AssertionError("SSE must not wait for the whole body")
+            def readline(self, size=-1):
+                line = super().readline(size)
+                if not line:
+                    raise AssertionError("SSE must stop at the matching response")
+                return line
+
+        response = OpenStream(
+            b': heartbeat\r\n\r\n'
+            b'data: {"jsonrpc":"2.0","method":"notifications/progress"}\r\n\r\n'
+            b'data: {"jsonrpc":"2.0","id":99,"result":{}}\r\n\r\n'
+            b'event: message\r\ndata: {"jsonrpc":"2.0",\r\ndata: "id":3,"result":{"content":[]}}\r\n\r\n',
+            content_type="text/event-stream; charset=utf-8",
+        )
+        self.assertEqual({"content": []}, parallel_mcp._read_response(response, 3)["result"])
+
+    def test_sse_supports_batched_messages(self):
+        payload = b'data: [{"jsonrpc":"2.0","method":"notifications/progress"},{"jsonrpc":"2.0","id":3,"result":{}}]\n\n'
+        response = self._Response(payload, content_type="text/event-stream")
+        self.assertEqual(3, parallel_mcp._read_response(response, 3)["id"])
+
+    def test_sse_response_cap_includes_heartbeats_and_all_events(self):
+        for payload in (b":" + b"x" * 80, b": heartbeat\n\n" * 10):
+            with self.subTest(payload=payload), patch.object(parallel_mcp, "_MAX_RESPONSE_BYTES", 64):
+                response = self._Response(payload, content_type="text/event-stream")
+                with self.assertRaisesRegex(RuntimeError, "exceeded 4 MiB"):
+                    parallel_mcp._read_response(response, 3)
+
+    def test_rejects_missing_or_mismatched_rpc_response(self):
+        for payload, content_type in (
+            ({"jsonrpc": "2.0", "id": 99, "result": {}}, "application/json"),
+            (None, "application/json"),
+            (b'data: {"jsonrpc":"2.0","method":"notifications/progress"}\n\n', "text/event-stream"),
+        ):
+            with self.subTest(payload=payload):
+                with self.assertRaisesRegex(RuntimeError, "missing the requested"):
+                    parallel_mcp._read_response(self._Response(payload, content_type=content_type), 3)
+
+    def test_filters_dates_and_invalid_urls_before_applying_result_limit(self):
+        rows = [
+            {"url": "https://example.com/old", "publish_date": "2026-07-26"},
+            {"url": "https://example.com/future", "publish_date": "2026-08-27"},
+            {"url": "https://example.com/undated"},
+            {"url": "https://example.com/invalid-date", "publish_date": "not-a-date"},
+            {"url": "https:///missing-host", "publish_date": "2026-08-01"},
+            {"url": "https://[invalid", "publish_date": "2026-08-01"},
+            {"url": "https://example.com/start", "publish_date": "2026-07-27T12:00:00Z", "excerpts": "Start evidence"},
+            {"url": "https://example.com/end", "publish_date": "2026-08-26", "excerpts": ["End evidence"]},
+            {"url": "https://example.com/extra", "publish_date": "2026-08-01"},
+        ]
+        responses = [
+            ({"result": {"protocolVersion": "2025-03-26"}}, None),
+            ({}, None),
+            ({"result": {"tools": [{"name": "web_search"}]}}, None),
+            ({"result": {"content": [{"type": "text", "text": json.dumps({"results": rows})}]}}, None),
+        ]
+        with patch.object(parallel_mcp, "_request", side_effect=responses):
+            items, artifact = parallel_mcp.search("test", ("2026-07-27", "2026-08-26"), count=2)
+        self.assertEqual(["2026-07-27", "2026-08-26"], [item["date"] for item in items])
+        self.assertEqual(["Start evidence", "End evidence"], [item["snippet"] for item in items])
+        self.assertEqual(2, artifact["resultCount"])
+
+    def test_empty_results_are_distinct_from_malformed_payloads(self):
+        self.assertEqual([], parallel_mcp._search_rows({"structuredContent": {"results": []}}))
+        for value in (42, "invalid", {"results": 42}):
+            with self.subTest(value=value), self.assertRaisesRegex(RuntimeError, "no results array"):
+                parallel_mcp._search_rows({"structuredContent": value})
+
+    def test_discovers_web_search_on_later_page_and_cleanup_failure_is_nonfatal(self):
+        responses = [
+            ({"result": {"protocolVersion": "2025-03-26"}}, "session-1"),
+            ({}, "session-1"),
+            ({"result": {"tools": [{"name": "web_fetch"}], "nextCursor": "page-2"}}, "session-1"),
+            ({"result": {"tools": [{"name": "web_search"}]}}, "session-1"),
+            ({"result": {"structuredContent": {"results": []}}}, "session-1"),
+            urllib.error.HTTPError(parallel_mcp.PARALLEL_MCP_URL, 405, "Not allowed", {}, None),
+        ]
+        with patch.object(parallel_mcp, "_request", side_effect=responses) as request:
+            items, _ = parallel_mcp.search("test", ("2026-07-27", "2026-08-26"))
+        self.assertEqual([], items)
+        self.assertEqual({"cursor": "page-2"}, request.call_args_list[3].args[0]["params"])
+        self.assertEqual(4, request.call_args_list[4].args[0]["id"])
+        self.assertEqual((None, None, "session-1"), request.call_args_list[-1].args)
+
+    def test_failed_discovery_still_terminates_session_and_preserves_error(self):
+        responses = [
+            ({"result": {"protocolVersion": "2025-03-26"}}, "session-1"),
+            ({}, "session-1"),
+            ({"error": {"message": "Discovery failed"}}, "session-1"),
+            OSError("Cleanup failed"),
+        ]
+        with patch.object(parallel_mcp, "_request", side_effect=responses) as request:
+            with self.assertRaisesRegex(RuntimeError, "Discovery failed"):
+                parallel_mcp.search("test", ("2026-07-27", "2026-08-26"))
+        self.assertIsNone(request.call_args.args[0])
+
+    def test_unsupported_protocol_is_rejected_before_search(self):
+        responses = [({"result": {"protocolVersion": "unsupported"}}, "session-1"), ({}, None)]
+        with patch.object(parallel_mcp, "_request", side_effect=responses) as request:
+            with self.assertRaisesRegex(RuntimeError, "unsupported protocol version"):
+                parallel_mcp.search("test", ("2026-07-27", "2026-08-26"))
+        self.assertEqual(2, request.call_count)
+        self.assertIsNone(request.call_args.args[0])
 
 
 if __name__ == "__main__":

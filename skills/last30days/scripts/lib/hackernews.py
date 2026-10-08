@@ -378,8 +378,12 @@ def enrich_top_stories(
     _log(f"Enriching top {len(to_enrich)} stories with comments")
 
     with ThreadPoolExecutor(max_workers=5) as executor:
+        # submit_with_context, not executor.submit: a plain submit drops the
+        # pipeline's capture_failures() sink, so failed or rate-limited item
+        # fetches would vanish and the HN source would look fully enriched.
         futures = {
-            executor.submit(
+            http.submit_with_context(
+                executor,
                 _fetch_item_comments,
                 items[idx]["id"],
             ): idx

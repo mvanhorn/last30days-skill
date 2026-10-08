@@ -19,6 +19,7 @@ Covers the plan's U2 scenarios:
      (env.x_backend_chain()[0]) across three config permutations.
 """
 
+from pathlib import Path
 from unittest import mock
 
 import pytest
@@ -57,6 +58,7 @@ def _x_env(
     grok_installed=False,
     grok_authed=False,
     grok_expired=False,
+    grok_off_path=None,
 ):
     """Context managers configuring the X-chain probe environment.
 
@@ -67,6 +69,12 @@ def _x_env(
 
     ``grok_expired`` simulates an expired session: AUTH_EXPIRED status, but
     has_stored_auth/is_available still return True (refresh may work).
+
+    ``grok_off_path`` drives the off-PATH branch of the grok probe. It must be
+    patched rather than left to the real filesystem: ``_off_path_binary``
+    scans installer dirs like ~/.local/bin, so a developer who has grok
+    installed there would otherwise take that branch on every
+    ``grok_installed=False`` case and see failures CI never reproduces.
     """
     from datetime import datetime, timezone, timedelta
     stored = (
@@ -114,6 +122,12 @@ def _x_env(
             return_value=grok_installed and (grok_authed or grok_expired),
         ),
         mock.patch("lib.grok_x.is_available", return_value=grok_available),
+        mock.patch(
+            "lib.health._off_path_binary",
+            lambda name: (
+                Path(grok_off_path) if name == "grok" and grok_off_path else None
+            ),
+        ),
         mock.patch("lib.health.probe_dependency", _probe_dep({"node": node_status})),
         mock.patch("lib.xurl_x.stored_auth_status", return_value=stored),
         mock.patch(
@@ -155,15 +169,19 @@ class TestDescriptorRegistry:
         assert d.mode == backends.MODE_ALTERNATIVE
         # Auto chain order: bird first, grok excluded (opt-in only).
         assert env.X_BACKEND_ORDER == ("bird", "xai", "xurl", "xquik")
-        # Grok is opt-in only, not in the auto chain.
-        assert env.X_BACKEND_OPT_IN == ("grok",)
+        # Grok and xapi are opt-in only off Grok Bot, not in the auto chain.
+        assert env.X_BACKEND_OPT_IN == ("grok", "xapi")
         # All known backends (auto + opt-in) for pin validation.
-        assert env.X_BACKEND_KNOWN == ("bird", "xai", "xurl", "xquik", "grok")
+        assert env.X_BACKEND_KNOWN == ("bird", "xai", "xurl", "xquik", "grok", "xapi")
         # Descriptor includes all backends (auto + opt-in) for doctor visibility.
         assert tuple(s.name for s in d.backends) == env.X_BACKEND_ORDER + env.X_BACKEND_OPT_IN
-        # Grok is marked opt-in in the descriptor.
+        # Grok and xapi are marked opt-in in the descriptor.
         grok_spec = next(s for s in d.backends if s.name == "grok")
         assert grok_spec.opt_in is True
+        xapi_spec = next(s for s in d.backends if s.name == "xapi")
+        assert xapi_spec.opt_in is True
+        assert xapi_spec.paid is True
+        assert xapi_spec.requires == "X_BEARER_TOKEN (X API v2)"
         # Auto chain backends are NOT marked opt-in.
         for name in env.X_BACKEND_ORDER:
             spec = next(s for s in d.backends if s.name == name)
@@ -188,7 +206,7 @@ class TestDescriptorRegistry:
         assert d.mode == backends.MODE_CONDITIONAL
         names = [s.name for s in d.backends]
         # Internal keyless lanes are sub-probe detail, never chain entries.
-        for lane in ("rss", "listing", "arctic", "shreddit"):
+        for lane in ("search", "listing", "arctic", "shreddit", "rss"):
             assert lane not in names
         assert names == ["public", "scrapecreators"]
 
@@ -400,6 +418,21 @@ class TestGrokExpiryStates:
         # X is unconfigured (no auto-chain backends available).
         assert res.active_backend is None
 
+    def test_grok_off_path_prescribes_a_path_edit_not_an_install(self):
+        """grok present in an installer dir but absent from PATH -> still
+        MISSING, but the prescription must be a PATH edit: installing again
+        would fix nothing. This branch had no coverage, so it only ever ran
+        on developer machines that happened to have grok in ~/.local/bin."""
+        res = _resolve_x({}, grok_installed=False,
+                         grok_off_path="/home/dev/.local/bin/grok")
+        grok = next(f for f in res.findings if f.name == "grok")
+        assert grok.status == health.MISSING
+        assert "not on this process's PATH" in grok.detail
+        assert "/home/dev/.local/bin/grok" in grok.detail
+        assert "/home/dev/.local/bin" in grok.prescription
+        assert "install" not in grok.prescription.lower()
+        assert res.active_backend is None
+
     def test_grok_installed_never_logged_in_is_missing(self):
         """CLI installed but never logged in -> MISSING with login hint."""
         res = _resolve_x({}, grok_installed=True, grok_authed=False)
@@ -597,16 +630,37 @@ class TestRedditConditional:
         assert "5" in res.conditional
         assert "floor" in res.conditional.lower()
 
-    def test_default_floor_zero_means_empty_only_wording(self):
+    def test_default_floor_names_five_item_floor(self):
         res = backends.resolve("reddit", {"SCRAPECREATORS_API_KEY": "dummy-key"})
-        assert "nothing" in res.conditional.lower()
+        low = res.conditional.lower()
+        assert "5-item floor" in low
+        assert "nothing" not in low
 
-    def test_malformed_floor_treated_as_default(self):
+    def test_empty_floor_treated_as_default(self):
+        res = backends.resolve(
+            "reddit",
+            {"SCRAPECREATORS_API_KEY": "dummy-key", "LAST30DAYS_REDDIT_SC_MIN_ITEMS": ""},
+        )
+        assert "5-item floor" in res.conditional.lower()
+
+    def test_explicit_zero_floor_means_empty_only_wording(self):
+        res = backends.resolve(
+            "reddit",
+            {"SCRAPECREATORS_API_KEY": "dummy-key", "LAST30DAYS_REDDIT_SC_MIN_ITEMS": "0"},
+        )
+        low = res.conditional.lower()
+        assert "nothing" in low
+        assert "floor" not in low
+
+    def test_malformed_floor_spends_nothing_extra(self):
+        # Malformed parses to 0 (empty-only), matching the pipeline.
         res = backends.resolve(
             "reddit",
             {"SCRAPECREATORS_API_KEY": "dummy-key", "LAST30DAYS_REDDIT_SC_MIN_ITEMS": "lots"},
         )
-        assert "nothing" in res.conditional.lower()
+        low = res.conditional.lower()
+        assert "nothing" in low
+        assert "floor" not in low
 
     def test_pinned_scrapecreators_renders_pin(self):
         res = backends.resolve(
@@ -641,8 +695,8 @@ class TestRedditConditional:
     def test_keyless_lanes_are_sub_probe_detail(self):
         res = backends.resolve("reddit", {})
         public = next(f for f in res.findings if f.name == "public")
-        for lane in ("rss", "listing", "arctic", "shreddit"):
-            assert lane in public.detail
+        assert public.detail.endswith("(lanes: search, listing, arctic, shreddit)")
+        assert "rss" not in public.detail
 
 
 # ---------------------------------------------------------------------------
@@ -699,6 +753,58 @@ class TestXParityWithPipeline:
             {"AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0", "XAI_API_KEY": "dummy-key"},
             bird_installed=True,
         )
+
+    # Host rows (U1): the policy shapes both sides identically.
+
+    def test_parity_grok_bot_bearer(self):
+        self._assert_parity(
+            {"LAST30DAYS_HOST": "grok-bot", "X_BEARER_TOKEN": "dummy-bearer",
+             "AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0"},
+            bird_installed=True,
+        )
+
+    def test_parity_grok_bot_xai_key(self):
+        self._assert_parity(
+            {"LAST30DAYS_HOST": "grok-bot", "XAI_API_KEY": "dummy-key",
+             "AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0"},
+            bird_installed=True,
+        )
+
+    def test_parity_grok_bot_cookies_only_unpinned(self):
+        self._assert_parity(
+            {"LAST30DAYS_HOST": "grok-bot", "AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0",
+             "XQUIK_API_KEY": "dummy-key"},
+            bird_installed=True,
+        )
+
+    def test_parity_grok_bot_bird_pin(self):
+        self._assert_parity(
+            {"LAST30DAYS_HOST": "grok-bot", "LAST30DAYS_X_BACKEND": "bird",
+             "AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0"},
+            bird_installed=True,
+        )
+
+    def test_parity_grok_bot_grok_pin(self):
+        self._assert_parity(
+            {"LAST30DAYS_HOST": "grok-bot", "LAST30DAYS_X_BACKEND": "grok"},
+            grok_installed=True,
+            grok_authed=True,
+        )
+
+    def test_parity_non_grok_linux_cookies_and_bearer(self):
+        with mock.patch("platform.system", return_value="Linux"):
+            self._assert_parity(
+                {"AUTH_TOKEN": "dummy-token", "CT0": "dummy-ct0",
+                 "X_BEARER_TOKEN": "dummy-bearer"},
+                bird_installed=True,
+            )
+
+    def test_parity_macbook_xai_key(self):
+        with (
+            mock.patch("platform.system", return_value="Darwin"),
+            mock.patch.object(env, "_mac_model", return_value="MacBookPro18,2"),
+        ):
+            self._assert_parity({"XAI_API_KEY": "dummy-key"})
 
 
 # ---------------------------------------------------------------------------

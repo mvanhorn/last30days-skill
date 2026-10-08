@@ -128,11 +128,68 @@ class TestParseValidCookies:
         result = _parse_binary_cookies(x_cookies_file, "x.com", ["bogus"])
         assert result is None
 
-    def test_domain_substring_match_with_leading_dot(self, x_cookies_file: bytes):
+    def test_leading_dot_stored_host_matches_bare_domain(self, x_cookies_file: bytes):
         """Domain '.x.com' in cookie should match search for 'x.com'."""
         result = _parse_binary_cookies(x_cookies_file, "x.com", ["auth_token"])
         assert result is not None
         assert result["auth_token"] == "test_auth_abc123"
+
+
+def _single_cookie_file(stored_host: str) -> bytes:
+    rec = _build_cookie_record(stored_host, "auth_token", "fake_value_for_" + stored_host)
+    return _build_binary_cookies_file([_build_page([rec])])
+
+
+class TestDomainMatching:
+    @pytest.mark.parametrize("wanted", ["x.com", ".x.com"])
+    def test_exact_host_match(self, wanted: str):
+        result = _parse_binary_cookies(_single_cookie_file("x.com"), wanted, ["auth_token"])
+        assert result == {"auth_token": "fake_value_for_x.com"}
+
+    @pytest.mark.parametrize("wanted", ["x.com", ".x.com"])
+    def test_leading_dot_stored_host_matches(self, wanted: str):
+        result = _parse_binary_cookies(_single_cookie_file(".x.com"), wanted, ["auth_token"])
+        assert result == {"auth_token": "fake_value_for_.x.com"}
+
+    @pytest.mark.parametrize("stored", ["api.x.com", ".api.x.com"])
+    @pytest.mark.parametrize("wanted", ["x.com", ".x.com"])
+    def test_subdomain_match(self, stored: str, wanted: str):
+        result = _parse_binary_cookies(_single_cookie_file(stored), wanted, ["auth_token"])
+        assert result == {"auth_token": "fake_value_for_" + stored}
+
+    def test_case_insensitive_host(self):
+        result = _parse_binary_cookies(_single_cookie_file(".X.com"), "x.com", ["auth_token"])
+        assert result == {"auth_token": "fake_value_for_.X.com"}
+
+    @pytest.mark.parametrize(
+        "stored",
+        [
+            "notx.com",
+            ".notx.com",
+            "evilx.com",
+            "x.com.evil.tld",
+            ".x.com.evil.tld",
+            "api.x.com.evil.tld",
+            "xcom",
+            "com",
+        ],
+    )
+    @pytest.mark.parametrize("wanted", ["x.com", ".x.com"])
+    def test_rejects_hosts_that_merely_contain_domain(self, stored: str, wanted: str):
+        result = _parse_binary_cookies(_single_cookie_file(stored), wanted, ["auth_token"])
+        assert result is None
+
+    def test_rejects_parent_domain_when_subdomain_requested(self):
+        result = _parse_binary_cookies(_single_cookie_file(".com"), "x.com", ["auth_token"])
+        assert result is None
+
+    def test_empty_stored_host_never_matches(self):
+        result = _parse_binary_cookies(_single_cookie_file(""), "x.com", ["auth_token"])
+        assert result is None
+
+    def test_empty_requested_domain_never_matches(self):
+        result = _parse_binary_cookies(_single_cookie_file(".x.com"), "", ["auth_token"])
+        assert result is None
 
 
 class TestMultiplePages:

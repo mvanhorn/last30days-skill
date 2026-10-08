@@ -98,7 +98,10 @@ def extract_safari_cookies_macos(
     Extract cookies from Safari on macOS.
 
     Args:
-        domain: Domain to match (substring match, e.g. "x.com")
+        domain: Registrable host to match, with or without a leading dot
+            (e.g. "x.com" or ".x.com"). A stored cookie host matches when it
+            equals the domain or is a subdomain of it; unrelated hosts that
+            merely contain the text (e.g. "x.com.evil.tld") do not.
         cookie_names: List of cookie names to extract (e.g. ["auth_token", "ct0"])
 
     Returns:
@@ -136,6 +139,19 @@ def extract_safari_cookies_macos(
         return None
 
     return _parse_binary_cookies(raw, domain, cookie_names)
+
+
+def _host_matches(stored_host: str, domain: str) -> bool:
+    """True when stored_host equals domain or is a subdomain of it.
+
+    Safari stores domain cookies with a leading dot (".x.com") and host-only
+    cookies without one ("x.com"); both spellings are accepted on either side.
+    """
+    host = stored_host.strip().lstrip(".").lower()
+    wanted = domain.strip().lstrip(".").lower()
+    if not host or not wanted:
+        return False
+    return host == wanted or host.endswith("." + wanted)
 
 
 def _parse_binary_cookies(
@@ -182,8 +198,7 @@ def _parse_binary_cookies(
         page_data = raw[offset : offset + ps]
         cookies = _parse_page(page_data)
         for c in cookies:
-            # Substring match on domain (handles leading dots like ".x.com")
-            if domain in c["url"] and c["name"] in names_set:
+            if _host_matches(c["url"], domain) and c["name"] in names_set:
                 result[c["name"]] = c["value"]
         offset += ps
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 
 from . import dates, relevance, schema
 
@@ -20,6 +20,10 @@ SOURCE_QUALITY = {
     # Verified-purchase reviews on a live aggregate rating: high-quality
     # buyer evidence, a notch above Trustpilot's open review model.
     "amazon": 0.8,
+    # Paid creative is first-party marketing copy: a reliable statement of
+    # what the brand is pushing, but not independent evidence about it, so it
+    # sits below the review-backed sources and above open social.
+    "meta_ads": 0.72,
     "reddit": 0.6,
     "x": 0.68,
     "bluesky": 0.66,
@@ -183,6 +187,11 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "digg":         [("postCount", 0.40), ("uniqueAuthors", 0.30), ("rank_score", 0.30)],
     "trustpilot":   [("reviews", 1.0)],
     "amazon":       [("ratings", 1.0)],
+    # Meta publishes reach and spend only for political and issue ads, so a
+    # commercial creative has no audience signal at all. How many variants a
+    # brand cut of one creative is the closest honest proxy for how hard it is
+    # pushing that message.
+    "meta_ads":     [("variants", 1.0)],
 }
 
 
@@ -335,6 +344,7 @@ def prune_low_relevance(
     items: list[schema.SourceItem],
     minimum: float = 0.15,
     first_party_handles: Iterable[str] | None = None,
+    first_party_by_source: Mapping[str, Iterable[str]] | None = None,
 ) -> list[schema.SourceItem]:
     """Drop weak lexical matches when stronger evidence exists.
 
@@ -351,6 +361,12 @@ def prune_low_relevance(
     scores it at or near zero no matter how on-topic it is. Without the
     exemption a mixed batch loses them silently, because the ``filtered or
     items`` rescue below only fires when *every* item fails.
+
+    ``first_party_by_source`` scopes exemptions to one platform each (e.g.
+    ``--ig-creators`` names Instagram accounts). A creator flag must not
+    exempt a same-name account on a *different* platform: username reuse
+    across platforms is common, and an unrelated account would otherwise
+    bypass the relevance and engagement floors.
     """
     sources_present = {item.source for item in items}
     first_party = {
@@ -358,11 +374,22 @@ def prune_low_relevance(
         for h in (first_party_handles or ())
         if h and h.strip()
     }
+    scoped_first_party = {
+        source: {
+            h.strip().lstrip("@").lower()
+            for h in handles
+            if h and h.strip()
+        }
+        for source, handles in (first_party_by_source or {}).items()
+    }
 
     def _is_first_party(item: schema.SourceItem) -> bool:
-        if not first_party or not item.author:
+        if not item.author:
             return False
-        return item.author.strip().lstrip("@").lower() in first_party
+        author = item.author.strip().lstrip("@").lower()
+        if author in first_party:
+            return True
+        return author in scoped_first_party.get(item.source, frozenset())
 
     def passes(item: schema.SourceItem) -> bool:
         # YouTube items with successfully extracted transcripts should not

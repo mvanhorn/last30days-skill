@@ -14,12 +14,16 @@ Priority: xAI API > Bird/GraphQL > xurl > web-only fallback
 import json
 import re
 import shutil
+import stat
 import subprocess
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from . import log
-from .relevance import token_overlap_relevance as _compute_relevance
+from . import health, http, log, usage
+from . import x_api
+# One X API v2 depth table and one parser: xurl_x re-imports both.
+from .x_api import DEPTH_CONFIG
 
 # xurl auth status marks a configured app-only bearer as "bearer: ✓".
 # Search uses --auth app, so availability must require this — oauth1 alone
@@ -30,13 +34,6 @@ _BEARER_CONFIGURED_RE = re.compile(r"bearer:\s*✓")
 def _log(msg: str) -> None:
     log.source_log("xurl", msg, tty_only=False)
 
-
-# Depth configurations: number of results to request
-DEPTH_CONFIG = {
-    "quick": 10,
-    "default": 30,
-    "deep": 60,
-}
 
 
 # Memoized availability, mirroring health.py's per-process dependency-probe
@@ -114,9 +111,54 @@ _TOKEN_STORE_MARKERS = (
 )
 
 
+def _is_file(path: Path) -> bool:
+    """True when *path* is a regular file; raise on an unreadable stat.
+
+    ``pathlib.Path.is_file()`` swallows ``OSError`` into ``False``, which
+    would silently misreport a permission-denied (EACCES) store as absent.
+    Probing via ``stat`` keeps the typed ``AUTH_ERROR`` path reachable for
+    real stat failures. A missing path (``FileNotFoundError``) returns False —
+    absence is a normal state (this also covers a dangling symlink whose
+    target is gone). Path stubs without ``stat``/``is_file`` support (test
+    doubles) fall back to their own behavior.
+    """
+    try:
+        return stat.S_ISREG(path.stat().st_mode)
+    except FileNotFoundError:
+        return False
+    except (AttributeError, TypeError):
+        try:
+            return bool(path.is_file())
+        except AttributeError:
+            return False
+
+
+def _is_dir(path: Path) -> bool:
+    """True when *path* is a directory; raise on an unreadable stat.
+
+    Same rationale as :func:`_is_file` — pathlib's ``is_dir()`` hides
+    ``OSError``, so a permission-denied parent would read as a missing store.
+    """
+    try:
+        return stat.S_ISDIR(path.stat().st_mode)
+    except FileNotFoundError:
+        return False
+    except (AttributeError, TypeError):
+        try:
+            return bool(path.is_dir())
+        except AttributeError:
+            return False
+
+
 def token_store_path() -> Path:
-    """xurl's on-disk OAuth token store (~/.xurl)."""
-    return Path.home() / ".xurl"
+    """xurl's on-disk OAuth token store (~/.xurl/auth.yml).
+
+    Current xurl (>=1.1) stores credentials in a YAML file at
+    ``~/.xurl/auth.yml``; ``~/.xurl`` itself is a directory. Legacy
+    releases wrote a flat file at ``~/.xurl``. ``stored_auth_status()``
+    resolves both layouts; this returns the canonical current path.
+    """
+    return Path.home() / ".xurl" / "auth.yml"
 
 
 def stored_auth_status() -> Tuple[str, str]:
@@ -128,10 +170,42 @@ def stored_auth_status() -> Tuple[str, str]:
     AUTH_ERROR (store exists but cannot be read — surfaced as a typed
     error, not as "unconfigured").
     """
+    # Resolve the actual credential file across layouts. Current xurl keeps
+    # ~/.xurl/auth.yml inside the ~/.xurl directory; legacy installs wrote a
+    # flat ~/.xurl file. Honor whatever token_store_path() resolves to and
+    # check both shapes so a valid directory layout is never misread as a
+    # missing token store. Path stubs that cannot combine (e.g. an unreadable
+    # store stub without / support) still reach the typed error path below.
     path = token_store_path()
     try:
-        if not path.is_file():
-            return AUTH_MISSING, f"no token store at {path}"
+        base = path.parent if path.name == "auth.yml" else path
+    except (AttributeError, TypeError):
+        # A path stub with no parent/name support: treat it as the file itself.
+        base = path
+    try:
+        # Use stat rather than is_file()/is_dir(): pathlib swallows OSError
+        # into False, which would silently turn a permission-denied store into
+        # "no token store" instead of the typed AUTH_ERROR.
+        candidates = [base / "auth.yml", base] if _is_dir(base) else [base, base / "auth.yml"]
+    except (TypeError, AttributeError):
+        # A path stub that cannot combine (no __truediv__): the path itself is
+        # the only candidate.
+        candidates = [path]
+    except OSError as exc:
+        return (
+            AUTH_ERROR,
+            f"token store {base} unreadable: {type(exc).__name__}: {exc}",
+        )
+    try:
+        path = next(c for c in candidates if _is_file(c))
+    except StopIteration:
+        return AUTH_MISSING, f"no token store at {token_store_path()}"
+    except OSError as exc:
+        return (
+            AUTH_ERROR,
+            f"token store {base} unreadable: {type(exc).__name__}: {exc}",
+        )
+    try:
         content = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return (
@@ -155,59 +229,108 @@ def has_stored_auth() -> bool:
     return shutil.which("xurl") is not None and stored_auth_status()[0] == AUTH_OK
 
 
+# Engine-authored fixed error strings (the same rule as x_api): xurl's
+# stderr can echo the request, the bearer, or an account id, so it never
+# reaches the outcome detail. Each string carries a marker that
+# http.classify_failure recognizes.
+ERR_PAYMENT_REQUIRED = "xurl: payment required (X API credits exhausted)"
+ERR_UNAUTHORIZED = "xurl: unauthorized (bearer token rejected)"
+ERR_FORBIDDEN = "xurl: forbidden (bearer token lacks access)"
+ERR_RATE_LIMITED = "xurl: rate limit exceeded (X API)"
+ERR_FAILED = "xurl: search failed"
+ERR_INVALID_JSON = "xurl: invalid JSON from xurl"
+ERR_NOT_FOUND = "xurl not found in PATH"
+ERR_TIMED_OUT = "xurl search timed out (30s)"
+
+
+def _classify_cli_failure(output: str) -> str:
+    """Map xurl's stderr/stdout to a fixed string via the shared classifier."""
+    text = output or ""
+    state = http.classify_failure(message=text)
+    if state == health.PAYMENT_REQUIRED:
+        return ERR_PAYMENT_REQUIRED
+    if state == health.AUTH_FAILED:
+        # The shared vocabulary has one auth state; split the wording only.
+        lowered = text.lower()
+        if "401" in lowered or "unauthorized" in lowered:
+            return ERR_UNAUTHORIZED
+        return ERR_FORBIDDEN
+    if state == health.RATE_LIMITED:
+        return ERR_RATE_LIMITED
+    return ERR_FAILED
+
+
 def search_x(
     query: str,
     depth: str = "default",
+    deadline: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Search X via xurl CLI using X API v2 search/recent.
 
     Args:
         query: Search query string
         depth: "quick", "default", or "deep"
+        deadline: Optional shared wall-clock deadline (``time.monotonic()``
+            instant) from the X backend chain. The single subprocess timeout
+            is clamped to the time left; a call past the deadline never starts.
 
     Returns:
         Raw JSON response from X API v2 tweets/search/recent, or a dict
-        with an "error" key on failure.
+        with an "error" key holding a fixed string on failure. The CLI's
+        own output reaches only the debug log, never the error.
     """
     max_results = DEPTH_CONFIG.get(depth, DEPTH_CONFIG["default"])
     # X API v2 search/recent requires max_results in 10–100 range
     max_results = max(10, min(100, max_results))
+    timeout = 30
+    if deadline is not None:
+        remaining = deadline - time.monotonic()
+        if remaining < 1:
+            return {"error": "xurl: chain budget exhausted"}
+        timeout = max(1, min(timeout, int(remaining)))
 
+    charge = None
     try:
         # --auth app (app-only bearer): xurl >=1.1 mis-signs OAuth1 requests
         # whose query needs percent-encoding (spaces, parens, ...) -> 401.
         # Bearer auth sends no signature, so multi-word queries work.
+        charge = usage.begin("x")
         result = subprocess.run(
             ["xurl", "search", query, "-n", str(max_results), "--auth", "app"],
             capture_output=True,
             text=True,
-            timeout=30,
+            timeout=timeout,
         )
 
         if result.returncode != 0:
             error_text = result.stderr.strip() or result.stdout.strip()
-            return {"error": f"xurl search failed: {error_text}"}
+            classified = _classify_cli_failure(error_text)
+            # The raw CLI output can echo the bearer; only the fixed string
+            # and its size reach the debug log.
+            log.debug(f"xurl exit {result.returncode}: {classified} ({len(error_text)} chars)")
+            return {"error": classified}
 
         return json.loads(result.stdout)
 
     except FileNotFoundError:
-        return {"error": "xurl not found in PATH"}
+        usage.cancel(charge)
+        return {"error": ERR_NOT_FOUND}
     except subprocess.TimeoutExpired:
-        return {"error": "xurl search timed out (30s)"}
-    except json.JSONDecodeError as exc:
-        return {"error": f"Invalid JSON from xurl: {exc}"}
+        return {"error": ERR_TIMED_OUT}
+    except json.JSONDecodeError:
+        return {"error": ERR_INVALID_JSON}
     except Exception as exc:
-        return {"error": f"{type(exc).__name__}: {exc}"}
+        return {"error": f"xurl: {type(exc).__name__}"}
 
 
 def parse_x_response(
     response: Dict[str, Any],
     topic: str = "",
 ) -> List[Dict[str, Any]]:
-    """Parse xurl search response into normalized item dicts.
+    """Parse an xurl search response into normalized item dicts.
 
-    Output format matches the existing XItem schema used by xai_x and bird_x:
-    id, text, url, author_handle, date, engagement, why_relevant, relevance.
+    Delegates to the shared X API v2 parser (``x_api.parse_v2_response``)
+    so xurl and xapi never drift; only the id prefix differs.
 
     Args:
         response: Raw X API v2 response dict from search_x()
@@ -216,62 +339,7 @@ def parse_x_response(
     Returns:
         List of item dicts.  Empty list on error or no results.
     """
-    items: List[Dict[str, Any]] = []
-
-    if "error" in response:
+    if isinstance(response, dict) and "error" in response:
         _log(f"Error in response: {response['error']}")
-        return items
-
-    data = response.get("data") or []
-    if not data:
-        return items
-
-    # Build author lookup from includes.users
-    authors: Dict[str, Dict[str, Any]] = {}
-    for user in (response.get("includes") or {}).get("users") or []:
-        authors[user["id"]] = user
-
-    for i, tweet in enumerate(data):
-        author_id = tweet.get("author_id", "")
-        author = authors.get(author_id, {})
-        username = author.get("username", "")
-
-        tweet_id = tweet.get("id", "")
-        url = f"https://x.com/{username}/status/{tweet_id}" if username else ""
-
-        # Parse public_metrics
-        engagement: Optional[Dict[str, Any]] = None
-        metrics = tweet.get("public_metrics") or {}
-        if metrics:
-            engagement = {
-                "likes": metrics.get("like_count", 0),
-                "reposts": metrics.get("retweet_count", 0),
-                "replies": metrics.get("reply_count", 0),
-                "quotes": metrics.get("quote_count", 0),
-            }
-
-        # Parse ISO 8601 date → YYYY-MM-DD
-        date: Optional[str] = None
-        created = tweet.get("created_at", "")
-        if created:
-            m = re.match(r"(\d{4}-\d{2}-\d{2})", created)
-            if m:
-                date = m.group(1)
-
-        text = tweet.get("text", "").strip()
-
-        # Relevance score via shared token-overlap function
-        relevance = _compute_relevance(topic, text) if topic else 0.5
-
-        items.append({
-            "id": f"XURL{i + 1}",
-            "text": text[:500],
-            "url": url,
-            "author_handle": username,
-            "date": date,
-            "engagement": engagement,
-            "why_relevant": "",
-            "relevance": relevance,
-        })
-
-    return items
+        return []
+    return x_api.parse_v2_response(response, topic, None, id_prefix="XURL")

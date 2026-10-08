@@ -3,7 +3,8 @@ name: Changelog guard
 # Non-release PRs must not edit CHANGELOG.md or bump lockstep version strings.
 # Content edits to SKILL.md / pyproject.toml / uv.lock are fine.
 # Release PRs (label: release) are exempt. Engine changes need a changelog
-# fragment unless labeled skip-changelog.
+# fragment unless labeled skip-changelog. Dependabot PRs skip the fragment
+# requirement automatically (author dependabot[bot]); the label is optional.
 
 on:
   pull_request:
@@ -28,10 +29,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
+
+          # Compare files and versions from the same merge base, even when the
+          # event's base SHA predates a release merged into the PR branch.
+          # fetch-depth: 0 populates refs/remotes/origin without another fetch.
+          BASE_REMOTE_REF="refs/remotes/origin/${BASE_REF}"
+          if ! git rev-parse --verify --quiet "${BASE_REMOTE_REF}" >/dev/null; then
+            echo "::error::Cannot resolve ${BASE_REMOTE_REF}. Checkout must use fetch-depth: 0."
+            exit 1
+          fi
+          BASE_SHA="$(git merge-base "${BASE_REMOTE_REF}" "${HEAD_SHA}")"
+          echo "Base ${BASE_SHA} (merge-base with origin/${BASE_REF})"
 
           LABELS="$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" --jq '.[].name')"
           IS_RELEASE=0
@@ -41,6 +54,13 @@ jobs:
           fi
           if printf '%s\n' "${LABELS}" | grep -qx 'skip-changelog'; then
             SKIP_CHANGELOG=1
+          fi
+          # Dependabot cannot add skip-changelog itself (labels: in
+          # dependabot.yml replaces default ecosystem labels, and a missing
+          # repo label is silently dropped). Author is available on opened.
+          if [ "${PR_AUTHOR}" = "dependabot[bot]" ]; then
+            SKIP_CHANGELOG=1
+            echo "PR author is dependabot[bot] — changelog fragment not required."
           fi
 
           mapfile -t CHANGED < <(git diff --name-only "${BASE_SHA}...${HEAD_SHA}")
@@ -98,6 +118,7 @@ jobs:
             .grok-plugin/plugin.json
             .grok-plugin/marketplace.json
             gemini-extension.json
+            mcp/manifest.json
           )
 
           bumps=()
@@ -138,7 +159,7 @@ jobs:
           touches_engine=0
           for path in "${CHANGED[@]}"; do
             case "${path}" in
-              skills/last30days/scripts/*|skills/last30days/SKILL.md|mcp/*)
+              skills/last30days/scripts/*|skills/last30days/SKILL.md|skills/last30days/references/*|mcp/*)
                 touches_engine=1
                 ;;
             esac

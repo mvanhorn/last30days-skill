@@ -22,6 +22,23 @@ from typing import Dict, List, Optional
 logger = logging.getLogger(__name__)
 
 
+def has_complete_pair(result: Optional[Dict[str, str]], cookie_names) -> bool:
+    """Return True when ``result`` holds every requested cookie with a value.
+
+    Shared by the Firefox profile scan, ``env.extract_browser_credentials``,
+    and the setup wizard so a partial pair (e.g. a lone ``ct0`` from a
+    logged-out session) never shadows a complete one. Empty values do not
+    count: ``{"auth_token": "", "ct0": ""}`` is incomplete. ``cookie_names``
+    is the spec's cookie list (a spec dict with a ``"cookies"`` key also
+    works).
+    """
+    if not result:
+        return False
+    if isinstance(cookie_names, dict):
+        cookie_names = cookie_names.get("cookies", [])
+    return all(result.get(name) for name in cookie_names)
+
+
 def _lock_temp_cookie_copy(path: str) -> None:
     """Restrict copied cookie DB temp files to the current user on POSIX."""
     if os.name == "nt":
@@ -86,6 +103,16 @@ def _get_firefox_profiles_dir() -> Optional[Path]:
     return path if path.is_dir() else None
 
 
+def _load_profiles_ini(ini_path: Path) -> configparser.ConfigParser:
+    """Parse Firefox profiles.ini, retrying UTF-16 LE used on Windows (#1067)."""
+    config = configparser.ConfigParser()
+    try:
+        config.read(str(ini_path), encoding="utf-8")
+    except UnicodeDecodeError:
+        config.read(str(ini_path), encoding="utf-16")
+    return config
+
+
 def _find_default_profile(profiles_dir: Path) -> Optional[Path]:
     """Parse profiles.ini to find the default profile directory.
 
@@ -96,8 +123,7 @@ def _find_default_profile(profiles_dir: Path) -> Optional[Path]:
 
     if ini_path.is_file():
         try:
-            config = configparser.ConfigParser()
-            config.read(str(ini_path), encoding="utf-8")
+            config = _load_profiles_ini(ini_path)
 
             # First pass: Install* section (Firefox >= 67 format, takes priority)
             for section in config.sections():
@@ -118,7 +144,7 @@ def _find_default_profile(profiles_dir: Path) -> Optional[Path]:
                     resolved = _resolve_profile_path(profiles_dir, config, section)
                     if resolved and resolved.is_dir():
                         return resolved
-        except (configparser.Error, OSError) as exc:
+        except (configparser.Error, OSError, UnicodeDecodeError) as exc:
             logger.debug("Failed to parse profiles.ini: %s", exc)
 
     # Fallback: scan directory for anything that looks like a profile
@@ -219,13 +245,18 @@ def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -
     Tries the default profile first, then falls back to scanning all
     profiles for matching cookies.  This handles multi-profile setups
     where the user is logged into x.com on a non-default profile.
+    A complete match (all ``cookie_names``) always wins: a partial
+    default-profile result is kept only as a fallback.
     """
     default_profile = _find_default_profile(profiles_dir)
     profiles_tried = 0
+    fallback: Optional[Dict[str, str]] = None
     if default_profile is not None:
         result = _query_cookies_db(default_profile / "cookies.sqlite", domain, cookie_names)
         if result is not None:
-            return result
+            if has_complete_pair(result, cookie_names):
+                return result
+            fallback = result
         profiles_tried = 1
     # Fallback: scan every profile directory for matching cookies
     try:
@@ -238,10 +269,15 @@ def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -
             if db.is_file():
                 result = _query_cookies_db(db, domain, cookie_names)
                 if result is not None:
-                    return result
+                    if has_complete_pair(result, cookie_names):
+                        return result
+                    if fallback is None:
+                        fallback = result
                 profiles_tried += 1
     except OSError:
         pass
+    if fallback is not None:
+        return fallback
     logger.debug("No matching cookies found in %d Firefox profile(s)", profiles_tried)
     return None
 

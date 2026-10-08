@@ -2,13 +2,16 @@
 
 Reddit's highest-upvote content (relationship drama, AITA, viral news) often
 has near-zero topic overlap. Before this change both the keyed (ScrapeCreators)
-and keyless (RSS) paths ranked the final list engagement-first, so a viral
+and keyless paths ranked the final list engagement-first, so a viral
 off-topic post outranked on-topic posts. These tests pin the new behavior:
 on-topic posts rank first and pure zero-overlap posts are dropped when anything
 relevant remains.
 """
 
+import math
 from unittest import mock
+
+import pytest
 
 from lib import reddit, reddit_keyless
 
@@ -35,6 +38,25 @@ class TestRelevanceRankKey:
         on_topic = {"relevance": 0.3, "engagement": {"score": 10, "num_comments": 5}}
         off_topic = {"relevance": 0.0, "engagement": {"score": 99999, "num_comments": 4000}}
         assert reddit_keyless._relevance_rank_key(on_topic) > reddit_keyless._relevance_rank_key(off_topic)
+
+    @pytest.mark.parametrize("key", [reddit._relevance_rank_key, reddit_keyless._relevance_rank_key])
+    def test_negative_engagement_scores_the_floor(self, key):
+        # Downvoted posts report a negative score; log10 of a non-positive total
+        # must not raise, and the bonus bottoms out at zero.
+        zero_total = {"relevance": 0.3, "engagement": {"score": -1, "num_comments": 0}}
+        negative_total = {"relevance": 0.3, "engagement": {"score": -10, "num_comments": 3}}
+        assert key(zero_total) == pytest.approx(0.3)
+        assert key(negative_total) == pytest.approx(0.3)
+
+    @pytest.mark.parametrize("key", [reddit._relevance_rank_key, reddit_keyless._relevance_rank_key])
+    def test_zero_engagement_adds_no_bonus(self, key):
+        item = {"relevance": 0.3, "engagement": {"score": 0, "num_comments": 0}}
+        assert key(item) == pytest.approx(0.3)
+
+    @pytest.mark.parametrize("key", [reddit._relevance_rank_key, reddit_keyless._relevance_rank_key])
+    def test_non_negative_engagement_bonus_unchanged(self, key):
+        item = {"relevance": 0.3, "engagement": {"score": 5, "num_comments": 2}}
+        assert key(item) == pytest.approx(0.3 + math.log10(8) / 20.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -83,7 +105,7 @@ def _kpost(rid, rel, score, date="2026-05-20"):
         "score": score, "num_comments": score, "subreddit": "t", "created_utc": None,
         "author": "u", "selftext": "", "date": date,
         "engagement": {"score": score, "num_comments": score, "upvote_ratio": None},
-        "relevance": rel, "why_relevant": "Reddit RSS", "metadata": {},
+        "relevance": rel, "why_relevant": "Reddit search", "metadata": {},
     }
 
 

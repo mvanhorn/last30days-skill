@@ -127,6 +127,179 @@ class TestStoredAuth(unittest.TestCase):
         self.assertEqual(xurl_x.AUTH_OK, status)
         self.assertIn(str(self.store), detail)
 
+    def test_directory_layout_auth_yml_with_token_is_ok(self):
+        # Current xurl (>=1.1) stores credentials at ~/.xurl/auth.yml inside
+        # the ~/.xurl directory. Regression for #978: this was misread as
+        # "no token store" because the directory itself fails is_file().
+        self.store.mkdir(exist_ok=True)
+        auth_yml = self.store / "auth.yml"
+        auth_yml.write_text(
+            "apps:\n  app:\n    oauth2_tokens:\n      me:\n        oauth2:\n"
+            "          access_token: dummy-not-real\n",
+            encoding="utf-8",
+        )
+        status, detail = self._status()
+        self.assertEqual(xurl_x.AUTH_OK, status)
+        self.assertIn("auth.yml", detail)
+
+    def test_directory_layout_empty_auth_yml_is_missing(self):
+        self.store.mkdir(exist_ok=True)
+        (self.store / "auth.yml").write_text("", encoding="utf-8")
+        status, _ = self._status()
+        self.assertEqual(xurl_x.AUTH_MISSING, status)
+
+    def test_directory_layout_without_auth_yml_is_missing(self):
+        self.store.mkdir(exist_ok=True)
+        status, detail = self._status()
+        self.assertEqual(xurl_x.AUTH_MISSING, status)
+        self.assertIn("no token store", detail)
+
+    def test_legacy_flat_file_layout_is_ok(self):
+        # When token_store_path() returns the canonical ~/.xurl/auth.yml but
+        # the legacy flat ~/.xurl file is what exists, still report OK.
+        self.store.write_text(
+            json.dumps({"bearer_token": {"bearer": "dummy-not-real"}}),
+            encoding="utf-8",
+        )
+        status, detail = self._status()
+        self.assertEqual(xurl_x.AUTH_OK, status)
+        self.assertIn(str(self.store), detail)
+
+    def test_directory_layout_unreadable_auth_yml_is_error(self):
+        self.store.mkdir(exist_ok=True)
+        (self.store / "auth.yml").write_text(
+            "access_token: dummy-not-real\n", encoding="utf-8"
+        )
+        class _BrokenFile:
+            def __init__(self, path):
+                self._path = path
+
+            def is_file(self):
+                return True
+
+            def read_text(self, *args, **kwargs):
+                raise PermissionError(13, "Permission denied")
+
+            def __str__(self):
+                return str(self._path)
+
+        status, detail = self._status(
+            path=_BrokenFile(self.store / "auth.yml")
+        )
+        self.assertEqual(xurl_x.AUTH_ERROR, status)
+        self.assertIn("PermissionError", detail)
+
+    def test_permission_denied_read_reports_error_not_missing(self):
+        # Regression: a store that exists but cannot be read must report the
+        # typed AUTH_ERROR, not AUTH_MISSING. stat() on a chmod-000 file still
+        # succeeds on POSIX; read_text() is what raises PermissionError.
+        import os
+
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root bypasses permission checks")
+        self.store.mkdir(exist_ok=True)
+        auth_yml = self.store / "auth.yml"
+        auth_yml.write_text("access_token: dummy-not-real\n", encoding="utf-8")
+        auth_yml.chmod(0)
+        try:
+            status, detail = self._status()
+            self.assertEqual(xurl_x.AUTH_ERROR, status)
+            self.assertIn("PermissionError", detail)
+        finally:
+            auth_yml.chmod(0o600)
+
+    def test_permission_denied_parent_stat_reports_error_not_missing(self):
+        # Regression: a store inside a non-searchable directory must report
+        # AUTH_ERROR, not AUTH_MISSING. stat() on the candidate inside a
+        # chmod-000 parent raises PermissionError, which must not be swallowed
+        # into "no token store" the way pathlib's is_file() would.
+        import os
+
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root bypasses permission checks")
+        self.store.mkdir(exist_ok=True)
+        (self.store / "auth.yml").write_text(
+            "access_token: dummy-not-real\n", encoding="utf-8"
+        )
+        self.store.chmod(0)
+        try:
+            status, detail = self._status()
+            self.assertEqual(xurl_x.AUTH_ERROR, status)
+            self.assertIn("PermissionError", detail)
+        finally:
+            self.store.chmod(0o700)
+
+    def test_permission_denied_grandparent_stat_reports_error_not_missing(self):
+        # Regression: distinct from the parent-chmod case above, which denies
+        # traversal INTO the store (raising on the per-candidate _is_file scan).
+        # Chmod-000 on the store's own PARENT directory instead blocks stat()
+        # on the store path itself, raising during the _is_dir(base) call that
+        # builds the candidate list -- a separate except-OSError branch that
+        # the parent-chmod case never reaches.
+        import os
+
+        if hasattr(os, "geteuid") and os.geteuid() == 0:
+            self.skipTest("root bypasses permission checks")
+        self.store.mkdir(exist_ok=True)
+        (self.store / "auth.yml").write_text(
+            "access_token: dummy-not-real\n", encoding="utf-8"
+        )
+        grandparent = self.store.parent
+        grandparent.chmod(0)
+        try:
+            status, detail = self._status()
+            self.assertEqual(xurl_x.AUTH_ERROR, status)
+            self.assertIn("PermissionError", detail)
+        finally:
+            grandparent.chmod(0o700)
+
+    def test_directory_layout_has_stored_auth_with_binary(self):
+        self.store.mkdir(exist_ok=True)
+        (self.store / "auth.yml").write_text(
+            "access_token: dummy-not-real\n", encoding="utf-8"
+        )
+        with mock.patch("lib.xurl_x.token_store_path", return_value=self.store), \
+             mock.patch("lib.xurl_x.shutil.which", return_value="/usr/local/bin/xurl"):
+            self.assertTrue(xurl_x.has_stored_auth())
+
+    def test_directory_layout_no_subprocess_spawned(self):
+        self.store.mkdir(exist_ok=True)
+        (self.store / "auth.yml").write_text(
+            "access_token: dummy-not-real\n", encoding="utf-8"
+        )
+        with mock.patch(
+            "subprocess.run",
+            side_effect=AssertionError("local auth evidence must not spawn a subprocess"),
+        ):
+            status, _ = self._status()
+        self.assertEqual(xurl_x.AUTH_OK, status)
+
+    def test_walk_up_canonical_path_finds_legacy_flat_file(self):
+        # token_store_path() returns the canonical ~/.xurl/auth.yml, but only
+        # the legacy flat ~/.xurl file exists. The parent-walk must find it.
+        self.store.write_text(
+            json.dumps({"bearer_token": {"bearer": "dummy-not-real"}}),
+            encoding="utf-8",
+        )
+        canonical = self.store / "auth.yml"
+        with mock.patch("lib.xurl_x.token_store_path", return_value=canonical):
+            status, detail = xurl_x.stored_auth_status()
+        self.assertEqual(xurl_x.AUTH_OK, status)
+        self.assertIn(str(self.store), detail)
+
+    def test_canonical_path_preferred_when_both_layouts_exist(self):
+        # A stale legacy flat ~/.xurl must never shadow the live auth.yml.
+        self.store.mkdir(exist_ok=True)
+        (self.store / "auth.yml").write_text(
+            "oauth2_tokens:\n  me:\n    oauth2:\n      access_token: live\n",
+            encoding="utf-8",
+        )
+        canonical = self.store / "auth.yml"
+        with mock.patch("lib.xurl_x.token_store_path", return_value=canonical):
+            status, detail = xurl_x.stored_auth_status()
+        self.assertEqual(xurl_x.AUTH_OK, status)
+        self.assertIn("auth.yml", detail)
+
     def test_legacy_json_store_with_bearer_token_is_ok(self):
         self.store.write_text(
             json.dumps({"bearer_token": {"bearer": "dummy-not-real"}}),
@@ -176,8 +349,8 @@ class TestStoredAuth(unittest.TestCase):
              mock.patch("lib.xurl_x.shutil.which", return_value="/usr/local/bin/xurl"):
             self.assertFalse(xurl_x.has_stored_auth())
 
-    def test_default_store_path_is_home_dot_xurl(self):
-        self.assertEqual(Path.home() / ".xurl", xurl_x.token_store_path())
+    def test_default_store_path_is_home_dot_xurl_auth_yml(self):
+        self.assertEqual(Path.home() / ".xurl" / "auth.yml", xurl_x.token_store_path())
 
 # ---------------------------------------------------------------------------
 # search_x
@@ -192,19 +365,26 @@ class TestSearchX(unittest.TestCase):
             result = xurl_x.search_x("hello world")
         self.assertEqual(result["data"][0]["id"], "1")
 
-    def test_returns_error_on_non_zero_exit(self):
-        completed = mock.Mock(returncode=1, stdout="", stderr="rate limit exceeded")
+    def test_returns_fixed_error_on_non_zero_exit(self):
+        # xurl's stderr may echo the request or the bearer; only an
+        # engine-authored fixed string (with a classifier marker) survives.
+        completed = mock.Mock(
+            returncode=1, stdout="",
+            stderr="rate limit exceeded for dummy-x-bearer-secret-000",
+        )
         with mock.patch("subprocess.run", return_value=completed):
             result = xurl_x.search_x("test")
-        self.assertIn("error", result)
-        self.assertIn("rate limit exceeded", result["error"])
+        self.assertEqual(xurl_x.ERR_RATE_LIMITED, result["error"])
+        self.assertIn("rate limit", result["error"])
+        self.assertNotIn("dummy-x-bearer-secret-000", result["error"])
 
-    def test_returns_error_on_invalid_json(self):
-        completed = mock.Mock(returncode=0, stdout="NOT JSON")
+    def test_returns_fixed_error_on_invalid_json(self):
+        completed = mock.Mock(returncode=0, stdout="NOT JSON dummy-x-bearer-secret-000")
         with mock.patch("subprocess.run", return_value=completed):
             result = xurl_x.search_x("test")
-        self.assertIn("error", result)
-        self.assertIn("Invalid JSON", result["error"])
+        self.assertEqual(xurl_x.ERR_INVALID_JSON, result["error"])
+        self.assertIn("invalid JSON", result["error"])
+        self.assertNotIn("dummy-x-bearer-secret-000", result["error"])
 
     def test_returns_error_when_not_installed(self):
         with mock.patch("subprocess.run", side_effect=FileNotFoundError):
@@ -345,11 +525,14 @@ class TestParseXResponse(unittest.TestCase):
         items = xurl_x.parse_x_response(resp)
         self.assertEqual(items[0]["relevance"], 0.5)
 
-    def test_url_empty_when_no_username(self):
-        # author_id not in includes.users → username=""
+    def test_url_falls_back_to_i_status_when_no_username(self):
+        # author_id not in includes.users → username="" but the post is
+        # kept with the id-only citation form (shared x_api parser).
         resp = _make_api_response(tweets=[self._tweet("999", "text", "unknown_uid")])
         items = xurl_x.parse_x_response(resp)
-        self.assertEqual(items[0]["url"], "")
+        self.assertEqual(items[0]["url"], "https://x.com/i/status/999")
+        self.assertEqual(items[0]["author_handle"], "")
+        self.assertEqual(items[0]["post_id"], "999")
 
     def test_multiple_tweets_parsed(self):
         tweets = [self._tweet(str(i), f"tweet {i}", "u1") for i in range(5)]
@@ -376,6 +559,10 @@ class TestDepthConfig(unittest.TestCase):
     def test_all_standard_depths_present(self):
         for depth in ("quick", "default", "deep"):
             self.assertIn(depth, xurl_x.DEPTH_CONFIG)
+
+    def test_depth_config_is_shared_with_x_api(self):
+        from lib import x_api
+        self.assertIs(x_api.DEPTH_CONFIG, xurl_x.DEPTH_CONFIG)
 
     def test_deep_greater_than_quick(self):
         self.assertGreater(

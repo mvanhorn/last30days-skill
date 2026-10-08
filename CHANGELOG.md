@@ -9,6 +9,230 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.27.1] - 2026-10-08
+
+### Fixed
+
+- On Grok Bot, the month's most-engaged on-topic X posts now reach the report: a host-fetched X stream holds half its slots for its most-engaged posts that name the topic, so the popular pass's big posts no longer lose to fresher low-engagement ones, and off-topic viral posts never take those slots. The footer's X line now names its source ("via Grok Bot X" or "via X connector"), and the Grok Bot X recipe gives discovered authors only topic-word lanes and uses the engine's UTC date for the window.
+
+
+## [3.27.0] - 2026-10-08
+
+### Security
+
+- Route `github.py` and `transcribe.py` through `http.open_request` so their bearer tokens are also dropped on cross-origin redirects; both built their own Request and called `urllib.request.urlopen` directly, bypassing the handler added for #1062. ([#1062](https://github.com/mvanhorn/last30days-skill/issues/1062))
+- Restricted Grok X research to an agent profile with no local tools or default tool injection, while retaining hosted X search. Only the audited Grok 1.0.46 stable build (2765805b9442) runs; other builds fail before credentials are staged. Search topics now enter the prompt as single-line JSON string literals, so quotes, backslashes, newlines, and invisible Unicode cannot break the prompt's framing. The model can still misinterpret a topic or report inaccurate results; escaping does not make model output trustworthy. ([#1161](https://github.com/mvanhorn/last30days-skill/issues/1161))
+- Prevented private corpus titles from appearing in published library briefs, indexes, and feeds. Daily briefing archives now retain headline provenance; library headlines use public findings from daily and weekly archives or a generic headline when provenance is unavailable. Original titles remain available locally.
+- Require explicit consent before reading browser cookies through Chrome debugging sessions. Setup now saves acceptance or refusal, and a saved refusal blocks native browser and CDP reads on subsequent runs without storing cookie values.
+
+### Added
+
+- Document previously-undocumented engine flags in SKILL.md; add CLI-flag and engine-sync contract tests.
+
+### Changed
+
+- Load last30days instructions by research stage and optional mode, keeping the skill entry point short and preserving onboarding, output, citation, and permission requirements. Remove conflicting recommendation and comparison recipes and align plan guidance with the existing engine contract. ([#1230](https://github.com/mvanhorn/last30days-skill/issues/1230))
+- On Grok Bot, X now works out of the box: the bot fetches X through its built-in X tools first, with no plugin, key, or X API credits needed, then falls back to the X for Grok Bot connector and the official X API keys. Busy topics also get a popular pass, one relevance-sorted page for each of 10 equal slices of the window (5 on `--quick`), so the month's most-engaged posts surface, and the footer reads "via Grok Bot X". Host-fetched X results (`--x-posts`) can now fill the same topic budget as the engine's own two X fetches (24 posts at default depth, up from 12).
+
+### Fixed
+
+- `.env` lines written with the shell's `export` prefix (`export KEY=value`) now set `KEY`; before, they created a key literally named `export KEY` and the setting was silently ignored. The setup wizard also treats an `export KEY=...` line as the key being set, so it no longer appends a second copy. ([#930](https://github.com/mvanhorn/last30days-skill/issues/930))
+- Hacker News stories now get their top comments attached again: the pipeline calls `hackernews.enrich_top_stories` after parsing search results, so HN items no longer reach normalization with empty `top_comments`. ([#1168](https://github.com/mvanhorn/last30days-skill/issues/1168))
+- SKILL.md now consistently documents the `--plan` tmpfile form (`--plan "$QUERY_PLAN_FILE"`) in the pre-run checklist and post-run self-check, matching LAW 7; the inline `--plan 'QUERY_PLAN_JSON'` form no longer appears in those spots. ([#1196](https://github.com/mvanhorn/last30days-skill/issues/1196))
+- SKILL.md's privacy list now notes the TikTok legacy fallback: when `SCRAPECREATORS_API_KEY` is unset, `APIFY_API_TOKEN` is sent to ScrapeCreators. ([#1197](https://github.com/mvanhorn/last30days-skill/issues/1197))
+- Reject YouTube SSH host aliases beginning with a dash while preserving valid aliases and SSH option termination.
+
+  The manual engine comparison tool now uses the canonical engine path, counts nested entity reports, reports command failures separately from source errors, and exits unsuccessfully for failed or partial comparisons, including failures retained only in source status. ([#1226](https://github.com/mvanhorn/last30days-skill/issues/1226))
+- A failed X handle lane is no longer reported as "the subject posted nothing". The bird and xquik FROM/ABOUT lanes signalled a per-handle failure by returning no items, and the pipeline hardcoded the auth flag to `False` for both backends, so a missing `node`, a bird-search timeout, or an unpaid xquik key produced an empty lane with no recorded outcome — indistinguishable from genuine silence. Both adapters now report the reason, the pipeline records it, and the lane's auth message names the backend that actually failed.
+- Bound MCP output-pipe draining after engine shutdown so detached helpers cannot delay timeout responses indefinitely. Canceled and timed-out requests now report their context error even when the engine's signal handler exits successfully, and requests canceled before startup do not launch the engine.
+- Bound X searches, source waits, and discovery enrichment with shared deadlines. Cancelled enrichment stops later supplemental searches, X retries, and pipeline provider phases; completed evidence survives source timeouts as partial results. Bird searches that complete empty before the budget blocks optional retries retain their no-results status and show a partial-coverage warning. In-flight subprocesses retain their bounded timeouts. Raised the MCP subprocess timeout to 600 seconds (10 minutes) to accommodate deep enrichment; `LAST30DAYS_MCP_TIMEOUT` overrides it. The longer cap also lets a hung subprocess occupy an MCP slot longer.
+- Browser cookie detection now requires the complete login pair before accepting a source, so a logged-out session can no longer shadow the browser where you are actually logged in.
+- Discovery enrichment now hands each sub-run worker its own config copy, so one topic's financial-topic flag can no longer overwrite another's mid-run.
+- Doctor source probes and Reddit comment enrichment now stop stalled HTTP reads within their operation budgets and reap the transport workers. Reddit keeps comments that completed in time, and a zero enrichment budget starts no requests.
+
+  GET worker launch failures no longer leave unknown API-spend records for requests that were never delivered.
+
+  Doctor preserves completed Reddit HTTP 429 responses as unverified when the remaining probe budget cannot fit a retry.
+- Fixed browser selections being lost after consented setup, including Chromium and services signed in through different browsers, so later research can reuse their sessions without saving cookie values.
+  Both onboarding flows now explain future browser reads before consent, possible repeated macOS Keychain prompts, and how to disable native browser and CDP access.
+- Fixed the runtime preflight failing with "requires Python 3.12+" when `/last30days` is invoked in Claude Code with a multi-word topic: positional parameters in the `SKILL.md` preflight are now written as `${1}` / `$(2)`, which Claude Code's `$<digit>` argument substitution leaves alone.
+- Fixed watchlist daily budgets to accumulate provider-reported OpenRouter and Perplexity USD charges, preserve spending after failed or timed-out runs, and stop subsequent topics when the budget is exhausted or paid usage has unknown cost.
+- Fixed watchlist topic removal to preserve findings and run history shared with other topics. Topic lists, finding queries, trend counts, and briefings now include shared findings without double-counting repeated sightings, using each topic's first sighting for reporting windows.
+- HTML export and optional publishing commands now locate the engine through the skill's established `SKILL_DIR`, including installation paths containing spaces.
+- Honor configured memory directories in skill research, library, and topic-queue commands, preserve explicit empty values, fall through unresolved host placeholders to lower-priority configuration, and reuse the resolved directory throughout discovery. Only claim a saved artifact when the engine emitted its path.
+- Honor the research end date in Bird X searches, including query retries, author timelines, and mentions, so newer posts cannot crowd out historical results.
+- Honor the research plan's source selection for supplemental X handle searches and host-fetched X posts, preventing excluded X sources from returning evidence or making extra backend requests.
+- Include the research persistence module in MCP bundles so enabling `LAST30DAYS_STORE` saves findings without failing before results are returned.
+- Keep slash-containing research topics such as `CI/CD`, repository names, and URLs intact instead of launching unintended competitor comparisons. Preserve supported comparison forms, including `React/Vue/Svelte`, and slashes inside explicitly compared entities.
+- MCP research tool now separates the topic from engine flags and no longer saves a report after an explicit decline.
+- On POSIX systems, MCP timeouts now terminate descendant processes (X search, YouTube/transcript, Digg helpers) instead of leaving them orphaned and running after the engine is killed. Per-source timeouts also stop helpers whose parent exits before them.
+- Paid Reddit search preserves the requested date range at every research depth, including historical windows.
+- Preserve discovery sweep coverage warnings through saved nomination bundles, resumed research, and final reports, including empty results. Older nomination bundles continue to load.
+- Preserve existing HTML briefs across repeated or concurrent exports, and publish a new local artifact only after rendering succeeds.
+- Preserve job-board roles through author diversity filtering and calculate hiring signals from the complete accepted board, so ranking and display limits do not hide strategic roles or understate company size.
+- Prevent competitor research from inheriting the main topic's resolved context when the competitor has no context of its own.
+- Prevent concurrent MCP server startups from replacing a complete engine cache with a partial extraction. Each process now stages its own files, bounds publication-lock waits to five seconds, and safely reclaims staging files left by terminated extractors.
+- Respect host, tool, and user citation requirements in research summaries while retaining the default footer and saved research appendix where compatible.
+- Saving research preserves an existing watchlist topic's custom queries and schedule.
+- Search-quality evaluations now reuse cached judgments only when the judge model and complete prompt match, so changed results, topics, or grading instructions receive fresh scores. Older caches are refreshed before reuse.
+- The `serper` web backend no longer discards every recent result. Google renders a relative date ("2 hours ago", "1 day ago") for fresh results, which the date parser did not understand, so the in-range check dropped them — the newer the result, the more likely it was thrown away. On a one-day research window the web lane came back empty every time, reported as `Web: 0 items (no results)` rather than as a failure. Relative dates now resolve against the query date, which is what the label states an age relative to, so a `--as-of` search of a past window keeps the results that belong to it. A sub-day label is subtracted from the clock rather than rounded up to the current date, so shortly after midnight "23 hours ago" still names yesterday, and an age too large to represent reads as an unparseable date instead of aborting the rest of the results. The `brave` and `exa` backends were unaffected, since they return ISO timestamps.
+- The changelog guard now compares files and lockstep versions from the same merge base resolved at job time. This avoids attributing base-branch releases to a pull request when its event contains an older base SHA or its branch has not yet incorporated the latest release.
+- The fun judge now reads normalized comment excerpts and their vote counts from YouTube, TikTok, and Instagram, while preserving legacy comment bodies and comment insights.
+- Tightened source failure classification: 429/5xx status matching no longer false-positives on embedded digits, the stream exception path keeps the most specific failure (auth over rate-limit), X URLs keep path/query case when deduping, and an unconfigured X backend reads as skipped rather than failed.
+- `XAI_BASE_URL` and `OPENROUTER_BASE_URL` now also redirect the X search (`x_search`) and the OpenRouter Sonar fallback, not only the planner and rerank client, so a gateway or proxy sees every request that carries those keys. `--preflight` now lists `OPENROUTER_BASE_URL` among the active endpoint overrides.
+
+
+## [3.26.0] - 2026-10-01
+
+### Security
+
+- `--save-suffix` is sanitized to a path-safe token so traversal fragments cannot escape the save directory (including discover-mode saves). ([#736](https://github.com/mvanhorn/last30days-skill/issues/736))
+
+### Removed
+
+- Keyless Reddit discovery no longer uses Reddit RSS feeds, which Reddit shuts off on 2026-11-13.
+
+### Added
+
+- Keyless Reddit discovery now uses Reddit's own site search, alongside subreddit listings, arctic-shift, and shreddit comments, so Reddit keeps working with no API key after the RSS shutdown.
+- New `--perplexity-search-type fast|web` flag and `LAST30DAYS_PERPLEXITY_SEARCH_TYPE` setting choose the search type for direct Perplexity Search API and Agent `web_search` requests. They do not enable the Perplexity source and need a direct `PERPLEXITY_API_KEY`. Thanks to @sk-holmes (#1184).
+- The local MCP server can now use an explicit `LAST30DAYS_PYTHON` interpreter and a default-deny, consent-gated `LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES` switch, enabling reproducible Windows Claude Desktop deployments without weakening the existing cookie-access default.
+
+### Changed
+
+- With `SCRAPECREATORS_API_KEY` set, Reddit now spends ScrapeCreators credits to backfill search whenever the free path returns fewer than 5 items, instead of only when it returns nothing. A run makes at most one ScrapeCreators Reddit backfill per distinct query, date window, and subreddit set, and each backfill is several API calls (searches plus comment fetches, roughly 10 at default depth). Set `LAST30DAYS_REDDIT_SC_MIN_ITEMS=0` to restore the old backfill-only-when-empty behavior.
+
+### Fixed
+
+- `--perplexity-search-type` no longer moves hosted-backend runs to local research when no direct `PERPLEXITY_API_KEY` is configured, and an invalid `LAST30DAYS_PERPLEXITY_SEARCH_TYPE` value no longer blocks OpenRouter Sonar searches. ([#1188](https://github.com/mvanhorn/last30days-skill/issues/1188))
+- Reading an HTTP error response body now counts against the caller's deadline instead of stalling past it, and debug logs redact request API keys, including keys a provider echoes back in an error body. Thanks to @sk-holmes (#1184).
+
+
+## [3.25.0] - 2026-09-18
+
+### Security
+
+- Scraped titles can no longer forge the engine's own block sentinels. Titles are the full post body on X, TikTok, Instagram and LinkedIn and kept their internal newlines, so a short post could close the EVIDENCE FOR SYNTHESIS envelope early and open a block shaped like the PASS-THROUGH FOOTER, which LAW 5 tells the host model to relay verbatim. Titles are now collapsed to one line, and the sentinel markers are defanged in titles, in snippet/comment evidence, and in private-corpus titles, filenames and snippets — every path that renders inside the synthesis envelope. ([#1053](https://github.com/mvanhorn/last30days-skill/issues/1053))
+- Safari cookie extraction now matches the cookie host exactly or as a true subdomain, so a session cookie stored for an unrelated host such as `x.com.evil.tld` is no longer picked up for `x.com`.
+- Scraped content can no longer close the `<untrusted_content>` fence that wraps it. A post title carrying the literal closing tag previously ended the block early, placing the rest of that title outside the fence in both the rerank judge prompt and the `--discover` host digest — the latter being the engine stdout that becomes the host agent's tool result.
+- `--record-fixtures` no longer writes live credentials to disk. Fixture redaction is driven by key name, and the recognized set omitted `password`, `accessJwt`, and `refreshJwt` — so a Bluesky session exchange recorded the app password from the request body and both session JWTs from the response in cleartext, in a file created world-readable. The key set now covers those names, recorded files are created `0600`, and env-derived secret values are scrubbed from responses on this path as they already were for source records.
+
+### Removed
+
+- The Claude Code and Grok plugin no longer installs a SessionStart hook. Welcome, source status, and the ScrapeCreators tip run only when `/last30days` is invoked (SKILL.md Step 0). `--preflight` remains as an opt-in permission inspector and MCP JSON contract; it is not a required first-run step. `LAST30DAYS_QUIET` is gone with the hook. The engine still creates `LAST30DAYS_MEMORY_DIR` on first save.
+
+### Added
+
+- **Meta Ads source** — a new opt-in research lane that surfaces what a brand is *paying* to say this month, alongside what everyone else is saying about it. It resolves the brand's advertiser page in the Meta Ad Library, pulls the creatives that launched inside your 30-day window, and reads back the ad copy, launch date, placements, call to action, landing product, any promo code, and the spoken transcript of the newest video ads. The 📣 footer line names the advertiser page it resolved, so a wrong-company match is visible rather than silent, and reports how much the brand is still running from before the window.
+
+  Paid message only, never audience reaction: Meta publishes reach and spend for political ads alone, so commercial creatives carry no engagement numbers.
+
+  Off by default and never inferred from topic shape. Turn it on per run with `--search meta_ads` or durably with `INCLUDE_SOURCES=meta_ads`; it needs `SCRAPECREATORS_API_KEY`. A default-depth run spends at most 7 of the 10,000 free calls. Use `--meta-ads-page=<page_id>` when a brand advertises under product-line page names, and `LAST30DAYS_META_ADS_COUNTRY` for a non-US Ad Library.
+
+### Fixed
+
+- ScrapeCreators GitHub device flow: `fetch_api_key` no longer collapses HTTP 5xx from `/v1/github/device/profile` into the already-linked "Authorized but failed to fetch API key" path. Server errors surface as `reason: upstream_error` with a distinct message (after bounded retries and a truncated body in the detail), and SKILL.md routes those failures to web signup/retry instead of "your GitHub is probably already linked." ([#882](https://github.com/mvanhorn/last30days-skill/issues/882))
+- Entity-miss demotion no longer goes inert on long topics without a distinctive named entity. Intent modifiers are stripped only as trailing suffixes, and generic-headed topics use stronger trailing anchors while broad words such as "code", "review", and "work" cannot ground a result by themselves. ([#887](https://github.com/mvanhorn/last30days-skill/issues/887))
+- The LinkedIn source now honors the requested date window instead of always querying a hardcoded `last-month` bucket, walks the response cursor instead of stopping after the first ~10 posts, and treats the endpoint's 404 as an empty result rather than an error, since 404 is how this API signals that a query matched no posts. Because results inside a bucket are relevance-ranked rather than recency-ranked, the search queries both the narrow and the covering bucket and unions them. A bucket that fails after another succeeded now returns `partial: True` with the first error rather than reading as a complete, low-volume result. ([#939](https://github.com/mvanhorn/last30days-skill/issues/939))
+- Adapter-valid arXiv papers are no longer dropped by the report date window during normalization. ([#946](https://github.com/mvanhorn/last30days-skill/issues/946))
+- GitHub search qualifiers wrapped in parentheses, quotes, or brackets (`(created:>2025-03-20)`, `"created:>2025-03-20"`) are now stripped from topics before the query is built, matching the plain-qualifier behavior. Previously a wrapped `created:` survived into the search, collided with the adapter's own `created:>{from_date}` window (GitHub honors the first), and the source silently reported zero results. Leftover empty wrapper pairs are removed too, so a wrapped qualifier-only topic still degrades to the no-search error instead of emitting stray characters. ([#952](https://github.com/mvanhorn/last30days-skill/issues/952))
+- Empty or qualifier-only GitHub topics now report no-results instead of marking the source as failed. ([#953](https://github.com/mvanhorn/last30days-skill/issues/953))
+- GitHub qualifier-only rejections now truncate the topic in error detail and logs so a long planner query cannot spam stderr, the error envelope, and doctor hints on every subquery. ([#954](https://github.com/mvanhorn/last30days-skill/issues/954))
+- `--diagnose` and doctor no longer report xurl as unauthenticated when credentials live in the current `~/.xurl/auth.yml` directory layout; the legacy flat `~/.xurl` file is still recognized. ([#978](https://github.com/mvanhorn/last30days-skill/issues/978))
+- Instagram creator reels now unwrap ScrapeCreators `media` envelopes before parsing, preserving their metadata and date filtering. ([#1017](https://github.com/mvanhorn/last30days-skill/issues/1017))
+- Grok X backend now requests `--output-format json` and parses the JSON array Grok CLI 1.0.5 actually emits, so searches no longer die as "no items parsed". `--json-schema` is still not passed. ([#1051](https://github.com/mvanhorn/last30days-skill/issues/1051))
+- A config value left as an unsubstituted `${user_config.*}` extension template is now treated as unset. `doctor` and `permission_preflight` report it as an unsubstituted template instead of a healthy credential, and backends fall back rather than sending the placeholder upstream. Previously the placeholder read as configured, so the diagnostics cleared a setup that could not work and the failure surfaced as a vendor auth error. (#1081) ([#1081](https://github.com/mvanhorn/last30days-skill/issues/1081))
+- A comparison run whose main topic fails now exits with an error instead of silently promoting a competitor to be the report's subject. `run_competitor_fanout` drops a failed sub-run, and the render treats the first surviving entry as the subject, so a main topic that raised while two or more peers succeeded produced a complete-looking comparison headed by a peer, saved under that peer's slug, with the requested topic unmentioned. Entities that were dropped are also recorded as a report warning, so a narrower comparison than requested is visible rather than silent.
+- Add `mcp/manifest.json` to the lockstep version set so the `.mcpb` manifest is bumped by release prep and guarded against drift in feature PRs.
+- Audio transcription posts the skill's canonical User-Agent instead of Python-urllib, so Groq's Cloudflare edge no longer 403s the request with error 1010.
+- Reddit ranking no longer crashes with a `math domain error` when a downvoted post has a negative score; such posts now receive the minimum engagement bonus.
+- The Grok CLI's stdout is now decoded as UTF-8 instead of the OS locale codec. On Windows (cp1252), an emoji or smart quote in an X post's text crashed the decode inside `subprocess.run`, which surfaced as "no items parsed" from the `grok` X backend rather than a real error.
+- Trailing `# comment` annotations on unquoted `.env` values (the shape shown in `CONFIGURATION.md`) are now stripped instead of being stored as part of the value; `#` inside quotes or glued to the value stays literal.
+- `HERMES_SETUP.md` now documents the working Hermes install path: the `hermes skills install … --force` command is blocked by Hermes's install-time scanner (a `dangerous` verdict that `--force` cannot override), so the guide uses `git clone` + `cp` into the skills directory instead, and the update steps match.
+- `OPENAI_BASE_URL`, `XAI_BASE_URL`, and `OPENROUTER_BASE_URL` now accept an API root (`https://host/v1`) in addition to a full endpoint URL. Values copied from a provider's setup guide previously POSTed to the API root and failed.
+- `doctor` no longer reports a rate-limited source as an outage. A probe refused with HTTP 429 is retried once and, if still refused, shown as unverified instead of `NOT WORKING`. Reddit was the visible case: a burst of keyless probes draws a 429 while the research lane, which retries with backoff, serves the same query fine. HTTP 403 still counts as a hard failure.
+- `verify_v3.py` now runs the unit stage with pytest, so pytest-style test files (previously skipped by `unittest discover`) are verified.
+
+
+## [3.24.0] - 2026-09-09
+
+### Added
+
+- New `xapi` X backend: the official X API v2 with an app-only `X_BEARER_TOKEN`, trying full-archive search first and falling back to recent search (about the last seven days, reported as "window truncated to 7 days"), serving the topic lane and the from/mention/related handle lanes; it is the first rung on Grok Bot and opt-in elsewhere (`LAST30DAYS_X_BACKEND=xapi`). New `--x-posts <path>` flag ingests a `last30days-x-posts/1` envelope of posts the hosting model fetched through its X connector (per-entity `x_posts` in `--competitors-plan`), and `LAST30DAYS_X_HOST_LANE=1` marks X as available for planning while a connector is in the session. New `setup --store-key <NAME>` persists one credential from stdin without echoing it. New `payment-required` source outcome, exported under agent JSON schema `1.3`.
+
+### Changed
+
+- On a Grok Bot host (`LAST30DAYS_HOST=grok-bot`) X search now runs through the bot's X connector first, with the official X API (`X_BEARER_TOKEN`) and xAI's licensed X search (`XAI_API_KEY`) as backups; onboarding, doctor, and repair hints there name only those paths. Credit-exhaustion responses from any source (HTTP 402 or an explicit "insufficient credits" message) now classify as the `payment-required` outcome instead of `error` or `auth-failed`, and `LAST30DAYS_STRICT_EXIT` treats it as degraded (exit `3`).
+
+
+## [3.23.1] - 2026-09-08
+
+### Security
+
+- Drop Authorization, x-api-key, x-csrf-token, and x-subscription-token when urllib follows a 3xx that changes scheme or host (stdlib otherwise copies them). ([#1062](https://github.com/mvanhorn/last30days-skill/issues/1062))
+- Require an absolute path for automatically discovered MCP Python interpreters,
+  including when Go's built-in relative-path protection is explicitly disabled.
+  Explicit interpreter overrides retain their existing behavior. ([#1109](https://github.com/mvanhorn/last30days-skill/issues/1109))
+- Keychain setup and listing now check existence without requesting plaintext passwords, and count existing entries by exit status. Selectively retains the safe presence-check changes from #1061; the existing credential writer is unchanged and its command-line exposure remains a separate follow-up.
+
+### Fixed
+
+- Operator-supplied `--plan` now keeps each subquery's `sources` instead of silently replacing them with the full available list. Unavailable-only subqueries are visibly skipped; if none remain, the run fails before retrieval with configuration guidance. Engine-internal LLM plans retain their fallback and expansion behavior. ([#1073](https://github.com/mvanhorn/last30days-skill/issues/1073))
+- SessionStart hook must use the bare ${CLAUDE_PLUGIN_ROOT} form so Claude Code's
+  missing-plugin-root guard can match it. A default of `.` resolves relative to the
+  session cwd and can execute a decoy check-config.sh from the user's project. ([#1074](https://github.com/mvanhorn/last30days-skill/issues/1074))
+- Grok Bot / Cursor agent chat is now a hidden-link citation host: LAW 8 detects it via `CURSOR_AGENT` (alongside `CLAUDECODE` for Claude Code) and inline-links every cited r/sub, u/name comment author, @handle, GitHub repo, and creator with URLs copied verbatim from the engine evidence. Codex, Gemini CLI, and raw CLI keep the plain-label regime, so no URL soup returns. ([#1095](https://github.com/mvanhorn/last30days-skill/issues/1095))
+- Documented that the SessionStart config hook ships only with the Claude Code plugin install; on npx and other hookless installs there is no hook and the engine creates the memory directory itself on first save. ([#1100](https://github.com/mvanhorn/last30days-skill/issues/1100))
+- Posts fetched via `--ig-creators` or TikTok `--creators` now reach the report: named creator accounts count as first-party provenance in the relevance prune, scoped to each flag's own platform so a same-name account elsewhere still faces the floor, and prune drops are logged per stream with the dropped count and floor. ([#1101](https://github.com/mvanhorn/last30days-skill/issues/1101))
+- Corrected the stated LAW count in the SKILL.md formatting-authority note to match the eleven LAWs defined below it. ([#1102](https://github.com/mvanhorn/last30days-skill/issues/1102))
+- Use Bluesky refresh tokens to recover expired search sessions before falling back to a new login, while keeping unauthorized retries bounded. ([#1065](https://github.com/mvanhorn/last30days-skill/pull/1065))
+
+
+## [3.23.0] - 2026-09-01
+
+### Added
+
+- On Linux and Mac mini hosts (and any host that sets `AGENTCOOKIE=on`), X search can now hand Bird a complete `auth_token`+`ct0` pair from two additional sources: the `agentcookie` sidecar CLI and a live signed-in Chrome/Chromium session read over the DevTools Protocol (`Network.getAllCookies`). The first complete pair wins, cookies are never written to the `.env` or logged, and a Node `--inspect` endpoint is never mistaken for Chrome. A MacBook is unchanged — it uses only the existing browser-cookie extract unless `AGENTCOOKIE=on`. The X backend chain and grok's pin-only status are unchanged from `main`.
+
+### Fixed
+
+- Stop listing SCRAPECREATORS_API_KEY as an X backend; the engine has no ScrapeCreators X path (`_X_BACKEND_ORDER` is bird/xai/xurl/xquik). ([#942](https://github.com/mvanhorn/last30days-skill/issues/942))
+- Keep YouTube videos that already had transcripts fetched when the hard date window would otherwise empty the source (#1043). Search already kept out-of-window results when fewer than 3 were recent. ([#1043](https://github.com/mvanhorn/last30days-skill/issues/1043))
+- `tests/test_footer_nudge_suppression.py::test_bare_run_emits_web_promo` failed on macOS for contributors with a `last30days-BRAVE_API_KEY` Keychain item, while passing in Linux CI. The test sealed two credential sources — it stripped the paid web keys from `os.environ` and set `LAST30DAYS_CONFIG_DIR=""` — but macOS Keychain is a third, independent source, so `BRAVE_API_KEY` was still resolved, `native_web_backend` was set, `_missing_sources_for_promo()` returned `None`, and the asserted `BRAVE_API_KEY` nudge was never printed. `_load_keychain()` gains a `LAST30DAYS_SKIP_KEYCHAIN` opt-out (process-environment only, since it gates a source consulted while the config is assembled), and the test now sets it. Engine behaviour is unchanged when the switch is unset. ([#1050](https://github.com/mvanhorn/last30days-skill/issues/1050))
+- Pass `player_client=android` to yt-dlp (overridable via `LAST30DAYS_YT_PLAYER_CLIENT`) so search, transcripts, and comments can clear the web bot-gate without spending ScrapeCreators credits. ([#1052](https://github.com/mvanhorn/last30days-skill/issues/1052))
+- The vendored X-search subprocess no longer receives a copy of the full environment: `bird_x` now passes only the variables the client actually reads (runtime vars, X session cookies, `BIRD_*` flags, injected credentials), so unrelated ambient API keys and tokens cannot reach scan-excluded vendored code ([#1063](https://github.com/mvanhorn/last30days-skill/issues/1063)). ([#1063](https://github.com/mvanhorn/last30days-skill/issues/1063))
+- Windows Firefox `FROM_BROWSER` X auth no longer dies on a UTF-16 `profiles.ini` (`UnicodeDecodeError` used to skip the fallback and kill the only keyless X route). ([#1067](https://github.com/mvanhorn/last30days-skill/issues/1067))
+- Declining or skipping X/browser-cookie access now continues the requested research with available sources, and reports X only as an optional omission after useful results.
+
+
+## [3.22.0] - 2026-08-31
+
+### Added
+
+- Telegram public channel source: opt-in via `--telegram-sources=handle1,handle2` or `TELEGRAM_SOURCES` + `INCLUDE_SOURCES=telegram`. Named public channels only (no keyword discovery); fetches recent posts via ScrapeCreators API and scores by views, reactions, and topic relevance. ([#990](https://github.com/mvanhorn/last30days-skill/issues/990))
+- Add an explicit `--web-backend=parallel-mcp` option for anonymous hosted Parallel web search.
+- Reddit threads with the most upvotes and comments now keep their place: each Reddit stream holds slots for its top three on-topic threads by engagement before per-stream truncation, and the fused candidate pool reserves slots (quick 2, default 3, deep 4) for the highest-engagement entity-grounded Reddit candidates. A 16K-upvote thread with weak title overlap was previously cut behind one-upvote posts. Topics whose primary entity starts with a generic word ("ai", "new") require the higher 0.25 relevance floor for these slots.
+
+### Changed
+
+- Keyless Reddit comment enrichment now covers 4 / 8 / 12 threads per subquery at quick / default / deep depth (was 3 / 5 / 8) and keeps up to 12 top comments per thread (was 10), now that repeat fetches are memoized and paced.
+- The emoji-tree footer no longer appends `⚠ partial after N items: HTTP 429 ... (run doctor for fixes)` outcome text to any source line; source lines carry counts and engagement only. `--emit=compact` stdout also drops the `Some sources failed` / `Some sources returned partial results` warning lines and the `## Source Errors` block. The model-facing `## Partial Coverage` note stays, and the saved raw file, `--emit=json`, and `doctor --postmortem` keep full `source_status`, `warnings`, and `errors_by_source`.
+
+### Fixed
+
+- Keyless Reddit comment-enrichment slots now go to the most-commented threads within each entity-priority tier, so a high-discussion thread no longer misses `## Top Community Comments` coverage while near-empty threads consume the scarce slots. ([#906](https://github.com/mvanhorn/last30days-skill/issues/906))
+- Keyless Reddit now paces unauthenticated reddit.com requests at 1 req/sec (configurable via `LAST30DAYS_REDDIT_KEYLESS_RATE`) and retries a 429'd RSS or listing sub-request once, so routine runs no longer drop those lanes as `partial` HTTP 429. ([#985](https://github.com/mvanhorn/last30days-skill/issues/985))
+- A source that delivered items but lost some sub-requests (a swallowed 429 or 403 on one lane) now records `ok` with a detail line such as `3 sub-requests rate-limited (HTTP 429)` instead of `partial`; `doctor --postmortem` shows that detail on the Succeeded line. Adapter-declared leg failures (for example a Perplexity `both` run whose agent leg failed) still brand the source partial.
+- Fusion and report finalize now identify a thread by its normalized URL, not its per-stream item id. When the same Reddit thread arrives from two subquery streams (both labelled `R1`), the candidate keeps the copy that carries `top_comments`, `comment_insights`, and the verified counts instead of discarding it as a duplicate, and `items_by_source` holds one entry per thread. This is what silently emptied `## Top Community Comments` on multi-subquery runs.
+- Keyless Reddit GETs are memoized for the life of one command, and concurrent requesters for the same URL share the in-flight fetch. Subreddit listing partials, listing RSS feeds, arctic supplements, and shreddit comment pages were fetched once per subquery (four times on a typical run) because the Reddit lane is dispatched with the raw topic every time; a four-subquery run now issues roughly 50 reddit.com requests instead of ~184, which is what kept tripping the anonymous rate limit.
+- Keyless Reddit RSS and listing fetches now size their per-future timeouts from the shared bucket's queue depth instead of a fixed 20 seconds. At 1 req/s with four subquery streams sharing the bucket, the fixed timeout expired while a fetch was still waiting for its token and the feed was silently dropped.
+- Keyless Reddit comment scraping now drops bot authors (RemindMeBot, AutoModerator, `WikiTextBot`-style camelCase names, and `-bot`/`_bot` suffixed accounts), so a "I will be messaging you in 3 days" reply can no longer occupy a Top Community Comments slot. Ordinary usernames ending in a lowercase "bot" (Talbot, abbot) are unaffected. Cherry-picked from [#1034](https://github.com/mvanhorn/last30days-skill/pull/1034) (rebase of [#907](https://github.com/mvanhorn/last30days-skill/pull/907)).
+- Rate-limit retries are bounded: a `Retry-After` / `x-ratelimit-reset` wait is capped at 60 seconds and an epoch-style reset (GitHub) is converted to a delta, so a 429 can no longer park a worker or the main thread for minutes. The keyless Reddit memo elects one new owner when an in-flight fetch fails instead of letting every waiter refetch, its gate wait and the comment-enrichment budget account for the shared bucket's queue, the Reddit pool reservation survives a small pool crowded by many sources, stream keepers respect `--max-per-source`, a source whose swallowed sub-requests all 429ed is not retried against the same host and is reported as rate-limited rather than `no-results` when filtering leaves it empty.
+- Reddit 429 backoff now honours `x-ratelimit-reset`, not just `Retry-After`. Reddit's anonymous search/RSS endpoints reply to a 429 with `x-ratelimit-reset: 42` and no `Retry-After`, so the retry fell through to exponential backoff (3s, 5s, 9s) — every step shorter than the window Reddit actually requires. Each retry re-429'd, the budget drained, and Reddit was reported as a dead source when it was only being asked too early. Both `http.fetch_url` and `reddit_public` now read either header through the new `http.retry_delay_from_headers` helper.
+- Sources that return items are no longer branded `auth-failed` / `partial` when a swallowed lane-level HTTP failure (e.g. Reddit shreddit partials 403-ing on datacenter egress) is captured by the pipeline sink. The transport-failure outcome still surfaces when nothing was delivered, so `doctor` prescriptions are unaffected.
+- `## Top Community Comments` and `## Best Takes` now draw from every cluster that clears the relevance floor, not only the eight clusters shown in `## Ranked Evidence Clusters`, so a top-voted comment on a lower-ranked thread still reaches the brief.
+
+
 ## [3.21.1] - 2026-08-18
 
 ### Changed

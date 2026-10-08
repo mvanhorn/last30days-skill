@@ -271,7 +271,15 @@ def _user_reels(
 
     raw_items = data.get("items") or data.get("reels") or data.get("data") or []
     _log(f"  -> {len(raw_items)} reels from @{handle}")
-    return raw_items
+
+    # User-reels responses wrap each reel in a ``media`` envelope, while
+    # other Instagram endpoints already return flat reel dictionaries.
+    return [
+        item["media"]
+        if isinstance(item, dict) and isinstance(item.get("media"), dict)
+        else item
+        for item in raw_items
+    ]
 
 
 def search_instagram(

@@ -36,14 +36,14 @@ _WELCOME_TEXT = """Welcome to /last30days! I research any topic across Reddit, X
 I synthesize what people are actually saying right now across social, news, and market sources.
 
 Auto setup gives you the core sources free in about 30 seconds:
-- X/Twitter - reads your browser cookies to authenticate (read live each run, never saved to disk). I check Chrome first (fastest - a one-time macOS Keychain prompt may appear; click Always Allow), then Firefox and Safari.
-- Reddit with comments - free keyless discovery (RSS + shreddit), no API key needed.
+- Reddit with comments - free keyless discovery (Reddit search + shreddit), no API key needed.
 - YouTube search + transcripts - installs yt-dlp (open source, 190K+ GitHub stars).
 - Digg - trending news, GitHub stars, and pipeline feeds - installs the free, keyless Digg CLI.
 - arXiv (papers) + Techmeme (tech-news) - install free, keyless Printing Press CLIs and run on any topic (arXiv is relevance + recency gated to research topics).
 - StockTwits - retail trader sentiment - auto-on when your topic is a ticker or crypto (e.g. "$NVDA earnings", "bitcoin"), off for everything else.
 - Trustpilot - brand/company review sentiment - opt-in (add trustpilot to INCLUDE_SOURCES), off by default.
 - Hacker News + Polymarket + GitHub (auto-on if the gh CLI is installed) - always on, zero config.
+- X/Twitter - optional. It stays available when you already configured it, or after you explicitly approve a browser-cookie read; skipping it never blocks research.
 
 Want TikTok and Instagram too? ScrapeCreators adds those (10,000 free calls, scrapecreators.com). No kickbacks, no affiliation.
 
@@ -61,6 +61,12 @@ def render_welcome() -> str:
     return _WELCOME_TEXT
 
 
+# Neutral note recorded on an official-only host instead of a cookie scan.
+# Deliberately names no cookie mechanism beyond the fact that none is used
+# (the vocabulary rule for Grok Bot onboarding output).
+OFFICIAL_HOST_COOKIE_NOTE = "browser sessions are not read on this host"
+
+
 def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = False) -> Dict[str, Any]:
     """Perform the auto-setup actions.
 
@@ -73,6 +79,10 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
     Returns:
         Dict with keys:
           cookies_found: {source_name: browser_name} for each source where cookies were found
+          browser_cookie_scan_attempted: bool (True only after explicit consent
+              AND on a host whose X policy permits cookie discovery)
+          cookie_note: present only on an official-only host, where the scan
+              is skipped for every domain (neutral, relayable text)
           ytdlp_installed: bool
           ytdlp_action: already_installed | installed | install_failed | no_homebrew
           digg_installed: bool (True when the engine can resolve digg-pp-cli on PATH)
@@ -82,14 +92,25 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
           digg_stderr: present when digg_action is install_failed
           digg_path: present when digg_action is installed_off_path (binary on disk, not on PATH)
     """
-    from .env import COOKIE_DOMAINS, cookie_extraction_browsers
+    from .env import COOKIE_DOMAINS, cookie_extraction_browsers, x_policy
 
     cookies_found: Dict[str, str] = {}
+    cookie_note: Optional[str] = None
+
+    # Official-only host (LAST30DAYS_HOST=grok-bot): the consented
+    # cookie scan is skipped for EVERY domain (X and Truth Social alike) and
+    # recorded as not attempted, with a neutral note the caller can relay.
+    # The free CLI installs below still run. A LAST30DAYS_X_BACKEND=bird pin
+    # is the one path that re-enables discovery, via x_policy.
+    if allow_browser_cookies and not x_policy(config).cookie_discovery:
+        allow_browser_cookies = False
+        cookie_note = OFFICIAL_HOST_COOKIE_NOTE
 
     if allow_browser_cookies:
         from . import cookie_extract
 
         cookie_config = dict(config)
+        cookie_config["BROWSER_CONSENT"] = "true"
         if not (cookie_config.get("FROM_BROWSER") or "").strip():
             # Chromium-first: Chrome/Brave/etc. read cookies via the Keychain
             # with no Full Disk Access, so try them before Safari, whose
@@ -110,9 +131,9 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
                 except Exception as exc:
                     logger.debug("Cookie extraction failed for %s via %s: %s", source_name, browser, exc)
                     continue
-                if result is not None and result[0]:
+                if result is not None and cookie_extract.has_complete_pair(result[0], cookie_names):
                     cookies_found[source_name] = result[1]
-                    break  # Found cookies for this service, stop trying browsers
+                    break  # Complete pair found for this service, stop trying browsers
 
     # Check yt-dlp availability and install via Homebrew if missing. Windows
     # has no Homebrew, and its working install path is `pip install yt-dlp`
@@ -154,6 +175,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
 
     results: Dict[str, Any] = {
         "cookies_found": cookies_found,
+        "browser_cookie_scan_attempted": allow_browser_cookies,
         "ytdlp_installed": ytdlp_installed,
         "ytdlp_action": ytdlp_action,
         "digg_installed": digg_installed,
@@ -162,13 +184,15 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
         # (arxiv, techmeme, trustpilot): {source: {installed, action, ...}}.
         "pp_sources": pp_sources,
         # Reported, never installed: this CLI spends the user's own metered
-        # credits, so acquiring it stays their decision (U5/R11). Passing
+        # credits, so acquiring it stays their decision. Passing
         # config matters: a user whose key lives in a .env file or the
         # keychain (rather than a `brightdata login` credentials file) is
         # active in the engine, and setup must not tell them otherwise.
         "brightdata": brightdata_status(config),
         "env_written": False,
     }
+    if cookie_note:
+        results["cookie_note"] = cookie_note
     if ytdlp_action == "install_failed":
         results["ytdlp_stderr"] = brew_stderr
     if digg_action == "install_failed":
@@ -503,6 +527,58 @@ def _open_secret_append(path: Path):
     return os.fdopen(fd, "a", encoding="utf-8")
 
 
+def _env_line_key(stripped: str) -> str:
+    """Return the key a stripped ``KEY=value`` line sets, as the loader reads it."""
+    from . import env as _env
+
+    return _env.env_line_key(stripped.split("=", 1)[0])
+
+
+def _replace_env_line(env_path: Path, content: str, key_name: str, value: str) -> bool:
+    """Rewrite every ``key_name=`` line of ``content`` with ``value`` as a 0o600 secret.
+
+    The new file is written to a sibling temp path opened at 0o600 and moved
+    over the original, so the secret never has a readable window and a
+    crash mid-write leaves the old file intact.
+    """
+    def _is_key(stripped: str) -> bool:
+        return bool(
+            stripped and not stripped.startswith("#") and "=" in stripped
+            and _env_line_key(stripped) == key_name
+        )
+
+    stripped_lines = [line.strip() for line in content.splitlines()]
+    # Keep a hand-written ``export`` -- on any of the duplicates being
+    # collapsed -- so a shell that sources the file still exports the key.
+    exported = any(
+        _is_key(s) and s.split("=", 1)[0].strip() != key_name for s in stripped_lines
+    )
+    new_line = f"{key_name}={_format_env_value(value)}"
+    if exported:
+        new_line = f"export {new_line}"
+    lines = []
+    replaced = False
+    for line, stripped in zip(content.splitlines(), stripped_lines):
+        if _is_key(stripped):
+            if not replaced:
+                lines.append(new_line)
+                replaced = True
+            continue
+        lines.append(line)
+    if not replaced:
+        lines.append(new_line)
+    tmp_path = env_path.with_name(env_path.name + ".tmp")
+    fd = os.open(tmp_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    os.replace(tmp_path, env_path)
+    try:
+        os.chmod(env_path, 0o600)
+    except OSError:
+        pass
+    return True
+
+
 def _format_env_value(value: str) -> str:
     """Quote a value so it round-trips through env.load_env_file.
 
@@ -526,20 +602,27 @@ def _format_env_value(value: str) -> str:
     return value
 
 
-def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
-    """Write SETUP_COMPLETE and FROM_BROWSER to the .env file.
+def write_setup_config(
+    env_path: Path,
+    from_browser: str | None = None,
+    *,
+    browser_consent: bool | None = None,
+) -> bool:
+    """Write setup completion, browser selection, and consent to the .env file.
 
     Creates the file and parent directories if needed.
-    Appends to existing file without overwriting existing keys.
+    Appends without overwriting existing keys, except for an explicit consent
+    decision.
 
     Args:
         env_path: Path to the .env file (e.g. ~/.config/last30days/.env)
-        from_browser: Browser extraction mode to persist. Pass the browser that
-            actually yielded cookies (e.g. "firefox") to fast-path future runs.
-            Pass None (default) to NOT pin FROM_BROWSER — the steady-state
-            default (Firefox/Safari, no Keychain prompt) then applies. We avoid
-            persisting "auto" because it makes every later run probe Chrome and
-            re-trigger the Keychain prompt.
+        from_browser: Browser or comma-separated browser list that actually
+            yielded cookies after consent (e.g. "chrome,firefox"). Pass None
+            (default) to leave FROM_BROWSER unchanged; when unset, future runs
+            do not read native browser stores. Avoid "auto", which would also probe
+            browsers that did not supply cookies during setup.
+        browser_consent: Record the user's current cookie-access decision.
+            None preserves any previous decision.
 
     Returns:
         True if config was written successfully, False on error.
@@ -547,6 +630,12 @@ def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
     try:
         env_path = Path(env_path)
         env_path.parent.mkdir(parents=True, exist_ok=True)
+        if browser_consent is not None:
+            if not write_api_key(
+                env_path, "true" if browser_consent else "false",
+                key_name="BROWSER_CONSENT", replace=True,
+            ):
+                return False
 
         # Read existing content to avoid overwriting keys
         existing_keys: set = set()
@@ -556,7 +645,7 @@ def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
             for line in existing_content.splitlines():
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#") and "=" in stripped:
-                    key = stripped.split("=", 1)[0].strip()
+                    key = _env_line_key(stripped)
                     existing_keys.add(key)
 
         lines_to_add = []
@@ -582,19 +671,28 @@ def write_setup_config(env_path: Path, from_browser: str | None = None) -> bool:
         return False
 
 
-def write_api_key(env_path: Path, api_key: str, key_name: str = "SCRAPECREATORS_API_KEY") -> bool:
+def write_api_key(
+    env_path: Path,
+    api_key: str,
+    key_name: str = "SCRAPECREATORS_API_KEY",
+    *,
+    replace: bool = False,
+) -> bool:
     """Append an API key to the .env file as a 0o600 secret.
 
     Reuses the same secret-safe write path as ``write_setup_config`` so the
     value lands with restrictive permissions and round-trips through
-    ``env.load_env_file``. Idempotent: if ``key_name`` is already present in
-    the file, nothing is written and the existing value is preserved (we never
-    clobber a key the user may have set by hand).
+    ``env.load_env_file``. Idempotent by default: if ``key_name`` is already
+    present in the file, nothing is written and the existing value is
+    preserved (we never clobber a key the user may have set by hand). With
+    ``replace=True`` an existing line is rewritten in place instead, so an
+    explicit ``setup --store-key`` can rotate a rejected credential.
 
     Args:
         env_path: Path to the .env file (e.g. ~/.config/last30days/.env).
         api_key: The raw key value to persist.
         key_name: The env var name to write (default SCRAPECREATORS_API_KEY).
+        replace: Rewrite an existing ``key_name`` line instead of keeping it.
 
     Returns:
         True if the key was written or already present, False on error or when
@@ -612,7 +710,9 @@ def write_api_key(env_path: Path, api_key: str, key_name: str = "SCRAPECREATORS_
             for line in existing_content.splitlines():
                 stripped = line.strip()
                 if stripped and not stripped.startswith("#") and "=" in stripped:
-                    if stripped.split("=", 1)[0].strip() == key_name:
+                    if _env_line_key(stripped) == key_name:
+                        if replace:
+                            return _replace_env_line(env_path, existing_content, key_name, api_key)
                         return True  # Already configured; do not duplicate
 
         line = f"{key_name}={_format_env_value(api_key)}\n"
@@ -653,11 +753,9 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
     lines.append("")
 
     cookies_found = results.get("cookies_found", {})
-    if cookies_found:
+    if results.get("browser_cookie_scan_attempted") and cookies_found:
         for source, browser in cookies_found.items():
             lines.append(f"  - {source.upper()} cookies found in {browser}")
-    else:
-        lines.append("  - No browser cookies found for X/Twitter")
 
     ytdlp_action = results.get("ytdlp_action", "")
     if ytdlp_action == "installed":
@@ -767,10 +865,19 @@ def get_setup_status_text(results: Dict[str, Any]) -> str:
             "requests/month). Install with: npm i -g @brightdata/cli && brightdata login"
         )
 
+    cookie_note = results.get("cookie_note")
+    if cookie_note:
+        # Official-only host: relay the neutral note; say nothing about
+        # browsers. The scan was not attempted, so nothing is "found".
+        lines.append(f"  - {cookie_note}")
+
     env_written = results.get("env_written", False)
     if env_written:
         lines.append("")
-        lines.append("Configuration saved. Future runs will auto-detect your browsers.")
+        if cookie_note:
+            lines.append("Configuration saved.")
+        else:
+            lines.append("Configuration saved. Future runs will auto-detect your browsers.")
 
     return "\n".join(lines)
 
@@ -858,6 +965,21 @@ def _existing_scrapecreators_key() -> Optional[str]:
     return None
 
 
+def _clamp_device_interval(interval: Any) -> int:
+    """Clamp a server-provided device-flow poll interval to [1, 30] seconds.
+
+    The ``interval`` comes from the server (device/code response or the
+    persisted poll handle), so 0 would hot-loop ``time.sleep``, a negative
+    would crash it, a huge value would sail past the poll timeout, and a
+    non-numeric value would raise. Defaults to 5 on missing/garbled input.
+    """
+    try:
+        value = int(interval or 5)
+    except (TypeError, ValueError):
+        return 5
+    return min(max(value, 1), 30)
+
+
 def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
     """Start the device authorization flow.
 
@@ -880,7 +1002,7 @@ def run_device_auth() -> Optional[Tuple[str, str, str, int]]:
     device_code = data.get("device_code")
     user_code = data.get("user_code")
     verification_uri = data.get("verification_uri")
-    interval = data.get("interval", 5)
+    interval = _clamp_device_interval(data.get("interval", 5))
 
     if not device_code or not user_code:
         # Log only the response's key names, never its values — a returning
@@ -914,6 +1036,7 @@ def poll_device_auth(
     """
     import sys
 
+    interval = _clamp_device_interval(interval)
     started_at = time.time()
     deadline = started_at + timeout
     last_reminder = started_at
@@ -969,22 +1092,98 @@ def poll_device_auth(
     return None
 
 
-def fetch_api_key(access_token: str) -> Optional[str]:
+# Bounded retries for transient ScrapeCreators /profile 5xx (see #882).
+_PROFILE_FETCH_ATTEMPTS = 3
+_PROFILE_FETCH_RETRY_SLEEP_S = 1.0
+_PROFILE_ERROR_BODY_LIMIT = 200
+
+
+def _http_error_detail(exc: HTTPError, *, body_limit: int = _PROFILE_ERROR_BODY_LIMIT) -> str:
+    """Build a diagnosable HTTPError string including a truncated body.
+
+    The body is capped and never treated as a secret source of truth; callers
+    still must not log bearer tokens. Used so a 5xx is not a black box.
+    """
+    base = f"HTTP Error {exc.code}: {getattr(exc, 'reason', '') or ''}".rstrip(": ")
+    try:
+        raw = exc.read() or b""
+    except Exception:
+        return base
+    if not raw:
+        return base
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return base
+    if len(text) > body_limit:
+        text = text[:body_limit] + "…"
+    return f"{base} body={text!r}"
+
+
+def fetch_api_key(access_token: str) -> Dict[str, Any]:
     """Fetch the ScrapeCreators API key using the GitHub access token.
 
-    GETs the device/profile endpoint with Bearer auth.
+    GETs the device/profile endpoint with Bearer auth. Distinguishes outcomes
+    so callers (and SKILL.md) do not collapse a server 5xx into the
+    already-linked guidance (#882).
 
-    Returns:
-        api_key string on success, None on failure.
+    Returns a result dict:
+      - ``{"ok": True, "api_key": str}`` on success
+      - ``{"ok": False, "reason": "no_api_key"}`` when /profile is 2xx but has
+        no ``api_key`` field (typical already-linked account)
+      - ``{"ok": False, "reason": "upstream_error", "http_status": int,
+        "detail": str}`` on 5xx after bounded retries
+      - ``{"ok": False, "reason": "http_error", "http_status": int,
+        "detail": str}`` on other HTTP errors (e.g. 401)
+      - ``{"ok": False, "reason": "request_failed", "detail": str}`` on
+        network/OS failures
     """
-    try:
-        req = Request(f"{_DEVICE_BASE}/profile")
-        req.add_header("Authorization", f"Bearer {access_token}")
-        with urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read())
-    except (HTTPError, URLError, OSError) as exc:
-        logger.warning("Failed to fetch API key: %s", exc)
-        return None
+    data: Optional[Dict[str, Any]] = None
+    last_upstream: Optional[Dict[str, Any]] = None
+
+    for attempt in range(_PROFILE_FETCH_ATTEMPTS):
+        try:
+            req = Request(f"{_DEVICE_BASE}/profile")
+            req.add_header("Authorization", f"Bearer {access_token}")
+            with urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+            break
+        except HTTPError as exc:
+            detail = _http_error_detail(exc)
+            if 500 <= int(exc.code) <= 599:
+                logger.warning(
+                    "Device auth /profile upstream error (attempt %s/%s): %s",
+                    attempt + 1,
+                    _PROFILE_FETCH_ATTEMPTS,
+                    detail,
+                )
+                last_upstream = {
+                    "ok": False,
+                    "reason": "upstream_error",
+                    "http_status": int(exc.code),
+                    "detail": detail,
+                }
+                if attempt + 1 < _PROFILE_FETCH_ATTEMPTS:
+                    time.sleep(_PROFILE_FETCH_RETRY_SLEEP_S)
+                    continue
+                return last_upstream
+            logger.warning("Failed to fetch API key: %s", detail)
+            return {
+                "ok": False,
+                "reason": "http_error",
+                "http_status": int(exc.code),
+                "detail": detail,
+            }
+        except (URLError, OSError) as exc:
+            logger.warning("Failed to fetch API key: %s", exc)
+            return {"ok": False, "reason": "request_failed", "detail": str(exc)}
+
+    if data is None:
+        # Defensive: loop exited without success or an explicit return.
+        return last_upstream or {
+            "ok": False,
+            "reason": "request_failed",
+            "detail": "No profile response",
+        }
 
     api_key = data.get("api_key")
     if not api_key:
@@ -996,8 +1195,8 @@ def fetch_api_key(access_token: str) -> Optional[str]:
         logger.warning(
             "Device auth /profile returned no api_key (fields: %s)", sorted(data.keys())
         )
-        return None
-    return api_key
+        return {"ok": False, "reason": "no_api_key"}
+    return {"ok": True, "api_key": api_key}
 
 
 def _device_handle_path() -> Path:
@@ -1170,7 +1369,7 @@ def run_github_poll(timeout: int = 300, *, _handle: Optional[Dict[str, Any]] = N
             }
 
     device_code = data["device_code"]
-    interval = int(data.get("interval", 5))
+    interval = _clamp_device_interval(data.get("interval", 5))
     user_code = data.get("user_code", "")
     # Read the real clipboard state so the polling reminder never falsely claims
     # the code is on the clipboard (non-macOS, or a failed pbcopy). Missing key
@@ -1192,15 +1391,50 @@ def run_github_poll(timeout: int = 300, *, _handle: Optional[Dict[str, Any]] = N
         _cleanup()
         return {"status": "timeout", "user_code": user_code}
 
-    api_key = fetch_api_key(access_token)
+    fetched = fetch_api_key(access_token)
     _cleanup()
-    if api_key is None:
+    if fetched.get("ok") and fetched.get("api_key"):
+        return {
+            "status": "success",
+            "method": "device",
+            "api_key": fetched["api_key"],
+            "user_code": user_code,
+        }
+
+    # Discriminate failure modes so SKILL.md does not misdiagnose a 5xx as
+    # "GitHub already linked" (#882). Keep the historical message only for the
+    # 2xx-without-api_key / already-linked case.
+    reason = fetched.get("reason") or "request_failed"
+    if reason == "no_api_key":
         return {
             "status": "error",
             "message": "Authorized but failed to fetch API key",
+            "reason": "no_api_key",
         }
-
-    return {"status": "success", "method": "device", "api_key": api_key, "user_code": user_code}
+    if reason == "upstream_error":
+        http_status = fetched.get("http_status")
+        return {
+            "status": "error",
+            "message": f"Authorized but ScrapeCreators profile failed (HTTP {http_status})",
+            "reason": "upstream_error",
+            "http_status": http_status,
+            "detail": fetched.get("detail"),
+        }
+    if reason == "http_error":
+        http_status = fetched.get("http_status")
+        return {
+            "status": "error",
+            "message": f"Authorized but failed to fetch API key (HTTP {http_status})",
+            "reason": "http_error",
+            "http_status": http_status,
+            "detail": fetched.get("detail"),
+        }
+    return {
+        "status": "error",
+        "message": "Authorized but failed to fetch API key",
+        "reason": reason,
+        "detail": fetched.get("detail"),
+    }
 
 
 def run_full_device_auth(timeout: int = 300) -> Dict[str, Any]:

@@ -30,6 +30,7 @@ JSON_VERSION_FILES = (
     ROOT / ".codex-plugin" / "plugin.json",
     ROOT / ".grok-plugin" / "plugin.json",
     ROOT / "gemini-extension.json",
+    ROOT / "mcp" / "manifest.json",
 )
 
 MARKETPLACE_FILES = (

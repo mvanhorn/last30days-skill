@@ -142,6 +142,96 @@ class PlannerV3Tests(unittest.TestCase):
         self.assertEqual(1, len(plan.subqueries))
         self.assertEqual(["reddit", "x"], plan.subqueries[0].sources)
 
+    def test_operator_plan_keeps_per_subquery_sources_at_default_and_deep(self):
+        # Issue #1073: operator --plan sources must not be replaced with the
+        # full available list outside --quick.
+        raw = {
+            "intent": "opinion",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "debate",
+            "subqueries": [{
+                "label": "primary",
+                "search_query": "late diagnosed autism adults",
+                "ranking_query": "late diagnosed autism adults",
+                "sources": ["reddit", "x", "youtube"],
+                "weight": 1.0,
+            }],
+        }
+        avail = ["reddit", "x", "youtube", "hackernews", "polymarket", "github"]
+        for depth in ("default", "deep"):
+            with self.subTest(depth=depth):
+                plan = planner._sanitize_plan(
+                    raw,
+                    "late diagnosed autism adults",
+                    avail,
+                    None,
+                    depth,
+                    honor_plan_sources=True,
+                )
+                self.assertEqual(["reddit", "x", "youtube"], plan.subqueries[0].sources)
+
+    def test_llm_plan_still_expands_narrow_sources_at_default_and_deep(self):
+        # Engine-internal LLM plans keep the expansion that lets fusion
+        # decide quality. Same snippet as #1073, without honor_plan_sources.
+        raw = {
+            "intent": "opinion",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "debate",
+            "subqueries": [{
+                "label": "primary",
+                "search_query": "late diagnosed autism adults",
+                "ranking_query": "late diagnosed autism adults",
+                "sources": ["reddit", "x", "youtube"],
+                "weight": 1.0,
+            }],
+        }
+        avail = ["reddit", "x", "youtube", "hackernews", "polymarket", "github"]
+        for depth in ("default", "deep"):
+            with self.subTest(depth=depth):
+                plan = planner._sanitize_plan(
+                    raw,
+                    "late diagnosed autism adults",
+                    avail,
+                    None,
+                    depth,
+                )
+                self.assertEqual(avail, plan.subqueries[0].sources)
+
+    def test_operator_plan_preserves_distinct_per_subquery_source_lists(self):
+        raw = {
+            "intent": "breaking_news",
+            "freshness_mode": "strict_recent",
+            "cluster_mode": "story",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "kanye west",
+                    "ranking_query": "What happened with Kanye West?",
+                    "sources": ["reddit", "x", "youtube"],
+                    "weight": 1.0,
+                },
+                {
+                    "label": "album",
+                    "search_query": "kanye west bully album",
+                    "ranking_query": "How was Kanye West's BULLY album received?",
+                    "sources": ["youtube", "reddit"],
+                    "weight": 0.8,
+                },
+            ],
+        }
+        avail = ["reddit", "x", "youtube", "hackernews", "polymarket", "github"]
+        plan = planner._sanitize_plan(
+            raw,
+            "Kanye West",
+            avail,
+            None,
+            "default",
+            honor_plan_sources=True,
+        )
+        by_label = {sq.label: sq.sources for sq in plan.subqueries}
+        self.assertEqual(["reddit", "x", "youtube"], by_label["primary"])
+        self.assertEqual(["youtube", "reddit"], by_label["album"])
+
     def test_quick_mode_prioritizes_explicit_requested_sources_within_cap(self):
         raw = {
             "intent": "product",

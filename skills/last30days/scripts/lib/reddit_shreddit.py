@@ -23,17 +23,46 @@ from typing import Any, Dict, List, Optional
 from . import http
 from . import reddit_enrich
 
-# Up to N posts enriched per run, by depth (mirrors reddit_public.ENRICH_LIMITS).
+# Up to N posts enriched per subquery, by depth. Raised from 3/5/8 once the
+# per-command memo (http.reddit_keyless_get_text) collapsed repeat shreddit
+# fetches across subqueries and the 1 req/s bucket stopped the 429s: eight
+# fetches fit inside ENRICH_BUDGET at four workers, and the comments are the
+# lane's headline value.
 ENRICH_LIMITS = {
-    "quick": 3,
-    "default": 5,
-    "deep": 8,
+    "quick": 4,
+    "default": 8,
+    "deep": 12,
 }
 
 # Max comments returned per post (independent of how many posts get enriched).
-MAX_COMMENTS = 10
+# Twelve so a thousand-comment thread feeds more than ten candidates into the
+# cross-platform Top Community Comments block.
+MAX_COMMENTS = 12
 
 SVC_TIMEOUT = 12
+
+# Known bots whose comments carry no community signal.
+BOT_AUTHORS = frozenset({
+    "automoderator",
+    "remindmebot",
+    "repostsleuthbot",
+    "sneakpeekbot",
+    "savevideo",
+    "videodownloadbot",
+    "totesmessenger",
+    "b0trank",
+    "amputatorbot",
+    "stabbot",
+    "gifreversingbot",
+    "haikubotinaction",
+    "imagesofnetwork",
+    "botdefense",
+})
+
+_BOT_SUFFIXES = ("-bot", "_bot")
+
+# CamelCase catches WikiTextBot without swallowing names such as Talbot.
+_CAMEL_BOT = re.compile(r"[a-z0-9]Bot\d*$")
 
 # Match the exact <shreddit-comment> element start tag, not <shreddit-comment-tree>
 # or <shreddit-comment-tree-stats> (lookahead requires whitespace or '>').
@@ -106,13 +135,28 @@ def _body_for(html_text: str, thing_id: str) -> str:
     return _WS.sub(" ", _html.unescape(text)).strip()
 
 
+def _is_bot_author(author: str) -> bool:
+    """Whether an author is a bot whose comments carry no community signal."""
+    raw = (author or "").strip()
+    if not raw:
+        return False
+    name = raw.lower()
+    return (name in BOT_AUTHORS
+            or name.endswith(_BOT_SUFFIXES)
+            or bool(_CAMEL_BOT.search(raw)))
+
+
 def parse_comments(html_text: str, limit: int = MAX_COMMENTS) -> List[Dict[str, Any]]:
-    """Parse <shreddit-comment> elements into scored comment dicts (sorted desc)."""
+    """Parse <shreddit-comment> elements into scored comment dicts (sorted desc).
+
+    Deleted, removed, and bot authors are dropped: they occupy top-comment slots
+    on high-traffic threads without saying anything about the topic.
+    """
     comments: List[Dict[str, Any]] = []
     for m in _COMMENT_START.finditer(html_text or ""):
         tag = m.group(0)
         author = _attr(tag, "author") or "[deleted]"
-        if author in ("[deleted]", "[removed]"):
+        if author in ("[deleted]", "[removed]") or _is_bot_author(author):
             continue
         thing_id = _attr(tag, "thingId")
         body = _body_for(html_text, thing_id)

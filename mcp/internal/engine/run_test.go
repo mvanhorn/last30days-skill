@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -21,6 +22,9 @@ import (
 //	STUB_SLEEP_SECS  - sleep before exiting (for timeout tests)
 //	STUB_ECHO_ENV    - name of an env var; the stub prints "<NAME>=<VALUE>"
 //	STUB_ECHO_ARG    - integer index; the stub prints "ARG<i>=<args[i]>"
+//	STUB_ECHO_ARGS   - when set (any value), the stub prints its full argv
+//	                   after the script path, one argument per line, so tests
+//	                   can assert the exact argv the engine receives
 //
 // The stub ignores its first argument (the script path), matching how a
 // real python3 invocation treats `python3 last30days.py ...`.
@@ -37,6 +41,7 @@ if [ -n "${STUB_STDOUT:-}" ]; then printf "%s" "$STUB_STDOUT"; fi
 if [ -n "${STUB_STDERR:-}" ]; then printf "%s" "$STUB_STDERR" >&2; fi
 if [ -n "${STUB_ECHO_ENV:-}" ]; then echo "${STUB_ECHO_ENV}=${!STUB_ECHO_ENV:-<unset>}"; fi
 if [ -n "${STUB_ECHO_ARG:-}" ]; then echo "ARG${STUB_ECHO_ARG}=${!STUB_ECHO_ARG:-<unset>}"; fi
+if [ -n "${STUB_ECHO_ARGS:-}" ]; then shift; printf "%s\n" "$@"; fi
 exit "${STUB_EXIT_CODE:-0}"
 `
 	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
@@ -78,6 +83,30 @@ func TestRunHappyPath(t *testing.T) {
 	}
 	if res.TimedOut {
 		t.Fatal("TimedOut = true, want false")
+	}
+}
+
+// TestRunForwardsExactArgv pins the full argv the engine subprocess
+// receives: options first, explicit empty --save-dir on decline, `--`
+// separator, then the positional topic. The default-deny
+// --no-browser-cookies flag rides along in this shape too.
+func TestRunForwardsExactArgv(t *testing.T) {
+	stub := makeStubPython(t)
+	cache := stageCache(t)
+	t.Setenv("STUB_ECHO_ARGS", "1")
+
+	want := []string{"--emit=compact", "--no-browser-cookies", "--save-dir", "", "--", "--mock"}
+	res, err := Run(context.Background(), RunOptions{
+		PythonPath: stub,
+		CacheDir:   cache,
+		Args:       want,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	got := strings.Split(strings.TrimSuffix(string(res.Stdout), "\n"), "\n")
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+		t.Fatalf("engine argv = %#v, want %#v", got, want)
 	}
 }
 
@@ -218,12 +247,135 @@ func TestRunTimesOut(t *testing.T) {
 	if !strings.Contains(err.Error(), "timeout") {
 		t.Fatalf("error %q lacks 'timeout' marker", err)
 	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Run error = %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestRunCanceledBeforeStart(t *testing.T) {
+	for _, wantErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(wantErr.Error(), func(t *testing.T) {
+			expired := wantErr == context.DeadlineExceeded
+			ctx, cancel := context.WithCancel(context.Background())
+			if expired {
+				cancel()
+				ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			}
+			cancel()
+			cache := stageCache(t)
+			// A missing executable exposes an attempted start even when a
+			// valid child would be killed before it could write output.
+			res, err := Run(ctx, RunOptions{
+				PythonPath: filepath.Join(cache, "must-not-start"),
+				CacheDir:   cache,
+			})
+			if !errors.Is(err, wantErr) {
+				t.Errorf("Run error = %v, want %v", err, wantErr)
+			}
+			if res == nil {
+				t.Fatal("Run result is nil; want a canceled result")
+			}
+			if res.TimedOut != expired || res.ExitCode != -1 || len(res.Stdout) != 0 {
+				t.Errorf("Run result = %+v, want no started subprocess and TimedOut=%v", res, expired)
+			}
+		})
+	}
+}
+
+func TestResolvePythonHonorsEnvOverride(t *testing.T) {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	t.Setenv(PythonEnvOverride, executable)
+	t.Setenv("PATH", "")
+
+	got, err := resolvePython("")
+	if err != nil {
+		t.Fatalf("resolvePython: %v", err)
+	}
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat resolved path %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(executable)
+	if err != nil {
+		t.Fatalf("stat override path %q: %v", executable, err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("resolvePython = %q, want executable %q", got, executable)
+	}
+}
+
+func TestResolvePythonRejectsInvalidEnvOverride(t *testing.T) {
+	t.Run("missing path", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "missing-python")
+		t.Setenv(PythonEnvOverride, missing)
+
+		_, err := resolvePython("")
+		if err == nil {
+			t.Fatal("expected invalid override error")
+		}
+		if !strings.Contains(err.Error(), PythonEnvOverride) || !strings.Contains(err.Error(), strconv.Quote(missing)) {
+			t.Fatalf("error %q does not identify invalid %s path %q", err, PythonEnvOverride, missing)
+		}
+	})
+
+	t.Run("empty value", func(t *testing.T) {
+		t.Setenv(PythonEnvOverride, "")
+
+		_, err := resolvePython("")
+		if err == nil {
+			t.Fatal("expected empty override error")
+		}
+		if !strings.Contains(err.Error(), PythonEnvOverride) || !strings.Contains(err.Error(), "set but empty") {
+			t.Fatalf("error %q does not clearly identify the empty override", err)
+		}
+	})
+}
+
+func TestResolvePythonDefaultsToPython3Lookup(t *testing.T) {
+	dir := t.TempDir()
+	name := DefaultPythonBinary
+	if runtime.GOOS == "windows" {
+		name += ".exe"
+		t.Setenv("PATHEXT", ".COM;.EXE;.BAT;.CMD")
+	}
+	candidate := filepath.Join(dir, name)
+	if err := os.WriteFile(candidate, []byte("stub"), 0o755); err != nil {
+		t.Fatalf("write default python stub: %v", err)
+	}
+	t.Setenv(PythonEnvOverride, "temporarily-set-for-cleanup")
+	if err := os.Unsetenv(PythonEnvOverride); err != nil {
+		t.Fatalf("unset %s: %v", PythonEnvOverride, err)
+	}
+	t.Setenv("PATH", dir)
+
+	got, err := resolvePython("")
+	if err != nil {
+		t.Fatalf("resolvePython: %v", err)
+	}
+	gotInfo, err := os.Stat(got)
+	if err != nil {
+		t.Fatalf("stat resolved path %q: %v", got, err)
+	}
+	wantInfo, err := os.Stat(candidate)
+	if err != nil {
+		t.Fatalf("stat default stub %q: %v", candidate, err)
+	}
+	if !os.SameFile(gotInfo, wantInfo) {
+		t.Fatalf("resolvePython = %q, want python3 lookup result %q", got, candidate)
+	}
 }
 
 func TestRunMissingPython(t *testing.T) {
 	cache := stageCache(t)
 	// Empty PATH guarantees the lookup fails. PythonPath stays unset so Run
 	// falls through to exec.LookPath.
+	t.Setenv(PythonEnvOverride, "temporarily-set-for-cleanup")
+	if err := os.Unsetenv(PythonEnvOverride); err != nil {
+		t.Fatalf("unset %s: %v", PythonEnvOverride, err)
+	}
 	t.Setenv("PATH", "")
 
 	_, err := Run(context.Background(), RunOptions{CacheDir: cache})
@@ -235,6 +387,45 @@ func TestRunMissingPython(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), PythonInstallURL) {
 		t.Fatalf("error %q does not include install URL", err)
+	}
+}
+
+func TestResolvePythonRejectsRelativePATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable fixture")
+	}
+	t.Chdir(t.TempDir())
+	if err := os.WriteFile(DefaultPythonBinary, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", ".")
+	// Exercise our own guard even when Go's ErrDot protection is disabled.
+	t.Setenv("GODEBUG", "execerrdot=0")
+	if path, err := resolvePython(""); err == nil || path != "" {
+		t.Fatalf("resolvePython accepted relative executable: path=%q err=%v", path, err)
+	}
+}
+
+func TestResolvePythonAcceptsAbsolutePATH(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX executable fixture")
+	}
+	dir := t.TempDir()
+	want := filepath.Join(dir, DefaultPythonBinary)
+	if err := os.WriteFile(want, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	if path, err := resolvePython(""); err != nil || path != want {
+		t.Fatalf("resolvePython = %q, %v; want %q", path, err, want)
+	}
+}
+
+func TestResolvePythonPreservesExplicitOverride(t *testing.T) {
+	t.Setenv("PATH", "")
+	want := filepath.Join("explicit", "python")
+	if path, err := resolvePython(want); err != nil || path != want {
+		t.Fatalf("resolvePython = %q, %v; want trusted override %q", path, err, want)
 	}
 }
 

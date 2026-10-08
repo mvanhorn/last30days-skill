@@ -140,8 +140,19 @@ class HtmlPublishModuleTests(unittest.TestCase):
             {"one": {"url": "https://one.ht-ml.app"}, "two": {"url": "https://two.ht-ml.app"}},
             results,
         )
-        self.assertEqual(2, publish.call_count)
-        self.assertEqual("shared", publish.call_args_list[0].kwargs["password"])
+        self.assertEqual(
+            [
+                mock.call(
+                    "<html>one</html>", password="shared",
+                    endpoint=html_publish.DEFAULT_ENDPOINT, opener=None, timeout=30,
+                ),
+                mock.call(
+                    "<html>two</html>", password="shared",
+                    endpoint=html_publish.DEFAULT_ENDPOINT, opener=None, timeout=30,
+                ),
+            ],
+            publish.call_args_list,
+        )
 
 
 class HtmlPublishCliTests(unittest.TestCase):

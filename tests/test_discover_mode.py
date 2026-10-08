@@ -100,7 +100,7 @@ def test_global_discovery_disables_keyword_gate():
     """Global trending fetches with keyword_gate=False; domain runs keep it on."""
     seen: dict[str, bool] = {}
 
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         seen[plan.domain or "global"] = keyword_gate
         return [], None
 
@@ -250,7 +250,7 @@ def test_discovery_renderer_snapshot():
 
 
 def test_keyless_discovery_degrades_without_digg():
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         return pipeline._mock_discovery_items(source, plan.domain, to_date), None
 
     with mock.patch.object(pipeline, "available_sources", return_value=["reddit", "hackernews"]), \
@@ -323,7 +323,7 @@ def test_discovery_reads_browser_credentials_and_does_not_schedule_pending_x():
         assert x_pending is False
         return ["reddit", "hackernews"] + (["x"] if x_pending is not False else [])
 
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         fetched_sources.append(source)
         return pipeline._mock_discovery_items(source, plan.domain, to_date), None
 
@@ -363,7 +363,7 @@ def test_authenticated_x_discovery_uses_available_backend():
 
 
 def test_listing_failure_is_not_reported_as_clean_no_results():
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         if source == "reddit":
             return [], "connection timed out"
         return pipeline._mock_discovery_items(source, plan.domain, to_date), None
@@ -767,7 +767,7 @@ def test_x_fallback_success_is_clean(monkeypatch):
 
     calls = []
 
-    def fake_fetch(backend, subquery, from_date, to_date, depth, config):
+    def fake_fetch(backend, subquery, from_date, to_date, depth, config, warnings=None, deadline=None):
         calls.append(backend)
         if backend == "bird":
             return [], "cookie expired"
@@ -1448,7 +1448,7 @@ def test_discovery_cli_nominate_only_zero_nominations_nothing_solid(tmp_path, ca
         ["--discover", "AI agents", "--save-dir", str(tmp_path), "--nominate-only"]
     )
 
-    def empty_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def empty_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         return [], None
 
     with mock.patch.object(

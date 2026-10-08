@@ -158,11 +158,12 @@ def _report() -> schema.Report:
             "youtube": schema.SourceOutcome(source="youtube", state=schema.RATE_LIMITED),
             "grounding": schema.SourceOutcome(source="grounding", state=schema.UNREACHABLE),
             "github": schema.SourceOutcome(source="github", state=schema.AUTH_FAILED),
+            "tiktok": schema.SourceOutcome(source="tiktok", state=schema.PAYMENT_REQUIRED),
         },
     )
 
 
-def test_agent_export_matches_v1_2_golden_contract():
+def test_agent_export_matches_v1_3_golden_contract():
     expected = json.loads(GOLDEN.read_text(encoding="utf-8"))
 
     assert schema.to_agent_export(_report()) == expected
@@ -177,6 +178,7 @@ def test_agent_export_maps_per_run_source_outcomes_to_states():
         "grounding": "unreachable",
         "hackernews": "no-results",
         "reddit": "ok",
+        "tiktok": "payment-required",
         "x": "ok",
         "youtube": "rate-limited",
     }

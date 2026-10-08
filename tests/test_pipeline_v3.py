@@ -7,6 +7,7 @@ from lib import fanout
 from lib import http
 from lib import pipeline
 from lib import schema
+from lib import subproc
 
 
 class DepthSettingsOverrideTests(unittest.TestCase):
@@ -66,6 +67,39 @@ class PipelineV3Tests(unittest.TestCase):
                 mock=True,
             )
 
+    def test_external_plan_honors_per_subquery_sources_at_default_depth(self):
+        # Issue #1073: --plan sources are a contract at default/deep.
+        plan = {
+            "intent": "opinion",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "debate",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "late diagnosed autism adults",
+                    "ranking_query": "What are people saying about late diagnosed autism in adults?",
+                    "sources": ["reddit", "x", "youtube"],
+                    "weight": 1.0,
+                }
+            ],
+        }
+        report = pipeline.run(
+            topic="late diagnosed autism adults",
+            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+            depth="default",
+            requested_sources=["reddit", "x", "youtube", "hackernews", "polymarket", "github"],
+            mock=True,
+            web_backend="none",
+            external_plan=plan,
+        )
+        self.assertEqual(
+            ["reddit", "x", "youtube"],
+            report.query_plan.subqueries[0].sources,
+        )
+        self.assertNotIn("hackernews", report.items_by_source)
+        self.assertNotIn("polymarket", report.items_by_source)
+        self.assertNotIn("github", report.items_by_source)
+
     def test_planner_trace_always_fires_on_mock_run(self):
         """Unit 5: The unified planner trace emits one summary line plus one
         line per subquery on every run, regardless of --debug. 2026-04-19
@@ -119,6 +153,34 @@ class PipelineV3Tests(unittest.TestCase):
         # changing the contract that the grounding source registers an
         # error when its required backend key is unset.
         self.assertIn("grounding", report.errors_by_source)
+
+    def test_parallel_mcp_enables_grounding_without_key_on_native_host(self):
+        def mcp_response(message, _api_key, _session_id=None):
+            results = {
+                "initialize": {"protocolVersion": "2025-03-26"},
+                "notifications/initialized": {},
+                "tools/list": {"tools": [{"name": "web_search"}]},
+                "tools/call": {"structuredContent": {"results": [{
+                    "url": "https://example.com/update",
+                    "title": "Test topic update",
+                    "publish_date": "2026-08-01",
+                    "excerpts": ["New evidence about test topic"],
+                }]}},
+            }
+            return {"result": results[message["method"]]}, None
+
+        with patch("lib.parallel_mcp._request", side_effect=mcp_response):
+            report = pipeline.run(
+                topic="test topic",
+                config={"LAST30DAYS_REASONING_PROVIDER": "auto", "LAST30DAYS_NATIVE_SEARCH": "1"},
+                depth="quick",
+                requested_sources=["grounding"],
+                web_backend="parallel-mcp",
+                as_of_date="2026-08-26",
+            )
+        self.assertNotIn("grounding", report.errors_by_source)
+        self.assertEqual(1, len(report.items_by_source["grounding"]))
+        self.assertEqual("2026-08-01", report.items_by_source["grounding"][0].published_at)
 
     def test_hiring_signals_mode_enables_jobs_source_in_mock_run(self):
         report = pipeline.run(
@@ -314,52 +376,37 @@ class TestSourceFetchCap(unittest.TestCase):
         self.assertEqual("deep-research", plan.subqueries[-1].label)
         self.assertEqual(["perplexity"], plan.subqueries[-1].sources)
 
-    def test_cap_logic_limits_source_submissions(self):
-        """Verify the cap logic skips submissions beyond the limit."""
-        subquery_sources = [
-            ["x", "reddit", "youtube"],
-            ["x", "reddit", "youtube"],
-            ["x", "reddit", "youtube"],
-            ["x", "reddit", "youtube"],
-        ]
-        source_fetch_count: dict[str, int] = {}
-        submitted: list[str] = []
-        for sources in subquery_sources:
-            for source in sources:
-                source_cap = pipeline.MAX_SOURCE_FETCHES.get(source)
-                if source_cap is not None:
-                    current = source_fetch_count.get(source, 0)
-                    if current >= source_cap:
-                        continue
-                    source_fetch_count[source] = current + 1
-                submitted.append(source)
-
-        x_count = submitted.count("x")
-        reddit_count = submitted.count("reddit")
-        self.assertEqual(x_count, 2, f"X should be capped at 2, got {x_count}")
-        self.assertEqual(reddit_count, 4, f"Reddit should be uncapped, got {reddit_count}")
-
+    @patch("lib.pipeline._retry_thin_sources")
     @patch("lib.pipeline._retrieve_stream")
-    def test_mock_run_caps_x_fetches(self, mock_retrieve):
-        """Pipeline.run in mock mode should call _retrieve_stream for X at most 2 times."""
-        mock_retrieve.side_effect = lambda **kwargs: pipeline._mock_stream_results(
-            kwargs["source"], kwargs["subquery"]
-        )
-        pipeline.run(
-            topic="compare iPhone vs Android vs Pixel vs Samsung",
-            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
-            depth="quick",
+    def test_run_caps_primary_x_fetches_without_capping_reddit(self, mock_retrieve, _retry):
+        mock_retrieve.return_value = ([], {})
+        report = pipeline.run(
+            topic="compare iPhone vs Android",
+            config={},
+            depth="default",
             requested_sources=["reddit", "x"],
             mock=True,
+            web_backend="none",
+            external_plan={
+                "intent": "comparison",
+                "freshness_mode": "balanced_recent",
+                "cluster_mode": "topic",
+                "subqueries": [
+                    {"label": label, "search_query": f"phones {label}",
+                     "ranking_query": f"phones {label}", "sources": ["x", "reddit"]}
+                    for label in ["price", "camera", "battery", "privacy"]
+                ],
+            },
         )
-        x_calls = [
-            call for call in mock_retrieve.call_args_list
-            if call.kwargs.get("source") == "x"
-        ]
-        self.assertLessEqual(
-            len(x_calls), 2,
-            f"X should be fetched at most 2 times, got {len(x_calls)}",
+        self.assertEqual(4, len(report.query_plan.subqueries))
+        submissions = {(call.kwargs["source"], call.kwargs["subquery"].label)
+                       for call in mock_retrieve.call_args_list}
+        self.assertEqual(
+            {("x", "price"), ("x", "camera"),
+             *[("reddit", label) for label in ["price", "camera", "battery", "privacy"]]},
+            submissions,
         )
+        self.assertEqual(6, mock_retrieve.call_count)
 
     @patch("lib.pipeline._retrieve_stream")
     def test_zero_source_fetch_override_suppresses_capped_source(self, mock_retrieve):
@@ -597,6 +644,99 @@ class TestRateLimitSharing(unittest.TestCase):
     def test_is_rate_limit_error_rejects_unrelated_error(self):
         exc = RuntimeError("Connection refused")
         self.assertFalse(pipeline._is_rate_limit_error(exc))
+
+    def test_is_rate_limit_error_rejects_embedded_digits(self):
+        # CR-007: "14293" must not read as a 429.
+        exc = RuntimeError("request id 14293 failed")
+        self.assertFalse(pipeline._is_rate_limit_error(exc))
+
+    def test_is_rate_limit_error_detects_standalone_code(self):
+        exc = RuntimeError("failed with HTTP 429")
+        self.assertTrue(pipeline._is_rate_limit_error(exc))
+
+    def test_is_rate_limit_error_rejects_bare_number(self):
+        # A bare 429 with no HTTP/status/rate-limit marker is not a rate
+        # limit; misreading it skips the source for the rest of the run.
+        exc = RuntimeError("batch 429 failed")
+        self.assertFalse(pipeline._is_rate_limit_error(exc))
+
+    def test_is_rate_limit_error_accepts_real_message_shapes(self):
+        for msg in (
+            "HTTP 429: Too Many Requests",
+            "HTTP Error 429: Too Many Requests",
+            "xapi: http 429",
+            "status: 429",
+            "status_code=429",
+            "Reddit rate limited (429) fetching https://example.com",
+            "429 Too Many Requests",
+        ):
+            with self.subTest(msg=msg):
+                self.assertTrue(pipeline._is_rate_limit_error(RuntimeError(msg)))
+
+    def test_is_transient_error_rejects_embedded_digits(self):
+        # CR-023: "15003" must not read as a 500.
+        exc = RuntimeError("job 15003 failed")
+        self.assertFalse(pipeline._is_transient_error(exc))
+
+    def test_is_transient_error_detects_full_5xx_range(self):
+        for code in ("500", "501", "502", "503", "504", "505", "507", "508", "520", "524", "599"):
+            with self.subTest(code=code):
+                exc = RuntimeError(f"upstream failed with HTTP {code}")
+                self.assertTrue(pipeline._is_transient_error(exc))
+
+    def test_is_transient_error_rejects_bare_number(self):
+        exc = RuntimeError("job 500 rows failed")
+        self.assertFalse(pipeline._is_transient_error(exc))
+
+    def test_is_transient_error_accepts_real_message_shapes(self):
+        for msg in (
+            "HTTP 503: Service Unavailable",
+            "HTTP Error 502: Bad Gateway",
+            "HTTP/1.1 504 Gateway Timeout",
+            "error code 520",
+            "upstream returned 502 Bad Gateway",
+        ):
+            with self.subTest(msg=msg):
+                self.assertTrue(pipeline._is_transient_error(RuntimeError(msg)))
+
+    def test_is_transient_error_rejects_unrelated_error(self):
+        exc = RuntimeError("Connection refused")
+        self.assertFalse(pipeline._is_transient_error(exc))
+
+    def test_retrieve_stream_exception_path_prefers_specific_failure(self):
+        # CR-008: the exception path must use _FAILURE_SPECIFICITY, so an
+        # AUTH_FAILED captured earlier is not masked by a later 429.
+        from lib import schema as _schema
+
+        def boom(*_args, **_kwargs):
+            # Record into the enclosing capture sink: auth first, 429 last,
+            # so the old failures[-1] code would have picked RATE_LIMITED.
+            http._record_failure(http.HTTPError("HTTP 401", status_code=401))
+            http._record_failure(http.HTTPError("HTTP 429", status_code=429))
+            raise RuntimeError("stream blew up")
+
+        with patch("lib.pipeline._retrieve_stream_impl", side_effect=boom):
+            with self.assertRaises(pipeline.SourceRunError) as caught:
+                pipeline._retrieve_stream(
+                    topic="test",
+                    subquery=_schema.SubQuery(
+                        label="test",
+                        search_query="test query",
+                        ranking_query="test query",
+                        sources=["x"],
+                    ),
+                    source="other",
+                    config={},
+                    depth="quick",
+                    date_range=("2026-02-15", "2026-03-17"),
+                    runtime=_schema.ProviderRuntime(
+                        reasoning_provider="mock",
+                        planner_model="mock",
+                        rerank_model="mock",
+                    ),
+                    mock=True,
+                )
+        self.assertEqual(caught.exception.outcome_state, _schema.AUTH_FAILED)
 
     def test_retrieve_stream_skips_rate_limited_source(self):
         """_retrieve_stream should return empty when source is rate-limited."""
@@ -1289,23 +1429,136 @@ class TestSupplementalSearches(unittest.TestCase):
         x_urls = {item.url for item in bundle.items_by_source.get("x", [])}
         self.assertIn("https://x.com/analyst1/status/888", x_urls)
 
+    @patch("lib.env.get_xquik_token", return_value="k")
+    @patch("lib.env.x_backend_chain", return_value=["xquik"])
+    @patch("lib.xquik._execute_search", return_value=([], "Xquik key unpaid: payment required (402)"))
+    @patch("lib.entity_extract.extract_entities")
+    def test_xquik_handle_lane_auth_failure_reaches_source_status(
+        self, mock_extract, _mock_exec, *_patches
+    ):
+        """An unpaid xquik key produced an empty FROM lane and no outcome, so
+        the run reported X as a clean zero and the report stated as fact that
+        the subject posted nothing."""
+        mock_extract.return_value = {
+            "x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": [],
+        }
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1",
+                              author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2",
+                              author="analyst1", body="AI safety research"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime(None), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+
+        outcome = bundle.source_status.get("x")
+        self.assertIsNotNone(outcome, "x outcome must exist, not a silent zero")
+        self.assertEqual(schema.AUTH_FAILED, outcome.state)
+        self.assertTrue(outcome.attempted)
+
+    @patch("lib.env.get_xquik_token", return_value="k")
+    @patch("lib.env.x_backend_chain", return_value=["xquik"])
+    @patch("lib.xquik.http.get")
+    @patch("lib.entity_extract.extract_entities")
+    def test_xquik_handle_lane_rate_limit_reaches_source_status(
+        self, mock_extract, mock_get, *_patches
+    ):
+        """A 429 is not an auth failure, so it took the non-fatal path inside
+        _execute_search and reported nothing at all: the lane came back empty
+        with no outcome and the run called it genuine silence."""
+        mock_extract.return_value = {
+            "x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": [],
+        }
+        mock_get.side_effect = http.HTTPError(
+            "HTTP 429: Too Many Requests", status_code=429,
+        )
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1",
+                              author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2",
+                              author="analyst1", body="AI safety research"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime(None), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+
+        outcome = bundle.source_status.get("x")
+        self.assertIsNotNone(outcome, "x outcome must exist, not a silent zero")
+        # PARTIAL rather than AUTH_FAILED: a 429 is transient, and Phase 1
+        # items survived, so record_failure keeps them and marks the source.
+        self.assertEqual(schema.PARTIAL, outcome.state)
+        self.assertIn("429", outcome.detail)
+
+    @patch("lib.env.x_backend_chain", return_value=["bird"])
+    @patch("lib.bird_x.search_mentions", return_value=[])
+    @patch("lib.bird_x.subproc.run_with_timeout")
+    @patch("lib.entity_extract.extract_entities")
+    def test_bird_handle_lane_transport_failure_reaches_source_status(
+        self, mock_extract, mock_run, *_patches
+    ):
+        """Same defect on the bird path: a bird-search timeout returned no
+        items and no outcome, so an unreachable lane looked like silence."""
+        mock_extract.return_value = {
+            "x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": [],
+        }
+        mock_run.side_effect = subproc.SubprocTimeout("timed out")
+        bundle = schema.RetrievalBundle()
+        bundle.items_by_source["x"] = [
+            _make_source_item("x", "X1", "https://x.com/analyst1/status/1",
+                              author="analyst1", body="AI safety analysis"),
+            _make_source_item("x", "X2", "https://x.com/analyst1/status/2",
+                              author="analyst1", body="AI safety research"),
+        ]
+
+        pipeline._run_supplemental_searches(
+            topic="AI safety", bundle=bundle, plan=_make_plan("AI safety"), config={},
+            depth="default", date_range=("2026-02-15", "2026-03-17"),
+            runtime=_make_runtime(None), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+        )
+
+        outcome = bundle.source_status.get("x")
+        self.assertIsNotNone(outcome, "x outcome must exist, not a silent zero")
+        # PARTIAL, not UNREACHABLE: X delivered Phase 1 items and only the
+        # Phase 2 handle lane failed, which is what record_failure encodes.
+        self.assertEqual(schema.PARTIAL, outcome.state)
+        self.assertIn("timed out", outcome.detail)
+        self.assertIn("@analyst1", outcome.detail)
+
+    @patch("lib.bird_x.search_mentions", return_value=[])
     @patch("lib.bird_x.search_handles")
     @patch("lib.entity_extract.extract_entities")
-    def test_supplemental_items_deduplicated_by_url(self, mock_extract, mock_handles):
+    def test_supplemental_items_deduplicated_by_url(self, mock_extract, mock_handles, mock_mentions):
         """Supplemental items with same URL as Phase 1 should not be duplicated."""
         mock_extract.return_value = {"x_handles": ["analyst1"], "x_hashtags": [], "reddit_subreddits": []}
-        # Return item with same URL as Phase 1
         mock_handles.return_value = [
             {
                 "id": "dup1",
-                "text": "Same tweet",
+                "text": "AI safety technical analysis from the author",
                 "url": "https://x.com/analyst1/status/1",
                 "author_handle": "analyst1",
                 "date": "2026-03-15",
                 "engagement": {"likes": 50},
                 "relevance": 0.8,
                 "why_relevant": "duplicate",
-            }
+            },
+            {
+                "id": "unique2", "text": "New AI safety benchmark results",
+                "url": "https://x.com/analyst1/status/2",
+                "author_handle": "analyst1", "date": "2026-03-16",
+                "engagement": {"likes": 20}, "relevance": 0.8,
+            },
         ]
 
         bundle = schema.RetrievalBundle()
@@ -1325,15 +1578,16 @@ class TestSupplementalSearches(unittest.TestCase):
             mock=False,
             rate_limited_sources=set(),
             rate_limit_lock=threading.Lock(),
+            x_handle="analyst1",
         )
 
-        # Should still have only 1 item (no duplicates)
+        mock_handles.assert_called_once()
+        mock_mentions.assert_called_once()
         x_items = bundle.items_by_source.get("x", [])
         urls = [item.url for item in x_items]
-        self.assertEqual(
-            urls.count("https://x.com/analyst1/status/1"), 1,
-            f"Duplicate URL found: {urls}",
-        )
+        self.assertCountEqual(["https://x.com/analyst1/status/1",
+                               "https://x.com/analyst1/status/2"], urls)
+        self.assertIs(original, x_items[0])
 
     @patch("lib.bird_x.search_mentions")
     @patch("lib.bird_x.search_handles")
@@ -1366,91 +1620,55 @@ class TestSupplementalSearches(unittest.TestCase):
         self.assertEqual(pipeline.FROM_LANE_COUNT_PER, from_call.kwargs.get("count_per"))
         self.assertEqual(pipeline.MENTION_LANE_COUNT_PER, mock_mentions.call_args.kwargs.get("count_per"))
 
-    def test_phase2_skipped_in_quick_mode(self):
-        """_run_supplemental_searches should return immediately when depth='quick'."""
-        bundle = schema.RetrievalBundle()
-        bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/a/1", author="someone"),
-        ]
+    def _assert_phase2_guard(self, **blocked):
+        for allowed in (False, True):
+            with self.subTest(allowed=allowed):
+                bundle = schema.RetrievalBundle()
+                bundle.items_by_source["x"] = [
+                    _make_source_item("x", "X1", "https://x.com/subject1/status/1", author="subject1"),
+                ]
+                options = dict(depth="default", mock=False, rate_limited_sources=set(), backend="bird")
+                if not allowed:
+                    options.update(blocked)
+                backend = options.pop("backend")
+                with patch("lib.env.x_backend_chain", return_value=[]), patch(
+                    "lib.entity_extract.extract_entities",
+                    return_value={"x_handles": [], "x_hashtags": [], "reddit_subreddits": []},
+                ), patch("lib.bird_x.search_handles", return_value=[{
+                    "id": "guard-control", "text": "subject1 test update",
+                    "url": "https://x.com/subject1/status/2", "author_handle": "subject1",
+                    "date": "2026-03-15", "engagement": {"likes": 12}, "relevance": 1.0,
+                }]) as handles, patch("lib.bird_x.search_mentions", return_value=[]) as mentions:
+                    pipeline._run_supplemental_searches(
+                        topic="subject1", bundle=bundle, plan=_make_plan("subject1"),
+                        config={}, date_range=("2026-02-15", "2026-03-17"),
+                        runtime=_make_runtime(backend), rate_limit_lock=threading.Lock(),
+                        x_handle="subject1", **options,
+                    )
+                if allowed:
+                    self.assertEqual(handles.call_count, 1)
+                    self.assertEqual(handles.call_args.args, (["subject1"], "subject1", "2026-02-15"))
+                    self.assertEqual(mentions.call_count, 1)
+                    self.assertEqual(
+                        [i.url for i in bundle.items_by_source["x"]],
+                        ["https://x.com/subject1/status/1", "https://x.com/subject1/status/2"],
+                    )
+                else:
+                    handles.assert_not_called()
+                    mentions.assert_not_called()
+                    self.assertEqual([i.item_id for i in bundle.items_by_source["x"]], ["X1"])
 
-        # If it tries to import entity_extract, that's fine -- it should return before calling it
-        pipeline._run_supplemental_searches(
-            topic="test",
-            bundle=bundle,
-            plan=_make_plan(),
-            config={},
-            depth="quick",
-            date_range=("2026-02-15", "2026-03-17"),
-            runtime=_make_runtime("bird"),
-            mock=False,
-            rate_limited_sources=set(),
-            rate_limit_lock=threading.Lock(),
-        )
-        # Bundle should be unchanged (only original item)
-        self.assertEqual(len(bundle.items_by_source["x"]), 1)
+    def test_phase2_skipped_in_quick_mode(self):
+        self._assert_phase2_guard(depth="quick")
 
     def test_phase2_skipped_in_mock_mode(self):
-        """_run_supplemental_searches should return immediately when mock=True."""
-        bundle = schema.RetrievalBundle()
-        bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/a/1", author="someone"),
-        ]
-
-        pipeline._run_supplemental_searches(
-            topic="test",
-            bundle=bundle,
-            plan=_make_plan(),
-            config={},
-            depth="default",
-            date_range=("2026-02-15", "2026-03-17"),
-            runtime=_make_runtime("bird"),
-            mock=True,
-            rate_limited_sources=set(),
-            rate_limit_lock=threading.Lock(),
-        )
-        self.assertEqual(len(bundle.items_by_source["x"]), 1)
+        self._assert_phase2_guard(mock=True)
 
     def test_phase2_skipped_when_x_rate_limited(self):
-        """_run_supplemental_searches should skip when X is rate-limited."""
-        bundle = schema.RetrievalBundle()
-        bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/a/1", author="someone"),
-        ]
+        self._assert_phase2_guard(rate_limited_sources={"x"})
 
-        pipeline._run_supplemental_searches(
-            topic="test",
-            bundle=bundle,
-            plan=_make_plan(),
-            config={},
-            depth="default",
-            date_range=("2026-02-15", "2026-03-17"),
-            runtime=_make_runtime("bird"),
-            mock=False,
-            rate_limited_sources={"x"},
-            rate_limit_lock=threading.Lock(),
-        )
-        self.assertEqual(len(bundle.items_by_source["x"]), 1)
-
-    def test_phase2_skipped_when_backend_not_bird(self):
-        """_run_supplemental_searches should skip when X backend is not bird."""
-        bundle = schema.RetrievalBundle()
-        bundle.items_by_source["x"] = [
-            _make_source_item("x", "X1", "https://x.com/a/1", author="someone"),
-        ]
-
-        pipeline._run_supplemental_searches(
-            topic="test",
-            bundle=bundle,
-            plan=_make_plan(),
-            config={},
-            depth="default",
-            date_range=("2026-02-15", "2026-03-17"),
-            runtime=_make_runtime("xai"),
-            mock=False,
-            rate_limited_sources=set(),
-            rate_limit_lock=threading.Lock(),
-        )
-        self.assertEqual(len(bundle.items_by_source["x"]), 1)
+    def test_phase2_skipped_when_backend_has_no_handle_support(self):
+        self._assert_phase2_guard(backend="xai")
 
 
 class TestThinSourceRetry(unittest.TestCase):
@@ -1517,6 +1735,18 @@ class TestThinSourceRetry(unittest.TestCase):
         self.assertIn("reddit", call_sources)
         # X should NOT have been retried
         self.assertNotIn("x", call_sources)
+        mock_retrieve.assert_called_once()
+        retry = mock_retrieve.call_args.kwargs["subquery"]
+        self.assertEqual(retry.search_query, "advanced ai safety")
+        self.assertEqual(
+            retry.ranking_query,
+            "What recent evidence from the last 30 days matters for advanced ai safety?",
+        )
+        self.assertEqual(retry.sources, ["reddit"])
+        self.assertEqual(
+            [i.url for i in bundle.items_by_source["reddit"]],
+            ["https://reddit.com/r/test/1", "https://reddit.com/r/test/2"],
+        )
 
     def test_sources_with_enough_items_not_retried(self):
         """Sources with >= 3 items should not be retried."""
@@ -1641,37 +1871,51 @@ class TestThinSourceRetry(unittest.TestCase):
 
 
 class TestErrorCleanup(unittest.TestCase):
-    """Source errors should be cleared when the source has items from other subqueries."""
+    def _run_with_failed_stream(self, successful_items):
+        def retrieve(**kwargs):
+            if kwargs["subquery"].label == "failed":
+                raise RuntimeError("fixture lane unavailable")
+            return successful_items, {}
 
-    def test_error_cleared_when_source_has_items(self):
-        """A source that 429'd on one subquery but succeeded on another is not errored."""
-        bundle = schema.RetrievalBundle(artifacts={})
-        item = schema.SourceItem(
-            item_id="x1", source="x", title="A tweet", body="content",
-            url="https://x.com/user/status/1",
-        )
-        bundle.items_by_source["x"] = [item]
-        bundle.errors_by_source["x"] = "HTTP 429: Too Many Requests"
+        with patch.object(pipeline, "_retrieve_stream", side_effect=retrieve) as retrieval, \
+             patch.object(pipeline, "_retry_thin_sources"):
+            report = pipeline.run(
+                topic="AI safety", config={}, depth="default", mock=True,
+                requested_sources=["x"], web_backend="none", as_of_date="2026-03-17",
+                external_plan={
+                    "intent": "exploration", "freshness_mode": "balanced_recent",
+                    "cluster_mode": "topic",
+                    "subqueries": [
+                        {"label": label, "search_query": f"AI safety {label}",
+                         "ranking_query": "AI safety", "sources": ["x"]}
+                        for label in ["success", "failed"]
+                    ],
+                },
+            )
+        self.assertCountEqual(["success", "failed"], [
+            call.kwargs["subquery"].label for call in retrieval.call_args_list])
+        return report
 
-        # Simulate the cleanup logic from pipeline.run()
-        for source in list(bundle.errors_by_source):
-            if bundle.items_by_source.get(source):
-                del bundle.errors_by_source[source]
+    def test_error_becomes_partial_warning_when_another_stream_succeeds(self):
+        report = self._run_with_failed_stream([{
+            "id": "survivor", "text": "AI safety evaluation results",
+            "url": "https://x.com/researcher/status/1", "author_handle": "researcher",
+            "date": "2026-03-15", "engagement": {"likes": 50},
+        }])
+        self.assertEqual(["survivor"], [item.item_id for item in report.items_by_source["x"]])
+        self.assertNotIn("x", report.errors_by_source)
+        self.assertEqual(schema.PARTIAL, report.source_status["x"].state)
+        self.assertIn("fixture lane unavailable", report.source_status["x"].detail)
+        self.assertIn("Some sources returned partial results (degraded): x", report.warnings)
+        self.assertNotIn("Some sources failed: x", report.warnings)
 
-        self.assertNotIn("x", bundle.errors_by_source,
-                         "X should not be errored when it has items")
-
-    def test_error_kept_when_source_has_no_items(self):
-        """A source with zero items should remain in errors_by_source."""
-        bundle = schema.RetrievalBundle(artifacts={})
-        bundle.errors_by_source["x"] = "HTTP 429: Too Many Requests"
-
-        for source in list(bundle.errors_by_source):
-            if bundle.items_by_source.get(source):
-                del bundle.errors_by_source[source]
-
-        self.assertIn("x", bundle.errors_by_source,
-                      "X should remain errored when it has no items")
+    def test_error_remains_hard_failure_when_no_stream_returns_items(self):
+        report = self._run_with_failed_stream([])
+        self.assertEqual([], report.items_by_source.get("x", []))
+        self.assertEqual("fixture lane unavailable", report.errors_by_source["x"])
+        self.assertNotEqual(schema.PARTIAL, report.source_status["x"].state)
+        self.assertIn("Some sources failed: x", report.warnings)
+        self.assertNotIn("Some sources returned partial results (degraded): x", report.warnings)
 
 
 class TestXHandleFlag(unittest.TestCase):
@@ -1700,17 +1944,31 @@ class TestXHandleFlag(unittest.TestCase):
         self.assertIn("x_handle", sig.parameters, "pipeline.run() must accept x_handle parameter")
 
     def test_x_handle_passed_to_supplemental_searches(self):
-        """When x_handle is provided, it should trigger targeted handle search."""
-        # Run pipeline in mock mode with x_handle -- should not raise
-        report = pipeline.run(
-            topic="test topic",
-            config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
-            depth="quick",
-            requested_sources=["reddit", "x", "grounding"],
-            mock=True,
-            x_handle="testuser",
-        )
-        self.assertEqual("test topic", report.topic)
+        with patch("lib.providers.resolve_runtime", return_value=(_make_runtime(), None)), patch(
+            "lib.pipeline.available_sources", return_value=["x"],
+        ), patch("lib.pipeline._fetch_x_backend", return_value=([], None)), patch(
+            "lib.env.x_backend_chain", return_value=["bird"],
+        ), patch("lib.entity_extract.extract_entities", return_value={
+            "x_handles": [], "x_hashtags": [], "reddit_subreddits": [],
+        }), patch("lib.bird_x.search_handles", return_value=[{
+            "id": "explicit-handle", "text": "test topic from testuser",
+            "url": "https://x.com/testuser/status/123", "author_handle": "testuser",
+            "date": "2026-03-15", "engagement": {"likes": 15}, "relevance": 1.0,
+        }]) as handles, patch("lib.bird_x.search_mentions", return_value=[]):
+            report = pipeline.run(
+                topic="test topic", config={}, depth="default", requested_sources=["x"],
+                mock=False, x_handle="testuser", web_backend="none", as_of_date="2026-03-17",
+                external_plan={
+                    "intent": "exploration", "freshness_mode": "balanced_recent", "cluster_mode": "topic",
+                    "subqueries": [{"label": "primary", "search_query": "test topic",
+                                    "ranking_query": "test topic", "sources": ["x"]}],
+                },
+            )
+        handles.assert_called_once()
+        self.assertEqual(handles.call_args.args, (["testuser"], "test topic", "2026-02-15"))
+        self.assertEqual(handles.call_args.kwargs["to_date"], "2026-03-17")
+        self.assertEqual(handles.call_args.kwargs["count_per"], pipeline.FROM_LANE_COUNT_PER)
+        self.assertEqual([i.url for i in report.items_by_source["x"]], ["https://x.com/testuser/status/123"])
 
 
 class TestWarnings(unittest.TestCase):
