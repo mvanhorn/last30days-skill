@@ -1,8 +1,7 @@
-"""Subprocess helpers: safe timeout + process-group cleanup.
+"""Subprocess helpers: safe timeout + process-tree cleanup.
 
-Used by bird_x.py (Node.js Bird search) and youtube_yt.py (yt-dlp search
-and transcript download). Both need the same os.setsid/killpg cleanup
-dance on timeout to avoid orphaning child processes.
+Used by Bird/X search and other external-source clients. POSIX children use
+their own process group; Windows children need taskkill's tree termination.
 """
 
 from __future__ import annotations
@@ -41,6 +40,7 @@ _child_pids_lock = threading.RLock()
 # handler sleeps through the grace, so a source can spawn a child after the
 # snapshot; register_child_pid kills such late children itself.
 _shutting_down = False
+_WINDOWS = os.name == "nt"
 
 
 def register_child_pid(pid: int) -> None:
@@ -74,9 +74,27 @@ def _signal_group(pgid: int, sig: int) -> bool:
     return True
 
 
+def _kill_windows_tree(pid: int) -> bool:
+    try:
+        result = subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", str(pid)],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    return result.returncode == 0
+
+
 def _kill_child_group(pid: int, sig: int) -> None:
     if hasattr(os, "setsid") and hasattr(os, "killpg"):
         _signal_group(pid, sig)
+        return
+    if _WINDOWS and _kill_windows_tree(pid):
         return
     try:
         os.kill(pid, sig)
@@ -140,10 +158,9 @@ def run_with_timeout(
     """Run a subprocess with process-group cleanup on timeout.
 
     Spawns ``cmd`` inside its own process group via ``start_new_session`` where
-    available. If ``communicate(timeout=...)`` raises ``TimeoutExpired``,
-    signals ``SIGTERM`` to the entire group, falls back to ``proc.kill()``
-    if the signal fails, then waits up to ``cleanup_grace`` seconds before
-    escalating to SIGKILL and waiting once more to reap the child.
+    available. On Windows, taskkill terminates the owned child and descendants.
+    If tree termination fails, the direct child is killed. POSIX signals the
+    group with SIGTERM, then escalates to SIGKILL if needed.
 
     Args:
         cmd: Command and arguments to spawn.
@@ -231,7 +248,7 @@ def run_with_timeout(
                 if own_group:
                     pgid = proc.pid
                     os.killpg(pgid, signal.SIGTERM)
-                else:
+                elif not (_WINDOWS and _kill_windows_tree(proc.pid)):
                     proc.kill()
             except (ProcessLookupError, PermissionError, OSError, AttributeError):
                 pgid = None
@@ -243,7 +260,7 @@ def run_with_timeout(
                 try:
                     if pgid is not None:
                         os.killpg(pgid, signal.SIGKILL)
-                    else:
+                    elif not (_WINDOWS and _kill_windows_tree(proc.pid)):
                         proc.kill()
                 except (ProcessLookupError, PermissionError, OSError, AttributeError):
                     proc.kill()

@@ -367,7 +367,7 @@ time.sleep(15)
         self.assertEqual(offenders, [])
 
     def test_timeout_falls_back_to_kill_when_killpg_unavailable(self):
-        """Simulate Windows (no killpg/getpgid) — should fall back to proc.kill()."""
+        """Without POSIX groups or Windows tree cleanup, kill the direct child."""
         real_hasattr = builtins.hasattr
 
         def selective_hasattr(obj, name):
@@ -381,6 +381,219 @@ time.sleep(15)
                     ["sh", "-c", "sleep 10"],
                     timeout=1,
                 )
+
+    def test_windows_timeout_terminates_owned_process_tree(self):
+        timeout_error = subproc.subprocess.TimeoutExpired("node", 1)
+
+        class FakeProc:
+            pid = 4321
+            stdin = stdout = stderr = None
+            returncode = None
+
+            def __init__(self):
+                self.killed = False
+
+            def communicate(self, **kwargs):
+                raise timeout_error
+
+            def wait(self, timeout=None):
+                self.returncode = 1
+                return 1
+
+            def kill(self):
+                self.killed = True
+
+        fake = FakeProc()
+        real_hasattr = builtins.hasattr
+
+        def windows_hasattr(obj, name):
+            if obj is real_os and name in ("setsid", "killpg"):
+                return False
+            return real_hasattr(obj, name)
+
+        with patch.object(builtins, "hasattr", side_effect=windows_hasattr), \
+             patch.object(subproc, "_WINDOWS", True), \
+             patch.object(subproc, "_kill_windows_tree", return_value=True) as kill_tree, \
+             patch.object(subproc.subprocess, "Popen", return_value=fake):
+            with self.assertRaises(subproc.SubprocTimeout):
+                subproc.run_with_timeout(["node", "bird-search.mjs"], timeout=1)
+
+        kill_tree.assert_called_once_with(fake.pid)
+        self.assertFalse(fake.killed)
+
+    def test_windows_tree_kill_uses_pid_scoped_taskkill_and_handles_failure(self):
+        import subprocess
+
+        with patch.object(subproc.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)) as run:
+            self.assertTrue(subproc._kill_windows_tree(4321))
+        run.assert_called_once_with(
+            ["taskkill", "/F", "/T", "/PID", "4321"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=2,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+
+        with patch.object(subproc.subprocess, "run", side_effect=subprocess.TimeoutExpired("taskkill", 2)):
+            self.assertFalse(subproc._kill_windows_tree(4321))
+
+        with patch.object(subproc.subprocess, "run", return_value=subprocess.CompletedProcess([], 1)):
+            self.assertFalse(subproc._kill_windows_tree(4321))
+
+    def test_windows_shutdown_terminates_owned_process_tree(self):
+        real_hasattr = builtins.hasattr
+
+        def windows_hasattr(obj, name):
+            if obj is real_os and name in ("setsid", "killpg"):
+                return False
+            return real_hasattr(obj, name)
+
+        with patch.object(builtins, "hasattr", side_effect=windows_hasattr), \
+             patch.object(subproc, "_WINDOWS", True), \
+             patch.object(subproc, "_child_pids", {4321}), \
+             patch.object(subproc, "_shutting_down", False), \
+             patch.object(subproc, "_kill_windows_tree", return_value=True) as kill_tree:
+            subproc.cleanup_children()
+
+        kill_tree.assert_called_once_with(4321)
+
+    def test_windows_tree_kill_failure_falls_back_to_direct_child(self):
+        timeout_error = subproc.subprocess.TimeoutExpired("node", 1)
+
+        class FakeProc:
+            pid = 4321
+            stdin = stdout = stderr = None
+            returncode = None
+
+            def __init__(self):
+                self.killed = False
+
+            def communicate(self, **kwargs):
+                raise timeout_error
+
+            def wait(self, timeout=None):
+                self.returncode = 1
+                return 1
+
+            def kill(self):
+                self.killed = True
+
+        fake = FakeProc()
+        real_hasattr = builtins.hasattr
+
+        def windows_hasattr(obj, name):
+            if obj is real_os and name in ("setsid", "killpg"):
+                return False
+            return real_hasattr(obj, name)
+
+        with patch.object(builtins, "hasattr", side_effect=windows_hasattr), \
+             patch.object(subproc, "_WINDOWS", True), \
+             patch.object(subproc, "_kill_windows_tree", return_value=False) as kill_tree, \
+             patch.object(subproc.subprocess, "Popen", return_value=fake):
+            with self.assertRaises(subproc.SubprocTimeout):
+                subproc.run_with_timeout(["node", "bird-search.mjs"], timeout=1)
+
+        kill_tree.assert_called_once_with(fake.pid)
+        self.assertTrue(fake.killed)
+
+    @unittest.skipUnless(IS_WINDOWS, "native Windows process-tree validation")
+    def test_windows_timeout_kills_shim_grandchild(self):
+        import ctypes
+        import pathlib
+        import signal
+        import sys
+        import tempfile
+        import threading
+        import time
+
+        kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel.OpenProcess.argtypes = (ctypes.c_ulong, ctypes.c_int, ctypes.c_ulong)
+        kernel.OpenProcess.restype = ctypes.c_void_p
+        kernel.GetExitCodeProcess.argtypes = (ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong))
+        kernel.GetExitCodeProcess.restype = ctypes.c_int
+        kernel.CloseHandle.argtypes = (ctypes.c_void_p,)
+
+        def running(pid):
+            handle = kernel.OpenProcess(0x1000, False, pid)
+            if not handle:
+                return False
+            try:
+                exit_code = ctypes.c_ulong()
+                self.assertTrue(kernel.GetExitCodeProcess(handle, ctypes.byref(exit_code)))
+                return exit_code.value == 259
+            finally:
+                kernel.CloseHandle(handle)
+
+        grandchild = (
+            "import os,pathlib,sys,time;"
+            "pathlib.Path(sys.argv[1]).write_text(str(os.getpid()));"
+            "time.sleep(12)"
+        )
+        shim = (
+            "import subprocess,sys,time;"
+            "subprocess.Popen([sys.executable,'-c',sys.argv[2],sys.argv[1]]);"
+            "time.sleep(30)"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            pidfile = pathlib.Path(tmp, "grandchild.pid")
+            shim_pids = []
+            observed_live = []
+
+            def wait_for_grandchild(pid):
+                shim_pids.append(pid)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if pidfile.exists() and pidfile.stat().st_size:
+                        observed_live.append(running(int(pidfile.read_text())))
+                        return
+                    time.sleep(0.01)
+                self.fail("grandchild did not write its PID")
+
+            def kill_owned_processes():
+                grandchild_pid = pidfile.read_text().strip() if pidfile.exists() else ""
+                targets = shim_pids + ([int(grandchild_pid)] if grandchild_pid.isdigit() else [])
+                for pid in targets:
+                    if running(pid):
+                        try:
+                            subproc.subprocess.run(
+                                ["taskkill", "/F", "/T", "/PID", str(pid)],
+                                stdout=subproc.subprocess.DEVNULL,
+                                stderr=subproc.subprocess.DEVNULL,
+                                timeout=2,
+                                check=False,
+                            )
+                        except (OSError, subproc.subprocess.TimeoutExpired):
+                            pass
+                        if running(pid):
+                            try:
+                                real_os.kill(pid, signal.SIGTERM)
+                            except OSError:
+                                pass
+
+            watchdog = threading.Timer(10, kill_owned_processes)
+            watchdog.daemon = True
+            watchdog.start()
+            try:
+                started = time.monotonic()
+                with self.assertRaises(subproc.SubprocTimeout):
+                    subproc.run_with_timeout(
+                        [sys.executable, "-c", shim, str(pidfile), grandchild],
+                        timeout=0.2,
+                        on_pid=wait_for_grandchild,
+                    )
+                self.assertLess(time.monotonic() - started, 8, "timeout waited for the grandchild to exit")
+                self.assertTrue(shim_pids)
+                self.assertEqual(observed_live, [True], "grandchild was not alive before timeout")
+                self.assertTrue(pidfile.exists())
+                shim_pid = shim_pids[0]
+                grandchild_pid = int(pidfile.read_text())
+                self.assertFalse(running(shim_pid), "shim survived its timeout")
+                self.assertFalse(running(grandchild_pid), "grandchild survived its timeout")
+            finally:
+                watchdog.cancel()
+                kill_owned_processes()
 
     def test_on_pid_callback_exceptions_are_suppressed(self):
         """If the PID callback raises, the subprocess should still run to completion."""
