@@ -33,7 +33,7 @@ import re
 import sys
 import time
 
-from . import env, http
+from . import env, http, usage
 from .log import source_log
 
 # Distinct exit code for the clarify gate so the invoking model can tell
@@ -84,6 +84,7 @@ def submit(query: str, depth: str, register: str = "default") -> dict:
     payload = {"query": query, "depth": depth}
     if register != "default":
         payload["register"] = register
+    usage.begin("hosted")
     return http.post(
         f"{_api_base()}/search",
         json_data=payload,

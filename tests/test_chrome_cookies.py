@@ -36,6 +36,13 @@ from lib.chrome_cookies import (
 
 KNOWN_PASSPHRASE = b"test_passphrase_for_unit_tests"
 KNOWN_AES_KEY = _derive_aes_key(KNOWN_PASSPHRASE)
+# Independent v10 vectors: PBKDF2-HMAC-SHA1, saltysalt, 1003 iterations,
+# 16-byte key; OpenSSL AES-128-CBC with a 16-space IV and PKCS7 padding.
+V10_AES_KEY = bytes.fromhex("bae7b43668299f6b6839c58cff9e97db")
+V10_AUTH_TOKEN = bytes.fromhex(
+    "76313040a19511ccca2ce72c5b842326adf2e97a36831c0c5943045f7d66f96cbf011e"
+)
+V10_CT0 = bytes.fromhex("763130189b696f39999dba1b0c8f9c005b8a24")
 
 
 def _encrypt_value_v10(plaintext: str, aes_key: bytes) -> bytes:
@@ -151,6 +158,9 @@ class TestPkcs7Padding:
 
 
 class TestKeyDerivation:
+    def test_derive_aes_key_matches_v10_known_answer(self):
+        assert _derive_aes_key(KNOWN_PASSPHRASE) == V10_AES_KEY
+
     def test_derive_aes_key_deterministic(self):
         key1 = _derive_aes_key(b"my_passphrase")
         key2 = _derive_aes_key(b"my_passphrase")
@@ -346,17 +356,14 @@ class TestUnencryptedCookies:
 class TestFullExtraction:
     @pytest.mark.skipif(not OPENSSL_AVAILABLE, reason="openssl not installed")
     def test_encrypted_cookies_extracted(self, tmp_path):
-        """End-to-end: create DB with real v10-encrypted values, extract them."""
+        """Extract fixed v10 vectors through SQLite, key derivation, and OpenSSL."""
         auth_val = "my_auth_token_123"
         ct0_val = "my_ct0_csrf_456"
 
-        encrypted_auth = _encrypt_value_v10(auth_val, KNOWN_AES_KEY)
-        encrypted_ct0 = _encrypt_value_v10(ct0_val, KNOWN_AES_KEY)
-
         db_path = str(tmp_path / "Cookies")
         _create_chrome_cookies_db(db_path, [
-            (".x.com", "auth_token", "", encrypted_auth),
-            (".x.com", "ct0", "", encrypted_ct0),
+            (".x.com", "auth_token", "", V10_AUTH_TOKEN),
+            (".x.com", "ct0", "", V10_CT0),
             (".other.com", "other", "", b""),  # unrelated cookie
         ])
 
@@ -370,9 +377,7 @@ class TestFullExtraction:
             ):
                 result = extract_chrome_cookies_macos(".x.com", ["auth_token", "ct0"])
 
-        assert result is not None
-        assert result["auth_token"] == auth_val
-        assert result["ct0"] == ct0_val
+        assert result == {"auth_token": auth_val, "ct0": ct0_val}
 
     def test_no_matching_cookies_returns_none(self, tmp_path):
         db_path = str(tmp_path / "Cookies")

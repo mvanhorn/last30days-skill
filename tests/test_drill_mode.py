@@ -452,15 +452,14 @@ def test_cli_drill_runs_deep_updates_cache_and_can_chain(tmp_path: Path):
     assert len(chained[0].artifacts["drill_history"]) == 2
 
 
-def test_drill_plan_does_not_gain_jobs_via_company_topic(monkeypatch):
-    from lib import pipeline, schema
-
+@pytest.mark.parametrize("drill", [True, False])
+def test_drill_plan_does_not_gain_jobs_via_company_topic(monkeypatch, drill):
     plan = schema.QueryPlan(
         intent="general",
         freshness_mode="balanced_recent",
         cluster_mode="story",
         raw_topic="OpenClaw",
-        notes=["drill-mode"],
+        notes=["drill-mode"] if drill else [],
         subqueries=[
             schema.SubQuery(
                 label="drill",
@@ -471,32 +470,39 @@ def test_drill_plan_does_not_gain_jobs_via_company_topic(monkeypatch):
         ],
         source_weights={"youtube": 1.0},
     )
-    pipeline._ensure_jobs_in_plan(plan, ["youtube", "jobs"], explicit=False, topic="OpenClaw")
-    # Direct call still injects (documenting baseline)...
-    assert "jobs" in plan.source_weights
-    # ...but run()'s drill gate skips the injection entirely for drill plans;
-    # assert the gate condition itself so the contract is pinned.
-    assert "drill-mode" in plan.notes
+    monkeypatch.setattr(pipeline, "MOCK_AVAILABLE_SOURCES", ["youtube", "jobs"])
+    report = pipeline.run(
+        topic="OpenClaw", config={}, depth="quick", mock=True,
+        external_plan=schema.to_dict(plan), web_backend="none",
+        as_of_date="2026-07-10",
+    )
+
+    expected = {"youtube"} if drill else {"youtube", "jobs"}
+    assert report.query_plan.subqueries
+    assert all(set(subquery.sources) == expected for subquery in report.query_plan.subqueries)
 
 
 def test_merge_collapses_exact_url_rediscoveries():
-    from lib import pipeline, schema
-    import copy
+    base = _report()
+    drill_report = _report(drill=True)
+    old = base.items_by_source["reddit"][0]
+    new = drill_report.items_by_source["reddit"][0]
+    old.body = "Initial rumor about the account restriction."
+    new.body = "Full interview transcript explains revised enforcement and appeal procedures."
+    new.snippet = "Appeals now receive human review."
+    new.metadata = {"top_comments": [{"text": "My appeal was approved."}]}
+    new.engagement = {"score": 321}
 
-    def item(url, body):
-        return schema.SourceItem(
-            item_id=url, source="reddit", title="t", body=body, url=url,
-            published_at="2026-07-01", snippet=body[:20], engagement={"score": 5},
-        )
+    merged = pipeline.merge_drill_report(
+        base, drill_report, [base.clusters[0]], target="cluster 1",
+    )
 
-    old = item("https://reddit.com/r/x/1", "original body")
-    new = item("https://reddit.com/r/x/1", "enriched body with transcript and much longer text")
-    from lib import dedupe
-    new_urls = {new.url}
-    filtered_old = [i for i in [old] if not (i.url and i.url in new_urls)]
-    combined = dedupe.dedupe_items([copy.deepcopy(new), *filtered_old])
-    assert len(combined) == 1
-    assert combined[0].body.startswith("enriched")
+    retained = [item for item in merged.items_by_source["reddit"] if item.url == old.url]
+    assert len(retained) == 1
+    assert retained[0].body == "Full interview transcript explains revised enforcement and appeal procedures."
+    assert retained[0].snippet == "Appeals now receive human review."
+    assert retained[0].metadata == {"top_comments": [{"text": "My appeal was approved."}]}
+    assert retained[0].engagement == {"score": 321}
 
 
 def test_write_last_run_returns_false_on_failure(monkeypatch, capsys):

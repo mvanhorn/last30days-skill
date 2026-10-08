@@ -7,6 +7,7 @@ bookmarks). Requires an API key from xquik.com.
 
 from __future__ import annotations
 
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -79,6 +80,8 @@ def search_xquik(
     to_date: str,
     depth: str = "default",
     token: str = "",
+    deadline: float | None = None,
+    cancel: Any = None,
 ) -> Dict[str, Any]:
     """Search X via Xquik REST API.
 
@@ -88,6 +91,10 @@ def search_xquik(
         to_date: End date (YYYY-MM-DD)
         depth: Research depth - "quick", "default", or "deep"
         token: Xquik API key
+        deadline: Optional shared wall-clock deadline (``time.monotonic()``
+            instant) from the X backend chain. Queries past the deadline are
+            never started; the per-request timeout/retry pair still bounds
+            each call (mirrors ``x_api``'s TIMEOUT_SECONDS/RETRIES pattern).
 
     Returns:
         Dict with "items" list and optional "error" string.
@@ -101,12 +108,17 @@ def search_xquik(
     seen_ids: set[str] = set()
 
     for query_text in queries:
+        if (cancel is not None and cancel.is_set()) or (deadline is not None and time.monotonic() >= deadline):
+            _log("chain deadline reached; skipping remaining queries")
+            return {"items": all_items, "error": "Xquik research cancelled or timed out"}
         q = f"{query_text} since:{from_date} until:{to_date}"
         items, auth_error = _execute_search(
             q, cfg["limit"], token,
             label=query_text, id_prefix="XQ",
             seen_ids=seen_ids, relevance_query=query_text,
             index_offset=len(all_items),
+            deadline_monotonic=deadline,
+            cancel=cancel,
         )
         if auth_error:
             # Auth/payment failure is fatal for the whole source (e.g. 401/403,
@@ -115,6 +127,8 @@ def search_xquik(
             return {"items": [], "error": auth_error}
         all_items.extend(items)
 
+    if (cancel is not None and cancel.is_set()) or (deadline is not None and time.monotonic() >= deadline):
+        return {"items": all_items, "error": "Xquik research cancelled or timed out"}
     return {"items": all_items}
 
 
@@ -128,22 +142,36 @@ def _execute_search(
     seen_ids: set[str],
     relevance_query: str,
     index_offset: int = 0,
+    deadline_monotonic: float | None = None,
+    failure_out: Optional[List[str]] = None,
+    cancel: Any = None,
 ) -> tuple[List[Dict[str, Any]], str | None]:
     """Run one Xquik search call and parse its tweets.
 
     Returns ``(items, auth_error)``. ``auth_error`` is a non-empty string only
     on a fatal auth/payment failure (401/403); transient/HTTP errors log and
     return ``([], None)`` so one bad lane never discards another's results.
+
+    Non-fatal failures (429, 5xx, network error, unparseable payload) append a
+    reason to ``failure_out`` instead. They stay out of the return value
+    because the caller must keep going to the next handle, but a caller that
+    stopped there would report the lane as empty rather than as failed.
     ``relevance_query`` (the topic) is what items are scored against — for the
     handle lanes that differs from the search query (``from:handle``).
     ``index_offset`` keeps item ids unique across multiple calls that share an
     accumulator (multi-query topic search, per-handle lanes).
+    ``deadline_monotonic`` bounds the request including retries at the
+    transport (mirrors ``x_api._get``).
     """
     full_url = f"{_BASE_URL}/x/tweets/search?q={_url_encode(q)}&queryType=Top&limit={limit}"
     _log(f"Searching: {label}")
     try:
         request_headers = {"X-Api-Key": token}
-        response = http.get(full_url, headers=request_headers, timeout=30, retries=2)
+        response = http.get(
+            full_url, headers=request_headers, timeout=30, retries=2,
+            deadline_monotonic=deadline_monotonic,
+            cancel=cancel,
+        )
     except http.HTTPError as exc:
         status = getattr(exc, "status_code", None)
         if status == 402:
@@ -156,13 +184,22 @@ def _execute_search(
         if status in (401, 403):
             return [], f"Xquik auth failed ({status})"
         _log(f"HTTP error for '{label}': {exc}")
+        if failure_out is not None:
+            failure_out.append(f"Xquik HTTP error for '{label}': {exc}")
         return [], None
     except Exception as exc:
         _log(f"Error for '{label}': {exc}")
+        if failure_out is not None:
+            failure_out.append(f"Xquik request failed for '{label}': {exc}")
         return [], None
 
     tweets = response.get("tweets", [])
     if not isinstance(tweets, list):
+        if failure_out is not None:
+            failure_out.append(
+                f"Xquik returned no tweets array for '{label}' "
+                f"(got {type(tweets).__name__})"
+            )
         return [], None
     items: List[Dict[str, Any]] = []
     for tweet in tweets:
@@ -192,18 +229,30 @@ def search_handles(
     *,
     count_per: int = 8,
     token: str = "",
+    failure_out: Optional[List[str]] = None,
+    deadline: float | None = None,
+    cancel: Any = None,
 ) -> List[Dict[str, Any]]:
     """FROM lane: tweets authored BY each handle (their own timeline).
 
     The topic is NOT AND'd into the query (that was the from:-AND bug, #610) —
     we pull the raw timeline and use ``topic`` for relevance ranking only.
     Returns a flat list of item dicts (mirrors ``bird_x.search_handles``).
+
+    When ``failure_out`` is provided, any failure reason is appended — the
+    fatal auth/payment one that stops the lane, and the per-handle transient
+    ones (429, 5xx, network, unparseable payload) that do not — so the caller
+    can distinguish a failed request from a handle that posted nothing.
     """
     if not token or not handles:
         return []
     items: List[Dict[str, Any]] = []
     seen_ids: set[str] = set()
     for raw in handles:
+        if (cancel is not None and cancel.is_set()) or (deadline is not None and time.monotonic() >= deadline):
+            if failure_out is not None:
+                failure_out.append("Xquik research cancelled or timed out")
+            break
         handle = str(raw).lstrip("@").strip()
         if not handle:
             continue
@@ -213,9 +262,17 @@ def search_handles(
             label=f"from:{handle}", id_prefix="XF",
             seen_ids=seen_ids, relevance_query=topic,
             index_offset=len(items),
+            failure_out=failure_out,
+            deadline_monotonic=deadline,
+            cancel=cancel,
         )
         if auth_error:
-            break  # fatal auth/payment failure — stop, keep what we have
+            # Fatal auth/payment failure — stop, keep what we have. Surface the
+            # reason: an empty FROM lane is otherwise indistinguishable from a
+            # subject who simply did not post.
+            if failure_out is not None:
+                failure_out.append(auth_error)
+            break
         items.extend(got)
     return items
 
@@ -228,17 +285,29 @@ def search_mentions(
     topic: str = "",
     count_per: int = 5,
     token: str = "",
+    failure_out: Optional[List[str]] = None,
+    deadline: float | None = None,
+    cancel: Any = None,
 ) -> List[Dict[str, Any]]:
     """ABOUT lane: tweets mentioning each handle, authored by OTHERS.
 
     Queries ``@handle`` then drops the handle's own tweets (``_is_own``) so only
     third-party mentions remain. Returns a flat list of item dicts.
+
+    When ``failure_out`` is provided, any failure reason is appended — the
+    fatal auth/payment one that stops the lane, and the per-handle transient
+    ones (429, 5xx, network, unparseable payload) that do not — so the caller
+    can distinguish a failed request from a handle nobody mentioned.
     """
     if not token or not handles:
         return []
     items: List[Dict[str, Any]] = []
     seen_ids: set[str] = set()
     for raw in handles:
+        if (cancel is not None and cancel.is_set()) or (deadline is not None and time.monotonic() >= deadline):
+            if failure_out is not None:
+                failure_out.append("Xquik research cancelled or timed out")
+            break
         handle = str(raw).lstrip("@").strip()
         if not handle:
             continue
@@ -248,8 +317,13 @@ def search_mentions(
             label=f"@{handle}", id_prefix="XA",
             seen_ids=seen_ids, relevance_query=topic,
             index_offset=len(items),
+            failure_out=failure_out,
+            deadline_monotonic=deadline,
+            cancel=cancel,
         )
         if auth_error:
+            if failure_out is not None:
+                failure_out.append(auth_error)
             break
         items.extend(it for it in got if not _is_own(it.get("url", ""), handle))
     return items

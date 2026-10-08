@@ -5,6 +5,7 @@ import unittest
 import urllib.error
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 from lib import grounding, parallel_mcp
@@ -30,17 +31,19 @@ class BraveSearchTests(unittest.TestCase):
                     {
                         "title": "Undated Article",
                         "url": "https://example.com/undated",
-                        "description": "Should also be filtered",
+                        "description": "Kept because date is unknown",
                     }
                 ]
             }
         }
         with patch("lib.grounding.http.request", return_value=mock_response) as mock_req:
             items, artifact = grounding.brave_search("test", ("2026-02-25", "2026-03-27"), "fake-key")
-            self.assertEqual(1, len(items))
+            self.assertEqual(2, len(items))
             self.assertEqual("Test Article", items[0]["title"])
             self.assertEqual("https://example.com/article", items[0]["url"])
             self.assertEqual("2026-03-10", items[0]["date"])
+            self.assertEqual("Undated Article", items[1]["title"])
+            self.assertIsNone(items[1]["date"])
             self.assertEqual("brave", artifact["label"])
             call_url = mock_req.call_args.args[1]
             self.assertIn("freshness=2026-02-25to2026-03-27", call_url)
@@ -65,16 +68,159 @@ class SerperSearchTests(unittest.TestCase):
                 {
                     "title": "Undated Result",
                     "link": "https://example.com/undated",
-                    "snippet": "Should also be filtered",
+                    "snippet": "Kept because date is unknown",
                 }
             ]
         }
         with patch("lib.grounding.http.request", return_value=mock_response):
             items, artifact = grounding.serper_search("test", ("2026-02-25", "2026-03-27"), "fake-key")
-            self.assertEqual(1, len(items))
+            self.assertEqual(2, len(items))
             self.assertEqual("Serper Result", items[0]["title"])
             self.assertEqual("2026-03-15", items[0]["date"])
+            self.assertEqual("Undated Result", items[1]["title"])
+            self.assertIsNone(items[1]["date"])
             self.assertEqual("serper", artifact["label"])
+
+    def test_serper_search_keeps_relative_dates(self):
+        """Google renders recent results with a relative date, not an absolute one.
+
+        Before these were parsed, every fresh result failed the in-range check
+        and the web lane came back empty on short windows.
+        """
+        mock_response = {
+            "organic": [
+                {
+                    "title": "Two Hours Old",
+                    "link": "https://example.com/hours",
+                    "snippet": "Fresh enough that Google shows an hour count",
+                    "date": "2 hours ago",
+                },
+                {
+                    "title": "One Day Old",
+                    "link": "https://example.com/day",
+                    "snippet": "Yesterday, relative to the window end",
+                    "date": "1 day ago",
+                },
+                {
+                    "title": "Too Old",
+                    "link": "https://example.com/stale",
+                    "snippet": "Resolves before the window start",
+                    "date": "3 weeks ago",
+                },
+            ]
+        }
+        with patch("lib.grounding.http.request", return_value=mock_response), \
+             patch("lib.grounding._now", return_value=datetime(2026, 3, 27, 12, 0)):
+            items, _ = grounding.serper_search("test", ("2026-03-26", "2026-03-27"), "fake-key")
+            self.assertEqual(2, len(items))
+            self.assertEqual("Two Hours Old", items[0]["title"])
+            self.assertEqual("2026-03-27", items[0]["date"])
+            self.assertEqual("One Day Old", items[1]["title"])
+            self.assertEqual("2026-03-26", items[1]["date"])
+
+
+    def test_serper_search_keeps_valid_result_after_overlong_relative_age(self):
+        response = {
+            "organic": [
+                {"title": "Malformed", "link": "https://example.com/bad",
+                 "date": "9" * 5000 + " days ago"},
+                {"title": "Valid", "link": "https://example.com/good",
+                 "date": "1 day ago"},
+            ]
+        }
+        with patch("lib.grounding.http.request", return_value=response), \
+             patch("lib.grounding._now", return_value=datetime(2026, 3, 27, 12, 0)):
+            items, artifact = grounding.serper_search(
+                "test", ("2026-03-26", "2026-03-27"), "fake-key"
+            )
+        self.assertEqual(["https://example.com/good"], [item["url"] for item in items])
+        self.assertEqual("2026-03-26", items[0]["date"])
+        self.assertEqual(1, artifact["resultCount"])
+
+
+class SerperRelativeDateTests(unittest.TestCase):
+    NOON = datetime(2026, 3, 27, 12, 0)
+
+    def test_absolute_formats_are_unchanged(self):
+        for raw, expected in (
+            ("Mar 15, 2026", "2026-03-15"),
+            ("March 15, 2026", "2026-03-15"),
+            ("2026-03-15", "2026-03-15"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(expected, grounding._parse_serper_date(raw, self.NOON))
+
+    def test_relative_units_resolve_against_query_time(self):
+        for raw, expected in (
+            ("45 minutes ago", "2026-03-27"),
+            ("2 hours ago", "2026-03-27"),
+            ("1 day ago", "2026-03-26"),
+            ("5 days ago", "2026-03-22"),
+            ("2 weeks ago", "2026-03-13"),
+            ("3 months ago", "2025-12-27"),
+            ("about 2 days ago", "2026-03-25"),
+            ("today", "2026-03-27"),
+            ("yesterday", "2026-03-26"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(expected, grounding._parse_serper_date(raw, self.NOON))
+
+    def test_historical_window_dates_against_query_time(self):
+        """A relative label describes age at query time, not age at the window end.
+
+        Searching a past window with --as-of still runs today, so Serper labels a
+        result from the window with its age as of today. Anchoring to the window
+        end would place it before the window and discard it.
+        """
+        self.assertEqual(
+            "2026-03-15",
+            grounding._parse_serper_date("12 days ago", now=datetime(2026, 3, 27, 12, 0)),
+        )
+
+    def test_unparseable_and_missing_dates_still_return_none(self):
+        for raw in ("", "sometime last spring", "ago 2 days", "many hours ago"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(grounding._parse_serper_date(raw, self.NOON))
+
+    def test_defaults_to_the_current_clock(self):
+        with patch("lib.grounding._now", return_value=datetime(2026, 3, 27, 12, 0)):
+            self.assertEqual("2026-03-26", grounding._parse_serper_date("1 day ago"))
+
+    def test_sub_day_labels_cross_the_midnight_boundary(self):
+        """A sub-day age is exact, so it must not be rounded up to the query date.
+
+        Just after midnight, "23 hours ago" names yesterday. Stamping it with
+        today's date both misreports the publication date downstream and lets a
+        one-day window admit a result that falls outside it.
+        """
+        just_after_midnight = datetime(2026, 3, 27, 0, 30)
+        for raw, expected in (
+            ("23 hours ago", "2026-03-26"),
+            ("20 minutes ago", "2026-03-27"),
+            ("2 hours ago", "2026-03-26"),
+        ):
+            with self.subTest(raw=raw):
+                self.assertEqual(
+                    expected, grounding._parse_serper_date(raw, just_after_midnight)
+                )
+
+    def test_absurd_ages_are_unparseable_rather_than_fatal(self):
+        """One malformed label must not take the whole web lane down with it.
+
+        The amount is unbounded, and a large enough one overflows `timedelta` or
+        runs off the end of `date`. That has to read as an unparseable date, the
+        same as any other junk value, not as an exception escaping the result
+        loop in `serper_search`.
+        """
+        for raw in ("999999999 years ago", "3000000 days ago", "99999999999 hours ago"):
+            with self.subTest(raw=raw):
+                self.assertIsNone(grounding._parse_serper_date(raw, self.NOON))
+
+    def test_long_zero_padded_age_is_still_parseable(self):
+        self.assertEqual(
+            "2026-03-26",
+            grounding._parse_serper_date("0" * 5000 + "1 day ago", self.NOON),
+        )
 
 
 class ExaSearchTests(unittest.TestCase):
@@ -98,19 +244,21 @@ class ExaSearchTests(unittest.TestCase):
                 {
                     "title": "Undated Exa Result",
                     "url": "https://example.com/undated-exa",
-                    "text": "No date means filtered",
+                    "text": "Kept because date is unknown",
                 },
             ]
         }
         with patch("lib.grounding.http.request", return_value=mock_response) as mock_req:
             items, artifact = grounding.exa_search("test", ("2026-02-25", "2026-03-27"), "fake-exa-key")
-            self.assertEqual(1, len(items))
+            self.assertEqual(2, len(items))
             self.assertEqual("Exa Result", items[0]["title"])
             self.assertEqual("https://example.com/exa", items[0]["url"])
             self.assertEqual("2026-03-15", items[0]["date"])
+            self.assertEqual("Undated Exa Result", items[1]["title"])
+            self.assertIsNone(items[1]["date"])
             self.assertTrue(items[0]["id"].startswith("WE"))
             self.assertEqual("exa", artifact["label"])
-            self.assertEqual(1, artifact["resultCount"])
+            self.assertEqual(2, artifact["resultCount"])
             # Verify API call
             call_args = mock_req.call_args
             self.assertEqual("POST", call_args.args[0])
@@ -126,13 +274,15 @@ class ExaSearchTests(unittest.TestCase):
 
 class ParallelSearchTests(unittest.TestCase):
     def test_parallel_search_filters_to_in_range_dated_items(self):
+        today = datetime.now(timezone.utc).date()
+        date_range = ((today - timedelta(days=30)).isoformat(), today.isoformat())
         mock_response = {
             "results": [
                 {
                     "title": "Parallel Result",
                     "url": "https://example.com/parallel",
                     "snippet": "A parallel snippet",
-                    "publish_date": "2026-03-15T00:00:00Z",
+                    "publish_date": f"{today.isoformat()}T00:00:00Z",
                 },
                 {
                     "title": "Old Parallel Result",
@@ -143,27 +293,26 @@ class ParallelSearchTests(unittest.TestCase):
                 {
                     "title": "Undated Parallel Result",
                     "url": "https://example.com/undated-parallel",
-                    "snippet": "Should also be filtered",
+                    "snippet": "Kept because date is unknown",
                 },
             ]
         }
         with patch("lib.grounding.http.request", return_value=mock_response) as mock_req:
             items, artifact = grounding.parallel_search(
-                "test", ("2026-02-25", "2026-03-27"), "fake-parallel-key"
+                "test", date_range, "fake-parallel-key"
             )
-            self.assertEqual(1, len(items))
+            self.assertEqual(2, len(items))
             self.assertEqual("Parallel Result", items[0]["title"])
             self.assertEqual("https://example.com/parallel", items[0]["url"])
-            self.assertEqual("2026-03-15", items[0]["date"])
+            self.assertEqual(today.isoformat(), items[0]["date"])
+            self.assertEqual("Undated Parallel Result", items[1]["title"])
+            self.assertIsNone(items[1]["date"])
             self.assertTrue(items[0]["id"].startswith("WP"))
             self.assertEqual("parallel", artifact["label"])
-            self.assertEqual(1, artifact["resultCount"])
+            self.assertEqual(2, artifact["resultCount"])
             self.assertEqual("POST", mock_req.call_args.args[0])
             self.assertEqual("https://api.parallel.ai/v1/search", mock_req.call_args.args[1])
-            self.assertEqual(
-                "Bearer fake-parallel-key",
-                mock_req.call_args.kwargs["headers"]["Authorization"],
-            )
+            self.assertEqual("fake-parallel-key", mock_req.call_args.kwargs["headers"]["x-api-key"])
 
     def test_parallel_search_returns_empty_for_no_results(self):
         with patch("lib.grounding.http.request", return_value={"results": []}):

@@ -424,7 +424,7 @@ def _hn_raw(item_id: str, title: str, points: int, comments: int, *, date: str =
 
 
 def _nominate_only(items_by_source: dict[str, list[dict]], **kwargs) -> "pipeline.DiscoverNominateResult":
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         return items_by_source.get(source, []), None
 
     with mock.patch.object(

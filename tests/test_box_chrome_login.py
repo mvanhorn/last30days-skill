@@ -168,7 +168,9 @@ def test_linux_and_mac_mini_recipe_unchanged_without_host_signal():
 
 
 def _skill():
-    return SKILL.read_text()
+    from tests.skill_contract import reference_text
+
+    return reference_text("setup-wizard")
 
 
 def test_skill_md_references_helper_in_flows_and_repair():

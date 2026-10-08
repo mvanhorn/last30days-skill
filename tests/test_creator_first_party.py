@@ -143,18 +143,29 @@ def test_scoped_exemption_keeps_creator_on_own_platform():
 
 
 def test_deferred_x_floor_ignores_creator_only_handles():
-    """The deferred X prune receives resolved_handles minus the creator sets:
-    an X account that merely shares a creator's handle still faces the floor."""
-    items = _annotate([
-        _shortform_item("x-same-name", "x", "linkuptv", 0.0, {"likes": 0}),
-        _shortform_item("x-hit", "x", "someone", 0.4, {"likes": 90, "reposts": 9}),
-    ])
-    kept = signals.prune_low_relevance(
-        items,
-        first_party_handles=set(),  # creator handles were subtracted out
-        first_party_by_source={"instagram": {"linkuptv"}},
-    )
-    assert "x-same-name" not in [item.item_id for item in kept]
+    raw = [
+        {"id": "collision", "author_handle": "linkuptv", "text": "Chocolate cake recipe",
+         "url": "https://x.com/linkuptv/status/1", "date": "2026-03-15",
+         "engagement": {"likes": 90}},
+        {"id": "subject", "author_handle": "steipete", "text": "Just shipped a new release",
+         "url": "https://x.com/steipete/status/2", "date": "2026-03-15",
+         "engagement": {"likes": 90}},
+        {"id": "relevant", "author_handle": "observer", "text": "steipete research results",
+         "url": "https://x.com/observer/status/3", "date": "2026-03-15",
+         "engagement": {"likes": 90}},
+    ]
+    with patch.object(pipeline, "_retrieve_stream", return_value=(raw, {})), \
+         patch.object(pipeline, "weighted_rrf", wraps=pipeline.weighted_rrf) as fuse:
+        report = pipeline.run(
+            topic="steipete research", x_handle="steipete", ig_creators=["linkuptv"],
+            config={}, depth="quick", mock=True, requested_sources=["x"],
+            web_backend="none", as_of_date="2026-03-31",
+        )
+    assert "linkuptv" in fuse.call_args.kwargs["first_party_handles"]
+    assert {item.item_id for stream in fuse.call_args.args[0].values()
+            for item in stream} == {"subject", "relevant"}
+    assert {item.item_id for candidate in report.ranked_candidates
+            for item in candidate.source_items} == {"subject", "relevant"}
 
 
 def _raw_ig(item_id, author, text, views):

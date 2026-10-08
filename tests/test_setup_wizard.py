@@ -1,7 +1,9 @@
 """Tests for the first-run setup wizard module."""
 
+import json
 import os
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -9,6 +11,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 
 from lib import setup_wizard
+import last30days as cli
 
 
 class _NtOs:
@@ -214,6 +217,38 @@ class TestRunAutoSetup:
         assert results["browser_cookie_scan_attempted"] is True
         assert "cookie_note" not in results
 
+    @patch("lib.cookie_extract.extract_cookies_with_source")
+    @patch("shutil.which")
+    def test_partial_pair_not_recorded_as_found(self, mock_which, mock_extract):
+        """A partial X pair (lone ct0) is not a found source."""
+        mock_extract.return_value = ({"ct0": "lone_ct0"}, "chrome")
+        mock_which.return_value = None
+
+        results = setup_wizard.run_auto_setup({}, allow_browser_cookies=True)
+
+        assert results["cookies_found"] == {}
+        assert results["browser_cookie_scan_attempted"] is True
+
+    @patch("lib.cookie_extract.extract_cookies_with_source")
+    @patch("shutil.which")
+    def test_partial_then_complete_records_complete_source(self, mock_which, mock_extract):
+        """The scan keeps looking past a partial pair and records the
+        browser that yielded the complete one."""
+        def side_effect(browser, domain, cookie_names):
+            if domain == ".x.com":
+                if browser == "chrome":
+                    return ({"ct0": "lone_ct0"}, "chrome")
+                if browser == "firefox":
+                    return ({"auth_token": "abc", "ct0": "xyz"}, "firefox")
+            return None
+        mock_extract.side_effect = side_effect
+        mock_which.return_value = None
+
+        config = {"FROM_BROWSER": "chrome,firefox"}
+        results = setup_wizard.run_auto_setup(config, allow_browser_cookies=True)
+
+        assert results["cookies_found"]["x"] == "firefox"
+
 
 class TestYtdlpAutoInstall:
     """Tests for yt-dlp auto-install via Homebrew in run_auto_setup()."""
@@ -329,10 +364,12 @@ class TestDiggAutoInstall:
 
     # Redirect HOME/GOPATH so real ~/.local/bin or ~/go/bin digg-pp-cli on the
     # dev box does not make the binary look present during absence tests.
+    # USERPROFILE too: Path.home() reads it on Windows, and the two must agree.
     @staticmethod
     def _empty_home(tmp_path, monkeypatch):
         monkeypatch.delenv("GOPATH", raising=False)
         monkeypatch.setenv("HOME", str(tmp_path))
+        monkeypatch.setenv("USERPROFILE", str(tmp_path))
 
     @patch("lib.cookie_extract.extract_cookies_with_source", return_value=None)
     @patch("shutil.which")
@@ -886,27 +923,34 @@ class TestGetSetupStatusText:
 
 
 class TestSetupSubcommand:
-    """Tests for setup subcommand detection in argument parsing."""
+    """Tests for setup dispatch through the production entrypoint."""
 
-    def test_setup_detected_as_topic(self):
-        """The word 'setup' is treated as the setup subcommand."""
-        # Simulate what argparse produces
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("topic", nargs="*")
-        args = parser.parse_args(["setup"])
-        topic = " ".join(args.topic) if args.topic else None
-        assert topic is not None
-        assert topic.strip().lower() == "setup"
+    def test_setup_detected_as_topic(self, capsys):
+        with patch.object(sys, "argv", ["last30days", "setup"]), patch.object(
+            cli.env, "get_config", return_value={}
+        ), patch.object(setup_wizard, "run_auto_setup", return_value={}) as setup, patch.object(
+            setup_wizard, "write_setup_config", return_value=True
+        ) as write_config, patch.object(
+            setup_wizard, "get_setup_status_text", return_value="setup-completed-sentinel"
+        ), patch.object(cli.pipeline, "run") as research:
+            assert cli.main() == 0
+        setup.assert_called_once_with({}, allow_browser_cookies=False)
+        write_config.assert_called_once()
+        research.assert_not_called()
+        assert "setup-completed-sentinel" in capsys.readouterr().err
 
     def test_normal_topic_not_setup(self):
-        """A normal topic is not confused with setup."""
-        import argparse
-        parser = argparse.ArgumentParser()
-        parser.add_argument("topic", nargs="*")
-        args = parser.parse_args(["AI", "video", "tools"])
-        topic = " ".join(args.topic) if args.topic else None
-        assert topic.strip().lower() != "setup"
+        with patch.object(sys, "argv", ["last30days", "AI", "setup", "tools", "--mock"]), patch.object(
+            cli.env, "get_config", return_value={}
+        ), patch.object(setup_wizard, "run_auto_setup", return_value={}) as setup, patch.object(
+            setup_wizard, "write_setup_config", return_value=True
+        ), patch.object(setup_wizard, "get_setup_status_text", return_value="setup-sentinel"), patch.object(
+            cli.pipeline, "diagnose", side_effect=RuntimeError("research-path-sentinel")
+        ) as research:
+            with pytest.raises(RuntimeError, match="research-path-sentinel"):
+                cli.main()
+        research.assert_called_once()
+        setup.assert_not_called()
 
 
 class TestBrightDataStatusHonesty:
@@ -993,3 +1037,90 @@ class TestBrightDataSetupSurface:
     def test_absent_offers_the_install_command_without_running_it(self):
         text = self._text({"action": "not_installed", "engine_active": False})
         assert "npm i -g @brightdata/cli" in text
+
+
+def _device_code_response(interval):
+    """Build a mocked urlopen context manager yielding a device/code payload."""
+    resp_data = {
+        "device_code": "dc-123",
+        "user_code": "ABCD-1234",
+        "verification_uri": "https://github.com/login/device",
+        "interval": interval,
+    }
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = json.dumps(resp_data).encode()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    return mock_resp
+
+
+class TestDeviceIntervalClamp:
+    """Server-controlled poll intervals are clamped to [1, 30] before use."""
+
+    @pytest.mark.parametrize("server,expected", [
+        (0, 5),
+        (-5, 1),
+        (3600, 30),
+        ("abc", 5),
+        (None, 5),
+        ("7", 7),
+    ])
+    @patch("lib.setup_wizard.urlopen")
+    def test_run_device_auth_clamps_server_interval(
+        self, mock_urlopen, server, expected
+    ):
+        """run_device_auth never returns 0/negative/huge/non-numeric intervals."""
+        mock_urlopen.return_value = _device_code_response(server)
+
+        result = setup_wizard.run_device_auth()
+
+        assert result is not None
+        assert result[3] == expected
+
+    @pytest.mark.parametrize("stored,expected", [
+        (0, 5),
+        (-10, 1),
+        (9999, 30),
+        ("junk", 5),
+    ])
+    @patch("lib.setup_wizard._device_handle_path")
+    @patch("lib.setup_wizard.fetch_api_key")
+    @patch("lib.setup_wizard.poll_device_auth")
+    def test_run_github_poll_clamps_stored_interval(
+        self, mock_poll, mock_fetch, mock_handle, tmp_path, stored, expected
+    ):
+        """A poisoned persisted handle (or server value) cannot hot-loop,
+        crash, or sail past the timeout via time.sleep(interval)."""
+        handle = tmp_path / "h.json"
+        handle.write_text(json.dumps(
+            {"device_code": "dc", "interval": stored, "user_code": "ABCD-1234"}
+        ))
+        mock_handle.return_value = handle
+        mock_poll.return_value = "tok"
+        mock_fetch.return_value = {"ok": True, "api_key": "sc_k"}
+
+        result = setup_wizard.run_github_poll(timeout=1)
+
+        assert result["status"] == "success"
+        assert mock_poll.call_args[0][1] == expected
+
+    @pytest.mark.parametrize("raw,expected", [
+        (0, 5),
+        (-5, 1),
+        (3600, 30),
+    ])
+    @patch("lib.setup_wizard.urlopen")
+    @patch("lib.setup_wizard.time.sleep")
+    def test_poll_device_auth_clamps_own_interval(
+        self, mock_sleep, mock_urlopen, raw, expected
+    ):
+        """poll_device_auth validates its own interval even when a caller
+        passes 0/negative/huge straight through."""
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({"access_token": "tok"}).encode()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        assert setup_wizard.poll_device_auth("dc", raw, timeout=30) == "tok"
+        mock_sleep.assert_called_once_with(expected)

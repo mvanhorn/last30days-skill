@@ -3,6 +3,8 @@ header, and the honest nothing-solid empty state."""
 
 from unittest import mock
 
+import pytest
+
 from lib import pipeline, render, schema
 
 
@@ -88,26 +90,33 @@ def test_no_voice_line_when_topic_has_no_comment():
     assert "**Community voice:**" not in rendered
 
 
-def test_best_community_comment_prefers_platform_normalized_strength():
+@pytest.mark.parametrize(
+    ("reddit_votes", "hn_votes", "expected"),
+    [
+        (300, 200, '"a modest but thoughtful comment here" - hn_user (200 votes)'),
+        (4000, 3, '"the sharpest take in the thread by far" - u/sharp (4,000 votes)'),
+    ],
+)
+def test_best_community_comment_prefers_platform_normalized_strength(
+    reddit_votes, hn_votes, expected,
+):
     items = [
         schema.SourceItem(
             item_id="a", source="reddit", title="t", body="t",
             url="https://reddit.com/a", metadata={"top_comments": [
-                {"text": "the sharpest take in the thread by far", "score": 4000, "author": "u/sharp"},
+                {"text": "the sharpest take in the thread by far", "score": reddit_votes, "author": "u/sharp"},
                 {"text": "short", "score": 9999},
             ]},
         ),
         schema.SourceItem(
             item_id="b", source="hackernews", title="t", body="t",
             url="https://news.ycombinator.com/b", metadata={"top_comments": [
-                {"text": "a modest but thoughtful comment here", "score": 3, "author": "hn_user"},
+                {"text": "a modest but thoughtful comment here", "score": hn_votes, "author": "hn_user"},
             ]},
         ),
     ]
     comment = pipeline._best_community_comment(items)
-    assert comment is not None
-    assert "u/sharp" in comment
-    assert "4,000 votes" in comment
+    assert comment == expected
     # Sub-12-char comment bodies never surface.
     assert "short" not in comment
 

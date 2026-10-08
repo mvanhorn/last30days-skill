@@ -50,7 +50,7 @@ def _reddit_item(item_id: str, title: str, score: int, comments: int, *, date: s
 
 
 def _run_discover_with(items_by_source: dict[str, list[dict]], **kwargs) -> schema.DiscoveryReport:
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         return items_by_source.get(source, []), None
 
     with mock.patch.object(

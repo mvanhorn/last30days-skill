@@ -8,7 +8,11 @@ that silently loses the subject's own posts, and no prior test exercised it --
 existing supplement-lane tests use single-item batches that trip the rescue.
 """
 
-from lib import schema, signals
+from unittest.mock import patch
+
+import pytest
+
+from lib import pipeline, schema, signals
 
 
 def _x_item(item_id: str, author: str, relevance: float, engagement: dict | None = None):
@@ -193,29 +197,31 @@ def test_non_first_party_demotion_survives_the_floor_pass():
 
 # --- Phase 1 / quick-depth wiring (Greptile) --------------------------------
 
-def test_phase_one_normalize_receives_the_explicit_handles():
-    """Quick runs skip Phase 2 entirely, so an exemption reaching only the
-    supplement path leaves quick-depth reports discarding the subject's posts."""
-    import inspect
-    from lib import pipeline
-    src = inspect.getsource(pipeline.run)
-    assert "explicit_first_party = {" in src, (
-        "the user-named handles must be resolved before retrieval, not after"
-    )
-    assert "first_party_handles=explicit_first_party," in src, (
-        "the Phase 1 per-source normalize must receive the exemption"
-    )
-
-
-def test_explicit_handles_are_available_before_any_retrieval():
-    """The entity-extracted set does not exist until Phase 2; the explicit one
-    must be built from run()'s own arguments so Phase 1 can use it."""
-    import inspect
-    from lib import pipeline
-    src = inspect.getsource(pipeline.run)
-    build_at = src.index("explicit_first_party = {")
-    first_use = src.index("first_party_handles=explicit_first_party,")
-    assert build_at < first_use
+@pytest.mark.parametrize("handle_in_topic", [False, True])
+def test_pipeline_deferred_floor_keeps_subject_and_prunes_unrelated_account(handle_in_topic):
+    topic = "@steipete research" if handle_in_topic else "Peter Steinberger research"
+    raw = [
+        {"id": "subject", "author_handle": "steipete", "text": "Shipped another update",
+         "url": "https://x.com/steipete/status/1", "date": "2026-03-15",
+         "engagement": {"likes": 50}},
+        {"id": "noise", "author_handle": "rando_acct", "text": "Banana bread recipe",
+         "url": "https://x.com/rando_acct/status/2", "date": "2026-03-15",
+         "engagement": {"likes": 50}},
+        {"id": "relevant", "author_handle": "observer", "text": f"{topic} evaluation results",
+         "url": "https://x.com/observer/status/3", "date": "2026-03-15",
+         "engagement": {"likes": 50}},
+    ]
+    with patch.object(pipeline, "_retrieve_stream", return_value=(raw, {})), \
+         patch.object(pipeline, "weighted_rrf", wraps=pipeline.weighted_rrf) as fuse:
+        report = pipeline.run(
+            topic=topic, x_handle=None if handle_in_topic else "steipete",
+            config={}, depth="quick", mock=True, requested_sources=["x"],
+            web_backend="none", as_of_date="2026-03-31",
+        )
+    streams = fuse.call_args.args[0]
+    assert {item.item_id for stream in streams.values() for item in stream} == {"subject", "relevant"}
+    assert {item.item_id for candidate in report.ranked_candidates
+            for item in candidate.source_items} == {"subject", "relevant"}
 
 
 def test_related_handles_lane_gets_the_exemption():

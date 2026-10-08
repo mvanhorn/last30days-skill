@@ -801,14 +801,31 @@ def test_sentinel_injection_cannot_escape_private_block():
     assert lines[-1] == render.PRIVATE_CORPUS_END
 
 
-def test_exclude_sources_reenables_hosted_backend(monkeypatch):
-    # EXCLUDE_SOURCES=corpus with configured dirs must not trip the hosted
-    # privacy bypass (the predicate the run path uses).
-    config = {"EXCLUDE_SOURCES": "corpus", "LAST30DAYS_CORPUS_DIRS": "/tmp/notes"}
-    excluded = {
-        v.strip().lower() for v in str(config.get("EXCLUDE_SOURCES") or "").split(",") if v.strip()
-    }
-    assert "corpus" in excluded
+def test_exclude_sources_reenables_hosted_backend(tmp_path, monkeypatch):
+    notes = tmp_path / "private-notes"
+    notes.mkdir()
+    (notes / "local.md").write_text("Private MCP research notes", encoding="utf-8")
+    config = {"EXCLUDE_SOURCES": "corpus", "LAST30DAYS_CORPUS_DIRS": str(notes)}
+    monkeypatch.setattr(env, "get_config", lambda **_kwargs: config)
+    monkeypatch.setenv("LAST30DAYS_API_KEY", "dummy-hosted-key")
+    monkeypatch.setenv("LAST30DAYS_API_BASE", "https://hosted.example.test")
+    hosted_run = mock.Mock(return_value=0)
+    monkeypatch.setattr("lib.hosted.run_hosted", hosted_run)
+    local_run = mock.Mock(return_value=_privacy_report())
+    monkeypatch.setattr(cli.pipeline, "run", local_run)
+    monkeypatch.setattr(cli.pipeline, "diagnose", lambda *_args, **_kwargs: {"available_sources": ["corpus"]})
+    monkeypatch.setattr(cli.env, "CONFIG_DIR", tmp_path / "config")
+    monkeypatch.setenv("LAST30DAYS_SKIP_PREFLIGHT", "1")
+    monkeypatch.setattr(sys, "argv", [
+        "last30days.py", "MCP servers", "--quick", "--emit=compact", "--save-dir=",
+    ])
+
+    assert cli.main() == 0
+
+    hosted_run.assert_called_once_with(
+        "MCP servers", "quick", emit="compact", save_dir="", save_suffix="",
+    )
+    local_run.assert_not_called()
 
 
 def test_corpus_notes_never_contain_absolute_paths(tmp_path):

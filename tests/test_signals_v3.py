@@ -109,6 +109,7 @@ class SignalsV3Tests(unittest.TestCase):
     def test_instagram_comment_vote_uses_instagram_reference(self):
         """U2: normalized_comment_vote uses the instagram reference, not the default."""
         strength = signals.normalized_comment_vote("instagram", 5000)
+        self.assertAlmostEqual(math.log1p(5000) / 9.2, strength)
         self.assertGreater(strength, 0.0)
         self.assertLessEqual(strength, 1.0)
 

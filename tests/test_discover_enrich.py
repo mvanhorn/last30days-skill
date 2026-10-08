@@ -512,6 +512,40 @@ def test_enrichment_path_never_uses_thread_pool_executor():
     assert "Semaphore" in source
 
 
+def test_enrich_workers_get_isolated_config_copies():
+    """CR-020: run() mutates config in place (config["_financial_topic"] =
+    ... in pipeline.run). The fan-out must hand each daemon worker its own
+    dict(config) copy - same idiom as the competitor runner - or topic A's
+    flag overwrites topic B's mid-run and abandoned stragglers keep mutating
+    the shared dict after budget expiry."""
+    import threading
+
+    received: dict[str, dict] = {}
+    lock = threading.Lock()
+    barrier = threading.Barrier(2)
+
+    def fake_run(*, topic, config, **_kwargs):
+        # Mirror run()'s in-place write, forced to overlap via the barrier.
+        barrier.wait(timeout=10)
+        config["_financial_topic"] = f"flag-for-{topic}"
+        barrier.wait(timeout=10)
+        with lock:
+            received[topic] = dict(config)
+        return _report(topic)
+
+    shared = {"BASE": "1"}
+    nominations = [_nomination("Topic A"), _nomination("Topic B")]
+    with mock.patch.object(pipeline, "run", side_effect=fake_run):
+        enriched = pipeline.enrich_nominations(
+            nominations, config=shared, max_workers=2,
+        )
+
+    assert all(entry.report is not None for entry in enriched)
+    assert received["Topic A"]["_financial_topic"] == "flag-for-Topic A"
+    assert received["Topic B"]["_financial_topic"] == "flag-for-Topic B"
+    assert "_financial_topic" not in shared
+
+
 def test_host_judged_name_becomes_enrichment_sub_run_topic():
     """Relocated from the retired engine-judge suite, retargeted to the
     judgments-file path: the host's applied name IS the enrichment sub-run
