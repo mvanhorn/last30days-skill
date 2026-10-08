@@ -444,6 +444,25 @@ An explicit `--register` wins over `LAST30DAYS_REGISTER`; the environment/config
 
 When you invoke `/last30days` from Claude Code, Codex, or Gemini, the host model **is** the reasoning provider for plan + synthesis - you don't need any of the keys above unless you also run the script headlessly (cron, CI, watchlist).
 
+### Agent-hosted runs must pass `--plan`
+
+When the engine detects an agent host, a research run without `--plan` exits 2 before live diagnostics or retrieval and does not call the internal planner. It prints a `[Planner] LAW 7` message telling the host model to write the plan and pass it with `--plan` (Step 0.75 and Research Execution in `references/research-runbook.md`). The engine treats a run as agent-hosted when any of these variables is set in the process environment (a `.env` line never counts):
+
+| Variable | Set by |
+|---|---|
+| `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT` | Claude Code / Claude Agent SDK |
+| `CODEX_THREAD_ID`, `CODEX_SESSION_ID`, `CODEX_SANDBOX` | Codex |
+| `LAST30DAYS_HOST` | Hosts that self-identify (e.g. `grok-bot`) |
+| `LAST30DAYS_HOST_AGENT=1` | Any other agent runtime, explicitly |
+
+Runs that may skip the plan stay unaffected: `--mock`, `--hiring-signals`, `--auto-resolve` (the no-WebSearch path), comparison runs (`A vs B`, `--competitors*`), the hosted API path, and non-research commands (`doctor`, `setup`, `--diagnose`, `--preflight`, discovery legs, `--drill`, `--verify-freshness` without a topic, `library`/`queue` commands). The watchlist runner and the MCP `research` tool opt their engine calls back in automatically.
+
+| Variable | Effect |
+|---|---|
+| `LAST30DAYS_ALLOW_ENGINE_PLAN=1` | Lift the gate for a headless or cron run launched from an agent shell: the engine plans internally with the reasoning provider above (or the deterministic fallback). Process environment only. |
+
+Outside a detected agent host nothing changes. The engine still plans internally and prints the LAW 7 reminder whenever it ends on the deterministic fallback, including when the internal planner fails (for example an HTTP 402 from a provider with no credits).
+
 ### Provider endpoint overrides
 
 Point a provider at a gateway (LiteLLM, an enterprise proxy, a self-hosted OpenAI-compatible server) without a code change:

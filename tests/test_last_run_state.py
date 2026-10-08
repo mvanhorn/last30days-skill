@@ -162,7 +162,7 @@ class LastRunStateTests(unittest.TestCase):
                 cli._write_last_run("OpenClaw", _report("OpenClaw"))
 
             with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
-                 mock.patch.object(cli.env, "get_config", return_value={}), \
+                 mock.patch.object(cli.env, "get_config", return_value={}) as get_config, \
                  mock.patch.object(cli.pipeline, "diagnose", return_value=_diag()), \
                  mock.patch.object(cli.pipeline, "run", side_effect=AssertionError("pipeline should not run")), \
                  mock.patch.object(sys, "argv", [
@@ -172,13 +172,20 @@ class LastRunStateTests(unittest.TestCase):
                      "--synthesis-file",
                      str(synthesis_path),
                  ]), \
-                 mock.patch.dict(os.environ, {"LAST30DAYS_SKIP_PREFLIGHT": "1"}, clear=False):
+                 mock.patch.dict(
+                     os.environ,
+                     {"LAST30DAYS_SKIP_PREFLIGHT": "1", "CLAUDECODE": "1"},
+                     clear=False,
+                 ):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
                 with redirect_stdout(stdout), redirect_stderr(stderr):
                     rc = cli.main()
 
             self.assertEqual(0, rc)
+            self.assertEqual(
+                "plan_only", get_config.call_args.kwargs["policy"].browser_cookies
+            )
             self.assertIn("Cached synthesis body.", stdout.getvalue())
             self.assertIn("Reusing cached report data", stderr.getvalue())
 

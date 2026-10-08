@@ -2748,6 +2748,50 @@ def _comparison_requested(args: argparse.Namespace, topic: str) -> bool:
     ) or len(_planner._comparison_entities(topic, uncapped=True)) >= 2
 
 
+LAW7_HOST_PLAN_EXIT = 2
+
+
+def _law7_host_plan_message(signal: str) -> str:
+    return (
+        "[Planner] LAW 7: no --plan passed, and this run is agent-hosted "
+        f"({signal} is set). The engine stopped before retrieval and did not "
+        "call its internal planner. If you are the reasoning model hosting "
+        "this skill, YOU ARE the planner; no API key or provider is needed. "
+        "Write the JSON query plan (references/research-runbook.md Step 0.75) "
+        "to a tmpfile with a "
+        "quoted heredoc - QUERY_PLAN_FILE=$(mktemp "
+        "\"${TMPDIR:-/tmp}/last30days-plan.XXXXXX\"); "
+        "cat >| \"$QUERY_PLAN_FILE\" <<'PLAN_EOF' ... PLAN_EOF - and re-run "
+        "with --plan \"$QUERY_PLAN_FILE\" (see Research Execution in that "
+        "runbook). With no "
+        "web-search tool, pass --auto-resolve instead. For headless or cron "
+        f"runs under an agent, set {env.ALLOW_ENGINE_PLAN_VAR}=1 to let the "
+        "engine plan internally.\n"
+    )
+
+
+def _law7_host_plan_signal(args: argparse.Namespace, topic: str) -> str:
+    """Identify a blocked agent run before configuration probes run."""
+    if not topic:
+        return ""
+    if args.plan or args.mock or args.hiring_signals or args.auto_resolve:
+        return ""
+    if _comparison_requested(args, topic):
+        return ""
+    if env.engine_plan_allowed():
+        return ""
+    return env.agent_host_signal()
+
+
+def _law7_host_plan_gate(args: argparse.Namespace, topic: str) -> int | None:
+    """Stop a plan-less agent research run after dispatch and cache exemptions."""
+    signal = _law7_host_plan_signal(args, topic)
+    if not signal:
+        return None
+    sys.stderr.write(_law7_host_plan_message(signal))
+    return LAW7_HOST_PLAN_EXIT
+
+
 def _read_x_envelope(
     path: str,
     topic: str,
@@ -2891,6 +2935,9 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
         browser_mode = "plan_only"
     elif normalized_topic == "setup":
         browser_mode = "read" if _setup_allows_browser_cookies(args, extra_argv) else "off"
+    elif _law7_host_plan_signal(args, topic):
+        # Hosted and cached paths need config before dispatch, but no browser read.
+        browser_mode = "plan_only"
     else:
         browser_mode = "read"
     return env.ConfigLoadPolicy(
@@ -3697,19 +3744,13 @@ def _main(
         except x_envelope.EnvelopeContractError as exc:
             sys.stderr.write(f"[last30days] {exc.message}\n")
             return 2
-    diag = pipeline.diagnose(
-        config, requested_sources, safe=args.diagnose,
-        x_envelope=x_posts_envelope is not None,
-    )
-
     if args.diagnose:
+        diag = pipeline.diagnose(
+            config, requested_sources, safe=True,
+            x_envelope=x_posts_envelope is not None,
+        )
         print(json.dumps(diag, indent=2, sort_keys=True))
         return 0
-
-    # Competitor sub-runs shallow-copy this config. The shared object makes the
-    # paid Perplexity cap command-wide and thread-safe across that fanout. Keep
-    # this runtime-only object out of the safe diagnose configuration contract.
-    config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget()
 
     # Per-entity host-fetched X envelopes are validated here, on the main
     # thread and BEFORE the report-cache lookup, so a bad or stale one fails
@@ -3778,6 +3819,22 @@ def _main(
             "--emit=html --synthesis-file; running fresh research.\n"
         )
         sys.stderr.flush()
+
+    # LAW 7: an agent host that skipped --plan stops before live diagnostics,
+    # auto-resolve, the internal planner, or any source retrieval can spend.
+    law7_exit = _law7_host_plan_gate(args, topic)
+    if law7_exit is not None:
+        return law7_exit
+
+    diag = pipeline.diagnose(
+        config, requested_sources, safe=False,
+        x_envelope=x_posts_envelope is not None,
+    )
+
+    # Competitor sub-runs shallow-copy this config. The shared object makes the
+    # paid Perplexity cap command-wide and thread-safe across that fanout. Keep
+    # this runtime-only object out of the safe diagnose configuration contract.
+    config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget()
 
     progress = ui.ProgressDisplay(topic, show_banner=True)
     progress.start_processing()

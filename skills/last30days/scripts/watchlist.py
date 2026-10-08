@@ -17,7 +17,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 import store
-from lib import http, schema, usage
+from lib import env as envlib, http, schema, usage
 
 
 # --- Webhook Delivery Functions ---
@@ -219,7 +219,7 @@ def _research_topic(topic: dict, run_id: int, child_env: dict) -> dict:
             capture_output=True,
             text=True,
             timeout=300,
-            env=child_env,
+            env={**child_env, envlib.ALLOW_ENGINE_PLAN_VAR: "1"},
         )
         duration = time.time() - start_time
         if result.returncode != 0:
