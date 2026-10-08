@@ -50,6 +50,11 @@ def allowed_base_url_override(value: str) -> bool:
     )
 
 
+def _is_loopback_http_url(url: str) -> bool:
+    parts = urlsplit(url)
+    return parts.scheme == "http" and _is_loopback(parts.hostname or "")
+
+
 def base_url_override(key: str, default: str) -> str:
     """Resolve a provider base-URL override, refusing cleartext remote hosts.
 
@@ -202,14 +207,16 @@ class OpenAIClient(ReasoningClient):
             "input": prompt,
             "temperature": 0,
         }
+        endpoint = resolve_endpoint("OPENAI_BASE_URL", OPENAI_RESPONSES_URL)
         response = http.post(
-            resolve_endpoint("OPENAI_BASE_URL", OPENAI_RESPONSES_URL),
+            endpoint,
             payload,
             headers={
                 "Authorization": f"Bearer {self.token}",
                 "Content-Type": "application/json",
             },
             timeout=90,
+            bypass_proxy=_is_loopback_http_url(endpoint),
         )
         return extract_openai_text(response)
 
@@ -233,14 +240,16 @@ class XAIClient(ReasoningClient):
             "model": model,
             "input": [{"role": "user", "content": prompt}],
         }
+        endpoint = resolve_endpoint("XAI_BASE_URL", XAI_RESPONSES_URL)
         response = http.post(
-            resolve_endpoint("XAI_BASE_URL", XAI_RESPONSES_URL),
+            endpoint,
             payload,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             },
             timeout=90,
+            bypass_proxy=_is_loopback_http_url(endpoint),
         )
         return extract_openai_text(response)
 
@@ -265,14 +274,16 @@ class OpenRouterClient(ReasoningClient):
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0,
         }
+        endpoint = resolve_endpoint("OPENROUTER_BASE_URL", OPENROUTER_URL)
         response = http.post(
-            resolve_endpoint("OPENROUTER_BASE_URL", OPENROUTER_URL),
+            endpoint,
             payload,
             headers={
                 "Authorization": f"Bearer {self.api_key}",
                 "Content-Type": "application/json",
             },
             timeout=90,
+            bypass_proxy=_is_loopback_http_url(endpoint),
         )
         return extract_openai_text(response)
 

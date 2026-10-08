@@ -457,7 +457,7 @@ Point a provider at a gateway (LiteLLM, an enterprise proxy, a self-hosted OpenA
 These redirect the request that carries the provider's `Authorization: Bearer <key>` header, so they are a credential boundary, not just a URL setting:
 
 - **`https://` is required for remote hosts.** An `http://` override to anything other than loopback is refused with a stderr warning and the vendor endpoint is used instead - otherwise the API key would go over the wire in cleartext.
-- **`http://` on loopback is allowed** (`localhost`, `127.0.0.0/8`, `::1`) so a local gateway or SSH tunnel keeps working; nothing leaves the machine.
+- **`http://` on loopback is allowed** (`localhost`, `127.0.0.0/8`, `::1`) so a local gateway or SSH tunnel keeps working. These provider requests bypass HTTP proxy settings for the request, keeping the bearer token on the local connection.
 - A host or API root ending in a version segment (for example, `/v1` or `/api/v1`) gets the provider's route appended. A complete custom gateway route is used unchanged, including its query string.
 - **`--preflight` reports all three** under `endpoint_overrides` / `ignored_endpoint_overrides`, so you can see before a run whether a config file is redirecting a key. Rejected values appear only by variable name, never by URL or embedded credentials.
 - A per-project `.claude/last30days.env` can set them only when project config is trusted (`LAST30DAYS_TRUST_PROJECT_CONFIG=1`); untrusted project files are ignored and listed by `--preflight`.
