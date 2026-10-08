@@ -2815,7 +2815,8 @@ def run(
                 if host_fetched_x:
                     stream_limit *= _source_fetch_cap("x", config) or 1
                 normalized = _apply_reddit_stream_keepers(
-                    source, normalized, stream_limit, topic, host_fetched_x=host_fetched_x
+                    source, normalized, stream_limit, topic,
+                    host_fetched_x=host_fetched_x, protected_authors=explicit_first_party,
                 )
             bundle.add_items(subquery.label, source, normalized)
             if artifact:
@@ -3338,13 +3339,16 @@ def _apply_reddit_stream_keepers(
     topic: str,
     *,
     host_fetched_x: bool = False,
+    protected_authors: Iterable[str] = (),
 ) -> list[schema.SourceItem]:
     """Truncate a stream to *limit*, holding slots for engagement keepers.
 
     Reddit holds a few slots for its most-engaged on-topic threads. A
     host-fetched X stream holds half its slots for its most-engaged on-topic
     posts, because its popular pass reaches back across the whole window and
-    those posts would otherwise lose to fresher low-engagement ones.
+    those posts would otherwise lose to fresher low-engagement ones. Posts by
+    ``protected_authors`` (the run's explicitly named handles) are never
+    displaced, because the first-party relevance exemption runs after this cut.
     """
     kept = list(items[:limit])
     if len(items) <= limit:
@@ -3366,17 +3370,22 @@ def _apply_reddit_stream_keepers(
     else:
         return kept
     keeper_ids = {id(item) for item in keepers}
+    protected = {author.lstrip("@").lower() for author in protected_authors if author}
     for keeper in keepers:
         if any(item is keeper for item in kept):
             continue
         # Displace the lowest-ranked non-keeper so the slice stays at limit;
-        # when the slice is already all keepers there is nothing to trade.
+        # when the slice is already all keepers or protected posts there is
+        # nothing to trade.
         displaced = False
         for index in range(len(kept) - 1, -1, -1):
-            if id(kept[index]) not in keeper_ids:
-                del kept[index]
-                displaced = True
-                break
+            if id(kept[index]) in keeper_ids:
+                continue
+            if (kept[index].author or "").lstrip("@").lower() in protected:
+                continue
+            del kept[index]
+            displaced = True
+            break
         if displaced or len(kept) < limit:
             kept.append(keeper)
     return kept[:limit]

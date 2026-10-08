@@ -859,6 +859,24 @@ class TestPipelineWiring:
         kept_likes = {item.engagement.get("likes") for item in report.items_by_source["x"]}
         assert 6749 in kept_likes
 
+    def test_engagement_keepers_never_evict_the_named_subjects_posts(self):
+        def item(n, author, likes, text):
+            return schema.SourceItem(
+                item_id=f"X{n}", source="x", title=text, body=text,
+                url=f"https://x.com/{author}/status/{1900000000000000000 + n}",
+                author=author, engagement={"likes": likes}, local_relevance=0.9,
+            )
+        fresh = [item(i, f"user{i}", 1, f"ai agents fresh note {i}") for i in range(8)]
+        subject = [item(20 + i, SUBJECT, 1, f"ai agents subject note {i}") for i in range(2)]
+        viral = [item(40 + i, f"fan{i}", 5000 + i, f"ai agents viral thread {i}") for i in range(6)]
+        ranked = [*fresh[:6], *subject, *fresh[6:], *viral]
+        kept = pipeline._apply_reddit_stream_keepers(
+            "x", ranked, 8, TOPIC, host_fetched_x=True, protected_authors={SUBJECT},
+        )
+        assert len(kept) == 8
+        assert sum(1 for i in kept if i.author == SUBJECT) == 2
+        assert sum(1 for i in kept if i.author.startswith("fan")) == 4
+
     def test_off_topic_viral_post_never_takes_an_engagement_slot(self, tmp_path):
         rows = self._many_topic_rows(57)
         off_topic = self._old_row(9000, "rocketco", "orbital launch window opens on friday", 777002)
