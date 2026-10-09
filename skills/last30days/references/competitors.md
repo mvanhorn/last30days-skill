@@ -7,7 +7,7 @@ Read when competitor mode is selected. The root also requires `comparison.md`; r
 `--competitors` is a SKILL.md-level shortcut for vs-mode with auto-discovery. When host web search is available, YOU (the hosting reasoning model) do the discovery and Step 0.55, then invoke the web-search vs-topic path in `comparison.md`.
 
 **With host web search, use the four-step protocol:**
-1. **Discover peers** via WebSearch: `"{topic} competitors"` / `"{topic} alternatives"`. Pick N=2 by default (match the flag's default), N=argument value if the user passed `--competitors=N`.
+1. **Discover peers** via WebSearch, inside the pre-engine isolated web search dispatch from the research runbook: `"{topic} competitors"` / `"{topic} alternatives"`. Pick N=2 by default (match the flag's default), N=argument value if the user passed `--competitors=N`.
 2. **Run Step 0.55 for the main topic AND each peer** — same protocol you use for a single-entity topic, just N times. X handle, subreddits, GitHub, news context, per entity.
 3. **Build the vs-topic string**: `"{main} vs {peer1} vs {peer2}"`.
 4. **Invoke the engine** with the vs-topic and a JSON-encoded `--competitors-plan` file covering both peers, plus outer `--x-handle`/`--subreddits`/`--github-*` values captured and passed as quoted shell data for the main topic. Main-topic plan entries do not override those outer targeting flags. A per-entity `x_posts` envelope entry is the explicit exception, including for the main entity.

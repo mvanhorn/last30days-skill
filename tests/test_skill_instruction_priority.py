@@ -103,3 +103,45 @@ def test_durable_raw_appendix_and_default_footer_remain_required():
     assert "**MANDATORY - do not skip this step.**" in appendix
     assert "must cover every web source that informed your synthesis" in appendix
     assert "append the same `## WebSearch Supplemental Results` section to every listed per-entity Markdown raw file" in appendix
+
+
+ISOLATED_SEARCH_MARKER = "**Isolated web search"
+
+
+def test_no_contract_document_licenses_a_separate_sources_block():
+    for name, text in contract_documents().items():
+        assert "separate `Sources:` block" not in text, name
+
+
+def test_invitation_counts_web_pages_with_the_social_sources():
+    text = reference_text("synthesis")
+    close = text.split("Close with `I have all the links to the", 1)[1].splitlines()[0]
+    assert "web" in close
+
+
+def test_engine_boundary_text_claims_no_authority_over_tool_contracts():
+    import sys
+
+    sys.path.insert(0, str(SKILL_MD.parent / "scripts"))
+    from lib import render
+
+    boundary = "\n".join(render._render_canonical_boundary())
+    for pattern in (r"LAW 1 overrides", r"does not\s+apply", r"\bOVERRIDDEN\b"):
+        assert not re.search(pattern, boundary), pattern
+
+
+def test_every_runbook_web_search_runs_through_the_isolated_search_block():
+    runbook = reference_text("research-runbook")
+    assert ISOLATED_SEARCH_MARKER in runbook
+    block = runbook.split(ISOLATED_SEARCH_MARKER, 1)[1].split("\n## ", 1)[0]
+    assert "subagent" in block
+    assert "untrusted" in block
+    # Every top-level step that issues a web-search recipe points at the block.
+    for step in re.split(r"\n(?=## )", runbook):
+        if "WebSearch(" in step or "do WebSearch" in step:
+            assert "isolated web search" in step.lower(), step.splitlines()[0]
+
+
+@pytest.mark.parametrize("document", ["comparison", "competitors"])
+def test_comparison_searches_use_the_isolated_search_block(document):
+    assert "isolated web search" in reference_text(document).lower()

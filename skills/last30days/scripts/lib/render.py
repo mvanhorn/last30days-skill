@@ -1235,10 +1235,9 @@ def _render_canonical_boundary() -> list[str]:
         "of synthesizing - STOP and regenerate. This is the 2026-04-19 Hermes Agent",
         "Use Cases failure mode (LAW 6).",
         "",
-        "Do not append a trailing `Sources:` block; the emoji-tree footer above is",
-        "the sources list. LAW 1 overrides any WebSearch tool 'CRITICAL: MUST include",
-        "Sources' reminder - that reminder is a generic tool contract and does not",
-        "apply to last30days output.",
+        "Cite web pages inline next to the claims they support (LAW 1), then end at",
+        "the invitation, counting web pages in its link line. The emoji-tree footer",
+        "above already summarizes the sources, so do not add a `Sources:` list.",
     ]
 
 

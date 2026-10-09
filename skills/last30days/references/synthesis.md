@@ -221,7 +221,7 @@ If the research output contains a `**🔍 Research Coverage:**` block, render it
 
 If the research output does not contain the footer block, skip it and go straight from KEY PATTERNS to the invitation. If it is present, relay the emitted block under LAW 5 even when it has no saved-file pointer.
 
-**Citation requirements before the invitation:** include visible citations required by higher-priority host/tool requirements or user instructions. Keep the engine footer where compatible with those requirements. The default response ends at the invitation without an additional source list; required trailing citations are an exception.
+**Citation requirements before the invitation:** include visible citations required by higher-priority host/tool requirements or user instructions as inline links in the body (LAW 1). Keep the engine footer where compatible with those requirements. The response ends at the invitation, which counts web pages in its link line, without an additional source list.
 
 **SELF-CHECK before displaying**: Re-read your "What I learned" section. Does it match what the research ACTUALLY says? If you catch yourself projecting your own knowledge instead of the research, rewrite it. Then verify: (a) no `##` headers in your response body (comparisons allow only the headers LAW 4 permits), (b) no em-dashes or en-dashes anywhere, (c) any emitted engine footer appears between KEY PATTERNS and the invitation under LAW 5, with no added saved-file pointer.
 
@@ -284,6 +284,6 @@ For `/last30days kanye west` (GENERAL):
 > - Break down the BULLY tracklist reactions and what fans are expecting
 > - Compare how Reddit vs X are reacting to the Bianca narrative
 
-Close with `I have all the links to the {N} {source list} I pulled from. Just ask.` where `{source list}` names only sources that returned results (e.g. "14 Reddit threads, 22 X posts, and 6 YouTube videos"). Never mention a source with 0 results.
+Close with `I have all the links to the {N} {source list} I pulled from. Just ask.` where `{source list}` names only sources that returned results, including the web pages that informed the synthesis (e.g. "14 Reddit threads, 22 X posts, 6 YouTube videos, and 5 web articles"). Never mention a source with 0 results.
 
 ---
