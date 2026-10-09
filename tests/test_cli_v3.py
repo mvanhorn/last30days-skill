@@ -10,7 +10,7 @@ import sys
 import types
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
@@ -529,10 +529,71 @@ class CliV3Tests(unittest.TestCase):
 
     def test_build_parser_still_accepts_other_web_backend_values(self):
         parser = cli.build_parser()
-        for value in ("auto", "brave", "exa", "serper", "parallel", "parallel-mcp", "none"):
+        for value in ("auto", "brave", "exa", "serper", "parallel", "parallel-mcp", "keenable", "none"):
             args, extra = parser.parse_known_args(["--web-backend", value, "biosecurity"])
             self.assertEqual(value, args.web_backend)
             self.assertEqual([], extra)
+
+    def _run_web_backend_cli(self, argv_extra, config):
+        """Run main() through argparse into the real pipeline with only the
+        HTTP seam stubbed, returning (rc, stdout, recorded request URLs)."""
+        published = (datetime.now(UTC) - timedelta(days=3)).date().isoformat()
+        urls = []
+
+        def fake_request(method, url, **kwargs):
+            urls.append(url)
+            return {"results": [{
+                "title": "Keenable test topic update",
+                "url": "https://example.com/keenable-update",
+                "description": "",
+                "snippet": "Fresh evidence\n\nabout the test topic",
+                "published_at": f"{published}T10:00:00Z",
+            }]}
+
+        stdout = io.StringIO()
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+            cli.env, "get_config", return_value=dict(config),
+        ), mock.patch.object(cli.env, "CONFIG_DIR", Path(tmp)), mock.patch(
+            "lib.grounding.http.request", side_effect=fake_request,
+        ), mock.patch(
+            "lib.grounding.web_search_keyless.keyless_search",
+            return_value=([], {"label": "keyless"}),
+        ) as keyless, mock.patch.dict(
+            os.environ, {"LAST30DAYS_SKIP_PREFLIGHT": "1"}, clear=False,
+        ), mock.patch.object(
+            sys, "argv",
+            ["last30days.py", "test topic", "--search", "web", "--emit=json", *argv_extra],
+        ):
+            os.environ.pop("LAST30DAYS_API_BASE", None)
+            with redirect_stdout(stdout), redirect_stderr(io.StringIO()):
+                rc = cli.main()
+        return rc, stdout.getvalue(), urls, keyless
+
+    def test_web_backend_keenable_flag_reaches_keenable_without_a_key(self):
+        # End to end through argparse: the pin must be accepted, carried into
+        # the pipeline, and dispatched to Keenable's public endpoint with no
+        # key, even on a native-search host where web is otherwise off.
+        rc, out, urls, keyless = self._run_web_backend_cli(
+            ["--web-backend", "keenable"], {"LAST30DAYS_NATIVE_SEARCH": "1"},
+        )
+        self.assertEqual(0, rc)
+        self.assertEqual({"https://api.keenable.ai/v1/search/public"}, set(urls))
+        self.assertIn("https://example.com/keenable-update", out)
+        keyless.assert_not_called()
+
+    def test_web_backend_keenable_flag_sends_configured_key(self):
+        rc, out, urls, _ = self._run_web_backend_cli(
+            ["--web-backend", "keenable"], {"KEENABLE_API_KEY": "dummy-keenable-key"},
+        )
+        self.assertEqual(0, rc)
+        self.assertEqual({"https://api.keenable.ai/v1/search"}, set(urls))
+        self.assertIn("https://example.com/keenable-update", out)
+
+    def test_default_cli_run_without_key_never_contacts_keenable(self):
+        rc, _, urls, keyless = self._run_web_backend_cli([], {})
+        self.assertEqual(0, rc)
+        self.assertEqual([], urls)
+        keyless.assert_called()
 
     def test_build_parser_rejects_invalid_web_backend(self):
         parser = cli.build_parser()

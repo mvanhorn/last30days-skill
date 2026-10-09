@@ -197,7 +197,7 @@ class TestDescriptorRegistry:
         assert tuple(s.name for s in yt.backends) == ("yt-dlp", "scrapecreators")
         web = backends.get_descriptor("web")
         assert tuple(s.name for s in web.backends) == (
-            "brave", "exa", "serper", "parallel", "keyless",
+            "brave", "exa", "serper", "parallel", "keenable", "keyless",
         )
         assert web.pin_flag == "--web-backend"
 
@@ -1093,6 +1093,7 @@ class TestWebChain:
                  mock.patch.object(grounding, "exa_search", rec("exa")), \
                  mock.patch.object(grounding, "serper_search", rec("serper")), \
                  mock.patch.object(grounding, "parallel_search", rec("parallel")), \
+                 mock.patch.object(grounding, "keenable_search", rec("keenable")), \
                  mock.patch(
                      "lib.web_search_keyless.keyless_search",
                      lambda q, dr, cfg: (picked.__setitem__("backend", "keyless") or ([], {})),
@@ -1103,9 +1104,21 @@ class TestWebChain:
         for config in (
             {"BRAVE_API_KEY": "dummy-key"},
             {"SERPER_API_KEY": "dummy-key"},
+            {"KEENABLE_API_KEY": "dummy-key"},
+            {"PARALLEL_API_KEY": "dummy-key", "KEENABLE_API_KEY": "dummy-key"},
             {},
         ):
             assert backends.resolve("web", config).active_backend == _auto_pick(config)
+
+    def test_keenable_is_left_out_of_the_chain_until_its_key_is_set(self):
+        for config in ({}, {"LAST30DAYS_NATIVE_SEARCH": "1"}, {"BRAVE_API_KEY": "dummy-key"}):
+            res = backends.resolve("web", config)
+            assert "keenable" not in res.chain
+            assert all(f.name != "keenable" for f in res.findings)
+        res = backends.resolve("web", {"KEENABLE_API_KEY": "dummy-key"})
+        assert res.chain == ["brave", "exa", "serper", "parallel", "keenable", "keyless"]
+        assert res.active_backend == "keenable"
+        assert res.tier == backends.TIER_OK
 
 
 # ---------------------------------------------------------------------------

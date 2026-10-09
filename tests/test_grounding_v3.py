@@ -321,6 +321,93 @@ class ParallelSearchTests(unittest.TestCase):
             self.assertEqual(0, artifact["resultCount"])
 
 
+_KEENABLE_RESPONSE = {
+    "results": [
+        {
+            "title": "Keenable Result",
+            "url": "https://example.com/keenable",
+            "description": "",
+            "snippet": "First line\n\n  second   line " + "x" * 600,
+            "published_at": "2026-03-15T08:30:00Z",
+        },
+        {
+            "title": "Old Keenable Result",
+            "url": "https://example.com/old-keenable",
+            "description": "",
+            "snippet": "Should be filtered",
+            "published_at": "2025-12-01T00:00:00Z",
+        },
+        {
+            "title": "Description only",
+            "url": "https://example.com/description-only",
+            "description": "Meta description text",
+            "snippet": "",
+            "published_at": "2026-03-16T00:00:00Z",
+        },
+    ]
+}
+
+
+class KeenableSearchTests(unittest.TestCase):
+    def test_keyless_call_uses_public_endpoint_and_app_title(self):
+        with patch("lib.grounding.http.request", return_value=_KEENABLE_RESPONSE) as mock_req:
+            items, artifact = grounding.keenable_search("test", ("2026-02-25", "2026-03-27"))
+        self.assertEqual("POST", mock_req.call_args.args[0])
+        self.assertEqual("https://api.keenable.ai/v1/search/public", mock_req.call_args.args[1])
+        headers = mock_req.call_args.kwargs["headers"]
+        self.assertEqual("last30days", headers["X-Keenable-Title"])
+        self.assertNotIn("X-API-Key", headers)
+        self.assertEqual(
+            {"query": "test", "max_results": 5, "published_after": "2026-02-25"},
+            mock_req.call_args.kwargs["json_data"],
+        )
+        self.assertEqual(["Keenable Result", "Description only"], [i["title"] for i in items])
+        self.assertEqual("2026-03-15", items[0]["date"])
+        self.assertTrue(items[0]["id"].startswith("WKN"))
+        self.assertEqual("keenable", artifact["label"])
+        self.assertEqual(2, artifact["resultCount"])
+
+    def test_snippet_is_whitespace_collapsed_and_capped(self):
+        with patch("lib.grounding.http.request", return_value=_KEENABLE_RESPONSE):
+            items, _ = grounding.keenable_search("test", ("2026-02-25", "2026-03-27"))
+        self.assertTrue(items[0]["snippet"].startswith("First line second line x"))
+        self.assertEqual(500, len(items[0]["snippet"]))
+        self.assertEqual("Meta description text", items[1]["snippet"])
+
+    def test_keyed_call_uses_keyed_endpoint(self):
+        with patch("lib.grounding.http.request", return_value={"results": []}) as mock_req:
+            items, artifact = grounding.keenable_search(
+                "test", ("2026-02-25", "2026-03-27"), "fake-keenable-key"
+            )
+        self.assertEqual([], items)
+        self.assertEqual(0, artifact["resultCount"])
+        self.assertEqual("https://api.keenable.ai/v1/search", mock_req.call_args.args[1])
+        headers = mock_req.call_args.kwargs["headers"]
+        self.assertEqual("fake-keenable-key", headers["X-API-Key"])
+        self.assertEqual("last30days", headers["X-Keenable-Title"])
+
+    @patch("lib.http.time.sleep")
+    @patch("lib.http.urllib.request.urlopen")
+    def test_rate_limit_raises_like_other_backends_without_keyless_fallback(
+        self, mock_urlopen, mock_sleep,
+    ):
+        # A 429 goes through the shared http retry cap (honoring Retry-After)
+        # and then raises, exactly as a Brave/Exa/Serper/Parallel 429 does; the
+        # pipeline records the grounding source as rate-limited. There is no
+        # silent switch to another provider.
+        mock_urlopen.side_effect = urllib.error.HTTPError(
+            "https://api.keenable.ai/v1/search/public", 429, "Too Many Requests",
+            {"Retry-After": "1"}, io.BytesIO(b'{"retryAfter": 1}'),
+        )
+        with patch("lib.grounding.web_search_keyless.keyless_search") as mock_keyless, \
+             self.assertRaises(grounding.http.HTTPError) as caught:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="keenable")
+        self.assertEqual(429, caught.exception.status_code)
+        self.assertEqual(grounding.http.MAX_429_RETRIES, mock_urlopen.call_count)
+        mock_sleep.assert_called_with(1.0)
+        mock_keyless.assert_not_called()
+
+
 class WebSearchDispatchTests(unittest.TestCase):
     def test_auto_selects_brave_when_key_present(self):
         config = {"BRAVE_API_KEY": "test-key"}
@@ -345,6 +432,45 @@ class WebSearchDispatchTests(unittest.TestCase):
         with patch("lib.grounding.parallel_search", return_value=([], {})) as mock:
             grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
             mock.assert_called_once()
+
+    def test_auto_selects_keenable_when_only_keenable_key(self):
+        config = {"KEENABLE_API_KEY": "test-key"}
+        with patch("lib.grounding.keenable_search", return_value=([], {})) as mock:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+        mock.assert_called_once_with("test", ("2026-02-25", "2026-03-27"), "test-key")
+
+    def test_auto_prefers_parallel_over_keenable(self):
+        config = {"PARALLEL_API_KEY": "parallel-key", "KEENABLE_API_KEY": "keenable-key"}
+        with patch("lib.grounding.parallel_search", return_value=([], {})) as mock_parallel, \
+             patch("lib.grounding.keenable_search", return_value=([], {})) as mock_keenable:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+        mock_parallel.assert_called_once()
+        mock_keenable.assert_not_called()
+
+    def test_auto_without_keenable_key_never_contacts_keenable(self):
+        # Keyless users keep the keyless floor (or nothing on a native-search
+        # host); Keenable is reached only by its key or an explicit pin.
+        for config in ({}, {"LAST30DAYS_NATIVE_SEARCH": "1"}, {"OPENROUTER_API_KEY": "or-key"}):
+            with self.subTest(config=config), \
+                 patch("lib.grounding.http.request") as mock_req, \
+                 patch("lib.grounding.web_search_keyless.keyless_search",
+                       return_value=([], {"label": "keyless"})):
+                grounding.web_search("test", ("2026-02-25", "2026-03-27"), config, backend="auto")
+            for call in mock_req.call_args_list:
+                self.assertNotIn("keenable", str(call.args[1]))
+
+    def test_explicit_keenable_without_key_uses_public_endpoint(self):
+        with patch("lib.grounding.keenable_search", return_value=([], {})) as mock:
+            grounding.web_search("test", ("2026-02-25", "2026-03-27"), {}, backend="keenable")
+        mock.assert_called_once_with("test", ("2026-02-25", "2026-03-27"), None)
+
+    def test_explicit_keenable_sends_configured_key(self):
+        with patch("lib.grounding.keenable_search", return_value=([], {})) as mock:
+            grounding.web_search(
+                "test", ("2026-02-25", "2026-03-27"),
+                {"KEENABLE_API_KEY": "test-key"}, backend="keenable",
+            )
+        mock.assert_called_once_with("test", ("2026-02-25", "2026-03-27"), "test-key")
 
     def test_auto_returns_empty_when_no_keys_and_native_search(self):
         # On a native-search host (signal set) with no paid key, the engine

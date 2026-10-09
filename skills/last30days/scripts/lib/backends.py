@@ -61,10 +61,10 @@ TIER_WARN = "warn"
 TIER_ERROR = "error"
 
 # Web search backend order. grounding.web_search's auto branch owns the
-# runtime behavior (brave -> exa -> serper -> parallel -> keyless floor);
-# there is no importable constant there, so this declaration is guarded by
-# the grounding-auto parity test rather than an import.
-WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keyless")
+# runtime behavior (brave -> exa -> serper -> parallel -> keenable -> keyless
+# floor); there is no importable constant there, so this declaration is
+# guarded by the grounding-auto parity test rather than an import.
+WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keenable", "keyless")
 
 # YouTube backend order (pipeline: yt-dlp first, ScrapeCreators search
 # fallback when yt-dlp is absent or fails — see lib/pipeline.py).
@@ -121,7 +121,9 @@ class BackendSpec:
     ``probe`` must be side-effect-free. When ``paid`` is True the probe is
     key-presence only: no subprocess, no network, no credential spend.
     ``opt_in`` marks backends that are never auto-selected and require an
-    explicit pin (grok).
+    explicit pin (grok). ``listed_if_set`` names a config key that must be
+    set before the backend is probed at all: while it is unset the backend
+    is left out of the chain, so doctor never lists or prescribes it.
     """
 
     name: str
@@ -129,6 +131,7 @@ class BackendSpec:
     probe: Callable[[Dict[str, Any]], "BackendFinding"]
     paid: bool = False
     opt_in: bool = False
+    listed_if_set: str | None = None
 
 
 @dataclass(frozen=True)
@@ -483,9 +486,12 @@ _WEB_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "exa": _key_probe("exa", "EXA_API_KEY", "EXA_API_KEY"),
     "serper": _key_probe("serper", "SERPER_API_KEY", "SERPER_API_KEY"),
     "parallel": _key_probe("parallel", "PARALLEL_API_KEY", "PARALLEL_API_KEY"),
+    "keenable": _key_probe("keenable", "KEENABLE_API_KEY", "KEENABLE_API_KEY"),
     "keyless": _probe_web_keyless,
 }
-_WEB_KEYED = {"brave", "exa", "serper", "parallel"}
+_WEB_KEYED = {"brave", "exa", "serper", "parallel", "keenable"}
+# Keenable is opt-in: it joins the chain only once its key is configured.
+_WEB_LISTED_IF_SET = {"keenable": "KEENABLE_API_KEY"}
 
 _SC_SPEC = BackendSpec(
     name="scrapecreators",
@@ -550,6 +556,7 @@ DESCRIPTORS: Dict[str, ChainDescriptor] = {
                           else "no key; suppressed on native-search hosts"),
                 probe=_WEB_PROBES[name],
                 paid=name in _WEB_KEYED,
+                listed_if_set=_WEB_LISTED_IF_SET.get(name),
             )
             for name in WEB_BACKEND_ORDER
         ),
@@ -614,8 +621,9 @@ def _specs_for_policy(
 ) -> Tuple[List[BackendSpec], set]:
     """The backends to probe for this host, and which of them auto-select.
 
-    Every source except X keeps its declared backends; auto-selection is the
-    non-opt-in set. For X the answer comes from ``env.x_policy``: on a
+    Every source except X keeps its declared backends (less any whose
+    ``listed_if_set`` key is unset); auto-selection is the non-opt-in set.
+    For X the answer comes from ``env.x_policy``: on a
     default host the declared chain (auto order plus opt-in entries for
     doctor visibility) is unchanged; on an official-only host the findings
     are the policy's chain in its order, plus the pinned backend when the
@@ -623,7 +631,10 @@ def _specs_for_policy(
     string carries a non-official backend unless it is pinned. Observation
     only: this mirrors ``env.x_backend_chain``, it never alters it.
     """
-    specs = list(descriptor.backends)
+    specs = [
+        spec for spec in descriptor.backends
+        if not spec.listed_if_set or config.get(spec.listed_if_set)
+    ]
     if descriptor.source != "x":
         return specs, {spec.name for spec in specs if not spec.opt_in}
     policy = env.x_policy(config)

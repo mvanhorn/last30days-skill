@@ -281,6 +281,66 @@ class PipelineV3Tests(unittest.TestCase):
         self.assertEqual(1, len(report.items_by_source["grounding"]))
         self.assertEqual("2026-08-01", report.items_by_source["grounding"][0].published_at)
 
+    def test_keenable_pin_enables_grounding_without_key_on_native_host(self):
+        response = {"results": [{
+            "url": "https://example.com/update",
+            "title": "Test topic update",
+            "description": "",
+            "snippet": "New evidence\nabout test topic",
+            "published_at": "2026-08-01T12:00:00Z",
+        }]}
+        with patch("lib.grounding.http.request", return_value=response) as request:
+            report = pipeline.run(
+                topic="test topic",
+                config={"LAST30DAYS_REASONING_PROVIDER": "auto", "LAST30DAYS_NATIVE_SEARCH": "1"},
+                depth="quick",
+                requested_sources=["grounding"],
+                web_backend="keenable",
+                as_of_date="2026-08-26",
+            )
+        self.assertEqual("https://api.keenable.ai/v1/search/public", request.call_args.args[1])
+        self.assertNotIn("grounding", report.errors_by_source)
+        self.assertEqual(1, len(report.items_by_source["grounding"]))
+        self.assertEqual("2026-08-01", report.items_by_source["grounding"][0].published_at)
+
+    def test_keenable_key_enables_grounding_on_native_host_like_other_keys(self):
+        native = {"LAST30DAYS_NATIVE_SEARCH": "1"}
+        self.assertNotIn("grounding", pipeline.available_sources(native))
+        for key in ("PARALLEL_API_KEY", "KEENABLE_API_KEY"):
+            with self.subTest(key=key):
+                self.assertIn("grounding", pipeline.available_sources({**native, key: "dummy"}))
+        self.assertIsNone(pipeline.diagnose({}, safe=True)["native_web_backend"])
+        self.assertEqual(
+            "keenable",
+            pipeline.diagnose({"KEENABLE_API_KEY": "dummy"}, safe=True)["native_web_backend"],
+        )
+
+    def test_keenable_rate_limit_is_recorded_like_other_backends(self):
+        # A pinned backend that 429s marks the grounding source rate-limited and
+        # the run carries on with what it has. Keenable must match Brave here,
+        # including not switching to the keyless floor.
+        rate_limited = http.HTTPError("HTTP 429: Too Many Requests", status_code=429)
+        for backend, config in (
+            ("brave", {"BRAVE_API_KEY": "dummy"}),
+            ("keenable", {}),
+            ("keenable", {"KEENABLE_API_KEY": "dummy"}),
+        ):
+            with self.subTest(backend=backend, keyed=bool(config)), \
+                 patch("lib.grounding.http.request", side_effect=rate_limited), \
+                 patch("lib.grounding.web_search_keyless.keyless_search") as keyless:
+                report = pipeline.run(
+                    topic="test topic",
+                    config={"LAST30DAYS_REASONING_PROVIDER": "auto", **config},
+                    depth="quick",
+                    requested_sources=["grounding"],
+                    web_backend=backend,
+                    as_of_date="2026-08-26",
+                )
+            self.assertEqual(health.RATE_LIMITED, report.source_status["grounding"].state)
+            self.assertIn("grounding", report.errors_by_source)
+            self.assertFalse(report.items_by_source.get("grounding"))
+            keyless.assert_not_called()
+
     def test_hiring_signals_mode_enables_jobs_source_in_mock_run(self):
         report = pipeline.run(
             topic="Listen Labs",

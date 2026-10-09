@@ -432,6 +432,7 @@ def available_sources(
     # engine leaves general web to the model's own search.
     if (config.get("BRAVE_API_KEY") or config.get("EXA_API_KEY")
             or config.get("SERPER_API_KEY") or config.get("PARALLEL_API_KEY")
+            or config.get("KEENABLE_API_KEY")
             or env.keyless_web_allowed(config)):
         available.append("grounding")
     if requested_sources and "jobs" in requested_sources:
@@ -2024,6 +2025,8 @@ def diagnose(
         native_web_backend = "serper"
     elif config.get("PARALLEL_API_KEY"):
         native_web_backend = "parallel"
+    elif config.get("KEENABLE_API_KEY"):
+        native_web_backend = "keenable"
     providers_status = {
         "google": bool(google_key),
         "openai": bool(config.get("OPENAI_API_KEY")) and config.get("OPENAI_AUTH_STATUS") == env.AUTH_STATUS_OK,
@@ -2322,7 +2325,7 @@ def run(
         available.append("corpus")
     if web_backend == "none":
         available = [s for s in available if s != "grounding"]
-    elif web_backend in ("brave", "exa", "serper", "parallel", "parallel-mcp", "keyless") and "grounding" not in available:
+    elif web_backend in ("brave", "exa", "serper", "parallel", "parallel-mcp", "keenable", "keyless") and "grounding" not in available:
         available.append("grounding")
     if (
         hiring_signals_mode

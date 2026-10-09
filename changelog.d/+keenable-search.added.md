@@ -1,0 +1,1 @@
+Add an opt-in Keenable web search backend: pin it per run with `--web-backend=keenable` (no key needed), or set `KEENABLE_API_KEY` to have it auto-detected after the existing web search keys. Keyless auto-selection is unchanged.

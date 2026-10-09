@@ -1,4 +1,4 @@
-"""Web search retrieval via Brave Search, Exa, Serper, Parallel, or a keyless floor."""
+"""Web search retrieval via Brave Search, Exa, Serper, Parallel, Keenable, or a keyless floor."""
 
 from __future__ import annotations
 
@@ -218,6 +218,55 @@ def parallel_search(
     return items, artifact
 
 
+# ---------------------------------------------------------------------------
+# Keenable Search
+# ---------------------------------------------------------------------------
+
+def keenable_search(
+    query: str, date_range: tuple[str, str], api_key: str | None = None, count: int = 5,
+) -> tuple[list[dict], dict]:
+    """Keenable web search. Without a key it calls the public endpoint, which
+    is rate limited per IP; a configured key is sent to the keyed endpoint."""
+    headers = {"X-Keenable-Title": "last30days"}
+    if api_key:
+        url = "https://api.keenable.ai/v1/search"
+        headers["X-API-Key"] = api_key
+    else:
+        url = "https://api.keenable.ai/v1/search/public"
+    data = http.request(
+        "POST", url,
+        headers=headers,
+        json_data={"query": query, "max_results": count, "published_after": date_range[0]},
+        timeout=15,
+    )
+    items = []
+    for i, r in enumerate((data.get("results", []))[:count]):
+        if not isinstance(r, dict):
+            continue
+        result_url = r.get("url", "")
+        if not result_url:
+            continue
+        raw_date = r.get("published_at") or ""
+        pub_date = _normalize_date(raw_date[:10]) if raw_date else None
+        if not _in_date_range(pub_date, date_range):
+            continue
+        # The page text is in `snippet` (multi-line, often several KB);
+        # `description` is usually empty. Collapse and cap like the others.
+        text = r.get("snippet") or r.get("description") or ""
+        items.append({
+            "id": f"WKN{i + 1}",
+            "title": r.get("title", ""),
+            "url": result_url,
+            "source_domain": _domain(result_url),
+            "snippet": " ".join(str(text).split())[:500],
+            "date": pub_date,
+            "relevance": 0.8,
+            "why_relevant": "Keenable web search",
+        })
+    artifact = {"label": "keenable", "webSearchQueries": [query], "resultCount": len(items)}
+    return items, artifact
+
+
 _SERPER_RELATIVE_RE = re.compile(
     r"^(?:about\s+)?(\d+)\s+(minute|min|hour|hr|day|week|month|year)s?\s+ago$", re.I
 )
@@ -310,6 +359,8 @@ def web_search(
             backend = "serper"
         elif config.get("PARALLEL_API_KEY"):
             backend = "parallel"
+        elif config.get("KEENABLE_API_KEY"):
+            backend = "keenable"
         elif env.keyless_web_allowed(config):
             # No paid key and the host has no native search -> use the keyless
             # floor. On a native-search host this branch is skipped (the model
@@ -343,6 +394,9 @@ def web_search(
         items, artifact = parallel_mcp.search(
             query, date_range, config.get("PARALLEL_API_KEY")
         )
+    elif backend == "keenable":
+        # Explicit pin works without a key; a configured key is sent if present.
+        items, artifact = keenable_search(query, date_range, config.get("KEENABLE_API_KEY"))
     elif backend == "keyless":
         items, artifact = web_search_keyless.keyless_search(query, date_range, config)
     elif backend != "none":
