@@ -1,1 +1,0 @@
-Reports no longer end with a trailing `Sources:` list. Host web searches now run in a subagent, so the main agent never receives the web-search tool's "include sources" reminder. Web pages are cited inline and counted in the closing "I have all the links" line. The engine's end-of-output text no longer claims to override tool contracts.

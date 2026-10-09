@@ -9,6 +9,36 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.27.2] - 2026-10-09
+
+### Security
+
+- Provider endpoint overrides (`OPENAI_BASE_URL`, `XAI_BASE_URL`, `OPENROUTER_BASE_URL`) now reject remote cleartext `http://` targets and use the vendor endpoint instead. Rejection warnings omit the configured URL so embedded credentials cannot leak to stderr. Loopback `http://` overrides still work for local gateways (LiteLLM, Ollama, SSH tunnels) and bypass configured HTTP proxies so the bearer token stays on the local connection. `--preflight` already listed all three override keys; it now marks rejected values as ignored rather than active and reports only the variable names.
+
+### Added
+
+- Agent JSON exports now include token usage from the full planner and rerank run for Gemini, OpenAI, xAI, and OpenRouter. Usage is `null` when a provider omits token counts or a request has unknown usage, so callers do not mistake missing data for zero cost. ([#1137](https://github.com/mvanhorn/last30days-skill/issues/1137))
+
+### Changed
+
+- Under a detected agent host (Claude Code, Codex, `LAST30DAYS_HOST`, or `LAST30DAYS_HOST_AGENT=1`), a research run without `--plan` now stops with exit 2 and a LAW 7 message before any retrieval or internal-planner spend, instead of silently planning with an engine-side provider. `--mock`, `--hiring-signals`, `--auto-resolve`, comparison runs and non-research commands are exempt, and `LAST30DAYS_ALLOW_ENGINE_PLAN=1` restores engine planning for headless runs under an agent. Outside an agent host, a failed internal planner (for example HTTP 402) now also prints the LAW 7 reminder. ([#1178](https://github.com/mvanhorn/last30days-skill/issues/1178))
+
+### Fixed
+
+- Added regression tests for issue #817: Arabic-script (and other non-Latin) topics no longer risk UnicodeEncodeError on TikTok and Instagram (ScrapeCreators) searches. Tests lock in the existing percent-encoding fix in `http.request()` and cover the TikTok and Instagram search paths end-to-end. ([#817](https://github.com/mvanhorn/last30days-skill/issues/817))
+- Fixed Windows Bird/X timeouts that left Node shim descendants running after the shim or intermediate processes exited. ([#823](https://github.com/mvanhorn/last30days-skill/issues/823))
+- Brave, Exa, and Serper web results with unknown dates now survive the research pipeline when the provider bounds the requested window. Parallel applies a provider start-date filter and keeps undated results for current-window searches. Unknown dates remain labeled as such. ([#928](https://github.com/mvanhorn/last30days-skill/issues/928))
+- Fixed Reddit discovery reporting blocked or cardless r/all listings as no results instead of a degraded source. ([#940](https://github.com/mvanhorn/last30days-skill/issues/940))
+- Backfill thin YouTube search results from ScrapeCreators when a key is set, retain yt-dlp videos and transcripts, and surface backfill and failure details. Set `LAST30DAYS_YT_SC_MIN_ITEMS=0` for empty-only fallback. ([#977](https://github.com/mvanhorn/last30days-skill/issues/977))
+- The ScrapeCreators YouTube transcript fallback now requests up to three distinct preferred caption languages in order (`LAST30DAYS_YT_SUB_LANGS`, default `en,es,pt`). It skips empty tracks and limits total fallback time to 30 seconds per video. ([#1169](https://github.com/mvanhorn/last30days-skill/issues/1169))
+- X search through `xurl` no longer fails with "xurl: search failed" when a topic contains a bare `and`/`or`: the topic is sanitized into plain keywords (operators, negation, grouping and quotes removed, capped at 512 characters) before it reaches the X API, and an X "Invalid Request" rejection is now reported as "xurl: X rejected the query (invalid request)". ([#1177](https://github.com/mvanhorn/last30days-skill/issues/1177))
+- X search failures attributed to the xAI backend now point to its credentials, billing, rate limit, or timeout remedy instead of browser login or an unrelated X API bearer. ([#1186](https://github.com/mvanhorn/last30days-skill/issues/1186))
+- Setup and research runs now explain when browser-data permission denial prevents X cookie authentication. Doctor shows the last setup denial without reading browser cookies and points to manual cookies or key-backed X access. ([#1193](https://github.com/mvanhorn/last30days-skill/issues/1193))
+- A failed yt-dlp YouTube search (network error, bot check, broken install) is now reported as a YouTube failure in Source Coverage instead of as "no results".
+- Reports no longer end with a trailing `Sources:` list. Host web searches now run in a subagent, so the main agent never receives the web-search tool's "include sources" reminder. Web pages are cited inline and counted in the closing "I have all the links" line. The engine's end-of-output text no longer claims to override tool contracts.
+- The research runbook passes literal topics containing apostrophes or backticks correctly on macOS Bash 3.2, while retaining zsh compatibility and preventing shell expansion.
+
+
 ## [3.27.1] - 2026-10-08
 
 ### Fixed
