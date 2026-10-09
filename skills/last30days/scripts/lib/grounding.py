@@ -1,10 +1,12 @@
-"""Web search retrieval via Brave Search, Exa, Serper, Parallel, or a keyless floor."""
+"""Web search retrieval via Brave Search, Exa, Serper, Parallel, looot, or a keyless floor."""
 
 from __future__ import annotations
 
 import re
 import sys
+import time
 import urllib.parse
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
@@ -132,19 +134,26 @@ def exa_search(
 # Serper (Google Search wrapper)
 # ---------------------------------------------------------------------------
 
-def serper_search(
-    query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
+def _serper_tbs(date_range: tuple[str, str]) -> str:
+    """Serper's custom date-range filter for the research window."""
+    return f"cdr:1,cd_min:{_serper_date_param(date_range[0])},cd_max:{_serper_date_param(date_range[1])}"
+
+
+def _serper_items(
+    data: dict,
+    query: str,
+    date_range: tuple[str, str],
+    count: int,
+    *,
+    label: str,
+    id_prefix: str,
+    why_relevant: str,
 ) -> tuple[list[dict], dict]:
-    data = http.request(
-        "POST", "https://google.serper.dev/search",
-        headers={"X-API-KEY": api_key},
-        json_data={
-            "q": query,
-            "num": count,
-            "tbs": f"cdr:1,cd_min:{_serper_date_param(date_range[0])},cd_max:{_serper_date_param(date_range[1])}",
-        },
-        timeout=15,
-    )
+    """Map a Serper response body to web items, dropping out-of-window results.
+
+    Shared by the direct Serper backend and the looot backend, whose pinned
+    `serper-search` endpoint returns the same body.
+    """
     items = []
     for i, r in enumerate((data.get("organic", []))[:count]):
         raw_date = r.get("date") or ""
@@ -154,18 +163,120 @@ def serper_search(
         if _known_date_out_of_range(pub_date, date_range):
             continue
         items.append({
-            "id": f"WS{i + 1}",
+            "id": f"{id_prefix}{i + 1}",
             "title": r.get("title", ""),
             "url": r.get("link", ""),
             "source_domain": _domain(r.get("link", "")),
             "snippet": r.get("snippet", ""),
             "date": pub_date,
             "relevance": 0.8,
-            "why_relevant": "Serper web search",
+            "why_relevant": why_relevant,
             "metadata": {"date_window_basis": "server_bounds"},
         })
-    artifact = {"label": "serper", "webSearchQueries": [query], "resultCount": len(items)}
+    artifact = {"label": label, "webSearchQueries": [query], "resultCount": len(items)}
     return items, artifact
+
+
+def serper_search(
+    query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
+) -> tuple[list[dict], dict]:
+    data = http.request(
+        "POST", "https://google.serper.dev/search",
+        headers={"X-API-KEY": api_key},
+        json_data={
+            "q": query,
+            "num": count,
+            "tbs": _serper_tbs(date_range),
+        },
+        timeout=15,
+    )
+    return _serper_items(
+        data, query, date_range, count,
+        label="serper", id_prefix="WS", why_relevant="Serper web search",
+    )
+
+
+# ---------------------------------------------------------------------------
+# looot (Serper search through a prepaid looot balance)
+# ---------------------------------------------------------------------------
+
+LOOOT_API_BASE = "https://api.looot.ai"
+_LOOOT_WAIT_SECONDS = 30
+_LOOOT_POLL_DEADLINE_SECONDS = 30.0
+_LOOOT_POLL_INTERVAL_SECONDS = 1.0
+_LOOOT_FAILED_STATUSES = frozenset({"failed", "blocked", "stopped"})
+
+
+def _looot_error(run: dict) -> str:
+    err = run.get("error")
+    if isinstance(err, dict):
+        return ": ".join(str(err[k]) for k in ("code", "message") if err.get(k))
+    return str(err) if err else ""
+
+
+def _looot_run_result(first: dict, headers: dict) -> dict:
+    """Return the result of a looot run, polling until it is terminal.
+
+    Raises RuntimeError for a failed, blocked or stopped run and when the run
+    is still going after the polling deadline.
+    """
+    run = first
+    run_id = run.get("runId")
+    deadline = time.monotonic() + _LOOOT_POLL_DEADLINE_SECONDS
+    while True:
+        status = run.get("status")
+        if status == "completed":
+            result = run.get("result")
+            if not isinstance(result, dict):
+                raise RuntimeError(f"looot run {run_id} completed without a result object")
+            return result
+        if status in _LOOOT_FAILED_STATUSES:
+            detail = _looot_error(run)
+            raise RuntimeError(f"looot run {run_id} {status}" + (f": {detail}" if detail else ""))
+        if not run_id:
+            raise RuntimeError("looot returned no runId")
+        timed_out = RuntimeError(
+            f"looot run {run_id} still {status or 'pending'} after "
+            f"{_LOOOT_POLL_DEADLINE_SECONDS:.0f}s of polling"
+        )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise timed_out
+        time.sleep(min(_LOOOT_POLL_INTERVAL_SECONDS, remaining))
+        try:
+            # The deadline covers the request, its retries and rate-limit waits.
+            run = http.request(
+                "GET", f"{LOOOT_API_BASE}/v1/runs/{run_id}", headers=headers,
+                timeout=15, deadline_monotonic=deadline,
+            )
+        except http.DeadlineExceeded:
+            raise timed_out from None
+
+
+def looot_search(
+    query: str, date_range: tuple[str, str], token: str, count: int = 5,
+) -> tuple[list[dict], dict]:
+    """Search Google through looot's `serper-search` endpoint (explicit opt-in).
+
+    The endpoint returns Serper's response body, so results go through the same
+    parser, date handling and window filter as the direct Serper backend.
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    run = http.request(
+        "POST", f"{LOOOT_API_BASE}/v1/runs?wait={_LOOOT_WAIT_SECONDS}",
+        headers=headers,
+        json_data={
+            "endpointId": "serper-search",
+            "input": {"q": query, "num": count, "tbs": _serper_tbs(date_range)},
+            "idempotencyKey": uuid.uuid4().hex,
+        },
+        timeout=_LOOOT_WAIT_SECONDS + 10,
+    )
+    data = _looot_run_result(run, headers)
+    return _serper_items(
+        data, query, date_range, count,
+        label="looot", id_prefix="WL", why_relevant="looot web search (Serper)",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +454,11 @@ def web_search(
         items, artifact = parallel_mcp.search(
             query, date_range, config.get("PARALLEL_API_KEY")
         )
+    elif backend == "looot":
+        key = config.get("LOOOT_TOKEN")
+        if not key:
+            raise RuntimeError("LOOOT_TOKEN is required when web_backend='looot'")
+        items, artifact = looot_search(query, date_range, key)
     elif backend == "keyless":
         items, artifact = web_search_keyless.keyless_search(query, date_range, config)
     elif backend != "none":

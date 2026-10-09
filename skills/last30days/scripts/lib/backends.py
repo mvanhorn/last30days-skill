@@ -65,6 +65,9 @@ TIER_ERROR = "error"
 # there is no importable constant there, so this declaration is guarded by
 # the grounding-auto parity test rather than an import.
 WEB_BACKEND_ORDER: Tuple[str, ...] = ("brave", "exa", "serper", "parallel", "keyless")
+# Opt-in web backends: probed for doctor visibility, never auto-selected,
+# run only under --web-backend=<name>.
+WEB_BACKEND_OPT_IN: Tuple[str, ...] = ("looot",)
 
 # YouTube backend order (pipeline: yt-dlp first, ScrapeCreators search
 # fallback when yt-dlp is absent or fails — see lib/pipeline.py).
@@ -484,8 +487,10 @@ _WEB_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "serper": _key_probe("serper", "SERPER_API_KEY", "SERPER_API_KEY"),
     "parallel": _key_probe("parallel", "PARALLEL_API_KEY", "PARALLEL_API_KEY"),
     "keyless": _probe_web_keyless,
+    "looot": _key_probe("looot", "LOOOT_TOKEN", "LOOOT_TOKEN"),
 }
-_WEB_KEYED = {"brave", "exa", "serper", "parallel"}
+_WEB_KEYED = {"brave", "exa", "serper", "parallel", "looot"}
+_WEB_KEY_VARS = {"looot": "LOOOT_TOKEN"}
 
 _SC_SPEC = BackendSpec(
     name="scrapecreators",
@@ -546,12 +551,14 @@ DESCRIPTORS: Dict[str, ChainDescriptor] = {
         backends=tuple(
             BackendSpec(
                 name=name,
-                requires=(f"{name.upper()}_API_KEY" if name in _WEB_KEYED
+                requires=(_WEB_KEY_VARS.get(name, f"{name.upper()}_API_KEY")
+                          if name in _WEB_KEYED
                           else "no key; suppressed on native-search hosts"),
                 probe=_WEB_PROBES[name],
                 paid=name in _WEB_KEYED,
+                opt_in=name in WEB_BACKEND_OPT_IN,
             )
-            for name in WEB_BACKEND_ORDER
+            for name in WEB_BACKEND_ORDER + WEB_BACKEND_OPT_IN
         ),
         pin_var=None,  # pinned per-run via --web-backend, not an env var
         pin_flag="--web-backend",

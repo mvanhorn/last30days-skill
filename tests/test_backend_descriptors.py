@@ -197,7 +197,7 @@ class TestDescriptorRegistry:
         assert tuple(s.name for s in yt.backends) == ("yt-dlp", "scrapecreators")
         web = backends.get_descriptor("web")
         assert tuple(s.name for s in web.backends) == (
-            "brave", "exa", "serper", "parallel", "keyless",
+            "brave", "exa", "serper", "parallel", "keyless", "looot",
         )
         assert web.pin_flag == "--web-backend"
 
@@ -485,6 +485,7 @@ class TestPaidLaneProbes:
         ("x", "xai", "XAI_API_KEY"),
         ("x", "xquik", "XQUIK_API_KEY"),
         ("web", "serper", "SERPER_API_KEY"),
+        ("web", "looot", "LOOOT_TOKEN"),
         ("youtube", "scrapecreators", "SCRAPECREATORS_API_KEY"),
         ("reddit", "scrapecreators", "SCRAPECREATORS_API_KEY"),
     ]
@@ -1074,6 +1075,24 @@ class TestWebChain:
         assert res.active_backend == "exa"
         assert res.pinned is True
         assert "pinned" in res.summary
+
+    def test_looot_is_opt_in_and_never_auto_selected(self):
+        spec = next(s for s in backends.get_descriptor("web").backends if s.name == "looot")
+        assert spec.opt_in is True
+        res = backends.resolve("web", {"LOOOT_TOKEN": "dummy-token"})
+        assert res.active_backend == "keyless"
+
+    def test_looot_pin_uses_the_token(self):
+        res = backends.resolve("web", {"LOOOT_TOKEN": "dummy-token"}, pin="looot")
+        assert res.active_backend == "looot"
+        assert res.pinned is True
+        assert res.tier == backends.TIER_OK
+
+    def test_looot_pin_without_token_is_an_error_with_a_fix(self):
+        res = backends.resolve("web", {}, pin="looot")
+        assert res.active_backend is None
+        assert res.tier == backends.TIER_ERROR
+        assert "LOOOT_TOKEN" in res.prescription
 
     def test_parity_with_grounding_auto_dispatch(self):
         """resolve('web').active_backend must match the backend grounding's
