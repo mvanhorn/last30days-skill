@@ -15,11 +15,9 @@ stdlib-only skill -- Scrapling is invoked as a subprocess, never imported::
 
     uv tool install 'scrapling[all]' && scrapling install
 
-Foundation, not yet wired in: this module is import-safe and fully tested,
-but no lane calls it yet. Wiring a specific lane (e.g. Reddit's 403 path) to
-fall through to Scrapling touches that lane's retry logic and needs an
-integration test plus a SKILL.md note, so it belongs in a dedicated
-beta-channel PR rather than riding in with the primitive.
+Wired into one lane: Reddit comment enrichment
+(``reddit_shreddit.fetch_comments``) falls through to this helper only after
+the keyless HTTP path was refused with HTTP 403. No other lane calls it.
 """
 
 from __future__ import annotations
