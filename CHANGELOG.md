@@ -9,6 +9,31 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.28.0] - 2026-10-11
+
+### Security
+
+- Cached research reports and the GitHub sign-in handle are now written with owner-only permissions on macOS and Linux. Hosted research through `LAST30DAYS_API_BASE` now requires HTTPS, except for loopback addresses.
+
+### Added
+
+- Added a security policy (`SECURITY.md`) that explains how to report vulnerabilities privately through GitHub security advisories and documents what the skill sends over the network, which credentials and browser cookies it reads, what it installs, and what it stores locally. ([#565](https://github.com/mvanhorn/last30days-skill/issues/565))
+- Added dev.to as a free, keyless source. When you research a software or developer topic, the skill infers dev.to tags and adds dev.to articles ranked by reactions and comments, with top comments from the leading articles. It stays off for other topics, and `INCLUDE_SOURCES=devto` turns it on for every run.
+
+### Fixed
+
+- A host-supplied query plan now searches only the sources it names: company topics no longer get an unrequested jobs lane added to it. A plan that names jobs keeps jobs on any topic, and hiring-signals mode with a host plan runs the jobs lane instead of failing with "No available planned sources remain".
+- A multi-subquery run now fetches each identical TikTok, Instagram, YouTube, and X search once instead of once per subquery, and the thin-source retry reuses a clean result instead of repeating the request. Polymarket and Digg no longer run the same search twice when the thin-source retry's simplified query matches the planner's. Failed fetches are not reused, so the retry still makes a real second attempt.
+- Corrected the configuration reference to describe ScrapeCreators' GitHub device-code signup, TikTok and Instagram availability with a ScrapeCreators key, and the DuckDuckGo → Startpage → optional SearXNG search fallback. Removed the unsupported Apify fallback claim and documented YouTube SSH routing, including its prerequisites and limits.
+- Fixed `--github-repo` project mode silently dropping the pinned repo when its newest GitHub release is older than the research window (Ghostty's newest release object is a 2022 nightly). The repo snapshot is now dated to the window end unless that release falls inside the window, so the live star count reaches the report and Source Coverage no longer shows "GitHub: 0 items (no results)" after the engine logged a project-mode result. A snapshot dated this way ranks on neutral freshness (the 10-90 scale midpoint) instead of maximum freshness, so the pinned repo card no longer sorts to #1 in every report; a repo whose newest release is inside the window keeps normal freshness.
+- Fixed first-run setup to find signed-in Opera sessions on macOS when you approve browser-cookie access, before trying Firefox and Safari.
+- Fixed the engine footer printing "15 storys" for Hacker News; it now reads "15 stories" (and "1 story"). Footer nouns ending in a consonant followed by "y" now pluralize to "ies".
+- Hacker News comment quotes now link to the comment itself (or the HN discussion page when the comment id is missing) instead of the story's article URL.
+- Hacker News: when the same article was submitted to HN more than once, the engine merged the submissions and showed one story's id with another story's comment count and comments. Each HN submission now keeps its own points, comment count, discussion link, and comments, and a ranked card's evidence text comes from the same submission whose numbers it shows; submissions of the same article still cluster together.
+- Ranking without an LLM reranker now weighs real engagement: a 380-point Hacker News story or a 254-upvote Reddit thread no longer ranks below 1-3-like posts that happen to be newer. Engagement is scored on an absolute per-platform scale instead of within each search's own results, freshness is counted once, the low-score cliff applies only to LLM-scored results, and first-party posts are lifted only when they are on topic (or the handle is the topic itself). The "All Items" list now shows real scores instead of 0 or 1. GitHub repo cards no longer count lifetime stars as engagement or take first-party credit, and YouTube, TikTok, and Instagram engagement is scored on a view scale so a few-hundred-view video no longer rates like a well-upvoted thread.
+- Recent-topic reports no longer include years-old YouTube videos when nothing on YouTube falls inside the date window; the YouTube section now comes back empty instead of padding the report with off-topic back-catalog videos. Evergreen and how-to topics still fall back to older videos when recent ones are scarce.
+
+
 ## [3.27.3] - 2026-10-11
 
 No significant changes.

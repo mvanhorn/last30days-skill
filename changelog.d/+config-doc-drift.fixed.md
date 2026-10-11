@@ -1,1 +1,0 @@
-Corrected the configuration reference to describe ScrapeCreators' GitHub device-code signup, TikTok and Instagram availability with a ScrapeCreators key, and the DuckDuckGo → Startpage → optional SearXNG search fallback. Removed the unsupported Apify fallback claim and documented YouTube SSH routing, including its prerequisites and limits.

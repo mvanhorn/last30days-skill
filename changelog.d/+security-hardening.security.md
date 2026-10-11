@@ -1,1 +1,0 @@
-Cached research reports and the GitHub sign-in handle are now written with owner-only permissions on macOS and Linux. Hosted research through `LAST30DAYS_API_BASE` now requires HTTPS, except for loopback addresses.

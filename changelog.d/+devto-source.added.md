@@ -1,1 +1,0 @@
-Added dev.to as a free, keyless source. When you research a software or developer topic, the skill infers dev.to tags and adds dev.to articles ranked by reactions and comments, with top comments from the leading articles. It stays off for other topics, and `INCLUDE_SOURCES=devto` turns it on for every run.
