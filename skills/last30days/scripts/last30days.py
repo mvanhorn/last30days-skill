@@ -51,6 +51,7 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, freshness, html_render, http, permission_preflight, pipeline, reddit, registers, render, schema, subproc, ui, x_envelope
+from lib.private_files import write_private_text
 
 atexit.register(subproc.cleanup_children)
 
@@ -1334,7 +1335,7 @@ def _write_last_run(
             "report_cache": str(target / "last-report.json"),
             "comparison": bool(entity_reports),
         }
-        (target / "last-run.json").write_text(json.dumps(payload, indent=2))
+        write_private_text(target / "last-run.json", json.dumps(payload, indent=2))
         cache_payload = {
             "schema": REPORT_CACHE_VERSION,
             "topic": topic,
@@ -1347,8 +1348,8 @@ def _write_last_run(
             ],
         }
         report_cache_path = target / "last-report.json"
-        report_cache_path.write_text(json.dumps(cache_payload, indent=2))
-        if has_private_corpus:
+        write_private_text(report_cache_path, json.dumps(cache_payload, indent=2))
+        if has_private_corpus and os.name != "posix":
             report_cache_path.chmod(0o600)
         return True
     except Exception as exc:
