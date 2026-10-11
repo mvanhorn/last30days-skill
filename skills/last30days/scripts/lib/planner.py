@@ -141,6 +141,7 @@ SOURCE_CAPABILITIES = {
     "tiktok": {"video", "video_shortform", "social"},
     "instagram": {"video", "video_shortform", "social"},
     "hackernews": {"discussion", "link"},
+    "devto": {"discussion", "link", "reference"},
     "bluesky": {"discussion", "social"},
     "truthsocial": {"discussion", "social"},
     "polymarket": {"market"},

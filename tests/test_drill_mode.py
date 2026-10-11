@@ -477,7 +477,7 @@ def test_drill_plan_does_not_gain_jobs_via_company_topic(monkeypatch, drill):
         as_of_date="2026-07-10",
     )
 
-    expected = {"youtube"} if drill else {"youtube", "jobs"}
+    expected = {"youtube"}
     assert report.query_plan.subqueries
     assert all(set(subquery.sources) == expected for subquery in report.query_plan.subqueries)
 

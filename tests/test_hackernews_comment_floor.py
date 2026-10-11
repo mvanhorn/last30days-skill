@@ -331,3 +331,91 @@ def test_best_takes_uses_hn_excerpt_retained_by_fused_candidate():
     assert any(
         call.args == ("hackernews", 93) for call in normalized_vote.call_args_list
     )
+
+
+# --- Comment permalinks (R7/R8): a quote links to where it was said. -------
+
+ARTICLE_URL = "https://example.test/thing"
+
+
+def _fetched_hn_item(children):
+    """Run Algolia children through fetch -> normalize, like the live path."""
+    raw = _hn_item()
+    with patch("lib.hackernews.http.request") as request:
+        request.return_value = {"children": children}
+        raw["top_comments"] = hackernews._fetch_item_comments("42")["comments"]
+    return normalize._normalize_hackernews("hackernews", raw, 0, FROM_DATE, TO_DATE)
+
+
+def _comment_lines(rendered, *needles):
+    return [
+        line for line in rendered.splitlines() if any(n in line for n in needles)
+    ]
+
+
+def _render_comment_paths(hn):
+    candidate = _candidate("hackernews", hn)
+    report = _report(hn, candidate)
+    return {
+        "top_comments": "\n".join(render._render_top_comments(report)),
+        "cluster": "\n".join(render._render_candidate(candidate, prefix="1.")),
+    }
+
+
+def test_hn_comment_with_id_links_its_own_permalink():
+    hn = _fetched_hn_item(
+        [
+            {"id": 4242, "author": "alice", "text": "The single clearest explanation I have read.", "points": None},
+            {"id": 4243, "author": "bob", "text": "Counterpoint: the benchmark skips the hard cases.", "points": None},
+        ]
+    )
+    assert hn.metadata["top_comments"][0]["url"] == "https://news.ycombinator.com/item?id=4242"
+    for path, rendered in _render_comment_paths(hn).items():
+        (line,) = _comment_lines(rendered, "clearest explanation")
+        assert "https://news.ycombinator.com/item?id=4242" in line, f"{path}: {line}"
+        assert ARTICLE_URL not in line, f"{path}: {line}"
+
+
+def test_hn_comment_without_id_links_the_discussion_page():
+    hn = _fetched_hn_item(
+        [
+            {"author": "alice", "text": "The single clearest explanation I have read.", "points": None},
+            {"author": "bob", "text": "Counterpoint: the benchmark skips the hard cases.", "points": None},
+        ]
+    )
+    for path, rendered in _render_comment_paths(hn).items():
+        lines = _comment_lines(rendered, "clearest explanation", "hard cases")
+        assert len(lines) == 2, f"{path}:\n{rendered}"
+        for line in lines:
+            assert "https://news.ycombinator.com/item?id=42" in line, f"{path}: {line}"
+            assert ARTICLE_URL not in line, f"{path}: {line}"
+
+
+def test_pre_fix_hn_item_falls_back_to_hn_url_metadata_not_article():
+    """An item normalized before comments carried URLs still links the discussion."""
+    raw = _hn_item()
+    raw["hn_url"] = "https://news.ycombinator.com/item?id=4200"
+    hn = normalize._normalize_hackernews("hackernews", raw, 0, FROM_DATE, TO_DATE)
+    assert all("url" not in c for c in hn.metadata["top_comments"])
+    assert hn.url == ARTICLE_URL
+    for path, rendered in _render_comment_paths(hn).items():
+        lines = _comment_lines(rendered, "clearest explanation", "hard cases")
+        assert len(lines) == 2, f"{path}:\n{rendered}"
+        for line in lines:
+            assert "https://news.ycombinator.com/item?id=4200" in line, f"{path}: {line}"
+            assert ARTICLE_URL not in line, f"{path}: {line}"
+
+
+def test_hn_comment_retained_by_non_hn_candidate_links_hn_not_candidate_url():
+    reddit = normalize._normalize_reddit("reddit", _reddit_item(), 0, FROM_DATE, TO_DATE)
+    hn = _fetched_hn_item(
+        [
+            {"id": 4242, "author": "dave", "text": "A retained HN comment with its own link.", "points": None},
+        ]
+    )
+    fused = _candidate("reddit", reddit)
+    fused.source_items = [reddit, hn]
+    rendered = "\n".join(render._render_top_comments(_report(reddit, fused)))
+    (line,) = _comment_lines(rendered, "retained HN comment")
+    assert "https://news.ycombinator.com/item?id=4242" in line
+    assert fused.url not in line

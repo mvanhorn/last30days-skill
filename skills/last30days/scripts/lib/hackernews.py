@@ -275,7 +275,7 @@ def parse_hackernews_response(response: Dict[str, Any], query: str = "") -> List
 
         # Article URL vs HN discussion URL
         article_url = hit.get("url") or ""
-        hn_url = f"https://news.ycombinator.com/item?id={object_id}"
+        hn_url = _hn_item_url(object_id)
 
         # Relevance: blend Algolia rank with token-overlap content matching
         rank_score = max(0.3, 1.0 - (i * 0.02))  # 1.0 -> 0.3 over 35 items
@@ -302,6 +302,11 @@ def parse_hackernews_response(response: Dict[str, Any], query: str = "") -> List
         })
 
     return items
+
+
+def _hn_item_url(item_id: Any) -> str:
+    """HN discussion/comment permalink for an item id."""
+    return f"https://news.ycombinator.com/item?id={item_id}"
 
 
 def _fetch_item_comments(object_id: str, max_comments: int = 5) -> Dict[str, Any]:
@@ -333,13 +338,18 @@ def _fetch_item_comments(object_id: str, max_comments: int = 5) -> Dict[str, Any
 
     comments = []
     insights = []
+    # A quote links to where it was said: the comment's own permalink, else the
+    # story's discussion page -- never the article URL.
+    discussion_url = _hn_item_url(object_id)
     for c in real_comments[:max_comments]:
         text = _strip_html(c.get("text", ""))
         excerpt = text[:300] + "..." if len(text) > 300 else text
+        comment_id = c.get("id")
         comments.append({
             "author": c.get("author", ""),
             "text": excerpt,
             "points": c.get("points"),
+            "url": _hn_item_url(comment_id) if comment_id else discussion_url,
         })
         # First sentence as insight
         first_sentence = text.split(". ")[0].split("\n")[0][:200]
