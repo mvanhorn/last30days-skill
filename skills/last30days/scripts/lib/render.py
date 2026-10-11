@@ -2898,7 +2898,12 @@ def _footer_line_for_source(
     emoji: str, label: str, count: int, item_word: str, stats: str
 ) -> str:
     count_str = f"{count:,}" if count >= 1000 else str(count)
-    plural = f"{item_word}s" if count != 1 else item_word
+    if count == 1:
+        plural = item_word
+    elif len(item_word) > 1 and item_word.endswith("y") and item_word[-2] not in "aeiou":
+        plural = f"{item_word[:-1]}ies"
+    else:
+        plural = f"{item_word}s"
     if stats:
         return f"{emoji} {label}: {count_str} {plural} │ {stats}"
     return f"{emoji} {label}: {count_str} {plural}"
