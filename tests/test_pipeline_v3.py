@@ -2796,6 +2796,19 @@ class TestSourceFetchMemo:
         assert items == [] and err
         assert err_state == health.TIMEOUT
 
+    def test_youtube_memo_is_keyed_by_freshness_mode(self):
+        [subquery] = _memo_subqueries(["youtube"], labels=("price",))
+        with patch("lib.youtube_yt.search_and_transcribe", side_effect=_youtube_payload) as yt_search, \
+             patch("lib.pipeline.which", return_value="/usr/bin/yt-dlp"), \
+             patch("lib.env.is_youtube_comments_available", return_value=False):
+            _memo_stream("youtube", subquery, {}, freshness_mode="evergreen_ok")
+            _memo_stream("youtube", subquery, {}, freshness_mode="balanced_recent")
+            _memo_stream("youtube", subquery, {}, freshness_mode="balanced_recent")
+        assert yt_search.call_count == 2
+        assert [c.kwargs["freshness_mode"] for c in yt_search.call_args_list] == [
+            "evergreen_ok", "balanced_recent",
+        ]
+
     def _thin_youtube_retry(self, config):
         plan = schema.QueryPlan(
             intent="general", freshness_mode="balanced_recent", cluster_mode="topic",
@@ -2814,7 +2827,8 @@ class TestSourceFetchMemo:
         with patch("lib.pipeline.which", return_value="/usr/bin/yt-dlp"), \
              patch("lib.youtube_yt.search_and_transcribe", side_effect=_youtube_payload) as yt_search, \
              patch("lib.env.is_youtube_comments_available", return_value=False):
-            _memo_stream("youtube", subquery, {})
+            # Same run, same plan freshness mode as the retry.
+            _memo_stream("youtube", subquery, {}, freshness_mode="balanced_recent")
             self._thin_youtube_retry({})
         assert yt_search.call_count == 1
 
@@ -2824,7 +2838,7 @@ class TestSourceFetchMemo:
         with patch("lib.pipeline.which", return_value="/usr/bin/yt-dlp"), \
              patch("lib.youtube_yt.search_and_transcribe", side_effect=responses) as yt_search, \
              patch("lib.env.is_youtube_comments_available", return_value=False):
-            _items, artifact = _memo_stream("youtube", subquery, {})
+            _items, artifact = _memo_stream("youtube", subquery, {}, freshness_mode="balanced_recent")
             assert artifact["_source_outcome"]["state"] == health.TIMEOUT
             self._thin_youtube_retry({})
         assert yt_search.call_count == 2
