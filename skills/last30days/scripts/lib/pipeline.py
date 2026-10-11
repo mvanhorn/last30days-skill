@@ -5256,6 +5256,9 @@ def _memo_wait_seconds(config: dict[str, Any]) -> float:
     )
 
 
+_X_MEMO_WAIT_GRACE_SECONDS = 5.0
+
+
 def _attempt_x_backend_memo(
     backend, query, from_date, to_date, depth, config, warnings=None, deadline=None,
 ):
@@ -5272,16 +5275,24 @@ def _attempt_x_backend_memo(
         )
         return items, err, err_state, local_warnings
 
+    # The owner is bounded by the same chain deadline, so a waiter allows a
+    # short grace past it for the owner to publish instead of timing out first.
     wait = (
-        max(0.0, deadline - time.monotonic()) if deadline is not None
+        max(0.0, deadline - time.monotonic()) + _X_MEMO_WAIT_GRACE_SECONDS
+        if deadline is not None
         else _memo_wait_seconds(config)
     )
-    items, err, err_state, backend_warnings = fetch_memo.fetch_once(
-        ("x", backend, query, from_date, to_date, depth),
-        _fetch,
-        timeout=wait,
-        cacheable=lambda outcome: not outcome[1],
-    )
+    try:
+        items, err, err_state, backend_warnings = fetch_memo.fetch_once(
+            ("x", backend, query, from_date, to_date, depth),
+            _fetch,
+            timeout=wait,
+            cacheable=lambda outcome: not outcome[1],
+        )
+    except fetch_memo.MemoWaitTimeout as exc:
+        # A chain error like any backend timeout, so the chain's own error
+        # handling and outcome reporting apply.
+        return [], str(exc), health.TIMEOUT
     if warnings is not None:
         warnings.extend(backend_warnings)
     return items, err, err_state

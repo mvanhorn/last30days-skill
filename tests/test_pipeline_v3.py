@@ -1,5 +1,8 @@
 import threading
+import time
 import unittest
+
+import pytest
 from unittest.mock import patch
 
 from lib import health
@@ -2707,6 +2710,82 @@ class TestSourceFetchMemo:
                          tiktok_hashtags=["ghostty"])
         assert tiktok_search.call_count == 2
         assert tiktok_search.call_args_list[1].kwargs["hashtags"] == ["ghostty"]
+
+    def test_failed_tiktok_search_is_not_reused(self):
+        [subquery] = _memo_subqueries(["tiktok"], labels=("price",))
+        responses = [{"items": [], "error": "HTTP 503"}, _tiktok_payload()]
+        with patch("lib.tiktok.search_and_enrich", side_effect=responses) as tiktok_search:
+            first_items, first_artifact = _memo_stream("tiktok", subquery, {"SCRAPECREATORS_API_KEY": "test-key"})
+            second_items, _ = _memo_stream("tiktok", subquery, {"SCRAPECREATORS_API_KEY": "test-key"})
+        assert tiktok_search.call_count == 2
+        assert first_items == [] and first_artifact
+        assert second_items
+
+    def test_failed_instagram_search_is_not_reused(self):
+        [subquery] = _memo_subqueries(["instagram"], labels=("price",))
+        responses = [{"items": [], "error": "HTTP 503"}, _instagram_payload()]
+        with patch("lib.instagram.search_and_enrich", side_effect=responses) as ig_search:
+            _memo_stream("instagram", subquery, {"SCRAPECREATORS_API_KEY": "test-key"})
+            second_items, _ = _memo_stream("instagram", subquery, {"SCRAPECREATORS_API_KEY": "test-key"})
+        assert ig_search.call_count == 2
+        assert second_items
+
+    @pytest.mark.parametrize("artifact, clean", [
+        ({}, True),
+        ({"_source_outcome_detail": "yt-dlp thin; backfilled"}, True),
+        ({"_source_outcome": {"state": "error"}}, False),
+        ({"_source_outcome_deferred": {"state": "partial"}}, False),
+        ({"_source_outcome_if_empty": {"state": "error"}}, False),
+        ({"_source_outcome_detail_state": "partial"}, False),
+    ])
+    def test_clean_stream_result_rejects_every_failure_marker(self, artifact, clean):
+        assert pipeline._clean_stream_result(([], artifact)) is clean
+
+    def test_x_waiter_gets_owner_result_when_owner_runs_to_chain_deadline(self):
+        deadline = time.monotonic() + 0.2
+
+        def slow_backend(*_args, **_kwargs):
+            time.sleep(0.35)
+            return [{"id": "x1"}], None, None
+
+        from concurrent.futures import ThreadPoolExecutor
+        with patch.object(pipeline, "_attempt_x_backend", side_effect=slow_backend) as backend, \
+             ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(
+                    pipeline._attempt_x_backend_memo,
+                    "bird", "ghostty", *_MEMO_RANGE, "default", {}, deadline=deadline,
+                )
+                for _ in range(2)
+            ]
+            results = [future.result(timeout=10) for future in futures]
+        assert backend.call_count == 1
+        assert all(items == [{"id": "x1"}] and err is None for items, err, _ in results)
+
+    def test_x_waiter_timeout_is_a_chain_error_not_an_exception(self):
+        deadline = time.monotonic() + 0.1
+
+        def hung_backend(*_args, **_kwargs):
+            time.sleep(0.6)
+            return [{"id": "x1"}], None, None
+
+        from concurrent.futures import ThreadPoolExecutor
+        with patch.object(pipeline, "_attempt_x_backend", side_effect=hung_backend), \
+             patch.object(pipeline, "_X_MEMO_WAIT_GRACE_SECONDS", 0.1), \
+             ThreadPoolExecutor(max_workers=2) as pool:
+            owner = pool.submit(
+                pipeline._attempt_x_backend_memo,
+                "bird", "ghostty", *_MEMO_RANGE, "default", {}, deadline=deadline,
+            )
+            time.sleep(0.05)
+            waiter = pool.submit(
+                pipeline._attempt_x_backend_memo,
+                "bird", "ghostty", *_MEMO_RANGE, "default", {}, deadline=deadline,
+            )
+            items, err, err_state = waiter.result(timeout=10)
+            owner.result(timeout=10)
+        assert items == [] and err
+        assert err_state == health.TIMEOUT
 
     def _thin_youtube_retry(self, config):
         plan = schema.QueryPlan(
