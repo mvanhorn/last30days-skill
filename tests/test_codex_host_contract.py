@@ -130,6 +130,24 @@ def test_law8_visible_url_hosts_exclude_cursor_and_split_from_step0():
     assert "renderer split is separate from onboarding; Cursor remains non-modal" in law8
 
 
+def test_law8_keeps_claude_code_hidden_link_despite_reattach_preview():
+    # Claude Code's background-session reattach preview prints every markdown
+    # link as `label (url)`; the live view below it renders clickable labels.
+    # Moving Claude Code to plain labels would hide those URLs but strip every
+    # clickable source link. See docs/solutions/integration-issues/
+    # claude-code-reattach-preview-flattens-links.md.
+    text = "\n".join(contract_documents().values())
+    visible_lists = re.findall(r"[Vv]isible-URL hosts? \(([^)]*)\)", text)
+    assert visible_lists, "no visible-URL host list found"
+    for hosts in visible_lists:
+        assert "Claude Code" not in hosts, f"Claude Code named as visible-URL host: {hosts!r}"
+    hidden_lists = re.findall(r"[Hh]idden-link hosts? \(([^)]*)\)", text)
+    assert hidden_lists, "no hidden-link host list found"
+    assert all("Claude Code" in hosts for hosts in hidden_lists)
+    law8 = _law8_block()
+    assert "`CLAUDECODE` or `CURSOR_AGENT` set means hidden-link default" in law8
+
+
 def test_law8_wrap_list_includes_u_name_and_github_repo_first_mentions():
     # u/name comment authors and GitHub repos must be in the wrap-every-citation
     # list, with URLs copied from the comment row / engine evidence block.
