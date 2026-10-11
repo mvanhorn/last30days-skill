@@ -1856,7 +1856,6 @@ _HTTP_PROBE_URLS = {
     "hackernews": "https://hn.algolia.com/api/v1/search?query=test&hitsPerPage=1",
     "polymarket": "https://gamma-api.polymarket.com/events?limit=1",
     "github": "https://api.github.com/rate_limit",
-    "devto": "https://dev.to/api/articles?per_page=1",
 }
 
 # Per-source exception to "a 4xx still means the endpoint responded". The

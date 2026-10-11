@@ -259,3 +259,85 @@ def test_doctor_reports_devto_as_opt_in_until_enabled():
 
     assert doctor._devto_record({})["status"] == "opt-in"
     assert doctor._devto_record({"INCLUDE_SOURCES": "devto"})["status"] == "ok"
+
+
+def _plan(sources):
+    from lib import schema
+
+    return schema.QueryPlan(
+        intent="concept",
+        freshness_mode="balanced_recent",
+        cluster_mode="none",
+        raw_topic="claude code",
+        subqueries=[schema.SubQuery(label="primary", search_query="claude code",
+                                    ranking_query="q", sources=list(sources), weight=1.0)],
+        source_weights={source: 1.0 for source in sources},
+    )
+
+
+def test_activated_devto_joins_a_host_plan_that_omits_it():
+    plan = _plan(["hackernews"])
+    pipeline._ensure_devto_in_plan(plan, ["hackernews", "devto"])
+    assert "devto" in plan.subqueries[0].sources
+    assert "devto" in plan.source_weights
+
+
+def test_inactive_devto_is_not_added_to_a_plan():
+    plan = _plan(["hackernews"])
+    pipeline._ensure_devto_in_plan(plan, ["hackernews"])
+    assert plan.subqueries[0].sources == ["hackernews"]
+
+
+def test_doctor_never_live_probes_devto():
+    from lib import doctor
+
+    assert "devto" not in doctor._probeable_sources()
+
+
+def test_unexpected_response_shape_is_an_error_not_an_empty_result(monkeypatch):
+    calls = []
+
+    def object_response(method, url, headers=None, **kwargs):
+        calls.append(url)
+        return {"error": "changed"}
+
+    monkeypatch.setattr(devto.http, "request", object_response)
+    result = devto.search_devto("rust", "2026-09-11", "2026-10-11", tags=["rust"])
+    assert result["articles"] == []
+    assert "unexpected dev.to response shape" in result["error"]
+    devto.search_devto("rust", "2026-09-11", "2026-10-11", tags=["rust"])
+    assert len(calls) == 4
+
+
+def test_requests_carry_a_total_deadline(monkeypatch):
+    seen = {}
+
+    def capture(method, url, headers=None, **kwargs):
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(devto.http, "request", capture)
+    devto._get_list("https://dev.to/api/articles?tag=rust")
+    assert seen["owned_get"] is True
+    assert seen["deadline_monotonic"] is not None
+
+
+def test_enrichment_stops_waiting_at_its_time_limit(monkeypatch):
+    import threading
+    import time
+
+    release = threading.Event()
+
+    def stuck(article_id):
+        release.wait(5)
+        return [{"author": "a", "text": "late", "replies": 0}]
+
+    monkeypatch.setattr(devto, "_fetch_comments", stuck)
+    monkeypatch.setattr(devto, "ENRICH_WAIT_SECONDS", 0.2)
+    items = _source_items([_article(1, "Rust one", comments=3)])
+    started = time.monotonic()
+    devto.enrich_source_items(items)
+    elapsed = time.monotonic() - started
+    release.set()
+    assert elapsed < 2
+    assert not items[0].metadata.get("top_comments")

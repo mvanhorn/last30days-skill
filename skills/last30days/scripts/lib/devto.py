@@ -22,8 +22,10 @@ import datetime
 import html
 import re
 import threading
+import time
 import urllib.parse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import TimeoutError as FuturesTimeout
 from typing import Any
 
 from . import http, log
@@ -43,6 +45,10 @@ MAX_COMMENTS = 5
 # keyless Reddit lane: it keeps "kubernetes" hits and drops the newest-posts
 # noise a loose multi-word query ("claude code") returns.
 SEARCH_RELEVANCE_FLOOR = 0.25
+# Total wall-clock cap per request. The socket timeout alone bounds each
+# read, so a response trickling in small chunks could otherwise run on.
+REQUEST_DEADLINE_SECONDS = 20.0
+ENRICH_WAIT_SECONDS = 25.0
 
 _TAG_RE = re.compile(r"[^a-z0-9]")
 # Bot comments on dev.to ("Official Platform Update ... tr.ee/dev-to") hide
@@ -99,10 +105,16 @@ def _get_list(url: str, headers: dict[str, str] | None = None) -> list[dict[str,
         lock = _URL_LOCKS.setdefault(url, threading.Lock())
     with lock:
         if url not in _RESPONSE_CACHE:
-            data = http.request("GET", url, headers=headers, timeout=15, retries=2)
-            _RESPONSE_CACHE[url] = (
-                [row for row in data if isinstance(row, dict)] if isinstance(data, list) else []
+            data = http.request(
+                "GET", url, headers=headers, timeout=15, retries=2,
+                deadline_monotonic=time.monotonic() + REQUEST_DEADLINE_SECONDS,
+                owned_get=True,
             )
+            if not isinstance(data, list):
+                # Forem list endpoints always return a JSON array; anything
+                # else is a changed or error response, not "no matches".
+                raise ValueError(f"unexpected dev.to response shape: {type(data).__name__}")
+            _RESPONSE_CACHE[url] = [row for row in data if isinstance(row, dict)]
         return [dict(row) for row in _RESPONSE_CACHE[url]]
 
 
@@ -280,9 +292,10 @@ def enrich_source_items(items: list[Any], top_k: int = ENRICH_LIMIT) -> list[Any
         targets.append(item)
     if not targets:
         return items
-    with ThreadPoolExecutor(max_workers=len(targets)) as executor:
-        futures = {http.submit_with_context(executor, _fetch_comments, item.item_id): item for item in targets}
-        for future in as_completed(futures):
+    executor = ThreadPoolExecutor(max_workers=len(targets))
+    futures = {http.submit_with_context(executor, _fetch_comments, item.item_id): item for item in targets}
+    try:
+        for future in as_completed(futures, timeout=ENRICH_WAIT_SECONDS):
             item = futures[future]
             item.metadata["top_comments"] = _remap_comments(
                 future.result(),
@@ -290,6 +303,11 @@ def enrich_source_items(items: list[Any], top_k: int = ENRICH_LIMIT) -> list[Any
                 excerpt_keys=("text", "excerpt"),
                 preserve_absent_score=True,
             )
+    except FuturesTimeout:
+        _log("comment enrichment hit its time limit; keeping the comments that arrived")
+    finally:
+        # Never block report finalization on a straggling comment fetch.
+        executor.shutdown(wait=False, cancel_futures=True)
     attached = sum(1 for item in targets if item.metadata.get("top_comments"))
     _log(f"attached comments to {attached} of {len(targets)} top articles")
     return items

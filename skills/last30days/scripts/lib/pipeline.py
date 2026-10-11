@@ -2399,6 +2399,7 @@ def run(
         # Drill plans re-fetch only the sources that contributed to the matched
         # cluster; the company-topic jobs injection must not widen that set.
         _ensure_jobs_in_plan(plan, available, explicit=hiring_signals_mode, topic=topic)
+        _ensure_devto_in_plan(plan, available)
     if "corpus" in available and plan.subqueries:
         # Corpus is deterministic and user-registered, so it always gets one
         # bounded stream even when a quick/LLM plan omits it. Reuse the primary
@@ -3714,6 +3715,22 @@ def _apply_hiring_signal_gate(
             if key[1] == "jobs":
                 del bundle.items_by_source_and_query[key]
     return summary
+
+
+def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
+    """Give an activated dev.to source the primary subquery.
+
+    dev.to is off by default, so a host plan built from the default source
+    list never names it. Once tags or INCLUDE_SOURCES turn it on, activation
+    must not be a no-op.
+    """
+    if "devto" not in available or not plan.subqueries:
+        return
+    if "devto" not in plan.subqueries[0].sources:
+        plan.subqueries[0].sources.append("devto")
+    if "devto" not in plan.source_weights:
+        plan.source_weights["devto"] = 1.0
+        plan.source_weights = planner._normalize_weights(plan.source_weights)
 
 
 def _ensure_jobs_in_plan(
