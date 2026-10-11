@@ -166,6 +166,7 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--meta-ads-page={page_id}` | Step 0.5f | Name-based advertiser resolution picked the wrong company, or the brand advertises only under product-line page names. Accepts a numeric Ad Library page id or an Ad Library URL with `view_all_page_id`; a facebook.com vanity URL is not a page id. Also add `meta_ads` to `--search` |
 | `--subreddits={sub1,sub2,...}` | Step 0.55 | Always — almost every topic has active Reddit communities |
 | `--tiktok-hashtags={h1,h2,...}` | Step 0.55 | Always — inferred from topic |
+| `--devto-tags={t1,t2}` | Step 0.55 | Tech topics: 1-3 lowercase tags (`claudecode,ai`); enables dev.to |
 | `--tiktok-creators={c1,c2,...}` | Step 0.55 | Creator / influencer / brand topics |
 | `--ig-creators={c1,c2,...}` | Step 0.55 | Creator / brand topics |
 | `--web-backend brave` | Step 0.45 Class 5 | **MANDATORY** for non-Latin-script topics (Hebrew, Arabic, CJK, etc.) — Brave is the only source that indexes non-English web |
@@ -603,7 +604,7 @@ Store your plan as `QUERY_PLAN_JSON` - you'll pass it to the script in the next 
 
 **On hosts with web search, pass your QUERY_PLAN_JSON via the --plan flag.** This tells the Python script to use your plan instead of its internal planner. On hosts without web search, omit `--plan` and use `--auto-resolve`.
 
-**IMPORTANT: Include `--x-handle={RESOLVED_HANDLE}` in the command. For comparison mode, use the single parallel comparison invocation in `comparison.md`, with outer targeting for the main entity and per-peer targeting in `--competitors-plan`. Also include `--subreddits={RESOLVED_SUBREDDITS}`, `--tiktok-hashtags={RESOLVED_HASHTAGS}`, `--tiktok-creators={RESOLVED_TIKTOK_CREATORS}`, and `--ig-creators={RESOLVED_IG_CREATORS}` from Step 0.55. Omit any flag where the value was not resolved (empty).**
+**IMPORTANT: Include `--x-handle={RESOLVED_HANDLE}` in the command. For comparison mode, use the single parallel comparison invocation in `comparison.md`, with outer targeting for the main entity and per-peer targeting in `--competitors-plan`. Also include the resolved Step 0.55 flags listed below.**
 
 Fill `{TOPIC}` below with the parsed topic as literal data, excluding skill-mode controls and engine CLI flags. Choose a quoted heredoc delimiter that does not occur as a line in the topic. Map recognized CLI flags separately to the engine command. Never evaluate raw slash-command text or depend on a shell `$ARGUMENTS` variable.
 
@@ -654,6 +655,7 @@ Then add to the engine command:
 - `--subreddits={RESOLVED_SUBREDDITS}` (broad/category subs, from Step 0.55)
 - `--dedicated-subreddits={RESOLVED_DEDICATED_SUBREDDITS}` (entity-home subs, from Step 0.55; pulled in full + floor-exempt)
 - `--tiktok-hashtags={RESOLVED_HASHTAGS}` (from Step 0.55)
+- `--devto-tags={t1,t2}` (see flag table)
 - `--tiktok-creators={RESOLVED_TIKTOK_CREATORS}` (from Step 0.55)
 - `--ig-creators={RESOLVED_IG_CREATORS}` (from Step 0.55)
 - `--github-user={RESOLVED_GITHUB_USER}` (from Step 0.5b, person topics only)

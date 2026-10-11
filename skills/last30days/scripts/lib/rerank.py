@@ -42,6 +42,7 @@ FIRST_PARTY_AUTHOR_CREDIT = 5.0
 _DISCOVERY_ENGAGEMENT_FIELDS = {
     "reddit": ("score", "num_comments"),
     "hackernews": ("points", "comments"),
+    "devto": ("reactions", "comments"),
     "digg": ("postCount", "uniqueAuthors"),
     "x": ("likes", "reposts", "replies", "quotes"),
 }
