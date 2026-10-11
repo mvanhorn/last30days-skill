@@ -2296,6 +2296,10 @@ def run(
     # assign it (eligible_sources = available ∩ capabilities).
     config["_financial_topic"] = stocktwits.is_financial_topic(topic)
 
+    # A host-supplied plan's source lists are final: company-topic jobs is an
+    # automatic lane only for engine-planned runs.
+    host_plan = external_plan is not None
+    auto_company_jobs = not host_plan and _company_topic_likely(topic)
     if mock:
         runtime = providers.mock_runtime(config, depth)
         reasoning_provider = None
@@ -2304,7 +2308,7 @@ def run(
             available.append("corpus")
         if not corpus_enabled and not corpus_requested:
             available = [source for source in available if source != "corpus"]
-        if not requested_sources and not hiring_signals_mode and not _company_topic_likely(topic):
+        if not requested_sources and not hiring_signals_mode and not auto_company_jobs:
             available = [source for source in available if source != "jobs"]
     else:
         runtime, reasoning_provider = providers.resolve_runtime(config, depth)
@@ -2326,8 +2330,15 @@ def run(
         available.append("grounding")
     if (
         hiring_signals_mode
-        or (not requested_sources and _company_topic_likely(topic))
+        or (not requested_sources and auto_company_jobs)
     ) and "jobs" not in available:
+        available.append("jobs")
+    if (
+        host_plan
+        and not requested_sources
+        and "jobs" not in available
+        and _external_plan_names_source(external_plan, "jobs")
+    ):
         available.append("jobs")
     if hiring_signals_mode:
         config = dict(config)
@@ -2345,6 +2356,15 @@ def run(
         # External plan provided (e.g., from Claude Code via --plan flag).
         # Explicit input is a contract: validate it before permissive sanitization.
         planner.validate_external_plan(external_plan)
+        if hiring_signals_mode:
+            # Hiring-signals mode always runs the jobs lane. Add it before
+            # sanitizing: with a jobs-only source set, sanitize would drop every
+            # subquery that does not already name jobs.
+            external_plan = copy.deepcopy(external_plan)
+            for subquery in external_plan["subqueries"]:
+                sources = subquery.setdefault("sources", [])
+                if isinstance(sources, list) and "jobs" not in sources:
+                    sources.append("jobs")
         plan = planner._sanitize_plan(
             external_plan, topic, available, planner_requested_sources, depth,
             honor_plan_sources=True,
@@ -2383,9 +2403,10 @@ def run(
         for sq in plan.subqueries:
             if "grounding" not in sq.sources:
                 sq.sources.append("grounding")
-    if "drill-mode" not in plan.notes:
+    if "drill-mode" not in plan.notes and (not host_plan or hiring_signals_mode):
         # Drill plans re-fetch only the sources that contributed to the matched
-        # cluster; the company-topic jobs injection must not widen that set.
+        # cluster, and host plans name their final source set; the company-topic
+        # jobs injection must not widen either.
         _ensure_jobs_in_plan(plan, available, explicit=hiring_signals_mode, topic=topic)
     if "corpus" in available and plan.subqueries:
         # Corpus is deterministic and user-registered, so it always gets one
@@ -3695,6 +3716,20 @@ def _apply_hiring_signal_gate(
             if key[1] == "jobs":
                 del bundle.items_by_source_and_query[key]
     return summary
+
+
+def _external_plan_names_source(external_plan: Any, source: str) -> bool:
+    if not isinstance(external_plan, dict):
+        return False
+    subqueries = external_plan.get("subqueries")
+    if not isinstance(subqueries, list):
+        return False
+    return any(
+        isinstance(subquery, dict)
+        and isinstance(subquery.get("sources"), list)
+        and source in subquery["sources"]
+        for subquery in subqueries
+    )
 
 
 def _ensure_jobs_in_plan(
