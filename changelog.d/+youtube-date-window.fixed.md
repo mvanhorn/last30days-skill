@@ -1,0 +1,1 @@
+Recent-topic reports no longer include years-old YouTube videos when nothing on YouTube falls inside the date window; the YouTube section now comes back empty instead of padding the report with off-topic back-catalog videos. Evergreen and how-to topics still fall back to older videos when recent ones are scarce.

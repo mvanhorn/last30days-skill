@@ -382,3 +382,43 @@ def test_ytdlp_bot_gate_and_paid_exception_do_not_retry_paid_search():
     assert artifact["_source_outcome"]["state"] == health.PARTIAL
     assert "not a bot" in artifact["_source_outcome"]["detail"]
     assert "SC disconnected" in artifact["_source_outcome"]["detail"]
+
+
+def test_freshness_mode_reaches_both_youtube_searches():
+    """plan.freshness_mode is threaded into the yt-dlp and ScrapeCreators searches."""
+    free = {
+        "video_id": "free", "title": "Vuori review", "date": "2026-06-15",
+        "url": "https://www.youtube.com/watch?v=free", "transcript_snippet": "free transcript",
+    }
+    plan = {
+        "intent": "how_to", "freshness_mode": "evergreen_ok", "cluster_mode": "story",
+        "subqueries": [{
+            "label": "primary", "search_query": "Vuori", "ranking_query": "Vuori",
+            "sources": ["youtube"],
+        }],
+        "source_weights": {"youtube": 1.0},
+    }
+    retrieve = pipeline._retrieve_stream
+
+    def live_youtube(*args, **kwargs):
+        return retrieve(*args, **{**kwargs, "mock": False})
+
+    with (
+        mock.patch.object(pipeline, "which", return_value="/usr/bin/yt-dlp"),
+        mock.patch.object(pipeline, "_retrieve_stream", side_effect=live_youtube),
+        mock.patch.object(
+            youtube_yt, "search_and_transcribe", return_value={"items": [free]},
+        ) as free_search,
+        mock.patch.object(youtube_yt, "search_youtube_sc", return_value={"items": []}) as sc_search,
+        mock.patch.object(pipeline.env, "is_youtube_comments_available", return_value=False),
+    ):
+        pipeline.run(
+            topic="Vuori", config={"SCRAPECREATORS_API_KEY": "dummy-key"},
+            depth="default", requested_sources=["youtube"], mock=True,
+            external_plan=plan, as_of_date="2026-07-01",
+        )
+
+    assert free_search.call_count >= 1
+    assert sc_search.call_count >= 1
+    for call in free_search.call_args_list + sc_search.call_args_list:
+        assert call.kwargs.get("freshness_mode") == "evergreen_ok"

@@ -106,12 +106,14 @@ def normalize_source_items(
     )
     if filtered:
         return filtered
-    # YouTube search already keeps out-of-window videos when fewer than 3
-    # are recent, then pays for transcripts. A second hard date filter here
-    # dropped those transcribed items to zero (#1043). Keep transcript-backed
-    # retrieved items instead of paying for transcripts that never appear in
-    # the brief. Metadata-only / caption-failed videos are not that rescue.
-    if source == "youtube" and normalized:
+    # For evergreen_ok, YouTube search keeps out-of-window videos when fewer
+    # than 3 are recent, then pays for transcripts. A second hard date filter
+    # here dropped those transcribed items to zero (#1043). Keep
+    # transcript-backed retrieved items instead of paying for transcripts that
+    # never appear in the brief. Metadata-only / caption-failed videos are not
+    # that rescue. Recent modes (strict_recent / balanced_recent) get no
+    # rescue: years-old videos on a recent topic are noise, not evidence.
+    if freshness_mode == "evergreen_ok" and source == "youtube" and normalized:
         transcribed = [
             item for item in normalized if str(item.snippet or "").strip()
         ]

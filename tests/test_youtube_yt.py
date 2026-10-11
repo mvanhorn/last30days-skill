@@ -1853,5 +1853,110 @@ class TestYtdlpPlayerClient(unittest.TestCase):
         self.assertEqual(youtube_yt._inject_youtube_player_client(cmd), cmd)
 
 
+class TestYouTubeDateWindowByFreshnessMode(unittest.TestCase):
+    """Out-of-window soft fallback is scoped to evergreen_ok (recent topics stay honest)."""
+
+    FROM = "2026-09-11"
+    TO = "2026-10-11"
+
+    def setUp(self):
+        youtube_yt.reset_search_cache()
+        self.addCleanup(youtube_yt.reset_search_cache)
+
+    def _ytdlp_stdout(self, dates):
+        videos = [
+            {
+                "id": f"v{i}", "title": f"Ghostty video {i}", "view_count": 100 + i,
+                "like_count": 1, "comment_count": 1, "upload_date": d.replace("-", ""),
+                "description": "desc",
+            }
+            for i, d in enumerate(dates)
+        ]
+        return "\n".join(json.dumps(v) for v in videos)
+
+    def _search(self, dates, freshness_mode):
+        from lib.subproc import SubprocResult
+        result = SubprocResult(returncode=0, stdout=self._ytdlp_stdout(dates), stderr="")
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=result):
+            return youtube_yt.search_youtube(
+                "Ghostty terminal", self.FROM, self.TO, freshness_mode=freshness_mode,
+            )
+
+    def test_ytdlp_balanced_recent_with_no_in_range_videos_keeps_nothing(self):
+        out = self._search(["2017-03-01", "2020-05-05"], "balanced_recent")
+        self.assertEqual(out["items"], [])
+
+    def test_ytdlp_strict_recent_keeps_only_in_range_videos(self):
+        out = self._search(["2026-10-01", "2017-03-01", "2020-05-05"], "strict_recent")
+        self.assertEqual([i["video_id"] for i in out["items"]], ["v0"])
+
+    def test_ytdlp_evergreen_ok_still_keeps_older_videos(self):
+        out = self._search(["2017-03-01", "2020-05-05"], "evergreen_ok")
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"v0", "v1"})
+
+    def test_ytdlp_unknown_mode_keeps_todays_soft_fallback(self):
+        out = self._search(["2017-03-01", "2020-05-05"], None)
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"v0", "v1"})
+
+    def test_ytdlp_in_range_path_unchanged_when_three_or_more_recent(self):
+        dates = ["2026-10-01", "2026-10-02", "2026-10-03", "2017-03-01"]
+        for mode in ("balanced_recent", "evergreen_ok", None):
+            youtube_yt.reset_search_cache()
+            out = self._search(dates, mode)
+            self.assertEqual({i["video_id"] for i in out["items"]}, {"v0", "v1", "v2"}, mode)
+
+    def test_ytdlp_search_cache_does_not_leak_across_freshness_modes(self):
+        dates = ["2017-03-01", "2020-05-05"]
+        self.assertEqual(len(self._search(dates, "evergreen_ok")["items"]), 2)
+        self.assertEqual(self._search(dates, "balanced_recent")["items"], [])
+
+    def test_search_and_transcribe_threads_freshness_mode(self):
+        from lib.subproc import SubprocResult
+        result = SubprocResult(
+            returncode=0, stdout=self._ytdlp_stdout(["2017-03-01", "2020-05-05"]), stderr="",
+        )
+        with mock.patch.object(youtube_yt, "is_ytdlp_installed", return_value=True), \
+             mock.patch.object(youtube_yt.subproc, "run_with_timeout", return_value=result), \
+             mock.patch.object(youtube_yt, "fetch_transcripts_parallel", return_value={}):
+            recent = youtube_yt.search_and_transcribe(
+                "Ghostty terminal", self.FROM, self.TO, freshness_mode="balanced_recent",
+            )
+            youtube_yt.reset_search_cache()
+            evergreen = youtube_yt.search_and_transcribe(
+                "Ghostty terminal", self.FROM, self.TO, freshness_mode="evergreen_ok",
+            )
+        self.assertEqual(recent["items"], [])
+        self.assertEqual({i["video_id"] for i in evergreen["items"]}, {"v0", "v1"})
+
+    def _sc_search(self, dates, freshness_mode):
+        raw = [
+            {"id": f"s{i}", "title": f"Ghostty video {i}", "views": 100 + i, "upload_date": d}
+            for i, d in enumerate(dates)
+        ]
+        with mock.patch.object(youtube_yt, "_sc_youtube_search", return_value=raw), \
+             mock.patch.object(youtube_yt, "_sc_fetch_transcript", return_value="transcript"):
+            return youtube_yt.search_youtube_sc(
+                "Ghostty terminal", self.FROM, self.TO, token="dummy-key",
+                freshness_mode=freshness_mode,
+            )
+
+    def test_sc_balanced_recent_with_no_in_range_videos_keeps_nothing(self):
+        out = self._sc_search(["2017-03-01", "2020-05-05"], "balanced_recent")
+        self.assertEqual(out["items"], [])
+
+    def test_sc_strict_recent_keeps_only_in_range_videos(self):
+        out = self._sc_search(["2026-10-01", "2017-03-01"], "strict_recent")
+        self.assertEqual([i["video_id"] for i in out["items"]], ["s0"])
+
+    def test_sc_evergreen_ok_still_keeps_older_videos(self):
+        out = self._sc_search(["2017-03-01", "2020-05-05"], "evergreen_ok")
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"s0", "s1"})
+
+    def test_sc_unknown_mode_keeps_todays_soft_fallback(self):
+        out = self._sc_search(["2017-03-01", "2020-05-05"], None)
+        self.assertEqual({i["video_id"] for i in out["items"]}, {"s0", "s1"})
+
+
 if __name__ == "__main__":
     unittest.main()

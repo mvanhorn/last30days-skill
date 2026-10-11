@@ -274,8 +274,31 @@ class NormalizeV3Tests(unittest.TestCase):
         )
         self.assertEqual([], normalized)
 
-    def test_youtube_keeps_older_items_when_date_window_is_empty_even_without_evergreen(self):
-        """#1043: search kept out-of-window videos so transcripts could run; normalize must not drop them."""
+    def test_youtube_recent_modes_drop_transcribed_older_items_when_date_window_is_empty(self):
+        """#1043 rescue is scoped to evergreen_ok: recent topics get an honest empty result."""
+        items = [
+            {
+                "video_id": "vid-old",
+                "title": "Ghost in the Shell review",
+                "url": "https://youtube.com/watch?v=vid-old",
+                "channel_name": "Example",
+                "date": "2017-03-01",
+                "transcript_snippet": "Fetched transcript about Ghost in the Shell.",
+                "engagement": {"views": 1000, "likes": 50, "comments": 10},
+            }
+        ]
+        for mode in ("balanced_recent", "strict_recent"):
+            normalized = normalize.normalize_source_items(
+                "youtube",
+                items,
+                "2026-02-15",
+                "2026-03-17",
+                freshness_mode=mode,
+            )
+            self.assertEqual([], normalized, mode)
+
+    def test_youtube_evergreen_keeps_transcribed_older_items_when_date_window_is_empty(self):
+        """#1043: evergreen search kept out-of-window videos so transcripts could run; normalize must not drop them."""
         items = [
             {
                 "video_id": "vid-old",
@@ -292,7 +315,7 @@ class NormalizeV3Tests(unittest.TestCase):
             items,
             "2026-02-15",
             "2026-03-17",
-            freshness_mode="balanced_recent",
+            freshness_mode="evergreen_ok",
         )
         self.assertEqual(1, len(normalized))
         self.assertEqual("vid-old", normalized[0].item_id)
@@ -324,7 +347,7 @@ class NormalizeV3Tests(unittest.TestCase):
             items,
             "2026-02-15",
             "2026-03-17",
-            freshness_mode="balanced_recent",
+            freshness_mode="evergreen_ok",
         )
         self.assertEqual(1, len(normalized))
         self.assertEqual("vid-old", normalized[0].item_id)
