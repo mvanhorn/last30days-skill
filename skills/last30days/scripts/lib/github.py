@@ -909,6 +909,7 @@ def search_github_person(
                     "comment_count": pr_count,
                     "reactions": stars,
                     "is_pr": False,
+                    "date_is_snapshot": not _has_in_window_release(releases, from_date, to_date),
                 },
             })
 
@@ -967,6 +968,7 @@ def search_github_person(
                     "comment_count": open_issues,
                     "reactions": stars,
                     "is_pr": False,
+                    "date_is_snapshot": not _has_in_window_release(releases, from_date, to_date),
                 },
             })
 
@@ -1163,10 +1165,20 @@ def _snapshot_date(releases: List[Dict[str, Any]], from_date: str, to_date: str)
     An older release date would make the report's date filter drop a repo the
     user pinned: Ghostty's newest release object is its 2022 "tip" nightly.
     """
-    release_date = releases[0].get("date") if releases else None
-    if release_date and from_date <= release_date <= to_date:
-        return release_date
+    if _has_in_window_release(releases, from_date, to_date):
+        return releases[0]["date"]
     return to_date
+
+
+def _has_in_window_release(releases: List[Dict[str, Any]], from_date: str, to_date: str) -> bool:
+    """True when the newest release date is a real in-window event.
+
+    False means ``_snapshot_date`` fell back to ``to_date``: that date keeps the
+    item through the date filter but says nothing about recency, so the item is
+    marked ``date_is_snapshot`` and ranks on neutral freshness.
+    """
+    release_date = releases[0].get("date") if releases else None
+    return bool(release_date and from_date <= release_date <= to_date)
 
 
 def search_github_project(
@@ -1261,6 +1273,7 @@ def search_github_project(
                     "comment_count": open_issues,
                     "reactions": stars,
                     "is_pr": False,
+                    "date_is_snapshot": not _has_in_window_release(releases, from_date, to_date),
                     "github_stars": {repo: stars},
                 },
             })

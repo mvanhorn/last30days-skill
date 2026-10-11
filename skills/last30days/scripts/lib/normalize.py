@@ -1004,6 +1004,7 @@ def _normalize_github(
             "labels": metadata.get("labels") or [],
             "state": metadata.get("state", ""),
             "is_pr": metadata.get("is_pr", False),
+            "date_is_snapshot": bool(metadata.get("date_is_snapshot")),
         },
     )
 

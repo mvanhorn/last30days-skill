@@ -88,6 +88,11 @@ def freshness(
     reference_date: str | None = None,
     max_days: int = 30,
 ) -> int:
+    # A live repo snapshot dated to the window end (no in-window release) has a
+    # read time, not an event date: rank it at the scale's midpoint instead of
+    # maximum freshness, or every pinned repo card sorts to #1.
+    if isinstance(item.metadata, dict) and item.metadata.get("date_is_snapshot"):
+        return 50
     score = dates.recency_score(
         item.published_at,
         max_days=max_days,

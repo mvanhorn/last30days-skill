@@ -868,3 +868,56 @@ def test_snapshot_date_uses_in_window_release_else_window_end():
     assert github._snapshot_date([{"date": "2022-11-17"}], *window) == "2026-10-11"
     assert github._snapshot_date([], *window) == "2026-10-11"
     assert github._snapshot_date([{"date": None}], *window) == "2026-10-11"
+
+
+def _project_mode_items(release_date):
+    from lib import github
+
+    enrichment = {
+        "info": {"stars": 40000, "open_issues": 900, "description": "A terminal", "language": "Zig"},
+        "readme": "Ghostty terminal",
+        "releases": [{"name": "tip", "date": release_date, "body": ""}],
+        "top_issues": {},
+    }
+    with patch.object(github, "_resolve_token", return_value="t"), \
+            patch.object(github, "_enrich_project_repo", return_value=enrichment):
+        return github.search_github_project(
+            ["ghostty-org/ghostty"], "2026-09-11", "2026-10-11",
+        )
+
+
+def test_snapshot_repo_gets_neutral_freshness_not_window_end_boost():
+    # A pinned repo whose newest release predates the window is dated to_date
+    # so the date filter keeps it. That date is a read time, not an event: it
+    # must rank on neutral freshness, not pin to #1 on maximum freshness.
+    from lib import normalize, signals
+
+    window = ("2026-09-11", "2026-10-11")
+    raw = _project_mode_items("2022-11-17") + [{
+        "id": "GH9",
+        "title": "ghostty-org/ghostty issue",
+        "url": "https://github.com/ghostty-org/ghostty/issues/1",
+        "date": "2026-09-26",
+        "source": "github",
+        "relevance": 0.9,
+        "metadata": {"labels": ["project-mode"], "state": "open"},
+    }]
+    items = normalize.normalize_source_items("github", raw, *window)
+    assert len(items) == 2  # the date filter still keeps the snapshot
+    ranked = signals.annotate_stream(items, "ghostty", "balanced_recent", reference_date=window[1])
+    by_id = {item.item_id: item for item in ranked}
+    snapshot, mid = by_id["GH1"], by_id["GH9"]
+    assert snapshot.local_relevance == mid.local_relevance
+    assert snapshot.freshness == 50
+    assert snapshot.freshness <= mid.freshness  # mid-window scores the 50 midpoint
+    assert snapshot.local_rank_score <= mid.local_rank_score + 0.10  # engagement only
+
+
+def test_in_window_release_keeps_normal_freshness():
+    from lib import normalize, signals
+
+    window = ("2026-09-11", "2026-10-11")
+    items = normalize.normalize_source_items("github", _project_mode_items("2026-10-09"), *window)
+    item = signals.annotate_stream(items, "ghostty", "balanced_recent", reference_date=window[1])[0]
+    assert item.published_at == "2026-10-09"
+    assert item.freshness > 80
