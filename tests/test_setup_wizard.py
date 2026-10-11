@@ -158,6 +158,9 @@ class TestRunAutoSetup:
         assert "chrome" in tried and "safari" in tried
         assert tried.index("chrome") < tried.index("safari")
         assert tried.index("chrome") < tried.index("firefox")
+        assert "opera" in tried
+        assert tried.index("opera") < tried.index("firefox")
+        assert tried.index("opera") < tried.index("safari")
         # And it must not route through the silent-first "auto" order.
         assert tried[0] == "chrome"
 
