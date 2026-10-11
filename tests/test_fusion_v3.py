@@ -1,6 +1,6 @@
 import unittest
 
-from lib import fusion, schema
+from lib import fusion, render, schema
 
 
 def make_item(item_id: str, source: str, url: str, title: str, rank_score: float) -> schema.SourceItem:
@@ -695,6 +695,42 @@ class HackerNewsDuplicateSubmissionTests(unittest.TestCase):
 
         self.assertEqual(1, len(candidates))
         self.assertEqual(["hackernews", "reddit"], sorted(item.source for item in candidates[0].source_items))
+
+    def _evidence_line(self, candidate):
+        lines = render._render_candidate(candidate, "1.")
+        evidence = [line for line in lines if "Evidence:" in line]
+        self.assertEqual(1, len(evidence), lines)
+        return evidence[0]
+
+    def test_card_evidence_comes_from_primary_submission(self):
+        # The sibling submission has the longer snippet; the card shows the
+        # primary story's metrics, so its Evidence must be the primary's text.
+        first, second = self._stories()
+        second.snippet = "How nice of them to support Windows XP until now, says ciupicri in a long comment."
+        streams = {("primary", "hackernews"): [first], ("release", "hackernews"): [second]}
+
+        candidate = fusion.weighted_rrf(streams, self._plan(), pool_limit=10)[0]
+        primary = schema.candidate_primary_item(candidate)
+
+        self.assertEqual("50040360", primary.item_id)
+        self.assertEqual(primary.snippet, candidate.snippet)
+        evidence = self._evidence_line(candidate)
+        self.assertIn("SQLite 3.54.0 Released", evidence)
+        self.assertNotIn("ciupicri", evidence)
+
+    def test_card_evidence_matches_primary_when_sibling_scores_higher(self):
+        # A later sibling that wins the primary-score comparison must not put
+        # its text beside the first-attached submission's metrics either.
+        first, second = self._stories()
+        first.metadata["local_relevance"] = 0.3
+        second.snippet = "How nice of them to support Windows XP until now, says ciupicri."
+        streams = {("primary", "hackernews"): [first], ("release", "hackernews"): [second]}
+
+        candidate = fusion.weighted_rrf(streams, self._plan(), pool_limit=10)[0]
+        primary = schema.candidate_primary_item(candidate)
+
+        self.assertEqual(primary.snippet, candidate.snippet)
+        self.assertIn(primary.snippet, self._evidence_line(candidate))
 
     def test_collapse_duplicate_urls_keeps_distinct_submissions(self):
         first, second = self._stories()

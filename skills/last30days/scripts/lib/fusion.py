@@ -344,6 +344,27 @@ def _diversify_pool(
     return pool[:pool_limit]
 
 
+def _pin_snippet_to_primary_submission(candidate: schema.Candidate) -> None:
+    """Keep a card's Evidence on the item whose metrics it shows.
+
+    The card renders :func:`schema.candidate_primary_item`'s metrics beside
+    ``candidate.snippet``. When the candidate also holds a distinct
+    same-source sibling (two HN submissions of one article), the longest- or
+    best-snippet rule above can pick the sibling's text, so one story's
+    numbers would sit beside another story's words. Other candidates keep
+    their snippet unchanged.
+    """
+    primary = schema.candidate_primary_item(candidate)
+    if primary is None:
+        return
+    primary_key = source_item_key(primary)
+    if any(
+        item.source == primary.source and source_item_key(item) != primary_key
+        for item in candidate.source_items
+    ):
+        candidate.snippet = primary.snippet or ""
+
+
 def weighted_rrf(
     streams: dict[tuple[str, str], list[schema.SourceItem]],
     plan: schema.QueryPlan,
@@ -460,6 +481,9 @@ def weighted_rrf(
                 candidate.snippet = item.snippet
             if len(candidate.snippet.split()) < len(item.snippet.split()):
                 candidate.snippet = item.snippet
+
+    for candidate in candidates.values():
+        _pin_snippet_to_primary_submission(candidate)
 
     fused = sorted(candidates.values(), key=_candidate_sort_key)
     fused = _apply_per_author_cap(fused, first_party_handles=first_party_handles)
