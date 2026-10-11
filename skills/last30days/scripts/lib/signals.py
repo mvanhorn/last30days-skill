@@ -272,6 +272,23 @@ def engagement_raw(item: schema.SourceItem) -> float | None:
     return _generic_engagement(item)
 
 
+def engagement_score(item: schema.SourceItem) -> int | None:
+    """Engagement on an absolute 0-100 scale, comparable across streams.
+
+    ``engagement_raw`` is a weighted mean of log1p counts, so dividing it by
+    the platform's log reference (the same ``_VOTE_LOG_REFERENCE`` used for
+    comment votes) places a 254-upvote Reddit thread near 50 and a 3-like X
+    post near 8 no matter what else shares their stream. The per-stream
+    min-max rescale this replaces mapped every stream's best item to 100 and
+    a lone item to 50, so the score said nothing about actual engagement.
+    """
+    raw = engagement_raw(item)
+    if raw is None:
+        return None
+    ref = _VOTE_LOG_REFERENCE.get(item.source, _VOTE_LOG_REFERENCE_DEFAULT)
+    return int(round(100.0 * max(0.0, min(1.0, raw / ref))))
+
+
 def normalize(values: list[float | None]) -> list[int | None]:
     valid = [value for value in values if value is not None]
     if not valid:
@@ -297,8 +314,8 @@ def annotate_stream(
 ) -> list[schema.SourceItem]:
     """Attach local scoring metadata and return items sorted by local_rank_score."""
     prepared_query = ranking_query if isinstance(ranking_query, relevance.PreparedQuery) else relevance.PreparedQuery(ranking_query)
-    engagement_scores = normalize([engagement_raw(item) for item in items])
-    for item, eng_score in zip(items, engagement_scores, strict=True):
+    for item in items:
+        eng_score = engagement_score(item)
         item.local_relevance = local_relevance(item, prepared_query)
         item.freshness = freshness(
             item,
@@ -404,10 +421,9 @@ def prune_low_relevance(
         rel = item.local_relevance if item.local_relevance is not None else 0.0
         if rel < minimum:
             return False
-        # Key the stricter social gate on genuinely absent engagement, not on
-        # the normalized score: signals.normalize is min-max over the batch, so
-        # it maps the least-engaged item to exactly 0 even when that item has
-        # thousands of likes.
+        # Key the stricter social gate on genuinely absent engagement (no
+        # counts at all), not on a rounded score: a handful of likes is still
+        # engagement even where the 0-100 scale rounds it low.
         if item.source in _SOCIAL_SOURCES and not engagement_raw(item):
             if rel < minimum * 1.5:
                 return False

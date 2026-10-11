@@ -1903,7 +1903,9 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         lines.append(f"### {_source_label(source)} ({len(items)} items)")
         lines.append("")
         for item in items:
-            score = item.local_rank_score if item.local_rank_score is not None else 0
+            # local_rank_score is 0..1; print it on the report's 0-100 scale
+            # (":.0f" of the raw value rendered every item as score:0 or 1).
+            score = (item.local_rank_score or 0) * 100.0
             lines.append(
                 f"**{item.item_id}** (score:{score:.0f}) {item.author or ''} ({item.published_at or 'date unknown'}) [{_format_item_engagement(item)}]"
             )
