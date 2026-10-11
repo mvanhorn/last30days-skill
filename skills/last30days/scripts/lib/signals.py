@@ -289,9 +289,9 @@ _ENGAGEMENT_LOG_REFERENCE: dict[str, float] = {
     "pinterest":   9.2,  # ~log1p(10000)
     # Reactions run like Reddit upvotes: a viral post has ~2k.
     "linkedin":    7.6,  # ~log1p(2000)
-    # Mixes per-issue reactions/comments (hundreds) with lifetime repo stars
-    # (tens of thousands); ~10k sits between, so a ~100-reaction thread lands
-    # near 50 and only a very large repo nears 100.
+    # Per-issue/PR reactions and comments (repo snapshot cards, whose counts
+    # are lifetime stars, get no score: see is_repo_snapshot). A
+    # ~100-reaction thread lands near 50.
     "github":      9.2,  # ~log1p(10000)
     # Dollars, not votes. polymarket.py's own saturation anchors: $9M volume
     # (log1p 16) and $1.2M liquidity (log1p 14), weighted 0.6/0.4 as in
@@ -320,6 +320,34 @@ _NO_ENGAGEMENT_SCORE_SOURCES = frozenset({
 })
 
 
+# YouTube, TikTok, and Instagram weight log1p(views) at 0.45 in
+# engagement_raw, and views run orders of magnitude above votes: any upload
+# collects ~100 passive feed views, so a 117-view, 1-like video already had raw
+# 2.4 (23 on the vote-style 10.3 reference, three times a 3-like X post).
+# These sources map raw linearly from a floor (an upload with ~100 views and no
+# reactions: 0.45*log1p(100) = 2.1) to a "very high" month-window post (~2-3M
+# views, ~100k likes, ~3k comments: 0.45*14.9 + 0.32*11.5 + 0.13*8.0 = 11.4).
+# Resulting scores: 117 views/1 like ~3, 655 views/17 likes ~17, 133k views/
+# 8.4k likes ~70, 726k views/13k likes ~85, 1M+ views ~90-100.
+_VIEW_ENGAGEMENT_SOURCES = frozenset({"youtube", "tiktok", "instagram"})
+_VIEW_ENGAGEMENT_LOG_FLOOR = 2.1
+_VIEW_ENGAGEMENT_LOG_REFERENCE = 11.5
+
+
+def is_repo_snapshot(item: schema.SourceItem) -> bool:
+    """True for a GitHub repo card (project mode, person-mode repo items).
+
+    Their engagement is lifetime stars and the open-issue count, a snapshot
+    of the repo's whole history rather than an audience response inside the
+    window. Issues and PRs carry reactions/comments, never stars.
+    """
+    return (
+        item.source == "github"
+        and "stars" in (item.engagement or {})
+        and not (item.metadata or {}).get("is_pr")
+    )
+
+
 def engagement_score(item: schema.SourceItem) -> int | None:
     """Engagement on an absolute 0-100 scale, comparable across streams.
 
@@ -329,9 +357,12 @@ def engagement_score(item: schema.SourceItem) -> int | None:
     X post near 8 no matter what else shares their stream. The per-stream
     min-max rescale this replaces mapped every stream's best item to 100 and
     a lone item to 50, so the score said nothing about actual engagement.
-    Sources without a comparable audience signal return None.
+    View-weighted sources (YouTube, TikTok, Instagram) use the view scale
+    (``_VIEW_ENGAGEMENT_LOG_FLOOR`` to ``_VIEW_ENGAGEMENT_LOG_REFERENCE``)
+    instead of their vote reference. Sources without a comparable audience
+    signal, and GitHub repo snapshots (lifetime stars), return None.
     """
-    if item.source in _NO_ENGAGEMENT_SCORE_SOURCES:
+    if item.source in _NO_ENGAGEMENT_SCORE_SOURCES or is_repo_snapshot(item):
         return None
     ref = _ENGAGEMENT_LOG_REFERENCE.get(item.source)
     if ref is None:
@@ -339,7 +370,12 @@ def engagement_score(item: schema.SourceItem) -> int | None:
     raw = engagement_raw(item)
     if raw is None:
         return None
-    return int(round(100.0 * max(0.0, min(1.0, raw / ref))))
+    if item.source in _VIEW_ENGAGEMENT_SOURCES:
+        floor = _VIEW_ENGAGEMENT_LOG_FLOOR
+        fraction = (raw - floor) / (_VIEW_ENGAGEMENT_LOG_REFERENCE - floor)
+    else:
+        fraction = raw / ref
+    return int(round(100.0 * max(0.0, min(1.0, fraction))))
 
 
 def normalize(values: list[float | None]) -> list[int | None]:

@@ -581,6 +581,13 @@ def _subject_handles(primary_handle: str | None, topic: str) -> set[str]:
     return set()
 
 
+def _is_repo_snapshot_candidate(candidate: schema.Candidate) -> bool:
+    """True when every source item is a GitHub repo card (signals.is_repo_snapshot)."""
+    return bool(candidate.source_items) and all(
+        signals.is_repo_snapshot(item) for item in candidate.source_items
+    )
+
+
 def _first_party_floor_eligible(
     candidate: schema.Candidate,
     *,
@@ -602,6 +609,11 @@ def _first_party_floor_eligible(
     everything, so there the post must clear the relevance floor instead.
     """
     if not _is_first_party(candidate, resolved_handles):
+        return False
+    # A repo snapshot card's "author" is the repo owner or the --github-user,
+    # not someone posting in the window (and a project owner such as "sqlite"
+    # can match a topic-token handle), so it never earns the lift.
+    if _is_repo_snapshot_candidate(candidate):
         return False
     if subject_handles and _candidate_author_handle(candidate) in subject_handles:
         return True
@@ -902,6 +914,10 @@ def _fallback_tuple(
             subject_handles=subject_handles,
         ):
             score += FIRST_PARTY_AUTHOR_CREDIT
+        # A repo card keeps the exemption (a person-mode card never names the
+        # person) but is not authored in the window, so it is not labeled so.
+        if _is_repo_snapshot_candidate(candidate):
+            return max(0.0, min(100.0, score)), "fallback-local-score (repo snapshot)"
         return max(0.0, min(100.0, score)), "fallback-local-score (first-party authorship)"
     # Grounding-exempt evidence (currently Amazon): the adapter gated these
     # against the model-supplied keyword before they existed, so the

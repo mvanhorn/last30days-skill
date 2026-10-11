@@ -366,9 +366,9 @@ def test_engagement_reference_units_per_source():
     # Lifetime totals on a company or product: ~300 maps near 50, not 100.
     assert score("trustpilot", {"reviews": 300, "trustScore": 4.2}) == 50
     assert score("amazon", {"ratings": 300}) == 50
-    # A busy issue sits mid-scale; a mega repo nears the top without a 2k-star repo saturating.
+    # A busy issue sits mid-scale; a repo snapshot's lifetime stars are not engagement.
     assert 40 <= score("github", {"reactions": 50, "comments": 80}) <= 55
-    assert score("github", {"stars": 2000, "comments": 50}) < 70
+    assert score("github", {"stars": 2000, "comments": 50}) is None
     # A rank-1 Digg cluster with 15 posts is strong but not saturated.
     assert 60 <= score("digg", {"postCount": 15, "uniqueAuthors": 10, "rank_score": 50}) <= 75
     # No audience signal: no engagement score at all.
@@ -390,3 +390,100 @@ def test_every_source_declares_its_engagement_units():
         and s not in signals._NO_ENGAGEMENT_SCORE_SOURCES
     }
     assert undeclared == set()
+
+
+# --- Repo snapshot cards carry lifetime totals, not month-window engagement ---
+# 2026-10-11 e2e: --github-repo project cards ranked #1 in 3 of 4 runs
+# (Ghostty 62K stars, Bun 96K, SQLite 11K) on saturated engagement from
+# lifetime stars, and the SQLite card also took first-party authorship credit
+# because its owner ("sqlite") matched a topic-token handle.
+
+def _repo_snapshot(item_id, repo, stars, open_issues, author, labels=("project-mode",)):
+    return schema.SourceItem(
+        item_id=item_id, source="github",
+        title=f"{repo} ({stars // 1000}K stars) - {open_issues} open issues",
+        body=f"Project: {repo}", url=f"https://github.com/{repo}", author=author,
+        container=repo, published_at=TO, date_confidence="high",
+        engagement={"stars": stars, "comments": open_issues},
+        metadata={"labels": list(labels), "state": "open", "is_pr": False},
+    )
+
+
+def test_repo_snapshot_gets_no_engagement_score():
+    # Project mode (owner as author) and every person-mode repo card shape.
+    assert signals.engagement_score(_repo_snapshot("p", "oven-sh/bun", 96195, 9551, "oven-sh")) is None
+    for labels in (["person-profile", "own-repo"], ["person-profile", "external-repo"],
+                   ["person-profile", "recent-push"]):
+        card = _repo_snapshot("o", "steipete/peekaboo", 3000, 12, "steipete", labels=labels)
+        assert signals.engagement_score(card) is None
+
+
+def test_github_issues_and_prs_keep_their_engagement():
+    issue = _item("i", "github", "SQLite WAL corruption", TO, {"reactions": 50, "comments": 80})
+    issue.metadata = {"labels": [], "state": "open", "is_pr": False}
+    pr = _item("p", "github", "Fix WAL checkpoint", TO, {"reactions": 12, "comments": 30})
+    pr.metadata = {"labels": [], "state": "closed", "is_pr": True}
+    assert 40 <= signals.engagement_score(issue) <= 55
+    assert signals.engagement_score(pr) > 0
+
+
+def test_repo_snapshot_gets_no_first_party_credit_or_floor():
+    # "sqlite" is a topic-token handle (pipeline._topic_first_party_candidates)
+    # and the project card's author is the repo owner, so it matched.
+    card = _repo_snapshot("g", "sqlite/sqlite", 96000, 24, "sqlite")
+    with_handle = _rank("SQLite", {"github": [card]}, handles={"sqlite"})[0]
+    card2 = _repo_snapshot("g", "sqlite/sqlite", 96000, 24, "sqlite")
+    without = _rank("SQLite", {"github": [card2]})[0]
+    assert "first-party" not in (with_handle.explanation or "")
+    assert with_handle.final_score == without.final_score
+
+
+def test_person_mode_repo_card_is_not_floored_but_not_pruned():
+    card = _repo_snapshot("o", "steipete/peekaboo", 3000, 12, "steipete",
+                          labels=["person-profile", "own-repo"])
+    c = _candidate(author="steipete", text=card.title, rel=0.0, source="github")
+    c.source_items = [card]
+    _rerank_one_with_peers("Peter Steinberger", c, {"steipete"}, primary_handle="steipete")
+    assert c.final_score < rerank.FIRST_PARTY_FLOOR
+    assert "entity-miss" not in (c.explanation or "")
+    assert rerank.prune_fallback_entity_misses([c], topic="Peter Steinberger") == [c]
+
+
+def test_96k_star_repo_card_does_not_outrank_equally_relevant_380_point_hn_story():
+    title = "sqlite/sqlite SQLite source repository"
+    card = _repo_snapshot("g", "sqlite/sqlite", 96000, 24, "sqlite")
+    card.title = card.body = title
+    hn = _item("hn", "hackernews", title, "2026-10-09", {"points": 380, "comments": 166})
+    ranked = _rank("SQLite", {"github": [card], "hackernews": [hn]}, handles={"sqlite"})
+    assert [c.item_id for c in ranked] == ["hn", "g"]
+
+
+# --- View-weighted platforms are calibrated on a view scale -------------------
+# 2026-10-11 e2e: a 117-view YouTube video ranked #2 for SQLite, and 655-view
+# TikToks with 17 likes scored near a 9,676-upvote Reddit thread, because
+# log1p(views) dominates engagement_raw for YouTube/TikTok/Instagram while the
+# reference was calibrated like votes.
+
+def _score(source, engagement):
+    return signals.engagement_score(_item("i", source, "t", TO, engagement))
+
+
+def test_view_platform_scores_land_in_intended_bands():
+    # A barely-watched upload is near the bottom, like a 3-like X post (~8).
+    assert _score("youtube", {"views": 117, "likes": 1}) <= 10
+    assert _score("tiktok", {"views": 1000}) <= 15
+    # Hundreds of views and a few dozen likes: low, below a 50-upvote Reddit post.
+    assert 10 <= _score("tiktok", {"views": 655, "likes": 17}) <= 25
+    assert _score("tiktok", {"views": 655, "likes": 17}) < _score(
+        "reddit", {"score": 50, "num_comments": 20, "upvote_ratio": 0.9})
+    # A real hit is strong; ~1M+ views nears the top.
+    assert 60 <= _score("tiktok", {"views": 133690, "likes": 8441, "comments": 192}) <= 80
+    assert 75 <= _score("youtube", {"views": 726269, "likes": 13031, "comments": 1300}) <= 92
+    assert _score("youtube", {"views": 5_000_000, "likes": 150_000, "comments": 5000}) >= 95
+    assert _score("instagram", {"views": 1_000_000, "likes": 50_000, "comments": 1000}) >= 80
+
+
+def test_655_view_tiktok_scores_well_below_9676_upvote_reddit_thread():
+    tiktok = _score("tiktok", {"views": 655, "likes": 17})
+    reddit = _score("reddit", {"score": 9676, "num_comments": 455, "upvote_ratio": 0.95})
+    assert reddit - tiktok >= 60
