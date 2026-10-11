@@ -18,6 +18,10 @@ English | [Français](README.fr.md) | [Deutsch](README.de.md) | [Español](READM
   <a href="https://github.com/mvanhorn/last30days-skill/actions/workflows/validate.yml">
     <img src="https://github.com/mvanhorn/last30days-skill/actions/workflows/validate.yml/badge.svg" alt="Validate status" />
   </a>
+  <br/>
+  <a href="https://gaiaskilltree.com/named/#explorer/mvanhorn/last-30-days">
+    <img src="https://gaiaskilltree.com/badges/_assets/mvanhorn/last-30-days.svg?repo=mvanhorn/last30days-skill" alt="Gaia Skill: Last 30 Days" />
+  </a>
 </p>
 
 **An AI agent-led search engine scored by upvotes, likes, and real money - not editors.**
