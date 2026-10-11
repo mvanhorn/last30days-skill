@@ -2449,9 +2449,17 @@ def _render_candidate(
             if score is not None and score != ""
             else ""
         )
+        # HN comment lines carry their own link: the candidate URL above is
+        # the article, not where the quote was said.
+        hn_link = (
+            _comment_link(primary, tc)
+            if primary is not None and primary.source == "hackernews"
+            else ""
+        )
         lines.append(
             f"   - {attribution}{vote_part}: "
             f"{_format_untrusted_evidence(excerpt.strip(), 240)}"
+            + (f" — {hn_link}" if hn_link else "")
         )
     for post in _digg_posts_for(primary):
         lines.append(f"   - {_format_digg_quote(post)}")
@@ -3625,6 +3633,26 @@ def _comment_attribution(source: str | None, author: str | None) -> str:
     return f"{prefix}{author}" if prefix else author
 
 
+def _comment_link(item: schema.SourceItem, comment: dict, fallback: str = "") -> str:
+    """Link for a quoted comment: where it was said, never the HN article.
+
+    HN items carry the article as their URL, so HN comments fall back to the
+    item's discussion page (``hn_url`` metadata, else built from a numeric item
+    id) instead of ``fallback``. Other sources keep ``fallback``.
+    """
+    if comment.get("url"):
+        return str(comment["url"])
+    if item.source != "hackernews":
+        return fallback or ""
+    hn_url = (item.metadata or {}).get("hn_url")
+    if hn_url:
+        return str(hn_url)
+    item_id = str(item.item_id or "")
+    if item_id.isdigit():
+        return f"https://news.ycombinator.com/item?id={item_id}"
+    return ""
+
+
 def _top_comments_list(
     item: schema.SourceItem | None, limit: int = 3, min_score: int | None = None
 ) -> list[dict]:
@@ -3911,7 +3939,7 @@ def _render_top_comments(
         score = tc.get("score", "")
         vote_label = _vote_label_for(item.source)
         attribution = _comment_attribution(item.source, tc.get("author"))
-        url = tc.get("url") or cand.url or ""
+        url = _comment_link(item, tc, fallback=cand.url)
         url_part = f" — {url}" if url else ""
         vote_part = (
             f" ({score} {vote_label})"
