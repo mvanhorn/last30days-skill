@@ -518,7 +518,6 @@ def test_grok_short_remaining_budget_reports_timeout(monkeypatch, partial):
 def test_rate_limit_stops_queued_streams_before_fanout_finishes(monkeypatch, x_run, failure):
     topic, _, plan, _ = x_run
     plan.subqueries = [replace(plan.subqueries[0], label=f"query-{index}") for index in range(6)]
-    barrier = threading.Barrier(4)
     calls = []
     lock = threading.Lock()
 
@@ -526,13 +525,13 @@ def test_rate_limit_stops_queued_streams_before_fanout_finishes(monkeypatch, x_r
         with lock:
             index = len(calls)
             calls.append(index)
-        if index < 4:
-            barrier.wait(2)
         if index == 0:
+            # Hold the 429 until the other in-flight streams are waiting on
+            # this same request in the run's fetch memo.
+            threading.Event().wait(0.3)
             if failure == "exception":
                 raise http.HTTPError("Rate limit exceeded", status_code=429)
             return {"items": [], "error": "xapi: rate limited (429)"}
-        threading.Event().wait(0.2)
         return {"items": []}
 
     monkeypatch.setattr(pipeline.x_api, "search_x", request)
@@ -540,5 +539,7 @@ def test_rate_limit_stops_queued_streams_before_fanout_finishes(monkeypatch, x_r
         topic=topic, config={"X_BEARER_TOKEN": "dummy", "_max_source_fetches": 6},
         depth="quick", requested_sources=["x"], internal_subrun=True,
     )
-    assert calls == [0, 1, 2, 3], "queued X streams must see the completed worker's rate-limit signal"
+    # Every stream searches the same raw topic: in-flight streams share the
+    # one request and its 429, and queued streams see the rate-limit signal.
+    assert calls == [0], "X streams must share the rate-limited request, not repeat it"
     assert report.source_status["x"].state == health.RATE_LIMITED

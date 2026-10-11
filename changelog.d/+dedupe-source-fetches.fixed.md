@@ -1,0 +1,1 @@
+A multi-subquery run now fetches each identical TikTok, Instagram, YouTube, and X search once instead of once per subquery, and the thin-source retry reuses a clean result instead of repeating the request. Failed fetches are not reused, so the retry still makes a real second attempt.

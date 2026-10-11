@@ -82,15 +82,18 @@ def _reset_probe_caches():
 
 @pytest.fixture(autouse=True)
 def _reset_reddit_keyless_memo():
-    """The Reddit run memos (keyless and ScrapeCreators) live for one command; tests are their own commands."""
+    """The run memos (Reddit keyless and ScrapeCreators, source fetches) live for one command; tests are their own commands."""
+    from lib import fetch_memo as _fetch_memo
     from lib import http as _http
     from lib import reddit as _reddit
 
     _http.reset_reddit_keyless_memo()
     _reddit.reset_scrapecreators_memo()
+    _fetch_memo.reset()
     yield
     _http.reset_reddit_keyless_memo()
     _reddit.reset_scrapecreators_memo()
+    _fetch_memo.reset()
 
 
 @pytest.fixture(autouse=True)

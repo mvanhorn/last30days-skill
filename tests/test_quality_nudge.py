@@ -1099,10 +1099,12 @@ class TestXaiErrorRemediation:
                 },
             )
 
+        # The failed xai call is not memoized, so each subquery tries it; the
+        # backup's clean result is fetched once and served to both subqueries.
         assert xai_search.call_count >= 2
-        assert fallback_search.call_count >= 2
+        assert fallback_search.call_count == 1
         assert any(
-            "status/123456789012345671" in item.url
+            "status/123456789012345670" in item.url
             for item in second_query_items
         )
         assert report.source_status["x"].lane_failure_state == schema.RATE_LIMITED
