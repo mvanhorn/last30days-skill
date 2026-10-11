@@ -222,6 +222,7 @@ SOURCE_LABELS = {
     "instagram": "Instagram",
     "grounding": "Web",
     "hackernews": "Hacker News",
+    "devto": "dev.to",
     "truthsocial": "Truth Social",
     "linkedin": "LinkedIn",
     "xiaohongshu": "Xiaohongshu",
@@ -1874,6 +1875,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         "threads",
         "pinterest",
         "hackernews",
+        "devto",
         "bluesky",
         "truthsocial",
         "polymarket",
@@ -2836,6 +2838,7 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
         "story",
         [("points", "points"), ("comments", "comments")],
     ),
+    ("devto", "👩‍💻", "dev.to", "article", [("reactions", "reactions"), ("comments", "comments")]),
     ("bluesky", "🦋", "Bluesky", "post", [("likes", "likes"), ("reposts", "reposts")]),
     (
         "truthsocial",
@@ -3429,6 +3432,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "threads": [("likes", "likes"), ("replies", "re")],
     "pinterest": [("saves", "saves"), ("comments", "cmt")],
     "hackernews": [("points", "pts"), ("comments", "cmt")],
+    "devto": [("reactions", "react"), ("comments", "cmt")],
     "bluesky": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "truthsocial": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "linkedin": [("likes", "likes"), ("comments", "cmt")],
@@ -3580,10 +3584,14 @@ _TOP_COMMENT_MIN_SCORE: dict[str, int] = {
     # for every comment child (only stories carry points), so any positive
     # threshold here rejects the entire source rather than filtering it.
     "hackernews": 0,
+    # Replies are the only comment signal the dev.to API exposes; most top
+    # comments have none, so any positive floor would drop the whole source.
+    "devto": 0,
 }
 _TOP_COMMENT_VOTE_LABEL: dict[str, str] = {
     "reddit": "upvotes",
     "hackernews": "points",
+    "devto": "replies",
     "youtube": "likes",
     "tiktok": "likes",
     "instagram": "likes",

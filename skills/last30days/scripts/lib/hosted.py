@@ -33,7 +33,7 @@ import re
 import sys
 import time
 
-from . import env, http, usage
+from . import env, http, providers, usage
 from .log import source_log
 
 # Distinct exit code for the clarify gate so the invoking model can tell
@@ -60,7 +60,13 @@ def _api_base() -> str:
     # Endpoint comes only from the environment - no built-in default. Hosted
     # mode is gated on this being set (see last30days.py), so by the time this
     # is called it is populated; an empty value means "not configured".
-    return (os.environ.get("LAST30DAYS_API_BASE") or "").rstrip("/")
+    base = (os.environ.get("LAST30DAYS_API_BASE") or "").rstrip("/")
+    if not providers.allowed_base_url_override(base):
+        raise ValueError(
+            "LAST30DAYS_API_BASE must use https:// "
+            "(http:// is allowed only for loopback hosts)."
+        )
+    return base
 
 
 def _billing_url() -> str:
@@ -269,7 +275,12 @@ def run_hosted(
     register: str = "default",
 ) -> int:
     """Submit topic to the remote API, poll to terminal status, render report."""
-    _err(f"Running via last30days API ({_api_base()}), depth={depth}")
+    try:
+        base = _api_base()
+    except ValueError as exc:
+        _err(str(exc))
+        return 1
+    _err(f"Running via last30days API ({base}), depth={depth}")
     try:
         resp = submit(topic, depth, register=register)
     except http.HTTPError as exc:

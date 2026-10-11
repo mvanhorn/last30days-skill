@@ -1,5 +1,6 @@
 """Tests for the first-run setup wizard module."""
 
+import io
 import json
 import os
 import subprocess
@@ -158,6 +159,9 @@ class TestRunAutoSetup:
         assert "chrome" in tried and "safari" in tried
         assert tried.index("chrome") < tried.index("safari")
         assert tried.index("chrome") < tried.index("firefox")
+        assert "opera" in tried
+        assert tried.index("opera") < tried.index("firefox")
+        assert tried.index("opera") < tried.index("safari")
         # And it must not route through the silent-first "auto" order.
         assert tried[0] == "chrome"
 
@@ -1176,6 +1180,39 @@ def _device_code_response(interval):
     mock_resp.__enter__ = lambda s: s
     mock_resp.__exit__ = MagicMock(return_value=False)
     return mock_resp
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX file permissions")
+@pytest.mark.parametrize("existing", [False, True])
+def test_github_device_handle_is_private_before_writing(tmp_path, existing):
+    path = tmp_path / ".github-device-handle.json"
+    if existing:
+        path.write_text("old handle " * 100)
+        path.chmod(0o644)
+    public = {"status": "awaiting_authorization", "user_code": "ABCD-1234"}
+    handle = {"device_code": "dummy-device-code", "interval": 5}
+    modes_at_open = []
+    real_open = io.open
+
+    def observe_open(*args, **kwargs):
+        stream = real_open(*args, **kwargs)
+        if "w" in stream.mode:
+            modes_at_open.append(os.fstat(stream.fileno()).st_mode & 0o777)
+        return stream
+
+    old_umask = os.umask(0o022)
+    try:
+        with patch.object(setup_wizard, "_start_device_flow", return_value=(public, handle)), \
+             patch.object(setup_wizard, "_device_handle_path", return_value=path), \
+             patch("io.open", side_effect=observe_open):
+            result = setup_wizard.run_github_start()
+    finally:
+        os.umask(old_umask)
+
+    assert result == public
+    assert modes_at_open == [0o600]
+    assert path.stat().st_mode & 0o777 == 0o600
+    assert json.loads(path.read_text()) == handle
 
 
 class TestDeviceIntervalClamp:

@@ -29,6 +29,7 @@ from . import (
     corpus,
     dates,
     dedupe,
+    devto,
     digg,
     dripstack,
     entity_extract,
@@ -98,6 +99,7 @@ DEPTH_SETTINGS = {
 
 SEARCH_ALIAS = {
     "hn": "hackernews",
+    "dev.to": "devto",
     "bsky": "bluesky",
     "truth": "truthsocial",
     "web": "grounding",
@@ -117,7 +119,7 @@ SEARCH_ALIAS = {
 # resolved per run, so every subquery would issue the identical page fetch.
 MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
-    "telegram": 1, "meta_ads": 1,
+    "telegram": 1, "meta_ads": 1, "devto": 1,
 }
 
 # Sources whose thin result is their normal success state, so the "<3 items"
@@ -324,6 +326,7 @@ MOCK_AVAILABLE_SOURCES = [
     "corpus",
     "dripstack",
     "telegram",
+    "devto",
 ]
 
 
@@ -412,6 +415,15 @@ def available_sources(
         requested_sources and "dripstack" in requested_sources
     ):
         available.append("dripstack")
+    # dev.to follows the same default-off policy. Host-inferred tags
+    # (--devto-tags) activate it for that run, the --trustpilot-domain idiom,
+    # so tech topics get it without default runs sending every topic there.
+    if (
+        "devto" in include_sources
+        or (requested_sources and "devto" in requested_sources)
+        or config.get("_devto_tags")
+    ):
+        available.append("devto")
     if which("digg-pp-cli"):
         available.append("digg")
     # arXiv is default-on when its Printing Press CLI is installed (zero auth).
@@ -2409,6 +2421,7 @@ def run(
         # cluster, and host plans name their final source set; the company-topic
         # jobs injection must not widen either.
         _ensure_jobs_in_plan(plan, available, explicit=hiring_signals_mode, topic=topic)
+        _ensure_devto_in_plan(plan, available)
     if "corpus" in available and plan.subqueries:
         # Corpus is deterministic and user-registered, so it always gets one
         # bounded stream even when a quick/LLM plan omits it. Reuse the primary
@@ -3655,6 +3668,13 @@ def _finalize_items_by_source(
             else:
                 digg.enrich_source_items(items, top_k=3)
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
+        if source == "devto" and items and not mock:
+            matched, replayed = http.fixture_source_replay(enrichment_request)
+            if matched:
+                items = _merge_replayed_enrichment(items, replayed)
+            else:
+                devto.enrich_source_items(items)
+                http.fixture_source_record(enrichment_request, schema.to_dict(items))
         if source == "amazon" and items and not mock:
             # Attach-if-missing: review enrichment now runs at search time in
             # _retrieve_stream_impl, so items arriving here should already have
@@ -3717,6 +3737,24 @@ def _apply_hiring_signal_gate(
             if key[1] == "jobs":
                 del bundle.items_by_source_and_query[key]
     return summary
+
+
+def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
+    """Give an activated dev.to source the primary subquery.
+
+    dev.to is off by default, so a host plan built from the default source
+    list never names it. Once tags or INCLUDE_SOURCES turn it on, activation
+    must not be a no-op.
+    """
+    if "devto" not in available or not plan.subqueries:
+        return
+    # A plan that already routes dev.to keeps its route: MAX_SOURCE_FETCHES
+    # allows one dev.to fetch, and a second route would spend it first.
+    if not any("devto" in subquery.sources for subquery in plan.subqueries):
+        plan.subqueries[0].sources.append("devto")
+    if "devto" not in plan.source_weights:
+        plan.source_weights["devto"] = 1.0
+        plan.source_weights = planner._normalize_weights(plan.source_weights)
 
 
 def _external_plan_names_source(external_plan: Any, source: str) -> bool:
@@ -5887,6 +5925,17 @@ def _retrieve_stream_impl(
         # Attach top-level comments to the highest-point stories (bounded by
         # hackernews.ENRICH_LIMITS per depth).
         items = hackernews.enrich_top_stories(items, depth=depth)
+        return items, _result_outcome_artifact(source, result)
+    if source == "devto":
+        relevance_topic = raw_topic or topic or subquery.search_query
+        result = devto.search_devto(
+            relevance_topic, from_date, to_date, depth=depth,
+            tags=(config or {}).get("_devto_tags"),
+            search_query=subquery.search_query,
+        )
+        items = devto.parse_devto_response(result, query=relevance_topic)
+        # Comment enrichment is deferred to _finalize_items_by_source so it
+        # lands on the articles that survive relevance pruning.
         return items, _result_outcome_artifact(source, result)
     if source == "stocktwits":
         # Pass raw_topic so symbol detection sees the full topic, not the

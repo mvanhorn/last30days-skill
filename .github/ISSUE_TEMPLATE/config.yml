@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/mvanhorn/last30days-skill/security/advisories/new
+    about: Report vulnerabilities privately through a GitHub security advisory. Please don't open a public issue.

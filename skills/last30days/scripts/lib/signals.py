@@ -12,6 +12,7 @@ from . import dates, relevance, schema
 SOURCE_QUALITY = {
     "xiaohongshu": 0.7,
     "hackernews": 0.8,
+    "devto": 0.78,
     "youtube": 0.85,
     "digg": 0.85,
     "arxiv": 0.9,
@@ -129,6 +130,7 @@ def _top_comment_score(item: schema.SourceItem) -> float:
 _VOTE_LOG_REFERENCE: dict[str, float] = {
     "reddit":     7.6,   # ~log1p(2000)
     "hackernews": 6.2,   # ~log1p(500)
+    "devto":      3.0,   # ~log1p(20) direct replies; the API has no comment likes
     "youtube":    10.3,  # ~log1p(30000)
     "tiktok":     10.3,  # ~log1p(30000)
     "instagram":  9.2,   # ~log1p(10000)
@@ -181,6 +183,7 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "x":            [("likes", 0.55), ("reposts", 0.25), ("replies", 0.15), ("quotes", 0.05)],
     "instagram":    [("views", 0.50), ("likes", 0.30), ("comments", 0.20)],
     "hackernews":   [("points", 0.55), ("comments", 0.45)],
+    "devto":        [("reactions", 0.60), ("comments", 0.40)],
     "bluesky":      [("likes", 0.40), ("reposts", 0.30), ("replies", 0.20), ("quotes", 0.10)],
     "truthsocial":  [("likes", 0.45), ("reposts", 0.30), ("replies", 0.25)],
     "polymarket":   [("volume", 0.60), ("liquidity", 0.40)],
