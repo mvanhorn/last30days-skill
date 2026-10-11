@@ -894,7 +894,7 @@ def search_github_person(
                 "id": f"GH{idx}",
                 "title": f"{repo} ({stars_str} stars) - {pr_count} PRs merged",
                 "url": f"https://github.com/{repo}",
-                "date": releases[0]["date"] if releases and releases[0].get("date") else to_date,
+                "date": _snapshot_date(releases, from_date, to_date),
                 "author": username,
                 "source": "github",
                 "score": stars,
@@ -952,7 +952,7 @@ def search_github_person(
                 "id": f"GH{idx}",
                 "title": f"{repo_name} ({stars_str} stars) - own project, {open_issues} open issues",
                 "url": f"https://github.com/{repo_name}",
-                "date": releases[0]["date"] if releases and releases[0].get("date") else to_date,
+                "date": _snapshot_date(releases, from_date, to_date),
                 "author": username,
                 "source": "github",
                 "score": stars,
@@ -1156,6 +1156,19 @@ def _enrich_own_repo(repo: str, token: str) -> Dict[str, Any]:
 # Project-mode search: fetch comprehensive data for specific repos
 # ---------------------------------------------------------------------------
 
+def _snapshot_date(releases: List[Dict[str, Any]], from_date: str, to_date: str) -> str:
+    """Date for a live repo snapshot item (stars, issues, PRs read now).
+
+    The newest release's date when it falls in the window, else ``to_date``.
+    An older release date would make the report's date filter drop a repo the
+    user pinned: Ghostty's newest release object is its 2022 "tip" nightly.
+    """
+    release_date = releases[0].get("date") if releases else None
+    if release_date and from_date <= release_date <= to_date:
+        return release_date
+    return to_date
+
+
 def search_github_project(
     repos: List[str],
     from_date: str,
@@ -1233,7 +1246,7 @@ def search_github_project(
                 "id": f"GH{idx + 1}",
                 "title": f"{repo} ({stars_str} stars) - {open_issues} open issues",
                 "url": f"https://github.com/{repo}",
-                "date": releases[0]["date"] if releases and releases[0].get("date") else to_date,
+                "date": _snapshot_date(releases, from_date, to_date),
                 "author": repo.split("/")[0],
                 "source": "github",
                 "score": stars,

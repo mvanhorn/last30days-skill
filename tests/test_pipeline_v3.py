@@ -1,4 +1,5 @@
 import threading
+from datetime import datetime, timezone
 import unittest
 from unittest.mock import patch
 
@@ -1015,6 +1016,81 @@ class TestPinnedGithubPersonAuthority(unittest.TestCase):
             report.errors_by_source["github"],
         )
 
+
+def _ghostty_enrichment(release_date: str) -> dict:
+    """GitHub fetch result for ghostty-org/ghostty as _enrich_project_repo
+    returns it. The newest release object is the 2022 "tip" nightly, so the
+    adapter's release date sits years outside any report window."""
+    return {
+        "info": {
+            "stars": 52000,
+            "open_issues": 2900,
+            "description": "Ghostty is a fast, feature-rich, cross-platform terminal emulator",
+            "language": "Zig",
+        },
+        "readme": "Ghostty is a terminal emulator.",
+        "releases": [
+            {"tag": "tip", "name": 'Ghostty Tip ("Nightly")', "date": release_date, "body": ""},
+        ],
+        "top_issues": {},
+    }
+
+
+class TestPinnedGithubProjectSurvivesDateWindow(unittest.TestCase):
+    """--github-repo pins a live repo snapshot. Ghostty's newest release object
+    is dated 2022, and dating the snapshot by it made the report's date filter
+    drop the pinned repo after "[GitHub] Project-mode returned 1 items",
+    leaving a false "GitHub: 0 items (no results)" in Source Coverage."""
+
+    _PLAN = {
+        "intent": "product",
+        "freshness_mode": "balanced_recent",
+        "cluster_mode": "none",
+        "subqueries": [
+            {
+                "label": "primary",
+                "search_query": "ghostty terminal",
+                "ranking_query": "What are people saying about Ghostty terminal?",
+                "sources": ["github"],
+            }
+        ],
+        "source_weights": {"github": 1.0},
+    }
+
+    def _run(self, release_date: str):
+        with patch("lib.github._resolve_token", return_value="dummy-token"), patch(
+            "lib.github._enrich_project_repo",
+            return_value=_ghostty_enrichment(release_date),
+        ), patch("lib.pipeline._retrieve_stream", return_value=([], {})):
+            return pipeline.run(
+                topic="Ghostty terminal",
+                config={"LAST30DAYS_REASONING_PROVIDER": "gemini"},
+                depth="default",
+                requested_sources=["github"],
+                mock=True,
+                external_plan=self._PLAN,
+                github_repos=["ghostty-org/ghostty"],
+            )
+
+    def test_out_of_window_release_still_reaches_report(self):
+        report = self._run("2022-11-17")
+
+        items = report.items_by_source.get("github", [])
+        self.assertEqual(["https://github.com/ghostty-org/ghostty"], [i.url for i in items])
+        self.assertNotEqual(schema.NO_RESULTS, report.source_status["github"].state)
+        # The live snapshot is dated to the window end, not the stale release;
+        # the release date stays visible in the snippet text.
+        self.assertEqual(report.range_to, items[0].published_at)
+
+    def test_in_window_release_keeps_release_date(self):
+        """Control: an in-window release still dates the item, so the date is
+        the only variable the out-of-window case exercises."""
+        today = datetime.now(timezone.utc).date().isoformat()
+        report = self._run(today)
+
+        items = report.items_by_source.get("github", [])
+        self.assertEqual(["https://github.com/ghostty-org/ghostty"], [i.url for i in items])
+        self.assertEqual(today, items[0].published_at)
 
 
 class TestTrustpilotNeverRetriedAsThin(unittest.TestCase):

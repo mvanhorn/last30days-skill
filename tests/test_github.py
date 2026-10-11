@@ -858,3 +858,13 @@ class TestSearchGithubQualifiers(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_snapshot_date_uses_in_window_release_else_window_end():
+    from lib import github
+
+    window = ("2026-09-11", "2026-10-11")
+    assert github._snapshot_date([{"date": "2026-10-05"}], *window) == "2026-10-05"
+    assert github._snapshot_date([{"date": "2022-11-17"}], *window) == "2026-10-11"
+    assert github._snapshot_date([], *window) == "2026-10-11"
+    assert github._snapshot_date([{"date": None}], *window) == "2026-10-11"
