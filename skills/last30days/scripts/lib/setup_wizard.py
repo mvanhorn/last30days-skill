@@ -18,6 +18,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from . import brightdata
+from .private_files import write_private_text
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,7 @@ def run_auto_setup(config: Dict[str, Any], *, allow_browser_cookies: bool = Fals
             # firefox/safari stay as the silent fallbacks. Note: an explicit
             # comma list preserves this order (cookie_extraction_browsers);
             # "auto" would put the silent browsers first, so do not use it here.
-            cookie_config["FROM_BROWSER"] = "chrome,brave,edge,vivaldi,arc,chromium,firefox,safari"
+            cookie_config["FROM_BROWSER"] = "chrome,brave,edge,vivaldi,opera,arc,chromium,firefox,safari"
         browsers = cookie_extraction_browsers(cookie_config)
 
         for source_name, spec in COOKIE_DOMAINS.items():
@@ -1374,8 +1375,9 @@ def run_github_start() -> Dict[str, Any]:
         path = _device_handle_path()
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(json.dumps(handle), encoding="utf-8")
-            os.chmod(path, 0o600)
+            write_private_text(path, json.dumps(handle), encoding="utf-8")
+            if os.name != "posix":
+                os.chmod(path, 0o600)
         except Exception as exc:
             logger.warning("Could not persist device handle: %s", exc)
     return public
