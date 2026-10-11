@@ -1,8 +1,9 @@
 """Run-scoped memo for source fetches.
 
 Subquery streams for TikTok, Instagram, YouTube, and X all search the raw
-topic, and the thin-source retry repeats that search, so one run can issue the
-same request several times. :func:`fetch_once` runs a fetch at most once per
+topic, and the thin-source retry repeats that search (and, for Polymarket and
+Digg, a planner subquery that equals the retry's core subject), so one run can
+issue the same request several times. :func:`fetch_once` runs a fetch at most once per
 key: the first caller fetches, concurrent callers wait for it (bounded by
 their own timeout), and later callers get a copy of the cached result.
 

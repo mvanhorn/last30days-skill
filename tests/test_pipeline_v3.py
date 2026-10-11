@@ -2619,6 +2619,15 @@ def _memo_subqueries(sources, labels=("price", "speed", "themes")):
     ]
 
 
+def _raw_topic_subquery(source):
+    return schema.SubQuery(
+        label="primary",
+        search_query=_MEMO_TOPIC,
+        ranking_query=f"What do people say about {_MEMO_TOPIC}?",
+        sources=[source],
+    )
+
+
 def _memo_stream(source, subquery, config, **kwargs):
     return pipeline._retrieve_stream(
         topic=_MEMO_TOPIC, subquery=subquery, source=source, config=config,
@@ -2819,6 +2828,55 @@ class TestSourceFetchMemo:
             assert artifact["_source_outcome"]["state"] == health.TIMEOUT
             self._thin_youtube_retry({})
         assert yt_search.call_count == 2
+
+    def _thin_retry(self, source):
+        plan = schema.QueryPlan(
+            intent="general", freshness_mode="balanced_recent", cluster_mode="topic",
+            raw_topic=_MEMO_TOPIC,
+            subqueries=[_raw_topic_subquery(source)],
+            source_weights={source: 1.0},
+        )
+        pipeline._retry_thin_sources(
+            topic=_MEMO_TOPIC, bundle=schema.RetrievalBundle(), plan=plan,
+            config={}, depth="default", date_range=_MEMO_RANGE,
+            runtime=_make_runtime(None), mock=False, rate_limited_sources=set(),
+            rate_limit_lock=threading.Lock(), settings={"per_stream_limit": 20},
+        )
+
+    @pytest.mark.parametrize("source, target", [
+        ("polymarket", "lib.polymarket.search_polymarket"),
+        ("digg", "lib.digg.search_digg"),
+    ])
+    def test_thin_retry_reuses_clean_raw_topic_fetch(self, source, target):
+        # Live runs: the planner's subquery searches the raw topic, the thin
+        # retry's core subject is the same string, so the request repeated.
+        empty = {"events": [], "results": []}
+        with patch(target, return_value=empty) as search:
+            _memo_stream(source, _raw_topic_subquery(source), {})
+            self._thin_retry(source)
+        assert search.call_count == 1
+
+    @pytest.mark.parametrize("source, target", [
+        ("polymarket", "lib.polymarket.search_polymarket"),
+        ("digg", "lib.digg.search_digg"),
+    ])
+    def test_thin_retry_refetches_after_failed_fetch(self, source, target):
+        failed = {"events": [], "results": [], "error": "HTTP 503"}
+        with patch(target, side_effect=[failed, {"events": [], "results": []}]) as search:
+            _items, artifact = _memo_stream(source, _raw_topic_subquery(source), {})
+            assert artifact.get("_source_outcome")
+            self._thin_retry(source)
+        assert search.call_count == 2
+
+    @pytest.mark.parametrize("source, target", [
+        ("polymarket", "lib.polymarket.search_polymarket"),
+        ("digg", "lib.digg.search_digg"),
+    ])
+    def test_different_queries_fetch_separately(self, source, target):
+        with patch(target, return_value={"events": [], "results": []}) as search:
+            for subquery in _memo_subqueries([source], labels=("price", "speed")):
+                _memo_stream(source, subquery, {})
+        assert search.call_count == 2
 
     def test_x_backend_fetched_once_and_each_subquery_judged_with_its_own_ranking_query(self):
         subqueries = _memo_subqueries(["x"], labels=("price", "speed"))

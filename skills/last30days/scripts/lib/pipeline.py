@@ -5248,6 +5248,11 @@ def _clean_stream_result(result: tuple[list[dict], dict]) -> bool:
     )
 
 
+def _clean_search_result(result: Any) -> bool:
+    """A legacy ``{"error": ...}`` search result is a failure and is not cached."""
+    return not (isinstance(result, dict) and result.get("error"))
+
+
 def _memo_wait_seconds(config: dict[str, Any]) -> float:
     """How long a stream may wait on an identical in-flight fetch: its own budget."""
     return max(
@@ -5997,7 +6002,14 @@ def _retrieve_stream_impl(
             _result_outcome_artifact(source, result),
         )
     if source == "digg":
-        result = digg.search_digg(subquery.search_query, from_date, to_date, depth=depth)
+        # The thin-source retry's core subject often equals a planner
+        # subquery's search, so share the identical CLI call within a run.
+        result = fetch_memo.fetch_once(
+            ("digg", subquery.search_query, from_date, to_date, depth),
+            lambda: digg.search_digg(subquery.search_query, from_date, to_date, depth=depth),
+            timeout=_memo_wait_seconds(config),
+            cacheable=_clean_search_result,
+        )
         items = digg.parse_digg_response(result, query=subquery.search_query)
         # Enrichment with attached X posts is deferred to
         # _finalize_items_by_source so it runs on the items that actually
@@ -6135,7 +6147,16 @@ def _retrieve_stream_impl(
         result = truthsocial.search_truthsocial(subquery.search_query, from_date, to_date, depth=depth, config=config)
         return truthsocial.parse_truthsocial_response(result), _result_outcome_artifact(source, result)
     if source == "polymarket":
-        result = polymarket.search_polymarket(subquery.search_query, from_date, to_date, depth=depth)
+        # Same sharing as digg: only the search is memoized; parsing still
+        # runs per caller with its own relevance topic.
+        result = fetch_memo.fetch_once(
+            ("polymarket", subquery.search_query, from_date, to_date, depth),
+            lambda: polymarket.search_polymarket(
+                subquery.search_query, from_date, to_date, depth=depth,
+            ),
+            timeout=_memo_wait_seconds(config),
+            cacheable=_clean_search_result,
+        )
         # Relevance filtering keys off the stable original research topic, not the
         # per-subquery search_query (which narrows differently on each fanout pass
         # and would let off-topic markets through on broad subqueries while dropping
