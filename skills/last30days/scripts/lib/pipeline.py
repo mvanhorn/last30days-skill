@@ -2337,6 +2337,7 @@ def run(
         host_plan
         and not requested_sources
         and "jobs" not in available
+        and "jobs" not in excluded_sources
         and _external_plan_names_source(external_plan, "jobs")
     ):
         available.append("jobs")

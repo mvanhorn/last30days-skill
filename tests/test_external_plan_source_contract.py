@@ -85,6 +85,20 @@ def test_host_plan_naming_jobs_keeps_it_on_non_company_topic():
     assert "jobs" in fetched
 
 
+def test_host_plan_naming_jobs_does_not_override_excluded_jobs():
+    with patch.object(pipeline, "_retrieve_stream", return_value=([], {})) as retrieve:
+        report = pipeline.run(
+            topic="test topic", config={"EXCLUDE_SOURCES": "jobs"}, mock=True,
+            web_backend="none", depth="default",
+            external_plan=plan_with(["reddit", "jobs"], ["hackernews"]),
+        )
+    fetched = {call.kwargs["source"] for call in retrieve.call_args_list}
+    assert [sq.sources for sq in report.query_plan.subqueries] == [
+        ["reddit"], ["hackernews"],
+    ]
+    assert "jobs" not in fetched
+
+
 def test_hiring_mode_adds_jobs_to_host_plan_without_it():
     report, fetched = _run_with_plan(
         "Listen Labs", plan_with(["reddit"], ["hackernews"]),
