@@ -1,0 +1,1 @@
+A host-supplied query plan now searches only the sources it names: company topics no longer get an unrequested jobs lane added to it. A plan that names jobs keeps jobs on any topic, and hiring-signals mode with a host plan runs the jobs lane instead of failing with "No available planned sources remain".

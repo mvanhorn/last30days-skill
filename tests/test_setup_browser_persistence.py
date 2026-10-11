@@ -66,7 +66,7 @@ def run_setup(tmp_path, monkeypatch, capsys):
 
 @pytest.mark.parametrize(
     "browser",
-    ["chrome", "brave", "edge", "vivaldi", "arc", "chromium", "firefox", "safari"],
+    ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium", "firefox", "safari"],
 )
 def test_consented_browser_remains_usable_after_setup(run_setup, browser):
     saved, config, _ = run_setup({".x.com": browser})

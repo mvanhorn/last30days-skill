@@ -1,6 +1,9 @@
 import threading
 from datetime import datetime, timezone
+import time
 import unittest
+
+import pytest
 from unittest.mock import patch
 
 from lib import health
@@ -2665,6 +2668,358 @@ class TestAmazonSourceGating:
     def test_capped_at_one_fetch_per_run(self):
         """One model-supplied keyword per run: extra streams are pure cost."""
         assert pipeline.MAX_SOURCE_FETCHES["amazon"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Run-scoped source fetch memo (U4, R5, R6): subquery streams that repeat the
+# raw-topic search for TikTok, Instagram, YouTube, and X fetch it once.
+# ---------------------------------------------------------------------------
+
+_MEMO_TOPIC = "ghostty terminal"
+_MEMO_RANGE = ("2026-09-11", "2026-10-11")
+_MEMO_SC_CONFIG = {
+    "SCRAPECREATORS_API_KEY": "test-key",
+    "INCLUDE_SOURCES": "tiktok,instagram,tiktok_comments,instagram_comments",
+}
+
+
+def _memo_subqueries(sources, labels=("price", "speed", "themes")):
+    return [
+        schema.SubQuery(
+            label=label,
+            search_query=f"ghostty {label}",
+            ranking_query=f"What do people say about ghostty {label}?",
+            sources=list(sources),
+        )
+        for label in labels
+    ]
+
+
+def _raw_topic_subquery(source):
+    return schema.SubQuery(
+        label="primary",
+        search_query=_MEMO_TOPIC,
+        ranking_query=f"What do people say about {_MEMO_TOPIC}?",
+        sources=[source],
+    )
+
+
+def _memo_stream(source, subquery, config, **kwargs):
+    return pipeline._retrieve_stream(
+        topic=_MEMO_TOPIC, subquery=subquery, source=source, config=config,
+        depth="default", date_range=_MEMO_RANGE, runtime=_make_runtime(None),
+        mock=False, raw_topic=_MEMO_TOPIC, **kwargs,
+    )
+
+
+def _memo_streams_concurrently(jobs):
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(max_workers=len(jobs)) as pool:
+        futures = [pool.submit(_memo_stream, *job) for job in jobs]
+        return [future.result(timeout=10) for future in futures]
+
+
+def _tiktok_payload(*_args, **_kwargs):
+    return {"items": [{
+        "id": "t1", "video_id": "t1", "text": "ghostty terminal setup tour",
+        "url": "https://www.tiktok.com/@dev/video/1", "author_name": "dev",
+        "date": "2026-10-01", "engagement": {"views": 900, "likes": 90},
+        "relevance": 0.9, "why_relevant": "fixture",
+    }]}
+
+
+def _instagram_payload(*_args, **_kwargs):
+    return {"items": [{
+        "id": "i1", "video_id": "i1", "text": "ghostty terminal reel",
+        "url": "https://www.instagram.com/reel/abc/", "author_name": "dev",
+        "date": "2026-10-01", "engagement": {"views": 500, "likes": 50},
+        "relevance": 0.9, "why_relevant": "fixture",
+    }]}
+
+
+def _youtube_payload(*_args, **_kwargs):
+    return {"items": [
+        {
+            "video_id": f"vid{n:08d}", "title": f"ghostty terminal review {n}",
+            "url": f"https://www.youtube.com/watch?v=vid{n:08d}", "channel_name": "dev",
+            "date": "2026-10-01", "engagement": {"views": 1000 - n, "likes": 10},
+            "relevance": 0.9, "why_relevant": "fixture",
+        }
+        for n in range(6)
+    ]}
+
+
+class TestSourceFetchMemo:
+    def test_three_subquery_streams_fetch_each_source_once(self):
+        subqueries = _memo_subqueries(["tiktok", "instagram", "youtube"])
+        with patch("lib.tiktok.search_and_enrich", side_effect=_tiktok_payload) as tiktok_search, \
+             patch("lib.instagram.search_and_enrich", side_effect=_instagram_payload) as ig_search, \
+             patch("lib.youtube_yt.search_and_transcribe", side_effect=_youtube_payload) as yt_search, \
+             patch("lib.pipeline.which", return_value="/usr/bin/yt-dlp"), \
+             patch("lib.env.is_youtube_comments_available", return_value=True), \
+             patch("lib.youtube_yt.enrich_with_comments") as yt_comments, \
+             patch("lib.tiktok.enrich_with_comments") as tiktok_comments, \
+             patch("lib.instagram.enrich_with_comments") as ig_comments:
+            results = _memo_streams_concurrently([
+                (source, subquery, dict(_MEMO_SC_CONFIG))
+                for subquery in subqueries
+                for source in ("tiktok", "instagram", "youtube")
+            ])
+
+        assert tiktok_search.call_count == 1
+        assert ig_search.call_count == 1
+        assert yt_search.call_count == 1
+        assert tiktok_comments.call_count == 1
+        assert ig_comments.call_count == 1
+        assert yt_comments.call_count == 1
+        assert all(items for items, _artifact in results)
+
+    def test_scrapecreators_only_youtube_searches_once(self):
+        subqueries = _memo_subqueries(["youtube"])
+        with patch("lib.pipeline.which", return_value=None), \
+             patch("lib.youtube_yt.search_youtube_sc", side_effect=_youtube_payload) as sc_search, \
+             patch("lib.env.is_youtube_comments_available", return_value=False):
+            results = _memo_streams_concurrently([
+                ("youtube", subquery, {"SCRAPECREATORS_API_KEY": "test-key"})
+                for subquery in subqueries
+            ])
+        assert sc_search.call_count == 1
+        assert all(len(items) == 6 for items, _artifact in results)
+
+    def test_hashtag_and_keyword_tiktok_calls_are_different_keys(self):
+        [subquery] = _memo_subqueries(["tiktok"], labels=("price",))
+        with patch("lib.tiktok.search_and_enrich", side_effect=_tiktok_payload) as tiktok_search:
+            _memo_stream("tiktok", subquery, {"SCRAPECREATORS_API_KEY": "test-key"})
+            _memo_stream("tiktok", subquery, {"SCRAPECREATORS_API_KEY": "test-key"},
+                         tiktok_hashtags=["ghostty"])
+        assert tiktok_search.call_count == 2
+        assert tiktok_search.call_args_list[1].kwargs["hashtags"] == ["ghostty"]
+
+    def test_failed_tiktok_search_is_not_reused(self):
+        [subquery] = _memo_subqueries(["tiktok"], labels=("price",))
+        responses = [{"items": [], "error": "HTTP 503"}, _tiktok_payload()]
+        with patch("lib.tiktok.search_and_enrich", side_effect=responses) as tiktok_search:
+            first_items, first_artifact = _memo_stream("tiktok", subquery, {"SCRAPECREATORS_API_KEY": "test-key"})
+            second_items, _ = _memo_stream("tiktok", subquery, {"SCRAPECREATORS_API_KEY": "test-key"})
+        assert tiktok_search.call_count == 2
+        assert first_items == [] and first_artifact
+        assert second_items
+
+    def test_failed_instagram_search_is_not_reused(self):
+        [subquery] = _memo_subqueries(["instagram"], labels=("price",))
+        responses = [{"items": [], "error": "HTTP 503"}, _instagram_payload()]
+        with patch("lib.instagram.search_and_enrich", side_effect=responses) as ig_search:
+            _memo_stream("instagram", subquery, {"SCRAPECREATORS_API_KEY": "test-key"})
+            second_items, _ = _memo_stream("instagram", subquery, {"SCRAPECREATORS_API_KEY": "test-key"})
+        assert ig_search.call_count == 2
+        assert second_items
+
+    @pytest.mark.parametrize("artifact, clean", [
+        ({}, True),
+        ({"_source_outcome_detail": "yt-dlp thin; backfilled"}, True),
+        ({"_source_outcome": {"state": "error"}}, False),
+        ({"_source_outcome_deferred": {"state": "partial"}}, False),
+        ({"_source_outcome_if_empty": {"state": "error"}}, False),
+        ({"_source_outcome_detail_state": "partial"}, False),
+    ])
+    def test_clean_stream_result_rejects_every_failure_marker(self, artifact, clean):
+        assert pipeline._clean_stream_result(([], artifact)) is clean
+
+    def test_x_waiter_gets_owner_result_when_owner_runs_to_chain_deadline(self):
+        deadline = time.monotonic() + 0.2
+
+        def slow_backend(*_args, **_kwargs):
+            time.sleep(0.35)
+            return [{"id": "x1"}], None, None
+
+        from concurrent.futures import ThreadPoolExecutor
+        with patch.object(pipeline, "_attempt_x_backend", side_effect=slow_backend) as backend, \
+             ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(
+                    pipeline._attempt_x_backend_memo,
+                    "bird", "ghostty", *_MEMO_RANGE, "default", {}, deadline=deadline,
+                )
+                for _ in range(2)
+            ]
+            results = [future.result(timeout=10) for future in futures]
+        assert backend.call_count == 1
+        assert all(items == [{"id": "x1"}] and err is None for items, err, _ in results)
+
+    def test_x_waiter_timeout_is_a_chain_error_not_an_exception(self):
+        deadline = time.monotonic() + 0.1
+
+        def hung_backend(*_args, **_kwargs):
+            time.sleep(0.6)
+            return [{"id": "x1"}], None, None
+
+        from concurrent.futures import ThreadPoolExecutor
+        with patch.object(pipeline, "_attempt_x_backend", side_effect=hung_backend), \
+             patch.object(pipeline, "_X_MEMO_WAIT_GRACE_SECONDS", 0.1), \
+             ThreadPoolExecutor(max_workers=2) as pool:
+            owner = pool.submit(
+                pipeline._attempt_x_backend_memo,
+                "bird", "ghostty", *_MEMO_RANGE, "default", {}, deadline=deadline,
+            )
+            time.sleep(0.05)
+            waiter = pool.submit(
+                pipeline._attempt_x_backend_memo,
+                "bird", "ghostty", *_MEMO_RANGE, "default", {}, deadline=deadline,
+            )
+            items, err, err_state = waiter.result(timeout=10)
+            owner.result(timeout=10)
+        assert items == [] and err
+        assert err_state == health.TIMEOUT
+
+    def _thin_youtube_retry(self, config):
+        plan = schema.QueryPlan(
+            intent="general", freshness_mode="balanced_recent", cluster_mode="topic",
+            raw_topic=_MEMO_TOPIC, subqueries=_memo_subqueries(["youtube"]),
+            source_weights={"youtube": 1.0},
+        )
+        pipeline._retry_thin_sources(
+            topic=_MEMO_TOPIC, bundle=schema.RetrievalBundle(), plan=plan,
+            config=config, depth="default", date_range=_MEMO_RANGE,
+            runtime=_make_runtime(None), mock=False, rate_limited_sources=set(),
+            rate_limit_lock=threading.Lock(), settings={"per_stream_limit": 20},
+        )
+
+    def test_thin_retry_after_clean_youtube_fetch_makes_no_network_call(self):
+        [subquery] = _memo_subqueries(["youtube"], labels=("price",))
+        with patch("lib.pipeline.which", return_value="/usr/bin/yt-dlp"), \
+             patch("lib.youtube_yt.search_and_transcribe", side_effect=_youtube_payload) as yt_search, \
+             patch("lib.env.is_youtube_comments_available", return_value=False):
+            _memo_stream("youtube", subquery, {})
+            self._thin_youtube_retry({})
+        assert yt_search.call_count == 1
+
+    def test_thin_retry_after_failed_youtube_fetch_refetches(self):
+        [subquery] = _memo_subqueries(["youtube"], labels=("price",))
+        responses = [{"items": [], "error": "yt-dlp search timed out"}, _youtube_payload()]
+        with patch("lib.pipeline.which", return_value="/usr/bin/yt-dlp"), \
+             patch("lib.youtube_yt.search_and_transcribe", side_effect=responses) as yt_search, \
+             patch("lib.env.is_youtube_comments_available", return_value=False):
+            _items, artifact = _memo_stream("youtube", subquery, {})
+            assert artifact["_source_outcome"]["state"] == health.TIMEOUT
+            self._thin_youtube_retry({})
+        assert yt_search.call_count == 2
+
+    def _thin_retry(self, source):
+        plan = schema.QueryPlan(
+            intent="general", freshness_mode="balanced_recent", cluster_mode="topic",
+            raw_topic=_MEMO_TOPIC,
+            subqueries=[_raw_topic_subquery(source)],
+            source_weights={source: 1.0},
+        )
+        pipeline._retry_thin_sources(
+            topic=_MEMO_TOPIC, bundle=schema.RetrievalBundle(), plan=plan,
+            config={}, depth="default", date_range=_MEMO_RANGE,
+            runtime=_make_runtime(None), mock=False, rate_limited_sources=set(),
+            rate_limit_lock=threading.Lock(), settings={"per_stream_limit": 20},
+        )
+
+    @pytest.mark.parametrize("source, target", [
+        ("polymarket", "lib.polymarket.search_polymarket"),
+        ("digg", "lib.digg.search_digg"),
+    ])
+    def test_thin_retry_reuses_clean_raw_topic_fetch(self, source, target):
+        # Live runs: the planner's subquery searches the raw topic, the thin
+        # retry's core subject is the same string, so the request repeated.
+        empty = {"events": [], "results": []}
+        with patch(target, return_value=empty) as search:
+            _memo_stream(source, _raw_topic_subquery(source), {})
+            self._thin_retry(source)
+        assert search.call_count == 1
+
+    @pytest.mark.parametrize("source, target", [
+        ("polymarket", "lib.polymarket.search_polymarket"),
+        ("digg", "lib.digg.search_digg"),
+    ])
+    def test_thin_retry_refetches_after_failed_fetch(self, source, target):
+        failed = {"events": [], "results": [], "error": "HTTP 503"}
+        with patch(target, side_effect=[failed, {"events": [], "results": []}]) as search:
+            _items, artifact = _memo_stream(source, _raw_topic_subquery(source), {})
+            assert artifact.get("_source_outcome")
+            self._thin_retry(source)
+        assert search.call_count == 2
+
+    @pytest.mark.parametrize("source, target", [
+        ("polymarket", "lib.polymarket.search_polymarket"),
+        ("digg", "lib.digg.search_digg"),
+    ])
+    def test_different_queries_fetch_separately(self, source, target):
+        with patch(target, return_value={"events": [], "results": []}) as search:
+            for subquery in _memo_subqueries([source], labels=("price", "speed")):
+                _memo_stream(source, subquery, {})
+        assert search.call_count == 2
+
+    def test_x_backend_fetched_once_and_each_subquery_judged_with_its_own_ranking_query(self):
+        subqueries = _memo_subqueries(["x"], labels=("price", "speed"))
+        posts = [{
+            "id": "X1", "text": "ghostty terminal is fast", "author_handle": "dev",
+            "url": "https://x.com/dev/status/1", "date": "2026-10-01",
+        }]
+        judged_with: list[str] = []
+
+        def _judge(items, _topic, *, ranking_query=""):
+            judged_with.append(ranking_query)
+            return {"on_topic_items": list(items), "on_topic_ratio": 1.0}
+
+        with patch("lib.env.x_backend_chain", return_value=["bird"]), \
+             patch("lib.pipeline._fetch_x_backend", return_value=(posts, "")) as fetch, \
+             patch("lib.x_judge.should_retry_x_search", return_value=False), \
+             patch("lib.x_judge.judge_x_corpus", side_effect=_judge):
+            results = [_memo_stream("x", subquery, {}) for subquery in subqueries]
+
+        assert fetch.call_count == 1
+        assert sorted(judged_with) == sorted(sq.ranking_query for sq in subqueries)
+        assert all(len(items) == 1 for items, _artifact in results)
+
+    def _parity_report(self):
+        plan = {
+            "intent": "general", "freshness_mode": "balanced_recent", "cluster_mode": "story",
+            "subqueries": [
+                {"label": sq.label, "search_query": sq.search_query,
+                 "ranking_query": sq.ranking_query, "sources": list(sq.sources)}
+                for sq in _memo_subqueries(["tiktok", "instagram", "youtube"])
+            ],
+        }
+        with patch("lib.tiktok.search_and_enrich", side_effect=_tiktok_payload), \
+             patch("lib.instagram.search_and_enrich", side_effect=_instagram_payload), \
+             patch("lib.youtube_yt.search_and_transcribe", side_effect=_youtube_payload), \
+             patch("lib.youtube_yt.search_youtube_sc", return_value={"items": []}), \
+             patch("lib.youtube_yt.backfill_transcripts"), \
+             patch("lib.pipeline.which", return_value="/usr/bin/yt-dlp"), \
+             patch("lib.env.is_youtube_comments_available", return_value=False), \
+             patch("lib.tiktok.enrich_with_comments"), \
+             patch("lib.instagram.enrich_with_comments"):
+            return pipeline.run(
+                topic=_MEMO_TOPIC, config=dict(_MEMO_SC_CONFIG), depth="default",
+                requested_sources=["tiktok", "instagram", "youtube"], mock=False,
+                external_plan=plan, web_backend="none", save_dir="",
+            )
+
+    def test_report_parity_with_memo_bypassed(self):
+        from lib import fetch_memo
+
+        def _summary(report):
+            return (
+                {source: sorted(item.url for item in items)
+                 for source, items in report.items_by_source.items()},
+                {source: outcome.state for source, outcome in report.source_status.items()},
+                sorted(report.errors_by_source),
+                [candidate.url for candidate in report.ranked_candidates],
+            )
+
+        memoized = _summary(self._parity_report())
+        fetch_memo.reset()
+        with patch("lib.fetch_memo.fetch_once",
+                   side_effect=lambda _key, fetch, **_kwargs: fetch()):
+            bypassed = _summary(self._parity_report())
+
+        assert memoized == bypassed
+        assert set(memoized[0]) == {"tiktok", "instagram", "youtube"}
 
 
 if __name__ == "__main__":

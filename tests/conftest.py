@@ -1,5 +1,8 @@
 import os
+import shutil
+import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from unittest import mock
 
@@ -8,6 +11,90 @@ import pytest
 pytest_plugins = ["tests.network_guard"]
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "skills" / "last30days" / "scripts"))
+
+
+_CONFIG_ENV_NAMES = {
+    "AUTH_TOKEN", "CT0", "TWITTER_CT0", "SESSION_ID",
+    "FROM_BROWSER", "BROWSER_CONSENT", "BROWSER_CDP_URL", "SETUP_COMPLETE",
+    "AGENTCOOKIE", "AGENTCOOKIE_CONFIG", "INCLUDE_SOURCES", "EXCLUDE_SOURCES",
+    "FUN_LEVEL", "ELI5_MODE", "DEGRADED_TRANSCRIPT_THRESHOLD", "TELEGRAM_SOURCES",
+    "OPENAI_MODEL_PIN", "XAI_MODEL_PIN", "OPENAI_BASE_URL", "XAI_BASE_URL",
+    "OPENROUTER_BASE_URL", "XIAOHONGSHU_API_BASE",
+}
+_CREDENTIAL_SUFFIXES = ("_API_KEY", "_TOKEN", "_KEY", "_SECRET", "_PASSWORD", "_COOKIE")
+_system_which = shutil.which
+_system_popen = subprocess.Popen
+
+
+def _without_credential_tools(command, *args, **kwargs):
+    if Path(command).name in {"security", "pass"}:
+        return None
+    return _system_which(command, *args, **kwargs)
+
+
+def _isolate_environment(monkeypatch, home):
+    for name in list(os.environ):
+        if (
+            name in _CONFIG_ENV_NAMES
+            or name.startswith(("LAST30DAYS_", "BSKY_", "BIRD_"))
+            or name.endswith(_CREDENTIAL_SUFFIXES)
+        ):
+            monkeypatch.delenv(name, raising=False)
+    config_dir = home / ".config" / "last30days"
+    config_dir.mkdir(parents=True)
+    for name, value in {
+        "HOME": home,
+        "USERPROFILE": home,
+        "XDG_CONFIG_HOME": home / ".config",
+        "APPDATA": home / "AppData" / "Roaming",
+        "LOCALAPPDATA": home / "AppData" / "Local",
+        "PASSWORD_STORE_DIR": home / ".password-store",
+        "LAST30DAYS_CONFIG_DIR": config_dir,
+    }.items():
+        monkeypatch.setenv(name, str(value))
+
+    class IsolatedPopen(_system_popen):
+        def __init__(self, *args, **kwargs):
+            child_env = dict(os.environ if kwargs.get("env") is None else kwargs["env"])
+            # Python mocks do not cross process boundaries; Keychain ignores HOME.
+            child_env.setdefault("LAST30DAYS_SKIP_KEYCHAIN", "1")
+            child_env.setdefault("HOME", str(home))
+            child_env.setdefault("USERPROFILE", child_env["HOME"])
+            child_env.setdefault("PASSWORD_STORE_DIR", str(Path(child_env["HOME"]) / ".password-store"))
+            kwargs["env"] = child_env
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(shutil, "which", _without_credential_tools)
+    monkeypatch.setattr(subprocess, "Popen", IsolatedPopen)
+    return config_dir
+
+
+def pytest_configure(config):
+    # CONFIG_FILE and other home-relative constants are frozen during collection.
+    home = tempfile.TemporaryDirectory(prefix="last30days-tests-")
+    config.add_cleanup(home.cleanup)
+    patch = pytest.MonkeyPatch()
+    config.add_cleanup(patch.undo)
+    _isolate_environment(patch, Path(home.name))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_config(tmp_path_factory, monkeypatch):
+    """Start each test with empty config, stores, and project discovery inputs.
+
+    Redirect HOME rather than stubbing store lookups: xurl and grok resolve
+    auth from plain files under HOME (``~/.xurl/auth.yml``), and
+    ``backends._xurl_finding`` calls ``stored_auth_status()`` directly, so a
+    stubbed ``has_stored_auth`` still reads a developer's real store. Tests
+    that need a populated store write one under the redirected home."""
+    from lib import env
+
+    home = tmp_path_factory.mktemp("home")
+    config_dir = _isolate_environment(monkeypatch, home)
+    monkeypatch.chdir(home)
+    monkeypatch.setattr(env, "_config_override", str(config_dir))
+    monkeypatch.setattr(env, "CONFIG_DIR", config_dir)
+    monkeypatch.setattr(env, "CONFIG_FILE", config_dir / ".env")
 
 
 @pytest.fixture(autouse=True)
@@ -35,37 +122,6 @@ def _no_ambient_grok_cli():
 
 
 @pytest.fixture(autouse=True)
-def _no_ambient_xurl_store(tmp_path_factory, monkeypatch):
-    """Point HOME at an empty directory so no test resolves the developer's own
-    xurl token store, for the same reason as the grok fixture above. xurl is an
-    X-chain backend whose auth evidence is a plain filesystem check, so anyone
-    who has ever run xurl has a populated ``~/.xurl`` and silently resolves
-    xurl as a configured backend in tests that assume none is present.
-
-    Observed with a populated store: three test_grok_surfacing doctor cases
-    report ``status == "ok"`` instead of ``"unconfigured"``, and
-    test_backend_descriptors.TestGetXSourceStatusGrokPin
-    .test_unpinned_with_store_does_not_return_grok_source fails
-    ``assert status["source"] is None`` with ``'xurl'``.
-
-    Stubbing ``xurl_x.has_stored_auth`` is not enough, and three of those tests
-    already do it: ``backends._xurl_finding`` calls ``stored_auth_status()``
-    directly, so the real store is still read. Stubbing ``token_store_path``
-    instead breaks the tests that assert on it.
-
-    Stub the input (where HOME points), not the logic: ``token_store_path``,
-    ``stored_auth_status`` and ``has_stored_auth`` all run their real code and
-    resolve absent on their own, and a test asserting
-    ``Path.home() / ".xurl" / "auth.yml"`` still agrees with them because both
-    sides move together. Tests that want a populated store write one under the
-    redirected home, as they already do."""
-    home = tmp_path_factory.mktemp("home")
-    monkeypatch.setenv("HOME", str(home))
-    monkeypatch.setenv("USERPROFILE", str(home))
-    yield
-
-
-@pytest.fixture(autouse=True)
 def _reset_probe_caches():
     """The doctor stack memoizes probe results in module-level dicts (safe for
     the one-shot CLI process, wrong across tests). Clear them around every test
@@ -82,15 +138,18 @@ def _reset_probe_caches():
 
 @pytest.fixture(autouse=True)
 def _reset_reddit_keyless_memo():
-    """The Reddit run memos (keyless and ScrapeCreators) live for one command; tests are their own commands."""
+    """The run memos (Reddit keyless and ScrapeCreators, source fetches) live for one command; tests are their own commands."""
+    from lib import fetch_memo as _fetch_memo
     from lib import http as _http
     from lib import reddit as _reddit
 
     _http.reset_reddit_keyless_memo()
     _reddit.reset_scrapecreators_memo()
+    _fetch_memo.reset()
     yield
     _http.reset_reddit_keyless_memo()
     _reddit.reset_scrapecreators_memo()
+    _fetch_memo.reset()
 
 
 @pytest.fixture(autouse=True)
@@ -110,21 +169,4 @@ def _no_ambient_agent_host(monkeypatch):
         _env.ALLOW_ENGINE_PLAN_VAR,
     ):
         monkeypatch.delenv(name, raising=False)
-    yield
-
-
-@pytest.fixture(autouse=True)
-def _no_ambient_credentials(monkeypatch):
-    """Strip credential-shaped variables from the process environment.
-
-    ``env.get_config()`` reads API keys and cookies straight from os.environ, so
-    a developer machine with real credentials exported resolves config the CI
-    box never would (upstream CI is a clean Linux runner). Tests that need a
-    credential set it themselves; nothing should depend on the ambient one.
-    """
-    suffixes = ("_API_KEY", "_TOKEN", "_KEY", "_SECRET", "_PASSWORD", "_COOKIE")
-    exact = {"AUTH_TOKEN", "CT0", "SESSION_ID"}
-    for name in list(os.environ):
-        if name in exact or name.endswith(suffixes):
-            monkeypatch.delenv(name, raising=False)
     yield

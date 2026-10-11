@@ -47,6 +47,22 @@ def candidate_key(item: schema.SourceItem) -> str:
     return f"{item.source}:{item.item_id}"
 
 
+def source_item_key(item: schema.SourceItem) -> tuple[str, str]:
+    """Identity of one source item, for same-source de-duplication.
+
+    Usually the normalized URL (see :func:`candidate_key`). A Hacker News
+    item's ``url`` is the linked article, and one article can be submitted
+    several times as distinct stories with their own points and comments, so
+    HN identity is the discussion URL. ``candidate_key`` still clusters those
+    submissions (and other sources linking the article) into one candidate.
+    """
+    if item.source == "hackernews":
+        hn_url = item.metadata.get("hn_url")
+        if hn_url:
+            return (item.source, _normalize_url(str(hn_url)))
+    return (item.source, candidate_key(item))
+
+
 # Enrichment that one copy of a thread may carry and another may lack. When
 # the same URL arrives from two subquery streams (each stream enriches its own
 # top-N), the copy that won a comment slot must survive de-duplication.
@@ -92,13 +108,14 @@ def collapse_duplicate_urls(items: list[schema.SourceItem]) -> list[schema.Sourc
     """Collapse same-source, same-URL copies, keeping order and merging enrichment.
 
     Per-stream item ids (``R1``, ``X1``) collide across subqueries, so identity
-    is the normalized URL, not the id. The first occurrence stays in place and
+    is :func:`source_item_key` (the normalized URL, or the HN discussion URL),
+    not the id. The first occurrence stays in place and
     absorbs later copies via :func:`merge_source_items`.
     """
     first_by_key: dict[tuple[str, str], schema.SourceItem] = {}
     kept: list[schema.SourceItem] = []
     for item in items:
-        key = (item.source, candidate_key(item))
+        key = source_item_key(item)
         existing = first_by_key.get(key)
         if existing is None:
             first_by_key[key] = item
@@ -327,6 +344,27 @@ def _diversify_pool(
     return pool[:pool_limit]
 
 
+def _pin_snippet_to_primary_submission(candidate: schema.Candidate) -> None:
+    """Keep a card's Evidence on the item whose metrics it shows.
+
+    The card renders :func:`schema.candidate_primary_item`'s metrics beside
+    ``candidate.snippet``. When the candidate also holds a distinct
+    same-source sibling (two HN submissions of one article), the longest- or
+    best-snippet rule above can pick the sibling's text, so one story's
+    numbers would sit beside another story's words. Other candidates keep
+    their snippet unchanged.
+    """
+    primary = schema.candidate_primary_item(candidate)
+    if primary is None:
+        return
+    primary_key = source_item_key(primary)
+    if any(
+        item.source == primary.source and source_item_key(item) != primary_key
+        for item in candidate.source_items
+    ):
+        candidate.snippet = primary.snippet or ""
+
+
 def weighted_rrf(
     streams: dict[tuple[str, str], list[schema.SourceItem]],
     plan: schema.QueryPlan,
@@ -348,7 +386,8 @@ def weighted_rrf(
     subqueries = {subquery.label: subquery for subquery in plan.subqueries}
     candidates: dict[str, schema.Candidate] = {}
     # Track source items already attached to each candidate, keyed by
-    # (source, normalized URL): per-stream ids collide across subqueries, and
+    # source_item_key (source + normalized URL, or the HN discussion URL):
+    # per-stream ids collide across subqueries, and
     # a repeat copy may carry enrichment the first one lacks.
     seen_source_items: dict[str, dict[tuple[str, str], schema.SourceItem]] = {}
 
@@ -394,7 +433,7 @@ def weighted_rrf(
                     source_items=[item],
                     metadata=candidate_metadata,
                 )
-                seen_source_items[key] = {(item.source, candidate_key(item)): item}
+                seen_source_items[key] = {source_item_key(item): item}
                 continue
 
             candidate = candidates[key]
@@ -420,10 +459,10 @@ def weighted_rrf(
                 candidate.subquery_labels.append(label)
             if item.source not in candidate.sources:
                 candidate.sources.append(item.source)
-            source_item_key = (item.source, candidate_key(item))
-            existing_item = seen_source_items[key].get(source_item_key)
+            item_key = source_item_key(item)
+            existing_item = seen_source_items[key].get(item_key)
             if existing_item is None:
-                seen_source_items[key][source_item_key] = item
+                seen_source_items[key][item_key] = item
                 candidate.source_items.append(item)
             else:
                 merge_source_items(existing_item, item)
@@ -442,6 +481,9 @@ def weighted_rrf(
                 candidate.snippet = item.snippet
             if len(candidate.snippet.split()) < len(item.snippet.split()):
                 candidate.snippet = item.snippet
+
+    for candidate in candidates.values():
+        _pin_snippet_to_primary_submission(candidate)
 
     fused = sorted(candidates.values(), key=_candidate_sort_key)
     fused = _apply_per_author_cap(fused, first_party_handles=first_party_handles)

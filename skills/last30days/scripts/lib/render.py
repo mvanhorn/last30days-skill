@@ -222,6 +222,7 @@ SOURCE_LABELS = {
     "instagram": "Instagram",
     "grounding": "Web",
     "hackernews": "Hacker News",
+    "devto": "dev.to",
     "truthsocial": "Truth Social",
     "linkedin": "LinkedIn",
     "xiaohongshu": "Xiaohongshu",
@@ -1874,6 +1875,7 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         "threads",
         "pinterest",
         "hackernews",
+        "devto",
         "bluesky",
         "truthsocial",
         "polymarket",
@@ -1903,7 +1905,9 @@ def render_full(report: schema.Report, save_path: str | None = None) -> str:
         lines.append(f"### {_source_label(source)} ({len(items)} items)")
         lines.append("")
         for item in items:
-            score = item.local_rank_score if item.local_rank_score is not None else 0
+            # local_rank_score is 0..1; print it on the report's 0-100 scale
+            # (":.0f" of the raw value rendered every item as score:0 or 1).
+            score = (item.local_rank_score or 0) * 100.0
             lines.append(
                 f"**{item.item_id}** (score:{score:.0f}) {item.author or ''} ({item.published_at or 'date unknown'}) [{_format_item_engagement(item)}]"
             )
@@ -2449,9 +2453,17 @@ def _render_candidate(
             if score is not None and score != ""
             else ""
         )
+        # HN comment lines carry their own link: the candidate URL above is
+        # the article, not where the quote was said.
+        hn_link = (
+            _comment_link(primary, tc)
+            if primary is not None and primary.source == "hackernews"
+            else ""
+        )
         lines.append(
             f"   - {attribution}{vote_part}: "
             f"{_format_untrusted_evidence(excerpt.strip(), 240)}"
+            + (f" — {hn_link}" if hn_link else "")
         )
     for post in _digg_posts_for(primary):
         lines.append(f"   - {_format_digg_quote(post)}")
@@ -2836,6 +2848,7 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
         "story",
         [("points", "points"), ("comments", "comments")],
     ),
+    ("devto", "👩‍💻", "dev.to", "article", [("reactions", "reactions"), ("comments", "comments")]),
     ("bluesky", "🦋", "Bluesky", "post", [("likes", "likes"), ("reposts", "reposts")]),
     (
         "truthsocial",
@@ -2898,7 +2911,12 @@ def _footer_line_for_source(
     emoji: str, label: str, count: int, item_word: str, stats: str
 ) -> str:
     count_str = f"{count:,}" if count >= 1000 else str(count)
-    plural = f"{item_word}s" if count != 1 else item_word
+    if count == 1:
+        plural = item_word
+    elif len(item_word) > 1 and item_word.endswith("y") and item_word[-2] not in "aeiou":
+        plural = f"{item_word[:-1]}ies"
+    else:
+        plural = f"{item_word}s"
     if stats:
         return f"{emoji} {label}: {count_str} {plural} │ {stats}"
     return f"{emoji} {label}: {count_str} {plural}"
@@ -3429,6 +3447,7 @@ ENGAGEMENT_DISPLAY: dict[str, list[tuple[str, str]]] = {
     "threads": [("likes", "likes"), ("replies", "re")],
     "pinterest": [("saves", "saves"), ("comments", "cmt")],
     "hackernews": [("points", "pts"), ("comments", "cmt")],
+    "devto": [("reactions", "react"), ("comments", "cmt")],
     "bluesky": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "truthsocial": [("likes", "likes"), ("reposts", "rt"), ("replies", "re")],
     "linkedin": [("likes", "likes"), ("comments", "cmt")],
@@ -3580,10 +3599,14 @@ _TOP_COMMENT_MIN_SCORE: dict[str, int] = {
     # for every comment child (only stories carry points), so any positive
     # threshold here rejects the entire source rather than filtering it.
     "hackernews": 0,
+    # Replies are the only comment signal the dev.to API exposes; most top
+    # comments have none, so any positive floor would drop the whole source.
+    "devto": 0,
 }
 _TOP_COMMENT_VOTE_LABEL: dict[str, str] = {
     "reddit": "upvotes",
     "hackernews": "points",
+    "devto": "replies",
     "youtube": "likes",
     "tiktok": "likes",
     "instagram": "likes",
@@ -3623,6 +3646,26 @@ def _comment_attribution(source: str | None, author: str | None) -> str:
     if prefix and author.startswith(prefix):
         author = author[len(prefix) :]
     return f"{prefix}{author}" if prefix else author
+
+
+def _comment_link(item: schema.SourceItem, comment: dict, fallback: str = "") -> str:
+    """Link for a quoted comment: where it was said, never the HN article.
+
+    HN items carry the article as their URL, so HN comments fall back to the
+    item's discussion page (``hn_url`` metadata, else built from a numeric item
+    id) instead of ``fallback``. Other sources keep ``fallback``.
+    """
+    if comment.get("url"):
+        return str(comment["url"])
+    if item.source != "hackernews":
+        return fallback or ""
+    hn_url = (item.metadata or {}).get("hn_url")
+    if hn_url:
+        return str(hn_url)
+    item_id = str(item.item_id or "")
+    if item_id.isdigit():
+        return f"https://news.ycombinator.com/item?id={item_id}"
+    return ""
 
 
 def _top_comments_list(
@@ -3911,7 +3954,7 @@ def _render_top_comments(
         score = tc.get("score", "")
         vote_label = _vote_label_for(item.source)
         attribution = _comment_attribution(item.source, tc.get("author"))
-        url = tc.get("url") or cand.url or ""
+        url = _comment_link(item, tc, fallback=cand.url)
         url_part = f" — {url}" if url else ""
         vote_part = (
             f" ({score} {vote_label})"

@@ -694,7 +694,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # Bright Data CLI. Optional: the CLI normally owns its own auth via
         # `brightdata login`, so this only matters for users who prefer an
         # explicit key in a `.env` file or the keychain. Registered here so
-        # those layers reach the gate and the subprocess (-k) alike.
+        # those layers reach the gate and the subprocess environment alike.
         ('BRIGHTDATA_API_KEY', None),
         # Amazon marketplace the amazon source searches. Non-US users point
         # this at their own storefront (e.g. https://www.amazon.co.uk).

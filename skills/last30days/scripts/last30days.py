@@ -50,7 +50,8 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, freshness, html_render, http, permission_preflight, pipeline, reddit, registers, render, schema, subproc, ui, x_envelope
+from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, permission_preflight, pipeline, reddit, registers, render, schema, subproc, ui, x_envelope
+from lib.private_files import write_private_text
 
 atexit.register(subproc.cleanup_children)
 
@@ -823,6 +824,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save-suffix", help="Suffix for saved output filename (e.g., 'gemini' → kanye-west-raw-gemini.md)")
     parser.add_argument("--subreddits", help="Comma-separated broad/category subreddit names to search (e.g., SaaS,Entrepreneur)")
     parser.add_argument("--dedicated-subreddits", help="Comma-separated entity-home subreddit names (e.g., Kanye,WestSubEver). Pulled in full (top+hot+new) and exempt from the relevance floor since the whole sub is the topic.")
+    parser.add_argument("--devto-tags", help="Comma-separated dev.to tags, lowercase alphanumeric (e.g., claudecode,ai)")
     parser.add_argument("--tiktok-hashtags", help="Comma-separated TikTok hashtags without # (e.g., tella,screenrecording)")
     parser.add_argument("--tiktok-creators", help="Comma-separated TikTok creator handles (e.g., TellaHQ,taborplace)")
     parser.add_argument("--ig-creators", help="Comma-separated Instagram creator handles (e.g., tella.tv,laborstories)")
@@ -1334,7 +1336,7 @@ def _write_last_run(
             "report_cache": str(target / "last-report.json"),
             "comparison": bool(entity_reports),
         }
-        (target / "last-run.json").write_text(json.dumps(payload, indent=2))
+        write_private_text(target / "last-run.json", json.dumps(payload, indent=2))
         cache_payload = {
             "schema": REPORT_CACHE_VERSION,
             "topic": topic,
@@ -1347,8 +1349,8 @@ def _write_last_run(
             ],
         }
         report_cache_path = target / "last-report.json"
-        report_cache_path.write_text(json.dumps(cache_payload, indent=2))
-        if has_private_corpus:
+        write_private_text(report_cache_path, json.dumps(cache_payload, indent=2))
+        if has_private_corpus and os.name != "posix":
             report_cache_path.chmod(0o600)
         return True
     except Exception as exc:
@@ -3291,6 +3293,7 @@ def _main(
     # parallel, so the reset must not live inside the pipeline.
     http.reset_reddit_keyless_memo()
     reddit.reset_scrapecreators_memo()
+    fetch_memo.reset()
     resolved_corpus_dirs = corpus.resolve_directories(
         args.corpus, config.get("LAST30DAYS_CORPUS_DIRS")
     )
@@ -3731,6 +3734,17 @@ def _main(
             requested_sources,
             channels=cli_telegram_sources,
         )
+    # --devto-tags activates the off-by-default dev.to source for this run
+    # (the --trustpilot-domain pattern): carried on config for the dispatch,
+    # and appended to an explicit or default --search list so it is not
+    # filtered back out. EXCLUDE_SOURCES=devto still wins in the pipeline.
+    cli_devto_tags = [
+        t.strip() for t in (args.devto_tags or "").split(",") if t.strip()
+    ]
+    if cli_devto_tags:
+        config["_devto_tags"] = cli_devto_tags
+        if requested_sources is not None and "devto" not in requested_sources:
+            requested_sources = [*requested_sources, "devto"]
     # Host-fetched X envelope: validated before diagnose so a present
     # envelope plans X in (available_sources) and a bad one fails closed here.
     x_posts_envelope: x_envelope.Envelope | None = None
@@ -4211,6 +4225,9 @@ def _main(
                 # so each peer derives its own keyword from its own topic; a
                 # per-entity keyword can ride in the --competitors-plan entry.
                 entity_config.pop("_amazon_query", None)
+                # dev.to tags describe the main topic; a peer falls back to
+                # the slug of its own name instead of a rival's tags.
+                entity_config.pop("_devto_tags", None)
                 # An advertiser page is per-entity state by definition: left in
                 # place it would render one brand's ads as every peer's.
                 entity_config.pop("_meta_ads_page", None)

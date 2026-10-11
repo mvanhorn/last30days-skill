@@ -225,7 +225,7 @@ def test_partial_ytdlp_search_error_stays_visible_after_backfill():
     assert "yt-dlp bot gate" in artifact["_source_outcome"]["detail"]
 
 
-def test_full_pipeline_reports_clean_backfill_and_searches_paid_once_per_subquery():
+def test_full_pipeline_reports_clean_backfill_and_searches_paid_once_per_run():
     free = {
         "video_id": "a", "title": "Vuori review", "date": "2026-06-15",
         "url": "https://www.youtube.com/watch?v=a", "transcript_snippet": "free transcript",
@@ -263,7 +263,9 @@ def test_full_pipeline_reports_clean_backfill_and_searches_paid_once_per_subquer
             external_plan=plan, as_of_date="2026-07-01",
         )
 
-    assert search.call_count == 2
+    # Both subqueries search the raw topic: the run fetch memo serves the
+    # second stream (and the thin retry) from the first clean fetch.
+    assert search.call_count == 1
     assert report.source_status["youtube"].state == health.OK
     assert "ScrapeCreators added 3" in report.source_status["youtube"].detail
 
@@ -301,8 +303,10 @@ def _run_thin_youtube_report(sc_responses):
     return report, search.call_count
 
 
-def test_empty_clean_backfill_can_retry_and_recover():
-    recovered = [
+def test_thin_retry_reuses_a_clean_empty_backfill_instead_of_refetching():
+    # A clean (error-free) backfill is the answer for this query in this run:
+    # the identical thin-source retry is served from the run fetch memo.
+    unused = [
         {
             "video_id": str(i), "title": f"Vuori review {i}", "date": "2026-06-15",
             "url": f"https://www.youtube.com/watch?v={i}",
@@ -310,18 +314,16 @@ def test_empty_clean_backfill_can_retry_and_recover():
         for i in range(2)
     ]
     report, calls = _run_thin_youtube_report([
-        {"items": []}, {"items": recovered},
+        {"items": []}, {"items": unused},
     ])
-    assert calls == 2
+    assert calls == 1
     assert report.source_status["youtube"].state == health.OK
-    assert {item.item_id for item in report.items_by_source["youtube"]} >= {
-        "free", "0",
-    }
+    assert [item.item_id for item in report.items_by_source["youtube"]] == ["free"]
 
 
 def test_clean_sparse_topic_stays_ok_after_empty_backfill_and_retry():
     report, calls = _run_thin_youtube_report([{"items": []}, {"items": []}])
-    assert calls == 2
+    assert calls == 1
     assert report.source_status["youtube"].state == health.OK
     assert [item.item_id for item in report.items_by_source["youtube"]] == ["free"]
     assert "added 0" in report.source_status["youtube"].detail

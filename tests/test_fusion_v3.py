@@ -1,6 +1,6 @@
 import unittest
 
-from lib import fusion, schema
+from lib import fusion, render, schema
 
 
 def make_item(item_id: str, source: str, url: str, title: str, rank_score: float) -> schema.SourceItem:
@@ -623,3 +623,118 @@ class FusionEnrichedCopyTests(unittest.TestCase):
         self.assertIs(out[0], bare)
         self.assertEqual(3, len(out[0].metadata["top_comments"]))
         self.assertIs(out[1], other)
+
+
+def _hn_story(story_id: str, author: str, points: int, comments: list[dict], rank: float) -> schema.SourceItem:
+    item = make_item(story_id, "hackernews", "https://sqlite.org/releaselog/3_54_0.html", "SQLite 3.54.0 Released", rank)
+    item.author = author
+    item.engagement = {"points": points, "comments": len(comments)}
+    item.metadata["hn_url"] = f"https://news.ycombinator.com/item?id={story_id}"
+    item.metadata["top_comments"] = comments
+    return item
+
+
+class HackerNewsDuplicateSubmissionTests(unittest.TestCase):
+    """Two HN submissions of one article URL are two stories, not two copies:
+    each keeps its own points, comment count, discussion link, and comments."""
+
+    def _plan(self):
+        return schema.QueryPlan(
+            intent="breaking_news",
+            freshness_mode="strict_recent",
+            cluster_mode="story",
+            raw_topic="sqlite",
+            subqueries=[
+                schema.SubQuery(label="primary", search_query="sqlite", ranking_query="sqlite", sources=["hackernews", "reddit"], weight=1.0),
+                schema.SubQuery(label="release", search_query="sqlite release", ranking_query="sqlite release", sources=["hackernews"], weight=0.8),
+            ],
+            source_weights={},
+        )
+
+    def _stories(self):
+        comment = {"score": 0, "author": "ciupicri", "excerpt": "How nice of them to support Windows XP until now."}
+        first = _hn_story("50040360", "thunderbong", 11, [], 0.6)
+        second = _hn_story("50032781", "lawrencejgd", 6, [comment], 0.5)
+        return first, second
+
+    def _assert_unmerged(self, items):
+        hn = {item.item_id: item for item in items if item.source == "hackernews"}
+        self.assertEqual({"50040360", "50032781"}, set(hn))
+        self.assertEqual({"points": 11, "comments": 0}, hn["50040360"].engagement)
+        self.assertEqual([], hn["50040360"].metadata["top_comments"])
+        self.assertEqual("https://news.ycombinator.com/item?id=50040360", hn["50040360"].metadata["hn_url"])
+        self.assertEqual({"points": 6, "comments": 1}, hn["50032781"].engagement)
+        self.assertEqual("ciupicri", hn["50032781"].metadata["top_comments"][0]["author"])
+
+    def test_weighted_rrf_keeps_each_submission_engagement(self):
+        first, second = self._stories()
+        streams = {("primary", "hackernews"): [first], ("release", "hackernews"): [second]}
+
+        candidates = fusion.weighted_rrf(streams, self._plan(), pool_limit=10)
+
+        # Same article URL still clusters into one candidate.
+        self.assertEqual(1, len(candidates))
+        self._assert_unmerged(candidates[0].source_items)
+
+    def test_same_submission_from_two_streams_still_merges(self):
+        bare = _hn_story("50032781", "lawrencejgd", 6, [], 0.6)
+        rich = _hn_story("50032781", "lawrencejgd", 6, [{"score": 0, "author": "ciupicri", "excerpt": "x"}], 0.4)
+        streams = {("primary", "hackernews"): [bare], ("release", "hackernews"): [rich]}
+
+        candidates = fusion.weighted_rrf(streams, self._plan(), pool_limit=10)
+
+        self.assertEqual(1, len(candidates[0].source_items))
+        self.assertEqual("ciupicri", candidates[0].source_items[0].metadata["top_comments"][0]["author"])
+
+    def test_hn_and_reddit_of_same_article_share_a_candidate(self):
+        first, _ = self._stories()
+        reddit = make_item("R1", "reddit", "https://sqlite.org/releaselog/3_54_0.html", "SQLite 3.54.0 released", 0.5)
+        streams = {("primary", "hackernews"): [first], ("primary", "reddit"): [reddit]}
+
+        candidates = fusion.weighted_rrf(streams, self._plan(), pool_limit=10)
+
+        self.assertEqual(1, len(candidates))
+        self.assertEqual(["hackernews", "reddit"], sorted(item.source for item in candidates[0].source_items))
+
+    def _evidence_line(self, candidate):
+        lines = render._render_candidate(candidate, "1.")
+        evidence = [line for line in lines if "Evidence:" in line]
+        self.assertEqual(1, len(evidence), lines)
+        return evidence[0]
+
+    def test_card_evidence_comes_from_primary_submission(self):
+        # The sibling submission has the longer snippet; the card shows the
+        # primary story's metrics, so its Evidence must be the primary's text.
+        first, second = self._stories()
+        second.snippet = "How nice of them to support Windows XP until now, says ciupicri in a long comment."
+        streams = {("primary", "hackernews"): [first], ("release", "hackernews"): [second]}
+
+        candidate = fusion.weighted_rrf(streams, self._plan(), pool_limit=10)[0]
+        primary = schema.candidate_primary_item(candidate)
+
+        self.assertEqual("50040360", primary.item_id)
+        self.assertEqual(primary.snippet, candidate.snippet)
+        evidence = self._evidence_line(candidate)
+        self.assertIn("SQLite 3.54.0 Released", evidence)
+        self.assertNotIn("ciupicri", evidence)
+
+    def test_card_evidence_matches_primary_when_sibling_scores_higher(self):
+        # A later sibling that wins the primary-score comparison must not put
+        # its text beside the first-attached submission's metrics either.
+        first, second = self._stories()
+        first.metadata["local_relevance"] = 0.3
+        second.snippet = "How nice of them to support Windows XP until now, says ciupicri."
+        streams = {("primary", "hackernews"): [first], ("release", "hackernews"): [second]}
+
+        candidate = fusion.weighted_rrf(streams, self._plan(), pool_limit=10)[0]
+        primary = schema.candidate_primary_item(candidate)
+
+        self.assertEqual(primary.snippet, candidate.snippet)
+        self.assertIn(primary.snippet, self._evidence_line(candidate))
+
+    def test_collapse_duplicate_urls_keeps_distinct_submissions(self):
+        first, second = self._stories()
+
+        out = fusion.collapse_duplicate_urls([first, second])
+
+        self._assert_unmerged(out)

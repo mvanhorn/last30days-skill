@@ -550,7 +550,13 @@ def test_pipeline_hackernews_stream_attaches_top_comments(mock_request):
 
     by_id = {item["id"]: item for item in items}
     assert by_id["1"]["top_comments"] == [
-        {"author": "alice", "text": "Great launch.", "points": 7}
+        {
+            "author": "alice",
+            "text": "Great launch.",
+            "points": 7,
+            # No Algolia child id, so the link is the story's discussion page.
+            "url": "https://news.ycombinator.com/item?id=1",
+        }
     ]
     assert by_id["1"]["comment_insights"] == ["Great launch."]
     item_urls = [

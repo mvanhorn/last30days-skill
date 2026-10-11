@@ -29,10 +29,12 @@ from . import (
     corpus,
     dates,
     dedupe,
+    devto,
     digg,
     dripstack,
     entity_extract,
     env,
+    fetch_memo,
     github,
     grok_x,
     grounding,
@@ -98,6 +100,7 @@ DEPTH_SETTINGS = {
 
 SEARCH_ALIAS = {
     "hn": "hackernews",
+    "dev.to": "devto",
     "bsky": "bluesky",
     "truth": "truthsocial",
     "web": "grounding",
@@ -117,7 +120,7 @@ SEARCH_ALIAS = {
 # resolved per run, so every subquery would issue the identical page fetch.
 MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
-    "telegram": 1, "meta_ads": 1,
+    "telegram": 1, "meta_ads": 1, "devto": 1,
 }
 
 # Sources whose thin result is their normal success state, so the "<3 items"
@@ -324,6 +327,7 @@ MOCK_AVAILABLE_SOURCES = [
     "corpus",
     "dripstack",
     "telegram",
+    "devto",
 ]
 
 
@@ -412,6 +416,15 @@ def available_sources(
         requested_sources and "dripstack" in requested_sources
     ):
         available.append("dripstack")
+    # dev.to follows the same default-off policy. Host-inferred tags
+    # (--devto-tags) activate it for that run, the --trustpilot-domain idiom,
+    # so tech topics get it without default runs sending every topic there.
+    if (
+        "devto" in include_sources
+        or (requested_sources and "devto" in requested_sources)
+        or config.get("_devto_tags")
+    ):
+        available.append("devto")
     if which("digg-pp-cli"):
         available.append("digg")
     # arXiv is default-on when its Printing Press CLI is installed (zero auth).
@@ -2296,6 +2309,10 @@ def run(
     # assign it (eligible_sources = available ∩ capabilities).
     config["_financial_topic"] = stocktwits.is_financial_topic(topic)
 
+    # A host-supplied plan's source lists are final: company-topic jobs is an
+    # automatic lane only for engine-planned runs.
+    host_plan = external_plan is not None
+    auto_company_jobs = not host_plan and _company_topic_likely(topic)
     if mock:
         runtime = providers.mock_runtime(config, depth)
         reasoning_provider = None
@@ -2304,7 +2321,7 @@ def run(
             available.append("corpus")
         if not corpus_enabled and not corpus_requested:
             available = [source for source in available if source != "corpus"]
-        if not requested_sources and not hiring_signals_mode and not _company_topic_likely(topic):
+        if not requested_sources and not hiring_signals_mode and not auto_company_jobs:
             available = [source for source in available if source != "jobs"]
     else:
         runtime, reasoning_provider = providers.resolve_runtime(config, depth)
@@ -2326,8 +2343,16 @@ def run(
         available.append("grounding")
     if (
         hiring_signals_mode
-        or (not requested_sources and _company_topic_likely(topic))
+        or (not requested_sources and auto_company_jobs)
     ) and "jobs" not in available:
+        available.append("jobs")
+    if (
+        host_plan
+        and not requested_sources
+        and "jobs" not in available
+        and "jobs" not in excluded_sources
+        and _external_plan_names_source(external_plan, "jobs")
+    ):
         available.append("jobs")
     if hiring_signals_mode:
         config = dict(config)
@@ -2345,6 +2370,15 @@ def run(
         # External plan provided (e.g., from Claude Code via --plan flag).
         # Explicit input is a contract: validate it before permissive sanitization.
         planner.validate_external_plan(external_plan)
+        if hiring_signals_mode:
+            # Hiring-signals mode always runs the jobs lane. Add it before
+            # sanitizing: with a jobs-only source set, sanitize would drop every
+            # subquery that does not already name jobs.
+            external_plan = copy.deepcopy(external_plan)
+            for subquery in external_plan["subqueries"]:
+                sources = subquery.setdefault("sources", [])
+                if isinstance(sources, list) and "jobs" not in sources:
+                    sources.append("jobs")
         plan = planner._sanitize_plan(
             external_plan, topic, available, planner_requested_sources, depth,
             honor_plan_sources=True,
@@ -2383,10 +2417,12 @@ def run(
         for sq in plan.subqueries:
             if "grounding" not in sq.sources:
                 sq.sources.append("grounding")
-    if "drill-mode" not in plan.notes:
+    if "drill-mode" not in plan.notes and (not host_plan or hiring_signals_mode):
         # Drill plans re-fetch only the sources that contributed to the matched
-        # cluster; the company-topic jobs injection must not widen that set.
+        # cluster, and host plans name their final source set; the company-topic
+        # jobs injection must not widen either.
         _ensure_jobs_in_plan(plan, available, explicit=hiring_signals_mode, topic=topic)
+        _ensure_devto_in_plan(plan, available)
     if "corpus" in available and plan.subqueries:
         # Corpus is deterministic and user-registered, so it always gets one
         # bounded stream even when a quick/LLM plan omits it. Reuse the primary
@@ -3030,6 +3066,7 @@ def run(
         model=None if mock else runtime.rerank_model,
         shortlist_size=settings["rerank_limit"],
         resolved_handles=resolved_handles,
+        primary_handle=x_handle,
     )
     # Corpus titles/snippets must never enter a hosted reasoning prompt. Score
     # every candidate carrying corpus evidence with the deterministic fallback,
@@ -3042,6 +3079,7 @@ def run(
         model=None,
         shortlist_size=settings["rerank_limit"],
         resolved_handles=resolved_handles,
+        primary_handle=x_handle,
     )
     ranked_public = rerank.prune_fallback_entity_misses(ranked_public, topic=topic)
     if hiring_summary:
@@ -3633,6 +3671,13 @@ def _finalize_items_by_source(
             else:
                 digg.enrich_source_items(items, top_k=3)
                 http.fixture_source_record(enrichment_request, schema.to_dict(items))
+        if source == "devto" and items and not mock:
+            matched, replayed = http.fixture_source_replay(enrichment_request)
+            if matched:
+                items = _merge_replayed_enrichment(items, replayed)
+            else:
+                devto.enrich_source_items(items)
+                http.fixture_source_record(enrichment_request, schema.to_dict(items))
         if source == "amazon" and items and not mock:
             # Attach-if-missing: review enrichment now runs at search time in
             # _retrieve_stream_impl, so items arriving here should already have
@@ -3695,6 +3740,38 @@ def _apply_hiring_signal_gate(
             if key[1] == "jobs":
                 del bundle.items_by_source_and_query[key]
     return summary
+
+
+def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
+    """Give an activated dev.to source the primary subquery.
+
+    dev.to is off by default, so a host plan built from the default source
+    list never names it. Once tags or INCLUDE_SOURCES turn it on, activation
+    must not be a no-op.
+    """
+    if "devto" not in available or not plan.subqueries:
+        return
+    # A plan that already routes dev.to keeps its route: MAX_SOURCE_FETCHES
+    # allows one dev.to fetch, and a second route would spend it first.
+    if not any("devto" in subquery.sources for subquery in plan.subqueries):
+        plan.subqueries[0].sources.append("devto")
+    if "devto" not in plan.source_weights:
+        plan.source_weights["devto"] = 1.0
+        plan.source_weights = planner._normalize_weights(plan.source_weights)
+
+
+def _external_plan_names_source(external_plan: Any, source: str) -> bool:
+    if not isinstance(external_plan, dict):
+        return False
+    subqueries = external_plan.get("subqueries")
+    if not isinstance(subqueries, list):
+        return False
+    return any(
+        isinstance(subquery, dict)
+        and isinstance(subquery.get("sources"), list)
+        and source in subquery["sources"]
+        for subquery in subqueries
+    )
 
 
 def _ensure_jobs_in_plan(
@@ -5228,6 +5305,217 @@ def _serve_envelope_lanes(
                 )
 
 
+# Artifact keys that mark a stream result as a failure (or a deferred one).
+# The fetch memo never caches such a result, so the thin-source retry and the
+# next stream still make a real attempt after a transient failure.
+_STREAM_FAILURE_ARTIFACT_KEYS = (
+    "_source_outcome",
+    "_source_outcome_deferred",
+    "_source_outcome_if_empty",
+    "_source_outcome_detail_state",
+)
+
+
+def _clean_stream_result(result: tuple[list[dict], dict]) -> bool:
+    _items, artifact = result
+    return not (
+        isinstance(artifact, dict)
+        and any(artifact.get(key) for key in _STREAM_FAILURE_ARTIFACT_KEYS)
+    )
+
+
+def _clean_search_result(result: Any) -> bool:
+    """A legacy ``{"error": ...}`` search result is a failure and is not cached."""
+    return not (isinstance(result, dict) and result.get("error"))
+
+
+def _memo_wait_seconds(config: dict[str, Any]) -> float:
+    """How long a stream may wait on an identical in-flight fetch: its own budget."""
+    return max(
+        0.0,
+        _research_deadline(config, STREAM_FUTURE_TIMEOUT_SECONDS) - time.monotonic(),
+    )
+
+
+_X_MEMO_WAIT_GRACE_SECONDS = 5.0
+
+
+def _attempt_x_backend_memo(
+    backend, query, from_date, to_date, depth, config, warnings=None, deadline=None,
+):
+    """:func:`_attempt_x_backend`, once per backend and query per run.
+
+    Only the backend call is shared: the judge and prune still run per
+    subquery with that subquery's ranking query.
+    """
+    def _fetch():
+        local_warnings: list[str] = []
+        items, err, err_state = _attempt_x_backend(
+            backend, query, from_date, to_date, depth, config,
+            warnings=local_warnings, deadline=deadline,
+        )
+        return items, err, err_state, local_warnings
+
+    # The owner is bounded by the same chain deadline, so a waiter allows a
+    # short grace past it for the owner to publish instead of timing out first.
+    wait = (
+        max(0.0, deadline - time.monotonic()) + _X_MEMO_WAIT_GRACE_SECONDS
+        if deadline is not None
+        else _memo_wait_seconds(config)
+    )
+    try:
+        items, err, err_state, backend_warnings = fetch_memo.fetch_once(
+            ("x", backend, query, from_date, to_date, depth),
+            _fetch,
+            timeout=wait,
+            cacheable=lambda outcome: not outcome[1],
+        )
+    except fetch_memo.MemoWaitTimeout as exc:
+        # A chain error like any backend timeout, so the chain's own error
+        # handling and outcome reporting apply.
+        return [], str(exc), health.TIMEOUT
+    if warnings is not None:
+        warnings.extend(backend_warnings)
+    return items, err, err_state
+
+
+def _fetch_youtube_stream(
+    yt_query: str,
+    from_date: str,
+    to_date: str,
+    depth: str,
+    config: dict[str, Any],
+    *,
+    has_ytdlp: bool,
+) -> tuple[list[dict], dict]:
+    """Search, backfill, transcribe, and comment-enrich one YouTube query."""
+    result = None
+    youtube_failure: str | None = None
+    recovered_failure: str | None = None
+    # ScrapeCreators key (when present) is the default-on backup tier: it
+    # powers the per-video transcript fallback, the SC search fallback, and
+    # comment enrichment. None when no key, which keeps everything keyless.
+    sc_token = (
+        config.get("SCRAPECREATORS_API_KEY", "")
+        if env.is_youtube_sc_available(config) else None
+    )
+    # Try yt-dlp first; the SC transcript fallback covers per-video failures.
+    if has_ytdlp:
+        try:
+            result = youtube_yt.search_and_transcribe(
+                yt_query, from_date, to_date, depth=depth, token=sc_token,
+            )
+            if result.get("error"):
+                youtube_failure = str(result["error"])
+        except Exception as exc:
+            youtube_failure = str(exc)
+            result = None
+    free_items = list((result or {}).get("items") or [])
+    min_items = env.youtube_sc_min_items(config)
+    backfill_thin = bool(free_items) and len(free_items) < min_items
+    thin_detail: str | None = None
+    thin_error = False
+    thin_retryable = False
+    if (not free_items or backfill_thin) and sc_token:
+        backfill_scope = (
+            http.capture_failures() if free_items else contextlib.nullcontext([])
+        )
+        try:
+            with backfill_scope as sc_failures:
+                transcribed_free_ids = {
+                    item["video_id"] for item in free_items
+                    if item.get("video_id")
+                    and str(item.get("transcript_snippet") or "").strip()
+                }
+                sc_result = youtube_yt.search_youtube_sc(
+                    yt_query, from_date, to_date, depth=depth, token=sc_token,
+                    skip_transcript_ids=transcribed_free_ids,
+                )
+            sc_error = str(sc_result["error"]) if sc_result.get("error") else None
+            if backfill_thin:
+                merged = _merge_youtube_items(free_items, sc_result.get("items") or [])
+                result = {"items": merged}
+                thin_detail = (
+                    f"yt-dlp returned {len(free_items)} videos below the "
+                    f"{min_items}-video backfill floor; ScrapeCreators added "
+                    f"{len(merged) - len(free_items)} videos"
+                )
+                if youtube_failure:
+                    thin_detail += f"; yt-dlp search: {youtube_failure}"
+                if sc_error:
+                    thin_detail += f"; ScrapeCreators search: {sc_error}"
+                if sc_failures:
+                    thin_detail += f"; ScrapeCreators: {_summarize_lane_failures(sc_failures, 'youtube')}"
+                thin_error = bool(youtube_failure or sc_error or sc_failures)
+                thin_retryable = thin_error and (
+                    len(merged) < min_items
+                    and (not youtube_failure or _retryable_youtube_error(youtube_failure))
+                    and (not sc_error or _retryable_youtube_error(sc_error))
+                    and all(
+                        _retryable_youtube_error(str(f), f.outcome_state)
+                        for f in sc_failures
+                    )
+                )
+                youtube_failure = None
+                recovered_failure = None
+            else:
+                result = sc_result
+                if sc_error:
+                    youtube_failure = sc_error
+                elif result.get("items") and youtube_failure:
+                    recovered_failure = youtube_failure
+                    youtube_failure = None
+        except Exception as exc:
+            prior_youtube_failure = youtube_failure
+            youtube_failure = str(exc)
+            result = {"items": free_items} if free_items else None
+            if backfill_thin:
+                thin_error = True
+                thin_detail = (
+                    f"yt-dlp returned {len(free_items)} videos below the "
+                    f"{min_items}-video backfill floor; ScrapeCreators failed: {exc}"
+                )
+                if prior_youtube_failure:
+                    thin_detail += f"; yt-dlp search: {prior_youtube_failure}"
+                thin_retryable = (
+                    _retryable_youtube_error(
+                        str(exc), getattr(exc, "outcome_state", None)
+                    )
+                    and (not prior_youtube_failure or _retryable_youtube_error(prior_youtube_failure))
+                )
+    if result is None:
+        result = {"items": []}
+    # Enrich top videos with comments (default-on when a key is present).
+    items = youtube_yt.parse_youtube_response(result)
+    if items and env.is_youtube_comments_available(config):
+        youtube_yt.enrich_with_comments(
+            items, token=config.get("SCRAPECREATORS_API_KEY", ""),
+        )
+    if thin_detail:
+        if not thin_error:
+            return items, {"_source_outcome_detail": thin_detail}
+        outcome = _outcome_artifact(health.PARTIAL, thin_detail)
+        if thin_retryable:
+            return items, {
+                "_source_outcome_detail": thin_detail,
+                "_source_outcome_deferred": outcome["_source_outcome"],
+            }
+        return items, outcome
+    if youtube_failure:
+        state = youtube_yt.classify_run_failure(youtube_failure)
+        attempted = state != schema.SKIPPED_UNCONFIGURED
+        return items, _outcome_artifact(state, youtube_failure, attempted=attempted)
+    if recovered_failure:
+        state = youtube_yt.classify_run_failure(recovered_failure)
+        attempted = state != schema.SKIPPED_UNCONFIGURED
+        return items, {
+            "_source_outcome_if_empty": _outcome_artifact(
+                state, recovered_failure, attempted=attempted,
+            )["_source_outcome"]
+        }
+    return items, {}
+
+
 def _retrieve_stream_impl(
     *,
     topic: str,
@@ -5479,7 +5767,7 @@ def _retrieve_stream_impl(
                 print("[X] chain budget exhausted; skipping remaining backends", file=sys.stderr)
                 break
             with http.tee_failures() as backend_failures:
-                items, err, err_state = _attempt_x_backend(
+                items, err, err_state = _attempt_x_backend_memo(
                     backend, x_query, from_date, to_date, depth, config, warnings=x_warnings,
                     deadline=chain_deadline,
                 )
@@ -5592,7 +5880,7 @@ def _retrieve_stream_impl(
                     if _research_stopped(config) or time.monotonic() >= chain_deadline:
                         print("[X] chain budget exhausted; skipping judge retry", file=sys.stderr)
                     else:
-                        retry_items, retry_err, _ = _attempt_x_backend(
+                        retry_items, retry_err, _ = _attempt_x_backend_memo(
                             used_backend, retry_query, from_date, to_date, depth, config,
                             deadline=chain_deadline,
                         )
@@ -5666,167 +5954,87 @@ def _retrieve_stream_impl(
         # Use raw_topic so expand_youtube_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         yt_query = raw_topic or subquery.search_query
-        result = None
-        youtube_failure: str | None = None
-        recovered_failure: str | None = None
-        # ScrapeCreators key (when present) is the default-on backup tier: it
-        # powers the per-video transcript fallback, the SC search fallback, and
-        # comment enrichment. None when no key, which keeps everything keyless.
-        sc_token = (
-            config.get("SCRAPECREATORS_API_KEY", "")
-            if env.is_youtube_sc_available(config) else None
+        has_ytdlp = bool(which("yt-dlp"))
+        # One memo unit covers yt-dlp search, the ScrapeCreators fallback and
+        # merge, transcripts, and comments, so subquery streams and the
+        # thin-source retry share one fetch (hosts without yt-dlp included).
+        return fetch_memo.fetch_once(
+            (
+                "youtube", yt_query, from_date, to_date, depth, has_ytdlp,
+                env.is_youtube_sc_available(config),
+                env.youtube_sc_min_items(config),
+                env.is_youtube_comments_available(config),
+            ),
+            lambda: _fetch_youtube_stream(
+                yt_query, from_date, to_date, depth, config, has_ytdlp=has_ytdlp,
+            ),
+            timeout=_memo_wait_seconds(config),
+            cacheable=_clean_stream_result,
         )
-        # Try yt-dlp first; the SC transcript fallback covers per-video failures.
-        if which("yt-dlp"):
-            try:
-                result = youtube_yt.search_and_transcribe(
-                    yt_query, from_date, to_date, depth=depth, token=sc_token,
-                )
-                if result.get("error"):
-                    youtube_failure = str(result["error"])
-            except Exception as exc:
-                youtube_failure = str(exc)
-                result = None
-        free_items = list((result or {}).get("items") or [])
-        min_items = env.youtube_sc_min_items(config)
-        backfill_thin = bool(free_items) and len(free_items) < min_items
-        thin_detail: str | None = None
-        thin_error = False
-        thin_retryable = False
-        if (not free_items or backfill_thin) and sc_token:
-            backfill_scope = (
-                http.capture_failures() if free_items else contextlib.nullcontext([])
-            )
-            try:
-                with backfill_scope as sc_failures:
-                    transcribed_free_ids = {
-                        item["video_id"] for item in free_items
-                        if item.get("video_id")
-                        and str(item.get("transcript_snippet") or "").strip()
-                    }
-                    sc_result = youtube_yt.search_youtube_sc(
-                        yt_query, from_date, to_date, depth=depth, token=sc_token,
-                        skip_transcript_ids=transcribed_free_ids,
-                    )
-                sc_error = str(sc_result["error"]) if sc_result.get("error") else None
-                if backfill_thin:
-                    merged = _merge_youtube_items(free_items, sc_result.get("items") or [])
-                    result = {"items": merged}
-                    thin_detail = (
-                        f"yt-dlp returned {len(free_items)} videos below the "
-                        f"{min_items}-video backfill floor; ScrapeCreators added "
-                        f"{len(merged) - len(free_items)} videos"
-                    )
-                    if youtube_failure:
-                        thin_detail += f"; yt-dlp search: {youtube_failure}"
-                    if sc_error:
-                        thin_detail += f"; ScrapeCreators search: {sc_error}"
-                    if sc_failures:
-                        thin_detail += f"; ScrapeCreators: {_summarize_lane_failures(sc_failures, 'youtube')}"
-                    thin_error = bool(youtube_failure or sc_error or sc_failures)
-                    thin_retryable = thin_error and (
-                        len(merged) < min_items
-                        and (not youtube_failure or _retryable_youtube_error(youtube_failure))
-                        and (not sc_error or _retryable_youtube_error(sc_error))
-                        and all(
-                            _retryable_youtube_error(str(f), f.outcome_state)
-                            for f in sc_failures
-                        )
-                    )
-                    youtube_failure = None
-                    recovered_failure = None
-                else:
-                    result = sc_result
-                    if sc_error:
-                        youtube_failure = sc_error
-                    elif result.get("items") and youtube_failure:
-                        recovered_failure = youtube_failure
-                        youtube_failure = None
-            except Exception as exc:
-                prior_youtube_failure = youtube_failure
-                youtube_failure = str(exc)
-                result = {"items": free_items} if free_items else None
-                if backfill_thin:
-                    thin_error = True
-                    thin_detail = (
-                        f"yt-dlp returned {len(free_items)} videos below the "
-                        f"{min_items}-video backfill floor; ScrapeCreators failed: {exc}"
-                    )
-                    if prior_youtube_failure:
-                        thin_detail += f"; yt-dlp search: {prior_youtube_failure}"
-                    thin_retryable = (
-                        _retryable_youtube_error(
-                            str(exc), getattr(exc, "outcome_state", None)
-                        )
-                        and (not prior_youtube_failure or _retryable_youtube_error(prior_youtube_failure))
-                    )
-        if result is None:
-            result = {"items": []}
-        # Enrich top videos with comments (default-on when a key is present).
-        items = youtube_yt.parse_youtube_response(result)
-        if items and env.is_youtube_comments_available(config):
-            youtube_yt.enrich_with_comments(
-                items, token=config.get("SCRAPECREATORS_API_KEY", ""),
-            )
-        if thin_detail:
-            if not thin_error:
-                return items, {"_source_outcome_detail": thin_detail}
-            outcome = _outcome_artifact(health.PARTIAL, thin_detail)
-            if thin_retryable:
-                return items, {
-                    "_source_outcome_detail": thin_detail,
-                    "_source_outcome_deferred": outcome["_source_outcome"],
-                }
-            return items, outcome
-        if youtube_failure:
-            state = youtube_yt.classify_run_failure(youtube_failure)
-            attempted = state != schema.SKIPPED_UNCONFIGURED
-            return items, _outcome_artifact(state, youtube_failure, attempted=attempted)
-        if recovered_failure:
-            state = youtube_yt.classify_run_failure(recovered_failure)
-            attempted = state != schema.SKIPPED_UNCONFIGURED
-            return items, {
-                "_source_outcome_if_empty": _outcome_artifact(
-                    state, recovered_failure, attempted=attempted,
-                )["_source_outcome"]
-            }
-        return items, {}
     if source == "tiktok":
         # Use raw_topic so expand_tiktok_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         tiktok_query = raw_topic or subquery.search_query
-        result = tiktok.search_and_enrich(
-            tiktok_query,
-            from_date,
-            to_date,
-            depth=depth,
-            token=env.get_tiktok_token(config),
-            hashtags=tiktok_hashtags,
-            creators=tiktok_creators,
+
+        def _fetch_tiktok() -> tuple[list[dict], dict]:
+            result = tiktok.search_and_enrich(
+                tiktok_query,
+                from_date,
+                to_date,
+                depth=depth,
+                token=env.get_tiktok_token(config),
+                hashtags=tiktok_hashtags,
+                creators=tiktok_creators,
+            )
+            items = tiktok.parse_tiktok_response(result)
+            if items and env.is_tiktok_comments_available(config):
+                sc_token = config.get("SCRAPECREATORS_API_KEY", "")
+                tiktok.enrich_with_comments(items, token=sc_token)
+            return items, _result_outcome_artifact(source, result)
+
+        return fetch_memo.fetch_once(
+            (
+                "tiktok", tiktok_query, from_date, to_date, depth,
+                bool(env.get_tiktok_token(config)),
+                tuple(tiktok_hashtags or ()), tuple(tiktok_creators or ()),
+                env.is_tiktok_comments_available(config),
+            ),
+            _fetch_tiktok,
+            timeout=_memo_wait_seconds(config),
+            cacheable=_clean_stream_result,
         )
-        items = tiktok.parse_tiktok_response(result)
-        if items and env.is_tiktok_comments_available(config):
-            sc_token = config.get("SCRAPECREATORS_API_KEY", "")
-            tiktok.enrich_with_comments(items, token=sc_token)
-        return items, _result_outcome_artifact(source, result)
     if source == "instagram":
         # Use raw_topic so expand_instagram_queries() generates diverse variants
         # from the original user topic, not the planner's narrowed search_query.
         ig_query = raw_topic or subquery.search_query
-        result = instagram.search_and_enrich(
-            ig_query,
-            from_date,
-            to_date,
-            depth=depth,
-            token=env.get_instagram_token(config),
-            ig_creators=ig_creators,
-        )
-        items = instagram.parse_instagram_response(result)
-        if items and env.is_instagram_comments_available(config):
-            instagram.enrich_with_comments(
-                items, token=config.get("SCRAPECREATORS_API_KEY", ""),
+
+        def _fetch_instagram() -> tuple[list[dict], dict]:
+            result = instagram.search_and_enrich(
+                ig_query,
+                from_date,
+                to_date,
+                depth=depth,
+                token=env.get_instagram_token(config),
+                ig_creators=ig_creators,
             )
-        return items, _result_outcome_artifact(source, result)
+            items = instagram.parse_instagram_response(result)
+            if items and env.is_instagram_comments_available(config):
+                instagram.enrich_with_comments(
+                    items, token=config.get("SCRAPECREATORS_API_KEY", ""),
+                )
+            return items, _result_outcome_artifact(source, result)
+
+        return fetch_memo.fetch_once(
+            (
+                "instagram", ig_query, from_date, to_date, depth,
+                bool(env.get_instagram_token(config)),
+                tuple(ig_creators or ()),
+                env.is_instagram_comments_available(config),
+            ),
+            _fetch_instagram,
+            timeout=_memo_wait_seconds(config),
+            cacheable=_clean_stream_result,
+        )
     if source == "linkedin":
         token = config.get("SCRAPECREATORS_API_KEY", "")
         result = linkedin.search_linkedin(
@@ -5852,6 +6060,17 @@ def _retrieve_stream_impl(
         # hackernews.ENRICH_LIMITS per depth).
         items = hackernews.enrich_top_stories(items, depth=depth)
         return items, _result_outcome_artifact(source, result)
+    if source == "devto":
+        relevance_topic = raw_topic or topic or subquery.search_query
+        result = devto.search_devto(
+            relevance_topic, from_date, to_date, depth=depth,
+            tags=(config or {}).get("_devto_tags"),
+            search_query=subquery.search_query,
+        )
+        items = devto.parse_devto_response(result, query=relevance_topic)
+        # Comment enrichment is deferred to _finalize_items_by_source so it
+        # lands on the articles that survive relevance pruning.
+        return items, _result_outcome_artifact(source, result)
     if source == "stocktwits":
         # Pass raw_topic so symbol detection sees the full topic, not the
         # narrowed per-subquery search_query (same rationale as reddit).
@@ -5870,7 +6089,14 @@ def _retrieve_stream_impl(
             _result_outcome_artifact(source, result),
         )
     if source == "digg":
-        result = digg.search_digg(subquery.search_query, from_date, to_date, depth=depth)
+        # The thin-source retry's core subject often equals a planner
+        # subquery's search, so share the identical CLI call within a run.
+        result = fetch_memo.fetch_once(
+            ("digg", subquery.search_query, from_date, to_date, depth),
+            lambda: digg.search_digg(subquery.search_query, from_date, to_date, depth=depth),
+            timeout=_memo_wait_seconds(config),
+            cacheable=_clean_search_result,
+        )
         items = digg.parse_digg_response(result, query=subquery.search_query)
         # Enrichment with attached X posts is deferred to
         # _finalize_items_by_source so it runs on the items that actually
@@ -6008,7 +6234,16 @@ def _retrieve_stream_impl(
         result = truthsocial.search_truthsocial(subquery.search_query, from_date, to_date, depth=depth, config=config)
         return truthsocial.parse_truthsocial_response(result), _result_outcome_artifact(source, result)
     if source == "polymarket":
-        result = polymarket.search_polymarket(subquery.search_query, from_date, to_date, depth=depth)
+        # Same sharing as digg: only the search is memoized; parsing still
+        # runs per caller with its own relevance topic.
+        result = fetch_memo.fetch_once(
+            ("polymarket", subquery.search_query, from_date, to_date, depth),
+            lambda: polymarket.search_polymarket(
+                subquery.search_query, from_date, to_date, depth=depth,
+            ),
+            timeout=_memo_wait_seconds(config),
+            cacheable=_clean_search_result,
+        )
         # Relevance filtering keys off the stable original research topic, not the
         # per-subquery search_query (which narrows differently on each fanout pass
         # and would let off-topic markets through on broad subqueries while dropping

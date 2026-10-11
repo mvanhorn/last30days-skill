@@ -161,6 +161,7 @@ SOURCE_ORDER = (
     "hackernews",
     "polymarket",
     "github",
+    "devto",
     "digg",
     "techmeme",
     "arxiv",
@@ -674,6 +675,17 @@ def _hackernews_record(config):
     return _record(status=health.OK, requires="none (free Algolia API)")
 
 
+def _devto_record(config):
+    requires = "none (public Forem API)"
+    if "devto" in env.include_sources(config):
+        return _record(status=health.OK, requires=requires)
+    return _record(
+        status="opt-in", requires=requires,
+        fix="add devto to INCLUDE_SOURCES (or request it via --search devto)",
+        note="off by default; --devto-tags activates it for a run",
+    )
+
+
 def _polymarket_record(config):
     return _record(status=health.OK, requires="none (public API)")
 
@@ -985,6 +997,7 @@ _SOURCE_BUILDERS: Dict[str, Callable[[Dict[str, Any]], Dict[str, Any]]] = {
     "hackernews": _hackernews_record,
     "polymarket": _polymarket_record,
     "github": _github_record,
+    "devto": _devto_record,
     "digg": _digg_record,
     "techmeme": _techmeme_record,
     "arxiv": _arxiv_record,
