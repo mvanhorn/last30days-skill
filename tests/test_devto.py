@@ -341,3 +341,14 @@ def test_enrichment_stops_waiting_at_its_time_limit(monkeypatch):
     release.set()
     assert elapsed < 2
     assert not items[0].metadata.get("top_comments")
+
+
+def test_existing_devto_route_is_left_alone():
+    from lib import schema
+
+    plan = _plan(["hackernews"])
+    plan.subqueries.append(schema.SubQuery(label="focused", search_query="claude code hooks",
+                                           ranking_query="q", sources=["devto"], weight=1.0))
+    pipeline._ensure_devto_in_plan(plan, ["hackernews", "devto"])
+    assert plan.subqueries[0].sources == ["hackernews"]
+    assert plan.subqueries[1].sources == ["devto"]

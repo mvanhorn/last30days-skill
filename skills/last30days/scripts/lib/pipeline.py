@@ -3726,7 +3726,9 @@ def _ensure_devto_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
     """
     if "devto" not in available or not plan.subqueries:
         return
-    if "devto" not in plan.subqueries[0].sources:
+    # A plan that already routes dev.to keeps its route: MAX_SOURCE_FETCHES
+    # allows one dev.to fetch, and a second route would spend it first.
+    if not any("devto" in subquery.sources for subquery in plan.subqueries):
         plan.subqueries[0].sources.append("devto")
     if "devto" not in plan.source_weights:
         plan.source_weights["devto"] = 1.0
