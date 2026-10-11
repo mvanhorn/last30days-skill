@@ -272,20 +272,73 @@ def engagement_raw(item: schema.SourceItem) -> float | None:
     return _generic_engagement(item)
 
 
+# Per-source log reference for engagement_score, in each source's own units.
+# Same convention as _VOTE_LOG_REFERENCE (which it extends): the value is
+# engagement_raw for a "very high" item, so that item scores 100 and, the scale
+# being logarithmic, roughly its square root scores 50. Every source that can
+# reach engagement_raw is listed here or in _NO_ENGAGEMENT_SCORE_SOURCES; an
+# unlisted source gets no score rather than an assumed Reddit-vote scale.
+_ENGAGEMENT_LOG_REFERENCE: dict[str, float] = {
+    **_VOTE_LOG_REFERENCE,
+    # Microblog likes/reposts/replies run on X's scale (~10k likes is very high).
+    "truthsocial": 9.2,  # ~log1p(10000)
+    "threads":     9.2,  # ~log1p(10000)
+    # Likes/comments/favorites on an Instagram-like feed.
+    "xiaohongshu": 9.2,  # ~log1p(10000)
+    # Saves on a viral pin reach ~10k.
+    "pinterest":   9.2,  # ~log1p(10000)
+    # Reactions run like Reddit upvotes: a viral post has ~2k.
+    "linkedin":    7.6,  # ~log1p(2000)
+    # Mixes per-issue reactions/comments (hundreds) with lifetime repo stars
+    # (tens of thousands); ~10k sits between, so a ~100-reaction thread lands
+    # near 50 and only a very large repo nears 100.
+    "github":      9.2,  # ~log1p(10000)
+    # Dollars, not votes. polymarket.py's own saturation anchors: $9M volume
+    # (log1p 16) and $1.2M liquidity (log1p 14), weighted 0.6/0.4 as in
+    # ENGAGEMENT_WEIGHTS: 0.6*16 + 0.4*14 = 15.2.
+    "polymarket": 15.2,
+    # A rank-1 cluster (rank_score 50) with ~100 posts from ~100 authors:
+    # 0.4*log1p(100) + 0.3*log1p(100) + 0.3*log1p(50) = 4.4.
+    "digg":        4.4,
+    # Lifetime totals for a whole company or product, not one post: big
+    # consumer brands and best-sellers carry ~100k, so ~300 lands near 50.
+    "trustpilot": 11.5,  # ~log1p(100000) reviews
+    "amazon":     11.5,  # ~log1p(100000) ratings
+}
+
+# Sources whose engagement fields are not an audience response, so no
+# engagement score is comparable with votes or likes:
+#   jobs       - a constant open_roles=1 per posting
+#   meta_ads   - variant count measures the advertiser's push, not reach
+#   grounding, perplexity - web results; counts are citations, not readers
+#   stocktwits - the author's follower count dominates sparse likes/reshares
+#   telegram   - the channel's subscriber count dominates per-post views
+#   arxiv, techmeme, dripstack, corpus - no engagement fields at all
+_NO_ENGAGEMENT_SCORE_SOURCES = frozenset({
+    "jobs", "meta_ads", "grounding", "perplexity", "stocktwits", "telegram",
+    "arxiv", "techmeme", "dripstack", "corpus",
+})
+
+
 def engagement_score(item: schema.SourceItem) -> int | None:
     """Engagement on an absolute 0-100 scale, comparable across streams.
 
     ``engagement_raw`` is a weighted mean of log1p counts, so dividing it by
-    the platform's log reference (the same ``_VOTE_LOG_REFERENCE`` used for
-    comment votes) places a 254-upvote Reddit thread near 50 and a 3-like X
-    post near 8 no matter what else shares their stream. The per-stream
+    the source's log reference (``_ENGAGEMENT_LOG_REFERENCE``, in that
+    source's own units) places a 250-upvote Reddit thread near 50 and a 3-like
+    X post near 8 no matter what else shares their stream. The per-stream
     min-max rescale this replaces mapped every stream's best item to 100 and
     a lone item to 50, so the score said nothing about actual engagement.
+    Sources without a comparable audience signal return None.
     """
+    if item.source in _NO_ENGAGEMENT_SCORE_SOURCES:
+        return None
+    ref = _ENGAGEMENT_LOG_REFERENCE.get(item.source)
+    if ref is None:
+        return None
     raw = engagement_raw(item)
     if raw is None:
         return None
-    ref = _VOTE_LOG_REFERENCE.get(item.source, _VOTE_LOG_REFERENCE_DEFAULT)
     return int(round(100.0 * max(0.0, min(1.0, raw / ref))))
 
 

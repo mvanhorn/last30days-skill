@@ -137,10 +137,13 @@ def test_fallback_final_score_counts_freshness_once():
 # --- Fix 3: the <20 rerank cliff applies to LLM scores only -------------------
 
 def test_fallback_scored_candidate_below_20_is_not_cliffed():
-    fallback = _candidate(explanation="fallback-local-score")
+    fallback = _candidate(text="SQLite fallback")
+    rerank._apply_fallback_scores([fallback])
     fallback.rerank_score = 18.0
-    llm = _candidate(explanation="weak match")
-    llm.rerank_score = 18.0
+    llm = _candidate(text="SQLite judged")
+    rerank._apply_llm_scores(
+        [llm], {"scores": [{"candidate_id": llm.candidate_id, "relevance": 18, "reason": "weak match"}]}
+    )
     assert abs(rerank._final_score(llm) - 0.3 * rerank._final_score(fallback)) < 1e-6
 
 
@@ -174,7 +177,7 @@ def test_all_items_by_source_prints_local_rank_score_on_a_100_scale():
 
 # --- Fix 5: first-party floors only for on-topic posts or the topic's handle --
 
-def _rerank_one_with_peers(topic, target, handles):
+def _rerank_one_with_peers(topic, target, handles, primary_handle=None):
     peers = [
         _candidate(author=f"peer{i}", text=f"{topic} thoughts {i}", engagement=e, freshness=80)
         for i, e in enumerate((1, 2))
@@ -184,7 +187,7 @@ def _rerank_one_with_peers(topic, target, handles):
         c.candidate_id = f"{c.candidate_id}-{id(c)}"
     rerank.rerank_candidates(
         topic=topic, plan=_plan(topic), candidates=pool, provider=None, model=None,
-        shortlist_size=10, resolved_handles=set(handles),
+        shortlist_size=10, resolved_handles=set(handles), primary_handle=primary_handle,
     )
     return target
 
@@ -192,7 +195,8 @@ def _rerank_one_with_peers(topic, target, handles):
 def test_off_topic_first_party_reply_is_not_floored():
     nanit = _candidate(author="mitchellh", text="@johnsoncory_ Nanit", rel=0.0,
                        mentions=["johnsoncory_"], engagement=20, freshness=82)
-    _rerank_one_with_peers("Ghostty terminal", nanit, {"mitchellh"})
+    # --x-handle mitchellh: the primary handle, but not the topic's own account.
+    _rerank_one_with_peers("Ghostty terminal", nanit, {"mitchellh"}, primary_handle="mitchellh")
     # Its own score stands: no interaction / first-party / rescue floor lifted it.
     assert nanit.final_score == rerank._final_score(nanit)
     assert nanit.final_score < rerank.FIRST_PARTY_FLOOR
@@ -222,20 +226,20 @@ def test_on_topic_first_party_reply_is_still_floored():
 
 
 def test_person_topic_subject_reply_is_still_floored():
-    """214a8fa0's case: the subject's own reply never names them."""
+    """214a8fa0's case: the subject's own reply never names them (--x-handle steipete)."""
     c = _candidate(author="steipete", text="@someone thanks, shipping tonight", rel=0.0,
                    mentions=["someone"])
     c.final_score = 5.0
     rerank._apply_interaction_signal(
         [c], resolved_handles={"steipete"}, primary_entity="Peter Steinberger",
-        topic="Peter Steinberger",
+        topic="Peter Steinberger", primary_handle="steipete",
     )
     assert c.final_score >= rerank.INTERACTION_FLOOR
     d = _candidate(author="steipete", text="shipping tonight", rel=0.0)
     d.final_score = 2.0
     rerank._apply_first_party_floor(
         [d], resolved_handles={"steipete"}, primary_entity="Peter Steinberger",
-        topic="Peter Steinberger",
+        topic="Peter Steinberger", primary_handle="steipete",
     )
     assert d.final_score >= rerank.FIRST_PARTY_FLOOR
 
@@ -243,7 +247,7 @@ def test_person_topic_subject_reply_is_still_floored():
 def test_person_topic_end_to_end_keeps_subject_reply_floored():
     reply = _candidate(author="steipete", text="@someone thanks, shipping tonight", rel=0.0,
                        mentions=["someone"], engagement=1, freshness=80)
-    _rerank_one_with_peers("Peter Steinberger", reply, {"steipete"})
+    _rerank_one_with_peers("Peter Steinberger", reply, {"steipete"}, primary_handle="steipete")
     assert reply.final_score >= rerank.INTERACTION_FLOOR
 
 
@@ -269,3 +273,120 @@ def test_off_topic_first_party_gets_no_authorship_credit():
     base, _ = rerank._fallback_tuple(stranger)
     assert off_score == base
     assert "entity-miss" not in off_reason
+
+
+# --- Review fixes: provenance, subject role, short topics, engagement units --
+
+def test_llm_reason_starting_with_fallback_is_still_cliffed():
+    """Provenance comes from the scoring path, not the explanation wording."""
+    tricky = _candidate(text="SQLite tricky")
+    plain = _candidate(text="SQLite plain")
+    payload = {"scores": [
+        {"candidate_id": tricky.candidate_id, "relevance": 10,
+         "reason": "fallback option only, barely related"},
+        {"candidate_id": plain.candidate_id, "relevance": 10, "reason": "barely related"},
+    ]}
+    rerank._apply_llm_scores([tricky, plain], payload)
+    assert tricky.explanation == "fallback option only, barely related"
+    assert abs(tricky.final_score - plain.final_score) < 1e-9
+
+
+def test_unscored_candidate_in_llm_batch_is_fallback_scored_and_not_cliffed():
+    missing = _candidate(rel=0.1, text="SQLite missing")
+    rerank._apply_llm_scores([missing], {"scores": []})
+    assert missing.rerank_score < 20.0
+    assert missing.explanation == "fallback-local-score"
+    assert rerank._is_fallback_scored(missing)
+
+
+def test_related_handle_inside_a_topic_word_is_not_a_subject():
+    """'art' sits inside 'smart', but a related handle is never the subject."""
+    reply = _candidate(author="art", text="@friend lunch was great", rel=0.0, mentions=["friend"])
+    reply.final_score = 5.0
+    rerank._apply_interaction_signal(
+        [reply], resolved_handles={"art"}, primary_entity="Smart home", topic="Smart home",
+    )
+    assert reply.final_score == 5.0
+    post = _candidate(author="art", text="lunch was great", rel=0.0)
+    post.final_score = 2.0
+    rerank._apply_first_party_floor(
+        [post], resolved_handles={"art"}, primary_entity="Smart home", topic="Smart home",
+    )
+    assert post.final_score == 2.0
+
+
+def test_related_handle_off_topic_post_end_to_end_gets_no_lift():
+    reply = _candidate(author="art", text="@friend lunch was great", rel=0.0,
+                       mentions=["friend"], engagement=30, freshness=82)
+    _rerank_one_with_peers("Smart home", reply, {"art", "homeowner"}, primary_handle="homeowner")
+    assert reply.final_score == rerank._final_score(reply)
+    assert reply.final_score < rerank.FIRST_PARTY_FLOOR
+
+
+def test_primary_handle_must_still_name_the_topic():
+    assert rerank._subject_handles("steipete", "Peter Steinberger") == {"steipete"}
+    assert rerank._subject_handles("@SteiPete", "Peter Steinberger") == {"steipete"}
+    assert rerank._subject_handles("mitchellh", "Ghostty terminal") == set()
+    assert rerank._subject_handles(None, "Smart home") == set()
+
+
+def test_short_topic_related_handle_off_topic_post_is_not_floored():
+    """'Go' cannot be grounded safely, so the floors need real relevance."""
+    reply = _candidate(author="rob", text="@friend lunch was great", rel=0.0,
+                       mentions=["friend"], engagement=30, freshness=82)
+    _rerank_one_with_peers("Go", reply, {"rob"})
+    assert reply.final_score == rerank._final_score(reply)
+    assert reply.final_score < rerank.FIRST_PARTY_FLOOR
+
+
+def test_short_topic_on_topic_first_party_post_is_still_floored():
+    c = _candidate(author="rob", text="@someone go 1.26 generics are great", rel=0.5,
+                   mentions=["someone"])
+    c.final_score = 5.0
+    rerank._apply_interaction_signal(
+        [c], resolved_handles={"rob"}, primary_entity="Go", topic="Go",
+    )
+    assert c.final_score >= rerank.INTERACTION_FLOOR
+
+
+def test_polymarket_engagement_does_not_saturate_on_dollar_amounts():
+    pm = _item("pm", "polymarket", "Will SQLite 4 ship?", TO,
+               {"volume": 5678, "liquidity": 100000})
+    reddit = _item("r", "reddit", "SQLite thread", TO, {"score": 250, "num_comments": 24})
+    assert signals.engagement_score(reddit) == 51
+    # 0.6*log1p(5678) + 0.4*log1p(100000) over polymarket.py's own anchors
+    # (0.6*16 + 0.4*14 = 15.2): 9.79 / 15.2.
+    assert signals.engagement_score(pm) == 64
+
+
+def test_engagement_reference_units_per_source():
+    def score(source, engagement):
+        return signals.engagement_score(_item("i", source, "t", TO, engagement))
+
+    # Lifetime totals on a company or product: ~300 maps near 50, not 100.
+    assert score("trustpilot", {"reviews": 300, "trustScore": 4.2}) == 50
+    assert score("amazon", {"ratings": 300}) == 50
+    # A busy issue sits mid-scale; a mega repo nears the top without a 2k-star repo saturating.
+    assert 40 <= score("github", {"reactions": 50, "comments": 80}) <= 55
+    assert score("github", {"stars": 2000, "comments": 50}) < 70
+    # A rank-1 Digg cluster with 15 posts is strong but not saturated.
+    assert 60 <= score("digg", {"postCount": 15, "uniqueAuthors": 10, "rank_score": 50}) <= 75
+    # No audience signal: no engagement score at all.
+    assert score("jobs", {"open_roles": 1}) is None
+    assert score("meta_ads", {"variants": 7}) is None
+    assert score("perplexity", {"citations": 12}) is None
+    assert score("grounding", {"citations": 3}) is None
+    assert score("stocktwits", {"likes": 0, "reshares": 0, "followers": 50000}) is None
+    assert score("telegram", {"views": 100, "reactions": 0, "subscribers": 1000000}) is None
+
+
+def test_every_source_declares_its_engagement_units():
+    from lib import pipeline
+
+    sources = set(pipeline.MOCK_AVAILABLE_SOURCES) | {"stocktwits"}
+    undeclared = {
+        s for s in sources
+        if s not in signals._ENGAGEMENT_LOG_REFERENCE
+        and s not in signals._NO_ENGAGEMENT_SCORE_SOURCES
+    }
+    assert undeclared == set()

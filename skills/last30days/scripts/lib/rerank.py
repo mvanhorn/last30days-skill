@@ -265,6 +265,7 @@ def rerank_candidates(
     model: str | None,
     shortlist_size: int,
     resolved_handles: set[str] | None = None,
+    primary_handle: str | None = None,
 ) -> list[schema.Candidate]:
     """Rerank the fused shortlist, demoting candidates the reranker scored as irrelevant.
 
@@ -274,11 +275,15 @@ def rerank_candidates(
     exempted from the entity-miss demotion in ``_fallback_tuple`` (a post almost
     never repeats its own author's name, so the body-text grounding check would
     otherwise bury the subject's own highest-signal posts).
+
+    ``primary_handle`` is the run's ``--x-handle``: the one handle in the
+    subject role. Only it can be the topic's own account (_subject_handles);
+    ``--x-related`` and discovered handles are first-party but never subjects.
     """
     handles = resolved_handles or set()
     shortlisted = candidates[:shortlist_size]
     primary_entity = _primary_entity(topic)
-    subject = _subject_handles(handles, topic)
+    subject = _subject_handles(primary_handle, topic)
     if provider and model and shortlisted:
         try:
             response = provider.generate_json(
@@ -302,9 +307,18 @@ def rerank_candidates(
             tail, primary_entity=primary_entity, resolved_handles=handles, subject_handles=subject
         )
 
-    _apply_first_party_floor(candidates, resolved_handles=handles, primary_entity=primary_entity, topic=topic)
-    _apply_engagement_rescue(candidates, primary_entity=primary_entity, resolved_handles=handles, topic=topic)
-    _apply_interaction_signal(candidates, resolved_handles=handles, primary_entity=primary_entity, topic=topic)
+    _apply_first_party_floor(
+        candidates, resolved_handles=handles, primary_entity=primary_entity, topic=topic,
+        primary_handle=primary_handle,
+    )
+    _apply_engagement_rescue(
+        candidates, primary_entity=primary_entity, resolved_handles=handles, topic=topic,
+        primary_handle=primary_handle,
+    )
+    _apply_interaction_signal(
+        candidates, resolved_handles=handles, primary_entity=primary_entity, topic=topic,
+        primary_handle=primary_handle,
+    )
 
     return sorted(
         candidates,
@@ -447,11 +461,15 @@ def _apply_llm_scores(
             str(row.get("reason") or "").strip() or None,
         )
     for candidate in candidates:
-        rerank_score, reason = scores.get(
-            candidate.candidate_id, _fallback_tuple(candidate, resolved_handles=handles)
-        )
+        if candidate.candidate_id in scores:
+            rerank_score, reason = scores[candidate.candidate_id]
+            provenance = RERANK_PROVENANCE_LLM
+        else:
+            rerank_score, reason = _fallback_tuple(candidate, resolved_handles=handles)
+            provenance = RERANK_PROVENANCE_FALLBACK
         candidate.rerank_score = rerank_score
         candidate.explanation = reason
+        _set_rerank_provenance(candidate, provenance)
         candidate.final_score = _final_score(candidate)
 
 
@@ -472,6 +490,7 @@ def _apply_fallback_scores(
         )
         candidate.rerank_score = rerank_score
         candidate.explanation = reason
+        _set_rerank_provenance(candidate, RERANK_PROVENANCE_FALLBACK)
         candidate.final_score = _final_score(candidate)
 
 
@@ -544,9 +563,22 @@ def _spelled_from_word_prefixes(rest: str, words: list[str], used: frozenset[int
     return False
 
 
-def _subject_handles(resolved_handles: set[str], topic: str) -> set[str]:
-    """Resolved handles that are the topic's own account (see _handle_is_topic)."""
-    return {handle for handle in resolved_handles if _handle_is_topic(handle, topic)}
+def _subject_handles(primary_handle: str | None, topic: str) -> set[str]:
+    """The topic's own account: the primary handle, when it names the topic.
+
+    Only ``--x-handle`` holds the subject role. A related handle is someone
+    near the topic, so it never qualifies, even when its letters happen to sit
+    inside a topic word ("art" in "Smart home"). The primary handle must still
+    name the topic (_handle_is_topic), so ``--x-handle mitchellh`` on
+    "Ghostty terminal" is a related voice, not the subject. Known false
+    negative: an alias handle that shares no letters with the name
+    ("mrbeast" for "Jimmy Donaldson") is not a subject; its on-topic posts
+    still earn the floors through grounding or relevance.
+    """
+    handle = (primary_handle or "").lstrip("@").strip().lower()
+    if handle and _handle_is_topic(handle, topic):
+        return {handle}
+    return set()
 
 
 def _first_party_floor_eligible(
@@ -564,13 +596,17 @@ def _first_party_floor_eligible(
     account, whose posts never name their author. A related handle's
     off-topic reply ("@friend Nanit" on a Ghostty run) stays where its own
     score puts it. With no primary entity every post counts as on-topic.
+
+    Grounding counts only when it is positively established. For a short
+    generic topic ("Go") _entity_grounded cannot test a match and passes
+    everything, so there the post must clear the relevance floor instead.
     """
     if not _is_first_party(candidate, resolved_handles):
         return False
     if subject_handles and _candidate_author_handle(candidate) in subject_handles:
         return True
     return (
-        _is_entity_grounded(candidate, primary_entity)
+        _is_entity_positively_grounded(candidate, primary_entity)
         or candidate.local_relevance >= relevance.RELEVANCE_FLOOR
     )
 
@@ -584,6 +620,20 @@ def _is_x_candidate(candidate: schema.Candidate) -> bool:
 
 def _candidate_engagement(candidate: schema.Candidate) -> float:
     return candidate.engagement if candidate.engagement is not None else 0.0
+
+
+def _is_entity_positively_grounded(candidate: schema.Candidate, primary_entity: str) -> bool:
+    """Like _is_entity_grounded, but False where grounding cannot be tested.
+
+    _entity_grounded passes every candidate when the entity offers no safe
+    anchor (a short generic topic such as "Go"); that keeps it from demoting,
+    but it is not evidence that a candidate is on topic. No primary entity
+    still counts as grounded, as in _is_entity_grounded.
+    """
+    if not primary_entity:
+        return True
+    haystack = _candidate_haystack(candidate)
+    return bool(haystack.strip()) and _entity_grounding_verdict(haystack, primary_entity) is True
 
 
 def _is_entity_grounded(candidate: schema.Candidate, primary_entity: str) -> bool:
@@ -634,6 +684,7 @@ def _apply_interaction_signal(
     resolved_handles: set[str],
     primary_entity: str = "",
     topic: str = "",
+    primary_handle: str | None = None,
 ) -> None:
     """Float and tag first-party posts directed at another account. The relational
     tell (the subject personally engaging someone) is invisible to keyword and
@@ -642,7 +693,7 @@ def _apply_interaction_signal(
     _first_party_floor_eligible holds; an off-topic reply is tagged, not lifted."""
     if not resolved_handles:
         return
-    subject = _subject_handles(resolved_handles, topic)
+    subject = _subject_handles(primary_handle, topic)
     for c in candidates:
         targets = _interaction_targets(c, resolved_handles)
         if not targets:
@@ -662,6 +713,7 @@ def _apply_first_party_floor(
     resolved_handles: set[str],
     primary_entity: str = "",
     topic: str = "",
+    primary_handle: str | None = None,
 ) -> None:
     """Floor on-topic first-party posts above the zero band, on any scoring path.
 
@@ -674,7 +726,7 @@ def _apply_first_party_floor(
     """
     if not resolved_handles:
         return
-    subject = _subject_handles(resolved_handles, topic)
+    subject = _subject_handles(primary_handle, topic)
     for c in candidates:
         if not _is_first_party(c, resolved_handles):
             continue
@@ -698,6 +750,7 @@ def _apply_engagement_rescue(
     primary_entity: str,
     resolved_handles: set[str],
     topic: str = "",
+    primary_handle: str | None = None,
 ) -> None:
     """Floor final_score for high-engagement X posts that are entity-grounded
     or floor-eligible first-party (see _first_party_floor_eligible), so a viral
@@ -708,16 +761,20 @@ def _apply_engagement_rescue(
     x_cands = [c for c in candidates if _is_x_candidate(c)]
     if len(x_cands) < 2:
         return
-    subject = _subject_handles(resolved_handles, topic)
+    subject = _subject_handles(primary_handle, topic)
     engagements = sorted(_candidate_engagement(c) for c in x_cands)
     n = len(engagements)
     for c in x_cands:
-        if not (
-            _first_party_floor_eligible(
+        # A first-party post qualifies only through _first_party_floor_eligible
+        # (which needs positive grounding); the bare grounding pass below would
+        # wave a related handle's off-topic post through on a short topic.
+        if _is_first_party(c, resolved_handles):
+            qualifies = _first_party_floor_eligible(
                 c, resolved_handles=resolved_handles, primary_entity=primary_entity, subject_handles=subject
             )
-            or _is_entity_grounded(c, primary_entity)
-        ):
+        else:
+            qualifies = _is_entity_grounded(c, primary_entity)
+        if not qualifies:
             continue
         e = _candidate_engagement(c)
         # Percentile rank in [0, 1]: fraction of the X pool strictly below e.
@@ -774,10 +831,21 @@ def _entity_grounded(haystack: str, primary_entity: str) -> bool:
     anchors. Short generic-headed topics remain a safe no-op so entities such as
     "Go" are not falsely demoted.
     """
+    verdict = _entity_grounding_verdict(haystack, primary_entity)
+    return True if verdict is None else verdict
+
+
+def _entity_grounding_verdict(haystack: str, primary_entity: str) -> bool | None:
+    """_entity_grounded's test, with None where no safe anchor exists.
+
+    None means the entity cannot be checked (no tokens, a short generic-headed
+    topic, or no strong trailing anchor); _entity_grounded treats that as a
+    pass so it never demotes, and _is_entity_positively_grounded as a miss.
+    """
     haystack = haystack.lower()
     tokens = re.findall(r"\w+", primary_entity.lower())
     if not tokens:
-        return True
+        return None
     head = tokens[0]
     if len(head) > 3 and head not in relevance.LOW_SIGNAL_QUERY_TOKENS:
         return head in haystack
@@ -786,7 +854,7 @@ def _entity_grounded(haystack: str, primary_entity: str) -> bool:
     # word needs a stronger anchor. Short entity-like topics keep the historical
     # safe no-op rather than risking false demotion.
     if len(tokens) < _GENERIC_GROUNDING_MIN_TOKENS:
-        return True
+        return None
     anchors = [
         token
         for token in tokens[1:]
@@ -795,7 +863,7 @@ def _entity_grounded(haystack: str, primary_entity: str) -> bool:
         and token not in _GROUNDING_LOW_SIGNAL_TOKENS
     ]
     if not anchors:
-        return True
+        return None
     return any(re.search(rf"\b{re.escape(token)}", haystack) for token in anchors)
 
 
@@ -973,9 +1041,25 @@ OUT_OF_WINDOW_FINAL_MULTIPLIER = 0.35
 ENGAGEMENT_FINAL_WEIGHT = 0.15
 
 
+#: Candidate.metadata key recording which path produced rerank_score. Set by
+#: _apply_fallback_scores and _apply_llm_scores; the explanation text is not
+#: provenance (an LLM reason may start with any word).
+RERANK_PROVENANCE_KEY = "rerank_provenance"
+RERANK_PROVENANCE_FALLBACK = "fallback"
+RERANK_PROVENANCE_LLM = "llm"
+
+
+def _set_rerank_provenance(candidate: schema.Candidate, provenance: str) -> None:
+    candidate.metadata = {**(candidate.metadata or {}), RERANK_PROVENANCE_KEY: provenance}
+
+
 def _is_fallback_scored(candidate: schema.Candidate) -> bool:
-    """True when rerank_score came from _fallback_tuple, not an LLM or host."""
-    return (candidate.explanation or "").startswith("fallback")
+    """True when rerank_score came from _fallback_tuple, not an LLM or host.
+
+    Reads the provenance the scoring path recorded. A candidate with none
+    recorded is treated as judge-scored, so the cliff still applies.
+    """
+    return (candidate.metadata or {}).get(RERANK_PROVENANCE_KEY) == RERANK_PROVENANCE_FALLBACK
 
 
 def _final_score(candidate: schema.Candidate) -> float:
