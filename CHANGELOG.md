@@ -9,6 +9,11 @@ This project uses [towncrier](https://towncrier.readthedocs.io/). Upcoming notes
 
 <!-- towncrier release notes start -->
 
+## [3.27.3] - 2026-10-11
+
+No significant changes.
+
+
 ## [3.27.2] - 2026-10-09
 
 ### Security
