@@ -60,11 +60,11 @@ This includes keys you configured for another purpose, such as `XAI_API_KEY` for
 
 ### Browser cookies
 
-- Cookie reads are off by default and require your consent during setup. To withdraw consent, set `BROWSER_CONSENT=false` or `FROM_BROWSER=off`.
+- Direct reads from your browser's cookie store are off by default and require your consent during setup. To withdraw consent, set `BROWSER_CONSENT=false` or `FROM_BROWSER=off`. These settings don't cover the `agentcookie` path described below, so also set `AGENTCOOKIE=off` to stop all cookie reads.
 - The engine reads only `auth_token` and `ct0` for `.x.com`, and `_session_id` for `.truthsocial.com`. It filters by domain and cookie name before it decrypts anything.
 - The Firefox and Chromium readers query a copy of the browser's whole cookie database, written to a temporary file with `0600` permissions and deleted afterward.
 - Cookie values stay in memory and pass to the X client through its environment. The engine doesn't save them to `.env` or any other file.
-- On Linux and agent hosts, if the `agentcookie` binary is on your `PATH`, the engine asks it for `.x.com` cookies. Set `AGENTCOOKIE=off` to disable this.
+- On Linux and agent hosts, if the `agentcookie` binary is on your `PATH`, the engine asks it for `.x.com` cookies, even when `BROWSER_CONSENT=false` or `FROM_BROWSER=off`. Set `AGENTCOOKIE=off` to disable this.
 - The MCP server disables browser cookies unless you set `LAST30DAYS_MCP_ALLOW_BROWSER_COOKIES`.
 
 ### Installs and external programs
@@ -80,10 +80,13 @@ This includes keys you configured for another purpose, such as `XAI_API_KEY` for
 | `~/.config/last30days/.env` | Your settings and keys (`0600`) | Setup, or when you create it |
 | `~/.config/last30days/last-report.json`, `last-run.json` | The latest report, including evidence text | Every run |
 | `~/.config/last30days/corpus-cache.json` | Text extracted from your corpus files (`0600`) | Corpus runs |
-| `~/.local/share/last30days/research.db` | Research history (`0600`) | Only with `--store` or `LAST30DAYS_STORE=1` |
-| `~/.local/share/last30days/library.db`, `briefs/` | Saved briefs library | Library commands |
+| `research.db` in the save directory, or `~/.local/share/last30days/research.db` when a run has no `--save-dir` | Research findings and the discovery topic queue (`0600`) | Runs with `--store` or `LAST30DAYS_STORE=1`, and every `--discover` run unless `LAST30DAYS_DISCOVERY_QUEUE=off` |
+| `~/.local/share/last30days/library.db`, `briefs/` | Search index of saved reports and briefs | Every Markdown report saved to the default directory, and library commands |
+| `.last30days-library.db` in a nondefault save directory | Search index of the reports saved there | Every Markdown report saved to that directory |
 
-The engine has no purge command. To remove local data, delete these files.
+Slash-command runs pass the resolved save directory to the engine with `--save-dir`, so their `research.db` usually sits next to your saved reports.
+
+The engine has no purge command. To remove local data, delete these files, including the databases in every save directory you've used.
 
 ### Untrusted content
 
