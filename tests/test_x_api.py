@@ -194,6 +194,9 @@ class TestBuildQuery:
         q = x_api.build_query("(Peter Steinberger) -steipete “quoted” [x] {y}")
         assert q == '"Peter Steinberger quoted x y" -is:retweet'
 
+    def test_trailing_colon_handling_stays_out_of_phrase_query(self):
+        assert x_api.build_query("Python: what's new") == '"what\'s new" -is:retweet'
+
     def test_600_char_topic_compiles_under_512_with_balanced_quotes(self):
         topic = " ".join(f"word{i}" for i in range(100))
         assert len(topic) >= 600
@@ -213,6 +216,31 @@ class TestBuildQuery:
 
     def test_only_operators_yields_empty_query(self):
         assert x_api.build_query("from:attacker OR -is:reply lang:en") == ""
+
+
+class TestBuildKeywordQuery:
+    def test_space_joined_keywords_without_phrase_or_retweet_filter(self):
+        assert x_api.build_keyword_query("Claude Code agents") == "Claude Code agents"
+
+    def test_bare_and_or_are_dropped_in_any_case(self):
+        q = x_api.build_keyword_query("review and security Or tools AND codex or x")
+        assert q == "review security tools codex x"
+
+    def test_operators_negation_grouping_and_quotes_are_stripped(self):
+        q = x_api.build_keyword_query('(foo) "bar from:attacker -baz lang:en')
+        assert q == "foo bar"
+
+    def test_capped_at_token_boundary(self):
+        q = x_api.build_keyword_query(" ".join(f"word{i}" for i in range(200)))
+        assert len(q) <= x_api.MAX_QUERY_CHARS
+        assert all(tok.startswith("word") and tok[4:].isdigit() for tok in q.split())
+
+    def test_single_giant_token_is_truncated(self):
+        q = x_api.build_keyword_query("a" * 700)
+        assert len(q) == x_api.MAX_QUERY_CHARS
+
+    def test_only_operators_yields_empty_query(self):
+        assert x_api.build_keyword_query("and from:x -y ()") == ""
 
 
 # ---------------------------------------------------------------------------
@@ -938,6 +966,7 @@ class TestXurlFixedStrings:
         ("401 Unauthorized", "ERR_UNAUTHORIZED", health.AUTH_FAILED),
         ("403 Forbidden: client-not-enrolled", "ERR_FORBIDDEN", health.AUTH_FAILED),
         ("402 Payment Required", "ERR_PAYMENT_REQUIRED", health.PAYMENT_REQUIRED),
+        ("400 Invalid Request: Ambiguous use of and", "ERR_INVALID_REQUEST", health.ERROR),
         ("something else entirely", "ERR_FAILED", health.ERROR),
     ])
     def test_status_words_map_to_fixed_strings(self, stderr, expected, state):

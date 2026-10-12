@@ -65,12 +65,11 @@ class TestChineseRelevance(_BigramBase):
         self.assertGreater(contiguous, scattered)
 
     def test_english_phrase_bonus_stays_space_sensitive(self):
-        # has_cjk gate: English must NOT gain a bonus from space-stripped
-        # concatenation (no "reacthooks" false phrase match).
         q = relevance.PreparedQuery("react hooks")
-        # "reacthooks" contiguous-without-space should not trigger a CJK-style retry
-        score = relevance.token_overlap_relevance(q, "myreacthooks bundle")
-        self.assertLessEqual(score, 1.0)  # sanity; behavior identical to pre-change
+        joined = relevance.token_overlap_relevance(q, "react myreacthooks bundle")
+        absent = relevance.token_overlap_relevance(q, "react unrelated bundle")
+        self.assertEqual(joined, 0.58)
+        self.assertEqual(absent, 0.58)
 
 
 class TestChineseDedupe(_BigramBase):

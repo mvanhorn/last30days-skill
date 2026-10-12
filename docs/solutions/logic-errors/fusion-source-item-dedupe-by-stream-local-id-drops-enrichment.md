@@ -76,7 +76,7 @@ A thread's URL is the same in every stream; its per-stream id is not. Keying on 
 
 ## Prevention
 
-- Never de-duplicate across subquery streams by an adapter-assigned id. Ids like `R{n}` (`skills/last30days/scripts/lib/reddit_keyless.py:397`, `skills/last30days/scripts/lib/reddit_rss.py:236`) are positions within one call, not identities. Use `fusion.candidate_key` for identity and `fusion.merge_source_items` for the merge.
+- Never de-duplicate across subquery streams by an adapter-assigned id. Ids like `R{n}` (`skills/last30days/scripts/lib/reddit_keyless.py:388`, `skills/last30days/scripts/lib/reddit_search.py:291`) are positions within one call, not identities. Use `fusion.candidate_key` for identity and `fusion.merge_source_items` for the merge.
 - When two copies of one item can differ in enrichment, dedupe must merge, not pick. A dedupe that keeps the first or highest-ranked copy silently loses whatever the other copy was enriched with; assert in tests that the retained copy carries the union.
 - The cheapest detector is in `last-report.json`: count duplicate URLs per source in `items_by_source`, and compare `metadata.top_comments` between `items_by_source` and the corresponding `ranked_candidates[*].source_items`. Any thread with comments in the former and none in the latter is this class of bug.
 - Multi-subquery plans are the trigger. A single-subquery run never produces two copies, so a fix verified only on `--quick` or one-subquery runs can miss it; the live check is a four-subquery plan on a busy topic with a dedicated subreddit.

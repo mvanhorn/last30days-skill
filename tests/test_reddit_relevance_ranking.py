@@ -2,7 +2,7 @@
 
 Reddit's highest-upvote content (relationship drama, AITA, viral news) often
 has near-zero topic overlap. Before this change both the keyed (ScrapeCreators)
-and keyless (RSS) paths ranked the final list engagement-first, so a viral
+and keyless paths ranked the final list engagement-first, so a viral
 off-topic post outranked on-topic posts. These tests pin the new behavior:
 on-topic posts rank first and pure zero-overlap posts are dropped when anything
 relevant remains.
@@ -105,7 +105,7 @@ def _kpost(rid, rel, score, date="2026-05-20"):
         "score": score, "num_comments": score, "subreddit": "t", "created_utc": None,
         "author": "u", "selftext": "", "date": date,
         "engagement": {"score": score, "num_comments": score, "upvote_ratio": None},
-        "relevance": rel, "why_relevant": "Reddit RSS", "metadata": {},
+        "relevance": rel, "why_relevant": "Reddit search", "metadata": {},
     }
 
 

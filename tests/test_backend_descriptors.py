@@ -206,7 +206,7 @@ class TestDescriptorRegistry:
         assert d.mode == backends.MODE_CONDITIONAL
         names = [s.name for s in d.backends]
         # Internal keyless lanes are sub-probe detail, never chain entries.
-        for lane in ("rss", "listing", "arctic", "shreddit"):
+        for lane in ("search", "listing", "arctic", "shreddit", "rss"):
             assert lane not in names
         assert names == ["public", "scrapecreators"]
 
@@ -630,16 +630,37 @@ class TestRedditConditional:
         assert "5" in res.conditional
         assert "floor" in res.conditional.lower()
 
-    def test_default_floor_zero_means_empty_only_wording(self):
+    def test_default_floor_names_five_item_floor(self):
         res = backends.resolve("reddit", {"SCRAPECREATORS_API_KEY": "dummy-key"})
-        assert "nothing" in res.conditional.lower()
+        low = res.conditional.lower()
+        assert "5-item floor" in low
+        assert "nothing" not in low
 
-    def test_malformed_floor_treated_as_default(self):
+    def test_empty_floor_treated_as_default(self):
+        res = backends.resolve(
+            "reddit",
+            {"SCRAPECREATORS_API_KEY": "dummy-key", "LAST30DAYS_REDDIT_SC_MIN_ITEMS": ""},
+        )
+        assert "5-item floor" in res.conditional.lower()
+
+    def test_explicit_zero_floor_means_empty_only_wording(self):
+        res = backends.resolve(
+            "reddit",
+            {"SCRAPECREATORS_API_KEY": "dummy-key", "LAST30DAYS_REDDIT_SC_MIN_ITEMS": "0"},
+        )
+        low = res.conditional.lower()
+        assert "nothing" in low
+        assert "floor" not in low
+
+    def test_malformed_floor_spends_nothing_extra(self):
+        # Malformed parses to 0 (empty-only), matching the pipeline.
         res = backends.resolve(
             "reddit",
             {"SCRAPECREATORS_API_KEY": "dummy-key", "LAST30DAYS_REDDIT_SC_MIN_ITEMS": "lots"},
         )
-        assert "nothing" in res.conditional.lower()
+        low = res.conditional.lower()
+        assert "nothing" in low
+        assert "floor" not in low
 
     def test_pinned_scrapecreators_renders_pin(self):
         res = backends.resolve(
@@ -674,8 +695,8 @@ class TestRedditConditional:
     def test_keyless_lanes_are_sub_probe_detail(self):
         res = backends.resolve("reddit", {})
         public = next(f for f in res.findings if f.name == "public")
-        for lane in ("rss", "listing", "arctic", "shreddit"):
-            assert lane in public.detail
+        assert public.detail.endswith("(lanes: search, listing, arctic, shreddit)")
+        assert "rss" not in public.detail
 
 
 # ---------------------------------------------------------------------------

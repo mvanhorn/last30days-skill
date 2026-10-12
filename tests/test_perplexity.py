@@ -1,3 +1,4 @@
+import os
 import unittest
 from unittest.mock import patch
 
@@ -44,6 +45,13 @@ def _agent_response(
 
 
 class PerplexityAgentTests(unittest.TestCase):
+    def setUp(self):
+        # The default-URL assertions must not depend on an ambient override.
+        env_patch = patch.dict("os.environ")
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
+        os.environ.pop("OPENROUTER_BASE_URL", None)
+
     def test_controlled_agent_uses_direct_key_and_explicit_web_search(self):
         citations = [
             {
@@ -320,6 +328,36 @@ class PerplexityAgentTests(unittest.TestCase):
         self.assertEqual("openrouter-chat-completions", artifact["endpoint"])
         self.assertEqual("OpenRouter fallback synthesis", items[0]["snippet"])
         self.assertEqual("OpenRouter citation", items[1]["title"])
+
+    def test_openrouter_sonar_fallback_honors_base_url_override(self):
+        response = {"id": "openrouter-2", "model": "perplexity/sonar-pro",
+                    "choices": [{"message": {"content": "ok"}}]}
+        endpoint = "https://gateway.test/v1/chat/completions"
+        for override in ("https://gateway.test/v1", endpoint):
+            for deep, model, timeout in (
+                (False, "perplexity/sonar-pro", 30),
+                (True, "perplexity/sonar-deep-research", 120),
+            ):
+                with self.subTest(override=override, deep=deep), patch.dict(
+                    "os.environ", {"OPENROUTER_BASE_URL": override}
+                ), patch("lib.perplexity.http.post", return_value=response) as post:
+                    items, artifact = perplexity.search(
+                        "test topic",
+                        ("2026-05-01", "2026-06-01"),
+                        {"OPENROUTER_API_KEY": "or-test"},
+                        deep=deep,
+                    )
+
+                    post.assert_called_once()
+                    url, payload = post.call_args.args
+                    self.assertEqual(endpoint, url)
+                    self.assertEqual(model, payload["model"])
+                    self.assertIn("test topic", payload["messages"][0]["content"])
+                    self.assertEqual("Bearer or-test", post.call_args.kwargs["headers"]["Authorization"])
+                    self.assertEqual(timeout, post.call_args.kwargs["timeout"])
+                    self.assertEqual(1, post.call_args.kwargs["retries"])
+                    self.assertEqual("openrouter", artifact["provider"])
+                    self.assertEqual("ok", items[0]["snippet"])
 
     def test_openrouter_search_mode_degrades_to_sonar_fallback(self):
         response = {

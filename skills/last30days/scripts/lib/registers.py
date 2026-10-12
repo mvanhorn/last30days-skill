@@ -89,6 +89,7 @@ _REGISTERS = {
             "github": 1.60,
             "hackernews": 1.35,
             "arxiv": 1.30,
+            "devto": 1.25,
             "grounding": 1.10,
         },
     ),

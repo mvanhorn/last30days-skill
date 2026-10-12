@@ -9,10 +9,11 @@ Covers:
 
 import pytest
 
-from lib import schema, signals
+from lib import fusion, normalize, schema, signals
 from lib.rerank import (
     _apply_single_fun_fallback,
     _build_fun_prompt,
+    _extract_comment_text,
     _extract_comment_text_scored,
 )
 from lib import render
@@ -100,6 +101,80 @@ class TestTopCommentVoteSignal:
 # --------------------------------------------------------------------------- U1
 
 class TestVotesInFunPrompt:
+    @pytest.mark.parametrize(
+        ("source", "vote_field"),
+        [
+            ("youtube", "likes"),
+            ("tiktok", "digg_count"),
+            ("instagram", "comment_like_count"),
+        ],
+    )
+    def test_normalized_video_comments_reach_fun_prompt(self, source, vote_field):
+        comment = f"lmao the {source} comment section did the research"
+        items = normalize.normalize_source_items(
+            source,
+            [{
+                "id": "video-1",
+                "title": "Research update",
+                "text": "Research update",
+                "url": f"https://example.com/{source}/video-1",
+                "date": "2026-09-20",
+                "top_comments": [{"text": comment, vote_field: 1200}],
+            }],
+            "2026-09-01",
+            "2026-09-30",
+        )
+        plan = schema.QueryPlan(
+            intent="concept",
+            freshness_mode="balanced_recent",
+            cluster_mode="concept",
+            raw_topic="Research update",
+            subqueries=[schema.SubQuery(
+                label="primary",
+                search_query="Research update",
+                ranking_query="Research update",
+                sources=[source],
+            )],
+            source_weights={source: 1.0},
+        )
+        candidates = fusion.weighted_rrf(
+            {("primary", source): items}, plan, pool_limit=10,
+        )
+
+        assert len(candidates) == 1
+        assert f"comments: [+1200] {comment}" in _build_fun_prompt(
+            "Research update", candidates,
+        )
+        assert _extract_comment_text(candidates[0]) == comment
+
+    def test_extractors_preserve_legacy_comments_limits_and_insights(self):
+        excerpt = "canonical comment " * 20
+        c = _candidate(top_comments=[
+            {"excerpt": excerpt, "body": "superseded body", "score": 14200},
+            {"body": "legacy Reddit comment", "score": 3},
+            "plain string comment",
+            {"excerpt": "fourth comment"},
+        ])
+        c.source_items[0].metadata["comment_insights"] = [
+            "first insight", "second insight", "third insight",
+        ]
+        tail = "plain string comment | first insight | second insight"
+
+        assert _extract_comment_text(c) == (
+            f"{excerpt[:150]} | legacy Reddit comment | {tail}"
+        )
+        assert _extract_comment_text_scored(c) == (
+            f"[+14200] {excerpt[:150]} | [+3] legacy Reddit comment | {tail}"
+        )
+
+    @pytest.mark.parametrize("excerpt", [None, ""])
+    def test_empty_excerpt_falls_back_to_legacy_body(self, excerpt):
+        c = _candidate(top_comments=[{
+            "excerpt": excerpt, "body": "legacy comment", "score": 5,
+        }])
+        assert _extract_comment_text(c) == "legacy comment"
+        assert _extract_comment_text_scored(c) == "[+5] legacy comment"
+
     def test_scored_extract_prefixes_vote_count(self):
         c = _candidate(top_comments=[{"body": "the crowd loved this", "score": 14200}])
         text = _extract_comment_text_scored(c)

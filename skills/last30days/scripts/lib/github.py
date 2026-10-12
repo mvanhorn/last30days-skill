@@ -102,7 +102,7 @@ def _fetch_json(
 
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with http.open_request(req, timeout) as resp:
             body = resp.read().decode("utf-8")
             return json.loads(body)
     except urllib.error.HTTPError as e:
@@ -583,7 +583,7 @@ def _fetch_readme_snippet(repo: str, token: str, max_chars: int = 500) -> Option
 
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with http.open_request(req, 10) as resp:
             raw = resp.read().decode("utf-8", errors="replace")
     except (urllib.error.HTTPError, urllib.error.URLError, OSError, TimeoutError):
         return None
@@ -894,7 +894,7 @@ def search_github_person(
                 "id": f"GH{idx}",
                 "title": f"{repo} ({stars_str} stars) - {pr_count} PRs merged",
                 "url": f"https://github.com/{repo}",
-                "date": releases[0]["date"] if releases and releases[0].get("date") else to_date,
+                "date": _snapshot_date(releases, from_date, to_date),
                 "author": username,
                 "source": "github",
                 "score": stars,
@@ -909,6 +909,7 @@ def search_github_person(
                     "comment_count": pr_count,
                     "reactions": stars,
                     "is_pr": False,
+                    "date_is_snapshot": not _has_in_window_release(releases, from_date, to_date),
                 },
             })
 
@@ -952,7 +953,7 @@ def search_github_person(
                 "id": f"GH{idx}",
                 "title": f"{repo_name} ({stars_str} stars) - own project, {open_issues} open issues",
                 "url": f"https://github.com/{repo_name}",
-                "date": releases[0]["date"] if releases and releases[0].get("date") else to_date,
+                "date": _snapshot_date(releases, from_date, to_date),
                 "author": username,
                 "source": "github",
                 "score": stars,
@@ -967,6 +968,7 @@ def search_github_person(
                     "comment_count": open_issues,
                     "reactions": stars,
                     "is_pr": False,
+                    "date_is_snapshot": not _has_in_window_release(releases, from_date, to_date),
                 },
             })
 
@@ -1156,6 +1158,29 @@ def _enrich_own_repo(repo: str, token: str) -> Dict[str, Any]:
 # Project-mode search: fetch comprehensive data for specific repos
 # ---------------------------------------------------------------------------
 
+def _snapshot_date(releases: List[Dict[str, Any]], from_date: str, to_date: str) -> str:
+    """Date for a live repo snapshot item (stars, issues, PRs read now).
+
+    The newest release's date when it falls in the window, else ``to_date``.
+    An older release date would make the report's date filter drop a repo the
+    user pinned: Ghostty's newest release object is its 2022 "tip" nightly.
+    """
+    if _has_in_window_release(releases, from_date, to_date):
+        return releases[0]["date"]
+    return to_date
+
+
+def _has_in_window_release(releases: List[Dict[str, Any]], from_date: str, to_date: str) -> bool:
+    """True when the newest release date is a real in-window event.
+
+    False means ``_snapshot_date`` fell back to ``to_date``: that date keeps the
+    item through the date filter but says nothing about recency, so the item is
+    marked ``date_is_snapshot`` and ranks on neutral freshness.
+    """
+    release_date = releases[0].get("date") if releases else None
+    return bool(release_date and from_date <= release_date <= to_date)
+
+
 def search_github_project(
     repos: List[str],
     from_date: str,
@@ -1233,7 +1258,7 @@ def search_github_project(
                 "id": f"GH{idx + 1}",
                 "title": f"{repo} ({stars_str} stars) - {open_issues} open issues",
                 "url": f"https://github.com/{repo}",
-                "date": releases[0]["date"] if releases and releases[0].get("date") else to_date,
+                "date": _snapshot_date(releases, from_date, to_date),
                 "author": repo.split("/")[0],
                 "source": "github",
                 "score": stars,
@@ -1248,6 +1273,7 @@ def search_github_project(
                     "comment_count": open_issues,
                     "reactions": stars,
                     "is_pr": False,
+                    "date_is_snapshot": not _has_in_window_release(releases, from_date, to_date),
                     "github_stars": {repo: stars},
                 },
             })

@@ -103,7 +103,7 @@ class TestBroken:
 
     def test_stale_shim_exec_oserror_is_broken_not_ok(self):
         with mock.patch.object(health.shutil, "which", side_effect=_which_map({"yt-dlp": "/x/yt-dlp", "brew": "/x/brew"})), \
-             mock.patch.object(health.subprocess, "run", side_effect=OSError("exec format error")):
+             mock.patch.object(health.subproc, "run_with_timeout", side_effect=OSError("exec format error")):
             probe = health.probe_dependency("yt-dlp")
         assert probe.status == health.BROKEN
         assert probe.prescription == "brew reinstall yt-dlp"
@@ -112,7 +112,7 @@ class TestBroken:
     def test_nonzero_version_exit_is_broken(self):
         fake = _completed(rc=1, stderr="ModuleNotFoundError: No module named 'yt_dlp'")
         with mock.patch.object(health.shutil, "which", side_effect=_which_map({"yt-dlp": "/x/yt-dlp", "brew": "/x/brew"})), \
-             mock.patch.object(health.subprocess, "run", return_value=fake):
+             mock.patch.object(health.subproc, "run_with_timeout", return_value=fake):
             probe = health.probe_dependency("yt-dlp")
         assert probe.status == health.BROKEN
         assert "ModuleNotFoundError" in probe.detail
@@ -120,7 +120,7 @@ class TestBroken:
 
     def test_broken_pp_cli_prescribes_rerunning_install(self):
         with mock.patch.object(health.shutil, "which", side_effect=_which_map({"digg-pp-cli": "/x/digg-pp-cli"})), \
-             mock.patch.object(health.subprocess, "run", side_effect=OSError("bad exec")):
+             mock.patch.object(health.subproc, "run_with_timeout", side_effect=OSError("bad exec")):
             probe = health.probe_dependency("digg-pp-cli")
         assert probe.status == health.BROKEN
         assert "printing-press-library" in probe.prescription
@@ -144,8 +144,8 @@ class TestTimeout:
     def test_timeout_status_and_message(self):
         with mock.patch.object(health.shutil, "which", side_effect=_which_map({"ffmpeg": "/x/ffmpeg", "brew": "/x/brew"})), \
              mock.patch.object(
-                 health.subprocess, "run",
-                 side_effect=subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=health.PROBE_TIMEOUT),
+                 health.subproc, "run_with_timeout",
+                 side_effect=health.subproc.SubprocTimeout("ffmpeg timed out"),
              ):
             probe = health.probe_dependency("ffmpeg")
         assert probe.status == health.TIMEOUT
@@ -153,7 +153,7 @@ class TestTimeout:
 
     def test_probe_budget_is_bounded(self):
         with mock.patch.object(health.shutil, "which", side_effect=_which_map({"node": "/x/node", "brew": "/x/brew"})), \
-             mock.patch.object(health.subprocess, "run", return_value=_completed(stdout="v22.1.0")) as run:
+             mock.patch.object(health.subproc, "run_with_timeout", return_value=_completed(stdout="v22.1.0")) as run:
             health.probe_dependency("node")
         assert run.call_args.kwargs["timeout"] <= health.PROBE_TIMEOUT
 
@@ -163,7 +163,7 @@ class TestOk:
 
     def test_healthy_binary_ok_no_prescription(self):
         with mock.patch.object(health.shutil, "which", side_effect=_which_map({"yt-dlp": "/x/yt-dlp", "brew": "/x/brew"})), \
-             mock.patch.object(health.subprocess, "run", return_value=_completed(stdout="2026.06.09\n")):
+             mock.patch.object(health.subproc, "run_with_timeout", return_value=_completed(stdout="2026.06.09\n")):
             probe = health.probe_dependency("yt-dlp")
         assert probe.status == health.OK
         assert probe.ok
@@ -214,7 +214,7 @@ class TestCachingAndRegistry:
 
     def test_probe_memoized_single_subprocess(self):
         with mock.patch.object(health.shutil, "which", side_effect=_which_map({"node": "/x/node", "brew": "/x/brew"})), \
-             mock.patch.object(health.subprocess, "run", return_value=_completed(stdout="v22.1.0")) as run:
+             mock.patch.object(health.subproc, "run_with_timeout", return_value=_completed(stdout="v22.1.0")) as run:
             first = health.probe_dependency("node")
             second = health.probe_dependency("node")
         assert run.call_count == 1
@@ -222,7 +222,7 @@ class TestCachingAndRegistry:
 
     def test_clear_cache_reprobes(self):
         with mock.patch.object(health.shutil, "which", side_effect=_which_map({"node": "/x/node", "brew": "/x/brew"})), \
-             mock.patch.object(health.subprocess, "run", return_value=_completed(stdout="v22.1.0")) as run:
+             mock.patch.object(health.subproc, "run_with_timeout", return_value=_completed(stdout="v22.1.0")) as run:
             health.probe_dependency("node")
             health.clear_dependency_probe_cache()
             health.probe_dependency("node")

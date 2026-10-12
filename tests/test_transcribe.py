@@ -52,10 +52,15 @@ class TestTranscribeFlow:
 
     def test_over_limit_chunks_joined_in_order(self):
         chunks = ["/tmp/wd/chunk_000.mp3", "/tmp/wd/chunk_001.mp3"]
+        transcripts = {chunks[0]: "part one", chunks[1]: "part two"}
+
+        def post(provider, path, key, timeout):
+            return transcripts[path]
+
         with mock.patch.object(transcribe.shutil, "which", return_value="/usr/bin/ffmpeg"), \
              mock.patch.object(transcribe, "_acquire_audio", return_value="/tmp/audio.mp3"), \
              mock.patch.object(transcribe, "_chunk_audio", return_value=chunks), \
-             mock.patch.object(transcribe, "_post_audio", side_effect=["part one", "part two"]), \
+             mock.patch.object(transcribe, "_post_audio", side_effect=post), \
              mock.patch.object(transcribe.shutil, "rmtree"), \
              mock.patch.object(transcribe.tempfile, "mkdtemp", return_value="/tmp/wd"):
             result = transcribe.transcribe_media("https://x/v", {"GROQ_API_KEY": "k"})

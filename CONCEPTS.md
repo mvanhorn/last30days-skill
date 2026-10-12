@@ -42,7 +42,7 @@ The fused unit of evidence that ranking, clustering, and rendering operate on: e
 
 ### Keyless path
 
-The research flow available with no API keys: source data is gathered by scraping and RSS rather than authenticated APIs, and ranking falls back to local scoring instead of LLM-based reranking. This is the free tier of the Skill; lexical quality safeguards like Entity grounding matter most here, because no LLM is available to judge relevance semantically.
+The research flow available with no API keys: source data is gathered by scraping public web pages rather than authenticated APIs, and ranking falls back to local scoring instead of LLM-based reranking. This is the free tier of the Skill; lexical quality safeguards like Entity grounding matter most here, because no LLM is available to judge relevance semantically.
 
 ### Comment-enrichment slots
 

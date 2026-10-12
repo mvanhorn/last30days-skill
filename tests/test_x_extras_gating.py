@@ -181,7 +181,7 @@ def test_explicit_env_pair_not_overwritten_on_extra_host():
 
 
 def test_cdp_used_when_agentcookie_empty_on_extra_host():
-    config = {}
+    config = {"BROWSER_CONSENT": "true"}
     with (
         mock.patch("platform.system", return_value="Linux"),
         mock.patch("lib.agentcookie.read_x_cookies", return_value=None),

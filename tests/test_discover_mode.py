@@ -12,7 +12,7 @@ from unittest import mock
 import pytest
 
 import last30days as cli
-from lib import dates, discovery_handoff, pipeline, planner, reddit_listing, render, rerank, schema
+from lib import dates, digg, discovery_handoff, pipeline, planner, reddit_listing, render, rerank, schema
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -100,7 +100,7 @@ def test_global_discovery_disables_keyword_gate():
     """Global trending fetches with keyword_gate=False; domain runs keep it on."""
     seen: dict[str, bool] = {}
 
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         seen[plan.domain or "global"] = keyword_gate
         return [], None
 
@@ -250,7 +250,7 @@ def test_discovery_renderer_snapshot():
 
 
 def test_keyless_discovery_degrades_without_digg():
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         return pipeline._mock_discovery_items(source, plan.domain, to_date), None
 
     with mock.patch.object(pipeline, "available_sources", return_value=["reddit", "hackernews"]), \
@@ -323,7 +323,7 @@ def test_discovery_reads_browser_credentials_and_does_not_schedule_pending_x():
         assert x_pending is False
         return ["reddit", "hackernews"] + (["x"] if x_pending is not False else [])
 
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         fetched_sources.append(source)
         return pipeline._mock_discovery_items(source, plan.domain, to_date), None
 
@@ -363,7 +363,7 @@ def test_authenticated_x_discovery_uses_available_backend():
 
 
 def test_listing_failure_is_not_reported_as_clean_no_results():
-    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def fake_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         if source == "reddit":
             return [], "connection timed out"
         return pipeline._mock_discovery_items(source, plan.domain, to_date), None
@@ -405,6 +405,138 @@ def test_discovery_listing_block_is_reported_as_rate_limited():
     outcome = report.source_status["reddit"]
     assert outcome.state == "rate-limited"
     assert "429" in (outcome.detail or "")
+
+
+def test_discovery_listing_403_is_reported_as_auth_failed():
+    blocked = urllib.error.HTTPError(
+        "https://www.reddit.com/r/all/rising/", 403, "Forbidden", {}, None,
+    )
+    with mock.patch.object(pipeline, "available_sources", return_value=["reddit"]), \
+         mock.patch("lib.http.urllib.request.urlopen", side_effect=blocked):
+        report = pipeline.run_discover(
+            domain="", config={}, as_of_date="2026-07-10",
+        )
+
+    outcome = report.source_status["reddit"]
+    assert outcome.state == schema.AUTH_FAILED
+    assert "403" in (outcome.detail or "")
+
+
+@pytest.mark.parametrize("body", [
+    "",
+    "<!doctype html><html><body><h1>You've been blocked</h1></body></html>",
+    "<html><body><main>Reddit listing layout changed</main></body></html>",
+])
+def test_reddit_global_listing_without_cards_reports_schema_drift(body):
+    with mock.patch.object(pipeline, "available_sources", return_value=["reddit"]), \
+         mock.patch.object(reddit_listing.http, "get_text", return_value=body), \
+         mock.patch("lib.reddit_arctic.fetch_listings", return_value=[]):
+        report = pipeline.run_discover(
+            domain="", config={}, as_of_date="2026-07-10",
+        )
+
+    outcome = report.source_status["reddit"]
+    assert outcome.state == schema.SCHEMA_DRIFT
+    assert "HTTP 2xx" in (outcome.detail or "")
+    assert "no post cards" in (outcome.detail or "")
+
+
+def test_reddit_domain_filter_zero_after_valid_listing_remains_no_results():
+    body = (
+        "<!doctype html><html><body>"
+        '<shreddit-post permalink="/r/cats/comments/abc123/post/" '
+        'post-title="A playful kitten" score="42" comment-count="7" '
+        'author="owner" subreddit-name="cats" '
+        'created-timestamp="2026-07-09T12:00:00+00:00">'
+        "</body></html>"
+    )
+    with mock.patch.object(pipeline, "available_sources", return_value=["reddit"]), \
+         mock.patch.object(reddit_listing.http, "get_text", return_value=body), \
+         mock.patch("lib.reddit_arctic.fetch_listings", return_value=[]):
+        report = pipeline.run_discover(
+            domain="urban gardening", config={}, as_of_date="2026-07-10",
+            subreddits=["all"],
+        )
+
+    assert report.source_status["reddit"].state == schema.NO_RESULTS
+
+
+@pytest.mark.parametrize("body", [
+    "<div></div>",
+    "<!doctype html><html><body><main>No posts yet</main></body></html>",
+])
+def test_empty_dedicated_reddit_listing_remains_no_results(body):
+    with mock.patch.object(pipeline, "available_sources", return_value=["reddit"]), \
+         mock.patch.object(reddit_listing.http, "get_text", return_value=body), \
+         mock.patch("lib.reddit_arctic.fetch_listings", return_value=[]):
+        report = pipeline.run_discover(
+            domain="tea", config={}, as_of_date="2026-07-10",
+            subreddits=["tea"],
+        )
+
+    assert report.source_status["reddit"].state == schema.NO_RESULTS
+
+
+def test_dedicated_reddit_challenge_fragment_reports_schema_drift():
+    body = "<div class='challenge-platform'>Please verify you are human</div>"
+    with mock.patch.object(pipeline, "available_sources", return_value=["reddit"]), \
+         mock.patch.object(reddit_listing.http, "get_text", return_value=body), \
+         mock.patch("lib.reddit_arctic.fetch_listings", return_value=[]):
+        report = pipeline.run_discover(
+            domain="tea", config={}, as_of_date="2026-07-10",
+            subreddits=["tea"],
+        )
+
+    outcome = report.source_status["reddit"]
+    assert outcome.state == schema.SCHEMA_DRIFT
+    assert "interstitial" in (outcome.detail or "")
+
+
+def test_dedicated_reddit_search_challenge_fixture_reports_schema_drift():
+    body = (REPO_ROOT / "fixtures/reddit_search_challenge.html").read_text(
+        encoding="utf-8"
+    )
+    with mock.patch.object(pipeline, "available_sources", return_value=["reddit"]), \
+         mock.patch.object(reddit_listing.http, "get_text", return_value=body), \
+         mock.patch("lib.reddit_arctic.fetch_listings", return_value=[]):
+        report = pipeline.run_discover(
+            domain="tea", config={}, as_of_date="2026-07-10",
+            subreddits=["tea"],
+        )
+
+    outcome = report.source_status["reddit"]
+    assert outcome.state == schema.SCHEMA_DRIFT
+    assert "interstitial" in (outcome.detail or "")
+
+
+def test_dedicated_reddit_verification_title_reports_schema_drift():
+    body = "<html><title>Please wait for verification</title></html>"
+    with mock.patch.object(pipeline, "available_sources", return_value=["reddit"]), \
+         mock.patch.object(reddit_listing.http, "get_text", return_value=body), \
+         mock.patch("lib.reddit_arctic.fetch_listings", return_value=[]):
+        report = pipeline.run_discover(
+            domain="tea", config={}, as_of_date="2026-07-10",
+            subreddits=["tea"],
+        )
+
+    outcome = report.source_status["reddit"]
+    assert outcome.state == schema.SCHEMA_DRIFT
+    assert "interstitial" in (outcome.detail or "")
+
+
+def test_global_digg_empty_topic_skips_cli_without_fabricated_failure():
+    plan = schema.DiscoveryPlan(
+        domain="", category=None, subreddits=[], sources=["digg"],
+    )
+    with mock.patch.object(digg, "_run_cli") as run_cli:
+        items, error = pipeline._fetch_discovery_source(
+            "digg", plan, from_date="2026-06-10", to_date="2026-07-10",
+            depth="default", mock=False, config={}, keyword_gate=False,
+        )
+
+    assert items == []
+    assert error is None
+    run_cli.assert_not_called()
 
 
 def test_reddit_discovery_adapter_preserves_partial_feed_errors():
@@ -767,7 +899,7 @@ def test_x_fallback_success_is_clean(monkeypatch):
 
     calls = []
 
-    def fake_fetch(backend, subquery, from_date, to_date, depth, config):
+    def fake_fetch(backend, subquery, from_date, to_date, depth, config, warnings=None, deadline=None):
         calls.append(backend)
         if backend == "bird":
             return [], "cookie expired"
@@ -1448,7 +1580,7 @@ def test_discovery_cli_nominate_only_zero_nominations_nothing_solid(tmp_path, ca
         ["--discover", "AI agents", "--save-dir", str(tmp_path), "--nominate-only"]
     )
 
-    def empty_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True):
+    def empty_fetch(source, plan, *, from_date, to_date, depth, mock, config, keyword_gate=True, warnings=None):
         return [], None
 
     with mock.patch.object(

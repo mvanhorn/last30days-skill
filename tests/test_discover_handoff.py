@@ -226,6 +226,19 @@ def test_bundle_reader_defaults_source_status_and_mock_for_older_files(tmp_path)
     assert read.mock is False
 
 
+@pytest.mark.parametrize("warnings", [None, "warning", {"warning": "text"}, ["valid", 3]])
+def test_bundle_ignores_malformed_advisory_warnings(tmp_path, capsys, warnings):
+    written = _write(tmp_path)
+    path = tmp_path / handoff.NOMINATIONS_BUNDLE_FILENAME
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["warnings"] = warnings
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    read = handoff.read_nominations_bundle(config_dir=tmp_path)
+    assert read.nominations == written.nominations
+    assert read.warnings == []
+    assert "ignoring malformed warnings list" in capsys.readouterr().err
+
+
 # --- Scenario 2: parity pin --------------------------------------------------
 
 

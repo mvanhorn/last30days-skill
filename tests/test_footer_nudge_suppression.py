@@ -69,6 +69,8 @@ class FooterNudgeSuppressionTests(unittest.TestCase):
 
     def test_bare_run_emits_web_promo(self):
         result = self._run(topic="OpenAI")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertRegex(result.stdout, r"(?m)^# last30days v[^\n]+: OpenAI$")
         combined = result.stdout + result.stderr
         # Mock mode still shows the promo when nothing indicates a hosting
         # model is driving. Check both streams since the UI may emit to stderr.
@@ -81,6 +83,9 @@ class FooterNudgeSuppressionTests(unittest.TestCase):
             '{"Anthropic":{"x_handle":"AnthropicAI","subreddits":["ClaudeAI"]}}',
             topic="OpenAI",
         )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertRegex(result.stdout, r"(?m)^# last30days v[^\n]+: OpenAI vs Anthropic$")
+        self.assertIn("- Comparison mode: 2 entities (OpenAI, Anthropic)", result.stdout)
         combined = result.stdout + result.stderr
         self.assertNotIn(
             "unlock native grounded web search",
@@ -96,6 +101,9 @@ class FooterNudgeSuppressionTests(unittest.TestCase):
             '"sources":["grounding"]}],"source_weights":{"grounding":1.0}}'
         )
         result = self._run("--plan", plan, topic="OpenAI")
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertRegex(result.stdout, r"(?m)^# last30days v[^\n]+: OpenAI$")
+        self.assertIn("## Stats", result.stdout)
         combined = result.stdout + result.stderr
         self.assertNotIn(
             "unlock native grounded web search",

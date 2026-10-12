@@ -15,7 +15,6 @@ import re
 import signal
 import sqlite3
 import sys
-import threading
 from collections.abc import Callable
 from pathlib import Path
 
@@ -51,36 +50,34 @@ if os.name == "nt":
 SCRIPT_DIR = Path(__file__).parent.resolve()
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, freshness, html_render, http, permission_preflight, pipeline, registers, render, schema, ui, x_envelope
+from lib import competitors as competitors_mod, corpus, dates, discovery_handoff, env, fetch_memo, freshness, html_render, http, permission_preflight, pipeline, reddit, registers, render, schema, subproc, ui, x_envelope
+from lib.private_files import write_private_text
 
-_child_pids: set[int] = set()
-_child_pids_lock = threading.Lock()
-
-
-def register_child_pid(pid: int) -> None:
-    with _child_pids_lock:
-        _child_pids.add(pid)
+atexit.register(subproc.cleanup_children)
 
 
-def unregister_child_pid(pid: int) -> None:
-    with _child_pids_lock:
-        _child_pids.discard(pid)
+def _on_sigterm(signum, frame) -> None:
+    """SIGTERM handler: clean descendant groups, then die as SIGTERM.
+
+    Every run_with_timeout child runs in its own pgid (lib/subproc.py via
+    os.setsid), so a group kill aimed at the engine can never reach them;
+    only the lib.subproc registry can. atexit never runs on a signal death,
+    so without this handler an MCP timeout would orphan node bird-search,
+    yt-dlp, and the digg CLI. The MCP server SIGTERMs the engine group
+    first, giving this handler room to killpg() each registered child
+    group before the SIGKILL backstop. Restoring the default disposition
+    and re-raising preserves killed-by-SIGTERM semantics for the parent.
+    """
+    subproc.cleanup_children()
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
-def _cleanup_children() -> None:
-    with _child_pids_lock:
-        pids = list(_child_pids)
-    for pid in pids:
-        try:
-            if hasattr(os, "killpg"):
-                os.killpg(os.getpgid(pid), signal.SIGTERM)
-            else:
-                os.kill(pid, signal.SIGTERM)
-        except (ProcessLookupError, PermissionError, OSError):
-            continue
-
-
-atexit.register(_cleanup_children)
+def _install_sigterm_handler() -> None:
+    try:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except (ValueError, OSError, RuntimeError):
+        pass
 
 
 def parse_meta_ads_page(raw: str) -> str:
@@ -640,7 +637,7 @@ def persist_report(report: schema.Report, store_db: Path | None = None) -> dict[
         store.init_db()
         if private_corpus:
             store.ensure_private_db_files()
-        topic_row = store.add_topic(report.topic)
+        topic_row = store.add_topic(report.topic, update_existing=False)
         topic_id = topic_row["id"]
         source_mode = ",".join(sorted(report.items_by_source)) or "v3"
         run_id = store.record_run(topic_id, source_mode=source_mode, status="running")
@@ -776,6 +773,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Disable browser-cookie extraction even when FROM_BROWSER is configured")
     parser.add_argument("--save-dir", help="Optional directory for saving the rendered output")
     parser.add_argument(
+        "--resolve-save-dir", action="store_true",
+        help="Print the skill save directory from flags/config, then exit without research",
+    )
+    parser.add_argument(
         "--corpus",
         action="append",
         default=[],
@@ -823,6 +824,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--save-suffix", help="Suffix for saved output filename (e.g., 'gemini' → kanye-west-raw-gemini.md)")
     parser.add_argument("--subreddits", help="Comma-separated broad/category subreddit names to search (e.g., SaaS,Entrepreneur)")
     parser.add_argument("--dedicated-subreddits", help="Comma-separated entity-home subreddit names (e.g., Kanye,WestSubEver). Pulled in full (top+hot+new) and exempt from the relevance floor since the whole sub is the topic.")
+    parser.add_argument("--devto-tags", help="Comma-separated dev.to tags, lowercase alphanumeric (e.g., claudecode,ai)")
     parser.add_argument("--tiktok-hashtags", help="Comma-separated TikTok hashtags without # (e.g., tella,screenrecording)")
     parser.add_argument("--tiktok-creators", help="Comma-separated TikTok creator handles (e.g., TellaHQ,taborplace)")
     parser.add_argument("--ig-creators", help="Comma-separated Instagram creator handles (e.g., tella.tv,laborstories)")
@@ -1334,7 +1336,7 @@ def _write_last_run(
             "report_cache": str(target / "last-report.json"),
             "comparison": bool(entity_reports),
         }
-        (target / "last-run.json").write_text(json.dumps(payload, indent=2))
+        write_private_text(target / "last-run.json", json.dumps(payload, indent=2))
         cache_payload = {
             "schema": REPORT_CACHE_VERSION,
             "topic": topic,
@@ -1347,8 +1349,8 @@ def _write_last_run(
             ],
         }
         report_cache_path = target / "last-report.json"
-        report_cache_path.write_text(json.dumps(cache_payload, indent=2))
-        if has_private_corpus:
+        write_private_text(report_cache_path, json.dumps(cache_payload, indent=2))
+        if has_private_corpus and os.name != "posix":
             report_cache_path.chmod(0o600)
         return True
     except Exception as exc:
@@ -2137,6 +2139,7 @@ def _run_discover_nominate(args: argparse.Namespace, config: dict[str, object]) 
         # 2-3 report degraded coverage instead of silently reading clean; the
         # mock stamp keeps mock-born and real state from cross-finalizing.
         source_status=result.source_status,
+        warnings=result.warnings,
         mock=args.mock,
         # Same resolution as _discover_handoff_state_dir: save dir when
         # given, else the config dir.
@@ -2747,6 +2750,50 @@ def _comparison_requested(args: argparse.Namespace, topic: str) -> bool:
     ) or len(_planner._comparison_entities(topic, uncapped=True)) >= 2
 
 
+LAW7_HOST_PLAN_EXIT = 2
+
+
+def _law7_host_plan_message(signal: str) -> str:
+    return (
+        "[Planner] LAW 7: no --plan passed, and this run is agent-hosted "
+        f"({signal} is set). The engine stopped before retrieval and did not "
+        "call its internal planner. If you are the reasoning model hosting "
+        "this skill, YOU ARE the planner; no API key or provider is needed. "
+        "Write the JSON query plan (references/research-runbook.md Step 0.75) "
+        "to a tmpfile with a "
+        "quoted heredoc - QUERY_PLAN_FILE=$(mktemp "
+        "\"${TMPDIR:-/tmp}/last30days-plan.XXXXXX\"); "
+        "cat >| \"$QUERY_PLAN_FILE\" <<'PLAN_EOF' ... PLAN_EOF - and re-run "
+        "with --plan \"$QUERY_PLAN_FILE\" (see Research Execution in that "
+        "runbook). With no "
+        "web-search tool, pass --auto-resolve instead. For headless or cron "
+        f"runs under an agent, set {env.ALLOW_ENGINE_PLAN_VAR}=1 to let the "
+        "engine plan internally.\n"
+    )
+
+
+def _law7_host_plan_signal(args: argparse.Namespace, topic: str) -> str:
+    """Identify a blocked agent run before configuration probes run."""
+    if not topic:
+        return ""
+    if args.plan or args.mock or args.hiring_signals or args.auto_resolve:
+        return ""
+    if _comparison_requested(args, topic):
+        return ""
+    if env.engine_plan_allowed():
+        return ""
+    return env.agent_host_signal()
+
+
+def _law7_host_plan_gate(args: argparse.Namespace, topic: str) -> int | None:
+    """Stop a plan-less agent research run after dispatch and cache exemptions."""
+    signal = _law7_host_plan_signal(args, topic)
+    if not signal:
+        return None
+    sys.stderr.write(_law7_host_plan_message(signal))
+    return LAW7_HOST_PLAN_EXIT
+
+
 def _read_x_envelope(
     path: str,
     topic: str,
@@ -2890,6 +2937,9 @@ def _config_policy_for_args(args: argparse.Namespace, topic: str, extra_argv: li
         browser_mode = "plan_only"
     elif normalized_topic == "setup":
         browser_mode = "read" if _setup_allows_browser_cookies(args, extra_argv) else "off"
+    elif _law7_host_plan_signal(args, topic):
+        # Hosted and cached paths need config before dispatch, but no browser read.
+        browser_mode = "plan_only"
     else:
         browser_mode = "read"
     return env.ConfigLoadPolicy(
@@ -3167,6 +3217,38 @@ def main() -> int:
     return _main(parser, args, extra_argv)
 
 
+def _quality_research_results(report, diag, yt_fetch_stats):
+    youtube_items = report.items_by_source.get("youtube") or []
+    instagram_items = report.items_by_source.get("instagram") or []
+    x_outcome = report.source_status.get("x")
+    x_degraded_error = None
+    if (
+        report.items_by_source.get("x")
+        and x_outcome is not None
+        and x_outcome.detail
+        and x_outcome.detail.startswith("X served via ")
+        and " after xai:" in x_outcome.detail
+    ):
+        x_degraded_error = x_outcome.detail
+    return {
+        "active_sources": diag.get("available_sources") or [],
+        "youtube_videos_count": len(youtube_items),
+        "youtube_transcripts_count": sum(
+            1 for it in youtube_items
+            if (it.metadata.get("transcript_highlights") or it.metadata.get("transcript_snippet"))
+        ),
+        "youtube_error": report.errors_by_source.get("youtube"),
+        "x_error": report.errors_by_source.get("x"),
+        "x_degraded_error": x_degraded_error,
+        "youtube_captions_disabled_count": sum(
+            1 for it in youtube_items if it.metadata.get("captions_disabled")
+        ),
+        "youtube_transcript_fetch_attempts": yt_fetch_stats["attempts"],
+        "youtube_transcript_fetch_failures": yt_fetch_stats["failures"],
+        "instagram_items_count": len(instagram_items),
+    }
+
+
 def _main(
     parser: argparse.ArgumentParser,
     args: argparse.Namespace,
@@ -3183,6 +3265,9 @@ def _main(
     topic = " ".join(args.topic).strip()
     original_topic = topic
     _validate_extra_argv(parser, topic, extra_argv)
+    if args.resolve_save_dir:
+        print(env.resolve_memory_dir(args.save_dir))
+        return 0
     if args.x_posts is not None and _looks_inline_json(args.x_posts):
         sys.stderr.write(
             "[last30days] --x-posts accepts a file path only (inline JSON is not "
@@ -3207,6 +3292,8 @@ def _main(
     # One memo per command: comparison mode runs pipeline.run per entity in
     # parallel, so the reset must not live inside the pipeline.
     http.reset_reddit_keyless_memo()
+    reddit.reset_scrapecreators_memo()
+    fetch_memo.reset()
     resolved_corpus_dirs = corpus.resolve_directories(
         args.corpus, config.get("LAST30DAYS_CORPUS_DIRS")
     )
@@ -3324,23 +3411,33 @@ def _main(
             config,
             allow_browser_cookies=_setup_allows_browser_cookies(args, extra_argv),
         )
-        # Persist FROM_BROWSER only when every service's cookies came from the
-        # SAME single browser — then we can fast-path future runs to it. If
-        # different services matched different browsers, or none matched, leave
-        # FROM_BROWSER unset so the safe default remains no browser-cookie
-        # reads. We deliberately do NOT pin "auto" here (it would re-probe
-        # Chrome and re-trigger the prompt) nor a single browser (it would
-        # silently skip the service that used the other one).
-        found_browsers = set(results.get("cookies_found", {}).values())
-        from_browser = found_browsers.pop() if len(found_browsers) == 1 else None
-        # Pin only a silent winner (firefox/safari). Pinning a Chromium browser
-        # would make every steady-state run re-read its Keychain-encrypted store
-        # and can re-trigger the "Always Allow" prompt, so Chrome is used for the
-        # first-run scan but never pinned.
-        if from_browser in {"chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"}:
-            from_browser = None
-        setup_wizard.write_setup_config(env.CONFIG_FILE, from_browser=from_browser)
-        results["env_written"] = True
+        # Keep only successful browsers, including distinct service winners;
+        # "auto" would also probe browsers that did not supply any cookies.
+        found_browsers = dict.fromkeys(
+            "firefox" if browser == "firefox-wsl" else browser
+            for browser in results.get("cookies_found", {}).values()
+        )
+        from_browser = ",".join(found_browsers) or None
+        denied_browsers = (
+            results.get("x_cookie_access_denied", [])
+            if results.get("browser_cookie_scan_attempted") else []
+        )
+        prior_denial = config.get("LAST30DAYS_X_COOKIE_ACCESS_DENIED")
+        denial_marker = (
+            ",".join(denied_browsers) or ("none" if prior_denial else None)
+            if results.get("browser_cookie_scan_attempted") else None
+        )
+        results["env_written"] = setup_wizard.write_setup_config(
+            env.CONFIG_FILE,
+            from_browser=from_browser,
+            x_cookie_access_denied=denial_marker,
+            browser_consent=(
+                None if args.diagnose else _setup_allows_browser_cookies(args, extra_argv)
+            ),
+        )
+        if not results["env_written"]:
+            sys.stderr.write("Setup configuration could not be fully saved; some settings may already be saved.\n")
+            return 1
         sys.stderr.write(setup_wizard.get_setup_status_text(results) + "\n")
         return 0
 
@@ -3637,6 +3734,17 @@ def _main(
             requested_sources,
             channels=cli_telegram_sources,
         )
+    # --devto-tags activates the off-by-default dev.to source for this run
+    # (the --trustpilot-domain pattern): carried on config for the dispatch,
+    # and appended to an explicit or default --search list so it is not
+    # filtered back out. EXCLUDE_SOURCES=devto still wins in the pipeline.
+    cli_devto_tags = [
+        t.strip() for t in (args.devto_tags or "").split(",") if t.strip()
+    ]
+    if cli_devto_tags:
+        config["_devto_tags"] = cli_devto_tags
+        if requested_sources is not None and "devto" not in requested_sources:
+            requested_sources = [*requested_sources, "devto"]
     # Host-fetched X envelope: validated before diagnose so a present
     # envelope plans X in (available_sources) and a bad one fails closed here.
     x_posts_envelope: x_envelope.Envelope | None = None
@@ -3660,19 +3768,13 @@ def _main(
         except x_envelope.EnvelopeContractError as exc:
             sys.stderr.write(f"[last30days] {exc.message}\n")
             return 2
-    diag = pipeline.diagnose(
-        config, requested_sources, safe=args.diagnose,
-        x_envelope=x_posts_envelope is not None,
-    )
-
     if args.diagnose:
+        diag = pipeline.diagnose(
+            config, requested_sources, safe=True,
+            x_envelope=x_posts_envelope is not None,
+        )
         print(json.dumps(diag, indent=2, sort_keys=True))
         return 0
-
-    # Competitor sub-runs shallow-copy this config. The shared object makes the
-    # paid Perplexity cap command-wide and thread-safe across that fanout. Keep
-    # this runtime-only object out of the safe diagnose configuration contract.
-    config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget()
 
     # Per-entity host-fetched X envelopes are validated here, on the main
     # thread and BEFORE the report-cache lookup, so a bad or stale one fails
@@ -3742,6 +3844,22 @@ def _main(
         )
         sys.stderr.flush()
 
+    # LAW 7: an agent host that skipped --plan stops before live diagnostics,
+    # auto-resolve, the internal planner, or any source retrieval can spend.
+    law7_exit = _law7_host_plan_gate(args, topic)
+    if law7_exit is not None:
+        return law7_exit
+
+    diag = pipeline.diagnose(
+        config, requested_sources, safe=False,
+        x_envelope=x_posts_envelope is not None,
+    )
+
+    # Competitor sub-runs shallow-copy this config. The shared object makes the
+    # paid Perplexity cap command-wide and thread-safe across that fanout. Keep
+    # this runtime-only object out of the safe diagnose configuration contract.
+    config["_perplexity_paid_budget"] = pipeline.PaidSourceBudget()
+
     progress = ui.ProgressDisplay(topic, show_banner=True)
     progress.start_processing()
 
@@ -3803,12 +3921,18 @@ def _main(
         # relevance floor entirely — a noisier report beats losing evidence.
         # Skipped when a handle was already supplied, when an external plan
         # owns resolution, or in mock runs.
+        auto_resolve_topic = topic
+        if args.competitors_list is None and (args.competitors is None or comp_plan):
+            from lib import planner as _planner
+            vs_entities = _planner._comparison_entities(topic, uncapped=True)
+            if len(vs_entities) >= 2:
+                auto_resolve_topic = vs_entities[0]
         if (
             not args.auto_resolve
             and not external_plan
             and not args.x_handle
             and not args.mock
-            and _looks_like_entity_topic(topic)
+            and _looks_like_entity_topic(auto_resolve_topic)
         ):
             args.auto_resolve = True
             sys.stderr.write(
@@ -3818,7 +3942,7 @@ def _main(
 
         if args.auto_resolve and not external_plan:
             from lib import resolve
-            resolution = resolve.auto_resolve(topic, config)
+            resolution = resolve.auto_resolve(auto_resolve_topic, config)
             if resolution.get("subreddits") and not subreddits:
                 subreddits = resolution["subreddits"]
                 sys.stderr.write(f"[AutoResolve] Subreddits: {', '.join(subreddits)}\n")
@@ -4037,7 +4161,7 @@ def _main(
                         "  3. Re-invoke: /last30days '{topic} vs {peer1} vs {peer2}' "
                         "--competitors-plan '{\"Peer1\":{\"x_handle\":\"h1\",\"subreddits\":"
                         "[\"s1\"],...},\"Peer2\":{...}}'.\n"
-                        "See SKILL.md 'Competitor mode' for the full protocol.\n"
+                        "See the skill's references/competitors.md for the full protocol.\n"
                         "\n"
                         "HEADLESS / CRON PATH (no hosting model available): set "
                         "BRAVE_API_KEY / EXA_API_KEY / SERPER_API_KEY / PARALLEL_API_KEY / "
@@ -4090,10 +4214,9 @@ def _main(
             )
 
             def _competitor_runner(entity: str) -> schema.Report:
-                # Deep-copy config so per-entity auto_resolve context does not
-                # leak across sub-runs. Each sub-run writes its own
-                # `_auto_resolve_context` into its local config copy.
+                # Resolution belongs to each entity, not the shared command.
                 entity_config = dict(config)
+                entity_config.pop("_auto_resolve_context", None)
                 # The Amazon keyword is entity-SPECIFIC, unlike the depth caps
                 # this shallow copy exists to inherit. Leaving the main topic's
                 # keyword in place would search Weber SKUs for a Traeger peer,
@@ -4102,6 +4225,9 @@ def _main(
                 # so each peer derives its own keyword from its own topic; a
                 # per-entity keyword can ride in the --competitors-plan entry.
                 entity_config.pop("_amazon_query", None)
+                # dev.to tags describe the main topic; a peer falls back to
+                # the slug of its own name instead of a rival's tags.
+                entity_config.pop("_devto_tags", None)
                 # An advertiser page is per-entity state by definition: left in
                 # place it would render one brand's ads as every peer's.
                 entity_config.pop("_meta_ads_page", None)
@@ -4270,40 +4396,9 @@ def _main(
         try:
             from lib import quality_nudge
             from lib import youtube_yt as _youtube_yt
-            # Populate transcript-fetch ratio so quality_nudge can detect the
-            # degraded-YouTube failure mode (videos returned but transcripts
-            # silently failed - typically a stale yt-dlp binary).
-            youtube_items = report.items_by_source.get("youtube") or []
-            _yt_fetch_stats = _youtube_yt.get_transcript_fetch_stats()
-            instagram_items = report.items_by_source.get("instagram") or []
-            research_results = {
-                "active_sources": diag.get("available_sources") or [],
-                "youtube_videos_count": len(youtube_items),
-                "youtube_transcripts_count": sum(
-                    1 for it in youtube_items
-                    if (it.metadata.get("transcript_highlights") or it.metadata.get("transcript_snippet"))
-                ),
-                "youtube_error": report.errors_by_source.get("youtube"),
-                "x_error": report.errors_by_source.get("x"),
-                # Captions-disabled videos can never produce a transcript regardless
-                # of yt-dlp version; subtract them from the degraded-ratio
-                # denominator so a single uploader-disabled video does not trip the
-                # "stale yt-dlp" nudge.
-                "youtube_captions_disabled_count": sum(
-                    1 for it in youtube_items if it.metadata.get("captions_disabled")
-                ),
-                # Actual yt-dlp fetch outcomes for this run. The counts above are
-                # computed from post-pruning items, so they can't tell "fetches
-                # failed (stale binary)" from "fetches succeeded but the videos
-                # were pruned downstream"; the latter was producing false
-                # stale-yt-dlp nudges (#531).
-                "youtube_transcript_fetch_attempts": _yt_fetch_stats["attempts"],
-                "youtube_transcript_fetch_failures": _yt_fetch_stats["failures"],
-                # Track Instagram returned-zero-items so quality_nudge can detect
-                # the silent-failure case (SC configured but the v2 reels endpoint
-                # 500'd through both the original query and the hashtag retry).
-                "instagram_items_count": len(instagram_items),
-            }
+            research_results = _quality_research_results(
+                report, diag, _youtube_yt.get_transcript_fetch_stats()
+            )
             quality = quality_nudge.compute_quality_score(config, research_results)
             if quality.get("nudge_text"):
                 sys.stderr.write(f"\n{quality['nudge_text']}\n")
@@ -4335,4 +4430,5 @@ def _main(
 
 
 if __name__ == "__main__":
+    _install_sigterm_handler()
     raise SystemExit(main())

@@ -25,7 +25,9 @@ Deliberate constraints (see docs/plans/2026-08-31 X plan):
 * **Require a Chrome page target.** ``/json/version`` must report a Chrome /
   Chromium browser (a Node inspector is rejected) and ``/json`` must expose a
   ``page`` target.
-* **``FROM_BROWSER=off`` skips CDP.**
+* **Explicit consent required.** ``BROWSER_CONSENT=true`` or an explicit
+  Chromium/``auto`` selection permits CDP. ``FROM_BROWSER=off`` or a recorded
+  refusal blocks it, including when an endpoint is configured.
 * Stdlib only: a tiny RFC 6455 websocket client, no third-party dependency.
 * Cookie **values are never logged** — only counts and endpoints.
 * First complete pair wins: both ``auth_token`` and ``ct0`` must be present.
@@ -390,23 +392,33 @@ def _pair_from_cookies(cookies: List[Dict[str, Any]]) -> Dict[str, str]:
     return {}
 
 
+def cookie_access_allowed(config: Optional[Dict[str, Any]] = None) -> bool:
+    config = config or {}
+    from_browser = str(config.get("FROM_BROWSER") or "").strip().lower()
+    if from_browser == "off":
+        return False
+    consent = config.get("BROWSER_CONSENT")
+    if consent is not None:
+        return str(consent).strip().lower() in {"1", "true", "yes", "on"}
+    requested = {browser.strip() for browser in from_browser.split(",")}
+    return bool(requested & {"auto", "chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"})
+
+
 def read_x_cookies(config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, str]]:
     """Return the complete X cookie pair from a live Chrome session, or None.
 
     Resolves the debug endpoint (BROWSER_CDP_URL, else 18800 if Chrome, else
     9222+$DISPLAY), requires a Chrome page target, and calls
     ``Network.getAllCookies``. Returns ``{"auth_token", "ct0"}`` only when BOTH
-    cookies are found (no half-pair). ``FROM_BROWSER=off`` returns None without
-    opening a socket. Any failure returns None so the caller falls through.
+    cookies are found (no half-pair). Without explicit consent, returns None
+    before resolving endpoints or opening a socket. Any failure returns None
+    so the caller falls through.
     Never raises.
 
     Host gating (extras-only) lives in the caller (``env.x_extras_enabled``);
     on a plain MacBook this function is never invoked, so no socket is opened.
     """
-    from_browser = ""
-    if config is not None:
-        from_browser = (config.get("FROM_BROWSER") or "").strip().lower()
-    if from_browser == "off":
+    if not cookie_access_allowed(config):
         return None
 
     for base in candidate_endpoints(config):

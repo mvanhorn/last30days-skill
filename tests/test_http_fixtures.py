@@ -270,24 +270,36 @@ def test_post_ranking_cli_enrichment_records_and_replays(
         engagement={"postCount": 1} if source == "digg" else {},
         metadata={"clusterUrlId": "cluster-1"} if source == "digg" else {},
     )
+    enrichment_calls = []
     if source == "youtube":
         def enrich(items, **_kwargs):
+            enrichment_calls.append(([entry.item_id for entry in items], _kwargs))
             items[0].metadata["transcript_snippet"] = "recorded transcript"
 
         monkeypatch.setattr(pipeline.youtube_yt, "backfill_transcripts", enrich)
+        expected_metadata = {"transcript_snippet": "recorded transcript"}
+        expected_kwargs = {"topic": "agents", "depth": "quick", "token": None}
     else:
         def enrich(items, **_kwargs):
+            enrichment_calls.append(([entry.item_id for entry in items], _kwargs))
             items[0].metadata["posts"] = [{"url": "https://x.com/example/status/1"}]
             return items
 
         monkeypatch.setattr(pipeline.digg, "enrich_source_items", enrich)
+        expected_metadata = {
+            "clusterUrlId": "cluster-1",
+            "posts": [{"url": "https://x.com/example/status/1"}],
+        }
+        expected_kwargs = {"top_k": 3}
 
     with http.recording_requests(fixture_dir):
         recorded = pipeline._finalize_items_by_source(
             {source: [item]}, topic="agents", depth="quick",
         )
 
-    expected_metadata = recorded[source][0].metadata
+    assert enrichment_calls == [(["item-1"], expected_kwargs)]
+    assert len(recorded[source]) == 1
+    assert recorded[source][0].metadata == expected_metadata
     replay_item = schema.SourceItem(
         item_id="item-1",
         source=source,
@@ -308,7 +320,9 @@ def test_post_ranking_cli_enrichment_records_and_replays(
             {source: [replay_item]}, topic="agents", depth="quick",
         )
 
+    assert len(replayed[source]) == 1
     assert replayed[source][0].metadata == expected_metadata
+    assert enrichment_calls == [(["item-1"], expected_kwargs)]
 
 
 def test_record_fixtures_flag_is_dev_only_and_hidden_from_help():

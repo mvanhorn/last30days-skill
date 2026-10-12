@@ -21,7 +21,7 @@ Two resolution modes:
   results fall below the configured thinness floor (see the gating in
   ``lib/pipeline.py``). No probe can pick one winner, so resolution renders
   honest conditional wording instead of an ``active_backend``. Reddit's
-  internal keyless lanes (rss/listing/arctic/shreddit) are sub-probe detail
+  internal keyless lanes (search/listing/arctic/shreddit) are sub-probe detail
   inside the public composite, never chain entries.
 
 ``active_backend`` semantics: a PREDICTION — "the first backend the probes
@@ -456,7 +456,7 @@ def _probe_reddit_public(config: Dict[str, Any]) -> BackendFinding:
     return BackendFinding(
         name="public",
         status=health.OK,
-        detail="public keyless composite (lanes: rss, listing, arctic, shreddit)",
+        detail="public keyless composite (lanes: search, listing, arctic, shreddit)",
         requires="none (public endpoints)",
     )
 
@@ -721,15 +721,6 @@ def _resolve_alternative(
     return res
 
 
-def _reddit_sc_min_items(config: Dict[str, Any]) -> int:
-    """The thinness floor, parsed exactly as the pipeline parses it
-    (lib/pipeline.py reddit fetch: int(... or 0), malformed -> 0)."""
-    try:
-        return int(config.get(env.REDDIT_SC_MIN_ITEMS_VAR) or 0)
-    except (TypeError, ValueError):
-        return 0
-
-
 def _resolve_conditional(
     descriptor: ChainDescriptor,
     config: Dict[str, Any],
@@ -747,7 +738,7 @@ def _resolve_conditional(
     has_key = bool(config.get("SCRAPECREATORS_API_KEY"))
     raw_pin = (config.get(descriptor.pin_var) or "").lower() if descriptor.pin_var else ""
     pinned_sc = has_key and raw_pin == "scrapecreators"
-    floor = _reddit_sc_min_items(config)
+    floor = env.reddit_sc_min_items(config)
 
     if pinned_sc:
         res.pinned = True

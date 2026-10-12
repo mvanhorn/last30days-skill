@@ -1,6 +1,8 @@
+import io
 import json
 import os
 import unittest
+import urllib.error
 from unittest import mock
 from typing import get_args
 
@@ -174,6 +176,20 @@ class ResolveEndpointTests(unittest.TestCase):
             self._resolve("https://example.test/v1/responses"),
         )
 
+    def test_full_endpoint_query_string_is_preserved(self):
+        endpoint = "https://example.test/v1/responses?tenant=acme"
+        self.assertEqual(endpoint, self._resolve(endpoint))
+
+    def test_custom_gateway_route_is_preserved(self):
+        endpoint = "https://example.test/proxy?tenant=acme"
+        self.assertEqual(endpoint, self._resolve(endpoint))
+
+    def test_api_root_query_string_stays_after_appended_path(self):
+        self.assertEqual(
+            "https://example.test/v1/responses?tenant=acme",
+            self._resolve("https://example.test/v1?tenant=acme"),
+        )
+
     def test_openrouter_uses_chat_completions_path(self):
         self.assertEqual(
             "https://example.test/api/v1/chat/completions",
@@ -193,3 +209,173 @@ class ResolveEndpointTests(unittest.TestCase):
                 default=providers.OPENROUTER_URL,
             ),
         )
+
+
+class TestProviderUsage(unittest.TestCase):
+    def test_successful_http_request_reports_usage(self):
+        client = providers.OpenAIClient("dummy")
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = json.dumps({
+            "output_text": "ok",
+            "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+        }).encode("utf-8")
+        with mock.patch.object(providers.http.urllib.request, "urlopen", return_value=response) as urlopen:
+            self.assertEqual("ok", client.generate_text("model", "prompt"))
+        self.assertEqual(1, urlopen.call_count)
+        self.assertEqual(
+            {"calls": 1, "promptTokens": 5, "completionTokens": 3, "totalTokens": 8},
+            client.total_usage,
+        )
+
+    def test_failed_request_makes_later_usage_incomplete(self):
+        client = providers.OpenAIClient("dummy")
+        response = {
+            "output_text": "ok",
+            "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+        }
+        with mock.patch.object(
+            providers.http, "post",
+            side_effect=[response, providers.http.HTTPError("timed out"), response],
+        ):
+            self.assertEqual("ok", client.generate_text("model", "prompt"))
+            with self.assertRaises(providers.http.HTTPError):
+                client.generate_text("model", "prompt")
+            self.assertEqual("ok", client.generate_text("model", "prompt"))
+        self.assertIsNone(client.total_usage)
+
+    def test_hidden_http_retry_makes_usage_incomplete(self):
+        client = providers.OpenAIClient("dummy")
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.read.return_value = json.dumps({
+            "output_text": "ok",
+            "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8},
+        }).encode("utf-8")
+        failed_attempt = urllib.error.HTTPError(
+            providers.OPENAI_RESPONSES_URL, 500, "server error", {}, io.BytesIO(b"{}"),
+        )
+        with mock.patch.object(providers.http.urllib.request, "urlopen", side_effect=[failed_attempt, response]) as urlopen:
+            with mock.patch.object(providers.http.time, "sleep"):
+                self.assertEqual("ok", client.generate_text("model", "prompt"))
+        self.assertEqual(2, urlopen.call_count)
+        self.assertIsNone(client.total_usage)
+
+    def test_gemini_counts_all_calls_including_thought_tokens(self):
+        client = providers.GeminiClient("dummy-key")
+        responses = [
+            {
+                "candidates": [{"content": {"parts": [{"text": "first"}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 10,
+                    "candidatesTokenCount": 4,
+                    "thoughtsTokenCount": 6,
+                    "totalTokenCount": 20,
+                },
+            },
+            {
+                "candidates": [{"content": {"parts": [{"text": "second"}]}}],
+                "usageMetadata": {
+                    "promptTokenCount": 7,
+                    "candidatesTokenCount": 3,
+                    "totalTokenCount": 10,
+                },
+            },
+        ]
+        with mock.patch.object(providers.http, "post", side_effect=responses):
+            self.assertEqual("first", client.generate_text("model", "prompt"))
+            self.assertEqual("second", client.generate_text("model", "prompt"))
+        self.assertEqual(
+            {"calls": 2, "promptTokens": 17, "completionTokens": 13, "totalTokens": 30},
+            client.total_usage,
+        )
+
+    def test_non_gemini_providers_capture_response_usage(self):
+        cases = [
+            (providers.OpenAIClient("dummy"), {"input_tokens": 11, "output_tokens": 7, "total_tokens": 18}),
+            (providers.XAIClient("dummy"), {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}),
+            (providers.OpenRouterClient("dummy"), {"prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18}),
+        ]
+        for client, usage in cases:
+            with self.subTest(provider=client.name):
+                with mock.patch.object(providers.http, "post", return_value={"output_text": "ok", "usage": usage}):
+                    self.assertEqual("ok", client.generate_text("model", "prompt"))
+                self.assertEqual(
+                    {"calls": 1, "promptTokens": 11, "completionTokens": 7, "totalTokens": 18},
+                    client.total_usage,
+                )
+
+    def test_missing_usage_never_exports_a_partial_or_false_zero_total(self):
+        client = providers.OpenAIClient("dummy")
+        responses = [
+            {"output_text": "first", "usage": {"input_tokens": 5, "output_tokens": 3, "total_tokens": 8}},
+            {"output_text": "second"},
+        ]
+        with mock.patch.object(providers.http, "post", side_effect=responses):
+            client.generate_text("model", "prompt")
+            client.generate_text("model", "prompt")
+        self.assertIsNone(client.total_usage)
+
+    def test_missing_usage_is_null_for_each_provider(self):
+        clients_and_responses = [
+            (providers.GeminiClient("dummy"), {"candidates": [{"content": {"parts": [{"text": "ok"}]}}]}),
+            (providers.OpenAIClient("dummy"), {"output_text": "ok"}),
+            (providers.XAIClient("dummy"), {"output_text": "ok"}),
+            (providers.OpenRouterClient("dummy"), {"output_text": "ok"}),
+        ]
+        for client, response in clients_and_responses:
+            with self.subTest(provider=client.name):
+                with mock.patch.object(providers.http, "post", return_value=response):
+                    self.assertEqual("ok", client.generate_text("model", "prompt"))
+                self.assertIsNone(client.total_usage)
+
+    def test_reported_zero_usage_is_not_treated_as_missing(self):
+        client = providers.OpenRouterClient("dummy")
+        response = {
+            "output_text": "cached",
+            "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+        }
+        with mock.patch.object(providers.http, "post", return_value=response):
+            self.assertEqual("cached", client.generate_text("model", "prompt"))
+        self.assertEqual(
+            {"calls": 1, "promptTokens": 0, "completionTokens": 0, "totalTokens": 0},
+            client.total_usage,
+        )
+
+    def test_xai_reported_total_includes_reasoning_tokens(self):
+        client = providers.XAIClient("dummy")
+        response = {
+            "output_text": "ok",
+            "usage": {"prompt_tokens": 32, "completion_tokens": 9, "total_tokens": 151},
+        }
+        with mock.patch.object(providers.http, "post", return_value=response):
+            client.generate_text("model", "prompt")
+        self.assertEqual(
+            {"calls": 1, "promptTokens": 32, "completionTokens": 119, "totalTokens": 151},
+            client.total_usage,
+        )
+
+    def test_xai_responses_usage_uses_input_and_output_token_keys(self):
+        client = providers.XAIClient("dummy")
+        response = {
+            "output_text": "ok",
+            "usage": {"input_tokens": 131, "output_tokens": 624, "total_tokens": 755},
+        }
+        with mock.patch.object(providers.http, "post", return_value=response):
+            client.generate_text("model", "prompt")
+        self.assertEqual(
+            {"calls": 1, "promptTokens": 131, "completionTokens": 624, "totalTokens": 755},
+            client.total_usage,
+        )
+
+    def test_inconsistent_provider_total_is_unavailable(self):
+        client = providers.OpenRouterClient("dummy")
+        response = {
+            "output_text": "ok",
+            "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 12},
+        }
+        with mock.patch.object(providers.http, "post", return_value=response):
+            client.generate_text("model", "prompt")
+        self.assertIsNone(client.total_usage)

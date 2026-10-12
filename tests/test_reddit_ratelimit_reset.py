@@ -13,7 +13,7 @@ class TestRetryDelayFromHeaders:
         assert http.retry_delay_from_headers({"Retry-After": "17"}, 3.0) == 17.0
 
     def test_falls_back_to_x_ratelimit_reset(self):
-        # The header Reddit actually sends on search/RSS 429s.
+        # The header Reddit actually sends on anonymous search 429s.
         assert http.retry_delay_from_headers({"x-ratelimit-reset": "42"}, 3.0) == 42.0
 
     def test_retry_after_wins_over_ratelimit_reset(self):
@@ -21,8 +21,8 @@ class TestRetryDelayFromHeaders:
         assert http.retry_delay_from_headers(headers, 3.0) == 5.0
 
     def test_real_reddit_429_headers(self):
-        # Captured verbatim from an anonymous GET to
-        # https://www.reddit.com/search.rss?q=... on 2026-08-23.
+        # Captured verbatim from an anonymous keyless Reddit search GET
+        # on 2026-08-23.
         headers = {
             "x-ratelimit-used": "1",
             "x-ratelimit-remaining": "0.0",

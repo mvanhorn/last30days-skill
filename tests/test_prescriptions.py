@@ -452,3 +452,10 @@ class TestAltCliArityPin:
             f"youtube/{failure} lost a platform alternate; quality_nudge "
             "wording degrades (tolerant, but fix the entry or the prose)"
         )
+
+
+@pytest.mark.parametrize("failure", ["bearer_missing", "connector_missing"])
+def test_official_x_repair_names_grok_bots_built_in_tools_before_the_connector(failure):
+    fix = prescriptions.for_x(GROK_BOT, failure).fix_nl
+    assert "built-in X tools" in fix
+    assert fix.index("built-in X tools") < fix.index("X for Grok Bot")

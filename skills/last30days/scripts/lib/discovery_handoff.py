@@ -117,7 +117,8 @@ class NominationsBundle:
     instead of silently reading as clean. ``mock`` is the writing run's
     provenance - mock-born state must never be finalized by a real run (and
     vice versa); files written before either field existed read as an empty
-    map and a real run."""
+    map and a real run. ``warnings`` retains informational sweep coverage
+    separately from source outcomes; older files read with no warnings."""
 
     schema_version: str
     bundle_id: str
@@ -133,6 +134,7 @@ class NominationsBundle:
     source_status: dict[str, schema.SourceOutcome] = field(default_factory=dict)
     mock: bool = False
     path: Path | None = None
+    warnings: list[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -244,6 +246,7 @@ def write_nominations_bundle(
     enrichment_source_boundary: list[str] | None,
     requested_sources: list[str] | None,
     source_status: dict[str, schema.SourceOutcome] | None = None,
+    warnings: Sequence[str] | None = None,
     mock: bool = False,
     save_dir: str | Path | None = None,
     config_dir: Path | None = None,
@@ -257,7 +260,8 @@ def write_nominations_bundle(
     "empty boundary" are different contracts. ``source_status`` is the
     sweep's finalized per-source outcome map (serialized via the same
     ``schema.to_dict`` round trip every report uses) so degraded coverage
-    survives into legs 2-3; ``mock`` stamps the writing run's provenance.
+    survives into legs 2-3; ``warnings`` preserves informational coverage
+    receipts, and ``mock`` stamps the writing run's provenance.
     """
     if tier not in _VALID_TIERS:
         raise ValueError(f"tier must be one of {_VALID_TIERS}, got {tier!r}")
@@ -305,6 +309,7 @@ def write_nominations_bundle(
         "domain": domain,
         "tier": tier,
         "mock": bool(mock),
+        "warnings": list(warnings or []),
         "source_status": {
             source: schema.to_dict(outcome)
             for source, outcome in (source_status or {}).items()
@@ -353,6 +358,7 @@ def write_nominations_bundle(
         source_status=dict(source_status or {}),
         mock=bool(mock),
         path=path,
+        warnings=list(warnings or []),
     )
 
 
@@ -522,6 +528,11 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
         _warn(f"ignoring malformed source_status map in {path.name}")
         source_status = {}
 
+    warnings = payload.get("warnings", [])
+    if not isinstance(warnings, list) or any(not isinstance(warning, str) for warning in warnings):
+        _warn(f"ignoring malformed warnings list in {path.name}")
+        warnings = []
+
     return NominationsBundle(
         schema_version=str(version),
         bundle_id=bundle_id,
@@ -543,6 +554,7 @@ def _parse_bundle_file(path: Path) -> NominationsBundle:
         source_status=source_status,
         mock=bool(payload.get("mock")),
         path=path,
+        warnings=warnings,
     )
 
 

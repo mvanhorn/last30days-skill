@@ -59,6 +59,11 @@ KEYCHAIN_ALIASES_ENV = "LAST30DAYS_KEYCHAIN_ALIASES"
 # a stored key can silently satisfy a lookup the test meant to see fail.
 KEYCHAIN_DISABLE_ENV = "LAST30DAYS_SKIP_KEYCHAIN"
 
+X_COOKIE_ACCESS_FIX = (
+    "Check the browser-data permissions for the terminal or agent host and retry setup. "
+    "If access remains blocked, set AUTH_TOKEN and CT0 manually or use XAI_API_KEY."
+)
+
 # Single source of truth for which credentials the Keychain loader looks up.
 # The setup-keychain.sh helper mirrors this list and is held in sync via
 # tests/test_env_keychain.py::test_keychain_keys_match_setup_script.
@@ -260,6 +265,23 @@ def _strip_inline_comment(value: str) -> str:
     return value
 
 
+# ``export KEY=value`` is the shell spelling people paste into .env files, and
+# python-dotenv and docker compose accept it too. The prefix only counts when
+# whitespace and a key follow it, so a key literally named ``export`` is kept.
+_EXPORT_PREFIX = re.compile(r'export\s+')
+
+
+def env_line_key(lhs: str) -> str:
+    """Return the key named by the left-hand side of a ``KEY=value`` line.
+
+    Shared with the setup wizard's .env writers so that reading and writing
+    agree on which key a hand-written line sets.
+    """
+    key = lhs.strip()
+    match = _EXPORT_PREFIX.match(key)
+    return key[match.end():] if match else key
+
+
 def load_env_file(path: Path) -> dict[str, str]:
     """Load environment variables from a file."""
     env = {}
@@ -283,14 +305,14 @@ def load_env_file(path: Path) -> dict[str, str]:
             continue
         if '=' in line:
             key, _, value = line.partition('=')
-            key = key.strip()
+            key = env_line_key(key)
             value = _strip_inline_comment(value).strip()
             # Remove quotes if present
             if value and value[0] in ('"', "'") and value[-1] == value[0]:
                 value = value[1:-1]
-            # Empty LAST30DAYS_YT_PLAYER_CLIENT is a persisted disable; other
-            # keys still drop blanks so secrets cannot be set to "".
-            if key and (value or key == 'LAST30DAYS_YT_PLAYER_CLIENT'):
+            # These settings use empty as a persisted disable; secrets still
+            # drop blanks instead of overriding a configured credential.
+            if key and (value or key in {'LAST30DAYS_YT_PLAYER_CLIENT', 'LAST30DAYS_MEMORY_DIR'}):
                 env.update({key: value})
     return env
 
@@ -494,6 +516,34 @@ def _find_project_env() -> Path | None:
     return None
 
 
+def _configured_memory_dir(*values: str | None) -> str | None:
+    for value in values:
+        if value is not None and not is_unsubstituted_template(value):
+            return value
+    return None
+
+
+def resolve_memory_dir(save_dir: str | None = None) -> str:
+    """Resolve the skill's save directory without credential-store access."""
+    value = save_dir
+    if value is None:
+        value = _configured_memory_dir(os.environ.get("LAST30DAYS_MEMORY_DIR"))
+    if value is None:
+        file_env = load_env_file(CONFIG_FILE) if CONFIG_FILE else {}
+        project_env = {}
+        if _project_config_trusted(ConfigLoadPolicy(), file_env):
+            project_path = _find_project_env()
+            if project_path:
+                project_env = load_env_file(project_path)
+        value = _configured_memory_dir(
+            project_env.get("LAST30DAYS_MEMORY_DIR"),
+            file_env.get("LAST30DAYS_MEMORY_DIR"),
+        )
+    if value is None:
+        value = str(Path.home() / "Documents" / "Last30Days")
+    return str(Path(value).expanduser().absolute()) if value else ""
+
+
 def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     """Load configuration from multiple sources.
 
@@ -578,6 +628,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # Per-source deadline (seconds) for doctor --probe live checks.
         ('LAST30DAYS_DOCTOR_PROBE_TIMEOUT', None),
         ('LAST30DAYS_REDDIT_SC_MIN_ITEMS', None),
+        ('LAST30DAYS_YT_SC_MIN_ITEMS', None),
         ('LAST30DAYS_STORE', None),
         # Discovery topic queue (podcast/X-article pipeline memory). Default
         # ON; the literal value "off" disables queue writes and annotations.
@@ -643,7 +694,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # Bright Data CLI. Optional: the CLI normally owns its own auth via
         # `brightdata login`, so this only matters for users who prefer an
         # explicit key in a `.env` file or the keychain. Registered here so
-        # those layers reach the gate and the subprocess (-k) alike.
+        # those layers reach the gate and the subprocess environment alike.
         ('BRIGHTDATA_API_KEY', None),
         # Amazon marketplace the amazon source searches. Non-US users point
         # this at their own storefront (e.g. https://www.amazon.co.uk).
@@ -664,6 +715,8 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         # automated contexts (cron/CI/eval). Read by trustpilot._harvest_allowed.
         ('LAST30DAYS_TRUSTPILOT_NO_BROWSER', None),
         ('FROM_BROWSER', None),
+        ('BROWSER_CONSENT', None),
+        ('LAST30DAYS_X_COOKIE_ACCESS_DENIED', None),
         # agentcookie sidecar: soft-dep X cookie source (lib/agentcookie.py),
         # active only on extra hosts (Linux / Mac mini / Darwin sink) or when
         # set to "on". "off" disables the sidecar reader.
@@ -721,7 +774,7 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
             # Process env only; the .env value never reaches config.
             config[key] = os.environ.get(key) or default
             continue
-        if key == 'LAST30DAYS_YT_PLAYER_CLIENT':
+        if key in {'LAST30DAYS_YT_PLAYER_CLIENT', 'LAST30DAYS_MEMORY_DIR'}:
             # Empty string is a valid disable; `or` would treat it as unset.
             if key in os.environ:
                 config[key] = os.environ.get(key)
@@ -818,7 +871,11 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
     )
     for key in templated_keys:
         os.environ.pop(key, None)
-        fallback = merged_env.get(key)
+        fallback = (
+            _configured_memory_dir(project_env.get(key), file_env.get(key))
+            if key == 'LAST30DAYS_MEMORY_DIR'
+            else merged_env.get(key)
+        )
         # A lower-priority value that is itself a placeholder is not a credential.
         if is_unsubstituted_template(fallback):
             fallback = None
@@ -990,8 +1047,8 @@ def _discover_and_apply_x_credentials(config: dict[str, Any]) -> None:
     if mini_extract_first and not have_pair():
         _apply_browser_extract(config)
 
-    # (3) live Chrome CDP — extras only, complete pair only.
-    if extras and not have_pair():
+    # (3) live Chrome CDP — extras only, after browser-cookie consent.
+    if extras and not have_pair() and chrome_cdp.cookie_access_allowed(config):
         pair = chrome_cdp.read_x_cookies(config)
         if pair:
             _apply_x_pair(config, pair["auth_token"], pair["ct0"], "chrome cdp")
@@ -1017,6 +1074,10 @@ COOKIE_DOMAINS: dict[str, dict[str, Any]] = {
         "mapping": {"_session_id": "TRUTHSOCIAL_TOKEN"},
     },
 }
+
+COOKIE_BROWSER_NAMES = (
+    "firefox", "safari", "chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"
+)
 
 
 def cookie_extraction_browsers(config: dict[str, Any]) -> list[str]:
@@ -1044,9 +1105,12 @@ def cookie_extraction_browsers(config: dict[str, Any]) -> list[str]:
     """
     if not x_policy(config).cookie_discovery:
         return []
-    silent_browsers = ["firefox", "safari"]
-    chromium_browsers = ["chrome", "brave", "edge", "vivaldi", "opera", "arc", "chromium"]
-    known_browsers = silent_browsers + chromium_browsers
+    consent = config.get("BROWSER_CONSENT")
+    if consent is not None and str(consent).strip().lower() not in {"1", "true", "yes", "on"}:
+        return []
+    silent_browsers = list(COOKIE_BROWSER_NAMES[:2])
+    chromium_browsers = list(COOKIE_BROWSER_NAMES[2:])
+    known_browsers = list(COOKIE_BROWSER_NAMES)
     from_browser = (config.get("FROM_BROWSER") or "").strip().lower()
     if not from_browser:
         return []
@@ -1096,18 +1160,52 @@ def extract_browser_credentials(config: dict[str, Any]) -> dict[str, str]:
         return {}
     extracted: dict[str, str] = {}
     for _service, spec in COOKIE_DOMAINS.items():
-        if all(config.get(env_key) for env_key in spec["mapping"].values()):
+        missing_cookies = [
+            name for name in spec["cookies"] if not config.get(spec["mapping"][name])
+        ]
+        if not missing_cookies:
             continue
+        # Cookies from different browsers can belong to different sessions,
+        # so values are never combined across browsers: a complete set from
+        # one browser wins, else the first browser's partial set is kept.
+        chosen: dict[str, str] | None = None
+        fallback: dict[str, str] | None = None
+        denied_browsers: list[str] = []
         for browser in browsers:
             try:
                 cookies = cookie_extract.extract_cookies(browser, spec["domain"], spec["cookies"])
+            except PermissionError:
+                denied_browsers.append(browser)
+                if len(missing_cookies) == len(spec["cookies"]):
+                    continue
+                # Keep full-pair profile preference unless a denied profile blocks it.
+                try:
+                    cookies = cookie_extract.extract_cookies(
+                        browser, spec["domain"], missing_cookies
+                    )
+                except Exception:
+                    continue
             except Exception:
                 continue
-            if cookies:
-                for cookie_name, env_key in spec["mapping"].items():
-                    if cookie_name in cookies and not config.get(env_key):
-                        extracted[env_key] = cookies[cookie_name]
-                break  # Found cookies for this service, stop trying browsers
+            if not cookies:
+                continue
+            if cookie_extract.has_complete_pair(cookies, spec["cookies"]):
+                chosen = cookies
+                break
+            if fallback is None:
+                fallback = cookies
+        if chosen is None:
+            chosen = fallback or {}
+        if _service == "x" and denied_browsers and not cookie_extract.has_complete_pair(
+            chosen, spec["cookies"]
+        ):
+            sys.stderr.write(
+                "[last30days] X browser cookie access permission denied in "
+                f"{', '.join(denied_browsers)}. {X_COOKIE_ACCESS_FIX}\n"
+            )
+        for cookie_name, env_key in spec["mapping"].items():
+            if chosen.get(cookie_name) and not config.get(env_key):
+                extracted[env_key] = chosen[cookie_name]
     return extracted
 
 
@@ -1200,6 +1298,52 @@ GROK_BOT_HOST = 'grok-bot'
 # Per-session X connector lane signal: process env only.
 X_HOST_LANE_VAR = 'LAST30DAYS_X_HOST_LANE'
 
+# Agent-hosted run detection, used only to enforce SKILL.md LAW 7 (the host
+# model writes the query plan and passes --plan). This is separate from the
+# X policy above, which trusts LAST30DAYS_HOST alone. Here the engine reads
+# the markers agent runtimes export into the shells they spawn, because the
+# failure it guards against is a host that forgot to plan. Process
+# environment only: a .env line never makes a cron run look agent-hosted.
+AGENT_HOST_ENV_VARS = (
+    'CLAUDECODE',              # Claude Code
+    'CLAUDE_CODE_ENTRYPOINT',  # Claude Code / Claude Agent SDK
+    'CODEX_THREAD_ID',         # Codex
+    'CODEX_SESSION_ID',
+    'CODEX_SANDBOX',
+)
+# Explicit self-identification for any other agent runtime.
+HOST_AGENT_VAR = 'LAST30DAYS_HOST_AGENT'
+# Headless/cron escape hatch under an agent: let the engine plan internally.
+ALLOW_ENGINE_PLAN_VAR = 'LAST30DAYS_ALLOW_ENGINE_PLAN'
+
+
+def agent_host_signal(environ: Any = None) -> str:
+    """Name of the env var that marks this process as agent-hosted, or "".
+
+    ``LAST30DAYS_HOST_AGENT`` counts when truthy; the runtime markers in
+    ``AGENT_HOST_ENV_VARS`` and a host self-identification in
+    ``LAST30DAYS_HOST`` (e.g. ``grok-bot``) count when non-empty. Returns the
+    variable name (never its value) so messages can cite what was detected.
+    """
+    source = os.environ if environ is None else environ
+    if _truthy(source.get(HOST_AGENT_VAR)):
+        return HOST_AGENT_VAR
+    for name in (*AGENT_HOST_ENV_VARS, X_HOST_VAR):
+        if str(source.get(name) or '').strip():
+            return name
+    return ''
+
+
+def agent_hosted_run(environ: Any = None) -> bool:
+    """True when an agent runtime appears to be hosting this engine process."""
+    return bool(agent_host_signal(environ))
+
+
+def engine_plan_allowed(environ: Any = None) -> bool:
+    """True when ``LAST30DAYS_ALLOW_ENGINE_PLAN`` opts back into engine planning."""
+    source = os.environ if environ is None else environ
+    return _truthy(source.get(ALLOW_ENGINE_PLAN_VAR))
+
 # Public routing definitions for the doctor/backend-descriptor layer
 # (lib/backends.py). These are aliases for knowledge this module already
 # owns — the declared X chain order and the pin/floor env var names — so
@@ -1211,6 +1355,39 @@ X_OFFICIAL = _X_OFFICIAL
 X_BACKEND_PIN_VAR = 'LAST30DAYS_X_BACKEND'
 REDDIT_BACKEND_PIN_VAR = 'LAST30DAYS_REDDIT_BACKEND'
 REDDIT_SC_MIN_ITEMS_VAR = 'LAST30DAYS_REDDIT_SC_MIN_ITEMS'
+# Keyed runs backfill Reddit from ScrapeCreators when the free path returns
+# fewer than this many items. Thin topics yield 2-3 free results; healthy
+# topics many more, so 5 spends credits only where it adds coverage.
+REDDIT_SC_MIN_ITEMS_DEFAULT = 5
+YOUTUBE_SC_MIN_ITEMS_VAR = 'LAST30DAYS_YT_SC_MIN_ITEMS'
+YOUTUBE_SC_MIN_ITEMS_DEFAULT = 3
+
+
+def reddit_sc_min_items(config: dict[str, Any]) -> int:
+    """The Reddit ScrapeCreators backfill floor, parsed one way for every caller.
+
+    Unset or blank means ``REDDIT_SC_MIN_ITEMS_DEFAULT``; an explicit ``0``
+    means backfill only when the free path is empty; a malformed value means
+    ``0`` so a typo never spends extra credits. Negative values clamp to 0.
+    """
+    raw = config.get(REDDIT_SC_MIN_ITEMS_VAR)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return REDDIT_SC_MIN_ITEMS_DEFAULT
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def youtube_sc_min_items(config: dict[str, Any]) -> int:
+    """Minimum yt-dlp result count before keyed YouTube search backfill is skipped."""
+    raw = config.get(YOUTUBE_SC_MIN_ITEMS_VAR)
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        return YOUTUBE_SC_MIN_ITEMS_DEFAULT
+    try:
+        return max(int(raw), 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 @dataclass(frozen=True)

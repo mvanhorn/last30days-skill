@@ -59,9 +59,13 @@ class TestParseComments:
         assert any("$750" in b or "pending" in b for b in bodies)
 
     def test_comment_url_built(self):
-        for c in rs.parse_comments(_html()):
-            if c["url"]:
-                assert c["url"].startswith("https://reddit.com/r/")
+        comments = rs.parse_comments(_html())
+        assert [c["url"] for c in comments] == [
+            f"https://reddit.com/r/Rakuten/comments/1taeiw0/comment/{comment_id}/"
+            for comment_id in (
+                "ol8tp8n", "olcy1iv", "olaqzjk", "omlbiqg", "ol8undb", "ol8w8w6", "synthneg"
+            )
+        ]
 
     def test_empty_html_returns_empty(self):
         assert rs.parse_comments("") == []

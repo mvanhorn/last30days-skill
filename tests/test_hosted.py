@@ -451,6 +451,63 @@ def test_api_base_override(remote_env, monkeypatch, capsys):
     assert urls == ["https://staging.example.dev/api/v1/search"]
 
 
+@pytest.mark.parametrize("base", [
+    TEST_BASE,
+    "http://localhost:8080/api/v1",
+    "http://127.0.0.1:8080/api/v1",
+    "http://[::1]:8080/api/v1",
+])
+def test_api_base_allows_https_and_loopback_http(remote_env, monkeypatch, base):
+    monkeypatch.setenv("LAST30DAYS_API_BASE", base)
+    with mock.patch.object(hosted.http, "post", return_value=SUBMIT_OK) as post, \
+         mock.patch.object(hosted.http, "get", return_value=POLL_COMPLETE) as get:
+        assert hosted.run_hosted("test topic", "quick") == 0
+
+    assert post.call_args.args == (f"{base}/search",)
+    assert get.call_args.args == (f"{base}/search",)
+    assert post.call_args.kwargs["headers"] == {"Authorization": f"Bearer {TEST_KEY}"}
+    assert get.call_args.kwargs["headers"] == {"Authorization": f"Bearer {TEST_KEY}"}
+
+
+@pytest.mark.parametrize("base", [
+    "http://remote.example.test/api/v1",
+    f"http://remote.example.test/{TEST_KEY}",
+    "ftp://remote.example.test/api/v1",
+])
+def test_api_base_rejects_insecure_remote_without_request(
+    remote_env, monkeypatch, capsys, base,
+):
+    monkeypatch.setenv("LAST30DAYS_API_BASE", base)
+    with mock.patch.object(hosted.http, "post", return_value=SUBMIT_OK) as post, \
+         mock.patch.object(hosted.http, "get", return_value=POLL_COMPLETE) as get:
+        rc = hosted.run_hosted("test topic", "quick")
+
+    captured = capsys.readouterr()
+    post.assert_not_called()
+    get.assert_not_called()
+    assert rc == 1
+    assert "LAST30DAYS_API_BASE" in captured.err
+    assert "https://" in captured.err
+    assert "loopback" in captured.err
+    assert TEST_KEY not in captured.out + captured.err
+
+
+@pytest.mark.parametrize("operation", ["submit", "poll"])
+def test_direct_hosted_requests_reject_insecure_remote(remote_env, monkeypatch, operation):
+    monkeypatch.setenv("LAST30DAYS_API_BASE", "http://remote.example.test/api/v1")
+    with mock.patch.object(hosted.http, "post") as post, \
+         mock.patch.object(hosted.http, "get") as get:
+        with pytest.raises(ValueError, match="LAST30DAYS_API_BASE.*https://") as exc:
+            if operation == "submit":
+                hosted.submit("test topic", "quick")
+            else:
+                hosted.poll(SEARCH_ID)
+
+    post.assert_not_called()
+    get.assert_not_called()
+    assert TEST_KEY not in str(exc.value)
+
+
 # ---------------------------------------------------------------------------
 # Error handling
 # ---------------------------------------------------------------------------
@@ -568,16 +625,27 @@ def test_persistent_network_failure_gives_up_with_message(remote_env, monkeypatc
     assert TEST_KEY not in captured.err
 
 
-def test_emit_json_prints_terminal_row_without_stderr(remote_env, monkeypatch, capsys):
+def test_emit_json_prints_terminal_row_without_stderr(remote_env, monkeypatch, capsys, tmp_path):
+    terminal = {
+        **POLL_COMPLETE,
+        "stderr": f"PRIVATE-STDERR-{tmp_path.name}",
+        "internal_trace": f"PRIVATE-TRACE-{tmp_path.name}",
+    }
     monkeypatch.setattr(hosted.http, "post", lambda *a, **k: dict(SUBMIT_OK))
-    monkeypatch.setattr(hosted.http, "get", lambda *a, **k: dict(POLL_COMPLETE))
+    monkeypatch.setattr(hosted.http, "get", lambda *a, **k: dict(terminal))
     rc = hosted.run_hosted("test topic", "default", emit="json",
                            save_dir=None, save_suffix="")
     captured = capsys.readouterr()
     assert rc == 0
     payload = json.loads(captured.out)
-    assert payload["status"] == "complete"
-    assert payload["synthesis_text"].startswith("## What happened")
-    assert payload["raw_markdown"].startswith("# Raw markdown")
-    assert "stderr" not in payload
+    assert payload == {
+        "id": SEARCH_ID,
+        "status": "complete",
+        "synthesis_text": "## What happened\nSynthesized report body.",
+        "raw_markdown": "# Raw markdown\nFull dump.",
+    }
+    assert terminal["stderr"] not in captured.out
+    assert terminal["stderr"] not in captured.err
+    assert terminal["internal_trace"] not in captured.out
+    assert terminal["internal_trace"] not in captured.err
     assert TEST_KEY not in captured.out

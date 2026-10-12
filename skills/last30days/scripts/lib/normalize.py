@@ -18,7 +18,12 @@ def filter_by_date_range(
     filtered: list[schema.SourceItem] = []
     for item in items:
         if not item.published_at:
-            if not require_date:
+            basis = item.metadata.get("date_window_basis") if item.source == "grounding" else None
+            if (
+                not require_date
+                or basis == "server_bounds"
+                or basis == "server_start_current"
+            ):
                 filtered.append(item)
             continue
         if item.published_at < from_date or item.published_at > to_date:
@@ -47,6 +52,7 @@ def normalize_source_items(
             s, i, idx, fd, td, "IG", "Instagram reel"
         ),
         "hackernews": _normalize_hackernews,
+        "devto": _normalize_devto,
         "stocktwits": _normalize_stocktwits,
         "dripstack": _normalize_dripstack,
         "bluesky": lambda s, i, idx, fd, td: _normalize_microblog(
@@ -101,12 +107,14 @@ def normalize_source_items(
     )
     if filtered:
         return filtered
-    # YouTube search already keeps out-of-window videos when fewer than 3
-    # are recent, then pays for transcripts. A second hard date filter here
-    # dropped those transcribed items to zero (#1043). Keep transcript-backed
-    # retrieved items instead of paying for transcripts that never appear in
-    # the brief. Metadata-only / caption-failed videos are not that rescue.
-    if source == "youtube" and normalized:
+    # For evergreen_ok, YouTube search keeps out-of-window videos when fewer
+    # than 3 are recent, then pays for transcripts. A second hard date filter
+    # here dropped those transcribed items to zero (#1043). Keep
+    # transcript-backed retrieved items instead of paying for transcripts that
+    # never appear in the brief. Metadata-only / caption-failed videos are not
+    # that rescue. Recent modes (strict_recent / balanced_recent) get no
+    # rescue: years-old videos on a recent topic are noise, not evidence.
+    if freshness_mode == "evergreen_ok" and source == "youtube" and normalized:
         transcribed = [
             item for item in normalized if str(item.snippet or "").strip()
         ]
@@ -520,6 +528,41 @@ def _normalize_pinterest(
         relevance_hint=item.get("relevance", 0.5),
         why_relevant=str(item.get("why_relevant") or ""),
         snippet=description[:400],
+    )
+
+
+def _normalize_devto(
+    source: str,
+    item: dict[str, Any],
+    index: int,
+    from_date: str,
+    to_date: str,
+) -> schema.SourceItem:
+    top_comments = _remap_comments(
+        item.get("top_comments") or [],
+        score_keys=("replies",),
+        excerpt_keys=("text", "excerpt"),
+        preserve_absent_score=True,
+    )
+    comment_text = _join_comment_excerpts(top_comments, "excerpt")
+    title = str(item.get("title") or "").strip()
+    description = str(item.get("text") or "").strip()
+    body = "\n".join(part for part in [title, description, comment_text] if part)
+    return _source_item(
+        item_id=str(item.get("id") or f"DEV{index + 1}"),
+        source=source,
+        title=title or f"dev.to article {index + 1}",
+        body=body,
+        url=str(item.get("url") or ""),
+        author=str(item.get("author") or ""),
+        container="dev.to",
+        published_at=item.get("date"),
+        date_confidence=_date_confidence(item, from_date, to_date, default="high"),
+        engagement=item.get("engagement") or {},
+        relevance_hint=item.get("relevance", 0.5),
+        why_relevant=str(item.get("why_relevant") or ""),
+        snippet=description or comment_text,
+        metadata={**(item.get("metadata") or {}), "top_comments": top_comments},
     )
 
 
@@ -999,6 +1042,7 @@ def _normalize_github(
             "labels": metadata.get("labels") or [],
             "state": metadata.get("state", ""),
             "is_pr": metadata.get("is_pr", False),
+            "date_is_snapshot": bool(metadata.get("date_is_snapshot")),
         },
     )
 

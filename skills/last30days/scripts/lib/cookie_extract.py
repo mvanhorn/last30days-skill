@@ -19,7 +19,26 @@ import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from .cookie_paths import path_is_dir, path_is_file
+
 logger = logging.getLogger(__name__)
+
+
+def has_complete_pair(result: Optional[Dict[str, str]], cookie_names) -> bool:
+    """Return True when ``result`` holds every requested cookie with a value.
+
+    Shared by the Firefox profile scan, ``env.extract_browser_credentials``,
+    and the setup wizard so a partial pair (e.g. a lone ``ct0`` from a
+    logged-out session) never shadows a complete one. Empty values do not
+    count: ``{"auth_token": "", "ct0": ""}`` is incomplete. ``cookie_names``
+    is the spec's cookie list (a spec dict with a ``"cookies"`` key also
+    works).
+    """
+    if not result:
+        return False
+    if isinstance(cookie_names, dict):
+        cookie_names = cookie_names.get("cookies", [])
+    return all(result.get(name) for name in cookie_names)
 
 
 def _lock_temp_cookie_copy(path: str) -> None:
@@ -48,18 +67,30 @@ def _get_wsl_firefox_profiles_dir() -> Optional[Path]:
     directories (skips Public, Default, etc.).
     """
     mnt_users = Path("/mnt/c/Users")
-    if not mnt_users.is_dir():
+    if not path_is_dir(mnt_users):
         return None
     skip = {"Public", "Default", "Default User", "All Users"}
+    denied = None
     try:
         for user_dir in sorted(mnt_users.iterdir()):
-            if user_dir.name in skip or not user_dir.is_dir():
+            if user_dir.name in skip:
                 continue
-            ff_dir = user_dir / "AppData" / "Roaming" / "Mozilla" / "Firefox"
-            if ff_dir.is_dir():
-                return ff_dir
+            try:
+                if not path_is_dir(user_dir):
+                    continue
+                ff_dir = user_dir / "AppData" / "Roaming" / "Mozilla" / "Firefox"
+                if path_is_dir(ff_dir):
+                    return ff_dir
+            except PermissionError as exc:
+                if denied is None:
+                    denied = exc
+    except PermissionError as exc:
+        if denied is None:
+            denied = exc
     except OSError:
         pass
+    if denied is not None:
+        raise denied
     return None
 
 
@@ -71,8 +102,12 @@ def _get_firefox_profiles_dir() -> Optional[Path]:
     elif system == "Linux":
         # Default location for most distros
         path = Path.home() / ".mozilla" / "firefox"
-        if path.is_dir():
-            return path
+        denied = None
+        try:
+            if path_is_dir(path):
+                return path
+        except PermissionError as exc:
+            denied = exc
         # Some distros (e.g. Fedora) honour $XDG_CONFIG_HOME
         xdg_config = os.environ.get("XDG_CONFIG_HOME")
         if xdg_config and os.path.isabs(xdg_config):
@@ -83,7 +118,11 @@ def _get_firefox_profiles_dir() -> Optional[Path]:
         # Windows: %APPDATA%\Mozilla\Firefox — best-effort
         appdata = Path.home() / "AppData" / "Roaming" / "Mozilla" / "Firefox"
         path = appdata
-    return path if path.is_dir() else None
+    if path_is_dir(path):
+        return path
+    if system == "Linux" and denied is not None:
+        raise denied
+    return None
 
 
 def _load_profiles_ini(ini_path: Path) -> configparser.ConfigParser:
@@ -96,15 +135,23 @@ def _load_profiles_ini(ini_path: Path) -> configparser.ConfigParser:
     return config
 
 
-def _find_default_profile(profiles_dir: Path) -> Optional[Path]:
+def _find_default_profile(
+    profiles_dir: Path, denials: Optional[list[PermissionError]] = None
+) -> Optional[Path]:
     """Parse profiles.ini to find the default profile directory.
 
     Looks for a section with Default=1. Falls back to the first profile
     directory found on disk if profiles.ini is missing or malformed.
     """
     ini_path = profiles_dir / "profiles.ini"
+    denied: list[PermissionError] = []
 
-    if ini_path.is_file():
+    try:
+        has_ini = path_is_file(ini_path)
+    except PermissionError as exc:
+        denied.append(exc)
+        has_ini = False
+    if has_ini:
         try:
             config = _load_profiles_ini(ini_path)
 
@@ -113,25 +160,53 @@ def _find_default_profile(profiles_dir: Path) -> Optional[Path]:
                 if section.startswith("Install") and config.has_option(section, "Default"):
                     raw = config.get(section, "Default")
                     candidate = profiles_dir / raw
-                    if candidate.is_dir():
+                    try:
+                        found = path_is_dir(candidate)
+                    except PermissionError as exc:
+                        denied.append(exc)
+                        continue
+                    if found:
+                        if denials is not None:
+                            denials.extend(denied)
                         return candidate
 
             # Second pass: Profile section with Default=1
             for section in config.sections():
                 if section.startswith("Profile") and config.has_option(section, "Default") and config.get(section, "Default") == "1":
-                    return _resolve_profile_path(profiles_dir, config, section)
+                    try:
+                        resolved = _resolve_profile_path(profiles_dir, config, section)
+                    except PermissionError as exc:
+                        denied.append(exc)
+                        continue
+                    if resolved is not None:
+                        if denials is not None:
+                            denials.extend(denied)
+                        return resolved
 
             # Third pass: first Profile section that exists on disk
             for section in config.sections():
                 if section.startswith("Profile"):
-                    resolved = _resolve_profile_path(profiles_dir, config, section)
-                    if resolved and resolved.is_dir():
+                    try:
+                        resolved = _resolve_profile_path(profiles_dir, config, section)
+                    except PermissionError as exc:
+                        denied.append(exc)
+                        continue
+                    if resolved:
+                        if denials is not None:
+                            denials.extend(denied)
                         return resolved
+        except PermissionError as exc:
+            denied.append(exc)
         except (configparser.Error, OSError, UnicodeDecodeError) as exc:
             logger.debug("Failed to parse profiles.ini: %s", exc)
 
     # Fallback: scan directory for anything that looks like a profile
-    return _fallback_find_profile(profiles_dir)
+    profile = _fallback_find_profile(profiles_dir, denied)
+    if denials is not None:
+        denials.extend(denied)
+    elif denied and profile is None:
+        raise denied[0]
+    return profile
 
 
 def _resolve_profile_path(
@@ -146,17 +221,31 @@ def _resolve_profile_path(
         candidate = profiles_dir / raw_path
     else:
         candidate = Path(raw_path)
-    return candidate if candidate.is_dir() else None
+    return candidate if path_is_dir(candidate) else None
 
 
-def _fallback_find_profile(profiles_dir: Path) -> Optional[Path]:
+def _fallback_find_profile(
+    profiles_dir: Path, denials: Optional[list[PermissionError]] = None
+) -> Optional[Path]:
     """Find the first directory that contains cookies.sqlite."""
+    denied: list[PermissionError] = []
     try:
         for child in sorted(profiles_dir.iterdir()):
-            if child.is_dir() and (child / "cookies.sqlite").is_file():
-                return child
+            try:
+                if path_is_dir(child) and path_is_file(child / "cookies.sqlite"):
+                    if denials is not None:
+                        denials.extend(denied)
+                    return child
+            except PermissionError as exc:
+                denied.append(exc)
+    except PermissionError as exc:
+        denied.append(exc)
     except OSError:
         pass
+    if denials is not None:
+        denials.extend(denied)
+    elif denied:
+        raise denied[0]
     return None
 
 
@@ -168,7 +257,7 @@ def _query_cookies_db(
     Firefox locks cookies.sqlite while running, so we copy first.
     Returns {name: value} dict or None if no matching cookies found.
     """
-    if not db_path.is_file():
+    if not path_is_file(db_path):
         return None
 
     tmp_fd = None
@@ -205,6 +294,11 @@ def _query_cookies_db(
             return None
         return {name: value for name, value in rows}
 
+    except PermissionError as exc:
+        if exc.filename == str(db_path):
+            raise
+        logger.debug("Failed to query cookies database %s: %s", db_path, exc)
+        return None
     except (sqlite3.Error, OSError) as exc:
         logger.debug("Failed to query cookies database %s: %s", db_path, exc)
         return None
@@ -228,29 +322,51 @@ def _try_firefox_dir(profiles_dir: Path, domain: str, cookie_names: List[str]) -
     Tries the default profile first, then falls back to scanning all
     profiles for matching cookies.  This handles multi-profile setups
     where the user is logged into x.com on a non-default profile.
+    A complete match (all ``cookie_names``) always wins: a partial
+    default-profile result is kept only as a fallback.
     """
-    default_profile = _find_default_profile(profiles_dir)
+    denials: list[PermissionError] = []
+    default_profile = _find_default_profile(profiles_dir, denials)
     profiles_tried = 0
+    fallback: Optional[Dict[str, str]] = None
     if default_profile is not None:
-        result = _query_cookies_db(default_profile / "cookies.sqlite", domain, cookie_names)
+        try:
+            result = _query_cookies_db(default_profile / "cookies.sqlite", domain, cookie_names)
+        except PermissionError as exc:
+            denials.append(exc)
+            result = None
         if result is not None:
-            return result
+            if has_complete_pair(result, cookie_names):
+                return result
+            fallback = result
         profiles_tried = 1
     # Fallback: scan every profile directory for matching cookies
     try:
         for child in sorted(profiles_dir.iterdir()):
-            if not child.is_dir():
-                continue
-            if default_profile is not None and child == default_profile:
-                continue
-            db = child / "cookies.sqlite"
-            if db.is_file():
-                result = _query_cookies_db(db, domain, cookie_names)
-                if result is not None:
-                    return result
-                profiles_tried += 1
+            try:
+                if not path_is_dir(child):
+                    continue
+                if default_profile is not None and child == default_profile:
+                    continue
+                db = child / "cookies.sqlite"
+                if path_is_file(db):
+                    result = _query_cookies_db(db, domain, cookie_names)
+                    if result is not None:
+                        if has_complete_pair(result, cookie_names):
+                            return result
+                        if fallback is None:
+                            fallback = result
+                    profiles_tried += 1
+            except PermissionError as exc:
+                denials.append(exc)
+    except PermissionError as exc:
+        denials.append(exc)
     except OSError:
         pass
+    if denials:
+        raise denials[0]
+    if fallback is not None:
+        return fallback
     logger.debug("No matching cookies found in %d Firefox profile(s)", profiles_tried)
     return None
 
@@ -274,18 +390,41 @@ def extract_firefox_cookies(
     Returns:
         Dict of {cookie_name: cookie_value} or None if extraction fails.
     """
-    profiles_dir = _get_firefox_profiles_dir()
+    denied = None
+    try:
+        profiles_dir = _get_firefox_profiles_dir()
+    except PermissionError as exc:
+        denied = exc
+        profiles_dir = None
     if profiles_dir is not None:
-        result = _try_firefox_dir(profiles_dir, domain, cookie_names)
+        try:
+            result = _try_firefox_dir(profiles_dir, domain, cookie_names)
+        except PermissionError as exc:
+            denied = exc
+            result = None
         if result is not None:
             return result
 
     if platform.system() == "Linux" and _is_wsl():
-        wsl_dir = _get_wsl_firefox_profiles_dir()
+        try:
+            wsl_dir = _get_wsl_firefox_profiles_dir()
+        except PermissionError as exc:
+            if denied is None:
+                denied = exc
+            wsl_dir = None
         if wsl_dir is not None:
             logger.debug("Trying Windows Firefox via WSL: %s", wsl_dir)
-            return _try_firefox_dir(wsl_dir, domain, cookie_names)
+            try:
+                result = _try_firefox_dir(wsl_dir, domain, cookie_names)
+            except PermissionError as exc:
+                if denied is None:
+                    denied = exc
+                result = None
+            if result is not None:
+                return result
 
+    if denied is not None:
+        raise denied
     if profiles_dir is None:
         logger.debug("Firefox profiles directory not found")
     return None
@@ -308,6 +447,8 @@ def extract_chrome_cookies(
     try:
         from .chrome_cookies import extract_chrome_cookies_macos
         return extract_chrome_cookies_macos(domain, cookie_names)
+    except PermissionError:
+        raise
     except Exception as exc:
         logger.debug("Chrome cookie extraction failed: %s", exc)
         return None
@@ -331,6 +472,8 @@ def extract_brave_cookies(
     try:
         from .chrome_cookies import extract_brave_cookies_macos
         return extract_brave_cookies_macos(domain, cookie_names)
+    except PermissionError:
+        raise
     except Exception as exc:
         logger.debug("Brave cookie extraction failed: %s", exc)
         return None
@@ -351,6 +494,8 @@ def _extract_chromium_family_cookies(
     try:
         from .chrome_cookies import extract_chromium_browser_cookies_macos
         return extract_chromium_browser_cookies_macos(browser, domain, cookie_names)
+    except PermissionError:
+        raise
     except Exception as exc:
         logger.debug("%s cookie extraction failed: %s", browser, exc)
         return None
@@ -397,6 +542,8 @@ def extract_safari_cookies(
     try:
         from .safari_cookies import extract_safari_cookies_macos
         return extract_safari_cookies_macos(domain, cookie_names)
+    except PermissionError:
+        raise
     except Exception as exc:
         logger.debug("Safari cookie extraction failed: %s", exc)
         return None
@@ -434,20 +581,41 @@ def _extract_firefox_with_source(
     Returns (cookies, "firefox") for native Linux/macOS Firefox, or
     (cookies, "firefox-wsl") for Windows Firefox accessed via WSL2.
     """
-    profiles_dir = _get_firefox_profiles_dir()
+    denied = None
+    try:
+        profiles_dir = _get_firefox_profiles_dir()
+    except PermissionError as exc:
+        denied = exc
+        profiles_dir = None
     if profiles_dir is not None:
-        result = _try_firefox_dir(profiles_dir, domain, cookie_names)
+        try:
+            result = _try_firefox_dir(profiles_dir, domain, cookie_names)
+        except PermissionError as exc:
+            denied = exc
+            result = None
         if result is not None:
             return (result, "firefox")
 
     if platform.system() == "Linux" and _is_wsl():
-        wsl_dir = _get_wsl_firefox_profiles_dir()
+        try:
+            wsl_dir = _get_wsl_firefox_profiles_dir()
+        except PermissionError as exc:
+            if denied is None:
+                denied = exc
+            wsl_dir = None
         if wsl_dir is not None:
             logger.debug("Trying Windows Firefox via WSL: %s", wsl_dir)
-            result = _try_firefox_dir(wsl_dir, domain, cookie_names)
+            try:
+                result = _try_firefox_dir(wsl_dir, domain, cookie_names)
+            except PermissionError as exc:
+                if denied is None:
+                    denied = exc
+                result = None
             if result is not None:
                 return (result, "firefox-wsl")
 
+    if denied is not None:
+        raise denied
     return None
 
 

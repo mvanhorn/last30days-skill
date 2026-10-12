@@ -117,6 +117,39 @@ class LastRunStateTests(unittest.TestCase):
             self.assertIsNone(entity_reports)
             self.assertEqual(config_dir / "last-report.json", cache_path)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX file permissions")
+    def test_run_cache_files_are_private_before_writing(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as tmp:
+                config_dir = Path(tmp)
+                paths = [config_dir / name for name in ("last-run.json", "last-report.json")]
+                if existing:
+                    for path in paths:
+                        path.write_text("old evidence " * 1000)
+                        path.chmod(0o644)
+                modes_at_open = []
+                real_open = io.open
+
+                def observe_open(*args, **kwargs):
+                    stream = real_open(*args, **kwargs)
+                    if "w" in stream.mode:
+                        modes_at_open.append(os.fstat(stream.fileno()).st_mode & 0o777)
+                    return stream
+
+                old_umask = os.umask(0o022)
+                try:
+                    with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
+                         mock.patch("io.open", side_effect=observe_open):
+                        written = cli._write_last_run("OpenClaw", _report("OpenClaw"))
+                finally:
+                    os.umask(old_umask)
+
+                self.assertTrue(written)
+                self.assertEqual([0o600, 0o600], modes_at_open)
+                for path in paths:
+                    self.assertEqual(0o600, path.stat().st_mode & 0o777)
+                    self.assertEqual("OpenClaw", json.loads(path.read_text())["topic"])
+
     def test_last_report_cache_expires_after_ttl(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_dir = Path(tmp) / "config"
@@ -162,7 +195,7 @@ class LastRunStateTests(unittest.TestCase):
                 cli._write_last_run("OpenClaw", _report("OpenClaw"))
 
             with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
-                 mock.patch.object(cli.env, "get_config", return_value={}), \
+                 mock.patch.object(cli.env, "get_config", return_value={}) as get_config, \
                  mock.patch.object(cli.pipeline, "diagnose", return_value=_diag()), \
                  mock.patch.object(cli.pipeline, "run", side_effect=AssertionError("pipeline should not run")), \
                  mock.patch.object(sys, "argv", [
@@ -172,13 +205,20 @@ class LastRunStateTests(unittest.TestCase):
                      "--synthesis-file",
                      str(synthesis_path),
                  ]), \
-                 mock.patch.dict(os.environ, {"LAST30DAYS_SKIP_PREFLIGHT": "1"}, clear=False):
+                 mock.patch.dict(
+                     os.environ,
+                     {"LAST30DAYS_SKIP_PREFLIGHT": "1", "CLAUDECODE": "1"},
+                     clear=False,
+                 ):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
                 with redirect_stdout(stdout), redirect_stderr(stderr):
                     rc = cli.main()
 
             self.assertEqual(0, rc)
+            self.assertEqual(
+                "plan_only", get_config.call_args.kwargs["policy"].browser_cookies
+            )
             self.assertIn("Cached synthesis body.", stdout.getvalue())
             self.assertIn("Reusing cached report data", stderr.getvalue())
 
@@ -194,6 +234,7 @@ class LastRunStateTests(unittest.TestCase):
             config = {"OPENROUTER_API_KEY": "or-test"}
             with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
                  mock.patch.object(cli.env, "get_config", return_value=config), \
+                 mock.patch("lib.resolve.auto_resolve", return_value={}), \
                  mock.patch.object(cli.pipeline, "diagnose", return_value=_diag()), \
                  mock.patch.object(cli.pipeline, "run", return_value=fresh_report) as run_mock, \
                  mock.patch.object(cli.ui, "ProgressDisplay"), \
@@ -329,16 +370,20 @@ class TestSkillMdFirstRunReference(unittest.TestCase):
     """Verifies SKILL.md references that exist in the CLI."""
 
     def test_nux_wizard_not_referenced(self):
-        content = SKILL_MD.read_text(encoding="utf-8")
+        from tests.skill_contract import contract_documents
+
+        content = "\n".join(contract_documents().values())
         self.assertNotIn(
             "nux-wizard.md", content,
             "SKILL.md should not reference the missing nux-wizard.md file",
         )
 
     def test_skill_md_references_setup_command(self):
-        content = SKILL_MD.read_text(encoding="utf-8")
+        from tests.skill_contract import reference_text
+
+        content = reference_text("setup-wizard")
         self.assertIn(
-            "last30days.py setup", content,
+            'last30days.py" setup', content,
             "SKILL.md should reference the Python setup subcommand",
         )
 

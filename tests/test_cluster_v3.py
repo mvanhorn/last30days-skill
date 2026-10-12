@@ -110,12 +110,20 @@ class TestCrossSourceMerging(unittest.TestCase):
             make_candidate("c1", "reddit", "Kanye West Wireless Festival headline announcement", "Three nights!", 80),
             make_candidate("c2", "reddit", "Kanye West returning to Wireless Festival confirmed", "UK comeback.", 70),
         ]
-        clusters = cluster.cluster_candidates(candidates, self._plan())
-        # The initial greedy pass may or may not merge these (depends on token similarity).
-        # But if they end up as separate clusters, the entity pass should NOT merge them
-        # since they're both from reddit.
-        for cl in clusters:
-            self.assertTrue(len(cl.sources) >= 1)  # basic sanity
+        initial = [
+            schema.Cluster(
+                cluster_id=f"cluster-{candidate.candidate_id}",
+                title=candidate.title,
+                candidate_ids=[candidate.candidate_id],
+                representative_ids=[candidate.candidate_id],
+                sources=[candidate.source],
+                score=candidate.final_score,
+            )
+            for candidate in candidates
+        ]
+        clusters = cluster._merge_entity_clusters(initial, candidates)
+        self.assertEqual([("c1",), ("c2",)], [tuple(cl.candidate_ids) for cl in clusters])
+        self.assertEqual([["reddit"], ["reddit"]], [cl.sources for cl in clusters])
 
 
 class TestPolymarketIsolation(unittest.TestCase):

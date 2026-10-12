@@ -10,6 +10,7 @@ import inspect
 
 import pytest
 
+import last30days as cli
 from lib import pipeline, schema
 
 
@@ -77,16 +78,6 @@ def test_name_lane_failure_does_not_abort_the_run():
     assert "NAME-lane" in block
 
 
-def test_partial_coverage_is_recorded():
-    """One-sided coverage must be visible, not look like thin discussion."""
-    src = _supplements_source()
-    assert "partial coverage" in src
-    assert 'if empty and len(empty) < 3:' in src, (
-        "an all-empty result is an ordinary no-results outcome, not partial "
-        "coverage; only a mixed result is worth flagging"
-    )
-
-
 def test_by_lane_does_not_and_the_topic_by_default():
     """A prior defect emptied the from-lane by ANDing the topic into it.
 
@@ -108,21 +99,78 @@ def test_by_lane_does_not_and_the_topic_by_default():
 
 # --- behavioral: the source-text assertions above cannot catch a crash -------
 
-def test_partial_coverage_does_not_raise_on_an_empty_x_source():
+@pytest.mark.parametrize("has_posts", [True, False])
+def test_partial_coverage_does_not_raise_on_an_empty_x_source(monkeypatch, has_posts):
     """Regression: partial coverage was recorded via bundle.record_failure with
     the state string "degraded", which is not in SourceOutcome's valid_states.
     With zero Phase-1 X items record_failure passes the caller's state straight
     through, so it raised ValueError and killed the whole run -- on exactly the
     entity topics this feature targets. No source-text assertion could catch
     this; only executing the path does."""
-    bundle = schema.RetrievalBundle()
-    assert not bundle.items_by_source.get("x")
-    empty = ["mention"]
-    # Mirror the production call: this must not raise.
-    bundle.artifacts.setdefault("x_partial_coverage", []).append(
-        f"X partial coverage: {', '.join(empty)} lane(s) returned nothing"
+    runtime = schema.ProviderRuntime(
+        reasoning_provider="local", planner_model="", rerank_model="",
+        x_search_backend="grok",
     )
-    assert bundle.artifacts["x_partial_coverage"]
+    monkeypatch.setattr(pipeline.providers, "resolve_runtime", lambda *_args: (runtime, None))
+    monkeypatch.setattr(pipeline, "available_sources", lambda *_args, **_kwargs: ["x"])
+    monkeypatch.setattr(pipeline.env, "x_backend_chain", lambda _config: ["grok"])
+    monkeypatch.setattr(pipeline, "_retrieve_stream_impl", lambda **_kwargs: ([], {}))
+    lanes = []
+
+    def from_lane(handles, topic, from_date, to_date, **kwargs):
+        lanes.append("by")
+        assert handles == ["steipete"]
+        assert kwargs["and_topic"] is False
+        if not has_posts:
+            return [], False
+        return [{
+            "id": "2087568620465607078",
+            "url": "https://x.com/steipete/status/2087568620465607078",
+            "author_handle": "steipete",
+            "text": "Peter Steinberger released a new agent toolkit.",
+            "date": "2026-08-12",
+            "relevance": 0.9,
+            "engagement": {"likes": 1462, "reposts": 48, "replies": 95},
+        }], False
+
+    def empty_lane(name):
+        def search(*_args, **_kwargs):
+            lanes.append(name)
+            return [], False
+        return search
+
+    monkeypatch.setattr(pipeline.grok_x, "search_handles", from_lane)
+    monkeypatch.setattr(pipeline.grok_x, "search_mentions", empty_lane("mention"))
+    monkeypatch.setattr(pipeline.grok_x, "search_name", empty_lane("name"))
+    report = pipeline.run(
+        topic="Peter Steinberger", config={}, depth="default",
+        requested_sources=["x"], x_handle="steipete", web_backend="none",
+        as_of_date="2026-08-13",
+        external_plan={
+            "intent": "general", "freshness_mode": "balanced_recent",
+            "cluster_mode": "story", "raw_topic": "Peter Steinberger",
+            "source_weights": {"x": 1.0},
+            "subqueries": [{"label": "primary", "search_query": "Peter Steinberger",
+                            "ranking_query": "Peter Steinberger", "sources": ["x"]}],
+        },
+    )
+
+    warning = (
+        "X partial coverage: mention, name lane(s) returned nothing; "
+        "the report may show only one side of this entity."
+    )
+    assert lanes == ["by", "mention", "name"]
+    expected_urls = [
+        "https://x.com/steipete/status/2087568620465607078",
+    ] if has_posts else []
+    assert [item.url for item in report.items_by_source["x"]] == expected_urls
+    expected_warnings = [warning] if has_posts else []
+    assert report.artifacts.get("x_partial_coverage", []) == expected_warnings
+    assert [note for note in report.warnings if note.startswith("X partial coverage:")] == expected_warnings
+    assert report.errors_by_source == {}
+    assert report.source_status["x"].state == ("ok" if has_posts else "no-results")
+    assert report.source_status["x"].items_returned == int(has_posts)
+    assert cli._strict_exit_code(report, None, {"LAST30DAYS_STRICT_EXIT": "1"}) == 0
 
 
 def test_degraded_is_not_a_valid_source_outcome_state():
@@ -131,20 +179,3 @@ def test_degraded_is_not_a_valid_source_outcome_state():
         schema.SourceOutcome(
             source="x", state="degraded", items_returned=0, attempted=True,
         )
-
-
-def test_partial_coverage_is_not_recorded_as_a_source_failure():
-    """A one-sided lane result must not mark X partial: PARTIAL is outside
-    _STRICT_EXIT_OK_STATES, so wrappers using LAST30DAYS_STRICT_EXIT would exit
-    3 on runs that returned good X coverage."""
-    src = _supplements_source()
-    # Strip comments: the rationale for NOT using record_failure names it.
-    code = "\n".join(
-        line for line in src.splitlines() if not line.strip().startswith("#")
-    )
-    idx = code.index("x_partial_coverage")
-    window = code[max(0, idx - 400):idx]
-    assert "record_failure" not in window, (
-        "partial lane coverage must be a warning, not a source outcome: "
-        "record_failure would set X to PARTIAL and trip strict-exit wrappers"
-    )

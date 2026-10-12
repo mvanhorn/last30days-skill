@@ -1,0 +1,22 @@
+<!-- FIXTURE: SYNTHETIC, not a live capture. Models an HTTP 200 anti-bot interstitial served in place of reddit.com/svc/shreddit/search/ (no search result units, no no-results unit). Written 2026-09-30 because a challenge page could not be triggered on demand. -->
+<!DOCTYPE html>
+<html lang="en-US">
+<head>
+<title>Reddit - Please wait for verification</title>
+<meta name="robots" content="noindex, nofollow">
+</head>
+<body>
+<shreddit-app>
+<main id="main-content">
+<div>
+<h1>Please wait for verification</h1>
+<p>Reddit is checking that your connection is secure before continuing.</p>
+<noscript>JavaScript is required to continue.</noscript>
+<form id="challenge-form" method="POST" action="/svc/shreddit/js-challenge">
+<input type="hidden" name="solution" value="">
+</form>
+</div>
+</main>
+</shreddit-app>
+</body>
+</html>

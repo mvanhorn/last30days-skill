@@ -1,1 +1,0 @@
-Reading an HTTP error response body now counts against the caller's deadline instead of stalling past it, and debug logs redact request API keys, including keys a provider echoes back in an error body. Thanks to @sk-holmes (#1184).

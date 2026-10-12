@@ -76,6 +76,7 @@ class _Hermetic:
         self.probe_spy = mock.Mock(side_effect=probe or _fake_probe)
         self._patches = [
             mock.patch("lib.health.probe_dependency", self.probe_spy),
+            mock.patch("lib.doctor._probe_sources", return_value={}),
             mock.patch("lib.bird_x.is_bird_installed", return_value=False),
             mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None),
             mock.patch("lib.bird_x.get_bird_status", return_value=dict(BIRD_STATUS_OFF)),
@@ -607,7 +608,9 @@ class DoctorSkillContract(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.text = SKILL_MD.read_text(encoding="utf-8")
+        from tests.skill_contract import reference_text
+
+        cls.text = reference_text("research-runbook")
 
     def test_doctor_trigger_phrases_present(self):
         for phrase in (
@@ -638,7 +641,7 @@ class DoctorSkillContract(unittest.TestCase):
         # Cold-start prompts like "is my last30days X search broken?" can
         # only load the skill if the machine-parsed frontmatter description
         # mentions the health surface (F16a). It must stay ONE line.
-        lines = self.text.splitlines()
+        lines = SKILL_MD.read_text(encoding="utf-8").splitlines()
         self.assertEqual("---", lines[0])
         closing = lines[1:].index("---") + 1
         frontmatter = lines[1:closing]

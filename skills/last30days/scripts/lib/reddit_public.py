@@ -4,8 +4,8 @@ Reddit's public ``.json`` endpoints now return HTTP 403 from most contexts
 (shreddit anti-bot), so this is no longer the primary free path. The keyless
 pipeline (see reddit_keyless.py) still calls ``search`` as a cheap one-shot
 Tier 0 attempt — a residential machine may occasionally get a 200 — before
-falling through to RSS discovery (reddit_rss.py) and shreddit comment
-enrichment (reddit_shreddit.py).
+falling through to site search discovery (reddit_search.py) and shreddit
+comment enrichment (reddit_shreddit.py).
 
 ``search_reddit_public`` is retained as a compatibility shim that delegates to
 the keyless pipeline, so existing callers (pipeline.py) need no change.
@@ -247,8 +247,8 @@ def search_reddit_public(
 
     Thin compatibility shim over the keyless pipeline: the legacy ``.json``
     search/enrichment endpoints now return HTTP 403, so this delegates to
-    ``reddit_keyless.search_and_enrich`` (dedicated-sub listings + RSS discovery
-    → shreddit comment enrichment; no ``.json`` search). The name and signature
+    ``reddit_keyless.search_and_enrich`` (dedicated-sub listings + site search
+    discovery → shreddit comment enrichment; no ``.json`` search). The name and signature
     are preserved so ``pipeline.py`` and other callers need no change and the
     ScrapeCreators backup still engages when this returns empty.
 

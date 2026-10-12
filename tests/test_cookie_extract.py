@@ -10,14 +10,101 @@ from unittest.mock import patch
 
 import pytest
 
-from lib import cookie_extract
+from lib import cookie_extract, env
 from lib.cookie_extract import (
     extract_cookies,
     extract_firefox_cookies,
+    has_complete_pair,
     _query_cookies_db,
     _find_default_profile,
     _get_firefox_profiles_dir,
 )
+
+
+def test_firefox_database_permission_denial_survives_extractor(tmp_path):
+    db = tmp_path / "cookies.sqlite"
+    db.touch()
+    with patch(
+        "lib.cookie_extract.shutil.copyfile",
+        side_effect=PermissionError(1, "Operation not permitted", str(db)),
+    ):
+        with pytest.raises(PermissionError):
+            _query_cookies_db(db, ".x.com", ["auth_token", "ct0"])
+
+
+def test_firefox_database_discovery_preserves_stat_permission_denial(tmp_path):
+    db = tmp_path / "cookies.sqlite"
+    real_stat = Path.stat
+    real_is_file = Path.is_file
+
+    def guarded_stat(path, *args, **kwargs):
+        if path == db:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    def simulated_py314_is_file(path, *args, **kwargs):
+        if path == db:
+            return False
+        return real_is_file(path, *args, **kwargs)
+
+    with patch.object(Path, "stat", guarded_stat), patch.object(
+        Path, "is_file", simulated_py314_is_file
+    ):
+        with pytest.raises(PermissionError):
+            _query_cookies_db(db, ".x.com", ["auth_token", "ct0"])
+
+
+def test_wsl_firefox_directory_skips_denied_user_for_accessible_user(tmp_path):
+    users = tmp_path / "Users"
+    denied_user = users / "aaa"
+    available = users / "bbb" / "AppData" / "Roaming" / "Mozilla" / "Firefox"
+    denied_user.mkdir(parents=True)
+    available.mkdir(parents=True)
+    real_stat = Path.stat
+    real_is_dir = Path.is_dir
+
+    def guarded_stat(path, *args, **kwargs):
+        if path == denied_user:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    def simulated_py314_is_dir(path, *args, **kwargs):
+        if path == denied_user:
+            return False
+        return real_is_dir(path, *args, **kwargs)
+
+    with patch("lib.cookie_extract.Path", return_value=users), patch.object(
+        Path, "stat", guarded_stat
+    ), patch.object(Path, "is_dir", simulated_py314_is_dir):
+        found = cookie_extract._get_wsl_firefox_profiles_dir()
+    assert found == available
+
+
+def test_linux_firefox_directory_tries_xdg_after_default_denial(tmp_path, monkeypatch):
+    blocked = tmp_path / ".mozilla" / "firefox"
+    available = tmp_path / "xdg" / "mozilla" / "firefox"
+    available.mkdir(parents=True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    real_stat = Path.stat
+    real_is_dir = Path.is_dir
+
+    def guarded_stat(path, *args, **kwargs):
+        if path == blocked:
+            raise PermissionError(1, "Operation not permitted", str(path))
+        return real_stat(path, *args, **kwargs)
+
+    def simulated_py314_is_dir(path, *args, **kwargs):
+        if path == blocked:
+            return False
+        return real_is_dir(path, *args, **kwargs)
+
+    with patch("lib.cookie_extract.Path.home", return_value=tmp_path), patch(
+        "lib.cookie_extract.platform.system", return_value="Linux"
+    ), patch.object(Path, "stat", guarded_stat), patch.object(
+        Path, "is_dir", simulated_py314_is_dir
+    ):
+        found = _get_firefox_profiles_dir()
+    assert found == available
 
 @pytest.fixture
 def mock_firefox_env(tmp_path):
@@ -41,6 +128,9 @@ def mock_firefox_env(tmp_path):
                 default_profile: [
                     (".x.com", "auth_token", "tok_abc123"),
                     (".x.com", "ct0", "ct0_xyz789"),
+                    (".x.com", "session", "sess_unrequested"),
+                    (".example.com", "auth_token", "foreign_auth_token"),
+                    (".example.com", "ct0", "foreign_ct0"),
                     (".example.com", "session", "sess_other"),
                 ],
             }
@@ -95,6 +185,107 @@ def mock_firefox_env(tmp_path):
 
 class TestExtractFirefoxCookies:
     """Tests for extract_firefox_cookies."""
+
+    def test_partial_cookie_survives_later_profile_denial(self, mock_firefox_env, capsys):
+        profiles_dir = mock_firefox_env(
+            profiles={
+                "abc123.default-release": [(".x.com", "ct0", "dummy-ct0")],
+                "xyz789.other": [],
+            }
+        )
+        blocked = profiles_dir / "xyz789.other" / "cookies.sqlite"
+        real_copyfile = cookie_extract.shutil.copyfile
+        requested = []
+
+        def guarded_copyfile(source, target):
+            if source == str(blocked):
+                raise PermissionError(1, "Operation not permitted", str(blocked))
+            return real_copyfile(source, target)
+
+        def extract_requested(_browser, domain, cookie_names):
+            if domain == ".x.com":
+                requested.append(cookie_names)
+            return cookie_extract._try_firefox_dir(profiles_dir, domain, cookie_names)
+
+        with patch("lib.cookie_extract.shutil.copyfile", side_effect=guarded_copyfile), patch(
+            "lib.cookie_extract.extract_cookies",
+            side_effect=extract_requested,
+        ):
+            found = env.extract_browser_credentials({
+                "FROM_BROWSER": "firefox", "BROWSER_CONSENT": "true",
+                "AUTH_TOKEN": "dummy-auth",
+            })
+        assert found == {"CT0": "dummy-ct0"}
+        assert requested == [["auth_token", "ct0"], ["ct0"]]
+        assert "permission denied" in capsys.readouterr().err.lower()
+
+    def test_manual_token_keeps_complete_profile_preference_without_denial(self, mock_firefox_env):
+        profiles_dir = mock_firefox_env(
+            profiles={
+                "abc123.default-release": [(".x.com", "ct0", "stale-ct0")],
+                "xyz789.other": [
+                    (".x.com", "auth_token", "dummy-auth"),
+                    (".x.com", "ct0", "matching-ct0"),
+                ],
+            }
+        )
+        requested = []
+
+        def extract_requested(_browser, domain, cookie_names):
+            if domain == ".x.com":
+                requested.append(cookie_names)
+            return cookie_extract._try_firefox_dir(profiles_dir, domain, cookie_names)
+
+        with patch("lib.cookie_extract.extract_cookies", side_effect=extract_requested):
+            found = env.extract_browser_credentials({
+                "FROM_BROWSER": "firefox", "BROWSER_CONSENT": "true",
+                "AUTH_TOKEN": "dummy-auth",
+            })
+        assert found == {"CT0": "matching-ct0"}
+        assert requested == [["auth_token", "ct0"]]
+
+    def test_later_install_entry_outside_profiles_survives_first_denial(self, tmp_path):
+        profiles_dir = tmp_path / "Firefox"
+        profiles_dir.mkdir()
+        blocked = tmp_path / "blocked"
+        available = tmp_path / "external-profile"
+        available.mkdir()
+        (profiles_dir / "profiles.ini").write_text(
+            f"[InstallA]\nDefault={blocked}\n[InstallB]\nDefault={available}\n"
+        )
+        real_stat = Path.stat
+
+        def guarded_stat(path, *args, **kwargs):
+            if path == blocked:
+                raise PermissionError(1, "Operation not permitted", str(path))
+            return real_stat(path, *args, **kwargs)
+
+        with patch.object(Path, "stat", guarded_stat):
+            assert _find_default_profile(profiles_dir) == available
+
+    def test_denied_default_copy_uses_complete_pair_in_alternate_profile(self, mock_firefox_env):
+        profiles_dir = mock_firefox_env(
+            profiles={
+                "abc123.default-release": [],
+                "xyz789.other": [
+                    (".x.com", "auth_token", "dummy-auth"),
+                    (".x.com", "ct0", "dummy-ct0"),
+                ],
+            }
+        )
+        blocked = profiles_dir / "abc123.default-release" / "cookies.sqlite"
+        real_copyfile = cookie_extract.shutil.copyfile
+
+        def guarded_copyfile(source, target):
+            if source == str(blocked):
+                raise PermissionError(1, "Operation not permitted", str(blocked))
+            return real_copyfile(source, target)
+
+        with patch("lib.cookie_extract.shutil.copyfile", side_effect=guarded_copyfile):
+            found = cookie_extract._try_firefox_dir(
+                profiles_dir, ".x.com", ["auth_token", "ct0"]
+            )
+        assert found == {"auth_token": "dummy-auth", "ct0": "dummy-ct0"}
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are not reliable on Windows")
     def test_temp_cookie_db_copy_is_owner_only(self, tmp_path):
@@ -166,10 +357,7 @@ class TestExtractFirefoxCookies:
         ):
             result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
 
-        assert result is not None
-        assert result["auth_token"] == "tok_abc123"
-        assert result["ct0"] == "ct0_xyz789"
-        assert "session" not in result  # different domain cookie not included
+        assert result == {"auth_token": "tok_abc123", "ct0": "ct0_xyz789"}
 
     def test_multiple_profiles_selects_default(self, mock_firefox_env):
         """When multiple profiles exist, the one with Default=1 is used."""
@@ -223,6 +411,74 @@ class TestExtractFirefoxCookies:
 
         assert result is None
 
+    def test_default_partial_yields_to_complete_non_default(self, mock_firefox_env):
+        """Default profile holds a lone ct0 (logged-out); the logged-in
+        non-default profile's complete pair wins."""
+        profiles_dir = mock_firefox_env(
+            profiles={
+                "aaa111.default": [
+                    (".x.com", "ct0", "partial_ct0"),
+                ],
+                "bbb222.release": [
+                    (".x.com", "auth_token", "tok_complete"),
+                    (".x.com", "ct0", "ct0_complete"),
+                ],
+            },
+            profiles_ini=textwrap.dedent("""\
+                [General]
+                StartWithLastProfile=1
+
+                [Profile0]
+                Name=default
+                IsRelative=1
+                Path=aaa111.default
+                Default=1
+
+                [Profile1]
+                Name=release
+                IsRelative=1
+                Path=bbb222.release
+            """),
+        )
+
+        with patch(
+            "lib.cookie_extract._get_firefox_profiles_dir",
+            return_value=profiles_dir,
+        ):
+            result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
+
+        assert result is not None
+        assert result["auth_token"] == "tok_complete"
+        assert result["ct0"] == "ct0_complete"
+
+    def test_partial_fallback_when_no_complete_profile(self, mock_firefox_env):
+        """With no complete profile anywhere, the first partial is kept."""
+        profiles_dir = mock_firefox_env(
+            profiles={
+                "aaa111.default": [
+                    (".x.com", "ct0", "partial_ct0"),
+                ],
+            },
+            profiles_ini=textwrap.dedent("""\
+                [General]
+                StartWithLastProfile=1
+
+                [Profile0]
+                Name=default
+                IsRelative=1
+                Path=aaa111.default
+                Default=1
+            """),
+        )
+
+        with patch(
+            "lib.cookie_extract._get_firefox_profiles_dir",
+            return_value=profiles_dir,
+        ):
+            result = extract_firefox_cookies(".x.com", ["auth_token", "ct0"])
+
+        assert result == {"ct0": "partial_ct0"}
+
     def test_cookies_sqlite_empty(self, mock_firefox_env):
         """Returns None when cookies.sqlite has no rows."""
         profiles_dir = mock_firefox_env(
@@ -245,6 +501,8 @@ class TestExtractFirefoxCookies:
         profiles_dir = mock_firefox_env(
             profiles={
                 "abc123.default-release": [
+                    (".example.com", "auth_token", "foreign_auth_token"),
+                    (".example.com", "ct0", "foreign_ct0"),
                     (".example.com", "session", "sess_123"),
                 ],
             },
@@ -476,3 +734,34 @@ class TestExtractCookiesAuto:
         ):
             result = extract_cookies("safari", ".x.com", ["auth_token"])
         assert result == {"auth_token": "safari_tok"}
+
+
+class TestHasCompletePair:
+    """Tests for the shared has_complete_pair() helper."""
+
+    def test_none_is_incomplete(self):
+        assert has_complete_pair(None, ["auth_token", "ct0"]) is False
+
+    def test_empty_is_incomplete(self):
+        assert has_complete_pair({}, ["auth_token", "ct0"]) is False
+
+    def test_partial_pair_is_incomplete(self):
+        assert has_complete_pair({"ct0": "x"}, ["auth_token", "ct0"]) is False
+
+    def test_empty_valued_pair_is_incomplete(self):
+        assert has_complete_pair({"auth_token": "", "ct0": ""}, ["auth_token", "ct0"]) is False
+        assert has_complete_pair({"auth_token": "a", "ct0": ""}, ["auth_token", "ct0"]) is False
+
+    def test_complete_pair(self):
+        assert has_complete_pair(
+            {"auth_token": "a", "ct0": "c"}, ["auth_token", "ct0"]
+        ) is True
+
+    def test_single_cookie_service(self):
+        assert has_complete_pair({"_session_id": "s"}, ["_session_id"]) is True
+
+    def test_extra_keys_still_complete(self):
+        assert has_complete_pair(
+            {"auth_token": "a", "ct0": "c", "other": "o"},
+            ["auth_token", "ct0"],
+        ) is True

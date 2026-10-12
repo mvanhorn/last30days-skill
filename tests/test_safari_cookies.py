@@ -301,10 +301,33 @@ class TestErrorPaths:
         ):
             mock_sys.platform = "darwin"
             mock_sys.stderr = sys.stderr
-            result = extract_safari_cookies_macos("x.com", ["auth_token"])
-        assert result is None
+            with pytest.raises(PermissionError):
+                extract_safari_cookies_macos("x.com", ["auth_token"])
         captured = capsys.readouterr()
-        assert "Full Disk Access" in captured.err
+        assert "browser-data permissions" in captured.err
+
+    def test_denied_container_uses_accessible_legacy_file(self, tmp_path, x_cookies_file):
+        container = (
+            tmp_path / "Library" / "Containers" / "com.apple.Safari" / "Data"
+            / "Library" / "Cookies" / "Cookies.binarycookies"
+        )
+        legacy = tmp_path / "Library" / "Cookies" / "Cookies.binarycookies"
+        container.parent.mkdir(parents=True)
+        legacy.parent.mkdir(parents=True)
+        container.write_bytes(b"cook")
+        legacy.write_bytes(x_cookies_file)
+        real_read_bytes = Path.read_bytes
+
+        def guarded_read_bytes(path):
+            if path == container:
+                raise PermissionError(1, "Operation not permitted", str(container))
+            return real_read_bytes(path)
+
+        with patch("lib.safari_cookies.Path.home", return_value=tmp_path), patch(
+            "lib.safari_cookies.sys.platform", "darwin"
+        ), patch.object(Path, "read_bytes", guarded_read_bytes):
+            found = extract_safari_cookies_macos("x.com", ["auth_token", "ct0"])
+        assert found == {"auth_token": "test_auth_abc123", "ct0": "test_ct0_xyz789"}
 
     def test_truncated_magic_only(self):
         result = _parse_binary_cookies(b"cook", "x.com", ["auth_token"])

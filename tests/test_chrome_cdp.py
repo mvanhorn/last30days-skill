@@ -14,6 +14,8 @@ import struct
 import threading
 from unittest import mock
 
+import pytest
+
 from lib import chrome_cdp
 
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
@@ -141,6 +143,21 @@ def test_from_browser_off_skips_endpoints():
         chrome_cdp, "candidate_endpoints", side_effect=AssertionError("must not probe")
     ):
         assert chrome_cdp.read_x_cookies({"FROM_BROWSER": "off"}) is None
+
+
+@pytest.mark.parametrize("config", [
+    None,
+    {},
+    {"BROWSER_CDP_URL": "ws://127.0.0.1:18800/devtools/page/test"},
+    {"FROM_BROWSER": "firefox"},
+    {"FROM_BROWSER": "chrome", "BROWSER_CONSENT": "false"},
+    {"FROM_BROWSER": "chrome", "BROWSER_CONSENT": "unknown"},
+    {"FROM_BROWSER": "off", "BROWSER_CONSENT": "true"},
+])
+def test_missing_or_declined_consent_skips_endpoint_discovery(config):
+    with mock.patch.object(chrome_cdp, "candidate_endpoints") as endpoints:
+        assert chrome_cdp.read_x_cookies(config) is None
+    endpoints.assert_not_called()
 
 
 # --- Fake CDP server (stdlib socket) ---------------------------------------
@@ -318,7 +335,7 @@ def test_read_x_cookies_via_fake_cdp():
         {"name": "guest_id", "value": "irrelevant", "domain": ".x.com"},
     ]
     with _FakeCDPServer(cookies) as server:
-        config = {"BROWSER_CDP_URL": f"http://127.0.0.1:{server.port}"}
+        config = {"BROWSER_CDP_URL": f"http://127.0.0.1:{server.port}", "BROWSER_CONSENT": "true"}
         result = chrome_cdp.read_x_cookies(config)
     assert result == {"auth_token": "test-auth-token", "ct0": "test-ct0"}
 
@@ -326,7 +343,7 @@ def test_read_x_cookies_via_fake_cdp():
 def test_read_x_cookies_incomplete_pair_returns_none():
     cookies = [{"name": "auth_token", "value": "test-auth-token", "domain": ".x.com"}]
     with _FakeCDPServer(cookies) as server:
-        config = {"BROWSER_CDP_URL": f"http://127.0.0.1:{server.port}"}
+        config = {"BROWSER_CDP_URL": f"http://127.0.0.1:{server.port}", "BROWSER_CONSENT": "true"}
         result = chrome_cdp.read_x_cookies(config)
     assert result is None
 
@@ -338,7 +355,7 @@ def test_read_x_cookies_rejects_node_inspector():
         {"name": "ct0", "value": "test-ct0", "domain": ".x.com"},
     ]
     with _FakeCDPServer(cookies, browser="node.js/v20.0.0") as server:
-        config = {"BROWSER_CDP_URL": f"http://127.0.0.1:{server.port}"}
+        config = {"BROWSER_CDP_URL": f"http://127.0.0.1:{server.port}", "BROWSER_CONSENT": "true"}
         result = chrome_cdp.read_x_cookies(config)
     assert result is None
 
@@ -355,7 +372,7 @@ def test_read_x_cookies_rejects_wss_without_plaintext_connect():
         mock.patch("socket.create_connection", side_effect=AssertionError("no plaintext connect to TLS endpoint")),
         mock.patch("urllib.request.urlopen", side_effect=AssertionError("no http probe of TLS endpoint")),
     ):
-        assert chrome_cdp.read_x_cookies({"BROWSER_CDP_URL": "wss://127.0.0.1:9222/devtools/page/ABC"}) is None
+        assert chrome_cdp.read_x_cookies({"BROWSER_CDP_URL": "wss://127.0.0.1:9222/devtools/page/ABC", "BROWSER_CONSENT": "true"}) is None
 
 
 def test_read_x_cookies_rejects_https_base_without_connect():
@@ -364,7 +381,7 @@ def test_read_x_cookies_rejects_https_base_without_connect():
         mock.patch("socket.create_connection", side_effect=AssertionError("no connect")),
         mock.patch("urllib.request.urlopen", side_effect=AssertionError("no TLS http probe")),
     ):
-        assert chrome_cdp.read_x_cookies({"BROWSER_CDP_URL": "https://127.0.0.1:18800"}) is None
+        assert chrome_cdp.read_x_cookies({"BROWSER_CDP_URL": "https://127.0.0.1:18800", "BROWSER_CONSENT": "true"}) is None
 
 
 def test_wsconn_connect_refuses_wss():
@@ -372,9 +389,8 @@ def test_wsconn_connect_refuses_wss():
 
 
 def test_read_x_cookies_no_reachable_endpoint_returns_none():
-    # A port with nothing listening: connection refused, returns None.
-    with socket.socket() as s:
-        s.bind(("127.0.0.1", 0))
-        dead_port = s.getsockname()[1]
-    config = {"BROWSER_CDP_URL": f"http://127.0.0.1:{dead_port}"}
-    assert chrome_cdp.read_x_cookies(config) is None
+    config = {"BROWSER_CDP_URL": "http://127.0.0.1:18800", "BROWSER_CONSENT": "true"}
+    with mock.patch("urllib.request.urlopen", side_effect=ConnectionRefusedError) as request:
+        assert chrome_cdp.read_x_cookies(config) is None
+    request.assert_called_once()
+    assert request.call_args.args[0] == "http://127.0.0.1:18800/json/version"

@@ -30,7 +30,7 @@ from pathlib import Path
 from unittest import mock
 
 import last30days as cli
-from lib import backends, doctor, env, grok_x, health, http, prescriptions
+from lib import backends, doctor, env, grok_x, health, http, prescriptions, reddit_search, setup_wizard
 
 BIRD_STATUS_OFF = {
     "installed": False,
@@ -283,6 +283,134 @@ class CookieBackedXReadiness(unittest.TestCase):
         self.assertIn("browser cookies", note)
         self.assertIn("not verified", note)
         self.assertIn("xai_api_key", note)
+
+    def test_last_setup_permission_denial_overrides_unverified_cookie_prediction(self):
+        config = {
+            "FROM_BROWSER": "edge", "BROWSER_CONSENT": "true",
+            "LAST30DAYS_X_COOKIE_ACCESS_DENIED": "edge",
+        }
+        with _Hermetic(), mock.patch(
+            "lib.bird_x.is_bird_installed", return_value=True
+        ), mock.patch(
+            "lib.cookie_extract.extract_cookies",
+            side_effect=AssertionError("doctor read cookies"),
+        ):
+            record = doctor._x_record(config)
+        self.assertEqual("error", record["tier"])
+        self.assertIn("Last setup", record["note"])
+        self.assertIn("permission denied", record["note"])
+        self.assertIn("AUTH_TOKEN", record["fix"])
+
+    def test_last_setup_denial_preserves_exclusive_xurl_pin_repair(self):
+        config = {
+            "LAST30DAYS_X_BACKEND": "xurl",
+            "FROM_BROWSER": "edge", "BROWSER_CONSENT": "true",
+            "LAST30DAYS_X_COOKIE_ACCESS_DENIED": "edge",
+        }
+        with _Hermetic():
+            record = doctor._x_record(config)
+        self.assertTrue(record["pinned"])
+        self.assertIn("xurl", record["fix"].lower())
+        self.assertIn("Last setup", record["note"])
+
+    def test_discovery_stat_denial_reaches_setup_and_no_read_doctor(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            profiles = Path(temp_dir)
+            profile = profiles / "default"
+            profile.mkdir()
+            blocked = profile / "cookies.sqlite"
+            blocked.touch()
+            real_stat = Path.stat
+            real_is_file = Path.is_file
+
+            def guarded_stat(path, *args, **kwargs):
+                if path == blocked:
+                    raise PermissionError(1, "Operation not permitted", str(path))
+                return real_stat(path, *args, **kwargs)
+
+            def simulated_py314_is_file(path, *args, **kwargs):
+                if path == blocked:
+                    return False
+                return real_is_file(path, *args, **kwargs)
+
+            with mock.patch("lib.cookie_extract._get_firefox_profiles_dir", return_value=profiles), mock.patch(
+                "lib.cookie_extract._is_wsl", return_value=False
+            ), mock.patch.object(
+                Path, "stat", guarded_stat
+            ), mock.patch.object(Path, "is_file", simulated_py314_is_file), mock.patch(
+                "lib.setup_wizard.shutil.which", return_value="/usr/bin/fake"
+            ), mock.patch("lib.setup_wizard._install_digg_cli", return_value=(True, "already_installed", "", "")), mock.patch(
+                "lib.setup_wizard.install_default_pp_sources", return_value={}
+            ), mock.patch("lib.setup_wizard.brightdata_status", return_value={}):
+                results = setup_wizard.run_auto_setup(
+                    {"FROM_BROWSER": "firefox"}, allow_browser_cookies=True
+                )
+            self.assertEqual(["firefox"], results["x_cookie_access_denied"], results)
+            self.assertIn("permission denied", setup_wizard.get_setup_status_text(results).lower())
+            config = {
+                "FROM_BROWSER": "firefox",
+                "BROWSER_CONSENT": "true",
+                "LAST30DAYS_X_COOKIE_ACCESS_DENIED": "firefox",
+            }
+            with _Hermetic(), mock.patch(
+                "lib.cookie_extract.extract_cookies",
+                side_effect=AssertionError("doctor read cookies"),
+            ):
+                record = doctor._x_record(config)
+            self.assertEqual("error", record["tier"])
+            self.assertIn("Last setup", record["note"])
+
+    def test_manual_cookie_pair_supersedes_last_setup_denial(self):
+        config = {
+            "FROM_BROWSER": "edge", "BROWSER_CONSENT": "true",
+            "LAST30DAYS_X_COOKIE_ACCESS_DENIED": "edge",
+            "AUTH_TOKEN": "dummy-auth-token", "CT0": "dummy-ct0",
+        }
+        with _Hermetic(probe_map={"node": health.OK}), mock.patch(
+            "lib.bird_x.is_bird_installed", return_value=True
+        ):
+            record = doctor._x_record(config)
+        self.assertEqual("ok", record["tier"])
+        self.assertNotIn("permission denied", record["note"])
+
+    def test_denial_after_auto_setup_is_visible_without_from_browser(self):
+        config = {
+            "BROWSER_CONSENT": "true",
+            "LAST30DAYS_X_COOKIE_ACCESS_DENIED": "edge",
+        }
+        with _Hermetic(), mock.patch(
+            "lib.cookie_extract.extract_cookies",
+            side_effect=AssertionError("doctor read cookies"),
+        ):
+            record = doctor._x_record(config)
+        self.assertEqual("error", record["tier"])
+        self.assertIn("Last setup", record["note"])
+
+    def test_other_source_browser_selection_does_not_hide_x_denial(self):
+        config = {
+            "FROM_BROWSER": "chrome", "BROWSER_CONSENT": "true",
+            "LAST30DAYS_X_COOKIE_ACCESS_DENIED": "edge",
+        }
+        with _Hermetic(), mock.patch("lib.bird_x.is_bird_installed", return_value=True):
+            record = doctor._x_record(config)
+        self.assertEqual("error", record["tier"])
+        self.assertIn("edge", record["note"])
+
+    def test_refused_browser_access_suppresses_old_denial_marker(self):
+        config = {
+            "FROM_BROWSER": "off", "BROWSER_CONSENT": "false",
+            "LAST30DAYS_X_COOKIE_ACCESS_DENIED": "edge",
+        }
+        with _Hermetic():
+            record = doctor._x_record(config)
+        self.assertNotIn("permission denied", record.get("note", ""))
+
+    def test_denial_marker_invalidates_cached_doctor_result(self):
+        before = doctor._config_fingerprint({"FROM_BROWSER": "edge"})
+        after = doctor._config_fingerprint({
+            "FROM_BROWSER": "edge", "LAST30DAYS_X_COOKIE_ACCESS_DENIED": "edge",
+        })
+        assert before != after
 
     def test_x_stays_off_when_bird_installed_but_no_consent(self):
         # bird installed but FROM_BROWSER=off -> no cookie path -> genuinely off.
@@ -977,6 +1105,23 @@ class JsonContract(unittest.TestCase):
         self.assertIn("audit_state", served["sources"]["reddit"])
         self.assertIn("WORKING", doctor.render_text(served))
 
+    def test_cached_denial_invalidated_by_browser_gate_changes(self):
+        tmp = Path(tempfile.mkdtemp()) / "doctor-cache.json"
+        config = {
+            "FROM_BROWSER": "edge",
+            "BROWSER_CONSENT": "true",
+            "LAST30DAYS_X_COOKIE_ACCESS_DENIED": "edge",
+        }
+        with _Hermetic(), mock.patch("lib.doctor.cache_path", return_value=tmp):
+            report = doctor.build_report(config)
+            report["generated_at"] = datetime.datetime.now(
+                datetime.timezone.utc
+            ).isoformat()
+            self.assertTrue(doctor._write_cache(report, config))
+            self.assertIsNotNone(doctor.read_cached_report(config))
+            self.assertIsNone(doctor.read_cached_report({**config, "BROWSER_CONSENT": "false"}))
+            self.assertIsNone(doctor.read_cached_report({**config, "FROM_BROWSER": "off"}))
+
 
 class LiveProbe(unittest.TestCase):
     """U5: bounded live probe (--probe / no-fresh-run auto-fallback)."""
@@ -999,18 +1144,41 @@ class LiveProbe(unittest.TestCase):
         self.assertIsNone(doctor._probe_source("tiktok", {}, 5))
 
     def test_reddit_probe_targets_the_endpoint_the_engine_uses(self):
-        # /r/all/hot.json is permanently 403 keyless and no lane requests it;
-        # probing it certified an endpoint the engine had abandoned (#899).
+        # Probing a hand-copied URL certified endpoints the engine had already
+        # abandoned (hot.json, then the retired feed). The probe asks the lane.
         url = doctor._HTTP_PROBE_URLS["reddit"]
-        self.assertIn("search.rss", url)
-        self.assertNotIn("hot.json", url)
+        self.assertEqual(reddit_search.search_url("test"), url)
+
+    def _probe_reddit_with_body(self, body):
+        with mock.patch("lib.bounded_get.get", return_value=(200, body.encode("utf-8"), None)):
+            return doctor._probe_source("reddit", {}, 5)
+
+    def test_reddit_probe_200_with_results_passes(self):
+        body = (Path(__file__).resolve().parent.parent / "fixtures" / "reddit_search_page1.html").read_text()
+        res = self._probe_reddit_with_body(body)
+        self.assertTrue(res["ok"])
+        self.assertEqual("HTTP 200", res["detail"])
+
+    def test_reddit_probe_200_no_results_page_passes(self):
+        # Reddit's explicit empty page is still the search endpoint answering.
+        res = self._probe_reddit_with_body(f"<div {reddit_search.NO_RESULTS_MARKER}></div>")
+        self.assertTrue(res["ok"])
+
+    def test_reddit_probe_200_challenge_page_is_blocked(self):
+        # A 200 challenge page is the failure the lane hits: status alone
+        # would report a blocked Reddit as working.
+        res = self._probe_reddit_with_body("<html><title>Please wait for verification</title></html>")
+        self.assertFalse(res["ok"])
+        self.assertIn("HTTP 200", res["detail"])
+        self.assertIn("blocked", res["detail"])
+        self.assertFalse(res.get("transient", False))
 
     def _probe_reddit_with_status(self, code):
         error = urllib.error.HTTPError(
             doctor._HTTP_PROBE_URLS["reddit"], code, "Blocked", {}, None
         )
         with (
-            mock.patch("lib.doctor.urllib.request.urlopen", side_effect=error),
+            mock.patch("lib.bounded_get.get", return_value=(code, None, error)),
             # 429 buys a retry; don't pay the real backoff in the suite.
             mock.patch("lib.doctor.time.sleep"),
         ):
@@ -1090,7 +1258,7 @@ class LiveProbe(unittest.TestCase):
         error = urllib.error.HTTPError(
             doctor._HTTP_PROBE_URLS["github"], 403, "Forbidden", {}, None
         )
-        with mock.patch("lib.doctor.urllib.request.urlopen", side_effect=error):
+        with mock.patch("lib.bounded_get.get", return_value=(403, None, error)):
             res = doctor._probe_source("github", {}, 5)
         self.assertTrue(res["ok"])
 
@@ -1098,13 +1266,15 @@ class LiveProbe(unittest.TestCase):
         # Probing with a different UA measures the User-Agent, not the endpoint.
         seen = {}
 
-        def capture(req, timeout=None):
+        def capture(req, **kwargs):
             seen["ua"] = req.get_header("User-agent")
-            raise urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
+            seen["accept"] = req.get_header("Accept")
+            return 500, None, urllib.error.HTTPError(req.full_url, 500, "boom", {}, None)
 
-        with mock.patch("lib.doctor.urllib.request.urlopen", capture):
+        with mock.patch("lib.bounded_get.get", capture):
             doctor._probe_source("reddit", {}, 5)
         self.assertEqual(http.BROWSER_USER_AGENT, seen["ua"])
+        self.assertIn("text/html", seen["accept"])
 
     def test_probe_failure_is_isolated(self):
         def flaky(name, config, timeout):
@@ -1118,19 +1288,12 @@ class LiveProbe(unittest.TestCase):
         self.assertIn("boom", results["reddit"]["detail"])
         self.assertTrue(results["hackernews"]["ok"])  # others unaffected
 
-    def test_probe_deadline_never_hangs(self):
-        import time
-
-        def too_slow(name, config, timeout):
-            time.sleep(1.3)  # exceeds the timeout(0)+1s result deadline
-            return {"ok": True, "probed": True}
-
-        with mock.patch("lib.doctor._probe_source", too_slow):
+    def test_zero_probe_budget_starts_no_transport(self):
+        with mock.patch("lib.bounded_get.get") as transport:
             results = doctor._probe_sources({}, timeout=0)
+        transport.assert_not_called()
         self.assertTrue(results)
-        self.assertTrue(
-            any("deadline" in r.get("detail", "") for r in results.values())
-        )
+        self.assertTrue(all("deadline" in r["detail"] for r in results.values()))
 
     def test_probe_result_flips_unverified_to_working(self):
         rec = {"tier": "ok", "status": "ok", "audit_state": doctor.AUDIT_UNVERIFIED}
@@ -1237,6 +1400,19 @@ class BackupAndCommentLanes(unittest.TestCase):
         self.assertIn("rate-limited", yt_backup["note"])
         text = doctor.render_text(report)
         self.assertIn("backup: ScrapeCreators transcript/search backstop — armed", text)
+
+    def test_reddit_backup_note_names_the_floor(self):
+        report = _build({"SCRAPECREATORS_API_KEY": "dummy-sc-secret-000"})
+        note = report["sources"]["reddit"]["backups"][0]["note"]
+        self.assertIn("below the 5-item floor", note)
+
+    def test_reddit_backup_note_floor_off_means_empty_only(self):
+        report = _build({
+            "SCRAPECREATORS_API_KEY": "dummy-sc-secret-000",
+            env.REDDIT_SC_MIN_ITEMS_VAR: "0",
+        })
+        note = report["sources"]["reddit"]["backups"][0]["note"]
+        self.assertIn("returns nothing", note)
 
     def test_backups_off_without_sc_key(self):
         report = _build({})
@@ -1514,21 +1690,21 @@ class GrokBotHostDoctor(unittest.TestCase):
         self.assertEqual("ok", rec["status"])
         self.assertEqual("ok", rec["tier"])
         self.assertEqual("connector", rec["active_backend"])
-        self.assertEqual("will use: X connector (host-fetched at run time)", rec["note"])
+        self.assertEqual("will use: built-in X tools or X connector (host-fetched at run time)", rec["note"])
         self.assertEqual("", rec["fix"])
         backup = rec["backups"][0]
         self.assertTrue(backup["armed"])
-        self.assertEqual("X connector lane armed", backup["note"])
+        self.assertEqual("host X lane armed (built-in X tools or X connector)", backup["note"])
         text = "\n".join(_x_text_lines(doctor.render_text(report)))
-        self.assertIn("will use: X connector (host-fetched at run time)", text)
-        self.assertIn("X connector lane armed", text)
+        self.assertIn("will use: built-in X tools or X connector (host-fetched at run time)", text)
+        self.assertIn("host X lane armed (built-in X tools or X connector)", text)
         self._assert_official_vocabulary(report)
 
     def test_lane_with_bearer_keeps_backend_prediction_and_lane_armed(self):
         report = _build(_grok_bot(LAST30DAYS_X_HOST_LANE="1", X_BEARER_TOKEN="dummy-x-bearer-secret-000"))
         rec = report["sources"]["x"]
         self.assertEqual("xapi", rec["active_backend"])
-        self.assertEqual("X connector lane armed", rec["backups"][0]["note"])
+        self.assertEqual("host X lane armed (built-in X tools or X connector)", rec["backups"][0]["note"])
 
     def test_bird_pin_names_bird_once_as_pinned(self):
         config = _grok_bot(

@@ -92,6 +92,44 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         anchor="api-keys-env",
     ),
     _entry(
+        "x", "xai_error",
+        cause="the xAI X search backend failed this run",
+        fix_nl=(
+            "check XAI_API_KEY and its chat/model permissions in console.x.ai, "
+            "confirm LAST30DAYS_X_MODEL names an available model, then re-run"
+        ),
+        fix_cli="XAI_API_KEY=<your-xai-key> LAST30DAYS_X_MODEL=<available-xai-model>",
+        anchor="api-keys-env",
+    ),
+    _entry(
+        "x", "xai_payment_required",
+        cause="the xAI X search backend has no available credits",
+        fix_nl="check xAI billing and credits in console.x.ai, then re-run",
+        fix_cli=f'{ENGINE_CLI} "<topic>" --search x',
+        anchor="api-keys-env",
+    ),
+    _entry(
+        "x", "xai_rate_limited",
+        cause="the xAI X search backend hit its rate limit",
+        fix_nl="wait for the xAI rate limit to reset, then re-run",
+        fix_cli=f'{ENGINE_CLI} "<topic>" --search x',
+        anchor="api-keys-env",
+    ),
+    _entry(
+        "x", "xai_timeout",
+        cause="the xAI X search backend timed out",
+        fix_nl="xAI timed out; retry the run or select another configured X backend",
+        fix_cli=f'{ENGINE_CLI} "<topic>" --search x',
+        anchor="api-keys-env",
+    ),
+    _entry(
+        "x", "xai_unavailable",
+        cause="the xAI X search backend failed this run",
+        fix_nl="retry xAI later or select another configured X backend",
+        fix_cli=f'{ENGINE_CLI} "<topic>" --search x',
+        anchor="api-keys-env",
+    ),
+    _entry(
         "x", "grok_cli_missing",
         cause="the Grok CLI is not installed, so the keyless X path is unavailable",
         fix_nl=(
@@ -109,18 +147,20 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         anchor="api-keys-env",
     ),
     # Official X path (an official-only host per env.x_policy, or an explicit
-    # xapi pin). Copy is limited to the connector lane, X_BEARER_TOKEN,
-    # XAI_API_KEY, and X API credits; the bearer path is described as
-    # about a week, never as parity with the connector. Anchors point at
+    # xapi pin). Copy is limited to the host X lanes (Grok Bot's built-in X
+    # tools, then the X for Grok Bot connector), X_BEARER_TOKEN, XAI_API_KEY,
+    # and X API credits; the bearer path is described as about a week, never
+    # as parity with the host lanes. Anchors point at
     # the CONFIGURATION.md Grok Bot subsection (slug grok-bot).
     _entry(
         "x", "bearer_missing",
         cause=(
-            "no official X path is configured (X connector, X_BEARER_TOKEN, "
-            "or XAI_API_KEY)"
+            "no official X path is configured (Grok Bot X tools, X connector, "
+            "X_BEARER_TOKEN, or XAI_API_KEY)"
         ),
         fix_nl=(
-            "add the X for Grok Bot plugin and connect X in Grok Bot settings (full 30-day coverage), or set "
+            "fetch X with Grok Bot's built-in X tools and pass the posts with --x-posts, or add the X for Grok Bot "
+            "plugin and connect X in Grok Bot settings (full 30-day coverage), or set "
             f"X_BEARER_TOKEN from the X developer console ({BEARER_COVERAGE_NOTE}), "
             "or set XAI_API_KEY from console.x.ai"
         ),
@@ -151,12 +191,12 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
     _entry(
         "x", "connector_missing",
         cause=(
-            "the X connector lane was declared but no connector result was "
+            "the host X lane was declared but no host-fetched result was "
             "passed to the engine"
         ),
         fix_nl=(
-            "add the X for Grok Bot plugin and connect X in Grok Bot settings (full 30-day coverage) and pass the "
-            "connector's posts with --x-posts, or set X_BEARER_TOKEN from the X "
+            "fetch X with Grok Bot's built-in X tools (or the X for Grok Bot connector) and pass the "
+            "posts with --x-posts, or unset LAST30DAYS_X_HOST_LANE and set X_BEARER_TOKEN from the X "
             f"developer console ({BEARER_COVERAGE_NOTE})"
         ),
         fix_cli=f'{ENGINE_CLI} "<topic>" --x-posts <path-to-x-posts.json>',

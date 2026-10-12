@@ -123,7 +123,9 @@ def test_official_x_api_fragments_exist_and_changelog_is_untouched():
 # --- SKILL.md unlock surfaces ---------------------------------------------
 
 def _skill_md():
-    return (REPO / "skills" / "last30days" / "SKILL.md").read_text()
+    from tests.skill_contract import reference_text
+
+    return reference_text("setup-wizard")
 
 
 def test_skill_md_does_not_check_grok_first():
@@ -143,8 +145,11 @@ def test_skill_md_presents_grok_as_opt_in_backup():
 
 def test_skill_md_replaces_just_in_time_unlock_with_optional_omission():
     """A useful report ends without a second X consent or key prompt."""
-    text = _skill_md()
-    assert "Just-in-time X unlock" not in text
+    from tests.skill_contract import contract_documents, reference_text
+
+    for name, document in contract_documents().items():
+        assert "Just-in-time X unlock" not in document, name
+    text = reference_text("synthesis")
     section = text[text.index("Optional X omission"):][:1200]
     assert "finish the useful findings first" in section
     assert "Do not open a modal" in section

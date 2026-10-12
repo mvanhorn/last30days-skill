@@ -14,6 +14,8 @@ import struct
 import sys
 from pathlib import Path
 
+from .cookie_paths import path_exists
+
 # Mac epoch: 2001-01-01 00:00:00 UTC (not used for filtering, but documented)
 _MAC_EPOCH_OFFSET = 978307200  # seconds between Unix epoch and Mac epoch
 
@@ -121,24 +123,34 @@ def extract_safari_cookies_macos(
         / "Cookies.binarycookies",
         Path.home() / "Library" / "Cookies" / "Cookies.binarycookies",
     ]
-    cookie_path = next((path for path in cookie_paths if path.exists()), cookie_paths[0])
+    denied = None
+    partial = None
+    for cookie_path in cookie_paths:
+        try:
+            if not path_exists(cookie_path):
+                continue
+            raw = cookie_path.read_bytes()
+        except PermissionError as exc:
+            if denied is None:
+                denied = exc
+            continue
+        except OSError:
+            continue
+        result = _parse_binary_cookies(raw, domain, cookie_names)
+        if result and all(result.get(name) for name in cookie_names):
+            return result
+        if result and partial is None:
+            partial = result
 
-    try:
-        raw = cookie_path.read_bytes()
-    except FileNotFoundError:
-        return None
-    except PermissionError:
+    if denied is not None:
         print(
             "[safari] Permission denied reading Cookies.binarycookies. "
-            "Enable Full Disk Access for Terminal in System Settings > "
-            "Privacy & Security > Full Disk Access.",
+            "Check the invoking app's browser-data permissions in System Settings > "
+            "Privacy & Security, then retry setup.",
             file=sys.stderr,
         )
-        return None
-    except OSError:
-        return None
-
-    return _parse_binary_cookies(raw, domain, cookie_names)
+        raise denied
+    return partial
 
 
 def _host_matches(stored_host: str, domain: str) -> bool:

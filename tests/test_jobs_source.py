@@ -96,7 +96,7 @@ class JobsSourceTests(unittest.TestCase):
         self.assertEqual(1, len(parsed))
         self.assertEqual("Staff Engineer", parsed[0]["title"])
         self.assertEqual("Engineering", parsed[0]["department"])
-        self.assertRegex(parsed[0]["date"], r"\d{4}-\d{2}-\d{2}")
+        self.assertEqual("2025-06-10", parsed[0]["date"])
         self.assertEqual("lever", parsed[0]["provider"])
 
     def test_parse_smartrecruiters_response_core_fields(self):

@@ -78,6 +78,30 @@
           "nbHits": 3
         }
       }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hn.algolia.com/api/v1/items/non-english-cjk-hn-1",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "children": []
+        }
+      }
+    },
+    {
+      "request": {
+        "method": "GET",
+        "url": "https://hn.algolia.com/api/v1/items/non-english-cjk-hn-3",
+        "raw": false
+      },
+      "response": {
+        "value": {
+          "children": []
+        }
+      }
     }
   ]
 }

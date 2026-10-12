@@ -449,14 +449,31 @@ class TestSearchMetaAds:
     def test_rate_limit_retries_are_disabled_on_every_call(self):
         # The shared client retries a 429 twice by default, which would both
         # contradict the no-further-calls contract and burn the lane budget.
-        _result, _calls = self._run(
-            [envelope([ad_row()]), envelope([ad_row()], key="results")]
-        )
-        with mock.patch("lib.meta_ads.http.get") as get:
-            get.return_value = envelope([])
-            search_meta_ads("Brightpan", FROM_DATE, TO_DATE, token=TOKEN)
-        assert get.call_args.kwargs["max_429_retries"] == 0
-        assert get.call_args.kwargs["deadline_monotonic"] is not None
+        video = ad_row()
+        video["snapshot"]["videos"] = [{"video_hd_url": "https://cdn.example/a.mp4"}]
+        responses = [
+            envelope([]),
+            envelope([company_row("300000000000001", "Brightpan")], key="results"),
+            envelope([video], key="results", cursor="next"),
+            envelope([ad_row(ad_archive_id="second", collation_id="second")], key="results"),
+            {"transcript_available": True, "transcript": "The kettle makes better mornings."},
+        ]
+        with mock.patch("lib.meta_ads.http.get", side_effect=responses) as get:
+            result = search_meta_ads("Brightpan", FROM_DATE, TO_DATE, token=TOKEN)
+        assert [call.args[0] for call in get.call_args_list] == [
+            meta_ads.SEARCH_ADS_URL,
+            meta_ads.SEARCH_COMPANIES_URL,
+            meta_ads.COMPANY_ADS_URL,
+            meta_ads.COMPANY_ADS_URL,
+            meta_ads.AD_TRANSCRIPT_URL,
+        ]
+        assert {ad["id"] for ad in result["ads"]} == {"1000000000000001", "second"}
+        assert result["tally"]["transcribed"] == 1
+        deadline = get.call_args_list[0].kwargs["deadline_monotonic"]
+        assert deadline is not None
+        for call in get.call_args_list:
+            assert call.kwargs["max_429_retries"] == 0, call.args[0]
+            assert call.kwargs["deadline_monotonic"] == deadline, call.args[0]
 
     def test_exhausted_budget_keeps_what_was_fetched_and_reports_partial(self):
         # Running out of time must not discard creatives already in hand: thin

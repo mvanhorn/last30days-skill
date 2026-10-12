@@ -66,7 +66,7 @@ def _postmortem_from(report):
 def test_reddit_rate_limit_is_not_reported_as_clean_no_results():
     report = _run_reddit_against(
         urllib.error.HTTPError(
-            "https://www.reddit.com/search.rss", 429, "Too Many Requests", {}, None
+            "https://www.reddit.com/svc/shreddit/search/", 429, "Too Many Requests", {}, None
         )
     )
 
@@ -78,7 +78,7 @@ def test_reddit_rate_limit_is_not_reported_as_clean_no_results():
 def test_reddit_block_is_not_reported_as_clean_no_results():
     report = _run_reddit_against(
         urllib.error.HTTPError(
-            "https://www.reddit.com/search.rss", 403, "Blocked", {}, None
+            "https://www.reddit.com/svc/shreddit/search/", 403, "Blocked", {}, None
         )
     )
 
@@ -90,7 +90,7 @@ def test_reddit_block_is_not_reported_as_clean_no_results():
 def test_postmortem_does_not_claim_success_after_a_reddit_block():
     report = _run_reddit_against(
         urllib.error.HTTPError(
-            "https://www.reddit.com/search.rss", 429, "Too Many Requests", {}, None
+            "https://www.reddit.com/svc/shreddit/search/", 429, "Too Many Requests", {}, None
         )
     )
 
@@ -255,7 +255,7 @@ def test_postmortem_shows_lane_detail_on_succeeded_source():
 
 def test_swallowed_429s_flag_the_source_as_rate_limited_for_thin_retry():
     lane_error = http.HTTPError(
-        "https://www.reddit.com/search.rss", status_code=429, body=b"Too Many Requests"
+        "https://www.reddit.com/svc/shreddit/search/", status_code=429, body=b"Too Many Requests"
     )
     subquery = schema.SubQuery(
         label="primary", search_query="matcha", ranking_query="matcha", sources=["reddit"],

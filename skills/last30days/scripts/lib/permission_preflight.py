@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from . import env
+from . import env, providers as provider_endpoints
 
 
 ENDPOINT_OVERRIDE_KEYS = {
@@ -12,6 +12,7 @@ ENDPOINT_OVERRIDE_KEYS = {
     "LAST30DAYS_SEARXNG_URL",
     "LAST30DAYS_YOUTUBE_SSH_HOST",
     "OPENAI_BASE_URL",
+    "OPENROUTER_BASE_URL",
     "XAI_BASE_URL",
     "XIAOHONGSHU_API_BASE",
 }
@@ -112,10 +113,22 @@ def build(
         },
     }
 
-    active_endpoint_overrides = sorted(
-        key for key in ENDPOINT_OVERRIDE_KEYS if config.get(key)
+    active_endpoint_overrides: list[str] = []
+    rejected_provider_overrides: list[str] = []
+    for key in sorted(ENDPOINT_OVERRIDE_KEYS):
+        value = str(config.get(key) or "").strip()
+        if not value:
+            continue
+        if (
+            key in provider_endpoints.PROVIDER_BASE_URL_KEYS
+            and not provider_endpoints.allowed_base_url_override(value)
+        ):
+            rejected_provider_overrides.append(key)
+        else:
+            active_endpoint_overrides.append(key)
+    ignored_endpoint_overrides = sorted(
+        set(diagnose.get("ignored_endpoint_overrides") or []) | set(rejected_provider_overrides)
     )
-    ignored_endpoint_overrides = sorted(diagnose.get("ignored_endpoint_overrides") or [])
     external_commands = {
         name: {"status": _status(bool(available))}
         for name, available in sorted((diagnose.get("external_commands") or {}).items())
@@ -133,6 +146,12 @@ def build(
             "Unsubstituted config template(s) count as unset: "
             + _format_names(templated_keys)
             + ". Replace each with a real value or remove it."
+        )
+    if rejected_provider_overrides:
+        action_items.append(
+            "Provider endpoint override(s) ignored: "
+            + _format_names(rejected_provider_overrides)
+            + ". Use HTTPS, or HTTP on loopback."
         )
 
     return {

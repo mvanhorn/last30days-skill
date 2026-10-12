@@ -12,6 +12,7 @@ from . import dates, relevance, schema
 SOURCE_QUALITY = {
     "xiaohongshu": 0.7,
     "hackernews": 0.8,
+    "devto": 0.78,
     "youtube": 0.85,
     "digg": 0.85,
     "arxiv": 0.9,
@@ -88,6 +89,11 @@ def freshness(
     reference_date: str | None = None,
     max_days: int = 30,
 ) -> int:
+    # A live repo snapshot dated to the window end (no in-window release) has a
+    # read time, not an event date: rank it at the scale's midpoint instead of
+    # maximum freshness, or every pinned repo card sorts to #1.
+    if isinstance(item.metadata, dict) and item.metadata.get("date_is_snapshot"):
+        return 50
     score = dates.recency_score(
         item.published_at,
         max_days=max_days,
@@ -129,6 +135,7 @@ def _top_comment_score(item: schema.SourceItem) -> float:
 _VOTE_LOG_REFERENCE: dict[str, float] = {
     "reddit":     7.6,   # ~log1p(2000)
     "hackernews": 6.2,   # ~log1p(500)
+    "devto":      3.0,   # ~log1p(20) direct replies; the API has no comment likes
     "youtube":    10.3,  # ~log1p(30000)
     "tiktok":     10.3,  # ~log1p(30000)
     "instagram":  9.2,   # ~log1p(10000)
@@ -181,6 +188,7 @@ ENGAGEMENT_WEIGHTS: dict[str, list[tuple[str, float]]] = {
     "x":            [("likes", 0.55), ("reposts", 0.25), ("replies", 0.15), ("quotes", 0.05)],
     "instagram":    [("views", 0.50), ("likes", 0.30), ("comments", 0.20)],
     "hackernews":   [("points", 0.55), ("comments", 0.45)],
+    "devto":        [("reactions", 0.60), ("comments", 0.40)],
     "bluesky":      [("likes", 0.40), ("reposts", 0.30), ("replies", 0.20), ("quotes", 0.10)],
     "truthsocial":  [("likes", 0.45), ("reposts", 0.30), ("replies", 0.25)],
     "polymarket":   [("volume", 0.60), ("liquidity", 0.40)],
@@ -272,6 +280,112 @@ def engagement_raw(item: schema.SourceItem) -> float | None:
     return _generic_engagement(item)
 
 
+# Per-source log reference for engagement_score, in each source's own units.
+# Same convention as _VOTE_LOG_REFERENCE (which it extends): the value is
+# engagement_raw for a "very high" item, so that item scores 100 and, the scale
+# being logarithmic, roughly its square root scores 50. Every source that can
+# reach engagement_raw is listed here or in _NO_ENGAGEMENT_SCORE_SOURCES; an
+# unlisted source gets no score rather than an assumed Reddit-vote scale.
+_ENGAGEMENT_LOG_REFERENCE: dict[str, float] = {
+    **_VOTE_LOG_REFERENCE,
+    # Microblog likes/reposts/replies run on X's scale (~10k likes is very high).
+    "truthsocial": 9.2,  # ~log1p(10000)
+    "threads":     9.2,  # ~log1p(10000)
+    # Likes/comments/favorites on an Instagram-like feed.
+    "xiaohongshu": 9.2,  # ~log1p(10000)
+    # Saves on a viral pin reach ~10k.
+    "pinterest":   9.2,  # ~log1p(10000)
+    # Reactions run like Reddit upvotes: a viral post has ~2k.
+    "linkedin":    7.6,  # ~log1p(2000)
+    # Per-issue/PR reactions and comments (repo snapshot cards, whose counts
+    # are lifetime stars, get no score: see is_repo_snapshot). A
+    # ~100-reaction thread lands near 50.
+    "github":      9.2,  # ~log1p(10000)
+    # Dollars, not votes. polymarket.py's own saturation anchors: $9M volume
+    # (log1p 16) and $1.2M liquidity (log1p 14), weighted 0.6/0.4 as in
+    # ENGAGEMENT_WEIGHTS: 0.6*16 + 0.4*14 = 15.2.
+    "polymarket": 15.2,
+    # A rank-1 cluster (rank_score 50) with ~100 posts from ~100 authors:
+    # 0.4*log1p(100) + 0.3*log1p(100) + 0.3*log1p(50) = 4.4.
+    "digg":        4.4,
+    # Lifetime totals for a whole company or product, not one post: big
+    # consumer brands and best-sellers carry ~100k, so ~300 lands near 50.
+    "trustpilot": 11.5,  # ~log1p(100000) reviews
+    "amazon":     11.5,  # ~log1p(100000) ratings
+}
+
+# Sources whose engagement fields are not an audience response, so no
+# engagement score is comparable with votes or likes:
+#   jobs       - a constant open_roles=1 per posting
+#   meta_ads   - variant count measures the advertiser's push, not reach
+#   grounding, perplexity - web results; counts are citations, not readers
+#   stocktwits - the author's follower count dominates sparse likes/reshares
+#   telegram   - the channel's subscriber count dominates per-post views
+#   arxiv, techmeme, dripstack, corpus - no engagement fields at all
+_NO_ENGAGEMENT_SCORE_SOURCES = frozenset({
+    "jobs", "meta_ads", "grounding", "perplexity", "stocktwits", "telegram",
+    "arxiv", "techmeme", "dripstack", "corpus",
+})
+
+
+# YouTube, TikTok, and Instagram weight log1p(views) at 0.45 in
+# engagement_raw, and views run orders of magnitude above votes: any upload
+# collects ~100 passive feed views, so a 117-view, 1-like video already had raw
+# 2.4 (23 on the vote-style 10.3 reference, three times a 3-like X post).
+# These sources map raw linearly from a floor (an upload with ~100 views and no
+# reactions: 0.45*log1p(100) = 2.1) to a "very high" month-window post (~2-3M
+# views, ~100k likes, ~3k comments: 0.45*14.9 + 0.32*11.5 + 0.13*8.0 = 11.4).
+# Resulting scores: 117 views/1 like ~3, 655 views/17 likes ~17, 133k views/
+# 8.4k likes ~70, 726k views/13k likes ~85, 1M+ views ~90-100.
+_VIEW_ENGAGEMENT_SOURCES = frozenset({"youtube", "tiktok", "instagram"})
+_VIEW_ENGAGEMENT_LOG_FLOOR = 2.1
+_VIEW_ENGAGEMENT_LOG_REFERENCE = 11.5
+
+
+def is_repo_snapshot(item: schema.SourceItem) -> bool:
+    """True for a GitHub repo card (project mode, person-mode repo items).
+
+    Their engagement is lifetime stars and the open-issue count, a snapshot
+    of the repo's whole history rather than an audience response inside the
+    window. Issues and PRs carry reactions/comments, never stars.
+    """
+    return (
+        item.source == "github"
+        and "stars" in (item.engagement or {})
+        and not (item.metadata or {}).get("is_pr")
+    )
+
+
+def engagement_score(item: schema.SourceItem) -> int | None:
+    """Engagement on an absolute 0-100 scale, comparable across streams.
+
+    ``engagement_raw`` is a weighted mean of log1p counts, so dividing it by
+    the source's log reference (``_ENGAGEMENT_LOG_REFERENCE``, in that
+    source's own units) places a 250-upvote Reddit thread near 50 and a 3-like
+    X post near 8 no matter what else shares their stream. The per-stream
+    min-max rescale this replaces mapped every stream's best item to 100 and
+    a lone item to 50, so the score said nothing about actual engagement.
+    View-weighted sources (YouTube, TikTok, Instagram) use the view scale
+    (``_VIEW_ENGAGEMENT_LOG_FLOOR`` to ``_VIEW_ENGAGEMENT_LOG_REFERENCE``)
+    instead of their vote reference. Sources without a comparable audience
+    signal, and GitHub repo snapshots (lifetime stars), return None.
+    """
+    if item.source in _NO_ENGAGEMENT_SCORE_SOURCES or is_repo_snapshot(item):
+        return None
+    ref = _ENGAGEMENT_LOG_REFERENCE.get(item.source)
+    if ref is None:
+        return None
+    raw = engagement_raw(item)
+    if raw is None:
+        return None
+    if item.source in _VIEW_ENGAGEMENT_SOURCES:
+        floor = _VIEW_ENGAGEMENT_LOG_FLOOR
+        fraction = (raw - floor) / (_VIEW_ENGAGEMENT_LOG_REFERENCE - floor)
+    else:
+        fraction = raw / ref
+    return int(round(100.0 * max(0.0, min(1.0, fraction))))
+
+
 def normalize(values: list[float | None]) -> list[int | None]:
     valid = [value for value in values if value is not None]
     if not valid:
@@ -297,8 +411,8 @@ def annotate_stream(
 ) -> list[schema.SourceItem]:
     """Attach local scoring metadata and return items sorted by local_rank_score."""
     prepared_query = ranking_query if isinstance(ranking_query, relevance.PreparedQuery) else relevance.PreparedQuery(ranking_query)
-    engagement_scores = normalize([engagement_raw(item) for item in items])
-    for item, eng_score in zip(items, engagement_scores, strict=True):
+    for item in items:
+        eng_score = engagement_score(item)
         item.local_relevance = local_relevance(item, prepared_query)
         item.freshness = freshness(
             item,
@@ -404,10 +518,9 @@ def prune_low_relevance(
         rel = item.local_relevance if item.local_relevance is not None else 0.0
         if rel < minimum:
             return False
-        # Key the stricter social gate on genuinely absent engagement, not on
-        # the normalized score: signals.normalize is min-max over the batch, so
-        # it maps the least-engaged item to exactly 0 even when that item has
-        # thousands of likes.
+        # Key the stricter social gate on genuinely absent engagement (no
+        # counts at all), not on a rounded score: a handful of likes is still
+        # engagement even where the 0-100 scale rounds it low.
         if item.source in _SOCIAL_SOURCES and not engagement_raw(item):
             if rel < minimum * 1.5:
                 return False

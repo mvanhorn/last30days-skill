@@ -24,7 +24,7 @@ import tempfile
 from dataclasses import dataclass, field
 from typing import Optional
 
-from . import env, health, http, log, subproc
+from . import env, health, http, log, subproc, usage
 
 # Whisper's documented upload ceiling. We compress to stay under it and chunk
 # when a single clip still exceeds it.
@@ -225,7 +225,8 @@ def _post_audio(provider: str, path: str, api_key: str, timeout: float) -> Optio
         },
         method="POST",
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    usage.begin(provider)
+    with http.open_request(req, timeout) as resp:
         data = json.loads(resp.read().decode("utf-8"))
     return data.get("text")
 

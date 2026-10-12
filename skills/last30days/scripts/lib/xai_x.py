@@ -5,7 +5,7 @@ import re
 import sys
 from typing import Any, Dict, List, Optional
 
-from . import http, log
+from . import http, log, providers
 
 
 def _safe_text(val) -> str:
@@ -74,6 +74,8 @@ def search_x(
     to_date: str,
     depth: str = "default",
     mock_response: Optional[Dict] = None,
+    deadline_monotonic: Optional[float] = None,
+    cancel: Any = None,
 ) -> Dict[str, Any]:
     """Search X for relevant posts using xAI API with live search.
 
@@ -85,6 +87,14 @@ def search_x(
         to_date: End date (YYYY-MM-DD)
         depth: Research depth - "quick", "default", or "deep"
         mock_response: Mock response for testing
+        deadline_monotonic: Optional shared wall-clock deadline (``time.monotonic()``
+            instant) from the X backend chain. Bounds the whole call including
+            retries; without one this call owns its own timeout only.
+
+    The transport runs with ``retries=1`` (a global default change from the
+    inherited ``retries=5``): one 90-180s live-search call must not become a
+    10-15 minute stall. DNS-resolution failures are the exception: the
+    transport widens those to three attempts.
 
     Returns:
         Raw API response
@@ -122,7 +132,20 @@ def search_x(
         ],
     }
 
-    return http.post(XAI_RESPONSES_URL, payload, headers=headers, timeout=timeout)
+    # Honor XAI_BASE_URL like the planner/rerank client does (providers.py), so
+    # an override redirects every request that carries the xAI key, not only some.
+    url = providers.resolve_endpoint("XAI_BASE_URL", XAI_RESPONSES_URL)
+    # A single non-DNS attempt: the per-call timeout already spans the model's
+    # full live-search latency, and the inherited http default (retries=5)
+    # would turn one 90-180s call into a 10-15 minute stall. The shared chain
+    # deadline bounds the wait wall-clock; failover to the next X backend
+    # covers the miss.
+    return http.post(
+        url, payload, headers=headers, timeout=timeout,
+        retries=1, deadline_monotonic=deadline_monotonic,
+        cancel=cancel,
+        bypass_proxy=providers.is_loopback_http_endpoint(url),
+    )
 
 
 def parse_x_response(response: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -39,12 +39,15 @@ class TestExtractSubreddits(unittest.TestCase):
 
     def test_ranks_by_frequency(self):
         items = [
-            {"subreddit": "A"},
-            {"subreddit": "A"},
             {"subreddit": "B"},
+            {"subreddit": "A"},
+            {"subreddit": "C"},
+            {"subreddit": "A"},
+            {"subreddit": "C"},
+            {"subreddit": "A"},
         ]
         result = entity_extract._extract_subreddits(items)
-        self.assertEqual(result[0], "A")
+        self.assertEqual(result, ["A", "C", "B"])
 
     def test_empty_items(self):
         self.assertEqual([], entity_extract._extract_subreddits([]))

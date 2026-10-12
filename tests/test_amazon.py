@@ -327,9 +327,13 @@ class TestEnrichmentLane:
     def test_reviews_attach_to_the_right_product(self):
         out, status = amazon.enrich_with_reviews(
             self._products(3), depth="default",
-            fetcher=lambda url: {"records": [review_record(2, 5, review_id=url)]},
+            fetcher=lambda url: {"records": [review_record(2, 5, review_text=f"Review for {url}")]},
         )
         assert all(p.get("top_comments") for p in out)
+        assert {p["asin"]: p["top_comments"][0]["excerpt"] for p in out} == {
+            f"B00000000{i}": f"Review for https://www.amazon.com/dp/B00000000{i}"
+            for i in range(3)
+        }
         assert out[0]["product_rating_count"] == 459
         assert status is None
 

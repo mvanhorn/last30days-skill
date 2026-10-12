@@ -16,9 +16,12 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
+
+from . import subproc
 
 # Health states, best to worst.
 OK = "ok"
@@ -388,6 +391,7 @@ def probe_dependency(name: str, timeout: float = PROBE_TIMEOUT) -> DependencyPro
 
 
 def _probe_dependency_uncached(name: str, timeout: float) -> DependencyProbe:
+    deadline = time.monotonic() + timeout
     resolved = shutil.which(name)
     if resolved is None:
         off_path = _off_path_binary(name)
@@ -412,11 +416,13 @@ def _probe_dependency_uncached(name: str, timeout: float) -> DependencyProbe:
 
     command = [name] + _VERSION_ARGS.get(name, ["--version"])
     try:
-        proc = subprocess.run(
+        cleanup_grace = 0.1
+        proc = subproc.run_with_timeout(
             command,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
+            timeout=max(0, deadline - time.monotonic() - 2 * cleanup_grace),
+            deadline_monotonic=deadline - 2 * cleanup_grace,
+            cleanup_grace=cleanup_grace,
+            capture_limit_bytes=64 * 1024,
         )
     except (FileNotFoundError, OSError) as exc:
         prescription, manager = _prescription(name, "reinstall")
@@ -427,7 +433,7 @@ def _probe_dependency_uncached(name: str, timeout: float) -> DependencyProbe:
             prescription=prescription,
             owner_pkg_manager=manager,
         )
-    except subprocess.TimeoutExpired:
+    except subproc.SubprocTimeout:
         prescription, manager = _prescription(name, "reinstall")
         return DependencyProbe(
             name=name,

@@ -29,11 +29,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
         run: |
           set -euo pipefail
+
+          # Compare files and versions from the same merge base, even when the
+          # event's base SHA predates a release merged into the PR branch.
+          # fetch-depth: 0 populates refs/remotes/origin without another fetch.
+          BASE_REMOTE_REF="refs/remotes/origin/${BASE_REF}"
+          if ! git rev-parse --verify --quiet "${BASE_REMOTE_REF}" >/dev/null; then
+            echo "::error::Cannot resolve ${BASE_REMOTE_REF}. Checkout must use fetch-depth: 0."
+            exit 1
+          fi
+          BASE_SHA="$(git merge-base "${BASE_REMOTE_REF}" "${HEAD_SHA}")"
+          echo "Base ${BASE_SHA} (merge-base with origin/${BASE_REF})"
 
           LABELS="$(gh api "repos/${{ github.repository }}/issues/${PR_NUMBER}/labels" --jq '.[].name')"
           IS_RELEASE=0
@@ -148,7 +159,7 @@ jobs:
           touches_engine=0
           for path in "${CHANGED[@]}"; do
             case "${path}" in
-              skills/last30days/scripts/*|skills/last30days/SKILL.md|mcp/*)
+              skills/last30days/scripts/*|skills/last30days/SKILL.md|skills/last30days/references/*|mcp/*)
                 touches_engine=1
                 ;;
             esac

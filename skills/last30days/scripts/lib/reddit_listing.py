@@ -3,14 +3,14 @@
 The subreddit listing partial
 ``/svc/shreddit/community-more-posts/{sort}/?name={sub}[&t={range}]`` serves
 HTTP 200 with no API key and **server-renders each post's upvote score**, which
-neither RSS nor the comments endpoint provides. Each post is a
+the comments endpoint does not provide. Each post is a
 ``<shreddit-post>`` element whose start-tag attributes carry ``score``,
 ``comment-count``, ``post-title``, ``permalink``, ``author``, ``subreddit-name``
 and ``created-timestamp``.
 
 This is the keyless source of post-level upvotes. It works for normal users on
 ordinary connections (verified), so reddit_keyless uses it both as a scored
-discovery source and to backfill scores onto RSS-discovered posts.
+discovery source and to backfill scores onto posts discovered elsewhere.
 """
 
 import html as _html
@@ -41,6 +41,19 @@ MAX_WORKERS = 4
 LISTING_TIMEOUT = 15
 
 _POST_CARD = re.compile(r"<shreddit-post(?=[\s>])[^>]*>")
+_BLOCK_MARKERS = (
+    "verify you are human",
+    "confirm you are a human",
+    "just a moment",
+    "attention required",
+    "cf-browser-verification",
+    "challenge-platform",
+    "/svc/shreddit/js-challenge",
+    "please wait for verification",
+    "enable javascript and reload",
+    "you've been blocked",
+    "whoa there",
+)
 
 
 def _log(msg: str) -> None:
@@ -172,6 +185,19 @@ def _listing_url(subreddit: str, sort: str, timeframe: str = TIMEFRAME) -> str:
     return url
 
 
+def _listing_body_problem(subreddit: str, body: str) -> Optional[str]:
+    lower = body.lower()
+    is_blocked = any(marker in lower for marker in _BLOCK_MARKERS)
+    is_all = subreddit.removeprefix("r/").strip().lower() == "all"
+    if not is_all and not is_blocked:
+        return None
+    if parse_cards(body):
+        return None
+    if is_blocked:
+        return "Reddit listing interstitial: HTTP 2xx with no post cards"
+    return "Reddit r/all listing schema drift: HTTP 2xx with no post cards"
+
+
 def _fetch_one(
     subreddit: str,
     sort: str,
@@ -190,12 +216,13 @@ def _fetch_one_with_status(
 ) -> tuple[List[Dict[str, Any]], Optional[str]]:
     try:
         # retry_429 records a terminal miss into the pipeline sink (issue #899)
-        # and retries a 429 once through the limiter (issue #985). An empty
-        # body ("") is a real empty listing; None never is.
+        # and retries a 429 once through the limiter (issue #985). Empty
+        # dedicated-subreddit fragments can be valid; r/all cannot be empty.
         text, error = http.reddit_keyless_get_text_retry_429(
             _listing_url(subreddit, sort, timeframe),
             timeout=LISTING_TIMEOUT,
             accept="text/html",
+            validate=lambda body: _listing_body_problem(subreddit, body),
         )
         if text is None:
             return [], (error or "no response")
@@ -351,7 +378,7 @@ def fetch_discovery_listings(
 def score_index(subreddits: List[str], depth: str = "default") -> Dict[str, Dict[str, int]]:
     """Build a {post_id: {score, num_comments}} map from subreddit listings.
 
-    Used to backfill real scores onto posts discovered via RSS, which carries
+    Used to backfill real scores onto posts discovered by a lane that carries
     no engagement numbers.
     """
     index: Dict[str, Dict[str, int]] = {}
