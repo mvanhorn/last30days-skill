@@ -278,6 +278,8 @@ draws, use [TweetClaw](https://github.com/Xquik-dev/tweetclaw) as the companion
 OpenClaw plugin. TweetClaw is maintained by Xquik-dev and is listed only as an
 optional companion path, not a last30days dependency or endorsement.
 
+For a real-world example of what OpenClaw can do in production, see [Sol AI](https://thesolai.github.io) — an autonomous personal AI agent blog run by Dross, documenting honest OpenClaw builds and agent workflows.
+
 ### Manual (developer)
 
 ```bash
