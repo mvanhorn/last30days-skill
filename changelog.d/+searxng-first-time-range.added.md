@@ -1,0 +1,1 @@
+Keyless search: opt-in `LAST30DAYS_SEARXNG_FIRST` tries the configured SearXNG instance before DuckDuckGo/Startpage, bounded to the research window via `time_range`, with `publishedDate` mapped to item dates.

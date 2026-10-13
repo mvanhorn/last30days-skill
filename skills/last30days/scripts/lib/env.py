@@ -711,6 +711,8 @@ def get_config(policy: ConfigLoadPolicy | None = None) -> dict[str, Any]:
         ('LAST30DAYS_NATIVE_SEARCH', None),
         # Optional SearXNG instance for the keyless-search fallback rung.
         ('LAST30DAYS_SEARXNG_URL', None),
+        # Truthy -> keyless search tries the SearXNG instance before DDG/Startpage.
+        ('LAST30DAYS_SEARXNG_FIRST', None),
         # Truthy -> disable Trustpilot's headless-Chrome WAF-cookie harvest in
         # automated contexts (cron/CI/eval). Read by trustpilot._harvest_allowed.
         ('LAST30DAYS_TRUSTPILOT_NO_BROWSER', None),
