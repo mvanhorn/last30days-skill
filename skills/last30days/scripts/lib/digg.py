@@ -133,6 +133,26 @@ def _build_posts_args(cluster_url_id: str, posts_per: int) -> List[str]:
     ]
 
 
+def _empty_local_fallback_error(data: Dict[str, Any]) -> Optional[str]:
+    """Return an error when the CLI answered from an empty local store.
+
+    ``digg-pp-cli search`` is live by default, but it falls back to its FTS5
+    store on a network error and exits 0 with ``meta.source == "local"``.
+    That store only holds rows for users who ran ``digg-pp-cli sync``
+    themselves, which last30days never does - so a broken live search
+    reaches the user as ``Digg: 0 items (no results)`` instead of an error.
+    A non-empty local store is real data and is left alone.
+    """
+    meta = data.get("meta")
+    if not isinstance(meta, dict) or meta.get("source") != "local":
+        return None
+    if data.get("results"):
+        return None
+    reason = str(meta.get("reason") or "").strip()
+    detail = reason or "live search fell back to an empty local store"
+    return f"live-search-unavailable: {detail}"
+
+
 def _run_cli(cmd: List[str], timeout: int) -> Dict[str, Any]:
     """Invoke digg-pp-cli and parse the JSON envelope.
 
@@ -200,6 +220,10 @@ def search_digg(
     cmd = _build_search_args(topic, limit)
     _log(f"search '{topic}' (limit={limit}, since=30d)")
     response = _run_cli(cmd, timeout=SEARCH_TIMEOUT)
+    fallback_error = _empty_local_fallback_error(response)
+    if fallback_error:
+        _log(fallback_error)
+        return {"results": [], "error": fallback_error}
     n = len(response.get("results") or [])
     _log(f"found {n} clusters")
     return response

@@ -313,6 +313,73 @@ def test_search_digg_empty_query_short_circuits(monkeypatch):
     assert out["results"] == []
     called.assert_not_called()
 
+
+def test_search_digg_empty_local_fallback_reports_error(monkeypatch):
+    """A live search that fell back to an empty local store is not 'no results'."""
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        lambda *a, **k: _stdout_for(
+            {
+                "meta": {
+                    "count": 0,
+                    "query": "openai",
+                    "since": "30d",
+                    "source": "local",
+                    "reason": "GET https://di.gg/api/search/stories: HTTP 404",
+                },
+                "results": [],
+            }
+        ),
+    )
+    out = digg.search_digg("openai", "2026-04-09", "2026-05-09")
+    assert out["results"] == []
+    assert "live-search-unavailable" in out["error"]
+    assert "HTTP 404" in out["error"]
+
+
+def test_search_digg_empty_local_fallback_without_reason_still_errors(monkeypatch):
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        lambda *a, **k: _stdout_for({"meta": {"source": "local"}, "results": []}),
+    )
+    out = digg.search_digg("openai", "2026-04-09", "2026-05-09")
+    assert out["results"] == []
+    assert "live-search-unavailable" in out["error"]
+
+
+def test_search_digg_local_fallback_with_rows_keeps_results(monkeypatch):
+    """A user who ran `digg-pp-cli sync` still gets their local clusters."""
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        lambda *a, **k: _stdout_for(
+            {"meta": {"source": "local"}, "results": [_cluster()]}
+        ),
+    )
+    out = digg.search_digg("openai", "2026-04-09", "2026-05-09")
+    assert len(out["results"]) == 1
+    assert "error" not in out
+
+
+def test_search_digg_live_empty_is_still_no_results(monkeypatch):
+    """A live search that genuinely found nothing stays a clean empty."""
+    monkeypatch.setattr(digg.shutil, "which", lambda _: "/fake/path")
+    monkeypatch.setattr(
+        digg.subproc,
+        "run_with_timeout",
+        lambda *a, **k: _stdout_for(
+            {"meta": {"source": "live", "count": 0}, "results": []}
+        ),
+    )
+    out = digg.search_digg("openai", "2026-04-09", "2026-05-09")
+    assert out["results"] == []
+    assert "error" not in out
+
 # === enrich_with_top_posts ===
 
 
