@@ -113,7 +113,9 @@ class TestSearchRetryOn500(unittest.TestCase):
         """Multi-word query 500 -> retry with collapsed hashtag form."""
         from lib import http as http_module
         first_error = http_module.HTTPError("HTTP 500: Server Error", 500, "")
-        second_payload = {"reels": []}
+        second_payload = {
+            "reels": [{"id": "retry-result", "taken_at": "2026-04-15T12:00:00Z"}]
+        }
         with patch.object(http_module, "get") as mock_http_get:
             mock_http_get.side_effect = [first_error, second_payload]
             instagram.search_instagram(
@@ -145,7 +147,9 @@ class TestSearchRetryOn500(unittest.TestCase):
     def test_first_call_succeeds_no_retry(self):
         """200 on first call -> retry path is never entered."""
         from lib import http as http_module
-        ok_payload = {"reels": []}
+        ok_payload = {
+            "reels": [{"id": "search-result", "taken_at": "2026-04-15T12:00:00Z"}]
+        }
         with patch.object(http_module, "get") as mock_http_get:
             mock_http_get.return_value = ok_payload
             instagram.search_instagram(
@@ -165,6 +169,318 @@ class TestSearchRetryOn500(unittest.TestCase):
             mock_http_get.assert_not_called()
             self.assertIn("error", result)
             self.assertIn("SCRAPECREATORS_API_KEY", result["error"])
+
+
+class TestGoogleSearchFallback(unittest.TestCase):
+    """The Google-indexed post lane recovers when reels search is empty."""
+
+    def _post_payload(self):
+        return {
+            "data": {
+                "xdt_shortcode_media": {
+                    "id": "post-1020",
+                    "shortcode": "ABC1020",
+                    "taken_at_timestamp": 1786900800,
+                    "edge_media_to_caption": {
+                        "edges": [{"node": {"text": "AI automation for small business"}}]
+                    },
+                    "video_play_count": 900,
+                    "edge_media_preview_like": {"count": 80},
+                    "edge_media_to_parent_comment": {"count": 12},
+                    "owner": {"username": "creator1020"},
+                }
+            }
+        }
+
+    def test_404_search_falls_back_to_google_reel_urls_and_post_details(self):
+        from lib import http as http_module
+
+        not_found = http_module.HTTPError(
+            'HTTP 404: No scrapeable reels found for that query', 404, ""
+        )
+        with patch.object(
+            http_module,
+            "get",
+            side_effect=[
+                not_found,
+                {
+                    "results": [
+                        {"url": "https://www.instagram.com/reel/ABC1020/"},
+                        {"url": "https://www.instagram.com/reel/ABC1020/"},
+                    ]
+                },
+                self._post_payload(),
+            ],
+        ) as mock_http_get:
+            result = instagram.search_instagram(
+                "AI automation for small business",
+                "2026-08-01",
+                "2026-08-31",
+                depth="quick",
+                token="fake-token",
+            )
+
+        self.assertNotIn("error", result)
+        self.assertEqual(1, len(result["items"]))
+        item = result["items"][0]
+        self.assertEqual("post-1020", item["video_id"])
+        self.assertEqual("creator1020", item["author_name"])
+        self.assertEqual("AI automation for small business", item["text"])
+        self.assertEqual("2026-08-16", item["date"])
+        self.assertEqual(
+            {"views": 900, "likes": 80, "comments": 12}, item["engagement"]
+        )
+        self.assertEqual(3, mock_http_get.call_count)
+        google_call = mock_http_get.call_args_list[1]
+        self.assertEqual(
+            "site:instagram.com/reel ai automation for small business "
+            "after:2026-08-01 before:2026-09-01",
+            google_call.kwargs["params"]["query"],
+        )
+        self.assertNotIn("date_posted", google_call.kwargs["params"])
+        self.assertEqual(1, google_call.kwargs["params"]["page"])
+        post_call = mock_http_get.call_args_list[2]
+        self.assertEqual(
+            "https://www.instagram.com/reel/ABC1020/",
+            post_call.kwargs["params"]["url"],
+        )
+        self.assertEqual(1, post_call.kwargs["retries"])
+
+    def test_404_is_preserved_when_google_fallback_has_no_results(self):
+        from lib import http as http_module
+
+        not_found = http_module.HTTPError("HTTP 404: no reels", 404, "")
+        with patch.object(
+            http_module, "get", side_effect=[not_found, {"results": []}]
+        ):
+            result = instagram.search_instagram(
+                "AI automation", "2026-08-01", "2026-08-31",
+                depth="quick", token="fake-token",
+            )
+
+        self.assertEqual([], result["items"])
+        self.assertIn("404", result["error"])
+
+    def test_404_is_preserved_when_google_search_fails(self):
+        from lib import http as http_module
+
+        not_found = http_module.HTTPError("HTTP 404: no reels", 404, "")
+        google_error = http_module.HTTPError("HTTP 503: unavailable", 503, "")
+        with patch.object(
+            http_module, "get", side_effect=[not_found, google_error]
+        ):
+            result = instagram.search_instagram(
+                "AI automation", "2026-08-01", "2026-08-31",
+                depth="quick", token="fake-token",
+            )
+
+        self.assertEqual([], result["items"])
+        self.assertIn("404", result["error"])
+
+    def test_google_fallback_rejects_non_instagram_and_non_reel_urls(self):
+        from lib import http as http_module
+
+        not_found = http_module.HTTPError("HTTP 404: no reels", 404, "")
+        results = {
+            "results": [
+                {"url": "https://example.com/reel/EXAMPLE/"},
+                {"url": "http://instagram.com/reel/HTTP/"},
+                {"url": "https://instagram.com.example.org/reel/LOOKALIKE/"},
+                {"url": "https://instagram.com/p/POST/"},
+                {"url": "https://instagram.com/not/reel/PREFIX/"},
+                {"url": "https://[invalid/reel/MALFORMED/"},
+            ]
+        }
+        with patch.object(
+            http_module, "get", side_effect=[not_found, results]
+        ) as mock_http_get:
+            result = instagram.search_instagram(
+                "AI automation", "2026-08-01", "2026-08-31",
+                depth="quick", token="fake-token",
+            )
+
+        self.assertEqual([], result["items"])
+        self.assertIn("404", result["error"])
+        self.assertEqual(2, mock_http_get.call_count)
+
+    def test_google_fallback_drops_posts_outside_requested_date_range(self):
+        from lib import http as http_module
+
+        with patch.object(
+            http_module,
+            "get",
+            side_effect=[
+                {"reels": []},
+                {"results": [{"url": "https://www.instagram.com/reel/ABC1020/"}]},
+                self._post_payload(),
+            ],
+        ):
+            result = instagram.search_instagram(
+                "AI automation", "2025-08-01", "2025-08-31",
+                depth="quick", token="fake-token",
+            )
+
+        self.assertEqual([], result["items"])
+        self.assertNotIn("error", result)
+
+    def test_empty_reels_search_uses_google_fallback(self):
+        from lib import http as http_module
+
+        with patch.object(
+            http_module,
+            "get",
+            side_effect=[
+                {"reels": []},
+                {"results": [{"url": "https://www.instagram.com/reel/ABC1020/"}]},
+                self._post_payload(),
+            ],
+        ) as mock_http_get:
+            result = instagram.search_instagram(
+                "AI automation for small business",
+                "2026-08-01",
+                "2026-08-31",
+                depth="quick",
+                token="fake-token",
+            )
+
+        self.assertEqual(1, len(result["items"]))
+        self.assertEqual(3, mock_http_get.call_count)
+
+    def test_default_depth_fallback_searches_the_second_page(self):
+        from lib import http as http_module
+
+        with patch.object(
+            http_module,
+            "get",
+            side_effect=[
+                {"reels": []},
+                {"results": []},
+                {"results": [{"url": "https://www.instagram.com/reel/ABC1020/"}]},
+                self._post_payload(),
+            ],
+        ) as mock_http_get:
+            result = instagram.search_instagram(
+                "AI automation", "2026-08-01", "2026-08-31",
+                depth="default", token="fake-token",
+            )
+
+        self.assertEqual(1, len(result["items"]))
+        google_calls = [
+            call for call in mock_http_get.call_args_list
+            if call.args[0].endswith("/v1/google/search")
+        ]
+        self.assertEqual(
+            [1, 2], [call.kwargs["params"]["page"] for call in google_calls]
+        )
+
+    def test_expanded_queries_share_the_depth_fallback_budget(self):
+        from lib import http as http_module
+
+        not_found = http_module.HTTPError("HTTP 404: no reels", 404, "")
+        with (
+            patch.object(
+                instagram,
+                "expand_instagram_queries",
+                return_value=["first", "second"],
+            ),
+            patch.object(instagram, "fetch_captions", return_value={}),
+            patch.object(
+                http_module,
+                "get",
+                side_effect=[
+                    not_found,
+                    {"results": []},
+                    not_found,
+                    {"results": []},
+                ],
+            ) as mock_http_get,
+        ):
+            result = instagram.search_and_enrich(
+                "AI automation", "2026-08-01", "2026-08-31",
+                depth="default", token="fake-token",
+            )
+
+        self.assertEqual([], result["items"])
+        google_calls = [
+            call for call in mock_http_get.call_args_list
+            if call.args[0].endswith("/v1/google/search")
+        ]
+        self.assertEqual(2, len(google_calls))
+        self.assertEqual(
+            [1, 1], [call.kwargs["params"]["page"] for call in google_calls]
+        )
+
+    def test_expanded_queries_fetch_each_reel_shortcode_once(self):
+        from lib import http as http_module
+
+        not_found = http_module.HTTPError("HTTP 404: no reels", 404, "")
+        with (
+            patch.object(
+                instagram,
+                "expand_instagram_queries",
+                return_value=["first", "second"],
+            ),
+            patch.object(instagram, "fetch_captions", return_value={}),
+            patch.object(
+                http_module,
+                "get",
+                side_effect=[
+                    not_found,
+                    {"results": [{"url": "https://www.instagram.com/reel/ABC1020/"}]},
+                    self._post_payload(),
+                    not_found,
+                    {"results": [{"url": "https://instagram.com/reel/ABC1020"}]},
+                ],
+            ) as mock_http_get,
+        ):
+            result = instagram.search_and_enrich(
+                "AI automation", "2026-08-01", "2026-08-31",
+                depth="default", token="fake-token",
+            )
+
+        detail_calls = [
+            call for call in mock_http_get.call_args_list
+            if call.args[0].endswith("/v1/instagram/post")
+        ]
+        self.assertEqual(1, len(result["items"]))
+        self.assertEqual(1, len(detail_calls))
+
+    def test_expanded_queries_retry_a_failed_detail_within_the_budget(self):
+        from lib import http as http_module
+
+        not_found = http_module.HTTPError("HTTP 404: no reels", 404, "")
+        temporary_error = http_module.HTTPError("HTTP 503: unavailable", 503, "")
+        with (
+            patch.object(
+                instagram,
+                "expand_instagram_queries",
+                return_value=["first", "second"],
+            ),
+            patch.object(instagram, "fetch_captions", return_value={}),
+            patch.object(
+                http_module,
+                "get",
+                side_effect=[
+                    not_found,
+                    {"results": [{"url": "https://www.instagram.com/reel/ABC1020/"}]},
+                    temporary_error,
+                    not_found,
+                    {"results": [{"url": "https://instagram.com/reel/ABC1020"}]},
+                    self._post_payload(),
+                ],
+            ) as mock_http_get,
+        ):
+            result = instagram.search_and_enrich(
+                "AI automation", "2026-08-01", "2026-08-31",
+                depth="default", token="fake-token",
+            )
+
+        detail_calls = [
+            call for call in mock_http_get.call_args_list
+            if call.args[0].endswith("/v1/instagram/post")
+        ]
+        self.assertEqual(1, len(result["items"]))
+        self.assertEqual(2, len(detail_calls))
 
 
 class TestTranscriptTimeoutConfig(unittest.TestCase):
@@ -262,7 +578,10 @@ class TestInstagramArabicTopicEncoding(unittest.TestCase):
         resp = MagicMock()
         resp.__enter__ = MagicMock(return_value=resp)
         resp.__exit__ = MagicMock(return_value=False)
-        resp.read.return_value = b'{"reels": []}'
+        resp.read.return_value = (
+            b'{"reels": [{"id": "arabic-result", '
+            b'"taken_at": "2026-06-10T00:00:00Z"}]}'
+        )
         resp.status = 200
         mock_urlopen.return_value = resp
 

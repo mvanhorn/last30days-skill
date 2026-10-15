@@ -10,8 +10,10 @@ API docs: https://scrapecreators.com/docs
 import os
 import re
 import sys
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Set
+from urllib.parse import urlsplit
 
 from . import dates, http, log
 from .query import infer_query_intent
@@ -24,6 +26,15 @@ DEPTH_CONFIG = {
     "quick":   {"results_per_page": 10, "max_captions": 3},
     "default": {"results_per_page": 20, "max_captions": 5},
     "deep":    {"results_per_page": 40, "max_captions": 8},
+}
+
+# Keep the Google discovery fallback bounded because each post detail request
+# costs one credit. The page/post totals match the fallback's observed depth
+# budgets: 1 + 9, 2 + 16, and 3 + 27 requests.
+GOOGLE_FALLBACK_BUDGETS = {
+    "quick": (1, 9),
+    "default": (2, 16),
+    "deep": (3, 27),
 }
 
 # Max words to keep from each caption
@@ -282,13 +293,182 @@ def _user_reels(
     ]
 
 
+def _normalize_google_post(
+    payload: dict[str, Any], url: str
+) -> dict[str, Any] | None:
+    """Convert a ScrapeCreators post detail response to the reels/search shape."""
+    if not isinstance(payload, dict):
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return None
+    media = data.get("xdt_shortcode_media")
+    if not isinstance(media, dict):
+        return None
+
+    caption = media.get("caption")
+    if not caption:
+        edges = (media.get("edge_media_to_caption") or {}).get("edges") or []
+        if edges and isinstance(edges[0], dict):
+            caption = (edges[0].get("node") or {}).get("text", "")
+
+    likes = (media.get("edge_media_preview_like") or {}).get("count")
+    comments = (media.get("edge_media_to_parent_comment") or {}).get("count")
+    if comments is None:
+        comments = (media.get("edge_media_to_comment") or {}).get("count")
+
+    return {
+        "id": media.get("id", ""),
+        "shortcode": media.get("shortcode", ""),
+        "url": url,
+        "caption": caption or "",
+        "taken_at": media.get("taken_at_timestamp") or media.get("created_at"),
+        "video_play_count": media.get("video_play_count") or 0,
+        "like_count": likes or 0,
+        "comment_count": comments or 0,
+        "owner": media.get("owner") or media.get("user") or {},
+    }
+
+
+def _google_reel_fallback(
+    topic: str,
+    depth: str,
+    token: str,
+    from_date: str,
+    to_date: str,
+    budget: dict[str, int] | None = None,
+    detail_cache: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Discover Instagram reels through Google and fetch their post details."""
+    if budget is None:
+        pages, max_posts = GOOGLE_FALLBACK_BUDGETS.get(
+            depth, GOOGLE_FALLBACK_BUDGETS["default"]
+        )
+        budget = {"pages": pages, "posts": max_posts}
+    pages = max(0, budget.get("pages", 0))
+    max_posts = max(0, budget.get("posts", 0))
+    if not pages or not max_posts:
+        return []
+    headers = http.scrapecreators_headers(token)
+    detail_cache = detail_cache if detail_cache is not None else {}
+    shortcode_urls: dict[str, str] = {}
+    ordered_shortcodes: list[str] = []
+    end_exclusive = (
+        datetime.strptime(to_date, "%Y-%m-%d") + timedelta(days=1)
+    ).strftime("%Y-%m-%d")
+
+    for page in range(1, pages + 1):
+        budget["pages"] -= 1
+        try:
+            data = http.get(
+                f"{SCRAPECREATORS_BASE}/v1/google/search",
+                params={
+                    "query": (
+                        f"site:instagram.com/reel {topic} "
+                        f"after:{from_date} before:{end_exclusive}"
+                    ),
+                    "page": page,
+                },
+                headers=headers,
+                timeout=30,
+                retries=1,
+            )
+        except Exception as e:
+            _log(f"Google Instagram fallback search failed on page {page}: {e}")
+            break
+        if not isinstance(data, dict):
+            _log(f"Google Instagram fallback returned invalid data on page {page}")
+            break
+
+        results = data.get("results") or data.get("items") or []
+        if not isinstance(results, list):
+            _log(f"Google Instagram fallback returned invalid results on page {page}")
+            continue
+        for result in results:
+            if not isinstance(result, dict):
+                continue
+            url = result.get("url", "")
+            try:
+                parsed_url = urlsplit(url) if isinstance(url, str) else None
+            except ValueError:
+                continue
+            hostname = parsed_url.hostname.lower() if parsed_url and parsed_url.hostname else ""
+            is_instagram = hostname == "instagram.com" or hostname.endswith(".instagram.com")
+            is_reel_path = bool(
+                parsed_url
+                and re.fullmatch(r"/reel/[A-Za-z0-9_-]+/?", parsed_url.path)
+            )
+            shortcode_match = (
+                re.fullmatch(r"/reel/([A-Za-z0-9_-]+)/?", parsed_url.path)
+                if parsed_url
+                else None
+            )
+            if (
+                parsed_url
+                and parsed_url.scheme == "https"
+                and is_instagram
+                and is_reel_path
+            ):
+                shortcode = shortcode_match.group(1)
+                if shortcode not in shortcode_urls and shortcode not in detail_cache:
+                    if len(shortcode_urls) >= max_posts:
+                        continue
+                    shortcode_urls[shortcode] = url
+                if shortcode not in ordered_shortcodes:
+                    ordered_shortcodes.append(shortcode)
+                if len(shortcode_urls) >= max_posts:
+                    break
+        if len(shortcode_urls) >= max_posts:
+            break
+
+    budget["posts"] -= len(shortcode_urls)
+
+    def fetch_post(url: str) -> dict[str, Any] | None:
+        try:
+            payload = http.get(
+                f"{SCRAPECREATORS_BASE}/v1/instagram/post",
+                params={"url": url},
+                headers=headers,
+                timeout=30,
+                retries=1,
+            )
+        except Exception as e:
+            _log(f"Instagram post detail failed for {url}: {e}")
+            return None
+        try:
+            return _normalize_google_post(payload, url)
+        except (AttributeError, TypeError, ValueError) as e:
+            _log(f"Instagram post detail had an invalid response for {url}: {e}")
+            return None
+
+    if shortcode_urls:
+        with ThreadPoolExecutor(max_workers=min(4, len(shortcode_urls))) as executor:
+            futures = {
+                shortcode: http.submit_with_context(executor, fetch_post, url)
+                for shortcode, url in shortcode_urls.items()
+            }
+            for shortcode, future in futures.items():
+                reel = future.result()
+                if reel:
+                    detail_cache[shortcode] = reel
+
+    reels = []
+    for shortcode in ordered_shortcodes:
+        reel = detail_cache.get(shortcode)
+        if reel:
+            reels.append(reel)
+    return reels
+
+
 def search_instagram(
     topic: str,
     from_date: str,
     to_date: str,
     depth: str = "default",
     token: str = None,
-) -> Dict[str, Any]:
+    _fallback_budget: dict[str, int] | None = None,
+    _fallback_cache: dict[str, dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     """Search Instagram Reels via ScrapeCreators API.
 
     Args:
@@ -309,6 +489,7 @@ def search_instagram(
 
     _log(f"Searching Instagram for '{core_topic}' (depth={depth}, count={config['results_per_page']})")
 
+    primary_error = None
     try:
         data = http.get(
             f"{SCRAPECREATORS_BASE}/v2/instagram/reels/search",
@@ -332,8 +513,21 @@ def search_instagram(
                     retries=2,
                 )
             except Exception as retry_e:
-                _log(f"IG search retry failed: {retry_e}")
-                return {"items": [], "error": f"{type(retry_e).__name__}: {retry_e}"}
+                if (
+                    isinstance(retry_e, http.HTTPError)
+                    and getattr(retry_e, "status_code", None) == 404
+                ):
+                    primary_error = retry_e
+                    data = {"reels": []}
+                else:
+                    _log(f"IG search retry failed: {retry_e}")
+                    return {"items": [], "error": f"{type(retry_e).__name__}: {retry_e}"}
+        elif getattr(e, "status_code", None) == 404:
+            # A 404 is ScrapeCreators' current response for both empty searches
+            # and the reported reels-search outage. Try the independent Google
+            # discovery + post-detail lane before treating Instagram as failed.
+            primary_error = e
+            data = {"reels": []}
         else:
             _log(f"ScrapeCreators error: {e}")
             return {"items": [], "error": f"{type(e).__name__}: {e}"}
@@ -344,6 +538,21 @@ def search_instagram(
     # Items are in the 'reels' array (ScrapeCreators v2 response)
     raw_items = data.get("reels") or data.get("items") or data.get("data") or []
 
+    used_google_fallback = not raw_items
+    if used_google_fallback:
+        if primary_error:
+            _log("IG reels search returned 404; trying Google Search fallback")
+        else:
+            _log("IG reels search returned no results; trying Google Search fallback")
+        raw_items = _google_reel_fallback(
+            core_topic, depth, token, from_date, to_date,
+            _fallback_budget, _fallback_cache,
+        )
+
+    if not raw_items and primary_error:
+        _log(f"Google Instagram fallback returned no reels: {primary_error}")
+        return {"items": [], "error": f"{type(primary_error).__name__}: {primary_error}"}
+
     # Limit to configured count
     raw_items = raw_items[:config["results_per_page"]]
 
@@ -353,7 +562,11 @@ def search_instagram(
     # Hard date filter
     in_range = [i for i in items if i["date"] and from_date <= i["date"] <= to_date]
     out_of_range = len(items) - len(in_range)
-    if in_range:
+    if used_google_fallback:
+        items = in_range
+        if out_of_range:
+            _log(f"Filtered {out_of_range} Google reels outside date range")
+    elif in_range:
         items = in_range
         if out_of_range:
             _log(f"Filtered {out_of_range} reels outside date range")
@@ -495,8 +708,22 @@ def search_and_enrich(
 
     # Step 1: Multi-query keyword search — run ScrapeCreators for each expanded query
     queries = expand_instagram_queries(topic, depth)
-    for q in queries:
-        search_result = search_instagram(q, from_date, to_date, depth, token)
+    fallback_pages, fallback_posts = GOOGLE_FALLBACK_BUDGETS.get(
+        depth, GOOGLE_FALLBACK_BUDGETS["default"]
+    )
+    fallback_cache: dict[str, dict[str, Any]] = {}
+    for index, q in enumerate(queries):
+        query_count = len(queries)
+        query_budget = {
+            "pages": fallback_pages // query_count
+            + (1 if index < fallback_pages % query_count else 0),
+            "posts": fallback_posts // query_count
+            + (1 if index < fallback_posts % query_count else 0),
+        }
+        search_result = search_instagram(
+            q, from_date, to_date, depth, token,
+            _fallback_budget=query_budget, _fallback_cache=fallback_cache,
+        )
         if search_result.get("error"):
             last_error = search_result["error"]
         for item in search_result.get("items", []):
