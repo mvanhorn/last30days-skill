@@ -60,6 +60,59 @@ class TestKeylessSearch:
         assert items[0]["url"] == "https://searxng.example/a"
         assert artifact["keyless_backend"] == "searxng"
 
+    def test_searxng_first_skips_ddg_when_opted_in(self):
+        payload = {"results": [
+            {"url": "https://sx.example/a", "title": "A", "content": "a",
+             "publishedDate": "2026-03-10T12:00:00"},
+            {"url": "https://sx.example/b", "title": "B", "content": "b"},
+        ]}
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://sx.example", "LAST30DAYS_SEARXNG_FIRST": "1"}
+        with mock.patch.object(web_search_keyless.http, "get_text") as get_text, \
+             mock.patch.object(web_search_keyless.http, "get", return_value=payload) as get:
+            items, artifact = web_search_keyless.keyless_search(
+                "topic", ("2026-02-25", "2026-03-27"), cfg)
+        get_text.assert_not_called()
+        assert "time_range=month" in get.call_args[0][0]
+        assert artifact["keyless_backend"] == "searxng"
+        assert [i["id"] for i in items] == ["WK1", "WK2"]
+        assert items[0]["date"] == "2026-03-10"
+        assert items[1]["date"] is None
+        assert items[1]["metadata"] == {"date_window_basis": "server_bounds"}
+
+    def test_searxng_first_falls_back_to_ddg_when_empty(self):
+        cfg = {"LAST30DAYS_SEARXNG_URL": "https://sx.example", "LAST30DAYS_SEARXNG_FIRST": "true"}
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=_DDG_HTML), \
+             mock.patch.object(web_search_keyless.http, "get", return_value={"results": []}) as get:
+            items, artifact = web_search_keyless.keyless_search(
+                "topic", ("2026-02-25", "2026-03-27"), cfg)
+        assert get.call_count == 1  # not retried as the last rung
+        assert artifact["keyless_backend"] == "ddg"
+        assert len(items) == 2
+
+    def test_searxng_first_ignored_without_url(self):
+        with mock.patch.object(web_search_keyless.http, "get_text", return_value=_DDG_HTML), \
+             mock.patch.object(web_search_keyless.http, "get") as get:
+            _, artifact = web_search_keyless.keyless_search(
+                "topic", ("2026-02-25", "2026-03-27"), {"LAST30DAYS_SEARXNG_FIRST": "1"})
+        get.assert_not_called()
+        assert artifact["keyless_backend"] == "ddg"
+
+    def test_searxng_time_range_buckets(self):
+        tr = web_search_keyless._searxng_time_range
+        assert tr(("2026-03-26", "2026-03-27")) == "day"
+        assert tr(("2026-03-20", "2026-03-27")) == "week"
+        assert tr(("2026-02-25", "2026-03-27")) == "month"
+        assert tr(("2025-03-27", "2026-03-27")) == "year"
+        assert tr(None) is None
+        assert tr(("bad", "2026-03-27")) is None
+
+    def test_searxng_without_window_has_no_server_bounds(self):
+        payload = {"results": [{"url": "https://sx.example/a", "title": "A", "content": ""}]}
+        with mock.patch.object(web_search_keyless.http, "get", return_value=payload) as get:
+            items = web_search_keyless._search_searxng("q", 5, "https://sx.example")
+        assert "time_range" not in get.call_args[0][0]
+        assert "metadata" not in items[0]
+
     def test_skips_non_http_results(self):
         html = '<a class="result__a" href="//duckduckgo.com/l/?uddg=javascript%3Avoid(0)">bad</a>'
         with mock.patch.object(web_search_keyless.http, "get_text", return_value=html):

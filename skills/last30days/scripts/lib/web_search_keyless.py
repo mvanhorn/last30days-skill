@@ -14,7 +14,8 @@ Three vendor-neutral rungs, all stdlib-only via :mod:`http`:
   2. Startpage HTML results, tried when DuckDuckGo yields nothing — notably
      when DuckDuckGo anomaly-blocks a datacenter IP with a 202 challenge page.
   3. A configurable SearXNG instance returning JSON (``LAST30DAYS_SEARXNG_URL``),
-     tried when the HTML rungs yield nothing.
+     tried when the HTML rungs yield nothing. With ``LAST30DAYS_SEARXNG_FIRST``
+     set truthy it is tried first instead, bounded to the research window.
 
 Never raises. Returns results in the same dict shape as the paid backends in
 :mod:`grounding` so they flow through normalize/score/dedupe unchanged. On total
@@ -28,7 +29,11 @@ import html
 import re
 from urllib.parse import parse_qs, urlencode, urlparse
 
+from datetime import date
+
 from . import http
+
+_TRUTHY = ("1", "true", "yes", "on")
 
 KEYLESS_BACKEND = "keyless"
 
@@ -101,18 +106,24 @@ def keyless_search(
     count: int = 5,
 ) -> tuple[list[dict], dict]:
     """Run keyless web search; returns (items, artifact). Never raises."""
-    items = _search_ddg(query, count)
-    used = "ddg"
+    items: list[dict] = []
+    used = ""
+    searxng_url = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
+    searxng_first = str(config.get("LAST30DAYS_SEARXNG_FIRST") or "").strip().lower() in _TRUTHY
+    if searxng_url and searxng_first:
+        items = _search_searxng(query, count, searxng_url, date_range)
+        used = "searxng"
+    if not items:
+        items = _search_ddg(query, count)
+        used = "ddg"
     if not items:
         # DuckDuckGo anomaly-blocks datacenter IPs (202 challenge page); fall
         # back to Startpage, which still serves organic results there.
         items = _search_startpage(query, count)
         used = "startpage"
-    if not items:
-        searxng_url = (config.get("LAST30DAYS_SEARXNG_URL") or "").strip()
-        if searxng_url:
-            items = _search_searxng(query, count, searxng_url)
-            used = "searxng"
+    if not items and searxng_url and not searxng_first:
+        items = _search_searxng(query, count, searxng_url, date_range)
+        used = "searxng"
     artifact = {
         "label": "keyless",
         "webSearchQueries": [query],
@@ -182,9 +193,43 @@ def _search_startpage(query: str, count: int) -> list[dict]:
     return items
 
 
-def _search_searxng(query: str, count: int, instance_url: str) -> list[dict]:
+def _searxng_time_range(date_range: tuple[str, str] | None) -> str | None:
+    """Smallest SearXNG ``time_range`` bucket covering the research window."""
+    if not date_range:
+        return None
+    try:
+        span = (date.fromisoformat(date_range[1]) - date.fromisoformat(date_range[0])).days
+    except (TypeError, ValueError, IndexError):
+        return None
+    if span <= 1:
+        return "day"
+    if span <= 7:
+        return "week"
+    if span <= 31:
+        return "month"
+    return "year"
+
+
+def _published_date(value: object) -> str | None:
+    """Map SearXNG's ``publishedDate`` (ISO-ish string) to a YYYY-MM-DD date."""
+    try:
+        return date.fromisoformat(str(value or "")[:10]).isoformat()
+    except ValueError:
+        return None
+
+
+def _search_searxng(
+    query: str,
+    count: int,
+    instance_url: str,
+    date_range: tuple[str, str] | None = None,
+) -> list[dict]:
     base = instance_url.rstrip("/")
-    url = f"{base}/search?{urlencode({'q': query, 'format': 'json'})}"
+    params = {"q": query, "format": "json"}
+    time_range = _searxng_time_range(date_range)
+    if time_range:
+        params["time_range"] = time_range
+    url = f"{base}/search?{urlencode(params)}"
     try:
         data = http.get(url, headers={"Accept": "application/json"}, timeout=15, retries=2)
     except http.HTTPError:
@@ -192,7 +237,7 @@ def _search_searxng(query: str, count: int, instance_url: str) -> list[dict]:
     if not isinstance(data, dict):
         return []
     items: list[dict] = []
-    for i, r in enumerate(data.get("results", [])):
+    for r in data.get("results", []):
         if len(items) >= count:
             break
         if not isinstance(r, dict):
@@ -200,7 +245,14 @@ def _search_searxng(query: str, count: int, instance_url: str) -> list[dict]:
         target = r.get("url", "")
         if not target.startswith("http"):
             continue
-        items.append(_to_item(i, r.get("title", ""), target, r.get("content", "")))
+        item = _to_item(len(items), r.get("title", ""), target, r.get("content", ""))
+        item["date"] = _published_date(r.get("publishedDate"))
+        if time_range:
+            # The instance already bounded results to the window, so undated
+            # hits should survive the date filter like other server-bounded
+            # grounding backends.
+            item["metadata"] = {"date_window_basis": "server_bounds"}
+        items.append(item)
     return items
 
 

@@ -519,6 +519,7 @@ Relevant env vars:
 | --- | --- |
 | `LAST30DAYS_NATIVE_SEARCH=1` | Tells the engine your agent session has host-side web search; suppresses automatic selection of the keyless floor. Set automatically by the skill when web search is available. Leave unset when the agent has no web-search tool so the floor runs. |
 | `LAST30DAYS_SEARXNG_URL=<base-url>` | Optional. A SearXNG instance used as the keyless-search fallback rung when both DuckDuckGo and Startpage return nothing. |
+| `LAST30DAYS_SEARXNG_FIRST=1` | Optional, requires `LAST30DAYS_SEARXNG_URL`. Tries SearXNG first (before DuckDuckGo and Startpage), passing a `time_range` derived from the research window and mapping `publishedDate` to the item date. Undated SearXNG results are treated as server-bounded so they survive the date filter. Falls back to DuckDuckGo/Startpage if SearXNG returns nothing. |
 | `LAST30DAYS_TRUSTPILOT_NO_BROWSER=1` | Optional. Truthy value disables the Trustpilot source's one-time headless-Chrome WAF-cookie harvest, so an automated/headless run (cron, CI, the eval harness) never spawns a browser. Trustpilot still degrades to empty gracefully. |
 
 Privacy note: the keyless floor sends your query to DuckDuckGo and, when earlier searches return nothing, to Startpage and your configured SearXNG instance. It is intended for public research; results may be cached snapshots. Automatic selection skips this floor when native search or a paid backend is available; an explicit `--web-backend=keyless` overrides that selection.
