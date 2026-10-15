@@ -171,6 +171,7 @@ Before running the engine, determine every applicable targeting flag and resolve
 | `--ig-creators={c1,c2,...}` | Step 0.55 | Creator / brand topics |
 | `--web-backend brave` | Step 0.45 Class 5 | **MANDATORY** for non-Latin-script topics (Hebrew, Arabic, CJK, etc.) — Brave is the only source that indexes non-English web |
 | `--web-backend parallel-mcp` | Explicit user request only | Use only when the user asks to use Parallel Search MCP. This opts the run into sending its search objective and queries to `https://search.parallel.ai/mcp`; never select it automatically. Anonymous use sends no authorization header; an existing `PARALLEL_API_KEY` is sent as Bearer auth. |
+| `--web-backend keenable` | Explicit user request only | As `parallel-mcp`, but queries go to `api.keenable.ai`; `KEENABLE_API_KEY` optional |
 | `--auto-resolve` | Fallback | WebSearch is available but Step 0.55 could not resolve everything cleanly — use as belt-and-suspenders |
 
 **Checkpoint before running the engine:** your Bash command must include every flag from the checklist that applies to this topic. For a person who ships code (the Peter Steinberger class), that is MINIMUM `--x-handle` AND `--github-user` AND `--subreddits`, and typically `--x-related` too. A command with only `--x-handle` on a person topic is a pre-flight skip and a Step 0.5 regression.
@@ -675,13 +676,13 @@ The script will automatically:
 - Run Reddit/X/YouTube/TikTok/Instagram/Hacker News/Polymarket searches
 - Output ALL results including YouTube transcripts, TikTok captions, Instagram captions, HN comments, and prediction market odds
 
-**Read the ENTIRE output.** It contains EIGHT data sections in this order: Reddit items, X items, YouTube items, TikTok items, Instagram Reels items, Hacker News items, Polymarket items, and WebSearch items. If you miss sections, you will produce incomplete stats.
+**Read the ENTIRE output.** It contains EIGHT data sections in this order: Reddit items, X items, YouTube items, TikTok items, Instagram Reels items, Hacker News items, Polymarket items, and WebSearch items. Count and include every section in your synthesis and stats block, or the stats are incomplete.
 
-**YouTube items in the output look like:** `**{video_id}** (score:N) {channel_name} [N views, N likes]` followed by a title, URL, **transcript highlights** (pre-extracted quotable excerpts from the video), and an optional full transcript in a collapsible section. **Quote the highlights directly in your synthesis.** When YouTube items also include top comments (default-on once a ScrapeCreators key is set; suppress via `EXCLUDE_SOURCES=youtube_comments`), quote those too with their like counts - they capture how viewers reacted to the video. Transcript highlights and top comments are complementary signals; use both when present. Attribute transcript quotes to the channel name, comment quotes to the commenter. Count them and include them in your synthesis and stats block.
+**YouTube items in the output look like:** `**{video_id}** (score:N) {channel_name} [N views, N likes]` followed by a title, URL, **transcript highlights** (pre-extracted quotable excerpts from the video), and an optional full transcript in a collapsible section. **Quote the highlights directly in your synthesis.** When YouTube items also include top comments (default-on once a ScrapeCreators key is set; suppress via `EXCLUDE_SOURCES=youtube_comments`), quote those too with their like counts - they capture how viewers reacted to the video. Transcript highlights and top comments are complementary signals; use both when present. Attribute transcript quotes to the channel name, comment quotes to the commenter.
 
-**TikTok items in the output look like:** `**{TK_id}** (score:N) @{creator} [N views, N likes]` followed by a caption, URL, hashtags, and optional caption snippet. Count them and include them in your synthesis and stats block.
+**TikTok items in the output look like:** `**{TK_id}** (score:N) @{creator} [N views, N likes]` followed by a caption, URL, hashtags, and optional caption snippet.
 
-**Instagram Reels items in the output look like:** `**{IG_id}** (score:N) @{creator} (date) [N views, N likes]` followed by caption text, URL, and optional transcript. Count them and include them in your synthesis and stats block. Instagram provides unique creator/influencer perspective - weight it alongside TikTok.
+**Instagram Reels items in the output look like:** `**{IG_id}** (score:N) @{creator} (date) [N views, N likes]` followed by caption text, URL, and optional transcript. Instagram provides unique creator/influencer perspective - weight it alongside TikTok.
 
 ---
 

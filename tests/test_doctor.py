@@ -855,6 +855,29 @@ class NativeSearchHost(unittest.TestCase):
         self.assertEqual("exa", record["active_backend"])
 
 
+class KeenableOptIn(unittest.TestCase):
+    """Keenable is opt-in: doctor names it only once KEENABLE_API_KEY is set."""
+
+    def test_unconfigured_doctor_never_names_keenable(self):
+        for config in ({}, {"LAST30DAYS_NATIVE_SEARCH": "1"}, {"BRAVE_API_KEY": "dummy-brave-secret-000"}):
+            with self.subTest(config=config):
+                report = _build(config)
+                self.assertNotIn("keenable", json.dumps(report["sources"]["web"]).lower())
+                self.assertNotIn("keenable", doctor.render_text(report).lower())
+
+    def test_configured_key_reads_like_other_vendor_keys(self):
+        report = _build({"KEENABLE_API_KEY": "dummy-keenable-secret-000"})
+        record = report["sources"]["web"]
+        self.assertEqual("ok", record["tier"])
+        self.assertEqual("keenable", record["active_backend"])
+        finding = next(b for b in record["backends"] if b["name"] == "keenable")
+        self.assertEqual("KEENABLE_API_KEY present", finding["detail"])
+        self.assertTrue(report["setup"]["keys_present"]["KEENABLE_API_KEY"])
+        text = doctor.render_text(report)
+        self.assertIn("will use: keenable", text)
+        self.assertNotIn("dummy-keenable-secret-000", text)
+
+
 class TextReport(unittest.TestCase):
     """Grouped text rendering: four-state audit."""
 
