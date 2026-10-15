@@ -21,6 +21,8 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+from .cookie_paths import path_exists, path_is_dir
+
 logger = logging.getLogger(__name__)
 
 
@@ -221,7 +223,11 @@ def _extract_chromium_cookies_macos(
         Dict mapping cookie name to decrypted value, or None on failure.
         Only includes cookies that were successfully found and decrypted.
     """
-    if not db_path.exists():
+    try:
+        db_path.stat()
+    except PermissionError:
+        raise
+    except OSError:
         logger.info("%s cookies database not found at %s", keychain_service, db_path)
         return None
 
@@ -236,12 +242,18 @@ def _extract_chromium_cookies_macos(
         shutil.copyfile(str(db_path), tmp_path)
         _lock_temp_cookie_copy(tmp_path)
     except Exception as e:
-        logger.info("Failed to copy %s cookies database: %s", keychain_service, e)
+        browser_read_denied = isinstance(e, PermissionError) and e.filename == str(db_path)
+        if browser_read_denied:
+            logger.info("Permission denied reading %s cookies database", keychain_service)
+        else:
+            logger.info("Failed to copy %s cookies database: %s", keychain_service, e)
         if tmp_path:
             try:
                 Path(tmp_path).unlink(missing_ok=True)
             except Exception:
                 pass
+        if browser_read_denied:
+            raise
         return None
     finally:
         if tmp_fd is not None:
@@ -330,7 +342,9 @@ def extract_chrome_cookies_macos(domain: str, cookie_names: list[str]) -> Option
     )
 
 
-def _profile_cookie_db(profile_dir: Path) -> Optional[Path]:
+def _profile_cookie_db(
+    profile_dir: Path, denials: Optional[list[PermissionError]] = None
+) -> Optional[Path]:
     """Return the Cookies DB inside a profile dir, or None.
 
     Prefers the modern ``Network/Cookies`` location (Chromium >= 96 moved the
@@ -338,10 +352,20 @@ def _profile_cookie_db(profile_dir: Path) -> Optional[Path]:
     to the legacy flat ``Cookies`` file. Different browsers and versions use
     different layouts, so both are probed.
     """
+    denied: list[PermissionError] = []
     for rel in ("Network/Cookies", "Cookies"):
         candidate = profile_dir / rel
-        if candidate.exists():
-            return candidate
+        try:
+            if path_exists(candidate):
+                if denials is not None:
+                    denials.extend(denied)
+                return candidate
+        except PermissionError as exc:
+            denied.append(exc)
+    if denials is not None:
+        denials.extend(denied)
+    elif denied:
+        raise denied[0]
     return None
 
 
@@ -364,7 +388,9 @@ def _find_chromium_cookies_db(base_dir: Path) -> Optional[Path]:
     return dbs[0] if dbs else None
 
 
-def _find_all_chromium_cookies_dbs(base_dir: Path) -> list[Path]:
+def _find_all_chromium_cookies_dbs(
+    base_dir: Path, denials: Optional[list[PermissionError]] = None
+) -> list[Path]:
     """Return ALL candidate Cookies DBs under base_dir, best-guess order first.
 
     Order: Default, the base dir itself (Opera's flat layout), then numbered
@@ -376,23 +402,35 @@ def _find_all_chromium_cookies_dbs(base_dir: Path) -> list[Path]:
     """
     paths: list[Path] = []
     seen: set[Path] = set()
+    denied: list[PermissionError] = []
 
     def add(p: Optional[Path]) -> None:
         if p is not None and p not in seen:
             seen.add(p)
             paths.append(p)
 
-    add(_profile_cookie_db(base_dir / "Default"))
-    add(_profile_cookie_db(base_dir))
+    add(_profile_cookie_db(base_dir / "Default", denied))
+    add(_profile_cookie_db(base_dir, denied))
     try:
-        candidates = [
-            child for child in base_dir.iterdir()
-            if child.is_dir() and child.name.startswith("Profile ")
-        ]
-        for child in sorted(candidates, key=lambda p: p.stat().st_mtime, reverse=True):
-            add(_profile_cookie_db(child))
+        candidates = []
+        for child in base_dir.iterdir():
+            if not child.name.startswith("Profile "):
+                continue
+            try:
+                if path_is_dir(child):
+                    candidates.append((child.stat().st_mtime, child))
+            except PermissionError as exc:
+                denied.append(exc)
+        for _, child in sorted(candidates, reverse=True):
+            add(_profile_cookie_db(child, denied))
+    except PermissionError as exc:
+        denied.append(exc)
     except OSError:
         pass
+    if denials is not None:
+        denials.extend(denied)
+    elif denied and not paths:
+        raise denied[0]
     return paths
 
 
@@ -406,22 +444,31 @@ def _extract_chromium_cookies_any_profile(
     None if no profile yielded any. This fixes the single-profile limitation
     where a guest-only Default profile shadowed a logged-in "Profile N".
     """
-    db_paths = _find_all_chromium_cookies_dbs(base_dir)
+    denials: list[PermissionError] = []
+    db_paths = _find_all_chromium_cookies_dbs(base_dir, denials)
     if not db_paths:
+        if denials:
+            raise denials[0]
         logger.info("%s cookies database not found under %s", keychain_service, base_dir)
         return None
     best: Optional[dict[str, str]] = None
     key_cache: dict[str, Optional[bytes]] = {}
     for db_path in db_paths:
-        got = _extract_chromium_cookies_macos(
-            db_path, keychain_service, domain, cookie_names, key_cache=key_cache
-        )
+        try:
+            got = _extract_chromium_cookies_macos(
+                db_path, keychain_service, domain, cookie_names, key_cache=key_cache
+            )
+        except PermissionError as exc:
+            denials.append(exc)
+            continue
         if got:
             if all(name in got for name in cookie_names):
                 logger.debug("Found complete cookie set for %s in %s", domain, db_path)
                 return got
             if best is None:
                 best = got
+    if denials:
+        raise denials[0]
     return best
 
 

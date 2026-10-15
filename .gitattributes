@@ -41,3 +41,8 @@ uv.lock            export-ignore
 .clawhubignore  export-ignore
 .gitignore      export-ignore
 .gitattributes  export-ignore
+
+# Normalize line endings to LF in the repository.
+# Without this, contributors on Windows checkouts commit CRLF, which turns
+# routine edits into whole-file diffs and hides the real change in review.
+* text=auto eol=lf

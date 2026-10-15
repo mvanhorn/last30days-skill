@@ -41,7 +41,7 @@ def test_broken_binary_yields_a_reinstall_prescription(monkeypatch):
     def boom(*a, **k):
         raise OSError("exec format error")
 
-    monkeypatch.setattr(health.subprocess, "run", boom)
+    monkeypatch.setattr(health.subproc, "run_with_timeout", boom)
     probe = health.probe_dependency("grok")
     assert probe.status == health.BROKEN
     assert "reinstall" in probe.prescription.lower()

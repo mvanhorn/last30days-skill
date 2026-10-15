@@ -20,13 +20,34 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Set up Python
         run: uv python install 3.12
 
       - name: Run test suite
         run: uv run pytest --cov --cov-report=term-missing
+
+  windows-process-tree:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Run Windows subprocess tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/skills/last30days/scripts
+        run: uv run python -m unittest tests.test_subproc -v
 
   eval:
     runs-on: ubuntu-latest
@@ -39,7 +60,7 @@ jobs:
           persist-credentials: false
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Set up Python
         run: uv python install 3.12
@@ -62,6 +83,9 @@ jobs:
         with:
           go-version: "1.25.5"
           cache-dependency-path: mcp/go.sum
+
+      - name: Sync vendored engine
+        run: bash mcp/scripts/sync-engine.sh
 
       - name: Run MCP Go tests
         run: go test -race ./...

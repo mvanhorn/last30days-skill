@@ -142,6 +142,96 @@ class PlannerV3Tests(unittest.TestCase):
         self.assertEqual(1, len(plan.subqueries))
         self.assertEqual(["reddit", "x"], plan.subqueries[0].sources)
 
+    def test_operator_plan_keeps_per_subquery_sources_at_default_and_deep(self):
+        # Issue #1073: operator --plan sources must not be replaced with the
+        # full available list outside --quick.
+        raw = {
+            "intent": "opinion",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "debate",
+            "subqueries": [{
+                "label": "primary",
+                "search_query": "late diagnosed autism adults",
+                "ranking_query": "late diagnosed autism adults",
+                "sources": ["reddit", "x", "youtube"],
+                "weight": 1.0,
+            }],
+        }
+        avail = ["reddit", "x", "youtube", "hackernews", "polymarket", "github"]
+        for depth in ("default", "deep"):
+            with self.subTest(depth=depth):
+                plan = planner._sanitize_plan(
+                    raw,
+                    "late diagnosed autism adults",
+                    avail,
+                    None,
+                    depth,
+                    honor_plan_sources=True,
+                )
+                self.assertEqual(["reddit", "x", "youtube"], plan.subqueries[0].sources)
+
+    def test_llm_plan_still_expands_narrow_sources_at_default_and_deep(self):
+        # Engine-internal LLM plans keep the expansion that lets fusion
+        # decide quality. Same snippet as #1073, without honor_plan_sources.
+        raw = {
+            "intent": "opinion",
+            "freshness_mode": "balanced_recent",
+            "cluster_mode": "debate",
+            "subqueries": [{
+                "label": "primary",
+                "search_query": "late diagnosed autism adults",
+                "ranking_query": "late diagnosed autism adults",
+                "sources": ["reddit", "x", "youtube"],
+                "weight": 1.0,
+            }],
+        }
+        avail = ["reddit", "x", "youtube", "hackernews", "polymarket", "github"]
+        for depth in ("default", "deep"):
+            with self.subTest(depth=depth):
+                plan = planner._sanitize_plan(
+                    raw,
+                    "late diagnosed autism adults",
+                    avail,
+                    None,
+                    depth,
+                )
+                self.assertEqual(avail, plan.subqueries[0].sources)
+
+    def test_operator_plan_preserves_distinct_per_subquery_source_lists(self):
+        raw = {
+            "intent": "breaking_news",
+            "freshness_mode": "strict_recent",
+            "cluster_mode": "story",
+            "subqueries": [
+                {
+                    "label": "primary",
+                    "search_query": "kanye west",
+                    "ranking_query": "What happened with Kanye West?",
+                    "sources": ["reddit", "x", "youtube"],
+                    "weight": 1.0,
+                },
+                {
+                    "label": "album",
+                    "search_query": "kanye west bully album",
+                    "ranking_query": "How was Kanye West's BULLY album received?",
+                    "sources": ["youtube", "reddit"],
+                    "weight": 0.8,
+                },
+            ],
+        }
+        avail = ["reddit", "x", "youtube", "hackernews", "polymarket", "github"]
+        plan = planner._sanitize_plan(
+            raw,
+            "Kanye West",
+            avail,
+            None,
+            "default",
+            honor_plan_sources=True,
+        )
+        by_label = {sq.label: sq.sources for sq in plan.subqueries}
+        self.assertEqual(["reddit", "x", "youtube"], by_label["primary"])
+        self.assertEqual(["youtube", "reddit"], by_label["album"])
+
     def test_quick_mode_prioritizes_explicit_requested_sources_within_cap(self):
         raw = {
             "intent": "product",
@@ -343,6 +433,28 @@ class PlannerV3Tests(unittest.TestCase):
             self.assertNotIn("polymarket", all_sources,
                              f"polymarket should be excluded from {expected_intent}")
 
+    def test_explicit_requested_sources_survive_intent_routing(self):
+        """--search sources are a user override at default/deep depth too."""
+        for topic, requested, expected_intent in [
+            ("will the fed cut rates in december", ["hackernews", "polymarket"], "concept"),
+            ("how to deploy on Fly.io", ["reddit", "youtube", "polymarket", "stocktwits"], "how_to"),
+        ]:
+            for depth in ("default", "deep"):
+                with self.subTest(topic=topic, depth=depth):
+                    plan = planner.plan_query(
+                        topic=topic,
+                        available_sources=requested,
+                        requested_sources=requested,
+                        depth=depth,
+                        provider=None,
+                        model=None,
+                    )
+                    self.assertEqual(expected_intent, plan.intent)
+                    all_sources = set()
+                    for subquery in plan.subqueries:
+                        all_sources.update(subquery.sources)
+                    self.assertEqual(set(requested), all_sources)
+
     def test_opinion_includes_polymarket(self):
         """Polymarket should not be excluded from opinion intent plans."""
         plan = planner.plan_query(
@@ -525,11 +637,12 @@ class FallbackDefaultsTests(unittest.TestCase):
         # The old misleading phrasing must NOT appear.
         self.assertNotIn("No --plan and no LLM provider configured", output)
 
-    def test_fallback_does_not_log_new_warning_when_provider_present(self):
+    def test_provider_failure_logs_error_and_law7_reminder(self):
         # When a provider is configured, the provider path runs; if it
-        # errors, we get the "LLM planning failed" message, NOT the
-        # "No --plan passed" guidance (which is specifically for the
-        # no-provider-no-plan caller path).
+        # errors, we get the "LLM planning failed" message AND the
+        # "No --plan passed" guidance: a failed internal planner degrades
+        # the run exactly like having none, and the host may not be
+        # detectable (see test_law7_host_plan_gate.py).
         import io
         import contextlib
         buf = io.StringIO()
@@ -549,7 +662,7 @@ class FallbackDefaultsTests(unittest.TestCase):
             )
         output = buf.getvalue()
         self.assertIn("LLM planning failed", output)
-        self.assertNotIn("No --plan passed", output)
+        self.assertIn("No --plan passed", output)
 
 if __name__ == "__main__":
     unittest.main()

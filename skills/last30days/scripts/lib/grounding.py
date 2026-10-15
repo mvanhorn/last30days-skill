@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import re
 import sys
 import urllib.parse
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from urllib.parse import urlparse
 
-from . import dates, env, http, schema, web_search_keyless
+from . import dates, env, http, parallel_mcp, schema, web_search_keyless
 
 
 @dataclass(frozen=True)
@@ -64,7 +65,7 @@ def brave_search(
     for i, r in enumerate((data.get("web", {}).get("results", []))[:count]):
         raw_date = r.get("page_age") or ""
         pub_date = _normalize_date(raw_date[:10]) if raw_date else None
-        if not _in_date_range(pub_date, date_range):
+        if _known_date_out_of_range(pub_date, date_range):
             continue
         items.append({
             "id": f"WB{i + 1}",
@@ -75,6 +76,7 @@ def brave_search(
             "date": pub_date,
             "relevance": 0.8,
             "why_relevant": "Brave web search",
+            "metadata": {"date_window_basis": "server_bounds"},
         })
     artifact = {"label": "brave", "webSearchQueries": [query], "resultCount": len(items)}
     return items, artifact
@@ -109,7 +111,7 @@ def exa_search(
             continue
         raw_date = r.get("publishedDate") or ""
         pub_date = _normalize_date(raw_date.split("T")[0] if "T" in raw_date else raw_date[:10]) if raw_date else None
-        if not _in_date_range(pub_date, date_range):
+        if _known_date_out_of_range(pub_date, date_range):
             continue
         items.append({
             "id": f"WE{i + 1}",
@@ -120,6 +122,7 @@ def exa_search(
             "date": pub_date,
             "relevance": 0.8,
             "why_relevant": "Exa web search",
+            "metadata": {"date_window_basis": "server_bounds"},
         })
     artifact = {"label": "exa", "webSearchQueries": [query], "resultCount": len(items)}
     return items, artifact
@@ -146,7 +149,9 @@ def serper_search(
     for i, r in enumerate((data.get("organic", []))[:count]):
         raw_date = r.get("date") or ""
         pub_date = _parse_serper_date(raw_date)
-        if not _in_date_range(pub_date, date_range):
+        if pub_date is None and _SERPER_RELATIVE_RE.match(raw_date.strip()):
+            continue
+        if _known_date_out_of_range(pub_date, date_range):
             continue
         items.append({
             "id": f"WS{i + 1}",
@@ -157,6 +162,7 @@ def serper_search(
             "date": pub_date,
             "relevance": 0.8,
             "why_relevant": "Serper web search",
+            "metadata": {"date_window_basis": "server_bounds"},
         })
     artifact = {"label": "serper", "webSearchQueries": [query], "resultCount": len(items)}
     return items, artifact
@@ -169,12 +175,16 @@ def serper_search(
 def parallel_search(
     query: str, date_range: tuple[str, str], api_key: str, count: int = 5,
 ) -> tuple[list[dict], dict]:
+    current_window = date_range[1] >= datetime.now(timezone.utc).date().isoformat()
     data = http.request(
         "POST", "https://api.parallel.ai/v1/search",
-        headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+        headers={"x-api-key": api_key, "Content-Type": "application/json"},
         json_data={
             "search_queries": [query],
-            "advanced_settings": {"max_results": count},
+            "advanced_settings": {
+                "max_results": count,
+                "source_policy": {"after_date": date_range[0]},
+            },
         },
         timeout=15,
     )
@@ -187,7 +197,9 @@ def parallel_search(
             continue
         raw_date = r.get("publish_date") or ""
         pub_date = _normalize_date(raw_date[:10]) if raw_date else None
-        if not _in_date_range(pub_date, date_range):
+        if _known_date_out_of_range(pub_date, date_range):
+            continue
+        if pub_date is None and not current_window:
             continue
         items.append({
             "id": f"WP{i + 1}",
@@ -198,12 +210,71 @@ def parallel_search(
             "date": pub_date,
             "relevance": 0.8,
             "why_relevant": "Parallel AI web search",
+            "metadata": {
+                "date_window_basis": "server_start_current" if current_window else "server_start"
+            },
         })
     artifact = {"label": "parallel", "webSearchQueries": [query], "resultCount": len(items)}
     return items, artifact
 
 
-def _parse_serper_date(raw: str) -> str | None:
+_SERPER_RELATIVE_RE = re.compile(
+    r"^(?:about\s+)?(\d+)\s+(minute|min|hour|hr|day|week|month|year)s?\s+ago$", re.I
+)
+_SERPER_RELATIVE_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
+_SERPER_RELATIVE_WORDS = {"just now": 0, "today": 0, "yesterday": 1}
+
+
+def _now() -> datetime:
+    """Query-time clock. Isolated so tests can pin it."""
+    return datetime.now()
+
+
+def _parse_serper_relative(raw: str, now: datetime | None = None) -> str | None:
+    """Resolve Serper's relative dates ("2 hours ago") to an ISO date.
+
+    Google renders a relative date for recent results, so the fresher a result
+    is the more likely it arrives in this form. Left unparsed it becomes None
+    and `_in_date_range` drops the item, which silently empties the web lane on
+    short research windows.
+
+    The label states the result's age **at query time**, so it resolves against
+    the clock rather than against the end of the research window. The two differ
+    whenever `--as-of` names a past window: a result inside a window ending two
+    weeks ago is still labelled with its age as of today, and anchoring to the
+    window end would place it a further two weeks back and discard it.
+
+    Sub-day units ("N minutes/hours ago") are subtracted from the clock rather
+    than rounded up to the current date, which would name the wrong day across
+    midnight: at 00:30 "23 hours ago" is yesterday. Residual slack comes only
+    from the timezone `_now()` reads against Google's.
+
+    An age large enough to overflow `timedelta` or run past the end of `date`
+    reads as unparseable, like any other junk label, so one malformed value
+    cannot abort the whole result loop in `serper_search`.
+    """
+    anchor = now or _now()
+    text = raw.strip().lower()
+    if text in _SERPER_RELATIVE_WORDS:
+        return (anchor.date() - timedelta(days=_SERPER_RELATIVE_WORDS[text])).isoformat()
+    m = _SERPER_RELATIVE_RE.match(text)
+    if not m:
+        return None
+    unit = {"min": "minute", "hr": "hour"}.get(m.group(2), m.group(2))
+    try:
+        amount = int(m.group(1).lstrip("0") or "0")
+        if unit == "minute":
+            return (anchor - timedelta(minutes=amount)).date().isoformat()
+        if unit == "hour":
+            return (anchor - timedelta(hours=amount)).date().isoformat()
+        return (
+            anchor.date() - timedelta(days=amount * _SERPER_RELATIVE_DAYS[unit])
+        ).isoformat()
+    except (OverflowError, ValueError):
+        return None
+
+
+def _parse_serper_date(raw: str, now: datetime | None = None) -> str | None:
     if not raw:
         return None
     normalized = _normalize_date(raw)
@@ -214,7 +285,7 @@ def _parse_serper_date(raw: str) -> str | None:
             return datetime.strptime(raw.strip(), fmt).date().isoformat()
         except ValueError:
             continue
-    return None
+    return _parse_serper_relative(raw, now)
 
 
 
@@ -268,6 +339,10 @@ def web_search(
         if not key:
             raise RuntimeError("PARALLEL_API_KEY is required when web_backend='parallel'")
         items, artifact = parallel_search(query, date_range, key)
+    elif backend == "parallel-mcp":
+        items, artifact = parallel_mcp.search(
+            query, date_range, config.get("PARALLEL_API_KEY")
+        )
     elif backend == "keyless":
         items, artifact = web_search_keyless.keyless_search(query, date_range, config)
     elif backend != "none":
@@ -363,6 +438,11 @@ def _in_date_range(pub_date: str | None, date_range: tuple[str, str]) -> bool:
     if not pub_date:
         return False
     return date_range[0] <= pub_date <= date_range[1]
+
+
+def _known_date_out_of_range(pub_date: str | None, date_range: tuple[str, str]) -> bool:
+    """True when a parseable date falls outside the window. Unknown dates stay."""
+    return pub_date is not None and not _in_date_range(pub_date, date_range)
 
 
 def _domain(url: str) -> str:

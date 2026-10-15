@@ -41,9 +41,8 @@ class TestExtractCoreSubject(unittest.TestCase):
         self.assertTrue(len(result) > 0)
 
     def test_only_first_prefix_stripped(self):
-        # "how to" should match, stripping once, not recursively
-        result = extract_core_subject("how to use how to debug")
-        self.assertIn("debug", result)
+        result = extract_core_subject("how to use how to debug", noise=frozenset())
+        self.assertEqual(result, "how to debug")
 
 
 class TestMaxWords(unittest.TestCase):
@@ -51,15 +50,14 @@ class TestMaxWords(unittest.TestCase):
 
     def test_max_words_caps_output(self):
         result = extract_core_subject(
-            "multi agent reinforcement learning framework",
+            "multi agent reinforcement learning framework distributed training",
             max_words=5,
         )
-        self.assertLessEqual(len(result.split()), 5)
+        self.assertEqual(result, "multi agent reinforcement learning framework")
 
     def test_max_words_none_no_cap(self):
         result = extract_core_subject("cursor IDE react native components")
-        # Without max_words, no cap applied
-        self.assertGreaterEqual(len(result.split()), 3)
+        self.assertEqual(result, "cursor ide react native components")
 
     def test_max_words_fallback_on_empty(self):
         # All words filtered + max_words should fall back to original
@@ -74,21 +72,21 @@ class TestStripSuffixes(unittest.TestCase):
         result = extract_core_subject(
             "claude code best practices",
             strip_suffixes=True,
+            noise=frozenset(),
         )
-        self.assertNotIn("practices", result)
+        self.assertEqual(result, "claude code")
 
     def test_strips_use_cases(self):
         result = extract_core_subject(
             "react hooks use cases",
             strip_suffixes=True,
+            noise=frozenset(),
         )
-        self.assertNotIn("cases", result)
+        self.assertEqual(result, "react hooks")
 
     def test_no_strip_without_flag(self):
-        result = extract_core_subject("claude code best practices")
-        # "best" and "practices" are noise words so they get filtered anyway
-        # but the suffix phase doesn't run
-        self.assertIn("claude", result)
+        result = extract_core_subject("claude code best practices", noise=frozenset())
+        self.assertEqual(result, "claude code best practices")
 
 
 class TestCustomNoise(unittest.TestCase):

@@ -11,16 +11,25 @@ This guide covers installing last30days on Hermes AI Agent.
 ## Installation
 
 ```bash
-hermes skills install mvanhorn/last30days-skill/skills/last30days --force
+git clone https://github.com/mvanhorn/last30days-skill.git
+mkdir -p ~/.hermes/skills/research
+cp -r last30days-skill/skills/last30days ~/.hermes/skills/research/
 ```
 
-The explicit `skills/last30days` path fetches the skill straight from this repo's current default branch and deploys it under `~/.hermes/skills/`. `--force` is required because Hermes's install-time security scanner returns a `caution` verdict for this skill — it flags benign patterns such as reading your own API keys from the environment and calling `subprocess` to run `yt-dlp`/`bird`. `--force` accepts the caution verdict and installs (it also reinstalls over any existing copy).
+That deploys the skill straight from this repo's current default branch to `~/.hermes/skills/research/last30days` (with named profiles the skills root is `~/.hermes/profiles/<name>/skills/`). Run `hermes skills list` to confirm it shows up; a session already open needs `/reload-skills` (or a new session) to pick it up.
 
-**Why the explicit path?** The shorter `hermes skills install mvanhorn/last30days-skill` currently resolves through the skills.sh index, which is serving an older cached snapshot of this repo (from before the skill moved under `skills/last30days/`). Use the explicit `.../skills/last30days` path above until the index re-crawls — tracked in [vercel-labs/skills#1602](https://github.com/vercel-labs/skills/issues/1602).
+> **Why not `hermes skills install`?** The installer is currently blocked for this skill. Hermes's install-time security scanner flags benign patterns here — reading your own API keys from the environment (`os.environ.get("XAI_API_KEY")` etc.) and calling `subprocess` to run `yt-dlp`/`bird` — and returns a `dangerous` verdict (19 findings). `--force` only overrides a `caution` verdict; for community sources a `dangerous` verdict is a hard block that `--force` cannot bypass:
+>
+> ```bash
+> hermes skills install mvanhorn/last30days-skill/skills/last30days --force
+> # → Installation blocked: Blocked (community source + dangerous verdict, 19 findings)
+> ```
+>
+> The `git clone` + `cp` path above sidesteps the installer and is the supported workaround until the scanner rules or this skill's flagged patterns change. (The shorter `hermes skills install mvanhorn/last30days-skill` additionally resolves through the skills.sh index, which was serving a stale snapshot — tracked in [vercel-labs/skills#1602](https://github.com/vercel-labs/skills/issues/1602).)
 
 ### Developer / live-edit alternative
 
-If you're hacking on the skill locally and want edits to propagate to Hermes without re-installing, symlink your working tree:
+If you're hacking on the skill locally and want edits to propagate to Hermes without re-copying, symlink your working tree instead of `cp`:
 
 ```bash
 git clone https://github.com/mvanhorn/last30days-skill.git
@@ -102,11 +111,14 @@ python3.12 scripts/last30days.py --diagnose
 
 ## Updating
 
+If you symlinked your working tree (developer alternative above), just `git pull` in the repo — edits propagate live, no re-install step. With a `cp` install, pull and re-copy:
+
 ```bash
-hermes skills install mvanhorn/last30days-skill --force
+cd last30days-skill && git pull
+cp -r skills/last30days ~/.hermes/skills/research/
 ```
 
-If you symlinked your working tree (developer alternative above), just `git pull` in the repo — edits propagate live, no re-install step.
+`hermes skills install mvanhorn/last30days-skill --force` remains blocked by the scanner verdict above; retry it occasionally in case the flagged patterns or scanner rules change.
 
 ## Support
 

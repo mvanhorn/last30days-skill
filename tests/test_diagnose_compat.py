@@ -20,8 +20,7 @@ The two real consumers, each with an explicit test:
    authoritative source list). Asserted: the key exists, is a list of
    source-name strings.
 
-hooks/scripts/check-config.sh is NOT a JSON consumer (it reads env files and
-last-run.json, never engine JSON) — deliberately no compat test for it.
+There is no SessionStart hook; last-run.json is not consumed at session start.
 
 NOTE: snapshots re-recorded against the committed v3.10.0 baseline
 (origin/main a5b3ca1, post-v3.9.x source wave: arxiv/techmeme/stocktwits/
@@ -30,11 +29,14 @@ otherwise stay frozen; re-record only when a committed baseline legitimately
 changes them.
 """
 
+import contextlib
 import io
 import json
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
 from unittest import mock
 
 import last30days as cli
@@ -106,6 +108,10 @@ PREFLIGHT_PROJECT_CONFIG_KEYS = {"status", "trusted", "ignored_path", "ignored_k
 PREFLIGHT_BROWSER_COOKIES_KEYS = {"status", "mode", "browsers", "reads_values"}
 PREFLIGHT_CREDENTIALS_KEYS = {
     "google", "openai", "xai", "openrouter", "perplexity", "scrapecreators", "github",
+    # X API bearer (X_BEARER_TOKEN): computed inside permission_preflight from
+    # config, never surfaced through diagnose.providers (whose key set above
+    # stays frozen).
+    "x_bearer",
 }
 PREFLIGHT_NETWORK_KEYS = {
     "available_sources", "native_search", "endpoint_overrides", "ignored_endpoint_overrides",
@@ -123,27 +129,46 @@ FAKE_KEYED_CONFIG = {
 }
 
 
-def _run_cli(argv: list[str], config: dict) -> tuple[int, str]:
-    """Run cli.main() in-process with a controlled config; return (rc, stdout)."""
-    bird_status = {
-        "installed": False,
-        "authenticated": False,
-        "username": None,
-        "can_install": True,
-    }
-    with mock.patch.object(cli.env, "get_config", return_value=dict(config)), \
-         mock.patch("lib.bird_x.get_bird_status", return_value=bird_status), \
-         mock.patch("lib.bird_x.is_bird_installed", return_value=False), \
-         mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None), \
-         mock.patch(
-             "lib.xurl_x.is_available",
-             side_effect=AssertionError(
-                 "--diagnose/--preflight are safe paths and must not run the "
-                 "live `xurl whoami` network check"
-             ),
-         ), \
-         mock.patch("lib.xurl_x.has_stored_auth", return_value=False), \
-         mock.patch.object(sys, "argv", ["last30days.py"] + argv):
+_BIRD_STATUS_KEYLESS = {
+    "installed": False,
+    "authenticated": False,
+    "username": None,
+    "can_install": True,
+}
+
+
+def _run_cli(
+    argv: list[str],
+    config: dict,
+    *,
+    extra_patches: tuple = (),
+    patch_has_stored_auth: bool = True,
+) -> tuple[int, str]:
+    """Run cli.main() in-process with a controlled config; return (rc, stdout).
+
+    `extra_patches` are additional `mock.patch(...)` context managers layered
+    on top of the common safe-path mock stack (e.g. to fake xurl's on-disk
+    token store instead of stubbing `has_stored_auth` directly).
+    `patch_has_stored_auth=False` omits the default `has_stored_auth` stub so
+    a caller-supplied patch (or the real function) can take its place.
+    """
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(mock.patch.object(cli.env, "get_config", return_value=dict(config)))
+        stack.enter_context(mock.patch("lib.bird_x.get_bird_status", return_value=_BIRD_STATUS_KEYLESS))
+        stack.enter_context(mock.patch("lib.bird_x.is_bird_installed", return_value=False))
+        stack.enter_context(mock.patch("lib.bird_x.set_credentials", lambda *a, **k: None))
+        stack.enter_context(mock.patch(
+            "lib.xurl_x.is_available",
+            side_effect=AssertionError(
+                "--diagnose/--preflight are safe paths and must not run the "
+                "live `xurl whoami` network check"
+            ),
+        ))
+        if patch_has_stored_auth:
+            stack.enter_context(mock.patch("lib.xurl_x.has_stored_auth", return_value=False))
+        for patch in extra_patches:
+            stack.enter_context(patch)
+        stack.enter_context(mock.patch.object(sys, "argv", ["last30days.py"] + argv))
         stdout = io.StringIO()
         stderr = io.StringIO()
         with redirect_stdout(stdout), redirect_stderr(stderr):
@@ -213,6 +238,85 @@ class DiagnoseShapeCompat(unittest.TestCase):
         # Free sources are always present even in a keyless environment.
         for free in ("reddit", "hackernews", "polymarket", "github"):
             self.assertIn(free, sources)
+
+
+class DiagnoseXurlAuthWiring(unittest.TestCase):
+    """Regression for #978 / PR #1027: prove `--diagnose`'s `x_backend` and
+    `available_sources` reflect xurl_x.stored_auth_status()'s corrected
+    directory-layout detection end-to-end through the real CLI entrypoint,
+    not just at the `has_stored_auth()` unit level (test_xurl_x.py) or a
+    mocked wiring level (test_env_v3.py). Neither of those proves the two
+    compose correctly through `pipeline.diagnose()` into the exact
+    `available_sources` array SKILL.md reads.
+
+    Scope: this covers the AUTH_OK / AUTH_MISSING distinction only.
+    `has_stored_auth()` collapses AUTH_ERROR (permission-denied store) to
+    the same `False` as AUTH_MISSING, so a permission-denied store is not
+    separately observable through `--diagnose`/`available_sources` -- only
+    `doctor`'s `backends._probe_xurl` surfaces the typed AUTH_ERROR. Not
+    covered here; that distinction is doctor-only by the current design."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.fake_home = Path(self._tmp.name)
+        self.store = self.fake_home / ".xurl"
+        boom = mock.patch(
+            "subprocess.run",
+            side_effect=AssertionError(
+                "--diagnose is a safe path and must not spawn any subprocess"
+            ),
+        )
+        boom.start()
+        self.addCleanup(boom.stop)
+
+    def _diagnose_with_store(self, auth_yml_content: str | None) -> dict:
+        """Run `--diagnose` with `Path.home()` pointed at a fake home dir
+        holding a real `~/.xurl/auth.yml` (current directory layout);
+        `auth_yml_content=None` leaves no store at all. `Path.home()` -- not
+        `token_store_path()` -- is what's faked, so this exercises
+        `token_store_path()`'s own directory-layout logic instead of
+        bypassing it; a pre-fix `token_store_path()` returning the bare
+        `~/.xurl` directory would make this fail exactly as it did for #978.
+
+        `Path.home` is a shared class attribute, so this patch also redirects
+        any other lib module's `Path.home()` call for the duration of the
+        CLI invocation (e.g. `brightdata.gate_status`). That's inert today:
+        the paired `shutil.which` patch below makes `brightdata.is_installed()`
+        return False, short-circuiting `has_credentials()` before it would
+        reach `Path.home()`. If that short-circuit is ever removed, re-check
+        whether another module's home-relative lookup needs isolating too."""
+        if auth_yml_content is not None:
+            self.store.mkdir(exist_ok=True)
+            (self.store / "auth.yml").write_text(auth_yml_content, encoding="utf-8")
+        rc, out = _run_cli(
+            ["--diagnose"],
+            FAKE_KEYLESS_CONFIG,
+            patch_has_stored_auth=False,
+            extra_patches=(
+                mock.patch("lib.xurl_x.Path.home", return_value=self.fake_home),
+                mock.patch(
+                    "lib.xurl_x.shutil.which",
+                    side_effect=lambda name: "/usr/local/bin/xurl" if name == "xurl" else None,
+                ),
+            ),
+        )
+        self.assertEqual(0, rc)
+        return json.loads(out)
+
+    def test_new_layout_auth_yml_makes_xurl_the_reported_backend(self):
+        payload = self._diagnose_with_store("access_token: dummy-not-real\n")
+        self.assertEqual("xurl", payload["x_backend"])
+        self.assertIn("x", payload["available_sources"])
+
+    def test_no_store_leaves_xurl_unreported(self):
+        payload = self._diagnose_with_store(None)
+        self.assertNotEqual("xurl", payload["x_backend"])
+        self.assertFalse(
+            payload["x_pending_browser_auth"],
+            "no browser-cookie config in this test, so pending-auth must be False",
+        )
+        self.assertNotIn("x", payload["available_sources"])
 
 
 class PreflightShapeCompat(unittest.TestCase):

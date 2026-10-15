@@ -270,7 +270,22 @@ class TestParseGithubResponse(unittest.TestCase):
         self.assertEqual(items[0]["title"], "In window")
 
     def test_sorts_by_relevance(self):
-        items = github.parse_github_response(self._RAW_ENVELOPE)
+        envelope = {
+            "items": [
+                {"html_url": "https://github.com/foo/bar/issues/1",
+                 "title": "Unrelated work", "comments": 0,
+                 "reactions": {"total_count": 0}},
+                {"html_url": "https://github.com/foo/bar/issues/2",
+                 "title": "foo", "comments": 100,
+                 "reactions": {"total_count": 500}},
+            ],
+            "context": {"core": "foo"},
+        }
+        items = github.parse_github_response(envelope)
+        self.assertEqual(
+            [item["url"] for item in items],
+            ["https://github.com/foo/bar/issues/2", "https://github.com/foo/bar/issues/1"],
+        )
         scores = [i.get("relevance", 0) for i in items]
         self.assertEqual(scores, sorted(scores, reverse=True))
 
@@ -496,6 +511,40 @@ class TestPersonPushEventsLane(unittest.TestCase):
         self.assertEqual(items[0]["metadata"]["event_id"], "2")
 
 
+class TestPersonVelocityWindow(unittest.TestCase):
+    """Person-mode PR counts must cover the requested window, not up to today."""
+
+    def _run(self, from_date, to_date):
+        queries = []
+
+        def fetch(url, **kwargs):
+            if "search/issues" in url:
+                queries.append(
+                    urllib.parse.parse_qs(urllib.parse.urlparse(url).query)["q"][0]
+                )
+                return {"total_count": 4, "items": []}
+            return []
+
+        with patch.object(github, "_resolve_token", return_value="t"), \
+                patch.object(github, "_fetch_json", side_effect=fetch):
+            items = github.search_github_person("kurt", from_date, to_date, token="t")
+        return queries, items
+
+    def test_pr_searches_end_at_window_end(self):
+        queries, _ = self._run("2026-05-31", "2026-06-30")
+
+        self.assertEqual(len(queries), 2)
+        for q in queries:
+            self.assertIn("created:2026-05-31..2026-06-30", q)
+            self.assertEqual(q.count("created:"), 1)
+
+    def test_velocity_label_uses_window_length(self):
+        _, items = self._run("2026-07-16", "2026-10-14")
+
+        self.assertIn("CONTRIBUTION VELOCITY (last 90 days)", items[0]["snippet"])
+
+
+
 class TestStripSearchQualifiers(unittest.TestCase):
     """Planner-injected GitHub search qualifiers must never reach the query
     builder: search_github appends its own created:>{from_date}, and two
@@ -521,6 +570,89 @@ class TestStripSearchQualifiers(unittest.TestCase):
             github.strip_search_qualifiers("langchain is:issue created:>2026-01-01"),
             "langchain",
         )
+
+    def test_paren_wrapped_qualifier_stripped(self):
+        # Wrapper shapes bypassed the strip until the boundary accepted them
+        # (issue #952); a surviving created: would collide with the adapter's
+        # own window and silently zero out the source (issue #949 class).
+        self.assertEqual(
+            github.strip_search_qualifiers("(created:>2025-03-20)"),
+            "",
+        )
+
+    def test_double_quote_wrapped_qualifier_stripped(self):
+        self.assertEqual(
+            github.strip_search_qualifiers('"created:>2025-03-20"'),
+            "",
+        )
+
+    def test_single_quote_wrapped_qualifier_stripped(self):
+        self.assertEqual(
+            github.strip_search_qualifiers("'is:issue'"),
+            "",
+        )
+
+    def test_bracket_wrapped_qualifier_stripped(self):
+        self.assertEqual(
+            github.strip_search_qualifiers("[stars:>1000]"),
+            "",
+        )
+
+    def test_wrapped_qualifier_among_words_leaves_no_empty_pair(self):
+        self.assertEqual(
+            github.strip_search_qualifiers("ai (created:>2025-03-20) model"),
+            "ai model",
+        )
+
+    def test_quoted_value_and_wrapped_qualifier_both_stripped(self):
+        self.assertEqual(
+            github.strip_search_qualifiers('label:"bug fix" (created:>2025-03-20)'),
+            "",
+        )
+
+    def test_wrapped_and_plain_duplicate_qualifiers_both_stripped(self):
+        self.assertEqual(
+            github.strip_search_qualifiers("(created:>2025-03-20) created:>2026-01-01"),
+            "",
+        )
+
+    def test_nested_wrapper_collapses_to_fixpoint(self):
+        self.assertEqual(
+            github.strip_search_qualifiers("((created:>2025-03-20))"),
+            "",
+        )
+
+    def test_missing_closer_qualifier_still_stripped(self):
+        self.assertEqual(
+            github.strip_search_qualifiers("(created:>2025-03-20"), "",
+        )
+
+    def test_wrapper_cleanup_preserves_real_topic_text(self):
+        for topic, expected in [
+            ("ai (foo", "ai (foo"),
+            ("ai (foo created:>2025-03-20", "ai (foo"),
+            ("(foo) created:>2025-03-20", "(foo)"),
+            ('"quoted topic" created:>2025-03-20', '"quoted topic"'),
+            ("([foo created:>2025-03-20", "([foo"),
+            ("(", "("),
+            (")", ")"),
+        ]:
+            with self.subTest(topic=topic):
+                self.assertEqual(github.strip_search_qualifiers(topic), expected)
+
+    def test_quote_wrapped_with_space_inside_does_not_leak_qualifier(self):
+        # '"created:>2025-03-20 abc"' has a space in the quoted value, so it is
+        # not a single wrapper pair; the qualifier itself must still not reach
+        # the query.
+        result = github.strip_search_qualifiers('"created:>2025-03-20 abc"')
+        self.assertNotIn("created:", result)
+
+    def test_wrapped_qualifier_with_glued_term_preserves_term(self):
+        # Mirrors the plain glued-term case: "(created:>2025-03-20,robotics)"
+        # must strip the qualifier and keep the term, with no created: leak.
+        result = github.strip_search_qualifiers("(created:>2025-03-20,robotics)")
+        self.assertIn("robotics", result)
+        self.assertNotIn("created:", result)
 
     def test_case_insensitive_qualifier_only_topic(self):
         self.assertEqual(github.strip_search_qualifiers("Stars:>1000"), "")
@@ -673,15 +805,14 @@ class TestSearchGithubQualifiers(unittest.TestCase):
         self.assertNotIn("is:pull-request", q)
 
     @patch.object(github, "_resolve_token", return_value="test-token")
-    def test_qualifier_only_topic_errors_without_network(self, mock_token):
+    def test_qualifier_only_topic_skips_network(self, mock_token):
         with patch.object(github, "_fetch_json") as mock_fetch:
             result = github.search_github(
                 "created:>2025-03-20", "2026-07-01", "2026-07-31",
             )
         mock_fetch.assert_not_called()
         self.assertEqual(result["items"], [])
-        self.assertIn("error", result)
-        self.assertIn("qualifier", result["error"].lower())
+        self.assertNotIn("error", result)
         self.assertEqual(result["context"]["from_date"], "2026-07-01")
 
     @patch.object(github, "_resolve_token", return_value="test-token")
@@ -712,12 +843,12 @@ class TestSearchGithubQualifiers(unittest.TestCase):
         self.assertNotIn("created:>2025-03-20", q)
 
     @patch.object(github, "_resolve_token", return_value="test-token")
-    def test_empty_topic_errors_without_network(self, mock_token):
+    def test_empty_topic_skips_network(self, mock_token):
         with patch.object(github, "_fetch_json") as mock_fetch:
             result = github.search_github("", "2026-07-01", "2026-07-31")
         mock_fetch.assert_not_called()
         self.assertEqual(result["items"], [])
-        self.assertIn("error", result)
+        self.assertNotIn("error", result)
 
     @patch.object(github, "_resolve_token", return_value="test-token")
     def test_glued_term_after_qualifier_value_reaches_query(self, mock_token):
@@ -731,6 +862,107 @@ class TestSearchGithubQualifiers(unittest.TestCase):
         self.assertIn("ai", q)
         self.assertEqual(q.count("created:"), 1)
 
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    def test_paren_wrapped_qualifier_builds_single_created_query(self, mock_token):
+        # Wrapped qualifier (issue #952) must not survive into the query to
+        # collide with the adapter's own created: window (issue #949 class).
+        # Authenticated search emits is:issue / is:pull-request partitions
+        # (GitHub 422s without one); assert the subject per sub-query.
+        captured = {}
+        with patch.object(github, "_fetch_json", side_effect=self._capturing_fetch(captured)):
+            github.search_github(
+                "open source ai (created:>2025-03-20)", "2026-07-01", "2026-07-31",
+            )
+        queries = [self._query(u) for u in captured["urls"]]
+        self.assertEqual(len(queries), 2)
+        for q in queries:
+            self.assertTrue(q.startswith("open source ai created:>2026-07-01"))
+            self.assertEqual(q.count("created:"), 1)
+            self.assertIn("created:>2026-07-01", q)
+            self.assertNotIn("created:>2025-03-20", q)
+            self.assertIn("open source", q)
+            self.assertIn("ai", q)
+        self.assertEqual(
+            {q.rsplit(" ", 1)[-1] for q in queries},
+            {"is:issue", "is:pull-request"},
+        )
+
+    @patch.object(github, "_resolve_token", return_value="test-token")
+    def test_quote_wrapped_qualifier_only_topic_skips_network(self, mock_token):
+        # A quote-wrapped qualifier-only topic strips to nothing, so the
+        # adapter must skip the network (#949/#952) and return a clean
+        # no-results envelope rather than ERROR (#953).
+        with patch.object(github, "_fetch_json") as mock_fetch:
+            result = github.search_github(
+                '"created:>2025-03-20"', "2026-07-01", "2026-07-31",
+            )
+        mock_fetch.assert_not_called()
+        self.assertEqual(result["items"], [])
+        self.assertNotIn("error", result)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_snapshot_date_uses_in_window_release_else_window_end():
+    from lib import github
+
+    window = ("2026-09-11", "2026-10-11")
+    assert github._snapshot_date([{"date": "2026-10-05"}], *window) == "2026-10-05"
+    assert github._snapshot_date([{"date": "2022-11-17"}], *window) == "2026-10-11"
+    assert github._snapshot_date([], *window) == "2026-10-11"
+    assert github._snapshot_date([{"date": None}], *window) == "2026-10-11"
+
+
+def _project_mode_items(release_date):
+    from lib import github
+
+    enrichment = {
+        "info": {"stars": 40000, "open_issues": 900, "description": "A terminal", "language": "Zig"},
+        "readme": "Ghostty terminal",
+        "releases": [{"name": "tip", "date": release_date, "body": ""}],
+        "top_issues": {},
+    }
+    with patch.object(github, "_resolve_token", return_value="t"), \
+            patch.object(github, "_enrich_project_repo", return_value=enrichment):
+        return github.search_github_project(
+            ["ghostty-org/ghostty"], "2026-09-11", "2026-10-11",
+        )
+
+
+def test_snapshot_repo_gets_neutral_freshness_not_window_end_boost():
+    # A pinned repo whose newest release predates the window is dated to_date
+    # so the date filter keeps it. That date is a read time, not an event: it
+    # must rank on neutral freshness, not pin to #1 on maximum freshness.
+    from lib import normalize, signals
+
+    window = ("2026-09-11", "2026-10-11")
+    raw = _project_mode_items("2022-11-17") + [{
+        "id": "GH9",
+        "title": "ghostty-org/ghostty issue",
+        "url": "https://github.com/ghostty-org/ghostty/issues/1",
+        "date": "2026-09-26",
+        "source": "github",
+        "relevance": 0.9,
+        "metadata": {"labels": ["project-mode"], "state": "open"},
+    }]
+    items = normalize.normalize_source_items("github", raw, *window)
+    assert len(items) == 2  # the date filter still keeps the snapshot
+    ranked = signals.annotate_stream(items, "ghostty", "balanced_recent", reference_date=window[1])
+    by_id = {item.item_id: item for item in ranked}
+    snapshot, mid = by_id["GH1"], by_id["GH9"]
+    assert snapshot.local_relevance == mid.local_relevance
+    assert snapshot.freshness == 50
+    assert snapshot.freshness <= mid.freshness  # mid-window scores the 50 midpoint
+    assert snapshot.local_rank_score <= mid.local_rank_score + 0.10  # engagement only
+
+
+def test_in_window_release_keeps_normal_freshness():
+    from lib import normalize, signals
+
+    window = ("2026-09-11", "2026-10-11")
+    items = normalize.normalize_source_items("github", _project_mode_items("2026-10-09"), *window)
+    item = signals.annotate_stream(items, "ghostty", "balanced_recent", reference_date=window[1])[0]
+    assert item.published_at == "2026-10-09"
+    assert item.freshness > 80

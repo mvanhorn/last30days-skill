@@ -43,6 +43,7 @@ def test_diagnose_uses_plan_only_cookie_policy_and_safe_pipeline(monkeypatch):
         {"_BROWSER_COOKIE_MODE": "plan_only", "_BROWSER_COOKIE_BROWSERS": ["firefox"]},
         None,
         safe=True,
+        x_envelope=False,
     )
     assert json.loads(stdout.getvalue()) == {"ok": True}
 

@@ -242,3 +242,10 @@ def test_pass_keys_match_setup_script():
         "lib/env.py::KEYCHAIN_KEYS and scripts/setup-pass.sh::ALL_KEYS have "
         f"drifted.\n  python: {python_keys}\n  shell:  {shell_keys}"
     )
+
+
+def test_x_bearer_token_is_a_pass_key():
+    """U6/R17: the X API bearer is loadable from pass(1) and listed exactly
+    once by the setup-pass.sh helper."""
+    assert "X_BEARER_TOKEN" in env.KEYCHAIN_KEYS
+    assert _parse_all_keys_from_shell(SETUP_PASS_SH).count("X_BEARER_TOKEN") == 1

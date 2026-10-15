@@ -7,10 +7,118 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from lib import bird_x
 from lib.bird_x import parse_bird_response
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 VENDORED_BIRD = REPO_ROOT / "skills" / "last30days" / "scripts" / "lib" / "vendor" / "bird-search" / "bird-search.mjs"
+
+
+class TestSubprocessEnv(unittest.TestCase):
+    """_subprocess_env() passes only the vendored client's env surface (issue #1063)."""
+
+    def _ambient(self, **overrides):
+        base = {
+            "PATH": "/usr/bin:/bin",
+            "HOME": "/home/test",
+            "NODE_ENV": "production",
+            "AUTH_TOKEN": "ambient-token",
+            "CT0": "ambient-ct0",
+            "TWITTER_AUTH_TOKEN": "ambient-tw-token",
+            "TWITTER_CT0": "ambient-tw-ct0",
+            "LAST30DAYS_DISABLE_BROWSER_COOKIES": "0",
+            "BIRD_QUERY_IDS_CACHE": "/tmp/ids.json",
+            "SCRAPECREATORS_API_KEY": "sc-secret",
+            "AWS_SECRET_ACCESS_KEY": "aws-secret",
+        }
+        base.update(overrides)
+        return base
+
+    def _call(self, ambient, credentials=None):
+        from lib import bird_x
+        old = bird_x._credentials
+        try:
+            bird_x._credentials = dict(credentials or {})
+            # None means "absent" - os.environ cannot hold None values.
+            patch_env = {k: v for k, v in ambient.items() if v is not None}
+            with mock.patch.dict(os.environ, patch_env, clear=True):
+                return bird_x._subprocess_env()
+        finally:
+            bird_x._credentials = old
+
+    def test_unrelated_ambient_secrets_are_excluded(self):
+        out = self._call(self._ambient())
+        self.assertNotIn("SCRAPECREATORS_API_KEY", out)
+        self.assertNotIn("AWS_SECRET_ACCESS_KEY", out)
+
+    def test_runtime_and_client_vars_pass_through(self):
+        out = self._call(self._ambient())
+        self.assertEqual("/usr/bin:/bin", out.get("PATH"))
+        self.assertEqual("/home/test", out.get("HOME"))
+        self.assertEqual("production", out.get("NODE_ENV"))
+        self.assertEqual("ambient-token", out.get("AUTH_TOKEN"))
+        self.assertEqual("ambient-ct0", out.get("CT0"))
+        self.assertEqual("ambient-tw-token", out.get("TWITTER_AUTH_TOKEN"))
+        self.assertEqual("ambient-tw-ct0", out.get("TWITTER_CT0"))
+        self.assertEqual("0", out.get("LAST30DAYS_DISABLE_BROWSER_COOKIES"))
+        self.assertEqual("/tmp/ids.json", out.get("BIRD_QUERY_IDS_CACHE"))
+
+    def test_absent_vars_are_omitted(self):
+        out = self._call(self._ambient(NODE_ENV=None))
+        self.assertNotIn("NODE_ENV", out)
+        out = self._call(self._ambient(LAST30DAYS_DISABLE_BROWSER_COOKIES=None))
+        self.assertNotIn("LAST30DAYS_DISABLE_BROWSER_COOKIES", out)
+
+    def test_injected_credentials_override_ambient(self):
+        out = self._call(self._ambient(), credentials={"AUTH_TOKEN": "injected", "CT0": "injected-ct0"})
+        self.assertEqual("injected", out.get("AUTH_TOKEN"))
+        self.assertEqual("injected-ct0", out.get("CT0"))
+
+    def test_disable_flag_always_hard_set(self):
+        out = self._call(self._ambient(), credentials={"AUTH_TOKEN": "t", "CT0": "c"})
+        self.assertEqual("1", out.get("BIRD_DISABLE_BROWSER_COOKIES"))
+        # ambient 0 is overridden to 1
+        out = self._call(self._ambient(BIRD_DISABLE_BROWSER_COOKIES="0"))
+        self.assertEqual("1", out.get("BIRD_DISABLE_BROWSER_COOKIES"))
+
+    def test_ambient_bird_vars_pass_through(self):
+        out = self._call(self._ambient(BIRD_FEATURES_PATH="/tmp/features.json"))
+        self.assertEqual("/tmp/features.json", out.get("BIRD_FEATURES_PATH"))
+
+    def test_allowlist_covers_vendored_client_env_reads(self):
+        """Every process.env name the vendored client reads is reachable.
+
+        Guards the allowlist against vendor drift: a future bird-search bump
+        that reads a new non-BIRD_ env var must either be added to the
+        allowlist or fail here, keeping the child env surface explicit
+        (issue #1063).
+        """
+        import re
+
+        from lib import bird_x
+
+        vendor_dir = REPO_ROOT / "skills" / "last30days" / "scripts" / "lib" / "vendor" / "bird-search"
+        reads = set()
+        for path in list(vendor_dir.rglob("*.js")) + list(vendor_dir.rglob("*.mjs")):
+            text = path.read_text(encoding="utf-8")
+            for m in re.finditer(
+                r"process\.env\[\s*['\"]([A-Z0-9_]+)['\"]\s*\]|process\.env\.([A-Z0-9_]+)",
+                text,
+            ):
+                reads.add(m.group(1) or m.group(2))
+            # cookies.js reads via helpers with the keys passed as arguments:
+            # envFlagEnabled('NAME') and readEnvCookie(cookies, ['A', 'B'], ...).
+            for m in re.finditer(r"envFlagEnabled\(\s*['\"]([A-Z0-9_]+)['\"]\s*\)", text):
+                reads.add(m.group(1))
+            for m in re.finditer(r"readEnvCookie\(\s*\w+\s*,\s*\[([^\]]*)\]", text):
+                reads.update(re.findall(r"['\"]([A-Z0-9_]+)['\"]", m.group(1)))
+        self.assertTrue(reads, "vendored client env reads not found")
+        allowlist = set(bird_x._SUBPROCESS_ENV_ALLOWLIST)
+        uncovered = {
+            name for name in reads
+            if not name.startswith("BIRD_") and name not in allowlist
+        }
+        self.assertEqual(set(), uncovered)
 
 
 class TestBirdXEngagementZero(unittest.TestCase):
@@ -473,7 +581,7 @@ class TestStrongestTokenRetryAnchored(unittest.TestCase):
 
         queries = []
 
-        def fake_run(query, count, timeout):
+        def fake_run(query, count, timeout, deadline=None):
             queries.append(query)
             return {"items": []}  # always 0 → forces every retry tier
 
@@ -495,7 +603,7 @@ class TestStrongestTokenRetryAnchored(unittest.TestCase):
 
         queries = []
 
-        def fake_run(query, count, timeout):
+        def fake_run(query, count, timeout, deadline=None):
             queries.append(query)
             return {"items": []}
 
@@ -514,7 +622,7 @@ class TestBirdRetryQueryCorrectness(unittest.TestCase):
 
         queries = []
 
-        def fake_run(query, count, timeout):
+        def fake_run(query, count, timeout, deadline=None):
             queries.append(query)
             if len(queries) == 1:
                 return {"items": []}
@@ -536,7 +644,7 @@ class TestBirdRetryQueryCorrectness(unittest.TestCase):
 
         self.assertGreaterEqual(len(queries), 2)
         self.assertEqual(
-            "immobilienmakler berlin mixed-use since:2026-07-12",
+            "immobilienmakler berlin mixed-use since:2026-07-12 until:2026-07-20",
             queries[0],
         )
         for query in queries:
@@ -589,3 +697,40 @@ class LeadingMentionsTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CredentialScrubInFailureDetailTests(unittest.TestCase):
+    """A handle-lane failure reason is recorded in the run's source_status and
+    rendered in the report, so subprocess stderr must not carry the X session
+    cookies into user-facing output."""
+
+    def tearDown(self):
+        bird_x._credentials.clear()
+
+    def test_injected_cookie_values_are_redacted_from_notes(self):
+        bird_x.set_credentials("auth-token-sentinel-value", "ct0-sentinel-value")
+        failures: list[str] = []
+        proc = mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr="rejected cookie auth_token=auth-token-sentinel-value ct0=ct0-sentinel-value",
+        )
+        with mock.patch.object(bird_x.subproc, "run_with_timeout", return_value=proc):
+            bird_x.search_handles(
+                ["someone"], "topic", "2026-05-19", count_per=1,
+                failure_out=failures,
+            )
+        joined = " ".join(failures)
+        assert failures, "a non-zero exit must be reported"
+        self.assertNotIn("auth-token-sentinel-value", joined)
+        self.assertNotIn("ct0-sentinel-value", joined)
+        self.assertIn("<redacted>", joined)
+        # The actionable part of the reason survives.
+        self.assertIn("exited 1", joined)
+
+    def test_scrub_leaves_ordinary_stderr_intact(self):
+        bird_x.set_credentials("auth-token-sentinel-value", "ct0-sentinel-value")
+        self.assertEqual(
+            "connect ETIMEDOUT 104.244.42.1:443",
+            bird_x._scrub_credentials("connect ETIMEDOUT 104.244.42.1:443"),
+        )

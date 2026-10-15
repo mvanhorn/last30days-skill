@@ -1,98 +1,70 @@
-"""Auto-discovered X handles must reach resolved_handles.
-
-resolved_handles gates every first-party protection downstream: the entity-miss
-exemption in rerank, FIRST_PARTY_FLOOR, the interaction floor, and the
-retrieval-floor exemption in signals. It was built only from --x-handle,
---github-user and --x-related, so on any run that did not pass --x-handle
-(the overwhelmingly common case) the whole mechanism was inert.
-"""
+"""Supplemental handle discovery reaches the first-party ranking boundaries."""
 
 import inspect
+import threading
+from unittest.mock import patch
 
-from lib import pipeline
+from lib import pipeline, providers, schema
 
 
-def _call_supplements(**overrides):
-    """Drive _run_supplemental_searches far enough to populate the out-param.
-
-    The function bails early when no X or Reddit dicts are present unless a
-    handle was supplied, so an explicit x_handle is the cheapest way to reach
-    the resolution block without standing up a full retrieval bundle.
-    """
-    out: list[str] = []
-    kwargs = dict(
-        topic="Peter Steinberger steipete",
-        bundle=overrides.pop("bundle"),
-        plan=overrides.pop("plan"),
-        config={},
-        depth="default",
-        date_range=("2026-07-14", "2026-08-13"),
-        runtime=overrides.pop("runtime"),
-        mock=True,
-        rate_limited_sources=set(),
-        rate_limit_lock=overrides.pop("lock"),
-        resolved_handles_out=out,
+def _plan():
+    return schema.QueryPlan(
+        intent="exploration", freshness_mode="balanced_recent", cluster_mode="topic",
+        raw_topic="Example research", source_weights={"x": 1.0},
+        subqueries=[schema.SubQuery(label="primary", search_query="Example research",
+                                   ranking_query="Example research", sources=["x"])],
     )
-    kwargs.update(overrides)
-    pipeline._run_supplemental_searches(**kwargs)
-    return out
 
 
 def test_out_param_is_part_of_the_contract():
-    sig = inspect.signature(pipeline._run_supplemental_searches)
-    assert "resolved_handles_out" in sig.parameters, (
-        "the supplement pass must be able to report the handles it resolved; "
-        "without it resolved_handles cannot see auto-discovered subjects"
-    )
-    assert sig.parameters["resolved_handles_out"].default is None, (
-        "the out-param must stay optional so existing callers are unaffected"
-    )
+    parameter = inspect.signature(pipeline._run_supplemental_searches).parameters["resolved_handles_out"]
+    assert parameter.default is None
 
 
-def test_resolved_handles_includes_supplemental_handles():
-    """The merge site must read the supplement pass's output.
-
-    Matched on the assignment rather than an exact literal: an earlier version
-    pinned "resolved_handles = {" and broke when the construction changed to
-    merge the explicit set, proving nothing about behavior either way.
-    """
-    src = inspect.getsource(pipeline)
-    start = src.index("resolved_handles =")
-    block = src[start:start + 400]
-    assert "supplemental_handles" in block, (
-        "resolved_handles is still built without the handles the supplement "
-        "pass discovered; auto-discovered subjects stay unprotected"
-    )
-    assert "explicit_first_party" in block, (
-        "the user-named handles must still be part of resolved_handles"
-    )
+def test_collector_normalizes_deduplicates_and_requires_corroboration():
+    output = ["existing"]
+    with patch.object(pipeline.entity_extract, "extract_entities", return_value={
+        "x_handles": ["@ExampleDev", "EXAMPLEDEV", "commentator", "@Existing"],
+        "x_hashtags": [], "reddit_subreddits": [],
+    }), patch.object(pipeline.env, "x_backend_chain", return_value=[]):
+        pipeline._run_supplemental_searches(
+            topic="Example research", bundle=schema.RetrievalBundle(), plan=_plan(),
+            config={}, depth="default", date_range=("2026-03-01", "2026-03-31"),
+            runtime=providers.mock_runtime({}, "default"), mock=False,
+            rate_limited_sources=set(), rate_limit_lock=threading.Lock(),
+            x_handle="@Explicit", x_related=["@Related", "related"],
+            resolved_handles_out=output,
+        )
+    assert output == ["existing", "explicit", "exampledev", "related"]
 
 
-def test_supplemental_handles_is_seeded_before_the_call():
-    src = inspect.getsource(pipeline)
-    assert "supplemental_handles: list[str] = []" in src
-    assert "resolved_handles_out=supplemental_handles," in src, (
-        "the supplement call must pass the collector it later merges from"
-    )
-
-
-def test_handles_are_normalized_and_deduped():
-    """Normalization must match resolved_handles' own lstrip/strip/lower form."""
-    src = inspect.getsource(pipeline._run_supplemental_searches)
-    block = src[src.index("resolved_handles_out is not None"):]
-    assert 'lstrip("@")' in block and ".lower()" in block, (
-        "handles must be normalized the same way resolved_handles normalizes, "
-        "or the set comparison in rerank/_is_first_party will miss them"
-    )
-    assert "seen" in block, "duplicate handles must not accumulate"
-
-
-def test_population_precedes_the_no_handles_early_return():
-    """A run whose lanes cannot execute must still contribute its handles."""
-    src = inspect.getsource(pipeline._run_supplemental_searches)
-    populate_at = src.index("resolved_handles_out is not None")
-    early_return_at = src.index("if not handles and not related_handles:")
-    assert populate_at < early_return_at, (
-        "handles are surfaced after the early return, so a run with no usable "
-        "handle lane would silently contribute nothing to resolved_handles"
-    )
+def test_discovered_handles_reach_real_fusion_and_reranking():
+    raw = [
+        {"id": "subject", "text": "A new release shipped today",
+         "author_handle": "ExampleDev", "url": "https://x.com/ExampleDev/status/1",
+         "date": "2026-03-15", "engagement": {"likes": 100}},
+        {"id": "mention", "text": "Example research by ExampleDev is detailed",
+         "author_handle": "observer", "url": "https://x.com/observer/status/2",
+         "date": "2026-03-16", "engagement": {"likes": 20}},
+    ]
+    runtime = providers.mock_runtime({}, "default")
+    with patch.object(pipeline.providers, "resolve_runtime", return_value=(runtime, None)), \
+         patch.object(pipeline, "available_sources", return_value=["x"]), \
+         patch.object(pipeline.env, "x_backend_chain", return_value=[]), \
+         patch.object(pipeline, "_retrieve_stream", return_value=(raw, {})), \
+         patch.object(pipeline, "_run_supplemental_searches", wraps=pipeline._run_supplemental_searches) as supplements, \
+         patch.object(pipeline, "weighted_rrf", wraps=pipeline.weighted_rrf) as fuse, \
+         patch.object(pipeline.rerank, "rerank_candidates", wraps=pipeline.rerank.rerank_candidates) as rank:
+        report = pipeline.run(
+            topic="Example research", config={}, depth="default", mock=False,
+            requested_sources=["x"], web_backend="none", as_of_date="2026-03-31",
+            external_plan=schema.to_dict(_plan()),
+        )
+    assert supplements.call_count == 1
+    assert supplements.call_args.kwargs["resolved_handles_out"] == ["exampledev"]
+    assert "exampledev" in fuse.call_args.kwargs["first_party_handles"]
+    assert "observer" not in fuse.call_args.kwargs["first_party_handles"]
+    assert rank.call_count == 2
+    assert all("exampledev" in call.kwargs["resolved_handles"] for call in rank.call_args_list)
+    assert any(item.author == "ExampleDev" for candidate in report.ranked_candidates
+               for item in candidate.source_items)

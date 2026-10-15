@@ -120,7 +120,7 @@ class TestAlreadyRegistered:
         handle.write_text(_json.dumps({"device_code": "dc", "interval": 1, "user_code": "819B-F71B"}))
         mock_handle.return_value = handle
         mock_poll.return_value = "access-token"
-        mock_fetch.return_value = "sc_polled_key"
+        mock_fetch.return_value = {"ok": True, "api_key": "sc_polled_key"}
 
         result = setup_wizard.run_github_poll(timeout=1)
 
@@ -148,7 +148,7 @@ class TestAlreadyRegistered:
         )
         mock_handle.return_value = handle
         mock_poll.return_value = "tok"
-        mock_fetch.return_value = "sc_k"
+        mock_fetch.return_value = {"ok": True, "api_key": "sc_k"}
 
         setup_wizard.run_github_poll(timeout=1)
 
@@ -169,7 +169,7 @@ class TestAlreadyRegistered:
             {"device_code": "dc", "interval": 1, "user_code": "819B-F71B", "clipboard_ok": True},
         )
         mock_poll.return_value = "tok"
-        mock_fetch.return_value = "sc_oneshot_key"
+        mock_fetch.return_value = {"ok": True, "api_key": "sc_oneshot_key"}
 
         result = setup_wizard.run_full_device_auth(timeout=1)
 
@@ -200,7 +200,7 @@ class TestFetchApiKeyLogging:
 
         result = setup_wizard.fetch_api_key("gh_access_token")
 
-        assert result is None
+        assert result == {"ok": False, "reason": "no_api_key"}
         # The warning must include the field names but never the secret value.
         logged = " ".join(str(c) for c in mock_logger.warning.call_args_list)
         assert "linked" in logged and "token" in logged

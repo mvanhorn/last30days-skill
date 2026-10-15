@@ -109,13 +109,15 @@ class TestExtractCommentInsights(unittest.TestCase):
         self.assertEqual(len(insights), 1)
 
     def test_filters_low_value_patterns(self):
+        substantive = "Measure the query latency before choosing a caching strategy."
         comments = [
-            {"body": "This."},
-            {"body": "lol that's hilarious"},
-            {"body": "A" * 50 + " Here's a real insight about how to approach this problem."},
+            {"body": "lol " + "that is hilarious " * 3},
+            {"body": "[deleted] " + "unavailable content " * 3},
+            {"body": "[removed] " + "unavailable content " * 3},
+            {"body": substantive},
         ]
         insights = reddit_enrich.extract_comment_insights(comments)
-        self.assertEqual(len(insights), 1)
+        self.assertEqual(insights, [substantive])
 
     def test_respects_limit(self):
         comments = [{"body": f"Comment number {i} " + "x" * 50} for i in range(20)]

@@ -14,6 +14,8 @@ import struct
 import sys
 from pathlib import Path
 
+from .cookie_paths import path_exists
+
 # Mac epoch: 2001-01-01 00:00:00 UTC (not used for filtering, but documented)
 _MAC_EPOCH_OFFSET = 978307200  # seconds between Unix epoch and Mac epoch
 
@@ -98,7 +100,10 @@ def extract_safari_cookies_macos(
     Extract cookies from Safari on macOS.
 
     Args:
-        domain: Domain to match (substring match, e.g. "x.com")
+        domain: Registrable host to match, with or without a leading dot
+            (e.g. "x.com" or ".x.com"). A stored cookie host matches when it
+            equals the domain or is a subdomain of it; unrelated hosts that
+            merely contain the text (e.g. "x.com.evil.tld") do not.
         cookie_names: List of cookie names to extract (e.g. ["auth_token", "ct0"])
 
     Returns:
@@ -118,24 +123,47 @@ def extract_safari_cookies_macos(
         / "Cookies.binarycookies",
         Path.home() / "Library" / "Cookies" / "Cookies.binarycookies",
     ]
-    cookie_path = next((path for path in cookie_paths if path.exists()), cookie_paths[0])
+    denied = None
+    partial = None
+    for cookie_path in cookie_paths:
+        try:
+            if not path_exists(cookie_path):
+                continue
+            raw = cookie_path.read_bytes()
+        except PermissionError as exc:
+            if denied is None:
+                denied = exc
+            continue
+        except OSError:
+            continue
+        result = _parse_binary_cookies(raw, domain, cookie_names)
+        if result and all(result.get(name) for name in cookie_names):
+            return result
+        if result and partial is None:
+            partial = result
 
-    try:
-        raw = cookie_path.read_bytes()
-    except FileNotFoundError:
-        return None
-    except PermissionError:
+    if denied is not None:
         print(
             "[safari] Permission denied reading Cookies.binarycookies. "
-            "Enable Full Disk Access for Terminal in System Settings > "
-            "Privacy & Security > Full Disk Access.",
+            "Check the invoking app's browser-data permissions in System Settings > "
+            "Privacy & Security, then retry setup.",
             file=sys.stderr,
         )
-        return None
-    except OSError:
-        return None
+        raise denied
+    return partial
 
-    return _parse_binary_cookies(raw, domain, cookie_names)
+
+def _host_matches(stored_host: str, domain: str) -> bool:
+    """True when stored_host equals domain or is a subdomain of it.
+
+    Safari stores domain cookies with a leading dot (".x.com") and host-only
+    cookies without one ("x.com"); both spellings are accepted on either side.
+    """
+    host = stored_host.strip().lstrip(".").lower()
+    wanted = domain.strip().lstrip(".").lower()
+    if not host or not wanted:
+        return False
+    return host == wanted or host.endswith("." + wanted)
 
 
 def _parse_binary_cookies(
@@ -182,8 +210,7 @@ def _parse_binary_cookies(
         page_data = raw[offset : offset + ps]
         cookies = _parse_page(page_data)
         for c in cookies:
-            # Substring match on domain (handles leading dots like ".x.com")
-            if domain in c["url"] and c["name"] in names_set:
+            if _host_matches(c["url"], domain) and c["name"] in names_set:
                 result[c["name"]] = c["value"]
         offset += ps
 

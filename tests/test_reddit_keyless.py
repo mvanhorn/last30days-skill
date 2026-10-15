@@ -1,4 +1,4 @@
-"""Tests for scripts/lib/reddit_keyless.py — tiered keyless Reddit pipeline."""
+"""Tests for scripts/lib/reddit_keyless.py: tiered keyless Reddit pipeline."""
 
 from unittest import mock
 
@@ -11,7 +11,7 @@ def _post(i, date="2026-05-20", rel=0.0):
         "id": "", "title": f"Post {i}", "url": url, "score": 0, "num_comments": 0,
         "subreddit": "test", "created_utc": None, "author": "u", "selftext": "",
         "date": date, "engagement": {"score": 0, "num_comments": 0, "upvote_ratio": None},
-        "relevance": rel, "why_relevant": "Reddit RSS", "metadata": {},
+        "relevance": rel, "why_relevant": "Reddit search", "metadata": {},
     }
 
 
@@ -26,71 +26,121 @@ def _scored(i, score, ncmt=0):
     return p
 
 
+def _searched(i, score, ncmt=0, rel=0.5):
+    """A site-search result: dated and scored straight from the search page."""
+    p = _scored(i, score, ncmt)
+    p["relevance"] = rel
+    p["why_relevant"] = "Reddit search"
+    return p
+
+
+def _lanes(search=(), listing=(), arctic_listing=(), arctic_scores=None):
+    """Patch every discovery lane at its module boundary; return the mocks."""
+    return (
+        mock.patch.object(reddit_keyless.reddit_search, "search", return_value=list(search)),
+        mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
+                          return_value=list(listing)),
+        mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
+                          return_value=list(arctic_listing)),
+        mock.patch.object(reddit_keyless.reddit_arctic, "fetch_scores",
+                          return_value=dict(arctic_scores or {})),
+    )
+
+
 class TestDiscovery:
-    """RSS breadth + scored listings are the keyless discovery path (no .json)."""
+    """Reddit site search + scored listings are the keyless discovery path."""
 
-    def test_keyless_path_runs_rss_and_listings(self):
-        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
-                               return_value=[_post(1), _post(2)]) as rss, \
-             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
-                               return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
-                               return_value=[]):
-            out = reddit_keyless._discover("topic", "default", ["test"])
-        assert len(out) == 2
-        rss.assert_called_once()
+    def test_bare_run_returns_search_posts_without_listing_requests(self):
+        hits = [_searched(1, score=412, ncmt=38), _searched(2, score=77, ncmt=5)]
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes(search=hits)
+        with p_search as search, p_listing as listing, \
+             p_arctic_listing as arctic_listing, p_scores as scores:
+            out = reddit_keyless._discover("topic", "default", None)
+        search.assert_called_once()
+        assert search.call_args.kwargs["subreddits"] is None
+        listing.assert_not_called()
+        arctic_listing.assert_not_called()
+        scores.assert_not_called()  # real scores, nothing to backfill
+        assert [p["url"] for p in out] == [h["url"] for h in hits]
+        assert [p["engagement"]["score"] for p in out] == [412, 77]
+        assert [p["num_comments"] for p in out] == [38, 5]
 
-    def test_listing_scores_backfill_rss_posts(self):
-        # RSS finds post 1 (no score); listing card for post 1 carries the score.
-        rss_post = _post(1)
+    def test_targeted_run_merges_search_and_listing_first_writer_wins(self):
         listing_post = _scored(1, score=52692, ncmt=1743)
-        listing_post["subreddit"] = "test"  # Match the requested subreddit.
-        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
-                               return_value=[rss_post]), \
-             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
-                               return_value=[listing_post]), \
-             mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
-                               return_value=[]):  # No arctic supplement.
+        listing_only = _scored(2, score=10)
+        search_dup = _searched(1, score=50000, ncmt=1700)  # same url as listing_post
+        search_only = _searched(3, score=9)
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes(
+            search=[search_dup, search_only], listing=[listing_post, listing_only])
+        with p_search as search, p_listing as listing, p_arctic_listing, p_scores:
             out = reddit_keyless._discover("topic", "default", ["test"])
-        # listing post (scored) is kept; RSS dup of same url is dropped
-        assert len(out) == 1
+        assert search.call_args.kwargs["subreddits"] == ["test"]
+        assert listing.call_args.args[0] == ["test"]
+        urls = [p["url"] for p in out]
+        assert urls == [listing_post["url"], listing_only["url"], search_only["url"]]
+        assert out[0]["why_relevant"] == "Reddit listing"  # one copy, listing kept
         assert out[0]["engagement"]["score"] == 52692
-        assert out[0]["num_comments"] == 1743
 
-    def test_scores_flow_to_distinct_rss_posts(self):
-        # Distinct RSS post whose id matches a listing card gets backfilled.
-        rss_post = _post(7)  # url .../000007/...
+    def test_targeted_listing_score_fills_distinct_search_post(self):
+        # A search post whose id matches a listing card under another url takes
+        # the listing's live score.
+        search_post = _searched(7, score=0)
         listing_post = _scored(7, score=999)
         listing_post["url"] = "https://www.reddit.com/r/test/comments/zzzzzz/other/"
-        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
-                               return_value=[rss_post]), \
-             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
-                               return_value=[listing_post]):
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes(
+            search=[search_post], listing=[listing_post])
+        with p_search, p_listing, p_arctic_listing, p_scores:
             out = reddit_keyless._discover("topic", "default", ["test"])
-        backfilled = [p for p in out if p["url"] == rss_post["url"]][0]
-        assert backfilled["engagement"]["score"] == 999
+        filled = [p for p in out if p["url"] == search_post["url"]][0]
+        assert filled["engagement"]["score"] == 999
+
+    def test_zero_score_search_post_gets_arctic_fill(self):
+        unscored = _searched(4, score=0)
+        scored = _searched(5, score=120, ncmt=3)
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes(
+            search=[unscored, scored],
+            arctic_scores={"000004": {"score": 31, "num_comments": 6}})
+        with p_search, p_listing, p_arctic_listing, p_scores as scores:
+            out = reddit_keyless._discover("topic", "default", None)
+        scores.assert_called_once_with(["000004"])
+        by_url = {p["url"]: p for p in out}
+        assert by_url[unscored["url"]]["engagement"]["score"] == 31
+        assert by_url[unscored["url"]]["num_comments"] == 6
+        assert by_url[scored["url"]]["engagement"]["score"] == 120
 
     def test_bare_query_does_not_merge_listing_discovery(self):
-        # No subreddits provided: derived-subreddit listings must NOT be added as
-        # results (avoids flooding with off-topic high-upvote posts) — only used
-        # to backfill scores onto the keyword-matched RSS posts.
-        rss_post = _post(1)  # on-topic keyword match
-        offtopic_listing = _scored(99, score=88888)  # high score, unrelated sub
+        # No subreddits provided: no listing is fetched, so high-upvote
+        # off-topic listing posts can never flood the keyword-matched results.
+        on_topic = _searched(1, score=15)
+        offtopic_listing = _scored(99, score=88888)
         offtopic_listing["url"] = "https://www.reddit.com/r/random/comments/zzz999/x/"
-        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
-                               return_value=[rss_post]), \
-             mock.patch.object(reddit_keyless, "_top_subreddits", return_value=["random"]), \
-             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
-                               return_value=[offtopic_listing]):
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes(
+            search=[on_topic], listing=[offtopic_listing], arctic_listing=[offtopic_listing])
+        with p_search, p_listing as listing, p_arctic_listing as arctic_listing, p_scores:
             out = reddit_keyless._discover("topic", "default", None)
         urls = [p["url"] for p in out]
-        assert rss_post["url"] in urls
-        assert offtopic_listing["url"] not in urls  # not merged as discovery
+        assert urls == [on_topic["url"]]
+        listing.assert_not_called()
+        arctic_listing.assert_not_called()
 
     def test_discover_never_raises_returns_empty(self):
-        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss", return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings", return_value=[]):
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes()
+        with p_search, p_listing, p_arctic_listing, p_scores:
             assert reddit_keyless._discover("t", "default", None) == []
+
+    def test_empty_search_makes_keyless_path_return_empty(self):
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes()
+        with p_search, p_listing, p_arctic_listing, p_scores:
+            assert reddit_keyless.search_and_enrich("t", "2026-05-01", "2026-05-31") == []
+
+    def test_search_window_follows_lookback(self):
+        p_search, p_listing, p_arctic_listing, p_scores = _lanes()
+        with p_search as search, p_listing, p_arctic_listing, p_scores:
+            reddit_keyless.search_and_enrich("t", "2026-05-24", "2026-05-31", depth="quick")
+        kwargs = search.call_args.kwargs
+        assert kwargs["from_date"] == "2026-05-24"
+        assert kwargs["to_date"] == "2026-05-31"
+        assert kwargs["depth"] == "quick"
 
 
 class TestSearchAndEnrich:
@@ -258,6 +308,116 @@ class TestSlotPriority:
         with mock.patch("lib.rerank._primary_entity", side_effect=Exception("boom")):
             out = reddit_keyless._slot_priority("openclaw", posts)
         assert out == posts
+
+    @staticmethod
+    def _titled_nc(i, title, score=0, ncmt=0, selftext=""):
+        """_titled variant that also sets a real comment count (both surfaces)."""
+        p = TestSlotPriority._titled(i, title, score=score, selftext=selftext)
+        p["num_comments"] = ncmt
+        p["engagement"]["num_comments"] = ncmt
+        return p
+
+    def test_comment_count_orders_within_match_tier(self):
+        # Two entity-matching posts: the low-score high-comment thread wins the slot.
+        high_comments = self._titled_nc(1, "openclaw thread with lots of discussion", score=1, ncmt=45)
+        low_comments = self._titled_nc(2, "openclaw thread, quiet", score=900, ncmt=3)
+        out = reddit_keyless._slot_priority("openclaw", [low_comments, high_comments])
+        assert out[0] is high_comments
+        assert out[1] is low_comments
+
+    def test_entity_match_tier_beats_comment_count(self):
+        # Entity priority is preserved: a miss with 100 comments still follows a
+        # match with 1 comment, regardless of discussion volume.
+        match = self._titled_nc(1, "openclaw tips", score=10, ncmt=1)
+        miss = self._titled_nc(2, "Gemma news", score=100, ncmt=100)
+        out = reddit_keyless._slot_priority("openclaw", [miss, match])
+        assert out[0] is match
+        assert out[1] is miss
+
+    def test_equal_comment_counts_preserve_incoming_order_stable(self):
+        # Stable tiebreak: equal comment counts preserve the incoming order. The
+        # score-first order is established by search_and_enrich's provisional
+        # sort before _slot_priority runs; _slot_priority must not re-sort ties.
+        p1 = self._titled_nc(1, "openclaw thread a", score=100, ncmt=5)
+        p2 = self._titled_nc(2, "openclaw thread b", score=50, ncmt=5)
+        out = reddit_keyless._slot_priority("openclaw", [p2, p1])
+        assert out[0] is p2
+        assert out[1] is p1
+
+    def test_unknown_comment_count_ties_with_zero(self):
+        # Missing/None comment count is treated as 0: it ties with a known-zero
+        # post (stable) and sorts below any positive-count post in its tier.
+        unknown = self._titled_nc(1, "openclaw unknown", score=100, ncmt=None)
+        positive = self._titled_nc(2, "openclaw positive", score=10, ncmt=3)
+        known_zero = self._titled_nc(3, "openclaw zero", score=5, ncmt=0)
+        out = reddit_keyless._slot_priority("openclaw", [known_zero, unknown, positive])
+        assert out[0] is positive
+        assert out[1:] == [known_zero, unknown]
+
+    def test_richest_thread_gets_slot_when_score_ranked_low(self):
+        # Issue #906 regression: a 45-comment thread ranked last by score must
+        # get an enrichment slot at default depth (limit 8) while a 4-comment
+        # thread above it in score order does not. All posts are in the same
+        # entity tier; there are more posts than slots so ordering matters.
+        posts = [
+            self._titled_nc(1, "openclaw thread one", score=1000, ncmt=4),
+            self._titled_nc(2, "openclaw thread two", score=900, ncmt=4),
+            self._titled_nc(3, "openclaw thread three", score=800, ncmt=4),
+            self._titled_nc(4, "openclaw thread four", score=700, ncmt=4),
+            self._titled_nc(5, "openclaw thread five", score=600, ncmt=6),
+            self._titled_nc(6, "openclaw thread six", score=500, ncmt=5),
+            self._titled_nc(7, "openclaw thread seven", score=300, ncmt=4),
+            self._titled_nc(9, "openclaw thread nine", score=250, ncmt=7),
+            self._titled_nc(10, "openclaw thread ten", score=200, ncmt=8),
+            self._titled_nc(11, "openclaw thread eleven", score=150, ncmt=9),
+            self._titled_nc(8, "openclaw thread eight", score=77, ncmt=45),
+        ]
+        enriched_urls = []
+
+        def _capture(url):
+            enriched_urls.append(url)
+            return {"top_comments": [], "comment_insights": [], "num_comments": None}
+
+        with mock.patch.object(reddit_keyless, "_discover", return_value=posts), \
+             mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments",
+                               side_effect=_capture):
+            reddit_keyless.search_and_enrich(
+                "openclaw", "2026-05-01", "2026-05-31", depth="default")
+        assert posts[10]["url"] in enriched_urls     # 45-comment thread enriched
+        assert posts[6]["url"] not in enriched_urls   # 4-comment thread above it skipped
+        assert len(enriched_urls) == reddit_keyless.ENRICH_LIMITS["default"]
+
+    def test_miss_tier_orders_by_comments_for_leftover_slots(self):
+        # Review finding #1 (validated): when the entity-match tier is smaller
+        # than ENRICH_LIMITS, leftover slots are filled from the miss tier in
+        # comment-count order. 1 match + 4 misses at quick depth (limit 4): the
+        # three most-commented misses get slots, the least-commented miss does not.
+        # Score order deliberately differs from comment order so this test
+        # discriminates the miss-tier sort from the old score-first order.
+        posts = [
+            self._titled_nc(1, "openclaw thread", score=100, ncmt=2),
+            self._titled_nc(2, "Gemma thread A", score=5, ncmt=30),
+            self._titled_nc(3, "Gemma thread B", score=40, ncmt=9),
+            self._titled_nc(4, "Gemma thread C", score=30, ncmt=2),
+            self._titled_nc(5, "Gemma thread D", score=20, ncmt=1),
+        ]
+        enriched_urls = []
+
+        def _capture(url):
+            enriched_urls.append(url)
+            return {"top_comments": [], "comment_insights": [], "num_comments": None}
+
+        with mock.patch.object(reddit_keyless, "_discover", return_value=posts), \
+             mock.patch.object(reddit_keyless.reddit_shreddit, "fetch_comments",
+                               side_effect=_capture):
+            reddit_keyless.search_and_enrich(
+                "openclaw", "2026-05-01", "2026-05-31", depth="quick")
+        assert posts[0]["url"] in enriched_urls       # entity match always slotted
+        assert posts[1]["url"] in enriched_urls       # 30-comment miss (top miss)
+        assert posts[2]["url"] in enriched_urls       # 9-comment miss
+        assert posts[3]["url"] in enriched_urls       # 2-comment miss takes the last slot
+        assert posts[4]["url"] not in enriched_urls   # 1-comment miss below the cut
+        assert len(enriched_urls) == reddit_keyless.ENRICH_LIMITS["quick"]
 
 
 class TestScoredListingsFallback:

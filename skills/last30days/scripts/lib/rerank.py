@@ -42,6 +42,7 @@ FIRST_PARTY_AUTHOR_CREDIT = 5.0
 _DISCOVERY_ENGAGEMENT_FIELDS = {
     "reddit": ("score", "num_comments"),
     "hackernews": ("points", "comments"),
+    "devto": ("reactions", "comments"),
     "digg": ("postCount", "uniqueAuthors"),
     "x": ("likes", "reposts", "replies", "quotes"),
 }
@@ -195,20 +196,23 @@ INTERACTION_FLOOR = 35.0
 # not a win.
 FIRST_PARTY_FLOOR = 25.0
 
-# Intent modifiers to strip before extracting the primary entity so that,
-# for example, "Hermes Agent use cases" yields primary_entity="hermes agent"
-# rather than "hermes agent use cases". Kept in sync with
-# planner._INTENT_MODIFIER_PATTERNS.
-_INTENT_MODIFIER_RE = re.compile(
+# Only strip trailing intent modifiers. A word such as "review" may instead be
+# the subject of a longer topic ("AI code review bottleneck").
+_TRAILING_INTENT_MODIFIER_RE = re.compile(
+    r"(?:\s+(?:and|or|&|,)\s*)?"
     r"\b("
     r"use cases|use case|workflows|workflow|"
     r"examples|example|tutorial|tutorials|"
     r"review|reviews|comparison|applications|"
     r"in practice|production use|production|"
     r"how i use"
-    r")\b",
+    r")\b[\s?.,:;!]*$",
     re.IGNORECASE,
 )
+
+_GENERIC_GROUNDING_MIN_TOKENS = 4
+_GROUNDING_ANCHOR_MIN_LENGTH = 6
+_GROUNDING_LOW_SIGNAL_TOKENS = relevance.LOW_SIGNAL_QUERY_TOKENS | {"still", "work"}
 
 INTENT_SCORING_HINTS: dict[str, str] = {
     "comparison": (
@@ -262,6 +266,7 @@ def rerank_candidates(
     model: str | None,
     shortlist_size: int,
     resolved_handles: set[str] | None = None,
+    primary_handle: str | None = None,
 ) -> list[schema.Candidate]:
     """Rerank the fused shortlist, demoting candidates the reranker scored as irrelevant.
 
@@ -271,10 +276,15 @@ def rerank_candidates(
     exempted from the entity-miss demotion in ``_fallback_tuple`` (a post almost
     never repeats its own author's name, so the body-text grounding check would
     otherwise bury the subject's own highest-signal posts).
+
+    ``primary_handle`` is the run's ``--x-handle``: the one handle in the
+    subject role. Only it can be the topic's own account (_subject_handles);
+    ``--x-related`` and discovered handles are first-party but never subjects.
     """
     handles = resolved_handles or set()
     shortlisted = candidates[:shortlist_size]
     primary_entity = _primary_entity(topic)
+    subject = _subject_handles(primary_handle, topic)
     if provider and model and shortlisted:
         try:
             response = provider.generate_json(
@@ -284,17 +294,32 @@ def rerank_candidates(
         except (ValueError, KeyError, json.JSONDecodeError, OSError, http.HTTPError) as exc:
             import sys
             print(f"[Rerank] LLM reranking failed, using local fallback: {type(exc).__name__}: {exc}", file=sys.stderr)
-            _apply_fallback_scores(shortlisted, primary_entity=primary_entity, resolved_handles=handles)
+            _apply_fallback_scores(
+                shortlisted, primary_entity=primary_entity, resolved_handles=handles, subject_handles=subject
+            )
     else:
-        _apply_fallback_scores(shortlisted, primary_entity=primary_entity, resolved_handles=handles)
+        _apply_fallback_scores(
+            shortlisted, primary_entity=primary_entity, resolved_handles=handles, subject_handles=subject
+        )
 
     if len(candidates) > shortlist_size:
         tail = candidates[shortlist_size:]
-        _apply_fallback_scores(tail, primary_entity=primary_entity, resolved_handles=handles)
+        _apply_fallback_scores(
+            tail, primary_entity=primary_entity, resolved_handles=handles, subject_handles=subject
+        )
 
-    _apply_first_party_floor(candidates, resolved_handles=handles)
-    _apply_engagement_rescue(candidates, primary_entity=primary_entity, resolved_handles=handles)
-    _apply_interaction_signal(candidates, resolved_handles=handles)
+    _apply_first_party_floor(
+        candidates, resolved_handles=handles, primary_entity=primary_entity, topic=topic,
+        primary_handle=primary_handle,
+    )
+    _apply_engagement_rescue(
+        candidates, primary_entity=primary_entity, resolved_handles=handles, topic=topic,
+        primary_handle=primary_handle,
+    )
+    _apply_interaction_signal(
+        candidates, resolved_handles=handles, primary_entity=primary_entity, topic=topic,
+        primary_handle=primary_handle,
+    )
 
     return sorted(
         candidates,
@@ -314,12 +339,33 @@ def _intent_hint_block(plan: schema.QueryPlan) -> str:
     return ""
 
 
+_UNTRUSTED_FENCE_TAG = re.compile(r"<\s*/?\s*untrusted_content\s*>", re.IGNORECASE)
+
+
+def _defang_untrusted_fence(value: str) -> str:
+    """Scraped content must not be able to terminate the fence that contains it.
+
+    A title carrying the literal closing tag would otherwise end the block
+    early, leaving the rest of the scraped text outside the fence and
+    indistinguishable from engine-authored prompt text.
+
+    Only the tag form is rewritten. A bare ``untrusted_content`` identifier in
+    scraped prose or code is left byte-exact: this is a research tool, and
+    altering evidence to defend the fence would corrupt what the judge scores.
+    Matched case-insensitively and tolerant of inner whitespace because the
+    reader is a model, not an XML parser.
+    """
+    return _UNTRUSTED_FENCE_TAG.sub(
+        lambda match: match.group(0).replace("_", "-"), value
+    )
+
+
 def _fenced_untrusted_content(candidate_block: str) -> str:
     return (
         f"{UNTRUSTED_CONTENT_NOTICE}\n\n"
         "Candidates:\n"
         "<untrusted_content>\n"
-        f"{candidate_block}\n"
+        f"{_defang_untrusted_fence(candidate_block)}\n"
         "</untrusted_content>"
     )
 
@@ -416,22 +462,36 @@ def _apply_llm_scores(
             str(row.get("reason") or "").strip() or None,
         )
     for candidate in candidates:
-        rerank_score, reason = scores.get(
-            candidate.candidate_id, _fallback_tuple(candidate, resolved_handles=handles)
-        )
+        if candidate.candidate_id in scores:
+            rerank_score, reason = scores[candidate.candidate_id]
+            provenance = RERANK_PROVENANCE_LLM
+        else:
+            rerank_score, reason = _fallback_tuple(candidate, resolved_handles=handles)
+            provenance = RERANK_PROVENANCE_FALLBACK
         candidate.rerank_score = rerank_score
         candidate.explanation = reason
+        _set_rerank_provenance(candidate, provenance)
         candidate.final_score = _final_score(candidate)
 
 
 def _apply_fallback_scores(
-    candidates: list[schema.Candidate], *, primary_entity: str = "", resolved_handles: set[str] | None = None
+    candidates: list[schema.Candidate],
+    *,
+    primary_entity: str = "",
+    resolved_handles: set[str] | None = None,
+    subject_handles: set[str] | None = None,
 ) -> None:
     handles = resolved_handles or set()
     for candidate in candidates:
-        rerank_score, reason = _fallback_tuple(candidate, primary_entity=primary_entity, resolved_handles=handles)
+        rerank_score, reason = _fallback_tuple(
+            candidate,
+            primary_entity=primary_entity,
+            resolved_handles=handles,
+            subject_handles=subject_handles,
+        )
         candidate.rerank_score = rerank_score
         candidate.explanation = reason
+        _set_rerank_provenance(candidate, RERANK_PROVENANCE_FALLBACK)
         candidate.final_score = _final_score(candidate)
 
 
@@ -458,6 +518,112 @@ def _is_first_party(candidate: schema.Candidate, resolved_handles: set[str]) -> 
     return _candidate_author_handle(candidate) in resolved_handles
 
 
+def _handle_is_topic(handle: str, topic: str) -> bool:
+    """True when the handle names the topic itself, not someone near it.
+
+    Matches a handle that contains a topic word ("ghostty" for "Ghostty
+    terminal", "karpathy" for "Andrej Karpathy") or is spelled from prefixes
+    of distinct topic words ("steipete" = stei+pete for "Peter Steinberger",
+    "sama" for "Sam Altman"). A founder or commentator handle on a product
+    topic ("mitchellh" for "Ghostty terminal") does not match.
+    """
+    letters = re.sub(r"[^a-z]", "", (handle or "").lower())
+    if len(letters) < 3:
+        return False
+    words = [
+        word
+        for word in re.findall(r"[a-z]+", (topic or "").lower())
+        if len(word) >= 3
+        and word not in relevance.STOPWORDS
+        and word not in relevance.LOW_SIGNAL_QUERY_TOKENS
+    ]
+    if any(len(word) >= 4 and (word in letters or letters in word) for word in words):
+        return True
+    return _spelled_from_word_prefixes(letters, words, frozenset())
+
+
+def _spelled_from_word_prefixes(rest: str, words: list[str], used: frozenset[int]) -> bool:
+    """Whether ``rest`` splits into prefixes of distinct ``words``.
+
+    Every chunk but the last must be at least 3 letters, and a single chunk
+    alone never counts (that case is the containment test above).
+    """
+    if not rest:
+        return len(used) >= 2
+    for index, word in enumerate(words):
+        if index in used:
+            continue
+        for size in range(min(len(word), len(rest)), 0, -1):
+            if rest[:size] != word[:size]:
+                continue
+            remaining = rest[size:]
+            if size < 3 and remaining:
+                continue
+            if _spelled_from_word_prefixes(remaining, words, used | {index}):
+                return True
+    return False
+
+
+def _subject_handles(primary_handle: str | None, topic: str) -> set[str]:
+    """The topic's own account: the primary handle, when it names the topic.
+
+    Only ``--x-handle`` holds the subject role. A related handle is someone
+    near the topic, so it never qualifies, even when its letters happen to sit
+    inside a topic word ("art" in "Smart home"). The primary handle must still
+    name the topic (_handle_is_topic), so ``--x-handle mitchellh`` on
+    "Ghostty terminal" is a related voice, not the subject. Known false
+    negative: an alias handle that shares no letters with the name
+    ("mrbeast" for "Jimmy Donaldson") is not a subject; its on-topic posts
+    still earn the floors through grounding or relevance.
+    """
+    handle = (primary_handle or "").lstrip("@").strip().lower()
+    if handle and _handle_is_topic(handle, topic):
+        return {handle}
+    return set()
+
+
+def _is_repo_snapshot_candidate(candidate: schema.Candidate) -> bool:
+    """True when every source item is a GitHub repo card (signals.is_repo_snapshot)."""
+    return bool(candidate.source_items) and all(
+        signals.is_repo_snapshot(item) for item in candidate.source_items
+    )
+
+
+def _first_party_floor_eligible(
+    candidate: schema.Candidate,
+    *,
+    resolved_handles: set[str],
+    primary_entity: str = "",
+    subject_handles: set[str] | None = None,
+) -> bool:
+    """Whether a first-party post earns the authorship credit and floors.
+
+    First-party authorship always exempts a post from pruning, but the lift
+    into the visible band is reserved for posts that are on-topic (entity
+    grounded, or clearing the normal relevance floor) and for the topic's own
+    account, whose posts never name their author. A related handle's
+    off-topic reply ("@friend Nanit" on a Ghostty run) stays where its own
+    score puts it. With no primary entity every post counts as on-topic.
+
+    Grounding counts only when it is positively established. For a short
+    generic topic ("Go") _entity_grounded cannot test a match and passes
+    everything, so there the post must clear the relevance floor instead.
+    """
+    if not _is_first_party(candidate, resolved_handles):
+        return False
+    # A repo snapshot card's "author" is the repo owner or the --github-user,
+    # not someone posting in the window (and a project owner such as "sqlite"
+    # can match a topic-token handle), so it never earns the lift.
+    if _is_repo_snapshot_candidate(candidate):
+        return False
+    if subject_handles and _candidate_author_handle(candidate) in subject_handles:
+        return True
+    return (
+        _is_entity_positively_grounded(candidate, primary_entity)
+        or candidate.local_relevance >= relevance.RELEVANCE_FLOOR
+    )
+
+
 def _is_x_candidate(candidate: schema.Candidate) -> bool:
     """True when the candidate originates from X (top-level or any source item)."""
     if candidate.source == "x":
@@ -467,6 +633,20 @@ def _is_x_candidate(candidate: schema.Candidate) -> bool:
 
 def _candidate_engagement(candidate: schema.Candidate) -> float:
     return candidate.engagement if candidate.engagement is not None else 0.0
+
+
+def _is_entity_positively_grounded(candidate: schema.Candidate, primary_entity: str) -> bool:
+    """Like _is_entity_grounded, but False where grounding cannot be tested.
+
+    _entity_grounded passes every candidate when the entity offers no safe
+    anchor (a short generic topic such as "Go"); that keeps it from demoting,
+    but it is not evidence that a candidate is on topic. No primary entity
+    still counts as grounded, as in _is_entity_grounded.
+    """
+    if not primary_entity:
+        return True
+    haystack = _candidate_haystack(candidate)
+    return bool(haystack.strip()) and _entity_grounding_verdict(haystack, primary_entity) is True
 
 
 def _is_entity_grounded(candidate: schema.Candidate, primary_entity: str) -> bool:
@@ -512,38 +692,60 @@ def _interaction_targets(candidate: schema.Candidate, resolved_handles: set[str]
 
 
 def _apply_interaction_signal(
-    candidates: list[schema.Candidate], *, resolved_handles: set[str]
+    candidates: list[schema.Candidate],
+    *,
+    resolved_handles: set[str],
+    primary_entity: str = "",
+    topic: str = "",
+    primary_handle: str | None = None,
 ) -> None:
     """Float and tag first-party posts directed at another account. The relational
     tell (the subject personally engaging someone) is invisible to keyword and
     engagement scoring, so these are floored into the visible band and tagged so
-    synthesis reads them as signal."""
+    synthesis reads them as signal. The floor applies only where
+    _first_party_floor_eligible holds; an off-topic reply is tagged, not lifted."""
     if not resolved_handles:
         return
+    subject = _subject_handles(primary_handle, topic)
     for c in candidates:
         targets = _interaction_targets(c, resolved_handles)
         if not targets:
             continue
         c.metadata = {**(c.metadata or {}), "interaction_targets": sorted(targets)}
+        if not _first_party_floor_eligible(
+            c, resolved_handles=resolved_handles, primary_entity=primary_entity, subject_handles=subject
+        ):
+            continue
         if c.final_score < INTERACTION_FLOOR:
             c.final_score = INTERACTION_FLOOR
 
 
 def _apply_first_party_floor(
-    candidates: list[schema.Candidate], *, resolved_handles: set[str]
+    candidates: list[schema.Candidate],
+    *,
+    resolved_handles: set[str],
+    primary_entity: str = "",
+    topic: str = "",
+    primary_handle: str | None = None,
 ) -> None:
-    """Floor every first-party post above the zero band, on any scoring path.
+    """Floor on-topic first-party posts above the zero band, on any scoring path.
 
     Backstops the LLM rerank path, where the grounding hint would otherwise cap
     a first-party post (which never names its own author) at <=30 and re-bury
-    it. Floor only lifts; it never lowers a post the scorer rated higher.
+    it. Floor only lifts; it never lowers a post the scorer rated higher. Only
+    posts passing _first_party_floor_eligible are lifted (the topic's own
+    account always is); every first-party post still has its entity-miss
+    marker cleared below, so none is pruned for omitting its author's name.
     """
     if not resolved_handles:
         return
+    subject = _subject_handles(primary_handle, topic)
     for c in candidates:
         if not _is_first_party(c, resolved_handles):
             continue
-        if c.final_score < FIRST_PARTY_FLOOR:
+        if c.final_score < FIRST_PARTY_FLOOR and _first_party_floor_eligible(
+            c, resolved_handles=resolved_handles, primary_entity=primary_entity, subject_handles=subject
+        ):
             c.final_score = FIRST_PARTY_FLOOR
         # Clear the entity-miss marker here, at the one site that knows the
         # resolved handles. Downstream relevance gates key on the marker, not
@@ -556,19 +758,36 @@ def _apply_first_party_floor(
 
 
 def _apply_engagement_rescue(
-    candidates: list[schema.Candidate], *, primary_entity: str, resolved_handles: set[str]
+    candidates: list[schema.Candidate],
+    *,
+    primary_entity: str,
+    resolved_handles: set[str],
+    topic: str = "",
+    primary_handle: str | None = None,
 ) -> None:
-    """Floor final_score for high-engagement X posts that are first-party or
-    entity-grounded, so a viral on-topic post can't sit at ~0. Off-topic
-    (entity-miss) collision posts are excluded, preserving noise suppression.
+    """Floor final_score for high-engagement X posts that are entity-grounded
+    or floor-eligible first-party (see _first_party_floor_eligible), so a viral
+    on-topic post can't sit at ~0. Off-topic (entity-miss) collision posts and
+    a related handle's off-topic posts are excluded, preserving noise
+    suppression.
     """
     x_cands = [c for c in candidates if _is_x_candidate(c)]
     if len(x_cands) < 2:
         return
+    subject = _subject_handles(primary_handle, topic)
     engagements = sorted(_candidate_engagement(c) for c in x_cands)
     n = len(engagements)
     for c in x_cands:
-        if not (_is_first_party(c, resolved_handles) or _is_entity_grounded(c, primary_entity)):
+        # A first-party post qualifies only through _first_party_floor_eligible
+        # (which needs positive grounding); the bare grounding pass below would
+        # wave a related handle's off-topic post through on a short topic.
+        if _is_first_party(c, resolved_handles):
+            qualifies = _first_party_floor_eligible(
+                c, resolved_handles=resolved_handles, primary_entity=primary_entity, subject_handles=subject
+            )
+        else:
+            qualifies = _is_entity_grounded(c, primary_entity)
+        if not qualifies:
             continue
         e = _candidate_engagement(c)
         # Percentile rank in [0, 1]: fraction of the X pool strictly below e.
@@ -621,26 +840,58 @@ def _entity_grounded(haystack: str, primary_entity: str) -> bool:
     items that omit the descriptor. Items that never name the brand at all still
     miss the head token and stay demoted.
 
-    Trade-off: a proper noun with a generic head ("New York Times" -> "new")
-    under-demotes rather than over-demotes - the safe direction, since the
-    observed harm was burying real high-engagement signal. Substring (not
-    word-boundary) matching is likewise deliberate: it catches plurals and
-    compounds ("stripes"), and vacuous matches from very short heads ("X",
-    "Go") merely disable the penalty rather than burying good items.
+    Long natural-language topics with a generic head use stronger trailing
+    anchors. Short generic-headed topics remain a safe no-op so entities such as
+    "Go" are not falsely demoted.
+    """
+    verdict = _entity_grounding_verdict(haystack, primary_entity)
+    return True if verdict is None else verdict
+
+
+def _entity_grounding_verdict(haystack: str, primary_entity: str) -> bool | None:
+    """_entity_grounded's test, with None where no safe anchor exists.
+
+    None means the entity cannot be checked (no tokens, a short generic-headed
+    topic, or no strong trailing anchor); _entity_grounded treats that as a
+    pass so it never demotes, and _is_entity_positively_grounded as a miss.
     """
     haystack = haystack.lower()
-    tokens = primary_entity.lower().split()
+    tokens = re.findall(r"\w+", primary_entity.lower())
     if not tokens:
-        return True
-    return tokens[0] in haystack
+        return None
+    head = tokens[0]
+    if len(head) > 3 and head not in relevance.LOW_SIGNAL_QUERY_TOKENS:
+        return head in haystack
+
+    # A long natural-language topic headed by "AI", "how", or another generic
+    # word needs a stronger anchor. Short entity-like topics keep the historical
+    # safe no-op rather than risking false demotion.
+    if len(tokens) < _GENERIC_GROUNDING_MIN_TOKENS:
+        return None
+    anchors = [
+        token
+        for token in tokens[1:]
+        if len(token) >= _GROUNDING_ANCHOR_MIN_LENGTH
+        and token not in relevance.STOPWORDS
+        and token not in _GROUNDING_LOW_SIGNAL_TOKENS
+    ]
+    if not anchors:
+        return None
+    return any(re.search(rf"\b{re.escape(token)}", haystack) for token in anchors)
 
 
 def _fallback_tuple(
-    candidate: schema.Candidate, *, primary_entity: str = "", resolved_handles: set[str] | None = None
+    candidate: schema.Candidate,
+    *,
+    primary_entity: str = "",
+    resolved_handles: set[str] | None = None,
+    subject_handles: set[str] | None = None,
 ) -> tuple[float, str]:
+    # Relevance and source quality only. Freshness enters once, in
+    # _final_score; counting it here too gave it ~0.22 of the final score and
+    # let a 3-point story from today outrank a 380-point one from last week.
     score = (
         (candidate.local_relevance * 100.0 * 0.7)
-        + (candidate.freshness * 0.2)
         + (candidate.source_quality * 100.0 * 0.1)
     )
     reason = "fallback-local-score"
@@ -653,8 +904,21 @@ def _fallback_tuple(
     # _final_score's secondary penalty (which greps for it) is also skipped.
     # A small bounded credit lifts a first-party post just off neutral without
     # letting authorship alone outrank a genuinely strong on-topic third party.
+    # The credit, like the floors, goes only to on-topic posts or the topic's
+    # own account (_first_party_floor_eligible); an off-topic reply from a
+    # related handle keeps the exemption (so it is not pruned) but earns no lift.
     if resolved_handles and _is_first_party(candidate, resolved_handles):
-        score += FIRST_PARTY_AUTHOR_CREDIT
+        if _first_party_floor_eligible(
+            candidate,
+            resolved_handles=resolved_handles,
+            primary_entity=primary_entity,
+            subject_handles=subject_handles,
+        ):
+            score += FIRST_PARTY_AUTHOR_CREDIT
+        # A repo card keeps the exemption (a person-mode card never names the
+        # person) but is not authored in the window, so it is not labeled so.
+        if _is_repo_snapshot_candidate(candidate):
+            return max(0.0, min(100.0, score)), "fallback-local-score (repo snapshot)"
         return max(0.0, min(100.0, score)), "fallback-local-score (first-party authorship)"
     # Grounding-exempt evidence (currently Amazon): the adapter gated these
     # against the model-supplied keyword before they existed, so the
@@ -689,8 +953,12 @@ def _primary_entity(topic: str) -> str:
     string for topics that are all intent modifier with no entity, so
     callers can skip the grounding check.
     """
-    stripped = _INTENT_MODIFIER_RE.sub(" ", topic)
-    # Also collapse multiple spaces and strip punctuation.
+    stripped = topic
+    while True:
+        shortened = _TRAILING_INTENT_MODIFIER_RE.sub("", stripped, count=1)
+        if shortened == stripped:
+            break
+        stripped = shortened
     stripped = re.sub(r"\s+", " ", stripped).strip(" \t\r\n?.,:;!")
     return stripped
 
@@ -780,23 +1048,60 @@ ENTITY_MISS_FINAL_PENALTY = 20.0
 OUT_OF_WINDOW_FINAL_MULTIPLIER = 0.35
 
 
+#: Weight of engagement (0-100, absolute per-source log scale from
+#: signals.engagement_score) in _final_score. Its full range is worth 15
+#: points, nearly twice freshness's effective 8 (freshness spans 10-90), so a
+#: large engagement gap (a 380-point HN story vs a 3-point one, ~78 points ->
+#: ~12) can outweigh most of a month's age gap (~7), while a modest gap cannot.
+#: Relevance still dominates: one tenth of local relevance is worth 4.2 points
+#: through the fallback rerank score alone.
+ENGAGEMENT_FINAL_WEIGHT = 0.15
+
+
+#: Candidate.metadata key recording which path produced rerank_score. Set by
+#: _apply_fallback_scores and _apply_llm_scores; the explanation text is not
+#: provenance (an LLM reason may start with any word).
+RERANK_PROVENANCE_KEY = "rerank_provenance"
+RERANK_PROVENANCE_FALLBACK = "fallback"
+RERANK_PROVENANCE_LLM = "llm"
+
+
+def _set_rerank_provenance(candidate: schema.Candidate, provenance: str) -> None:
+    candidate.metadata = {**(candidate.metadata or {}), RERANK_PROVENANCE_KEY: provenance}
+
+
+def _is_fallback_scored(candidate: schema.Candidate) -> bool:
+    """True when rerank_score came from _fallback_tuple, not an LLM or host.
+
+    Reads the provenance the scoring path recorded. A candidate with none
+    recorded is treated as judge-scored, so the cliff still applies.
+    """
+    return (candidate.metadata or {}).get(RERANK_PROVENANCE_KEY) == RERANK_PROVENANCE_FALLBACK
+
+
 def _final_score(candidate: schema.Candidate) -> float:
     normalized_rrf = _normalized_rrf(candidate.rrf_score)
     rerank_score = candidate.rerank_score or 0.0
-    # Engagement bonus: high-engagement items (viral TikToks, popular YouTube videos)
-    # get a boost so they aren't buried by lower-engagement but text-relevant items.
-    # Engagement is log1p-normalized (0-100 range via signals.py), so a 2.5M-view
-    # TikTok scores ~15 and a 1500-view one scores ~7. The 0.05 weight gives a
-    # meaningful but not dominant boost.
+    # Engagement is already 0-100 on an absolute per-source log scale
+    # (signals.engagement_score): ~8 for a 3-like X post, ~50 for a 254-upvote
+    # Reddit thread, ~90 for a 380-point HN story.
     engagement_val = candidate.engagement if candidate.engagement is not None else 0.0
     base = (
         0.60 * rerank_score
         + 0.20 * normalized_rrf
         + 0.10 * candidate.freshness
         + 0.05 * (candidate.source_quality * 100.0)
-        + 0.05 * min(engagement_val * 6.0, 100.0)
+        + ENGAGEMENT_FINAL_WEIGHT * max(0.0, min(engagement_val, 100.0))
     )
-    if candidate.rerank_score is not None and candidate.rerank_score < 20.0:
+    # The cliff demotes items a judge explicitly called irrelevant. A fallback
+    # score below 20 only means weak lexical overlap, which the 0.60 weight
+    # already prices in; cliffing it too buried on-topic threads (a 254-upvote
+    # r/Ghostty post ranked last at score 7).
+    if (
+        candidate.rerank_score is not None
+        and candidate.rerank_score < 20.0
+        and not _is_fallback_scored(candidate)
+    ):
         base *= 0.3
     # Secondary entity-grounding penalty: when the fallback path flagged
     # entity-miss via candidate.explanation, apply an additional penalty
@@ -864,7 +1169,10 @@ def _extract_comment_text(candidate: schema.Candidate) -> str:
     parts = []
     for item in candidate.source_items:
         for comment in item.metadata.get("top_comments", [])[:3]:
-            body = comment.get("body", "") if isinstance(comment, dict) else str(comment)
+            body = (
+                comment.get("excerpt") or comment.get("body", "")
+                if isinstance(comment, dict) else str(comment)
+            )
             if body:
                 parts.append(body[:150])
         for insight in item.metadata.get("comment_insights", [])[:2]:
@@ -883,7 +1191,7 @@ def _extract_comment_text_scored(candidate: schema.Candidate) -> str:
     for item in candidate.source_items:
         for comment in item.metadata.get("top_comments", [])[:3]:
             if isinstance(comment, dict):
-                body = comment.get("body", "")
+                body = comment.get("excerpt") or comment.get("body", "")
                 if not body:
                     continue
                 score = comment.get("score")

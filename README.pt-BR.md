@@ -14,6 +14,10 @@
   <a href="https://trendshift.io/repositories/21997" target="_blank">
     <img src="https://trendshift.io/api/badge/repositories/21997" alt="mvanhorn/last30days-skill | Trendshift" style="width: 250px; height: 55px;" width="250" height="55"/>
   </a>
+  <br/>
+  <a href="https://github.com/mvanhorn/last30days-skill/actions/workflows/validate.yml">
+    <img src="https://github.com/mvanhorn/last30days-skill/actions/workflows/validate.yml/badge.svg" alt="Validate status" />
+  </a>
 </p>
 
 **Um buscador conduzido por um agente de IA, que pontua por votos positivos, curtidas e dinheiro de verdade — não por redações.**
@@ -76,6 +80,7 @@ Se você vai se reunir com um CEO, já leu todos os tweets e todas as transcriç
 | **arXiv** | Os artigos científicos por trás do hype. Pesquisa nova dentro da janela, de graça e sem chave de API. Ativa sozinho quando `arxiv-pp-cli` está no PATH (a configuração inicial instala). |
 | **Techmeme** | A camada editorial do noticiário de tecnologia, limitada à sua janela de 30 dias. De graça e sem chave de API. Ativa sozinho quando `techmeme-pp-cli` está no PATH (a configuração inicial instala). |
 | **LinkedIn** | O sinal profissional. Publicações e artigos, com os artigos ponderados como sinal forte. |
+| **Meta Ads** | O que uma marca paga para dizer. Criativos de anúncios da Meta lançados neste mês, com texto, códigos promocionais e transcrições. |
 | **StockTwits** | O humor dos traders. Ativa automaticamente quando seu assunto é um ticker ou uma cripto. |
 | **Threads** | A camada de texto do pós-Twitter. Conversas de criadores e marcas. |
 | **Pinterest** | Descoberta visual. Pins, itens salvos e comentários sobre produtos e ideias. |
@@ -177,6 +182,10 @@ Se preferir usar o caminho de instalação do Agent Skills no Claude Code, ele t
 npx skills add mvanhorn/last30days-skill -g -a claude-code
 ```
 
+### Link para experimentar rápido
+
+[Experimente a skill Last30Days Research no Telegram ou WhatsApp](https://app.clawmama.run/skills/2ne05f/hermes?utm_source=github&utm_medium=issue&utm_campaign=skill_outreach_mvanhorn_last30days_skill)
+
 O plugin nativo e a instalação com `npx skills` podem conviver. Só atenção: o Claude Code não deduplica entre métodos de instalação. Se você tiver ativos ao mesmo tempo o plugin do marketplace e a cópia do `npx skills`, o `/last30days` vai aparecer duas vezes. Use um método de instalação por máquina.
 
 ### Grok (xAI Build CLI)
@@ -194,7 +203,7 @@ grok plugin marketplace add mvanhorn/last30days-skill
 grok plugin install last30days
 ```
 
-Acrescente `--trust` para pular a confirmação de instalação. Atualize com `grok plugin update last30days`. O Grok também lê os manifestos do Claude Code por compatibilidade; o par nativo `.grok-plugin/` é o caminho principal — e é para ele que aponta um registro oficial no [marketplace da xAI](https://github.com/xai-org/plugin-marketplace). O `npx skills add` continua sendo uma alternativa válida em qualquer host.
+Acrescente `--trust` para pular a confirmação de instalação. Atualize com `grok plugin update last30days`. O Grok também lê os manifestos do Claude Code por compatibilidade; o par nativo `.grok-plugin/` é o caminho principal — e é para ele que aponta um registro oficial no [marketplace da xAI](https://github.com/xai-org/plugin-marketplace). O `npx skills add` continua sendo uma alternativa válida em qualquer host. No Grok Bot, o X funciona sem configuração pelas ferramentas de X integradas do bot, depois pelo conector de X do bot, com a API oficial do X (`X_BEARER_TOKEN`) como reserva.
 
 ### Codex, Cursor, Copilot, Gemini CLI e outros hosts do Agent Skills
 
@@ -206,7 +215,7 @@ npx skills add mvanhorn/last30days-skill -g
 
 A flag `-g` (global) instala no seu diretório de usuário, então a skill fica disponível em todos os projetos. Sem `-g`, o `npx skills` instala só no projeto, dentro de `./.skills/` (e vai versionado junto com o repositório). Para uma ferramenta feita para pesquisar o mundo inteiro, o que você quer é a instalação global.
 
-O Codex desktop e outros hosts que trabalham no nível de pasta funcionam tanto em pastas comuns quanto em repositórios Git. Antes da primeira pesquisa, peça ao agente host que rode o `scripts/last30days.py --preflight` que acompanha a skill, a partir do diretório da skill carregada; em um clone do código-fonte, o comando equivalente é `python3 skills/last30days/scripts/last30days.py --preflight`. Ele mostra de onde vem a configuração, quais cookies do navegador seriam lidos, quais arquivos seriam escritos, quais comandos opcionais existem e qual configuração de projeto está sendo ignorada — sem ler cookies, sem escrever arquivos e sem rodar pesquisa nenhuma.
+O Codex desktop e outros hosts que trabalham no nível de pasta funcionam tanto em pastas comuns quanto em repositórios Git. Para inspecionar o que uma execução leria e escreveria sem iniciar pesquisa, rode o `scripts/last30days.py --preflight` que acompanha a skill, a partir do diretório da skill carregada; em um clone do código-fonte, o comando equivalente é `python3 skills/last30days/scripts/last30days.py --preflight`. Ele mostra de onde vem a configuração, quais cookies do navegador seriam lidos, quais arquivos seriam escritos, quais comandos opcionais existem e qual configuração de projeto está sendo ignorada — sem ler cookies, sem escrever arquivos e sem rodar pesquisa nenhuma. A configuração da primeira execução não exige isso.
 
 Por padrão, a instalação vale para o host que o `npx skills` detectar. Para mirar em um específico (ou em vários):
 
@@ -289,7 +298,7 @@ Essas plataformas não têm relação nenhuma entre si. O X não sabe o que o Re
 |---------|---------------|------|
 | Reddit (com comentários) + HN + Polymarket + GitHub + StockTwits | Nada | De graça |
 | arXiv + Techmeme | CLIs gratuitas, instaladas automaticamente pela configuração inicial | De graça |
-| X / Twitter | Faça login em x.com em qualquer navegador, ou defina `XQUIK_API_KEY` / `XAI_API_KEY` | Os cookies do navegador são gratuitos; as chaves dependem do provedor |
+| X / Twitter | Defina `X_BEARER_TOKEN` para a API oficial do X (posts recentes, cerca da última semana, a menos que seu projeto de desenvolvedor do X tenha acesso ao arquivo completo; é uma reserva no Grok Bot depois das ferramentas de X integradas do bot e opcional em outros hosts com `LAST30DAYS_X_BACKEND=xapi`), ou faça login em x.com em qualquer navegador, ou defina `XQUIK_API_KEY` / `XAI_API_KEY` | Os créditos da API do X vêm do seu projeto de desenvolvedor do X; os cookies do navegador são gratuitos; as demais chaves dependem do provedor |
 | YouTube | `brew install yt-dlp` | De graça |
 | Bluesky | Uma senha de aplicativo do bsky.app | De graça |
 | TikTok + Instagram + Threads + Pinterest + LinkedIn + comentários do YouTube | Uma chave do ScrapeCreators | 10.000 chamadas gratuitas e depois pagamento por uso |
@@ -324,7 +333,7 @@ Veja [CONFIGURATION.md](CONFIGURATION.md) para a matriz completa de chaves por f
 
 Duas coisas que você provavelmente vai querer saber no primeiro dia:
 
-**Onde os arquivos de pesquisa são salvos.** O `LAST30DAYS_MEMORY_DIR` aponta por padrão para `~/Documents/Last30Days/` (no Windows: `C:\Users\<you>\Documents\Last30Days\`). Para mudar, defina essa variável de ambiente no seu shell com o caminho que quiser, ou use `--save-dir <path>` em uma execução específica. Use `--output <file>` quando precisar do resultado renderizado em um caminho exato, no formato escolhido por `--emit`. Use `--save-suffix=<name>` para manter separadas várias variações do mesmo assunto (por cliente, por exemplo). Cada execução com `--save-dir` gera `<slug>-raw[-suffix].md`. Rode `python3 skills/last30days/scripts/last30days.py --preflight` para conferir o que será escrito antes de disparar uma pesquisa.
+**Onde os arquivos de pesquisa são salvos.** O `LAST30DAYS_MEMORY_DIR` aponta por padrão para `~/Documents/Last30Days/` (no Windows: `C:\Users\<you>\Documents\Last30Days\`). Para mudar, defina essa variável de ambiente no seu shell com o caminho que quiser, ou use `--save-dir <path>` em uma execução específica. Use `--output <file>` quando precisar do resultado renderizado em um caminho exato, no formato escolhido por `--emit`. Use `--save-suffix=<name>` para manter separadas várias variações do mesmo assunto (por cliente, por exemplo). Cada execução com `--save-dir` gera `<slug>-raw[-suffix].md`. Opcionalmente, rode `python3 skills/last30days/scripts/last30days.py --preflight` para conferir o que será escrito sem disparar uma pesquisa.
 
 **Saída estruturada para agentes e fluxos de trabalho.** Peça ao `/last30days` um JSON legível por máquina e você recebe o perfil de agente estável e versionado. Para usar o motor direto em scripts ou no desenvolvimento, rode `python3 skills/last30days/scripts/last30days.py "AI coding agents" --emit=json`; use `--json-profile=raw` só quando precisar do dump interno não versionado do `Report`. Veja a [referência de campos da exportação JSON e a política de versionamento](docs/reference/json-export.md).
 

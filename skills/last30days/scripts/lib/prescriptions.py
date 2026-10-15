@@ -31,7 +31,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import Dict, Optional, Tuple
 
-from . import health
+from . import env, health
+from .x_api import BEARER_COVERAGE_NOTE
 
 # Direct engine invocation prefix (scripting fallback; the slash-command UX
 # is "ask the agent to run setup ...", which is the natural-language form).
@@ -91,6 +92,44 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         anchor="api-keys-env",
     ),
     _entry(
+        "x", "xai_error",
+        cause="the xAI X search backend failed this run",
+        fix_nl=(
+            "check XAI_API_KEY and its chat/model permissions in console.x.ai, "
+            "confirm LAST30DAYS_X_MODEL names an available model, then re-run"
+        ),
+        fix_cli="XAI_API_KEY=<your-xai-key> LAST30DAYS_X_MODEL=<available-xai-model>",
+        anchor="api-keys-env",
+    ),
+    _entry(
+        "x", "xai_payment_required",
+        cause="the xAI X search backend has no available credits",
+        fix_nl="check xAI billing and credits in console.x.ai, then re-run",
+        fix_cli=f'{ENGINE_CLI} "<topic>" --search x',
+        anchor="api-keys-env",
+    ),
+    _entry(
+        "x", "xai_rate_limited",
+        cause="the xAI X search backend hit its rate limit",
+        fix_nl="wait for the xAI rate limit to reset, then re-run",
+        fix_cli=f'{ENGINE_CLI} "<topic>" --search x',
+        anchor="api-keys-env",
+    ),
+    _entry(
+        "x", "xai_timeout",
+        cause="the xAI X search backend timed out",
+        fix_nl="xAI timed out; retry the run or select another configured X backend",
+        fix_cli=f'{ENGINE_CLI} "<topic>" --search x',
+        anchor="api-keys-env",
+    ),
+    _entry(
+        "x", "xai_unavailable",
+        cause="the xAI X search backend failed this run",
+        fix_nl="retry xAI later or select another configured X backend",
+        fix_cli=f'{ENGINE_CLI} "<topic>" --search x',
+        anchor="api-keys-env",
+    ),
+    _entry(
         "x", "grok_cli_missing",
         cause="the Grok CLI is not installed, so the keyless X path is unavailable",
         fix_nl=(
@@ -106,6 +145,62 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
         fix_nl="sign in to Grok once; no X account or API key is needed after that",
         fix_cli="grok login",
         anchor="api-keys-env",
+    ),
+    # Official X path (an official-only host per env.x_policy, or an explicit
+    # xapi pin). Copy is limited to the host X lanes (Grok Bot's built-in X
+    # tools, then the X for Grok Bot connector), X_BEARER_TOKEN, XAI_API_KEY,
+    # and X API credits; the bearer path is described as about a week, never
+    # as parity with the host lanes. Anchors point at
+    # the CONFIGURATION.md Grok Bot subsection (slug grok-bot).
+    _entry(
+        "x", "bearer_missing",
+        cause=(
+            "no official X path is configured (Grok Bot X tools, X connector, "
+            "X_BEARER_TOKEN, or XAI_API_KEY)"
+        ),
+        fix_nl=(
+            "fetch X with Grok Bot's built-in X tools and pass the posts with --x-posts, or add the X for Grok Bot "
+            "plugin and connect X in Grok Bot settings (full 30-day coverage), or set "
+            f"X_BEARER_TOKEN from the X developer console ({BEARER_COVERAGE_NOTE}), "
+            "or set XAI_API_KEY from console.x.ai"
+        ),
+        fix_cli="X_BEARER_TOKEN=<your-x-api-bearer-token>",
+        anchor="grok-bot",
+    ),
+    _entry(
+        "x", "bearer_invalid",
+        cause="the X API rejected X_BEARER_TOKEN (401/403)",
+        fix_nl=(
+            "set a valid X_BEARER_TOKEN from the X developer console "
+            f"({BEARER_COVERAGE_NOTE}), or add the X for Grok Bot plugin and connect X in Grok Bot settings "
+            "(full 30-day coverage)"
+        ),
+        fix_cli="X_BEARER_TOKEN=<your-x-api-bearer-token>",
+        anchor="grok-bot",
+    ),
+    _entry(
+        "x", "payment_required",
+        cause="X API credits are exhausted (HTTP 402)",
+        fix_nl=(
+            "top up X API credits in the X developer console, or connect X in "
+            "Grok Bot settings (full 30-day coverage)"
+        ),
+        fix_cli="X_BEARER_TOKEN=<bearer-from-a-project-with-credits>",
+        anchor="grok-bot",
+    ),
+    _entry(
+        "x", "connector_missing",
+        cause=(
+            "the host X lane was declared but no host-fetched result was "
+            "passed to the engine"
+        ),
+        fix_nl=(
+            "fetch X with Grok Bot's built-in X tools (or the X for Grok Bot connector) and pass the "
+            "posts with --x-posts, or unset LAST30DAYS_X_HOST_LANE and set X_BEARER_TOKEN from the X "
+            f"developer console ({BEARER_COVERAGE_NOTE})"
+        ),
+        fix_cli=f'{ENGINE_CLI} "<topic>" --x-posts <path-to-x-posts.json>',
+        anchor="grok-bot",
     ),
     _entry(
         "scrapecreators", "key_missing",
@@ -240,6 +335,31 @@ REGISTRY: Dict[Tuple[str, str], Prescription] = dict((
 def lookup(source: str, failure: str) -> Optional[Prescription]:
     """Return the registered entry for (source, failure), or None."""
     return REGISTRY.get((source, failure))
+
+
+# Failure names remapped on an official-only host (env.x_policy): every
+# cookie or Grok CLI failure has an official-path counterpart, so no fix
+# line there names cookies, the scraper, or the CLI. Official names
+# pass through unchanged on every host.
+_OFFICIAL_X_FAILURES: Dict[str, str] = {
+    "cookies_missing": "bearer_missing",
+    "cookies_expired": "bearer_invalid",
+    "grok_cli_missing": "bearer_missing",
+    "grok_not_authenticated": "bearer_missing",
+}
+
+
+def for_x(config: dict, failure: str) -> Prescription:
+    """Policy-aware X prescription.
+
+    On an official-only host (``env.x_policy(config).hint_namespace ==
+    "official"``) a default-namespace failure resolves to its official
+    counterpart; elsewhere today's entry is returned unchanged. Never
+    raises (falls through to ``get``'s generic fallback).
+    """
+    if env.x_policy(config or {}).hint_namespace == "official":
+        failure = _OFFICIAL_X_FAILURES.get(failure, failure)
+    return get("x", failure)
 
 
 def get(source: str, failure: str) -> Prescription:

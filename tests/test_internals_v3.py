@@ -7,7 +7,7 @@ any of these functions would silently degrade output quality.
 
 import unittest
 
-from lib import planner, rerank, render, signals, schema
+from lib import dates, planner, rerank, render, signals, schema
 
 
 def _item(source: str = "reddit", **kwargs) -> schema.SourceItem:
@@ -314,6 +314,20 @@ class TestTrimSubqueriesForDepth(unittest.TestCase):
         # Deep comparison should also use capability expansion, not trim
         self.assertGreaterEqual(len(result[0].sources), 4)
 
+    def test_honor_plan_sources_skips_expansion_at_default_and_deep(self):
+        available = ["reddit", "x", "youtube", "hackernews", "polymarket", "github"]
+        sqs = [self._sq(sources=["reddit", "x", "youtube"])]
+        for depth in ("default", "deep"):
+            with self.subTest(depth=depth):
+                result = planner._trim_subqueries_for_depth(
+                    sqs,
+                    "opinion",
+                    depth,
+                    available,
+                    honor_plan_sources=True,
+                )
+                self.assertEqual(["reddit", "x", "youtube"], result[0].sources)
+
 # ---------------------------------------------------------------------------
 # signals.annotate_stream
 # ---------------------------------------------------------------------------
@@ -391,9 +405,14 @@ class TestDaysAgoZeroFalsy(unittest.TestCase):
         )
 
     def test_items_from_today_count_as_recent(self):
-        from datetime import date
-        today = date.today().isoformat()
-        report = self._report_with_items([today] * 5)
+        report = self._report_with_items(["2026-03-17"] * 5)
+        self.assertEqual(
+            [0] * 5,
+            [
+                dates.days_ago(item.published_at, reference_date=report.range_to)
+                for item in report.items_by_source["reddit"]
+            ],
+        )
         warning = render._assess_data_freshness(report)
         self.assertIsNone(warning, f"Items from today should be recent, got warning: {warning}")
 
@@ -445,11 +464,7 @@ class TestGenericEngagementFormatter(unittest.TestCase):
     def test_xiaohongshu_engagement_not_garbled(self):
         item = _item(source="xiaohongshu", engagement={"likes": 500, "views": 10000})
         result = render._format_engagement(item)
-        if result is not None:
-            self.assertNotIn("likes500", result, "Key used as value prefix")
-            self.assertNotIn("views10000", result, "Key used as value prefix")
-            # Should contain numeric values, not dict keys as numbers
-            self.assertIn("500", result)
+        self.assertEqual(result, "[500likes, 10,000views]")
 
 if __name__ == "__main__":
     unittest.main()
@@ -550,4 +565,3 @@ class TestXaiModelDefault(unittest.TestCase):
         from lib import providers
         self.assertIn("grok-4", providers.XAI_DEFAULT,
                       f"XAI_DEFAULT should be a grok-4 model, got: {providers.XAI_DEFAULT}")
-

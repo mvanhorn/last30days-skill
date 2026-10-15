@@ -16,7 +16,7 @@ def _post(i, date="2026-05-20", rel=0.0):
         "id": "", "title": f"Post {i}", "url": url, "score": 0, "num_comments": 0,
         "subreddit": "test", "created_utc": None, "author": "u", "selftext": "",
         "date": date, "engagement": {"score": 0, "num_comments": 0, "upvote_ratio": None},
-        "relevance": rel, "why_relevant": "Reddit RSS", "metadata": {},
+        "relevance": rel, "why_relevant": "Reddit search", "metadata": {},
     }
 
 
@@ -54,9 +54,12 @@ class TestDedicatedLane:
                                side_effect=fake_fetch), \
              mock.patch.object(reddit_keyless.reddit_arctic, "fetch_listings",
                                return_value=[]), \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss", return_value=[]):
+             mock.patch.object(reddit_keyless.reddit_search, "search",
+                               return_value=[]) as search:
             out = reddit_keyless._discover("Kanye West", "default", None,
                                            dedicated_subreddits=["Kanye"])
+        # Dedicated subs keep their full-listing lane; no per-sub search for them.
+        assert search.call_args.kwargs["subreddits"] is None
         assert captured["sorts"] == ["top", "hot", "new"]
         assert captured["subs"] == ["Kanye"]
         assert len(out) == 1
@@ -88,7 +91,7 @@ class TestDedicatedLane:
 
         with mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
                                side_effect=fake_fetch), \
-             mock.patch.object(reddit_keyless.reddit_rss, "search_rss", return_value=[]):
+             mock.patch.object(reddit_keyless.reddit_search, "search", return_value=[]):
             out = reddit_keyless._discover("Kanye West", "default", ["hiphopheads"],
                                            dedicated_subreddits=["Kanye"])
         same = [p for p in out if p["url"] == shared_ded["url"]]
@@ -96,7 +99,7 @@ class TestDedicatedLane:
         assert same[0].get("dedicated") is True
 
     def test_no_dedicated_subs_is_noop(self):
-        with mock.patch.object(reddit_keyless.reddit_rss, "search_rss",
+        with mock.patch.object(reddit_keyless.reddit_search, "search",
                                return_value=[_post(1)]), \
              mock.patch.object(reddit_keyless.reddit_listing, "fetch_listings",
                                return_value=[]):

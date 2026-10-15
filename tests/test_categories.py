@@ -86,11 +86,9 @@ class DetectCategoryEdgeCases(unittest.TestCase):
         self.assertIsNone(detect_category(None))
 
     def test_first_match_wins_image_gen_before_chat_model(self):
-        # "gpt image 2" contains "gpt image" (ai_image_generation) and the
-        # substring "gpt" could resemble gpt-N chat-model patterns. The
-        # narrower category wins because it is declared earlier.
+        self.assertEqual(detect_category("gpt-5"), "ai_chat_model")
         self.assertEqual(
-            detect_category("gpt image 2 review"),
+            detect_category("gpt image and gpt-5"),
             "ai_image_generation",
         )
 

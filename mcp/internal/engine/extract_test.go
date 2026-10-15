@@ -1,16 +1,22 @@
 package engine
 
 import (
+	"bytes"
+	"context"
+	"fmt"
+	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 )
 
 func newTestFS() fstest.MapFS {
 	return fstest.MapFS{
-		"last30days.py":  &fstest.MapFile{Data: []byte("# last30days entry\n"), Mode: 0o644},
+		"last30days.py":   &fstest.MapFile{Data: []byte("# last30days entry\n"), Mode: 0o644},
 		"lib/__init__.py": &fstest.MapFile{Data: []byte(""), Mode: 0o644},
 		"lib/env.py":      &fstest.MapFile{Data: []byte("# env helpers\n"), Mode: 0o644},
 	}
@@ -116,6 +122,124 @@ func TestEnsureConcurrentFirstCall(t *testing.T) {
 		}
 	}
 	mustReadFile(t, filepath.Join(results[0], "last30days.py"), "# last30days entry\n")
+}
+
+type pausedExtractionFS struct {
+	fs.FS
+	base string
+}
+
+func (src pausedExtractionFS) Open(name string) (fs.File, error) {
+	if name == "zeta.txt" {
+		if err := os.WriteFile(filepath.Join(src.base, "ready"), nil, 0o600); err != nil {
+			return nil, err
+		}
+		deadline := time.Now().Add(20 * time.Second)
+		for {
+			if _, err := os.Stat(filepath.Join(src.base, "release")); err == nil {
+				break
+			}
+			if time.Now().After(deadline) {
+				return nil, fmt.Errorf("timed out waiting to resume extraction")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	return src.FS.Open(name)
+}
+
+func TestEnsureConcurrentProcesses(t *testing.T) {
+	src := fstest.MapFS{
+		"alpha.txt": &fstest.MapFile{Data: []byte("alpha")},
+		"zeta.txt":  &fstest.MapFile{Data: []byte("zeta")},
+	}
+	if role := os.Getenv("LAST30DAYS_TEST_EXTRACT_ROLE"); role != "" {
+		var source fs.FS = src
+		if role == "paused" {
+			source = pausedExtractionFS{FS: src, base: os.Getenv(CacheEnvOverride)}
+		}
+		if _, err := EnsureUserCache(source, "v1"); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+
+	for _, initialState := range []string{"missing", "incomplete", "stale"} {
+		t.Run(initialState, func(t *testing.T) {
+			base := t.TempDir()
+			cacheDir := filepath.Join(base, cacheSubdir, "v1")
+			if initialState != "missing" {
+				if err := os.MkdirAll(cacheDir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(filepath.Join(cacheDir, "alpha.txt"), []byte("partial"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if initialState == "stale" {
+					if err := os.WriteFile(filepath.Join(cacheDir, SentinelFilename), []byte("old-version"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			executable, err := os.Executable()
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv(CacheEnvOverride, base)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			child := func(role string) *exec.Cmd {
+				cmd := exec.CommandContext(ctx, executable, "-test.run=^TestEnsureConcurrentProcesses$")
+				cmd.Env = append(os.Environ(), "LAST30DAYS_TEST_EXTRACT_ROLE="+role)
+				return cmd
+			}
+			paused := child("paused")
+			var output bytes.Buffer
+			paused.Stdout = &output
+			paused.Stderr = &output
+			if err := paused.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				_ = paused.Process.Kill()
+				if paused.ProcessState == nil {
+					_ = paused.Wait()
+				}
+			})
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				if _, err := os.Stat(filepath.Join(base, "ready")); err == nil {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("first process did not pause during extraction")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if out, err := child("winner").CombinedOutput(); err != nil {
+				t.Fatalf("second process: %v\n%s", err, out)
+			}
+			mustReadFile(t, filepath.Join(cacheDir, "alpha.txt"), "alpha")
+			mustReadFile(t, filepath.Join(cacheDir, "zeta.txt"), "zeta")
+			canary := filepath.Join(cacheDir, "winner-only.txt")
+			if err := os.WriteFile(canary, []byte(base), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(base, "release"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := paused.Wait(); err != nil {
+				t.Fatalf("first process: %v\n%s", err, &output)
+			}
+			if _, err := EnsureUserCache(src, "v1"); err != nil {
+				t.Fatalf("reuse completed cache: %v", err)
+			}
+			mustReadFile(t, filepath.Join(cacheDir, "alpha.txt"), "alpha")
+			mustReadFile(t, filepath.Join(cacheDir, "zeta.txt"), "zeta")
+			mustReadFile(t, filepath.Join(cacheDir, SentinelFilename), "v1")
+			mustReadFile(t, canary, base)
+		})
+	}
 }
 
 func TestEnsureRejectsEmptyVersion(t *testing.T) {

@@ -22,8 +22,9 @@ permissions: {}
 
 jobs:
   scan-scheduled:
-    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@8deb546fdb875b9996d27d4950be7312dac076a1 # v2.5.0
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@a345acffa64b0eaede81a3d9aae6141214d9c8fc # v2.6.0
     permissions:
+      actions: read # Required by the pinned reusable workflow for SARIF upload.
       contents: read
       security-events: write
     with:

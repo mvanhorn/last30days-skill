@@ -10,6 +10,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 )
 
 // envBinding is a minimal subset of the MCPB v0.3 manifest just covering
@@ -155,22 +157,49 @@ func TestUserConfigShape(t *testing.T) {
 }
 
 func TestPlatformsMatchShippingMatrix(t *testing.T) {
-	// compatibility.platforms must list exactly what the release CI
-	// actually packages. Listing a platform we don't ship would let
-	// Claude Desktop start an install that has no matching binary inside
-	// the bundle, producing a silent failure. The CI matrix in
-	// .github/workflows/release.yml currently covers darwin (arm64 +
-	// amd64) and linux/amd64; Windows is deferred.
 	m := loadManifest(t)
-	required := map[string]bool{"darwin": false, "linux": false}
-	forbidden := map[string]bool{"win32": true}
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller failed")
+	}
+	workflowPath := filepath.Join(filepath.Dir(thisFile), "..", "..", "..", ".github", "workflows", "release.yml")
+	data, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("read release workflow: %v", err)
+	}
+	var workflow struct {
+		Jobs map[string]struct {
+			Strategy struct {
+				Matrix struct {
+					Include []struct {
+						GOOS string `yaml:"goos"`
+					} `yaml:"include"`
+				} `yaml:"matrix"`
+			} `yaml:"strategy"`
+		} `yaml:"jobs"`
+	}
+	if err := yaml.Unmarshal(data, &workflow); err != nil {
+		t.Fatalf("parse release workflow: %v", err)
+	}
+	entries := workflow.Jobs["build-mcpb"].Strategy.Matrix.Include
+	if len(entries) == 0 {
+		t.Fatal("release build-mcpb matrix has no shipping platforms")
+	}
+	platformNames := map[string]string{"darwin": "darwin", "linux": "linux", "windows": "win32"}
+	required := make(map[string]bool)
+	for _, entry := range entries {
+		platform, ok := platformNames[entry.GOOS]
+		if !ok {
+			t.Fatalf("release matrix GOOS %q has no manifest platform mapping", entry.GOOS)
+		}
+		required[platform] = false
+	}
 	for _, p := range m.Compatibility.Platforms {
-		if _, ok := required[p]; ok {
-			required[p] = true
-		}
-		if forbidden[p] {
+		if _, ok := required[p]; !ok {
 			t.Errorf("compatibility.platforms contains %q but the release matrix does not ship that platform; add it to the matrix or remove from the manifest", p)
+			continue
 		}
+		required[p] = true
 	}
 	for p, found := range required {
 		if !found {

@@ -1,9 +1,6 @@
 import io
 import json
 import os
-import re
-import shutil
-import stat
 import subprocess
 import sys
 import tempfile
@@ -120,6 +117,39 @@ class LastRunStateTests(unittest.TestCase):
             self.assertIsNone(entity_reports)
             self.assertEqual(config_dir / "last-report.json", cache_path)
 
+    @unittest.skipUnless(os.name == "posix", "POSIX file permissions")
+    def test_run_cache_files_are_private_before_writing(self):
+        for existing in (False, True):
+            with self.subTest(existing=existing), tempfile.TemporaryDirectory() as tmp:
+                config_dir = Path(tmp)
+                paths = [config_dir / name for name in ("last-run.json", "last-report.json")]
+                if existing:
+                    for path in paths:
+                        path.write_text("old evidence " * 1000)
+                        path.chmod(0o644)
+                modes_at_open = []
+                real_open = io.open
+
+                def observe_open(*args, **kwargs):
+                    stream = real_open(*args, **kwargs)
+                    if "w" in stream.mode:
+                        modes_at_open.append(os.fstat(stream.fileno()).st_mode & 0o777)
+                    return stream
+
+                old_umask = os.umask(0o022)
+                try:
+                    with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
+                         mock.patch("io.open", side_effect=observe_open):
+                        written = cli._write_last_run("OpenClaw", _report("OpenClaw"))
+                finally:
+                    os.umask(old_umask)
+
+                self.assertTrue(written)
+                self.assertEqual([0o600, 0o600], modes_at_open)
+                for path in paths:
+                    self.assertEqual(0o600, path.stat().st_mode & 0o777)
+                    self.assertEqual("OpenClaw", json.loads(path.read_text())["topic"])
+
     def test_last_report_cache_expires_after_ttl(self):
         with tempfile.TemporaryDirectory() as tmp:
             config_dir = Path(tmp) / "config"
@@ -165,7 +195,7 @@ class LastRunStateTests(unittest.TestCase):
                 cli._write_last_run("OpenClaw", _report("OpenClaw"))
 
             with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
-                 mock.patch.object(cli.env, "get_config", return_value={}), \
+                 mock.patch.object(cli.env, "get_config", return_value={}) as get_config, \
                  mock.patch.object(cli.pipeline, "diagnose", return_value=_diag()), \
                  mock.patch.object(cli.pipeline, "run", side_effect=AssertionError("pipeline should not run")), \
                  mock.patch.object(sys, "argv", [
@@ -175,13 +205,20 @@ class LastRunStateTests(unittest.TestCase):
                      "--synthesis-file",
                      str(synthesis_path),
                  ]), \
-                 mock.patch.dict(os.environ, {"LAST30DAYS_SKIP_PREFLIGHT": "1"}, clear=False):
+                 mock.patch.dict(
+                     os.environ,
+                     {"LAST30DAYS_SKIP_PREFLIGHT": "1", "CLAUDECODE": "1"},
+                     clear=False,
+                 ):
                 stdout = io.StringIO()
                 stderr = io.StringIO()
                 with redirect_stdout(stdout), redirect_stderr(stderr):
                     rc = cli.main()
 
             self.assertEqual(0, rc)
+            self.assertEqual(
+                "plan_only", get_config.call_args.kwargs["policy"].browser_cookies
+            )
             self.assertIn("Cached synthesis body.", stdout.getvalue())
             self.assertIn("Reusing cached report data", stderr.getvalue())
 
@@ -197,6 +234,7 @@ class LastRunStateTests(unittest.TestCase):
             config = {"OPENROUTER_API_KEY": "or-test"}
             with mock.patch.object(cli.env, "CONFIG_DIR", config_dir), \
                  mock.patch.object(cli.env, "get_config", return_value=config), \
+                 mock.patch("lib.resolve.auto_resolve", return_value={}), \
                  mock.patch.object(cli.pipeline, "diagnose", return_value=_diag()), \
                  mock.patch.object(cli.pipeline, "run", return_value=fresh_report) as run_mock, \
                  mock.patch.object(cli.ui, "ProgressDisplay"), \
@@ -327,198 +365,25 @@ class LastRunStateTests(unittest.TestCase):
             self.assertIn("No matching cached report data", stderr.getvalue())
             self.assertIn("Cached synthesis body.", stdout.getvalue())
 
-    @unittest.skipIf(shutil.which("bash") is None, "bash not available")
-    def test_hook_reads_last_run_from_custom_config_dir(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config_dir = Path(tmp) / "custom-config"
-            config_dir.mkdir()
-            (config_dir / "last-run.json").write_text(
-                json.dumps(
-                    {
-                        "topic": "custom hook query",
-                        "timestamp": "2026-04-30T00:00:00+00:00",
-                        "sources": {"reddit": 2},
-                        "total": 2,
-                    }
-                )
-            )
-            env = os.environ.copy()
-            env["HOME"] = str(Path(tmp) / "home")
-            env["LAST30DAYS_CONFIG_DIR"] = str(config_dir)
-
-            result = subprocess.run(
-                ["bash", "hooks/scripts/check-config.sh"],
-                cwd=REPO_ROOT,
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('Last run: "custom hook query"', result.stdout)
-
-    def test_hook_exits_0_when_no_last_run(self):
-        """Script exits 0 when ScrapeCreators configured but no prior run (last-run.json absent)."""
-        with tempfile.TemporaryDirectory() as tmp:
-            env = os.environ.copy()
-            env["HOME"] = str(Path(tmp) / "home")
-            env["SETUP_COMPLETE"] = "true"
-            env["ENV_SCRAPECREATORS_API_KEY"] = "sk-test"
-
-            result = subprocess.run(
-                ["bash", "hooks/scripts/check-config.sh"],
-                cwd=REPO_ROOT,
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("Ready —", result.stdout)
-            self.assertNotIn("Last run:", result.stdout)
-
-    def test_hook_parses_dotenv_with_unbalanced_quote(self):
-        """Script exits 0 when .env contains an unbalanced quote in a value."""
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp) / "home"
-            config_dir = home / ".config" / "last30days"
-            config_dir.mkdir(parents=True)
-            env_file = config_dir / ".env"
-            env_file.write_text(
-                "SETUP_COMPLETE=true\n"
-                "XAI_API_KEY=xai-key-with-apostrophe's-ok\n"
-                "AUTH_TOKEN=test-auth\n"
-                "CT0=test-ct0\n"
-            )
-            env = os.environ.copy()
-            env["HOME"] = str(home)
-
-            result = subprocess.run(
-                ["bash", "hooks/scripts/check-config.sh"],
-                cwd=REPO_ROOT,
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("Ready —", result.stdout)
-
-    @staticmethod
-    def _extract_source_count(output: str) -> int:
-        match = re.search(r"Ready — (\d+) sources active", output)
-        if not match:
-            raise AssertionError(f"Could not find source count in: {repr(output[:200])}")
-        return int(match.group(1))
-
-    def _run_hook(self, tmp: str, env_overrides: dict[str, str]) -> subprocess.CompletedProcess[str]:
-        env = os.environ.copy()
-        env["HOME"] = str(Path(tmp) / "home")
-        env["SETUP_COMPLETE"] = "true"
-        # Strip credentials that could bleed in from the test-runner environment
-        # and corrupt source-count baseline comparisons.
-        for key in ("AUTH_TOKEN", "CT0", "XAI_API_KEY", "BSKY_HANDLE", "EXA_API_KEY", "SCRAPECREATORS_API_KEY"):
-            env.pop(key, None)
-        env.update(env_overrides)
-        return subprocess.run(
-            ["bash", "hooks/scripts/check-config.sh"],
-            cwd=REPO_ROOT,
-            env=env,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-
-    def test_x_not_counted_with_only_auth_token(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            neither = self._extract_source_count(
-                self._run_hook(tmp, {}).stdout
-            )
-            only_auth = self._extract_source_count(
-                self._run_hook(tmp, {"AUTH_TOKEN": "test_auth"}).stdout
-            )
-            self.assertEqual(
-                only_auth, neither,
-                "X should not be counted when only AUTH_TOKEN is set (CT0 missing)",
-            )
-
-    def test_x_not_counted_with_only_ct0(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            neither = self._extract_source_count(
-                self._run_hook(tmp, {}).stdout
-            )
-            only_ct0 = self._extract_source_count(
-                self._run_hook(tmp, {"CT0": "test_ct0"}).stdout
-            )
-            self.assertEqual(
-                only_ct0, neither,
-                "X should not be counted when only CT0 is set (AUTH_TOKEN missing)",
-            )
-
-    def test_x_counted_when_both_auth_token_and_ct0(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            neither = self._extract_source_count(
-                self._run_hook(tmp, {}).stdout
-            )
-            both = self._extract_source_count(
-                self._run_hook(tmp, {"AUTH_TOKEN": "test_auth", "CT0": "test_ct0"}).stdout
-            )
-            self.assertEqual(
-                both, neither + 1,
-                "X should add 1 source when both AUTH_TOKEN and CT0 are set",
-            )
-
-    def test_hook_shows_last_run_when_json_exists(self):
-        """Script exits 0 and shows last-run summary when last-run.json exists."""
-        with tempfile.TemporaryDirectory() as tmp:
-            config_dir = Path(tmp) / "custom-config"
-            config_dir.mkdir()
-            (config_dir / "last-run.json").write_text(
-                json.dumps(
-                    {
-                        "topic": "prior research",
-                        "timestamp": "2026-06-01T12:00:00+00:00",
-                        "sources": {"reddit": 5},
-                        "total": 5,
-                    }
-                )
-            )
-            env = os.environ.copy()
-            env["HOME"] = str(Path(tmp) / "home")
-            env["SETUP_COMPLETE"] = "true"
-            env["ENV_SCRAPECREATORS_API_KEY"] = "sk-test"
-            env["LAST30DAYS_CONFIG_DIR"] = str(config_dir)
-
-            result = subprocess.run(
-                ["bash", "hooks/scripts/check-config.sh"],
-                cwd=REPO_ROOT,
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn('Last run: "prior research"', result.stdout)
-
 
 class TestSkillMdFirstRunReference(unittest.TestCase):
     """Verifies SKILL.md references that exist in the CLI."""
 
     def test_nux_wizard_not_referenced(self):
-        content = SKILL_MD.read_text(encoding="utf-8")
+        from tests.skill_contract import contract_documents
+
+        content = "\n".join(contract_documents().values())
         self.assertNotIn(
             "nux-wizard.md", content,
             "SKILL.md should not reference the missing nux-wizard.md file",
         )
 
     def test_skill_md_references_setup_command(self):
-        content = SKILL_MD.read_text(encoding="utf-8")
+        from tests.skill_contract import reference_text
+
+        content = reference_text("setup-wizard")
         self.assertIn(
-            "last30days.py setup", content,
+            'last30days.py" setup', content,
             "SKILL.md should reference the Python setup subcommand",
         )
 
@@ -536,34 +401,6 @@ class TestSkillMdFirstRunReference(unittest.TestCase):
         mock_setup.assert_called_once()
         mock_write.assert_called_once()
 
-
-class TestCheckPermsAutoFix(unittest.TestCase):
-    """check_perms should auto-fix loose .env permissions instead of warning only."""
-
-    def test_loose_env_is_tightened_by_check_perms(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            config_dir = Path(tmp) / ".config" / "last30days"
-            config_dir.mkdir(parents=True)
-            env_file = config_dir / ".env"
-            env_file.write_text("SETUP_COMPLETE=true\n")
-            os.chmod(env_file, 0o644)
-
-            env = os.environ.copy()
-            env["HOME"] = str(Path(tmp))
-            env["LAST30DAYS_CONFIG_DIR"] = str(config_dir)
-
-            result = subprocess.run(
-                ["bash", "hooks/scripts/check-config.sh"],
-                cwd=REPO_ROOT,
-                env=env,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("auto-fixed", result.stdout.lower())
-            self.assertEqual(stat.S_IMODE(os.stat(env_file).st_mode), 0o600)
 
 
 if __name__ == "__main__":

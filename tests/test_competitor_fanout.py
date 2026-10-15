@@ -105,24 +105,29 @@ class FanoutOrchestratorTests(unittest.TestCase):
         """Comparison mode must not inherit a prior run's ytsearch cache."""
         from lib import youtube_yt
 
-        youtube_yt._search_cache[("prior", 8, "2026-01-01")] = {"items": []}
-        cleared = []
+        stale_key = ("prior", 8, "2026-01-01")
+        youtube_yt._search_cache[stale_key] = {"items": []}
+        observed = {}
+        barrier = threading.Barrier(2, timeout=3)
 
-        def main_runner():
-            cleared.append("main" in youtube_yt._search_cache or len(youtube_yt._search_cache) == 0)
-            return _fake_report("OpenAI")
+        def runner(topic):
+            observed[topic] = stale_key in youtube_yt._search_cache
+            barrier.wait()
+            return _fake_report(topic)
 
         with mock.patch.object(
             youtube_yt, "reset_search_cache", wraps=youtube_yt.reset_search_cache
         ) as reset_mock, redirect_stderr(io.StringIO()):
-            fanout.run_competitor_fanout(
+            results = fanout.run_competitor_fanout(
                 main_topic="OpenAI",
-                main_runner=main_runner,
+                main_runner=lambda: runner("OpenAI"),
                 competitors=["Anthropic"],
-                competitor_runner=lambda e: _fake_report(e),
+                competitor_runner=runner,
             )
-        reset_mock.assert_called()
-        self.assertNotIn(("prior", 8, "2026-01-01"), youtube_yt._search_cache)
+        reset_mock.assert_called_once_with()
+        self.assertEqual(observed, {"OpenAI": False, "Anthropic": False})
+        self.assertEqual([label for label, _ in results], ["OpenAI", "Anthropic"])
+        self.assertNotIn(stale_key, youtube_yt._search_cache)
 
     def test_sub_runs_execute_in_parallel(self):
         """Wall clock should be closer to max(latency) than sum(latency)."""

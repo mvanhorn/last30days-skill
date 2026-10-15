@@ -129,11 +129,13 @@ class RenderV3Tests(unittest.TestCase):
         self.assertIn("Top clusters:", text)
         self.assertIn("Grounded result", text)
 
-    def test_render_compact_includes_source_errors_section(self):
+    def test_render_compact_omits_source_errors_section(self):
+        # Source errors are diagnostics: the saved raw file (render_full) and
+        # doctor --postmortem carry them; compact stdout does not.
         report = sample_report()
         report.errors_by_source = {"x": "HTTP 400: Bad Request"}
-        text = render.render_compact(report)
-        self.assertIn("## Source Errors", text)
+        self.assertNotIn("## Source Errors", render.render_compact(report))
+        self.assertIn("## Source Errors", render.render_full(report))
 
     def test_failed_x_bookmark_workflow_query_emits_no_solid_floor(self):
         """Regression: generic token overlap must not turn all-zero X noise
@@ -1780,3 +1782,37 @@ class TestSourceUrlsAreClickable(unittest.TestCase):
         text = "\n".join(render._render_candidate(candidate, "1."))
         self.assertNotIn("\n## forged heading", text)
         self.assertNotIn("URL: [", text)
+
+
+class FooterPluralizationTests(unittest.TestCase):
+    def test_story_pluralizes_to_stories(self):
+        self.assertEqual(
+            render._footer_line_for_source("🟡", "HN", 15, "story", ""),
+            "🟡 HN: 15 stories",
+        )
+        self.assertEqual(
+            render._footer_line_for_source("🟡", "HN", 1, "story", ""),
+            "🟡 HN: 1 story",
+        )
+
+    def test_regular_nouns_keep_plain_s(self):
+        self.assertEqual(
+            render._footer_line_for_source("🟠", "Reddit", 2, "thread", "5 upvotes"),
+            "🟠 Reddit: 2 threads │ 5 upvotes",
+        )
+        self.assertEqual(
+            render._footer_line_for_source("🔵", "X", 1, "post", ""),
+            "🔵 X: 1 post",
+        )
+        self.assertEqual(
+            render._footer_line_for_source("🔴", "YouTube", 0, "video", ""),
+            "🔴 YouTube: 0 videos",
+        )
+
+    def test_every_footer_noun_pluralizes_sanely(self):
+        for _key, _emoji, _label, noun, _eng in render._FOOTER_SOURCES:
+            plural = render._footer_line_for_source("x", "L", 2, noun, "").split("2 ", 1)[1]
+            if noun.endswith("y") and noun[-2] not in "aeiou":
+                self.assertEqual(plural, noun[:-1] + "ies")
+            else:
+                self.assertEqual(plural, noun + "s")

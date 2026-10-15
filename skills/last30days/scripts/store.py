@@ -165,20 +165,20 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 """
 
-SCHEMA_V1_DEFAULTS = """
-INSERT OR IGNORE INTO schema_version (version) VALUES (1);
-INSERT OR IGNORE INTO settings (key, value) VALUES ('daily_budget', '5.00');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('delivery_channel', '');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('delivery_mode', 'announce');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('briefing_format', 'concise');
-INSERT OR IGNORE INTO settings (key, value) VALUES ('default_schedule', '0 8 * * *');
-"""
+_DEFAULT_SETTINGS = {
+    "daily_budget": "5.00",
+    "delivery_channel": "",
+    "delivery_mode": "announce",
+    "briefing_format": "concise",
+    "default_schedule": "0 8 * * *",
+}
 
 _UPDATABLE_RUN_COLUMNS = frozenset({
     "source_mode",
     "prompt_tokens",
     "completion_tokens",
     "token_cost",
+    "cost_unknown",
     "duration_seconds",
     "status",
     "error_message",
@@ -242,6 +242,10 @@ CREATE TABLE IF NOT EXISTS discovery_topics (
 CREATE INDEX IF NOT EXISTS idx_discovery_topics_status_surfaced
     ON discovery_topics(status, last_surfaced);
 """,
+    4: """
+ALTER TABLE research_runs ADD COLUMN cost_unknown INTEGER NOT NULL DEFAULT 1;
+UPDATE research_runs SET cost_unknown = 0 WHERE token_cost > 0;
+""",
 }
 
 
@@ -268,9 +272,22 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     conn = _connect(path)
     try:
         conn.executescript(SCHEMA_V1)
-        conn.executescript(SCHEMA_V1_DEFAULTS)
+        if not conn.execute("SELECT 1 FROM schema_version WHERE version = 1").fetchone():
+            conn.execute("INSERT OR IGNORE INTO schema_version (version) VALUES (1)")
+        existing_settings = {row["key"] for row in conn.execute("SELECT key FROM settings")}
+        missing_defaults = [
+            (key, value) for key, value in _DEFAULT_SETTINGS.items()
+            if key not in existing_settings
+        ]
+        if missing_defaults:
+            conn.executemany(
+                "INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)",
+                missing_defaults,
+            )
+        conn.commit()
         _run_migrations(conn)
         conn.commit()
+        _backfill_owner_sightings(conn)
     finally:
         conn.close()
 
@@ -279,27 +296,88 @@ def init_db(db_path: Optional[Path] = None) -> Path:
 
 def _run_migrations(conn: sqlite3.Connection):
     """Apply pending schema migrations."""
-    current = conn.execute(
-        "SELECT MAX(version) FROM schema_version"
-    ).fetchone()[0] or 0
+    current = conn.execute("SELECT MAX(version) FROM schema_version").fetchone()[0] or 0
+    if current >= max(MIGRATIONS, default=0):
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        current = conn.execute(
+            "SELECT MAX(version) FROM schema_version"
+        ).fetchone()[0] or 0
+        for version in sorted(MIGRATIONS):
+            if version <= current:
+                continue
+            # executescript commits before running; keep DDL and its marker atomic.
+            statement = ""
+            for character in MIGRATIONS[version]:
+                statement += character
+                if character == ";" and sqlite3.complete_statement(statement):
+                    conn.execute(statement)
+                    statement = ""
+            if statement.strip():
+                conn.execute(statement)
+            conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
-    for version in sorted(MIGRATIONS.keys()):
-        if version > current:
-            conn.executescript(MIGRATIONS[version])
-            conn.execute(
-                "INSERT INTO schema_version (version) VALUES (?)", (version,)
-            )
+
+def _backfill_owner_sightings(conn: sqlite3.Connection) -> None:
+    """Preserve legacy first observations before aggregate ownership can change."""
+    marker = "_topic_sightings_backfilled_v1"
+    if conn.execute("SELECT 1 FROM settings WHERE key = ?", (marker,)).fetchone():
+        return
+    with conn:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("SELECT 1 FROM settings WHERE key = ?", (marker,)).fetchone():
+            return
+        conn.execute(
+            """INSERT INTO finding_sightings
+               (finding_id, run_id, topic_id, source, source_url, source_title,
+                engagement_score, relevance_score, seen_at)
+               SELECT f.id, NULL, f.topic_id, f.source, COALESCE(f.source_url, ''),
+                      f.source_title, f.engagement_score, f.relevance_score, f.first_seen
+               FROM findings f
+               WHERE f.topic_id IS NOT NULL AND f.first_seen IS NOT NULL
+                 AND NOT EXISTS (
+                     SELECT 1 FROM finding_sightings s
+                     WHERE s.finding_id = f.id AND s.topic_id = f.topic_id
+                       AND s.seen_at <= f.first_seen
+                 )"""
+        )
+        conn.execute("INSERT INTO settings (key, value) VALUES (?, '1')", (marker,))
 
 
 # --- Topics ---
+
+
+# Ledger dates survive aggregate ownership reassignment; references are a legacy fallback.
+_FINDING_TOPICS_SQL = """
+SELECT finding_id, topic_id,
+       COALESCE(MIN(sighting_seen), MIN(legacy_first_seen)) AS first_seen
+FROM (
+    SELECT id AS finding_id, topic_id, NULL AS sighting_seen, first_seen AS legacy_first_seen
+    FROM findings WHERE topic_id IS NOT NULL
+    UNION ALL
+    SELECT finding_id, topic_id, seen_at, NULL
+    FROM finding_sightings WHERE topic_id IS NOT NULL
+    UNION ALL
+    SELECT f.id, r.topic_id, NULL, r.run_date FROM findings f
+    JOIN research_runs r ON r.id = f.run_id WHERE r.topic_id IS NOT NULL
+)
+GROUP BY finding_id, topic_id
+"""
 
 
 def add_topic(
     name: str,
     search_queries: Optional[List[str]] = None,
     schedule: str = "0 8 * * *",
+    *,
+    update_existing: bool = True,
 ) -> Dict[str, Any]:
-    """Add a topic to the watchlist. Returns the topic dict."""
+    """Add a topic, optionally preserving an existing topic's configuration."""
     init_db()
     conn = _connect()
     try:
@@ -310,8 +388,9 @@ def add_topic(
                ON CONFLICT(name) DO UPDATE SET
                    search_queries = excluded.search_queries,
                    schedule = excluded.schedule,
-                   updated_at = datetime('now')""",
-            (name, queries_json, schedule),
+                   updated_at = datetime('now')
+               WHERE ?""",
+            (name, queries_json, schedule, update_existing),
         )
         conn.commit()
         row = conn.execute(
@@ -327,14 +406,44 @@ def remove_topic(name: str) -> bool:
     init_db()
     conn = _connect()
     try:
+        conn.execute("BEGIN IMMEDIATE")
         row = conn.execute(
             "SELECT id FROM topics WHERE name = ?", (name,)
         ).fetchone()
         if not row:
             return False
         topic_id = row["id"]
-        # Delete findings and runs for this topic
-        conn.execute("DELETE FROM findings WHERE topic_id = ?", (topic_id,))
+        findings = conn.execute(
+            f"""WITH memberships AS ({_FINDING_TOPICS_SQL})
+                SELECT f.id, f.topic_id, f.run_id, r.topic_id AS run_topic_id,
+                       (SELECT MIN(m.topic_id) FROM memberships m
+                        WHERE m.finding_id = f.id AND m.topic_id != ?) AS survivor
+                FROM findings f
+                LEFT JOIN research_runs r ON r.id = f.run_id
+                WHERE f.id IN (SELECT finding_id FROM memberships WHERE topic_id = ?)""",
+            (topic_id, topic_id),
+        ).fetchall()
+        for finding in findings:
+            if finding["survivor"] is None:
+                conn.execute("DELETE FROM findings WHERE id = ?", (finding["id"],))
+                continue
+            owner_id = finding["topic_id"]
+            if owner_id == topic_id:
+                owner_id = finding["survivor"]
+            run_id = finding["run_id"]
+            if finding["run_topic_id"] == topic_id:
+                surviving_run = conn.execute(
+                    """SELECT s.run_id FROM finding_sightings s
+                       JOIN research_runs r ON r.id = s.run_id
+                       WHERE s.finding_id = ? AND s.topic_id != ? AND r.topic_id != ?
+                       ORDER BY s.seen_at DESC, s.id DESC LIMIT 1""",
+                    (finding["id"], topic_id, topic_id),
+                ).fetchone()
+                run_id = surviving_run["run_id"] if surviving_run else None
+            conn.execute(
+                "UPDATE findings SET topic_id = ?, run_id = ? WHERE id = ?",
+                (owner_id, run_id, finding["id"]),
+            )
         conn.execute("DELETE FROM research_runs WHERE topic_id = ?", (topic_id,))
         conn.execute("DELETE FROM topics WHERE id = ?", (topic_id,))
         conn.commit()
@@ -349,8 +458,9 @@ def list_topics() -> List[Dict[str, Any]]:
     conn = _connect()
     try:
         rows = conn.execute(
-            """SELECT t.*,
-                      (SELECT COUNT(*) FROM findings WHERE topic_id = t.id) as finding_count,
+            f"""WITH memberships AS ({_FINDING_TOPICS_SQL})
+               SELECT t.*,
+                      (SELECT COUNT(*) FROM memberships WHERE topic_id = t.id) as finding_count,
                       (SELECT MAX(run_date) FROM research_runs WHERE topic_id = t.id) as last_run,
                       (SELECT status FROM research_runs WHERE topic_id = t.id
                        ORDER BY created_at DESC LIMIT 1) as last_status
@@ -386,7 +496,7 @@ def record_run(
     duration_seconds: float = 0,
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
-    token_cost: float = 0,
+    token_cost: Optional[float] = None,
 ) -> int:
     """Record a research run. Returns the run ID."""
     conn = _connect()
@@ -394,11 +504,12 @@ def record_run(
         cursor = conn.execute(
             """INSERT INTO research_runs
                (topic_id, run_date, source_mode, status, error_message,
-                duration_seconds, prompt_tokens, completion_tokens, token_cost)
-               VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?)""",
+                duration_seconds, prompt_tokens, completion_tokens, token_cost, cost_unknown)
+               VALUES (?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 topic_id, source_mode, status, error_message,
                 duration_seconds, prompt_tokens, completion_tokens, token_cost,
+                int(token_cost is None),
             ),
         )
         conn.commit()
@@ -726,25 +837,31 @@ def _delta_source_counts(
 def get_new_findings(
     topic_id: int,
     since: Optional[str] = None,
+    before: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
-    """Get findings for a topic, optionally since a date."""
+    """Get findings by their first observation for this topic within the date bounds."""
     conn = _connect()
     try:
+        date_filter = ""
+        parameters: List[Any] = [topic_id]
         if since:
-            rows = conn.execute(
-                """SELECT * FROM findings
-                   WHERE topic_id = ? AND first_seen >= ? AND dismissed = 0
-                   ORDER BY first_seen DESC""",
-                (topic_id, since),
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                """SELECT * FROM findings
-                   WHERE topic_id = ? AND dismissed = 0
-                   ORDER BY first_seen DESC""",
-                (topic_id,),
-            ).fetchall()
-        return [dict(r) for r in rows]
+            date_filter += " AND m.first_seen >= ?"
+            parameters.append(since)
+        if before:
+            date_filter += " AND m.first_seen < ?"
+            parameters.append(before)
+        rows = conn.execute(
+            f"""WITH memberships AS ({_FINDING_TOPICS_SQL})
+                SELECT f.*, m.first_seen AS topic_first_seen FROM findings f
+                JOIN memberships m ON m.finding_id = f.id
+                WHERE m.topic_id = ? AND f.dismissed = 0{date_filter}
+                ORDER BY m.first_seen DESC""",
+            parameters,
+        ).fetchall()
+        findings = [dict(r) for r in rows]
+        for finding in findings:
+            finding["first_seen"] = finding.pop("topic_first_seen")
+        return findings
     finally:
         conn.close()
 
@@ -1026,6 +1143,18 @@ def get_daily_cost(date: Optional[str] = None) -> float:
 # --- Settings ---
 
 
+def get_daily_unknown_cost_runs(date: Optional[str] = None) -> int:
+    conn = _connect()
+    try:
+        date = date or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        return conn.execute(
+            "SELECT COUNT(*) FROM research_runs WHERE date(run_date) = date(?) AND cost_unknown = 1",
+            (date,),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+
+
 def get_setting(key: str, default: Optional[str] = None) -> Optional[str]:
     """Get a setting value."""
     init_db()
@@ -1115,11 +1244,13 @@ def get_trending(days: int = 7) -> List[Dict[str, Any]]:
     try:
         since = (datetime.now(timezone.utc) - timedelta(days=days)).strftime("%Y-%m-%d")
         rows = conn.execute(
-            """SELECT t.name, t.id,
+            f"""WITH memberships AS ({_FINDING_TOPICS_SQL})
+               SELECT t.name, t.id,
                       COUNT(f.id) as new_findings,
                       COALESCE(SUM(f.engagement_score), 0) as total_engagement
                FROM topics t
-               LEFT JOIN findings f ON f.topic_id = t.id AND f.first_seen >= ?
+               LEFT JOIN memberships m ON m.topic_id = t.id
+               LEFT JOIN findings f ON f.id = m.finding_id AND m.first_seen >= ?
                WHERE t.enabled = 1
                GROUP BY t.id
                ORDER BY new_findings DESC""",

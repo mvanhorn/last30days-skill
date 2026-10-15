@@ -317,7 +317,7 @@ class TestFetchApiKey:
 
     @patch("lib.setup_wizard.urlopen")
     def test_success(self, mock_urlopen):
-        """Returns api_key from profile response."""
+        """Returns ok+api_key from profile response."""
         resp_data = {"api_key": "sc-key-abc123", "username": "testuser"}
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps(resp_data).encode()
@@ -326,11 +326,11 @@ class TestFetchApiKey:
         mock_urlopen.return_value = mock_resp
 
         result = setup_wizard.fetch_api_key("gho_token")
-        assert result == "sc-key-abc123"
+        assert result == {"ok": True, "api_key": "sc-key-abc123"}
 
     @patch("lib.setup_wizard.urlopen")
     def test_no_api_key_in_response(self, mock_urlopen):
-        """Returns None when api_key is not in the response."""
+        """Returns no_api_key when api_key is not in the response."""
         resp_data = {"username": "testuser"}
         mock_resp = MagicMock()
         mock_resp.read.return_value = json.dumps(resp_data).encode()
@@ -339,18 +339,46 @@ class TestFetchApiKey:
         mock_urlopen.return_value = mock_resp
 
         result = setup_wizard.fetch_api_key("gho_token")
-        assert result is None
+        assert result == {"ok": False, "reason": "no_api_key"}
 
     @patch("lib.setup_wizard.urlopen")
-    def test_http_error_returns_none(self, mock_urlopen):
-        """HTTP error returns None."""
+    def test_http_error_returns_http_error(self, mock_urlopen):
+        """4xx HTTP error is reason=http_error, not no_api_key."""
         from urllib.error import HTTPError
         mock_urlopen.side_effect = HTTPError(
             "https://example.com", 401, "Unauthorized", {}, None
         )
 
         result = setup_wizard.fetch_api_key("bad_token")
-        assert result is None
+        assert result["ok"] is False
+        assert result["reason"] == "http_error"
+        assert result["http_status"] == 401
+
+    @patch("lib.setup_wizard.time.sleep")
+    @patch("lib.setup_wizard.urlopen")
+    def test_http_500_is_upstream_error_with_retries(self, mock_urlopen, mock_sleep):
+        """5xx is upstream_error after bounded retries; not no_api_key (#882)."""
+        from urllib.error import HTTPError
+        from io import BytesIO
+
+        def _http_500(_req, timeout=15):
+            raise HTTPError(
+                "https://api.scrapecreators.com/v1/github/device/profile",
+                500,
+                "Internal Server Error",
+                {},
+                BytesIO(b'{"message":"internal"}'),
+            )
+
+        mock_urlopen.side_effect = _http_500
+
+        result = setup_wizard.fetch_api_key("gho_token")
+        assert result["ok"] is False
+        assert result["reason"] == "upstream_error"
+        assert result["http_status"] == 500
+        assert "500" in result["detail"]
+        assert mock_urlopen.call_count == setup_wizard._PROFILE_FETCH_ATTEMPTS
+        assert mock_sleep.call_count == setup_wizard._PROFILE_FETCH_ATTEMPTS - 1
 
 
 class TestRunFullDeviceAuth:
@@ -364,7 +392,7 @@ class TestRunFullDeviceAuth:
         """Full flow succeeds: start -> poll -> fetch -> return api_key."""
         mock_start.return_value = ("dev123", "ABCD-1234", "https://example.com/device", 5)
         mock_poll.return_value = "access_tok"
-        mock_fetch.return_value = "sc_live_abc123"
+        mock_fetch.return_value = {"ok": True, "api_key": "sc_live_abc123"}
 
         result = setup_wizard.run_full_device_auth(timeout=10)
 
@@ -401,15 +429,39 @@ class TestRunFullDeviceAuth:
     @patch("lib.setup_wizard.run_device_auth")
     @patch("webbrowser.open")
     def test_fetch_fails_after_auth(self, mock_browser, mock_start, mock_poll, mock_fetch):
-        """Auth succeeds but profile fetch fails -> error status."""
+        """Auth succeeds but profile has no api_key -> already-linked error message."""
         mock_start.return_value = ("dev123", "CODE-1111", "https://example.com/device", 5)
         mock_poll.return_value = "access_tok"
-        mock_fetch.return_value = None
+        mock_fetch.return_value = {"ok": False, "reason": "no_api_key"}
 
         result = setup_wizard.run_full_device_auth(timeout=10)
 
         assert result["status"] == "error"
-        assert "failed to fetch" in result["message"].lower()
+        assert result["message"] == "Authorized but failed to fetch API key"
+        assert result["reason"] == "no_api_key"
+
+    @patch("lib.setup_wizard.fetch_api_key")
+    @patch("lib.setup_wizard.poll_device_auth")
+    @patch("lib.setup_wizard.run_device_auth")
+    @patch("webbrowser.open")
+    def test_fetch_upstream_500_after_auth(self, mock_browser, mock_start, mock_poll, mock_fetch):
+        """Auth succeeds but /profile 5xx -> distinct upstream message (#882)."""
+        mock_start.return_value = ("dev123", "CODE-1111", "https://example.com/device", 5)
+        mock_poll.return_value = "access_tok"
+        mock_fetch.return_value = {
+            "ok": False,
+            "reason": "upstream_error",
+            "http_status": 500,
+            "detail": "HTTP Error 500: Internal Server Error",
+        }
+
+        result = setup_wizard.run_full_device_auth(timeout=10)
+
+        assert result["status"] == "error"
+        assert result["reason"] == "upstream_error"
+        assert "ScrapeCreators profile failed" in result["message"]
+        assert "500" in result["message"]
+        assert result["message"] != "Authorized but failed to fetch API key"
 
     @patch("lib.setup_wizard.run_device_auth")
     @patch("webbrowser.open")

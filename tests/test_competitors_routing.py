@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import io
 import json
+import sys
 import unittest
 from contextlib import redirect_stderr
+from unittest.mock import patch
 
 import last30days as cli
 from lib import competitors, planner, render
@@ -135,23 +137,17 @@ class TestEntityCapAlignment(unittest.TestCase):
         self.assertIn("primary", [sq.label for sq in plan.subqueries])
 
     def test_empty_plan_alone_errors_clearly(self):
-        args = _parse("Weber grills", "--competitors-plan", "{}")
-        enabled, count, explicit = cli.resolve_competitors_args(args)
-        plan = cli.parse_competitors_plan(args.competitors_plan)
-        topic, enabled, count, explicit = cli.apply_vs_competitor_routing(
-            "Weber grills",
-            competitors_flag=args.competitors,
-            comp_enabled=enabled,
-            comp_count=count,
-            comp_explicit=explicit,
-            comp_plan=plan,
-        )
-        self.assertTrue(enabled)
-        self.assertEqual(explicit, [])
-        # Guard in _main: plan present, no peers, not discover-N
-        self.assertIsNone(args.competitors)
-        self.assertTrue(args.competitors_plan)
-        self.assertFalse(explicit)
+        stderr = io.StringIO()
+        with patch.object(sys, "argv", ["last30days", "Weber grills", "--mock", "--competitors-plan", "{}"]), patch.object(
+            cli.env, "get_config", return_value={}
+        ), patch("lib.competitors.discover_competitors") as discover, patch(
+            "lib.fanout.run_competitor_fanout"
+        ) as fanout, patch.object(cli.pipeline, "run") as research, redirect_stderr(stderr):
+            self.assertEqual(cli.main(), 2)
+        self.assertIn("--competitors-plan has no usable peer entries", stderr.getvalue())
+        discover.assert_not_called()
+        fanout.assert_not_called()
+        research.assert_not_called()
 
     def test_over_max_warns_and_names_dropped(self):
         # main + 6 peers = max; 8th entity dropped with warning

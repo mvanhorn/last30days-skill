@@ -29,10 +29,9 @@ const CacheEnvOverride = "LAST30DAYS_CACHE_DIR"
 // directory is reused without rewriting. version must be non-empty so the
 // cache layout always namespaces by version.
 //
-// Extraction writes to a sibling .tmp directory and renames it on success
-// so a partial extraction can never be mistaken for a complete one. Concurrent
-// callers within the same process serialize behind a per-cache-dir sync.Once
-// so the rename happens exactly once.
+// Extraction writes to a unique sibling directory and publishes it under a
+// filesystem lock so another process cannot remove a completed cache. Concurrent
+// callers within the same process serialize behind a per-cache-dir sync.Once.
 func Ensure(src fs.FS, baseDir, version string) (string, error) {
 	if version == "" {
 		return "", errors.New("engine: version is required")
@@ -40,16 +39,16 @@ func Ensure(src fs.FS, baseDir, version string) (string, error) {
 	cacheDir := filepath.Join(baseDir, cacheSubdir, version)
 
 	once := getOnce(cacheDir)
-	var extractErr error
 	once.Do(func() {
-		extractErr = ensureLocked(src, cacheDir, version)
+		once.err = ensureLocked(src, cacheDir, version)
+		if once.err != nil {
+			// Waiting callers share this error; a later call can retry with
+			// a new entry after the failed extraction has finished.
+			resetOnce(cacheDir)
+		}
 	})
-	if extractErr != nil {
-		// Reset the sync.Once so a follow-up call can retry rather than
-		// permanently caching the error. Retry is the right default when
-		// the failure is transient (e.g., disk full, parent dir restored).
-		resetOnce(cacheDir)
-		return "", extractErr
+	if once.err != nil {
+		return "", once.err
 	}
 	return cacheDir, nil
 }
@@ -70,30 +69,49 @@ func EnsureUserCache(src fs.FS, version string) (string, error) {
 
 func ensureLocked(src fs.FS, cacheDir, version string) error {
 	if sentinelMatches(cacheDir, version) {
+		if lock, err := openPublicationLock(cacheDir, false); err == nil && lock != nil {
+			_ = reclaimCacheStages(cacheDir)
+			_ = lock.Close()
+		}
 		return nil
 	}
-	tmpDir := cacheDir + ".tmp"
-	if err := os.RemoveAll(tmpDir); err != nil {
-		return fmt.Errorf("engine: clean tmp cache: %w", err)
+	parent := filepath.Dir(cacheDir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("engine: create cache parent (%s, set %s to override): %w", parent, CacheEnvOverride, err)
 	}
-	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
-		return fmt.Errorf("engine: create tmp cache (%s, set %s to override): %w", tmpDir, CacheEnvOverride, err)
+	tmpDir, owner, err := prepareCacheStage(cacheDir, version)
+	if err != nil {
+		return err
 	}
-	if err := extractAll(src, tmpDir); err != nil {
+	if tmpDir == "" {
+		return nil
+	}
+	defer func() {
+		_ = owner.Close()
 		_ = os.RemoveAll(tmpDir)
+		_ = os.Remove(owner.Name())
+	}()
+	if err := extractAll(src, tmpDir); err != nil {
 		return err
 	}
 	sentinel := filepath.Join(tmpDir, SentinelFilename)
 	if err := os.WriteFile(sentinel, []byte(version), 0o644); err != nil {
-		_ = os.RemoveAll(tmpDir)
 		return fmt.Errorf("engine: write sentinel: %w", err)
 	}
+	lock, err := openPublicationLock(cacheDir, true)
+	if err != nil {
+		return fmt.Errorf("engine: lock cache publication: %w", err)
+	}
+	defer func() { _ = lock.Close() }()
+	// Keep the lock file in place: unlinking it can give concurrent publishers
+	// different lock inodes. Closing the descriptor releases the lock.
+	if sentinelMatches(cacheDir, version) {
+		return nil
+	}
 	if err := os.RemoveAll(cacheDir); err != nil {
-		_ = os.RemoveAll(tmpDir)
 		return fmt.Errorf("engine: clean old cache: %w", err)
 	}
 	if err := os.Rename(tmpDir, cacheDir); err != nil {
-		_ = os.RemoveAll(tmpDir)
 		return fmt.Errorf("engine: promote tmp cache: %w", err)
 	}
 	return nil
@@ -145,18 +163,23 @@ func copyEmbeddedFile(src fs.FS, srcPath, dst string) error {
 
 // onceRegistry serializes first-call extraction per cache directory so the
 // rename in ensureLocked happens exactly once across goroutines.
+type extractionOnce struct {
+	sync.Once
+	err error
+}
+
 var (
 	onceMu       sync.Mutex
-	onceRegistry = map[string]*sync.Once{}
+	onceRegistry = map[string]*extractionOnce{}
 )
 
-func getOnce(cacheDir string) *sync.Once {
+func getOnce(cacheDir string) *extractionOnce {
 	onceMu.Lock()
 	defer onceMu.Unlock()
 	if o, ok := onceRegistry[cacheDir]; ok {
 		return o
 	}
-	o := &sync.Once{}
+	o := &extractionOnce{}
 	onceRegistry[cacheDir] = o
 	return o
 }
