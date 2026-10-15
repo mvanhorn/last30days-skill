@@ -371,11 +371,19 @@ Vous avez publié une veille IA récurrente, un suivi de marché ou une obsessio
 
 ## Open source
 
-Licence MIT. Aucun tracking. Aucune analytics. Vos recherches restent sur votre machine. Plus de 2 700 tests.
+Licence MIT. Aucun tracking. Aucune analytics. Vos recherches restent sur votre machine (voir Gestion des données ci-dessous). Plus de 2 700 tests.
 
 Construit avec Python 3.12+, yt-dlp, Node.js (client Bird intégré pour la recherche X) et l'API ScrapeCreators. Architecture du moteur v3 par [@j-sperling](https://github.com/j-sperling).
 
 Voir [CONTRIBUTING.md](CONTRIBUTING.md) pour ouvrir une PR, [CONTRIBUTORS.md](CONTRIBUTORS.md) pour la liste complète des contributeurs de la communauté, et [CHANGELOG.md](CHANGELOG.md) pour l'historique des versions.
+
+## Gestion des données
+
+Par défaut, l'outil fonctionne entièrement sur votre machine — aucune donnée ne quitte votre appareil, sauf vers les API de recherche que vous appelez (Reddit, ScrapeCreators, etc.).
+
+**Reclassement (reranking).** Si vous configurez un fournisseur de raisonnement (`OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY` ou `GOOGLE_GENAI_API_KEY`), le moteur envoie votre sujet de recherche et des extraits de contenu récupérés à ce fournisseur pour le scoring de pertinence. C'est optionnel : sans clé de raisonnement, le moteur utilise un modèle de scoring local et aucun appel externe n'est effectué.
+
+**Stockage local.** Avec `LAST30DAYS_STORE=1`, les résultats sont persistés dans une base SQLite locale (`~/.local/share/last30days/research.db`). Aucune donnée n'est envoyée à un service distant. Voir [CONFIGURATION.md](CONFIGURATION.md) pour les détails de rétention et les instructions de purge.
 
 ## Évolution des étoiles
 

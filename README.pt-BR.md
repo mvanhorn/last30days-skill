@@ -371,11 +371,19 @@ Publicou com o last30days um panorama recorrente de IA, um acompanhamento de mer
 
 ## Código aberto
 
-Licença MIT. Sem rastreamento. Sem analytics. Sua pesquisa fica na sua máquina. Mais de 2.700 testes.
+Licença MIT. Sem rastreamento. Sem analytics. Sua pesquisa fica na sua máquina (veja Tratamento de dados abaixo). Mais de 2.700 testes.
 
 Construído com Python 3.12+, yt-dlp, Node.js (cliente Bird embarcado para a busca no X) e a API do ScrapeCreators. Arquitetura do motor v3 por [@j-sperling](https://github.com/j-sperling).
 
 Veja [CONTRIBUTING.md](CONTRIBUTING.md) para abrir um PR, [CONTRIBUTORS.md](CONTRIBUTORS.md) para a lista completa de quem contribuiu e [CHANGELOG.md](CHANGELOG.md) para o histórico de versões.
+
+## Tratamento de dados
+
+Por padrão, a ferramenta roda inteiramente na sua máquina — nenhum dado sai do seu dispositivo, exceto para as APIs de busca que você utiliza (Reddit, ScrapeCreators, etc.).
+
+**Reranking.** Se você configurar um provedor de raciocínio (`OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY` ou `GOOGLE_GENAI_API_KEY`), o motor envia seu tema de pesquisa e trechos de conteúdo recuperado para esse provedor pontuar a relevância. É opcional: sem chave de raciocínio, o motor usa um modelo de pontuação local sem nenhuma chamada externa.
+
+**Armazenamento local.** Com `LAST30DAYS_STORE=1`, os resultados são persistidos em um banco de dados SQLite local (`~/.local/share/last30days/research.db`). Nenhum dado é enviado a serviços remotos. Consulte [CONFIGURATION.md](CONFIGURATION.md) para detalhes de retenção e instruções de limpeza.
 
 ## Histórico de estrelas
 

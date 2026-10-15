@@ -370,11 +370,19 @@ Published a recurring AI update, market watch, or wonderfully narrow obsession w
 
 ## Open source
 
-MIT license. No tracking. No analytics. Your research stays on your machine. 2,700+ tests.
+MIT license. No tracking. No analytics. Your research stays on your machine (see Data handling below). 2,700+ tests.
 
 Built with Python 3.12+, yt-dlp, Node.js (vendored Bird client for X search), and ScrapeCreators API. v3 engine architecture by [@j-sperling](https://github.com/j-sperling).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) to open a PR, [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full list of community contributors, and [CHANGELOG.md](CHANGELOG.md) for version history.
+
+## Data handling
+
+By default the skill runs entirely on your machine — no data leaves except to the search APIs you call (Reddit, ScrapeCreators, etc.).
+
+**Reranking.** When you configure a reasoning provider (`OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY`, or `GOOGLE_GENAI_API_KEY`), the engine sends your research topic and retrieved content snippets to that provider for relevance scoring. This is opt-in: if you set no reasoning key, the engine falls back to a local scoring model and no external reranking call is made. See [CONFIGURATION.md](CONFIGURATION.md) for provider priority.
+
+**Local store.** When `LAST30DAYS_STORE=1` is set, findings are persisted to a local SQLite database (`~/.local/share/last30days/research.db`, or `$LAST30DAYS_MEMORY_DIR/research.db` when that variable is set). No data is sent to any remote service; the database stays on your machine. See [CONFIGURATION.md — `--store` flag](CONFIGURATION.md) for retention details and purge instructions.
 
 ## Star History
 

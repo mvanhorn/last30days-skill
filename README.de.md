@@ -371,11 +371,19 @@ Du hast mit last30days ein wiederkehrendes KI-Update, eine Marktbeobachtung oder
 
 ## Open Source
 
-MIT-Lizenz. Kein Tracking. Keine Analytics. Deine Recherche bleibt auf deinem Rechner. Über 2.700 Tests.
+MIT-Lizenz. Kein Tracking. Keine Analytics. Deine Recherche bleibt auf deinem Rechner (siehe Datenschutzhinweise unten). Über 2.700 Tests.
 
 Gebaut mit Python 3.12+, yt-dlp, Node.js (mitgelieferter Bird-Client für die X-Suche) und der ScrapeCreators-API. Architektur der v3-Engine von [@j-sperling](https://github.com/j-sperling).
 
 Wie du einen PR aufmachst, steht in [CONTRIBUTING.md](CONTRIBUTING.md), die vollständige Liste der Community-Beitragenden in [CONTRIBUTORS.md](CONTRIBUTORS.md) und die Versionshistorie in [CHANGELOG.md](CHANGELOG.md).
+
+## Datenschutzhinweise
+
+Standardmäßig läuft das Tool vollständig auf deinem Rechner — keine Daten verlassen dein Gerät, außer an die von dir genutzten Such-APIs (Reddit, ScrapeCreators usw.).
+
+**Reranking.** Wenn du einen Reasoning-Provider konfigurierst (`OPENAI_API_KEY`, `XAI_API_KEY`, `OPENROUTER_API_KEY`, `GOOGLE_API_KEY`, `GEMINI_API_KEY` oder `GOOGLE_GENAI_API_KEY`), sendet das Engine dein Recherchethema und abgerufene Inhaltsausschnitte an diesen Provider zum Relevanz-Scoring. Das ist optional: Ohne Reasoning-Key verwendet die Engine ein lokales Scoring-Modell — kein externer Aufruf wird getätigt.
+
+**Lokaler Speicher.** Mit `LAST30DAYS_STORE=1` werden Ergebnisse in einer lokalen SQLite-Datenbank gespeichert (`~/.local/share/last30days/research.db`). Es werden keine Daten an einen Remote-Dienst gesendet. Einzelheiten zur Aufbewahrung und Löschanleitung findest du in [CONFIGURATION.md](CONFIGURATION.md).
 
 ## Sternverlauf
 

@@ -369,11 +369,19 @@ skills/last30days/scripts/setup-keychain.sh --delete XAI_API_KEY
 
 ## 开源
 
-采用 MIT 许可证。无跟踪、无分析，你的研究数据始终留在本机。拥有 2,700 多项测试。
+采用 MIT 许可证。无跟踪、无分析，你的研究数据始终留在本机（详见下方数据处理说明）。拥有 2,700 多项测试。
 
 项目基于 Python 3.12+、yt-dlp、Node.js（内置用于 X 搜索的 Bird 客户端）和 ScrapeCreators API 构建。v3 引擎架构由 [@j-sperling](https://github.com/j-sperling) 设计。
 
 提交 PR 请参阅 [CONTRIBUTING.md](CONTRIBUTING.md)，完整社区贡献者名单见 [CONTRIBUTORS.md](CONTRIBUTORS.md)，版本历史见 [CHANGELOG.md](CHANGELOG.md)。
+
+## 数据处理
+
+默认情况下，工具完全在本机运行——除了你调用的搜索 API（Reddit、ScrapeCreators 等），不会向外部发送任何数据。
+
+**重排序（Reranking）。** 如果配置了推理提供商（`OPENAI_API_KEY`、`XAI_API_KEY`、`OPENROUTER_API_KEY`、`GOOGLE_API_KEY`、`GEMINI_API_KEY` 或 `GOOGLE_GENAI_API_KEY`），引擎会将研究主题和检索到的内容片段发送给该提供商进行相关性评分。这是可选的：若不设置推理密钥，引擎将使用本地评分模型，不会发起任何外部调用。
+
+**本地存储。** 设置 `LAST30DAYS_STORE=1` 后，研究结果将持久化到本地 SQLite 数据库（`~/.local/share/last30days/research.db`），不会向远程服务发送任何数据。保留期限与清理方法详见 [CONFIGURATION.md](CONFIGURATION.md)。
 
 ## Star 历史
 

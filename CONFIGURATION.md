@@ -635,6 +635,22 @@ Adding `--store` to any run persists every finding to a SQLite database (default
 
 Relevant tables: `topics`, `research_runs`, `findings`, `settings`. Schema: [`scripts/store.py`](skills/last30days/scripts/store.py).
 
+**Retention.** The store has no built-in automatic expiry — rows accumulate until you delete them. The database stays entirely on your machine; nothing is sent to any remote service. To purge old findings, delete the database file directly:
+
+```bash
+# Remove the global research database (irreversible — back it up first if you want it)
+rm ~/.local/share/last30days/research.db
+```
+
+If you set `LAST30DAYS_MEMORY_DIR`, the database lives at `<memory-dir>/research.db` instead of the default path above. If that variable is set only in your `.env` file (not exported in your shell), your shell won't expand `$LAST30DAYS_MEMORY_DIR`, so resolve the path first and pass it directly:
+
+```bash
+# Replace /path/to/memory with your actual LAST30DAYS_MEMORY_DIR value
+rm /path/to/memory/research.db
+```
+
+The engine recreates an empty database on the next `--store` run. With `--save-dir`, a scoped `research.db` lives inside that directory instead; delete that path to purge scoped runs.
+
 ### Discovery topic queue (`LAST30DAYS_DISCOVERY_QUEUE`)
 
 `--discover` runs remember what they surfaced (table `discovery_topics` in the same research.db). Re-surfaced topics get a `**Pipeline:**` line on their card ("surfaced 2nd time", "marked covered") so the discovery brief doubles as a podcast / X-article content pipeline. On by default for real runs; `--mock` runs never write. With `--save-dir`, queue rows land in that directory's scoped `research.db`, never the global one.
