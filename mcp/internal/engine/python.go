@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -69,10 +70,21 @@ func resolvePythonWithCandidates(ctx context.Context, override string, candidate
 			failures = append(failures, fmt.Sprintf("%s: %v", candidate, err))
 		}
 	}
-	if ctx.Err() != nil {
-		failures = append(failures, ctx.Err().Error())
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("engine: python discovery interrupted (need Python %s+; set %s to a compatible executable); checked: %s: %w", MinPythonVersion, PythonEnvOverride, strings.Join(failures, "; "), err)
 	}
 	return "", fmt.Errorf("engine: no compatible %s on PATH (need Python %s+; set %s to a compatible executable, or install from %s); checked: %s", DefaultPythonBinary, MinPythonVersion, PythonEnvOverride, PythonInstallURL, strings.Join(failures, "; "))
+}
+
+// Windows filenames are case-insensitive, so Python3.exe and python3.EXE must
+// match the same candidate rules as python3.exe.
+var caseInsensitiveNames = runtime.GOOS == "windows"
+
+func pythonStem(name string) string {
+	if caseInsensitiveNames {
+		name = strings.ToLower(name)
+	}
+	return strings.TrimSuffix(name, ".exe")
 }
 
 // Keep PATH precedence, prefer python3 in each directory, then versioned names.
@@ -95,7 +107,7 @@ func pythonCandidates(pathValue string) []string {
 				continue
 			}
 			name := entry.Name()
-			stem := strings.TrimSuffix(name, ".exe")
+			stem := pythonStem(name)
 			if stem == "python3" || stem == "python" {
 				names = append(names, name)
 				continue
@@ -109,7 +121,7 @@ func pythonCandidates(pathValue string) []string {
 		}
 		sort.SliceStable(names, func(i, j int) bool {
 			rank := func(name string) int {
-				stem := strings.TrimSuffix(name, ".exe")
+				stem := pythonStem(name)
 				if stem == "python3" {
 					return 1000000
 				}

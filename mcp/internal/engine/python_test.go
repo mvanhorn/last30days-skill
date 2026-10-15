@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -168,7 +169,56 @@ func TestDiscoveryCancelsStalledDirectory(t *testing.T) {
 	defer cancel()
 	start := time.Now()
 	_, err := resolvePythonWithCandidates(ctx, "", func(string) []string { <-release; return nil })
-	if err == nil || !strings.Contains(err.Error(), "context deadline exceeded") || time.Since(start) > time.Second {
+	if !errors.Is(err, context.DeadlineExceeded) || time.Since(start) > time.Second {
 		t.Fatalf("stalled discovery ignored cancellation: %v", err)
+	}
+}
+
+func TestRunDiscoveryPreservesCancellation(t *testing.T) {
+	for _, wantErr := range []error{context.Canceled, context.DeadlineExceeded} {
+		t.Run(wantErr.Error(), func(t *testing.T) {
+			unsetPythonOverride(t)
+			dir := t.TempDir()
+			fakePython(t, dir, "python3", "3.12")
+			t.Setenv("PATH", dir)
+			var ctx context.Context
+			var cancel context.CancelFunc
+			if wantErr == context.DeadlineExceeded {
+				ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+			} else {
+				ctx, cancel = context.WithCancel(context.Background())
+			}
+			cancel()
+			_, err := Run(ctx, RunOptions{CacheDir: stageCache(t)})
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("Run error = %v, want %v", err, wantErr)
+			}
+		})
+	}
+}
+
+func TestPythonCandidatesCaseInsensitiveNames(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"PYTHON.exe", "python3.12.Exe", "Python3.EXE", "python3.11.exe"} {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	defer func(prev bool) { caseInsensitiveNames = prev }(caseInsensitiveNames)
+
+	caseInsensitiveNames = true
+	got := pythonCandidates(dir)
+	want := []string{
+		filepath.Join(dir, "Python3.EXE"),
+		filepath.Join(dir, "python3.12.Exe"),
+		filepath.Join(dir, "PYTHON.exe"),
+	}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("case-insensitive candidates = %q, want %q", got, want)
+	}
+
+	caseInsensitiveNames = false
+	if got := pythonCandidates(dir); len(got) != 0 {
+		t.Fatalf("case-sensitive candidates = %q, want none", got)
 	}
 }
