@@ -33,6 +33,7 @@ from . import (
     digg,
     dripstack,
     entity_extract,
+    fxmacrodata,
     env,
     fetch_memo,
     github,
@@ -120,7 +121,7 @@ SEARCH_ALIAS = {
 # resolved per run, so every subquery would issue the identical page fetch.
 MAX_SOURCE_FETCHES: dict[str, int] = {
     "x": 2, "jobs": 1, "linkedin": 1, "stocktwits": 1, "trustpilot": 1, "amazon": 1,
-    "telegram": 1, "meta_ads": 1, "devto": 1,
+    "telegram": 1, "meta_ads": 1, "devto": 1, "fxmacrodata": 1,
 }
 
 # Sources whose thin result is their normal success state, so the "<3 items"
@@ -132,7 +133,9 @@ MAX_SOURCE_FETCHES: dict[str, int] = {
 #   meta_ads resolves one advertiser page per run, so a brand that genuinely
 #   ran two creatives this month is complete; a retry would re-resolve the
 #   page and re-spend the discovery credit.
-THIN_RETRY_EXEMPT: frozenset[str] = frozenset({"trustpilot", "perplexity", "meta_ads"})
+#   fxmacrodata returns the releases the topic's currencies had; the same
+#   request cannot return more.
+THIN_RETRY_EXEMPT: frozenset[str] = frozenset({"trustpilot", "perplexity", "meta_ads", "fxmacrodata"})
 
 # Stream-artifact keys promoted to named top-level report artifacts. A stream
 # artifact only ever reaches the report as an anonymous entry in the grounding
@@ -328,6 +331,7 @@ MOCK_AVAILABLE_SOURCES = [
     "dripstack",
     "telegram",
     "devto",
+    "fxmacrodata",
 ]
 
 
@@ -425,6 +429,12 @@ def available_sources(
         or config.get("_devto_tags")
     ):
         available.append("devto")
+    # FXMacroData (official macro releases) follows the same default-off
+    # policy. USD needs no key; FXMACRODATA_API_KEY only widens currencies.
+    if "fxmacrodata" in include_sources or (
+        requested_sources and "fxmacrodata" in requested_sources
+    ):
+        available.append("fxmacrodata")
     if which("digg-pp-cli"):
         available.append("digg")
     # arXiv is default-on when its Printing Press CLI is installed (zero auth).
@@ -2423,6 +2433,7 @@ def run(
         # jobs injection must not widen either.
         _ensure_jobs_in_plan(plan, available, explicit=hiring_signals_mode, topic=topic)
         _ensure_devto_in_plan(plan, available)
+        _ensure_fxmacrodata_in_plan(plan, available)
     if "corpus" in available and plan.subqueries:
         # Corpus is deterministic and user-registered, so it always gets one
         # bounded stream even when a quick/LLM plan omits it. Reuse the primary
@@ -3774,6 +3785,21 @@ def _external_plan_names_source(external_plan: Any, source: str) -> bool:
         and source in subquery["sources"]
         for subquery in subqueries
     )
+
+
+def _ensure_fxmacrodata_in_plan(plan: schema.QueryPlan, available: list[str]) -> None:
+    """Give an opted-in FXMacroData source the primary subquery.
+
+    Same reasoning as dev.to: a host plan built from the default source list
+    never names an off-by-default source, so the opt-in must not be a no-op.
+    """
+    if "fxmacrodata" not in available or not plan.subqueries:
+        return
+    if not any("fxmacrodata" in subquery.sources for subquery in plan.subqueries):
+        plan.subqueries[0].sources.append("fxmacrodata")
+    if "fxmacrodata" not in plan.source_weights:
+        plan.source_weights["fxmacrodata"] = 1.0
+        plan.source_weights = planner._normalize_weights(plan.source_weights)
 
 
 def _ensure_jobs_in_plan(
@@ -6079,6 +6105,18 @@ def _retrieve_stream_impl(
         # Comment enrichment is deferred to _finalize_items_by_source so it
         # lands on the articles that survive relevance pruning.
         return items, _result_outcome_artifact(source, result)
+    if source == "fxmacrodata":
+        # Currency detection keys off the full topic, not the narrowed
+        # per-subquery search_query (same rationale as stocktwits).
+        relevance_topic = raw_topic or topic or subquery.search_query
+        result = fxmacrodata.search_fxmacrodata(
+            relevance_topic, from_date, to_date, depth=depth,
+            api_key=(config or {}).get("FXMACRODATA_API_KEY"),
+        )
+        return (
+            fxmacrodata.parse_fxmacrodata_response(result, query=relevance_topic),
+            _result_outcome_artifact(source, result),
+        )
     if source == "stocktwits":
         # Pass raw_topic so symbol detection sees the full topic, not the
         # narrowed per-subquery search_query (same rationale as reddit).

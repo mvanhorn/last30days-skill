@@ -223,6 +223,7 @@ SOURCE_LABELS = {
     "grounding": "Web",
     "hackernews": "Hacker News",
     "devto": "dev.to",
+    "fxmacrodata": "FXMacroData",
     "truthsocial": "Truth Social",
     "linkedin": "LinkedIn",
     "xiaohongshu": "Xiaohongshu",
@@ -2885,6 +2886,7 @@ _FOOTER_SOURCES: list[tuple[str, str, str, str, list[tuple[str, str]]]] = [
     ),
     ("arxiv", "📄", "arXiv", "paper", []),
     ("techmeme", "📰", "Techmeme", "headline", []),
+    ("fxmacrodata", "🏦", "FXMacroData", "release", []),
     ("trustpilot", "⭐", "Trustpilot", "review", [("reviews", "reviews")]),
     # Jobs must appear so a scoped --hiring-signals run (jobs-only) still emits
     # the LAW 5 footer; without it the footer was dropped entirely.
