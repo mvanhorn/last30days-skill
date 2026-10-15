@@ -483,9 +483,10 @@ _WEB_PROBES: Dict[str, Callable[[Dict[str, Any]], BackendFinding]] = {
     "exa": _key_probe("exa", "EXA_API_KEY", "EXA_API_KEY"),
     "serper": _key_probe("serper", "SERPER_API_KEY", "SERPER_API_KEY"),
     "parallel": _key_probe("parallel", "PARALLEL_API_KEY", "PARALLEL_API_KEY"),
+    "kagi": _key_probe("kagi", "KAGI_API_KEY", "KAGI_API_KEY"),
     "keyless": _probe_web_keyless,
 }
-_WEB_KEYED = {"brave", "exa", "serper", "parallel"}
+_WEB_KEYED = {"brave", "exa", "serper", "parallel", "kagi"}
 
 _SC_SPEC = BackendSpec(
     name="scrapecreators",
