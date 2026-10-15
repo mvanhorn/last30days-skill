@@ -620,3 +620,60 @@ def test_pipeline_hackernews_reports_failed_comment_enrichment(
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+# === HN kids ordering (#1285) ===
+
+
+@patch("lib.hackernews.http.request")
+def test_fetch_item_comments_orders_by_firebase_kids(mock_request):
+    """Quoted comments follow HN thread order, not Algolia child / id order."""
+
+    def fake_request(method, url, **kwargs):
+        if url.startswith(hackernews.FIREBASE_ITEM_URL):
+            # HN ranks B then A then C; Algolia listed them A, B, C (id order).
+            return {"kids": [2, 1, 3]}
+        if url.startswith(hackernews.ALGOLIA_ITEM_URL):
+            return {
+                "children": [
+                    {"id": 1, "author": "alice", "text": "<p>First posted.</p>", "points": None},
+                    {"id": 2, "author": "bob", "text": "<p>Top-ranked reply.</p>", "points": None},
+                    {"id": 3, "author": "carol", "text": "<p>Third.</p>", "points": None},
+                ]
+            }
+        raise AssertionError(f"unexpected url: {url}")
+
+    mock_request.side_effect = fake_request
+    result = hackernews._fetch_item_comments("50019911", max_comments=2)
+
+    assert [c["author"] for c in result["comments"]] == ["bob", "alice"]
+    assert result["comments"][0]["url"] == "https://news.ycombinator.com/item?id=2"
+
+
+@patch("lib.hackernews.http.request")
+def test_fetch_item_comments_falls_back_to_points_when_kids_unavailable(mock_request):
+    """If the Firebase kids fetch fails, keep the previous points ordering."""
+
+    def fake_request(method, url, **kwargs):
+        if url.startswith(hackernews.FIREBASE_ITEM_URL):
+            raise hackernews.http.HTTPError("firebase down", status_code=503)
+        return {
+            "children": [
+                {"id": 1, "author": "alice", "text": "low", "points": 1},
+                {"id": 2, "author": "bob", "text": "high", "points": 9},
+            ]
+        }
+
+    mock_request.side_effect = fake_request
+    result = hackernews._fetch_item_comments("123", max_comments=2)
+    assert [c["author"] for c in result["comments"]] == ["bob", "alice"]
+
+
+def test_order_comments_by_kids_appends_unknowns():
+    comments = [
+        {"id": 1, "author": "a"},
+        {"id": 2, "author": "b"},
+        {"id": 99, "author": "extra"},
+    ]
+    ordered = hackernews._order_comments_by_kids(comments, [2, 1])
+    assert [c["id"] for c in ordered] == [2, 1, 99]
